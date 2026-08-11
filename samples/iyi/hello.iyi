@@ -83,8 +83,10 @@ crowd.each { |member| puts describe(member) }
 # Not yet implemented
 # ---------------------------------------------------------------------------
 #
-# * Generic impls (`impl Enumerable for Array(T) forall T`) parse but are
-#   rejected in semantic analysis with an explicit "not implemented yet".
+# * Trait bounds on a generic impl's parameters (`forall T : Show`) parse but
+#   are rejected. A bound makes the impl conditional, and a conditional impl
+#   has to be checked where the type is instantiated rather than where the
+#   impl is written — a different mechanism from the one `generics.iyi` uses.
 #
 # * Traits are currently desugared to modules, which is why this works at all
 #   so early. A consequence: `include Greet` also compiles, and it should not.
@@ -97,5 +99,5 @@ crowd.each { |member| puts describe(member) }
 #   three things the whole design exists for — are unimplemented. Today this
 #   file is compiled exactly the way Crystal compiles a `.cr` file.
 #
-# See `modules.iyi` for `import` and `using` across files, which this
-# single-file sample has no way to show.
+# See `modules.iyi` for `import` and `using` across files, and `generics.iyi`
+# for implementing a trait for a generic type.

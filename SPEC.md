@@ -310,6 +310,50 @@ having no traits. In iyi it is `forall O : Enumerable`. A union-of-traits bound
 would mean "implements at least one of", which no body could rely on — it should
 not exist in the language.
 
+### II.7 Generic impls — **SETTLED**
+
+`impl Enumerable for Array(T) forall T`. Four decisions, each taken from the
+language that already paid for the mistake.
+
+**1. The binder is required (Rust).** `impl Show for Box(T)` with no `forall T`
+is refused. Without the binder, whether `T` is a new parameter or a type
+already in scope depends on what happens to be imported — so a library could
+change the meaning of a consumer's impl by adding an export. Rust requires
+`impl<T>` for exactly this reason. The cost is four characters; the error names
+them.
+
+**2. Parameter names are the impl's own, bound positionally (Rust and Java,
+not Crystal).** `impl Show for Pair(X, Y) forall X, Y` works on a `Pair(A, B)`.
+Crystal requires a reopened generic to repeat the declared names, which leaks a
+type's private naming into every impl of it. An impl states arity, not
+vocabulary.
+
+**3. A bound is a trait, and nothing else (Go).** `forall T : Show`. There is no
+separate constraint language: what you can bound by is what you can implement.
+This matters more here than in Go, because under R-4 a bound is not only a
+check — it is what gets passed, as the dictionary.
+
+**4. No specialisation and no blanket impls (Java's position; Rust's unfinished
+business).**
+
+- `impl Show for Box(Int32)` alongside `impl Show for Box(T) forall T` is
+  refused. Overlapping impls need a rule for which one wins, and that rule has
+  to stay sound when the two live in different modules compiled separately.
+  Rust has wanted specialisation for a decade and it is still unstable. Java
+  cannot express it at all. Refusing it is what keeps `Box(T)`'s method set
+  knowable without knowing `T` — the same property R-3 exists to protect.
+- `impl Show for T forall T : Debug` — a blanket impl — is refused for the same
+  reason open classes are: it lets a distant module add methods to every type.
+
+**What it costs.** Nothing extra at build time. Under R-4 an impl on a generic
+type is compiled once per GC shape, not once per instantiation, so a generic
+impl is one body and not N.
+
+**Not yet built:** bounds are parsed and rejected. Enforcing `forall T : Show`
+means an impl that applies only for some `T`, and a conditional impl is a
+different mechanism from the unconditional one — it has to be checked where the
+type is instantiated, not where the impl is written.
+
 ---
 
 ## Part III — Open questions, with recommendations

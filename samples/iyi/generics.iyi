@@ -1,0 +1,90 @@
+# Implementing a trait for a generic type — SPEC.md II.7.
+#
+#   ./bin/crystal run samples/iyi/generics.iyi
+
+module samples/generics
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Box(T)
+  getter value : T
+
+  def initialize(@value : T)
+  end
+end
+
+# `forall T` introduces the parameter, and it is required. Without it, whether
+# `T` names a new parameter or a type already in scope would depend on what
+# happens to be imported — so a library could change what this impl means by
+# adding an export. Rust requires the same binder for the same reason.
+impl Show for Box(T) forall T
+  def show : String
+    "Box(#{value})"
+  end
+end
+
+pub struct Pair(A, B)
+  getter first : A
+  getter second : B
+
+  def initialize(@first : A, @second : B)
+  end
+end
+
+# `Pair` declared its parameters `A, B`; this impl calls them `X, Y`. The names
+# are the impl's own and bind positionally, so an impl states arity and not
+# vocabulary — what a type chose to call its parameters is its own business.
+# Crystal requires a reopened generic to repeat the declared names; that leaks
+# the declaration's naming into every impl of it.
+impl Show for Pair(X, Y) forall X, Y
+  def show : String
+    "#{label(first)}, #{label(second)}"
+  end
+
+  def label(v : X) : String
+    "first=#{v}"
+  end
+
+  def label(v : Y) : String
+    "second=#{v}"
+  end
+end
+
+puts Box.new(42).show
+puts Box.new("hello").show
+puts Pair.new(1, "two").show
+
+# One impl covers every instantiation, so instantiations of the same generic
+# dispatch through the trait together.
+shown = [Box.new(1), Box.new("two"), Pair.new(3, "four")] of Show
+shown.each { |s| puts s.show }
+
+# ---------------------------------------------------------------------------
+# What this sample would report as an error
+# ---------------------------------------------------------------------------
+#
+# * `impl Show for Box(T)` without `forall T` — the error names the binder and
+#   writes out the line you meant.
+#
+# * `impl Show for Box(Int32)` — iyi has no specialised impls. Overlapping
+#   impls need a rule for which one wins, and that rule has to stay sound when
+#   the two live in modules compiled separately; Rust has wanted this for a
+#   decade and it is still unstable, and Java cannot express it at all.
+#   Refusing it is what keeps `Box(T)`'s method set knowable without knowing T.
+#
+# * `impl Show for T forall T : Show` — a blanket impl, refused for the reason
+#   open classes are: it lets a distant module add methods to every type.
+#
+# ---------------------------------------------------------------------------
+# Not yet implemented
+# ---------------------------------------------------------------------------
+#
+# * `forall T : Show` parses but is rejected. A bound makes the impl
+#   conditional, and a conditional impl has to be checked where the type is
+#   instantiated rather than where the impl is written.
+#
+# * Under R-4 an impl on a generic type should be compiled once per GC shape
+#   rather than once per instantiation. Today this monomorphises, exactly the
+#   way Crystal does.
