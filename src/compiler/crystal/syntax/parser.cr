@@ -84,7 +84,59 @@ module Crystal
     def parse
       next_token_skip_statement_end
 
-      parse_expressions.tap { check :EOF }
+      nodes = parse_expressions.tap { check :EOF }
+      apply_module_header(nodes)
+    end
+
+    # iyi: `module app/greeter` scopes everything after it in the file.
+    #
+    # Desugared here rather than in semantic analysis, because a header
+    # applies to the rest of the file while `current_type` is managed with
+    # nested blocks — the two do not line up. Rewriting
+    #
+    #     module app/greeter
+    #     <rest>
+    #
+    # into `ModuleDef(App::Greeter, <rest>)` means the whole semantic phase
+    # needs no changes at all.
+    #
+    # NOTE: path segments are capitalised to form the namespace, because
+    # Crystal type names must be constants. `app/greeter` is reachable as
+    # `App::Greeter`. That mismatch between how a module is declared and how
+    # it is named is a wart the spec still has to settle.
+    private def apply_module_header(nodes : ASTNode) : ASTNode
+      expressions =
+        case nodes
+        when Expressions then nodes.expressions
+        else                  [nodes]
+        end
+
+      header = expressions.first?
+      return nodes unless header.is_a?(ModuleHeader)
+
+      rest = expressions[1..]
+
+      # Directives stay at file level; only declarations get scoped.
+      directives = [] of ASTNode
+      while (first = rest.first?) && (first.is_a?(ImportDecl) || first.is_a?(UsingDecl))
+        directives << rest.shift
+      end
+
+      path = Path.new(header.path.map(&.camelcase))
+      path.at(header)
+
+      # `extend self` so a module-level `pub def` is callable on the module
+      # (`App::Greeter.polite`) rather than being an instance method of it.
+      # In iyi a module is a compilation unit, not a mixin, so its functions
+      # belong to the module itself.
+      extend_self = Extend.new(Self.new).at(header)
+      body = [extend_self] of ASTNode + rest
+
+      module_def = ModuleDef.new(path, Expressions.from(body))
+      module_def.at(header)
+      module_def.end_location = header.end_location
+
+      Expressions.from([header] of ASTNode + directives + [module_def] of ASTNode)
     end
 
     def parse(mode : ParseMode)

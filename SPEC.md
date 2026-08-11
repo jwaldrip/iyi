@@ -724,7 +724,27 @@ files can disagree about what `app/greeter` refers to — which defeats the
 purpose of having module identity at all. Go takes the same position. Until iyi
 has a manifest, the project root is the directory of the entry file.
 
-**4. New keywords are cheap, but not free.** `trait`, `impl`, `pub`, `import`
+**4. Namespacing makes `using` mandatory, not a convenience.** II.3 presented
+`using` as the thing that keeps DSL-shaped libraries writable. Implementing
+namespaces showed it is more basic than that: the moment `module app/greeter`
+actually scoped its contents, every cross-module reference broke, and the
+working test had to be rewritten to
+`impl App::Greeter::Greet for User` / `App::Greeter.polite(name)`. Without
+`using`, ordinary multi-module code is unbearable, not merely verbose.
+
+**5. Module functions need `extend self`.** A `pub def` at module level is a
+function of the module, not an instance method of a mixin — iyi modules are
+compilation units, not mixins. The desugar inserts `extend self` so
+`App::Greeter.polite` resolves.
+
+**6. Declaring a module and naming one do not match yet.** A module is declared
+lowercase (`module app/greeter`) but reached capitalised (`App::Greeter`),
+because Crystal type names must be constants. The implementation capitalises
+each path segment. This is a wart the spec has to settle: either accept the
+mismatch, adopt Go's convention where the last path segment is the name, or
+teach the type system lowercase module names.
+
+**7. New keywords are cheap, but not free.** `trait`, `impl`, `pub`, `import`
 and `using` were added to the lexer with no regressions — `trailing`,
 `implements`, `public`, `usingx` and `impl_` all still lex as identifiers. But
 `impl` was in use as a local variable in two compiler tool files, which had to be
