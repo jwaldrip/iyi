@@ -2020,7 +2020,7 @@ module Crystal
     def_equals_and_hash @name, @body, @type_vars, @exported
   end
 
-  # iyi: `impl Greet for User ... end`
+  # iyi: `impl Greet for User ... end`, `impl Greet for Box(T) forall T`
   #
   # Coherence (R-3): must live in the module defining the trait or the type.
   # SPEC.md IV.4 shows the import DAG makes duplicate impls unrepresentable.
@@ -2030,12 +2030,16 @@ module Crystal
     # `@type : Crystal::Type?` for the inferred type of every node.
     property target : ASTNode
     property body : ASTNode
+    # The names introduced by `forall`. They are the impl's own, bound
+    # positionally to the target's parameters — see SPEC.md II.7.
     property type_vars : Array(String)?
+    # `forall T : Show` — the trait each parameter is bounded by, if any.
+    property type_var_bounds : Hash(String, ASTNode)?
     property name_location : Location?
     property doc : String?
     property visibility = Visibility::Public
 
-    def initialize(@trait, @target, body = nil, @type_vars = nil)
+    def initialize(@trait, @target, body = nil, @type_vars = nil, @type_var_bounds = nil)
       @body = Expressions.from body
     end
 
@@ -2046,12 +2050,12 @@ module Crystal
     end
 
     def clone_without_location
-      clone = ImplDef.new(@trait.clone, @target.clone, @body.clone, @type_vars.clone)
+      clone = ImplDef.new(@trait.clone, @target.clone, @body.clone, @type_vars.clone, @type_var_bounds.clone)
       clone.name_location = name_location
       clone
     end
 
-    def_equals_and_hash @trait, @target, @body, @type_vars
+    def_equals_and_hash @trait, @target, @body, @type_vars, @type_var_bounds
   end
 
   # iyi: `module app/user` — the compilation-unit header (R-1).

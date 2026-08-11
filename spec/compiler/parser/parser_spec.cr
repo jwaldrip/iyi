@@ -4171,7 +4171,29 @@ module Crystal
         node = parse("impl Greet for User\ndef greet\nend\nend").as(ImplDef)
         node.trait.should eq(Path.new(["Greet"]))
         node.target.should eq(Path.new(["User"]))
+        node.type_vars.should be_nil
       end
+
+      it "parses a generic impl" do
+        node = parse("impl Show for Box(T) forall T\nend").as(ImplDef)
+        node.target.should eq(Generic.new(Path.new(["Box"]), [Path.new(["T"])] of ASTNode))
+        node.type_vars.should eq(["T"])
+        node.type_var_bounds.should be_nil
+      end
+
+      it "parses a generic impl with several parameters" do
+        node = parse("impl Show for Pair(X, Y) forall X, Y\nend").as(ImplDef)
+        node.type_vars.should eq(["X", "Y"])
+      end
+
+      it "parses bounds on a generic impl" do
+        node = parse("impl Show for Pair(X, Y) forall X : Show, Y\nend").as(ImplDef)
+        node.type_vars.should eq(["X", "Y"])
+        node.type_var_bounds.should eq({"X" => Path.new(["Show"])})
+      end
+
+      assert_syntax_error "impl Show for Box(T) forall\nend", "expecting token 'CONST'"
+      assert_syntax_error "impl Show for Box(T) forall T :\nend", "expecting token 'CONST'"
     end
   end
 end

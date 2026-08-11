@@ -2066,7 +2066,8 @@ module Crystal
       trait_def
     end
 
-    # iyi: `impl Greet for User ... end`, optionally `... forall T`
+    # iyi: `impl Greet for User ... end`, `impl Greet for Box(T) forall T`,
+    # `impl Show for Box(T) forall T : Show` (SPEC.md II.7)
     def parse_impl_def
       @type_nest += 1
 
@@ -2086,13 +2087,26 @@ module Crystal
       skip_space
 
       type_vars = nil
+      type_var_bounds = nil
       if @token.type.ident? && @token.value == "forall"
         next_token_skip_space
         type_vars = [] of String
         loop do
           check Token::Kind::CONST
-          type_vars << @token.value.to_s
+          name = @token.value.to_s
+          type_vars << name
           next_token_skip_space
+
+          # `forall T : Show` — the bound is a trait, and nothing else. There
+          # is no separate constraint language to learn: what you can bound by
+          # is what you can implement.
+          if @token.type.op_colon?
+            next_token_skip_space_or_newline
+            type_var_bounds ||= {} of String => ASTNode
+            type_var_bounds[name] = parse_path
+            skip_space
+          end
+
           break unless @token.type.op_comma?
           next_token_skip_space_or_newline
         end
@@ -2108,7 +2122,7 @@ module Crystal
 
       @type_nest -= 1
 
-      impl_def = ImplDef.new trait_path, target, body, type_vars
+      impl_def = ImplDef.new trait_path, target, body, type_vars, type_var_bounds
       impl_def.doc = doc
       impl_def.name_location = name_location
       impl_def.end_location = end_location
