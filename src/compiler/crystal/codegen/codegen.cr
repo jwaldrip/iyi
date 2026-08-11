@@ -156,9 +156,9 @@ module Crystal
                 frame_pointers = FramePointers::Auto)
       visitor = CodeGenVisitor.new self, node, single_module: single_module,
         debug: debug, frame_pointers: frame_pointers
-      visitor.accept node
-      visitor.process_finished_hooks
-      visitor.finish
+      Prof.span("  codegen: visitor.accept") { visitor.accept node }
+      Prof.span("  codegen: finished hooks") { visitor.process_finished_hooks }
+      Prof.span("  codegen: visitor.finish") { visitor.finish }
 
       visitor.modules
     end

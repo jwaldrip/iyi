@@ -23,8 +23,9 @@ class Crystal::Program
 
     @progress_tracker.stage("Semantic (ivars initializers)") do
       visitor = InstanceVarsInitializerVisitor.new(self)
-      visit_with_finished_hooks(node, visitor)
-      visitor.finish
+      Prof.span("  ivars: node.accept") { node.accept visitor }
+      Prof.span("  ivars: finished hooks") { process_finished_hooks visitor }
+      Prof.span("  ivars: visitor.finish") { visitor.finish }
     end
 
     @progress_tracker.stage("Semantic (cvars initializers)") do

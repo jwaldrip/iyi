@@ -250,6 +250,7 @@ module Crystal
       @progress_tracker.clear
       print_macro_run_stats(program)
       print_codegen_stats(units)
+      Prof.report
 
       Result.new program, node
     end

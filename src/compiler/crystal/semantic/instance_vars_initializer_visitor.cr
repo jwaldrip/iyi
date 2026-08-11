@@ -76,14 +76,17 @@ class Crystal::InstanceVarsInitializerVisitor < Crystal::SemanticVisitor
 
     # First declare them, so when we type all of them we will have
     # the info of which instance vars have initializers (so they are not nil)
-    initializers.each do |i|
-      scope = i.scope
-      unless scope.lookup_instance_var?(i.target.name)
-        program.undefined_instance_variable(i.target, scope, nil)
-      end
+    Prof.count("  ivars: initializer count", initializers.size)
+    Prof.span("  ivars.finish: declare") do
+      initializers.each do |i|
+        scope = i.scope
+        unless scope.lookup_instance_var?(i.target.name)
+          program.undefined_instance_variable(i.target, scope, nil)
+        end
 
-      scope_initializers <<
-        scope.add_instance_var_initializer(i.target.name, i.value, scope.is_a?(GenericType) ? nil : i.meta_vars)
+        scope_initializers <<
+          scope.add_instance_var_initializer(i.target.name, i.value, scope.is_a?(GenericType) ? nil : i.meta_vars)
+      end
     end
 
     # Now type them
@@ -95,18 +98,28 @@ class Crystal::InstanceVarsInitializerVisitor < Crystal::SemanticVisitor
 
       # Check if we can autocast
       if value.supports_autocast?(!@program.has_flag?("no_number_autocast")) && (scope_initializer = scope_initializers[index])
-        cloned_value = value.clone
-        cloned_value.accept MainVisitor.new(program)
-        if casted_value = MainVisitor.check_automatic_cast(@program, cloned_value, scope.lookup_instance_var(i.target.name).type)
+        Prof.count("  ivars: autocast probes")
+        casted_value = Prof.span("  ivars.finish: autocast probe") do
+          cloned_value = value.clone
+          cloned_value.accept MainVisitor.new(program)
+          MainVisitor.check_automatic_cast(@program, cloned_value, scope.lookup_instance_var(i.target.name).type)
+        end
+        if casted_value
+          Prof.count("  ivars: autocast hits")
           scope_initializer.value = casted_value
           next
         end
       end
 
-      ivar_visitor = MainVisitor.new(program, meta_vars: i.meta_vars)
-      ivar_visitor.scope = scope.metaclass
-      ivar_visitor.pushing_type(scope.as(ModuleType)) do
-        value.accept ivar_visitor
+      Prof.count("  ivars: full type passes")
+      Prof.span("  ivars.finish: type") do
+        Prof.sample("ivars type passes", "#{scope}##{i.target.name}") do
+          ivar_visitor = MainVisitor.new(program, meta_vars: i.meta_vars)
+          ivar_visitor.scope = scope.metaclass
+          ivar_visitor.pushing_type(scope.as(ModuleType)) do
+            value.accept ivar_visitor
+          end
+        end
       end
     end
   end
