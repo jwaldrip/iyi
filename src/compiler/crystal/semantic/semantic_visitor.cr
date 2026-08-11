@@ -84,6 +84,97 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     false
   end
 
+  # iyi: `import app/user` (R-1)
+  #
+  # Resolves a module path to a file and loads it at most once, so the import
+  # graph is a DAG rather than textual inclusion. What this does NOT yet do is
+  # namespace the loaded module — its declarations still land in the global
+  # namespace, exactly as `require` leaves them. That is the next step, and
+  # until it lands `import` is a DAG-shaped `require`.
+  def visit(node : ImportDecl)
+    if expanded = node.expanded
+      expanded.accept self
+      return false
+    end
+
+    if inside_exp?
+      node.raise "can't import dynamically"
+    end
+
+    path = node.path.join('/')
+    location = node.location
+    relative_to = location.try &.original_filename
+
+    filename = resolve_import(path)
+    unless filename
+      node.raise "can't find module '#{path}'"
+    end
+
+    @program.record_require(path, relative_to)
+
+    # Load-once. A module imported by several others is compiled once.
+    if @program.requires.add?(filename)
+      expanded = import_file(node, filename)
+    else
+      expanded = Nop.new
+    end
+
+    node.expanded = expanded
+    node.bind_to expanded
+    false
+  end
+
+  # Resolves `a/b` to a file.
+  #
+  # Module paths are ABSOLUTE, resolved from the project root — never relative
+  # to the importing file. That is what makes `import app/greeter` mean the
+  # same module no matter which file writes it; a relative reading would make
+  # a path's meaning depend on its location, and two files could disagree
+  # about what `app/greeter` is. Go takes the same position.
+  #
+  # The project root is the directory of the entry file until iyi has a
+  # manifest to declare one.
+  #
+  # `.iyi` wins over `.cr` so an iyi module can shadow a Crystal file of the
+  # same name during the transition.
+  private def resolve_import(path : String) : String?
+    candidates = [] of String
+
+    if root = project_root
+      candidates << File.join(root, "#{path}.iyi")
+      candidates << File.join(root, "#{path}.cr")
+    end
+
+    @program.crystal_path.entries.each do |entry|
+      candidates << File.join(entry, "#{path}.iyi")
+      candidates << File.join(entry, "#{path}.cr")
+    end
+
+    candidates.find { |candidate| File.file?(candidate) }
+  end
+
+  private def project_root : String?
+    filename = @program.filename
+    filename ? File.dirname(filename) : nil
+  end
+
+  private def import_file(node : ImportDecl, filename : String)
+    parser = @program.new_parser(File.read(filename))
+    parser.filename = filename
+    parser.wants_doc = @program.wants_doc?
+    begin
+      parsed_nodes = parser.parse
+      parsed_nodes = @program.normalize(parsed_nodes, inside_exp: false)
+      parsed_nodes.accept self
+    rescue ex : CodeError
+      node.raise "while importing \"#{node.path.join('/')}\"", ex
+    rescue ex
+      raise Error.new "while importing \"#{node.path.join('/')}\"", ex
+    end
+
+    FileNode.new(parsed_nodes, filename)
+  end
+
   private def require_file(node : Require, filename : String)
     parser = @program.new_parser(File.read(filename))
     parser.filename = filename

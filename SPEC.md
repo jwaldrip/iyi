@@ -715,7 +715,16 @@ costs a two-line workaround.
 **2. `abstract def` for trait requirements.** See II.6; a bare signature is not
 distinguishable from a default method without unbounded lookahead.
 
-**3. New keywords are cheap, but not free.** `trait`, `impl`, `pub`, `import`
+**3. Module paths are absolute, resolved from the project root.** Not relative
+to the importing file. This only surfaced when a module two levels deep
+imported a sibling: a relative reading resolved `app/greeter` against
+`app/`, looked for `app/app/greeter`, and failed. The deeper point is that a
+relative reading makes a path's meaning depend on where it is written, so two
+files can disagree about what `app/greeter` refers to — which defeats the
+purpose of having module identity at all. Go takes the same position. Until iyi
+has a manifest, the project root is the directory of the entry file.
+
+**4. New keywords are cheap, but not free.** `trait`, `impl`, `pub`, `import`
 and `using` were added to the lexer with no regressions — `trailing`,
 `implements`, `public`, `usingx` and `impl_` all still lex as identifiers. But
 `impl` was in use as a local variable in two compiler tool files, which had to be

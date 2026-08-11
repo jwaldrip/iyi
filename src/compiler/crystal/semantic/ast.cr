@@ -671,7 +671,8 @@ module Crystal
                    ArrayLiteral HashLiteral RegexLiteral RangeLiteral
                    Case StringInterpolation
                    MacroExpression MacroIf MacroFor MacroVerbatim MultiAssign
-                   SizeOf InstanceSizeOf AlignOf InstanceAlignOf OffsetOf Global Require Select) %}
+                   SizeOf InstanceSizeOf AlignOf InstanceAlignOf OffsetOf Global Require Select
+                   ImportDecl) %}
     class {{name.id}}
       include ExpandableNode
     end
