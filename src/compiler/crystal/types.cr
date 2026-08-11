@@ -87,6 +87,61 @@ module Crystal
       false
     end
 
+    # Approximate Go-style "GC shape" of this type's *value representation*.
+    # Two types with the same shape occupy memory identically, so a generic
+    # body specialised for one could serve the other under dictionary passing.
+    #
+    # Deliberately conservative: named structs are never collapsed together,
+    # so any saving derived from this is a LOWER bound.
+    # Crystal's type graph contains cycles, so both shape functions are
+    # depth-bounded. At the limit they fall back to the exact type name,
+    # which never collapses — so the guard can only make a measured
+    # collapse ratio more conservative, never inflate it.
+    SHAPE_MAX_DEPTH = 6
+
+    def gc_shape(depth = 0) : String
+      return "X:#{self}" if depth > SHAPE_MAX_DEPTH
+
+      t = remove_typedef
+      return "PTR" if t.pointer?
+      return "PTR" if t.reference_like?
+
+      case t
+      when ProcInstanceType then "PROC"
+      when PrimitiveType    then "SCALAR#{t.bytes}"
+      when MetaclassType, GenericClassInstanceMetaclassType,
+           GenericModuleInstanceMetaclassType, VirtualMetaclassType
+        "META"
+      when UnionType
+        "UNION(#{t.union_types.map(&.gc_shape(depth + 1)).uniq!.sort!.join("|")})"
+      else
+        "ST:#{t}"
+      end
+    end
+
+    # The key Go would actually stencil on: the value shape, plus the shapes
+    # of any type arguments. Without the type arguments `Array(User).new` and
+    # `Array(Int32).new` would wrongly collapse — both receivers are pointers,
+    # but the generated code differs because the element shapes differ.
+    def inst_shape(depth = 0) : String
+      return "X:#{self}" if depth > SHAPE_MAX_DEPTH
+
+      t = remove_typedef
+
+      case t
+      when GenericInstanceType
+        vars = t.type_vars.values.map do |node|
+          node.is_a?(Var) && (vt = node.type?) ? vt.inst_shape(depth + 1) : "?"
+        end
+        vars.empty? ? t.gc_shape(depth) : "#{t.gc_shape(depth)}<#{vars.join(",")}>"
+      when MetaclassType, GenericClassInstanceMetaclassType,
+           GenericModuleInstanceMetaclassType, VirtualMetaclassType
+        "META<#{t.instance_type.inst_shape(depth + 1)}>"
+      else
+        t.gc_shape(depth)
+      end
+    end
+
     # Returns `true` if this type inherits from `Reference` or if this
     # is a union type where all types are reference types or nil.
     # In this case this type can be represented with a single pointer.
@@ -893,6 +948,7 @@ module Crystal
     getter(def_instances) { {} of DefInstanceKey => Def }
 
     def add_def_instance(key, typed_def)
+      Prof.instantiation(self, key, typed_def) if Prof.enabled?
       def_instances[key] = typed_def
     end
 
