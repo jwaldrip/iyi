@@ -1,0 +1,21 @@
+# A module other files can import. See `../modules.iyi`.
+#
+# R-1: the module path is the compilation unit's name, and it is absolute —
+# resolved from the project root, never relative to whoever imports it. That
+# is what makes `app/greeter` mean the same module in every file that writes
+# it. The file lives at `app/greeter.iyi` because the path says so.
+module app/greeter
+
+pub trait Greet
+  abstract def greet : String
+end
+
+pub def polite(name : String) : String
+  "Hello, #{name}."
+end
+
+# Also exported, and deliberately named the same as something in
+# `app/formal` — see how `modules.iyi` has to deal with that.
+pub def title : String
+  "friend"
+end

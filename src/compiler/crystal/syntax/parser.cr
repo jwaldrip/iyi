@@ -139,6 +139,7 @@ module Crystal
       body = [extend_self] of ASTNode + rest
 
       module_def = ModuleDef.new(path, Expressions.from(body))
+      module_def.iyi_unit = true
       module_def.at(header)
       module_def.end_location = header.end_location
 
@@ -1954,22 +1955,46 @@ module Crystal
       node
     end
 
-    # iyi: `using app/greeter` (SPEC.md II.3)
+    # iyi: `using app/greeter`, `using app/greeter::{polite, Greet}` (SPEC.md II.3)
     #
-    # Takes the same path form as `import`. Both name a module, so they should
-    # look the same; the spec's original `using kemal::dsl` mixed two
-    # notations for one concept.
+    # The module is written in the same path form as `import`. Both name a
+    # module, so they should look the same; the spec's original
+    # `using kemal::dsl` mixed two notations for one concept.
     #
-    # The selective form is not parsed yet — see the visitor, which rejects it
-    # explicitly rather than silently ignoring the distinction.
+    # `::{...}` then narrows what the directive brings in. The names are taken
+    # as written and matched as written, so the list may hold both method
+    # names and type names — to the consumer they are just names.
     def parse_using
       location = @token.location
       next_token_skip_space
       path = parse_module_path
-      node = UsingDecl.new(path, nil)
+      names = parse_using_names if @token.type.op_colon_colon?
+
+      node = UsingDecl.new(path, names)
       node.at(location)
       node.end_location = token_end_location
       node
+    end
+
+    private def parse_using_names : Array(String)
+      next_token
+      check Token::Kind::OP_LCURLY
+
+      names = [] of String
+      next_token_skip_space_or_newline
+      loop do
+        unless @token.type.ident? || @token.type.const?
+          raise "expected a name to bring into scope", @token.line_number, @token.column_number
+        end
+        names << @token.value.to_s
+        next_token_skip_space_or_newline
+        break unless @token.type.op_comma?
+        next_token_skip_space_or_newline
+      end
+      check Token::Kind::OP_RCURLY
+
+      next_token_skip_space
+      names
     end
 
     # iyi: `pub` marks a declaration as exported (R-2). Exported declarations

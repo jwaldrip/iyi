@@ -93,9 +93,13 @@ crowd.each { |member| puts describe(member) }
 # * Traits are currently desugared to modules, which is why this works at all
 #   so early. A consequence: `include Greet` also compiles, and it should not.
 #
-# * `import` and `using` parse and do nothing — there is no module resolution
-#   behind them yet, so every file is still one compilation unit.
+# * `pub` is parsed and ignored. Nothing is actually private to a module yet,
+#   so `using` brings in every name a module declares rather than only its
+#   exported ones.
 #
 # * `.iyimod`, separate compilation, and dictionary-passing generics — the
 #   three things the whole design exists for — are unimplemented. Today this
 #   file is compiled exactly the way Crystal compiles a `.cr` file.
+#
+# See `modules.iyi` for `import` and `using` across files, which this
+# single-file sample has no way to show.

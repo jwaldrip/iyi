@@ -1,0 +1,87 @@
+# Modules across files: `import` and `using`.
+#
+#   ./bin/crystal run samples/iyi/modules.iyi
+#
+# Everything below compiles and runs today. `hello.iyi` covers traits and
+# `impl` in a single file; this one covers the part a single file cannot show.
+
+module samples/modules
+
+# R-1: `import` names a module and loads it at most once, so the import graph
+# is a DAG rather than textual inclusion. It brings the module into scope
+# under its qualified name and nothing more — after this line, and with no
+# `using`, the module's names are reachable only as `App::Greeter::Greet` and
+# `App::Greeter.polite`.
+import app/greeter
+import app/formal
+
+# II.3: `using` is what makes those names available unqualified. It is written
+# by the consumer, not performed by the library: importing a module never
+# changes what the importer's unqualified names mean, so a library cannot
+# capture a name in your file by adding one to itself.
+using app/greeter
+
+# The selective form narrows a `using` to the names listed. Here it is not
+# decoration — `app/greeter` and `app/formal` both export `title`, and taking
+# both whole would make every unqualified `title` in this module ambiguous.
+using app/formal::{address}
+
+pub struct User
+  getter name : String
+
+  def initialize(@name : String)
+  end
+end
+
+# `Greet` resolves through the `using` above, so `impl` needs no qualification.
+impl Greet for User
+  def greet : String
+    # `polite` comes from `app/greeter`, `address` from `app/formal`, and
+    # `shout` is this module's own function, declared below. All three are
+    # written the same way, because to this file they are all just names.
+    shout(polite(name)) + " " + address(name)
+  end
+end
+
+# A module's own functions are in scope for the types declared in it, without
+# `self.` and without qualification: an iyi module is a compilation unit, and
+# these are its functions. Not exported, so nothing outside can call it.
+def shout(text : String) : String
+  text.upcase
+end
+
+puts User.new("iyi").greet
+
+# `title` was reachable unqualified from neither `using`: `app/greeter`'s was
+# left ambiguous by nothing (only one `using` was whole), and `app/formal`'s
+# was excluded by the selective form. Qualification always works.
+puts App::Greeter.title
+puts App::Formal.title
+
+# ---------------------------------------------------------------------------
+# What this sample would report as an error
+# ---------------------------------------------------------------------------
+#
+# * Widening the second directive to `using app/formal` and then writing an
+#   unqualified `title` is an error, and it is reported at the `title`, not at
+#   the `using`. Widening it alone is not an error at all: two modules
+#   exporting the same name is not by itself a mistake, so nothing is wrong
+#   until a name is written that could mean either (SPEC.md II.3).
+#
+# * Adding `def title` here makes even that legal again. A local definition
+#   beats a used one, silently, which is what keeps a library from breaking
+#   its consumers by adding an export.
+#
+# ---------------------------------------------------------------------------
+# Not yet implemented
+# ---------------------------------------------------------------------------
+#
+# * `pub` is parsed and ignored, so `using` brings in every name a module
+#   declares rather than only its exported ones.
+#
+# * `module app/greeter` is declared in one notation and referred to in
+#   another (`App::Greeter`). SPEC.md Appendix B #6 is where that gets settled.
+#
+# * Each imported module is still re-analysed from source. `.iyimod` — reading
+#   a module's exported signatures instead of its body — is the whole point of
+#   R-1 and is not built yet.

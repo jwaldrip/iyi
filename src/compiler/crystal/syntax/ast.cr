@@ -2113,6 +2113,15 @@ module Crystal
     property doc : String?
     property visibility = Visibility::Public
 
+    # iyi: true when this node came from a `module app/greeter` header rather
+    # than from Crystal's `module` keyword. The two are not the same thing: an
+    # iyi module is a compilation unit whose `def`s are functions in lexical
+    # scope, so a type nested inside it may call them unqualified. Crystal
+    # modules do not work that way, and existing `.cr` code must keep
+    # resolving exactly as it does now — hence the flag rather than a change
+    # in how modules behave.
+    property? iyi_unit = false
+
     def initialize(@name, body = nil, @type_vars = nil, @splat_index = nil)
       @body = Expressions.from body
     end
@@ -2124,6 +2133,7 @@ module Crystal
     def clone_without_location
       clone = ModuleDef.new(@name, @body.clone, @type_vars.clone, @splat_index)
       clone.name_location = name_location
+      clone.iyi_unit = iyi_unit?
       clone
     end
 

@@ -21,6 +21,24 @@ module Crystal
       nil
     end
 
+    # iyi: the `using` directives written in this type's body, or nil if there
+    # are none — which is every type in every program that does not use iyi.
+    # Defined here, rather than only on `ModuleType`, so that name lookup can
+    # ask any type without first checking what kind of type it is.
+    # Overridden in `ModuleType`.
+    def using_modules? : Array(UsingModule)?
+      nil
+    end
+
+    # iyi: true for a module declared with a `module app/greeter` header — a
+    # compilation unit, not a Crystal mixin. Its `def`s are functions in
+    # lexical scope: a type nested inside may call them unqualified. Crystal
+    # modules must keep resolving as they do today, so this is what the
+    # difference is keyed on. Overridden in `ModuleType`.
+    def iyi_unit? : Bool
+      false
+    end
+
     # An opaque id of every type. 0 for Nil, non zero for others, so we can
     # sort types by opaque_id and have Nil in the beginning.
     def opaque_id
@@ -957,6 +975,17 @@ module Crystal
     end
   end
 
+  # iyi: one `using` directive in effect somewhere (SPEC.md II.3) — the module
+  # it names, plus the names taken from it when the selective form
+  # (`using app/greeter::{polite}`) was written. A nil `names` is the whole
+  # form: every name the module exports.
+  record UsingModule, type : Type, names : Array(String)? do
+    def exports?(name : String) : Bool
+      names = @names
+      names.nil? || names.includes?(name)
+    end
+  end
+
   # Base type for all module-like types (modules, classes, structs, enums).
   abstract class ModuleType < NamedType
     getter defs : Hash(String, Array(DefWithMetadata))?
@@ -966,20 +995,26 @@ module Crystal
 
     # iyi: modules brought into unqualified scope here by `using` (SPEC.md II.3).
     #
-    # Kept separate from `parents` on purpose. `include` only reaches this
-    # type's own scope, but `using` must also cover unqualified calls made
-    # from inside types *nested* in this module — and searching this list
-    # explicitly means method lookup is unchanged for any code that never
-    # writes `using`.
-    getter(using_modules) { [] of Type }
+    # Kept out of `parents` on purpose. `include` is the obvious shortcut and
+    # is wrong in four ways at once: it does not reach types nested inside
+    # this one, it re-exports (whoever imports this module would reach the
+    # used names *through* it), it cannot express the selective form, and it
+    # settles a clash between two used modules silently by ancestor order
+    # instead of reporting it at the point of use. A separate list searched
+    # explicitly gets all four right, and leaves lookup untouched for any code
+    # that never writes `using`.
+    getter(using_modules) { [] of UsingModule }
 
-    def add_using_module(type : Type)
-      using_modules << type unless using_modules.includes?(type)
+    def add_using_module(type : Type, names : Array(String)?)
+      using_modules << UsingModule.new(type, names)
     end
 
-    def using_modules?
+    def using_modules? : Array(UsingModule)?
       @using_modules
     end
+
+    # iyi: see `Type#iyi_unit?`.
+    property? iyi_unit = false
 
     def add_def(a_def)
       a_def.owner = self

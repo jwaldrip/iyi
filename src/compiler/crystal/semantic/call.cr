@@ -261,25 +261,38 @@ class Crystal::Call
     matches = check_tuple_indexer(owner, def_name, args, arg_types)
     matches ||= lookup_matches_checking_expansion(owner, signature, search_in_parents, with_autocast: with_autocast)
 
-    # iyi: before falling back to the top level, try any modules brought into
-    # scope with `using` by an enclosing namespace. This is what lets an
-    # unqualified call inside a type reach a function `using`ed by the module
-    # the type is declared in — `include` alone does not reach nested types,
-    # because it layers the used module into *this* module's ancestor chain
-    # and a type nested inside is not on that chain.
+    # iyi: before falling back to the top level, walk the enclosing lexical
+    # scopes. This is the step Crystal has no equivalent of, and both halves
+    # of it exist for the same reason: in iyi a module is a compilation unit,
+    # so the functions in scope for a type are the ones its module declares
+    # and the ones its module brought in with `using` — not, as in Crystal,
+    # only what the type inherits plus the top level.
     #
-    # Resolution goes through the used module's METACLASS, not the module
-    # itself. A module's functions are written `pub def` in its body and
-    # reached as `App::Greeter.polite`, thanks to the `extend self` the module
-    # header desugars to. Choosing the metaclass is what makes the resolved
-    # call correct and not merely findable: a non-generic metaclass is not
+    # At each scope, in order:
+    #
+    #   1. the scope's own functions, so a type nested in a module can call
+    #      the module's helpers unqualified;
+    #   2. the modules that scope brought in with `using` (SPEC.md II.3).
+    #
+    # That order is II.3's rule that a local definition beats a used one, and
+    # the outward walk is what makes a nearer scope win over a farther one.
+    # Neither could be an `include`: including reaches this module's own scope
+    # but not the types nested in it, and it would settle a clash between two
+    # used modules silently, by ancestor order.
+    #
+    # Both halves resolve through a METACLASS, not through the module itself.
+    # A module's functions are written `pub def` in its body and reached as
+    # `App::Greeter.polite`, thanks to the `extend self` the module header
+    # desugars to. Choosing the metaclass is what makes the resolved call
+    # correct and not merely findable: a non-generic metaclass is not
     # `passed_as_self?`, so codegen passes no receiver at all, whereas
     # resolving against the module would hand the def whatever `self` the
     # caller happened to have — a `User` instance, say, which then fails the
     # `DefInstanceContainer` cast in `#instantiate`.
     #
-    # Costs nothing for code that never writes `using`: the list is lazily
-    # allocated, so the loop sees nil and stops immediately.
+    # Costs nothing for code that is not iyi: `iyi_unit?` is false and the
+    # `using` list is lazily allocated, so each scope is two loads and the
+    # walk ends at `program`.
     #
     # NOTE: the walk must stop at `program`, which is its own namespace
     # (`Program` is constructed with `super(self, self, "main")`). Walking past
@@ -288,26 +301,36 @@ class Crystal::Call
     # below already covers that case.
     using_owner = nil
     if matches.empty? && !obj && search_in_toplevel
-      namespace = owner.is_a?(NamedType) ? owner.namespace : nil
-      while namespace && namespace != program
-        if namespace.is_a?(ModuleType) && (used = namespace.using_modules?)
-          used.each do |used_module|
-            used_metaclass = used_module.metaclass
-            used_matches = lookup_matches_with_signature(used_metaclass, signature, search_in_parents, with_autocast)
-            next if used_matches.empty?
+      # The walk starts at the owner itself, because a `using` written in a
+      # type's own body belongs to that type. `instance_type` turns
+      # `Main.class` — the owner of code in a module body — back into `Main`,
+      # which is where the directive was recorded.
+      scope_type = owner.instance_type
+      enclosing = false
 
-            # Only what the used module itself declares. A metaclass inherits
-            # from `Module`/`Object`, so an unmatched call for anything named
-            # like `to_s` would otherwise silently bind there.
-            next unless used_matches.all? { |match| match.def.owner == used_module }
-
-            matches = used_matches
-            using_owner = used_metaclass
+      while scope_type
+        # Own functions, but only for a scope that lexically *encloses* the
+        # call: the owner's own defs were already searched above, and going
+        # through its metaclass here would reach `new` and `allocate` from an
+        # instance method, which is not iyi scoping but a new way to be wrong.
+        if enclosing && scope_type.iyi_unit?
+          scope_matches = lookup_matches_owned_by(scope_type, signature, search_in_parents, with_autocast)
+          if scope_matches
+            matches = scope_matches
+            using_owner = scope_type.metaclass
             break
           end
         end
-        break if using_owner
-        namespace = namespace.is_a?(NamedType) ? namespace.namespace : nil
+
+        if (used = scope_type.using_modules?) &&
+           (found = lookup_using_matches(used, def_name, signature, search_in_parents, with_autocast))
+          matches, using_owner = found
+          break
+        end
+
+        break if scope_type == program
+        scope_type = scope_type.is_a?(NamedType) ? scope_type.namespace : nil
+        enclosing = true
       end
     end
 
@@ -404,6 +427,47 @@ class Crystal::Call
     end
 
     matches
+  end
+
+  # iyi: resolves a signature against the functions *mod* itself declares,
+  # or nil if it declares none that match.
+  #
+  # The lookup runs on the metaclass, because that is where `extend self` puts
+  # a module's functions, but the result is then restricted to defs `mod`
+  # owns. A metaclass inherits from `Module` and `Object`, so without that
+  # restriction a call named like `to_s` that had failed everywhere else would
+  # silently bind there instead of being reported as undefined.
+  private def lookup_matches_owned_by(mod : Type, signature, search_in_parents, with_autocast)
+    matches = lookup_matches_with_signature(mod.metaclass, signature, search_in_parents, with_autocast)
+    return nil if matches.empty?
+    return nil unless matches.all? { |match| match.def.owner == mod }
+    matches
+  end
+
+  # iyi: resolves *def_name* against the modules `using` brought into a scope,
+  # returning the matches together with the owner they must be instantiated
+  # under, or nil if none of them provides it.
+  #
+  # Two used modules providing the same name is an error here, at the call,
+  # and only for the name actually called — SPEC.md II.3. The mirror of
+  # `Type#lookup_using_path_item`, which does the same for type names.
+  private def lookup_using_matches(used : Array(UsingModule), def_name, signature, search_in_parents, with_autocast)
+    found = nil
+
+    used.each do |using_module|
+      next unless using_module.exports?(def_name)
+
+      used_matches = lookup_matches_owned_by(using_module.type, signature, search_in_parents, with_autocast)
+      next unless used_matches
+
+      if found
+        raise "'#{def_name}' is ambiguous here: it is exported by both #{found[1].instance_type} and #{using_module.type}. Qualify the call, or narrow one of the `using` directives."
+      end
+
+      found = {used_matches, using_module.type.metaclass}
+    end
+
+    found
   end
 
   def lookup_matches_with_signature(owner, signature, search_in_parents, with_autocast)

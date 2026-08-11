@@ -255,35 +255,29 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     false
   end
 
-  # iyi: `using app/greeter` (SPEC.md II.3)
+  # iyi: `using app/greeter`, `using app/greeter::{polite}` (SPEC.md II.3)
   #
-  # Brings a module's exported names into unqualified scope, written by the
-  # consumer rather than performed by the library. Desugars to `include`,
-  # which already makes both a module's methods and its nested types reachable
-  # without qualification.
+  # Brings a module's exported names into unqualified scope — written by the
+  # consumer, not performed by the library. This is only a record: the two
+  # lookups that matter consult it directly, `Call#lookup_using_matches` for
+  # methods and `Type#lookup_using_path_item` for type names. Nothing is added
+  # to the ancestor chain, which is what keeps `using` from re-exporting.
   #
-  # Not yet enforced: II.3's resolution rules. Local definitions beating
-  # imports, and ambiguity between two `using`s being an error at the point of
-  # use, both need name resolution this does not have — `include` simply
-  # layers modules into the ancestor chain, so the last one wins silently.
+  # The record lands on `current_type`, so the directive reaches exactly the
+  # scope it was written in and no further: both lookups walk outward from
+  # where the name is used, so a `using` in a module covers the types nested
+  # inside it, and stops at the module's edge.
   def visit(node : UsingDecl)
     check_outside_exp node, "use `using`"
 
-    if node.names
-      node.raise "selective `using` is not implemented yet"
+    path = Path.new(node.path.map(&.camelcase)).at(node)
+    used_type = lookup_type(path)
+
+    unless used_type.is_a?(ModuleType)
+      node.raise "can't `using` #{used_type}, which is not a module"
     end
 
-    path = Path.new(node.path.map(&.camelcase)).at(node)
-
-    # `include` handles this scope: methods, and nested types reachable
-    # unqualified (so `impl Greet for User` finds a trait from another module).
-    include_node = Include.new(path).at(node)
-    include_in current_type, include_node, :included
-
-    # ...and record it so unqualified calls from types nested in this module
-    # can reach it too, which `include` alone does not cover.
-    used_type = lookup_type(path)
-    current_type.add_using_module(used_type) if used_type.is_a?(Type)
+    current_type.add_using_module(used_type, node.names)
 
     false
   end
@@ -406,6 +400,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     end
 
     type.private = true if node.visibility.private?
+    type.iyi_unit = true if node.iyi_unit?
 
     node.resolved_type = type
 

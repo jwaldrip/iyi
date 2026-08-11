@@ -119,12 +119,65 @@ module Crystal
         return match if match
       end
 
+      # iyi: then the modules brought into this scope with `using` (SPEC.md
+      # II.3). Placed after our own types and our parents, because a local
+      # definition beats a used one; and before the namespace, so that a
+      # `using` shadows an enclosing scope exactly the way a nested type does.
+      if used = using_modules?
+        match = lookup_using_path_item(used, name, location)
+        return match if match
+      end
+
       # Try our namespace, unless we are the top-level
       if lookup_in_namespace && self != program
         return namespace.lookup_path_item(name, false, lookup_in_namespace, include_private, location)
       end
 
       nil
+    end
+
+    # iyi: resolves *name* against the modules `using` brought into this scope.
+    #
+    # Only each module's OWN types are considered — not what it inherits, and
+    # not what it itself brought in with `using`. `using` grants access to a
+    # module's exports, not to everything reachable from it, which is what
+    # keeps a module's public surface something you can read off its own
+    # source.
+    #
+    # Two used modules exporting the same name is not an error where the
+    # `using` lines are written; it is an error here, at the point of use, and
+    # only for the name actually used. That is SPEC.md II.3's rule, and it is
+    # the reason this cannot be an `include`: ancestor order would silently
+    # pick one.
+    private def lookup_using_path_item(used : Array(UsingModule), name : String, location) : Type?
+      found = nil
+      found_in = nil
+
+      used.each do |using_module|
+        next unless using_module.exports?(name)
+
+        match = using_module.type.lookup_name(name)
+        next unless match
+        next if match.private?
+
+        if found && found != match
+          message = String.build do |io|
+            io << '\'' << name << "' is ambiguous here: it is exported by both "
+            io << found_in << " and " << using_module.type
+            io << ". Qualify it, or narrow one of the `using` directives."
+          end
+          if location
+            ::raise TypeException.new(message, location.line_number, location.column_number, location.filename, name.size)
+          else
+            ::raise TypeException.new(message)
+          end
+        end
+
+        found = match
+        found_in = using_module.type
+      end
+
+      found
     end
   end
 
