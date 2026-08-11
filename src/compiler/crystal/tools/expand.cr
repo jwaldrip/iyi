@@ -23,9 +23,9 @@ module Crystal
           .each_with_index do |(expanded_source, expanded_macro), j|
             expanded_macro.each do |a_macro|
               name = a_macro[:name]
-              impl = a_macro[:implementation]
-              io.puts "# expand macro '#{name}' (#{impl.filename}:#{impl.line}:#{impl.column})"
-              # TODO: When `impl.expands` is not `nil`, how shows this?
+              implem = a_macro[:implementation]
+              io.puts "# expand macro '#{name}' (#{implem.filename}:#{implem.line}:#{implem.column})"
+              # TODO: When `implem.expands` is not `nil`, how shows this?
             end
             io << "~> "
             io.puts expanded_source.lines(chomp: false).join "   "

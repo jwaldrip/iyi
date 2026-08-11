@@ -1171,8 +1171,34 @@ module Crystal
           when .module?
             check_type_declaration do
               check_not_inside_def("can't define module") do
+                # `parse_module_def` returns a ModuleHeader instead when the
+                # name is a lowercase path (iyi) rather than a CONST (Crystal).
                 parse_module_def
               end
+            end
+          when .trait?
+            check_type_declaration do
+              check_not_inside_def("can't define trait") do
+                parse_trait_def
+              end
+            end
+          when .impl?
+            check_type_declaration do
+              check_not_inside_def("can't define impl") do
+                parse_impl_def
+              end
+            end
+          when .import?
+            check_type_declaration do
+              check_not_inside_def("can't import") { parse_import }
+            end
+          when .using?
+            check_type_declaration do
+              check_not_inside_def("can't use `using`") { parse_using }
+            end
+          when .pub?
+            check_type_declaration do
+              check_not_inside_def("can't export") { parse_pub }
             end
           when .enum?
             check_type_declaration do
@@ -1818,13 +1844,236 @@ module Crystal
       {type_vars, splat_index}
     end
 
-    def parse_module_def
+    # iyi: a slash-separated lowercase path, e.g. `app/user`, `std/json`.
+    # Distinguishable from Crystal's `module Foo` because that takes a CONST.
+    def parse_module_path : Array(String)
+      segments = [] of String
+      check Token::Kind::IDENT
+      segments << @token.value.to_s
+
+      # After an identifier the lexer would treat `/` as the start of a regex
+      # literal, so `app/user` lexes as `app` followed by DELIMITER_START.
+      # Module paths are the one place `/` is a separator, so suppress regex
+      # mode for the duration.
+      @wants_regex = false
+      next_token
+
+      while @token.type.op_slash?
+        @wants_regex = false
+        next_token
+        check Token::Kind::IDENT
+        segments << @token.value.to_s
+        @wants_regex = false
+        next_token
+      end
+
+      @wants_regex = true
+      skip_space
+      segments
+    end
+
+    # iyi: `module app/user` — compilation-unit header (R-1).
+    # Crystal's `module Foo ... end` still parses; the two are told apart by
+    # whether the name is a CONST or a lowercase IDENT.
+    def parse_module_header
+      location = @token.location
+      next_token_skip_space
+      path = parse_module_path
+      header = ModuleHeader.new(path)
+      header.at(location)
+      header.end_location = token_end_location
+      header
+    end
+
+    # iyi: `import std/json`
+    def parse_import
+      location = @token.location
+      next_token_skip_space
+      path = parse_module_path
+      node = ImportDecl.new(path)
+      node.at(location)
+      node.end_location = token_end_location
+      node
+    end
+
+    # iyi: `using kemal::dsl` or `using kemal::dsl::{get, post}` (SPEC.md II.3)
+    def parse_using
+      location = @token.location
+      next_token_skip_space
+
+      segments = [] of String
+      names = nil
+
+      check Token::Kind::IDENT
+      segments << @token.value.to_s
+      next_token
+
+      while @token.type.op_colon_colon?
+        next_token
+        if @token.type.op_lcurly?
+          # selective form: ::{a, b, c}
+          names = [] of String
+          next_token_skip_space_or_newline
+          loop do
+            check Token::Kind::IDENT
+            names << @token.value.to_s
+            next_token_skip_space_or_newline
+            break unless @token.type.op_comma?
+            next_token_skip_space_or_newline
+          end
+          check Token::Kind::OP_RCURLY
+          next_token
+          break
+        end
+        check Token::Kind::IDENT
+        segments << @token.value.to_s
+        next_token
+      end
+
+      skip_space
+      node = UsingDecl.new(segments, names)
+      node.at(location)
+      node.end_location = token_end_location
+      node
+    end
+
+    # iyi: `pub` marks a declaration as exported (R-2). Exported declarations
+    # appear in the module's `.iyimod` and must carry full type signatures.
+    def parse_pub
+      pub_location = @token.location
+      next_token_skip_space
+
+      unless @token.type.ident?
+        raise "expected a declaration after `pub`", @token.line_number, @token.column_number
+      end
+
+      node =
+        case @token.value
+        when Keyword::TRAIT
+          parse_trait_def(exported: true)
+        when Keyword::DEF
+          a_def = parse_def
+          a_def.exported = true
+          a_def
+        when Keyword::CLASS
+          cls = parse_class_def
+          cls.exported = true if cls.is_a?(ClassDef)
+          cls
+        when Keyword::STRUCT
+          cls = parse_class_def is_struct: true
+          cls.exported = true if cls.is_a?(ClassDef)
+          cls
+        else
+          raise "can't apply `pub` to #{@token}", @token.line_number, @token.column_number
+        end
+
+      node.at(pub_location)
+      node
+    end
+
+    # iyi: `trait Greet ... end` (SPEC.md R-3, II.6)
+    def parse_trait_def(exported = false)
       @type_nest += 1
 
       location = @token.location
       doc = @token.doc
 
       next_token_skip_space_or_newline
+
+      name_location = @token.location
+      name = parse_path
+      found_space = @token.type.space?
+      skip_space
+
+      type_vars, _ = parse_type_vars
+
+      check(StatementEnd) if type_vars || !found_space
+      skip_statement_end
+
+      body = push_visibility { parse_expressions }
+
+      end_location = token_end_location
+      check_ident :end
+      next_token_skip_space
+
+      @type_nest -= 1
+
+      trait_def = TraitDef.new name, body, type_vars, exported
+      trait_def.doc = doc
+      trait_def.name_location = name_location
+      trait_def.end_location = end_location
+      trait_def.at(location)
+      trait_def
+    end
+
+    # iyi: `impl Greet for User ... end`, optionally `... forall T`
+    def parse_impl_def
+      @type_nest += 1
+
+      location = @token.location
+      doc = @token.doc
+
+      next_token_skip_space_or_newline
+
+      name_location = @token.location
+      trait_path = parse_path
+      skip_space
+
+      check_ident :for
+      next_token_skip_space_or_newline
+
+      target = parse_bare_proc_type
+      skip_space
+
+      type_vars = nil
+      if @token.type.ident? && @token.value == "forall"
+        next_token_skip_space
+        type_vars = [] of String
+        loop do
+          check Token::Kind::CONST
+          type_vars << @token.value.to_s
+          next_token_skip_space
+          break unless @token.type.op_comma?
+          next_token_skip_space_or_newline
+        end
+      end
+
+      skip_statement_end
+
+      body = push_visibility { parse_expressions }
+
+      end_location = token_end_location
+      check_ident :end
+      next_token_skip_space
+
+      @type_nest -= 1
+
+      impl_def = ImplDef.new trait_path, target, body, type_vars
+      impl_def.doc = doc
+      impl_def.name_location = name_location
+      impl_def.end_location = end_location
+      impl_def.at(location)
+      impl_def
+    end
+
+    def parse_module_def
+      location = @token.location
+      doc = @token.doc
+
+      next_token_skip_space_or_newline
+
+      # iyi: `module app/user` — compilation-unit header, lowercase path and no
+      # body. Crystal's `module Foo ... end` takes a CONST, so the token type
+      # after `module` is enough to tell them apart without lookahead.
+      if @token.type.ident?
+        path = parse_module_path
+        header = ModuleHeader.new(path)
+        header.at(location)
+        header.end_location = token_end_location
+        return header
+      end
+
+      @type_nest += 1
 
       name_location = @token.location
       name = parse_path

@@ -1435,6 +1435,8 @@ module Crystal
     property splat_index : Int32?
     property doc : String?
     property visibility = Visibility::Public
+    # iyi: `pub def` — exported, so it appears in `.iyimod` (R-2).
+    property? exported = false
 
     property? macro_def : Bool
     property? calls_super = false
@@ -1949,6 +1951,8 @@ module Crystal
     property? abstract : Bool
     property? struct : Bool
     property visibility = Visibility::Public
+    # iyi: `pub class` / `pub struct` — exported (R-2).
+    property? exported = false
 
     def initialize(@name, body = nil, @superclass = nil, @type_vars = nil, @abstract = false, @struct = false, @splat_index = nil)
       @body = Expressions.from body
@@ -1985,6 +1989,121 @@ module Crystal
   #       body
   #     'end'
   #
+  # iyi: `trait Greet ... end`
+  #
+  # A named set of required methods, associated types and default methods.
+  # Replaces Crystal's mixin modules; see SPEC.md R-3 and II.6.
+  class TraitDef < ASTNode
+    property name : Path
+    property body : ASTNode
+    property type_vars : Array(String)?
+    property name_location : Location?
+    property doc : String?
+    property visibility = Visibility::Public
+    # `pub trait` — exported from the module, so it appears in `.iyimod`.
+    property? exported = false
+
+    def initialize(@name, body = nil, @type_vars = nil, @exported = false)
+      @body = Expressions.from body
+    end
+
+    def accept_children(visitor)
+      @body.accept visitor
+    end
+
+    def clone_without_location
+      clone = TraitDef.new(@name, @body.clone, @type_vars.clone, @exported)
+      clone.name_location = name_location
+      clone
+    end
+
+    def_equals_and_hash @name, @body, @type_vars, @exported
+  end
+
+  # iyi: `impl Greet for User ... end`
+  #
+  # Coherence (R-3): must live in the module defining the trait or the type.
+  # SPEC.md IV.4 shows the import DAG makes duplicate impls unrepresentable.
+  class ImplDef < ASTNode
+    property trait : Path
+    # Named `target` rather than `type`: ASTNode already declares
+    # `@type : Crystal::Type?` for the inferred type of every node.
+    property target : ASTNode
+    property body : ASTNode
+    property type_vars : Array(String)?
+    property name_location : Location?
+    property doc : String?
+    property visibility = Visibility::Public
+
+    def initialize(@trait, @target, body = nil, @type_vars = nil)
+      @body = Expressions.from body
+    end
+
+    def accept_children(visitor)
+      @trait.accept visitor
+      @target.accept visitor
+      @body.accept visitor
+    end
+
+    def clone_without_location
+      clone = ImplDef.new(@trait.clone, @target.clone, @body.clone, @type_vars.clone)
+      clone.name_location = name_location
+      clone
+    end
+
+    def_equals_and_hash @trait, @target, @body, @type_vars
+  end
+
+  # iyi: `module app/user` — the compilation-unit header (R-1).
+  #
+  # Must be the first statement in a file. Unlike Crystal's `module`, this
+  # declares which module the file belongs to and has no body.
+  class ModuleHeader < ASTNode
+    property path : Array(String)
+
+    def initialize(@path)
+    end
+
+    def clone_without_location
+      ModuleHeader.new(@path.dup)
+    end
+
+    def_equals_and_hash @path
+  end
+
+  # iyi: `import std/json`
+  class ImportDecl < ASTNode
+    property path : Array(String)
+
+    def initialize(@path)
+    end
+
+    def clone_without_location
+      ImportDecl.new(@path.dup)
+    end
+
+    def_equals_and_hash @path
+  end
+
+  # iyi: `using kemal::dsl` / `using kemal::dsl::{get, post}`
+  #
+  # Brings exported names into unqualified scope. Written by the consumer,
+  # never by the library; see SPEC.md II.3.
+  class UsingDecl < ASTNode
+    property path : Array(String)
+    # nil means "everything exported"; otherwise the selected names.
+    property names : Array(String)?
+
+    def initialize(@path, @names = nil)
+    end
+
+    def clone_without_location
+      UsingDecl.new(@path.dup, @names.dup)
+    end
+
+    def_equals_and_hash @path, @names
+  end
+
   class ModuleDef < ASTNode
     property name : Path
     property body : ASTNode

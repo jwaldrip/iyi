@@ -258,6 +258,29 @@ module Crystal
       node
     end
 
+    def transform(node : TraitDef)
+      node.body = node.body.transform(self)
+      node
+    end
+
+    # Leaf declarations — no child expressions to rewrite.
+    def transform(node : ModuleHeader)
+      node
+    end
+
+    def transform(node : ImportDecl)
+      node
+    end
+
+    def transform(node : UsingDecl)
+      node
+    end
+
+    def transform(node : ImplDef)
+      node.body = node.body.transform(self)
+      node
+    end
+
     def transform(node : AnnotationDef)
       node
     end

@@ -683,6 +683,22 @@ module Crystal
         case next_char
         when 'f'
           return check_ident_or_keyword(:if, start)
+        when 'm'
+          case next_char
+          when 'p'
+            case next_char
+            when 'l'
+              return check_ident_or_keyword(:impl, start)
+            when 'o'
+              if char_sequence?('r', 't')
+                return check_ident_or_keyword(:import, start)
+              end
+            else
+              # scan_ident
+            end
+          else
+            # scan_ident
+          end
         when 'n'
           if ident_part_or_end?(peek_next_char)
             case next_char
@@ -797,6 +813,10 @@ module Crystal
           if char_sequence?('i', 'n', 't', 'e', 'r', 'o', 'f')
             return check_ident_or_keyword(:pointerof, start)
           end
+        when 'u'
+          if char_sequence?('b')
+            return check_ident_or_keyword(:pub, start)
+          end
         when 'r'
           case next_char
           when 'i'
@@ -884,8 +904,17 @@ module Crystal
             return check_ident_or_keyword(:then, start)
           end
         when 'r'
-          if char_sequence?('u', 'e')
-            return check_ident_or_keyword(:true, start)
+          case next_char
+          when 'u'
+            if char_sequence?('e')
+              return check_ident_or_keyword(:true, start)
+            end
+          when 'a'
+            if char_sequence?('i', 't')
+              return check_ident_or_keyword(:trait, start)
+            end
+          else
+            # scan_ident
           end
         when 'y'
           if char_sequence?('p', 'e')
@@ -903,7 +932,8 @@ module Crystal
         end
         scan_ident(start)
       when 'u'
-        if next_char == 'n'
+        case next_char
+        when 'n'
           case next_char
           when 'i'
             case next_char
@@ -929,6 +959,12 @@ module Crystal
           else
             # scan_ident
           end
+        when 's'
+          if char_sequence?('i', 'n', 'g')
+            return check_ident_or_keyword(:using, start)
+          end
+        else
+          # scan_ident
         end
         scan_ident(start)
       when 'v'

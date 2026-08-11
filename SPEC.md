@@ -233,10 +233,21 @@ genuine conflict.
 
 ```
 pub trait Enumerable
-  type Elem                              # an output of the impl
-  def each(&block : Elem -> Nil) : Nil
+  type Elem                                       # an output of the impl
+  abstract def each(&block : Elem -> Nil) : Nil   # required
+  def to_a : Array(Elem)                          # default, has a body
+    # ...
+  end
 end
 ```
+
+**`abstract def` marks a requirement, and this was corrected by writing the
+parser.** The first draft used a bare `def each(...) : Nil` with no body. That is
+ambiguous in a language with no statement terminator: after the signature, the
+parser cannot tell a requirement from a default whose body starts on the next
+line without unbounded lookahead. Rust avoids this with `;`. `abstract` is
+already a Crystal keyword meaning exactly this, so it costs nothing and reads as
+expected.
 
 A collection iterates one way, so the element type is not something the caller
 picks — making it a parameter would leave `arr.map` ambiguous about which impl
@@ -687,6 +698,29 @@ link-time surprise, no cost at build time.
 This is the payoff for accepting R-3's restriction, and it is worth stating
 plainly because it is not obvious that the orphan rule buys anything beyond
 knowing a type's method set.
+
+### IV.6 Notes from implementing the parser
+
+Three things only surfaced once the syntax was fed to a real lexer. Recorded
+because they are the class of problem a spec cannot find by reasoning.
+
+**1. `/` in module paths collides with regex literals.** After an identifier,
+Crystal's lexer treats `/` as the start of a regex, so `module app/user` lexes as
+`app` followed by `DELIMITER_START`. Module paths are the one place `/` separates
+rather than divides, so the parser suppresses regex mode while reading a path.
+Go sidesteps this by putting import paths in string literals; Rust by using
+`::`. Keeping `/` is a deliberate choice — it mirrors the filesystem — and it
+costs a two-line workaround.
+
+**2. `abstract def` for trait requirements.** See II.6; a bare signature is not
+distinguishable from a default method without unbounded lookahead.
+
+**3. New keywords are cheap, but not free.** `trait`, `impl`, `pub`, `import`
+and `using` were added to the lexer with no regressions — `trailing`,
+`implements`, `public`, `usingx` and `impl_` all still lex as identifiers. But
+`impl` was in use as a local variable in two compiler tool files, which had to be
+renamed. Every keyword iyi adds is a name taken away from every program; the
+count should stay small.
 
 ### IV.5 Versioning
 

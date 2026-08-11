@@ -432,6 +432,53 @@ module Crystal
       false
     end
 
+    def visit(node : ModuleHeader)
+      @str << "module " << node.path.join('/')
+      false
+    end
+
+    def visit(node : ImportDecl)
+      @str << "import " << node.path.join('/')
+      false
+    end
+
+    def visit(node : UsingDecl)
+      @str << "using " << node.path.join("::")
+      if names = node.names
+        @str << "::{" << names.join(", ") << '}'
+      end
+      false
+    end
+
+    def visit(node : TraitDef)
+      @str << "pub " if node.exported?
+      @str << "trait "
+      node.name.accept self
+      if type_vars = node.type_vars
+        @str << '(' << type_vars.join(", ") << ')'
+      end
+      newline
+      accept_with_indent(node.body)
+      append_indent
+      @str << "end"
+      false
+    end
+
+    def visit(node : ImplDef)
+      @str << "impl "
+      node.trait.accept self
+      @str << " for "
+      node.target.accept self
+      if type_vars = node.type_vars
+        @str << " forall " << type_vars.join(", ")
+      end
+      newline
+      accept_with_indent(node.body)
+      append_indent
+      @str << "end"
+      false
+    end
+
     def visit(node : ModuleDef)
       @str << "module "
       node.name.accept self
