@@ -691,8 +691,9 @@ module Crystal
   end
 
   class ImplDef
-    # The type the trait is implemented for.
-    property! resolved_type : Type
+    # The type the trait is implemented for. For a generic impl this is the
+    # uninstantiated generic type — `Box`, not `Box(Int32)`.
+    property! resolved_type : ModuleType
   end
 
   class LibDef

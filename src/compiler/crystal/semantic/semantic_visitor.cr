@@ -213,6 +213,32 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     false
   end
 
+  # iyi: the top-level visitor already reopened the target and defined the
+  # methods on it; this walks the body in the target's scope, the way
+  # `ModuleDef` does.
+  #
+  # Without it the default walk visits `node.target` as an expression, and for
+  # `impl Greet for Box(T) forall T` that means resolving `T` as a constant —
+  # which it is not.
+  def visit(node : ImplDef)
+    check_outside_exp node, "declare impl"
+    pushing_type(node.resolved_type) do
+      node.body.accept self
+    end
+    node.set_type(@program.nil)
+    false
+  end
+
+  # iyi: likewise, and for the same reason.
+  def visit(node : TraitDef)
+    check_outside_exp node, "declare trait"
+    pushing_type(node.resolved_type) do
+      node.body.accept self
+    end
+    node.set_type(@program.nil)
+    false
+  end
+
   def visit(node : AnnotationDef)
     check_outside_exp node, "declare annotation"
     node.set_type(@program.nil)

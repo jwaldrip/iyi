@@ -909,6 +909,15 @@ module Crystal
       false
     end
 
+    # iyi: like `ModuleDef` — the body is what carries code, and the trait and
+    # target paths are declarations rather than expressions, so they are never
+    # typed and must not be walked.
+    def visit(node : ImplDef | TraitDef)
+      accept node.body
+      @last = llvm_nil
+      false
+    end
+
     def visit(node : LibDef)
       @in_lib = true
       accept node.body
