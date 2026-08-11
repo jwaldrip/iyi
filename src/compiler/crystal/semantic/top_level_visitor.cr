@@ -331,8 +331,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
   # iyi: `impl Greet for User ... end`
   #
   # Desugars to reopening the target type, defining the methods on it, and
-  # including the trait. Coherence (R-3) is not checked yet: nothing here
-  # verifies the impl lives in the trait's or the type's module.
+  # including the trait.
   def visit(node : ImplDef)
     check_outside_exp node, "declare impl"
 
@@ -346,6 +345,8 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     unless target_type.is_a?(ModuleType)
       node.target.raise "can't implement a trait for #{target_type}, it's a #{target_type.type_desc}"
     end
+
+    check_impl_coherence node, lookup_type(node.trait), target_type
 
     node.resolved_type = target_type
 
@@ -363,6 +364,41 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     include_node = Include.new(node.trait).at(node)
     include_in target_type, include_node, :included
 
+    false
+  end
+
+  # iyi: R-3's orphan rule — an `impl` must live in the module that defines
+  # the trait or the module that defines the type.
+  #
+  # SPEC.md IV.4 shows what the restriction buys: with it in force, no two
+  # modules can define the same impl, because each would have to name a
+  # declaration of the other and so import it, and R-1's import graph is a
+  # DAG. That is what removes the need for a global coherence pass — and it is
+  # the rule doing the work, not the DAG. The DAG alone forbids nothing here:
+  # a third module that imports both is free to write the impl, and so is a
+  # fourth, and the two would differ with no error and no link-time complaint.
+  #
+  # `namespace` is the defining module because that is what the `module`
+  # header desugars to, so a declaration's module is simply the type enclosing
+  # it. A trait or type declared with no module header belongs to the top
+  # level, and then the rule is vacuous — which is right: a program that never
+  # writes a module header is a single compilation unit.
+  private def check_impl_coherence(node, trait_type, target_type)
+    trait_module = trait_type.namespace
+    target_module = target_type.namespace
+    return if within?(current_type, trait_module) || within?(current_type, target_module)
+
+    node.raise "can't implement #{trait_type} for #{target_type} in #{current_type}: an impl must live in the module that defines the trait (#{trait_module}) or the module that defines the type (#{target_module}). This is R-3, the orphan rule, and it is what lets coherence be checked without a global pass — see SPEC.md IV.4"
+  end
+
+  # Whether *type* is *mod*, or is nested somewhere inside it.
+  private def within?(type : Type, mod : Type) : Bool
+    scope = type
+    while scope
+      return true if scope == mod
+      break if scope == @program
+      scope = scope.is_a?(NamedType) ? scope.namespace : nil
+    end
     false
   end
 

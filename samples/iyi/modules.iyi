@@ -34,6 +34,11 @@ pub struct User
 end
 
 # `Greet` resolves through the `using` above, so `impl` needs no qualification.
+#
+# R-3's orphan rule allows this impl here because `User` is declared here:
+# this is the type's module. It would equally be allowed in `app/greeter`,
+# the trait's module. Nowhere else — a third module that imports both is
+# refused, which is what makes two modules unable to define the same impl.
 impl Greet for User
   def greet : String
     # `polite` comes from `app/greeter`, `address` from `app/formal`, and
@@ -71,6 +76,9 @@ puts App::Formal.title
 # * Adding `def title` here makes even that legal again. A local definition
 #   beats a used one, silently, which is what keeps a library from breaking
 #   its consumers by adding an export.
+#
+# * Moving the `impl` above into a module that is neither `app/greeter` nor
+#   this one is refused by R-3, naming both modules where it would be allowed.
 #
 # ---------------------------------------------------------------------------
 # Not yet implemented

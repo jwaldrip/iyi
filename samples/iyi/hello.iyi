@@ -39,9 +39,10 @@ pub struct Robot
   end
 end
 
-# `impl Trait for Type` — the replacement for reopening a class. Under the
-# coherence rule this must live in the module defining either the trait or the
-# type, which is what keeps separate compilation sound.
+# `impl Trait for Type` — the replacement for reopening a class. R-3's orphan
+# rule requires it to live in the module defining either the trait or the
+# type, and that is enforced: both are defined right here. `modules.iyi` shows
+# the cross-module case, where the choice actually costs something.
 impl Greet for User
   def greet : String
     "Hello, #{name}!"
@@ -81,11 +82,6 @@ crowd.each { |member| puts describe(member) }
 # ---------------------------------------------------------------------------
 # Not yet implemented
 # ---------------------------------------------------------------------------
-#
-# * Coherence is not checked. Nothing verifies that an `impl` lives in the
-#   trait's or the type's module, so the orphan rule is documentation rather
-#   than a rule. SPEC.md IV.4 shows the import DAG makes violations
-#   unrepresentable once module resolution exists.
 #
 # * Generic impls (`impl Enumerable for Array(T) forall T`) parse but are
 #   rejected in semantic analysis with an explicit "not implemented yet".
