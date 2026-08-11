@@ -685,6 +685,15 @@ module Crystal
     property! resolved_type : ModuleType
   end
 
+  class TraitDef
+    property! resolved_type : ModuleType
+  end
+
+  class ImplDef
+    # The type the trait is implemented for.
+    property! resolved_type : Type
+  end
+
   class LibDef
     property! resolved_type : LibType
   end

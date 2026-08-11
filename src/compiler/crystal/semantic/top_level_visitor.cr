@@ -255,6 +255,90 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     false
   end
 
+  # iyi: `trait Greet ... end`
+  #
+  # First implementation desugars a trait to a module type, so that `abstract
+  # def` requirements and default methods register through machinery that is
+  # already correct. What this does NOT yet do: enforce the coherence rule
+  # (R-3), or treat traits as distinct from modules — `include Greet` still
+  # works here and should not.
+  def visit(node : TraitDef)
+    check_outside_exp node, "declare trait"
+
+    annotations = read_annotations
+
+    scope, name, type = lookup_type_def(node)
+
+    if type
+      type = type.remove_alias
+      unless type.module?
+        node.raise "#{name} is not a trait, it's a #{type.type_desc}"
+      end
+      type = type.as(ModuleType)
+    else
+      if type_vars = node.type_vars
+        type = GenericModuleType.new @program, scope, name, type_vars
+      else
+        type = NonGenericModuleType.new @program, scope, name
+      end
+      scope.types[name] = type
+    end
+
+    type.private = true if node.visibility.private?
+
+    node.resolved_type = type
+
+    attach_doc type, node, annotations
+
+    process_annotations(annotations) do |annotation_type, ann|
+      type.add_annotation(annotation_type, ann)
+    end
+
+    pushing_type(type) do
+      node.body.accept self
+    end
+
+    false
+  end
+
+  # iyi: `impl Greet for User ... end`
+  #
+  # Desugars to reopening the target type, defining the methods on it, and
+  # including the trait. Coherence (R-3) is not checked yet: nothing here
+  # verifies the impl lives in the trait's or the type's module.
+  def visit(node : ImplDef)
+    check_outside_exp node, "declare impl"
+
+    if node.type_vars
+      node.raise "generic impls (`impl T for X forall U`) are not implemented yet"
+    end
+
+    annotations = read_annotations
+
+    target_type = lookup_type(node.target)
+    unless target_type.is_a?(ModuleType)
+      node.target.raise "can't implement a trait for #{target_type}, it's a #{target_type.type_desc}"
+    end
+
+    node.resolved_type = target_type
+
+    process_annotations(annotations) do |annotation_type, ann|
+      target_type.add_annotation(annotation_type, ann)
+    end
+
+    # Define the methods on the target type.
+    pushing_type(target_type) do
+      node.body.accept self
+    end
+
+    # Record that the target implements the trait. Reuses `include`, which is
+    # why traits are modules in this first implementation.
+    include_node = Include.new(node.trait).at(node)
+    include_in target_type, include_node, :included
+
+    false
+  end
+
   def visit(node : ModuleDef)
     check_outside_exp node, "declare module"
 

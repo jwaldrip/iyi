@@ -258,7 +258,10 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     case node
     when Expressions, LibDef, CStructOrUnionDef, ClassDef, ModuleDef, FunDef, Def, Macro,
          Alias, Include, Extend, EnumDef, VisibilityModifier, MacroFor, MacroIf, MacroExpression,
-         FileNode, TypeDeclaration, Require, AnnotationDef
+         FileNode, TypeDeclaration, Require, AnnotationDef,
+         # iyi declarations — like the above, these declare rather than compute,
+         # so they must not count as being inside an expression.
+         TraitDef, ImplDef, ModuleHeader, ImportDecl, UsingDecl
       false
     else
       true

@@ -2,8 +2,8 @@
 #
 #   ./bin/crystal run samples/iyi/hello.iyi
 #
-# Everything below compiles and runs today. What is deliberately absent is
-# noted at the bottom — this file is meant to stay honest about how far the
+# Everything below compiles and runs today. What is still missing is listed at
+# the bottom — this file is meant to stay honest about how far the
 # implementation actually reaches.
 
 # R-1: the compilation-unit header. A module is the unit of compilation and of
@@ -11,48 +11,91 @@
 # `.iyimod` is what will one day replace re-analysing its source.
 module samples/hello
 
+# R-3: a trait is a named set of requirements. `abstract def` marks a method an
+# implementer must provide. Traits replace Crystal's open classes: a type's
+# method set is knowable without reading the whole program.
+pub trait Greet
+  abstract def greet : String
+end
+
+pub trait Loud
+  abstract def shout : String
+end
+
 # R-2: `pub` marks a declaration as exported, and exported declarations carry
-# full signatures — parameter types and a return type. That signature is the
-# module's contract, and the only thing a consumer ever needs to read.
-pub def greet(name : String) : String
-  "Hello, #{name}!"
+# full signatures. That signature is the module's contract, and the only thing
+# a consumer ever needs to read.
+pub struct User
+  getter name : String
+
+  def initialize(@name : String)
+  end
+end
+
+pub struct Robot
+  getter id : Int32
+
+  def initialize(@id : Int32)
+  end
+end
+
+# `impl Trait for Type` — the replacement for reopening a class. Under the
+# coherence rule this must live in the module defining either the trait or the
+# type, which is what keeps separate compilation sound.
+impl Greet for User
+  def greet : String
+    "Hello, #{name}!"
+  end
+end
+
+# A type may implement several traits...
+impl Loud for User
+  def shout : String
+    greet.upcase
+  end
+end
+
+# ...and a trait may be implemented by several types.
+impl Greet for Robot
+  def greet : String
+    "BEEP #{id}"
+  end
 end
 
 # Not exported. No signature required, because nothing outside this module can
 # depend on it — inference inside a module costs only what the module costs.
-def shout(text)
-  text.upcase
+def describe(item)
+  item.greet
 end
 
 # Ruby ergonomics, unchanged and free to compile: blocks, string
 # interpolation, everything-is-an-expression, local inference.
-names = ["iyi", "crystal", "go"]
+puts User.new("iyi").greet
+puts User.new("iyi").shout
+puts Robot.new(42).greet
 
-names.each do |name|
-  puts greet(name)
-end
-
-puts shout(greet("world"))
+# A trait as a type: both implementers dispatch through it.
+crowd = [User.new("crystal"), Robot.new(7)] of Greet
+crowd.each { |member| puts describe(member) }
 
 # ---------------------------------------------------------------------------
-# Not yet working
+# Not yet implemented
 # ---------------------------------------------------------------------------
 #
-#   pub trait Greet
-#     abstract def greet : String
-#   end
+# * Coherence is not checked. Nothing verifies that an `impl` lives in the
+#   trait's or the type's module, so the orphan rule is documentation rather
+#   than a rule. SPEC.md IV.4 shows the import DAG makes violations
+#   unrepresentable once module resolution exists.
 #
-#   impl Greet for User
-#     def greet : String
-#       "Hello, #{name}!"
-#     end
-#   end
+# * Generic impls (`impl Enumerable for Array(T) forall T`) parse but are
+#   rejected in semantic analysis with an explicit "not implemented yet".
 #
-# These parse — the AST nodes exist and the parser builds them — but semantic
-# analysis has not been taught that `trait` and `impl` open a declaration
-# scope, so a `def` inside one is still read as a dynamic definition and
-# rejected. That is the next piece of work, and it is where R-3 and R-4 stop
-# being prose and become an implementation.
+# * Traits are currently desugared to modules, which is why this works at all
+#   so early. A consequence: `include Greet` also compiles, and it should not.
 #
-# `using` parses too, and does nothing yet: there is no module resolution to
-# bring names in from.
+# * `import` and `using` parse and do nothing — there is no module resolution
+#   behind them yet, so every file is still one compilation unit.
+#
+# * `.iyimod`, separate compilation, and dictionary-passing generics — the
+#   three things the whole design exists for — are unimplemented. Today this
+#   file is compiled exactly the way Crystal compiles a `.cr` file.
