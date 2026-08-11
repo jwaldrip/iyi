@@ -1,0 +1,58 @@
+# The first iyi program.
+#
+#   ./bin/crystal run samples/iyi/hello.iyi
+#
+# Everything below compiles and runs today. What is deliberately absent is
+# noted at the bottom — this file is meant to stay honest about how far the
+# implementation actually reaches.
+
+# R-1: the compilation-unit header. A module is the unit of compilation and of
+# recompilation; `import` edges between modules form a DAG. Reading a module's
+# `.iyimod` is what will one day replace re-analysing its source.
+module samples/hello
+
+# R-2: `pub` marks a declaration as exported, and exported declarations carry
+# full signatures — parameter types and a return type. That signature is the
+# module's contract, and the only thing a consumer ever needs to read.
+pub def greet(name : String) : String
+  "Hello, #{name}!"
+end
+
+# Not exported. No signature required, because nothing outside this module can
+# depend on it — inference inside a module costs only what the module costs.
+def shout(text)
+  text.upcase
+end
+
+# Ruby ergonomics, unchanged and free to compile: blocks, string
+# interpolation, everything-is-an-expression, local inference.
+names = ["iyi", "crystal", "go"]
+
+names.each do |name|
+  puts greet(name)
+end
+
+puts shout(greet("world"))
+
+# ---------------------------------------------------------------------------
+# Not yet working
+# ---------------------------------------------------------------------------
+#
+#   pub trait Greet
+#     abstract def greet : String
+#   end
+#
+#   impl Greet for User
+#     def greet : String
+#       "Hello, #{name}!"
+#     end
+#   end
+#
+# These parse — the AST nodes exist and the parser builds them — but semantic
+# analysis has not been taught that `trait` and `impl` open a declaration
+# scope, so a `def` inside one is still read as a dynamic definition and
+# rejected. That is the next piece of work, and it is where R-3 and R-4 stop
+# being prose and become an implementation.
+#
+# `using` parses too, and does nothing yet: there is no module resolution to
+# bring names in from.
