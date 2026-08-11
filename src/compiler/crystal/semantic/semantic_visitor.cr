@@ -241,6 +241,13 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     false
   end
 
+  # iyi: already resolved into an `include` by the top-level visitor.
+  def visit(node : UsingDecl)
+    check_outside_exp node, "use `using`"
+    node.set_type(@program.nil)
+    false
+  end
+
   def visit(node : Extend)
     check_outside_exp node, "extend"
     node.hook_expansions.try &.each &.accept self

@@ -116,9 +116,15 @@ module Crystal
 
       rest = expressions[1..]
 
-      # Directives stay at file level; only declarations get scoped.
+      # `import` stays at FILE level, outside the namespace. An imported file
+      # carries its own `module` header, and processing it while scoped inside
+      # this module would nest the two — `app/main` importing `app/greeter`
+      # would create `App::Main::App::Greeter`.
+      #
+      # `using` deliberately stays INSIDE, because it affects name resolution
+      # within this module and should not leak to whoever imports it.
       directives = [] of ASTNode
-      while (first = rest.first?) && (first.is_a?(ImportDecl) || first.is_a?(UsingDecl))
+      while (first = rest.first?) && first.is_a?(ImportDecl)
         directives << rest.shift
       end
 
@@ -1948,42 +1954,19 @@ module Crystal
       node
     end
 
-    # iyi: `using kemal::dsl` or `using kemal::dsl::{get, post}` (SPEC.md II.3)
+    # iyi: `using app/greeter` (SPEC.md II.3)
+    #
+    # Takes the same path form as `import`. Both name a module, so they should
+    # look the same; the spec's original `using kemal::dsl` mixed two
+    # notations for one concept.
+    #
+    # The selective form is not parsed yet — see the visitor, which rejects it
+    # explicitly rather than silently ignoring the distinction.
     def parse_using
       location = @token.location
       next_token_skip_space
-
-      segments = [] of String
-      names = nil
-
-      check Token::Kind::IDENT
-      segments << @token.value.to_s
-      next_token
-
-      while @token.type.op_colon_colon?
-        next_token
-        if @token.type.op_lcurly?
-          # selective form: ::{a, b, c}
-          names = [] of String
-          next_token_skip_space_or_newline
-          loop do
-            check Token::Kind::IDENT
-            names << @token.value.to_s
-            next_token_skip_space_or_newline
-            break unless @token.type.op_comma?
-            next_token_skip_space_or_newline
-          end
-          check Token::Kind::OP_RCURLY
-          next_token
-          break
-        end
-        check Token::Kind::IDENT
-        segments << @token.value.to_s
-        next_token
-      end
-
-      skip_space
-      node = UsingDecl.new(segments, names)
+      path = parse_module_path
+      node = UsingDecl.new(path, nil)
       node.at(location)
       node.end_location = token_end_location
       node

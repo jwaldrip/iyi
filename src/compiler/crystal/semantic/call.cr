@@ -261,6 +261,35 @@ class Crystal::Call
     matches = check_tuple_indexer(owner, def_name, args, arg_types)
     matches ||= lookup_matches_checking_expansion(owner, signature, search_in_parents, with_autocast: with_autocast)
 
+    # iyi: before falling back to the top level, try any modules brought into
+    # scope with `using` by an enclosing namespace. This is what lets an
+    # unqualified call inside a type reach a function `using`ed by the module
+    # the type is declared in — `include` alone does not reach nested types.
+    #
+    # Costs nothing for code that never writes `using`: the list is lazily
+    # allocated, so the loop sees nil and stops immediately.
+    # NOTE: the walk must stop at `program`, which is its own namespace
+    # (`Program` is constructed with `super(self, self, "main")`). Walking past
+    # it loops forever. Stopping there is also correct: a `using` at file top
+    # level lands on `program` itself, and the existing top-level fallback
+    # below already covers that case.
+    if matches.empty? && !obj && search_in_toplevel
+      namespace = owner.is_a?(NamedType) ? owner.namespace : nil
+      while namespace && namespace != program
+        if namespace.is_a?(ModuleType) && (used = namespace.using_modules?)
+          used.each do |used_module|
+            used_matches = lookup_matches_with_signature(used_module, signature, search_in_parents, with_autocast)
+            unless used_matches.empty?
+              matches = used_matches
+              break
+            end
+          end
+        end
+        break unless matches.empty?
+        namespace = namespace.is_a?(NamedType) ? namespace.namespace : nil
+      end
+    end
+
     # If we didn't find a match and this call doesn't have a receiver,
     # and we are not at the top level, let's try searching the top-level
     if matches.empty? && !obj && owner != program && search_in_toplevel

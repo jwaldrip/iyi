@@ -964,6 +964,23 @@ module Crystal
     getter hooks : Array(Hook)?
     getter(parents) { [] of Type }
 
+    # iyi: modules brought into unqualified scope here by `using` (SPEC.md II.3).
+    #
+    # Kept separate from `parents` on purpose. `include` only reaches this
+    # type's own scope, but `using` must also cover unqualified calls made
+    # from inside types *nested* in this module — and searching this list
+    # explicitly means method lookup is unchanged for any code that never
+    # writes `using`.
+    getter(using_modules) { [] of Type }
+
+    def add_using_module(type : Type)
+      using_modules << type unless using_modules.includes?(type)
+    end
+
+    def using_modules?
+      @using_modules
+    end
+
     def add_def(a_def)
       a_def.owner = self
 
