@@ -264,28 +264,49 @@ class Crystal::Call
     # iyi: before falling back to the top level, try any modules brought into
     # scope with `using` by an enclosing namespace. This is what lets an
     # unqualified call inside a type reach a function `using`ed by the module
-    # the type is declared in — `include` alone does not reach nested types.
+    # the type is declared in — `include` alone does not reach nested types,
+    # because it layers the used module into *this* module's ancestor chain
+    # and a type nested inside is not on that chain.
+    #
+    # Resolution goes through the used module's METACLASS, not the module
+    # itself. A module's functions are written `pub def` in its body and
+    # reached as `App::Greeter.polite`, thanks to the `extend self` the module
+    # header desugars to. Choosing the metaclass is what makes the resolved
+    # call correct and not merely findable: a non-generic metaclass is not
+    # `passed_as_self?`, so codegen passes no receiver at all, whereas
+    # resolving against the module would hand the def whatever `self` the
+    # caller happened to have — a `User` instance, say, which then fails the
+    # `DefInstanceContainer` cast in `#instantiate`.
     #
     # Costs nothing for code that never writes `using`: the list is lazily
     # allocated, so the loop sees nil and stops immediately.
+    #
     # NOTE: the walk must stop at `program`, which is its own namespace
     # (`Program` is constructed with `super(self, self, "main")`). Walking past
     # it loops forever. Stopping there is also correct: a `using` at file top
     # level lands on `program` itself, and the existing top-level fallback
     # below already covers that case.
+    using_owner = nil
     if matches.empty? && !obj && search_in_toplevel
       namespace = owner.is_a?(NamedType) ? owner.namespace : nil
       while namespace && namespace != program
         if namespace.is_a?(ModuleType) && (used = namespace.using_modules?)
           used.each do |used_module|
-            used_matches = lookup_matches_with_signature(used_module, signature, search_in_parents, with_autocast)
-            unless used_matches.empty?
-              matches = used_matches
-              break
-            end
+            used_metaclass = used_module.metaclass
+            used_matches = lookup_matches_with_signature(used_metaclass, signature, search_in_parents, with_autocast)
+            next if used_matches.empty?
+
+            # Only what the used module itself declares. A metaclass inherits
+            # from `Module`/`Object`, so an unmatched call for anything named
+            # like `to_s` would otherwise silently bind there.
+            next unless used_matches.all? { |match| match.def.owner == used_module }
+
+            matches = used_matches
+            using_owner = used_metaclass
+            break
           end
         end
-        break unless matches.empty?
+        break if using_owner
         namespace = namespace.is_a?(NamedType) ? namespace.namespace : nil
       end
     end
@@ -331,7 +352,9 @@ class Crystal::Call
     end
 
     # If this call is an implicit call to self
-    if !obj && !program_matches && !owner.is_a?(Program)
+    # (a call resolved through `using` is not: its receiver is a module, and
+    # codegen passes no receiver for it at all)
+    if !obj && !program_matches && !using_owner && !owner.is_a?(Program)
       parent_visitor.check_self_closured
     end
 
@@ -340,7 +363,7 @@ class Crystal::Call
       attach_subclass_observer instance_type.base_type
     end
 
-    instantiate signature, matches, owner, self_type, with_autocast
+    instantiate signature, matches, using_owner || owner, self_type, with_autocast
   end
 
   def lookup_matches_checking_expansion(owner, signature, search_in_parents = true, with_autocast = false)
