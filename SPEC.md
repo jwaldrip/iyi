@@ -219,6 +219,86 @@ Consequences:
   collection requires interior-pointer discipline throughout, and Crystal's
   `to_unsafe`/`Pointer` idioms are pervasive. Defer.
 
+### II.6 Traits × the standard library — **SETTLED by porting `Enumerable`**
+
+`Enumerable` is the load-bearing abstraction of Crystal's stdlib: 2,350 lines,
+**130 methods built on a single `abstract def each`**, included by 17 types.
+`Comparable` reaches 21 more. If traits cannot express that shape, the library
+cannot be written in Crystal's idiom and the ergonomics half of the pitch fails.
+
+It ports. But it required three things Draft 0 did not have, and exposed one
+genuine conflict.
+
+**1. Traits need associated types as well as parameters.**
+
+```
+pub trait Enumerable
+  type Elem                              # an output of the impl
+  def each(&block : Elem -> Nil) : Nil
+end
+```
+
+A collection iterates one way, so the element type is not something the caller
+picks — making it a parameter would leave `arr.map` ambiguous about which impl
+it means. But parameters are still needed where several impls are the whole
+point (`Into(T)`, `From(T)`). **Both forms exist.** Draft 0 assumed only
+parameters.
+
+**2. Default methods need their own type parameters.**
+
+```
+def map(&block : Elem -> U) : Array(U) forall U
+```
+
+`U` belongs to the method, not the trait. Unavoidable — `map`, `flat_map`,
+`group_by`, `min_by` and `to_a(&)` all need it.
+
+**3. Default methods need conditional bounds.**
+
+```
+def max  : Elem            where Elem : Comparable
+def sum  : Elem            where Elem : Numeric
+def tally : Hash(Elem, Int32) where Elem : Hashable
+```
+
+About a quarter of `Enumerable` is only valid for some element types. Crystal
+duck-types these and fails at instantiation with a confusing message; a closed
+method set forces the bound to be written. More work for the library author, a
+much better error for the caller.
+
+**4. The conflict: where default bodies are compiled.**
+
+R-1 says compiling a module reads only export metadata, never bodies. But a
+default method's body must be compiled for each implementing type, and the
+implementer is in another module. This is the Go/Rust fork a second time:
+
+- **(a)** Stencil the body once per GC shape in the trait's module, reaching
+  element operations through a dictionary. Pure R-1, cheap to compile — and it
+  pays the cost measured at **4.3× on reference field access**, which is exactly
+  the shape of `arr.map(&.name)`, the most idiomatic line in Crystal.
+- **(b)** Ship default bodies in export metadata so the implementing module
+  monomorphises them. Fast at runtime; precisely why Rust compiles slowly.
+
+**Resolution: (a) by default, `@[Monomorphize]` opting a method into (b).** The
+hot handful — `each`, `map`, `select`, `reduce` — are marked in the stdlib; the
+other ~120 stay stencilled.
+
+The price is real and belongs on the record: **the library author now makes a
+per-method performance decision and has to get it right.** Crystal's author
+never faced that choice, because everything monomorphises. This is the clearest
+place where iyi asks the stdlib to absorb complexity so that user builds stay
+fast.
+
+**5. Dictionaries carry a type descriptor, not just a pointer map.**
+`select(type : U.class)` filters by runtime type, so dictionaries need type
+identity. II.5 had claimed only pointer maps; Go's dictionaries carry both.
+
+**6. One simplification found.** Crystal's
+`zip(*others : Indexable | Iterable | Iterator)` is duck typing left over from
+having no traits. In iyi it is `forall O : Enumerable`. A union-of-traits bound
+would mean "implements at least one of", which no body could rely on — it should
+not exist in the language.
+
 ---
 
 ## Part III — Open questions, with recommendations
@@ -478,17 +558,156 @@ Cut it. Keep compile-time `responds_to?`.
 
 ---
 
-## Part IV — Not yet specified
+## Part IV — `.iyimod`, the module artifact
+
+Everything in R-1 rests on this file. If it is wrong, separate compilation does
+not work and the 95% prelude tax stays.
+
+**The contract:** to compile module B which imports A, the compiler reads A's
+`.iyimod` and never opens A's source. The prelude stops being 200k lines to
+re-analyse and becomes a file to read.
+
+### IV.1 Shape
+
+One file per module, sections in a single container. Single-file because
+replacement must be atomic — a half-written artifact that a later build treats
+as valid is the worst failure mode a build cache has.
+
+| Section | Contents |
+|---|---|
+| Header | magic, format version, compiler version, target triple, build flags |
+| Hashes | interface / implementation / private (see IV.3) |
+| Imports | DAG edges, each with the interface hash it was compiled against |
+| Exports | types, signatures, traits, impls, constants |
+| Macro bodies | serialised AST for exported macros and derives |
+| Mono bodies | serialised typed IR for `@[Monomorphize]` items |
+| Object code | machine code for this module's own definitions |
+
+Binary, for read speed. A `iyi mod dump` producing text is required, not
+optional — an opaque cache format is one nobody can debug.
+
+**Target:** reading the prelude's `.iyimod` should cost single-digit
+milliseconds, against the **0.5 s** its semantic analysis costs today.
+
+### IV.2 What goes in Exports — and what is deliberately kept out
+
+**In:**
+
+- **Type declarations.** Name, kind, generic parameters, field names and types.
+- **Layout templates.** Size, alignment, and pointer map — expressed as a
+  *function of the type parameters' shapes*, not a fixed layout. `Array(T)` is
+  three words regardless of `T`; `Tuple(Int32, String)` is not. R-4 needs the
+  template to stencil at any shape.
+- **Type descriptors.** A runtime type id per exported type. II.6 established
+  that dictionaries carry type identity, not just pointer maps, because
+  `select(type : U.class)` filters by runtime type.
+- **Signatures** of `pub` functions and methods. Parameters, return type, and
+  the `where` bounds from II.6.
+- **Trait declarations.** Required methods, associated types, and the
+  *signatures* of default methods.
+- **Impl records.** Every `(Trait, Type)` pair this module provides. This is
+  what lets a consumer answer "does `Customer` implement `ToJSON`?" without
+  reading `Customer`, which II.4 depends on.
+- **Exported constants**, with values where a value can appear in a type.
+
+**Out, deliberately:**
+
+- Bodies of ordinary `pub` functions.
+- Everything private — types, methods, fields not exposed.
+- Anything that would let a consumer come to depend on an implementation detail.
+
+**The two exceptions, both of which cost something:**
+
+1. **Macro bodies.** `derive JSON` runs in the module declaring the type
+   (II.4), so that module needs `std/json`'s macro body in order to run it.
+   Macros are compile-time code; shipping them is loading a plugin, not reading
+   an implementation.
+2. **`@[Monomorphize]` bodies.** The consumer specialises them, so it needs the
+   body. This is the (b) path from II.6 and it is where incrementality is at
+   risk — see IV.3.
+
+### IV.3 Hashing — the part that decides whether builds are actually incremental
+
+**The property that matters: changing a function body must not change the
+interface hash.** If it does, every dependent rebuilds and the entire benefit
+evaporates.
+
+Three hashes, not one:
+
+| Hash | Covers | Changing it invalidates |
+|---|---|---|
+| **Interface** | exported signatures, layouts, type descriptors, trait declarations, impl records, exported constant types | every dependent must re-typecheck |
+| **Implementation** | macro bodies, `@[Monomorphize]` bodies | only dependents that actually expand or specialise those items; no re-typechecking |
+| **Private** | everything else — private types, all ordinary bodies | nothing outside this module; dependents relink but do not recompile |
+
+Worked through:
+
+- Edit a private helper → private hash only → this module rebuilds, nothing else.
+- Edit a `pub def` body → private hash → this module rebuilds; dependents relink.
+- Change a `pub def` signature → interface hash → dependents re-typecheck.
+- Edit `@[Monomorphize] def map`'s body → implementation hash → callers of `map`
+  re-codegen, but do not re-typecheck.
+
+**This makes the real price of `@[Monomorphize]` visible.** It is not only "more
+code generated" — it puts the body in the metadata, so **editing a monomorphised
+function rebuilds everything that uses it.** That is the mechanism behind Rust's
+slow incremental builds, and iyi imports it deliberately, in exchange for speed
+on the hot path. Without the interface/implementation split it would poison
+incrementality outright.
+
+**Cache key** for a module: its own source hash, plus the interface hashes of
+all transitive imports, plus compiler version, target triple and build flags.
+
+**Granularity — module-level, for Draft 0.** Adding an unused `pub def`
+invalidates dependents that never call it. That is pessimistic, and acceptable,
+because what re-typechecking costs is a metadata read, not body analysis — the
+expensive thing is already avoided. Per-declaration hashing with used-symbol
+tracking is the known refinement (this is what salsa does) and should wait until
+measurement says module-level is the bottleneck.
+
+### IV.4 A result: coherence needs no global check
+
+R-3 says an `impl Trait for Type` must live in the module defining the trait or
+the type. Separate compilation raises the obvious worry: if module T and module
+Y each define `impl Show for Foo`, neither can see the other, and the clash is
+only discovered at link time — or never.
+
+**It cannot happen.** Suppose trait `Show` is in module T and type `Foo` in
+module Y. The impl may live in T or in Y.
+
+- For T to define it, T must name `Foo`, so T imports Y.
+- For Y to define it, Y must name `Show`, so Y imports T.
+- Both would mean T imports Y and Y imports T — a cycle, which R-1 forbids.
+
+So at most one module can define any given impl, **by construction**. The DAG
+and the orphan rule together make duplicate impls unrepresentable, and
+coherence is checkable locally from the impl records in IV.2. No global pass, no
+link-time surprise, no cost at build time.
+
+This is the payoff for accepting R-3's restriction, and it is worth stating
+plainly because it is not obvious that the orphan rule buys anything beyond
+knowing a type's method set.
+
+### IV.5 Versioning
+
+Format version in the header. **Compiler version must match exactly** for
+Draft 0 — a `.iyimod` built by a different compiler is rejected and rebuilt, not
+migrated. Cross-version metadata compatibility is a large, permanent surface and
+there is no reason to take it on before 1.0.
+
+---
+
+## Part V — Not yet specified
 
 Named honestly, so nobody mistakes this draft for complete.
 
-1. **Export metadata format.** The on-disk contract for `.iyimod`. Everything in
-   R-1 depends on it and none of it is designed.
-2. **Trait generics and associated types.** `trait Into(T)`, `trait Iterator` with
-   an element type. Unavoidable for a real stdlib; not addressed here.
-3. **Trait default methods.** Whether a trait may supply a body. Affects
-   whether traits can carry the Enumerable-style surface that makes Crystal
-   pleasant.
+1. ~~Export metadata format.~~ **Specified in Part IV.** Remaining sub-question:
+   the concrete binary encoding, which is engineering rather than design.
+2. ~~Trait generics and associated types.~~ **Settled by II.6** — both forms
+   exist; associated types for single-answer traits, parameters where multiple
+   impls are the point.
+3. ~~Trait default methods.~~ **Settled by II.6** — traits supply bodies, with
+   their own type parameters and conditional `where` bounds.
 4. **Module initialisation order.** Kemal registers routes as a side effect of
    top-level calls. Legal, but the ordering guarantees across a module DAG need
    stating. Go's `init()` is the reference.
@@ -523,6 +742,8 @@ For traceability, since several rules here rest on numbers rather than taste.
 | Dictionaries cost ~3–4 cycles per call | 17.5× on a vectorisable loop, 1.21× where neither side vectorises, 1.00× with real work per element |
 | `macro_run` must go | 21% of a cold build from one call site |
 | `method_missing` is safe to cut | one occurrence in stdlib, zero in Kemal |
+| Traits can carry the stdlib | `Enumerable` — 130 methods on one `each` — ports, given associated types, method-level type params and `where` bounds |
+| Coherence costs nothing at build time | the import DAG plus the orphan rule make duplicate impls unrepresentable (IV.4) |
 
 ## Appendix B — Decisions awaiting your call
 
@@ -533,3 +754,4 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 3 | Implicit error conversion (III.1.6) | no, for Draft 0 |
 | 4 | Nil-propagation operator (III.1.5) | not in Draft 0 |
 | 5 | `pub using` re-export (II.3) | no, for Draft 0 |
+| 6 | `@[Monomorphize]` on stdlib trait defaults (II.6) | yes — mark `each`/`map`/`select`/`reduce`, stencil the rest. Accepts that the library author owns a per-method performance decision |
