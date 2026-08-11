@@ -273,8 +273,10 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     path = Path.new(node.path.map(&.camelcase)).at(node)
     used_type = lookup_type(path)
 
-    unless used_type.is_a?(ModuleType)
-      node.raise "can't `using` #{used_type}, which is not a module"
+    # `is_a?(ModuleType)` would not do: classes and structs are `ModuleType`s
+    # too, and `using` a struct is meaningless.
+    unless used_type.is_a?(ModuleType) && used_type.module?
+      node.raise "can't `using` #{used_type}, it's a #{used_type.type_desc}"
     end
 
     current_type.add_using_module(used_type, node.names)

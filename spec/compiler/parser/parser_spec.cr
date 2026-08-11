@@ -4127,5 +4127,51 @@ module Crystal
       node = parser.parse.as(Call)
       node.args_in_brackets?.should be_true
     end
+
+    describe "iyi" do
+      it "scopes a module header's contents into a namespace" do
+        # `module app/greeter` is rewritten to `ModuleDef(App::Greeter)` at
+        # parse time, so the whole semantic phase needs no changes. `import`
+        # stays outside it: an imported file carries its own header, and
+        # processing it while scoped inside this one would nest the two.
+        nodes = parse("module app/greeter\nimport app/user\nusing app/other\ndef polite\nend").as(Expressions)
+        nodes.expressions[0].should be_a(ModuleHeader)
+        nodes.expressions[1].should be_a(ImportDecl)
+
+        mod = nodes.expressions[2].as(ModuleDef)
+        mod.name.should eq(Path.new(["App", "Greeter"]))
+        mod.iyi_unit?.should be_true
+
+        body = mod.body.as(Expressions).expressions
+        # `extend self`, so a module-level `def` is a function of the module.
+        body[0].should be_a(Extend)
+        body[1].should be_a(UsingDecl)
+        body[2].should be_a(Def)
+      end
+
+      it "leaves a Crystal module alone" do
+        mod = parse("module Foo\nend").as(ModuleDef)
+        mod.iyi_unit?.should be_false
+      end
+
+      it_parses "import app/user", ImportDecl.new(["app", "user"])
+      it_parses "using app/greeter", UsingDecl.new(["app", "greeter"], nil)
+      it_parses "using app/greeter::{polite}", UsingDecl.new(["app", "greeter"], ["polite"])
+      it_parses "using app/greeter::{polite, Greet}", UsingDecl.new(["app", "greeter"], ["polite", "Greet"])
+      it_parses "using a/b/c", UsingDecl.new(["a", "b", "c"], nil)
+
+      assert_syntax_error "using app/greeter::polite", "expecting token '{'"
+      assert_syntax_error "using app/greeter::{}", "expected a name to bring into scope"
+      assert_syntax_error "using app/greeter::{polite,}", "expected a name to bring into scope"
+
+      it_parses "trait Greet\nend", TraitDef.new(Path.new(["Greet"]))
+      it_parses "pub trait Greet\nend", TraitDef.new(Path.new(["Greet"]), exported: true)
+
+      it "parses an impl" do
+        node = parse("impl Greet for User\ndef greet\nend\nend").as(ImplDef)
+        node.trait.should eq(Path.new(["Greet"]))
+        node.target.should eq(Path.new(["User"]))
+      end
+    end
   end
 end
