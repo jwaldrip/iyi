@@ -330,20 +330,23 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     false
   end
 
-  # iyi: `impl Greet for User ... end`
+  # iyi: `impl Greet for User ... end`, `impl Greet for Box(T) forall T`
   #
   # Desugars to reopening the target type, defining the methods on it, and
   # including the trait.
   def visit(node : ImplDef)
     check_outside_exp node, "declare impl"
 
-    if node.type_vars
-      node.raise "generic impls (`impl T for X forall U`) are not implemented yet"
-    end
-
     annotations = read_annotations
 
-    target_type = lookup_type(node.target)
+    target_type =
+      if type_vars = node.type_vars
+        resolve_generic_impl_target(node, type_vars)
+      else
+        check_generic_impl_without_forall(node)
+        lookup_type(node.target)
+      end
+
     unless target_type.is_a?(ModuleType)
       node.target.raise "can't implement a trait for #{target_type}, it's a #{target_type.type_desc}"
     end
@@ -367,6 +370,140 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     include_in target_type, include_node, :included
 
     false
+  end
+
+  # iyi: `impl Greet for Box(T)` and `impl Greet for Box(Int32)`, both without
+  # `forall` (SPEC.md II.7). Neither is legal, and each is wrong in its own
+  # way, so each gets its own error.
+  private def check_generic_impl_without_forall(node : ImplDef)
+    target = node.target
+    return unless target.is_a?(Generic)
+
+    # Left alone, the first fails with "undefined constant T" — which
+    # describes the mechanism, not the mistake. Requiring the binder is a
+    # deliberate decision, so it should be possible to learn it from the error.
+    unbound = target.type_vars.compact_map do |arg|
+      next unless arg.is_a?(Path) && !arg.global? && arg.names.size == 1
+      name = arg.names.first
+      name unless current_type.lookup_path(arg)
+    end
+
+    unless unbound.empty?
+      node.target.raise "#{unbound.join(", ")} #{unbound.size == 1 ? "is" : "are"} not a type here. To implement #{node.trait} for every #{target.name}, introduce the parameters with `forall`: `impl #{node.trait} for #{target} forall #{unbound.join(", ")}`"
+    end
+
+    # Everything resolved, so this asks to implement the trait for one
+    # instantiation only. See SPEC.md II.7 for why iyi has no specialisation.
+    node.target.raise "can't implement #{node.trait} for #{target} alone: iyi has no specialised impls, so a trait is implemented for #{target.name} once, for every instantiation. Write `impl #{node.trait} for #{target.name}(T) forall T`"
+  end
+
+  # iyi: resolves the target of `impl Greet for Box(T) forall T` (SPEC.md II.7).
+  #
+  # `forall` is required, and this is the reason: without it, whether `T` in
+  # `Box(T)` is a new parameter or a type already in scope would depend on
+  # what happens to be imported, so a library could change the meaning of a
+  # consumer's impl by adding an export. Rust takes the same position for the
+  # same reason.
+  #
+  # The names are the impl's own, bound positionally to the target's
+  # parameters, so an impl states arity and not vocabulary — what a type chose
+  # to call its parameters is its own business. Reopening the type is how the
+  # methods get defined, and Crystal resolves parameters inside a reopened
+  # generic by name, so a differing name is renamed in the body here.
+  private def resolve_generic_impl_target(node : ImplDef, type_vars : Array(String))
+    target = node.target
+
+    # A blanket impl — the target is the parameter itself. Checked before
+    # anything else because refusing it is permanent, where the unimplemented
+    # pieces below are not.
+    if target.is_a?(Path) && !target.global? && target.names.size == 1 && type_vars.includes?(target.names.first)
+      node.target.raise "can't implement #{node.trait} for every type. A blanket impl lets one module add methods to types it has never heard of, which is the open-class problem traits exist to remove — implement #{node.trait} for each type instead"
+    end
+
+    if bounds = node.type_var_bounds
+      names = bounds.keys.join(", ")
+      node.raise "trait bounds on impl type parameters (`forall #{names} : ...`) are not implemented yet"
+    end
+
+    unless target.is_a?(Generic)
+      node.target.raise "#{node.target} takes no type parameters, so `forall #{type_vars.join(", ")}` has nothing to bind"
+    end
+
+    base = lookup_type(target.name)
+    unless base.is_a?(GenericType)
+      target.name.raise "#{base} is not a generic type"
+    end
+
+    declared = base.type_vars
+    args = target.type_vars
+
+    if args.size != declared.size
+      node.target.raise "wrong number of type vars for #{base} (given #{args.size}, expected #{declared.size})"
+    end
+
+    # Every argument must be one of the `forall` names, each used once. A
+    # concrete argument — `impl Show for Box(Int32)` — is refused rather than
+    # treated as specialisation: see SPEC.md II.7.
+    renames = {} of String => String
+    args.each_with_index do |arg, index|
+      unless arg.is_a?(Path) && !arg.global? && arg.names.size == 1 && type_vars.includes?(arg.names.first)
+        arg.raise "expected one of the type parameters introduced by `forall` (#{type_vars.join(", ")}); iyi has no specialised impls, so a concrete type here is not a narrower impl but an error"
+      end
+
+      name = arg.names.first
+      if renames.has_key?(name)
+        arg.raise "type parameter #{name} is bound twice; each of #{base}'s parameters needs its own"
+      end
+      renames[name] = declared[index]
+    end
+
+    unused = type_vars.reject { |name| renames.has_key?(name) }
+    unless unused.empty?
+      node.raise "`forall` introduces #{unused.join(", ")}, which #{unused.size == 1 ? "is" : "are"} never used in #{node.target}"
+    end
+
+    unless renames.all? { |from, to| from == to }
+      node.body = node.body.transform(TypeParamRenamer.new(renames))
+    end
+
+    base
+  end
+
+  # iyi: rewrites an impl's own type-parameter names to the ones the target
+  # was declared with, so that `impl Greet for Box(U) forall U` works on a
+  # `Box(T)` — the names an impl chooses are local to it.
+  #
+  # Renaming can capture: if the body already refers to something called `T`
+  # meaning anything else, the rewrite would silently make it the type
+  # parameter. That is refused rather than risked.
+  private class TypeParamRenamer < Crystal::Transformer
+    def initialize(@renames : Hash(String, String))
+      @targets = @renames.values.to_set - @renames.keys.to_set
+    end
+
+    def transform(node : Crystal::Path)
+      return node if node.global? || node.names.size != 1
+
+      name = node.names.first
+      if @targets.includes?(name)
+        node.raise "#{name} is what this impl's target declared its type parameter as, so it can't also be used as a name here; rename the `forall` parameter to #{name}"
+      end
+
+      if (renamed = @renames[name]?)
+        Crystal::Path.new([renamed]).at(node)
+      else
+        node
+      end
+    end
+
+    # `Def#return_type` is not walked by the base transformer, and `def get : T`
+    # is exactly where an impl's type parameter appears.
+    def transform(node : Crystal::Def)
+      if return_type = node.return_type
+        node.return_type = return_type.transform(self)
+      end
+      super
+    end
   end
 
   # iyi: R-3's orphan rule — an `impl` must live in the module that defines

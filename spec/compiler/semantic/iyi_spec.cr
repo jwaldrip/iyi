@@ -559,4 +559,247 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
   end
+
+  describe "generic impls (SPEC.md II.7)" do
+    it "implements a trait for every instantiation of a generic type" do
+      assert_type(<<-CRYSTAL) { int32 }
+        trait Showable
+          abstract def show
+        end
+
+        struct Box(T)
+          def initialize(@value : T)
+          end
+
+          def value
+            @value
+          end
+        end
+
+        impl Showable for Box(T) forall T
+          def show
+            value
+          end
+        end
+
+        Box.new(1).show
+        CRYSTAL
+    end
+
+    it "binds the impl's own parameter names positionally" do
+      # `Pair` declared `A, B`; the impl calls them `X, Y`. An impl states
+      # arity, not vocabulary — Crystal requires a reopened generic to repeat
+      # the declared names, which leaks a type's private naming.
+      assert_type(<<-CRYSTAL) { bool }
+        trait Showable
+          abstract def show
+        end
+
+        struct Pair(A, B)
+          def initialize(@first : A, @second : B)
+          end
+
+          def second
+            @second
+          end
+        end
+
+        impl Showable for Pair(X, Y) forall X, Y
+          def show : Y
+            second
+          end
+        end
+
+        Pair.new(1, true).show
+        CRYSTAL
+    end
+
+    it "requires the binder" do
+      assert_error <<-CRYSTAL, "introduce the parameters with `forall`"
+        trait Showable
+          abstract def show
+        end
+
+        struct Box(T)
+        end
+
+        impl Showable for Box(T)
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a specialised impl" do
+      assert_error <<-CRYSTAL, "iyi has no specialised impls"
+        trait Showable
+          abstract def show
+        end
+
+        struct Box(T)
+        end
+
+        impl Showable for Box(Int32)
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a concrete argument alongside a binder" do
+      assert_error <<-CRYSTAL, "iyi has no specialised impls"
+        trait Showable
+          abstract def show
+        end
+
+        struct Pair(A, B)
+        end
+
+        impl Showable for Pair(T, Int32) forall T
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a blanket impl" do
+      assert_error <<-CRYSTAL, "can't implement Showable for every type"
+        trait Showable
+          abstract def show
+        end
+
+        impl Showable for T forall T
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a blanket impl before complaining about its bound" do
+      # Refusing the blanket form is permanent; the bound being unimplemented
+      # is not. The permanent answer is the more useful one.
+      assert_error <<-CRYSTAL, "can't implement Showable for every type"
+        trait Showable
+          abstract def show
+        end
+
+        impl Showable for T forall T : Showable
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "rejects bounds as unimplemented" do
+      assert_error <<-CRYSTAL, "trait bounds on impl type parameters"
+        trait Showable
+          abstract def show
+        end
+
+        struct Box(T)
+        end
+
+        impl Showable for Box(T) forall T : Showable
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "checks arity" do
+      assert_error <<-CRYSTAL, "wrong number of type vars"
+        trait Showable
+          abstract def show
+        end
+
+        struct Box(T)
+        end
+
+        impl Showable for Box(T, U) forall T, U
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses binding one parameter twice" do
+      assert_error <<-CRYSTAL, "is bound twice"
+        trait Showable
+          abstract def show
+        end
+
+        struct Pair(A, B)
+        end
+
+        impl Showable for Pair(T, T) forall T
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses an unused binder name" do
+      assert_error <<-CRYSTAL, "which is never used"
+        trait Showable
+          abstract def show
+        end
+
+        struct Box(T)
+        end
+
+        impl Showable for Box(T) forall T, U
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a rename that would capture" do
+      # `Pair` declared `A`; renaming the impl's `X` to `A` would silently turn
+      # a body reference to `A` into the type parameter.
+      assert_error <<-CRYSTAL, "can't also be used as a name here"
+        trait Showable
+          abstract def show
+        end
+
+        struct A
+        end
+
+        struct Pair(A, B)
+        end
+
+        impl Showable for Pair(X, Y) forall X, Y
+          def show
+            A.new
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses `forall` on a target that takes no parameters" do
+      assert_error <<-CRYSTAL, "has nothing to bind"
+        trait Showable
+          abstract def show
+        end
+
+        struct Foo
+        end
+
+        impl Showable for Foo forall T
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+  end
 end
