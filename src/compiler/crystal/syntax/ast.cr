@@ -2034,6 +2034,12 @@ module Crystal
   # SPEC.md IV.4 shows the import DAG makes duplicate impls unrepresentable.
   class ImplDef < ASTNode
     property trait : Path
+    # `impl Into(String) for User` — the arguments a parameterised trait is
+    # implemented at (SPEC.md II.6). Kept beside the path rather than folded
+    # into a `Generic` node, because the checks that follow — coherence and
+    # the required-method check — need the trait's own type, not an
+    # instantiation of it.
+    property trait_args : Array(ASTNode)?
     # Named `target` rather than `type`: ASTNode already declares
     # `@type : Crystal::Type?` for the inferred type of every node.
     property target : ASTNode
@@ -2047,23 +2053,24 @@ module Crystal
     property doc : String?
     property visibility = Visibility::Public
 
-    def initialize(@trait, @target, body = nil, @type_vars = nil, @type_var_bounds = nil)
+    def initialize(@trait, @target, body = nil, @type_vars = nil, @type_var_bounds = nil, @trait_args = nil)
       @body = Expressions.from body
     end
 
     def accept_children(visitor)
       @trait.accept visitor
+      @trait_args.try &.each &.accept visitor
       @target.accept visitor
       @body.accept visitor
     end
 
     def clone_without_location
-      clone = ImplDef.new(@trait.clone, @target.clone, @body.clone, @type_vars.clone, @type_var_bounds.clone)
+      clone = ImplDef.new(@trait.clone, @target.clone, @body.clone, @type_vars.clone, @type_var_bounds.clone, @trait_args.clone)
       clone.name_location = name_location
       clone
     end
 
-    def_equals_and_hash @trait, @target, @body, @type_vars, @type_var_bounds
+    def_equals_and_hash @trait, @trait_args, @target, @body, @type_vars, @type_var_bounds
   end
 
   # iyi: `module app/user` — the compilation-unit header (R-1).

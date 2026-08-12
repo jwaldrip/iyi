@@ -1246,4 +1246,124 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
   end
+
+  # iyi: `impl Into(String) for User` — a trait with parameters (SPEC.md II.6).
+  # Parameters are the form to reach for where several impls for one type are
+  # the point; associated types are the form for a single answer per type.
+  describe "parameterised traits" do
+    it "implements a trait at a type argument" do
+      assert_type(<<-CRYSTAL) { string }
+        module App
+          module Conv
+            trait Into(T)
+              abstract def into : T
+            end
+
+            struct User
+              def initialize
+              end
+            end
+
+            impl Into(String) for User
+              def into : String
+                "u"
+              end
+            end
+          end
+        end
+
+        App::Conv::User.new.into
+        CRYSTAL
+    end
+
+    it "checks the impl's signature against the type argument" do
+      # The argument is not decoration: `Into(String)` instantiates the trait,
+      # so the requirement being satisfied is `into : String`.
+      assert_error <<-CRYSTAL, "must return String"
+        module App
+          module Conv
+            trait Into(T)
+              abstract def into : T
+            end
+
+            struct User
+              def initialize
+              end
+            end
+
+            impl Into(String) for User
+              def into : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Conv::User.new.into
+        CRYSTAL
+    end
+
+    it "reports a missing type argument at the impl" do
+      assert_error <<-CRYSTAL, "type arguments must be specified when implementing App::Conv::Into(T), one for each of T"
+        module App
+          module Conv
+            trait Into(T)
+              abstract def into : T
+            end
+
+            struct User
+            end
+
+            impl Into for User
+              def into : String
+                "u"
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports type arguments given to a trait that has no parameters" do
+      assert_error <<-CRYSTAL, "can't implement App::Conv::Plain with type arguments, it's not a generic trait"
+        module App
+          module Conv
+            trait Plain
+              abstract def go : Int32
+            end
+
+            struct User
+            end
+
+            impl Plain(String) for User
+              def go : Int32
+                1
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports the wrong number of type arguments" do
+      assert_error <<-CRYSTAL, "wrong number of type arguments for App::Conv::Into(T) (given 2, expected 1)"
+        module App
+          module Conv
+            trait Into(T)
+              abstract def into : T
+            end
+
+            struct User
+            end
+
+            impl Into(String, Int32) for User
+              def into : String
+                "u"
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+  end
 end

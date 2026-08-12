@@ -4174,6 +4174,22 @@ module Crystal
         node.type_vars.should be_nil
       end
 
+      it "parses an impl of a trait with parameters" do
+        node = parse("impl Into(String) for User\nend").as(ImplDef)
+        node.trait.should eq(Path.new(["Into"]))
+        node.trait_args.should eq([Path.new(["String"])] of ASTNode)
+        node.target.should eq(Path.new(["User"]))
+      end
+
+      it "parses nested type arguments on the trait" do
+        node = parse("impl Into(Array(String)) for User\nend").as(ImplDef)
+        node.trait_args.should eq([Generic.new(Path.new(["Array"]), [Path.new(["String"])] of ASTNode)] of ASTNode)
+      end
+
+      it "leaves an impl without parameters alone" do
+        parse("impl Greet for User\nend").as(ImplDef).trait_args.should be_nil
+      end
+
       it "parses a generic impl" do
         node = parse("impl Show for Box(T) forall T\nend").as(ImplDef)
         node.target.should eq(Generic.new(Path.new(["Box"]), [Path.new(["T"])] of ASTNode))

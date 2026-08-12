@@ -353,6 +353,8 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       node.trait.raise "can't implement #{trait_type}, it's a #{trait_type.type_desc}. Only a trait can be implemented"
     end
 
+    check_impl_trait_args node, trait_type
+
     target_type =
       if type_vars = node.type_vars
         resolve_generic_impl_target(node, type_vars)
@@ -386,12 +388,46 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     # Record that the target implements the trait. Reuses `include`, which is
     # why `TraitType` is a module type — and `from_impl` is what keeps this
     # path open now that a written `include` of a trait is refused.
-    include_node = Include.new(node.trait).at(node)
+    trait_name =
+      if trait_args = node.trait_args
+        Generic.new(node.trait, trait_args).at(node.trait)
+      else
+        node.trait
+      end
+    include_node = Include.new(trait_name).at(node)
     include_in target_type, include_node, :included, from_impl: true
 
     check_impl_requirements node, trait_type, target_type
 
     false
+  end
+
+  # iyi: `impl Into(String) for User` — the arguments a parameterised trait is
+  # implemented at (SPEC.md II.6).
+  #
+  # Checked here rather than left to the include below, whose error says
+  # "including" and names no impl. The arity check is worth doing eagerly for
+  # the same reason `check_impl_requirements` is: the impl is where the author
+  # can fix it, and it needs nothing but this node and the trait's declaration.
+  private def check_impl_trait_args(node : ImplDef, trait_type)
+    trait_args = node.trait_args
+
+    unless trait_type.is_a?(GenericType)
+      if trait_args
+        node.trait.raise "can't implement #{trait_type} with type arguments, it's not a generic trait"
+      end
+      return
+    end
+
+    type_vars = trait_type.type_vars
+
+    unless trait_args
+      node.trait.raise "type arguments must be specified when implementing #{trait_type}, one for each of #{type_vars.join(", ")}"
+    end
+
+    if trait_args.size != type_vars.size
+      node.trait.raise "wrong number of type arguments for #{trait_type} (given #{trait_args.size}, expected #{type_vars.size})"
+    end
   end
 
   # iyi: `impl Greet for Box(T)` and `impl Greet for Box(Int32)`, both without

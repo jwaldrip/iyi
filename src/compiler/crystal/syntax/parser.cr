@@ -2067,7 +2067,8 @@ module Crystal
     end
 
     # iyi: `impl Greet for User ... end`, `impl Greet for Box(T) forall T`,
-    # `impl Show for Box(T) forall T : Show` (SPEC.md II.7)
+    # `impl Show for Box(T) forall T : Show` (SPEC.md II.7),
+    # `impl Into(String) for User` (SPEC.md II.6)
     def parse_impl_def
       @type_nest += 1
 
@@ -2077,7 +2078,26 @@ module Crystal
       next_token_skip_space_or_newline
 
       name_location = @token.location
-      trait_path = parse_path
+
+      # Parsed as a type rather than a path, so that a parameterised trait
+      # reuses the same argument grammar every other type position uses —
+      # `impl Into(Array(String)) for User` needs no rule of its own. It stops
+      # before `for` for the same reason the target below stops before
+      # `forall`: neither is a type token.
+      trait_node = parse_bare_proc_type
+      trait_path, trait_args =
+        case trait_node
+        when Path
+          {trait_node, nil}
+        when Generic
+          name = trait_node.name
+          unless name.is_a?(Path)
+            raise "expected a trait name after `impl`", name_location
+          end
+          {name, trait_node.type_vars}
+        else
+          raise "expected a trait name after `impl`", name_location
+        end
       skip_space
 
       check_ident :for
@@ -2122,7 +2142,7 @@ module Crystal
 
       @type_nest -= 1
 
-      impl_def = ImplDef.new trait_path, target, body, type_vars, type_var_bounds
+      impl_def = ImplDef.new trait_path, target, body, type_vars, type_var_bounds, trait_args
       impl_def.doc = doc
       impl_def.name_location = name_location
       impl_def.end_location = end_location
