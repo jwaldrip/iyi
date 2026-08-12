@@ -756,7 +756,53 @@ Binary, for read speed. A `iyi mod dump` producing text is required, not
 optional — an opaque cache format is one nobody can debug.
 
 **Target:** reading the prelude's `.iyimod` should cost single-digit
-milliseconds, against the **0.5 s** its semantic analysis costs today.
+milliseconds, against the **~1.0 s** its top-level analysis costs today —
+measured, not estimated, and 2× the 0.5 s this section claimed before anyone
+had run the experiment. See IV.1a for what that does and does not buy.
+
+### IV.1a What the artifact actually buys — measured
+
+The prelude fork probe (`IYI_FORK_PROBE=1`, temporary instrumentation) analyses
+the prelude, forks, and compiles the user program in the child. Restoring the
+prelude then costs a `fork`, which is the ceiling no serialised artifact can
+beat. Front end only; 5 runs, median; single-threaded compiler build.
+
+| Program | Front end today | Prelude pre-analysed | |
+|---|---|---|---|
+| `hello.iyi` | 1.58 s | 0.47 s | 3.4× |
+| `webapp.iyi` (the Kemal port) | 1.54 s | 0.45 s | 3.4× |
+| 19.5k lines, 1500 types, 4500 methods | 2.39 s | 1.39 s | 1.7× |
+| prelude-free floor (`--prelude=empty`) | 0.09 s | — | |
+
+**The artifact alone is worth 3.4×, not 20×, and the gap is not the artifact's
+fault.** Where the child's 0.45 s goes:
+
+| Pass | Cost with prelude pre-analysed |
+|---|---|
+| top level | 0.004 s (was 0.99 s) |
+| class-var initializers | **0.285 s** |
+| main | **0.162 s** |
+| everything else | ~0.04 s |
+
+The top-level pass — the only one `.iyimod` removes — drops by 250×. What
+remains is that **six of the eleven semantic passes re-walk the prelude AST and
+three re-walk the whole type graph**, whatever put the prelude there. Class-var
+initializers and `main` are 90% of the residual.
+
+**So Part IV is necessary and not sufficient.** A serialised prelude that the
+later passes still traverse converts a 1.5 s front end into a 0.45 s one; the
+0.09 s floor needs those passes to skip prelude nodes too. That is a separate
+piece of work from the file format, it is larger than the format, and it should
+be planned as such rather than discovered afterwards.
+
+Two secondary results from the same instrument:
+
+- **Half the top-level cost is parsing.** 304 files, 107,719 lines: 0.57 s to
+  parse, 0.54 s to visit. A cache removes both; a faster parser removes one.
+- **User code stays nearly free until the program is large.** `webapp.iyi` costs
+  the same as `puts "hi"`. At 19.5k lines user code finally dominates and the
+  win falls to 1.7× — the prelude cache matters most to the small, frequent
+  builds, which is where build-speed complaints come from.
 
 ### IV.2 What goes in Exports — and what is deliberately kept out
 
@@ -956,6 +1002,9 @@ For traceability, since several rules here rest on numbers rather than taste.
 | Claim | Evidence |
 |---|---|
 | Separate compilation is the main prize | 1000 typed functions cost +0.08 s; ~95% of non-LLVM work is fixed prelude tax |
+| A cached prelude is worth 3.4×, not 20× | fork probe: 1.58 s → 0.47 s front end; 0.09 s if the prelude did not exist (IV.1a) |
+| The artifact is not the whole job | with the prelude pre-analysed, class-var initializers and `main` are 90% of what is left, because they still walk the prelude (IV.1a) |
+| Half the top-level pass is the parser | 304 prelude files, 107,719 lines: 0.57 s parse, 0.54 s visit |
 | Open classes are the blocker | 77 of 484 types reopened across module boundaries; `String` by five modules |
 | Traits are a viable replacement | Kemal router ports at +4% code size, structure intact |
 | `using` is required, not optional | Kemal's DSL is unwritable without it |
