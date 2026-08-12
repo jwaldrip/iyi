@@ -404,9 +404,17 @@ module Crystal
     #   own nodes. This prices IV.1a's third row: what the later passes would
     #   have to become for the front end to reach its floor.
     #
-    #   It is 10× faster than the artifact model, reports what a normal compile
-    #   reports on every program tried, and emits an object with an identical
-    #   symbol table. A prelude-free front end is achievable.
+    #   It is 10× faster than the artifact model on the small programs in the
+    #   gate, where it also reports what a normal compile reports and emits an
+    #   object with an identical symbol table.
+    #
+    #   It does not work on real code, and the reason is structural rather than
+    #   incidental: analysing the prelude *through `main`* and then declaring new
+    #   types into it re-enters machinery that assumes declaration precedes
+    #   typing. Subclassing a prelude type is enough to trip it — see SPEC.md
+    #   IV.1e. Part IV's artifact carries types and signatures, not typed method
+    #   bodies, so this model measures more than `.iyimod` restores. Treat its
+    #   numbers as a ceiling on a configuration that does not work.
     #
     #   One trap, because it looks like a soundness failure and is not. Give
     #   codegen only the user tree and it dies with:
