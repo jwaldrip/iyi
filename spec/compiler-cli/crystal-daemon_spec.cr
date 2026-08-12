@@ -156,6 +156,20 @@ describe "`crystal daemon`" do
     end
   end
 
+  it "refuses to build once the compiler it started from has been rebuilt" do
+    # The daemon holds an analysed prelude *and* the compiler that produced it.
+    # Rebuilding while it runs would otherwise have it keep serving builds from
+    # the old compiler, and the output would look completely normal.
+    with_daemon do |socket|
+      File.touch(CRYSTAL_DAEMON_BIN)
+
+      result = daemon_build(socket, "--no-codegen", fixture_path("hello-world.cr"))
+
+      result.should be_failure(1)
+      result.error.should contain("Restart the daemon")
+    end
+  end
+
   it "still builds correctly when flags differ from the daemon's prelude" do
     # Macros branch on flags, so such a build cannot adopt the analysed
     # prelude and has to analyse its own. It must be correct, not just fast.

@@ -953,6 +953,23 @@ than about compilation:
   child closing its inherited copy took the daemon's address away from every
   later client while the daemon went on listening, looking healthy. `close(delete:
   false)` in the child.
+- **Its own compiler.** A daemon holds an analysed prelude *and the compiler that
+  analysed it*. Rebuild the compiler and it keeps serving builds from the old
+  one, with output that looks entirely normal — the worst shape a stale cache
+  can take. It now records its executable's size and modification time before
+  opening the socket, checks per request, and refuses with an instruction to
+  restart. Nanoseconds, not seconds: a rebuild landing in the same second as the
+  daemon's start is exactly the case to catch.
+
+**Builds run one at a time, and that is not laziness.** The obvious
+fiber-per-connection version was written and dropped: a forked child inherits the
+parent's live fibers, and the scheduler runs them as soon as the child blocks on
+IO. Another build's relay fiber then writes to descriptors this child has closed,
+and the daemon dies of a broken pipe mid-build. Concurrency needs a parent with
+exactly one fiber — a single `IO.select` loop over the listener and every
+in-flight build's pipes — so that no fork ever happens with another fiber alive.
+That is a different server, not a flag, and **fork-based build servers cannot be
+made concurrent by adding fibers** is the transferable part.
 
 **Packaging.** The server is a separate binary, `make crystal-daemon`, built with
 `-Dwithout_mt`. This is not a workaround to be removed later: only the forking

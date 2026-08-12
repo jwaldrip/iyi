@@ -19,7 +19,9 @@ require "socket"
 #     that many bytes
 #
 # Requests are a little-endian length followed by that many bytes of JSON,
-# `{"cwd": ..., "args": [...]}`.
+# `{"cwd": ..., "args": [...], "version": ...}`. The version is checked, along
+# with the server's own executable, so that a rebuilt compiler cannot be served
+# from silently.
 class Crystal::Command
   DAEMON_FRAME_EXIT   = 0_u8
   DAEMON_FRAME_STDOUT = 1_u8
@@ -118,6 +120,11 @@ class Crystal::Command
     {% unless flag?(:without_mt) %}
       daemon_exec_server
     {% else %}
+      # Before the socket exists, so that what is recorded is the compiler this
+      # daemon actually started from. A client can appear the instant the socket
+      # does, and anything sampled after that races with it.
+      identity = daemon_identity
+
       path = daemon_socket_path
       Dir.mkdir_p(File.dirname(path))
       File.delete?(path)
@@ -133,6 +140,8 @@ class Crystal::Command
       STDERR.puts "prelude analysed in #{elapsed.elapsed.total_seconds.round(3)}s"
       STDERR.flush
 
+      # One build at a time, and not for lack of trying: see the note on
+      # `daemon_serve` about why a fiber per connection cannot work here.
       loop do
         client = server.accept
         begin
@@ -144,7 +153,7 @@ class Crystal::Command
             STDERR.flush
           end
 
-          daemon_serve(server, client)
+          daemon_serve(server, client, identity)
         rescue ex
           STDERR.puts "daemon: #{ex.message}"
           STDERR.flush
@@ -156,13 +165,43 @@ class Crystal::Command
   end
 
   {% if flag?(:without_mt) %}
-    # Serves one build. Sequential on purpose: one build at a time is enough to
-    # show what the preserved prelude is worth, and concurrent builds would need
-    # a separate `Program` per child anyway.
-    private def daemon_serve(server, client)
+    # Serves one build.
+    #
+    # Sequential, and this is not a placeholder. Serving connections from a fiber
+    # each — the obvious way — breaks, because a forked child inherits the
+    # parent's live fibers and the scheduler runs them the moment the child
+    # blocks on IO. Another build's relay fiber then writes to descriptors this
+    # child has closed, and the daemon dies of a broken pipe mid-build.
+    #
+    # Concurrency here needs a parent with exactly one fiber: a single `IO.select`
+    # loop over the listener and every in-flight build's pipes, so that a fork
+    # never happens with another fiber alive. That is a different server, not a
+    # flag.
+    private def daemon_serve(server, client, identity : String)
       request = daemon_read_request(client)
       cwd = request["cwd"].as_s
       args = request["args"].as_a.map(&.as_s)
+
+      # A daemon holds an analysed prelude *and* the compiler that analysed it.
+      # Rebuild the compiler and the daemon keeps serving builds from the old
+      # one, silently — the worst kind of stale cache, because the output looks
+      # like a normal build. Refuse instead, and say why.
+      if daemon_identity != identity
+        daemon_refuse(client, <<-MSG)
+          The build daemon started before #{Process.executable_path || "the compiler"} was rebuilt,
+          so it would compile this with the old one. Restart the daemon.
+          MSG
+        return
+      end
+
+      if (client_version = request["version"]?.try(&.as_s)) && client_version != Crystal::Config.description
+        daemon_refuse(client, <<-MSG)
+          The build daemon and this client are different compilers.
+          Daemon: #{Crystal::Config.description}
+          Client: #{client_version}
+          MSG
+        return
+      end
 
       out_r, out_w = IO.pipe(read_blocking: false, write_blocking: true)
       err_r, err_w = IO.pipe(read_blocking: false, write_blocking: true)
@@ -224,6 +263,34 @@ class Crystal::Command
     end
   {% end %}
 
+  # Identifies the running server's own executable, so a rebuild is noticed.
+  # The version string alone cannot see it: two builds of the same commit
+  # describe themselves identically, and during development that is the normal
+  # case rather than the exception.
+  private def daemon_identity : String
+    executable = Process.executable_path
+    return "an unknown build" unless executable
+
+    info = File.info?(executable)
+    return "a deleted build" unless info
+
+    # Nanoseconds, not seconds: a rebuild that lands in the same second as the
+    # daemon's start is exactly the case this has to catch.
+    "#{info.size}:#{info.modification_time.to_unix_ns}"
+  end
+
+  private def daemon_refuse(client, message : String) : Nil
+    message.each_line do |line|
+      bytes = "#{line}\n".to_slice
+      client.write_byte(DAEMON_FRAME_STDERR)
+      client.write_bytes(bytes.size.to_u32, IO::ByteFormat::LittleEndian)
+      client.write(bytes)
+    end
+    client.write_byte(DAEMON_FRAME_EXIT)
+    client.write_bytes(1, IO::ByteFormat::LittleEndian)
+    client.flush
+  end
+
   private def daemon_read_request(client) : JSON::Any
     size = client.read_bytes(UInt32, IO::ByteFormat::LittleEndian)
     bytes = Bytes.new(size)
@@ -242,7 +309,7 @@ class Crystal::Command
 
     # The child runs a full command line, so put back the subcommand this one
     # consumed: `crystal daemon build -o x y.cr` is `crystal build -o x y.cr`.
-    request = {cwd: Dir.current, args: ["build"] + options}.to_json
+    request = {cwd: Dir.current, args: ["build"] + options, version: Crystal::Config.description}.to_json
     client.write_bytes(request.bytesize.to_u32, IO::ByteFormat::LittleEndian)
     client.write(request.to_slice)
     client.flush
