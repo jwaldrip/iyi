@@ -274,6 +274,11 @@ module Crystal
       node
     end
 
+    def transform(node : Propagate)
+      node.exp = node.exp.transform(self)
+      node
+    end
+
     def transform(node : ImportDecl)
       node
     end

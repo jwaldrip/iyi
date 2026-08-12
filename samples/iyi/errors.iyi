@@ -1,0 +1,104 @@
+# Errors are ordinary union members — SPEC.md III.1.
+#
+#   ./bin/crystal run samples/iyi/errors.iyi
+#
+# No `Result` wrapper, no exception hierarchy, no new type machinery: unions
+# already exist and already carry a type id. What makes a member an *error*
+# member is that its type implements `Error`, a trait the compiler owns.
+
+module samples/errors
+
+pub struct IOError
+  getter path : String
+
+  def initialize(@path : String)
+  end
+end
+
+# `Error` is not declared here. It is the compiler's, so that `!` can ask
+# whether a member implements it without a name in scope deciding the answer.
+impl Error for IOError
+  def message : String
+    "no such file: #{path}"
+  end
+end
+
+pub struct ParseError
+  getter text : String
+
+  def initialize(@text : String)
+  end
+end
+
+impl Error for ParseError
+  def message : String
+    "not a number: #{text}"
+  end
+end
+
+pub def read(path : String) : String | IOError
+  return IOError.new(path) if path == "missing"
+  path == "bad" ? "twelve" : "12"
+end
+
+pub def to_number(text : String) : Int32 | ParseError
+  return ParseError.new(text) unless text == "12"
+  12
+end
+
+# `!` propagates. If the value is a non-error member the expression evaluates to
+# it — narrowed, so `to_number` sees a `String` and not the union. If it is an
+# error member it is returned from here, which is why `load` has to admit both
+# errors in its own return type. Nothing enforces that separately: it is the
+# ordinary return-type check on the return the operator writes.
+pub def load(path : String) : Int32 | IOError | ParseError
+  text = read(path)!
+  to_number(text)!
+end
+
+# Handling needs nothing new. An exhaustive `case` already checks totality, so
+# adding an error member to `load` turns every incomplete `case` on it into a
+# compile error. That is the main ergonomic argument for the whole approach and
+# it cost nothing to build.
+["config", "missing", "bad"].each do |path|
+  result = load(path)
+  case result
+  in Int32      then puts "read #{result}"
+  in IOError    then puts "io:    #{result.message}"
+  in ParseError then puts "parse: #{result.message}"
+  end
+end
+
+# ---------------------------------------------------------------------------
+# What this sample would report as an error
+# ---------------------------------------------------------------------------
+#
+# * Dropping the `in ParseError` branch — `case is not exhaustive`.
+#
+# * `def go : String` with `read(p)!` in it — the error names the return type
+#   and the error being propagated into it.
+#
+# * `!` on something with no error member, such as an `Int32?`. Rejected rather
+#   than given a surprising meaning: `Nil` does not implement `Error` (III.1.5),
+#   so without the check this would compile and silently do nothing.
+#
+# * `!` on a value whose every member is an error. It could never produce one,
+#   and a function that genuinely never succeeds returns `NoReturn`.
+#
+# * `def sort!` — `!` is not part of a name (III.1.7). This is the one place
+#   that still explains the naming convention, because after a `def` name there
+#   is nothing to propagate.
+#
+# ---------------------------------------------------------------------------
+# Not yet implemented
+# ---------------------------------------------------------------------------
+#
+# * `.or(default)` and `.or_panic` (III.1.3), for the cases where a `case` is
+#   overkill. They have to be compiler-known on error unions: by II.1 an
+#   ordinary method call on `Int32 | ConfigError` would require *both* members
+#   to implement it, which is the thing being avoided.
+#
+# * `defer` (III.1.4). Because errors are values returned early, `begin`/
+#   `ensure` no longer covers cleanup properly.
+#
+# * `it` is not bound in a `case` branch, so each one names the variable.

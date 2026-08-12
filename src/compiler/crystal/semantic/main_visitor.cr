@@ -1874,8 +1874,31 @@ module Crystal
       end
     end
 
+    # iyi: `expr!` expands to an `is_a?(::Error)`, and this is where its operand
+    # is judged (SPEC.md III.1.1). Both cases are rejected rather than given a
+    # surprising meaning — without this, `!` on a type with no error member
+    # compiles and silently does nothing, which is the opposite of what anyone
+    # writes it for.
+    private def check_propagate_operand(node : IsA)
+      type = node.obj.type?
+      return unless type
+
+      members = type.is_a?(UnionType) ? type.union_types : [type] of Type
+      errors, values = members.partition &.error?
+
+      if errors.empty?
+        node.raise "`!` has no error to propagate: no member of #{type} implements `Error`. `!` is for a union with an error member — see SPEC.md III.1"
+      end
+
+      if values.empty?
+        node.raise "`!` can never produce a value: every member of #{type} implements `Error`. A function that never succeeds returns `NoReturn` — see SPEC.md III.1.1"
+      end
+    end
+
     def visit(node : IsA)
       node.obj.accept self
+
+      check_propagate_operand(node) if node.from_propagate?
 
       @in_type_args += 1
       @inside_is_a = true

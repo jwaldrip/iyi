@@ -1185,38 +1185,14 @@ module Crystal
         next_char
       end
       if current_char.in?('?', '!') && peek_next_char != '='
-        check_iyi_bang if current_char == '!'
-        next_char
+        # iyi: `!` is not part of a name (SPEC.md III.1.7). It is left for the
+        # parser, which reads it as the propagation operator after an
+        # expression and refuses it after a `def` name.
+        next_char unless @iyi && current_char == '!'
       end
       @token.type = :IDENT
       @token.value = string_range_from_pool(start)
       @token
-    end
-
-    # iyi: `!` may not end an identifier (SPEC III.1.7, decision A).
-    #
-    # Crystal lets `!` end a method name, which makes `arr.sort!` genuinely
-    # ambiguous once postfix `!` propagates errors: it is either a call to
-    # `sort!`, or a call to `sort` whose error is propagated. Resolving that by
-    # preferring the method name is worse than the ambiguity, because then
-    # *adding* a `sort!` to a type silently changes what existing call sites
-    # mean — the action at a distance R-3 exists to remove. So the character is
-    # taken out of identifiers instead, and the naming convention carries the
-    # distinction: the plain verb mutates, the participle returns a new value.
-    #
-    # This is rejected at every occurrence rather than only at `def`, because
-    # the ambiguity lives at the call site: banning the definition while still
-    # lexing `arr.sort!` as one name would leave the operator with no room.
-    private def check_iyi_bang
-      return unless @iyi
-
-      raise <<-MSG, @line_number, @column_number
-        `!` can't be part of a name in iyi
-
-        Name the mutating form after the plain verb and the non-mutating form
-        after the participle — `sort` mutates, `sorted` returns a new value.
-        Postfix `!` is reserved for error propagation.
-        MSG
     end
 
     def next_char_and_symbol(value)

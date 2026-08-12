@@ -727,9 +727,20 @@ module Crystal
     end
 
     def parse_atomic_method_suffix(atomic, location)
+      # iyi: whether a `!` here is attached to what precedes it. A space before
+      # it makes it the unary operator it has always been, so `f !x` keeps
+      # meaning `f(!x)` and only `f(x)!` propagates.
+      attached = true
+
       while true
         case @token.type
+        when .op_bang?
+          break unless attached && iyi?
+          check_void_value atomic, location
+          atomic = Propagate.new(atomic).at(location)
+          next_token
         when .space?
+          attached = false
           next_token
         when .newline?
           # In these cases we don't want to chain a call
@@ -4176,6 +4187,7 @@ module Crystal
         name = @token.value.to_s
 
         equals_sign, _ = consume_def_equals_sign
+        check_iyi_def_bang
         name = "#{name}=" if equals_sign
         last_was_space = @token.type.space?
         skip_space
@@ -4208,6 +4220,7 @@ module Crystal
 
           name_location = @token.location
           equals_sign, _ = consume_def_equals_sign
+          check_iyi_def_bang
           name = "#{name}=" if equals_sign
           last_was_space = @token.type.space?
           skip_space
@@ -4406,6 +4419,25 @@ module Crystal
         next_token_skip_space_or_newline
       end
       bounds
+    end
+
+    # iyi: `def sort!` (SPEC.md III.1.7, decision A).
+    #
+    # `!` is no longer part of a name, so by here it has been left as its own
+    # token. After a `def` name there is nothing to propagate, and the author
+    # almost certainly meant a Crystal-style mutating name — so this is the one
+    # place that still explains the convention rather than reporting a stray
+    # token.
+    private def check_iyi_def_bang
+      return unless iyi? && @token.type.op_bang?
+
+      raise <<-MSG, @token
+        `!` can't be part of a name in iyi
+
+        Name the mutating form after the plain verb and the non-mutating form
+        after the participle — `sort` mutates, `sorted` returns a new value.
+        Postfix `!` propagates an error, and a name has none.
+        MSG
     end
 
     def check_valid_def_name

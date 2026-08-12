@@ -4348,19 +4348,54 @@ module Crystal
       # postfix `!` is free to mean error propagation. The mode comes from the
       # file extension: the very same source stays legal Crystal.
       it "rejects `!` at the end of a def name" do
-        ex = expect_raises(SyntaxException, "`!` can't be part of a name in iyi") do
+        # The one place the naming convention is still explained: after a `def`
+        # name there is nothing to propagate, so a stray-token error would be
+        # useless to whoever wrote a Crystal-style mutating name.
+        expect_raises(SyntaxException, "`!` can't be part of a name in iyi") do
           parse("def sort!\nend", filename: "x.iyi")
         end
-        ex.line_number.should eq(1)
-        ex.column_number.should eq(9)
       end
 
-      it "rejects `!` at the end of a call name" do
-        # Rejected at the call site too, not only at the definition: this is
-        # where `sort!` and `sort` + propagation would collide.
+      it "rejects `!` at the end of a def name with a receiver" do
         expect_raises(SyntaxException, "`!` can't be part of a name in iyi") do
-          parse("a.sort!", filename: "x.iyi")
+          parse("def self.sort!\nend", filename: "x.iyi")
         end
+      end
+
+      # iyi: `expr!` — the propagation operator the name was freed for
+      # (SPEC.md III.1.2). At a call site `!` is now the operator, which is the
+      # whole reason it was taken out of names.
+      it "reads `!` after a call as propagation" do
+        node = parse("a.sort!", filename: "x.iyi").as(Propagate)
+        node.exp.should be_a(Call)
+        node.exp.as(Call).name.should eq("sort")
+      end
+
+      it "reads `!` after a call with arguments" do
+        parse("read(path)!", filename: "x.iyi").as(Propagate).exp.as(Call).name.should eq("read")
+      end
+
+      it "chains a method onto a propagated value" do
+        node = parse("read(path)!.strip", filename: "x.iyi").as(Call)
+        node.name.should eq("strip")
+        node.obj.should be_a(Propagate)
+      end
+
+      it "propagates twice in one expression" do
+        node = parse("parse(read(path)!)!", filename: "x.iyi").as(Propagate)
+        node.exp.as(Call).args[0].should be_a(Propagate)
+      end
+
+      it "leaves `!` with a space before it as the unary operator" do
+        # `f !x` has always meant `f(!x)`, and still does: only an attached
+        # `!` propagates.
+        node = parse("f !x", filename: "x.iyi").as(Call)
+        node.name.should eq("f")
+        node.args[0].should be_a(Not)
+      end
+
+      it "leaves a Crystal file's `!` alone" do
+        parse("a.sort!", filename: "x.cr").as(Call).name.should eq("sort!")
       end
 
       it "keeps `!` in a name in a Crystal file" do

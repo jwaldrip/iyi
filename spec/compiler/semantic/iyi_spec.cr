@@ -1912,6 +1912,129 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
 
+    it "propagates an error member out of the enclosing method" do
+      # III.1.2. `read` can fail; `load` says so in its own return type, and
+      # `!` is what carries the failure across without a `case`. The filename
+      # matters: `!` is the operator only in a `.iyi` file.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { union_of(int32, types["App"].types["Fails"].types["IOError"]) }
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read(missing : Bool) : String | IOError
+              return IOError.new if missing
+              "contents"
+            end
+
+            # `length` takes a `String`, so this only matches if `!` narrowed
+            # `text` to the union's non-error member. Without the narrowing it
+            # would still be `String | IOError` and no overload would match.
+            def self.length(s : String) : Int32
+              1
+            end
+
+            def self.load(missing : Bool) : Int32 | IOError
+              text = read(missing)!
+              length(text)
+            end
+          end
+        end
+
+        App::Fails.load(false)
+        CRYSTAL
+    end
+
+    it "refuses to propagate where there is no error member" do
+      # III.1.1's degenerate cases are rejected rather than given a surprising
+      # meaning: without this, `!` here compiles and silently does nothing.
+      assert_error <<-CRYSTAL, "`!` has no error to propagate: no member of (Int32 | Nil) implements `Error`", filename: "x.iyi"
+        module App
+          module Fails
+            def self.maybe(missing : Bool) : Int32?
+              return nil if missing
+              1
+            end
+
+            def self.go : Int32?
+              maybe(false)!
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
+
+    it "refuses to propagate where every member is an error" do
+      assert_error <<-CRYSTAL, "`!` can never produce a value: every member of App::Fails::IOError implements `Error`", filename: "x.iyi"
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.always : IOError
+              IOError.new
+            end
+
+            def self.go : IOError
+              always!
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
+
+    it "reports an enclosing return type that does not admit the error" do
+      # Not a rule the operator enforces: it is the ordinary return-type check
+      # on the `return` the expansion wrote.
+      assert_error <<-CRYSTAL, "must return String but it is returning App::Fails::IOError", filename: "x.iyi"
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read(missing : Bool) : String | IOError
+              return IOError.new if missing
+              "contents"
+            end
+
+            def self.go : String
+              read(false)!
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
+
     it "does not make Nil an error" do
       # III.1.5: absence and failure stay distinct, so `T?` is not an error
       # union and nothing here touches it.

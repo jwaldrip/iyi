@@ -642,7 +642,7 @@ meanings:
   produce a value. Also an error. If a function genuinely never succeeds, its
   return type is `NoReturn`.
 
-#### III.1.2 The propagation operator — **PROPOSED**
+#### III.1.2 The propagation operator — **BUILT**
 
 For `expr : T | E` where `E : Error`:
 
@@ -651,6 +651,31 @@ For `expr : T | E` where `E : Error`:
 
 The enclosing function's return type must already include `E`. There is no
 implicit widening.
+
+**Built, and it needed no type machinery.** `expr!` expands to
+
+```
+tmp = expr
+return tmp if tmp.is_a?(::Error)
+tmp
+```
+
+which is a purely syntactic rewrite. `Error` is an ordinary trait, so `is_a?`
+narrows `tmp` in what follows to the union's non-error members — that *is* "if
+the value is a non-error member, `expr!` evaluates to it". And the rule above,
+that the enclosing function must already include `E`, is not enforced
+separately: it is the ordinary return-type check on the `return` the expansion
+wrote. `::Error` rather than `Error`, so a module with a type of that name
+cannot change what the operator means.
+
+The operator is attached-only: `f(x)!` propagates, `f !x` still means `f(!x)`.
+`!` is left out of names by III.1.7, and the one place that still explains the
+naming convention is a `def` name, where there is nothing to propagate.
+
+III.1.1's two degenerate cases are rejected, along with a third the build found:
+`!` on a type with **no** error member — `Int32?`, say, since `Nil` is not an
+error. Without that check it compiles and silently does nothing, which is worse
+than either case the section already named.
 
 ```
 pub def load(path : String) : Config | IOError | ParseError

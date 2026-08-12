@@ -1698,6 +1698,10 @@ module Crystal
     property obj : ASTNode
     property const : ASTNode
     property? nil_check : Bool
+    # iyi: set on the check `expr!` expands into, so that the semantic phase can
+    # judge the operand — an `is_a?` the author wrote is nobody's business, but
+    # one the operator wrote has rules (SPEC.md III.1.1).
+    property? from_propagate = false
 
     def initialize(@obj, @const, @nil_check = false)
     end
@@ -1708,7 +1712,9 @@ module Crystal
     end
 
     def clone_without_location
-      IsA.new(@obj.clone, @const.clone, @nil_check)
+      clone = IsA.new(@obj.clone, @const.clone, @nil_check)
+      clone.from_propagate = from_propagate?
+      clone
     end
 
     def_equals_and_hash @obj, @const, @nil_check
@@ -2042,6 +2048,31 @@ module Crystal
     end
 
     def_equals_and_hash @name, @body, @type_vars, @exported, @assoc_types, @supertraits
+  end
+
+  # iyi: `read(path)!` — propagate an error member out of the enclosing method
+  # (SPEC.md III.1.2).
+  #
+  # If the value is a non-error member of its union, the expression evaluates to
+  # it; if it is an error member, it is returned from the enclosing method. Kept
+  # as a node of its own rather than desugared at parse time so that `to_s` and
+  # the formatter still write the operator the author wrote; the normalizer
+  # expands it.
+  class Propagate < ASTNode
+    property exp : ASTNode
+
+    def initialize(@exp)
+    end
+
+    def accept_children(visitor)
+      @exp.accept visitor
+    end
+
+    def clone_without_location
+      Propagate.new(@exp.clone)
+    end
+
+    def_equals_and_hash @exp
   end
 
   # iyi: `type Elem` in a trait, `type Elem = String` in an impl (SPEC.md II.6).

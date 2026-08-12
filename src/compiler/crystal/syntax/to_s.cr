@@ -471,6 +471,12 @@ module Crystal
       false
     end
 
+    def visit(node : Propagate)
+      node.exp.accept self
+      @str << '!'
+      false
+    end
+
     def visit(node : AssocTypeDecl)
       @str << "type " << node.name
       if value = node.value

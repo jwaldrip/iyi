@@ -40,8 +40,8 @@ record SemanticResult,
   program : Program,
   node : ASTNode
 
-def assert_type(str, *, inject_primitives = false, flags = nil, file = __FILE__, line = __LINE__, &)
-  result = semantic(str, flags: flags, inject_primitives: inject_primitives)
+def assert_type(str, *, inject_primitives = false, flags = nil, filename = nil, file = __FILE__, line = __LINE__, &)
+  result = semantic(str, flags: flags, inject_primitives: inject_primitives, filename: filename)
   program = result.program
   expected_type = with program yield program
   node = result.node
@@ -158,9 +158,9 @@ def assert_expand_named(from : String, to, *, generic = nil, flags = nil, filena
   to_nodes.to_s.strip.should eq(to.strip), file: file, line: line
 end
 
-def assert_error(str, message = nil, *, inject_primitives = false, flags = nil, file = __FILE__, line = __LINE__)
+def assert_error(str, message = nil, *, inject_primitives = false, flags = nil, filename = nil, file = __FILE__, line = __LINE__)
   expect_raises TypeException, message, file, line do
-    semantic str, inject_primitives: inject_primitives, flags: flags
+    semantic str, inject_primitives: inject_primitives, flags: flags, filename: filename
   end
 end
 

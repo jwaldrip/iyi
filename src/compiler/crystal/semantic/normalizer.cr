@@ -183,6 +183,39 @@ module Crystal
     #     else
     #       bar
     #     end
+    # iyi: `read(path)!` — propagate an error member (SPEC.md III.1.2).
+    #
+    # From:
+    #
+    #     read(path)!
+    #
+    # To:
+    #
+    #     tmp = read(path)
+    #     return tmp if tmp.is_a?(::Error)
+    #     tmp
+    #
+    # No type information is needed here, and that is the point. `Error` is an
+    # ordinary trait, so `is_a?` narrows the value in what follows to the
+    # union's non-error members — which is exactly "if the value is a non-error
+    # member, `expr!` evaluates to it". And "the enclosing function's return
+    # type must already include E" is not a rule this has to enforce: it is the
+    # ordinary return-type check on the `return` it just wrote.
+    #
+    # `::Error` rather than `Error`, so that a module of its own with that name
+    # cannot change what the operator means.
+    def transform(node : Propagate)
+      exp = node.exp.transform(self)
+      temp_var = program.new_temp_var
+
+      assign = Assign.new(temp_var.clone, exp).at(node)
+      check = IsA.new(temp_var.clone, Path.global(["Error"]).at(node)).at(node)
+      check.from_propagate = true
+      propagate = If.new(check, Return.new(temp_var.clone).at(node)).at(node)
+
+      Expressions.new([assign, propagate, temp_var.clone] of ASTNode).at(node)
+    end
+
     def transform(node : Unless)
       If.new(node.cond, node.else, node.then).transform(self).at(node)
     end
