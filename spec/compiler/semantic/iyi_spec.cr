@@ -1914,6 +1914,81 @@ describe "Semantic: iyi" do
     # what another module reaches. `samples/iyi/modules.iyi` is a separate
     # file and is where that half is exercised.
 
+    it "refuses a qualified call to a name the module does not export" do
+      assert_error <<-CRYSTAL, "App::Greeter does not export 'helper'. Only what a module marks `pub` is reachable from outside it"
+        module app/greeter
+
+        pub def polite : Int32
+          helper
+        end
+
+        def helper : Int32
+          1
+        end
+
+        module Consumer
+          def self.go : Int32
+            App::Greeter.helper
+          end
+        end
+
+        Consumer.go
+        CRYSTAL
+    end
+
+    it "refuses a qualified reference to a type the module does not export" do
+      assert_error <<-CRYSTAL, "does not export App::Greeter::Closed"
+        module app/greeter
+
+        struct Closed
+          def initialize
+          end
+        end
+
+        module Consumer
+          def self.go : App::Greeter::Closed
+            App::Greeter::Closed.new
+          end
+        end
+
+        Consumer.go
+        CRYSTAL
+    end
+
+    it "leaves the methods of an exported type alone" do
+      # The carve-out that matters: only the unit's own body carries `pub`. A
+      # `def` inside a `pub trait` belongs to the trait — `Enumerable#to_a`
+      # writes no `pub` and has to stay callable on every implementer.
+      semantic(<<-CRYSTAL)
+        module std/enumerable
+
+        pub trait Container
+          type Elem
+
+          abstract def first : Elem
+
+          def again : Elem
+            first
+          end
+        end
+
+        pub struct Nums
+          def initialize
+          end
+        end
+
+        impl Container for Nums
+          type Elem = Int32
+
+          def first : Int32
+            1
+          end
+        end
+
+        Nums.new.again
+        CRYSTAL
+    end
+
     it "leaves a Crystal module's names alone" do
       # A Crystal module has no `pub` and so no surface to enforce. Were the
       # rule applied to it, every `using` of one would reach nothing.

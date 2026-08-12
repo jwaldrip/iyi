@@ -128,10 +128,6 @@ puts announce(Robot.new(9))
 #   checked where the type is instantiated rather than where the impl is
 #   written. A different mechanism, and the harder of the two.
 #
-# * `pub` is parsed and ignored. Nothing is actually private to a module yet,
-#   so `using` brings in every name a module declares rather than only its
-#   exported ones.
-#
 # * `.iyimod`, separate compilation, and dictionary-passing generics — the
 #   three things the whole design exists for — are unimplemented. Today this
 #   file is compiled exactly the way Crystal compiles a `.cr` file.

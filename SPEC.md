@@ -144,6 +144,20 @@ using kemal::dsl                    # everything exported
 using kemal::dsl::{get, post}       # just these
 ```
 
+**Enforced.** `pub` is what a module's surface is, and both halves are closed:
+`using` reaches only exported names — the selective form reports at the
+directive which of the names it asked for the module does not export — and a
+qualified `App::Greeter.helper` or `App::Greeter::Closed` is refused too.
+
+The second half is not decoration. `.iyimod` carries a module's exports and
+nothing else (IV.2), so if another module could reach an unmarked name, that
+metadata would not be enough to compile against and R-1 would not hold.
+
+Only a `module app/greeter` compilation unit has a surface, and only its own
+body carries it: a `def` inside a `pub trait` or a `pub struct` belongs to the
+trait or the struct. `Enumerable#to_a` writes no `pub` and stays callable on
+every implementer. A Crystal module never wrote `pub` and is untouched.
+
 **OPEN:** whether `using` may be re-exported (`pub using`), so a facade module
 can pass a DSL through. Convenient for `import kemal` giving you the DSL without
 a second line — and a way to reintroduce exactly the implicitness R-3 removed.

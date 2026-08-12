@@ -86,6 +86,12 @@ puts App::Formal.title
 #   cannot have. Widening to a bare `using app/greeter` does not reach it
 #   either; it simply is not there to be found (R-2b).
 #
+# * `App::Greeter.greeting` — qualifying it does not get around `pub` either.
+#   It has to be unreachable, not merely absent from `using`: `.iyimod` carries
+#   a module's exports and nothing else, so if another module could call an
+#   unmarked name, that metadata would not be enough to compile against
+#   (SPEC.md IV.2).
+#
 # ---------------------------------------------------------------------------
 # Not yet implemented
 # ---------------------------------------------------------------------------

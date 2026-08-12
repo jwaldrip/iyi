@@ -197,6 +197,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     end
 
     record_export scope, name, node.exported?
+    type.private = true if unexported_in_unit?(scope, node.exported?)
 
     node.resolved_type = type
 
@@ -347,6 +348,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     type.private = true if node.visibility.private?
 
     record_export scope, name, node.exported?
+    type.private = true if unexported_in_unit?(scope, node.exported?)
 
     resolve_supertraits node, type
 
@@ -378,6 +380,20 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     return unless mod && mod.iyi_unit?
 
     mod.add_exported_name(name)
+  end
+
+  # iyi: whether *scope* is a module unit that left this declaration unmarked,
+  # so it is the module's own and no other module may reach it (R-2).
+  #
+  # Only the unit's own body is governed. A `def` inside a `pub trait` or a
+  # `pub struct` declared in that body belongs to the trait or the struct, not
+  # to the module's surface: `Enumerable`'s `to_a` carries no `pub` and has to
+  # stay callable on every implementer.
+  private def unexported_in_unit?(scope, exported : Bool) : Bool
+    return false if exported
+
+    mod = scope.as?(ModuleType)
+    !!(mod && mod.iyi_unit?)
   end
 
   # iyi: `trait Ord : Eq` (SPEC.md II.6).
@@ -1047,6 +1063,12 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     if target_type.is_a?(EnumType) && node.name == "initialize"
       node.raise "enums can't define an `initialize` method, try using `def self.new`"
     end
+
+    # iyi: a module-level `def` left unmarked is the module's own (R-2).
+    # Crystal's private visibility is exactly the rule R-2 needs — reachable
+    # unqualified from inside the module, refused through the module's name
+    # from outside — so it is set here rather than reimplemented.
+    node.visibility = :private if is_instance_method && unexported_in_unit?(current_type, node.exported?)
 
     target_type.add_def node
 
