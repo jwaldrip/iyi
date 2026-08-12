@@ -967,15 +967,28 @@ the same warm cache — and falls back to a normal build, with a line saying so,
 when nothing answers. Opting in to a daemon must never be able to *stop* a build;
 the worst it may cost is the speedup.
 
-**Builds run one at a time, and that is not laziness.** The obvious
-fiber-per-connection version was written and dropped: a forked child inherits the
+**Builds run concurrently, and getting there took two attempts.** The obvious
+fiber-per-connection version deadlocks and then dies: a forked child inherits the
 parent's live fibers, and the scheduler runs them as soon as the child blocks on
-IO. Another build's relay fiber then writes to descriptors this child has closed,
-and the daemon dies of a broken pipe mid-build. Concurrency needs a parent with
-exactly one fiber — a single `IO.select` loop over the listener and every
-in-flight build's pipes — so that no fork ever happens with another fiber alive.
-That is a different server, not a flag, and **fork-based build servers cannot be
-made concurrent by adding fibers** is the transferable part.
+IO, so another build's relay fiber writes to descriptors this child has closed.
+**Fork-based build servers cannot be made concurrent by adding fibers** — that is
+the transferable part.
+
+What works is one fiber and one `poll(2)` over the listener plus every in-flight
+build's two pipes. Crystal has no `IO.select`, so the binding is declared in the
+daemon (at file scope: reopening `lib LibC` inside a class defines a *nested* lib
+of the same name instead of extending the real one). A child also closes every
+*other* in-flight build's connection and pipes, or an inherited copy outlives the
+build that owns it.
+
+Measured: four concurrent builds finish in 2.0 s against 1.16 s for one, and
+eight — half of them deliberately failing — in 3.2 s with every exit status and
+every diagnostic delivered to the client that asked for it.
+
+Two limits worth naming: the request is read inline, so a client that connects
+and then stalls holds up the loop; and writes to a client are blocking, so a
+client that stops reading stalls the relaying of other builds. Both are fine for
+a local build daemon and neither is fine for anything exposed.
 
 **Packaging.** The server is a separate binary, `make crystal-daemon`, built with
 `-Dwithout_mt`. This is not a workaround to be removed later: only the forking

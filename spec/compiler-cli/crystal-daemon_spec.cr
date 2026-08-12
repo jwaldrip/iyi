@@ -170,6 +170,47 @@ describe "`crystal daemon`" do
     end
   end
 
+  it "serves several builds at once, keeping each client's output its own" do
+    # The daemon waits on every in-flight build from one fiber, via `poll`.
+    # Getting this wrong does not merely serialise the builds — an earlier
+    # fiber-per-connection version had children inherit each other's live
+    # fibers and write into each other's pipes. So the property under test is
+    # not speed: it is that four concurrent builds, one of which must fail,
+    # each get their own result.
+    with_daemon do |socket|
+      with_tempfile("daemon-concurrent") do |dir|
+        Dir.mkdir_p(dir)
+
+        good = (1..3).map { |i| File.join(dir, "ok-#{i}") }
+        processes = good.map do |path|
+          Process.new(crystal, ["daemon", "build", "--socket", socket, "-o", path,
+                                fixture_path("hello-world.cr")],
+            input: Process::Redirect::Close, output: Process::Redirect::Pipe, error: Process::Redirect::Pipe)
+        end
+
+        failing = Process.new(crystal, ["daemon", "build", "--socket", socket, "--no-codegen",
+                                        fixture_path("semantic-error.cr")],
+          input: Process::Redirect::Close, output: Process::Redirect::Pipe, error: Process::Redirect::Pipe)
+        failing_error = failing.error.gets_to_end
+        failing_status = failing.wait
+
+        processes.each_with_index do |process, index|
+          process.error.gets_to_end
+          process.wait.success?.should be_true
+          Process.capture_result(good[index]).should(be_success).output.should(eq("hello world\n"))
+        end
+
+        failing_status.success?.should be_false
+        failing_error.should contain("undefined method 'frobulate' for Int32")
+
+        # And the daemon is still there afterwards.
+        with_temp_executable "daemon-after-concurrent" do |path|
+          daemon_build(socket, "-o", path, fixture_path("hello-world.cr")).should be_success
+        end
+      end
+    end
+  end
+
   it "builds anyway when CRYSTAL_DAEMON_SOCKET points at nothing" do
     # Opting in to a daemon must never be able to stop a build. A daemon that
     # died should cost the speedup and nothing else — but it has to say so,

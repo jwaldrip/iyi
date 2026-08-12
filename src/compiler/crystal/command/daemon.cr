@@ -1,5 +1,22 @@
 require "socket"
 
+{% if flag?(:without_mt) %}
+  require "c/poll"
+
+  # `poll(2)`, for the build daemon's single-fiber server loop. Declared here
+  # because reopening `lib LibC` inside a class would define a nested lib of the
+  # same name rather than extending the real one.
+  lib LibC
+    struct PollFd
+      fd : Int
+      events : Short
+      revents : Short
+    end
+
+    fun poll(fds : PollFd*, nfds : ULong, timeout : Int) : Int
+  end
+{% end %}
+
 # A build daemon: analyse the prelude once, then fork a child per build so each
 # build starts from a `Program` that already has it.
 #
@@ -161,57 +178,123 @@ class Crystal::Command
       STDERR.puts "prelude analysed in #{elapsed.elapsed.total_seconds.round(3)}s"
       STDERR.flush
 
-      # One build at a time, and not for lack of trying: see the note on
-      # `daemon_serve` about why a fiber per connection cannot work here.
-      loop do
-        client = server.accept
-        begin
-          if preanalysed.stale?
-            elapsed = Time.instant
-            preanalysed = Compiler.new.preanalyse_prelude
-            Compiler.preanalysed = preanalysed
-            STDERR.puts "prelude changed, re-analysed in #{elapsed.elapsed.total_seconds.round(3)}s"
-            STDERR.flush
-          end
-
-          daemon_serve(server, client, identity)
-        rescue ex
-          STDERR.puts "daemon: #{ex.message}"
+      daemon_loop(server, identity) do
+        if preanalysed.stale?
+          elapsed = Time.instant
+          preanalysed = Compiler.new.preanalyse_prelude
+          Compiler.preanalysed = preanalysed
+          STDERR.puts "prelude changed, re-analysed in #{elapsed.elapsed.total_seconds.round(3)}s"
           STDERR.flush
-        ensure
-          client.close rescue nil
         end
       end
     {% end %}
   end
-
   {% if flag?(:without_mt) %}
-    # Serves one build.
+    # `poll(2)`, because the server has to wait on many descriptors from a single
+    # fiber. Crystal has no `IO.select`, and a fiber per stream is what broke the
+    # first attempt at concurrency: a forked child inherits the parent's live
+    # fibers, and the scheduler runs them as soon as the child blocks on IO, so
+    # another build's relay writes to descriptors this child has closed.
     #
-    # Sequential, and this is not a placeholder. Serving connections from a fiber
-    # each — the obvious way — breaks, because a forked child inherits the
-    # parent's live fibers and the scheduler runs them the moment the child
-    # blocks on IO. Another build's relay fiber then writes to descriptors this
-    # child has closed, and the daemon dies of a broken pipe mid-build.
-    #
-    # Concurrency here needs a parent with exactly one fiber: a single `IO.select`
-    # loop over the listener and every in-flight build's pipes, so that a fork
-    # never happens with another fiber alive. That is a different server, not a
-    # flag.
-    private def daemon_serve(server, client, identity : String)
+    # One fiber, one `poll`, no inherited relays.
+    # A build in flight: the connection to report to, the child's two output
+    # pipes, and how many of them are still open.
+    private class DaemonBuild
+      getter client : UNIXSocket
+      getter out_r : IO::FileDescriptor
+      getter err_r : IO::FileDescriptor
+      getter pid : LibC::PidT
+      property open : Int32
+
+      def initialize(@client, @out_r, @err_r, @pid)
+        @open = 2
+      end
+
+      def stream(kind : UInt8) : IO::FileDescriptor
+        kind == DAEMON_FRAME_STDOUT ? @out_r : @err_r
+      end
+    end
+
+    private def daemon_loop(server, identity : String, &refresh) : Nil
+      builds = [] of DaemonBuild
+      buffer = Bytes.new(16384)
+
+      loop do
+        # Rebuilt each round: which descriptors matter changes as builds start
+        # and finish, and the set is small enough that this is not worth caching.
+        fds = [] of LibC::PollFd
+        owners = [] of {DaemonBuild?, UInt8}
+
+        fds << LibC::PollFd.new(fd: server.fd, events: LibC::POLLIN.to_i16, revents: 0)
+        owners << {nil, 0_u8}
+
+        builds.each do |build|
+          {DAEMON_FRAME_STDOUT, DAEMON_FRAME_STDERR}.each do |kind|
+            stream = build.stream(kind)
+            next if stream.closed?
+            fds << LibC::PollFd.new(fd: stream.fd, events: LibC::POLLIN.to_i16, revents: 0)
+            owners << {build, kind}
+          end
+        end
+
+        ready = LibC.poll(fds.to_unsafe, fds.size.to_u64, -1)
+        next if ready < 0 # interrupted; rebuild the set and wait again
+
+        finished = [] of DaemonBuild
+
+        fds.each_with_index do |pollfd, index|
+          next if pollfd.revents == 0
+
+          build, kind = owners[index]
+
+          unless build
+            daemon_accept(server, identity, builds) { refresh.call }
+            next
+          end
+
+          # `poll` said readable, so this does not block: it returns data, or 0
+          # at end of stream once the child has exited and closed its end.
+          stream = build.stream(kind)
+          read = begin
+            stream.read(buffer)
+          rescue IO::Error
+            0
+          end
+
+          if read == 0
+            stream.close rescue nil
+            build.open -= 1
+            finished << build if build.open == 0
+          else
+            daemon_frame(build.client, kind, buffer[0, read]) rescue nil
+          end
+        end
+
+        finished.each do |build|
+          daemon_finish(build)
+          builds.delete(build)
+        end
+      end
+    end
+
+    # Accepts one connection and starts its build, or refuses it. Returns
+    # without starting anything if the request is rejected.
+    private def daemon_accept(server, identity : String, builds : Array(DaemonBuild), &refresh) : Nil
+      client = server.accept
+
       request = daemon_read_request(client)
       cwd = request["cwd"].as_s
       args = request["args"].as_a.map(&.as_s)
 
       # A daemon holds an analysed prelude *and* the compiler that analysed it.
-      # Rebuild the compiler and the daemon keeps serving builds from the old
-      # one, silently — the worst kind of stale cache, because the output looks
-      # like a normal build. Refuse instead, and say why.
+      # Rebuild the compiler and it would keep serving builds from the old one,
+      # silently, with output that looks like a normal build's.
       if daemon_identity != identity
         daemon_refuse(client, <<-MSG)
           The build daemon started before #{Process.executable_path || "the compiler"} was rebuilt,
           so it would compile this with the old one. Restart the daemon.
           MSG
+        client.close rescue nil
         return
       end
 
@@ -221,23 +304,30 @@ class Crystal::Command
           Daemon: #{Crystal::Config.description}
           Client: #{client_version}
           MSG
+        client.close rescue nil
         return
       end
+
+      refresh.call
 
       out_r, out_w = IO.pipe(read_blocking: false, write_blocking: true)
       err_r, err_w = IO.pipe(read_blocking: false, write_blocking: true)
 
       pid = Crystal::System::Process.fork do
-        # The child must not keep the listening socket or the connection alive:
-        # the client waits for end-of-stream, and an inherited copy would hold
-        # it open past the build. Note `delete: false` — `UNIXServer#close`
-        # unlinks the socket file by default, so a plain `close` here would take
-        # the daemon's address away from every later client while the daemon
-        # itself went on listening, apparently healthy.
+        # Nothing of the daemon's, and nothing of any *other* build's: an
+        # inherited connection or pipe read-end left open here outlives this
+        # build. Note `delete: false` — `UNIXServer#close` unlinks the socket
+        # file, which would take the daemon's address away from every later
+        # client while the daemon went on listening, apparently healthy.
         server.close(delete: false) rescue nil
         client.close rescue nil
         out_r.close rescue nil
         err_r.close rescue nil
+        builds.each do |other|
+          other.client.close rescue nil
+          other.out_r.close rescue nil
+          other.err_r.close rescue nil
+        end
 
         LibC.dup2(out_w.fd, 1)
         LibC.dup2(err_w.fd, 2)
@@ -250,39 +340,29 @@ class Crystal::Command
       out_w.close
       err_w.close
 
-      # One fiber per stream, and a lock so two frames never interleave.
-      lock = Mutex.new
-      done = Channel(Nil).new
-      spawn { daemon_relay(out_r, DAEMON_FRAME_STDOUT, client, lock); done.send(nil) }
-      spawn { daemon_relay(err_r, DAEMON_FRAME_STDERR, client, lock); done.send(nil) }
-      2.times { done.receive }
-
-      status = ::Process.new(Crystal::System::Process.new(pid.not_nil!)).wait
-
-      lock.synchronize do
-        client.write_byte(DAEMON_FRAME_EXIT)
-        client.write_bytes(status.exit_code, IO::ByteFormat::LittleEndian)
-        client.flush
-      end
+      builds << DaemonBuild.new(client, out_r, err_r, pid.not_nil!)
     end
 
-    private def daemon_relay(src : IO, kind : UInt8, dst : IO, lock : Mutex)
-      buffer = Bytes.new(16384)
-      while (read = src.read(buffer)) > 0
-        lock.synchronize do
-          dst.write_byte(kind)
-          dst.write_bytes(read.to_u32, IO::ByteFormat::LittleEndian)
-          dst.write(buffer[0, read])
-          dst.flush
-        end
-      end
+    private def daemon_finish(build : DaemonBuild) : Nil
+      status = ::Process.new(Crystal::System::Process.new(build.pid)).wait
+
+      build.client.write_byte(DAEMON_FRAME_EXIT)
+      build.client.write_bytes(status.exit_code, IO::ByteFormat::LittleEndian)
+      build.client.flush
     rescue IO::Error
-      # Client hung up mid-build; the exit frame will fail too and the daemon
-      # simply moves on to the next request.
+      # The client hung up before its build finished; nothing left to tell it.
     ensure
-      src.close rescue nil
+      build.client.close rescue nil
     end
   {% end %}
+
+  private def daemon_frame(io : IO, kind : UInt8, bytes : Bytes) : Nil
+    io.write_byte(kind)
+    io.write_bytes(bytes.size.to_u32, IO::ByteFormat::LittleEndian)
+    io.write(bytes)
+    io.flush
+  end
+
 
   # Identifies the running server's own executable, so a rebuild is noticed.
   # The version string alone cannot see it: two builds of the same commit
@@ -302,10 +382,7 @@ class Crystal::Command
 
   private def daemon_refuse(client, message : String) : Nil
     message.each_line do |line|
-      bytes = "#{line}\n".to_slice
-      client.write_byte(DAEMON_FRAME_STDERR)
-      client.write_bytes(bytes.size.to_u32, IO::ByteFormat::LittleEndian)
-      client.write(bytes)
+      daemon_frame(client, DAEMON_FRAME_STDERR, "#{line}\n".to_slice)
     end
     client.write_byte(DAEMON_FRAME_EXIT)
     client.write_bytes(1, IO::ByteFormat::LittleEndian)
