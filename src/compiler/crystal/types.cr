@@ -247,6 +247,18 @@ module Crystal
       false
     end
 
+    # iyi: true for a type declared with `trait Greet ... end` (SPEC.md R-3).
+    #
+    # A trait *is* a module structurally — it carries required and default
+    # methods, it is what an implementing type includes, and a value can be
+    # typed by it — so `module?` stays true and every restriction, dispatch
+    # and codegen path keeps working unchanged. What this predicate adds is
+    # the ability to refuse the things a trait is not: `include Greet`,
+    # `using Greet`, and `impl SomeModule for X`.
+    def trait?
+      false
+    end
+
     def metaclass?
       case self
       when MetaclassType,
@@ -1302,6 +1314,24 @@ module Crystal
     end
   end
 
+  # iyi: `trait Greet ... end` (SPEC.md R-3, II.6).
+  #
+  # A subclass rather than a sibling of `ModuleType`, because everything a
+  # trait has to do at the type level is what a module already does: a value
+  # can be typed by it, an impl registers through `including_types`, and a
+  # call on a trait-typed receiver dispatches through `remove_indirection`.
+  # Rebuilding that would mean reimplementing restriction matching, union
+  # dispatch and codegen for no gain — see `Type#trait?`.
+  class TraitType < NonGenericModuleType
+    def trait?
+      true
+    end
+
+    def type_desc
+      "trait"
+    end
+  end
+
   # A module that is related to a file and contains its private defs.
   class FileModule < NonGenericModuleType
     include DefInstanceContainer
@@ -1992,6 +2022,17 @@ module Crystal
     end
   end
 
+  # iyi: `trait Into(T) ... end` — a trait with parameters (SPEC.md II.6).
+  class GenericTraitType < GenericModuleType
+    def trait?
+      true
+    end
+
+    def type_desc
+      "generic trait"
+    end
+  end
+
   # A generic class type, like Array(T).
   class GenericClassType < ClassType
     include GenericType
@@ -2312,7 +2353,7 @@ module Crystal
 
     delegate leaf?, depth, defs, macros,
       type_desc, namespace, lookup_new_in_ancestors?,
-      splat_index, double_variadic?, to: @generic_type
+      splat_index, double_variadic?, trait?, to: @generic_type
 
     def add_including_type(type)
       return if type.unbound?

@@ -460,6 +460,63 @@ describe "Semantic: iyi" do
     end
   end
 
+  describe "traits are their own type (SPEC.md R-3)" do
+    it "refuses to reopen a struct as a trait" do
+      assert_error <<-CRYSTAL, "Foo is not a trait, it's a struct"
+        module App
+          struct Foo
+          end
+
+          trait Foo
+            abstract def show
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses to reopen a module as a trait" do
+      assert_error <<-CRYSTAL, "Greet is not a trait, it's a module"
+        module App
+          module Greet
+          end
+
+          trait Greet
+            abstract def greet
+          end
+        end
+        CRYSTAL
+    end
+
+    it "keeps a trait usable as a type restriction" do
+      # The reason `TraitType` subclasses the module type rather than replacing
+      # it: a value typed by the trait still dispatches to the impl.
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+              def show : Int32
+                1
+              end
+            end
+
+            def self.render(x : Showable) : Int32
+              x.show
+            end
+          end
+        end
+
+        App::Show.render(App::Show::Foo.new)
+        CRYSTAL
+    end
+  end
+
   describe "impl coherence (R-3)" do
     it "allows an impl in the module that defines the trait" do
       assert_type(<<-CRYSTAL) { types["App"].types["Data"].types["Foo"] }

@@ -286,11 +286,11 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
 
   # iyi: `trait Greet ... end`
   #
-  # First implementation desugars a trait to a module type, so that `abstract
-  # def` requirements and default methods register through machinery that is
-  # already correct. What this does NOT yet do: enforce the coherence rule
-  # (R-3), or treat traits as distinct from modules — `include Greet` still
-  # works here and should not.
+  # A trait is its own type — `TraitType` — but a *subclass* of the module
+  # type, so that requirements, default methods, impl registration and
+  # dispatch on a trait-typed value all keep running on machinery that is
+  # already correct. See `Type#trait?` for why the distinction is drawn at
+  # the declaration and use sites rather than in the type hierarchy.
   def visit(node : TraitDef)
     check_outside_exp node, "declare trait"
 
@@ -300,15 +300,15 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
 
     if type
       type = type.remove_alias
-      unless type.module?
+      unless type.trait?
         node.raise "#{name} is not a trait, it's a #{type.type_desc}"
       end
       type = type.as(ModuleType)
     else
       if type_vars = node.type_vars
-        type = GenericModuleType.new @program, scope, name, type_vars
+        type = GenericTraitType.new @program, scope, name, type_vars
       else
-        type = NonGenericModuleType.new @program, scope, name
+        type = TraitType.new @program, scope, name
       end
       scope.types[name] = type
     end
