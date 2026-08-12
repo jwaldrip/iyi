@@ -172,7 +172,7 @@ class Crystal::Command
       # build. Children adopt this and start from it.
       elapsed = Time.instant
       preanalysed = Compiler.new.preanalyse_prelude
-      Compiler.preanalysed = preanalysed
+      Compiler.preanalysed[preanalysed.key] = preanalysed
 
       STDERR.puts "crystal daemon listening on #{path}"
       STDERR.puts "prelude analysed in #{elapsed.elapsed.total_seconds.round(3)}s"
@@ -181,8 +181,11 @@ class Crystal::Command
       daemon_loop(server, identity) do
         if preanalysed.stale?
           elapsed = Time.instant
+          # Every cached prelude came from the same sources, so they are all
+          # stale together.
+          Compiler.preanalysed.clear
           preanalysed = Compiler.new.preanalyse_prelude
-          Compiler.preanalysed = preanalysed
+          Compiler.preanalysed[preanalysed.key] = preanalysed
           STDERR.puts "prelude changed, re-analysed in #{elapsed.elapsed.total_seconds.round(3)}s"
           STDERR.flush
         end
@@ -204,9 +207,10 @@ class Crystal::Command
       getter out_r : IO::FileDescriptor
       getter err_r : IO::FileDescriptor
       getter pid : LibC::PidT
+      getter args : Array(String)
       property open : Int32
 
-      def initialize(@client, @out_r, @err_r, @pid)
+      def initialize(@client, @out_r, @err_r, @pid, @args)
         @open = 2
       end
 
@@ -217,6 +221,7 @@ class Crystal::Command
 
     private def daemon_loop(server, identity : String, &refresh) : Nil
       builds = [] of DaemonBuild
+      warm = [] of Array(String)
       buffer = Bytes.new(16384)
 
       loop do
@@ -271,8 +276,14 @@ class Crystal::Command
         end
 
         finished.each do |build|
-          daemon_finish(build)
+          warm << build.args if daemon_finish(build)
           builds.delete(build)
+        end
+
+        # Only while nothing is in flight: analysing a prelude takes about a
+        # second, and this loop is the only thing relaying output.
+        if builds.empty? && !warm.empty?
+          daemon_warm(warm.shift)
         end
       end
     end
@@ -340,19 +351,51 @@ class Crystal::Command
       out_w.close
       err_w.close
 
-      builds << DaemonBuild.new(client, out_r, err_r, pid.not_nil!)
+      builds << DaemonBuild.new(client, out_r, err_r, pid.not_nil!, args)
     end
 
-    private def daemon_finish(build : DaemonBuild) : Nil
+    private def daemon_finish(build : DaemonBuild) : Bool
       status = ::Process.new(Crystal::System::Process.new(build.pid)).wait
 
-      build.client.write_byte(DAEMON_FRAME_EXIT)
-      build.client.write_bytes(status.exit_code, IO::ByteFormat::LittleEndian)
-      build.client.flush
-    rescue IO::Error
-      # The client hung up before its build finished; nothing left to tell it.
-    ensure
+      begin
+        build.client.write_byte(DAEMON_FRAME_EXIT)
+        build.client.write_bytes(status.exit_code, IO::ByteFormat::LittleEndian)
+        build.client.flush
+      rescue IO::Error
+        # The client hung up before its build finished; nothing left to tell it.
+      end
+
       build.client.close rescue nil
+      status.success?
+    end
+
+    # Analyses the prelude for a flag set some build actually used, so the next
+    # build with those flags is fast too. Macros branch on flags, so `--release`
+    # and `-Dfoo` each need their own.
+    #
+    # Driven by builds that already *succeeded*, which is what makes it safe:
+    # turning arguments into a compiler means running the option parser, and the
+    # option parser exits the process on bad input. Doing that here on arguments
+    # a client made up would take the daemon down on a typo.
+    private def daemon_warm(args : Array(String)) : Nil
+      limit = (ENV["CRYSTAL_DAEMON_PRELUDES"]?.try(&.to_i?) || 3)
+      return if Compiler.preanalysed.size >= limit
+
+      compiler = Crystal::Command.new(args.dup).prelude_compiler_for_build
+      return if Compiler.preanalysed.has_key?(compiler.prelude_cache_key)
+
+      elapsed = Time.instant
+      preanalysed = compiler.preanalyse_prelude
+      Compiler.preanalysed[preanalysed.key] = preanalysed
+
+      switches = args.select(&.starts_with?("-")).join(' ')
+      switches = "(default flags)" if switches.empty?
+      STDERR.puts "prelude for #{switches} analysed in #{elapsed.elapsed.total_seconds.round(3)}s (#{Compiler.preanalysed.size}/#{limit} cached)"
+      STDERR.flush
+    rescue ex
+      # A flag set we cannot pre-analyse just stays slow.
+      STDERR.puts "daemon: could not pre-analyse a prelude: #{ex.message}"
+      STDERR.flush
     end
   {% end %}
 

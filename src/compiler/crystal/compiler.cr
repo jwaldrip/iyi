@@ -308,8 +308,10 @@ module Crystal
       end
     end
 
-    # Set in the daemon before it forks, adopted by the child.
-    class_property preanalysed : Preanalysed?
+    # Set in the daemon before it forks, adopted by the child. Keyed by
+    # `prelude_cache_key`, because a prelude analysed under one set of flags
+    # cannot serve a build under another — macros branch on flags.
+    class_property preanalysed = {} of String => Preanalysed
 
     # Everything that changes what the prelude analyses *to*. Macros branch on
     # flags, so a build whose key differs cannot adopt a prelude analysed under
@@ -341,7 +343,7 @@ module Crystal
       source = [source] unless source.is_a?(Array)
       return prelude_fork_probe(source, output_filename) if ENV["IYI_FORK_PROBE"]?
 
-      if (pre = Compiler.preanalysed) && pre.key == prelude_cache_key
+      if pre = Compiler.preanalysed[prelude_cache_key]?
         return compile_with_preanalysed_prelude(pre, source, output_filename) { |program| yield program }
       end
       program = new_program(source)

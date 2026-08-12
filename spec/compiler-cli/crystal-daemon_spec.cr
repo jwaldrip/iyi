@@ -240,6 +240,26 @@ describe "`crystal daemon`" do
     end
   end
 
+  it "keeps preludes for different flag sets apart" do
+    # The daemon caches a prelude per flag set and warms new ones from builds
+    # that already succeeded. The hazard is not slowness, it is serving a build
+    # the prelude analysed under someone else's flags — macros branch on flags,
+    # so that would miscompile rather than merely misbehave. Each of these runs
+    # twice: the second time is the one served from the cache.
+    with_daemon do |socket|
+      [[] of String, ["--release"], ["-Dspec_daemon_flag_set"]].each do |flags|
+        2.times do
+          with_temp_executable "daemon-flags" do |path|
+            args = [crystal, "daemon", "build", "--socket", socket] + flags +
+                   ["-o", path, fixture_path("hello-world.cr")]
+            Process.capture_result(args).should be_success
+            Process.capture_result(path).should(be_success).output.should(eq("hello world\n"))
+          end
+        end
+      end
+    end
+  end
+
   it "still builds correctly when flags differ from the daemon's prelude" do
     # Macros branch on flags, so such a build cannot adopt the analysed
     # prelude and has to analyse its own. It must be correct, not just fast.

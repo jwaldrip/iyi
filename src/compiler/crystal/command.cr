@@ -276,6 +276,17 @@ class Crystal::Command
     config.compile
   end
 
+  # The compiler a `crystal build` with these arguments would use, so the daemon
+  # can analyse the prelude those flags imply and have it ready next time.
+  #
+  # Only ever called with arguments a build has already parsed successfully:
+  # option parsing exits the process on bad input, and doing that in a daemon
+  # would take it down on a client's typo.
+  protected def prelude_compiler_for_build : Compiler
+    options.shift if options.first? == "build"
+    create_compiler("build").compiler
+  end
+
   private def hierarchy
     config, result = compile_no_codegen "tool hierarchy", hierarchy: true, top_level: true
     @progress_tracker.stage("Tool (hierarchy)") do

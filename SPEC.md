@@ -945,10 +945,23 @@ than about compilation:
   by adding a method to `String`, watching a previously failing program compile,
   removing it, and watching the error come back.
 - **Flags.** Macros branch on flags, so an analysis made under one set cannot
-  serve a build under another. Requests carrying different flags fall back to
-  analysing their own prelude: `--release` and `-Dfoo` measure 1.65 s against
-  0.64 s for a matching request, which is the fallback working rather than
-  failing.
+  serve a build under another. The daemon keeps one prelude *per flag set*,
+  keyed on everything that changes what the prelude analyses to, and warms a new
+  one from builds that already succeeded — the first `--release` build is cold,
+  the rest are not. Measured: 0.46 s on a cached flag set, 1.48 s cold, and
+  0.52 s once warmed.
+
+  It warms only from arguments a build has already parsed successfully, and that
+  is the whole safety argument: turning arguments into a compiler means running
+  the option parser, and the option parser exits the process on bad input. Doing
+  that on arguments a client made up would take the daemon down on a typo. It
+  also warms only while nothing is in flight, since analysing costs about a
+  second and this loop is what relays every build's output.
+
+  Bounded by `CRYSTAL_DAEMON_PRELUDES`, default 3, because each analysed prelude
+  is roughly 180 MB of live heap. Past the bound, extra flag sets stay cold
+  rather than being evicted — a cold build is slow, and evicting the set someone
+  is actively using would make every build slow in turn.
 - **Its own socket.** `UNIXServer#close` unlinks the socket file, so the forked
   child closing its inherited copy took the daemon's address away from every
   later client while the daemon went on listening, looking healthy. `close(delete:
