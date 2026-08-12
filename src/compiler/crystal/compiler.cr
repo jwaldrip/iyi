@@ -270,6 +270,14 @@ module Crystal
     # linking are LLVM's and the linker's problem, and `.iyimod`'s object-code
     # section addresses them separately.
     #
+    # Known limit: a program whose semantic analysis performs a `{{ run }}`
+    # hangs, because the forked child cannot drive a subprocess through the
+    # event loop it inherited. Set IYI_FORK_TRACE=1 to see where it stops — it
+    # will be inside the top-level pass. That rules out compiling the compiler
+    # itself with the probe, and it is worth noting that the only feature that
+    # trips it is the one the appendix already measured at 21% of a cold build
+    # and marked for deletion.
+    #
     # Note what the child still does: the top-level pass runs over the user file
     # only, but every pass after it walks the combined tree, and three of them
     # walk the whole type graph. That residual is the point of the measurement —
@@ -288,16 +296,20 @@ module Crystal
         prelude_taken = prelude_elapsed.elapsed
         @progress_tracker.clear
 
+        probe_trace "[probe] parent: forking\n"
         pid = Crystal::System::Process.fork do
+          probe_trace "[probe] child: alive\n"
           child_elapsed = Time.instant
           begin
             nodes = sources.map do |source|
               program.requires.add source.filename
               parse(program, source).as(ASTNode)
             end
+            probe_trace "[probe] child: parsed\n"
             user_node = program.normalize(Expressions.from(nodes))
 
             user_node, processor = program.top_level_semantic(user_node)
+            probe_trace "[probe] child: top level done\n"
 
             # The prelude was processed by the parent's own processor, so its
             # class-var check has to be threaded through as well, or the child
@@ -326,6 +338,17 @@ module Crystal
         status = ::Process.new(Crystal::System::Process.new(pid.not_nil!)).wait
         exit status.exit_code
       {% end %}
+    end
+
+    # Unbuffered and allocation-free, so it still reports if the child is wedged
+    # on the event loop or on the collector. Pass string literals only.
+    # Resolved in the parent, before the fork, so the child never has to touch
+    # ENV (which allocates) just to decide whether to trace.
+    PROBE_TRACE = !ENV["IYI_FORK_TRACE"]?.nil?
+
+    private def probe_trace(msg : String) : Nil
+      return unless PROBE_TRACE
+      LibC.write(2, msg.to_unsafe.as(Void*), LibC::SizeT.new(msg.bytesize))
     end
 
     private def report_probe(prelude_taken : Time::Span, child_taken : Time::Span) : Nil
