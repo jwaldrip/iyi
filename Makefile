@@ -105,6 +105,10 @@ EXE     :=
 WINDOWS :=
 endif
 CRYSTAL_BIN := crystal$(EXE)
+# The build daemon must be single-threaded: it forks a child per build, and only
+# the forking thread survives a fork, so a multi-threaded runtime would hand the
+# child a broken one. `crystal daemon start` execs this binary.
+CRYSTAL_DAEMON_BIN := crystal-daemon$(EXE)
 
 DESTDIR ?=
 PREFIX  ?= /usr/local
@@ -193,6 +197,9 @@ docs: ## Generate standard library documentation
 
 .PHONY: crystal
 crystal: $(O)/$(CRYSTAL_BIN) ## Build the compiler [default]
+
+.PHONY: crystal-daemon
+crystal-daemon: $(O)/$(CRYSTAL_DAEMON_BIN) ## Build the single-threaded build daemon
 
 .PHONY: build
 build: ## Build all files for a package install (currently the compiler and manpages)
@@ -322,6 +329,11 @@ $(O)/$(CRYSTAL_BIN): $(DEPS) $(SOURCES)
 	@# NOTE: on MSYS2 it is not possible to overwrite a running program, so the compiler must be first built with
 	@# a different filename and then moved to the final destination.
 	$(if $(WINDOWS),mv $(O)/crystal-next.exe $@)
+
+$(O)/$(CRYSTAL_DAEMON_BIN): $(DEPS) $(SOURCES)
+	$(call check_llvm_config)
+	@mkdir -p $(O)
+	$(EXPORTS) $(EXPORTS_BUILD) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_mt -o $@ src/compiler/crystal.cr
 
 $(LLVM_EXT_OBJ): $(LLVM_EXT_DIR)/llvm_ext.cc
 	$(call check_llvm_config)

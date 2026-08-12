@@ -59,6 +59,41 @@ class Crystal::Command
     end
   end
 
+  # Hands the server over to the single-threaded daemon binary.
+  #
+  # The daemon forks a child per build, and only the forking thread survives a
+  # fork — a multi-threaded runtime would give the child a broken one, which is
+  # why Crystal refuses `fork` in such a build at compile time. So the server
+  # half lives in its own binary. The client half does not fork and runs
+  # anywhere, which is why only `start` is redirected.
+  private def daemon_exec_server : NoReturn
+    candidates = [] of String
+    if (override = ENV["CRYSTAL_DAEMON"]?) && !override.empty?
+      candidates << override
+    end
+    if executable = Process.executable_path
+      candidates << File.join(File.dirname(executable), "crystal-daemon")
+    end
+    candidates << File.join(".build", "crystal-daemon")
+
+    if server = candidates.find { |candidate| File.info?(candidate).try(&.file?) }
+      Process.exec(server, ["daemon", "start"] + options)
+    end
+
+    STDERR.puts <<-MSG
+      The build daemon needs a single-threaded compiler, and none was found.
+
+      Build one with:
+          make crystal-daemon
+
+      Looked in:
+      #{candidates.join('\n') { |candidate| "    #{candidate}" }}
+
+      Set CRYSTAL_DAEMON to point at it directly.
+      MSG
+    exit 1
+  end
+
   private def daemon_socket_path : String
     path = nil
     options.each_with_index do |opt, i|
@@ -73,9 +108,7 @@ class Crystal::Command
 
   private def daemon_start
     {% unless flag?(:without_mt) %}
-      STDERR.puts "The build daemon needs a single-threaded compiler: make crystal sequential_codegen=1"
-      STDERR.puts "(`Crystal::System::Process.fork` is unavailable in a multi-threaded build.)"
-      exit 1
+      daemon_exec_server
     {% else %}
       path = daemon_socket_path
       Dir.mkdir_p(File.dirname(path))

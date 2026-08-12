@@ -897,12 +897,30 @@ than about compilation:
   later client while the daemon went on listening, looking healthy. `close(delete:
   false)` in the child.
 
+**Packaging.** The server is a separate binary, `make crystal-daemon`, built with
+`-Dwithout_mt`. This is not a workaround to be removed later: only the forking
+thread survives a `fork`, so a multi-threaded runtime hands the child a broken
+one, and Crystal refuses `fork` in such a build at compile time — correctly. The
+client does not fork, so it stays in the normal compiler; `crystal daemon start`
+execs the server binary (or `CRYSTAL_DAEMON`, if set) and says how to build it
+when it is missing.
+
+The cost of that split is that the daemon's builds code-generate sequentially.
+Measured, it does not eat the win: on a 19.5k-line, 1500-type program the normal
+multi-threaded build takes 3.40–4.25 s and the daemon 2.59–2.77 s, with identical
+output. That is one program on one machine, not a general claim — a program whose
+codegen both dominates and parallelises well could come out differently.
+
+Against the same multi-threaded compiler as baseline: `hello.iyi` 2.21–2.26 s
+normally, 1.16–1.24 s through the daemon.
+
 **What it is not.** It cannot cross machines or sessions, it holds one prelude
-and so serves one flag set quickly, it builds one program at a time, and it needs
-a single-threaded compiler because `fork` is unavailable in a multi-threaded
-build. It is scaffolding that `.iyimod` will replace — worth having because it
-delivers the win now and because every latent single-run assumption it trips over
-is one `.iyimod` would have tripped over later.
+and so serves one flag set quickly, and it builds one program at a time. It is
+scaffolding that `.iyimod` will replace — worth having because it delivers the
+win now and because every latent single-run assumption it trips over is one
+`.iyimod` would have tripped over later. It also has no spec: it needs a
+single-threaded build, so the suite that runs against the normal compiler cannot
+exercise it. That is a real gap, not an oversight.
 
 **The artifact alone is worth 3.4×, not 20×, and the gap is not the artifact's
 fault.** Where the child's 0.45 s goes:
