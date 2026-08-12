@@ -20,7 +20,16 @@ class Crystal::Program
   # this program.
   def semantic(node : ASTNode, cleanup = true, main_visitor : MainVisitor = MainVisitor.new(self)) : ASTNode
     node, processor = top_level_semantic(node, main_visitor)
+    semantic_after_top_level(node, processor, cleanup: cleanup, main_visitor: main_visitor)
+  end
 
+  # The passes that follow the top-level ones, split out so that the prelude
+  # fork probe can run the top-level pass over the prelude and over the user
+  # file separately and then finish over the combined tree. Calling
+  # `top_level_semantic` and then this is exactly `semantic`.
+  def semantic_after_top_level(node : ASTNode, processor : TypeDeclarationProcessor,
+                               cleanup = true,
+                               main_visitor : MainVisitor = MainVisitor.new(self)) : ASTNode
     @progress_tracker.stage("Semantic (ivars initializers)") do
       visitor = InstanceVarsInitializerVisitor.new(self)
       Prof.span("  ivars: node.accept") { node.accept visitor }
