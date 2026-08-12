@@ -137,6 +137,9 @@ class Crystal::Command
     when command == "clear_cache"
       options.shift
       clear_cache
+    when command == "daemon"
+      options.shift
+      daemon
     when "help".starts_with?(command), "--help" == command, "-h" == command
       puts USAGE
       exit

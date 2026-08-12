@@ -230,12 +230,97 @@ module Crystal
       compile_configure_program(source, output_filename) { }
     end
 
+    # Compiles against an already-analysed prelude. This is the same split the
+    # fork probe measures (SPEC.md IV.1a): the top-level pass runs over the user
+    # file only, and every pass after it runs over both trees, because they walk
+    # the prelude for reasons caching its analysis does not remove.
+    private def compile_with_preanalysed_prelude(pre : Preanalysed, sources : Array(Source),
+                                                 output_filename : String, & : Program -> Nil) : Result
+      program = pre.program
+
+      # The prelude was analysed against a placeholder filename. Adopt this
+      # build's, so that anything derived from it — `__temp_` prefixes, error
+      # locations — matches what a normal compile would produce.
+      program.filename = sources.first.filename
+      program.compiler = self
+      program.progress_tracker = @progress_tracker
+      yield program
+
+      node = @progress_tracker.stage("Parse") do
+        nodes = sources.map do |source|
+          program.requires.add source.filename
+          parse(program, source).as(ASTNode)
+        end
+        program.normalize(Expressions.from(nodes))
+      end
+
+      begin
+        node, processor = program.top_level_semantic(node, processor: pre.processor)
+        node = program.semantic_after_top_level(
+          Expressions.from([pre.node, node] of ASTNode), processor,
+          cleanup: !no_cleanup?)
+      rescue ex : SkipMacroCodeCoverageException
+        program.macro_expansion_error_hook.try &.call(ex.cause)
+      end
+
+      units = codegen program, node, sources, output_filename unless @no_codegen
+
+      @progress_tracker.clear
+      print_macro_run_stats(program)
+      print_codegen_stats(units)
+
+      Result.new program, node
+    end
+
+    # A prelude analysed ahead of a build, for a later compile to adopt instead
+    # of analysing it again. The build daemon produces one before forking; the
+    # child adopts it, which is where its speed comes from.
+    class Preanalysed
+      getter program : Program
+      getter node : ASTNode
+      getter processor : TypeDeclarationProcessor
+      getter key : String
+
+      def initialize(@program, @node, @processor, @key)
+      end
+    end
+
+    # Set in the daemon before it forks, adopted by the child.
+    class_property preanalysed : Preanalysed?
+
+    # Everything that changes what the prelude analyses *to*. Macros branch on
+    # flags, so a build whose key differs cannot adopt a prelude analysed under
+    # another one and has to analyse its own.
+    def prelude_cache_key : String
+      String.build do |io|
+        io << prelude << '|' << codegen_target << '|' << @optimization_mode << '|'
+        io << debug << '|' << static? << '|' << wants_doc? << '|'
+        io << @flags.sort.join(',')
+      end
+    end
+
+    # Analyses the prelude on its own, so a later compile can start from it.
+    # The filename is a placeholder: the build that adopts this has its own, and
+    # sets it before compiling.
+    def preanalyse_prelude : Preanalysed
+      program = new_program([Source.new("", "")] of Source)
+      location = Location.new(program.filename, 1, 1)
+      node = program.normalize(Expressions.new([Require.new(prelude).at(location)] of ASTNode))
+      node, processor = program.top_level_semantic(node)
+      @progress_tracker.clear
+      Preanalysed.new(program, node, processor, prelude_cache_key)
+    end
+
     # :ditto:
     #
     # Yields a `Program` instance before compiling.
     def compile_configure_program(source : Source | Array(Source), output_filename : String, & : Program -> Nil) : Result
       source = [source] unless source.is_a?(Array)
       return prelude_fork_probe(source, output_filename) if ENV["IYI_FORK_PROBE"]?
+
+      if (pre = Compiler.preanalysed) && pre.key == prelude_cache_key
+        return compile_with_preanalysed_prelude(pre, source, output_filename) { |program| yield program }
+      end
       program = new_program(source)
       yield program
       node = parse program, source
