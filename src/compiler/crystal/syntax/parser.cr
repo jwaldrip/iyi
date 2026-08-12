@@ -4182,9 +4182,10 @@ module Crystal
       end
 
       skip_space
+      free_var_bounds = nil
       if @token.type.ident? && @token.value == "forall"
         next_token_skip_space
-        free_vars = parse_def_free_vars
+        free_vars, free_var_bounds = parse_def_free_vars
       end
 
       if is_abstract
@@ -4218,6 +4219,7 @@ module Crystal
       @doc_enabled = @wants_doc
 
       node = Def.new name, params, body, receiver, block_param, return_type, @is_macro_def, @block_arity, is_abstract, splat_index, double_splat: double_splat, free_vars: free_vars
+      node.free_var_bounds = free_var_bounds
       node.name_location = name_location
       set_visibility node
       node.end_location = end_location
@@ -4236,8 +4238,13 @@ module Crystal
       end
     end
 
-    def parse_def_free_vars
+    # Returns the free variable names and, for iyi, the trait each one is
+    # bounded by — `forall B : IntoBody` (SPEC.md II.7 rule 3). A bound is a
+    # trait path and nothing else: there is no separate constraint language,
+    # so what you can bound by is what you can implement.
+    def parse_def_free_vars : {Array(String), Hash(String, ASTNode)?}
       free_vars = [] of String
+      bounds = nil
       while true
         check :CONST
         free_var = @token.value.to_s
@@ -4245,6 +4252,14 @@ module Crystal
         free_vars << free_var
 
         next_token_skip_space
+
+        if @token.type.op_colon?
+          next_token_skip_space_or_newline
+          bounds ||= {} of String => ASTNode
+          bounds[free_var] = parse_path
+          skip_space
+        end
+
         if @token.type.op_comma?
           next_token_skip_space
           check :CONST
@@ -4252,7 +4267,7 @@ module Crystal
           break
         end
       end
-      free_vars
+      {free_vars, bounds}
     end
 
     def compute_block_arg_yields(block_arg)

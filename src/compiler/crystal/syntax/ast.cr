@@ -1421,6 +1421,13 @@ module Crystal
   #
   class Def < ASTNode
     property free_vars : Array(String)?
+    # iyi: `def f(x : T) forall T : Show` — the trait each free variable is
+    # bounded by, if any (SPEC.md II.7 rule 3).
+    #
+    # Unlike a bound on an *impl*'s parameter, this one makes nothing
+    # conditional: the method exists either way, and the bound is a check
+    # performed where the free variable binds to a concrete type.
+    property free_var_bounds : Hash(String, ASTNode)?
     property receiver : ASTNode?
     property name : String
     property args : Array(Arg)
@@ -1472,6 +1479,7 @@ module Crystal
       a_def.assigns_special_var = assigns_special_var?
       a_def.name_location = name_location
       a_def.visibility = visibility
+      a_def.free_var_bounds = @free_var_bounds.clone
       a_def
     end
 

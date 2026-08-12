@@ -1108,4 +1108,142 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
   end
+
+  # A bound on a *method*'s free variable, which is a different mechanism from
+  # a bound on an impl's parameter: the method exists either way, so there is
+  # one check where the variable binds and nothing to defer. The impl form
+  # stays unimplemented — see the `describe` above.
+  describe "trait bounds on a method (SPEC.md II.7)" do
+    it "accepts a call whose bound type implements the trait" do
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+              def show : Int32
+                1
+              end
+            end
+
+            def self.render(x : T) : Int32 forall T : Showable
+              x.show
+            end
+          end
+        end
+
+        App::Show.render(App::Show::Foo.new)
+        CRYSTAL
+    end
+
+    it "refuses a call whose bound type does not implement the trait" do
+      assert_error <<-CRYSTAL, "Char does not implement App::Show::Showable, required by `T` in `render`"
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            def self.render(x : T) : Int32 forall T : Showable
+              1
+            end
+          end
+        end
+
+        App::Show.render('a')
+        CRYSTAL
+    end
+
+    it "binds through a block's return type" do
+      # The shape the Kemal router needs: nothing in the parameter list
+      # mentions the bounded variable.
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Router
+            trait IntoBody
+              abstract def into_body : Int32
+            end
+
+            impl IntoBody for Char
+              def into_body : Int32
+                1
+              end
+            end
+
+            # The body does not call the block: the spec harness runs a
+            # minimal prelude with no `Proc#call`, and what is under test is
+            # where `B` binds, not what the body does with it.
+            def self.add_route(&block : Int32 -> B) : Int32 forall B : IntoBody
+              1
+            end
+          end
+        end
+
+        App::Router.add_route { |x| 'a' }
+        CRYSTAL
+    end
+
+    it "refuses a block whose return type does not implement the trait" do
+      assert_error <<-CRYSTAL, "Bool does not implement App::Router::IntoBody, required by `B` in `add_route`"
+        module App
+          module Router
+            trait IntoBody
+              abstract def into_body : Int32
+            end
+
+            def self.add_route(&block : Int32 -> B) : Int32 forall B : IntoBody
+              1
+            end
+          end
+        end
+
+        App::Router.add_route { |x| true }
+        CRYSTAL
+    end
+
+    it "checks only the names that carry a bound" do
+      assert_error <<-CRYSTAL, "does not implement App::Show::Showable, required by `A` in `pair`"
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            impl Showable for Char
+              def show : Int32
+                1
+              end
+            end
+
+            def self.pair(a : A, b : B) : Int32 forall A : Showable, B
+              a.show
+            end
+          end
+        end
+
+        App::Show.pair('a', true)
+        App::Show.pair(true, 'a')
+        CRYSTAL
+    end
+
+    it "refuses a bound that is not a trait" do
+      assert_error <<-CRYSTAL, "can't bound T by App::Helpers, it's a module. A bound is a trait, and nothing else"
+        module App
+          module Helpers
+          end
+
+          def self.f(x : T) : Int32 forall T : Helpers
+            1
+          end
+        end
+
+        App.f(1)
+        CRYSTAL
+    end
+  end
 end

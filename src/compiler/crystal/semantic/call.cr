@@ -489,6 +489,12 @@ class Crystal::Call
       check_visibility match
 
       yield_vars, block_arg_type = match_block_arg(match)
+
+      # iyi: checked here rather than during overload matching because a free
+      # variable can be bound by the block's return type — `&block : Ctx -> B`
+      # — which `match_block_arg` has only just resolved.
+      check_free_var_bounds match
+
       use_cache = !block || match.def.block_arg
 
       if block && match.def.block_arg
@@ -1213,6 +1219,37 @@ class Crystal::Call
 
   private def cant_infer_block_return_type
     raise "can't infer block return type, try to cast the block body with `as`. See: https://crystal-lang.org/reference/syntax_and_semantics/as.html#usage-for-when-the-compiler-cant-infer-the-type-of-a-block"
+  end
+
+  # iyi: `def add_route(&block : Ctx -> B) forall B : IntoBody` (SPEC.md II.7
+  # rule 3, II.8).
+  #
+  # A bound on a *method*'s free variable is not the conditional-impl problem
+  # a bound on an impl's parameter is. The method exists either way; all this
+  # asks is whether the type the variable just bound to implements the trait.
+  # So it is one check at the call site, with nothing to defer.
+  #
+  # Reported as an error rather than as a failed match: under R-3 a type's
+  # method set is closed, so "Int32 does not implement IntoBody" is the true
+  # reason, and "no overload matches" would hide it.
+  private def check_free_var_bounds(match)
+    bounds = match.def.free_var_bounds
+    return unless bounds
+
+    bounds.each do |name, bound_node|
+      bound_type = match.context.bound_free_var?(name)
+      next unless bound_type.is_a?(Type)
+
+      trait_type = lookup_node_type(match.context, bound_node)
+
+      unless trait_type.trait?
+        bound_node.raise "can't bound #{name} by #{trait_type}, it's a #{trait_type.type_desc}. A bound is a trait, and nothing else — see SPEC.md II.7"
+      end
+
+      unless bound_type.implements?(trait_type)
+        raise "#{bound_type} does not implement #{trait_type}, required by `#{name}` in `#{match.def.name}`"
+      end
+    end
   end
 
   private def lookup_node_type(context, node)

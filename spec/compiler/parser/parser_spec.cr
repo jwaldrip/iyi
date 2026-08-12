@@ -4194,6 +4194,39 @@ module Crystal
 
       assert_syntax_error "impl Show for Box(T) forall\nend", "expecting token 'CONST'"
       assert_syntax_error "impl Show for Box(T) forall T :\nend", "expecting token 'CONST'"
+
+      it "parses a bound on a def's free variable" do
+        node = parse("def f(x : T) forall T : Show\nend").as(Def)
+        node.free_vars.should eq(["T"])
+        node.free_var_bounds.should eq({"T" => Path.new(["Show"])})
+      end
+
+      it "parses a bound on the return type of a block parameter" do
+        # The shape the Kemal router is written in: the bound is on what the
+        # block returns, not on anything in the parameter list.
+        node = parse("def add_route(path : String, &block : Ctx -> B) : Nil forall B : IntoBody\nend").as(Def)
+        node.free_vars.should eq(["B"])
+        node.free_var_bounds.should eq({"B" => Path.new(["IntoBody"])})
+      end
+
+      it "parses a namespaced bound" do
+        node = parse("def f(x : T) forall T : App::Show::Showable\nend").as(Def)
+        node.free_var_bounds.should eq({"T" => Path.new(["App", "Show", "Showable"])})
+      end
+
+      it "parses a forall list where only some names are bounded" do
+        node = parse("def f(a : A, b : B) forall A : Show, B\nend").as(Def)
+        node.free_vars.should eq(["A", "B"])
+        node.free_var_bounds.should eq({"A" => Path.new(["Show"])})
+      end
+
+      it "leaves an unbounded forall alone" do
+        node = parse("def f(x : T) forall T\nend").as(Def)
+        node.free_vars.should eq(["T"])
+        node.free_var_bounds.should be_nil
+      end
+
+      assert_syntax_error "def f(x : T) forall T :\nend", "expecting token 'CONST'"
     end
   end
 end
