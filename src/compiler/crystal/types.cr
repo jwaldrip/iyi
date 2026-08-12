@@ -39,6 +39,14 @@ module Crystal
       false
     end
 
+    # iyi: whether *name* is part of this type's public surface — what `pub`
+    # marks (R-2). Only an iyi compilation unit has one; a Crystal module never
+    # wrote `pub`, so everything it declares stays reachable exactly as it does
+    # today. Overridden in `ModuleType`.
+    def exported_name?(name : String) : Bool
+      true
+    end
+
     # An opaque id of every type. 0 for Nil, non zero for others, so we can
     # sort types by opaque_id and have Nil in the beginning.
     def opaque_id
@@ -993,6 +1001,12 @@ module Crystal
   # form: every name the module exports.
   record UsingModule, type : Type, names : Array(String)? do
     def exports?(name : String) : Bool
+      # R-2b: a module's *exported* names. Checked before the selective list,
+      # because `using app/greeter::{internal}` naming something unexported is
+      # already an error at the directive — this is the lookup, and by the time
+      # it runs there is nothing left to find.
+      return false unless type.exported_name?(name)
+
       names = @names
       names.nil? || names.includes?(name)
     end
@@ -1027,6 +1041,23 @@ module Crystal
 
     # iyi: see `Type#iyi_unit?`.
     property? iyi_unit = false
+
+    # iyi: the names this module marked `pub` (R-2). Nil until something is
+    # exported, which is every module in every program that does not use iyi.
+    getter exported_names : Set(String)?
+
+    def add_exported_name(name : String)
+      names = @exported_names ||= Set(String).new
+      names << name
+    end
+
+    # iyi: see `Type#exported_name?`.
+    def exported_name?(name : String) : Bool
+      return true unless iyi_unit?
+
+      names = @exported_names
+      names ? names.includes?(name) : false
+    end
 
     def add_def(a_def)
       a_def.owner = self

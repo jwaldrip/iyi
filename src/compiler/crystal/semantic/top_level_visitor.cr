@@ -196,6 +196,8 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       scope.types[name] = type
     end
 
+    record_export scope, name, node.exported?
+
     node.resolved_type = type
 
     process_annotations(annotations) do |annotation_type, ann|
@@ -286,6 +288,16 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       node.raise "can't `using` #{used_type}, it's a #{used_type.type_desc}"
     end
 
+    # R-2b: `using` reaches a module's *exported* names. Reported here rather
+    # than left to fail at the point of use, because the selective form names
+    # what it wants and the author can be told which of those they cannot have.
+    if names = node.names
+      unexported = names.reject { |name| used_type.exported_name?(name) }
+      unless unexported.empty?
+        node.raise "#{used_type} does not export #{unexported.map { |name| "`#{name}`" }.join(", ")}. `using` reaches only what a module marks `pub` — add `pub` to the declaration if it is meant to be part of the module's surface (SPEC.md R-2b)"
+      end
+    end
+
     current_type.add_using_module(used_type, node.names)
 
     false
@@ -334,6 +346,8 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
 
     type.private = true if node.visibility.private?
 
+    record_export scope, name, node.exported?
+
     resolve_supertraits node, type
 
     node.resolved_type = type
@@ -349,6 +363,21 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     end
 
     false
+  end
+
+  # iyi: `pub` — record *name* on the enclosing module's public surface (R-2).
+  #
+  # Only an iyi compilation unit has one. What it marks is the whole of what
+  # another module may reach, because `.iyimod` carries the exports and nothing
+  # else: a name left unmarked has to be unreachable, or the metadata would not
+  # be enough to compile against (SPEC.md IV.2).
+  private def record_export(scope, name : String, exported : Bool)
+    return unless exported
+
+    mod = scope.as?(ModuleType)
+    return unless mod && mod.iyi_unit?
+
+    mod.add_exported_name(name)
   end
 
   # iyi: `trait Ord : Eq` (SPEC.md II.6).
@@ -1020,6 +1049,8 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     end
 
     target_type.add_def node
+
+    record_export current_type, node.name, node.exported?
 
     node.set_type @program.nil
 

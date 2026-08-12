@@ -80,12 +80,15 @@ puts App::Formal.title
 # * Moving the `impl` above into a module that is neither `app/greeter` nor
 #   this one is refused by R-3, naming both modules where it would be allowed.
 #
+# * `using app/greeter::{greeting}` — `greeting` is declared there without
+#   `pub`, so it is not part of the module's surface. The error names it at the
+#   `using`, where the author can see which of the names they asked for they
+#   cannot have. Widening to a bare `using app/greeter` does not reach it
+#   either; it simply is not there to be found (R-2b).
+#
 # ---------------------------------------------------------------------------
 # Not yet implemented
 # ---------------------------------------------------------------------------
-#
-# * `pub` is parsed and ignored, so `using` brings in every name a module
-#   declares rather than only its exported ones.
 #
 # * `module app/greeter` is declared in one notation and referred to in
 #   another (`App::Greeter`). SPEC.md Appendix B #6 is where that gets settled.

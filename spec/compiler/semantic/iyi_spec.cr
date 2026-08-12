@@ -1839,6 +1839,108 @@ describe "Semantic: iyi" do
     end
   end
 
+  # iyi: `pub` — what a module exports (R-2), and what `using` may reach
+  # (R-2b). Only a `module app/greeter` compilation unit has a surface; a
+  # Crystal module never wrote `pub`, so the `using` specs above are unaffected.
+  describe "pub" do
+    it "refuses a selective `using` of a name the module does not export" do
+      assert_error <<-CRYSTAL, "App::Greeter does not export `internal`"
+        module app/greeter
+
+        pub def polite : Int32
+          1
+        end
+
+        def internal : Int32
+          2
+        end
+
+        module Consumer
+          using app/greeter::{internal}
+        end
+        CRYSTAL
+    end
+
+    it "names every unexported name the directive asked for" do
+      assert_error <<-CRYSTAL, "does not export `internal`, `Hidden`"
+        module app/greeter
+
+        def internal : Int32
+          2
+        end
+
+        trait Hidden
+          abstract def go : Int32
+        end
+
+        module Consumer
+          using app/greeter::{internal, Hidden}
+        end
+        CRYSTAL
+    end
+
+    it "allows a selective `using` of exported names" do
+      # `semantic` rather than `assert_type`: a `module app/greeter` header
+      # scopes the whole rest of the source into the module, so the last
+      # expression is inside it and the program's type is the module's, not the
+      # call's. What is being asserted here is that nothing raises.
+      semantic(<<-CRYSTAL)
+        module app/greeter
+
+        pub def polite : Int32
+          1
+        end
+
+        pub trait Greet
+          abstract def greet : Int32
+        end
+
+        module Consumer
+          using app/greeter::{polite, Greet}
+
+          def self.go : Int32
+            polite
+          end
+        end
+
+        Consumer.go
+        CRYSTAL
+    end
+
+    # A bare `using app/greeter` reaching only the exported names cannot be
+    # written here for the same reason: the header scopes the rest of the
+    # source into the module, so any consumer declared after it is *inside*
+    # the module and sees its names lexically — which is right, R-2 is about
+    # what another module reaches. `samples/iyi/modules.iyi` is a separate
+    # file and is where that half is exercised.
+
+    it "leaves a Crystal module's names alone" do
+      # A Crystal module has no `pub` and so no surface to enforce. Were the
+      # rule applied to it, every `using` of one would reach nothing.
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Plain
+            extend self
+
+            def helper : Int32
+              1
+            end
+          end
+
+          module Consumer
+            using app/plain::{helper}
+
+            def self.go : Int32
+              helper
+            end
+          end
+        end
+
+        App::Consumer.go
+        CRYSTAL
+    end
+  end
+
   # iyi: `abstract def self.zero : self` — a trait requiring a class-level
   # method (SPEC.md II.6). Needed for an identity: `Enumerable#sum` has no
   # element to ask when the collection is empty.
