@@ -235,7 +235,7 @@ module Crystal
     # Yields a `Program` instance before compiling.
     def compile_configure_program(source : Source | Array(Source), output_filename : String, & : Program -> Nil) : Result
       source = [source] unless source.is_a?(Array)
-      return prelude_fork_probe(source) if ENV["IYI_FORK_PROBE"]?
+      return prelude_fork_probe(source, output_filename) if ENV["IYI_FORK_PROBE"]?
       program = new_program(source)
       yield program
       node = parse program, source
@@ -278,21 +278,47 @@ module Crystal
     # trips it is the one the appendix already measured at 21% of a cold build
     # and marked for deletion.
     #
-    # Note what the child still does: the top-level pass runs over the user file
-    # only, but every pass after it walks the combined tree, and three of them
-    # walk the whole type graph. That residual is the point of the measurement —
-    # it is the work a `.iyimod` would *not* remove on its own.
-    private def prelude_fork_probe(sources : Array(Source)) : NoReturn
+    # Two models, because they answer different questions:
+    #
+    # * `IYI_FORK_PROBE=1` — the artifact exactly as Part IV describes it. The
+    #   parent runs only the *top-level* passes over the prelude, so the child
+    #   still walks the combined tree in every pass after that, and three passes
+    #   still walk the whole type graph. That residual is the work a `.iyimod`
+    #   would not remove on its own.
+    #
+    # * `IYI_FORK_PROBE=full` — the artifact *plus* prelude-aware passes. The
+    #   parent analyses the prelude completely and the child touches only its
+    #   own nodes. This prices IV.1a's third row: what the later passes would
+    #   have to become for the front end to reach its floor.
+    #
+    #   Its result is a warning, not a target. It reports what a normal compile
+    #   reports on every program tried, and it is 10× faster than the artifact
+    #   model — but the program it produces cannot be code-generated:
+    #
+    #     Missing __crystal_raise_overflow function
+    #
+    #   `main` is demand-driven, so a prelude analysed on its own never
+    #   instantiates the prelude functions that only *user* code reaches. The
+    #   artifact model re-walks the prelude in `main` and picks them up; this one
+    #   skips the walk and loses them. Front-end diagnostics agreeing is
+    #   therefore not evidence of soundness, which is exactly why the probe can
+    #   also codegen. Any real prelude-aware pass has to instantiate these on
+    #   demand — the same problem dictionary-passing solves for generics.
+    private def prelude_fork_probe(sources : Array(Source), output_filename : String) : NoReturn
       {% unless flag?(:without_mt) %}
         STDERR.puts "IYI_FORK_PROBE needs a single-threaded compiler: make crystal sequential_codegen=1"
         exit 1
       {% else %}
         program = new_program(sources)
+        full = ENV["IYI_FORK_PROBE"]? == "full"
 
         prelude_elapsed = Time.instant
         location = Location.new(program.filename, 1, 1)
         prelude_node = program.normalize(Expressions.new([Require.new(prelude).at(location)] of ASTNode))
         prelude_node, prelude_processor = program.top_level_semantic(prelude_node)
+        if full
+          program.semantic_after_top_level(prelude_node, prelude_processor, cleanup: !no_cleanup?)
+        end
         prelude_taken = prelude_elapsed.elapsed
         @progress_tracker.clear
 
@@ -311,12 +337,33 @@ module Crystal
             user_node, processor = program.top_level_semantic(user_node)
             probe_trace "[probe] child: top level done\n"
 
-            # The prelude was processed by the parent's own processor, so its
-            # class-var check has to be threaded through as well, or the child
-            # would skip a check a normal compile performs.
-            combined = Expressions.from([prelude_node, user_node] of ASTNode)
-            program.semantic_after_top_level(combined, processor,
-              cleanup: !no_cleanup?, also_check: prelude_processor)
+            result = if full
+              # Prelude fully analysed in the parent, including its class-var
+              # check, so the child finishes over its own nodes alone.
+              program.semantic_after_top_level(user_node, processor, cleanup: !no_cleanup?)
+            else
+              # The prelude was processed by the parent's own processor, so its
+              # class-var check has to be threaded through as well, or the child
+              # would skip a check a normal compile performs.
+              combined = Expressions.from([prelude_node, user_node] of ASTNode)
+              program.semantic_after_top_level(combined, processor,
+                cleanup: !no_cleanup?, also_check: prelude_processor)
+            end
+            probe_trace "[probe] child: semantic done\n"
+
+            # Proving the child's typed program is *codegen-able* is a stronger
+            # claim than proving it reports the same diagnostics, so
+            # IYI_FORK_CODEGEN=1 goes on to emit object code. Pair it with
+            # `--cross-compile` and expect it to write the object and then hang:
+            # everything after the emit spawns a subprocess, which is the one
+            # thing the forked child cannot do. Kill it and compare the object.
+            #
+            # It is a verification tool, not a timing one — it never completes,
+            # so it stays off by default and out of every measurement.
+            if !@no_codegen && ENV["IYI_FORK_CODEGEN"]?
+              codegen program, result, sources, output_filename
+              probe_trace "[probe] child: codegen done\n"
+            end
           rescue ex : Crystal::CodeError
             # Same decision the driver makes in `Command#run`, so the child's
             # diagnostics are byte-identical to a normal compile's.
