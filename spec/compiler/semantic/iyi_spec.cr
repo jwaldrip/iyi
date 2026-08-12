@@ -642,6 +642,100 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
 
+    it "reports a requirement the impl does not satisfy, at the impl" do
+      # Crystal's abstract-def check reports at the point the type is first
+      # used and names the type. This names the impl and the method.
+      assert_error <<-CRYSTAL, "impl App::Show::Showable for App::Show::Foo is missing a method required by the trait: show"
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports every missing requirement at once" do
+      assert_error <<-CRYSTAL, "is missing methods required by the trait: shout, show"
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+              abstract def shout : Int32
+
+              def loud : Int32
+                shout
+              end
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "does not report a requirement an unused type leaves unimplemented" do
+      # The point of checking at the impl: today this compiles clean, because
+      # Crystal only reports an unimplemented abstract where the type is used.
+      assert_error <<-CRYSTAL, "is missing a method required by the trait: show"
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            struct Unused
+            end
+
+            impl Showable for Unused
+            end
+          end
+        end
+
+        1
+        CRYSTAL
+    end
+
+    it "accepts a requirement satisfied by a default method" do
+      # A trait method with a body is not a requirement, so an impl that
+      # defines only the abstract one is complete.
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+
+              def shown : Int32
+                show
+              end
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+              def show : Int32
+                21
+              end
+            end
+          end
+        end
+
+        App::Show::Foo.new.shown
+        CRYSTAL
+    end
+
     it "keeps a trait usable as a type restriction" do
       # The reason `TraitType` subclasses the module type rather than replacing
       # it: a value typed by the trait still dispatches to the impl.

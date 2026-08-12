@@ -389,6 +389,8 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     include_node = Include.new(node.trait).at(node)
     include_in target_type, include_node, :included, from_impl: true
 
+    check_impl_requirements node, trait_type, target_type
+
     false
   end
 
@@ -548,6 +550,37 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     return if within?(current_type, trait_module) || within?(current_type, target_module)
 
     node.raise "can't implement #{trait_type} for #{target_type} in #{current_type}: an impl must live in the module that defines the trait (#{trait_module}) or the module that defines the type (#{target_module}). This is R-3, the orphan rule, and it is what lets coherence be checked without a global pass — see SPEC.md IV.4"
+  end
+
+  # iyi: `abstract def` in a trait is a requirement the impl has to satisfy
+  # (SPEC.md II.6), and this is what makes it one.
+  #
+  # Crystal's own abstract-def check would eventually complain, but it reports
+  # at the point the type is first *used* and names the type — saying nothing
+  # about which impl was supposed to provide the method, and only if the type
+  # is used at all. Checked here the error lands on the impl and names what is
+  # missing. This is a local check: it needs the trait's declaration and this
+  # impl, never a global pass, which is what R-1 requires of it.
+  #
+  # Satisfied by the method existing on the target, not strictly by this impl
+  # block defining it: a `def show` written on the struct itself lives in the
+  # type's own module, which is exactly where R-3 would let an impl live, so
+  # there is no coherence hole in accepting it.
+  private def check_impl_requirements(node : ImplDef, trait_type, target_type)
+    defs = trait_type.defs
+    return unless defs
+
+    missing = defs.compact_map do |name, list|
+      next unless list.any? &.def.abstract?
+      # Rejecting abstract defs skips the requirement itself, which the target
+      # now inherits through the include this impl just performed.
+      name if target_type.lookup_defs(name).none? { |a_def| !a_def.abstract? }
+    end
+
+    return if missing.empty?
+
+    missing.sort!
+    node.raise "impl #{trait_type} for #{target_type} is missing #{missing.size == 1 ? "a method" : "methods"} required by the trait: #{missing.join(", ")}"
   end
 
   # Whether *type* is *mod*, or is nested somewhere inside it.
