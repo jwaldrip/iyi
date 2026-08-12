@@ -1247,6 +1247,194 @@ describe "Semantic: iyi" do
     end
   end
 
+  # iyi: `trait Ord : Eq` — a trait requiring another trait (SPEC.md II.6).
+  # A requirement, not an inclusion, so a type still acquires `Eq` only by
+  # having an `impl Eq for` it — which is what keeps R-3 the only route in.
+  describe "supertraits" do
+    it "lets a default method call a method the required trait provides" do
+      # `Ord` never declares `eq`. It is the requirement that guarantees the
+      # implementer has one.
+      assert_type(<<-CRYSTAL) { bool }
+        module App
+          module Cmp
+            trait Eq
+              abstract def eq : Bool
+            end
+
+            trait Ord : Eq
+              abstract def key : Int32
+
+              def same : Bool
+                eq
+              end
+            end
+
+            struct N
+              def initialize
+              end
+            end
+
+            impl Eq for N
+              def eq : Bool
+                true
+              end
+            end
+
+            impl Ord for N
+              def key : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Cmp::N.new.same
+        CRYSTAL
+    end
+
+    it "reports a required trait the type does not implement" do
+      assert_error <<-CRYSTAL, "needs an impl of App::Cmp::Eq for App::Cmp::N first"
+        module App
+          module Cmp
+            trait Eq
+              abstract def eq : Bool
+            end
+
+            trait Ord : Eq
+              abstract def key : Int32
+            end
+
+            struct N
+            end
+
+            impl Ord for N
+              def key : Int32
+                1
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "does not let implementing the requiring trait confer the required one" do
+      # The reason this is a requirement rather than an `include`: if `Ord`
+      # included `Eq`, every implementer of `Ord` would satisfy `Eq` with no
+      # impl anywhere, which is the open-class hole R-3 closes.
+      assert_error <<-CRYSTAL, "needs an impl of App::Cmp::Eq for App::Cmp::M first"
+        module App
+          module Cmp
+            trait Eq
+              abstract def eq : Bool
+            end
+
+            trait Ord : Eq
+              abstract def key : Int32
+            end
+
+            struct N
+              def initialize
+              end
+            end
+
+            impl Eq for N
+              def eq : Bool
+                true
+              end
+            end
+
+            impl Ord for N
+              def key : Int32
+                1
+              end
+            end
+
+            struct M
+            end
+
+            impl Ord for M
+              def key : Int32
+                2
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports every required trait that is missing at once" do
+      assert_error <<-CRYSTAL, "needs impls of App::Cmp::Eq, App::Cmp::Show for App::Cmp::N first"
+        module App
+          module Cmp
+            trait Eq
+              abstract def eq : Bool
+            end
+
+            trait Show
+              abstract def show : String
+            end
+
+            trait Ord : Eq, Show
+              abstract def key : Int32
+            end
+
+            struct N
+            end
+
+            impl Ord for N
+              def key : Int32
+                1
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a requirement that is not a trait" do
+      assert_error <<-CRYSTAL, "can't require App::Cmp::Helpers, it's a module. A trait can only require another trait"
+        module App
+          module Cmp
+            module Helpers
+            end
+
+            trait Ord : Helpers
+              abstract def key : Int32
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a trait that requires itself" do
+      assert_error <<-CRYSTAL, "App::Cmp::Ord can't require itself"
+        module App
+          module Cmp
+            trait Ord : Ord
+              abstract def key : Int32
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses the same requirement twice" do
+      assert_error <<-CRYSTAL, "App::Cmp::Ord already requires App::Cmp::Eq"
+        module App
+          module Cmp
+            trait Eq
+              abstract def eq : Bool
+            end
+
+            trait Ord : Eq, Eq
+              abstract def key : Int32
+            end
+          end
+        end
+        CRYSTAL
+    end
+  end
+
   # iyi: `type Elem` — an associated type (SPEC.md II.6). It is an output of the
   # impl, not an input the caller picks, which is why a trait that declares one
   # can be implemented only once for a type.

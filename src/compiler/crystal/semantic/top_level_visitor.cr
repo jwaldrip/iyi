@@ -334,6 +334,8 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
 
     type.private = true if node.visibility.private?
 
+    resolve_supertraits node, type
+
     node.resolved_type = type
 
     attach_doc type, node, annotations
@@ -347,6 +349,34 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     end
 
     false
+  end
+
+  # iyi: `trait Ord : Eq` (SPEC.md II.6).
+  private def resolve_supertraits(node : TraitDef, type)
+    supertraits = node.supertraits
+    return unless supertraits
+    return unless type.is_a?(TraitSupertraits)
+
+    resolved = [] of Type
+    supertraits.each do |supertrait_node|
+      supertrait = lookup_type(supertrait_node)
+
+      unless supertrait.trait?
+        supertrait_node.raise "can't require #{supertrait}, it's a #{supertrait.type_desc}. A trait can only require another trait"
+      end
+
+      if supertrait == type
+        supertrait_node.raise "#{type} can't require itself"
+      end
+
+      if resolved.includes?(supertrait)
+        supertrait_node.raise "#{type} already requires #{supertrait}"
+      end
+
+      resolved << supertrait
+    end
+
+    type.supertraits = resolved
   end
 
   # iyi: `impl Greet for User ... end`, `impl Greet for Box(T) forall T`
@@ -402,6 +432,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     # path open now that a written `include` of a trait is refused.
     assoc_args = check_impl_assoc_types node, trait_type, target_type
     check_single_impl node, trait_type, target_type
+    check_impl_supertraits node, trait_type, target_type
 
     args = (node.trait_args || [] of ASTNode) + (assoc_args || [] of ASTNode)
     trait_name =
@@ -492,6 +523,25 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     end
 
     declared.map { |assoc_name| given[assoc_name] }
+  end
+
+  # iyi: `trait Ord : Eq` — an impl of `Ord` needs an impl of `Eq` for the same
+  # type to exist already (SPEC.md II.6).
+  #
+  # Checked at the impl, like the required methods are, and for the same
+  # reason: it needs this node and the trait's declaration, never a global
+  # pass. The cost is that the impls have to be written in dependency order,
+  # since nothing has run yet that would know about a later one.
+  #
+  # Transitivity comes for free. If `Eq` itself required `Show`, the
+  # `impl Eq for N` this one insists on was checked the same way.
+  private def check_impl_supertraits(node : ImplDef, trait_type, target_type)
+    return unless trait_type.is_a?(TraitSupertraits)
+
+    missing = trait_type.supertraits.reject { |supertrait| target_type.implements?(supertrait) }
+    return if missing.empty?
+
+    node.raise "impl #{trait_type} for #{target_type} needs #{missing.size == 1 ? "an impl" : "impls"} of #{missing.join(", ")} for #{target_type} first: #{trait_type} requires its implementers to implement #{missing.size == 1 ? "it" : "them"} — see SPEC.md II.6"
   end
 
   # iyi: a trait whose only type vars are associated ones can be implemented at

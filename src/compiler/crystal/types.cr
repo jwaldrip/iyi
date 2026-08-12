@@ -1323,7 +1323,21 @@ module Crystal
   # call on a trait-typed receiver dispatches through `remove_indirection`.
   # Rebuilding that would mean reimplementing restriction matching, union
   # dispatch and codegen for no gain — see `Type#trait?`.
+  # iyi: `trait Ord : Eq` — the traits an implementer must already implement
+  # (SPEC.md II.6).
+  #
+  # Held as a requirement rather than as an include: including `Eq` would make
+  # every implementer of `Ord` satisfy `implements?(Eq)` without an
+  # `impl Eq for ...` anywhere, which is the open-class hole R-3 closes. A
+  # default method in `Ord` can still call `Eq`'s methods, because a module's
+  # body resolves against the type it is included in.
+  module TraitSupertraits
+    property supertraits = [] of Type
+  end
+
   class TraitType < NonGenericModuleType
+    include TraitSupertraits
+
     def trait?
       true
     end
@@ -2034,6 +2048,8 @@ module Crystal
   # associated ones are appended after the parameters, so `type_vars` minus
   # `assoc_types` is the parameter list.
   class GenericTraitType < GenericModuleType
+    include TraitSupertraits
+
     # The names declared with `type`, in declaration order.
     property assoc_types = [] of String
 

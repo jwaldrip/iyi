@@ -2015,27 +2015,33 @@ module Crystal
     # visiting the body, because the trait's type has to be created before the
     # body is visited and these are part of what it is.
     property assoc_types : Array(String)?
+    # `trait Ord : Eq` — the traits an implementer must already implement.
+    # A requirement, not an inclusion: `Ord` does not hand its implementers
+    # `Eq`'s methods, it insists they have their own `impl Eq for ...`, which
+    # is what keeps R-3 the only way a type acquires a trait.
+    property supertraits : Array(ASTNode)?
     property name_location : Location?
     property doc : String?
     property visibility = Visibility::Public
     # `pub trait` — exported from the module, so it appears in `.iyimod`.
     property? exported = false
 
-    def initialize(@name, body = nil, @type_vars = nil, @exported = false, @assoc_types = nil)
+    def initialize(@name, body = nil, @type_vars = nil, @exported = false, @assoc_types = nil, @supertraits = nil)
       @body = Expressions.from body
     end
 
     def accept_children(visitor)
+      @supertraits.try &.each &.accept visitor
       @body.accept visitor
     end
 
     def clone_without_location
-      clone = TraitDef.new(@name, @body.clone, @type_vars.clone, @exported, @assoc_types.clone)
+      clone = TraitDef.new(@name, @body.clone, @type_vars.clone, @exported, @assoc_types.clone, @supertraits.clone)
       clone.name_location = name_location
       clone
     end
 
-    def_equals_and_hash @name, @body, @type_vars, @exported, @assoc_types
+    def_equals_and_hash @name, @body, @type_vars, @exported, @assoc_types, @supertraits
   end
 
   # iyi: `type Elem` in a trait, `type Elem = String` in an impl (SPEC.md II.6).

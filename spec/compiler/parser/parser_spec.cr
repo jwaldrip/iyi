@@ -4174,6 +4174,34 @@ module Crystal
         node.type_vars.should be_nil
       end
 
+      # iyi: `trait Ord : Eq` — a trait requiring another trait (SPEC.md II.6).
+      it "parses a supertrait" do
+        node = parse("trait Ord : Eq\nend").as(TraitDef)
+        node.supertraits.should eq([Path.new(["Eq"])] of ASTNode)
+      end
+
+      it "parses several supertraits" do
+        node = parse("trait Ord : Eq, Show\nend").as(TraitDef)
+        node.supertraits.should eq([Path.new(["Eq"]), Path.new(["Show"])] of ASTNode)
+      end
+
+      it "parses a supertrait on a trait with parameters" do
+        node = parse("trait Into(T) : Show\nend").as(TraitDef)
+        node.type_vars.should eq(["T"])
+        node.supertraits.should eq([Path.new(["Show"])] of ASTNode)
+      end
+
+      it "parses a namespaced supertrait" do
+        node = parse("trait Ord : App::Cmp::Eq\nend").as(TraitDef)
+        node.supertraits.should eq([Path.new(["App", "Cmp", "Eq"])] of ASTNode)
+      end
+
+      it "leaves a trait without supertraits alone" do
+        parse("trait Greet\nend").as(TraitDef).supertraits.should be_nil
+      end
+
+      assert_syntax_error "trait Ord :\nend", "expecting token 'CONST'"
+
       # iyi: `type Elem` — an associated type (SPEC.md II.6).
       it "parses an associated type declared by a trait" do
         node = parse("trait Container\ntype Elem\nend").as(TraitDef)

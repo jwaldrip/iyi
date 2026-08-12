@@ -113,8 +113,88 @@ puts Names.new.pair.join(", ")
 puts Counts.new.pair.sum
 
 # ---------------------------------------------------------------------------
+# Bounds and requirements — SPEC.md II.6
+# ---------------------------------------------------------------------------
+#
+# About a quarter of `Enumerable` is valid only for some element types: `max`
+# needs `Comparable`, `sum` needs `Numeric`, `tally` needs `Hashable`. `where`
+# says so. Crystal duck-types these and fails at instantiation naming neither
+# the bound nor the element type.
+
+pub trait Cmp
+  abstract def cmp(other : self) : Int32
+end
+
+# `Ord : Cmp` requires an implementer to implement `Cmp` too. A requirement,
+# not an inclusion: implementing `Ord` does not hand a type `Cmp`'s methods,
+# it insists the type has its own `impl Cmp for` it. Were it an include, every
+# implementer of `Ord` would satisfy `Cmp` with no impl anywhere — the open
+# class hole R-3 exists to close.
+pub trait Ord : Cmp
+  type Item
+
+  abstract def item : Item
+
+  # `Ord` never declares `cmp`; the requirement is what guarantees it is there.
+  def beats(other : self) : Bool
+    cmp(other) > 0
+  end
+
+  # Valid only when the item type is comparable. `Ranked` answers `Item` with
+  # `Score`, which implements `Cmp`, so this one is callable there.
+  def best : Item where Item : Cmp
+    item
+  end
+end
+
+pub struct Score
+  getter n : Int32
+
+  def initialize(@n : Int32)
+  end
+end
+
+impl Cmp for Score
+  def cmp(other : self) : Int32
+    n - other.n
+  end
+end
+
+pub struct Ranked
+  getter n : Int32
+
+  def initialize(@n : Int32)
+  end
+end
+
+impl Cmp for Ranked
+  def cmp(other : self) : Int32
+    n - other.n
+  end
+end
+
+impl Ord for Ranked
+  type Item = Score
+
+  def item : Score
+    Score.new(n)
+  end
+end
+
+puts Ranked.new(2).beats(Ranked.new(1))
+puts Ranked.new(7).best.n
+
+# ---------------------------------------------------------------------------
 # What this sample would report as an error
 # ---------------------------------------------------------------------------
+#
+# * `impl Ord for X` with no `impl Cmp for X` before it — the error names the
+#   required trait. The impls have to be written in dependency order, because
+#   the check runs where the impl is and nothing has looked ahead.
+#
+# * `Ranked.new(1).best` if `Item` were answered with a type that does not
+#   implement `Cmp` — the error names the element type and the bound, which is
+#   the whole reason the bound is written.
 #
 # * A second `impl Container for Names` — a trait with associated types is
 #   implementable only once for a type. That restriction *is* the difference
@@ -151,11 +231,6 @@ puts Counts.new.pair.sum
 # * Under R-4 an impl on a generic type should be compiled once per GC shape
 #   rather than once per instantiation. Today this monomorphises, exactly the
 #   way Crystal does.
-#
-# * A trait cannot require another trait. `def max : Elem where Elem :
-#   Comparable` — about a quarter of `Enumerable` is only valid for some
-#   element types — has no syntax yet, and neither has a trait requiring one of
-#   its implementers.
 #
 # * Two impls of the same *parameterised* trait for one type collide when their
 #   methods take the same arguments: `impl Into(String) for U` and

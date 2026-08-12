@@ -2152,8 +2152,24 @@ module Crystal
       skip_space
 
       type_vars, _ = parse_type_vars
+      skip_space
 
-      check(StatementEnd) if type_vars || !found_space
+      # iyi: `trait Ord : Eq, Show` — the traits an implementer must already
+      # implement (SPEC.md II.6). `:` reads as "bounded by" here exactly as it
+      # does in `forall T : Show` and `where Elem : Cmp`.
+      supertraits = nil
+      if @token.type.op_colon?
+        next_token_skip_space_or_newline
+        supertraits = [] of ASTNode
+        loop do
+          supertraits << parse_path
+          skip_space
+          break unless @token.type.op_comma?
+          next_token_skip_space_or_newline
+        end
+      end
+
+      check(StatementEnd) if type_vars || supertraits || !found_space
       skip_statement_end
 
       body = push_visibility { parse_trait_or_impl_body }
@@ -2166,7 +2182,7 @@ module Crystal
 
       assoc_types = collect_trait_assoc_types(body)
 
-      trait_def = TraitDef.new name, body, type_vars, exported, assoc_types
+      trait_def = TraitDef.new name, body, type_vars, exported, assoc_types, supertraits
       trait_def.doc = doc
       trait_def.name_location = name_location
       trait_def.end_location = end_location

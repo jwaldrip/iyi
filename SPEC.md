@@ -305,6 +305,37 @@ duck-types these and fails at instantiation with a confusing message; a closed
 method set forces the bound to be written. More work for the library author, a
 much better error for the caller.
 
+**Built.** `where` bounds a name the method did not introduce, which is what
+separates it from `forall`: `forall` introduces a name and may bound it, `where`
+bounds an associated type the enclosing trait already introduced. The check runs
+where the call is matched, because by then the associated type is a type, and it
+reports `Int32 does not implement Comparable, required by `where Elem :
+Comparable` in `max``. The unbounded methods of the same trait stay available
+whatever the element type is; only the bounded one is withheld.
+
+**3a. A trait needs to require another trait.** `Comparable` reaching 21 more
+methods is only sound if an implementer of the trait that uses them has them.
+
+```
+trait Ord : Cmp
+  def beats(other : self) : Bool
+    cmp(other) > 0        # Ord never declared `cmp`
+  end
+end
+```
+
+**A requirement, not an inclusion.** Were `Ord` to include `Cmp`, every
+implementer of `Ord` would satisfy `Cmp` with no `impl Cmp for` it anywhere —
+the open-class hole R-3 exists to close. So `impl Ord for X` is refused unless
+an `impl Cmp for X` already exists, and `Ord`'s default bodies still reach
+`cmp` because a module's body resolves against the type it is included in.
+Transitivity is free: if `Cmp` required `Show`, the `impl Cmp for X` this one
+insists on was checked the same way.
+
+The price is that impls have to be written in dependency order. The check needs
+this impl and the trait's declaration and nothing else, which is what R-1 asks
+of it, and nothing has run that would know about an impl written later.
+
 **4. The conflict: where default bodies are compiled.**
 
 R-1 says compiling a module reads only export metadata, never bodies. But a

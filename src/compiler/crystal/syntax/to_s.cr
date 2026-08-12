@@ -457,6 +457,13 @@ module Crystal
       if type_vars = node.type_vars
         @str << '(' << type_vars.join(", ") << ')'
       end
+      if supertraits = node.supertraits
+        @str << " : "
+        supertraits.each_with_index do |supertrait, i|
+          @str << ", " if i > 0
+          supertrait.accept self
+        end
+      end
       newline
       accept_with_indent(node.body)
       append_indent

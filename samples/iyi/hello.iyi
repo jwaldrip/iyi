@@ -128,11 +128,6 @@ puts announce(Robot.new(9))
 #   checked where the type is instantiated rather than where the impl is
 #   written. A different mechanism, and the harder of the two.
 #
-# * A trait cannot require another trait — neither `where Elem : Comparable`
-#   on a default method, nor a trait requiring one of its implementers. About
-#   a quarter of `Enumerable` needs the first. Associated types themselves
-#   work; `generics.iyi` shows them.
-#
 # * `pub` is parsed and ignored. Nothing is actually private to a module yet,
 #   so `using` brings in every name a module declares rather than only its
 #   exported ones.
