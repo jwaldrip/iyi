@@ -550,6 +550,98 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
 
+    it "refuses to `using` a trait" do
+      assert_error <<-CRYSTAL, "can't `using` App::Show::Showable, it's a trait"
+        module App
+          module Show
+            trait Showable
+              abstract def show
+            end
+          end
+        end
+
+        module Consumer
+          using app/show/showable
+        end
+        CRYSTAL
+    end
+
+    it "still lets the selective form name a trait" do
+      # `using app/show::{Showable}` uses the *module* and selects a type name
+      # from it, which is II.3 working as specified — only naming the trait as
+      # the used module itself is refused.
+      assert_type(<<-CRYSTAL) { types["App"].types["Show"].types["Foo"] }
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+              def show : Int32
+                1
+              end
+            end
+          end
+        end
+
+        module Consumer
+          using app/show::{Showable, Foo}
+
+          def self.build : Showable
+            Foo.new
+          end
+        end
+
+        Consumer.build
+        CRYSTAL
+    end
+
+    it "refuses to implement a module" do
+      assert_error <<-CRYSTAL, "can't implement App::Greeter, it's a module. Only a trait can be implemented"
+        module App
+          module Greeter
+          end
+
+          struct Foo
+          end
+
+          impl Greeter for Foo
+            def greet
+              1
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses to implement a trait for a trait" do
+      # A blanket impl in disguise: it would give every implementer of one
+      # trait a second one, from a module that has heard of neither.
+      assert_error <<-CRYSTAL, "it's a trait"
+        module App
+          module Show
+            trait Showable
+              abstract def show
+            end
+
+            trait Loud
+              abstract def shout
+            end
+
+            impl Showable for Loud
+              def show
+                1
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
     it "keeps a trait usable as a type restriction" do
       # The reason `TraitType` subclasses the module type rather than replacing
       # it: a value typed by the trait still dispatches to the impl.

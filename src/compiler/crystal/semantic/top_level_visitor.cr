@@ -274,7 +274,14 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     used_type = lookup_type(path)
 
     # `is_a?(ModuleType)` would not do: classes and structs are `ModuleType`s
-    # too, and `using` a struct is meaningless.
+    # too, and `using` a struct is meaningless. Nor would `module?` alone: a
+    # trait is a module type, but it exports no names to bring into scope —
+    # its methods are reached through the receiver's impl, which II.3 rule 1
+    # keeps entirely out of `using`'s namespace.
+    if used_type.trait?
+      node.raise "can't `using` #{used_type}, it's a trait. Trait methods are resolved from the receiver's type, never from a `using` — see SPEC.md II.3"
+    end
+
     unless used_type.is_a?(ModuleType) && used_type.module?
       node.raise "can't `using` #{used_type}, it's a #{used_type.type_desc}"
     end
@@ -339,6 +346,13 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
 
     annotations = read_annotations
 
+    # What follows `impl` has to be a trait. A module is not implementable:
+    # it has no requirements to satisfy, and R-3 has nothing to check for it.
+    trait_type = lookup_type(node.trait)
+    unless trait_type.trait?
+      node.trait.raise "can't implement #{trait_type}, it's a #{trait_type.type_desc}. Only a trait can be implemented"
+    end
+
     target_type =
       if type_vars = node.type_vars
         resolve_generic_impl_target(node, type_vars)
@@ -347,11 +361,16 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
         lookup_type(node.target)
       end
 
+    # Checked before `is_a?(ModuleType)`, which a trait would satisfy.
+    if target_type.trait?
+      node.target.raise "can't implement #{trait_type} for #{target_type}, it's a trait. A trait is implemented for a type, and a trait is not one — to give every implementer of #{target_type} a default #{trait_type}, iyi has no blanket impls (SPEC.md II.7)"
+    end
+
     unless target_type.is_a?(ModuleType)
       node.target.raise "can't implement a trait for #{target_type}, it's a #{target_type.type_desc}"
     end
 
-    check_impl_coherence node, lookup_type(node.trait), target_type
+    check_impl_coherence node, trait_type, target_type
 
     node.resolved_type = target_type
 
