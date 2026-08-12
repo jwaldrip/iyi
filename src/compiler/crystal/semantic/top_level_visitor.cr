@@ -312,8 +312,20 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       end
       type = type.as(ModuleType)
     else
-      if type_vars = node.type_vars
-        type = GenericTraitType.new @program, scope, name, type_vars
+      type_vars = node.type_vars
+      assoc_types = node.assoc_types
+
+      if type_vars && assoc_types
+        clashing = assoc_types & type_vars
+        unless clashing.empty?
+          node.raise "#{name} declares #{clashing.sort.join(", ")} both as a parameter and as an associated type"
+        end
+      end
+
+      if type_vars || assoc_types
+        generic = GenericTraitType.new @program, scope, name, (type_vars || [] of String) + (assoc_types || [] of String)
+        generic.assoc_types = assoc_types || [] of String
+        type = generic
       else
         type = TraitType.new @program, scope, name
       end
@@ -388,17 +400,31 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     # Record that the target implements the trait. Reuses `include`, which is
     # why `TraitType` is a module type — and `from_impl` is what keeps this
     # path open now that a written `include` of a trait is refused.
+    assoc_args = check_impl_assoc_types node, trait_type, target_type
+    check_single_impl node, trait_type, target_type
+
+    args = (node.trait_args || [] of ASTNode) + (assoc_args || [] of ASTNode)
     trait_name =
-      if trait_args = node.trait_args
-        Generic.new(node.trait, trait_args).at(node.trait)
-      else
+      if args.empty?
         node.trait
+      else
+        Generic.new(node.trait, args).at(node.trait)
       end
     include_node = Include.new(trait_name).at(node)
     include_in target_type, include_node, :included, from_impl: true
 
     check_impl_requirements node, trait_type, target_type
 
+    false
+  end
+
+  # iyi: `type Elem` outside a trait or an impl body. The parser marks the ones
+  # that sit directly in such a body; anything else reaching here is nested
+  # inside a type declared in that body, where it means nothing.
+  def visit(node : AssocTypeDecl)
+    unless node.in_type_body?
+      node.raise "an associated type can only be declared directly in a trait or an impl body"
+    end
     false
   end
 
@@ -419,15 +445,73 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       return
     end
 
-    type_vars = trait_type.type_vars
+    # An associated type is not a parameter: it is answered in the impl's body,
+    # not written here. So the arity checked is the parameter count.
+    params = trait_type.is_a?(GenericTraitType) ? trait_type.trait_params : trait_type.type_vars
+
+    if params.empty?
+      if trait_args
+        node.trait.raise "can't implement #{trait_type} with type arguments, it has no parameters"
+      end
+      return
+    end
 
     unless trait_args
-      node.trait.raise "type arguments must be specified when implementing #{trait_type}, one for each of #{type_vars.join(", ")}"
+      node.trait.raise "type arguments must be specified when implementing #{trait_type}, one for each of #{params.join(", ")}"
     end
 
-    if trait_args.size != type_vars.size
-      node.trait.raise "wrong number of type arguments for #{trait_type} (given #{trait_args.size}, expected #{type_vars.size})"
+    if trait_args.size != params.size
+      node.trait.raise "wrong number of type arguments for #{trait_type} (given #{trait_args.size}, expected #{params.size})"
     end
+  end
+
+  # iyi: `type Elem = String` in an impl — the answer to an associated type the
+  # trait declared (SPEC.md II.6). Returns the answers in declaration order,
+  # which is the order they are appended to the trait's type vars.
+  private def check_impl_assoc_types(node : ImplDef, trait_type, target_type) : Array(ASTNode)?
+    declared = trait_type.is_a?(GenericTraitType) ? trait_type.assoc_types : [] of String
+    given = node.assoc_types
+
+    if declared.empty?
+      if given
+        node.raise "#{trait_type} declares no associated types, so this impl has nothing to answer with `type #{given.first_key}`"
+      end
+      return nil
+    end
+
+    given ||= {} of String => ASTNode
+
+    unknown = given.keys.reject { |assoc_name| declared.includes?(assoc_name) }
+    unless unknown.empty?
+      node.raise "#{trait_type} declares no associated type named #{unknown.sort.join(", ")}. It declares: #{declared.join(", ")}"
+    end
+
+    missing = declared.reject { |assoc_name| given.has_key?(assoc_name) }
+    unless missing.empty?
+      node.raise "impl #{trait_type} for #{target_type} does not answer #{missing.size == 1 ? "an associated type" : "associated types"} the trait declares: #{missing.join(", ")}"
+    end
+
+    declared.map { |assoc_name| given[assoc_name] }
+  end
+
+  # iyi: a trait whose only type vars are associated ones can be implemented at
+  # most once for a type (SPEC.md II.6).
+  #
+  # This is the whole difference between an associated type and a parameter. If
+  # a second impl could answer `Elem` differently, `arr.map` would be ambiguous
+  # about which impl it meant — which is exactly what making the element type a
+  # parameter would have cost. Where the trait does have parameters, several
+  # impls are the point, so they are left alone.
+  private def check_single_impl(node : ImplDef, trait_type, target_type)
+    return unless trait_type.is_a?(GenericTraitType)
+    return if trait_type.assoc_types.empty?
+    return unless trait_type.trait_params.empty?
+
+    return unless target_type.ancestors.any? do |ancestor|
+                    ancestor.is_a?(GenericModuleInstanceType) && ancestor.generic_type == trait_type
+                  end
+
+    node.raise "#{target_type} already implements #{trait_type}, and a trait with associated types can be implemented only once for a type: #{trait_type.assoc_types.join(", ")} #{trait_type.assoc_types.size == 1 ? "is an output" : "are outputs"} of the impl, so a second answer would make a call on #{target_type} ambiguous — see SPEC.md II.6"
   end
 
   # iyi: `impl Greet for Box(T)` and `impl Greet for Box(Int32)`, both without

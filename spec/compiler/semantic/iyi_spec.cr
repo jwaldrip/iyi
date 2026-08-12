@@ -1247,6 +1247,244 @@ describe "Semantic: iyi" do
     end
   end
 
+  # iyi: `type Elem` — an associated type (SPEC.md II.6). It is an output of the
+  # impl, not an input the caller picks, which is why a trait that declares one
+  # can be implemented only once for a type.
+  describe "associated types" do
+    it "resolves the trait's own signatures through the impl's answer" do
+      assert_type(<<-CRYSTAL) { string }
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+
+              def describe : Elem
+                first
+              end
+            end
+
+            struct Names
+              def initialize
+              end
+            end
+
+            impl Container for Names
+              type Elem = String
+
+              def first : String
+                "ada"
+              end
+            end
+          end
+        end
+
+        App::Coll::Names.new.describe
+        CRYSTAL
+    end
+
+    it "lets two types answer it differently" do
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+            end
+
+            struct Names
+              def initialize
+              end
+            end
+
+            impl Container for Names
+              type Elem = String
+
+              def first : String
+                "ada"
+              end
+            end
+
+            struct Counts
+              def initialize
+              end
+            end
+
+            impl Container for Counts
+              type Elem = Int32
+
+              def first : Int32
+                42
+              end
+            end
+          end
+        end
+
+        App::Coll::Counts.new.first
+        CRYSTAL
+    end
+
+    it "checks the impl's signature against its own answer" do
+      assert_error <<-CRYSTAL, "must return String"
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+            end
+
+            struct Names
+              def initialize
+              end
+            end
+
+            impl Container for Names
+              type Elem = String
+
+              def first : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Coll::Names.new.first
+        CRYSTAL
+    end
+
+    it "reports an associated type the impl does not answer" do
+      assert_error <<-CRYSTAL, "impl App::Coll::Container for App::Coll::Names does not answer an associated type the trait declares: Elem"
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+            end
+
+            struct Names
+            end
+
+            impl Container for Names
+              def first : String
+                "ada"
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports an answer the trait never asked for" do
+      assert_error <<-CRYSTAL, "App::Coll::Container declares no associated type named Key. It declares: Elem"
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+            end
+
+            struct Names
+            end
+
+            impl Container for Names
+              type Elem = String
+              type Key = Int32
+
+              def first : String
+                "ada"
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a second impl of the same trait for one type" do
+      # The whole difference from a parameter: a second answer would make a
+      # call on the type ambiguous about which impl it meant.
+      assert_error <<-CRYSTAL, "already implements App::Coll::Container, and a trait with associated types can be implemented only once for a type"
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+            end
+
+            struct Names
+              def initialize
+              end
+            end
+
+            impl Container for Names
+              type Elem = String
+
+              def first : String
+                "ada"
+              end
+            end
+
+            impl Container for Names
+              type Elem = Int32
+
+              def first : Int32
+                1
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses one declared anywhere but a trait or an impl body" do
+      assert_error <<-CRYSTAL, "an associated type can only be declared directly in a trait or an impl body"
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+            end
+
+            struct Names
+            end
+
+            impl Container for Names
+              type Elem = String
+
+              struct Inner
+                type Nested = Int32
+              end
+
+              def first : String
+                "ada"
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a name that is both a parameter and an associated type" do
+      assert_error <<-CRYSTAL, "declares T both as a parameter and as an associated type"
+        module App
+          module Coll
+            trait Both(T)
+              type T
+
+              abstract def go : T
+            end
+          end
+        end
+        CRYSTAL
+    end
+  end
+
   # iyi: `impl Into(String) for User` — a trait with parameters (SPEC.md II.6).
   # Parameters are the form to reach for where several impls for one type are
   # the point; associated types are the form for a single answer per type.

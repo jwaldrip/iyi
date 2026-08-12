@@ -918,6 +918,13 @@ module Crystal
       false
     end
 
+    # iyi: `type Elem` is answered at declaration time; nothing of it survives
+    # into the code.
+    def visit(node : AssocTypeDecl)
+      @last = llvm_nil
+      false
+    end
+
     def visit(node : LibDef)
       @in_lib = true
       accept node.body

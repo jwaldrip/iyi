@@ -249,6 +249,13 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     false
   end
 
+  # iyi: the trait and impl visitors above already read what this declares, so
+  # by now it carries nothing left to do.
+  def visit(node : AssocTypeDecl)
+    node.set_type(@program.nil)
+    false
+  end
+
   def visit(node : AnnotationDef)
     check_outside_exp node, "declare annotation"
     node.set_type(@program.nil)
@@ -395,7 +402,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
          FileNode, TypeDeclaration, Require, AnnotationDef,
          # iyi declarations — like the above, these declare rather than compute,
          # so they must not count as being inside an expression.
-         TraitDef, ImplDef, ModuleHeader, ImportDecl, UsingDecl
+         TraitDef, ImplDef, ModuleHeader, ImportDecl, UsingDecl, AssocTypeDecl
       false
     else
       true

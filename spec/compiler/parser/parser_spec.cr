@@ -4174,6 +4174,40 @@ module Crystal
         node.type_vars.should be_nil
       end
 
+      # iyi: `type Elem` — an associated type (SPEC.md II.6).
+      it "parses an associated type declared by a trait" do
+        node = parse("trait Container\ntype Elem\nend").as(TraitDef)
+        node.assoc_types.should eq(["Elem"])
+        decl = node.body.as(AssocTypeDecl)
+        decl.name.should eq("Elem")
+        decl.value.should be_nil
+      end
+
+      it "parses the answer an impl gives" do
+        node = parse("impl Container for N\ntype Elem = String\nend").as(ImplDef)
+        node.assoc_types.should eq({"Elem" => Path.new(["String"])} of String => ASTNode)
+      end
+
+      it "leaves a trait and an impl without associated types alone" do
+        parse("trait Greet\nend").as(TraitDef).assoc_types.should be_nil
+        parse("impl Greet for User\nend").as(ImplDef).assoc_types.should be_nil
+      end
+
+      it "keeps `type` a method call outside a trait or an impl" do
+        # Crystal has no statement-level `type` outside `lib`, so this has
+        # always been a call and stays one.
+        parse("type Elem").should be_a(Call)
+      end
+
+      assert_syntax_error "trait Container\ntype Elem = String\nend",
+        "a trait declares an associated type, it does not answer it"
+      assert_syntax_error "impl Container for N\ntype Elem\nend",
+        "an impl has to answer the associated type Elem"
+      assert_syntax_error "impl Container for N\ntype Elem = String\ntype Elem = Int32\nend",
+        "duplicate associated type Elem"
+      assert_syntax_error "trait Container\ntype Elem\ntype Elem\nend",
+        "duplicate associated type Elem"
+
       it "parses an impl of a trait with parameters" do
         node = parse("impl Into(String) for User\nend").as(ImplDef)
         node.trait.should eq(Path.new(["Into"]))

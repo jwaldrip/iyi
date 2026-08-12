@@ -2023,8 +2023,44 @@ module Crystal
     end
   end
 
-  # iyi: `trait Into(T) ... end` — a trait with parameters (SPEC.md II.6).
+  # iyi: `trait Into(T) ... end` — a trait with parameters, and/or
+  # `type Elem` — a trait with associated types (SPEC.md II.6).
+  #
+  # Both are carried as type vars, because what a trait's own signatures and
+  # default bodies need from them is identical and Crystal already resolves a
+  # type var through an include. They differ in where the argument comes from:
+  # a parameter is written at the impl's `impl Into(String) for ...`, an
+  # associated type is answered in its body with `type Elem = String`. The
+  # associated ones are appended after the parameters, so `type_vars` minus
+  # `assoc_types` is the parameter list.
   class GenericTraitType < GenericModuleType
+    # The names declared with `type`, in declaration order.
+    property assoc_types = [] of String
+
+    # The parameters, which are everything the impl writes in parentheses.
+    def trait_params : Array(String)
+      type_vars[0, type_vars.size - assoc_types.size]
+    end
+
+    # Only the parameters are printed. An associated type is a type var by
+    # implementation and not by design, and naming it in every error message
+    # would tell the reader to write something they must not write.
+    def to_s_with_options(io : IO, skip_union_parens : Bool = false, generic_args : Bool = true, codegen : Bool = false) : Nil
+      params = trait_params
+      if generic_args && !params.empty?
+        super(io, skip_union_parens, generic_args: false, codegen: codegen)
+        io << '('
+        params.each_with_index do |param, i|
+          io << ", " if i > 0
+          io << '*' if i == splat_index
+          param.to_s(io)
+        end
+        io << ')'
+      else
+        super(io, skip_union_parens, generic_args: false, codegen: codegen)
+      end
+    end
+
     def trait?
       true
     end

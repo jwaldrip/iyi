@@ -268,6 +268,12 @@ module Crystal
       node
     end
 
+    # The value is a type, not an expression, so there is nothing here to
+    # rewrite either.
+    def transform(node : AssocTypeDecl)
+      node
+    end
+
     def transform(node : ImportDecl)
       node
     end

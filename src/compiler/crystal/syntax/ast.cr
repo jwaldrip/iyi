@@ -2005,13 +2005,18 @@ module Crystal
     property name : Path
     property body : ASTNode
     property type_vars : Array(String)?
+    # `type Elem` — the associated types this trait declares, in the order
+    # they are written. Collected by the parser rather than found while
+    # visiting the body, because the trait's type has to be created before the
+    # body is visited and these are part of what it is.
+    property assoc_types : Array(String)?
     property name_location : Location?
     property doc : String?
     property visibility = Visibility::Public
     # `pub trait` — exported from the module, so it appears in `.iyimod`.
     property? exported = false
 
-    def initialize(@name, body = nil, @type_vars = nil, @exported = false)
+    def initialize(@name, body = nil, @type_vars = nil, @exported = false, @assoc_types = nil)
       @body = Expressions.from body
     end
 
@@ -2020,12 +2025,48 @@ module Crystal
     end
 
     def clone_without_location
-      clone = TraitDef.new(@name, @body.clone, @type_vars.clone, @exported)
+      clone = TraitDef.new(@name, @body.clone, @type_vars.clone, @exported, @assoc_types.clone)
       clone.name_location = name_location
       clone
     end
 
-    def_equals_and_hash @name, @body, @type_vars, @exported
+    def_equals_and_hash @name, @body, @type_vars, @exported, @assoc_types
+  end
+
+  # iyi: `type Elem` in a trait, `type Elem = String` in an impl (SPEC.md II.6).
+  #
+  # An associated type is an *output* of the impl, not an input the caller
+  # picks: a collection iterates one way, so `arr.map` must not have to say
+  # which element type it means. That is the whole difference from a trait
+  # parameter, and it is why a trait with associated types can be implemented
+  # only once for a given type.
+  class AssocTypeDecl < ASTNode
+    property name : String
+    # The type the impl supplies. `nil` in a trait, which declares the name
+    # and requires each impl to answer it.
+    property value : ASTNode?
+    # Set by the parser on the declarations that sit directly in a trait or
+    # impl body — the only place one means anything. Anything else carrying
+    # this node is rejected in the semantic phase.
+    property? in_type_body = false
+    property name_location : Location?
+    property doc : String?
+
+    def initialize(@name, @value = nil)
+    end
+
+    def accept_children(visitor)
+      @value.try &.accept visitor
+    end
+
+    def clone_without_location
+      clone = AssocTypeDecl.new(@name, @value.clone)
+      clone.in_type_body = in_type_body?
+      clone.name_location = name_location
+      clone
+    end
+
+    def_equals_and_hash @name, @value
   end
 
   # iyi: `impl Greet for User ... end`, `impl Greet for Box(T) forall T`
@@ -2049,11 +2090,14 @@ module Crystal
     property type_vars : Array(String)?
     # `forall T : Show` — the trait each parameter is bounded by, if any.
     property type_var_bounds : Hash(String, ASTNode)?
+    # `type Elem = String` — the answer this impl gives to each associated
+    # type the trait declares.
+    property assoc_types : Hash(String, ASTNode)?
     property name_location : Location?
     property doc : String?
     property visibility = Visibility::Public
 
-    def initialize(@trait, @target, body = nil, @type_vars = nil, @type_var_bounds = nil, @trait_args = nil)
+    def initialize(@trait, @target, body = nil, @type_vars = nil, @type_var_bounds = nil, @trait_args = nil, @assoc_types = nil)
       @body = Expressions.from body
     end
 
@@ -2065,12 +2109,12 @@ module Crystal
     end
 
     def clone_without_location
-      clone = ImplDef.new(@trait.clone, @target.clone, @body.clone, @type_vars.clone, @type_var_bounds.clone, @trait_args.clone)
+      clone = ImplDef.new(@trait.clone, @target.clone, @body.clone, @type_vars.clone, @type_var_bounds.clone, @trait_args.clone, @assoc_types.clone)
       clone.name_location = name_location
       clone
     end
 
-    def_equals_and_hash @trait, @trait_args, @target, @body, @type_vars, @type_var_bounds
+    def_equals_and_hash @trait, @trait_args, @target, @body, @type_vars, @type_var_bounds, @assoc_types
   end
 
   # iyi: `module app/user` — the compilation-unit header (R-1).

@@ -255,6 +255,34 @@ it means. But parameters are still needed where several impls are the whole
 point (`Into(T)`, `From(T)`). **Both forms exist.** Draft 0 assumed only
 parameters.
 
+**Both are built.** An impl answers an associated type in its body, and names a
+trait's parameters where it names the trait:
+
+```
+impl Container for Names          impl Into(String) for User
+  type Elem = String                def into : String
+  def first : String                  "u"
+    "ada"                           end
+  end                             end
+end
+```
+
+Both are carried as type vars of the trait — what a trait's signatures and
+default bodies need from them is identical, and an included generic module is
+already how Crystal resolves such a name. They differ in exactly one checked
+rule, which is the whole reason the distinction exists: **a trait that declares
+associated types can be implemented only once for a given type.** A second impl
+answering `Elem` differently would make a call on that type ambiguous, which is
+the cost that ruled out making the element type a parameter. A trait with
+parameters has no such rule, because several impls are the point of it.
+
+One gap the implementation found, and it is on the parameter side: two impls of
+the same parameterised trait for one type **collide when their methods take the
+same arguments**. `impl Into(String) for U` and `impl Into(Int32) for U` both
+define `into`, and the second silently wins. That is the shape parameters exist
+for, so it needs an answer; Rust's is to select the impl from the type the call
+site expects, which this design does not yet have anywhere else.
+
 **2. Default methods need their own type parameters.**
 
 ```

@@ -464,6 +464,15 @@ module Crystal
       false
     end
 
+    def visit(node : AssocTypeDecl)
+      @str << "type " << node.name
+      if value = node.value
+        @str << " = "
+        value.accept self
+      end
+      false
+    end
+
     def visit(node : ImplDef)
       @str << "impl "
       node.trait.accept self

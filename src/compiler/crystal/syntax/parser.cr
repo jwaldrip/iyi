@@ -46,6 +46,10 @@ module Crystal
       @in_macro_expression = false
       @stop_on_yield = 0
       @inside_c_struct = false
+      # iyi: true while parsing the immediate body of a trait or an impl, which
+      # is the only place `type Elem` declares an associated type rather than
+      # calling a method named `type`.
+      @inside_trait_or_impl = false
       @wants_doc = false
       @doc_enabled = false
       @no_type_declaration = 0
@@ -1259,6 +1263,19 @@ module Crystal
             check_type_declaration do
               check_not_inside_def("can't export") { parse_pub }
             end
+          when .type?
+            # Outside a trait or an impl this stays what it has always been: a
+            # call to a method named `type`. Crystal's own `type X = Y` has its
+            # own parse loop inside `lib`, and never reaches here.
+            if @inside_trait_or_impl
+              check_type_declaration do
+                check_not_inside_def("can't declare an associated type") do
+                  parse_assoc_type
+                end
+              end
+            else
+              set_visibility parse_var_or_call
+            end
           when .enum?
             check_type_declaration do
               check_not_inside_def("can't define enum") do
@@ -2031,6 +2048,95 @@ module Crystal
       node
     end
 
+    # iyi: `type Elem` in a trait, `type Elem = String` in an impl (SPEC.md II.6).
+    def parse_assoc_type
+      doc = @token.doc
+      next_token_skip_space_or_newline
+
+      name_location = @token.location
+      name = check_const
+      next_token_skip_space
+
+      value = nil
+      if @token.type.op_eq?
+        next_token_skip_space_or_newline
+        value = parse_bare_proc_type
+        skip_space
+      end
+
+      decl = AssocTypeDecl.new(name, value)
+      decl.name_location = name_location
+      decl.doc = doc
+      decl
+    end
+
+    # The body of a trait or an impl, parsed with `type` meaning an associated
+    # type declaration.
+    private def parse_trait_or_impl_body
+      old = @inside_trait_or_impl
+      @inside_trait_or_impl = true
+      body = parse_expressions
+      @inside_trait_or_impl = old
+      body
+    end
+
+    # iyi: the associated types a trait declares (SPEC.md II.6).
+    #
+    # Collected here rather than found while visiting, because the trait's type
+    # is created before its body is visited and these are part of what it is.
+    private def collect_trait_assoc_types(body) : Array(String)?
+      names = nil
+      each_assoc_type_decl(body) do |decl, location|
+        if decl.value
+          raise "a trait declares an associated type, it does not answer it: write `type #{decl.name}`, and let each impl say what it is", location
+        end
+        names ||= [] of String
+        if names.includes?(decl.name)
+          raise "duplicate associated type #{decl.name}", location
+        end
+        names << decl.name
+      end
+      names
+    end
+
+    # iyi: the answers an impl gives (SPEC.md II.6).
+    private def collect_impl_assoc_types(body) : Hash(String, ASTNode)?
+      types = nil
+      each_assoc_type_decl(body) do |decl, location|
+        value = decl.value
+        unless value
+          raise "an impl has to answer the associated type #{decl.name}: write `type #{decl.name} = ...`", location
+        end
+        types ||= {} of String => ASTNode
+        if types.has_key?(decl.name)
+          raise "duplicate associated type #{decl.name}", location
+        end
+        types[decl.name] = value
+      end
+      types
+    end
+
+    # Only the declarations sitting directly in the body count. One nested
+    # inside a type declared in that body is marked by nobody, and the semantic
+    # phase rejects it there.
+    private def each_assoc_type_decl(body, & : AssocTypeDecl, Location ->)
+      case body
+      when AssocTypeDecl
+        body.in_type_body = true
+        yield body, assoc_type_location(body)
+      when Expressions
+        body.expressions.each do |exp|
+          next unless exp.is_a?(AssocTypeDecl)
+          exp.in_type_body = true
+          yield exp, assoc_type_location(exp)
+        end
+      end
+    end
+
+    private def assoc_type_location(decl : AssocTypeDecl) : Location
+      decl.name_location || decl.location || @token.location
+    end
+
     # iyi: `trait Greet ... end` (SPEC.md R-3, II.6)
     def parse_trait_def(exported = false)
       @type_nest += 1
@@ -2050,7 +2156,7 @@ module Crystal
       check(StatementEnd) if type_vars || !found_space
       skip_statement_end
 
-      body = push_visibility { parse_expressions }
+      body = push_visibility { parse_trait_or_impl_body }
 
       end_location = token_end_location
       check_ident :end
@@ -2058,7 +2164,9 @@ module Crystal
 
       @type_nest -= 1
 
-      trait_def = TraitDef.new name, body, type_vars, exported
+      assoc_types = collect_trait_assoc_types(body)
+
+      trait_def = TraitDef.new name, body, type_vars, exported, assoc_types
       trait_def.doc = doc
       trait_def.name_location = name_location
       trait_def.end_location = end_location
@@ -2134,7 +2242,7 @@ module Crystal
 
       skip_statement_end
 
-      body = push_visibility { parse_expressions }
+      body = push_visibility { parse_trait_or_impl_body }
 
       end_location = token_end_location
       check_ident :end
@@ -2142,7 +2250,9 @@ module Crystal
 
       @type_nest -= 1
 
-      impl_def = ImplDef.new trait_path, target, body, type_vars, type_var_bounds, trait_args
+      assoc_types = collect_impl_assoc_types(body)
+
+      impl_def = ImplDef.new trait_path, target, body, type_vars, type_var_bounds, trait_args, assoc_types
       impl_def.doc = doc
       impl_def.name_location = name_location
       impl_def.end_location = end_location
