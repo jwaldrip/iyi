@@ -270,13 +270,18 @@ module Crystal
     # linking are LLVM's and the linker's problem, and `.iyimod`'s object-code
     # section addresses them separately.
     #
-    # Known limit: a program whose semantic analysis performs a `{{ run }}`
-    # hangs, because the forked child cannot drive a subprocess through the
-    # event loop it inherited. Set IYI_FORK_TRACE=1 to see where it stops — it
-    # will be inside the top-level pass. That rules out compiling the compiler
-    # itself with the probe, and it is worth noting that the only feature that
-    # trips it is the one the appendix already measured at 21% of a cold build
-    # and marked for deletion.
+    # Known limit: compiling the compiler itself still fails under both models —
+    # a `NilAssertionError` in `add_instance_var_initializer` under the artifact
+    # model, and an error during the top-level pass under the full one. The
+    # split runs `TypeDeclarationProcessor` twice, and part of its work is
+    # global rather than per-tree, so the second run does not see everything the
+    # first established. The nine smaller programs in the gate do not exercise
+    # that. This is the next thing to fix before the probe becomes a build
+    # daemon, and it is a real defect rather than a measurement caveat.
+    #
+    # Set IYI_FORK_TRACE=1 to see how far the child gets, and
+    # IYI_FORK_SELFTEST=1 to check the runtime facilities a build needs (file
+    # write, flock, subprocess) before it starts.
     #
     # Two models, because they answer different questions:
     #
@@ -329,6 +334,18 @@ module Crystal
         probe_trace "[probe] parent: forking\n"
         pid = Crystal::System::Process.fork do
           probe_trace "[probe] child: alive\n"
+          if ENV["IYI_FORK_SELFTEST"]?
+            # Which runtime facility does a forked child actually lose? Each of
+            # these is something a build needs, so whichever hangs is the one
+            # standing between the probe and a real build daemon.
+            probe_trace "[probe] selftest: file write\n"
+            File.write("/tmp/iyi_probe_selftest", "x")
+            probe_trace "[probe] selftest: flock\n"
+            File.open("/tmp/iyi_probe_selftest", "w") { |f| f.flock_exclusive { } }
+            probe_trace "[probe] selftest: subprocess\n"
+            ::Process.run("true", shell: true)
+            probe_trace "[probe] selftest: all passed\n"
+          end
           child_elapsed = Time.instant
           begin
             nodes = sources.map do |source|

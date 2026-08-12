@@ -801,10 +801,35 @@ codegen need the prelude for *different reasons*, and only the front end's reaso
 is removed by caching analysis. Anyone building this will hit the same error and
 should not conclude from it that the design is unsound.
 
-The honest limit of the result: the front end can be made prelude-free, and that
-is now measured and verified. Codegen's own prelude cost is untouched — 0.7 s of
-the 2.2 s build — and reducing it is the object-code section's job, which
-Crystal's existing `.o` reuse already does part of.
+### IV.1b End to end, with a real binary at the end
+
+The probe can also link, so the claim can be checked the only way that really
+counts: build `hello.iyi` inside the fork and run what comes out. Both models
+produce a binary whose output is identical to a normal build's.
+
+| | front end | whole build | vs Crystal today |
+|---|---|---|---|
+| today | 1.48 s | 2.19 s | 1.00× |
+| artifact model | 0.47 s | 1.13 s | **1.9×** |
+| + prelude-aware passes | 0.049 s | 0.74 s | **3.0×** |
+
+Reaching this needed a runtime fix, worth recording because it is not
+iyi-specific. **A forked child could not spawn a subprocess at all.**
+`Signal.after_fork` recreates the signal pipe but never restarts the
+`signal-loop` fiber that reads it — only the forking thread survives a fork — so
+a `SIGCHLD` was written into a pipe nobody read and `Process#wait` blocked
+forever. That silently broke the linker, `expand_lib_flags`, and `macro_run`
+alike; restarting the reader fixes all three.
+
+So a prelude daemon — analyse once, fork per build — is not blocked on `.iyimod`
+at all. What it is still blocked on: **compiling the compiler itself fails under
+both models**, because the split runs `TypeDeclarationProcessor` twice and part
+of its work is global rather than per-tree. Nine smaller programs pass; that one
+does not. Until it does, 3.0× is a result on small programs, not a build system.
+
+The other honest limit: codegen's own prelude cost is untouched — 0.7 s of the
+2.2 s build, now the dominant term — and reducing it is the object-code
+section's job, which Crystal's existing `.o` reuse already does part of.
 
 **The artifact alone is worth 3.4×, not 20×, and the gap is not the artifact's
 fault.** Where the child's 0.45 s goes:
