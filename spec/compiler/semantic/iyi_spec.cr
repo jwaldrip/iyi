@@ -1839,6 +1839,97 @@ describe "Semantic: iyi" do
     end
   end
 
+  # iyi: errors are ordinary union members (SPEC.md III.1). `Error` is the
+  # compiler's own marker trait: what makes a member an error member is that
+  # its type implements it, which needs no new syntax and no new type machinery.
+  describe "errors" do
+    it "lets a module implement the compiler's Error trait" do
+      assert_type(<<-CRYSTAL) { types["App"].types["Fails"].types["IOError"] }
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+          end
+        end
+
+        App::Fails::IOError.new
+        CRYSTAL
+    end
+
+    it "checks Error's own requirement" do
+      assert_error <<-CRYSTAL, "impl Error for App::Fails::Bad is missing a method required by the trait: message"
+        module App
+          module Fails
+            struct Bad
+            end
+
+            impl Error for Bad
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports an error member left unhandled" do
+      # III.1.3, and the main ergonomic argument for the whole approach:
+      # adding an error member turns every incomplete `case` into an error.
+      assert_error <<-CRYSTAL, "case is not exhaustive"
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read : String | IOError
+              IOError.new
+            end
+
+            def self.go : Int32
+              result = read
+              case result
+              in String then 1
+              end
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
+
+    it "does not make Nil an error" do
+      # III.1.5: absence and failure stay distinct, so `T?` is not an error
+      # union and nothing here touches it.
+      assert_type(<<-CRYSTAL) { nilable int32 }
+        module App
+          module Fails
+            def self.maybe(missing : Bool) : Int32?
+              return nil if missing
+              1
+            end
+          end
+        end
+
+        App::Fails.maybe(false)
+        CRYSTAL
+    end
+  end
+
   # iyi: `pub` — what a module exports (R-2), and what `using` may reach
   # (R-2b). Only a `module app/greeter` compilation unit has a surface; a
   # Crystal module never wrote `pub`, so the `using` specs above are unaffected.

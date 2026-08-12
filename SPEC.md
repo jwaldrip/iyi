@@ -586,7 +586,7 @@ would be comparing different programs.
 
 ## Part III — Open questions, with recommendations
 
-### III.1 Errors — **PROPOSED, developed**
+### III.1 Errors — **DECIDED (Appendix B #1: yes), being built**
 
 Errors are ordinary union members. No `Result` wrapper, no exception hierarchy,
 no new type machinery — unions already exist and already carry a type id.
@@ -608,6 +608,31 @@ end
 A union member is an *error member* if its type implements `Error`. This needs
 no new syntax and composes with II.1: `IOError` is a normal type that happens to
 implement a normal trait.
+
+**Built.** `Error` is created by the compiler rather than declared in the
+prelude, because the compiler has to recognise this exact trait — `!`, `.or` and
+`.or_panic` all ask whether a member implements it — and a name the prelude
+happened to define could be shadowed or replaced. Nothing else about it is
+special: a module writes `impl Error for IOError` like any other impl, and the
+`message` requirement is checked like any other.
+
+The type side needed nothing else. Error unions are ordinary unions, and III.1.3
+is already true: dropping a branch from a `case` over one is reported as `case is
+not exhaustive`. `T?` is untouched, since `Nil` does not implement `Error`.
+
+Two things the build found:
+
+- **`it` is not bound in a `case` branch.** The examples in this section write
+  `in IOError then log(it)`; `it` is Crystal's block-parameter shorthand and
+  means nothing in a `case`. Either the examples take a variable, or `case`
+  learns to bind one. The examples below are written the second way and are
+  aspirational until it does.
+- **The orphan rule is vacuous for a top-level trait.** `Error` has no module,
+  and coherence is satisfied by being inside the trait's module *or* the type's
+  — where the trait's module is the top level, everyone is inside it. So
+  `impl Error for String` is accepted from any module, and two modules could
+  both write it. Narrow today, because `Error` is the only trait with no module,
+  but it is the orphan rule not holding.
 
 Two degenerate cases are rejected at compile time rather than given surprising
 meanings:

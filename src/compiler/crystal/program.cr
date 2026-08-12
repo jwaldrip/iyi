@@ -283,6 +283,17 @@ module Crystal
       types["Experimental"] = @experimental_annotation = AnnotationType.new self, self, "Experimental"
       types["TargetFeature"] = @target_feature_annotation = AnnotationType.new self, self, "TargetFeature"
 
+      # iyi: the marker that makes a union member an error member (SPEC.md
+      # III.1.1). Created here rather than declared in the prelude because the
+      # compiler has to recognise this exact trait — `!`, `.or` and `.or_panic`
+      # all ask whether a member implements it — and a name the prelude happened
+      # to define could be shadowed or replaced. Nothing else about it is
+      # special: it is an ordinary trait, implemented with an ordinary `impl`.
+      types["Error"] = @error_trait = TraitType.new self, self, "Error"
+      error_message = Def.new("message", return_type: Path.global(["String"]))
+      error_message.abstract = true
+      error_trait.add_def error_message
+
       define_crystal_constants
 
       # definition in `macros/types.cr`
@@ -568,7 +579,8 @@ module Crystal
                      packed_annotation thread_local_annotation no_inline_annotation target_feature_annotation
                      always_inline_annotation naked_annotation returns_twice_annotation
                      raises_annotation primitive_annotation call_convention_annotation
-                     flags_annotation link_annotation extern_annotation deprecated_annotation experimental_annotation) %}
+                     flags_annotation link_annotation extern_annotation deprecated_annotation experimental_annotation
+                     error_trait) %}
       def {{name.id}}
         @{{name.id}}.not_nil!
       end

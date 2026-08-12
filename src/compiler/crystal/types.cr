@@ -39,6 +39,15 @@ module Crystal
       false
     end
 
+    # iyi: whether this type is an *error member* when it appears in a union —
+    # that is, whether it implements the `Error` marker trait (SPEC.md III.1.1).
+    #
+    # `Nil` does not implement it, which is III.1.5: absence and failure stay
+    # distinct, and `T?` is not an error union.
+    def error? : Bool
+      implements?(program.error_trait)
+    end
+
     # iyi: whether *name* is part of this type's public surface — what `pub`
     # marks (R-2). Only an iyi compilation unit has one; a Crystal module never
     # wrote `pub`, so everything it declares stays reachable exactly as it does
