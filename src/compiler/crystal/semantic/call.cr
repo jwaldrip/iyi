@@ -494,6 +494,7 @@ class Crystal::Call
       # variable can be bound by the block's return type — `&block : Ctx -> B`
       # — which `match_block_arg` has only just resolved.
       check_free_var_bounds match
+      check_where_bounds match
 
       use_cache = !block || match.def.block_arg
 
@@ -1248,6 +1249,31 @@ class Crystal::Call
 
       unless bound_type.implements?(trait_type)
         raise "#{bound_type} does not implement #{trait_type}, required by `#{name}` in `#{match.def.name}`"
+      end
+    end
+  end
+
+  # iyi: `def max : Elem where Elem : Comparable` (SPEC.md II.6).
+  #
+  # Unlike a `forall` bound, the bounded name is not one this method
+  # introduced: it is an associated type of the trait the method is written in,
+  # so by the time a call matches it is already a type. About a quarter of
+  # `Enumerable` is valid only for some element types, and this is what lets
+  # the trait say so instead of duck-typing and failing at instantiation.
+  private def check_where_bounds(match)
+    bounds = match.def.where_bounds
+    return unless bounds
+
+    bounds.each do |name, bound_node|
+      bound_type = lookup_node_type(match.context, Path.new([name]).at(bound_node))
+      trait_type = lookup_node_type(match.context, bound_node)
+
+      unless trait_type.trait?
+        bound_node.raise "can't bound #{name} by #{trait_type}, it's a #{trait_type.type_desc}. A bound is a trait, and nothing else — see SPEC.md II.7"
+      end
+
+      unless bound_type.implements?(trait_type)
+        raise "#{bound_type} does not implement #{trait_type}, required by `where #{name} : #{trait_type}` in `#{match.def.name}`"
       end
     end
   end

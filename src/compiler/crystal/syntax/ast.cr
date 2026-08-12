@@ -1428,6 +1428,10 @@ module Crystal
     # conditional: the method exists either way, and the bound is a check
     # performed where the free variable binds to a concrete type.
     property free_var_bounds : Hash(String, ASTNode)?
+    # iyi: `def max : Elem where Elem : Comparable` — a bound on a name the
+    # method did not introduce, which is how a trait says a default method is
+    # only valid for some answers to its associated types (SPEC.md II.6).
+    property where_bounds : Hash(String, ASTNode)?
     property receiver : ASTNode?
     property name : String
     property args : Array(Arg)
@@ -1480,6 +1484,7 @@ module Crystal
       a_def.name_location = name_location
       a_def.visibility = visibility
       a_def.free_var_bounds = @free_var_bounds.clone
+      a_def.where_bounds = @where_bounds.clone
       a_def
     end
 

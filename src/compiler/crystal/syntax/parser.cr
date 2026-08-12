@@ -4318,6 +4318,13 @@ module Crystal
         free_vars, free_var_bounds = parse_def_free_vars
       end
 
+      skip_space
+      where_bounds = nil
+      if @token.type.ident? && @token.value == "where"
+        next_token_skip_space
+        where_bounds = parse_where_bounds
+      end
+
       if is_abstract
         body = Nop.new
       else
@@ -4350,10 +4357,39 @@ module Crystal
 
       node = Def.new name, params, body, receiver, block_param, return_type, @is_macro_def, @block_arity, is_abstract, splat_index, double_splat: double_splat, free_vars: free_vars
       node.free_var_bounds = free_var_bounds
+      node.where_bounds = where_bounds
       node.name_location = name_location
       set_visibility node
       node.end_location = end_location
       node
+    end
+
+    # iyi: `def max : Elem where Elem : Comparable` (SPEC.md II.6).
+    #
+    # `forall` introduces a name and may bound it; `where` bounds a name that
+    # is already in scope — an associated type of the enclosing trait. Keeping
+    # the two separate keeps `forall`'s rule intact: a name it did not
+    # introduce is not its business.
+    private def parse_where_bounds : Hash(String, ASTNode)
+      bounds = {} of String => ASTNode
+      loop do
+        check Token::Kind::CONST
+        name = @token.value.to_s
+        if bounds.has_key?(name)
+          raise "duplicate `where` bound for #{name}", @token
+        end
+        next_token_skip_space
+
+        check :OP_COLON
+        next_token_skip_space_or_newline
+
+        bounds[name] = parse_path
+        skip_space
+
+        break unless @token.type.op_comma?
+        next_token_skip_space_or_newline
+      end
+      bounds
     end
 
     def check_valid_def_name

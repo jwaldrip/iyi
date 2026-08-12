@@ -4278,6 +4278,44 @@ module Crystal
 
       assert_syntax_error "def f(x : T) forall T :\nend", "expecting token 'CONST'"
 
+      # iyi: `where Elem : Comparable` — a bound on a name the method did not
+      # introduce (SPEC.md II.6).
+      it "parses a where bound" do
+        node = parse("def max : Elem where Elem : Comparable\nend").as(Def)
+        node.where_bounds.should eq({"Elem" => Path.new(["Comparable"])} of String => ASTNode)
+        node.free_vars.should be_nil
+      end
+
+      it "parses several where bounds" do
+        node = parse("def go : Nil where Elem : Show, Key : Hashable\nend").as(Def)
+        node.where_bounds.should eq({
+          "Elem" => Path.new(["Show"]),
+          "Key"  => Path.new(["Hashable"]),
+        } of String => ASTNode)
+      end
+
+      it "parses a namespaced where bound" do
+        node = parse("def go : Nil where Elem : App::Show::Showable\nend").as(Def)
+        node.where_bounds.should eq({"Elem" => Path.new(["App", "Show", "Showable"])} of String => ASTNode)
+      end
+
+      it "parses forall and where on the same def" do
+        # They do different jobs: `forall` introduces U, `where` bounds Elem,
+        # which the enclosing trait introduced.
+        node = parse("def both(x : U) : U forall U where Elem : Cmp\nend").as(Def)
+        node.free_vars.should eq(["U"])
+        node.where_bounds.should eq({"Elem" => Path.new(["Cmp"])} of String => ASTNode)
+      end
+
+      it "leaves a def without where bounds alone" do
+        parse("def f\nend").as(Def).where_bounds.should be_nil
+      end
+
+      assert_syntax_error "def go : Nil where Elem : Cmp, Elem : Cmp\nend",
+        "duplicate `where` bound for Elem"
+      assert_syntax_error "def go : Nil where Elem\nend", "expecting token ':'"
+      assert_syntax_error "def go : Nil where\nend", "expecting token 'CONST'"
+
       # `!` is not part of a name in iyi (SPEC III.1.7, decision A), so that
       # postfix `!` is free to mean error propagation. The mode comes from the
       # file extension: the very same source stays legal Crystal.

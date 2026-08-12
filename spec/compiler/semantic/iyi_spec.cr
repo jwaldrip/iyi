@@ -1470,6 +1470,172 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
 
+    it "allows a default method bounded on the associated type" do
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Coll
+            trait Cmp
+              abstract def cmp : Int32
+            end
+
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+
+              def biggest : Elem where Elem : Cmp
+                first
+              end
+            end
+
+            struct Score
+              def initialize
+              end
+            end
+
+            impl Cmp for Score
+              def cmp : Int32
+                1
+              end
+            end
+
+            struct Scores
+              def initialize
+              end
+            end
+
+            impl Container for Scores
+              type Elem = Score
+
+              def first : Score
+                Score.new
+              end
+            end
+          end
+        end
+
+        App::Coll::Scores.new.biggest.cmp
+        CRYSTAL
+    end
+
+    it "reports an element type that does not meet the bound" do
+      # The point of the bound: Crystal duck-types these and fails at
+      # instantiation, naming neither the bound nor the element type.
+      assert_error <<-CRYSTAL, "Int32 does not implement App::Coll::Cmp, required by `where Elem : App::Coll::Cmp` in `biggest`"
+        module App
+          module Coll
+            trait Cmp
+              abstract def cmp : Int32
+            end
+
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+
+              def biggest : Elem where Elem : Cmp
+                first
+              end
+            end
+
+            struct Raw
+              def initialize
+              end
+            end
+
+            impl Container for Raw
+              type Elem = Int32
+
+              def first : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Coll::Raw.new.biggest
+        CRYSTAL
+    end
+
+    it "leaves an unbounded method alone on the same trait" do
+      # Only the bounded method is restricted; the rest of the trait stays
+      # available whatever the element type is.
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Coll
+            trait Cmp
+              abstract def cmp : Int32
+            end
+
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+
+              def biggest : Elem where Elem : Cmp
+                first
+              end
+
+              def any : Elem
+                first
+              end
+            end
+
+            struct Raw
+              def initialize
+              end
+            end
+
+            impl Container for Raw
+              type Elem = Int32
+
+              def first : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Coll::Raw.new.any
+        CRYSTAL
+    end
+
+    it "refuses a where bound that is not a trait" do
+      assert_error <<-CRYSTAL, "can't bound Elem by App::Coll::Helpers, it's a module. A bound is a trait, and nothing else"
+        module App
+          module Coll
+            module Helpers
+            end
+
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+
+              def go : Elem where Elem : Helpers
+                first
+              end
+            end
+
+            struct Raw
+              def initialize
+              end
+            end
+
+            impl Container for Raw
+              type Elem = Int32
+
+              def first : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Coll::Raw.new.go
+        CRYSTAL
+    end
+
     it "refuses a name that is both a parameter and an associated type" do
       assert_error <<-CRYSTAL, "declares T both as a parameter and as an associated type"
         module App
