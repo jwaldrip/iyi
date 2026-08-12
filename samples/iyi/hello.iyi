@@ -63,6 +63,26 @@ impl Greet for Robot
   end
 end
 
+# `impl` is the only way to give a type a trait. SPEC.md II.8 — each of these
+# is refused, and each for its own reason:
+#
+#   struct User
+#     include Greet     # a type acquires a trait by having an impl, whose
+#   end                 # location R-3 can check; `include` has no such rule
+#
+#   using samples/hello/greet   # a trait exports no names to bring into
+#                               # scope — a trait method is resolved from the
+#                               # receiver, never from a `using`
+#
+#   impl Greet for Loud         # a blanket impl in disguise
+#
+# And leaving a requirement unmet is an error where the impl is written, not
+# where the type is later used:
+#
+#   impl Loud for Robot
+#   end
+#   # => impl Loud for Robot is missing a method required by the trait: shout
+
 # Not exported. No signature required, because nothing outside this module can
 # depend on it — inference inside a module costs only what the module costs.
 def describe(item)
@@ -88,8 +108,8 @@ crowd.each { |member| puts describe(member) }
 #   has to be checked where the type is instantiated rather than where the
 #   impl is written — a different mechanism from the one `generics.iyi` uses.
 #
-# * Traits are currently desugared to modules, which is why this works at all
-#   so early. A consequence: `include Greet` also compiles, and it should not.
+# * Associated types (`type Elem`, SPEC.md II.6) are not parsed, and a trait
+#   cannot require another trait. Both are needed to port `Enumerable`.
 #
 # * `pub` is parsed and ignored. Nothing is actually private to a module yet,
 #   so `using` brings in every name a module declares rather than only its
