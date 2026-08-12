@@ -291,19 +291,20 @@ module Crystal
     #   own nodes. This prices IV.1a's third row: what the later passes would
     #   have to become for the front end to reach its floor.
     #
-    #   Its result is a warning, not a target. It reports what a normal compile
-    #   reports on every program tried, and it is 10× faster than the artifact
-    #   model — but the program it produces cannot be code-generated:
+    #   It is 10× faster than the artifact model, reports what a normal compile
+    #   reports on every program tried, and emits an object with an identical
+    #   symbol table. A prelude-free front end is achievable.
+    #
+    #   One trap, because it looks like a soundness failure and is not. Give
+    #   codegen only the user tree and it dies with:
     #
     #     Missing __crystal_raise_overflow function
     #
-    #   `main` is demand-driven, so a prelude analysed on its own never
-    #   instantiates the prelude functions that only *user* code reaches. The
-    #   artifact model re-walks the prelude in `main` and picks them up; this one
-    #   skips the walk and loses them. Front-end diagnostics agreeing is
-    #   therefore not evidence of soundness, which is exactly why the probe can
-    #   also codegen. Any real prelude-aware pass has to instantiate these on
-    #   demand — the same problem dictionary-passing solves for generics.
+    #   That is a `fun` in `src/raise.cr`, and codegen emits `fun`s and top-level
+    #   code by walking the AST — so the prelude's tree has to reach codegen no
+    #   matter what the front end did with it. That is the artifact's
+    #   object-code section, not its analysis cache: the two need the prelude for
+    #   different reasons.
     private def prelude_fork_probe(sources : Array(Source), output_filename : String) : NoReturn
       {% unless flag?(:without_mt) %}
         STDERR.puts "IYI_FORK_PROBE needs a single-threaded compiler: make crystal sequential_codegen=1"
@@ -317,7 +318,10 @@ module Crystal
         prelude_node = program.normalize(Expressions.new([Require.new(prelude).at(location)] of ASTNode))
         prelude_node, prelude_processor = program.top_level_semantic(prelude_node)
         if full
-          program.semantic_after_top_level(prelude_node, prelude_processor, cleanup: !no_cleanup?)
+          # Keep what it returns: the cleanup transformer rewrites the tree, and
+          # codegen needs the rewritten one — the original still holds an
+          # unexpanded `require`.
+          prelude_node = program.semantic_after_top_level(prelude_node, prelude_processor, cleanup: !no_cleanup?)
         end
         prelude_taken = prelude_elapsed.elapsed
         @progress_tracker.clear
@@ -361,7 +365,15 @@ module Crystal
             # It is a verification tool, not a timing one — it never completes,
             # so it stays off by default and out of every measurement.
             if !@no_codegen && ENV["IYI_FORK_CODEGEN"]?
-              codegen program, result, sources, output_filename
+              # Codegen emits `fun` definitions and top-level code by walking the
+              # AST, so it needs the prelude's tree even when the front end did
+              # not. That is not a fudge: it is what Part IV's object-code
+              # section means — the prelude's machine code comes from the
+              # artifact rather than from re-analysing its source. Skipping the
+              # prelude in the *front end* is the claim under test; skipping it
+              # in codegen too would just be leaving the program half-emitted.
+              to_emit = full ? Expressions.from([prelude_node, result] of ASTNode) : result
+              codegen program, to_emit, sources, output_filename
               probe_trace "[probe] child: codegen done\n"
             end
           rescue ex : Crystal::CodeError

@@ -774,28 +774,37 @@ beat. Front end only; 5 runs, median; single-threaded compiler build.
 | 19.5k lines, 1500 types, 4500 methods | 2.39 s | 1.39 s — 1.7× | 0.94 s — 2.6× |
 | prelude-free floor (`--prelude=empty`) | 0.09 s | — | — |
 
-**The third column is not a target. It is a bill.** It reports what a normal
-compile reports on all nine programs tried, including four that must fail — and
-the program it produces still cannot be code-generated:
+**The third column is reachable, and it was verified past the front end.** The
+probe can go on to emit object code (`IYI_FORK_CODEGEN=1`). Under both models the
+emitted object has a **byte-identical symbol table** to a normal build's — 3741
+symbols, same size, differing only in 0.1% of bytes. So a front end that never
+looks at the prelude produces the same program.
+
+Getting there took one wrong turn worth recording, because it is the kind of
+mistake this design invites. The first attempt handed codegen only the *user*
+tree and failed with:
 
 ```
 Missing __crystal_raise_overflow function
 ```
 
-`main` is demand-driven. A prelude analysed on its own never instantiates the
-prelude functions that only *user* code reaches, and integer addition in the
-user program reaches that one. The artifact model survives precisely because it
-re-walks the prelude in `main` and picks them up — the 0.16 s it spends there is
-buying something. So the 32× is the value of a pass that does not exist yet and
-whose hard part is now named: **instantiating prelude entities on demand**,
-which is the same problem dictionary-passing solves for generics (II.6), arriving
-from a different direction.
+The tempting reading is that `main` is demand-driven and a prelude analysed
+alone never instantiates what only user code reaches. That reading is wrong.
+`__crystal_raise_overflow` is a `fun` in `src/raise.cr`, and **codegen emits
+`fun`s and top-level code by walking the AST** — so the prelude's tree has to
+reach codegen whatever the front end did with it. Once it does, the object is
+equivalent.
 
-This also settles how much front-end agreement is worth as evidence: identical
-diagnostics on nine programs did not catch a defect that codegen caught
-immediately. Hence the probe can emit object code (`IYI_FORK_CODEGEN=1`). Under
-the artifact model the emitted object has a **byte-identical symbol table** to a
-normal build's, 3741 symbols, same size.
+Which is exactly what IV.1's object-code section is for: the prelude's machine
+code comes from the artifact, not from re-analysing its source. The front end and
+codegen need the prelude for *different reasons*, and only the front end's reason
+is removed by caching analysis. Anyone building this will hit the same error and
+should not conclude from it that the design is unsound.
+
+The honest limit of the result: the front end can be made prelude-free, and that
+is now measured and verified. Codegen's own prelude cost is untouched — 0.7 s of
+the 2.2 s build — and reducing it is the object-code section's job, which
+Crystal's existing `.o` reuse already does part of.
 
 **The artifact alone is worth 3.4×, not 20×, and the gap is not the artifact's
 fault.** Where the child's 0.45 s goes:
@@ -814,10 +823,10 @@ initializers and `main` are 90% of the residual.
 
 **So Part IV is necessary and not sufficient.** A serialised prelude that the
 later passes still traverse converts a 1.5 s front end into a 0.45 s one; the
-floor needs those passes to skip prelude nodes too, and the experiment above
-shows skipping them naively produces a program that does not link. That is a
-separate piece of work from the file format, it is larger than the format, and
-it should be planned as such rather than discovered afterwards.
+floor needs those passes to skip prelude nodes too, which the experiment above
+shows is achievable and worth another 10×. That is a separate piece of work from
+the file format, it is larger than the format, and it should be planned as such
+rather than discovered afterwards.
 
 Two secondary results from the same instrument:
 
@@ -1028,7 +1037,8 @@ For traceability, since several rules here rest on numbers rather than taste.
 | Separate compilation is the main prize | 1000 typed functions cost +0.08 s; ~95% of non-LLVM work is fixed prelude tax |
 | A cached prelude is worth 3.4×, not 20× | fork probe: 1.58 s → 0.47 s front end; 0.09 s if the prelude did not exist (IV.1a) |
 | The artifact is not the whole job | with the prelude pre-analysed, class-var initializers and `main` are 90% of what is left, because they still walk the prelude (IV.1a) |
-| Prelude-aware passes are worth 32×, and are not free | skipping the prelude in the later passes reports every diagnostic correctly and still fails codegen on `__crystal_raise_overflow`: `main` is demand-driven, so prelude entities only user code reaches are never instantiated (IV.1a) |
+| Prelude-aware passes are worth another 10× | a front end that never walks the prelude runs `hello.iyi` in 0.049 s vs 1.58 s, and emits an object with an identical symbol table (IV.1a) |
+| The front end and codegen need the prelude for different reasons | codegen emits `fun`s by walking the AST, so the prelude's tree must reach it regardless; only the front end's need is removed by caching analysis (IV.1a) |
 | Half the top-level pass is the parser | 304 prelude files, 107,719 lines: 0.57 s parse, 0.54 s visit |
 | Open classes are the blocker | 77 of 484 types reopened across module boundaries; `String` by five modules |
 | Traits are a viable replacement | Kemal router ports at +4% code size, structure intact |
