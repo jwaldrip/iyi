@@ -252,11 +252,20 @@ this section had wrong or had not reached:
   convention, only because plain `find` was already taken by the nilable one.
   With `!` gone (III.1.7) the port uses `find?`/`find` and `index?`/`index`
   throughout. The naming decision paid here rather than cost.
-- **A trait cannot require a class-level method.** `sum` and `product` with no
-  argument need an additive and a multiplicative identity, which means
-  `abstract def self.zero : self`. That is refused — "can't define abstract def
-  on metaclass" — so both take an explicit `initial`. This is the one gap the
-  port hit that needs language work rather than more typing.
+- **A trait needs to require class-level methods, and now can.** `sum` and
+  `product` with no argument need an additive and a multiplicative identity,
+  and an identity belongs to the type: an empty collection has no element to
+  ask. So `Num` declares `abstract def self.zero : self`, an impl answers it
+  with `def self.zero`, and `sum` reaches it as `Elem.zero` through the
+  associated type. The requirement is checked at the impl like every other,
+  and reported as `self.zero` — what has to be written to fix it. It stays
+  refused outside a trait, where an abstract class method would oblige nobody:
+  only a trait has implementers whose class methods anything checks.
+
+  This is checked separately from the instance requirements, because `include`
+  carries instance methods only. The trait's metaclass defs never reach the
+  target's, so there is nothing for the impl to have inherited — it has to have
+  written them.
 
 Finding 6 below is realised too: `zip` is `forall O : Enumerable`, and `O::Elem`
 names what the other collection yields without the caller stating it.

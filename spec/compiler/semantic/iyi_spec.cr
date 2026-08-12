@@ -1839,6 +1839,113 @@ describe "Semantic: iyi" do
     end
   end
 
+  # iyi: `abstract def self.zero : self` — a trait requiring a class-level
+  # method (SPEC.md II.6). Needed for an identity: `Enumerable#sum` has no
+  # element to ask when the collection is empty.
+  describe "class-level requirements" do
+    it "lets a default method reach the requirement through an associated type" do
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Coll
+            trait Num
+              abstract def self.zero : self
+              abstract def add(other : self) : self
+            end
+
+            impl Num for Int32
+              def self.zero : self
+                0
+              end
+
+              def add(other : self) : self
+                self + other
+              end
+            end
+
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+
+              def start : Elem where Elem : Num
+                Elem.zero
+              end
+            end
+
+            struct Nums
+              def initialize
+              end
+            end
+
+            impl Container for Nums
+              type Elem = Int32
+
+              def first : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Coll::Nums.new.start
+        CRYSTAL
+    end
+
+    it "reports a class-level requirement the impl does not satisfy" do
+      # Named `self.zero`, because that is what has to be written to fix it.
+      assert_error <<-CRYSTAL, "is missing a method required by the trait: self.zero"
+        module App
+          module Coll
+            trait Num
+              abstract def self.zero : self
+              abstract def add(other : self) : self
+            end
+
+            struct Money
+              def initialize
+              end
+            end
+
+            impl Num for Money
+              def add(other : self) : self
+                Money.new
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports instance and class requirements together" do
+      assert_error <<-CRYSTAL, "is missing methods required by the trait: add, self.zero"
+        module App
+          module Coll
+            trait Num
+              abstract def self.zero : self
+              abstract def add(other : self) : self
+            end
+
+            struct Money
+            end
+
+            impl Num for Money
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "still refuses an abstract class method outside a trait" do
+      # A trait is the only type whose implementers have their class methods
+      # checked; anywhere else the requirement would oblige nobody.
+      assert_error <<-CRYSTAL, "can't define abstract def on metaclass"
+        abstract class Base
+          abstract def self.make : self
+        end
+        CRYSTAL
+    end
+  end
+
   # iyi: `impl Into(String) for User` — a trait with parameters (SPEC.md II.6).
   # Parameters are the form to reach for where several impls for one type are
   # the point; associated types are the form for a single answer per type.

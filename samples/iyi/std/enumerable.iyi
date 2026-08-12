@@ -24,7 +24,10 @@
 #     the trait.
 #   * `where Elem : Cmp` — about a quarter of `Enumerable` is valid only for
 #     some element types. `max`, `min`, `sum`, `product`, `tally`, `sorted`,
-#     `includes?` and `minmax` say so instead of duck-typing.
+#     `includes?` and `minmax` say so instead of duck-typing. `sum` and
+#     `product` also need `Num` to require `self.zero` and `self.one`: an
+#     identity belongs to the type, since an empty collection has no element
+#     to ask.
 #
 # What the port corrected in the spec's own sketch:
 #
@@ -313,14 +316,14 @@ pub trait Enumerable
     raise "empty"
   end
 
-  def sum(initial : Elem) : Elem where Elem : Num
-    acc = initial
+  def sum : Elem where Elem : Num
+    acc = Elem.zero
     each { |e| acc = acc.add(e) }
     acc
   end
 
-  def product(initial : Elem) : Elem where Elem : Num
-    acc = initial
+  def product : Elem where Elem : Num
+    acc = Elem.one
     each { |e| acc = acc.mul(e) }
     acc
   end
@@ -545,8 +548,8 @@ pub trait Enumerable
     counts
   end
 
-  def sum_by(initial : U, & : Elem -> U) : U forall U : Num
-    acc = initial
+  def sum_by(& : Elem -> U) : U forall U : Num
+    acc = U.zero
     each { |e| acc = acc.add(yield e) }
     acc
   end
@@ -555,13 +558,6 @@ end
 # ---------------------------------------------------------------------------
 # Not ported, and why
 # ---------------------------------------------------------------------------
-#
-# * `sum` and `product` with no argument. They need an additive and a
-#   multiplicative identity, which means a trait requiring a *class*-level
-#   method — `abstract def self.zero : self`. That is refused today
-#   ("can't define abstract def on metaclass"), so both take an explicit
-#   `initial` here. This is the one gap the port hit that needs language work
-#   rather than more typing.
 #
 # * `to_h`, `chunks`, `in_slices_of` — they destructure the element as a pair
 #   or a tuple, which needs the element type to be constrained to a shape

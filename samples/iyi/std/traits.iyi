@@ -13,6 +13,12 @@ pub trait Cmp
 end
 
 pub trait Num : Cmp
+  # Class-level requirements. `Enumerable#sum` and `#product` need an additive
+  # and a multiplicative identity, and an identity belongs to the type, not to
+  # any value of it — there is no element to ask when the collection is empty.
+  abstract def self.zero : self
+  abstract def self.one : self
+
   abstract def add(other : self) : self
   abstract def mul(other : self) : self
 end
@@ -28,6 +34,14 @@ impl Cmp for Int32
 end
 
 impl Num for Int32
+  def self.zero : self
+    0
+  end
+
+  def self.one : self
+    1
+  end
+
   def add(other : self) : self
     self + other
   end

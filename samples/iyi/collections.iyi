@@ -72,7 +72,8 @@ puts "join            #{n.join("-")}"
 puts "includes?       #{n.includes?(4)} #{n.includes?(9)}"
 puts "max?/max        #{n.max?} #{n.max}"
 puts "min?/min        #{n.min?} #{n.min}"
-puts "sum/product     #{n.sum(0)} #{n.product(1)}"
+puts "sum/product     #{n.sum} #{n.product}"
+puts "sum of nothing  #{Nums.new([] of Int32).sum}"
 puts "tally           #{n.tally[1]}"
 puts "sorted          #{n.sorted.join(",")}"
 puts "max_by          #{w.max_by { |s| s.size }}"
@@ -92,7 +93,7 @@ puts "min_by          #{w.min_by { |s| s.size }}"
 puts "max_of/min_of   #{w.max_of { |s| s.size }} #{w.min_of { |s| s.size }}"
 puts "minmax          #{n.minmax[0]},#{n.minmax[1]}"
 puts "tally_by        #{w.tally_by { |s| s.size }[4]}"
-puts "sum_by          #{w.sum_by(0) { |s| s.size }}"
+puts "sum_by          #{w.sum_by { |s| s.size }}"
 
 # SPEC II.6 finding 6: one bound replaces `Indexable | Iterable | Iterator`,
 # and `O::Elem` names what the other collection yields.
@@ -112,7 +113,7 @@ puts "as a type       #{describe(n)} / #{describe(w)}"
 # What this sample would report as an error
 # ---------------------------------------------------------------------------
 #
-# * `Words.new([...]).sum(0)` — `sum` is bounded `where Elem : Num` and
+# * `Words.new([...]).sum` — `sum` is bounded `where Elem : Num` and
 #   `String` implements `Cmp` but not `Num`. The error names the element type
 #   and the bound rather than failing somewhere inside the method body.
 #

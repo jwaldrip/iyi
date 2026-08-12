@@ -737,20 +737,30 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
   # type's own module, which is exactly where R-3 would let an impl live, so
   # there is no coherence hole in accepting it.
   private def check_impl_requirements(node : ImplDef, trait_type, target_type)
-    defs = trait_type.defs
-    return unless defs
+    missing = missing_requirements(trait_type, target_type)
 
-    missing = defs.compact_map do |name, list|
-      next unless list.any? &.def.abstract?
-      # Rejecting abstract defs skips the requirement itself, which the target
-      # now inherits through the include this impl just performed.
-      name if target_type.lookup_defs(name).none? { |a_def| !a_def.abstract? }
-    end
+    # iyi: `abstract def self.zero : self` — a class-level requirement.
+    # Checked separately because `include` carries instance methods only, so
+    # the trait's metaclass defs never reach the target's and there is nothing
+    # here for the impl to have inherited: it has to have written them.
+    missing.concat missing_requirements(trait_type.metaclass, target_type.metaclass).map { |name| "self.#{name}" }
 
     return if missing.empty?
 
     missing.sort!
     node.raise "impl #{trait_type} for #{target_type} is missing #{missing.size == 1 ? "a method" : "methods"} required by the trait: #{missing.join(", ")}"
+  end
+
+  private def missing_requirements(trait_type, target_type) : Array(String)
+    defs = trait_type.defs
+    return [] of String unless defs
+
+    defs.compact_map do |name, list|
+      next unless list.any? &.def.abstract?
+      # Rejecting abstract defs skips the requirement itself, which the target
+      # now inherits through the include this impl just performed.
+      name if target_type.lookup_defs(name).none? { |a_def| !a_def.abstract? }
+    end
   end
 
   # Whether *type* is *mod*, or is nested somewhere inside it.
@@ -989,7 +999,15 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
         node.raise "can't define abstract def on non-abstract #{target_type.type_desc}"
       end
       if target_type.metaclass?
-        node.raise "can't define abstract def on metaclass"
+        # iyi: a trait may require a class-level method —
+        # `abstract def self.zero : self` (SPEC.md II.6). Without it a trait
+        # cannot express an identity, so `sum` and `product` have to be given
+        # one by every caller. Everywhere else the rejection stands: an
+        # abstract def on a metaclass has nobody it could oblige, because only
+        # a trait has implementers whose class methods are checked.
+        unless current_type.trait?
+          node.raise "can't define abstract def on metaclass"
+        end
       end
     end
 
