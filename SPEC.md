@@ -847,18 +847,36 @@ Part IV costs beyond the file format.
    prelude class variable's initializer — caught here by the non-nilable check,
    but the same clobbering would have left them uninitialized at runtime.
 
-The pattern in both: **passes assume they see the whole program once.** Not
+3. **A per-pass flag stayed set across passes.** `top_level_semantic_complete`
+   guards `TypeNode#instance_vars` and `#has_inner_pointers?` in macros, which
+   must refuse to answer before instance variables are declared. A second
+   top-level pass inherited the flag from the first, so the guard did not fire
+   and the macro got an *empty* list instead of an error — then generated code
+   against variables the type did not have yet. It is now cleared at the start
+   of every top-level pass, which is a no-op in a single run.
+
+The pattern in all three: **passes assume they see the whole program once.** Not
 "they are slow", which is what IV.1a measured — they encode single-run
 assumptions in ways that only fail when a program is analysed in two pieces.
 That is the real content of "make the passes prelude-aware", and it is found by
 running the split, not by reading the code.
 
+**A fourth, diagnosed and still open.** `Program#finished_hooks` accumulates and
+is never cleared, and every top-level pass re-visits all of it. Under the full
+model the parent runs a complete analysis of the prelude — main and cleanup
+included — and the child's top-level pass then re-accepts hook nodes that were
+already typed and rewritten by that earlier pass. On the compiler's own source
+this surfaces as `can't infer the type of instance variable '@inner' of
+Crystal::TypeException`, raised from inside macro expansion during the child's
+top-level pass, before any type declarations have run. The fix is to make hooks
+belong to the pass that discovered them rather than to the program, which is a
+change to how hooks are scoped and is not attempted here.
+
 **Where it stands:** the artifact model now compiles all nine gate programs, a
 targeted regression for each bug above, and the compiler itself. The full model
-still fails on the compiler — `can't infer the type of instance variable
-'@inner' of Crystal::TypeException` — so its 3.0× remains a result on small
-programs. The artifact model's 1.9× is the one that survives contact with a real
-codebase.
+still fails on the compiler, for the fourth reason above, so its 3.0× remains a
+result on small programs. The artifact model's 1.9× is the one that survives
+contact with a real codebase.
 
 The other honest limit: codegen's own prelude cost is untouched — 0.7 s of the
 2.2 s build, now the dominant term — and reducing it is the object-code

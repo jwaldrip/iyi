@@ -83,6 +83,14 @@ class Crystal::Program
   # rather than recompute them.
   def top_level_semantic(node, main_visitor : MainVisitor = MainVisitor.new(self),
                          processor : TypeDeclarationProcessor? = nil)
+    # A top-level pass is running, whatever an earlier one concluded. The flag
+    # guards `TypeNode#instance_vars` and `#has_inner_pointers?` in macros, which
+    # must refuse to answer until instance variables are declared. Leaving it set
+    # from a previous pass — which only a split analysis can do — turns that
+    # refusal into an empty answer, and the macro then generates code against
+    # variables the type does not have yet.
+    self.top_level_semantic_complete = false
+
     new_expansions = @progress_tracker.stage("Semantic (top level)") do
       visitor = TopLevelVisitor.new(self)
 
