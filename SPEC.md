@@ -918,9 +918,16 @@ normally, 1.16–1.24 s through the daemon.
 and so serves one flag set quickly, and it builds one program at a time. It is
 scaffolding that `.iyimod` will replace — worth having because it delivers the
 win now and because every latent single-run assumption it trips over is one
-`.iyimod` would have tripped over later. It also has no spec: it needs a
-single-threaded build, so the suite that runs against the normal compiler cannot
-exercise it. That is a real gap, not an oversight.
+`.iyimod` would have tripped over later.
+
+It is covered by `spec/compiler-cli/crystal-daemon_spec.cr`, which starts a real
+daemon on a private socket and checks the properties that would make it subtly
+wrong rather than visibly broken: a served build's exit status and diagnostics
+match a normal build's byte for byte, `stdout` and `stderr` stay separate, a
+second build is still served after the first, and a build whose flags differ from
+the daemon's prelude is still correct. `make cli_spec` builds the server binary
+so the suite actually exercises it; if it is absent the examples report as
+pending with the reason, rather than passing silently.
 
 **The artifact alone is worth 3.4×, not 20×, and the gap is not the artifact's
 fault.** Where the child's 0.45 s goes:

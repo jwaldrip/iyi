@@ -1,0 +1,171 @@
+require "./spec_helper"
+
+# The build daemon analyses the prelude once and forks a child per build. What
+# has to hold is that a build served this way is indistinguishable from a normal
+# one: same exit status, same diagnostics, same binary behaviour, with `stdout`
+# and `stderr` still separate. Speed is measured elsewhere (SPEC.md IV.1d) —
+# these specs are about not being subtly wrong.
+#
+# The server needs a single-threaded compiler, because only the forking thread
+# survives a `fork`. `make cli_spec` builds it; CRYSTAL_SPEC_DAEMON_BIN can point
+# somewhere else.
+CRYSTAL_DAEMON_BIN = ENV.fetch("CRYSTAL_SPEC_DAEMON_BIN") { Path[Dir.current, ".build", "crystal-daemon"].to_s }
+
+private def daemon_available?
+  File::Info.executable?(CRYSTAL_DAEMON_BIN)
+end
+
+# Starts a daemon on a private socket, yields the socket path, and stops it.
+private def with_daemon(&)
+  # Reported as pending rather than skipped silently: a daemon spec that passes
+  # because it never ran is worse than one that fails.
+  pending!("requires #{CRYSTAL_DAEMON_BIN} (`make crystal-daemon`)") unless daemon_available?
+
+  with_tempfile("daemon") do |dir|
+    Dir.mkdir_p(dir)
+    socket = File.join(dir, "build.sock")
+    log = File.join(dir, "daemon.log")
+
+    process = File.open(log, "w") do |io|
+      Process.new(CRYSTAL_DAEMON_BIN, ["daemon", "start", "--socket", socket],
+        input: Process::Redirect::Close, output: io, error: io)
+    end
+
+    begin
+      # Startup includes analysing the prelude, so allow real time for it — but
+      # never wait forever, or a daemon that died at startup looks like a slow one.
+      deadline = Time.instant + 120.seconds
+      until File.exists?(socket)
+        if Time.instant > deadline
+          raise "daemon did not create #{socket} within 120s\n#{File.read(log)}"
+        end
+        unless process.exists?
+          raise "daemon exited before listening\n#{File.read(log)}"
+        end
+        sleep 50.milliseconds
+      end
+
+      yield socket
+    ensure
+      process.terminate(graceful: false) rescue nil
+      process.wait rescue nil
+    end
+  end
+end
+
+private def daemon_build(socket : String, *args : String)
+  Process.capture_result(crystal, "daemon", "build", "--socket", socket, *args)
+end
+
+describe "`crystal daemon`" do
+  it "refuses an explicit CRYSTAL_DAEMON that is not there" do
+    # An explicit override is authoritative: falling back to whatever binary
+    # happens to sit next to the compiler would run builds against one the user
+    # did not choose, and say nothing. The path has to appear in the message,
+    # because that is the thing they got wrong.
+    #
+    # The sibling-lookup message ("none installed anywhere, run
+    # `make crystal-daemon`") is not covered here — this repository always has a
+    # built server for the rest of these specs to use, so the search cannot be
+    # made to fail without hiding it first.
+    result = Process.capture_result(crystal, "daemon", "start",
+      env: {"CRYSTAL_DAEMON" => "/nonexistent/crystal-daemon"})
+
+    result.should be_failure(1)
+    result.error.should contain("/nonexistent/crystal-daemon")
+  end
+
+  it "fails clearly when no daemon is listening" do
+    with_tempfile("daemon-absent") do |dir|
+      Dir.mkdir_p(dir)
+      socket = File.join(dir, "absent.sock")
+
+      result = Process.capture_result(crystal, "daemon", "build", "--socket", socket,
+        fixture_path("hello-world.cr"))
+
+      result.should be_failure(1)
+      result.error.should contain("no daemon listening")
+    end
+  end
+
+  it "builds a program that behaves like a normally built one" do
+    with_daemon do |socket|
+      with_temp_executable "daemon-hello" do |output_path|
+        daemon_build(socket, "-o", output_path, fixture_path("hello-world.cr"))
+          .should be_success
+
+        File::Info.executable?(output_path).should be_true
+        Process.capture_result(output_path)
+          .should(be_success)
+          .output.should(eq("hello world\n"))
+      end
+    end
+  end
+
+  it "serves more than one build from the same daemon" do
+    # The child inherits the listening socket, and closing a `UNIXServer`
+    # unlinks its path — so a daemon can serve one build and then quietly
+    # become unreachable while still appearing to run.
+    with_daemon do |socket|
+      with_temp_executable "daemon-first" do |first|
+        with_temp_executable "daemon-second" do |second|
+          daemon_build(socket, "-o", first, fixture_path("hello-world.cr")).should be_success
+          daemon_build(socket, "-o", second, fixture_path("hello-world.cr")).should be_success
+
+          Process.capture_result(second).should(be_success).output.should(eq("hello world\n"))
+        end
+      end
+    end
+  end
+
+  it "reports a semantic error exactly as a normal build does" do
+    with_daemon do |socket|
+      fixture = fixture_path("semantic-error.cr")
+
+      normal = Process.capture_result(crystal, "build", "--no-codegen", fixture)
+      served = daemon_build(socket, "--no-codegen", fixture)
+
+      served.status.should eq(normal.status)
+      served.error.should eq(normal.error)
+      served.error.should contain("undefined method 'frobulate' for Int32")
+    end
+  end
+
+  it "reports a syntax error exactly as a normal build does" do
+    with_daemon do |socket|
+      fixture = fixture_path("syntax-error.cr.txt")
+
+      normal = Process.capture_result(crystal, "build", "--no-codegen", fixture)
+      served = daemon_build(socket, "--no-codegen", fixture)
+
+      served.status.should eq(normal.status)
+      served.error.should eq(normal.error)
+    end
+  end
+
+  it "keeps stdout and stderr apart" do
+    # The child writes to pipes the daemon frames separately. If that framing
+    # were dropped, diagnostics would arrive on stdout and scripts that read
+    # a compiler's output would silently start seeing error text.
+    with_daemon do |socket|
+      served = daemon_build(socket, "--no-codegen", fixture_path("semantic-error.cr"))
+
+      served.should be_failure(1)
+      served.output.should eq("")
+      served.error.should contain("Error:")
+    end
+  end
+
+  it "still builds correctly when flags differ from the daemon's prelude" do
+    # Macros branch on flags, so such a build cannot adopt the analysed
+    # prelude and has to analyse its own. It must be correct, not just fast.
+    with_daemon do |socket|
+      with_temp_executable "daemon-flagged" do |output_path|
+        daemon_build(socket, "-Dspec_daemon_unused_flag", "-o", output_path,
+          fixture_path("hello-world.cr")).should be_success
+
+        Process.capture_result(output_path).should(be_success).output.should(eq("hello world\n"))
+      end
+    end
+  end
+end

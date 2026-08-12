@@ -67,10 +67,18 @@ class Crystal::Command
   # half lives in its own binary. The client half does not fork and runs
   # anywhere, which is why only `start` is redirected.
   private def daemon_exec_server : NoReturn
-    candidates = [] of String
+    # An explicit override is authoritative. Falling back to some other binary
+    # because the named one is missing would run a build against a compiler the
+    # user did not ask for, and say nothing about it.
     if (override = ENV["CRYSTAL_DAEMON"]?) && !override.empty?
-      candidates << override
+      unless File.info?(override).try(&.file?)
+        STDERR.puts "CRYSTAL_DAEMON points at #{override}, which is not a file"
+        exit 1
+      end
+      Process.exec(override, ["daemon", "start"] + options)
     end
+
+    candidates = [] of String
     if executable = Process.executable_path
       candidates << File.join(File.dirname(executable), "crystal-daemon")
     end
