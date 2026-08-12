@@ -89,6 +89,22 @@ def describe(item)
   item.greet
 end
 
+# A trait bound on a method's own type parameter — SPEC.md II.7 rule 3. The
+# method exists for every `T`; the bound is checked where `T` binds, so a call
+# with a type that does not implement `Greet` is rejected at that call:
+#
+#   announce(42)
+#   # => Int32 does not implement Samples::Hello::Greet, required by `T`
+#   #    in `announce`
+#
+# This is the shape Kemal's router needs: `&block : Context -> B forall
+# B : IntoBody` replaces a per-request runtime type check with one at compile
+# time. Note this is *not* the impl-level bound below — nothing here is
+# conditional.
+pub def announce(item : T) : String forall T : Greet
+  "-> #{item.greet}"
+end
+
 # Ruby ergonomics, unchanged and free to compile: blocks, string
 # interpolation, everything-is-an-expression, local inference.
 puts User.new("iyi").greet
@@ -99,14 +115,18 @@ puts Robot.new(42).greet
 crowd = [User.new("crystal"), Robot.new(7)] of Greet
 crowd.each { |member| puts describe(member) }
 
+puts announce(Robot.new(9))
+
 # ---------------------------------------------------------------------------
 # Not yet implemented
 # ---------------------------------------------------------------------------
 #
-# * Trait bounds on a generic impl's parameters (`forall T : Show`) parse but
-#   are rejected. A bound makes the impl conditional, and a conditional impl
-#   has to be checked where the type is instantiated rather than where the
-#   impl is written — a different mechanism from the one `generics.iyi` uses.
+# * Trait bounds on a generic *impl*'s parameters (`impl Show for Box(T)
+#   forall T : Show`) parse but are rejected — unlike the bound on `announce`
+#   above, which works. A bound on an impl makes the impl conditional:
+#   `Box(Int32)` would implement `Show` only if `Int32` did, which has to be
+#   checked where the type is instantiated rather than where the impl is
+#   written. A different mechanism, and the harder of the two.
 #
 # * Associated types (`type Elem`, SPEC.md II.6) are not parsed, and a trait
 #   cannot require another trait. Both are needed to port `Enumerable`.

@@ -349,10 +349,29 @@ business).**
 type is compiled once per GC shape, not once per instantiation, so a generic
 impl is one body and not N.
 
-**Not yet built:** bounds are parsed and rejected. Enforcing `forall T : Show`
-means an impl that applies only for some `T`, and a conditional impl is a
-different mechanism from the unconditional one — it has to be checked where the
-type is instantiated, not where the impl is written.
+**A bound on a method and a bound on an impl are two different features.** The
+draft treated `forall T : Show` as one thing. Implementing it showed the two
+places it can be written have almost nothing in common:
+
+| | What it means | Cost |
+|---|---|---|
+| `def add_route(&block : Ctx -> B) forall B : IntoBody` | The method exists either way. When `B` binds to a concrete type, check that the type implements the trait. | One check at the call site. **Built.** |
+| `impl Show for Box(T) forall T : Show` | `Box(Int32)` implements `Show` only if `Int32` does — a **conditional** impl, checked where the type is instantiated rather than where the impl is written, and interacting with coherence. | A separate mechanism. **Not built.** |
+
+The method form is the one the Kemal router depends on, in both `add_route`
+and the macro loop that generates the HTTP verbs, so it was on the critical
+path of the design's own acceptance test while being the cheaper of the two.
+The error names the type, the variable and the method:
+
+```
+Error: Int32 does not implement App::Router::IntoBody, required by `B` in `add_route`
+```
+
+It is reported as an error rather than as a failed overload match. Under R-3 a
+type's method set is closed, so "`Int32` does not implement `IntoBody`" is the
+true reason a call is rejected, and Crystal's "no overload matches" would bury
+it. This is also where II.6 finding 6 lands: `zip(*others : Indexable |
+Iterable | Iterator)` becomes `forall O : Enumerable`.
 
 ### II.8 What a trait is, and is not — **SETTLED**
 
