@@ -67,8 +67,8 @@ class Crystal::Program
       # use a new MainVisitor which will have no vars.
       visitor.vars = main_visitor.vars.dup unless main_visitor.vars.empty?
 
-      node.accept visitor
-      visitor.process_finished_hooks
+      Prof.span("top level: node.accept") { node.accept visitor }
+      Prof.span("top level: finished hooks") { visitor.process_finished_hooks }
       visitor.new_expansions
     end
     @progress_tracker.stage("Semantic (new)") do

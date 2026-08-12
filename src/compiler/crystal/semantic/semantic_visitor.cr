@@ -176,12 +176,22 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
   end
 
   private def require_file(node : Require, filename : String)
-    parser = @program.new_parser(File.read(filename))
+    # These spans are additive: a require is parsed and normalized before any
+    # nested require inside it is expanded, so they never nest. The visit is
+    # deliberately not timed here — `accept` recurses into nested requires, so
+    # a span around it would count inner files once per enclosing file. Take
+    # it as the "Semantic (top level)" stage total minus these.
+    source = Prof.span("require: read") { File.read(filename) }
+    if Prof.enabled?
+      Prof.count("require: files")
+      Prof.count("require: lines", source.count('\n'))
+    end
+    parser = @program.new_parser(source)
     parser.filename = filename
     parser.wants_doc = @program.wants_doc?
     begin
-      parsed_nodes = parser.parse
-      parsed_nodes = @program.normalize(parsed_nodes, inside_exp: inside_exp?)
+      parsed_nodes = Prof.span("require: parse") { parser.parse }
+      parsed_nodes = Prof.span("require: normalize") { @program.normalize(parsed_nodes, inside_exp: inside_exp?) }
       # We must type the node immediately, in case a file requires another
       # *before* one of the files in `filenames`
       parsed_nodes.accept self
