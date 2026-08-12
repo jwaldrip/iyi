@@ -487,6 +487,69 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
 
+    it "refuses to `include` a trait" do
+      # The whole point of R-3: a type acquires a trait through an impl, whose
+      # location the orphan rule can check. `include` has no such rule.
+      assert_error <<-CRYSTAL, "can't include App::Show::Showable, it's a trait"
+        module App
+          module Show
+            trait Showable
+              abstract def show
+            end
+
+            struct Foo
+              include Showable
+
+              def show
+                1
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses to `extend` a trait" do
+      assert_error <<-CRYSTAL, "can't extend App::Show::Showable, it's a trait"
+        module App
+          module Show
+            trait Showable
+              abstract def show
+            end
+
+            struct Foo
+              extend Showable
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "still lets an impl register the trait" do
+      # `impl` reaches the same machinery `include` does, so refusing the
+      # written directive must not close the path the impl needs.
+      assert_type(<<-CRYSTAL) { bool }
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+              def show : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Show::Foo.new.is_a?(App::Show::Showable)
+        CRYSTAL
+    end
+
     it "keeps a trait usable as a type restriction" do
       # The reason `TraitType` subclasses the module type rather than replacing
       # it: a value typed by the trait still dispatches to the impl.

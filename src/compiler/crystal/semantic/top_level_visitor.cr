@@ -365,9 +365,10 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     end
 
     # Record that the target implements the trait. Reuses `include`, which is
-    # why traits are modules in this first implementation.
+    # why `TraitType` is a module type — and `from_impl` is what keeps this
+    # path open now that a written `include` of a trait is refused.
     include_node = Include.new(node.trait).at(node)
-    include_in target_type, include_node, :included
+    include_in target_type, include_node, :included, from_impl: true
 
     false
   end
@@ -1415,10 +1416,22 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     false
   end
 
-  def include_in(current_type, node, kind : HookKind)
+  # iyi: *from_impl* is set by `visit(ImplDef)`, the one caller that may
+  # legitimately include a trait. Everywhere else the caller is a written
+  # `include` or `extend`, and including a trait is what R-3 removes: a type
+  # acquires a trait by having an impl, which the orphan rule can check.
+  def include_in(current_type, node, kind : HookKind, from_impl = false)
     node_name = node.name
 
     type = lookup_type(node_name)
+
+    # Checked before the generic branch: a bare `include Into` on a generic
+    # trait is a trait mistake, not a missing-type-arguments one.
+    if type.trait? && !from_impl
+      directive = kind.extended? ? "extend" : "include"
+      node_name.raise "can't #{directive} #{type}, it's a trait. A type implements a trait by having an `impl #{type} for #{current_type.instance_type}`, which is what lets the orphan rule check it — see SPEC.md R-3"
+    end
+
     case type
     when GenericModuleType
       node.raise "generic type arguments must be specified when including #{type}"
