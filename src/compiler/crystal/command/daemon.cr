@@ -54,6 +54,9 @@ class Crystal::Command
 
         Switches:
             --socket PATH        socket to listen on / connect to
+
+        Set CRYSTAL_DAEMON_SOCKET and an ordinary `crystal build` is served by
+        that daemon too, falling back to a normal build if it is not there.
         USAGE
       exit
     else
@@ -102,6 +105,24 @@ class Crystal::Command
       Set CRYSTAL_DAEMON to point at it directly.
       MSG
     exit 1
+  end
+
+  # Lets `crystal build` go through a daemon without the user retyping the
+  # command: set CRYSTAL_DAEMON_SOCKET and ordinary builds are served by it.
+  #
+  # Opt-in, and it falls back to building normally when nothing is listening —
+  # with a line saying so, because a daemon that quietly died should not look
+  # like a daemon that is working.
+  private def daemon_socket_from_env : String?
+    socket = ENV["CRYSTAL_DAEMON_SOCKET"]?
+    return nil if socket.nil? || socket.empty?
+
+    unless File.exists?(socket)
+      STDERR.puts "crystal: no daemon at #{socket}, building without it"
+      return nil
+    end
+
+    socket
   end
 
   private def daemon_socket_path : String
@@ -298,12 +319,18 @@ class Crystal::Command
     JSON.parse(String.new(bytes))
   end
 
-  private def daemon_build
-    path = daemon_socket_path
+  # Returns only when *fallback* is set and no daemon answered; otherwise it
+  # runs the build to completion and exits with the daemon's status.
+  private def daemon_build(path : String? = nil, fallback : Bool = false)
+    path ||= daemon_socket_path
 
     begin
       client = UNIXSocket.new(path)
     rescue ex : Socket::Error | File::Error
+      if fallback
+        STDERR.puts "crystal: daemon at #{path} did not answer, building without it"
+        return
+      end
       abort! "no daemon listening on #{path} (start one with `crystal daemon start`)", :FAILURE
     end
 

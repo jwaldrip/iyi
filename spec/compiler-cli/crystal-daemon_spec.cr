@@ -170,6 +170,35 @@ describe "`crystal daemon`" do
     end
   end
 
+  it "builds anyway when CRYSTAL_DAEMON_SOCKET points at nothing" do
+    # Opting in to a daemon must never be able to stop a build. A daemon that
+    # died should cost the speedup and nothing else — but it has to say so,
+    # rather than leave the impression that builds are still being served.
+    with_temp_executable "daemon-env-absent" do |output_path|
+      result = Process.capture_result(crystal, "build", "-o", output_path,
+        fixture_path("hello-world.cr"),
+        env: {"CRYSTAL_DAEMON_SOCKET" => "/nonexistent/build.sock"})
+
+      result.should be_success
+      result.error.should contain("building without it")
+      Process.capture_result(output_path).should(be_success).output.should(eq("hello world\n"))
+    end
+  end
+
+  it "serves an ordinary `crystal build` when CRYSTAL_DAEMON_SOCKET names a daemon" do
+    with_daemon do |socket|
+      with_temp_executable "daemon-env-served" do |output_path|
+        result = Process.capture_result(crystal, "build", "-o", output_path,
+          fixture_path("hello-world.cr"),
+          env: {"CRYSTAL_DAEMON_SOCKET" => socket})
+
+        result.should be_success
+        result.error.should_not contain("building without it")
+        Process.capture_result(output_path).should(be_success).output.should(eq("hello world\n"))
+      end
+    end
+  end
+
   it "still builds correctly when flags differ from the daemon's prelude" do
     # Macros branch on flags, so such a build cannot adopt the analysed
     # prelude and has to analyse its own. It must be correct, not just fast.

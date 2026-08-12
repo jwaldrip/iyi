@@ -93,6 +93,11 @@ class Crystal::Command
       init
     when "build".starts_with?(command)
       options.shift
+      # A daemon named by the environment serves ordinary builds too, so the
+      # speed does not depend on remembering to type `daemon build`.
+      if socket = daemon_socket_from_env
+        daemon_build(socket, fallback: true)
+      end
       build
       report_warnings
       exit 1 if warnings_fail_on_exit?

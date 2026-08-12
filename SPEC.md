@@ -961,6 +961,12 @@ than about compilation:
   restart. Nanoseconds, not seconds: a rebuild landing in the same second as the
   daemon's start is exactly the case to catch.
 
+**Using it should not require remembering it.** With `CRYSTAL_DAEMON_SOCKET` set,
+an ordinary `crystal build` is served by that daemon — 1.00 s against 1.85 s on
+the same warm cache — and falls back to a normal build, with a line saying so,
+when nothing answers. Opting in to a daemon must never be able to *stop* a build;
+the worst it may cost is the speedup.
+
 **Builds run one at a time, and that is not laziness.** The obvious
 fiber-per-connection version was written and dropped: a forked child inherits the
 parent's live fibers, and the scheduler runs them as soon as the child blocks on
