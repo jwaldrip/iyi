@@ -354,6 +354,54 @@ means an impl that applies only for some `T`, and a conditional impl is a
 different mechanism from the unconditional one — it has to be checked where the
 type is instantiated, not where the impl is written.
 
+### II.8 What a trait is, and is not — **SETTLED**
+
+Draft 0 said `impl Trait for Type` and left "trait" undefined. The first
+implementation desugared it to a module, which compiled but meant a trait and a
+module were the same thing: `include Greet` worked, `using Greet` worked, and
+`abstract def` was Crystal's abstract method rather than a requirement of
+anything. Writing the checks settled what the word means.
+
+**The distinction is at the declaration and use sites, not in the type
+hierarchy.** This is the finding, and it went the opposite way from the
+expectation. A trait has to *be* a type — `def render(x : Showable)` is
+ordinary iyi, and it dispatches to the impl — and everything that makes that
+work is what a module already does: it holds the required and default methods,
+an impl registers the implementing type against it, and a call on a
+trait-typed receiver resolves through the set of implementers. Rebuilding that
+as a separate kind of type would mean reimplementing restriction matching,
+union dispatch and codegen to arrive back where it started.
+
+So `TraitType` is a *subclass* of the module type. What it adds is the ability
+to refuse four things:
+
+| Written | Refused because |
+|---|---|
+| `include Greet` / `extend Greet` | A type acquires a trait by having an impl, whose location R-3 can check. `include` has no such rule — it is the open-class hole under a different name. |
+| `using Greet` | A trait exports no names to bring into scope. By II.3 rule 1 a trait method is resolved from the receiver, never from a `using`, so the two never meet. |
+| `impl SomeModule for X` | A module has no requirements to satisfy and nothing for R-3 to check. Only a trait is implementable. |
+| `impl Greet for SomeTrait` | A blanket impl in disguise, refused for the reason II.7 gives. |
+
+The selective form of `using` may still *name* a trait —
+`using app/show::{Showable}` uses the module and selects a type from it, which
+is II.3 working as specified.
+
+**`abstract def` is a requirement, checked where the impl is written.**
+Crystal's abstract-method check reports at the point the type is first *used*,
+names the type rather than the impl, and says nothing at all if the type is
+never used. The trait reading is different in all three: an impl that does not
+satisfy the trait is wrong when it is written, whether or not anything uses it.
+The check is local — it needs the trait's declaration and this impl, never a
+global pass, which is what R-1 requires of it.
+
+A requirement is satisfied by the method existing on the target, not strictly
+by the impl block defining it. A `def show` written on the struct itself lives
+in the type's own module, which is exactly where R-3 would let an impl live, so
+accepting it opens no coherence hole.
+
+**Not yet built:** associated types (`type Elem`, II.6) are not parsed, and a
+trait cannot yet require another trait.
+
 ---
 
 ## Part III — Open questions, with recommendations
