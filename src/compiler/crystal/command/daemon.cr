@@ -95,6 +95,14 @@ class Crystal::Command
       loop do
         client = server.accept
         begin
+          if preanalysed.stale?
+            elapsed = Time.instant
+            preanalysed = Compiler.new.preanalyse_prelude
+            Compiler.preanalysed = preanalysed
+            STDERR.puts "prelude changed, re-analysed in #{elapsed.elapsed.total_seconds.round(3)}s"
+            STDERR.flush
+          end
+
           daemon_serve(server, client)
         rescue ex
           STDERR.puts "daemon: #{ex.message}"

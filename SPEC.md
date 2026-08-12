@@ -864,6 +864,46 @@ The other honest limit: codegen's own prelude cost is untouched — 0.7 s of the
 2.2 s build, now the dominant term — and reducing it is the object-code
 section's job, which Crystal's existing `.o` reuse already does part of.
 
+### IV.1d The daemon — the measurement, shipped
+
+`crystal daemon` analyses the prelude once and forks a child per build, so the
+1.9× above is available to an actual user without `.iyimod` existing. Measured
+on `hello.iyi`, five consecutive builds with the output deleted each time:
+
+| | |
+|---|---|
+| `crystal build` | 2.19 s |
+| `crystal daemon build` | **1.12–1.31 s** |
+| prelude analysed once, at startup | 1.07 s |
+
+Diagnostics and exit status are identical to a normal build on all nine gate
+programs, and the binaries it produces behave identically on all four samples.
+
+Three things it has to get right, all of which are about being a *daemon* rather
+than about compilation:
+
+- **Staleness.** It holds an analysed prelude across edits to that prelude. The
+  fingerprint is every file in `program.requires` with its modification time,
+  checked per request; a changed prelude is re-analysed before the build. Tested
+  by adding a method to `String`, watching a previously failing program compile,
+  removing it, and watching the error come back.
+- **Flags.** Macros branch on flags, so an analysis made under one set cannot
+  serve a build under another. Requests carrying different flags fall back to
+  analysing their own prelude: `--release` and `-Dfoo` measure 1.65 s against
+  0.64 s for a matching request, which is the fallback working rather than
+  failing.
+- **Its own socket.** `UNIXServer#close` unlinks the socket file, so the forked
+  child closing its inherited copy took the daemon's address away from every
+  later client while the daemon went on listening, looking healthy. `close(delete:
+  false)` in the child.
+
+**What it is not.** It cannot cross machines or sessions, it holds one prelude
+and so serves one flag set quickly, it builds one program at a time, and it needs
+a single-threaded compiler because `fork` is unavailable in a multi-threaded
+build. It is scaffolding that `.iyimod` will replace — worth having because it
+delivers the win now and because every latent single-run assumption it trips over
+is one `.iyimod` would have tripped over later.
+
 **The artifact alone is worth 3.4×, not 20×, and the gap is not the artifact's
 fault.** Where the child's 0.45 s goes:
 

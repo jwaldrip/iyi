@@ -281,7 +281,30 @@ module Crystal
       getter processor : TypeDeclarationProcessor
       getter key : String
 
+      # Every file the prelude pulled in, with the modification time it had when
+      # it was read. A daemon outlives edits to its own sources, so serving a
+      # build from an analysis of a since-edited prelude is the one way it can
+      # be silently, confusingly wrong.
+      getter fingerprint : Hash(String, Time)
+
       def initialize(@program, @node, @processor, @key)
+        @fingerprint = {} of String => Time
+        @program.requires.each do |filename|
+          if info = File.info?(filename)
+            @fingerprint[filename] = info.modification_time
+          end
+        end
+      end
+
+      # Whether the prelude on disk has moved out from under this analysis.
+      # Files added since are not detectable from here — a new `require` in an
+      # edited file shows up as that file's own mtime changing, which is what
+      # actually triggers the reload.
+      def stale? : Bool
+        @fingerprint.any? do |filename, mtime|
+          info = File.info?(filename)
+          info.nil? || info.modification_time != mtime
+        end
       end
     end
 
