@@ -4227,6 +4227,35 @@ module Crystal
       end
 
       assert_syntax_error "def f(x : T) forall T :\nend", "expecting token 'CONST'"
+
+      # `!` is not part of a name in iyi (SPEC III.1.7, decision A), so that
+      # postfix `!` is free to mean error propagation. The mode comes from the
+      # file extension: the very same source stays legal Crystal.
+      it "rejects `!` at the end of a def name" do
+        ex = expect_raises(SyntaxException, "`!` can't be part of a name in iyi") do
+          parse("def sort!\nend", filename: "x.iyi")
+        end
+        ex.line_number.should eq(1)
+        ex.column_number.should eq(9)
+      end
+
+      it "rejects `!` at the end of a call name" do
+        # Rejected at the call site too, not only at the definition: this is
+        # where `sort!` and `sort` + propagation would collide.
+        expect_raises(SyntaxException, "`!` can't be part of a name in iyi") do
+          parse("a.sort!", filename: "x.iyi")
+        end
+      end
+
+      it "keeps `!` in a name in a Crystal file" do
+        parse("def sort!\nend", filename: "x.cr").as(Def).name.should eq("sort!")
+      end
+
+      it "leaves the other uses of `!` and `?` alone" do
+        parse("!a", filename: "x.iyi").should eq(Not.new("a".call))
+        parse("a != b", filename: "x.iyi").as(Call).name.should eq("!=")
+        parse("a.empty?", filename: "x.iyi").as(Call).name.should eq("empty?")
+      end
     end
   end
 end

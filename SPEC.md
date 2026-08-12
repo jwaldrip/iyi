@@ -610,7 +610,7 @@ Draft 0 requires the error type to already be a member of the caller's return
 union; conversion is written by hand. Recommend keeping it that way until real
 code proves it unbearable.
 
-### III.1.7 The conflict this design creates — **needs your call**
+### III.1.7 The conflict this design creates — **SETTLED — A**
 
 Working through the operator surfaced a problem the earlier draft only gestured
 at. It is not cosmetic.
@@ -659,9 +659,30 @@ read(path)!.strip.parse!          # A
 Postfix wins wherever a fallible call is part of a larger expression, which is
 most of the time.
 
-**Recommendation: A.** It costs one Ruby convention and buys an operator with no
-special cases. But this is a taste decision about the language's surface, so it
-is yours.
+**Decided: A.** It costs one Ruby convention and buys an operator with no
+special cases.
+
+The compiler enforces this today. `!` may not end a name in a `.iyi` file; `?`
+still may. The mode comes from the file extension, so a `.cr` file is unaffected
+and the prelude — which is full of `sort!` and `not_nil!` — keeps compiling.
+
+The rejection applies at **call sites as well as definitions**. Banning only
+`def sort!` would leave `arr.sort!` lexing as a single name, which is exactly the
+room the operator needs. Since no iyi standard library exists yet, and no sample
+used such a name, this cost nothing to adopt — which is why it was worth settling
+before any stdlib code was written rather than after.
+
+Two deliberate gaps:
+
+- **Symbol literals are exempt.** `:sort!` is still legal in a `.iyi` file. A
+  symbol is a literal, not an identifier, and since no iyi method can be *named*
+  `sort!`, such a symbol can only ever refer to a Crystal method. The ambiguity
+  being removed lives in call syntax, not in symbols.
+- **Macro expansion is exempt.** Code expanded inside a `.iyi` file is parsed
+  against a `VirtualFile`, so it lexes in Crystal mode and can still generate a
+  name ending in `!`. The decision is about hand-written surface syntax, so this
+  is defensible; closing it would mean making `VirtualFile` carry the mode of the
+  file it expands into.
 
 #### III.1.8 Worked comparison
 
@@ -1246,11 +1267,11 @@ Named honestly, so nobody mistakes this draft for complete.
 6. **Macro cost.** Still unmeasured. The one gap in the measurement record; the
    attempt to isolate it was invalid because the test program never called the
    generated methods.
-7. **Stdlib naming convention.** If III.1.7(A) is accepted, `!` leaves
-   identifiers and the mutating/non-mutating pair becomes `sort` / `sorted`.
-   That is a convention the entire standard library has to be designed around
-   from the first commit, so it needs deciding before any stdlib code exists —
-   not after.
+7. ~~Stdlib naming convention.~~ **Settled by III.1.7(A)** — `!` has left
+   identifiers and the mutating/non-mutating pair is `sort` / `sorted`. Settled
+   while no stdlib code existed yet, which was the whole point: it is a
+   convention the entire library has to be designed around from the first
+   commit, and it is now enforced by the compiler rather than left to style.
 8. **`defer` semantics.** Ordering of multiple `defer`s in a scope, and whether
    a `defer` may itself propagate with `!`. Go's answers (LIFO; no) are probably
    right but are not automatic here.
@@ -1284,7 +1305,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | # | Decision | Recommendation |
 |---|---|---|
 | 1 | Errors as unions at all (III.1) | yes — biggest departure from Ruby feel, so it is a taste call |
-| 2 | `!` in identifiers vs `!` as propagation (III.1.7) | drop `!` from identifiers, adopt `sort`/`sorted` |
+| 2 | ~~`!` in identifiers vs `!` as propagation (III.1.7)~~ | **Decided: A** — `!` dropped from identifiers, `sort`/`sorted` adopted, enforced by the compiler |
 | 3 | Implicit error conversion (III.1.6) | no, for Draft 0 |
 | 4 | Nil-propagation operator (III.1.5) | not in Draft 0 |
 | 5 | `pub using` re-export (II.3) | no, for Draft 0 |

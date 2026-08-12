@@ -16,6 +16,13 @@ module Crystal
     property line_number : Int32
     property column_number : Int32
     property wants_symbol : Bool
+
+    # iyi: true while lexing a `.iyi` file, where `!` is not part of an
+    # identifier (SPEC III.1.7, decision A). Derived from the filename rather
+    # than passed in, because every parser that reads a file from disk sets
+    # `filename` immediately after construction and nothing else needs to know.
+    property? iyi = false
+
     @filename : String | VirtualFile | Nil
     @stacked_filename : String | VirtualFile | Nil
     @token_end_location : Location?
@@ -95,6 +102,7 @@ module Crystal
 
     def filename=(filename)
       @filename = filename
+      @iyi = filename.is_a?(String) && filename.ends_with?(".iyi")
     end
 
     def next_token
@@ -1177,11 +1185,38 @@ module Crystal
         next_char
       end
       if current_char.in?('?', '!') && peek_next_char != '='
+        check_iyi_bang if current_char == '!'
         next_char
       end
       @token.type = :IDENT
       @token.value = string_range_from_pool(start)
       @token
+    end
+
+    # iyi: `!` may not end an identifier (SPEC III.1.7, decision A).
+    #
+    # Crystal lets `!` end a method name, which makes `arr.sort!` genuinely
+    # ambiguous once postfix `!` propagates errors: it is either a call to
+    # `sort!`, or a call to `sort` whose error is propagated. Resolving that by
+    # preferring the method name is worse than the ambiguity, because then
+    # *adding* a `sort!` to a type silently changes what existing call sites
+    # mean — the action at a distance R-3 exists to remove. So the character is
+    # taken out of identifiers instead, and the naming convention carries the
+    # distinction: the plain verb mutates, the participle returns a new value.
+    #
+    # This is rejected at every occurrence rather than only at `def`, because
+    # the ambiguity lives at the call site: banning the definition while still
+    # lexing `arr.sort!` as one name would leave the operator with no room.
+    private def check_iyi_bang
+      return unless @iyi
+
+      raise <<-MSG, @line_number, @column_number
+        `!` can't be part of a name in iyi
+
+        Name the mutating form after the plain verb and the non-mutating form
+        after the participle — `sort` mutates, `sorted` returns a new value.
+        Postfix `!` is reserved for error propagation.
+        MSG
     end
 
     def next_char_and_symbol(value)
