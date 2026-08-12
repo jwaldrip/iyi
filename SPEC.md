@@ -769,10 +769,15 @@ beat. Front end only; 5 runs, median; single-threaded compiler build.
 
 | Program | Front end today | Artifact (top level cached) | + prelude-aware passes |
 |---|---|---|---|
-| `hello.iyi` | 1.58 s | 0.47 s — 3.4× | 0.049 s — 32× |
+| `hello.iyi` | 1.58 s | 0.47 s — 3.4× | 0.049 s — 32×† |
 | `webapp.iyi` (the Kemal port) | 1.54 s | 0.45 s — 3.4× | — |
-| 19.5k lines, 1500 types, 4500 methods | 2.39 s | 1.39 s — 1.7× | 0.94 s — 2.6× |
+| 19.5k lines, 1500 types, 4500 methods | 2.39 s | 1.39 s — 1.7× | 0.94 s — 2.6×† |
 | prelude-free floor (`--prelude=empty`) | 0.09 s | — | — |
+
+† Read IV.1e before quoting these. The third column measures a prelude analysed
+all the way through `main`, which is more than Part IV's artifact carries and
+which fails on any program that subclasses a prelude type. The number is a
+ceiling on a configuration that does not work, not a target.
 
 **The third column is reachable, and it was verified past the front end.** The
 probe can go on to emit object code (`IYI_FORK_CODEGEN=1`). Under both models the
@@ -861,16 +866,50 @@ assumptions in ways that only fail when a program is analysed in two pieces.
 That is the real content of "make the passes prelude-aware", and it is found by
 running the split, not by reading the code.
 
-**A fourth, diagnosed and still open.** `Program#finished_hooks` accumulates and
-is never cleared, and every top-level pass re-visits all of it. Under the full
-model the parent runs a complete analysis of the prelude — main and cleanup
-included — and the child's top-level pass then re-accepts hook nodes that were
-already typed and rewritten by that earlier pass. On the compiler's own source
-this surfaces as `can't infer the type of instance variable '@inner' of
-Crystal::TypeException`, raised from inside macro expansion during the child's
-top-level pass, before any type declarations have run. The fix is to make hooks
-belong to the pass that discovered them rather than to the program, which is a
-change to how hooks are scoped and is not attempted here.
+### IV.1e What the fourth failure revealed about the experiment
+
+The full model's remaining failure on the compiler was worth chasing to the
+bottom, because the answer is about the experiment rather than about a bug.
+
+Two plausible causes were wrong. It was not `finished_hooks` accumulating across
+runs, and it was not the flag above. The actual chain, from the compiler's own
+stack rather than from reading:
+
+```
+force_add_subclass → add_subclass → notify_subclass_added → Call#on_new_subclass
+```
+
+**A subclass observer is a `Call` registered during `main`, and notifying it
+re-types that call.** In an ordinary compile this can never fire mid-declaration:
+every type exists before `main` runs. Under the full model the parent had already
+run `main`, so the child's top-level pass declaring `TypeException < CodeError`
+re-typed a prelude call against a type whose instance variables were not declared
+yet — hence a complaint about `@inner`, three layers away from the cause.
+
+Holding those notifications until the end of the top-level pass fixes that layer
+and exposes the next one: `instance variable '@dependencies' of Crystal::ASTNode
+must be Crystal::SmallNodeList, not Nil`, i.e. nodes bound by the completed run
+being re-bound by the new one.
+
+That deferral is **not** in the tree. It passed the whole suite — 3350 semantic,
+1811 codegen, 3962 parser — so removing it was a scope decision rather than a
+correctness one: it changes a core mechanism to serve a configuration that still
+does not work, and the knowledge it produced is this section. Whoever builds the
+real prelude-aware passes will need it, and will find it here.
+
+**The pattern is the finding.** The full model restores a prelude analysed
+*through `main` and `cleanup`* and then declares new types against it. Part IV's
+artifact deliberately carries types, signatures, impl records and layout
+templates — **not typed method bodies**. So the full model was measuring a
+configuration the design does not ask for, and its layered failures are what
+"analysis complete, now declare more types into it" costs.
+
+This corrects the third column of IV.1a: **32× is the value of a configuration
+that does not work**, not a target. The genuine version of "prelude-aware passes"
+— parent stops at the end of the top-level phase exactly as the artifact model
+does, and the child's *later* passes skip prelude subtrees — has not been built
+or measured. It is the honest next experiment, and it is unaffected by everything
+above, because it never runs `main` twice.
 
 **Where it stands:** the artifact model now compiles all nine gate programs, a
 targeted regression for each bug above, and the compiler itself. The full model
