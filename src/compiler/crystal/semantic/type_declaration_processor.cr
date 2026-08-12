@@ -195,6 +195,15 @@ struct Crystal::TypeDeclarationProcessor
       var.add_annotation(annotation_type, ann)
     end
 
+    # Redeclaring must not lose an initializer that was already computed for
+    # this variable. Only a split analysis can get here with one — declarations
+    # are processed before initializers are visited, so within a single run the
+    # existing var never has one — and dropping it would both fail the
+    # non-nilable check and leave the variable uninitialized at runtime.
+    if (existing = vars[name]?) && (existing_initializer = existing.initializer)
+      var.initializer = existing_initializer
+    end
+
     vars[name] = var
 
     var
@@ -385,7 +394,22 @@ struct Crystal::TypeDeclarationProcessor
     # If a superclass already defines this variable we ignore
     # the guessed type information for subclasses
     supervar = owner.lookup_instance_var?(name)
-    return if supervar
+    if supervar
+      # Unless this is a module that already carries the variable and has since
+      # gained a type that includes it. That happens when the analysis is split
+      # across runs — the fork probe, and any `.iyimod` restoring a module the
+      # current run then includes — where the module was processed while
+      # `raw_including_types` was still empty. Returning here would leave the
+      # including type without the variable, and it only fails much later, when
+      # the initializer is attached. In a single run this is unreachable: the
+      # module cannot already own the variable the first time it is processed.
+      if supervar.owner == owner && (owner.is_a?(NonGenericModuleType) || owner.is_a?(GenericModuleType))
+        owner.raw_including_types.try &.each do |including_type|
+          process_owner_guessed_instance_var_declaration(including_type, name, type_info)
+        end
+      end
+      return
+    end
 
     case owner
     when NonGenericClassType

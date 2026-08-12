@@ -822,10 +822,43 @@ forever. That silently broke the linker, `expand_lib_flags`, and `macro_run`
 alike; restarting the reader fixes all three.
 
 So a prelude daemon — analyse once, fork per build — is not blocked on `.iyimod`
-at all. What it is still blocked on: **compiling the compiler itself fails under
-both models**, because the split runs `TypeDeclarationProcessor` twice and part
-of its work is global rather than per-tree. Nine smaller programs pass; that one
-does not. Until it does, 3.0× is a result on small programs, not a build system.
+at all.
+
+### IV.1c Two bugs the split found, which `.iyimod` would have hit anyway
+
+Making the artifact model compile the compiler itself took fixing two defects in
+`TypeDeclarationProcessor`. Both are latent today and unreachable in a single
+run, and both are certain to reappear the moment analysis is restored from an
+artifact rather than recomputed. They are the first concrete evidence of what
+Part IV costs beyond the file format.
+
+1. **A module's guessed instance variables never reached types that included it
+   later.** `process_owner_guessed_instance_var_declaration` returns early when
+   the owner already has the variable — which doubles as "already processed" —
+   and that skipped the transfer to `raw_including_types`. When `IO::Buffered` is
+   analysed in one run and `Socket` includes it in the next, `Socket` never gets
+   `@in_buffer`, and it surfaces far away, as a nil assertion while attaching the
+   initializer.
+
+2. **Redeclaring a variable discarded its initializer.**
+   `declare_meta_type_var` always builds a fresh `MetaTypeVar` and replaces the
+   old one. In a single run that is safe, because declarations are processed
+   before initializers are visited. Across a split it silently dropped every
+   prelude class variable's initializer — caught here by the non-nilable check,
+   but the same clobbering would have left them uninitialized at runtime.
+
+The pattern in both: **passes assume they see the whole program once.** Not
+"they are slow", which is what IV.1a measured — they encode single-run
+assumptions in ways that only fail when a program is analysed in two pieces.
+That is the real content of "make the passes prelude-aware", and it is found by
+running the split, not by reading the code.
+
+**Where it stands:** the artifact model now compiles all nine gate programs, a
+targeted regression for each bug above, and the compiler itself. The full model
+still fails on the compiler — `can't infer the type of instance variable
+'@inner' of Crystal::TypeException` — so its 3.0× remains a result on small
+programs. The artifact model's 1.9× is the one that survives contact with a real
+codebase.
 
 The other honest limit: codegen's own prelude cost is untouched — 0.7 s of the
 2.2 s build, now the dominant term — and reducing it is the object-code

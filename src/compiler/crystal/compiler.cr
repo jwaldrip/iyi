@@ -355,7 +355,10 @@ module Crystal
             probe_trace "[probe] child: parsed\n"
             user_node = program.normalize(Expressions.from(nodes))
 
-            user_node, processor = program.top_level_semantic(user_node)
+            # Continue with the parent's processor: `Socket` is declared here but
+            # includes `IO::Buffered`, which was declared there, and only a
+            # shared processor gives the class the module's instance variables.
+            user_node, processor = program.top_level_semantic(user_node, processor: prelude_processor)
             probe_trace "[probe] child: top level done\n"
 
             result = if full

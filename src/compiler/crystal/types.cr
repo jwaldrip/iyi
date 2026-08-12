@@ -1219,7 +1219,8 @@ module Crystal
       meta_vars ||= MetaVars.new
 
       unless self.is_a?(GenericType)
-        instance_var = lookup_instance_var(name)
+        instance_var = lookup_instance_var?(name) ||
+                       raise "BUG: #{self} has no instance var #{name} when adding its initializer"
         instance_var.bind_to(value)
       end
 

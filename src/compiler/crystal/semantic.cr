@@ -73,7 +73,16 @@ class Crystal::Program
   #
   # This alone is useful for some tools like doc or hierarchy
   # where a full semantic of the program is not needed.
-  def top_level_semantic(node, main_visitor : MainVisitor = MainVisitor.new(self))
+  # *processor* lets a caller continue with an existing
+  # `TypeDeclarationProcessor` instead of a fresh one. The processor accumulates
+  # which type owns which instance variable, and `process_instance_vars_declarations`
+  # only walks the owners *it* recorded — so a run that analyses a module and a
+  # later run that analyses a type including that module have to share one, or
+  # the second never learns to give the including type the module's variables.
+  # Only the fork probe needs this today; a `.iyimod` would restore these tables
+  # rather than recompute them.
+  def top_level_semantic(node, main_visitor : MainVisitor = MainVisitor.new(self),
+                         processor : TypeDeclarationProcessor? = nil)
     new_expansions = @progress_tracker.stage("Semantic (top level)") do
       visitor = TopLevelVisitor.new(self)
 
@@ -91,7 +100,7 @@ class Crystal::Program
       define_new_methods(new_expansions)
     end
     node, processor = @progress_tracker.stage("Semantic (type declarations)") do
-      TypeDeclarationProcessor.new(self).process(node)
+      (processor || TypeDeclarationProcessor.new(self)).process(node)
     end
 
     @progress_tracker.stage("Semantic (abstract def check)") do
