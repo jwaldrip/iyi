@@ -1,0 +1,56 @@
+module std/traits
+
+pub trait Cmp
+  abstract def cmp(other : self) : Int32
+
+  def lt(other : self) : Bool
+    cmp(other) < 0
+  end
+
+  def gt(other : self) : Bool
+    cmp(other) > 0
+  end
+end
+
+pub trait Num : Cmp
+  abstract def add(other : self) : self
+  abstract def mul(other : self) : self
+end
+
+pub trait Hashable
+  abstract def hash_key : Int32
+end
+
+impl Cmp for Int32
+  def cmp(other : self) : Int32
+    self - other
+  end
+end
+
+impl Num for Int32
+  def add(other : self) : self
+    self + other
+  end
+
+  def mul(other : self) : self
+    self * other
+  end
+end
+
+impl Hashable for Int32
+  def hash_key : Int32
+    self
+  end
+end
+
+impl Cmp for String
+  def cmp(other : self) : Int32
+    self <=> other
+  end
+end
+
+impl Hashable for String
+  def hash_key : Int32
+    size
+  end
+end

@@ -1,0 +1,579 @@
+# `Enumerable`, ported — SPEC.md II.6.
+#
+# The load-bearing abstraction of Crystal's standard library: 71 method names
+# in 117 defs, written against a single `abstract def each`, included by 17
+# types. If traits
+# cannot express this shape, the library cannot be written in Crystal's idiom
+# and the ergonomics half of the pitch fails. So this file is the evidence for
+# the claim, not an illustration of it.
+#
+#   ./bin/crystal run samples/iyi/collections.iyi
+#
+# 57 of those 71 names are here, in 58 defs. Every one of them is called by
+# `collections.iyi`, because a default method that is never called is never
+# typed — compiling this file proves nothing on its own.
+#
+# It needs all three of what II.6 said it would need, and nothing else:
+#
+#   * `type Elem` — an associated type. The element type is an output of the
+#     impl, not something the caller picks. Were it a parameter, one type could
+#     implement `Enumerable(String)` and `Enumerable(Int32)` and `arr.map`
+#     would be ambiguous about which impl it meant.
+#   * `forall U` on methods — `map`, `flat_map`, `group_by`, `min_by`,
+#     `reduce`, `accumulate` and eight more. `U` belongs to the method, not to
+#     the trait.
+#   * `where Elem : Cmp` — about a quarter of `Enumerable` is valid only for
+#     some element types. `max`, `min`, `sum`, `product`, `tally`, `sorted`,
+#     `includes?` and `minmax` say so instead of duck-typing.
+#
+# What the port corrected in the spec's own sketch:
+#
+#   * II.6 writes `abstract def each(&block : Elem -> Nil)`. That form
+#     *captures* the block into a `Proc`, and a captured block cannot `return`
+#     from the enclosing method — which kills early exit in `find`, `any?`,
+#     `all?`, `none?`, `first`, `take`, `take_while`, `empty?`, `index` and
+#     `find_value`. The block has to be typed without being captured, as
+#     `& : Elem -> Nil`, and yielded. That is the form the Crystal stdlib uses
+#     for the same reason.
+#   * Crystal spells two of these `find!` and `index!`. With `!` out of
+#     identifiers (III.1.7) the port takes the convention `Enumerable` already
+#     uses everywhere else — `max?`/`max`, `first?`/`first` — and applies it
+#     here too: `?` is the nilable one, the plain name raises. Dropping `!`
+#     made the library *more* consistent, not less.
+
+module std/enumerable
+
+import std/traits
+using std/traits::{Cmp, Num, Hashable}
+
+pub trait Enumerable
+  type Elem
+
+  abstract def each(& : Elem -> Nil) : Nil
+
+  # ---- building ------------------------------------------------------------
+
+  def to_a : Array(Elem)
+    result = [] of Elem
+    each { |e| result << e }
+    result
+  end
+
+  def size : Int32
+    n = 0
+    each { |e| n = n + 1 }
+    n
+  end
+
+  def empty? : Bool
+    each { |e| return false }
+    true
+  end
+
+  # ---- predicates ----------------------------------------------------------
+
+  def all?(& : Elem -> Bool) : Bool
+    each { |e| return false unless yield e }
+    true
+  end
+
+  def any?(& : Elem -> Bool) : Bool
+    each { |e| return true if yield e }
+    false
+  end
+
+  def none?(& : Elem -> Bool) : Bool
+    each { |e| return false if yield e }
+    true
+  end
+
+  def one?(& : Elem -> Bool) : Bool
+    found = false
+    each do |e|
+      if yield e
+        return false if found
+        found = true
+      end
+    end
+    found
+  end
+
+  def count(& : Elem -> Bool) : Int32
+    n = 0
+    each { |e| n = n + 1 if yield e }
+    n
+  end
+
+  # ---- searching -----------------------------------------------------------
+  #
+  # Crystal spells these `find` (nilable) and `find!` (raises). With `!` out of
+  # identifiers, the port takes the convention `Enumerable` already uses
+  # everywhere else — `max?`/`max`, `first?`/`first` — and applies it here too:
+  # `?` is the nilable one, the plain name is the one that raises.
+
+  def find?(& : Elem -> Bool) : Elem?
+    each { |e| return e if yield e }
+    nil
+  end
+
+  def find(& : Elem -> Bool) : Elem
+    each { |e| return e if yield e }
+    raise "no element matched"
+  end
+
+  def index?(& : Elem -> Bool) : Int32?
+    i = 0
+    each do |e|
+      return i if yield e
+      i = i + 1
+    end
+    nil
+  end
+
+  def index(& : Elem -> Bool) : Int32
+    i = 0
+    each do |e|
+      return i if yield e
+      i = i + 1
+    end
+    raise "no element matched"
+  end
+
+  def first? : Elem?
+    each { |e| return e }
+    nil
+  end
+
+  def first : Elem
+    each { |e| return e }
+    raise "empty"
+  end
+
+  # ---- transforming --------------------------------------------------------
+  #
+  # `U` belongs to the method, not to the trait: `map` is one method that works
+  # for every result type, not one trait per result type (SPEC.md II.6).
+
+  def map(& : Elem -> U) : Array(U) forall U
+    result = [] of U
+    each { |e| result << yield e }
+    result
+  end
+
+  def flat_map(& : Elem -> Array(U)) : Array(U) forall U
+    result = [] of U
+    each { |e| (yield e).each { |inner| result << inner } }
+    result
+  end
+
+  def map_with_index(& : Elem, Int32 -> U) : Array(U) forall U
+    result = [] of U
+    i = 0
+    each do |e|
+      result << yield e, i
+      i = i + 1
+    end
+    result
+  end
+
+  def select(& : Elem -> Bool) : Array(Elem)
+    result = [] of Elem
+    each { |e| result << e if yield e }
+    result
+  end
+
+  def reject(& : Elem -> Bool) : Array(Elem)
+    result = [] of Elem
+    each { |e| result << e unless yield e }
+    result
+  end
+
+  def partition(& : Elem -> Bool) : Array(Array(Elem))
+    yes = [] of Elem
+    no = [] of Elem
+    each do |e|
+      if yield e
+        yes << e
+      else
+        no << e
+      end
+    end
+    [yes, no]
+  end
+
+  def take(n : Int32) : Array(Elem)
+    result = [] of Elem
+    each do |e|
+      return result if result.size >= n
+      result << e
+    end
+    result
+  end
+
+  def skip(n : Int32) : Array(Elem)
+    result = [] of Elem
+    i = 0
+    each do |e|
+      result << e if i >= n
+      i = i + 1
+    end
+    result
+  end
+
+  def take_while(& : Elem -> Bool) : Array(Elem)
+    result = [] of Elem
+    each do |e|
+      return result unless yield e
+      result << e
+    end
+    result
+  end
+
+  def skip_while(& : Elem -> Bool) : Array(Elem)
+    result = [] of Elem
+    skipping = true
+    each do |e|
+      skipping = false if skipping && !yield e
+      result << e unless skipping
+    end
+    result
+  end
+
+  # ---- folding -------------------------------------------------------------
+
+  def reduce(initial : U, & : U, Elem -> U) : U forall U
+    acc = initial
+    each { |e| acc = yield acc, e }
+    acc
+  end
+
+  def each_with_index(& : Elem, Int32 -> Nil) : Nil
+    i = 0
+    each do |e|
+      yield e, i
+      i = i + 1
+    end
+  end
+
+  def each_with_object(obj : U, & : U, Elem -> Nil) : U forall U
+    each { |e| yield obj, e }
+    obj
+  end
+
+  def join(separator : String) : String
+    result = ""
+    first = true
+    each do |e|
+      result = result + separator unless first
+      result = result + e.to_s
+      first = false
+    end
+    result
+  end
+
+  # ---- needing something of the element type -------------------------------
+  #
+  # About a quarter of `Enumerable` is valid only for some element types. This
+  # is where `where` earns its place: the trait says so, instead of duck-typing
+  # and failing at instantiation with a message naming neither the bound nor
+  # the element type.
+
+  def includes?(value : Elem) : Bool where Elem : Cmp
+    each { |e| return true if e.cmp(value) == 0 }
+    false
+  end
+
+  def max? : Elem? where Elem : Cmp
+    best = nil
+    each do |e|
+      current = best
+      best = e if current.nil? || e.gt(current)
+    end
+    best
+  end
+
+  def max : Elem where Elem : Cmp
+    found = max?
+    return found unless found.nil?
+    raise "empty"
+  end
+
+  def min? : Elem? where Elem : Cmp
+    best = nil
+    each do |e|
+      current = best
+      best = e if current.nil? || e.lt(current)
+    end
+    best
+  end
+
+  def min : Elem where Elem : Cmp
+    found = min?
+    return found unless found.nil?
+    raise "empty"
+  end
+
+  def sum(initial : Elem) : Elem where Elem : Num
+    acc = initial
+    each { |e| acc = acc.add(e) }
+    acc
+  end
+
+  def product(initial : Elem) : Elem where Elem : Num
+    acc = initial
+    each { |e| acc = acc.mul(e) }
+    acc
+  end
+
+  def tally : Hash(Elem, Int32) where Elem : Hashable
+    counts = {} of Elem => Int32
+    each { |e| counts[e] = (counts[e]? || 0) + 1 }
+    counts
+  end
+
+  def sorted : Array(Elem) where Elem : Cmp
+    to_a.sort { |a, b| a.cmp(b) }
+  end
+
+  # ---- needing something of the block's result type -------------------------
+
+  def max_by(& : Elem -> U) : Elem forall U : Cmp
+    best = nil
+    best_key = nil
+    each do |e|
+      key = yield e
+      current = best_key
+      if current.nil? || key.gt(current)
+        best = e
+        best_key = key
+      end
+    end
+    found = best
+    return found unless found.nil?
+    raise "empty"
+  end
+
+  def group_by(& : Elem -> U) : Hash(U, Array(Elem)) forall U : Hashable
+    groups = {} of U => Array(Elem)
+    each do |e|
+      key = yield e
+      bucket = groups[key]?
+      if bucket.nil?
+        groups[key] = [e]
+      else
+        bucket << e
+      end
+    end
+    groups
+  end
+
+  def index_by(& : Elem -> U) : Hash(U, Elem) forall U : Hashable
+    result = {} of U => Elem
+    each { |e| result[yield e] = e }
+    result
+  end
+
+  def each_slice(n : Int32) : Array(Array(Elem))
+    slices = [] of Array(Elem)
+    current = [] of Elem
+    each do |e|
+      current << e
+      if current.size == n
+        slices << current
+        current = [] of Elem
+      end
+    end
+    slices << current unless current.empty?
+    slices
+  end
+
+  def each_cons(n : Int32) : Array(Array(Elem))
+    result = [] of Array(Elem)
+    window = [] of Elem
+    each do |e|
+      window << e
+      window.shift if window.size > n
+      result << window.dup if window.size == n
+    end
+    result
+  end
+
+  def chunk_while(& : Elem, Elem -> Bool) : Array(Array(Elem))
+    chunks = [] of Array(Elem)
+    current = [] of Elem
+    previous = nil
+    each do |e|
+      last = previous
+      if last.nil? || (yield last, e)
+        current << e
+      else
+        chunks << current
+        current = [e]
+      end
+      previous = e
+    end
+    chunks << current unless current.empty?
+    chunks
+  end
+
+  def cycle(n : Int32, & : Elem -> Nil) : Nil
+    i = 0
+    while i < n
+      each { |e| yield e }
+      i = i + 1
+    end
+  end
+
+  def first(n : Int32) : Array(Elem)
+    take(n)
+  end
+
+  def compact_map(& : Elem -> U?) : Array(U) forall U
+    result = [] of U
+    each do |e|
+      value = yield e
+      result << value unless value.nil?
+    end
+    result
+  end
+
+  def find_value(& : Elem -> U?) : U? forall U
+    each do |e|
+      value = yield e
+      return value unless value.nil?
+    end
+    nil
+  end
+
+  def accumulate(initial : U, & : U, Elem -> U) : Array(U) forall U
+    acc = initial
+    result = [acc]
+    each do |e|
+      acc = yield acc, e
+      result << acc
+    end
+    result
+  end
+
+  def reduce?(& : Elem, Elem -> Elem) : Elem?
+    acc = nil
+    each do |e|
+      current = acc
+      acc = current.nil? ? e : (yield current, e)
+    end
+    acc
+  end
+
+  def in_groups_of(n : Int32, filler : Elem) : Array(Array(Elem))
+    groups = each_slice(n)
+    last = groups.last?
+    if last
+      while last.size < n
+        last << filler
+      end
+    end
+    groups
+  end
+
+  def zip(other : O) : Array(Tuple(Elem, O::Elem)) forall O : Enumerable
+    # SPEC.md II.6 finding 6: Crystal's
+    # `zip(*others : Indexable | Iterable | Iterator)` is duck typing left over
+    # from having no traits. One bound replaces the union, and `O::Elem` names
+    # what the other collection yields without the caller stating it.
+    theirs = other.to_a
+    result = [] of Tuple(Elem, O::Elem)
+    i = 0
+    each do |e|
+      result << {e, theirs[i]} if i < theirs.size
+      i = i + 1
+    end
+    result
+  end
+
+  def min_by(& : Elem -> U) : Elem forall U : Cmp
+    best = nil
+    best_key = nil
+    each do |e|
+      key = yield e
+      current = best_key
+      if current.nil? || key.lt(current)
+        best = e
+        best_key = key
+      end
+    end
+    found = best
+    return found unless found.nil?
+    raise "empty"
+  end
+
+  def max_of(& : Elem -> U) : U forall U : Cmp
+    best = nil
+    each do |e|
+      key = yield e
+      current = best
+      best = key if current.nil? || key.gt(current)
+    end
+    found = best
+    return found unless found.nil?
+    raise "empty"
+  end
+
+  def min_of(& : Elem -> U) : U forall U : Cmp
+    best = nil
+    each do |e|
+      key = yield e
+      current = best
+      best = key if current.nil? || key.lt(current)
+    end
+    found = best
+    return found unless found.nil?
+    raise "empty"
+  end
+
+  def minmax : Tuple(Elem, Elem) where Elem : Cmp
+    low = min
+    high = max
+    {low, high}
+  end
+
+  def tally_by(& : Elem -> U) : Hash(U, Int32) forall U : Hashable
+    counts = {} of U => Int32
+    each do |e|
+      key = yield e
+      counts[key] = (counts[key]? || 0) + 1
+    end
+    counts
+  end
+
+  def sum_by(initial : U, & : Elem -> U) : U forall U : Num
+    acc = initial
+    each { |e| acc = acc.add(yield e) }
+    acc
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Not ported, and why
+# ---------------------------------------------------------------------------
+#
+# * `sum` and `product` with no argument. They need an additive and a
+#   multiplicative identity, which means a trait requiring a *class*-level
+#   method — `abstract def self.zero : self`. That is refused today
+#   ("can't define abstract def on metaclass"), so both take an explicit
+#   `initial` here. This is the one gap the port hit that needs language work
+#   rather than more typing.
+#
+# * `to_h`, `chunks`, `in_slices_of` — they destructure the element as a pair
+#   or a tuple, which needs the element type to be constrained to a shape
+#   rather than to a trait.
+#
+# * `sample`, `each_step`, `step` — `Random` and numeric stepping, neither of
+#   which is about `Enumerable`.
+#
+# * `max_by?`, `min_by?`, `minmax_by`, `minmax_of`, `max_of?` and the rest of
+#   the nilable-variant family. They are mechanical repeats of the ones here
+#   and would prove nothing further.
+#
+# * Crystal's specialisations, where `Indexable` overrides `size` or `first`
+#   with an O(1) version. That is II.6's `@[Monomorphize]` question and the
+#   dictionary-passing design, neither of which is implemented.

@@ -1,0 +1,124 @@
+# The `Enumerable` port, exercised — SPEC.md II.6.
+#
+#   ./bin/crystal run samples/iyi/collections.iyi
+#
+# `std/enumerable.iyi` holds the trait. This file implements it twice and calls
+# every method it defines. Both matter: a default method is only typed when it
+# is called, so a trait that merely compiles has proved nothing about whether
+# its bodies are sound.
+#
+# `Nums` and `Words` answer `Elem` differently — `Int32` and `String` — and each
+# gets the same 57 default methods from one `each`. That is the claim II.6
+# makes, running.
+
+module samples/collections
+
+import std/enumerable
+using std/enumerable::{Enumerable}
+
+pub struct Nums
+  def initialize(@a : Array(Int32))
+  end
+end
+
+impl Enumerable for Nums
+  type Elem = Int32
+  def each(& : Int32 -> Nil) : Nil
+    @a.each { |x| yield x }
+  end
+end
+
+pub struct Words
+  def initialize(@a : Array(String))
+  end
+end
+
+impl Enumerable for Words
+  type Elem = String
+  def each(& : String -> Nil) : Nil
+    @a.each { |x| yield x }
+  end
+end
+
+n = Nums.new([3, 1, 4, 1, 5])
+w = Words.new(["pear", "fig", "plum", "kiwi"])
+
+puts "to_a            #{n.to_a.join(",")}"
+puts "size            #{n.size}"
+puts "empty?          #{n.empty?} #{Nums.new([] of Int32).empty?}"
+puts "all?            #{n.all? { |x| x > 0 }}"
+puts "any?            #{n.any? { |x| x > 4 }}"
+puts "none?           #{n.none? { |x| x > 9 }}"
+puts "one?            #{n.one? { |x| x == 4 }}"
+puts "count           #{n.count { |x| x == 1 }}"
+puts "find?           #{n.find? { |x| x > 3 }} #{n.find? { |x| x > 9 }.inspect}"
+puts "find            #{n.find { |x| x > 3 }}"
+puts "index?          #{n.index? { |x| x == 4 }}"
+puts "index           #{n.index { |x| x == 4 }}"
+puts "first?/first    #{n.first?} #{n.first}"
+puts "map             #{n.map { |x| x * 2 }.join(",")}"
+puts "flat_map        #{n.flat_map { |x| [x, x] }.join(",")}"
+puts "map_with_index  #{n.map_with_index { |x, i| x * i }.join(",")}"
+puts "select          #{n.select { |x| x > 2 }.join(",")}"
+puts "reject          #{n.reject { |x| x > 2 }.join(",")}"
+puts "partition       #{n.partition { |x| x > 2 }.map(&.join("+")).join(" | ")}"
+puts "take/skip       #{n.take(2).join(",")} #{n.skip(3).join(",")}"
+puts "take_while      #{n.take_while { |x| x < 4 }.join(",")}"
+puts "skip_while      #{n.skip_while { |x| x < 4 }.join(",")}"
+puts "reduce          #{n.reduce(0) { |a, x| a + x }}"
+puts "each_with_index #{n.map_with_index { |x, i| i }.join(",")}"
+puts "each_with_object #{n.each_with_object([] of Int32) { |o, e| o << e * 10 }.join(",")}"
+puts "join            #{n.join("-")}"
+puts "includes?       #{n.includes?(4)} #{n.includes?(9)}"
+puts "max?/max        #{n.max?} #{n.max}"
+puts "min?/min        #{n.min?} #{n.min}"
+puts "sum/product     #{n.sum(0)} #{n.product(1)}"
+puts "tally           #{n.tally[1]}"
+puts "sorted          #{n.sorted.join(",")}"
+puts "max_by          #{w.max_by { |s| s.size }}"
+puts "group_by        #{w.group_by { |s| s.size }[4].join(",")}"
+puts "index_by        #{w.index_by { |s| s.size }[3]}"
+
+puts "each_slice      #{n.each_slice(2).map(&.join("+")).join(" ")}"
+puts "each_cons       #{n.each_cons(2).map(&.join("+")).join(" ")}"
+puts "chunk_while     #{n.chunk_while { |a, b| b >= a }.map(&.join("+")).join(" ")}"
+puts "first(n)        #{n.first(3).join(",")}"
+puts "compact_map     #{n.compact_map { |x| x > 2 ? x * 10 : nil }.join(",")}"
+puts "find_value      #{n.find_value { |x| x > 3 ? "big" : nil }}"
+puts "accumulate      #{n.accumulate(0) { |a, x| a + x }.join(",")}"
+puts "reduce?         #{n.reduce? { |a, x| a + x }}"
+puts "in_groups_of    #{n.in_groups_of(2, 0).map(&.join("+")).join(" ")}"
+puts "min_by          #{w.min_by { |s| s.size }}"
+puts "max_of/min_of   #{w.max_of { |s| s.size }} #{w.min_of { |s| s.size }}"
+puts "minmax          #{n.minmax[0]},#{n.minmax[1]}"
+puts "tally_by        #{w.tally_by { |s| s.size }[4]}"
+puts "sum_by          #{w.sum_by(0) { |s| s.size }}"
+
+# SPEC II.6 finding 6: one bound replaces `Indexable | Iterable | Iterator`,
+# and `O::Elem` names what the other collection yields.
+puts "zip             #{n.zip(w).map { |pair| "#{pair[0]}#{pair[1]}" }.join(" ")}"
+
+cycled = [] of Int32
+Nums.new([1, 2]).cycle(2) { |x| cycled << x }
+puts "cycle           #{cycled.join(",")}"
+
+# A trait with an associated type used as a type: one function, any implementer.
+def describe(e : Enumerable) : String
+  "#{e.size} items"
+end
+puts "as a type       #{describe(n)} / #{describe(w)}"
+
+# ---------------------------------------------------------------------------
+# What this sample would report as an error
+# ---------------------------------------------------------------------------
+#
+# * `Words.new([...]).sum(0)` — `sum` is bounded `where Elem : Num` and
+#   `String` implements `Cmp` but not `Num`. The error names the element type
+#   and the bound rather than failing somewhere inside the method body.
+#
+# * A second `impl Enumerable for Nums` — a trait with an associated type is
+#   implementable once per type, because a second answer for `Elem` would make
+#   every call on `Nums` ambiguous.
+#
+# * `impl Num for X` with no `impl Cmp for X` before it — `Num : Cmp` requires
+#   it, and the impls have to be written in dependency order.

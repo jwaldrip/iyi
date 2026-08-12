@@ -229,13 +229,45 @@ cannot be written in Crystal's idiom and the ergonomics half of the pitch fails.
 It ports. But it required three things Draft 0 did not have, and exposed one
 genuine conflict.
 
+**It now ports in the compiler, not on paper.**
+`samples/iyi/std/enumerable.iyi` carries **57 of Crystal's 71 distinct method
+names** (58 defs against Crystal's 117, which counts overloads), all written
+against one `abstract def each`. `samples/iyi/collections.iyi` implements it for
+two types that answer `Elem` differently and calls every one of them — a default
+method that is never called is never typed, so a trait that merely compiles
+proves nothing. What is left out is listed at the foot of the port, and is
+mostly the nilable-variant family (`minmax?`, `max_by?`) and methods that
+destructure the element (`to_h`, `chunks`). It needed the
+three things below and nothing else. Three findings came out of the port that
+this section had wrong or had not reached:
+
+- **The block must not be captured.** The sketch below writes
+  `abstract def each(&block : Elem -> Nil)`. That form captures the block into
+  a `Proc`, and a captured block cannot `return` from the enclosing method —
+  which removes early exit from `find`, `any?`, `all?`, `none?`, `first`,
+  `take`, `take_while`, `empty?`, `index` and `find_value`. It has to be typed
+  without being captured, `& : Elem -> Nil`, and yielded. Corrected below.
+- **Dropping `!` made the library more consistent.** Crystal spells two of
+  these `find!` and `index!`, against its own `max?`/`max` and `first?`/`first`
+  convention, only because plain `find` was already taken by the nilable one.
+  With `!` gone (III.1.7) the port uses `find?`/`find` and `index?`/`index`
+  throughout. The naming decision paid here rather than cost.
+- **A trait cannot require a class-level method.** `sum` and `product` with no
+  argument need an additive and a multiplicative identity, which means
+  `abstract def self.zero : self`. That is refused — "can't define abstract def
+  on metaclass" — so both take an explicit `initial`. This is the one gap the
+  port hit that needs language work rather than more typing.
+
+Finding 6 below is realised too: `zip` is `forall O : Enumerable`, and `O::Elem`
+names what the other collection yields without the caller stating it.
+
 **1. Traits need associated types as well as parameters.**
 
 ```
 pub trait Enumerable
-  type Elem                                       # an output of the impl
-  abstract def each(&block : Elem -> Nil) : Nil   # required
-  def to_a : Array(Elem)                          # default, has a body
+  type Elem                                     # an output of the impl
+  abstract def each(& : Elem -> Nil) : Nil      # required, and not captured
+  def to_a : Array(Elem)                        # default, has a body
     # ...
   end
 end
@@ -1356,7 +1388,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | Dictionaries cost ~3–4 cycles per call | 17.5× on a vectorisable loop, 1.21× where neither side vectorises, 1.00× with real work per element |
 | `macro_run` must go | 21% of a cold build from one call site |
 | `method_missing` is safe to cut | one occurrence in stdlib, zero in Kemal |
-| Traits can carry the stdlib | `Enumerable` — 130 methods on one `each` — ports, given associated types, method-level type params and `where` bounds |
+| Traits can carry the stdlib | `Enumerable` ported and running: 57 of its 71 method names on one `each`, implemented for two element types, every method called (`samples/iyi/std/enumerable.iyi`) |
 | Coherence costs nothing at build time | the import DAG plus the orphan rule make duplicate impls unrepresentable (IV.4) |
 
 ## Appendix B — Decisions awaiting your call
