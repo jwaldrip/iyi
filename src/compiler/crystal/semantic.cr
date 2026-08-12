@@ -27,9 +27,15 @@ class Crystal::Program
   # fork probe can run the top-level pass over the prelude and over the user
   # file separately and then finish over the combined tree. Calling
   # `top_level_semantic` and then this is exactly `semantic`.
+  #
+  # *also_check* is for the fork probe, whose prelude was processed by a
+  # different `TypeDeclarationProcessor` in the parent. Its class-var check has
+  # to happen here rather than earlier, because it can only run once the
+  # initializers have been visited below.
   def semantic_after_top_level(node : ASTNode, processor : TypeDeclarationProcessor,
                                cleanup = true,
-                               main_visitor : MainVisitor = MainVisitor.new(self)) : ASTNode
+                               main_visitor : MainVisitor = MainVisitor.new(self),
+                               also_check : TypeDeclarationProcessor? = nil) : ASTNode
     @progress_tracker.stage("Semantic (ivars initializers)") do
       visitor = InstanceVarsInitializerVisitor.new(self)
       Prof.span("  ivars: node.accept") { node.accept visitor }
@@ -44,6 +50,7 @@ class Crystal::Program
     # Check that class vars without an initializer are nilable,
     # give an error otherwise
     processor.check_non_nilable_class_vars_without_initializers
+    also_check.try &.check_non_nilable_class_vars_without_initializers
 
     result = @progress_tracker.stage("Semantic (main)") do
       visit_main(node, process_finished_hooks: true, cleanup: cleanup, visitor: main_visitor)

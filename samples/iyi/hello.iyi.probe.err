@@ -1,0 +1,12 @@
+[33mUsing compiled compiler at .build/crystal[0m
+Showing last frame. Use --error-trace for full trace.
+
+In /tmp/claude-1000/-home-uzumaki-playground-crystal/43065138-7587-4219-a7d5-b6c9ba7da655/scratchpad/nomethod.iyi:4:7
+
+ 4 | "x".no_such_method_here
+         ^------------------
+Error: undefined method 'no_such_method_here' for String
+
+=== IYI_FORK_PROBE ===
+prelude top level (parent, paid once) 00:00:01.159799716
+front end with prelude already analysed 00:00:00.372758349

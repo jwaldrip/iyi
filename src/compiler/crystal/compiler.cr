@@ -235,6 +235,7 @@ module Crystal
     # Yields a `Program` instance before compiling.
     def compile_configure_program(source : Source | Array(Source), output_filename : String, & : Program -> Nil) : Result
       source = [source] unless source.is_a?(Array)
+      return prelude_fork_probe(source) if ENV["IYI_FORK_PROBE"]?
       program = new_program(source)
       yield program
       node = parse program, source
@@ -253,6 +254,87 @@ module Crystal
       Prof.report
 
       Result.new program, node
+    end
+
+    # Measures what a compile costs when the prelude has already been analysed,
+    # gated behind IYI_FORK_PROBE=1. Temporary instrumentation, like `Prof`.
+    #
+    # The parent runs the top-level passes over the prelude alone and forks. The
+    # child then compiles the user program against a `Program` that already has
+    # the prelude in it, so restoring the prelude costs it a `fork` — around a
+    # millisecond, a floor no serialised `.iyimod` can beat. The child's elapsed
+    # time is therefore the ceiling of the whole `.iyimod` idea, obtainable
+    # without designing the format.
+    #
+    # Front-end only: the child stops after semantic analysis. Codegen and
+    # linking are LLVM's and the linker's problem, and `.iyimod`'s object-code
+    # section addresses them separately.
+    #
+    # Note what the child still does: the top-level pass runs over the user file
+    # only, but every pass after it walks the combined tree, and three of them
+    # walk the whole type graph. That residual is the point of the measurement —
+    # it is the work a `.iyimod` would *not* remove on its own.
+    private def prelude_fork_probe(sources : Array(Source)) : NoReturn
+      {% unless flag?(:without_mt) %}
+        STDERR.puts "IYI_FORK_PROBE needs a single-threaded compiler: make crystal sequential_codegen=1"
+        exit 1
+      {% else %}
+        program = new_program(sources)
+
+        prelude_elapsed = Time.instant
+        location = Location.new(program.filename, 1, 1)
+        prelude_node = program.normalize(Expressions.new([Require.new(prelude).at(location)] of ASTNode))
+        prelude_node, prelude_processor = program.top_level_semantic(prelude_node)
+        prelude_taken = prelude_elapsed.elapsed
+        @progress_tracker.clear
+
+        pid = Crystal::System::Process.fork do
+          child_elapsed = Time.instant
+          begin
+            nodes = sources.map do |source|
+              program.requires.add source.filename
+              parse(program, source).as(ASTNode)
+            end
+            user_node = program.normalize(Expressions.from(nodes))
+
+            user_node, processor = program.top_level_semantic(user_node)
+
+            # The prelude was processed by the parent's own processor, so its
+            # class-var check has to be threaded through as well, or the child
+            # would skip a check a normal compile performs.
+            combined = Expressions.from([prelude_node, user_node] of ASTNode)
+            program.semantic_after_top_level(combined, processor,
+              cleanup: !no_cleanup?, also_check: prelude_processor)
+          rescue ex : Crystal::CodeError
+            # Same decision the driver makes in `Command#run`, so the child's
+            # diagnostics are byte-identical to a normal compile's.
+            ex.color = color? && Colorize.default_enabled?(STDOUT, STDERR)
+            ex.error_trace = show_error_trace?
+            STDERR.puts ex
+            report_probe(prelude_taken, child_elapsed.elapsed)
+            STDOUT.flush
+            STDERR.flush
+            LibC._exit 1
+          end
+
+          report_probe(prelude_taken, child_elapsed.elapsed)
+          STDOUT.flush
+          STDERR.flush
+          LibC._exit 0
+        end
+
+        status = ::Process.new(Crystal::System::Process.new(pid.not_nil!)).wait
+        exit status.exit_code
+      {% end %}
+    end
+
+    private def report_probe(prelude_taken : Time::Span, child_taken : Time::Span) : Nil
+      @progress_tracker.clear
+      Prof.report
+      STDERR.puts
+      STDERR.puts "=== IYI_FORK_PROBE ==="
+      STDERR.puts "prelude top level (parent, paid once) #{prelude_taken}"
+      STDERR.puts "front end with prelude already analysed #{child_taken}"
     end
 
     # Runs the semantic pass on the given source, without generating an
