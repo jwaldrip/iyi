@@ -1,0 +1,213 @@
+# Kemal's modular router, ported to iyi from `kemal/src/kemal/router.cr` (337
+# lines). This is the acceptance test the design named: the hardest DSL in the
+# Crystal ecosystem for "no open classes, no global macros".
+#
+# What is deliberately not ported, and why:
+#
+# * `HTTP::Server::Context`, WebSocket and SSE — they need the stdlib, and
+#   they add no construct the routes do not already exercise. `Context` here
+#   is a stub.
+# * `Kemal::RouteHandler::INSTANCE` and the other global mutable singletons.
+#   `router.cr:270` carries a workaround for them — "may have been cleared
+#   between tests" — and a clean sheet is the moment to stop. Registration
+#   returns a value instead.
+module kemal/router
+
+pub struct Context
+  getter method : String
+  getter path : String
+
+  def initialize(@method : String, @path : String)
+  end
+end
+
+# The finding the port produced. Kemal types a route block as
+# `HTTP::Server::Context -> _` and coerces the result on every request:
+#
+#     result = block.call(ctx)
+#     result.is_a?(String) ? result : ""     # router.cr:301
+#
+# Mandatory export signatures forbid `_`, so the block's return type has to be
+# named — and once it is named, the coercion becomes a bound. The check moves
+# from every request to compile time, and a user can now make their own type
+# returnable by implementing the trait, which Kemal cannot offer.
+pub trait IntoBody
+  abstract def into_body : String
+end
+
+impl IntoBody for String
+  def into_body : String
+    self
+  end
+end
+
+impl IntoBody for Nil
+  def into_body : String
+    ""
+  end
+end
+
+impl IntoBody for Int32
+  def into_body : String
+    to_s
+  end
+end
+
+HTTP_METHODS   = %w(get post put patch delete options head)
+FILTER_METHODS = %w(get post put patch delete options)
+
+pub class Router
+  alias Handler = Context -> String
+
+  private record RouteDefinition,
+    method : String,
+    path : String,
+    handler : Handler
+
+  private record FilterDefinition,
+    kind : Symbol,
+    method : String,
+    path : String,
+    handler : Handler
+
+  private record SubRouter,
+    path : String,
+    router : Router
+
+  getter prefix : String
+
+  @routes : Array(RouteDefinition)
+  @filters : Array(FilterDefinition)
+  @sub_routers : Array(SubRouter)
+
+  def initialize(@prefix : String = "")
+    @routes = [] of RouteDefinition
+    @filters = [] of FilterDefinition
+    @sub_routers = [] of SubRouter
+  end
+
+  # The macro loop ports unchanged — it reads a module-local constant and
+  # emits declarations into its own module, which is legal under R-5. The one
+  # addition is `forall B : IntoBody` on each generated signature.
+  {% for method in HTTP_METHODS %}
+    pub def {{ method.id }}(path : String, &block : Context -> B) : Nil forall B : IntoBody
+      add_route({{ method.upcase }}, path, &block)
+    end
+  {% end %}
+
+  pub def before(path : String = "*", &block : Context -> B) : Nil forall B : IntoBody
+    add_filter(:before, "ALL", path, &block)
+  end
+
+  pub def after(path : String = "*", &block : Context -> B) : Nil forall B : IntoBody
+    add_filter(:after, "ALL", path, &block)
+  end
+
+  {% for method in FILTER_METHODS %}
+    pub def before_{{ method.id }}(path : String = "*", &block : Context -> B) : Nil forall B : IntoBody
+      add_filter(:before, {{ method.upcase }}, path, &block)
+    end
+
+    pub def after_{{ method.id }}(path : String = "*", &block : Context -> B) : Nil forall B : IntoBody
+      add_filter(:after, {{ method.upcase }}, path, &block)
+    end
+  {% end %}
+
+  # `with sub_router yield` survives: the block's receiver type is known
+  # statically, so it is not `instance_eval` and needs no open method set.
+  pub def namespace(path : String, &) : Nil
+    sub_router = Router.new
+    with sub_router yield
+    @sub_routers << SubRouter.new(path: path, router: sub_router)
+  end
+
+  pub def mount(path : String, router : Router) : Nil
+    @sub_routers << SubRouter.new(path: path, router: router)
+  end
+
+  # Kemal's `register_routes` pushed into global singletons. This returns the
+  # flattened table instead, which is the same walk without the globals.
+  pub def routes(base_prefix : String = "") : Array(Tuple(String, String))
+    full_prefix = join_paths(base_prefix, @prefix)
+    collected = [] of Tuple(String, String)
+
+    @routes.each do |route|
+      collected << {route.method, join_paths(full_prefix, route.path)}
+    end
+
+    @sub_routers.each do |sub|
+      collected.concat(sub.router.routes(join_paths(full_prefix, sub.path)))
+    end
+
+    collected
+  end
+
+  # Ported from `register_filters`, which is the densest code in the file:
+  # `case` on a symbol, `select` destructuring a tuple, `in?` over a splat,
+  # and `starts_with?`.
+  pub def filters_for(method : String, path : String) : Array(Symbol)
+    applicable = [] of Symbol
+
+    @filters.each do |filter|
+      next unless filter.method.in?("ALL", method)
+
+      matches = if filter.path == "*"
+                  true
+                else
+                  scoped = join_paths(@prefix, filter.path)
+                  path == scoped || path.starts_with?("#{scoped}/")
+                end
+
+      next unless matches
+
+      case filter.kind
+      when :before then applicable << :before
+      when :after  then applicable << :after
+      end
+    end
+
+    applicable
+  end
+
+  pub def dispatch(ctx : Context) : String
+    before = 0
+    after = 0
+    filters_for(ctx.method, ctx.path).each do |kind|
+      case kind
+      when :before then before += 1
+      when :after  then after += 1
+      end
+    end
+
+    body = ""
+    @routes.each do |route|
+      if route.method == ctx.method && join_paths(@prefix, route.path) == ctx.path
+        body = route.handler.call(ctx)
+      end
+    end
+
+    @sub_routers.each do |sub|
+      body = sub.router.dispatch(ctx) if body.empty?
+    end
+
+    "#{before}|#{body}|#{after}"
+  end
+
+  private def add_route(method : String, path : String, &block : Context -> B) : Nil forall B : IntoBody
+    handler = ->(ctx : Context) { block.call(ctx).into_body }
+    @routes << RouteDefinition.new(method: method, path: path, handler: handler)
+  end
+
+  private def add_filter(kind : Symbol, method : String, path : String, &block : Context -> B) : Nil forall B : IntoBody
+    handler = ->(ctx : Context) { block.call(ctx).into_body }
+    @filters << FilterDefinition.new(kind: kind, method: method, path: path, handler: handler)
+  end
+
+  private def join_paths(a : String, b : String) : String
+    a = a.chomp('/')
+    b = b.lchop('/') if b.starts_with?('/')
+    return "/#{b}" if a.empty?
+    return a if b.empty?
+    "#{a}/#{b}"
+  end
+end

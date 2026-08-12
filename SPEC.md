@@ -421,6 +421,53 @@ accepting it opens no coherence hole.
 **Not yet built:** associated types (`type Elem`, II.6) are not parsed, and a
 trait cannot yet require another trait.
 
+### II.9 The Kemal port, compiled — **SETTLED**
+
+The design named Kemal's router as its acceptance test and reported that it
+passed. That port was done **by hand, on paper**. It has now been fed to the
+compiler: `samples/iyi/kemal/{router,dsl}.iyi` and `samples/iyi/webapp.iyi`
+compile and run.
+
+**Everything ported, and one thing had to be built first.** `record`, the macro
+loop over a module-local constant that generates the HTTP verb surface,
+`with sub_router yield`, blocks, procs, `alias`, `case` on symbols, nested
+records, `Array(Tuple(String, String))` — none needed a language change. The
+single feature the port required that did not exist is the method-level trait
+bound of II.7, which is how `HTTP::Server::Context -> _` gets a name. That it
+sat on the acceptance test's critical path is the argument for having built it
+before anything else on the list.
+
+**The runtime coercion is gone, as claimed.** `router.cr:301` runs
+`result.is_a?(String) ? result : ""` on every request. In the port that is
+`forall B : IntoBody`, checked once:
+
+```
+Error: Array(Int32) does not implement Kemal::Router::IntoBody, required by `B` in `get`
+```
+
+Kemal cannot say this — it accepts the block and returns an empty body forever.
+And a user can now make their own type returnable by implementing the trait,
+which Kemal has no way to offer.
+
+**`using` did what II.3 said it would.** `dsl.cr` opens with "Kemal DSL is
+defined here and it's baked into global scope." The port exports the same names
+and the consumer writes `using kemal/dsl`; `before_all`, `get` and `mount` are
+then unqualified in `webapp.iyi`. The Sinatra feel survives without the library
+reaching into the program's namespace.
+
+**The singletons went, and nothing forced it.** `Kemal::RouteHandler::INSTANCE`
+and its three neighbours are replaced by one application value. Separate
+compilation permits module-level state, so this is not a rule doing the work —
+but `router.cr:270` carries "may have been cleared between tests" as a live
+workaround, and a clean sheet is the moment such a line stops being necessary.
+
+**What this does not establish.** `Context` is a stub, so no HTTP, no stdlib,
+and WebSocket/SSE are omitted as they add no construct the routes do not
+already exercise. Registration into handlers is replaced by returning the route
+table. The earlier "+4% size" figure is therefore neither confirmed nor
+refuted here: the ported scope differs, and comparing 142 lines against 173
+would be comparing different programs.
+
 ---
 
 ## Part III — Open questions, with recommendations
