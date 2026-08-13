@@ -531,6 +531,33 @@ module Crystal
     #     if (1 === x && y === 2) || (3 === x && 4 === y)
     #       3
     #     end
+    # iyi: `it` — the value a `case` is matching, named inside every branch
+    # (SPEC.md III.1.1).
+    #
+    # From:
+    #
+    #     case load(path)
+    #     in Config  then serve(it)
+    #     in IOError then log(it.message)
+    #     end
+    #
+    # To, in each branch:
+    #
+    #     it = %temp
+    #     serve(it)
+    #
+    # An assignment rather than anything new, so `it` picks up the narrowing the
+    # branch's `is_a?` already did — in the second branch it is an `IOError`,
+    # not the whole union. It also means `it` outlives the `case` exactly the
+    # way a variable assigned inside an `if` does, which is the rule iyi already
+    # has for every other branch body.
+    private def bind_it(node : Case, body : ASTNode, subject : ASTNode?)
+      return body unless node.binds_it? && subject
+
+      assign = Assign.new(Var.new("it").at(body), subject.clone).at(body)
+      Expressions.new([assign, body] of ASTNode).at(body)
+    end
+
     def expand(node : Case)
       node_cond = node.cond
 
@@ -576,6 +603,10 @@ module Crystal
       final_if = nil
       temp_var = temp_vars.try(&.first)
 
+      # iyi: the subject `it` names inside every branch (SPEC.md III.1.1). Only
+      # where there is exactly one, which is what the parser already gated on.
+      it_subject = temp_vars.try { |vars| vars.first if vars.size == 1 }
+
       node.whens.each do |wh|
         comps = wh.conds.compact_map do |cond|
           next if cond.is_a?(Underscore)
@@ -603,6 +634,8 @@ module Crystal
           end
         end
 
+        wh_body = bind_it(node, wh.body, it_subject)
+
         if comps.present? && comps.all?(IsA)
           # From:
           #     case foo
@@ -618,7 +651,7 @@ module Crystal
           #       qux
           #     end
           comps.each do |comp|
-            wh_if = If.new(comp, wh.body.clone).at(wh)
+            wh_if = If.new(comp, wh_body.clone).at(wh)
             if a_if
               a_if.else = wh_if
             else
@@ -640,7 +673,7 @@ module Crystal
 
         final_comp ||= BoolLiteral.new(true)
 
-        wh_if = If.new(final_comp, wh.body).at(final_comp)
+        wh_if = If.new(final_comp, wh_body).at(final_comp)
         if a_if
           a_if.else = wh_if
         else
@@ -650,9 +683,10 @@ module Crystal
       end
 
       if node.exhaustive?
-        a_if.not_nil!.else = node.else || Unreachable.new
+        node_else = node.else
+        a_if.not_nil!.else = node_else ? bind_it(node, node_else, it_subject) : Unreachable.new
       elsif node_else = node.else
-        a_if.not_nil!.else = node_else
+        a_if.not_nil!.else = bind_it(node, node_else, it_subject)
       end
 
       final_if = final_if.not_nil!

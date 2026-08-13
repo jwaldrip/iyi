@@ -1817,6 +1817,11 @@ module Crystal
     property whens : Array(When)
     property else : ASTNode?
     property? exhaustive : Bool
+    # iyi: whether `it` names the value being matched inside every branch
+    # (SPEC.md III.1.1). Decided by the parser, because the bodies have to be
+    # parsed knowing `it` is a variable rather than a call; the expander is what
+    # assigns it.
+    property? binds_it = false
 
     def initialize(@cond : ASTNode?, @whens : Array(When), @else : ASTNode?, @exhaustive : Bool)
       @whens.each do |wh|
@@ -1831,7 +1836,9 @@ module Crystal
     end
 
     def clone_without_location
-      Case.new(@cond.clone, @whens.clone, @else.clone, @exhaustive)
+      clone = Case.new(@cond.clone, @whens.clone, @else.clone, @exhaustive)
+      clone.binds_it = binds_it?
+      clone
     end
 
     def_equals_and_hash @exhaustive, @cond, @whens, @else

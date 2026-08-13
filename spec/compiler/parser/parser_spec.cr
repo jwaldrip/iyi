@@ -4450,6 +4450,41 @@ module Crystal
         parse("read(path).or_panic", filename: "x.iyi").to_s.should eq("read(path).or_panic")
       end
 
+      # iyi: `it` in a `case` branch (SPEC.md III.1.1). The parser is what has to
+      # know, because this is where an identifier is decided to be a variable
+      # rather than a call.
+      it "reads `it` in a case branch as a variable" do
+        node = parse("case x\nin Int32 then it\nend", filename: "x.iyi").as(Case)
+        node.binds_it?.should be_true
+        node.whens[0].body.should be_a(Var)
+      end
+
+      it "reads `it` in a `when` branch and in the else" do
+        node = parse("case x\nwhen Int32 then it\nelse it\nend", filename: "x.iyi").as(Case)
+        node.whens[0].body.should be_a(Var)
+        node.else.should be_a(Var)
+      end
+
+      it "leaves `it` alone where a case has a tuple subject" do
+        # No single value to name, so it is left a call rather than given one of
+        # the elements.
+        node = parse("case {a, b}\nin {Int32, Int32} then it\nend", filename: "x.iyi").as(Case)
+        node.binds_it?.should be_false
+        node.whens[0].body.should be_a(Call)
+      end
+
+      it "leaves `it` alone in a case with no subject" do
+        node = parse("case\nwhen a then it\nend", filename: "x.iyi").as(Case)
+        node.binds_it?.should be_false
+        node.whens[0].body.should be_a(Call)
+      end
+
+      it "leaves a Crystal file's `it` as an ordinary call" do
+        node = parse("case x\nwhen Int32 then it\nend", filename: "x.cr").as(Case)
+        node.binds_it?.should be_false
+        node.whens[0].body.should be_a(Call)
+      end
+
       it "leaves a Crystal file's `.or` as an ordinary call" do
         # The gate really is the file extension: nothing here reserves the name
         # for a program that never asked for iyi.

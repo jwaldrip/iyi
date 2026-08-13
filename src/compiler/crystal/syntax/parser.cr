@@ -3384,6 +3384,14 @@ module Crystal
         skip_statement_end
       end
 
+      # iyi: `it` names the value being matched inside every branch
+      # (SPEC.md III.1.1). It has to be declared before the bodies are parsed,
+      # because that is where an identifier is decided to be a variable rather
+      # than a call. A tuple subject has no single value to name, so it is left
+      # out rather than given one of its elements.
+      binds_it = iyi? && !cond.nil? && !cond.is_a?(TupleLiteral)
+      push_var_name "it" if binds_it
+
       whens = [] of When
       a_else = nil
       exhaustive = nil
@@ -3496,7 +3504,9 @@ module Crystal
         end
       end
 
-      Case.new(cond, whens, a_else, exhaustive.nil? ? false : exhaustive).at_end(end_location)
+      node = Case.new(cond, whens, a_else, exhaustive.nil? ? false : exhaustive).at_end(end_location)
+      node.binds_it = binds_it
+      node
     end
 
     def check_valid_exhaustive_expression(exp)

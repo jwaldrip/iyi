@@ -2052,6 +2052,99 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
 
+    # iyi: `it` in a `case` branch (SPEC.md III.1.1). An assignment, not new
+    # machinery, so it picks up the narrowing the branch already did.
+    it "binds `it` to the value a case is matching, narrowed per branch" do
+      # `length` takes a `String`, so this only compiles if `it` is the narrowed
+      # value and not the whole union.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read(missing : Bool) : String | IOError
+              return IOError.new if missing
+              "contents"
+            end
+
+            def self.length(s : String) : Int32
+              1
+            end
+
+            def self.go(missing : Bool) : Int32
+              case read(missing)
+              in String  then length(it)
+              in IOError then length(it.message)
+              end
+            end
+          end
+        end
+
+        App::Fails.go(false)
+        CRYSTAL
+    end
+
+    it "binds `it` in a `when` branch and in the else" do
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Fails
+            def self.go(n : Int32) : Int32
+              case n
+              when Int32 then it
+              else            it
+              end
+            end
+          end
+        end
+
+        App::Fails.go(1)
+        CRYSTAL
+    end
+
+    it "leaves `it` undefined where a case has a tuple subject" do
+      # There is no single value to name, so `it` is left a call rather than
+      # bound to one of the elements.
+      assert_error <<-CRYSTAL, "undefined local variable or method 'it'", filename: "x.iyi"
+        module App
+          module Fails
+            def self.go(a : Int32, b : Int32) : Int32
+              case {a, b}
+              in {Int32, Int32} then it
+              end
+            end
+          end
+        end
+
+        App::Fails.go(1, 2)
+        CRYSTAL
+    end
+
+    it "leaves `it` undefined in a Crystal file" do
+      assert_error <<-CRYSTAL, "undefined local variable or method 'it'"
+        module App
+          module Fails
+            def self.go(n : Int32) : Int32
+              case n
+              when Int32 then it
+              else            n
+              end
+            end
+          end
+        end
+
+        App::Fails.go(1)
+        CRYSTAL
+    end
+
     # iyi: `.or(default)` and `.or_panic` — III.1.3's two conveniences, for
     # where a `case` is overkill. Compiler-known rather than trait methods:
     # by II.1 an ordinary call on `Int32 | IOError` would need *both* members

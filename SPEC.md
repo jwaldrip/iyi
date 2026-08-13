@@ -622,11 +622,17 @@ not exhaustive`. `T?` is untouched, since `Nil` does not implement `Error`.
 
 Two things the build found:
 
-- **`it` is not bound in a `case` branch.** The examples in this section write
-  `in IOError then log(it)`; `it` is Crystal's block-parameter shorthand and
-  means nothing in a `case`. Either the examples take a variable, or `case`
-  learns to bind one. The examples below are written the second way and are
-  aspirational until it does.
+- **`it` was not bound in a `case` branch — now it is.** The examples in this
+  section write `in IOError then log(it)`, and `case` has learned to bind the
+  value it is matching. The binding is an ordinary assignment the expander
+  writes into each branch, so `it` picks up the narrowing that branch already
+  did: in the `IOError` branch it *is* an `IOError`, not the whole union. Three
+  consequences follow from it being an assignment rather than new machinery:
+  `it` outlives the `case` exactly the way a variable assigned inside an `if`
+  does; a nested `case` shadows the outer one's `it`; and `it` is a name an iyi
+  program should not use for anything else. A `case` over a tuple subject binds
+  nothing, since there is no single value to name, and a Crystal file is
+  untouched.
 - **The orphan rule is vacuous for a top-level trait.** `Error` has no module,
   and coherence is satisfied by being inside the trait's module *or* the type's
   — where the trait's module is the top level, everyone is inside it. So
