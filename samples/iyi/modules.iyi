@@ -97,7 +97,9 @@ puts App::Formal.title
 # ---------------------------------------------------------------------------
 #
 # * `module app/greeter` is declared in one notation and referred to in
-#   another (`App::Greeter`). SPEC.md Appendix B #6 is where that gets settled.
+#   another (`App::Greeter`). SPEC.md IV.6 #6 is where that gets settled, and
+#   0.1.0 settles it — it is in every line of user code, so it cannot be
+#   changed once there is user code.
 #
 # * Each imported module is still re-analysed from source. `.iyimod` — reading
 #   a module's exported signatures instead of its body — is the whole point of
