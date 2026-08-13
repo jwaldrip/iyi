@@ -1104,7 +1104,7 @@ hook, and the prelude's own definition of it is untouched. Compile-time
 `responds_to?` works unchanged, which the error message is entitled to claim
 because it is tested.
 
-### III.4 Concurrency — **PROPOSED**
+### III.4 Concurrency — **PROPOSED; III.4.4's gate cleared by the count in III.4.7**
 
 This is the section where the design either beats Go or does not, so it is worth
 being blunt about where Go actually loses. Not goroutines: they are cheap, the
@@ -1205,8 +1205,15 @@ why it lost.** The other sound answer without ownership is Erlang's: no sharing
 at all, tasks communicate only by copying. It is simpler and it is proven. It
 was rejected because copying cost is not something a systems language can hide,
 and because `Mutex(T)` gives the escape hatch that Erlang has to route through a
-process. If the experiment below says most real types fail `Share`, that
-judgement was wrong and the Erlang answer is the fallback, not a redesign.
+process. The count in III.4.7 was to be the arbiter, and it came back for
+`Share`: the class this section feared turned out to be empty, and clean-sheet
+iyi code is 77% shareable as written.
+
+**It came back with an obligation attached, though.** Every failure in that
+clean-sheet code is a type holding an `Array`, which makes a **shareable
+immutable collection** a thing the standard library owes the language rather
+than a convenience — without it the `Mutex(T)` escape becomes the normal case,
+and an escape hatch used routinely is the definition of a failed rule.
 
 #### III.4.5 What this settles about module-level state
 
@@ -1233,22 +1240,77 @@ combination does not compile.
   is single-threaded. A multi-threaded runtime and a fork-based daemon are in
   tension, and that is a measured fact rather than a prediction.
 
-#### III.4.7 The experiment that would settle III.4.4
+#### III.4.7 What `Share` costs — **COUNTED**
 
 Every other rule in this document that costs users something was decided by
-counting — 77 of 484 types reopened, 46.6% of instantiations collapsed, one
-`method_missing` in the whole standard library. `Share` deserves the same
-treatment before it is built, and the count is cheap:
+counting, and `Share` was not to be built before the same was done to it. The
+count is `bench/share_count.cr`, which makes the marker mechanical: a field is
+**mutable** if it is assigned anywhere other than the constructor, or if an
+accessor macro generates a setter for it; a type fails if any field is mutable
+or any field's type fails.
 
-> Over `samples/iyi/kemal/*`, `samples/iyi/std/*` and the compiler's own source,
-> how many types would fail `Share`, and how many of those are reached from
-> something that would plausibly be spawned?
+| | `samples/iyi` | the compiler's own source |
+|---|---|---|
+| types that can hold state | 13 | 483 |
+| directly mutable | 0 — 0% | 118 — 24.4% |
+| fail once field types propagate | 3 — 23.1% | 297 — 61.5% |
+| …only because a collection is mutable | 3 — 23.1% | 2 — 0.4% |
+| …only because of a generated setter | 0 | 42 — 8.7% |
+| **pass `Share`** | **10 — 76.9%** | **186 — 38.5%** |
+| pass given a shareable immutable collection | 13 — **100%** | 188 — 38.9% |
+| hold class variables (III.4.5) | 0 | 3 — 0.6% |
 
-The number to fear is types that are immutable in practice but hold a mutable
-field for one initialisation, since those fail the marker while being perfectly
-safe. If that class is large, `Share` needs an escape hatch — an explicit
-unsafe assertion — and an escape hatch that gets used routinely is a failed
-rule. **Nothing here should be built before that count exists.**
+**The class this section told itself to fear is empty.** "Immutable in practice
+but holds a mutable field for one initialisation" describes no type here,
+because a construction-only write is not a mutation — and letting it pass is
+sound rather than lenient: a value is not reachable from another task until it
+exists, so there is no second party to observe the write. Zero of the sample
+types are directly mutable at all. The escape hatch that would have signalled a
+failed rule is not needed for this reason.
+
+**Nor for the reason next most likely.** Only 8.7% of the compiler's types fail
+solely because of a generated setter, so "move the field into the constructor"
+is not a fix anyone would be applying constantly either.
+
+**What the count actually found is that the two corpora disagree, and why.**
+Clean-sheet iyi code is 77% shareable as written and **100% shareable given one
+missing piece**: every failure in it is a type holding an `Array`. The compiler
+is 38.5% shareable and stays there, because its failures are not collections but
+its own mutable object graph — `MainVisitor` with 35 mutated fields, `Compiler`
+with 34, `Formatter` with 32, `Parser` with 30.
+
+So `Share` is not a rule that fails; it is a rule that **prices a style**. It
+costs nothing for code written the way the ported samples are written, and it is
+close to unpayable as a retrofit onto a program built as a mutable workspace.
+
+**The compiler is the control case, and it agrees with something already
+measured the hard way.** IV.1d records that the build server could not be made
+concurrent by adding fibers — the obvious fiber-per-connection version deadlocked
+and died, and the daemon had to fork instead. That took two attempts and a
+debugging session to discover. `Share` says the same thing about the same code
+statically, before anything runs. A marker whose verdict matches a fact that
+previously cost a failed implementation to learn is measuring something real,
+not merely being restrictive.
+
+**Verdict: keep `Share` (Appendix B #9), with one dependency.** The stdlib owes
+the language a **shareable immutable collection**, and it is not optional —
+without it a quarter of clean-sheet iyi types fail the marker for a reason that
+has nothing to do with how they were written, and the only workaround is
+`Mutex(Array(T))` everywhere, which is exactly the routinely-used escape hatch
+that would mean the rule had failed. Rust answers this with an immutable borrow,
+which is not available here; Erlang answers it with immutable collections by
+default, which is. This is the same shape of dependency as II.5's precise
+collector: a language rule that constrains the library from day one.
+
+**Limits.** The tool reads syntax, not types: field types are matched on the
+last segment of their path, so a name used in two namespaces is conflated, and
+`Mutex(T)` is counted as mutable rather than as the synchronised escape it is
+meant to be — which makes these numbers a lower bound on what passes. It also
+cannot answer the second half of the original question, "how many of those are
+reached from something that would plausibly be spawned", for the compiler, which
+spawns nothing. For the samples it can: the three failures are `Nums`, `Words`
+and the Kemal router's route table, and the router is precisely the thing a
+server would share across tasks.
 
 ### III.5 Module initialisation — **PROPOSED; rule 4 BUILT**
 
@@ -1915,6 +1977,8 @@ For traceability, since several rules here rest on numbers rather than taste.
 | Macro expansion is not a compile-time cost | a template macro runs at 1.00–1.05× hand-written code; a computing macro adds ~9 µs per method against the ~18 µs the method costs anyway (II.10) |
 | `method_missing` is safe to cut | one occurrence in stdlib, zero in Kemal |
 | Traits can carry the stdlib | `Enumerable` ported and running: 57 of its 71 method names on one `each`, implemented for two element types, every method called (`samples/iyi/std/enumerable.iyi`) |
+| `Share` prices a style rather than failing | clean-sheet iyi code is 77% shareable as written and 100% given an immutable collection; the compiler, built as a mutable workspace, is 38.5% and stays there (III.4.7) |
+| Module-level mutable state is already rare | 3 of 483 compiler types hold a class variable, so III.4.5 costs almost nothing |
 | Coherence costs nothing at build time | the import DAG plus the orphan rule make duplicate impls unrepresentable (IV.4) |
 
 ## Appendix B — Decisions awaiting your call
@@ -1929,7 +1993,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 6 | `@[Monomorphize]` on stdlib trait defaults (II.6) | yes — mark `each`/`map`/`select`/`reduce`, stencil the rest. Accepts that the library author owns a per-method performance decision |
 | 7 | ~~`!` inside a `defer` (III.1.4, V.8)~~ | **Decided: no** — a `defer` runs while the function is already returning, so propagating from one needs error-during-error semantics |
 | 8 | Structured concurrency only, no bare spawn (III.4.1) | yes — it is `defer` applied to a task set, so it costs no new mechanism, and it makes Go's commonest bug unrepresentable. The price is that a task cannot outlive its scope, which is a taste call |
-| 9 | `Share` marker vs Erlang-style no sharing (III.4.4) | `Share` — but this is the decision most likely to be wrong, and III.4.7's count is what should settle it rather than taste |
+| 9 | ~~`Share` marker vs Erlang-style no sharing (III.4.4)~~ | **Decided: `Share`, on the count** — III.4.7 found the feared class empty and clean-sheet iyi code 77% shareable as written, 100% given a shareable immutable collection. That collection is now a stdlib obligation, not a nicety |
 
 ### B.1 — Why #3, #4 and #7 are one decision
 
