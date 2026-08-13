@@ -1278,10 +1278,24 @@ initialiser has nothing of an unrelated module to look at, and no program can
 tell which of two independent modules went first. The tiebreak therefore does
 not need specifying — there is no experiment that could detect it.
 
-A rule nobody can observe is a rule that rots, so **debug builds shuffle the
-order of independent modules**. This is Go's own trick: map iteration was
+A rule nobody can observe is a rule that rots, so **debug builds should shuffle
+the order of independent modules**. This is Go's own trick: map iteration was
 randomised precisely to stop programs depending on an order the specification
-never promised. Borrowing it here costs nothing and keeps the guarantee true.
+never promised.
+
+**Blocked, and on something worth knowing.** There is nothing to shuffle yet,
+because there is no module initialiser to reorder: `import` today expands the
+imported file *in place*, splicing its top-level nodes where the `import`
+statement stands — a DAG-shaped `require`, which is what
+`SemanticVisitor#import_file` says it is and what its own comment admits about
+namespacing. Initialisation order is therefore textual, and the only way to
+change it is to move code between splice points.
+
+Making the order shuffleable means first making a module's top-level code a
+thing the compiler holds separately from the site that imported it. That is the
+same separation Part IV needs — an artifact cannot store an initialiser it never
+distinguished — so this is not a detour, but it is not a small change either,
+and building the shuffle on the current shape would be building it on sand.
 
 **3. There is no `init()`. A module's top-level expressions are its
 initialiser, in source order.** Go needs two mechanisms — dependency-ordered
@@ -1322,9 +1336,10 @@ module-level constant is a cost paid by every program to solve a problem that
 R-1's DAG already prevents.
 
 **Status.** Rules 1–3 are descriptions of what the compilation model already
-forces and need writing down more than building — the shuffle in rule 2 is the
-only code in them. Rule 4 is built. Rule 5 is the one with a real cost and no
-measurement behind it yet, and it is the one to be suspicious of.
+forces and need writing down more than building. Rule 4 is built. Rule 2's
+shuffle is the only code in 1–3 and it is blocked on separating a module's
+initialiser from its import site, as above. Rule 5 is the one with a real cost
+and no measurement behind it yet, and it is the one to be suspicious of.
 
 ---
 
