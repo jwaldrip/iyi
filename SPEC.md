@@ -1020,6 +1020,152 @@ people actually reach for.
 
 Cut it. Keep compile-time `responds_to?`.
 
+### III.4 Concurrency — **PROPOSED**
+
+This is the section where the design either beats Go or does not, so it is worth
+being blunt about where Go actually loses. Not goroutines: they are cheap, the
+scheduler is good, and nothing here improves on them. Go loses in three places,
+all of them the same shape — **the compiler is not told anything, so the failure
+shows up at runtime or not at all**:
+
+1. **`go f()` is fire-and-forget.** Nobody waits, nobody is told, and a leaked
+   goroutine is invisible. There is no construct that makes "this finished"
+   checkable.
+2. **Data races compile.** Sharing a map across goroutines is legal Go. `-race`
+   is a runtime detector that finds what a particular execution happened to do.
+3. **`context.Context` is a parameter, not a property of the work.** It is
+   viral, appears in nearly every signature, carries values in a
+   `map[any]any`, and cancellation is cooperative — you must remember to select
+   on `Done()` in every loop.
+
+The recommendation below turns each of the three into something the compiler
+knows. It is not built, and none of it is free.
+
+#### III.4.1 Concurrency is introduced by a scope, never by a call
+
+There is no bare spawn. A task is started inside a group, and the group's block
+cannot be left until every task started in it has finished:
+
+```
+pub def fetch_both(a : String, b : String) : Tuple(String, String) | IOError
+  group do |g|
+    x = g.spawn { read(a) }
+    y = g.spawn { read(b) }
+  end!
+end
+```
+
+**This is `defer` again, and that is the argument for it.** III.1.4 built a
+cleanup that runs on a normal exit, on a `!` propagation, and on an unwind, by
+lowering to an `ensure`. A group is that same guarantee applied to a set of
+tasks: the join is deferred to the end of the scope, so there is no exit — not a
+`return`, not an error, not a panic — that leaves a task running. Go's leak is
+unrepresentable, and it costs no new mechanism.
+
+The cost is real and should be stated: a task cannot outlive the scope that
+started it. Work that genuinely must outlive its caller is started from a group
+that lives as long as it should — usually one owned by the program's entry
+point — and that group is written down rather than implied. Trio, Kotlin and
+Swift all landed here; Go is the outlier.
+
+#### III.4.2 Cancellation belongs to the group, not to a parameter
+
+Because a group owns its children, cancellation is a property of the scope, not
+an argument threaded through every signature. There is no `Context` parameter.
+A group cancels its remaining children when the block leaves early, when a
+child fails under the group's policy, or when an enclosing group is cancelled.
+
+**This has a runtime dependency, and it is the same class of dependency as
+II.5's precise collector: it constrains the runtime from day one rather than
+being added later.** Cancellation is worthless unless it reaches a task that is
+*blocked*, so every blocking primitive — channel receive, IO, sleep — has to be
+cancellable. A cooperative check the author has to remember is Go's answer, and
+it is the part of Go's answer people get wrong.
+
+#### III.4.3 A task's failure is an error member
+
+The group returns what its tasks return, and an error from a task is an ordinary
+member of that union — so `!` propagates it (III.1.2) and `case` handles it
+exhaustively (III.1.3). Nothing new is required, which is the whole point:
+Go needed `errgroup`, a library, because `error` carries no type information a
+signature could have stated.
+
+Default policy: the first failing task cancels its siblings and the error leaves
+the group. That is `errgroup`'s behaviour, typed and built in.
+
+#### III.4.4 Data races are a compile error — and R-3 is why that is affordable
+
+A marker trait, `Share`, decided structurally: a type is shareable if every
+field is shareable and none is mutable, or if it is a synchronised type that
+owns its contents — `Mutex(T)` is shareable when `T` is. A value that is not
+shareable cannot be captured by a spawned block or sent over a channel.
+
+This is Rust's `Send`/`Sync` **without** ownership or borrowing, and it is worth
+being exact about what that buys and what it does not. It rules out data races,
+because anything two tasks can both reach is either immutable or synchronised.
+It does not rule out deadlock, and it does not rule out logical races. Aliasing
+is untouched — the restriction is on the *type*, not on who points at what,
+which is exactly why it needs no borrow checker.
+
+**The interaction that makes it affordable is R-3.** A structural marker is only
+computable if a type's field set is final, and open classes are what would
+break that: any module could reopen a type and add a mutable field, and
+shareability would no longer be a property the defining module could state.
+With R-3 it is, so `Share` is computed once by the module that declares the type
+and travels in its export metadata (IV.2) like any other exported fact. A
+consumer checks a spawn against a marker it read from a `.iyimod`, with no
+global pass — the same result IV.4 reaches for coherence, for the same reason.
+
+**This is the decision most likely to be wrong, so here is the alternative and
+why it lost.** The other sound answer without ownership is Erlang's: no sharing
+at all, tasks communicate only by copying. It is simpler and it is proven. It
+was rejected because copying cost is not something a systems language can hide,
+and because `Mutex(T)` gives the escape hatch that Erlang has to route through a
+process. If the experiment below says most real types fail `Share`, that
+judgement was wrong and the Erlang answer is the fallback, not a redesign.
+
+#### III.4.5 What this settles about module-level state
+
+II.9 recorded that the Kemal port replaced `Kemal::RouteHandler::INSTANCE` and
+its neighbours with one application value, and noted that **nothing in the
+design forced it** — separate compilation permits module-level state, so it was
+taste and a suspicious comment in `router.cr:270` doing the work.
+
+III.4.4 is the rule that was missing. Module-level mutable state is not
+shareable, so it is not reachable from a task; it is either immutable or it is
+behind a synchronised type. The Kemal port did by hand what this makes checked,
+and Part V.5's question about the interaction between concurrency and
+module-level mutable state is answered: there is no interaction, because the
+combination does not compile.
+
+#### III.4.6 What carries over from Crystal, and what does not
+
+- **`Channel(T)` carries over**, with `T : Share`.
+- **`select` carries over** unchanged.
+- **`Fiber` does not carry over as a user-facing primitive.** It is how a task
+  is implemented. Exposing a raw spawn puts III.4.1's leak straight back.
+- **Parallelism is not free of the rest of the design.** IV.1d already measured
+  that only the forking thread survives a `fork`, which is why the build daemon
+  is single-threaded. A multi-threaded runtime and a fork-based daemon are in
+  tension, and that is a measured fact rather than a prediction.
+
+#### III.4.7 The experiment that would settle III.4.4
+
+Every other rule in this document that costs users something was decided by
+counting — 77 of 484 types reopened, 46.6% of instantiations collapsed, one
+`method_missing` in the whole standard library. `Share` deserves the same
+treatment before it is built, and the count is cheap:
+
+> Over `samples/iyi/kemal/*`, `samples/iyi/std/*` and the compiler's own source,
+> how many types would fail `Share`, and how many of those are reached from
+> something that would plausibly be spawned?
+
+The number to fear is types that are immutable in practice but hold a mutable
+field for one initialisation, since those fail the marker while being perfectly
+safe. If that class is large, `Share` needs an escape hatch — an explicit
+unsafe assertion — and an escape hatch that gets used routinely is a failed
+rule. **Nothing here should be built before that count exists.**
+
 ---
 
 ## Part IV — `.iyimod`, the module artifact
@@ -1545,9 +1691,13 @@ Named honestly, so nobody mistakes this draft for complete.
 4. **Module initialisation order.** Kemal registers routes as a side effect of
    top-level calls. Legal, but the ordering guarantees across a module DAG need
    stating. Go's `init()` is the reference.
-5. **Concurrency semantics.** `Channel(T)` and `Fiber` carry over from Crystal,
-   but their interaction with module-level mutable state — which the Kemal port
-   flagged as a smell worth fixing — is unspecified.
+5. ~~**Concurrency semantics.**~~ **Specified in III.4** — structured
+   concurrency so a leak is unrepresentable, cancellation owned by the scope
+   rather than threaded through signatures, task failure as an ordinary error
+   member, and a `Share` marker that makes a data race a compile error. The
+   module-level state question the Kemal port flagged is answered by III.4.5:
+   the combination does not compile. Proposed, not built, and III.4.7 names the
+   count that has to come first.
 6. **Macro cost.** Still unmeasured. The one gap in the measurement record; the
    attempt to isolate it was invalid because the test program never called the
    generated methods.
@@ -1598,6 +1748,8 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 5 | `pub using` re-export (II.3) | no, for Draft 0 |
 | 6 | `@[Monomorphize]` on stdlib trait defaults (II.6) | yes — mark `each`/`map`/`select`/`reduce`, stencil the rest. Accepts that the library author owns a per-method performance decision |
 | 7 | ~~`!` inside a `defer` (III.1.4, V.8)~~ | **Decided: no** — a `defer` runs while the function is already returning, so propagating from one needs error-during-error semantics |
+| 8 | Structured concurrency only, no bare spawn (III.4.1) | yes — it is `defer` applied to a task set, so it costs no new mechanism, and it makes Go's commonest bug unrepresentable. The price is that a task cannot outlive its scope, which is a taste call |
+| 9 | `Share` marker vs Erlang-style no sharing (III.4.4) | `Share` — but this is the decision most likely to be wrong, and III.4.7's count is what should settle it rather than taste |
 
 ### B.1 — Why #3, #4 and #7 are one decision
 
