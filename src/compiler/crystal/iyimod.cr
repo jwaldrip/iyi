@@ -26,16 +26,16 @@ require "./config"
 #
 # ## What is not here yet
 #
-# `Hashes`, `Exports`, `MacroBodies`, `MonoBodies` and `ObjectCode` are named in
-# `Section` and not written. The kinds are declared now so that a file written
-# today is readable by the compiler that adds them: an unknown section is
-# skipped, a known one that is absent is simply absent.
+# `Hashes`, `MacroBodies`, `MonoBodies` and `ObjectCode` are named in `Section`
+# and not written. The kinds are declared now so that a file written today is
+# readable by the compiler that adds them: an unknown section is skipped, a
+# known one that is absent is simply absent.
 module Crystal::IyiMod
   MAGIC = "IYIMOD\0\0".to_slice
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 2_u32
+  FORMAT_VERSION = 3_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -75,10 +75,38 @@ module Crystal::IyiMod
   # so the annotation *is* the signature and there is nothing to infer. It is
   # also the more robust choice — the reader parses it with the same parser that
   # read the source, instead of a second grammar invented for this file.
+  #
+  # An empty *return_type* means none was written. A constructor is the ordinary
+  # case — its result is its type and nobody annotates it — so this is recorded
+  # as absent rather than filled in with a type the author never wrote.
   record Signature,
     name : String,
     parameters : Array({String, String}),
     return_type : String
+
+  # An exported type: `pub struct`, `pub class`, `pub trait`, `pub enum`.
+  #
+  # For a trait, *methods* is what the trait requires and supplies — II.6's
+  # abstract requirements and the signatures (not bodies) of its defaults,
+  # which is what a consumer needs to check an impl against. For a struct or
+  # class it is the exported methods declared on it.
+  record TypeDecl,
+    name : String,
+    kind : String,
+    type_parameters : Array(String),
+    methods : Array(Signature)
+
+  # One `(Trait, Type)` pair this module provides.
+  #
+  # This is the record II.4 depends on: it lets a consumer answer "does
+  # `Customer` implement `ToJSON`?" without reading `Customer`. R-3 is what
+  # makes the answer complete rather than merely available — an impl may only
+  # live in the trait's module or the type's module, so the pairs are always
+  # findable from one of two files a consumer already has, and IV.4's argument
+  # that no two modules can define the same impl rests on the same rule.
+  record ImplRecord,
+    trait_name : String,
+    type_name : String
 
   # What a module offers another module: `Exports` in IV.1's table.
   #
@@ -90,12 +118,22 @@ module Crystal::IyiMod
   #
   # ## What is not here yet
   #
-  # Type declarations, layout templates, type descriptors, trait declarations,
-  # impl records and constants. IV.2 names them all; this carries the first of
-  # the list, module-level `pub def` signatures. Methods of exported types are
-  # not here either, since the types themselves are not.
+  # Layout templates, type descriptors, field lists and constants. The first
+  # three are what codegen needs rather than what the front end needs, so they
+  # arrive with object code; a consumer can typecheck a call against a
+  # signature without knowing how the receiver is laid out.
   record Exports,
-    functions : Array(Signature)
+    functions : Array(Signature),
+    types : Array(TypeDecl),
+    impls : Array(ImplRecord) do
+    def self.empty
+      new([] of Signature, [] of TypeDecl, [] of ImplRecord)
+    end
+
+    def empty?
+      functions.empty? && types.empty? && impls.empty?
+    end
+  end
 
   # What a `.iyimod` says about the module it was built from.
   #
@@ -129,7 +167,7 @@ module Crystal::IyiMod
     getter exports : Exports
 
     def initialize(@module_name, @source_path, @compiler_version, @target_triple,
-                   @flags, @imports, @exports = Exports.new([] of Signature))
+                   @flags, @imports, @exports = Exports.empty)
     end
   end
 
@@ -190,7 +228,7 @@ module Crystal::IyiMod
 
       header = nil
       imports = [] of String
-      exports = Exports.new([] of Signature)
+      exports = Exports.empty
 
       table.each do |(kind, length)|
         payload = Bytes.new(length)
@@ -230,26 +268,42 @@ module Crystal::IyiMod
       artifact.imports.each { |name| io.puts "  #{name}" }
     end
 
-    functions = artifact.exports.functions
-    if functions.empty?
+    exports = artifact.exports
+    if exports.empty?
       io.puts "exports       (none)"
     else
       io.puts "exports"
-      functions.each do |signature|
-        parameters = signature.parameters.map { |(name, type)| "#{name} : #{type}" }
-        arguments = parameters.empty? ? "" : "(#{parameters.join(", ")})"
-        io.puts "  def #{signature.name}#{arguments} : #{signature.return_type}"
+      exports.functions.each { |signature| io.puts "  #{render_signature(signature)}" }
+
+      exports.types.each do |declaration|
+        parameters = declaration.type_parameters
+        generic = parameters.empty? ? "" : "(#{parameters.join(", ")})"
+        io.puts "  #{declaration.kind} #{declaration.name}#{generic}"
+        declaration.methods.each { |signature| io.puts "    #{render_signature(signature)}" }
+      end
+
+      exports.impls.each do |record|
+        io.puts "  impl #{record.trait_name} for #{record.type_name}"
       end
     end
 
-    # Said out loud on every dump, because an exported trait or type currently
-    # leaves no trace in the file at all: without this line a reader would take
-    # the list above for the module's whole surface, which is precisely the
-    # mistake `.iyimod` cannot afford anyone making.
+    # Said out loud on every dump. What is missing is no longer whole
+    # declarations but the parts of them codegen needs, and a reader has no way
+    # to tell a field list that is absent from one that is empty.
     io.puts
-    io.puts "note          format v#{FORMAT_VERSION} carries module-level `pub def`"
-    io.puts "              signatures only. Exported types, traits, impls and"
-    io.puts "              constants are not in this file yet (SPEC.md IV.2)."
+    io.puts "note          format v#{FORMAT_VERSION} carries declarations and"
+    io.puts "              signatures. Field lists, layout templates, type"
+    io.puts "              descriptors and constants are not in this file yet"
+    io.puts "              (SPEC.md IV.2)."
+  end
+
+  private def self.render_signature(signature : Signature) : String
+    parameters = signature.parameters.map do |(name, type)|
+      type.empty? ? name : "#{name} : #{type}"
+    end
+    arguments = parameters.empty? ? "" : "(#{parameters.join(", ")})"
+    returns = signature.return_type.empty? ? "" : " : #{signature.return_type}"
+    "def #{signature.name}#{arguments}#{returns}"
   end
 
   private def self.encode_header(artifact : Artifact) : Bytes
@@ -288,9 +342,31 @@ module Crystal::IyiMod
 
   private def self.encode_exports(artifact : Artifact) : Bytes
     io = IO::Memory.new
-    functions = artifact.exports.functions
-    io.write_bytes functions.size.to_u32, FORMAT
-    functions.each do |signature|
+    write_signatures io, artifact.exports.functions
+
+    types = artifact.exports.types
+    io.write_bytes types.size.to_u32, FORMAT
+    types.each do |declaration|
+      write_string io, declaration.name
+      write_string io, declaration.kind
+      io.write_bytes declaration.type_parameters.size.to_u32, FORMAT
+      declaration.type_parameters.each { |parameter| write_string io, parameter }
+      write_signatures io, declaration.methods
+    end
+
+    impls = artifact.exports.impls
+    io.write_bytes impls.size.to_u32, FORMAT
+    impls.each do |record|
+      write_string io, record.trait_name
+      write_string io, record.type_name
+    end
+
+    io.to_slice
+  end
+
+  private def self.write_signatures(io : IO, signatures : Array(Signature)) : Nil
+    io.write_bytes signatures.size.to_u32, FORMAT
+    signatures.each do |signature|
       write_string io, signature.name
       io.write_bytes signature.parameters.size.to_u32, FORMAT
       signature.parameters.each do |(name, type)|
@@ -299,19 +375,34 @@ module Crystal::IyiMod
       end
       write_string io, signature.return_type
     end
-    io.to_slice
   end
 
-  private def self.decode_exports(payload : Bytes) : Exports
-    io = IO::Memory.new(payload)
-    functions = Array(Signature).new(io.read_bytes(UInt32, FORMAT)) do
+  private def self.read_signatures(io : IO) : Array(Signature)
+    Array(Signature).new(io.read_bytes(UInt32, FORMAT)) do
       name = read_string(io)
       parameters = Array({String, String}).new(io.read_bytes(UInt32, FORMAT)) do
         {read_string(io), read_string(io)}
       end
       Signature.new(name, parameters, read_string(io))
     end
-    Exports.new(functions)
+  end
+
+  private def self.decode_exports(payload : Bytes) : Exports
+    io = IO::Memory.new(payload)
+    functions = read_signatures(io)
+
+    types = Array(TypeDecl).new(io.read_bytes(UInt32, FORMAT)) do
+      name = read_string(io)
+      kind = read_string(io)
+      parameters = Array(String).new(io.read_bytes(UInt32, FORMAT)) { read_string(io) }
+      TypeDecl.new(name, kind, parameters, read_signatures(io))
+    end
+
+    impls = Array(ImplRecord).new(io.read_bytes(UInt32, FORMAT)) do
+      ImplRecord.new(read_string(io), read_string(io))
+    end
+
+    Exports.new(functions, types, impls)
   end
 
   private def self.write_string(io : IO, value : String) : Nil

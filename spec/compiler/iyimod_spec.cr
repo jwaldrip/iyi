@@ -8,7 +8,9 @@ require "./spec_helper"
 # carried on" is the failure IV.1 is written to avoid, so the rejections below
 # matter at least as much as the round trip.
 private def sample_artifact(imports = [] of String,
-                            exports = [] of Crystal::IyiMod::Signature)
+                            exports = [] of Crystal::IyiMod::Signature,
+                            types = [] of Crystal::IyiMod::TypeDecl,
+                            impls = [] of Crystal::IyiMod::ImplRecord)
   Crystal::IyiMod::Artifact.new(
     module_name: "app/greeter",
     source_path: "/src/app/greeter.iyi",
@@ -16,7 +18,7 @@ private def sample_artifact(imports = [] of String,
     target_triple: "x86_64-pc-linux-gnu",
     flags: ["bits64", "linux"],
     imports: imports,
-    exports: Crystal::IyiMod::Exports.new(exports),
+    exports: Crystal::IyiMod::Exports.new(exports, types, impls),
   )
 end
 
@@ -187,12 +189,73 @@ describe Crystal::IyiMod do
     text.should contain "  def title : String"
   end
 
-  # An exported trait or type leaves no trace in the file at format v2, so the
-  # dump has to say the list is partial. A reader taking it for the module's
-  # whole surface is the one mistake this file cannot afford.
+  # The format still stops short of what codegen needs, and a reader has no way
+  # to tell an absent field list from an empty one, so the dump says so.
   it "says what the format does not carry yet" do
     io = IO::Memory.new
     Crystal::IyiMod.dump sample_artifact, io
     io.to_s.should contain "not in this file yet"
+  end
+
+  it "round-trips exported types with their parameters and methods" do
+    declaration = Crystal::IyiMod::TypeDecl.new(
+      name: "List",
+      kind: "generic struct",
+      type_parameters: ["T"],
+      methods: [Crystal::IyiMod::Signature.new("at", [{"index", "Int32"}], "T")],
+    )
+
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(types: [declaration]), path
+      read = Crystal::IyiMod.read(path).exports.types
+
+      read.size.should eq 1
+      read[0].name.should eq "List"
+      read[0].kind.should eq "generic struct"
+      read[0].type_parameters.should eq ["T"]
+      read[0].methods.map(&.name).should eq ["at"]
+    end
+  end
+
+  # II.4 depends on this record: it is what lets a consumer answer "does
+  # `Customer` implement `ToJSON`?" without reading `Customer`.
+  it "round-trips impl records" do
+    impls = [
+      Crystal::IyiMod::ImplRecord.new("Std::Traits::Cmp", "Int32"),
+      Crystal::IyiMod::ImplRecord.new("Std::Enumerable::Enumerable", "Std::List::List(T)"),
+    ]
+
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(impls: impls), path
+      read = Crystal::IyiMod.read(path).exports.impls
+
+      read.map(&.trait_name).should eq ["Std::Traits::Cmp", "Std::Enumerable::Enumerable"]
+      read.map(&.type_name).should eq ["Int32", "Std::List::List(T)"]
+    end
+  end
+
+  # A constructor's result is its type and nobody writes it down, so an absent
+  # return type is recorded as absent rather than filled in with a guess.
+  it "renders a signature with no return annotation without one" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact(exports: [
+      Crystal::IyiMod::Signature.new("initialize", [{"items", "Array(T)"}], ""),
+    ]), io
+
+    io.to_s.should contain "  def initialize(items : Array(T))\n"
+  end
+
+  it "dumps a type declaration and an impl" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact(
+      types: [Crystal::IyiMod::TypeDecl.new("Greet", "trait", [] of String,
+        [Crystal::IyiMod::Signature.new("greet", [] of {String, String}, "String")])],
+      impls: [Crystal::IyiMod::ImplRecord.new("Greet", "User")],
+    ), io
+    text = io.to_s
+
+    text.should contain "  trait Greet"
+    text.should contain "    def greet : String"
+    text.should contain "  impl Greet for User"
   end
 end

@@ -461,6 +461,14 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
 
     check_impl_coherence node, trait_type, target_type
 
+    # iyi: one row of the artifact's impl records (SPEC.md IV.2). Recorded
+    # against the file that declares it, which R-3 guarantees is the trait's
+    # module or the type's — so a consumer holding both files holds every impl
+    # that can exist for the pair.
+    if file = @iyi_importing.last?
+      (@program.iyi_impls[file] ||= [] of {String, String}) << {trait_type.to_s, target_type.to_s}
+    end
+
     node.resolved_type = target_type
 
     process_annotations(annotations) do |annotation_type, ann|

@@ -404,7 +404,7 @@ module Crystal
           target_triple: program.codegen_target.to_s,
           flags: flags,
           imports: imports || [] of String,
-          exports: collect_iyi_exports(program, module_name),
+          exports: collect_iyi_exports(program, module_name, filename),
         )
 
         IyiMod.write artifact, File.join(dir, "#{module_name}.iyimod")
@@ -422,30 +422,60 @@ module Crystal
     # infer but a rule that was broken somewhere else; it is recorded as `?`
     # rather than guessed at, which keeps that visible in `mod dump` instead of
     # inventing a type the author never wrote.
-    private def collect_iyi_exports(program : Program, module_name : String) : IyiMod::Exports
+    private def collect_iyi_exports(program : Program, module_name : String,
+                                    filename : String) : IyiMod::Exports
       functions = [] of IyiMod::Signature
+      types = [] of IyiMod::TypeDecl
 
       if type = program.iyi_module_type(module_name)
         if exported = type.exported_names
-          if defs = type.defs
-            exported.to_a.sort!.each do |name|
-              defs[name]?.try &.each do |item|
-                a_def = item.def
-                parameters = a_def.args.map do |arg|
-                  {arg.name, arg.restriction.try(&.to_s) || "?"}
-                end
-                functions << IyiMod::Signature.new(
-                  name: a_def.name,
-                  parameters: parameters,
-                  return_type: a_def.return_type.try(&.to_s) || "?",
-                )
-              end
+          exported.to_a.sort!.each do |name|
+            # A name is a function or a type, never both: they share one
+            # namespace on the module, which is what makes `pub` a mark on a
+            # name rather than on a kind of declaration.
+            if signatures = type.defs.try &.[]?(name)
+              signatures.each { |item| functions << iyi_signature(item.def) }
+            elsif exported_type = type.types?.try &.[]?(name)
+              types << iyi_type_declaration(name, exported_type)
             end
           end
         end
       end
 
-      IyiMod::Exports.new(functions)
+      impls = program.iyi_impls[filename]?.try(&.map do |(trait_name, type_name)|
+        IyiMod::ImplRecord.new(trait_name, type_name)
+      end) || [] of IyiMod::ImplRecord
+
+      IyiMod::Exports.new(functions, types, impls)
+    end
+
+    private def iyi_signature(a_def : Def) : IyiMod::Signature
+      parameters = a_def.args.map { |arg| {arg.name, arg.restriction.try(&.to_s) || ""} }
+      IyiMod::Signature.new(
+        name: a_def.name,
+        parameters: parameters,
+        return_type: a_def.return_type.try(&.to_s) || "",
+      )
+    end
+
+    # A trait's methods are its whole point in the artifact: II.6 makes an impl
+    # checkable against the trait's requirements, and a consumer can only run
+    # that check if the requirements travel. Its defaults travel as signatures
+    # too — the body stays behind, since the consumer calls it rather than
+    # reimplementing it.
+    private def iyi_type_declaration(name : String, type : Type) : IyiMod::TypeDecl
+      methods = [] of IyiMod::Signature
+      type.as?(ModuleType).try &.defs.try &.each_value do |items|
+        items.each { |item| methods << iyi_signature(item.def) }
+      end
+      methods.sort_by! &.name
+
+      IyiMod::TypeDecl.new(
+        name: name,
+        kind: type.type_desc,
+        type_parameters: type.as?(GenericType).try(&.type_vars) || [] of String,
+        methods: methods,
+      )
     end
 
     # Measures what a compile costs when the prelude has already been analysed,

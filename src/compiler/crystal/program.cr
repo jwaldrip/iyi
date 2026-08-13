@@ -92,6 +92,15 @@ module Crystal
     # modules, so it needs the way back (SPEC.md IV.1).
     getter iyi_module_paths = {} of String => String
 
+    # iyi: the `(Trait, Type)` pairs each file provides, by absolute filename
+    # (SPEC.md IV.2, "Impl records").
+    #
+    # Collected as they are declared rather than recovered afterwards, because
+    # an impl leaves no record of its own: it works by making the target type
+    # include the trait, and by the time analysis is over that is
+    # indistinguishable from any other ancestor.
+    getter iyi_impls = {} of String => Array({String, String})
+
     # iyi: the type a module path denotes — `"app/greeter"` to `App::Greeter`.
     #
     # Resolved by segment rather than remembered, which is only safe because

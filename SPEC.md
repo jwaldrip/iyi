@@ -60,9 +60,9 @@ speed has shipped the cost and none of the benefit.
 the rest of the document is built on, and `import` still re-reads and
 re-analyses each module's source. Without the artifact everything here is a
 design document. The container, the `Header`, `Imports` and `Exports` sections,
-`--emit-iyimod` and `mod dump` are built, with `Exports` carrying `pub def`
-signatures so far; exported types, traits and impls are next, then a consumer
-that reads the file in place of the source, then object code.
+`--emit-iyimod` and `mod dump` are built, with `Exports` carrying signatures,
+type declarations and impl records. What is left is the half that matters most:
+a consumer that reads the file in place of the source, and object code.
 
 **2. The passes that still walk the prelude stop walking it (IV.1d).** The
 artifact alone leaves 0.47 s, of which class-var initializers and `main` are
@@ -1695,26 +1695,48 @@ as valid is the worst failure mode a build cache has.
 Binary, for read speed. A `iyi mod dump` producing text is required, not
 optional — an opaque cache format is one nobody can debug.
 
-**The container is built, and `Exports` has begun.**
+**The container is built, and `Exports` carries the declarations.**
 `src/compiler/crystal/iyimod.cr` writes and reads magic, format version, a
 section table and the `Header`, `Imports` and `Exports` sections;
 `crystal build --emit-iyimod DIR` writes one per imported module, and
-`crystal mod dump FILE` prints it. `Exports` carries module-level `pub def`
-signatures; exported types, traits, impls and constants are not in it yet, and
-neither are `Hashes`, `MacroBodies`, `MonoBodies` or `ObjectCode`.
+`crystal mod dump FILE` prints it. `Exports` carries `pub def` signatures,
+exported type declarations with their parameters and methods, and impl records.
+Field lists, layout templates, type descriptors and constants are not in it —
+those are what codegen needs rather than what the front end needs, so they
+arrive with `ObjectCode`. `Hashes`, `MacroBodies` and `MonoBodies` are declared
+in the `Section` enum and unwritten.
+
+`std/list` reads back as:
+
+```
+exports
+  generic struct List(T)
+    def appended(item : T) : List(T)
+    def at(index : Int32) : T
+    def initialize(items : Array(T))
+    def size : Int32
+  impl Std::Enumerable::Enumerable for Std::List::List(T)
+```
 
 **A signature is stored as the annotation the author wrote**, not as a
 rendering of the inferred `Crystal::Type`. R-2 is what makes that sound —
 everything exported carries full parameter and return types, so there is
 nothing to infer — and it avoids inventing a second grammar for this file when
-the consumer already has a parser for the first one.
+the consumer already has a parser for the first one. Where no annotation was
+written it is recorded as absent rather than filled in: a constructor's result
+is its type and nobody writes it down, and `def initialize(items : Array(T))`
+above is that case rather than a missing one.
 
-Because the section is partial, **`mod dump` says so on every dump**. An
-exported trait leaves no trace in the file at all today, so `app/greeter` lists
-two functions and not its `pub trait Greet`, and `std/list` — whose whole
-surface is a `pub struct` — lists nothing at all. A reader taking that for a
-module's complete surface is the one mistake this file cannot afford, so the
-gap is printed rather than left to be inferred from an empty list.
+**Impl records had to be collected as they are declared**, not recovered
+afterwards. An impl leaves no record of its own — it works by making the target
+type include the trait, and once analysis is over that is indistinguishable
+from any other ancestor. R-3 is what makes the collected set complete: an impl
+may only live in the trait's module or the type's, so `std/traits` carries
+`impl Cmp for Int32` and no third module could have carried it instead.
+
+Because the section is still partial, **`mod dump` says so on every dump**. A
+reader cannot tell an absent field list from an empty one, and taking a partial
+surface for a complete one is the mistake this file cannot afford.
 
 Two properties were built in from the start rather than retrofitted, because
 neither can be added later without a format break. **Replacement is atomic**: a
