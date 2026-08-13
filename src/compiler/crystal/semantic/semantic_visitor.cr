@@ -233,6 +233,31 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     end
   end
 
+  # iyi: an imported module is declared at the top level (R-1).
+  #
+  # Wherever the `import` is written. `apply_module_header` lifts the ones at
+  # the head of a file out of the module they would otherwise be nested in, and
+  # that covered every import until one was written lower down: `import
+  # boot/registry` below `samples/init_order`'s own code declared
+  # `Samples::InitOrder::Boot::Registry`, a module nobody else could name.
+  #
+  # It compiled, which is why it lasted. The importing file finds the nested
+  # module under the same name it would have found the real one under, so the
+  # only visible effect was on anyone looking from outside — and the first to
+  # look was `--emit-iyimod`, which wrote `boot/registry.iyimod` with no
+  # exports at all, because there was no `Boot::Registry` at the top level to
+  # read them off. III.5 had already made a module's initialiser independent of
+  # where its `import` is written; this is its namespace catching up.
+  private def iyi_at_top_level(&)
+    old_type = @current_type
+    @current_type = @program
+    begin
+      yield
+    ensure
+      @current_type = old_type
+    end
+  end
+
   private def import_file(node : ImportDecl, filename : String)
     parser = @program.new_parser(File.read(filename))
     parser.filename = filename
@@ -241,7 +266,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     begin
       parsed_nodes = parser.parse
       parsed_nodes = @program.normalize(parsed_nodes, inside_exp: false)
-      parsed_nodes.accept self
+      iyi_at_top_level { parsed_nodes.accept self }
     rescue ex : CodeError
       node.raise "while importing \"#{node.path.join('/')}\"", ex
     rescue ex
