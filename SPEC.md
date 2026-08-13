@@ -1353,7 +1353,7 @@ spawns nothing. For the samples it can: the three failures are `Nums`, `Words`
 and the Kemal router's route table, and the router is precisely the thing a
 server would share across tasks.
 
-### III.5 Module initialisation — **PROPOSED; rules 1 and 4 BUILT**
+### III.5 Module initialisation — **PROPOSED; rules 1, 2 and 4 BUILT**
 
 II.9 left this open with a concrete case: Kemal registers routes as a side
 effect of top-level calls, which is legal, and the ordering guarantees across a
@@ -2017,9 +2017,9 @@ Named honestly, so nobody mistakes this draft for complete.
 4. ~~**Module initialisation order.**~~ **Specified in III.5** — DAG order, a
    relative order between independent modules that is unobservable rather than
    merely unspecified, no `init()`, no import for side effects, and
-   initialisation that may not fail. DAG order and the last of those are
-   built; the rest are mostly restatements of what R-1 through R-3 already
-   force.
+   initialisation that may not fail. All but "no import for side effects" are
+   built, the shuffle that keeps the unobservable order unobservable included.
+   That last one is the only rule here with a cost and no measurement.
 5. ~~**Concurrency semantics.**~~ **Specified in III.4** — structured
    concurrency so a leak is unrepresentable, cancellation owned by the scope
    rather than threaded through signatures, task failure as an ordinary error
