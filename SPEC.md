@@ -1,6 +1,8 @@
 # iyi Language Specification — Draft 0
 
-**Status: draft for discussion. Nothing here is implemented.**
+**Status: draft for discussion. Parts of it are built — each section says which,
+and a heading that does not say so is a heading to distrust.** What 0.1.0 needs
+of it is scoped below Part I.
 
 This draft deliberately does *not* re-describe the six rules. Each has been
 validated on its own — by the Kemal port, by the instantiation census, by the
@@ -31,6 +33,96 @@ The compilation model, stated only as far as Part II needs it.
 
 Union types, nil-safety flow typing, blocks, local inference and Ruby syntax are
 kept unchanged from Crystal. They cost the compiler nothing.
+
+---
+
+## 0.1.0 — what the first release has to prove
+
+Everything below this line is design. This section is scope, and it is here
+because the rest of the document is easier to read once it is known which parts
+of it the first release is allowed to need.
+
+**0.1.0 is not a usable language.** It is the smallest artifact that lets
+somebody who did not write it check the central claim and find it false. Nobody
+will write production code with it, there will be no standard library worth the
+name, and it will not be self-hosted. Go's first public release was the same
+shape.
+
+**The claim under test** is compile speed. The type system is the means, not the
+product: open classes go so that a module can be compiled against its
+dependencies' metadata instead of their bodies (R-1, R-3), and that is what
+makes a build incremental. A release that ships the type system without the
+speed has shipped the cost and none of the benefit.
+
+### In scope
+
+**1. `.iyimod`, end to end (IV.1).** Not negotiable. R-1 is the rule the rest of
+the document is built on and it is currently unimplemented — `import` still
+re-reads and re-analyses each module's source. Without the artifact everything
+here is a design document.
+
+**2. The passes that still walk the prelude stop walking it (IV.1d).** The
+artifact alone leaves 0.47 s, of which class-var initializers and `main` are
+90%, because six of the eleven semantic passes re-walk the prelude AST whatever
+put it there. 0.47 s beats Crystal and does not beat Go. This item is the
+headline number, not a refinement of it.
+
+**3. A deliberately tiny prelude, written in iyi.** Not a standard library:
+integers, floats, booleans, a string, one sequence, one dictionary, `puts`.
+While an iyi program `require`s Crystal's 107,719-line prelude the 95% prelude
+tax is still there and the benchmark measures a workaround rather than the
+thesis. **Its scope is set by what the samples call and by nothing else** — a
+method enters the prelude because an existing sample needs it, never because it
+belongs there. This is the item that decides the schedule; see below.
+
+**4. IV.6 #6, module naming.** A module is declared `app/greeter` and reached
+`App::Greeter`. This appears in every line of user code and cannot be changed
+after there is user code, so it is settled before the release and not after.
+The cheap answer is to keep the mismatch and stop calling it a wart: restrict
+path segments to lowercase `snake_case` so that the segment-to-name mapping is
+injective and two paths can never denote one type. Teaching the type system
+lowercase module names is the better answer and does not fit here.
+
+**5. A benchmark that produces the claim, and a check that fails until it
+holds.** `bench/` already prices macros and `Share`; build speed is the one
+number the project exists for and it is the one with no committed harness.
+
+### Out of scope, stated so it is not argued twice
+
+III.4 in its entirety — structured concurrency is specified and it is not on
+the critical path of the claim. III.5 rule 5's measurement. Cross-version
+`.iyimod` compatibility (IV.5 already says this). A package manager. A standard
+library. Self-hosting: the compiler is 95,010 lines and iyi's own library is
+722, so this is not a near thing and pretending otherwise sets the wrong
+priorities. Of the calls still open in Appendix B, only #1 is a taste decision
+that would change what 0.1.0 looks like, and deferring it costs nothing.
+
+### Done is a number
+
+1. `bench/build_speed` prints one table, measured on one machine: iyi cold, iyi
+   warm, and `go build` on the equivalent program. **The Go column is measured
+   there, not quoted from anywhere** — this document has no Go timing in it and
+   is not entitled to one until the bench runs.
+2. The front end compiles `hello.iyi` in **0.05 s or less**. This is not an
+   aspiration: IV.1a already ran a front end that never walks the prelude at
+   0.049 s, and it emitted an object with an identical symbol table. 0.1.0's job
+   is to make that configuration the ordinary one rather than an experiment.
+3. The end-to-end `crystal build` time is published in the same table even
+   though LLVM and the linker dominate it, so that the claim cannot quietly
+   become a front-end-only claim.
+4. A spec asserts (2) and stays red until it holds. The release is a passing
+   assertion, not a judgement call — which is the same standard the rest of this
+   document is held to.
+
+### The item that decides the schedule
+
+Item 3. "Tiny prelude" sounds small and is not: writing a string and a
+dictionary under iyi's own rules — no open classes, `Share`, `sorted` — is the
+first real library ever designed against them, and the whole of the evidence
+that this is possible is one ported `Enumerable` and 722 lines of samples. The
+bound is the rule stated above: the samples decide what goes in. If that bound
+slips, 0.1.0 becomes a standard-library project and the claim goes unmeasured
+for a year.
 
 ---
 
