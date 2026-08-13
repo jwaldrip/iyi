@@ -3805,6 +3805,7 @@ module Crystal
       # that in regular statements states for delimiters
       # here must be treated as method names.
       name = consume_def_or_macro_name
+      check_iyi_method_missing name
 
       with_isolated_var_scope do
         name_location = @token.location
@@ -4523,6 +4524,30 @@ module Crystal
         Name the mutating form after the plain verb and the non-mutating form
         after the participle — `sort` mutates, `sorted` returns a new value.
         Postfix `!` propagates an error, and a name has none.
+        MSG
+    end
+
+    # iyi: `macro method_missing` (SPEC.md III.3).
+    #
+    # It requires an open method set, and R-3 closes that by construction: a
+    # type's methods are its own module's declarations plus its impls, all
+    # known from export metadata. A hook that answers calls nobody declared
+    # would make that set unknowable, which is the one thing the compilation
+    # model needs it to be.
+    #
+    # Cheap to give up, and counted rather than assumed: one occurrence in the
+    # whole Crystal standard library — the hook definition itself — none in
+    # Kemal, against `responds_to?` across 34 files.
+    private def check_iyi_method_missing(name)
+      return unless iyi? && name == "method_missing"
+
+      raise <<-MSG, @token
+        `method_missing` doesn't exist in iyi
+
+        It needs a method set that is open to names nobody declared, and R-3
+        closes that: a type's methods are what its module declares plus its
+        impls. Use compile-time `responds_to?`, which is what Crystal code
+        reaches for anyway — see SPEC.md III.3.
         MSG
     end
 

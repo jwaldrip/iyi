@@ -91,7 +91,7 @@ This is worth stating explicitly because the intuition "unions are already
 dynamic, so they must be dictionaries" is wrong and would lead someone to build
 two parallel dispatch systems.
 
-### II.3 `using` × everything — **PROPOSED**
+### II.3 `using` × everything — **BUILT, one sub-question open**
 
 The Kemal port proved `using` is required: without it, Kemal's DSL is
 unwritable, because Crystal achieves it by injecting top-level methods into the
@@ -672,7 +672,7 @@ no new type machinery — unions already exist and already carry a type id.
 pub def read(path : String) : String | IOError
 ```
 
-#### III.1.1 What makes a member an error — **PROPOSED**
+#### III.1.1 What makes a member an error — **BUILT**
 
 A prelude marker trait:
 
@@ -1085,9 +1085,12 @@ remove it. This remains the largest departure from Ruby feel in the design.
 No longer an open question. R-4 forces a precise collector; recommendation is
 precise, generational, non-moving for Draft 0.
 
-### III.3 `method_missing` — **PROPOSED: cut it**
+### III.3 `method_missing` — **CUT**
 
-It requires an open method set, which R-3 closes by construction.
+It requires an open method set, which R-3 closes by construction: a type's
+methods are what its module declares plus its impls, all of it readable from
+export metadata. A hook that answers calls nobody declared makes that set
+unknowable, which is the one thing the compilation model needs it to be.
 
 Grounded rather than asserted: in the Crystal standard library `method_missing`
 appears **once**, as the hook definition in `object.cr`. **Kemal does not use it
@@ -1095,7 +1098,11 @@ at all.** Meanwhile `responds_to?` — the static alternative — appears across
 files. The dynamic escape hatch is close to unused; the static one is what
 people actually reach for.
 
-Cut it. Keep compile-time `responds_to?`.
+**Cut.** `macro method_missing` is rejected in a `.iyi` file, with an error that
+names R-3 and points at `responds_to?`. Only there — a Crystal file keeps the
+hook, and the prelude's own definition of it is untouched. Compile-time
+`responds_to?` works unchanged, which the error message is entitled to claim
+because it is tested.
 
 ### III.4 Concurrency — **PROPOSED**
 
@@ -1243,7 +1250,7 @@ safe. If that class is large, `Share` needs an escape hatch — an explicit
 unsafe assertion — and an escape hatch that gets used routinely is a failed
 rule. **Nothing here should be built before that count exists.**
 
-### III.5 Module initialisation — **PROPOSED**
+### III.5 Module initialisation — **PROPOSED; rule 4 BUILT**
 
 II.9 left this open with a concrete case: Kemal registers routes as a side
 effect of top-level calls, which is legal, and the ordering guarantees across a

@@ -4450,6 +4450,29 @@ module Crystal
         parse("read(path).or_panic", filename: "x.iyi").to_s.should eq("read(path).or_panic")
       end
 
+      # iyi: `method_missing` is gone (SPEC.md III.3). It needs a method set
+      # open to names nobody declared, and R-3 closes that by construction.
+      it "rejects `macro method_missing`" do
+        expect_raises(SyntaxException, "`method_missing` doesn't exist in iyi") do
+          parse("macro method_missing(call)\n  0\nend", filename: "x.iyi")
+        end
+      end
+
+      it "rejects `macro method_missing` inside a type" do
+        expect_raises(SyntaxException, "`method_missing` doesn't exist in iyi") do
+          parse("struct Ghost\n  macro method_missing(call)\n    0\n  end\nend", filename: "x.iyi")
+        end
+      end
+
+      it "leaves other macros and other hooks alone" do
+        parse("macro gen\n  0\nend", filename: "x.iyi").as(Macro).name.should eq("gen")
+        parse("macro finished\n  0\nend", filename: "x.iyi").as(Macro).name.should eq("finished")
+      end
+
+      it "keeps `method_missing` in a Crystal file" do
+        parse("macro method_missing(call)\n  0\nend", filename: "x.cr").as(Macro).name.should eq("method_missing")
+      end
+
       # iyi: `defer` (SPEC.md III.1.4). Recognised by name, so it is reserved in
       # an iyi program and only there.
       it "reads `defer`" do
