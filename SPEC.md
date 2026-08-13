@@ -56,10 +56,12 @@ speed has shipped the cost and none of the benefit.
 
 ### In scope
 
-**1. `.iyimod`, end to end (IV.1).** Not negotiable. R-1 is the rule the rest of
-the document is built on and it is currently unimplemented — `import` still
-re-reads and re-analyses each module's source. Without the artifact everything
-here is a design document.
+**1. `.iyimod`, end to end (IV.1). Started.** Not negotiable. R-1 is the rule
+the rest of the document is built on, and `import` still re-reads and
+re-analyses each module's source. Without the artifact everything here is a
+design document. The container, the `Header` and `Imports` sections,
+`--emit-iyimod` and `mod dump` are built; `Exports` is next, then a consumer
+that reads it in place of the source, then object code.
 
 **2. The passes that still walk the prelude stop walking it (IV.1d).** The
 artifact alone leaves 0.47 s, of which class-var initializers and `main` are
@@ -1691,6 +1693,22 @@ as valid is the worst failure mode a build cache has.
 
 Binary, for read speed. A `iyi mod dump` producing text is required, not
 optional — an opaque cache format is one nobody can debug.
+
+**The container is built.** `src/compiler/crystal/iyimod.cr` writes and reads
+magic, format version, a section table and the `Header` and `Imports` sections;
+`crystal build --emit-iyimod DIR` writes one per imported module, and
+`crystal mod dump FILE` prints it. The remaining kinds — `Hashes`, `Exports`,
+`MacroBodies`, `MonoBodies`, `ObjectCode` — are declared in the `Section` enum
+and not yet written.
+
+Two properties were built in from the start rather than retrofitted, because
+neither can be added later without a format break. **Replacement is atomic**: a
+sibling temporary is renamed over the target, so a reader sees the old file or
+the new one and never a half-written one — the worst failure a cache has is the
+one that looks fine. **Unknown sections are skipped**, which is what the table
+is for: a consumer wanting `Exports` must not have to page in `ObjectCode` to
+reach it, and forward compatibility falls out of the same property. Both are
+covered in `spec/compiler/iyimod_spec.cr` rather than asserted here.
 
 **Target:** reading the prelude's `.iyimod` should cost single-digit
 milliseconds, against the **~1.0 s** its top-level analysis costs today —

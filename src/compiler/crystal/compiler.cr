@@ -110,6 +110,10 @@ module Crystal
     # the source file to compile.
     property prelude = "prelude"
 
+    # iyi: directory to write a `.iyimod` per imported module into, or nil
+    # (SPEC.md IV.1). Set by `--emit-iyimod`.
+    property emit_iyimod : String? = nil
+
     # Optimization mode
     enum OptimizationMode
       # [default] no optimization, fastest compilation, slowest runtime
@@ -263,6 +267,8 @@ module Crystal
         program.macro_expansion_error_hook.try &.call(ex.cause)
       end
 
+      write_iyimods program
+
       units = codegen program, node, sources, output_filename unless @no_codegen
 
       @progress_tracker.clear
@@ -356,6 +362,8 @@ module Crystal
         program.macro_expansion_error_hook.try &.call(ex.cause)
       end
 
+      write_iyimods program
+
       units = codegen program, node, source, output_filename unless @no_codegen
 
       @progress_tracker.clear
@@ -364,6 +372,42 @@ module Crystal
       Prof.report
 
       Result.new program, node
+    end
+
+    # iyi: writes a `.iyimod` per imported module (SPEC.md IV.1), when
+    # `--emit-iyimod` asked for it.
+    #
+    # Only imported modules. The entry file is a program rather than a
+    # dependency, and nothing can import it — III.5 rule 1 puts its initialiser
+    # last for the same reason.
+    #
+    # The file is named after the module path with `/` kept, so `app/greeter`
+    # lands at `DIR/app/greeter.iyimod` and the layout mirrors the source tree.
+    # IV.6 #6's segment rule is what makes that safe: two module paths cannot
+    # collide, so two modules cannot claim one artifact.
+    private def write_iyimods(program : Program) : Nil
+      return unless dir = emit_iyimod
+
+      flags = program.flags.to_a.sort!
+
+      program.iyi_module_paths.each do |filename, module_name|
+        imports = program.iyi_module_imports[filename]?.try do |dependencies|
+          dependencies.map { |dependency| program.iyi_module_paths[dependency]? || dependency }
+        end
+
+        artifact = IyiMod::Artifact.new(
+          module_name: module_name,
+          source_path: filename,
+          # Not `Config.description`: that is the multi-line `--version` banner,
+          # and this field is compared for equality (IV.5).
+          compiler_version: IyiMod.compiler_version,
+          target_triple: program.codegen_target.to_s,
+          flags: flags,
+          imports: imports || [] of String,
+        )
+
+        IyiMod.write artifact, File.join(dir, "#{module_name}.iyimod")
+      end
     end
 
     # Measures what a compile costs when the prelude has already been analysed,

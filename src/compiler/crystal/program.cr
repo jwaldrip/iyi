@@ -86,6 +86,12 @@ module Crystal
     # the edges, which is what makes every *other* order it allows computable.
     getter iyi_module_imports = {} of String => Array(String)
 
+    # iyi: the module path each imported file was named by, e.g.
+    # `/…/app/greeter.iyi => "app/greeter"`. The edges above are keyed on
+    # filenames because that is what load-once is keyed on; a `.iyimod` names
+    # modules, so it needs the way back (SPEC.md IV.1).
+    getter iyi_module_paths = {} of String => String
+
     # All created unions in a program, indexed by an array of opaque
     # ids of each type in the union. The array (the key) is sorted
     # by this opaque id.

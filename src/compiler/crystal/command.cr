@@ -41,6 +41,7 @@ class Crystal::Command
         env                      print Crystal environment information
         eval                     eval code from args or standard input
         i/interactive            starts interactive Crystal
+        mod                      inspect a .iyimod module artifact
         play                     starts Crystal playground server
         run (default)            build and run program
         spec                     build and run specs (in spec directory)
@@ -145,6 +146,9 @@ class Crystal::Command
     when command == "daemon"
       options.shift
       daemon
+    when command == "mod"
+      options.shift
+      mod
     when "help".starts_with?(command), "--help" == command, "-h" == command
       puts USAGE
       exit
@@ -572,6 +576,15 @@ class Crystal::Command
 
       opts.on("--prelude ", "Use given file as prelude") do |prelude|
         compiler.prelude = prelude
+      end
+
+      # iyi: write a `.iyimod` per imported module into DIR (SPEC.md IV.1).
+      #
+      # Emitting from an ordinary build rather than from a "compile this module
+      # alone" command, because compiling a module alone is the thing the
+      # artifact is *for* and cannot precede it.
+      opts.on("--emit-iyimod DIR", "iyi: write a .iyimod per imported module into DIR") do |dir|
+        compiler.emit_iyimod = dir
       end
 
       unless no_codegen

@@ -131,6 +131,8 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
 
     check_import_cycle(node, filename)
 
+    @program.iyi_module_paths[filename] ||= path
+
     # One edge of the import DAG. Recorded even when the module is already
     # loaded: the second importer adds no initialiser, but it does constrain
     # where that initialiser may be moved to (rule 2).
