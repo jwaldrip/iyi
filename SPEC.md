@@ -2278,9 +2278,9 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 7 | ~~`!` inside a `defer` (III.1.4, V.8)~~ | **Decided: no** — a `defer` runs while the function is already returning, so propagating from one needs error-during-error semantics |
 | 8 | Structured concurrency only, no bare spawn (III.4.1) | yes — it is `defer` applied to a task set, so it costs no new mechanism, and it makes Go's commonest bug unrepresentable. The price is that a task cannot outlive its scope, which is a taste call |
 | 9 | ~~`Share` marker vs Erlang-style no sharing (III.4.4)~~ | **Decided: `Share`, on the count** — III.4.7 found the feared class empty and clean-sheet iyi code 77% shareable as written, 100% given a shareable immutable collection. That collection is now a stdlib obligation, not a nicety |
-| 10 | **Is iyi ever meant to be self-hosted?** | say **no**, explicitly — and if the answer is yes, act on it now rather than later. See B.2 |
+| 10 | ~~**Is iyi ever meant to be self-hosted?**~~ | **Decided: no.** iyi's compiler is and remains a Crystal program. The language's claim is what it compiles, not what compiles it. See B.2 |
 
-### B.2 — The one decision the fork already made
+### B.2 — The one decision the fork already made — **SETTLED: not a self-hosting project**
 
 Crystal's compiler was written in Crystal before its 0.1.0, when the compiler
 was 24,984 lines and the library 8,161. iyi begins from a fork: 95,010 lines of
@@ -2296,19 +2296,19 @@ the style most of those lines are written in.
 
 So this is not a task that gets scheduled later; it is a door that is already
 mostly shut, and the honest thing is to say so rather than leave it implied.
-The recommendation is to state in the README and here that **iyi is not a
-self-hosting project**, that its compiler is and remains a Crystal program, and
-that the language's claim is what it compiles rather than what compiles it. Go
+**Settled: iyi is not a self-hosting project.** Its compiler is and remains a
+Crystal program, and the language's claim is what it compiles rather than what
+compiles it. Go
 is again the evidence for why that is survivable: `gc` stayed a C compiler
 until Go 1.5 in 2015, nearly six years after the language was announced and
 four point releases into Go 1, and nobody held it against the language.
 
-The alternative — deciding that self-hosting matters — is legitimate, but it
-changes the plan rather than adding to it: it would make the compiler's own
-shape a design input from now on, and III.4.7's measurement that the compiler
-is 38.5% shareable *and stays there* is the first thing it would collide with.
-That is a call worth making deliberately and early, which is the whole reason
-this entry exists.
+The alternative — deciding that self-hosting matters — would have changed the
+plan rather than added to it: it would make the compiler's own shape a design
+input from here on, and III.4.7's measurement that the compiler is 38.5%
+shareable *and stays there* is the first thing it would have collided with.
+Deciding it now costs nothing; deciding it after the library exists would have
+cost the library.
 
 ### B.1 — Why #3, #4 and #7 are one decision
 
