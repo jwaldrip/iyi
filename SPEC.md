@@ -620,7 +620,7 @@ The type side needed nothing else. Error unions are ordinary unions, and III.1.3
 is already true: dropping a branch from a `case` over one is reported as `case is
 not exhaustive`. `T?` is untouched, since `Nil` does not implement `Error`.
 
-Two things the build found:
+Two things the build found, both since closed:
 
 - **`it` was not bound in a `case` branch — now it is.** The examples in this
   section write `in IOError then log(it)`, and `case` has learned to bind the
@@ -633,12 +633,22 @@ Two things the build found:
   program should not use for anything else. A `case` over a tuple subject binds
   nothing, since there is no single value to name, and a Crystal file is
   untouched.
-- **The orphan rule is vacuous for a top-level trait.** `Error` has no module,
-  and coherence is satisfied by being inside the trait's module *or* the type's
-  — where the trait's module is the top level, everyone is inside it. So
-  `impl Error for String` is accepted from any module, and two modules could
-  both write it. Narrow today, because `Error` is the only trait with no module,
-  but it is the orphan rule not holding.
+- **The orphan rule was vacuous for a top-level trait — now it holds.** `Error`
+  has no module, and coherence is satisfied by being inside the trait's module
+  *or* the type's; where the trait's module was taken to be the top level,
+  everyone was inside it, so `impl Error for String` was accepted from any
+  module and two of them could both write it. The fix is that **the top level
+  is not a module**: a side of the rule counts only when there is a real module
+  on it to be inside of. So `impl Error for T` must live in `T`'s module, and
+  `impl Error for String` — where neither side belongs to anyone — is an orphan
+  from everywhere and is rejected outright.
+
+  This is not special-casing `Error`. It is the same correction for a prelude
+  type, which belongs to no module either, and it leaves both real sides of the
+  rule open: `std/traits` still writes `impl Cmp for Int32`, because it owns
+  `Cmp`. The one place the top level still answers is a program that never
+  writes a module header — a single compilation unit, with no other module an
+  impl could have gone in, and nothing for the rule to say.
 
 Two degenerate cases are rejected at compile time rather than given surprising
 meanings:
@@ -1385,8 +1395,18 @@ module Y. The impl may live in T or in Y.
 - For Y to define it, Y must name `Show`, so Y imports T.
 - Both would mean T imports Y and Y imports T — a cycle, which R-1 forbids.
 
-So at most one module can define any given impl, **by construction**. The DAG
-and the orphan rule together make duplicate impls unrepresentable, and
+So at most one module can define any given impl, **by construction**.
+
+The argument needs both T and Y to exist, and the build found the case where
+neither does: a trait the compiler owns, or a prelude type, belongs to no
+module. Taking the top level to be a module in their place is what broke this —
+every module counts as inside it, so nothing was ruled out and any number of
+modules could write `impl Error for String`. The top level is therefore not a
+module (III.1.1): where a side has no module, that side cannot be satisfied,
+and an impl with no module on either side is rejected wherever it is written.
+That restores the premise rather than adding a rule.
+
+The DAG and the orphan rule together make duplicate impls unrepresentable, and
 coherence is checkable locally from the impl records in IV.2. No global pass, no
 link-time surprise, no cost at build time.
 

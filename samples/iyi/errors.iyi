@@ -128,6 +128,11 @@ puts "panic: #{load("config").or_panic}"
 #   value to name, so `it` stays undefined rather than being bound to one of
 #   the elements.
 #
+# * `impl Error for String` here — the orphan rule (R-3). `Error` is the
+#   compiler's and `String` is the prelude's, so neither belongs to a module
+#   this impl could be at home in, and every module that can name both would be
+#   free to write its own.
+#
 # ---------------------------------------------------------------------------
 # Not yet implemented
 # ---------------------------------------------------------------------------

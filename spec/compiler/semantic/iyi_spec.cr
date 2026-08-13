@@ -844,6 +844,85 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
 
+    it "refuses an impl where neither declaration belongs to a module" do
+      # The top level is not a module. Treating it as one is what used to make
+      # the rule vacuous for `Error`, which the compiler owns, and for a
+      # prelude type: every module was trivially "inside" it.
+      assert_error <<-CRYSTAL, "neither belongs to a module, so there is no module this impl could be at home in", filename: "x.iyi"
+        module App
+          module Orphan
+            impl Error for String
+              def message : String
+                self
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses an impl of a module-less trait outside the type's module" do
+      # With no module on the trait's side, only the type's side is left to
+      # satisfy — and this impl is in neither.
+      assert_error <<-CRYSTAL, "an impl must live in the module that defines the type (App::Data)", filename: "x.iyi"
+        module App
+          module Data
+            struct Foo
+            end
+          end
+
+          module Orphan
+            impl Error for App::Data::Foo
+              def message : String
+                "x"
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "allows an impl of a module-less trait in the type's own module" do
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { types["App"].types["Data"].types["Foo"] }
+        module App
+          module Data
+            struct Foo
+            end
+
+            impl Error for Foo
+              def message : String
+                "x"
+              end
+            end
+          end
+        end
+
+        App::Data::Foo.new
+        CRYSTAL
+    end
+
+    it "allows an impl for a module-less type from the trait's own module" do
+      # Implementing a trait you own for a type you do not is the other side of
+      # the rule, and it stays open — this is how `std/traits` reaches `Int32`.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            impl Showable for Int32
+              def show : Int32
+                1
+              end
+            end
+          end
+        end
+
+        1
+        CRYSTAL
+    end
+
     it "is vacuous when neither declaration is in a module" do
       # A program that never writes a module header is one compilation unit,
       # so there is no other module for an impl to have gone in.

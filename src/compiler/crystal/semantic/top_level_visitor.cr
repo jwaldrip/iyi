@@ -756,15 +756,41 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
   #
   # `namespace` is the defining module because that is what the `module`
   # header desugars to, so a declaration's module is simply the type enclosing
-  # it. A trait or type declared with no module header belongs to the top
-  # level, and then the rule is vacuous — which is right: a program that never
-  # writes a module header is a single compilation unit.
+  # it.
+  #
+  # The top level is not a module, and treating it as one is what used to make
+  # the rule vacuous: `Error` is the compiler's and belongs to no module,
+  # `String` is the prelude's and belongs to none either, so
+  # `impl Error for String` satisfied "inside the module that defines the
+  # trait" from anywhere at all — and two modules could both write it, which is
+  # the exact thing R-3 exists to prevent. So a side only counts when there is
+  # a real module on it to be inside of.
+  #
+  # The one place the top level still answers is a program that never writes a
+  # module header: it is a single compilation unit, there is no other module
+  # for an impl to have gone in, and the rule has nothing to say.
   private def check_impl_coherence(node, trait_type, target_type)
+    return if current_type.is_a?(Program)
+
     trait_module = trait_type.namespace
     target_module = target_type.namespace
-    return if within?(current_type, trait_module) || within?(current_type, target_module)
+    return if inside_module?(trait_module) || inside_module?(target_module)
 
-    node.raise "can't implement #{trait_type} for #{target_type} in #{current_type}: an impl must live in the module that defines the trait (#{trait_module}) or the module that defines the type (#{target_module}). This is R-3, the orphan rule, and it is what lets coherence be checked without a global pass — see SPEC.md IV.4"
+    places = [] of String
+    places << "the module that defines the trait (#{trait_module})" unless trait_module.is_a?(Program)
+    places << "the module that defines the type (#{target_module})" unless target_module.is_a?(Program)
+
+    if places.empty?
+      node.raise "can't implement #{trait_type} for #{target_type} in #{current_type}: neither belongs to a module, so there is no module this impl could be at home in. Every module that can name both is free to write it, and they would disagree with no error and no complaint at link time. This is R-3, the orphan rule — see SPEC.md IV.4"
+    end
+
+    node.raise "can't implement #{trait_type} for #{target_type} in #{current_type}: an impl must live in #{places.join(" or ")}. This is R-3, the orphan rule, and it is what lets coherence be checked without a global pass — see SPEC.md IV.4"
+  end
+
+  # iyi: whether *mod* is a module the current type is inside of. The top level
+  # is not one: nobody owns it, so being "in" it settles nothing.
+  private def inside_module?(mod : Type) : Bool
+    !mod.is_a?(Program) && within?(current_type, mod)
   end
 
   # iyi: `abstract def` in a trait is a requirement the impl has to satisfy
