@@ -92,8 +92,12 @@ and is made reversible instead: a path segment is `[a-z][a-z0-9]*` with single
 snake_case" turned out not to be enough — `v_1` and `v1` both give `V1`.
 
 **5. A benchmark that produces the claim, and a check that fails until it
-holds.** `bench/` already prices macros and `Share`; build speed is the one
-number the project exists for and it is the one with no committed harness.
+holds. Built.** `bench/` already priced macros and `Share`; build speed was the
+one number the project exists for and the one with no committed harness.
+`bench/build_speed.py` is it, and its first run is below. Its corpus is one
+program, because `hello` is the only pair where "the equivalent Go program" is
+unambiguous and because iyi has no other program to offer — which makes growing
+that corpus a dependency of this item on item 3, not a nicety.
 
 ### Out of scope, stated so it is not argued twice
 
@@ -118,9 +122,41 @@ that would change what 0.1.0 looks like, and deferring it costs nothing.
 3. The end-to-end `crystal build` time is published in the same table even
    though LLVM and the linker dominate it, so that the claim cannot quietly
    become a front-end-only claim.
-4. A spec asserts (2) and stays red until it holds. The release is a passing
-   assertion, not a judgement call — which is the same standard the rest of this
-   document is held to.
+4. The check for (2) is the bench's own exit status, not a spec. The release is
+   a command that passes, not a judgement call — the same standard as the rest
+   of this document. **Built:** `python3 bench/build_speed.py` exits non-zero
+   while the target is unmet, and names which scope item closes the gap. It is
+   deliberately not a `spec/compiler/…` example: one permanently red assertion
+   in that suite would cost it the only thing it is good for, which is that a
+   failure there means something broke.
+
+**The first run, recorded because a bench with no baseline is a script.** On one
+machine, best of three, seconds:
+
+| program | stage | cold | warm |
+|---|---|---|---|
+| `hello.iyi` | front end (`--no-codegen`) | 1.32 | — |
+| `hello.iyi` | end to end | 2.20 | 1.96 |
+| `hello.go` | `go build` | 1.98 | 0.18 |
+| `webapp.iyi` | front end, iyi only | 1.31 | — |
+
+Three things fall out of it, and none were stated before it ran.
+
+**The fight is the warm build, and it is 11× not 3×.** Cold, the two are level
+— 2.20 against 1.98, because Go is compiling its own dependencies too. Warm,
+Go drops to 0.18 and iyi to 1.96, because Crystal's cache only holds codegen
+and the front end is redone in full every time. Warm rebuild is what a person
+actually waits for, so **11× is the real gap**, and it is almost exactly the
+front end: item 1 plus item 2 are worth 1.32 s of the 1.78 s difference.
+
+**Being level when cold is not a consolation, it is a warning.** It means iyi's
+cold build is already as expensive as compiling Go's stdlib from source, on a
+program that prints one line.
+
+**`webapp.iyi` costs the same as `hello.iyi`**, 1.31 against 1.32. IV.1d found
+this on the previous instrument and it still holds on this one: user code is
+nearly free and the fixed prelude cost is the whole bill. It is why the target
+is set on a one-line program rather than a large one.
 
 ### What Crystal's own 0.1.0 looked like
 
@@ -2224,6 +2260,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | `Share` prices a style rather than failing | clean-sheet iyi code is 77% shareable as written and 100% given an immutable collection; the compiler, built as a mutable workspace, is 38.5% and stays there (III.4.7) |
 | Module-level mutable state is already rare | 3 of 483 compiler types hold a class variable, so III.4.5 costs almost nothing |
 | Coherence costs nothing at build time | the import DAG plus the orphan rule make duplicate impls unrepresentable (IV.4) |
+| The gap to Go is the warm build, and it is 11× | `hello`: cold 2.20 s vs Go's 1.98 s, warm 1.96 s vs Go's 0.18 s. Crystal's cache holds codegen only, so the 1.32 s front end is paid on every build (`bench/build_speed.py`) |
 | A first release's prelude is ~3.5k lines | Crystal 0.1.0 shipped 8,161 lines of library, 3,551 of it the core that a prelude is; the rest is `json`/`yaml`/`http` |
 | Self-hosting only gets more expensive | Crystal self-hosted at 24,984 lines of compiler and 8,161 of library, before its 0.1.0; iyi's fork starts at 95,010 and 196,217 (Appendix B.2) |
 | The path/name mapping needed more than snake_case | `camelcase` drops an underscore before a digit, so `v_1` and `v1` both give `V1`; requiring each group to start with a letter removes that and three sibling collisions (IV.6 #6) |
