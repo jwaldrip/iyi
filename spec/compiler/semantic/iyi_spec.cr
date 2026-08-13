@@ -2914,6 +2914,69 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
 
+    # iyi: II.7 × II.6. A generic impl answering an associated type with its own
+    # parameter. Both halves were built long before they were ever written
+    # together, and the meeting failed on `undefined constant T`.
+    it "answers an associated type with the impl's own type parameter" do
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Coll
+            trait Holder
+              type Elem
+              abstract def get : Elem
+            end
+
+            struct Box(T)
+              @value : T
+
+              def initialize(@value : T)
+              end
+            end
+
+            impl Holder for Box(T) forall T
+              type Elem = T
+
+              def get : T
+                @value
+              end
+            end
+
+            def self.go : Int32
+              Box(Int32).new(1).get
+            end
+          end
+        end
+
+        App::Coll.go
+        CRYSTAL
+    end
+
+    it "keeps the trait's own name resolvable from the impl's module" do
+      # The fix must not reach for the target's scope: `Cmp` lives where the
+      # impl was written, and `Int32` has never heard of it.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Traits
+            trait Sized
+              abstract def measure : Int32
+            end
+
+            impl Sized for Int32
+              def measure : Int32
+                1
+              end
+            end
+
+            def self.go : Int32
+              1.measure
+            end
+          end
+        end
+
+        App::Traits.go
+        CRYSTAL
+    end
+
     it "reports type arguments given to a trait that has no parameters" do
       assert_error <<-CRYSTAL, "can't implement App::Conv::Plain with type arguments, it's not a generic trait"
         module App

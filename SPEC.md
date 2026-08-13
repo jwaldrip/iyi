@@ -487,6 +487,28 @@ true reason a call is rejected, and Crystal's "no overload matches" would bury
 it. This is also where II.6 finding 6 lands: `zip(*others : Indexable |
 Iterable | Iterator)` becomes `forall O : Enumerable`.
 
+**A generic impl of a trait with an associated type — II.7 × II.6 — did not
+work until something needed it.** `impl Enumerable for List(T) forall T` with
+`type Elem = T` reported `undefined constant T`. Both halves were built and
+specced; they had simply never been written together, because every impl in the
+samples was either generic with a parameterless trait (`Show for Box(T)`) or
+associated-typed on a concrete target (`Enumerable for Nums`).
+
+The cause is worth recording, because the obvious fix is the wrong one. An
+impl's answer to an associated type becomes an argument of the `include` the
+compiler writes, and that argument may name a parameter of the *target* —
+`List`'s `T` — which is not in scope where the impl was written. Pushing the
+target's scope to find it loses the trait, whose name lives in the impl's own
+module, and breaks every `impl Cmp for Int32` in `samples/iyi/std/traits.iyi`.
+The parameters have to be passed as **free variables** into a lookup that still
+happens in the impl's scope, which is what resolving a superclass from inside a
+generic already does. Both names then resolve, each from where it actually
+lives.
+
+That a generic collection implementing `Enumerable` is the first program to
+need this says something about the order the samples were written in: the
+canonical case arrived last.
+
 ### II.8 What a trait is, and is not — **SETTLED**
 
 Draft 0 said `impl Trait for Type` and left "trait" undefined. The first
@@ -1209,11 +1231,30 @@ process. The count in III.4.7 was to be the arbiter, and it came back for
 `Share`: the class this section feared turned out to be empty, and clean-sheet
 iyi code is 77% shareable as written.
 
-**It came back with an obligation attached, though.** Every failure in that
-clean-sheet code is a type holding an `Array`, which makes a **shareable
-immutable collection** a thing the standard library owes the language rather
-than a convenience — without it the `Mutex(T)` escape becomes the normal case,
-and an escape hatch used routinely is the definition of a failed rule.
+**It came back with an obligation attached, though, and the obligation is
+now met.** Every failure in that clean-sheet code was a type holding an
+`Array`, which made a **shareable immutable collection** something the standard
+library owed the language rather than a convenience — without it the `Mutex(T)`
+escape becomes the normal case, and an escape hatch used routinely is the
+definition of a failed rule. `samples/iyi/std/list.iyi` is that collection, and
+`samples/iyi/immutable.iyi` exercises it.
+
+Two things building it settled that the count could not:
+
+- **The collection cannot derive `Share`; it has to be trusted.** `List(T)`
+  holds an `Array(T)`, so structurally it fails its own marker — and the
+  counting tool duly reports it as failing, which is the demonstration rather
+  than an embarrassment. What makes it safe is that it *owns* the array and
+  never hands it out, and ownership is exactly what this design has no way to
+  express, having refused a borrow checker. So `List` joins `Mutex` as a type
+  the compiler trusts rather than checks. That list should stay short, but it
+  cannot be empty. Rerunning the count with `List` present: 14 of 14 sample
+  types pass once a shareable collection exists, against 10 of 14 without.
+- **The constructor has to copy, for the same missing reason.** A caller that
+  keeps the array it passed in could otherwise mutate the list from underneath
+  a task holding it. Rust says "I own this now" and pays nothing; here it costs
+  one copy at the boundary. `immutable.iyi` demonstrates the failure that copy
+  prevents rather than asserting it.
 
 #### III.4.5 What this settles about module-level state
 

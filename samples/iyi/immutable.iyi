@@ -1,0 +1,85 @@
+# The shareable immutable sequence, exercised — SPEC.md III.4.7.
+#
+#   ./bin/crystal run samples/iyi/immutable.iyi
+#
+# `std/list.iyi` holds the type. This file is the evidence for the two claims
+# made about it, because a type that merely compiles has proved neither:
+#
+#   * It is genuinely immutable — nothing a caller keeps a hold of can change
+#     a list after it exists, which is what makes it shareable under III.4.4.
+#   * It costs one `each` and gets the rest, which is II.6's claim tested on a
+#     second type after `Enumerable` itself, and the first time on a *generic*
+#     one.
+
+module samples/immutable
+
+import std/list
+using std/list::{List}
+
+nums = List(Int32).new([3, 1, 4, 1, 5])
+words = List(String).new(["pear", "fig", "plum", "kiwi"])
+
+# ---------------------------------------------------------------------------
+# Its own surface: small on purpose
+# ---------------------------------------------------------------------------
+puts "size            #{nums.size}"
+puts "empty?          #{nums.empty?} #{List(Int32).new([] of Int32).empty?}"
+puts "at              #{nums.at(0)} #{nums.at(4)}"
+
+# ---------------------------------------------------------------------------
+# Immutability, demonstrated rather than asserted
+# ---------------------------------------------------------------------------
+#
+# `appended` returns a new list and leaves this one alone. By III.1.7 the plain
+# verb names the mutating form, so the participle is the only name this type
+# can have — `push` and `sort` describe something it cannot do. The naming
+# convention was settled before any library code existed precisely so that it
+# would fall out here rather than be applied here.
+longer = nums.appended(9)
+puts "appended        #{longer.size} from #{nums.size}, original #{nums.to_a.join(",")}"
+puts "concatenated    #{nums.concatenated(List(Int32).new([7])).to_a.join(",")} / #{nums.size}"
+
+# The constructor copies, and this is the line that shows why it must. `source`
+# is still held by this file; if the list had kept it rather than copying, a
+# task holding `taken` would see it change underneath. That copy is the price
+# of having no borrow checker to say "I own this now" — one copy, at the
+# boundary, once.
+source = [1, 2]
+taken = List(Int32).new(source)
+source << 3
+puts "copied          list #{taken.size}, source #{source.size}"
+
+# ---------------------------------------------------------------------------
+# Everything below here is the trait's, from one `each`
+# ---------------------------------------------------------------------------
+puts "to_a            #{nums.to_a.join(",")}"
+puts "all?/any?       #{nums.all? { |x| x > 0 }} #{nums.any? { |x| x > 4 }}"
+puts "none?/one?      #{nums.none? { |x| x > 9 }} #{nums.one? { |x| x == 4 }}"
+puts "count           #{nums.count { |x| x == 1 }}"
+puts "find?/find      #{nums.find? { |x| x > 3 }} #{nums.find { |x| x > 3 }}"
+puts "index?/index    #{nums.index? { |x| x == 4 }} #{nums.index { |x| x == 4 }}"
+puts "first?/first    #{nums.first?} #{nums.first}"
+puts "map             #{nums.map { |x| x * 2 }.join(",")}"
+puts "flat_map        #{nums.flat_map { |x| [x, x] }.join(",")}"
+puts "map_with_index  #{nums.map_with_index { |x, i| x * i }.join(",")}"
+puts "select/reject   #{nums.select { |x| x > 2 }.join(",")} #{nums.reject { |x| x > 2 }.join(",")}"
+puts "partition       #{nums.partition { |x| x > 2 }.map(&.join("+")).join(" | ")}"
+puts "take/skip       #{nums.take(2).join(",")} #{nums.skip(3).join(",")}"
+puts "take_while      #{nums.take_while { |x| x < 4 }.join(",")}"
+puts "skip_while      #{nums.skip_while { |x| x < 4 }.join(",")}"
+puts "reduce          #{nums.reduce(0) { |a, x| a + x }}"
+puts "each_with_object #{nums.each_with_object([] of Int32) { |o, e| o << e * 10 }.join(",")}"
+puts "join            #{nums.join("-")}"
+puts "includes?       #{nums.includes?(4)} #{nums.includes?(9)}"
+puts "max/min         #{nums.max} #{nums.min}"
+puts "sum/product     #{nums.sum} #{nums.product}"
+puts "tally           #{nums.tally[1]}"
+puts "sorted          #{nums.sorted.join(",")}"
+puts "max_by          #{words.max_by { |s| s.size }}"
+puts "group_by        #{words.group_by { |s| s.size }[4].join(",")}"
+
+# The trait reaches a generic type, which is the part that was not built until
+# this file needed it. `type Elem = T` binds the associated type to the impl's
+# own parameter, so `List(Int32)` enumerates `Int32` and `List(String)`
+# enumerates `String` from the same impl — II.6 × II.7, which had never met.
+puts "two elem types  #{nums.map { |x| x + 1 }.join(",")} / #{words.map { |s| s.size }.join(",")}"

@@ -487,7 +487,17 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
         Generic.new(node.trait, args).at(node.trait)
       end
     include_node = Include.new(trait_name).at(node)
-    include_in target_type, include_node, :included, from_impl: true
+    # iyi: where II.6's associated types meet II.7's generic impls.
+    #
+    # `impl Enumerable for List(T) forall T` answers `type Elem = T`, and that
+    # `T` becomes an argument of the `include` written here — but it names a
+    # parameter of `List`, which is not in scope where the impl was written.
+    # Pushing the target's scope would find it and lose the trait, whose name
+    # lives in the impl's own module. So the parameters are passed as free
+    # variables instead, which is what resolving a superclass inside a generic
+    # already does.
+    include_in target_type, include_node, :included,
+      from_impl: true, free_vars: impl_target_free_vars(target_type)
 
     check_impl_requirements node, trait_type, target_type
 
@@ -1739,10 +1749,23 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
   # legitimately include a trait. Everywhere else the caller is a written
   # `include` or `extend`, and including a trait is what R-3 removes: a type
   # acquires a trait by having an impl, which the orphan rule can check.
-  def include_in(current_type, node, kind : HookKind, from_impl = false)
+  # iyi: the target's own type parameters, so an impl's `include` can name them
+  # (SPEC.md II.6 × II.7). Nil for a non-generic target, which is every impl
+  # that has nothing to bind.
+  private def impl_target_free_vars(target_type) : Hash(String, TypeVar)?
+    return nil unless target_type.is_a?(GenericType)
+
+    free_vars = {} of String => TypeVar
+    target_type.type_vars.each do |type_var|
+      free_vars[type_var] = target_type.type_parameter(type_var)
+    end
+    free_vars
+  end
+
+  def include_in(current_type, node, kind : HookKind, from_impl = false, free_vars = nil)
     node_name = node.name
 
-    type = lookup_type(node_name)
+    type = lookup_type(node_name, free_vars: free_vars)
 
     # Checked before the generic branch: a bare `include Into` on a generic
     # trait is a trait mistake, not a missing-type-arguments one.
