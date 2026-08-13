@@ -7,7 +7,8 @@ require "./spec_helper"
 # refused. A build cache whose worst case is "read something plausible and
 # carried on" is the failure IV.1 is written to avoid, so the rejections below
 # matter at least as much as the round trip.
-private def sample_artifact(imports = [] of String)
+private def sample_artifact(imports = [] of String,
+                            exports = [] of Crystal::IyiMod::Signature)
   Crystal::IyiMod::Artifact.new(
     module_name: "app/greeter",
     source_path: "/src/app/greeter.iyi",
@@ -15,6 +16,7 @@ private def sample_artifact(imports = [] of String)
     target_triple: "x86_64-pc-linux-gnu",
     flags: ["bits64", "linux"],
     imports: imports,
+    exports: Crystal::IyiMod::Exports.new(exports),
   )
 end
 
@@ -146,5 +148,51 @@ describe Crystal::IyiMod do
 
     text.should contain "module        app/greeter"
     text.should contain "  std/list"
+  end
+
+  # R-2: everything exported carries full parameter and return types, which is
+  # why the signature can be the annotation as written rather than a rendering
+  # of an inferred type.
+  it "round-trips exported signatures" do
+    signatures = [
+      Crystal::IyiMod::Signature.new("polite", [{"name", "String"}], "String"),
+      Crystal::IyiMod::Signature.new("title", [] of {String, String}, "String"),
+      Crystal::IyiMod::Signature.new("pair", [{"a", "Int32"}, {"b", "Array(String)"}], "Tuple(Int32, String)"),
+    ]
+
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(exports: signatures), path
+      read = Crystal::IyiMod.read(path).exports.functions
+
+      read.size.should eq 3
+      read[0].name.should eq "polite"
+      read[0].parameters.should eq [{"name", "String"}]
+      read[0].return_type.should eq "String"
+      read[1].parameters.should be_empty
+      read[2].parameters.should eq [{"a", "Int32"}, {"b", "Array(String)"}]
+      read[2].return_type.should eq "Tuple(Int32, String)"
+    end
+  end
+
+  it "dumps a signature the way it was written" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact(exports: [
+      Crystal::IyiMod::Signature.new("polite", [{"name", "String"}], "String"),
+      Crystal::IyiMod::Signature.new("title", [] of {String, String}, "String"),
+    ]), io
+    text = io.to_s
+
+    text.should contain "  def polite(name : String) : String"
+    # No empty parens for a function that takes nothing.
+    text.should contain "  def title : String"
+  end
+
+  # An exported trait or type leaves no trace in the file at format v2, so the
+  # dump has to say the list is partial. A reader taking it for the module's
+  # whole surface is the one mistake this file cannot afford.
+  it "says what the format does not carry yet" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact, io
+    io.to_s.should contain "not in this file yet"
   end
 end

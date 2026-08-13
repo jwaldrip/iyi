@@ -35,7 +35,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 1_u32
+  FORMAT_VERSION = 2_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -67,6 +67,36 @@ module Crystal::IyiMod
     end
   end
 
+  # One exported function's signature — a `pub def` (R-2).
+  #
+  # Types are carried as the **source text of the annotation the author wrote**,
+  # not as a rendering of the inferred `Crystal::Type`. R-2 is what makes that
+  # sound: everything a module exports carries full parameter and return types,
+  # so the annotation *is* the signature and there is nothing to infer. It is
+  # also the more robust choice — the reader parses it with the same parser that
+  # read the source, instead of a second grammar invented for this file.
+  record Signature,
+    name : String,
+    parameters : Array({String, String}),
+    return_type : String
+
+  # What a module offers another module: `Exports` in IV.1's table.
+  #
+  # Deliberately not everything the module contains. Bodies of ordinary `pub`
+  # functions stay out, and so does everything unexported, because a consumer
+  # that could reach them would come to depend on an implementation detail —
+  # and because a name left unmarked has to be *unreachable*, or these
+  # metadata would not be enough to compile against (IV.2).
+  #
+  # ## What is not here yet
+  #
+  # Type declarations, layout templates, type descriptors, trait declarations,
+  # impl records and constants. IV.2 names them all; this carries the first of
+  # the list, module-level `pub def` signatures. Methods of exported types are
+  # not here either, since the types themselves are not.
+  record Exports,
+    functions : Array(Signature)
+
   # What a `.iyimod` says about the module it was built from.
   #
   # Only the parts the compiler can already produce. This grows a field at a
@@ -95,8 +125,11 @@ module Crystal::IyiMod
     # recorded. III.5's initialisation order is derivable from these.
     getter imports : Array(String)
 
+    # What another module may reach. See `Exports`.
+    getter exports : Exports
+
     def initialize(@module_name, @source_path, @compiler_version, @target_triple,
-                   @flags, @imports)
+                   @flags, @imports, @exports = Exports.new([] of Signature))
     end
   end
 
@@ -110,6 +143,7 @@ module Crystal::IyiMod
     sections = [] of {Section, Bytes}
     sections << {Section::Header, encode_header(artifact)}
     sections << {Section::Imports, encode_imports(artifact)}
+    sections << {Section::Exports, encode_exports(artifact)}
 
     Dir.mkdir_p(File.dirname(path))
     temporary = "#{path}.#{Process.pid}.tmp"
@@ -156,6 +190,7 @@ module Crystal::IyiMod
 
       header = nil
       imports = [] of String
+      exports = Exports.new([] of Signature)
 
       table.each do |(kind, length)|
         payload = Bytes.new(length)
@@ -163,6 +198,7 @@ module Crystal::IyiMod
         case Section.from_value?(kind)
         when Section::Header  then header = decode_header(payload)
         when Section::Imports then imports = decode_imports(payload)
+        when Section::Exports then exports = decode_exports(payload)
         else
           # Written by a later compiler, or a section this one does not need.
           # Skipping is the point of the table.
@@ -174,7 +210,7 @@ module Crystal::IyiMod
       end
 
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
-        header[:target_triple], header[:flags], imports)
+        header[:target_triple], header[:flags], imports, exports)
     end
   end
 
@@ -193,6 +229,27 @@ module Crystal::IyiMod
       io.puts "imports"
       artifact.imports.each { |name| io.puts "  #{name}" }
     end
+
+    functions = artifact.exports.functions
+    if functions.empty?
+      io.puts "exports       (none)"
+    else
+      io.puts "exports"
+      functions.each do |signature|
+        parameters = signature.parameters.map { |(name, type)| "#{name} : #{type}" }
+        arguments = parameters.empty? ? "" : "(#{parameters.join(", ")})"
+        io.puts "  def #{signature.name}#{arguments} : #{signature.return_type}"
+      end
+    end
+
+    # Said out loud on every dump, because an exported trait or type currently
+    # leaves no trace in the file at all: without this line a reader would take
+    # the list above for the module's whole surface, which is precisely the
+    # mistake `.iyimod` cannot afford anyone making.
+    io.puts
+    io.puts "note          format v#{FORMAT_VERSION} carries module-level `pub def`"
+    io.puts "              signatures only. Exported types, traits, impls and"
+    io.puts "              constants are not in this file yet (SPEC.md IV.2)."
   end
 
   private def self.encode_header(artifact : Artifact) : Bytes
@@ -227,6 +284,34 @@ module Crystal::IyiMod
   private def self.decode_imports(payload : Bytes) : Array(String)
     io = IO::Memory.new(payload)
     Array(String).new(io.read_bytes(UInt32, FORMAT)) { read_string(io) }
+  end
+
+  private def self.encode_exports(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    functions = artifact.exports.functions
+    io.write_bytes functions.size.to_u32, FORMAT
+    functions.each do |signature|
+      write_string io, signature.name
+      io.write_bytes signature.parameters.size.to_u32, FORMAT
+      signature.parameters.each do |(name, type)|
+        write_string io, name
+        write_string io, type
+      end
+      write_string io, signature.return_type
+    end
+    io.to_slice
+  end
+
+  private def self.decode_exports(payload : Bytes) : Exports
+    io = IO::Memory.new(payload)
+    functions = Array(Signature).new(io.read_bytes(UInt32, FORMAT)) do
+      name = read_string(io)
+      parameters = Array({String, String}).new(io.read_bytes(UInt32, FORMAT)) do
+        {read_string(io), read_string(io)}
+      end
+      Signature.new(name, parameters, read_string(io))
+    end
+    Exports.new(functions)
   end
 
   private def self.write_string(io : IO, value : String) : Nil

@@ -404,10 +404,48 @@ module Crystal
           target_triple: program.codegen_target.to_s,
           flags: flags,
           imports: imports || [] of String,
+          exports: collect_iyi_exports(program, module_name),
         )
 
         IyiMod.write artifact, File.join(dir, "#{module_name}.iyimod")
       end
+    end
+
+    # iyi: a module's public surface, for the artifact's `Exports` (IV.2).
+    #
+    # `pub` records a *name* on the module (R-2), so this walks those names and
+    # takes the signature of each `def` they resolve to. A name can carry
+    # several overloads and each is its own signature.
+    #
+    # Parameter and return types are the annotations as written. R-2 requires
+    # them on anything exported, so an export missing one is not a signature to
+    # infer but a rule that was broken somewhere else; it is recorded as `?`
+    # rather than guessed at, which keeps that visible in `mod dump` instead of
+    # inventing a type the author never wrote.
+    private def collect_iyi_exports(program : Program, module_name : String) : IyiMod::Exports
+      functions = [] of IyiMod::Signature
+
+      if type = program.iyi_module_type(module_name)
+        if exported = type.exported_names
+          if defs = type.defs
+            exported.to_a.sort!.each do |name|
+              defs[name]?.try &.each do |item|
+                a_def = item.def
+                parameters = a_def.args.map do |arg|
+                  {arg.name, arg.restriction.try(&.to_s) || "?"}
+                end
+                functions << IyiMod::Signature.new(
+                  name: a_def.name,
+                  parameters: parameters,
+                  return_type: a_def.return_type.try(&.to_s) || "?",
+                )
+              end
+            end
+          end
+        end
+      end
+
+      IyiMod::Exports.new(functions)
     end
 
     # Measures what a compile costs when the prelude has already been analysed,

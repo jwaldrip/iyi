@@ -59,9 +59,10 @@ speed has shipped the cost and none of the benefit.
 **1. `.iyimod`, end to end (IV.1). Started.** Not negotiable. R-1 is the rule
 the rest of the document is built on, and `import` still re-reads and
 re-analyses each module's source. Without the artifact everything here is a
-design document. The container, the `Header` and `Imports` sections,
-`--emit-iyimod` and `mod dump` are built; `Exports` is next, then a consumer
-that reads it in place of the source, then object code.
+design document. The container, the `Header`, `Imports` and `Exports` sections,
+`--emit-iyimod` and `mod dump` are built, with `Exports` carrying `pub def`
+signatures so far; exported types, traits and impls are next, then a consumer
+that reads the file in place of the source, then object code.
 
 **2. The passes that still walk the prelude stop walking it (IV.1d).** The
 artifact alone leaves 0.47 s, of which class-var initializers and `main` are
@@ -1694,12 +1695,26 @@ as valid is the worst failure mode a build cache has.
 Binary, for read speed. A `iyi mod dump` producing text is required, not
 optional — an opaque cache format is one nobody can debug.
 
-**The container is built.** `src/compiler/crystal/iyimod.cr` writes and reads
-magic, format version, a section table and the `Header` and `Imports` sections;
+**The container is built, and `Exports` has begun.**
+`src/compiler/crystal/iyimod.cr` writes and reads magic, format version, a
+section table and the `Header`, `Imports` and `Exports` sections;
 `crystal build --emit-iyimod DIR` writes one per imported module, and
-`crystal mod dump FILE` prints it. The remaining kinds — `Hashes`, `Exports`,
-`MacroBodies`, `MonoBodies`, `ObjectCode` — are declared in the `Section` enum
-and not yet written.
+`crystal mod dump FILE` prints it. `Exports` carries module-level `pub def`
+signatures; exported types, traits, impls and constants are not in it yet, and
+neither are `Hashes`, `MacroBodies`, `MonoBodies` or `ObjectCode`.
+
+**A signature is stored as the annotation the author wrote**, not as a
+rendering of the inferred `Crystal::Type`. R-2 is what makes that sound —
+everything exported carries full parameter and return types, so there is
+nothing to infer — and it avoids inventing a second grammar for this file when
+the consumer already has a parser for the first one.
+
+Because the section is partial, **`mod dump` says so on every dump**. An
+exported trait leaves no trace in the file at all today, so `app/greeter` lists
+two functions and not its `pub trait Greet`, and `std/list` — whose whole
+surface is a `pub struct` — lists nothing at all. A reader taking that for a
+module's complete surface is the one mistake this file cannot afford, so the
+gap is printed rather than left to be inferred from an empty list.
 
 Two properties were built in from the start rather than retrofitted, because
 neither can be added later without a format break. **Replacement is atomic**: a

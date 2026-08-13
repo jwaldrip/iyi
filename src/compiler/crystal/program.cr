@@ -92,6 +92,18 @@ module Crystal
     # modules, so it needs the way back (SPEC.md IV.1).
     getter iyi_module_paths = {} of String => String
 
+    # iyi: the type a module path denotes — `"app/greeter"` to `App::Greeter`.
+    #
+    # Resolved by segment rather than remembered, which is only safe because
+    # IV.6 #6 made the path-to-name mapping injective: two module paths cannot
+    # denote one type, so this lookup cannot answer for the wrong module.
+    def iyi_module_type(module_path : String) : ModuleType?
+      module_path.split('/').reduce(self.as(ModuleType?)) do |scope, segment|
+        return nil unless scope
+        scope.types?.try(&.[]?(segment.camelcase)).as?(ModuleType)
+      end
+    end
+
     # All created unions in a program, indexed by an array of opaque
     # ids of each type in the union. The array (the key) is sorted
     # by this opaque id.
