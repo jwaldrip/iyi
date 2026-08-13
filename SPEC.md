@@ -815,18 +815,31 @@ distinct, as they are in Crystal today: `T?` for "not there", error unions for
 "tried and failed". Existing flow typing (`if x = maybe_get`) handles nil, and
 `!` does not touch it.
 
-**OPEN:** whether a nil-propagating operator is worth having later. Deliberately
-excluded from Draft 0 — one new control-flow operator at a time.
+**No nil-propagating operator** (Appendix B #4). Not "not yet" — a second
+propagating operator would give absence and failure the same shape, and the
+pressure would then be to unify them, which ends with `Nil` implementing `Error`
+and this section deleted. Flow typing is the better tool anyway: it forces the
+branch to be written where the absence means something.
 
-#### III.1.6 Error conversion — **OPEN**
+#### III.1.6 Error conversion — **SETTLED: none**
 
 Rust's `?` silently converts error types through `From`. That is convenient and
 it is also the mechanism by which Rust error handling became something people
-write blog posts to explain.
+write blog posts to explain: the set of errors a function returns stops being
+what its signature says and becomes what trait resolution computes.
 
-Draft 0 requires the error type to already be a member of the caller's return
-union; conversion is written by hand. Recommend keeping it that way until real
-code proves it unbearable.
+There is no implicit conversion here, and this is not a Draft 0 restriction
+waiting to be relaxed (Appendix B #3). The error type must already be a member
+of the caller's return union. Two things make that livable rather than
+punishing:
+
+- **Widening is not conversion.** Error sets are aliases (III.1.2), so a caller
+  that admits more errors than it raises just names a wider alias. Union
+  subtyping makes this free, and it covers most of what conversion is asked to
+  do.
+- **Real conversion is rare and should look it.** Deliberately hiding an
+  `IOError` behind a `ConfigError` is a decision about a module's public
+  surface. It is an ordinary function call, written where the decision is made.
 
 ### III.1.7 The conflict this design creates — **SETTLED — A**
 
@@ -1500,9 +1513,11 @@ Named honestly, so nobody mistakes this draft for complete.
    while no stdlib code existed yet, which was the whole point: it is a
    convention the entire library has to be designed around from the first
    commit, and it is now enforced by the compiler rather than left to style.
-8. **`defer` semantics.** Ordering of multiple `defer`s in a scope, and whether
-   a `defer` may itself propagate with `!`. Go's answers (LIFO; no) are probably
-   right but are not automatic here.
+8. **`defer` semantics.** ~~Ordering of multiple `defer`s in a scope, and
+   whether a `defer` may itself propagate with `!`.~~ **Both answered as Go
+   answers them, LIFO and no** — LIFO because it is the reverse of acquisition
+   order, and no because a `defer` runs while the function is already returning
+   (Appendix B #7). What remains is building it: III.1.4.
 
 ---
 
@@ -1534,7 +1549,55 @@ For traceability, since several rules here rest on numbers rather than taste.
 |---|---|---|
 | 1 | Errors as unions at all (III.1) | yes — biggest departure from Ruby feel, so it is a taste call |
 | 2 | ~~`!` in identifiers vs `!` as propagation (III.1.7)~~ | **Decided: A** — `!` dropped from identifiers, `sort`/`sorted` adopted, enforced by the compiler |
-| 3 | Implicit error conversion (III.1.6) | no, for Draft 0 |
-| 4 | Nil-propagation operator (III.1.5) | not in Draft 0 |
+| 3 | ~~Implicit error conversion (III.1.6)~~ | **Decided: no, and not on a schedule** — the signature is the error set; a conversion the reader cannot see takes that away |
+| 4 | ~~Nil-propagation operator (III.1.5)~~ | **Decided: no, and not on a schedule** — a second propagation channel ends by making `Nil` an error, which III.1.5 exists to prevent |
 | 5 | `pub using` re-export (II.3) | no, for Draft 0 |
 | 6 | `@[Monomorphize]` on stdlib trait defaults (II.6) | yes — mark `each`/`map`/`select`/`reduce`, stencil the rest. Accepts that the library author owns a per-method performance decision |
+| 7 | ~~`!` inside a `defer` (III.1.4, V.8)~~ | **Decided: no** — a `defer` runs while the function is already returning, so propagating from one needs error-during-error semantics |
+
+### B.1 — Why #3, #4 and #7 are one decision
+
+They are three requests for the same thing: **more reach for `!`**. Each is
+individually reasonable and the three of them together are how this design
+fails, so it is worth writing down once what they have in common rather than
+answering each on its own merits.
+
+`!` does exactly one thing: return early. It does not convert, does not widen,
+does not reach into a second kind of absence, and does not run during unwind.
+That is the whole of it, and the value of the design is in what the operator
+**refuses** to do, not in what it does — because everything it refuses is a way
+for a function's real error set to stop being the one written in its signature.
+
+Go's own answer to this question is the evidence. The `try` proposal
+(golang/go#32437, 2019) was not declined for being hard to implement. It was
+declined because it hid control flow and made adding context to an error worse,
+and Go took error *wrapping* instead. That is a language with the same taste as
+this one deciding that the operator was the wrong place to spend the budget.
+
+Taken one at a time:
+
+- **#3, implicit conversion.** This is the decision that separates this design
+  from Rust's. `?` plus `From` means the set of errors a function returns is
+  computed by a trait resolution the reader cannot see, which is why that
+  ecosystem grew libraries whose entire job is to make error types writable.
+  Here the signature is the truth, and it stays the truth only if nothing
+  silently rewrites an error on the way out. The replacement is not a
+  conversion mechanism: error sets are aliases (III.1.2), so widening a return
+  type covers most of what conversion is asked for, and it is free. Genuine
+  conversion — deliberately *hiding* one error behind another — is rare, should
+  look rare, and is an ordinary function call.
+- **#4, nil propagation.** `T?` and error unions are different questions, and
+  III.1.5 keeps them different. A `?`-propagating operator would put them in the
+  same shape, and the pressure would then be to unify them — at which point
+  `Nil` implements `Error` and the distinction is gone. Flow typing already
+  handles absence, and it is the better tool: it forces the branch to be written
+  where the absence means something, which is the whole reason absence is not an
+  error.
+- **#7, `!` in a `defer`.** A `defer` body runs while the function has already
+  decided to return, and possibly while it is carrying an error of its own.
+  Propagating a second error from there is the error-during-error problem, which
+  is the ugliest corner of every language that has taken it on. A `defer` body
+  handles its own failure, explicitly — `.or_panic` or ignore it.
+
+None of the three is blocked on anything. They are not deferred to Draft 1; they
+are answered.
