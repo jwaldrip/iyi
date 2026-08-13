@@ -73,7 +73,16 @@ While an iyi program `require`s Crystal's 107,719-line prelude the 95% prelude
 tax is still there and the benchmark measures a workaround rather than the
 thesis. **Its scope is set by what the samples call and by nothing else** — a
 method enters the prelude because an existing sample needs it, never because it
-belongs there. This is the item that decides the schedule; see below.
+belongs there.
+
+The ceiling is not a guess. Crystal's own 0.1.0 shipped 8,161 lines of library,
+of which the core — `object`, `nil`, `bool`, `char`, `int`, `float`, `number`,
+`string`, `array`, `hash`, `range`, `enumerable`, `comparable`, `io`,
+`pointer`, `exception`, `raise`, `main`, `prelude` — is **3,551 lines**. The
+rest is `json`, `yaml`, `http`, `option_parser`: libraries, not a prelude.
+**3,551 lines is the number to stay under**, measured in the same language
+family and for the same purpose. This is the item that decides the schedule;
+see below.
 
 **4. IV.6 #6, module naming. Done.** A module is declared `app/greeter` and
 reached `App::Greeter`. This appears in every line of user code and could not be
@@ -112,6 +121,43 @@ that would change what 0.1.0 looks like, and deferring it costs nothing.
 4. A spec asserts (2) and stays red until it holds. The release is a passing
    assertion, not a judgement call — which is the same standard the rest of this
    document is held to.
+
+### What Crystal's own 0.1.0 looked like
+
+The scope above was drawn before checking it against the one release most
+comparable to it — the same language family, the same first-release question.
+Checking it moved two things and left the shape alone.
+
+| | Crystal 0.1.0 (2014-06-18) | iyi today |
+|---|---|---|
+| Compiler | 24,984 lines, **written in Crystal** | 95,010 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 722 |
+| Specs | 21,146 lines | ~3,400 for iyi |
+| Samples | 24 **programs** | 8 **explanations** |
+| History | 3,165 commits over 21 months | 75 |
+| Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, building not started |
+
+**It shipped admitting the language was undesigned.** No binaries, clone and
+run `bin/crystal --setup`, OSX and 32/64-bit Linux. That is permission rather
+than a rebuke: the scope above is *more* conservative than the release it is
+being measured against, and iyi is further along in design at this point than
+Crystal was at its first release. It is behind on building and ahead on
+deciding.
+
+**Its samples were programs.** mandelbrot, binary-trees, brainfuck,
+`http_server`, sudoku, a red-black tree, n-bodies, SDL and Cocoa bindings. iyi's
+samples are better in one respect — every claim in them is compiled, which
+Crystal's were not — and they have a gap Crystal's did not: **no iyi program
+does any work.** A build-speed claim needs programs to build, and the benchmark
+in item 5 therefore starts with almost nothing to measure. Growing that corpus
+is a dependency of item 5, not a nicety, and it is bounded by item 3: a program
+can only be written once the prelude carries it.
+
+**And self-hosting was already behind it.** Crystal's compiler was written in
+Crystal before 0.1.0, at 24,984 lines against an 8,161-line library. That is
+the cheapest such a move is ever going to be, and the cost only rises. See
+Appendix B #10 — the fork means iyi has already passed that point, and this
+document has been silent about it.
 
 ### The item that decides the schedule
 
@@ -2178,6 +2224,9 @@ For traceability, since several rules here rest on numbers rather than taste.
 | `Share` prices a style rather than failing | clean-sheet iyi code is 77% shareable as written and 100% given an immutable collection; the compiler, built as a mutable workspace, is 38.5% and stays there (III.4.7) |
 | Module-level mutable state is already rare | 3 of 483 compiler types hold a class variable, so III.4.5 costs almost nothing |
 | Coherence costs nothing at build time | the import DAG plus the orphan rule make duplicate impls unrepresentable (IV.4) |
+| A first release's prelude is ~3.5k lines | Crystal 0.1.0 shipped 8,161 lines of library, 3,551 of it the core that a prelude is; the rest is `json`/`yaml`/`http` |
+| Self-hosting only gets more expensive | Crystal self-hosted at 24,984 lines of compiler and 8,161 of library, before its 0.1.0; iyi's fork starts at 95,010 and 196,217 (Appendix B.2) |
+| The path/name mapping needed more than snake_case | `camelcase` drops an underscore before a digit, so `v_1` and `v1` both give `V1`; requiring each group to start with a letter removes that and three sibling collisions (IV.6 #6) |
 
 ## Appendix B — Decisions awaiting your call
 
@@ -2192,6 +2241,37 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 7 | ~~`!` inside a `defer` (III.1.4, V.8)~~ | **Decided: no** — a `defer` runs while the function is already returning, so propagating from one needs error-during-error semantics |
 | 8 | Structured concurrency only, no bare spawn (III.4.1) | yes — it is `defer` applied to a task set, so it costs no new mechanism, and it makes Go's commonest bug unrepresentable. The price is that a task cannot outlive its scope, which is a taste call |
 | 9 | ~~`Share` marker vs Erlang-style no sharing (III.4.4)~~ | **Decided: `Share`, on the count** — III.4.7 found the feared class empty and clean-sheet iyi code 77% shareable as written, 100% given a shareable immutable collection. That collection is now a stdlib obligation, not a nicety |
+| 10 | **Is iyi ever meant to be self-hosted?** | say **no**, explicitly — and if the answer is yes, act on it now rather than later. See B.2 |
+
+### B.2 — The one decision the fork already made
+
+Crystal's compiler was written in Crystal before its 0.1.0, when the compiler
+was 24,984 lines and the library 8,161. iyi begins from a fork: 95,010 lines of
+compiler and 196,217 of library, none of it written in iyi, and none of it
+compilable by iyi's own rules — the Appendix's own count says 77 of 484 types
+are reopened across module boundaries, `String` by five modules.
+
+The fork was the right call and it is why iyi has a working backend, a GC and a
+measured thesis at 75 commits. It also bought that with something, and the
+something is this: **self-hosting is the one cost that only rises.** Crystal
+paid it at 33k lines total. iyi would pay it at 291k, against rules that forbid
+the style most of those lines are written in.
+
+So this is not a task that gets scheduled later; it is a door that is already
+mostly shut, and the honest thing is to say so rather than leave it implied.
+The recommendation is to state in the README and here that **iyi is not a
+self-hosting project**, that its compiler is and remains a Crystal program, and
+that the language's claim is what it compiles rather than what compiles it. Go
+is again the evidence for why that is survivable: `gc` stayed a C compiler
+until Go 1.5 in 2015, nearly six years after the language was announced and
+four point releases into Go 1, and nobody held it against the language.
+
+The alternative — deciding that self-hosting matters — is legitimate, but it
+changes the plan rather than adding to it: it would make the compiler's own
+shape a design input from now on, and III.4.7's measurement that the compiler
+is 38.5% shareable *and stays there* is the first thing it would collide with.
+That is a call worth making deliberately and early, which is the whole reason
+this entry exists.
 
 ### B.1 — Why #3, #4 and #7 are one decision
 
