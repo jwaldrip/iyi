@@ -2012,7 +2012,7 @@ module Crystal
     def parse_module_path : Array(String)
       segments = [] of String
       check Token::Kind::IDENT
-      segments << @token.value.to_s
+      segments << check_module_path_segment(@token.value.to_s)
 
       # After an identifier the lexer would treat `/` as the start of a regex
       # literal, so `app/user` lexes as `app` followed by DELIMITER_START.
@@ -2025,7 +2025,7 @@ module Crystal
         @wants_regex = false
         next_token
         check Token::Kind::IDENT
-        segments << @token.value.to_s
+        segments << check_module_path_segment(@token.value.to_s)
         @wants_regex = false
         next_token
       end
@@ -2033,6 +2033,50 @@ module Crystal
       @wants_regex = true
       skip_space
       segments
+    end
+
+    # iyi: a module path segment is `[a-z][a-z0-9]*` with single `_` between
+    # groups (SPEC.md IV.6 #6).
+    #
+    # A module is declared `app/greeter` and reached `App::Greeter`, and the
+    # two notations are kept in step by making the mapping between them
+    # reversible rather than by unifying them. `camelcase` upper-cases the
+    # first character of each underscore-separated group and drops the
+    # underscores, so a name is split back into a path at every upper-case
+    # letter — but only if every group starts with a letter, which is what
+    # this enforces.
+    #
+    # Plain `snake_case` is not enough, which is the reason this is checked
+    # rather than assumed: `camelcase` drops an underscore that precedes a
+    # digit, so `v_1` and `v1` both give `V1`. Doubled, leading and trailing
+    # underscores collide the same way.
+    private def check_module_path_segment(segment : String) : String
+      start_of_group = true
+      valid = segment.each_char do |char|
+        if start_of_group
+          break false unless char.ascii_lowercase?
+          start_of_group = false
+        elsif char == '_'
+          start_of_group = true
+        elsif !(char.ascii_lowercase? || char.ascii_number?)
+          break false
+        end
+      end
+
+      # `start_of_group` is still set for an empty segment or a trailing `_`.
+      if valid == false || start_of_group
+        raise <<-MSG, @token.line_number, @token.column_number
+          module path segment '#{segment}' is not lower-case snake_case
+
+          A module declared `app/greeter` is reached as `App::Greeter`, so the \
+          path and the type name have to determine each other: every segment \
+          is a lower-case letter followed by letters and digits, with single \
+          `_` between groups. Otherwise two paths can name one module — `v_1` \
+          and `v1` would both be `V1`. See SPEC.md IV.6 #6.
+          MSG
+      end
+
+      segment
     end
 
     # iyi: `module app/user` — compilation-unit header (R-1).

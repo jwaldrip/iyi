@@ -4164,6 +4164,34 @@ module Crystal
       assert_syntax_error "using app/greeter::{}", "expected a name to bring into scope"
       assert_syntax_error "using app/greeter::{polite,}", "expected a name to bring into scope"
 
+      # iyi: a module path segment has to survive the round trip to the type
+      # name it is reached by, `app/greeter` <-> `App::Greeter` (SPEC.md IV.6
+      # #6). `camelcase` makes an upper-case letter only where a group starts,
+      # so requiring every group to start with a letter is what makes the name
+      # splittable back into a path.
+      it "parses a module path whose segments round-trip to a type name" do
+        {
+          "app/json_parser" => ["app", "json_parser"],
+          "app/v1"          => ["app", "v1"],
+          "app/x9y"         => ["app", "x9y"],
+          "a_b_c"           => ["a_b_c"],
+        }.each do |path, segments|
+          nodes = parse("module #{path}").as(Expressions)
+          nodes.expressions[0].as(ModuleHeader).path.should eq(segments)
+        end
+      end
+
+      # `v_1` and `v1` would both be `V1`: the underscore before a digit is
+      # dropped. This is the case that makes plain snake_case insufficient.
+      assert_syntax_error "module app/v_1", "not lower-case snake_case"
+      assert_syntax_error "module app/my__greeter", "not lower-case snake_case"
+      assert_syntax_error "module app/my_", "not lower-case snake_case"
+      assert_syntax_error "module app/fooBar", "not lower-case snake_case"
+
+      # Checked at the one gate all three directives pass through.
+      assert_syntax_error "import app/v_1", "not lower-case snake_case"
+      assert_syntax_error "using app/v_1", "not lower-case snake_case"
+
       it_parses "trait Greet\nend", TraitDef.new(Path.new(["Greet"]))
       it_parses "pub trait Greet\nend", TraitDef.new(Path.new(["Greet"]), exported: true)
 

@@ -75,13 +75,12 @@ thesis. **Its scope is set by what the samples call and by nothing else** — a
 method enters the prelude because an existing sample needs it, never because it
 belongs there. This is the item that decides the schedule; see below.
 
-**4. IV.6 #6, module naming.** A module is declared `app/greeter` and reached
-`App::Greeter`. This appears in every line of user code and cannot be changed
-after there is user code, so it is settled before the release and not after.
-The cheap answer is to keep the mismatch and stop calling it a wart: restrict
-path segments to lowercase `snake_case` so that the segment-to-name mapping is
-injective and two paths can never denote one type. Teaching the type system
-lowercase module names is the better answer and does not fit here.
+**4. IV.6 #6, module naming. Done.** A module is declared `app/greeter` and
+reached `App::Greeter`. This appears in every line of user code and could not be
+changed once there was user code, so it was settled first. The mismatch stays
+and is made reversible instead: a path segment is `[a-z][a-z0-9]*` with single
+`_` between groups, so path and type name determine each other. "Lowercase
+snake_case" turned out not to be enough — `v_1` and `v1` both give `V1`.
 
 **5. A benchmark that produces the claim, and a check that fails until it
 holds.** `bench/` already prices macros and `Share`; build speed is the one
@@ -2072,12 +2071,29 @@ function of the module, not an instance method of a mixin — iyi modules are
 compilation units, not mixins. The desugar inserts `extend self` so
 `App::Greeter.polite` resolves.
 
-**6. Declaring a module and naming one do not match yet.** A module is declared
-lowercase (`module app/greeter`) but reached capitalised (`App::Greeter`),
-because Crystal type names must be constants. The implementation capitalises
-each path segment. This is a wart the spec has to settle: either accept the
-mismatch, adopt Go's convention where the last path segment is the name, or
-teach the type system lowercase module names.
+**6. Declaring a module and naming one. SETTLED — the mismatch stays, and is
+made reversible. Built.** A module is declared lowercase (`module app/greeter`)
+but reached capitalised (`App::Greeter`), because Crystal type names must be
+constants. Three answers were available: accept the mismatch, adopt Go's
+convention where the last path segment is the name, or teach the type system
+lowercase module names. The third is the better language and does not fit
+0.1.0; the second replaces a cosmetic problem with a real one, since
+`app/greeter` and `web/greeter` would then be one name.
+
+So the mismatch stays, and stops being a wart by being made **reversible**: a
+path segment is `[a-z][a-z0-9]*` with single `_` between groups, checked in
+`Parser#parse_module_path`, which is the one gate `module`, `import` and
+`using` all pass through. `camelcase` upper-cases the first character of each
+underscore-separated group and drops the underscores, so a name splits back
+into a path at every upper-case letter, and path and name determine each other.
+
+**"Lowercase snake_case" was not the rule, and finding that out is why it was
+checked rather than asserted.** `camelcase` drops an underscore that precedes a
+digit, so `v_1` and `v1` both give `V1` — two paths, one module, a collision
+that survives any amount of care about naming style. Doubled, leading and
+trailing underscores collide the same way (`my__greeter` with `my_greeter`,
+`my_` with `my`). Requiring each group to begin with a letter removes all four
+cases at once.
 
 **7. New keywords are cheap, but not free.** `trait`, `impl`, `pub`, `import`
 and `using` were added to the lexer with no regressions — `trailing`,
