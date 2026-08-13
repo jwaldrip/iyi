@@ -42,6 +42,15 @@ module Crystal
     def transform(node : Expressions)
       exps = [] of ASTNode
       node.expressions.each do |exp|
+        # iyi: a `defer` is left standing here on purpose. What it defers past
+        # is everything after it in *this* list, which is only known once the
+        # list is complete — see `apply_defers` below.
+        if exp.is_a?(Defer)
+          exp.exp = exp.exp.transform(self)
+          exps << exp
+          next
+        end
+
         new_exp = exp.transform(self)
         if new_exp
           if new_exp.is_a?(Expressions)
@@ -52,6 +61,7 @@ module Crystal
         end
         break if @dead_code
       end
+      exps = apply_defers(exps)
       case exps.size
       when 0
         Nop.new
@@ -59,6 +69,61 @@ module Crystal
         node.expressions = exps
         node
       end
+    end
+
+    # iyi: `defer` — cleanup that runs however the scope is left
+    # (SPEC.md III.1.4).
+    #
+    # From:
+    #
+    #     a
+    #     defer x
+    #     b
+    #
+    # To:
+    #
+    #     a
+    #     begin
+    #       b
+    #     ensure
+    #       x
+    #     end
+    #
+    # `ensure` already runs on a normal exit, on a `return` through it, and on
+    # an unwind — which is the whole of what III.1.4 asks for, because `!`
+    # expands to a `return` (III.1.2) and a panic is currently a raise. So this
+    # needs no new machinery at all; it needs the *shape* changed, because
+    # `begin`/`ensure` makes you wrap everything after the acquisition while
+    # `defer` names the cleanup at the acquisition.
+    #
+    # **LIFO falls out of the nesting.** A second `defer` is expanded inside the
+    # first one's body, so its `ensure` is the inner one and runs first — the
+    # reverse of acquisition order, which is the only order that can be right
+    # when a later resource was built from an earlier one.
+    #
+    # **The scope is the block, not the function.** This is a deliberate
+    # departure from Go, and it is the shape of the lowering rather than an
+    # extra rule: a `defer` in a loop body runs at the end of each iteration
+    # instead of piling up until the function returns, which is Go's
+    # best-known wart with the feature.
+    private def apply_defers(exps : Array(ASTNode)) : Array(ASTNode)
+      index = exps.index { |exp| exp.is_a?(Defer) }
+      return exps unless index
+
+      deferred = exps[index].as(Defer)
+      rest = apply_defers(exps[(index + 1)..])
+      handler = ExceptionHandler.new(rest, ensure: deferred.exp).at(deferred)
+
+      head = exps[0...index]
+      head << handler
+      head
+    end
+
+    # A `defer` that is not one of several expressions — the whole of a body,
+    # say — has nothing after it to defer past, so all that is left of it is
+    # the cleanup itself, still guarded so that it runs on an unwind.
+    def transform(node : Defer)
+      ExceptionHandler.new(Nop.new, ensure: node.exp.transform(self)).at(node)
     end
 
     def transform(node : Call)

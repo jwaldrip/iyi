@@ -2131,6 +2131,64 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
 
+    # iyi: `defer` (SPEC.md III.1.4). The shape of the expansion is specced in
+    # `spec/compiler/normalize/defer_spec.cr`; what matters here is that it
+    # leaves the scope's type alone — the cleanup is an `ensure`, and an
+    # `ensure` contributes nothing to a value.
+    it "leaves the value of the scope alone" do
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Res
+            def self.close : Char
+              'x'
+            end
+
+            def self.go : Int32
+              defer close
+              1
+            end
+          end
+        end
+
+        App::Res.go
+        CRYSTAL
+    end
+
+    it "keeps a defer in a method that propagates" do
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { union_of(int32, types["App"].types["Res"].types["IOError"]) }
+        module App
+          module Res
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.close : Char
+              'x'
+            end
+
+            def self.open(missing : Bool) : Int32 | IOError
+              return IOError.new if missing
+              1
+            end
+
+            def self.go(missing : Bool) : Int32 | IOError
+              defer close
+              open(missing)!
+            end
+          end
+        end
+
+        App::Res.go(false)
+        CRYSTAL
+    end
+
     # iyi: `it` in a `case` branch (SPEC.md III.1.1). An assignment, not new
     # machinery, so it picks up the narrowing the branch already did.
     it "binds `it` to the value a case is matching, narrowed per branch" do

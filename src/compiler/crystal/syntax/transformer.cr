@@ -279,6 +279,11 @@ module Crystal
       node
     end
 
+    def transform(node : Defer)
+      node.exp = node.exp.transform(self)
+      node
+    end
+
     def transform(node : Recover)
       node.exp = node.exp.transform(self)
       node.default = node.default.try &.transform(self)

@@ -4450,6 +4450,36 @@ module Crystal
         parse("read(path).or_panic", filename: "x.iyi").to_s.should eq("read(path).or_panic")
       end
 
+      # iyi: `defer` (SPEC.md III.1.4). Recognised by name, so it is reserved in
+      # an iyi program and only there.
+      it "reads `defer`" do
+        node = parse("defer f.close", filename: "x.iyi").as(Defer)
+        node.exp.as(Call).name.should eq("close")
+      end
+
+      it "writes `defer` back the way it was written" do
+        parse("defer f.close", filename: "x.iyi").to_s.should eq("defer f.close")
+      end
+
+      it "refuses `!` inside a `defer`" do
+        # A `defer` runs while the scope is already being left, possibly
+        # carrying an error of its own — Appendix B #7.
+        expect_raises(SyntaxException, "`!` can't propagate out of a `defer`") do
+          parse("defer close(f)!", filename: "x.iyi")
+        end
+      end
+
+      it "still propagates after the `defer` body has been parsed" do
+        node = parse("defer f.close\nread(p)!", filename: "x.iyi").as(Expressions)
+        node.expressions[0].should be_a(Defer)
+        node.expressions[1].should be_a(Propagate)
+      end
+
+      it "leaves a Crystal file's `defer` as an ordinary name" do
+        parse("defer = 7", filename: "x.cr").as(Assign).target.as(Var).name.should eq("defer")
+        parse("defer f.close", filename: "x.cr").as(Call).name.should eq("defer")
+      end
+
       # iyi: `it` in a `case` branch (SPEC.md III.1.1). The parser is what has to
       # know, because this is where an identifier is decided to be a variable
       # rather than a call.

@@ -50,6 +50,9 @@ module Crystal
       # is the only place `type Elem` declares an associated type rather than
       # calling a method named `type`.
       @inside_trait_or_impl = false
+      # iyi: depth of `defer` bodies being parsed, which is where `!` is
+      # refused (SPEC.md III.1.4, Appendix B #7).
+      @inside_defer = 0
       @wants_doc = false
       @doc_enabled = false
       @no_type_declaration = 0
@@ -736,6 +739,15 @@ module Crystal
         case @token.type
         when .op_bang?
           break unless attached && iyi?
+          if @inside_defer > 0
+            raise <<-MSG, @token
+              `!` can't propagate out of a `defer`
+
+              A `defer` runs while the scope is already being left, and may be
+              carrying an error of its own. Handle the failure here — `.or_panic`
+              or ignore it — see SPEC.md III.1.4.
+              MSG
+          end
           check_void_value atomic, location
           atomic = Propagate.new(atomic).at(location)
           next_token
@@ -978,6 +990,29 @@ module Crystal
       end
 
       IsA.new(atomic, type).at_end(end_location)
+    end
+
+    # iyi: `defer f.close` (SPEC.md III.1.4).
+    #
+    # Recognised by name, so `defer` is a reserved word in an iyi program and
+    # only there — a Crystal file keeps it as an ordinary identifier.
+    #
+    # The body may not propagate. A `defer` runs while the scope is already
+    # being left, possibly carrying an error of its own, so a second error
+    # leaving from here is the error-during-error problem — the ugliest corner
+    # of every language that has taken it on (Appendix B #7).
+    def parse_defer
+      location = @token.location
+      next_token_skip_space
+
+      @inside_defer += 1
+      begin
+        exp = parse_op_assign
+      ensure
+        @inside_defer -= 1
+      end
+
+      Defer.new(exp).at(location).at_end(exp)
     end
 
     # iyi: `.or(default)` and `.or_panic` (SPEC.md III.1.3).
@@ -1389,6 +1424,8 @@ module Crystal
           else
             set_visibility parse_var_or_call
           end
+        elsif iyi? && @token.value == "defer"
+          parse_defer
         else
           set_visibility parse_var_or_call
         end

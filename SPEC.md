@@ -790,11 +790,13 @@ Three things the build settled:
   `unwrap` of this design unwinds as a Crystal exception carrying the error's
   `message`. One line changes when panics land.
 
-#### III.1.4 Panics, and cleanup — **PROPOSED**
+#### III.1.4 Panics, and cleanup — **`defer` BUILT; panics still PROPOSED**
 
 Panics are for bugs, not control flow: index out of range, division by zero,
 a violated invariant. They unwind and are catchable **only at task boundaries**,
-so a panicking fiber cannot die silently.
+so a panicking fiber cannot die silently. **Not built** — the task boundary is
+part of III.1.4 that Part V.5 has to specify first, and until then `.or_panic`
+raises (III.1.3).
 
 Because errors are values returned early, `begin`/`ensure` no longer covers
 cleanup properly. Replace it with `defer`, which runs on normal return, on `!`
@@ -807,6 +809,47 @@ pub def with_file(path : String) : String | IOError
   f.read_all()!
 end
 ```
+
+**Built, and it needed no new machinery — only a new shape.** `defer x` expands
+to wrapping the rest of its scope:
+
+```
+a                       a
+defer x        ⟶        begin
+b                         b
+                        ensure
+                          x
+                        end
+```
+
+`ensure` already runs on a normal exit, on a `return` through it, and on an
+unwind, which is the whole of what this section asks for: `!` expands to a
+`return` (III.1.2), and a panic is a raise today. So nothing was added to the
+runtime. What changed is where the cleanup is *written* — `begin`/`ensure` makes
+you wrap everything after the acquisition, and `defer` names the cleanup at the
+acquisition, which is the entire ergonomic point.
+
+Two questions Part V.8 left open, both answered by Go's answers:
+
+- **Ordering is LIFO**, and it is not a rule — a second `defer` expands inside
+  the first one's body, so its `ensure` is the inner one and runs first. That
+  is the only order that can be right when a later resource was built from an
+  earlier one.
+- **A `defer` may not propagate with `!`** (Appendix B #7), rejected in the
+  parser with an error that says why.
+
+One deliberate departure from Go:
+
+- **The scope is the block, not the function.** A `defer` in a loop body runs at
+  the end of each iteration rather than piling up until the function returns,
+  which is Go's best-known wart with the feature — there, a loop that opens a
+  file per iteration holds every one of them until the function is done. This is
+  not an extra rule either; it is what the lowering does, and it is where Zig
+  and Swift landed. The cost is that a `defer` cannot outlive the block it is
+  written in, which is the same restriction stated from the other side.
+
+`defer` is a reserved word in iyi and only in iyi: a Crystal file keeps it as an
+ordinary identifier.
 
 #### III.1.5 Nil is not an error — **SETTLED**
 
@@ -1517,7 +1560,8 @@ Named honestly, so nobody mistakes this draft for complete.
    whether a `defer` may itself propagate with `!`.~~ **Both answered as Go
    answers them, LIFO and no** — LIFO because it is the reverse of acquisition
    order, and no because a `defer` runs while the function is already returning
-   (Appendix B #7). What remains is building it: III.1.4.
+   (Appendix B #7). Both are built (III.1.4), along with one departure from Go:
+   the scope is the block, not the function.
 
 ---
 

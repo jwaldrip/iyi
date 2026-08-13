@@ -477,6 +477,12 @@ module Crystal
       false
     end
 
+    def visit(node : Defer)
+      @str << "defer "
+      node.exp.accept self
+      false
+    end
+
     def visit(node : Recover)
       node.exp.accept self
       if default = node.default

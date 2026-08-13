@@ -2084,6 +2084,33 @@ module Crystal
     def_equals_and_hash @exp
   end
 
+  # iyi: `defer f.close` — cleanup that runs however the scope is left
+  # (SPEC.md III.1.4).
+  #
+  # `begin`/`ensure` stopped covering cleanup once errors became values returned
+  # early, because the interesting exit is now an ordinary `return` in the
+  # middle of a body. `defer` names the cleanup where the resource is acquired
+  # instead of wrapping everything after it in a block.
+  #
+  # Kept as a node of its own rather than desugared at parse time so that `to_s`
+  # writes back what the author wrote; the normalizer expands it.
+  class Defer < ASTNode
+    property exp : ASTNode
+
+    def initialize(@exp)
+    end
+
+    def accept_children(visitor)
+      @exp.accept visitor
+    end
+
+    def clone_without_location
+      Defer.new(@exp.clone)
+    end
+
+    def_equals_and_hash @exp
+  end
+
   # iyi: `read_port().or(8080)` and `read_port().or_panic` — take the value out
   # of an error union without writing a `case` (SPEC.md III.1.3).
   #

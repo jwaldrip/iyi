@@ -98,6 +98,46 @@ puts "or:    #{load("missing").or(-1)}"
 puts "panic: #{load("config").or_panic}"
 
 # ---------------------------------------------------------------------------
+# defer — III.1.4
+# ---------------------------------------------------------------------------
+#
+# Once errors are values returned early, the interesting exit from a body is an
+# ordinary `return` in the middle of it, and `begin`/`ensure` makes you wrap
+# everything after the acquisition to cover it. `defer` names the cleanup at the
+# acquisition instead. It expands to that same `ensure`, so it runs on a normal
+# exit, on a `!` propagation, and on an unwind — no new runtime machinery, only
+# a different shape.
+pub def session(path : String) : Int32 | IOError | ParseError
+  puts "  open outer"
+  defer puts "  close outer"
+
+  text = read(path)!
+
+  puts "  open inner"
+  defer puts "  close inner"
+
+  to_number(text)!
+end
+
+# Cleanup is LIFO, and that is the nesting rather than a rule: the second
+# `defer` expands inside the first one's body, so its `ensure` is the inner one.
+# The failing run proves the part that matters — `read(path)!` returns from the
+# middle of the body and the cleanup still happens.
+puts "success:"
+puts session("config").or(-1)
+puts "propagating:"
+puts session("missing").or(-1)
+
+# The scope is the block, not the function. This is the departure from Go, and
+# it is what the expansion does rather than an extra rule: the cleanup lands
+# inside the loop body, so it runs each iteration instead of piling up until the
+# function returns — Go's best-known wart with the feature.
+2.times do |i|
+  defer puts "  iteration #{i} closed"
+  puts "  iteration #{i}"
+end
+
+# ---------------------------------------------------------------------------
 # What this sample would report as an error
 # ---------------------------------------------------------------------------
 #
@@ -128,6 +168,10 @@ puts "panic: #{load("config").or_panic}"
 #   value to name, so `it` stays undefined rather than being bound to one of
 #   the elements.
 #
+# * `defer close(f)!` — a `defer` runs while the scope is already being left,
+#   possibly carrying an error of its own, so a second one leaving from there
+#   is the error-during-error problem. Handle it in the `defer` body.
+#
 # * `impl Error for String` here — the orphan rule (R-3). `Error` is the
 #   compiler's and `String` is the prelude's, so neither belongs to a module
 #   this impl could be at home in, and every module that can name both would be
@@ -137,6 +181,6 @@ puts "panic: #{load("config").or_panic}"
 # Not yet implemented
 # ---------------------------------------------------------------------------
 #
-# * `defer` (III.1.4). Because errors are values returned early, `begin`/
-#   `ensure` no longer covers cleanup properly. `.or_panic` raises a Crystal
-#   exception until panics exist.
+# * Panics (III.1.4). They are meant to be catchable only at task boundaries,
+#   and what a task boundary is belongs to Part V.5. Until then `.or_panic`
+#   raises a Crystal exception, and `defer` runs on that unwind either way.
