@@ -22,6 +22,17 @@ private def sample_artifact(imports = [] of String,
   )
 end
 
+private def signature(name : String,
+                      parameters = [] of String,
+                      return_type = "",
+                      block_parameter = "",
+                      free_variables = [] of String,
+                      receiver = "",
+                      required = false)
+  Crystal::IyiMod::Signature.new(name, receiver, parameters, block_parameter,
+    return_type, free_variables, required)
+end
+
 private def with_temporary_file(&)
   path = File.tempname("iyimod", ".iyimod")
   begin
@@ -157,9 +168,9 @@ describe Crystal::IyiMod do
   # of an inferred type.
   it "round-trips exported signatures" do
     signatures = [
-      Crystal::IyiMod::Signature.new("polite", [{"name", "String"}], "String"),
-      Crystal::IyiMod::Signature.new("title", [] of {String, String}, "String"),
-      Crystal::IyiMod::Signature.new("pair", [{"a", "Int32"}, {"b", "Array(String)"}], "Tuple(Int32, String)"),
+      signature("polite", ["name : String"], "String"),
+      signature("title", return_type: "String"),
+      signature("pair", ["a : Int32", "b : Array(String)"], "Tuple(Int32, String)"),
     ]
 
     with_temporary_file do |path|
@@ -168,19 +179,65 @@ describe Crystal::IyiMod do
 
       read.size.should eq 3
       read[0].name.should eq "polite"
-      read[0].parameters.should eq [{"name", "String"}]
+      read[0].parameters.should eq ["name : String"]
       read[0].return_type.should eq "String"
       read[1].parameters.should be_empty
-      read[2].parameters.should eq [{"a", "Int32"}, {"b", "Array(String)"}]
+      read[2].parameters.should eq ["a : Int32", "b : Array(String)"]
       read[2].return_type.should eq "Tuple(Int32, String)"
     end
+  end
+
+  # Everything a consumer needs and the source's `def` line carries. Each of
+  # these was absent from the format until a consumer that reads the artifact
+  # instead of the source went looking for it: without the block annotation
+  # there is no `yield` left to infer a block from, without the `forall` the
+  # return type does not resolve, and an `abstract def` read as a definition is
+  # a requirement nobody is told they missed.
+  it "round-trips the rest of a def's header" do
+    signatures = [
+      signature("map", ["a : Int32"], "Array(U)",
+        block_parameter: "& : (Elem -> U)", free_variables: ["U"]),
+      signature("each", return_type: "Nil",
+        block_parameter: "& : (Elem -> Nil)", required: true),
+      signature("zero", return_type: "self", receiver: "self"),
+      signature("push", ["*values : T", "**options"]),
+    ]
+
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(exports: signatures), path
+      read = Crystal::IyiMod.read(path).exports.functions
+
+      read[0].block_parameter.should eq "& : (Elem -> U)"
+      read[0].free_variables.should eq ["U"]
+      read[0].required.should be_false
+      read[1].required.should be_true
+      read[2].receiver.should eq "self"
+      read[3].parameters.should eq ["*values : T", "**options"]
+    end
+  end
+
+  it "dumps a def's header the way it was written" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact(exports: [
+      signature("map", ["a : Int32"], "Array(U)",
+        block_parameter: "& : (Elem -> U)", free_variables: ["U"]),
+      signature("each", return_type: "Nil",
+        block_parameter: "& : (Elem -> Nil)", required: true),
+      signature("zero", return_type: "self", receiver: "self"),
+    ]), io
+    text = io.to_s
+
+    text.should contain "  def map(a : Int32, & : (Elem -> U)) : Array(U) forall U"
+    # A block parameter alone still gets the parentheses it needs.
+    text.should contain "  abstract def each(& : (Elem -> Nil)) : Nil"
+    text.should contain "  def self.zero : self"
   end
 
   it "dumps a signature the way it was written" do
     io = IO::Memory.new
     Crystal::IyiMod.dump sample_artifact(exports: [
-      Crystal::IyiMod::Signature.new("polite", [{"name", "String"}], "String"),
-      Crystal::IyiMod::Signature.new("title", [] of {String, String}, "String"),
+      signature("polite", ["name : String"], "String"),
+      signature("title", return_type: "String"),
     ]), io
     text = io.to_s
 
@@ -202,7 +259,7 @@ describe Crystal::IyiMod do
       name: "List",
       kind: "generic struct",
       type_parameters: ["T"],
-      methods: [Crystal::IyiMod::Signature.new("at", [{"index", "Int32"}], "T")],
+      methods: [signature("at", ["index : Int32"], "T")],
     )
 
     with_temporary_file do |path|
@@ -239,7 +296,7 @@ describe Crystal::IyiMod do
   it "renders a signature with no return annotation without one" do
     io = IO::Memory.new
     Crystal::IyiMod.dump sample_artifact(exports: [
-      Crystal::IyiMod::Signature.new("initialize", [{"items", "Array(T)"}], ""),
+      signature("initialize", ["items : Array(T)"]),
     ]), io
 
     io.to_s.should contain "  def initialize(items : Array(T))\n"
@@ -249,7 +306,7 @@ describe Crystal::IyiMod do
     io = IO::Memory.new
     Crystal::IyiMod.dump sample_artifact(
       types: [Crystal::IyiMod::TypeDecl.new("Greet", "trait", [] of String,
-        [Crystal::IyiMod::Signature.new("greet", [] of {String, String}, "String")])],
+        [signature("greet", return_type: "String")])],
       impls: [Crystal::IyiMod::ImplRecord.new("Greet", "User")],
     ), io
     text = io.to_s

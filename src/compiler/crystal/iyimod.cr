@@ -35,7 +35,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 3_u32
+  FORMAT_VERSION = 4_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -79,10 +79,30 @@ module Crystal::IyiMod
   # An empty *return_type* means none was written. A constructor is the ordinary
   # case — its result is its type and nobody annotates it — so this is recorded
   # as absent rather than filled in with a type the author never wrote.
+  #
+  # A parameter is one whole parameter as written — `name : Type = default`,
+  # `*rest : T`, `to target : T`. Splitting it into a name and a type lost the
+  # rest, and the rest is not decoration: a default value changes the arity a
+  # consumer sees, and dropping it makes calls that compile against the source
+  # fail against the artifact.
+  #
+  # *block_parameter* is `& : Elem -> Bool` and empty when there is none. It is
+  # here because a consumer cannot type a block without it. With the body gone
+  # there is no `yield` left to infer from, so the annotation is the only thing
+  # that says what the block receives and returns — which is R-2 reaching a
+  # place it was not obviously about.
+  #
+  # *free_variables* is `forall U`, without which a return type naming `U` does
+  # not resolve on the far side. *required* is `abstract def`: a requirement an
+  # impl has to satisfy (II.6) rather than something a consumer may call.
   record Signature,
     name : String,
-    parameters : Array({String, String}),
-    return_type : String
+    receiver : String,
+    parameters : Array(String),
+    block_parameter : String,
+    return_type : String,
+    free_variables : Array(String),
+    required : Bool
 
   # An exported type: `pub struct`, `pub class`, `pub trait`, `pub enum`.
   #
@@ -297,13 +317,37 @@ module Crystal::IyiMod
     io.puts "              (SPEC.md IV.2)."
   end
 
-  private def self.render_signature(signature : Signature) : String
-    parameters = signature.parameters.map do |(name, type)|
-      type.empty? ? name : "#{name} : #{type}"
+  # One signature as the declaration it came from.
+  #
+  # `mod dump` prints this, and so does the reconstruction a consumer compiles
+  # against — deliberately the same text from the same function. A dump that
+  # showed something other than what the compiler reads would be a debugging
+  # tool that lies at exactly the moment it is needed.
+  def self.render_signature(signature : Signature) : String
+    String.build do |io|
+      io << "abstract " if signature.required
+      io << "def "
+      io << signature.receiver << '.' unless signature.receiver.empty?
+      io << signature.name
+
+      parameters = signature.parameters
+      block_parameter = signature.block_parameter
+      unless parameters.empty? && block_parameter.empty?
+        io << '('
+        parameters.join(io, ", ")
+        io << ", " unless parameters.empty? || block_parameter.empty?
+        io << block_parameter
+        io << ')'
+      end
+
+      io << " : " << signature.return_type unless signature.return_type.empty?
+
+      free_variables = signature.free_variables
+      unless free_variables.empty?
+        io << " forall "
+        free_variables.join(io, ", ")
+      end
     end
-    arguments = parameters.empty? ? "" : "(#{parameters.join(", ")})"
-    returns = signature.return_type.empty? ? "" : " : #{signature.return_type}"
-    "def #{signature.name}#{arguments}#{returns}"
   end
 
   private def self.encode_header(artifact : Artifact) : Bytes
@@ -368,22 +412,28 @@ module Crystal::IyiMod
     io.write_bytes signatures.size.to_u32, FORMAT
     signatures.each do |signature|
       write_string io, signature.name
+      write_string io, signature.receiver
       io.write_bytes signature.parameters.size.to_u32, FORMAT
-      signature.parameters.each do |(name, type)|
-        write_string io, name
-        write_string io, type
-      end
+      signature.parameters.each { |parameter| write_string io, parameter }
+      write_string io, signature.block_parameter
       write_string io, signature.return_type
+      io.write_bytes signature.free_variables.size.to_u32, FORMAT
+      signature.free_variables.each { |name| write_string io, name }
+      io.write_byte(signature.required ? 1_u8 : 0_u8)
     end
   end
 
   private def self.read_signatures(io : IO) : Array(Signature)
     Array(Signature).new(io.read_bytes(UInt32, FORMAT)) do
       name = read_string(io)
-      parameters = Array({String, String}).new(io.read_bytes(UInt32, FORMAT)) do
-        {read_string(io), read_string(io)}
-      end
-      Signature.new(name, parameters, read_string(io))
+      receiver = read_string(io)
+      parameters = Array(String).new(io.read_bytes(UInt32, FORMAT)) { read_string(io) }
+      block_parameter = read_string(io)
+      return_type = read_string(io)
+      free_variables = Array(String).new(io.read_bytes(UInt32, FORMAT)) { read_string(io) }
+      required = io.read_byte == 1_u8
+      Signature.new(name, receiver, parameters, block_parameter, return_type,
+        free_variables, required)
     end
   end
 

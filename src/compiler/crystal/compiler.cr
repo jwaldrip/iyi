@@ -449,12 +449,31 @@ module Crystal
       IyiMod::Exports.new(functions, types, impls)
     end
 
+    # A parameter travels whole, and everything that decorates the method
+    # travels with it: the splat markers, the block parameter, `forall`, the
+    # receiver and `abstract`. Each of those was left out once and each is
+    # needed by a consumer that has only this file — a block cannot be typed
+    # without its annotation, `Array(U)` does not resolve without the `forall`
+    # that introduced `U`, and an `abstract def` a consumer took for a
+    # definition is a requirement it would never be told it had missed.
     private def iyi_signature(a_def : Def) : IyiMod::Signature
-      parameters = a_def.args.map { |arg| {arg.name, arg.restriction.try(&.to_s) || ""} }
+      parameters = a_def.args.map_with_index do |arg, index|
+        a_def.splat_index == index ? "*#{arg}" : arg.to_s
+      end
+      if double_splat = a_def.double_splat
+        parameters << "**#{double_splat}"
+      end
+
+      block_parameter = a_def.block_arg.try { |arg| "&#{arg}" } || ""
+
       IyiMod::Signature.new(
         name: a_def.name,
+        receiver: a_def.receiver.try(&.to_s) || "",
         parameters: parameters,
+        block_parameter: block_parameter,
         return_type: a_def.return_type.try(&.to_s) || "",
+        free_variables: a_def.free_vars || [] of String,
+        required: a_def.abstract?,
       )
     end
 
