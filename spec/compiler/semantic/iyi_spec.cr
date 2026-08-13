@@ -2051,6 +2051,243 @@ describe "Semantic: iyi" do
         App::Fails.maybe(false)
         CRYSTAL
     end
+
+    # iyi: `.or(default)` and `.or_panic` — III.1.3's two conveniences, for
+    # where a `case` is overkill. Compiler-known rather than trait methods:
+    # by II.1 an ordinary call on `Int32 | IOError` would need *both* members
+    # to implement it, which is the thing this design avoids.
+    it "recovers from an error with a default" do
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read_port(missing : Bool) : Int32 | IOError
+              return IOError.new if missing
+              1234
+            end
+
+            def self.port(missing : Bool) : Int32
+              read_port(missing).or(8080)
+            end
+          end
+        end
+
+        App::Fails.port(true)
+        CRYSTAL
+    end
+
+    it "widens the result when the default is of another type" do
+      # Nothing computes this: the expansion is an `if`, so the result is the
+      # union of the default and what `is_a?(::Error)` left on the other side.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { union_of(int32, char) }
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read_port(missing : Bool) : Int32 | IOError
+              return IOError.new if missing
+              1234
+            end
+
+            def self.port(missing : Bool) : Int32 | Char
+              read_port(missing).or('x')
+            end
+          end
+        end
+
+        App::Fails.port(true)
+        CRYSTAL
+    end
+
+    it "recovers by panicking, leaving only the non-error members" do
+      # `raise` is `NoReturn`, so the error branch contributes nothing to the
+      # type. Defined here because the semantic harness runs without a prelude.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        def raise(message : String) : NoReturn
+          while true
+          end
+        end
+
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read_port(missing : Bool) : Int32 | IOError
+              return IOError.new if missing
+              1234
+            end
+
+            def self.port(missing : Bool) : Int32
+              read_port(missing).or_panic
+            end
+          end
+        end
+
+        App::Fails.port(false)
+        CRYSTAL
+    end
+
+    it "reaches `message` across a union of several error types" do
+      # `.or_panic` calls `message` on the narrowed value, which here holds two
+      # unrelated error types. That resolves by II.1: both implement `Error`,
+      # so their union does, and the marker trait carries the call.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        def raise(message : String) : NoReturn
+          while true
+          end
+        end
+
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            struct ParseError
+              def initialize
+              end
+            end
+
+            impl Error for ParseError
+              def message : String
+                "bad"
+              end
+            end
+
+            def self.read(missing : Bool, bad : Bool) : Int32 | IOError | ParseError
+              return IOError.new if missing
+              return ParseError.new if bad
+              1234
+            end
+
+            def self.port(missing : Bool, bad : Bool) : Int32
+              read(missing, bad).or_panic
+            end
+          end
+        end
+
+        App::Fails.port(false, false)
+        CRYSTAL
+    end
+
+    it "refuses to recover where there is no error member" do
+      assert_error <<-CRYSTAL, "`.or` has no error to recover: no member of (Int32 | Nil) implements `Error`", filename: "x.iyi"
+        module App
+          module Fails
+            def self.maybe(missing : Bool) : Int32?
+              return nil if missing
+              1
+            end
+
+            def self.go : Int32?
+              maybe(false).or(0)
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
+
+    it "refuses to recover where every member is an error" do
+      # The default would be the only outcome, which is dead code dressed up as
+      # a fallback — rejected for the same reason `!` rejects this operand.
+      assert_error <<-CRYSTAL, "`.or` can only ever return its default: every member of App::Fails::IOError implements `Error`", filename: "x.iyi"
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.always : IOError
+              IOError.new
+            end
+
+            def self.go : Int32
+              always.or(0)
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
+
+    it "refuses to panic-recover where every member is an error" do
+      assert_error <<-CRYSTAL, "`.or_panic` can never produce a value: every member of App::Fails::IOError implements `Error`", filename: "x.iyi"
+        def raise(message : String) : NoReturn
+          while true
+          end
+        end
+
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.always : IOError
+              IOError.new
+            end
+
+            def self.go : Int32
+              always.or_panic
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
   end
 
   # iyi: `pub` — what a module exports (R-2), and what `using` may reach

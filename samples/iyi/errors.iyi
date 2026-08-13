@@ -69,6 +69,28 @@ end
   end
 end
 
+# Where a `case` is overkill, `.or` takes a default and `.or_panic` takes the
+# value or dies (III.1.3). These cannot be ordinary methods: by II.1 a real
+# method call on `Int32 | IOError` would demand it from *both* members, and a
+# method every error type has to supply is what this design avoids. So the
+# compiler knows them by name — which is also why `or` and `or_panic` are not
+# names an iyi program can use for anything else.
+["config", "missing", "bad"].each do |path|
+  puts "or:    #{load(path).or(0)}"
+end
+
+# `.or` is an `is_a?(::Error)` and nothing more, so the result type falls out
+# instead of being computed: the default's type unioned with the non-error
+# members. Here that is `Int32`, and the default is only evaluated when there is
+# an error to recover from.
+puts "or:    #{load("missing").or(-1)}"
+
+# `.or_panic` yields the non-error members alone, because what it calls never
+# returns. It reaches `message` on a value narrowed to `IOError | ParseError` —
+# two unrelated types — which resolves by II.1: both implement `Error`, so their
+# union does. Until panics exist (III.1.4), this unwinds as a Crystal exception.
+puts "panic: #{load("config").or_panic}"
+
 # ---------------------------------------------------------------------------
 # What this sample would report as an error
 # ---------------------------------------------------------------------------
@@ -89,16 +111,19 @@ end
 #   that still explains the naming convention, because after a `def` name there
 #   is nothing to propagate.
 #
+# * `.or` and `.or_panic` on the same two operands `!` rejects. With no error
+#   member there is nothing to recover; with every member an error, `.or` can
+#   only return its default and `.or_panic` can only panic.
+#
+# * `.or 0` without parentheses — `.or` takes the default in parentheses, so
+#   the shape cannot be confused with a call to a method of that name.
+#
 # ---------------------------------------------------------------------------
 # Not yet implemented
 # ---------------------------------------------------------------------------
 #
-# * `.or(default)` and `.or_panic` (III.1.3), for the cases where a `case` is
-#   overkill. They have to be compiler-known on error unions: by II.1 an
-#   ordinary method call on `Int32 | ConfigError` would require *both* members
-#   to implement it, which is the thing being avoided.
-#
 # * `defer` (III.1.4). Because errors are values returned early, `begin`/
-#   `ensure` no longer covers cleanup properly.
+#   `ensure` no longer covers cleanup properly. `.or_panic` raises a Crystal
+#   exception until panics exist.
 #
 # * `it` is not bound in a `case` branch, so each one names the variable.

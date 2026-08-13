@@ -210,10 +210,61 @@ module Crystal
 
       assign = Assign.new(temp_var.clone, exp).at(node)
       check = IsA.new(temp_var.clone, Path.global(["Error"]).at(node)).at(node)
-      check.from_propagate = true
+      check.error_construct = "!"
       propagate = If.new(check, Return.new(temp_var.clone).at(node)).at(node)
 
       Expressions.new([assign, propagate, temp_var.clone] of ASTNode).at(node)
+    end
+
+    # iyi: `read_port().or(8080)` and `read_port().or_panic` (SPEC.md III.1.3).
+    #
+    # From:
+    #
+    #     read_port().or(8080)          read_port().or_panic
+    #
+    # To:
+    #
+    #     tmp = read_port()             tmp = read_port()
+    #     if tmp.is_a?(::Error)         if tmp.is_a?(::Error)
+    #       8080                          ::raise tmp.message
+    #     else                          else
+    #       tmp                           tmp
+    #     end                           end
+    #
+    # Same trick as `Propagate` above, and for the same reason: `is_a?` already
+    # narrows both ways, so the result type falls out instead of being computed.
+    # `.or` yields the default unioned with the non-error members; `.or_panic`
+    # yields the non-error members alone, because `raise` is `NoReturn`.
+    #
+    # `tmp.message` is only reached where `tmp` has been narrowed to the error
+    # members, and every one of those implements `Error` — so by II.1 the union
+    # implements it too and `message` dispatches without either branch of this
+    # having to know which error it holds.
+    #
+    # The default is evaluated only when there is an error to recover from,
+    # which is what a reader of `||` would expect.
+    #
+    # `::raise` is a stand-in: panics (III.1.4) are not built yet, so the
+    # "unwrap of this design" currently unwinds as a Crystal exception. When
+    # panics land, this is the one line that changes.
+    def transform(node : Recover)
+      exp = node.exp.transform(self)
+      temp_var = program.new_temp_var
+
+      assign = Assign.new(temp_var.clone, exp).at(node)
+      check = IsA.new(temp_var.clone, Path.global(["Error"]).at(node)).at(node)
+      check.error_construct = node.panic? ? ".or_panic" : ".or"
+
+      recovery =
+        if default = node.default
+          default.transform(self)
+        else
+          Call.global("raise", Call.new(temp_var.clone, "message").at(node)).at(node)
+        end
+
+      value = If.new(check, recovery, temp_var.clone).at(node)
+
+      Expressions.new([assign, value] of ASTNode).at(node)
     end
 
     def transform(node : Unless)

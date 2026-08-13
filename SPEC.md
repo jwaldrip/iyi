@@ -586,7 +586,7 @@ would be comparing different programs.
 
 ## Part III — Open questions, with recommendations
 
-### III.1 Errors — **DECIDED (Appendix B #1: yes), being built**
+### III.1 Errors — **DECIDED (Appendix B #1: yes), built except III.1.4**
 
 Errors are ordinary union members. No `Result` wrapper, no exception hierarchy,
 no new type machinery — unions already exist and already carry a type id.
@@ -707,7 +707,7 @@ existing `return`-in-block semantics. `items.map { |x| parse(x)! }` therefore
 abandons the whole method on the first failure. Consistent, and worth stating
 because the alternative reading is defensible.
 
-#### III.1.3 Handling — **SETTLED**
+#### III.1.3 Handling — **BUILT**
 
 Nothing new is required. Exhaustive `case`/`in` over a union already exists and
 already checks totality:
@@ -724,7 +724,7 @@ Adding a new error member to `load` turns every incomplete `case` on it into a
 compile error. This is the main ergonomic argument for the whole approach and it
 costs nothing to build.
 
-Two conveniences in the prelude for the cases where matching is overkill:
+Two conveniences for the cases where matching is overkill:
 
 ```
 port = read_port().or(8080)     # value, or a default
@@ -735,6 +735,44 @@ These are compiler-known on error unions rather than ordinary trait methods.
 They have to be: by II.1 an ordinary method call on `Int32 | ConfigError` would
 require *both* members to implement it, which is precisely the thing being
 avoided here.
+
+**Built, and like `!` they needed no type machinery.** Both expand to the same
+`is_a?(::Error)` the operator uses:
+
+```
+tmp = read_port()               tmp = read_port()
+if tmp.is_a?(::Error)           if tmp.is_a?(::Error)
+  8080                            ::raise tmp.message
+else                            else
+  tmp                             tmp
+end                             end
+```
+
+The result type falls out of that `if` rather than being computed. `.or` yields
+the default unioned with the non-error members — `Int32` for the example above,
+and honestly `Int32 | Char` if the default is a `Char`, since nothing here
+narrows what the author wrote. `.or_panic` yields the non-error members alone,
+because `raise` is `NoReturn`. And `tmp.message` is only reached where `tmp` has
+been narrowed to the error members: they all implement `Error`, so by II.1 their
+union does too, and the call resolves without this having to know which error it
+holds.
+
+The default is evaluated only when there is an error to recover from, matching
+what a reader of `||` would expect.
+
+Three things the build settled:
+
+- **The two degenerate operands are rejected, as they are for `!`.** With no
+  error member there is nothing to recover; with every member an error, `.or`
+  can only ever return its default and `.or_panic` can only ever panic. Both
+  are dead code wearing a fallback's clothes.
+- **`or` and `or_panic` are reserved names in iyi.** That is what
+  "compiler-known" costs: they are recognised at the call site by name, so an
+  iyi program cannot define or call a method of either name. Only iyi — a
+  Crystal file's `.or` is an ordinary call and is untouched.
+- **`or_panic` currently raises.** Panics (III.1.4) are not built, so the
+  `unwrap` of this design unwinds as a Crystal exception carrying the error's
+  `message`. One line changes when panics land.
 
 #### III.1.4 Panics, and cleanup — **PROPOSED**
 

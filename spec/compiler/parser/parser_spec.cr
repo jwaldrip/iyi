@@ -4407,6 +4407,57 @@ module Crystal
         parse("a != b", filename: "x.iyi").as(Call).name.should eq("!=")
         parse("a.empty?", filename: "x.iyi").as(Call).name.should eq("empty?")
       end
+
+      # iyi: `.or(default)` and `.or_panic` (SPEC.md III.1.3). Recognised by
+      # name rather than dispatched, because by II.1 an ordinary call on
+      # `Int32 | ConfigError` would demand the method from *both* members.
+      it "reads `.or` as recovery" do
+        node = parse("read(path).or(8080)", filename: "x.iyi").as(Recover)
+        node.exp.as(Call).name.should eq("read")
+        node.default.should eq(8080.int32)
+        node.panic?.should be_false
+      end
+
+      it "reads `.or_panic` as recovery with no default" do
+        node = parse("read(path).or_panic", filename: "x.iyi").as(Recover)
+        node.exp.as(Call).name.should eq("read")
+        node.default.should be_nil
+        node.panic?.should be_true
+      end
+
+      it "accepts empty parentheses after `.or_panic`" do
+        parse("read(path).or_panic()", filename: "x.iyi").as(Recover).panic?.should be_true
+      end
+
+      it "requires a default in parentheses after `.or`" do
+        expect_raises(SyntaxException, "`.or` takes the default to use when the value is an error") do
+          parse("read(path).or 8080", filename: "x.iyi")
+        end
+      end
+
+      it "chains a method onto a recovered value" do
+        node = parse("read(path).or(8080).to_s", filename: "x.iyi").as(Call)
+        node.name.should eq("to_s")
+        node.obj.should be_a(Recover)
+      end
+
+      it "recovers from a propagated value" do
+        parse("read(path)!.or(8080)", filename: "x.iyi").as(Recover).exp.should be_a(Propagate)
+      end
+
+      it "writes recovery back the way it was written" do
+        parse("read(path).or(8080)", filename: "x.iyi").to_s.should eq("read(path).or(8080)")
+        parse("read(path).or_panic", filename: "x.iyi").to_s.should eq("read(path).or_panic")
+      end
+
+      it "leaves a Crystal file's `.or` as an ordinary call" do
+        # The gate really is the file extension: nothing here reserves the name
+        # for a program that never asked for iyi.
+        node = parse("read(path).or(8080)", filename: "x.cr").as(Call)
+        node.name.should eq("or")
+        node.args[0].should eq(8080.int32)
+        parse("read(path).or_panic", filename: "x.cr").as(Call).name.should eq("or_panic")
+      end
     end
   end
 end

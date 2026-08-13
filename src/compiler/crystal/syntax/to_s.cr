@@ -477,6 +477,18 @@ module Crystal
       false
     end
 
+    def visit(node : Recover)
+      node.exp.accept self
+      if default = node.default
+        @str << ".or("
+        default.accept self
+        @str << ')'
+      else
+        @str << ".or_panic"
+      end
+      false
+    end
+
     def visit(node : AssocTypeDecl)
       @str << "type " << node.name
       if value = node.value

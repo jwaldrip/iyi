@@ -786,6 +786,8 @@ module Crystal
             atomic = parse_atomic_method_suffix_special(atomic, location)
           elsif @token.type.op_lsquare?
             return parse_atomic_method_suffix(atomic, location)
+          elsif iyi? && @token.type.ident? && @token.value.to_s.in?("or", "or_panic")
+            atomic = parse_iyi_recover(atomic).at(location)
           else
             name = case @token.type
                    when .ident?, .const?
@@ -976,6 +978,43 @@ module Crystal
       end
 
       IsA.new(atomic, type).at_end(end_location)
+    end
+
+    # iyi: `.or(default)` and `.or_panic` (SPEC.md III.1.3).
+    #
+    # Recognised by name here, which is what "compiler-known" costs: `or` and
+    # `or_panic` are reserved in an iyi program. Gated on `iyi?`, so a Crystal
+    # file that calls a method of either name is untouched.
+    def parse_iyi_recover(atomic)
+      panic = @token.value.to_s == "or_panic"
+      end_location = token_end_location
+      next_token
+
+      if panic
+        # `.or_panic()` is allowed but pointless; there is nothing to pass.
+        if @token.type.op_lparen?
+          next_token_skip_space_or_newline
+          check :OP_RPAREN
+          end_location = token_end_location
+          next_token
+        end
+
+        return Recover.new(atomic).at_end(end_location)
+      end
+
+      skip_space
+      unless @token.type.op_lparen?
+        unexpected_token "expected '(': `.or` takes the default to use when the value is an error"
+      end
+
+      next_token_skip_space_or_newline
+      default = parse_op_assign
+      skip_space_or_newline
+      check :OP_RPAREN
+      end_location = token_end_location
+      next_token
+
+      Recover.new(atomic, default).at_end(end_location)
     end
 
     def parse_as(atomic, klass = Cast)

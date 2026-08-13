@@ -1698,10 +1698,12 @@ module Crystal
     property obj : ASTNode
     property const : ASTNode
     property? nil_check : Bool
-    # iyi: set on the check `expr!` expands into, so that the semantic phase can
-    # judge the operand — an `is_a?` the author wrote is nobody's business, but
-    # one the operator wrote has rules (SPEC.md III.1.1).
-    property? from_propagate = false
+    # iyi: the construct this check was written by — `"!"`, `".or"` or
+    # `".or_panic"` — so that the semantic phase can judge the operand and name
+    # it in the message. An `is_a?` the author wrote is nobody's business and
+    # leaves this nil; one a compiler-known construct wrote has rules
+    # (SPEC.md III.1.1).
+    property error_construct : String? = nil
 
     def initialize(@obj, @const, @nil_check = false)
     end
@@ -1713,7 +1715,7 @@ module Crystal
 
     def clone_without_location
       clone = IsA.new(@obj.clone, @const.clone, @nil_check)
-      clone.from_propagate = from_propagate?
+      clone.error_construct = error_construct
       clone
     end
 
@@ -2073,6 +2075,39 @@ module Crystal
     end
 
     def_equals_and_hash @exp
+  end
+
+  # iyi: `read_port().or(8080)` and `read_port().or_panic` — take the value out
+  # of an error union without writing a `case` (SPEC.md III.1.3).
+  #
+  # These cannot be ordinary methods, which is why they are a node. By II.1 an
+  # ordinary call on `Int32 | ConfigError` would require *both* members to
+  # implement it, and a method every error type has to supply is exactly what
+  # this design is avoiding. So the compiler knows them, and `or` / `or_panic`
+  # are not names an iyi program can use for anything else.
+  #
+  # `default` is nil for `.or_panic`, which has no value to fall back to.
+  class Recover < ASTNode
+    property exp : ASTNode
+    property default : ASTNode?
+
+    def initialize(@exp, @default = nil)
+    end
+
+    def panic?
+      @default.nil?
+    end
+
+    def accept_children(visitor)
+      @exp.accept visitor
+      @default.try &.accept visitor
+    end
+
+    def clone_without_location
+      Recover.new(@exp.clone, @default.clone)
+    end
+
+    def_equals_and_hash @exp, @default
   end
 
   # iyi: `type Elem` in a trait, `type Elem = String` in an impl (SPEC.md II.6).
