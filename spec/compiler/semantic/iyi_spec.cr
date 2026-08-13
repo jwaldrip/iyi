@@ -2131,6 +2131,39 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
 
+    # iyi: a module's initialisation may not fail (SPEC.md III.5). Already
+    # rejected before this, but through Crystal's rule about `return` — which
+    # is what the expansion happens to be made of, and explains nothing.
+    it "refuses to propagate out of a module's initialisation" do
+      assert_error <<-CRYSTAL, "`!` can't propagate out of a module's initialisation", filename: "x.iyi"
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read(missing : Bool) : Int32 | IOError
+              return IOError.new if missing
+              1
+            end
+          end
+        end
+
+        App::Fails.read(false)!
+        CRYSTAL
+    end
+
+    it "still reports a plain top-level `return` as itself" do
+      assert_error "return", "can't return from top level", filename: "x.iyi"
+    end
+
     # iyi: `defer` (SPEC.md III.1.4). The shape of the expansion is specced in
     # `spec/compiler/normalize/defer_spec.cr`; what matters here is that it
     # leaves the scope's type alone — the cleanup is an `ensure`, and an

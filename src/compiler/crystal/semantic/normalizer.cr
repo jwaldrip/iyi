@@ -276,7 +276,9 @@ module Crystal
       assign = Assign.new(temp_var.clone, exp).at(node)
       check = IsA.new(temp_var.clone, Path.global(["Error"]).at(node)).at(node)
       check.error_construct = "!"
-      propagate = If.new(check, Return.new(temp_var.clone).at(node)).at(node)
+      returned = Return.new(temp_var.clone).at(node)
+      returned.from_propagate = true
+      propagate = If.new(check, returned).at(node)
 
       Expressions.new([assign, propagate, temp_var.clone] of ASTNode).at(node)
     end

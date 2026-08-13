@@ -1839,7 +1839,19 @@ module Crystal
         node.raise "can't return from constant"
       end
 
-      typed_def = @typed_def || node.raise("can't return from top level")
+      typed_def = @typed_def || begin
+        # iyi: a `!` here is a propagation out of a module's initialisation,
+        # which III.5 refuses. Reported as the rule rather than as a stray
+        # `return`, which is what the expansion happens to be made of.
+        if node.from_propagate?
+          node.raise <<-MSG
+            `!` can't propagate out of a module's initialisation
+
+            A module's top-level expressions run when the module is initialised, and there is nothing there to return to. If it can fail it is not initialisation, it is work — put it in a function the program calls when it is ready to handle the failure. See SPEC.md III.5.
+            MSG
+        end
+        node.raise "can't return from top level"
+      end
 
       if typed_def.captured_block?
         node.raise "can't return from captured block, use next"

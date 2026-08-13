@@ -1166,6 +1166,82 @@ safe. If that class is large, `Share` needs an escape hatch — an explicit
 unsafe assertion — and an escape hatch that gets used routinely is a failed
 rule. **Nothing here should be built before that count exists.**
 
+### III.5 Module initialisation — **PROPOSED**
+
+II.9 left this open with a concrete case: Kemal registers routes as a side
+effect of top-level calls, which is legal, and the ordering guarantees across a
+module DAG were never stated. Go's `init()` is the reference, and it is a
+reference for what to avoid — importing a package runs code, order within a
+package follows *file name*, an `init` that fails can only panic, and
+`import _ "github.com/lib/pq"` exists as a language-level hack for a side effect
+the compiler cannot see.
+
+**III.4.5 already shrank the question.** Module-level mutable state is not
+shareable, so it is either immutable or behind a synchronised type. What a
+module initialiser mostly does, then, is compute constants — and the order in
+which constants are computed is a much smaller question than the order in which
+arbitrary side effects run.
+
+**1. A module initialises after every module it imports.** R-1 makes `import` a
+DAG, so this is a partial order with no cycles to resolve, and it needs no
+analysis beyond the edges already in the artifact (IV.2).
+
+**2. Between independent modules the order is *unobservable*, not merely
+unspecified.** This is the rule worth having, and the compilation model already
+pays for it: a module can only name what it imports (R-1), can only reach what
+that module exports (R-2), and cannot reopen anything (R-3). So a module's
+initialiser has nothing of an unrelated module to look at, and no program can
+tell which of two independent modules went first. The tiebreak therefore does
+not need specifying — there is no experiment that could detect it.
+
+A rule nobody can observe is a rule that rots, so **debug builds shuffle the
+order of independent modules**. This is Go's own trick: map iteration was
+randomised precisely to stop programs depending on an order the specification
+never promised. Borrowing it here costs nothing and keeps the guarantee true.
+
+**3. There is no `init()`. A module's top-level expressions are its
+initialiser, in source order.** Go needs two mechanisms — dependency-ordered
+package variables *and* `init` functions — and orders the second by file name,
+which means adding a file can change behaviour. That failure has nowhere to live
+here: `import a/b` resolves to `a/b.iyi`, one source file per module, so source
+order is already total.
+
+**4. Initialisation may not fail. Built.** If it can fail it is not
+initialisation, it is work, and work belongs in a function the program calls
+when it is ready to handle the failure. This is checkable rather than
+aspirational, because errors are types: a top-level expression may not
+propagate.
+
+It turned out to be enforced already, but by accident — `!` expands to a
+`return` (III.1.2), so it hit Crystal's rule about returning from the top level
+and reported `can't return from top level`, which describes the expansion rather
+than the rule. The propagating `return` is now marked, and the message names
+III.5. Reported where the check already was rather than in the parser, because
+the parser cannot see through a macro to know whether the expansion will land
+inside a `def`.
+
+**5. No import for side effects.** `import` brings a module's declarations; it
+is not a way to run its registrations. The driver-registration pattern Go writes
+as `import _` becomes an ordinary call the program makes, where a reader can see
+it. This is the rule that costs the most: it is more code, and it removes a
+convenience real programs use. The Kemal port is the evidence that the trade is
+survivable — II.9 records that its singletons were replaced by one application
+value and its routes returned as a table rather than registered into a global,
+and that **nothing in the design forced it at the time**. This is the rule that
+would have.
+
+**The alternative that lost: lazy initialisation.** Module-level values could be
+computed on first use, which removes ordering as a question entirely — Swift's
+answer. It was rejected because it moves cycles from a compile-time
+impossibility to a runtime failure, and because a guard on every access to a
+module-level constant is a cost paid by every program to solve a problem that
+R-1's DAG already prevents.
+
+**Status.** Rules 1–3 are descriptions of what the compilation model already
+forces and need writing down more than building — the shuffle in rule 2 is the
+only code in them. Rule 4 is built. Rule 5 is the one with a real cost and no
+measurement behind it yet, and it is the one to be suspicious of.
+
 ---
 
 ## Part IV — `.iyimod`, the module artifact
@@ -1688,9 +1764,11 @@ Named honestly, so nobody mistakes this draft for complete.
    impls are the point.
 3. ~~Trait default methods.~~ **Settled by II.6** — traits supply bodies, with
    their own type parameters and conditional `where` bounds.
-4. **Module initialisation order.** Kemal registers routes as a side effect of
-   top-level calls. Legal, but the ordering guarantees across a module DAG need
-   stating. Go's `init()` is the reference.
+4. ~~**Module initialisation order.**~~ **Specified in III.5** — DAG order, a
+   relative order between independent modules that is unobservable rather than
+   merely unspecified, no `init()`, no import for side effects, and
+   initialisation that may not fail. The last of those is built; the rest are
+   mostly restatements of what R-1 through R-3 already force.
 5. ~~**Concurrency semantics.**~~ **Specified in III.4** — structured
    concurrency so a leak is unrepresentable, cancellation owned by the scope
    rather than threaded through signatures, task failure as an ordinary error

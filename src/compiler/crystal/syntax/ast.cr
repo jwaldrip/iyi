@@ -2793,8 +2793,15 @@ module Crystal
   end
 
   class Return < ControlExpression
+    # iyi: set on the `return` that `expr!` expands into, so that a propagation
+    # with nowhere to return to can be reported as the rule it breaks rather
+    # than as a stray `return` (SPEC.md III.5).
+    property? from_propagate = false
+
     def clone_without_location
-      Return.new(@exp.clone)
+      clone = Return.new(@exp.clone)
+      clone.from_propagate = from_propagate?
+      clone
     end
   end
 
