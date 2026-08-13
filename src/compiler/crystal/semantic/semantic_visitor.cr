@@ -87,10 +87,19 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
   # iyi: `import app/user` (R-1)
   #
   # Resolves a module path to a file and loads it at most once, so the import
-  # graph is a DAG rather than textual inclusion. What this does NOT yet do is
-  # namespace the loaded module — its declarations still land in the global
-  # namespace, exactly as `require` leaves them. That is the next step, and
-  # until it lands `import` is a DAG-shaped `require`.
+  # graph is a DAG rather than textual inclusion.
+  #
+  # The loaded module IS namespaced: `Parser#apply_module_header` turns the
+  # file's `module a/b` header into a `ModuleDef` for `A::B` before this ever
+  # sees it, so `import a/b` brings in `A::B::Thing`, not a global `Thing`.
+  #
+  # What this does not do is separate *when* a module's top-level code runs
+  # from where it was imported. The nodes are expanded in place, so a module's
+  # initialiser executes at the import site. Order therefore follows the text
+  # rather than the DAG — which happens to agree with it, since an `import`
+  # precedes the body that needs it, but agrees by accident. SPEC.md III.5
+  # rule 2 wants an order that can be shuffled in debug builds, and that needs
+  # the initialiser held apart from its import site first.
   def visit(node : ImportDecl)
     if expanded = node.expanded
       expanded.accept self

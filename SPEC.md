@@ -1345,19 +1345,21 @@ the order of independent modules**. This is Go's own trick: map iteration was
 randomised precisely to stop programs depending on an order the specification
 never promised.
 
-**Blocked, and on something worth knowing.** There is nothing to shuffle yet,
-because there is no module initialiser to reorder: `import` today expands the
-imported file *in place*, splicing its top-level nodes where the `import`
-statement stands — a DAG-shaped `require`, which is what
-`SemanticVisitor#import_file` says it is and what its own comment admits about
-namespacing. Initialisation order is therefore textual, and the only way to
-change it is to move code between splice points.
+**Blocked, and on something worth knowing.** `import` expands the imported file
+*in place*, splicing its nodes where the `import` statement stands, so a
+module's top-level code runs at its import site. Order is therefore textual. It
+happens to agree with rule 1 — an `import` precedes the body that needs it — but
+it agrees by accident, and the only way to change it is to move code between
+splice points.
 
-Making the order shuffleable means first making a module's top-level code a
-thing the compiler holds separately from the site that imported it. That is the
-same separation Part IV needs — an artifact cannot store an initialiser it never
-distinguished — so this is not a detour, but it is not a small change either,
-and building the shuffle on the current shape would be building it on sand.
+The module is not the missing piece: `Parser#apply_module_header` already turns
+a `module a/b` header into a `ModuleDef` for `A::B`, marked `iyi_unit`, so a
+module's code is identifiable and namespaced. What is missing is holding that
+initialiser apart from the site that imported it, so the compiler can choose
+when to run it. That is the same separation Part IV needs — an artifact cannot
+store an initialiser it never separated — so this is not a detour, but it is not
+a small change either, and building the shuffle on the current shape would be
+building it on sand.
 
 **3. There is no `init()`. A module's top-level expressions are its
 initialiser, in source order.** Go needs two mechanisms — dependency-ordered
