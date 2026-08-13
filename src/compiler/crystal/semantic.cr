@@ -147,6 +147,8 @@ class Crystal::Program
     return node if inits.empty?
     @iyi_module_inits = [] of ASTNode
 
+    inits = shuffle_iyi_module_initialisers(inits) unless has_flag?("release")
+
     expressions = node.is_a?(Expressions) ? node.expressions : [node] of ASTNode
 
     # The prelude reaches here as a `require` the compiler prepended, so the
@@ -157,6 +159,53 @@ class Crystal::Program
     expressions.insert(index, Expressions.from(inits))
 
     node.is_a?(Expressions) ? node : Expressions.new(expressions)
+  end
+
+  # iyi: reorders independent modules (SPEC.md III.5 rule 2).
+  #
+  # Rule 2 says the relative order of two modules that do not import each other
+  # is *unobservable*, not merely unspecified — a module can only name what it
+  # imports (R-1), reach what that module exports (R-2), and reopen nothing
+  # (R-3), so an initialiser has nothing of an unrelated module to look at. A
+  # rule nobody can observe is a rule that rots, so debug builds do not hand
+  # out the same order twice: this walks the DAG the way Kahn's algorithm does
+  # and picks at random among the modules whose imports have all been placed,
+  # which produces a different valid topological order each build.
+  #
+  # Release builds keep the load order, so what ships is reproducible.
+  # `IYI_INIT_SEED` pins the order, for a program that fails under one.
+  private def shuffle_iyi_module_initialisers(inits : Array(ASTNode)) : Array(ASTNode)
+    seed = ENV["IYI_INIT_SEED"]?.try &.to_u64?
+    random = seed ? Random.new(seed) : Random.new
+
+    by_file = {} of String => ASTNode
+    pending = inits.map do |init|
+      filename = init.as(FileNode).filename
+      by_file[filename] = init
+      filename
+    end
+
+    placed = Set(String).new
+    ordered = Array(ASTNode).new(inits.size)
+
+    until pending.empty?
+      ready = pending.select do |filename|
+        imports = @iyi_module_imports[filename]?
+        # An import that is not in `by_file` was loaded by someone else and is
+        # already placed; there is only ever one initialiser per module.
+        imports.nil? || imports.all? { |dep| placed.includes?(dep) || !by_file.has_key?(dep) }
+      end
+      # Cannot be empty: `import` is refused a cycle, so some module's imports
+      # are all placed. Falling back rather than dividing by zero if it is.
+      ready = pending if ready.empty?
+
+      chosen = ready[random.rand(ready.size)]
+      pending.delete chosen
+      placed << chosen
+      ordered << by_file[chosen]
+    end
+
+    ordered
   end
 
   # This property indicates that the compiler has finished the top-level semantic

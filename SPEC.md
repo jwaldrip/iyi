@@ -1391,10 +1391,29 @@ initialiser has nothing of an unrelated module to look at, and no program can
 tell which of two independent modules went first. The tiebreak therefore does
 not need specifying — there is no experiment that could detect it.
 
-A rule nobody can observe is a rule that rots, so **debug builds should shuffle
-the order of independent modules**. This is Go's own trick: map iteration was
+A rule nobody can observe is a rule that rots, so **debug builds shuffle the
+order of independent modules. Built.** This is Go's own trick: map iteration was
 randomised precisely to stop programs depending on an order the specification
-never promised.
+never promised — and Go went further there than in its own `init`, which is
+ordered by file name and therefore depends on one.
+
+The compiler walks the DAG the way Kahn's algorithm does and picks at random
+among the modules whose imports have all been placed, so no two debug builds of
+a program need hand out the same order. Release builds keep the load order, so
+what ships is reproducible; `IYI_INIT_SEED` pins a debug one, for a program
+that fails under an order and has to be looked at twice.
+
+**What it cost, measured.** Every sample was built under eight orders and all
+eight produced identical output. The result is thinner than it sounds: of the
+samples, only `modules.iyi` imports two modules that are independent of each
+other, and their initialisers are declarations with nothing to observe. What it
+does establish is that the reordering is safe — the tree the compiler hands the
+rest of the pipeline is still one it types and generates code for — and that no
+sample was quietly relying on load order. Evidence for what the rule *catches*
+needs a program whose modules do work at initialisation, and there is not one
+yet; III.4.5 is the reason to expect there never will be many, since
+module-level mutable state is not shareable and an initialiser mostly computes
+constants.
 
 **Rule 1 was accidental, and now is not. Built.** `import` used to expand the
 imported file *in place*, splicing its nodes where the directive stood, so a
@@ -1465,8 +1484,8 @@ module-level constant is a cost paid by every program to solve a problem that
 R-1's DAG already prevents.
 
 **Status.** Rule 3 is a description of what the compilation model already
-forces and needed writing down more than building. Rules 1 and 4 are built.
-Rule 2's shuffle is the only code left in 1–3, and it is no longer blocked.
+forces and needed writing down more than building. Rules 1, 2 and 4 are built,
+and so is the cycle refusal R-1 asserted and the compiler did not perform.
 Rule 5 is the one with a real cost and no measurement behind it yet, and it is
 the one to be suspicious of.
 

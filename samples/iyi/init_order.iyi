@@ -30,7 +30,10 @@ puts "5. #{Boot::Registry.greeting}"
 #   what it imports (R-1), reach what that module exports (R-2), and reopen
 #   nothing (R-3), so an initialiser has nothing of an unrelated module to
 #   look at. Nothing here prints from two independent modules, because that
-#   would be documenting an order the spec refuses to have.
+#   would be documenting an order the spec refuses to have — and debug builds
+#   shuffle it, so the documentation would be wrong most of the time. Build
+#   with `--release` to get the load order back, or `IYI_INIT_SEED=1` to get
+#   the same shuffled one twice.
 #
 # * Anything about the second `import` above. `boot/config` was already loaded
 #   by `boot/registry`, so naming it here adds an edge and nothing else: a
@@ -60,7 +63,7 @@ puts "5. #{Boot::Registry.greeting}"
 # Not yet implemented
 # ---------------------------------------------------------------------------
 #
-# * Rule 2's shuffle. The order of independent modules is unobservable, and a
-#   rule nobody can observe is a rule that rots, so debug builds should shuffle
-#   it — Go's own trick for map iteration. The separation this file documents
-#   is what that needed; it is not built yet.
+# * A module's initialiser as something an artifact could store. The compiler
+#   holds the modules' *nodes* apart from their import sites, which is what
+#   rules 1 and 2 needed, but `.iyimod` needs the step after: a callable
+#   initialiser in the module's own object code (SPEC.md Part IV).

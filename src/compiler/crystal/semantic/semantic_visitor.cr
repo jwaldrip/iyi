@@ -131,6 +131,11 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
 
     check_import_cycle(node, filename)
 
+    # One edge of the import DAG. Recorded even when the module is already
+    # loaded: the second importer adds no initialiser, but it does constrain
+    # where that initialiser may be moved to (rule 2).
+    (@program.iyi_module_imports[@iyi_importing.last] ||= [] of String) << filename
+
     # Load-once. A module imported by several others is compiled once, and so
     # is initialised once — the second importer adds no entry to the list.
     if @program.requires.add?(filename)

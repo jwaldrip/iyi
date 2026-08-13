@@ -81,6 +81,11 @@ module Crystal
     # `top_level_semantic` empties it into the tree.
     property iyi_module_inits = [] of ASTNode
 
+    # iyi: which modules each file imports, by absolute filename (SPEC.md
+    # III.5 rule 2). `iyi_module_inits` is one order the DAG allows; these are
+    # the edges, which is what makes every *other* order it allows computable.
+    getter iyi_module_imports = {} of String => Array(String)
+
     # All created unions in a program, indexed by an array of opaque
     # ids of each type in the union. The array (the key) is sorted
     # by this opaque id.
