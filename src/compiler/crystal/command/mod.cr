@@ -24,6 +24,9 @@ class Crystal::Command
 
     Subcommand:
         dump FILE                print a .iyimod as text
+        dump --declarations FILE print the iyi declarations a consumer compiles
+                                 against, which is what `import` reads instead
+                                 of the module's source
 
     A .iyimod is a module's compiled interface: what another module reads
     instead of this one's source (SPEC.md Part IV). Produced by
@@ -31,6 +34,16 @@ class Crystal::Command
     USAGE
 
   private def mod_dump
+    # Not a flag on the command, because it selects between two whole outputs:
+    # the file as it is stored, and the file as the compiler reads it. The
+    # second exists so that a diagnostic pointing into a `.iyimod` can be
+    # looked at — the text it names is the text this prints.
+    declarations = false
+    if options.first? == "--declarations"
+      options.shift
+      declarations = true
+    end
+
     filename = options.shift?
     unless filename
       abort! "expected a .iyimod path", :USAGE_ERROR
@@ -41,7 +54,12 @@ class Crystal::Command
     end
 
     begin
-      IyiMod.dump IyiMod.read(filename), STDOUT
+      artifact = IyiMod.read(filename)
+      if declarations
+        IyiMod.declarations artifact, STDOUT
+      else
+        IyiMod.dump artifact, STDOUT
+      end
     rescue ex : IyiMod::Error
       abort! ex.message.to_s, :USAGE_ERROR
     end

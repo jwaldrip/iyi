@@ -33,6 +33,26 @@ private def signature(name : String,
     return_type, free_variables, required)
 end
 
+private def type_declaration(name : String,
+                             kind : String,
+                             type_parameters = [] of String,
+                             assoc_types = [] of String,
+                             supertraits = [] of String,
+                             methods = [] of Crystal::IyiMod::Signature)
+  Crystal::IyiMod::TypeDecl.new(name, kind, type_parameters, assoc_types,
+    supertraits, methods)
+end
+
+private def impl_record(trait_name : String,
+                        type_name : String,
+                        trait_arguments = [] of String,
+                        free_variables = [] of String,
+                        free_variable_bounds = [] of {String, String},
+                        assoc_types = [] of {String, String})
+  Crystal::IyiMod::ImplRecord.new(trait_name, type_name, trait_arguments,
+    free_variables, free_variable_bounds, assoc_types)
+end
+
 private def with_temporary_file(&)
   path = File.tempname("iyimod", ".iyimod")
   begin
@@ -255,12 +275,9 @@ describe Crystal::IyiMod do
   end
 
   it "round-trips exported types with their parameters and methods" do
-    declaration = Crystal::IyiMod::TypeDecl.new(
-      name: "List",
-      kind: "generic struct",
+    declaration = type_declaration("List", "generic struct",
       type_parameters: ["T"],
-      methods: [signature("at", ["index : Int32"], "T")],
-    )
+      methods: [signature("at", ["index : Int32"], "T")])
 
     with_temporary_file do |path|
       Crystal::IyiMod.write sample_artifact(types: [declaration]), path
@@ -278,8 +295,9 @@ describe Crystal::IyiMod do
   # `Customer` implement `ToJSON`?" without reading `Customer`.
   it "round-trips impl records" do
     impls = [
-      Crystal::IyiMod::ImplRecord.new("Std::Traits::Cmp", "Int32"),
-      Crystal::IyiMod::ImplRecord.new("Std::Enumerable::Enumerable", "Std::List::List(T)"),
+      impl_record("Std::Traits::Cmp", "Int32"),
+      impl_record("Std::Enumerable::Enumerable", "Std::List::List(T)",
+        free_variables: ["T"], assoc_types: [{"Elem", "T"}]),
     ]
 
     with_temporary_file do |path|
@@ -288,6 +306,8 @@ describe Crystal::IyiMod do
 
       read.map(&.trait_name).should eq ["Std::Traits::Cmp", "Std::Enumerable::Enumerable"]
       read.map(&.type_name).should eq ["Int32", "Std::List::List(T)"]
+      read[1].free_variables.should eq ["T"]
+      read[1].assoc_types.should eq [{"Elem", "T"}]
     end
   end
 
@@ -305,14 +325,98 @@ describe Crystal::IyiMod do
   it "dumps a type declaration and an impl" do
     io = IO::Memory.new
     Crystal::IyiMod.dump sample_artifact(
-      types: [Crystal::IyiMod::TypeDecl.new("Greet", "trait", [] of String,
-        [signature("greet", return_type: "String")])],
-      impls: [Crystal::IyiMod::ImplRecord.new("Greet", "User")],
+      types: [type_declaration("Greet", "trait",
+        methods: [signature("greet", return_type: "String")])],
+      impls: [impl_record("Greet", "User")],
     ), io
     text = io.to_s
 
     text.should contain "  trait Greet"
     text.should contain "    def greet : String"
     text.should contain "  impl Greet for User"
+  end
+
+  # II.6 keeps a trait's parameters and its associated types apart — the first
+  # is supplied at the `impl` line and the second is answered in its body — so
+  # an artifact that merged them would ask for `Elem` in the one place II.6
+  # says it does not go.
+  it "round-trips a trait's parameters, associated types and supertraits" do
+    declaration = type_declaration("Enumerable", "generic trait",
+      type_parameters: ["K"],
+      assoc_types: ["Elem"],
+      supertraits: ["Std::Traits::Cmp"],
+      methods: [signature("each", return_type: "Nil",
+        block_parameter: "& : (Elem -> Nil)", required: true)])
+
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(types: [declaration]), path
+      read = Crystal::IyiMod.read(path).exports.types[0]
+
+      read.type_parameters.should eq ["K"]
+      read.assoc_types.should eq ["Elem"]
+      read.supertraits.should eq ["Std::Traits::Cmp"]
+    end
+  end
+
+  it "dumps a trait and an impl as they were declared" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact(
+      types: [type_declaration("Enumerable", "generic trait",
+        assoc_types: ["Elem"],
+        supertraits: ["Cmp"],
+        methods: [signature("each", return_type: "Nil", required: true)])],
+      impls: [impl_record("Std::Enumerable::Enumerable", "Std::List::List(T)",
+        free_variables: ["T"],
+        free_variable_bounds: [{"T", "Cmp"}],
+        assoc_types: [{"Elem", "T"}])],
+    ), io
+    text = io.to_s
+
+    # `generic` is how a type describes itself, not how anyone declares one.
+    text.should contain "  trait Enumerable : Cmp"
+    text.should contain "    type Elem"
+    text.should contain "  impl Std::Enumerable::Enumerable for Std::List::List(T) forall T : Cmp"
+    text.should contain "    type Elem = T"
+  end
+
+  # What `import` compiles against instead of the module's source (R-1). It is
+  # iyi rather than a second grammar, so the parser that read the module reads
+  # its declarations back.
+  it "renders the declarations a consumer compiles against" do
+    io = IO::Memory.new
+    Crystal::IyiMod.declarations sample_artifact(
+      exports: [signature("polite", ["name : String"], "String")],
+      types: [type_declaration("Greet", "trait",
+        methods: [signature("greet", return_type: "String", required: true)])],
+      impls: [impl_record("Greet", "User")],
+    ), io
+    text = io.to_s
+
+    text.should contain "module app/greeter"
+    # A body is absent, not empty: a call is typed from the return annotation,
+    # which is what makes this enough for the front end and nothing else.
+    text.should contain "pub def polite(name : String) : String\nend\n"
+    text.should contain "pub trait Greet\n  abstract def greet : String\nend\n"
+    # An `abstract def` ends at its signature and takes no `end` of its own.
+    text.should_not contain "abstract def greet : String\n  end"
+    text.should contain "impl Greet for User\nend\n"
+    # The impl comes after the type it targets, because the requirement check
+    # reads the methods off the target rather than out of the impl's body.
+    text.index("pub trait Greet").not_nil!.should be < text.index("impl Greet for User").not_nil!
+  end
+
+  it "renders a generic type and the impl that answers its associated type" do
+    io = IO::Memory.new
+    Crystal::IyiMod.declarations sample_artifact(
+      types: [type_declaration("List", "generic struct", type_parameters: ["T"],
+        methods: [signature("each", return_type: "Nil", block_parameter: "& : (T -> Nil)")])],
+      impls: [impl_record("Std::Enumerable::Enumerable", "Std::List::List(T)",
+        free_variables: ["T"], assoc_types: [{"Elem", "T"}])],
+    ), io
+    text = io.to_s
+
+    text.should contain "pub struct List(T)"
+    text.should contain "  def each(& : (T -> Nil)) : Nil\n  end\n"
+    text.should contain "impl Std::Enumerable::Enumerable for Std::List::List(T) forall T\n  type Elem = T\nend\n"
   end
 end

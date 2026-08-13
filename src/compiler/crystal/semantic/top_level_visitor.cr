@@ -465,8 +465,19 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     # against the file that declares it, which R-3 guarantees is the trait's
     # module or the type's — so a consumer holding both files holds every impl
     # that can exist for the pair.
+    #
+    # The trait and the target are recorded resolved, since that is the pair
+    # coherence is about; everything else is recorded as written, because it is
+    # what a consumer needs in order to state the impl again.
     if file = @iyi_importing.last?
-      (@program.iyi_impls[file] ||= [] of {String, String}) << {trait_type.to_s, target_type.to_s}
+      (@program.iyi_impls[file] ||= [] of IyiMod::ImplRecord) << IyiMod::ImplRecord.new(
+        trait_name: trait_type.to_s,
+        type_name: target_type.to_s,
+        trait_arguments: node.trait_args.try(&.map(&.to_s)) || [] of String,
+        free_variables: node.type_vars || [] of String,
+        free_variable_bounds: node.type_var_bounds.try(&.map { |name, bound| {name, bound.to_s} }) || [] of {String, String},
+        assoc_types: node.assoc_types.try(&.map { |name, answer| {name, answer.to_s} }) || [] of {String, String},
+      )
     end
 
     node.resolved_type = target_type

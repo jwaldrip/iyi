@@ -35,7 +35,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 4_u32
+  FORMAT_VERSION = 5_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -110,10 +110,19 @@ module Crystal::IyiMod
   # abstract requirements and the signatures (not bodies) of its defaults,
   # which is what a consumer needs to check an impl against. For a struct or
   # class it is the exported methods declared on it.
+  #
+  # *assoc_types* is kept apart from *type_parameters* because II.6 keeps them
+  # apart: a parameter is chosen by whoever implements the trait and an
+  # associated type is answered by the impl. Both are type variables of the
+  # same type internally, so a reader that merged them would ask an impl of
+  # `Enumerable` to supply `Elem` at the `impl` line, which is the one place
+  # II.6 says it does not go.
   record TypeDecl,
     name : String,
     kind : String,
     type_parameters : Array(String),
+    assoc_types : Array(String),
+    supertraits : Array(String),
     methods : Array(Signature)
 
   # One `(Trait, Type)` pair this module provides.
@@ -124,9 +133,20 @@ module Crystal::IyiMod
   # live in the trait's module or the type's module, so the pairs are always
   # findable from one of two files a consumer already has, and IV.4's argument
   # that no two modules can define the same impl rests on the same rule.
+  #
+  # The pair alone says the impl exists; the rest is what it takes to state it
+  # again on the far side. `impl Enumerable for List(T) forall T` answering
+  # `type Elem = T` is four separate things — a trait, a target, the impl's own
+  # parameters, and the answers — and an artifact that carried only the first
+  # two would leave a consumer knowing `List` enumerates something without
+  # knowing what.
   record ImplRecord,
     trait_name : String,
-    type_name : String
+    type_name : String,
+    trait_arguments : Array(String),
+    free_variables : Array(String),
+    free_variable_bounds : Array({String, String}),
+    assoc_types : Array({String, String})
 
   # What a module offers another module: `Exports` in IV.1's table.
   #
@@ -296,14 +316,14 @@ module Crystal::IyiMod
       exports.functions.each { |signature| io.puts "  #{render_signature(signature)}" }
 
       exports.types.each do |declaration|
-        parameters = declaration.type_parameters
-        generic = parameters.empty? ? "" : "(#{parameters.join(", ")})"
-        io.puts "  #{declaration.kind} #{declaration.name}#{generic}"
+        io.puts "  #{render_type_header(declaration)}"
+        declaration.assoc_types.each { |name| io.puts "    type #{name}" }
         declaration.methods.each { |signature| io.puts "    #{render_signature(signature)}" }
       end
 
       exports.impls.each do |record|
-        io.puts "  impl #{record.trait_name} for #{record.type_name}"
+        io.puts "  #{render_impl_header(record)}"
+        record.assoc_types.each { |(name, answer)| io.puts "    type #{name} = #{answer}" }
       end
     end
 
@@ -315,6 +335,113 @@ module Crystal::IyiMod
     io.puts "              signatures. Field lists, layout templates, type"
     io.puts "              descriptors and constants are not in this file yet"
     io.puts "              (SPEC.md IV.2)."
+  end
+
+  # The artifact as the iyi declarations it was built from.
+  #
+  # This is the whole point of the file: `import` reads it and compiles against
+  # this text instead of opening the module's source (R-1). It is iyi source
+  # rather than an AST because the signatures already are source — the parser
+  # that read the module is the one that should read its declarations back, and
+  # a second grammar for this file would be a second thing to keep correct.
+  #
+  # Bodies are absent rather than empty. Every `def` here is a header, and a
+  # call against it is typed from its return annotation, which R-2 guarantees
+  # is written. That is also the boundary: this is enough to typecheck against
+  # and not enough to generate code from, which is why a build that reads
+  # artifacts is a front-end-only build until `ObjectCode` exists (IV.1a).
+  #
+  # Everything is `pub`, because everything in the file is: an unexported name
+  # never reached `Exports`, and R-2b needs it to stay unreachable rather than
+  # merely unmentioned.
+  def self.declarations(artifact : Artifact, io : IO) : Nil
+    io << "module " << artifact.module_name << '\n'
+
+    exports = artifact.exports
+    exports.functions.each do |signature|
+      io << '\n'
+      render_declaration io, signature, exported: true
+    end
+
+    exports.types.each do |declaration|
+      io << "\npub " << render_type_header(declaration) << '\n'
+      declaration.assoc_types.each { |name| io << "  type " << name << '\n' }
+      declaration.methods.each do |signature|
+        render_declaration io, signature, indent: "  "
+      end
+      io << "end\n"
+    end
+
+    # After the types, because an impl needs its target declared and because
+    # the requirement check reads the methods off the target rather than out of
+    # the impl's body — which is what lets that body be empty here.
+    exports.impls.each do |record|
+      io << '\n' << render_impl_header(record) << '\n'
+      record.assoc_types.each { |(name, answer)| io << "  type " << name << " = " << answer << '\n' }
+      io << "end\n"
+    end
+  end
+
+  private def self.render_declaration(io : IO, signature : Signature,
+                                      exported = false, indent = "") : Nil
+    io << indent
+    io << "pub " if exported
+    io << render_signature(signature) << '\n'
+    # An `abstract def` ends at its signature. Anything else needs the `end`
+    # its absent body would have carried.
+    io << indent << "end\n" unless signature.required
+  end
+
+  # A type's declaration line — `struct List(T)`, `trait Ord : Eq`.
+  #
+  # The kind loses its `generic ` prefix, which is how a `Crystal::Type`
+  # describes itself and not how anybody declares one: what makes `List`
+  # generic is the `(T)` this line already carries.
+  def self.render_type_header(declaration : TypeDecl) : String
+    String.build do |io|
+      io << declaration.kind.lchop("generic ") << ' ' << declaration.name
+
+      parameters = declaration.type_parameters
+      unless parameters.empty?
+        io << '('
+        parameters.join(io, ", ")
+        io << ')'
+      end
+
+      supertraits = declaration.supertraits
+      unless supertraits.empty?
+        io << " : "
+        supertraits.join(io, ", ")
+      end
+    end
+  end
+
+  # An impl's declaration line — `impl Enumerable for List(T) forall T`.
+  def self.render_impl_header(record : ImplRecord) : String
+    String.build do |io|
+      io << "impl " << record.trait_name
+
+      arguments = record.trait_arguments
+      unless arguments.empty?
+        io << '('
+        arguments.join(io, ", ")
+        io << ')'
+      end
+
+      io << " for " << record.type_name
+
+      free_variables = record.free_variables
+      unless free_variables.empty?
+        bounds = record.free_variable_bounds.to_h
+        io << " forall "
+        free_variables.join(io, ", ") do |name, inner|
+          inner << name
+          if bound = bounds[name]?
+            inner << " : " << bound
+          end
+        end
+      end
+    end
   end
 
   # One signature as the declaration it came from.
@@ -393,8 +520,9 @@ module Crystal::IyiMod
     types.each do |declaration|
       write_string io, declaration.name
       write_string io, declaration.kind
-      io.write_bytes declaration.type_parameters.size.to_u32, FORMAT
-      declaration.type_parameters.each { |parameter| write_string io, parameter }
+      write_strings io, declaration.type_parameters
+      write_strings io, declaration.assoc_types
+      write_strings io, declaration.supertraits
       write_signatures io, declaration.methods
     end
 
@@ -403,6 +531,10 @@ module Crystal::IyiMod
     impls.each do |record|
       write_string io, record.trait_name
       write_string io, record.type_name
+      write_strings io, record.trait_arguments
+      write_strings io, record.free_variables
+      write_pairs io, record.free_variable_bounds
+      write_pairs io, record.assoc_types
     end
 
     io.to_slice
@@ -413,12 +545,10 @@ module Crystal::IyiMod
     signatures.each do |signature|
       write_string io, signature.name
       write_string io, signature.receiver
-      io.write_bytes signature.parameters.size.to_u32, FORMAT
-      signature.parameters.each { |parameter| write_string io, parameter }
+      write_strings io, signature.parameters
       write_string io, signature.block_parameter
       write_string io, signature.return_type
-      io.write_bytes signature.free_variables.size.to_u32, FORMAT
-      signature.free_variables.each { |name| write_string io, name }
+      write_strings io, signature.free_variables
       io.write_byte(signature.required ? 1_u8 : 0_u8)
     end
   end
@@ -427,10 +557,10 @@ module Crystal::IyiMod
     Array(Signature).new(io.read_bytes(UInt32, FORMAT)) do
       name = read_string(io)
       receiver = read_string(io)
-      parameters = Array(String).new(io.read_bytes(UInt32, FORMAT)) { read_string(io) }
+      parameters = read_strings(io)
       block_parameter = read_string(io)
       return_type = read_string(io)
-      free_variables = Array(String).new(io.read_bytes(UInt32, FORMAT)) { read_string(io) }
+      free_variables = read_strings(io)
       required = io.read_byte == 1_u8
       Signature.new(name, receiver, parameters, block_parameter, return_type,
         free_variables, required)
@@ -444,15 +574,46 @@ module Crystal::IyiMod
     types = Array(TypeDecl).new(io.read_bytes(UInt32, FORMAT)) do
       name = read_string(io)
       kind = read_string(io)
-      parameters = Array(String).new(io.read_bytes(UInt32, FORMAT)) { read_string(io) }
-      TypeDecl.new(name, kind, parameters, read_signatures(io))
+      parameters = read_strings(io)
+      assoc_types = read_strings(io)
+      supertraits = read_strings(io)
+      TypeDecl.new(name, kind, parameters, assoc_types, supertraits, read_signatures(io))
     end
 
     impls = Array(ImplRecord).new(io.read_bytes(UInt32, FORMAT)) do
-      ImplRecord.new(read_string(io), read_string(io))
+      trait_name = read_string(io)
+      type_name = read_string(io)
+      trait_arguments = read_strings(io)
+      free_variables = read_strings(io)
+      free_variable_bounds = read_pairs(io)
+      ImplRecord.new(trait_name, type_name, trait_arguments, free_variables,
+        free_variable_bounds, read_pairs(io))
     end
 
     Exports.new(functions, types, impls)
+  end
+
+  private def self.write_strings(io : IO, values : Array(String)) : Nil
+    io.write_bytes values.size.to_u32, FORMAT
+    values.each { |value| write_string io, value }
+  end
+
+  private def self.read_strings(io : IO) : Array(String)
+    Array(String).new(io.read_bytes(UInt32, FORMAT)) { read_string(io) }
+  end
+
+  private def self.write_pairs(io : IO, values : Array({String, String})) : Nil
+    io.write_bytes values.size.to_u32, FORMAT
+    values.each do |(first, second)|
+      write_string io, first
+      write_string io, second
+    end
+  end
+
+  private def self.read_pairs(io : IO) : Array({String, String})
+    Array({String, String}).new(io.read_bytes(UInt32, FORMAT)) do
+      {read_string(io), read_string(io)}
+    end
   end
 
   private def self.write_string(io : IO, value : String) : Nil

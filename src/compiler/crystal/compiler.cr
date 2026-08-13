@@ -442,9 +442,7 @@ module Crystal
         end
       end
 
-      impls = program.iyi_impls[filename]?.try(&.map do |(trait_name, type_name)|
-        IyiMod::ImplRecord.new(trait_name, type_name)
-      end) || [] of IyiMod::ImplRecord
+      impls = program.iyi_impls[filename]? || [] of IyiMod::ImplRecord
 
       IyiMod::Exports.new(functions, types, impls)
     end
@@ -489,10 +487,25 @@ module Crystal
       end
       methods.sort_by! &.name
 
+      # A generic trait's type variables are its parameters followed by its
+      # associated types, which is how they are stored and not how they are
+      # declared. They are split apart again here, because II.6 makes them
+      # different things to a consumer: it supplies the first at the `impl`
+      # line and answers the second in the body.
+      if generic_trait = type.as?(GenericTraitType)
+        type_parameters = generic_trait.trait_params
+        assoc_types = generic_trait.assoc_types
+      else
+        type_parameters = type.as?(GenericType).try(&.type_vars) || [] of String
+        assoc_types = [] of String
+      end
+
       IyiMod::TypeDecl.new(
         name: name,
         kind: type.type_desc,
-        type_parameters: type.as?(GenericType).try(&.type_vars) || [] of String,
+        type_parameters: type_parameters,
+        assoc_types: assoc_types,
+        supertraits: type.responds_to?(:supertraits) ? type.supertraits.map(&.to_s) : [] of String,
         methods: methods,
       )
     end

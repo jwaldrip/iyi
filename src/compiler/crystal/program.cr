@@ -99,7 +99,7 @@ module Crystal
     # an impl leaves no record of its own: it works by making the target type
     # include the trait, and by the time analysis is over that is
     # indistinguishable from any other ancestor.
-    getter iyi_impls = {} of String => Array({String, String})
+    getter iyi_impls = {} of String => Array(IyiMod::ImplRecord)
 
     # iyi: the type a module path denotes — `"app/greeter"` to `App::Greeter`.
     #
