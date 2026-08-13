@@ -122,7 +122,13 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     location = node.location
     relative_to = location.try &.original_filename
 
-    filename = resolve_import(path)
+    # iyi: the artifact, if there is one (SPEC.md IV.1). This is R-1's contract
+    # arriving: a module that has a `.iyimod` is compiled against it, and its
+    # source is not opened — not read, not parsed, not analysed. The source
+    # need not even be there.
+    artifact_path = iyi_artifact_path(path)
+
+    filename = artifact_path || resolve_import(path)
     unless filename
       node.raise "can't find module '#{path}'"
     end
@@ -131,7 +137,10 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
 
     check_import_cycle(node, filename)
 
-    @program.iyi_module_paths[filename] ||= path
+    # Only a module read from source: `iyi_module_paths` is the list
+    # `--emit-iyimod` writes from, and a module that arrived as an artifact
+    # already has one.
+    @program.iyi_module_paths[filename] ||= path unless artifact_path
 
     # One edge of the import DAG. Recorded even when the module is already
     # loaded: the second importer adds no initialiser, but it does constrain
@@ -141,7 +150,11 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     # Load-once. A module imported by several others is compiled once, and so
     # is initialised once — the second importer adds no entry to the list.
     if @program.requires.add?(filename)
-      @program.iyi_module_inits << import_file(node, filename)
+      if artifact_path
+        import_artifact(node, artifact_path)
+      else
+        @program.iyi_module_inits << import_file(node, filename)
+      end
     end
 
     expanded = Nop.new
@@ -255,6 +268,83 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       yield
     ensure
       @current_type = old_type
+    end
+  end
+
+  # iyi: where `import a/b` would find `a/b.iyimod` (SPEC.md IV.1).
+  #
+  # Nowhere at all unless `--use-iyimod` named a directory, so an ordinary
+  # build is the one that was there before this existed.
+  private def iyi_artifact_path(path : String) : String?
+    dir = @program.iyi_module_dir
+    return unless dir
+
+    candidate = File.join(dir, "#{path}.iyimod")
+    File.file?(candidate) ? candidate : nil
+  end
+
+  # iyi: compiles an imported module from its `.iyimod` (SPEC.md IV.1).
+  #
+  # The artifact is read, rendered back to the declarations it was built from,
+  # and those are parsed and analysed in place of the module's source. What
+  # that removes is the module's *bodies* — the part of a dependency that is
+  # not a consumer's business (IV.2) and the part there is most of.
+  #
+  # The module contributes **no initialiser**. Its top-level code is not a
+  # declaration and is not in the file, so III.5's ordering has nothing of it
+  # to order. That is the honest edge of what an artifact buys today: enough to
+  # typecheck against, not enough to run, which is why a build that reads them
+  # is a front-end-only build until `ObjectCode` exists (IV.1a).
+  private def import_artifact(node : ImportDecl, artifact_path : String) : Nil
+    artifact =
+      begin
+        IyiMod.read(artifact_path)
+      rescue ex : IyiMod::Error
+        node.raise ex.message.to_s
+      end
+
+    check_artifact_matches node, artifact, artifact_path
+
+    source = String.build { |io| IyiMod.declarations(artifact, io) }
+    parser = @program.new_parser(source)
+    parser.filename = artifact_path
+    @iyi_importing << artifact_path
+    begin
+      parsed_nodes = parser.parse
+      parsed_nodes = @program.normalize(parsed_nodes, inside_exp: false)
+      parsed_nodes.accept IyiMod::DeclarationMarker.new
+      iyi_at_top_level { parsed_nodes.accept self }
+    rescue ex : CodeError
+      node.raise "while importing \"#{node.path.join('/')}\" from its .iyimod", ex
+    rescue ex
+      raise Error.new "while importing \"#{node.path.join('/')}\" from its .iyimod", ex
+    ensure
+      @iyi_importing.pop
+    end
+  end
+
+  # iyi: IV.5 — an artifact from another compiler, target or set of flags is
+  # refused, never migrated.
+  #
+  # Refused rather than quietly ignored in favour of the source. A build that
+  # asked to be compiled against artifacts and was silently given the source
+  # instead is slower than it looks and proves nothing, which for the one
+  # measurement this project exists for is the worst answer available.
+  private def check_artifact_matches(node : ImportDecl, artifact : IyiMod::Artifact,
+                                     artifact_path : String) : Nil
+    expected = IyiMod.compiler_version
+    unless artifact.compiler_version == expected
+      node.raise "#{artifact_path} was written by compiler #{artifact.compiler_version}, this is #{expected}. A .iyimod is rejected and rebuilt, never migrated (SPEC.md IV.5) — rebuild it with --emit-iyimod"
+    end
+
+    target = @program.codegen_target.to_s
+    unless artifact.target_triple == target
+      node.raise "#{artifact_path} was built for #{artifact.target_triple}, this build targets #{target} — rebuild it with --emit-iyimod"
+    end
+
+    flags = @program.flags.to_a.sort!
+    unless artifact.flags == flags
+      node.raise "#{artifact_path} was built with flags #{artifact.flags.join(", ")}, this build has #{flags.join(", ")}. Macros branch on flags, so an artifact built under one set cannot be adopted by a build under another — rebuild it with --emit-iyimod"
     end
   end
 

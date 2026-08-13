@@ -92,6 +92,22 @@ module Crystal
     # modules, so it needs the way back (SPEC.md IV.1).
     getter iyi_module_paths = {} of String => String
 
+    # iyi: where to look for a `.iyimod` before falling back to a module's
+    # source, or nil (SPEC.md IV.1). Set by `--use-iyimod`.
+    property iyi_module_dir : String? = nil
+
+    # iyi: the `using` directives each file's module unit writes, by absolute
+    # filename and as written (SPEC.md II.3).
+    #
+    # In the artifact because a signature is stored as the annotation the
+    # author wrote, and an annotation is written in a context: `pub def
+    # handle(ctx : Context)` means what it means because of a `using` further
+    # up the file. Carrying the annotation without the context that resolves it
+    # was enough for `std/list`, whose signatures name only its own types, and
+    # not for the Kemal port, whose first exported signature names an imported
+    # one.
+    getter iyi_usings = {} of String => Array(String)
+
     # iyi: the `(Trait, Type)` pairs each file provides, by absolute filename
     # (SPEC.md IV.2, "Impl records").
     #

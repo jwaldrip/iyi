@@ -114,6 +114,12 @@ module Crystal
     # (SPEC.md IV.1). Set by `--emit-iyimod`.
     property emit_iyimod : String? = nil
 
+    # iyi: directory to read a `.iyimod` per imported module from, or nil
+    # (SPEC.md IV.1). Set by `--use-iyimod`. An import that finds one there is
+    # compiled against it and never opens the module's source, which is R-1's
+    # contract and the reason the file exists.
+    property use_iyimod : String? = nil
+
     # Optimization mode
     enum OptimizationMode
       # [default] no optimization, fastest compilation, slowest runtime
@@ -404,6 +410,7 @@ module Crystal
           target_triple: program.codegen_target.to_s,
           flags: flags,
           imports: imports || [] of String,
+          usings: program.iyi_usings[filename]? || [] of String,
           exports: collect_iyi_exports(program, module_name, filename),
         )
 
@@ -434,7 +441,7 @@ module Crystal
             # namespace on the module, which is what makes `pub` a mark on a
             # name rather than on a kind of declaration.
             if signatures = type.defs.try &.[]?(name)
-              signatures.each { |item| functions << iyi_signature(item.def) }
+              signatures.each { |item| functions << IyiMod.signature(item.def) }
             elsif exported_type = type.types?.try &.[]?(name)
               types << iyi_type_declaration(name, exported_type)
             end
@@ -447,34 +454,6 @@ module Crystal
       IyiMod::Exports.new(functions, types, impls)
     end
 
-    # A parameter travels whole, and everything that decorates the method
-    # travels with it: the splat markers, the block parameter, `forall`, the
-    # receiver and `abstract`. Each of those was left out once and each is
-    # needed by a consumer that has only this file — a block cannot be typed
-    # without its annotation, `Array(U)` does not resolve without the `forall`
-    # that introduced `U`, and an `abstract def` a consumer took for a
-    # definition is a requirement it would never be told it had missed.
-    private def iyi_signature(a_def : Def) : IyiMod::Signature
-      parameters = a_def.args.map_with_index do |arg, index|
-        a_def.splat_index == index ? "*#{arg}" : arg.to_s
-      end
-      if double_splat = a_def.double_splat
-        parameters << "**#{double_splat}"
-      end
-
-      block_parameter = a_def.block_arg.try { |arg| "&#{arg}" } || ""
-
-      IyiMod::Signature.new(
-        name: a_def.name,
-        receiver: a_def.receiver.try(&.to_s) || "",
-        parameters: parameters,
-        block_parameter: block_parameter,
-        return_type: a_def.return_type.try(&.to_s) || "",
-        free_variables: a_def.free_vars || [] of String,
-        required: a_def.abstract?,
-      )
-    end
-
     # A trait's methods are its whole point in the artifact: II.6 makes an impl
     # checkable against the trait's requirements, and a consumer can only run
     # that check if the requirements travel. Its defaults travel as signatures
@@ -483,7 +462,10 @@ module Crystal
     private def iyi_type_declaration(name : String, type : Type) : IyiMod::TypeDecl
       methods = [] of IyiMod::Signature
       type.as?(ModuleType).try &.defs.try &.each_value do |items|
-        items.each { |item| methods << iyi_signature(item.def) }
+        # A method an `impl` defined is the impl's, and travels in its record.
+        # The distinction is invisible here — an impl works by defining methods
+        # on the target — which is why it is marked where it is made.
+        items.each { |item| methods << IyiMod.signature(item.def) unless item.def.iyi_from_impl? }
       end
       methods.sort_by! &.name
 
@@ -750,6 +732,7 @@ module Crystal
       program.progress_tracker = @progress_tracker
       program.warnings = @warnings
       program.optimization_mode = @optimization_mode
+      program.iyi_module_dir = @use_iyimod
       program
     end
 

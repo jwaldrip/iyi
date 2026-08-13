@@ -299,6 +299,16 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       end
     end
 
+    # iyi: the directive as written, for the artifact (SPEC.md IV.2). Only the
+    # module unit's own, because only its own reach the signatures the artifact
+    # carries — one written inside a nested type resolves names there and
+    # nowhere a consumer will look.
+    if (file = @iyi_importing.last?) && current_type.iyi_unit?
+      names = node.names
+      selection = names ? "::{#{names.join(", ")}}" : ""
+      (@program.iyi_usings[file] ||= [] of String) << "#{node.path.join('/')}#{selection}"
+    end
+
     current_type.add_using_module(used_type, node.names)
 
     false
@@ -469,6 +479,17 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     # The trait and the target are recorded resolved, since that is the pair
     # coherence is about; everything else is recorded as written, because it is
     # what a consumer needs in order to state the impl again.
+    # The methods are the impl's own, and are marked as such: once the body is
+    # accepted below they are defs on the target like any other, and nothing
+    # about them says where they came from. `impl Cmp for Int32` is why that
+    # matters — the target is a prelude type this module does not export, so
+    # recording them against it would lose them.
+    impl_methods = [] of IyiMod::Signature
+    iyi_impl_body_defs(node) do |a_def|
+      a_def.iyi_from_impl = true
+      impl_methods << IyiMod.signature(a_def)
+    end
+
     if file = @iyi_importing.last?
       (@program.iyi_impls[file] ||= [] of IyiMod::ImplRecord) << IyiMod::ImplRecord.new(
         trait_name: trait_type.to_s,
@@ -477,6 +498,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
         free_variables: node.type_vars || [] of String,
         free_variable_bounds: node.type_var_bounds.try(&.map { |name, bound| {name, bound.to_s} }) || [] of {String, String},
         assoc_types: node.assoc_types.try(&.map { |name, answer| {name, answer.to_s} }) || [] of {String, String},
+        methods: impl_methods,
       )
     end
 
@@ -521,6 +543,19 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     check_impl_requirements node, trait_type, target_type
 
     false
+  end
+
+  # iyi: the `def`s written directly in an impl's body.
+  #
+  # Directly: anything deeper belongs to a type declared in there and is not
+  # the impl's answer to the trait.
+  private def iyi_impl_body_defs(node : ImplDef, &)
+    body = node.body
+    expressions = body.is_a?(Expressions) ? body.expressions : [body]
+    expressions.each do |expression|
+      expression = expression.exp if expression.is_a?(VisibilityModifier)
+      yield expression if expression.is_a?(Def)
+    end
   end
 
   # iyi: `type Elem` outside a trait or an impl body. The parser marks the ones

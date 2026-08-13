@@ -1449,6 +1449,23 @@ module Crystal
     # iyi: `pub def` — exported, so it appears in `.iyimod` (R-2).
     property? exported = false
 
+    # iyi: written in an `impl` body (SPEC.md IV.2).
+    #
+    # An impl defines its methods on the target type, so by the time anything
+    # looks at them they are the target's like any other. This is the only
+    # record that they were the impl's, and the artifact needs it: `impl Cmp
+    # for Int32` puts a method on a type its module does not export.
+    property? iyi_from_impl = false
+
+    # iyi: read from a `.iyimod` rather than from source (SPEC.md IV.1).
+    #
+    # There is no body under this signature and there is not meant to be one:
+    # the artifact carries what another module may call, not how it is done. A
+    # call to it is typed from its return annotation, which R-2 guarantees is
+    # written down. That is exactly as far as an artifact takes a build, and it
+    # is why one that reads artifacts cannot yet generate code.
+    property? iyi_from_artifact = false
+
     property? macro_def : Bool
     property? calls_super = false
     property? calls_initialize = false
@@ -1481,6 +1498,8 @@ module Crystal
       a_def.calls_previous_def = calls_previous_def?
       a_def.uses_block_arg = uses_block_arg?
       a_def.assigns_special_var = assigns_special_var?
+      a_def.iyi_from_impl = iyi_from_impl?
+      a_def.iyi_from_artifact = iyi_from_artifact?
       a_def.name_location = name_location
       a_def.visibility = visibility
       a_def.free_var_bounds = @free_var_bounds.clone

@@ -48,9 +48,10 @@ private def impl_record(trait_name : String,
                         trait_arguments = [] of String,
                         free_variables = [] of String,
                         free_variable_bounds = [] of {String, String},
-                        assoc_types = [] of {String, String})
+                        assoc_types = [] of {String, String},
+                        methods = [] of Crystal::IyiMod::Signature)
   Crystal::IyiMod::ImplRecord.new(trait_name, type_name, trait_arguments,
-    free_variables, free_variable_bounds, assoc_types)
+    free_variables, free_variable_bounds, assoc_types, methods)
 end
 
 private def with_temporary_file(&)

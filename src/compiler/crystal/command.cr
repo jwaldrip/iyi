@@ -587,6 +587,20 @@ class Crystal::Command
         compiler.emit_iyimod = dir
       end
 
+      # iyi: read imported modules from DIR's `.iyimod` files (SPEC.md IV.1).
+      #
+      # Front end only, and refused otherwise. An artifact carries a module's
+      # declarations and not its bodies, so there is nothing in it to generate
+      # code from; `ObjectCode` is the section that changes that, and it is not
+      # written yet (IV.1a).
+      opts.on("--use-iyimod DIR", "iyi: compile imported modules from DIR's .iyimod files (implies --no-codegen)") do |dir|
+        if run
+          raise Error.new("--use-iyimod is front end only, so there is no executable to run: a .iyimod carries a module's declarations, not its object code (SPEC.md IV.1)")
+        end
+        compiler.no_codegen = true
+        compiler.use_iyimod = dir
+      end
+
       unless no_codegen
         opts.on("--release", "Compile in release mode (-O3 --single-module)") do
           compiler.release!

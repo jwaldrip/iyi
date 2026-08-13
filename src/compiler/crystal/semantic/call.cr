@@ -528,6 +528,19 @@ class Crystal::Call
           check_return_type(typed_def, typed_def_return_type, match, match_owner)
         end
 
+        # iyi: a def read from a `.iyimod` has no body to visit (SPEC.md IV.1).
+        #
+        # Its type is the return annotation `check_return_type` just resolved,
+        # which R-2 guarantees is there — a constructor being the one case that
+        # writes none, and its result is not what the caller reads anyway. This
+        # is the whole of what the artifact buys the front end: the call is
+        # checked against the signature and the module's body is never seen.
+        if match.def.iyi_from_artifact?
+          typed_def.type = typed_def.freeze_type || program.nil unless typed_def.type?
+          typed_defs << typed_def
+          next
+        end
+
         bubbling_exception do
           check_recursive_splat_call match.def, typed_def_args do
             visitor = MainVisitor.new(program, typed_def_args, typed_def)

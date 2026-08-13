@@ -35,7 +35,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 5_u32
+  FORMAT_VERSION = 6_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -140,13 +140,20 @@ module Crystal::IyiMod
   # parameters, and the answers — and an artifact that carried only the first
   # two would leave a consumer knowing `List` enumerates something without
   # knowing what.
+  #
+  # *methods* is what the impl defines. They are the impl's rather than the
+  # target's: `impl Cmp for Int32` puts `cmp` on a prelude type, which is a
+  # type this module does not export and cannot describe. Recording them
+  # against the target would lose them entirely for every impl written in the
+  # trait's module, which R-3 allows and `std/traits` is made of.
   record ImplRecord,
     trait_name : String,
     type_name : String,
     trait_arguments : Array(String),
     free_variables : Array(String),
     free_variable_bounds : Array({String, String}),
-    assoc_types : Array({String, String})
+    assoc_types : Array({String, String}),
+    methods : Array(Signature)
 
   # What a module offers another module: `Exports` in IV.1's table.
   #
@@ -203,11 +210,20 @@ module Crystal::IyiMod
     # recorded. III.5's initialisation order is derivable from these.
     getter imports : Array(String)
 
+    # The `using` directives the module writes, as written (II.3).
+    #
+    # Not part of the module's surface — nothing here is reachable through it —
+    # but part of what its surface *means*. A signature is stored as the
+    # annotation the author wrote, and `pub def handle(ctx : Context)` resolves
+    # `Context` through a `using` further up the file. The annotation travels;
+    # so must what resolves it.
+    getter usings : Array(String)
+
     # What another module may reach. See `Exports`.
     getter exports : Exports
 
     def initialize(@module_name, @source_path, @compiler_version, @target_triple,
-                   @flags, @imports, @exports = Exports.empty)
+                   @flags, @imports, @usings = [] of String, @exports = Exports.empty)
     end
   end
 
@@ -267,7 +283,7 @@ module Crystal::IyiMod
       end
 
       header = nil
-      imports = [] of String
+      imports = {imports: [] of String, usings: [] of String}
       exports = Exports.empty
 
       table.each do |(kind, length)|
@@ -288,7 +304,7 @@ module Crystal::IyiMod
       end
 
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
-        header[:target_triple], header[:flags], imports, exports)
+        header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports)
     end
   end
 
@@ -308,6 +324,11 @@ module Crystal::IyiMod
       artifact.imports.each { |name| io.puts "  #{name}" }
     end
 
+    unless artifact.usings.empty?
+      io.puts "usings"
+      artifact.usings.each { |directive| io.puts "  #{directive}" }
+    end
+
     exports = artifact.exports
     if exports.empty?
       io.puts "exports       (none)"
@@ -324,6 +345,7 @@ module Crystal::IyiMod
       exports.impls.each do |record|
         io.puts "  #{render_impl_header(record)}"
         record.assoc_types.each { |(name, answer)| io.puts "    type #{name} = #{answer}" }
+        record.methods.each { |signature| io.puts "    #{render_signature(signature)}" }
       end
     end
 
@@ -357,6 +379,23 @@ module Crystal::IyiMod
   def self.declarations(artifact : Artifact, io : IO) : Nil
     io << "module " << artifact.module_name << '\n'
 
+    # The module's own imports, restated. A consumer needs them loaded before
+    # these declarations mean anything — a signature here can name a type from
+    # one of them — and writing them as `import` rather than resolving them
+    # here means they are loaded by the same rule as any other import, artifact
+    # or source, at most once, cycle-checked.
+    unless artifact.imports.empty?
+      io << '\n'
+      artifact.imports.each { |name| io << "import " << name << '\n' }
+    end
+
+    # Inside the module, where the parser keeps a `using` — it resolves names
+    # for this module's declarations and must not reach whoever reads them.
+    unless artifact.usings.empty?
+      io << '\n'
+      artifact.usings.each { |directive| io << "using " << directive << '\n' }
+    end
+
     exports = artifact.exports
     exports.functions.each do |signature|
       io << '\n'
@@ -378,7 +417,91 @@ module Crystal::IyiMod
     exports.impls.each do |record|
       io << '\n' << render_impl_header(record) << '\n'
       record.assoc_types.each { |(name, answer)| io << "  type " << name << " = " << answer << '\n' }
+      record.methods.each { |signature| render_declaration io, signature, indent: "  " }
       io << "end\n"
+    end
+  end
+
+  # One `def`'s header, as the artifact carries it.
+  #
+  # A parameter travels whole, and everything that decorates the method travels
+  # with it: the splat markers, the block parameter, `forall`, the receiver and
+  # `abstract`. Each of those was left out once and each is needed by a
+  # consumer that has only this file — a block cannot be typed without its
+  # annotation, `Array(U)` does not resolve without the `forall` that
+  # introduced `U`, and an `abstract def` a consumer took for a definition is a
+  # requirement it would never be told it had missed.
+  def self.signature(a_def : Def) : Signature
+    check_block_annotated a_def
+
+    parameters = a_def.args.map_with_index do |arg, index|
+      a_def.splat_index == index ? "*#{arg}" : arg.to_s
+    end
+    if double_splat = a_def.double_splat
+      parameters << "**#{double_splat}"
+    end
+
+    Signature.new(
+      name: a_def.name,
+      receiver: a_def.receiver.try(&.to_s) || "",
+      parameters: parameters,
+      block_parameter: a_def.block_arg.try { |arg| "&#{arg}" } || "",
+      return_type: a_def.return_type.try(&.to_s) || "",
+      free_variables: a_def.free_vars || [] of String,
+      required: a_def.abstract?,
+    )
+  end
+
+  # iyi: R-2 reaches the block parameter (SPEC.md IV.2).
+  #
+  # An exported `def` that takes a block has to say what the block is. R-2 asks
+  # for full parameter and return types so that a consumer never infers
+  # anything, and a block is the one parameter whose type used not to be
+  # written down: `def namespace(path : String, &)` says a block arrives and
+  # nothing about it. Inside the module that is enough, because `yield` is
+  # right there. Through an artifact it is not — the body stays behind, and
+  # what the block receives, returns, and is evaluated in are all in it.
+  #
+  # Refused where the module is compiled rather than where it is read, because
+  # this is the author's to fix and the consumer would only be able to report
+  # that somebody else's module cannot be read.
+  #
+  # Counted before it was ruled: one exported signature in the samples, Kemal's
+  # `Router#namespace`, out of about eighty. That one uses `with sub_router
+  # yield` — it changes what `self` means inside the block — which is the case
+  # no annotation can express yet either. See SPEC.md IV.2.
+  private def self.check_block_annotated(a_def : Def) : Nil
+    return unless a_def.block_arity || a_def.block_arg
+    return if a_def.block_arg.try(&.restriction)
+
+    a_def.raise <<-MSG
+      `#{a_def.name}` is exported and takes a block it does not describe
+
+      R-2 asks an exported signature for full types so that a consumer infers \
+      nothing, and a block parameter is a parameter. The body stays in this \
+      module, so a module reading `#{a_def.name}` from its `.iyimod` has no \
+      `yield` left to infer the block from.
+
+      Annotate it — `& : Elem -> Nil` — or leave the def unexported.
+      MSG
+  end
+
+  # Marks a parsed reconstruction as what it is.
+  #
+  # A `def` from an artifact is a header: a call to it is typed from its return
+  # annotation instead of from the body that is not there. The block parameter
+  # is marked used for the same reason — with no body there is no `yield` to
+  # infer a block from, so the annotation is what types it, which is the path
+  # a def taking `&block : A -> B` and calling it already takes.
+  class DeclarationMarker < Visitor
+    def visit(node : Def)
+      node.iyi_from_artifact = true
+      node.uses_block_arg = true if node.block_arg.try(&.restriction)
+      false
+    end
+
+    def visit(node : ASTNode)
+      true
     end
   end
 
@@ -501,14 +624,14 @@ module Crystal::IyiMod
 
   private def self.encode_imports(artifact : Artifact) : Bytes
     io = IO::Memory.new
-    io.write_bytes artifact.imports.size.to_u32, FORMAT
-    artifact.imports.each { |name| write_string io, name }
+    write_strings io, artifact.imports
+    write_strings io, artifact.usings
     io.to_slice
   end
 
-  private def self.decode_imports(payload : Bytes) : Array(String)
+  private def self.decode_imports(payload : Bytes)
     io = IO::Memory.new(payload)
-    Array(String).new(io.read_bytes(UInt32, FORMAT)) { read_string(io) }
+    {imports: read_strings(io), usings: read_strings(io)}
   end
 
   private def self.encode_exports(artifact : Artifact) : Bytes
@@ -535,6 +658,7 @@ module Crystal::IyiMod
       write_strings io, record.free_variables
       write_pairs io, record.free_variable_bounds
       write_pairs io, record.assoc_types
+      write_signatures io, record.methods
     end
 
     io.to_slice
@@ -586,8 +710,9 @@ module Crystal::IyiMod
       trait_arguments = read_strings(io)
       free_variables = read_strings(io)
       free_variable_bounds = read_pairs(io)
+      assoc_types = read_pairs(io)
       ImplRecord.new(trait_name, type_name, trait_arguments, free_variables,
-        free_variable_bounds, read_pairs(io))
+        free_variable_bounds, assoc_types, read_signatures(io))
     end
 
     Exports.new(functions, types, impls)
