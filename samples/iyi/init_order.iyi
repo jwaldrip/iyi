@@ -45,6 +45,12 @@ puts "5. #{Boot::Registry.greeting}"
 #   and work belongs in a function the program calls when it is ready to handle
 #   the failure. The error names III.5.
 #
+# * An import cycle. `import` forms a DAG (R-1), and a cycle has no order that
+#   satisfies rule 1 — each module would have to initialise after the other.
+#   The error names the cycle. Adding `import boot/registry` to `boot/config`
+#   reports `boot/registry -> boot/config -> boot/registry`, the chain as it
+#   was walked, not as it was written.
+#
 # * An `import` inside a `def` — `can't import inside def`, reported by the
 #   parser. Inside any other expression the semantic pass reports `can't import
 #   dynamically` instead. Rule 1 needs the import graph to be a DAG the

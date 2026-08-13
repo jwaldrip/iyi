@@ -1373,6 +1373,16 @@ arbitrary side effects run.
 DAG, so this is a partial order with no cycles to resolve, and it needs no
 analysis beyond the edges already in the artifact (IV.2).
 
+R-1's DAG was a claim about the language and not about the compiler: a cycle
+compiled. It was refused only where a module needed one of the other's names at
+*declaration* time, because the second module of a pair is loaded from inside
+the first's `import`, before the first's own body has been seen. Anything
+resolving later got through — a cycle whose only crossing use sat inside a
+`def` built and ran, and so did one that closed through the entry module, whose
+initialiser is last by construction and so cannot precede a module that imports
+it. A cycle is now an error naming the cycle, which is the same accident rule 1
+stopped relying on above, and the one IV.4's coherence proof rests on.
+
 **2. Between independent modules the order is *unobservable*, not merely
 unspecified.** This is the rule worth having, and the compilation model already
 pays for it: a module can only name what it imports (R-1), can only reach what
@@ -1891,7 +1901,10 @@ module Y. The impl may live in T or in Y.
 - For Y to define it, Y must name `Show`, so Y imports T.
 - Both would mean T imports Y and Y imports T — a cycle, which R-1 forbids.
 
-So at most one module can define any given impl, **by construction**.
+So at most one module can define any given impl, **by construction**. The
+compiler now refuses the cycle rather than leaving that step of the argument to
+the load order that happened to hide one module's names from the other (III.5
+rule 1).
 
 The argument needs both T and Y to exist, and the build found the case where
 neither does: a trait the compiler owns, or a prelude type, belongs to no

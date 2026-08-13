@@ -19,6 +19,10 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
   @typed_def : Def?
   @block : Block?
 
+  # iyi: the files `import` is part way through loading, entry file first. A
+  # file that appears twice in it is an import cycle — see `check_import_cycle`.
+  @iyi_importing = [] of String
+
   def initialize(@program, @vars = MetaVars.new)
     @current_type = @program
     @exp_nest = 0
@@ -125,6 +129,8 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
 
     @program.record_require(path, relative_to)
 
+    check_import_cycle(node, filename)
+
     # Load-once. A module imported by several others is compiled once, and so
     # is initialised once — the second importer adds no entry to the list.
     if @program.requires.add?(filename)
@@ -171,10 +177,60 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     filename ? File.dirname(filename) : nil
   end
 
+  # iyi: refuses an import cycle (R-1, SPEC.md III.5 rule 1).
+  #
+  # A cycle used to compile. It was refused only where a module needed one of
+  # the other's names at *declaration* time — the second module of the pair is
+  # loaded from inside the first's `import`, before the first's own body has
+  # been seen, so its declarations are not there yet. Everything that resolves
+  # later got through: a cycle whose only crossing use is inside a `def` built
+  # and ran, and so did one that closed through the entry module.
+  #
+  # That is the accident rule 1 no longer relies on, and it is the one IV.4's
+  # coherence proof rests on. Reported as a cycle, so the author reads the
+  # cause rather than an undefined constant somewhere along it.
+  private def check_import_cycle(node : ImportDecl, filename : String) : Nil
+    # The entry file is the root of the walk and never reaches `import_file`,
+    # so seed it here — a cycle that closes through it is still a cycle.
+    if @iyi_importing.empty?
+      @iyi_importing << @program.filename.to_s
+    end
+
+    index = @iyi_importing.index(filename)
+    return unless index
+
+    chain = @iyi_importing[index..].map { |file| iyi_module_name(file) }
+    chain << iyi_module_name(filename)
+
+    node.raise <<-MSG
+      import cycle
+
+          #{chain.join(" -> ")}
+
+      `import` forms a DAG (R-1). A cycle has no initialisation order — a \
+      module initialises after every module it imports (SPEC.md III.5 rule 1), \
+      and here each would have to go after the other — and it is what makes at \
+      most one module able to define any given impl (SPEC.md IV.4). Move what \
+      the modules in the cycle share into a module they both import.
+      MSG
+  end
+
+  # The module path a file would be imported by, for diagnostics. Files outside
+  # the project root have none, so they keep their name.
+  private def iyi_module_name(filename : String) : String
+    root = project_root
+    if root && filename.starts_with?("#{root}/")
+      filename[(root.size + 1)..].sub(/\.(iyi|cr)$/, "")
+    else
+      filename
+    end
+  end
+
   private def import_file(node : ImportDecl, filename : String)
     parser = @program.new_parser(File.read(filename))
     parser.filename = filename
     parser.wants_doc = @program.wants_doc?
+    @iyi_importing << filename
     begin
       parsed_nodes = parser.parse
       parsed_nodes = @program.normalize(parsed_nodes, inside_exp: false)
@@ -183,6 +239,8 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       node.raise "while importing \"#{node.path.join('/')}\"", ex
     rescue ex
       raise Error.new "while importing \"#{node.path.join('/')}\"", ex
+    ensure
+      @iyi_importing.pop
     end
 
     FileNode.new(parsed_nodes, filename)
