@@ -72,6 +72,15 @@ module Crystal
     # files loaded by `require` nodes are only processed once.
     getter requires = Set(String).new
 
+    # iyi: the imported modules of the program, in the order their initialisers
+    # must run (SPEC.md III.5 rule 1).
+    #
+    # `import` fills this rather than expanding the module where it was
+    # written, so a module's top-level code is held apart from the site that
+    # imported it and the compiler is the one that decides when it runs.
+    # `top_level_semantic` empties it into the tree.
+    property iyi_module_inits = [] of ASTNode
+
     # All created unions in a program, indexed by an array of opaque
     # ids of each type in the union. The array (the key) is sorted
     # by this opaque id.

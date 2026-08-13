@@ -1,0 +1,13 @@
+# The module `boot/registry` depends on. See `../init_order.iyi`.
+module boot/config
+
+# A module's top-level expressions ARE its initialiser — there is no `init`
+# function to write (SPEC.md III.5 rule 3). Go needs two mechanisms and orders
+# the second by file name, so adding a file can change behaviour; that failure
+# has nowhere to live here, because `import boot/config` resolves to one file
+# and source order inside it is already total.
+puts "1. boot/config"
+
+pub def name : String
+  "iyi"
+end

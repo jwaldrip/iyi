@@ -93,13 +93,17 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
   # file's `module a/b` header into a `ModuleDef` for `A::B` before this ever
   # sees it, so `import a/b` brings in `A::B::Thing`, not a global `Thing`.
   #
-  # What this does not do is separate *when* a module's top-level code runs
-  # from where it was imported. The nodes are expanded in place, so a module's
-  # initialiser executes at the import site. Order therefore follows the text
-  # rather than the DAG — which happens to agree with it, since an `import`
-  # precedes the body that needs it, but agrees by accident. SPEC.md III.5
-  # rule 2 wants an order that can be shuffled in debug builds, and that needs
-  # the initialiser held apart from its import site first.
+  # The module's nodes do NOT land here. `import` leaves a `Nop` where it was
+  # written and hands the loaded file to `Program#iyi_module_inits`, which
+  # `top_level_semantic` splices ahead of the program's own code. Loading is
+  # depth-first, and a module is appended only once the modules it imports
+  # already are, so that list is in topological order: III.5 rule 1 — a module
+  # initialises after every module it imports — holds by construction rather
+  # than by the accident of an `import` preceding the body that needs it.
+  #
+  # That accident was observable. An `import` written below other top-level
+  # code used to splice there, so the importing module ran part of its own
+  # initialiser before the imported module ran any of its.
   def visit(node : ImportDecl)
     if expanded = node.expanded
       expanded.accept self
@@ -121,13 +125,13 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
 
     @program.record_require(path, relative_to)
 
-    # Load-once. A module imported by several others is compiled once.
+    # Load-once. A module imported by several others is compiled once, and so
+    # is initialised once — the second importer adds no entry to the list.
     if @program.requires.add?(filename)
-      expanded = import_file(node, filename)
-    else
-      expanded = Nop.new
+      @program.iyi_module_inits << import_file(node, filename)
     end
 
+    expanded = Nop.new
     node.expanded = expanded
     node.bind_to expanded
     false

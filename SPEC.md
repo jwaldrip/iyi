@@ -1353,7 +1353,7 @@ spawns nothing. For the samples it can: the three failures are `Nums`, `Words`
 and the Kemal router's route table, and the router is precisely the thing a
 server would share across tasks.
 
-### III.5 Module initialisation — **PROPOSED; rule 4 BUILT**
+### III.5 Module initialisation — **PROPOSED; rules 1 and 4 BUILT**
 
 II.9 left this open with a concrete case: Kemal registers routes as a side
 effect of top-level calls, which is legal, and the ordering guarantees across a
@@ -1386,21 +1386,35 @@ the order of independent modules**. This is Go's own trick: map iteration was
 randomised precisely to stop programs depending on an order the specification
 never promised.
 
-**Blocked, and on something worth knowing.** `import` expands the imported file
-*in place*, splicing its nodes where the `import` statement stands, so a
-module's top-level code runs at its import site. Order is therefore textual. It
-happens to agree with rule 1 — an `import` precedes the body that needs it — but
-it agrees by accident, and the only way to change it is to move code between
-splice points.
+**Rule 1 was accidental, and now is not. Built.** `import` used to expand the
+imported file *in place*, splicing its nodes where the directive stood, so a
+module's top-level code ran at its import site and the order was textual. It
+happened to agree with rule 1 — an `import` usually precedes the body that
+needs it — but only usually. An `import` written below other top-level code
+disagreed, and the disagreement printed:
 
-The module is not the missing piece: `Parser#apply_module_header` already turns
-a `module a/b` header into a `ModuleDef` for `A::B`, marked `iyi_unit`, so a
-module's code is identifiable and namespaced. What is missing is holding that
-initialiser apart from the site that imported it, so the compiler can choose
-when to run it. That is the same separation Part IV needs — an artifact cannot
-store an initialiser it never separated — so this is not a detour, but it is not
-a small change either, and building the shuffle on the current shape would be
-building it on sand.
+```
+module probe/main
+puts "before"     # ran first, before `probe/a` had initialised at all
+import probe/a
+puts "after"
+```
+
+`import` now leaves a `Nop` where it is written and hands the loaded file to
+`Program#iyi_module_inits`; `top_level_semantic` splices that list into the
+tree, after the prelude and ahead of the program's own code. Loading is
+depth-first and a module is appended only once the modules it imports already
+are, so the list is in topological order and rule 1 holds by construction. The
+entry file is not in the list, which is rule 1 applied to it: it imports
+everything, so it initialises last. `samples/iyi/init_order.iyi` is the case
+above, printing in the order the DAG fixes.
+
+This is the separation rule 2's shuffle was waiting for — the order is now a
+list the compiler owns rather than a property of where the text sits — and it
+is the same separation Part IV needs, since an artifact cannot store an
+initialiser it never separated. What is still missing for Part IV is the step
+after: the list holds a module's *nodes*, not a callable initialiser in the
+module's own object code.
 
 **3. There is no `init()`. A module's top-level expressions are its
 initialiser, in source order.** Go needs two mechanisms — dependency-ordered
@@ -1440,11 +1454,11 @@ impossibility to a runtime failure, and because a guard on every access to a
 module-level constant is a cost paid by every program to solve a problem that
 R-1's DAG already prevents.
 
-**Status.** Rules 1–3 are descriptions of what the compilation model already
-forces and need writing down more than building. Rule 4 is built. Rule 2's
-shuffle is the only code in 1–3 and it is blocked on separating a module's
-initialiser from its import site, as above. Rule 5 is the one with a real cost
-and no measurement behind it yet, and it is the one to be suspicious of.
+**Status.** Rule 3 is a description of what the compilation model already
+forces and needed writing down more than building. Rules 1 and 4 are built.
+Rule 2's shuffle is the only code left in 1–3, and it is no longer blocked.
+Rule 5 is the one with a real cost and no measurement behind it yet, and it is
+the one to be suspicious of.
 
 ---
 
@@ -1971,8 +1985,9 @@ Named honestly, so nobody mistakes this draft for complete.
 4. ~~**Module initialisation order.**~~ **Specified in III.5** — DAG order, a
    relative order between independent modules that is unobservable rather than
    merely unspecified, no `init()`, no import for side effects, and
-   initialisation that may not fail. The last of those is built; the rest are
-   mostly restatements of what R-1 through R-3 already force.
+   initialisation that may not fail. DAG order and the last of those are
+   built; the rest are mostly restatements of what R-1 through R-3 already
+   force.
 5. ~~**Concurrency semantics.**~~ **Specified in III.4** — structured
    concurrency so a leak is unrepresentable, cancellation owned by the scope
    rather than threaded through signatures, task failure as an ordinary error

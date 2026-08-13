@@ -104,6 +104,11 @@ class Crystal::Program
       Prof.span("top level: finished hooks") { visitor.process_finished_hooks }
       visitor.new_expansions
     end
+
+    # Before anything else walks the tree: the imports collected above are not
+    # in it yet, and every pass from here on has to see them.
+    node = splice_iyi_module_initialisers(node)
+
     @progress_tracker.stage("Semantic (new)") do
       define_new_methods(new_expansions)
     end
@@ -124,6 +129,34 @@ class Crystal::Program
     self.top_level_semantic_complete = true
 
     {node, processor}
+  end
+
+  # iyi: puts the imported modules' initialisers into the tree (SPEC.md III.5).
+  #
+  # `import` collects them instead of expanding them where it was written, so
+  # this is where the compiler chooses when they run. The list is already in
+  # the order the import DAG forces, and they go in as one block: after the
+  # prelude, because an initialiser calls `puts` and allocates and so cannot
+  # run before the runtime is up, and before the program's own code, because
+  # that code is what would observe them.
+  #
+  # The entry file is not in the list — it is the program's own code, and being
+  # last is exactly rule 1 applied to it.
+  private def splice_iyi_module_initialisers(node : ASTNode) : ASTNode
+    inits = @iyi_module_inits
+    return node if inits.empty?
+    @iyi_module_inits = [] of ASTNode
+
+    expressions = node.is_a?(Expressions) ? node.expressions : [node] of ASTNode
+
+    # The prelude reaches here as a `require` the compiler prepended, so the
+    # program's own code starts at the first node that is not one. When the
+    # prelude was analysed separately there is no such node and the block goes
+    # to the front, which is the same position.
+    index = expressions.index { |exp| !exp.is_a?(Require) } || expressions.size
+    expressions.insert(index, Expressions.from(inits))
+
+    node.is_a?(Expressions) ? node : Expressions.new(expressions)
   end
 
   # This property indicates that the compiler has finished the top-level semantic
