@@ -68,6 +68,18 @@ class String
     end
   end
 
+  # FNV-1a over the bytes: three lines, no table, and good enough for a
+  # linear-probing table of a few dozen entries.
+  def hash : Int32
+    value = -2128831035
+    index = 0
+    while index < bytesize
+      value = (value ^ to_unsafe[index].to_i32) &* 16777619
+      index = index + 1
+    end
+    value
+  end
+
   # ASCII only, and the samples are ASCII. A prelude that folded case for
   # every alphabet would be a Unicode table, which is more lines than this
   # whole file and not what any sample is about.

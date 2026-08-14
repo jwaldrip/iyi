@@ -10,6 +10,21 @@ class Object
     {{ @type.name.stringify }}
   end
 
+  # What a value looks like written down rather than printed. The two differ
+  # for `nil` and for strings, which is the whole reason a sample reaches for
+  # it: `#{value.inspect}` is how it shows that a value is absent.
+  def inspect : String
+    to_s
+  end
+
+  # Every type is usable as a `Hash` key, and one that has not said how it
+  # hashes hashes to its type. That is correct and useless — every value of
+  # such a type lands in one slot — which is the honest default: a type that
+  # is used as a key defines `hash`.
+  def hash : Int32
+    crystal_type_id
+  end
+
   def ==(other) : Bool
     false
   end
@@ -22,6 +37,10 @@ end
 struct Nil
   def to_s : String
     ""
+  end
+
+  def inspect : String
+    "nil"
   end
 
   def ==(other : Nil) : Bool

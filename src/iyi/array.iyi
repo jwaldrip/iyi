@@ -75,6 +75,80 @@ class Array(T)
     end
   end
 
+  # Here rather than on `Enumerable`: the trait is iyi's, written in
+  # `samples/iyi/std`, and every one of its methods that returns a sequence
+  # returns one of these. So an `Array` is what a sample ends up holding, and
+  # `join` is what it ends up calling.
+  def join(separator : String) : String
+    result = ""
+    first = true
+    each do |value|
+      result = result + separator unless first
+      result = result + value.to_s
+      first = false
+    end
+    result
+  end
+
+  # No zero to start from — that would need a trait this prelude does not
+  # have — so an empty array is a panic rather than a 0. The trait's own `sum`
+  # does have one (`Num.zero`) and answers for the empty case.
+  def sum : T
+    raise "sum of an empty array" if empty?
+
+    total = @buffer[0]
+    index = 1
+    while index < @size
+      total = total + @buffer[index]
+      index = index + 1
+    end
+    total
+  end
+
+  def map(& : T -> U) : Array(U) forall U
+    result = Array(U).new(@size)
+    each { |value| result << yield value }
+    result
+  end
+
+  def last? : T?
+    empty? ? nil : @buffer[@size - 1]
+  end
+
+  # Removes and returns the first element, moving the rest down. Linear, which
+  # is what an array without a head offset costs; `each_cons` in the trait is
+  # the one caller and its window is `n` long.
+  def shift : T
+    raise "shift of an empty array" if empty?
+
+    value = @buffer[0]
+    index = 1
+    while index < @size
+      @buffer[index - 1] = @buffer[index]
+      index = index + 1
+    end
+    @size = @size - 1
+    value
+  end
+
+  # Insertion sort: the samples sort five elements, and a merge sort would be
+  # three times the lines to be slower at that size.
+  def sort(& : T, T -> Int32) : Array(T)
+    result = dup
+    index = 1
+    while index < result.size
+      value = result[index]
+      slot = index - 1
+      while slot >= 0 && (yield result[slot], value) > 0
+        result[slot + 1] = result[slot]
+        slot = slot - 1
+      end
+      result[slot + 1] = value
+      index = index + 1
+    end
+    result
+  end
+
   def dup : Array(T)
     copy = Array(T).new(@size)
     each { |value| copy << value }

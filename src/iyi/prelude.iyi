@@ -23,6 +23,7 @@ require "./object"
 require "./number"
 require "./string"
 require "./array"
+require "./hash"
 
 lib LibC
   fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
@@ -57,6 +58,14 @@ end
 # Codegen emits a call to this on every overflowing operation, so a program
 # cannot link without it. It aborts rather than raising: 0.1.0's `raise` is a
 # panic (SPEC.md III.1.4) and there is no unwinder under it.
+# Every function with an `ensure` names a personality function, so a program
+# with a `defer` in it does not link without this symbol. It is not reachable:
+# reaching it would mean something is unwinding, and nothing here unwinds.
+fun __crystal_personality
+  print "iyi: __crystal_personality called, which cannot happen\n"
+  LibC.exit(1)
+end
+
 fun __crystal_raise_overflow : NoReturn
   print "iyi: arithmetic overflow\n"
   LibC.exit(1)

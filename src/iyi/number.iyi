@@ -17,6 +17,14 @@ struct Int32
     0 - self
   end
 
+  def times(& : Int32 -> Nil) : Nil
+    index = 0
+    while index < self
+      yield index
+      index = index + 1
+    end
+  end
+
   def to_s : String
     to_i64.to_s
   end

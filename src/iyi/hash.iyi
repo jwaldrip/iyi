@@ -1,0 +1,110 @@
+# The one dictionary — SPEC.md, "0.1.0", item 3.
+#
+# Open addressing with linear probing, because it is the shortest correct
+# table: one array of keys, one of values, one of occupancy, and no buckets to
+# chase. Crystal's `Hash` keeps insertion order and can delete; this one does
+# neither, because no sample asks. What it must do is answer `[]?` for a key
+# that is not there, which is what `tally` and `group_by` are built on.
+#
+# Hashing is `key.hash`, defined per type in this prelude. It is deliberately
+# not iyi's `Hashable` trait: that trait lives in `samples/iyi/std`, and a
+# prelude that depended on a sample would have the dependency backwards.
+class Hash(K, V)
+  @keys : Pointer(K)
+  @values : Pointer(V)
+  @used : Pointer(Bool)
+  @size : Int32
+  @capacity : Int32
+
+  def initialize
+    @size = 0
+    @capacity = 8
+    @keys = Pointer(K).malloc(8_u64)
+    @values = Pointer(V).malloc(8_u64)
+    @used = Pointer(Bool).malloc(8_u64)
+    clear_slots
+  end
+
+  def size : Int32
+    @size
+  end
+
+  def empty? : Bool
+    @size == 0
+  end
+
+  def []=(key : K, value : V) : V
+    index = slot_for(key)
+    unless @used[index]
+      @used[index] = true
+      @keys[index] = key
+      @size = @size + 1
+    end
+    @values[index] = value
+    # Kept under three quarters full: linear probing degrades badly past that,
+    # and a table this small can afford the copy.
+    grow if @size * 4 >= @capacity * 3
+    value
+  end
+
+  def []?(key : K) : V?
+    index = slot_for(key)
+    @used[index] ? @values[index] : nil
+  end
+
+  def [](key : K) : V
+    index = slot_for(key)
+    raise "no such key" unless @used[index]
+    @values[index]
+  end
+
+  def has_key?(key : K) : Bool
+    @used[slot_for(key)]
+  end
+
+  def each(& : K, V -> Nil) : Nil
+    index = 0
+    while index < @capacity
+      yield @keys[index], @values[index] if @used[index]
+      index = index + 1
+    end
+  end
+
+  # The slot this key belongs in: the one holding it, or the first free one
+  # after where it hashes to. The table is never full, so this always stops.
+  private def slot_for(key : K) : Int32
+    index = key.hash & (@capacity - 1)
+    while @used[index] && !(@keys[index] == key)
+      index = (index + 1) & (@capacity - 1)
+    end
+    index
+  end
+
+  private def clear_slots : Nil
+    index = 0
+    while index < @capacity
+      @used[index] = false
+      index = index + 1
+    end
+  end
+
+  private def grow : Nil
+    old_keys = @keys
+    old_values = @values
+    old_used = @used
+    old_capacity = @capacity
+
+    @capacity = @capacity * 2
+    @keys = Pointer(K).malloc(@capacity.to_u64)
+    @values = Pointer(V).malloc(@capacity.to_u64)
+    @used = Pointer(Bool).malloc(@capacity.to_u64)
+    @size = 0
+    clear_slots
+
+    index = 0
+    while index < old_capacity
+      self[old_keys[index]] = old_values[index] if old_used[index]
+      index = index + 1
+    end
+  end
+end
