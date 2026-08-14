@@ -111,6 +111,11 @@ class Array(T)
     result
   end
 
+  def concat(other : Array(T)) : Array(T)
+    other.each { |value| self << value }
+    self
+  end
+
   def last? : T?
     empty? ? nil : @buffer[@size - 1]
   end

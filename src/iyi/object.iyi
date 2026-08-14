@@ -25,6 +25,15 @@ class Object
     crystal_type_id
   end
 
+  # `value.in?(a, b)` — the Kemal port's way of writing an alternation. On
+  # `Object` because it is about the value, not about any one type of it.
+  def in?(*values : *T) : Bool forall T
+    {% for index in 0...T.size %}
+      return true if self == values[{{ index }}]
+    {% end %}
+    false
+  end
+
   def ==(other) : Bool
     false
   end
@@ -45,6 +54,19 @@ struct Nil
 
   def ==(other : Nil) : Bool
     true
+  end
+end
+
+struct Symbol
+  # `case … when :before` compares with `===`, which on an ordinary value is
+  # `==`. Defined on `Object` in Crystal; here it is only ever reached on a
+  # symbol, so it is here.
+  def ===(other) : Bool
+    self == other
+  end
+
+  def hash : Int32
+    to_i
   end
 end
 

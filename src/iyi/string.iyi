@@ -68,6 +68,40 @@ class String
     end
   end
 
+  # The three the Kemal port's path joining needs. ASCII again — a `Char`
+  # argument here is always `\'/\'` — and byte-indexed, which is the same
+  # thing while the strings are ASCII.
+  def starts_with?(prefix : String) : Bool
+    return false if prefix.bytesize > bytesize
+
+    index = 0
+    while index < prefix.bytesize
+      return false unless to_unsafe[index] == prefix.to_unsafe[index]
+      index = index + 1
+    end
+    true
+  end
+
+  def starts_with?(char : Char) : Bool
+    bytesize > 0 && to_unsafe[0] == char.ord.to_u8
+  end
+
+  def chomp(char : Char) : String
+    return self if bytesize == 0 || to_unsafe[bytesize - 1] != char.ord.to_u8
+    byte_slice(0, bytesize - 1)
+  end
+
+  def lchop(char : Char) : String
+    return self unless starts_with?(char)
+    byte_slice(1, bytesize - 1)
+  end
+
+  private def byte_slice(start : Int32, count : Int32) : String
+    String.new(count) do |buffer|
+      buffer.copy_from(to_unsafe + start, count)
+    end
+  end
+
   # FNV-1a over the bytes: three lines, no table, and good enough for a
   # linear-probing table of a few dozen entries.
   def hash : Int32

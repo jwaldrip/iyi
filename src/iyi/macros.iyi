@@ -22,6 +22,21 @@ class Object
     {% end %}
   end
 
+  # `record Point, x : Int32, y : Int32` — a struct whose fields are its
+  # constructor. Crystal's version also generates `copy_with` and `clone` and
+  # takes default values; this one takes what the Kemal port writes, which is
+  # a name and a list of typed fields.
+  macro record(name, *fields)
+    struct {{ name.id }}
+      {% for field in fields %}
+        getter {{ field }}
+      {% end %}
+
+      def initialize({{ fields.map { |field| "@#{field}".id }.splat }})
+      end
+    end
+  end
+
   macro property(*names)
     {% for name in names %}
       {% if name.is_a?(TypeDeclaration) %}

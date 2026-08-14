@@ -66,6 +66,24 @@ fun __crystal_personality
   LibC.exit(1)
 end
 
+# Reached from the same landing pad, for the same reason, and just as
+# unreachable: `ensure` compiles a path that would ask the unwinder what was
+# thrown, and nothing here throws.
+fun __crystal_get_exception(exception : Void*) : UInt64
+  print "iyi: __crystal_get_exception called, which cannot happen\n"
+  LibC.exit(1)
+  0_u64
+end
+
+# Codegen emits a call to this wherever a `rescue` would re-raise. Nothing in
+# this prelude can reach it either — `raise` panics rather than unwinding —
+# but a program with an `ensure` in it names the symbol.
+@[Raises]
+fun __crystal_raise(exception : Void*) : NoReturn
+  print "iyi: __crystal_raise called, which cannot happen\n"
+  LibC.exit(1)
+end
+
 fun __crystal_raise_overflow : NoReturn
   print "iyi: arithmetic overflow\n"
   LibC.exit(1)
