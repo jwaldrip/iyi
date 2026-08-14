@@ -538,6 +538,12 @@ struct Crystal::TypeDeclarationProcessor
     # super or assign all of those variables
     if ancestor_non_nilable
       infos.each do |info|
+        # iyi: an `initialize` read from a `.iyimod` is a header — there is no
+        # body for it to assign in, and the build that wrote the artifact
+        # already checked that the real one assigns everything. Treated like a
+        # macro def below, and for the same reason (SPEC.md IV.1g).
+        next if info.def.iyi_from_artifact?
+
         unless info.def.calls_super? || info.def.calls_previous_def? || info.def.calls_initialize? || info.def.macro_def?
           ancestor_non_nilable.each do |name|
             # If the variable is initialized outside, it's OK
@@ -578,6 +584,10 @@ struct Crystal::TypeDeclarationProcessor
         # Assume a macro def initializes all of them
         # (will be checked later)
         next if info.def.macro_def?
+
+        # iyi: and an `initialize` from a `.iyimod` for the same reason — it is
+        # a header with no body, and the artifact's own build checked it.
+        next if info.def.iyi_from_artifact?
 
         # Similarly, calling previous_def would have the vars initialized
         # in the other def

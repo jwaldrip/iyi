@@ -2143,6 +2143,28 @@ generate code against such a module is refused, naming the module and why. The
 distinction is worth the precision: the flag used to mean "has anything to run"
 and refused three modules that were fine.
 
+**Two things the samples do not have, found by writing an example that did.**
+A module exporting a type with a class method and a field is an ordinary shape
+and no sample happens to be one, so both of these survived every sweep above.
+
+*A class method lives on the metaclass.* `def self.zero` is stored there rather
+than on the type, so walking a type's own defs dropped every class method a
+module exported — `Counter.zero` was an undefined method on the far side of an
+artifact that looked complete. Both sides now travel, told apart by the
+signature's receiver, which is a thing the format already carried and nothing
+had used. Two methods are kept out on the way: `new`, which is synthesized from
+`initialize` and which the consumer therefore makes for itself, and anything
+whose body is a `Primitive` — `allocate` is put on every metaclass by the
+compiler, and describing it as part of a module's surface would be describing
+this compiler instead.
+
+*A field with a bodyless `initialize` reads as nilable.* The artifact's
+`initialize` is a header, so nothing in it assigns `@n`, so the check that
+looks for an `initialize` leaving an instance variable unassigned refused the
+module outright. It is treated like a macro def now — assumed to assign
+everything, because the build that wrote the artifact already checked that the
+real one does.
+
 **Where that leaves the eight samples.** Five import a module at all; the other
 three (`hello`, `generics`, `errors`) are single files and exercise nothing
 here.

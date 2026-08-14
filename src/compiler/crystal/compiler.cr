@@ -596,19 +596,16 @@ module Crystal
       travels = iyi_bodies_travel?(type)
       methods = [] of IyiMod::Signature
 
-      type.as?(ModuleType).try &.defs.try &.each_value do |items|
-        # A method an `impl` defined is the impl's, and travels in its record.
-        # The distinction is invisible here — an impl works by defining methods
-        # on the target — which is why it is marked where it is made.
-        items.each do |item|
-          next if item.def.iyi_from_impl?
-          signature = IyiMod.signature(item.def)
-          methods << signature
-          if travels && !item.def.abstract?
-            iyi_record_mono_body program, filename, name, signature, item.def
-          end
-        end
-      end
+      # Both sides of the type. A `def self.zero` is stored on the metaclass
+      # rather than on the type, so walking only the type's own defs dropped
+      # every class method a module exported — `Counter.zero` was an undefined
+      # method on the far side of an artifact that looked complete.
+      #
+      # The two are told apart by the signature's receiver, which
+      # `render_signature` already writes back as `def self.zero`. Nothing else
+      # needs to know: to a consumer it is one more name on the type.
+      iyi_collect_type_methods program, filename, name, type, travels, methods
+      iyi_collect_type_methods program, filename, name, type.metaclass, travels, methods
       methods.sort_by! &.name
 
       # A generic trait's type variables are its parameters followed by its
@@ -633,6 +630,41 @@ module Crystal
         fields: collect_iyi_fields(type),
         methods: methods,
       )
+    end
+
+    # One side of a type's methods — its own, or its metaclass's.
+    #
+    # `new` is skipped. It is synthesized from `initialize` rather than written,
+    # so the consumer generates its own from the `initialize` this artifact
+    # does carry; carrying it as well would declare a method the consumer also
+    # defines, and for a type whose object code travels it would be defined
+    # twice over.
+    private def iyi_collect_type_methods(program : Program, filename : String,
+                                         container : String, type : Type,
+                                         travels : Bool,
+                                         methods : Array(IyiMod::Signature)) : Nil
+      type.as?(ModuleType).try &.defs.try &.each_value do |items|
+        # A method an `impl` defined is the impl's, and travels in its record.
+        # The distinction is invisible here — an impl works by defining methods
+        # on the target — which is why it is marked where it is made.
+        items.each do |item|
+          next if item.def.iyi_from_impl?
+          next if item.def.new?
+
+          # `allocate` is put on every metaclass by the compiler, not by the
+          # author, and the consumer's compiler puts one there too. Anything
+          # whose body is a `Primitive` is the compiler's rather than the
+          # module's, and describing it as part of the module's surface would
+          # be describing this compiler instead.
+          next if item.def.body.is_a?(Primitive)
+
+          signature = IyiMod.signature(item.def)
+          methods << signature
+          if travels && !item.def.abstract?
+            iyi_record_mono_body program, filename, container, signature, item.def
+          end
+        end
+      end
     end
 
     # iyi: whether *type*'s method bodies have to travel (`MonoBodies`).

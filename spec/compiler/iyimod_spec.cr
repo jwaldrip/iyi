@@ -488,6 +488,70 @@ describe Crystal::IyiMod do
     end
   end
 
+  # A class method lives on the type's *metaclass*, so walking a type's own
+  # defs dropped every one a module exported — `Counter.zero` was an undefined
+  # method on the far side of an artifact that looked complete. And a field
+  # with a bodyless `initialize` is the shape no sample has: the artifact's
+  # `initialize` has no body to assign `@n` in, which read as leaving it
+  # nilable and refused the module outright.
+  it "carries a type's class methods, and its bodyless initialize" do
+    with_tempdir("iyimod_class_methods") do
+      Dir.mkdir_p "std"
+      File.write "std/counter.iyi", <<-IYI
+        module std/counter
+
+        pub struct Counter
+          @n : Int32
+
+          def initialize(@n : Int32)
+          end
+
+          def self.zero : Counter
+            Counter.new(0)
+          end
+
+          def n : Int32
+            @n
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/counter
+
+        puts Std::Counter::Counter.zero.n
+        puts Std::Counter::Counter.new(5).n
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "0\n5"
+
+      declaration = Crystal::IyiMod.read(File.join("mods", "std", "counter.iyimod"))
+        .exports.types.find! { |candidate| candidate.name == "Counter" }
+
+      declaration.methods.find { |m| m.name == "zero" }.try(&.receiver).should eq "self"
+
+      # `allocate` is put on every metaclass by the compiler and `new` is
+      # synthesized from `initialize`; describing either as part of the
+      # module's surface would be describing this compiler instead.
+      declaration.methods.map(&.name).should eq ["initialize", "n", "zero"]
+
+      File.delete "std/counter.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "0\n5"
+    end
+  end
+
   # `MonoBodies`. A generic type's method exists once per instantiation, and
   # the instantiations belong to whoever writes them — so no machine code the
   # producer emits can serve a consumer, and the body is the only thing that
