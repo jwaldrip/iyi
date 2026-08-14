@@ -108,6 +108,8 @@ describe Crystal::CrystalPath do
   # Don't find relative filenames in src or shards
   assert_doesnt_find "../../src/file_three", relative_to: Path["test_files", "test_folder", "test_folder.cr"].to_s, expected_relative_to: Path["test_files", "test_folder"].to_s
 
+  # iyi: the `.iyi` candidate comes first wherever the name does not already
+  # end in `.cr`, so an iyi file shadows a Crystal one of the same name.
   describe "#each_file_expansion" do
     path = Crystal::CrystalPath.new
 
@@ -121,6 +123,7 @@ describe Crystal::CrystalPath do
 
     it "foo.cr/bar" do
       assert_iterates_yielding [
+        "x/foo.cr/bar.iyi",
         "x/foo.cr/bar.cr",
         "x/foo.cr/src/bar.cr",
         "x/foo.cr/src/foo.cr/bar.cr",
@@ -143,6 +146,7 @@ describe Crystal::CrystalPath do
 
     it "foo" do
       assert_iterates_yielding [
+        "x/foo.iyi",
         "x/foo.cr",
         "x/foo/foo.cr",
         "x/foo/src/foo.cr",
@@ -151,6 +155,7 @@ describe Crystal::CrystalPath do
 
     it "./foo" do
       assert_iterates_yielding [
+        "x/./foo.iyi",
         "x/./foo.cr",
         "x/./foo/foo.cr",
       ], path.each_file_expansion("./foo", "x")
@@ -165,6 +170,7 @@ describe Crystal::CrystalPath do
 
     it "foo/bar" do
       assert_iterates_yielding [
+        "x/foo/bar.iyi",
         "x/foo/bar.cr",
         "x/foo/src/bar.cr",
         "x/foo/src/foo/bar.cr",
@@ -176,6 +182,7 @@ describe Crystal::CrystalPath do
 
     it "./foo/bar" do
       assert_iterates_yielding [
+        "x/./foo/bar.iyi",
         "x/./foo/bar.cr",
         "x/./foo/bar/bar.cr",
       ], path.each_file_expansion("./foo/bar", "x")
@@ -183,6 +190,7 @@ describe Crystal::CrystalPath do
 
     it "foo/bar/baz" do
       assert_iterates_yielding [
+        "x/foo/bar/baz.iyi",
         "x/foo/bar/baz.cr",
         "x/foo/src/bar/baz.cr",
         "x/foo/src/foo/bar/baz.cr",
@@ -194,6 +202,7 @@ describe Crystal::CrystalPath do
 
     it "./foo/bar/baz" do
       assert_iterates_yielding [
+        "x/./foo/bar/baz.iyi",
         "x/./foo/bar/baz.cr",
         "x/./foo/bar/baz/baz.cr",
       ], path.each_file_expansion("./foo/bar/baz", "x")

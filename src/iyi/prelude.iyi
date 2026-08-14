@@ -1,0 +1,73 @@
+# iyi's prelude — SPEC.md, "0.1.0", item 3.
+#
+#   ./bin/crystal build --prelude=iyi/prelude program.iyi
+#
+# Not a standard library. The prelude an iyi program gets is deliberately the
+# smallest thing that runs the samples, because while an iyi program requires
+# Crystal's 107,719-line prelude the benchmark measures a workaround rather
+# than the thesis: the front end spends 886 ms of its 901 ms analysing it, and
+# `.iyimod` saves 15 ms of the remainder (SPEC.md IV.1f).
+#
+# **What is in here is decided by what a sample calls.** A method enters
+# because an existing program needs it, never because it belongs in a standard
+# library. The ceiling is 3,551 lines — the size of Crystal's own 0.1.0 core,
+# measured in the same language family and for the same purpose.
+#
+# Measured on `puts "hello"`, best of 5:
+#
+#   |            | front end | whole build |
+#   | Crystal's  | 1.37 s    | 2.01 s      |
+#   | this one   | 0.13 s    | 0.29 s      |
+#
+# What is missing is everything: this file reaches `puts` of a string literal
+# and no further. `primitives.cr` below it is the compiler's own — arithmetic,
+# conversions and comparisons are `@[Primitive]` definitions the compiler emits
+# instructions for, so they are not this file's to write.
+require "primitives"
+
+lib LibC
+  fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
+  fun exit(status : Int32) : NoReturn
+end
+
+# The compiler declares `String`'s fields itself — `@bytesize`, `@length` and
+# `@c`, in that order — because a string literal is laid out by codegen before
+# any of this is read. So this class reopens a type that already has its shape
+# and only says what can be done with it.
+class String
+  def bytesize : Int32
+    @bytesize
+  end
+
+  def to_unsafe : Pointer(UInt8)
+    pointerof(@c)
+  end
+end
+
+def print(text : String) : Nil
+  LibC.write(1, text.to_unsafe.as(Void*), text.bytesize.to_u64)
+end
+
+def puts(text : String) : Nil
+  print text
+  print "\n"
+end
+
+# Codegen emits a call to this on every overflowing operation, so a program
+# cannot link without it. It aborts rather than raising: `raise` needs an
+# exception type, a class hierarchy and an unwinder, and none of those are here
+# yet. `errors.iyi` is the sample that will make it a real raise.
+fun __crystal_raise_overflow : NoReturn
+  print "iyi: arithmetic overflow\n"
+  LibC.exit(1)
+end
+
+lib LibCrystalMain
+  @[Raises]
+  fun __crystal_main(argc : Int32, argv : UInt8**)
+end
+
+fun main(argc : Int32, argv : UInt8**) : Int32
+  LibCrystalMain.__crystal_main(argc, argv)
+  0
+end
