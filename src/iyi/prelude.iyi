@@ -13,10 +13,10 @@
 # library. The ceiling is 3,551 lines — the size of Crystal's own 0.1.0 core,
 # measured in the same language family and for the same purpose.
 #
-# `primitives.cr` below it is the compiler's own: arithmetic, conversions,
-# comparisons and `Pointer` are `@[Primitive]` definitions it emits
-# instructions for, so they are not this file's to write.
-require "primitives"
+# `primitives.iyi` under it is the list of machine operations iyi admits —
+# arithmetic, conversions, comparisons and `Pointer`. It is iyi's own rather
+# than Crystal's, and the reason is measured there.
+require "./primitives"
 
 require "./macros"
 require "./object"
