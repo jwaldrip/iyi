@@ -1,0 +1,48 @@
+# The macros a declaration cannot be written without — SPEC.md, "0.1.0",
+# item 3.
+#
+# `getter` is here because every sample declares a field with it, and a field
+# reader written by hand five times in a row is what a macro is for. The
+# variants Crystal's `object.cr` carries — lazy, nilable, `?`, raise-on-nil —
+# are not here, because no sample writes one.
+class Object
+  macro getter(*names)
+    {% for name in names %}
+      {% if name.is_a?(TypeDeclaration) %}
+        @{{ name.var.id }} : {{ name.type }}
+
+        def {{ name.var.id }} : {{ name.type }}
+          @{{ name.var.id }}
+        end
+      {% else %}
+        def {{ name.id }}
+          @{{ name.id }}
+        end
+      {% end %}
+    {% end %}
+  end
+
+  macro property(*names)
+    {% for name in names %}
+      {% if name.is_a?(TypeDeclaration) %}
+        @{{ name.var.id }} : {{ name.type }}
+
+        def {{ name.var.id }} : {{ name.type }}
+          @{{ name.var.id }}
+        end
+
+        def {{ name.var.id }}=(value : {{ name.type }}) : {{ name.type }}
+          @{{ name.var.id }} = value
+        end
+      {% else %}
+        def {{ name.id }}
+          @{{ name.id }}
+        end
+
+        def {{ name.id }}=(value)
+          @{{ name.id }} = value
+        end
+      {% end %}
+    {% end %}
+  end
+end

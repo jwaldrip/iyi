@@ -18,9 +18,11 @@
 # instructions for, so they are not this file's to write.
 require "primitives"
 
+require "./macros"
 require "./object"
 require "./number"
 require "./string"
+require "./array"
 
 lib LibC
   fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
@@ -77,6 +79,20 @@ struct Pointer(T)
       index = index + 1
     end
   end
+end
+
+# 0.1.0's `raise` is a panic — it prints and exits, and nothing catches it.
+#
+# SPEC.md III.1.4 says that is what the language wants, and the normalizer's
+# `.or_panic` says so too: it lowers to `::raise` with a comment that a panic
+# is the intent and a Crystal exception the stand-in. Nothing in the samples
+# rescues, so the unwinder, the personality function and the exception
+# hierarchy under Crystal's `raise` buy this release nothing.
+def raise(message : String) : NoReturn
+  print "iyi: panic: "
+  print message
+  print "\n"
+  LibC.exit(1)
 end
 
 def print(text : String) : Nil
