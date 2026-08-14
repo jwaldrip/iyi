@@ -54,7 +54,11 @@ class Crystal::Command
     end
 
     begin
-      artifact = IyiMod.read(filename)
+      # The one reader that wants the object code. `import` does not — it is a
+      # front-end reader and seeks past the section — but a dump that silently
+      # left out the largest thing in the file would be the opposite of what
+      # this command is for.
+      artifact = IyiMod.read(filename, want_object_code: !declarations)
       if declarations
         IyiMod.declarations artifact, STDOUT
       else

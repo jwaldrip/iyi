@@ -56,14 +56,20 @@ speed has shipped the cost and none of the benefit.
 
 ### In scope
 
-**1. `.iyimod`, end to end (IV.1). Front end done.** Not negotiable. R-1 is the
-rule the rest of the document is built on, and without the artifact everything
-here is a design document. The container, the `Header`, `Imports` and `Exports`
-sections, `--emit-iyimod` and `mod dump` are built, and `--use-iyimod` now
-compiles an imported module from its artifact: seven of the eight samples
-compile with the imported module's source **deleted**. What is left is object
-code, which is what makes such a build able to produce a program rather than
-only typecheck one.
+**1. `.iyimod`, end to end (IV.1). Front end done; object code started.** Not
+negotiable. R-1 is the rule the rest of the document is built on, and without
+the artifact everything here is a design document. The container, the `Header`,
+`Imports` and `Exports` sections, `--emit-iyimod` and `mod dump` are built, and
+`--use-iyimod` now compiles an imported module from its artifact: seven of the
+eight samples compile with the imported module's source **deleted**.
+
+`ObjectCode` now carries a module's own machine code — the object files of the
+types it declares, which is what a build can link instead of re-generating.
+Three things still have to join them before a build can be produced rather than
+only typechecked, and IV.1g names all three: the prelude generics a module
+instantiates at its own types, everything `_main` holds on the module's behalf
+(its constants, its proc literals, its type ids), and the fact that a module
+compiled as somebody's dependency yields only the code that dependant reached.
 
 **2. The passes that still walk the prelude stop walking it (IV.1d).** The
 artifact alone leaves 0.47 s, of which class-var initializers and `main` are
@@ -1816,6 +1822,9 @@ in it — those are what codegen needs rather than what the front end needs, so
 they arrive with `ObjectCode`. `Hashes`, `MacroBodies` and `MonoBodies` are
 declared in the `Section` enum and unwritten.
 
+**`ObjectCode` now carries a module's own machine code** — see IV.1g for what
+that turned out to mean and for the two things it does not yet carry.
+
 `std/list` reads back as:
 
 ```
@@ -1895,7 +1904,9 @@ annotation is written, and IV.2 keeps the body out. That is the whole of what
 the front end gets, and it is also the boundary: a module read this way
 contributes **no initialiser**, because its top-level code is not a
 declaration and is not in the file. So `--use-iyimod` implies `--no-codegen`
-until `ObjectCode` exists. IV.1a said the same thing from the other direction —
+until `ObjectCode` is complete — it is now written but not yet read, and IV.1g
+names the three things still missing from it. IV.1a said the same thing from
+the other direction —
 codegen needs the prelude's tree for reasons caching analysis does not remove.
 
 **Three things had to travel that the format did not carry**, each found by a
@@ -1930,6 +1941,72 @@ promises. It is also invisible, because 0.886 s of prelude is next to it. That
 is the 95% prelude tax stated as a measurement rather than as an argument, and
 it is why item 3 of the 0.1.0 list — a prelude small enough to be one of these
 modules — is what decides the schedule and not this section.
+
+### IV.1g `ObjectCode` — the module's own machine code
+
+**The unit is the object file, because codegen already splits that way.** Every
+method is emitted into the LLVM module of the type that owns it, one object
+file per type, and the split is a **partition**: on the Kemal port, 23 units
+and no symbol defined by two of them. So "this module's own definitions" is a
+set of whole object files rather than a filter inside one, and carrying them is
+copying bytes rather than teaching codegen a second way to lay out a program.
+
+A module's units are the module type itself — where its own `pub def`s are
+owned — plus every type declared under it, recursively, with one unit per
+instantiation of a generic type. `kemal/router` owns five (`Router`, its three
+nested records, `Context`) and `kemal/dsl` one. `app/greeter`'s artifact comes
+out at 3,177 bytes, of which 2,736 are an ELF object defining `polite`.
+
+**Two properties had to hold for this to be possible at all, and both were
+checked rather than assumed.**
+
+*Symbol names carry nothing build-specific.* A method's symbol is its owner
+type, its name, its argument types and its return type, escaped — no counter,
+no path, no hash of the build. Two builds that agree on the types agree on the
+name, which is what lets one build's object file be linked by another's.
+
+*A type id is already an external reference.* Type ids are integers assigned by
+a global pass, so a module compiled alone cannot know its own — the obvious
+reading is that separate compilation is therefore impossible without a format
+that carries them. It is wrong: the router's unit lists `Kemal::Router::Router:
+type_id` among its **undefined** symbols. The number is resolved by the linker
+from a definition in `_main`, not baked into the code. Whoever assigns the ids
+defines the symbols, and everything else relocates against them.
+
+**What it does not carry yet, said plainly because none of it is visible in the
+file.**
+
+1. **Prelude generics instantiated at this module's own types.** The router's
+   body builds an `Array(Kemal::Router::Router::RouteDefinition)`, and that
+   unit is named after `Array` — not after anything `kemal/router` declares —
+   so the rule above does not catch it. **Twelve of the router's 41 undefined
+   symbols are of this kind**, and nothing else can supply them: a consumer
+   compiling against the artifact never sees the body that needs them. They
+   belong to this module by the same logic R-3 uses for impls — the
+   instantiation exists because of this module and no other — and attaching
+   them is the next step.
+2. **Everything `_main` holds on the module's behalf.** The module's constants
+   (`Kemal::Dsl::APP` and its initialiser), its proc literals — named by source
+   file and line, `~procProc(…)@samples/iyi/kemal/router.iyi:210` — and the
+   type ids above are all emitted into the program's own unit. A consumer that
+   never opens the source cannot produce any of them.
+3. **What the *consuming* build reached, rather than the module's surface.**
+   Codegen is demand-driven, so `app/greeter`'s artifact carries `polite` and
+   not `title`: `modules.iyi` calls one and not the other. This is
+   `--emit-iyimod` living inside an ordinary build. A module compiled on its
+   own would instantiate every exported def at the signature R-2 makes it write
+   down — and compiling a module on its own is the command that cannot precede
+   the artifact it produces.
+
+So `--use-iyimod` still implies `--no-codegen`. The section is written and is
+not yet read by a build, which is the honest state: the bytes are there and
+three things have to join them before a program can be linked from them.
+
+**A reader that does not want it does not pay for it.** `ObjectCode` is the
+largest section in the file and is written last; `IyiMod.read` seeks past it
+unless asked, so `import` — the front-end reader this whole file exists to make
+fast — never allocates it. A `--no-codegen` build omits the section entirely
+rather than writing it empty.
 
 ### IV.1a What the artifact actually buys — measured
 

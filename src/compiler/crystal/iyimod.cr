@@ -26,16 +26,16 @@ require "./config"
 #
 # ## What is not here yet
 #
-# `Hashes`, `MacroBodies`, `MonoBodies` and `ObjectCode` are named in `Section`
-# and not written. The kinds are declared now so that a file written today is
-# readable by the compiler that adds them: an unknown section is skipped, a
-# known one that is absent is simply absent.
+# `Hashes`, `MacroBodies` and `MonoBodies` are named in `Section` and not
+# written. The kinds are declared now so that a file written today is readable
+# by the compiler that adds them: an unknown section is skipped, a known one
+# that is absent is simply absent.
 module Crystal::IyiMod
   MAGIC = "IYIMOD\0\0".to_slice
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 6_u32
+  FORMAT_VERSION = 7_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -182,6 +182,25 @@ module Crystal::IyiMod
     end
   end
 
+  # One object file: the machine code for the definitions on one type.
+  #
+  # The unit is a whole object file rather than a filtered part of one because
+  # codegen already splits that way — every method is emitted into the LLVM
+  # module of the type that owns it, one object file per type. Measured on the
+  # Kemal port: 23 units, and **no symbol is defined by two of them**. So "this
+  # module's own definitions" is expressible as a set of whole units, which is
+  # what makes carrying them a matter of copying bytes rather than of teaching
+  # codegen a second way to lay out a program.
+  #
+  # *name* is the type whose unit this is, as codegen named it —
+  # `Kemal::Router::Router`, or `Std::List::List(Int32)` for an instantiation.
+  # Kept as the type name and not as the mangled filename because the filename
+  # is a function of the name plus this compiler's own escaping rules, and the
+  # name is the thing that means something on the far side.
+  record ObjectUnit,
+    name : String,
+    code : Bytes
+
   # What a `.iyimod` says about the module it was built from.
   #
   # Only the parts the compiler can already produce. This grows a field at a
@@ -222,8 +241,24 @@ module Crystal::IyiMod
     # What another module may reach. See `Exports`.
     getter exports : Exports
 
+    # The machine code for this module's own definitions. See `ObjectUnit`.
+    #
+    # Empty when the build that wrote this generated no code — `--emit-iyimod`
+    # is allowed on a `--no-codegen` build, and an artifact from one carries
+    # declarations and nothing to link. That is a build that produced no object
+    # code rather than a module that has none, and the two are told apart by
+    # the flag the build was given rather than by anything in the file.
+    #
+    # Settable, and the only field that is, because it is the only one that is
+    # not known when the artifact is described. Everything else comes out of
+    # semantic analysis; this comes out of codegen, which runs after — and the
+    # rest has to be built before it, so that a rule broken in a signature is
+    # reported without waiting for a link that was never going to happen.
+    property object_code : Array(ObjectUnit)
+
     def initialize(@module_name, @source_path, @compiler_version, @target_triple,
-                   @flags, @imports, @usings = [] of String, @exports = Exports.empty)
+                   @flags, @imports, @usings = [] of String, @exports = Exports.empty,
+                   @object_code = [] of ObjectUnit)
     end
   end
 
@@ -238,6 +273,14 @@ module Crystal::IyiMod
     sections << {Section::Header, encode_header(artifact)}
     sections << {Section::Imports, encode_imports(artifact)}
     sections << {Section::Exports, encode_exports(artifact)}
+
+    # Last, and omitted when there is nothing in it. A consumer reading
+    # `Exports` seeks past this section rather than through it, and the further
+    # it sits from the header the less of the file a front-end-only build has
+    # to touch — object code is by far the largest thing in here.
+    unless artifact.object_code.empty?
+      sections << {Section::ObjectCode, encode_object_code(artifact)}
+    end
 
     Dir.mkdir_p(File.dirname(path))
     temporary = "#{path}.#{Process.pid}.tmp"
@@ -264,7 +307,12 @@ module Crystal::IyiMod
   #
   # Rejects rather than migrates: a file from another format or compiler version
   # is an error the caller answers by rebuilding it (IV.5).
-  def self.read(path : String) : Artifact
+  #
+  # *want_object_code* is false by default because the reader that matters most
+  # is `import`, and it is a front-end reader: it needs the declarations and has
+  # no use for the machine code. Reading it anyway would put the largest section
+  # in the file on the path of the pass this artifact exists to make fast.
+  def self.read(path : String, want_object_code : Bool = false) : Artifact
     File.open(path, "rb") do |file|
       magic = Bytes.new(MAGIC.size)
       file.read_fully?(magic) || raise Error.new("#{path} is too short to be a .iyimod")
@@ -285,14 +333,26 @@ module Crystal::IyiMod
       header = nil
       imports = {imports: [] of String, usings: [] of String}
       exports = Exports.empty
+      object_code = [] of ObjectUnit
 
       table.each do |(kind, length)|
+        section = Section.from_value?(kind)
+
+        # The table's whole purpose, taken literally: a front-end-only build
+        # never wants the object code, and reading it would be the largest read
+        # in the file. Seek past it rather than allocate it.
+        if section == Section::ObjectCode && !want_object_code
+          file.skip length
+          next
+        end
+
         payload = Bytes.new(length)
         file.read_fully?(payload) || raise Error.new("#{path} ends inside a section")
-        case Section.from_value?(kind)
-        when Section::Header  then header = decode_header(payload)
-        when Section::Imports then imports = decode_imports(payload)
-        when Section::Exports then exports = decode_exports(payload)
+        case section
+        when Section::Header     then header = decode_header(payload)
+        when Section::Imports    then imports = decode_imports(payload)
+        when Section::Exports    then exports = decode_exports(payload)
+        when Section::ObjectCode then object_code = decode_object_code(payload)
         else
           # Written by a later compiler, or a section this one does not need.
           # Skipping is the point of the table.
@@ -304,7 +364,8 @@ module Crystal::IyiMod
       end
 
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
-        header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports)
+        header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
+        object_code)
     end
   end
 
@@ -349,14 +410,24 @@ module Crystal::IyiMod
       end
     end
 
+    object_code = artifact.object_code
+    if object_code.empty?
+      io.puts "object code   (none)"
+    else
+      io.puts "object code"
+      object_code.each { |unit| io.puts "  #{unit.name} — #{unit.code.size} bytes" }
+    end
+
     # Said out loud on every dump. What is missing is no longer whole
     # declarations but the parts of them codegen needs, and a reader has no way
     # to tell a field list that is absent from one that is empty.
     io.puts
-    io.puts "note          format v#{FORMAT_VERSION} carries declarations and"
-    io.puts "              signatures. Field lists, layout templates, type"
-    io.puts "              descriptors and constants are not in this file yet"
-    io.puts "              (SPEC.md IV.2)."
+    io.puts "note          format v#{FORMAT_VERSION} carries declarations,"
+    io.puts "              signatures, and the object code of this module's own"
+    io.puts "              types. Field lists, layout templates, type"
+    io.puts "              descriptors and constants are not in this file yet,"
+    io.puts "              and neither is the code for prelude generics this"
+    io.puts "              module instantiates (SPEC.md IV.2)."
   end
 
   # The artifact as the iyi declarations it was built from.
@@ -632,6 +703,28 @@ module Crystal::IyiMod
   private def self.decode_imports(payload : Bytes)
     io = IO::Memory.new(payload)
     {imports: read_strings(io), usings: read_strings(io)}
+  end
+
+  private def self.encode_object_code(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    units = artifact.object_code
+    io.write_bytes units.size.to_u32, FORMAT
+    units.each do |unit|
+      write_string io, unit.name
+      io.write_bytes unit.code.size.to_u32, FORMAT
+      io.write unit.code
+    end
+    io.to_slice
+  end
+
+  private def self.decode_object_code(payload : Bytes) : Array(ObjectUnit)
+    io = IO::Memory.new(payload)
+    Array(ObjectUnit).new(io.read_bytes(UInt32, FORMAT)) do
+      name = read_string(io)
+      code = Bytes.new(io.read_bytes(UInt32, FORMAT))
+      io.read_fully(code)
+      ObjectUnit.new(name, code)
+    end
   end
 
   private def self.encode_exports(artifact : Artifact) : Bytes

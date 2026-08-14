@@ -10,7 +10,8 @@ require "./spec_helper"
 private def sample_artifact(imports = [] of String,
                             exports = [] of Crystal::IyiMod::Signature,
                             types = [] of Crystal::IyiMod::TypeDecl,
-                            impls = [] of Crystal::IyiMod::ImplRecord)
+                            impls = [] of Crystal::IyiMod::ImplRecord,
+                            object_code = [] of Crystal::IyiMod::ObjectUnit)
   Crystal::IyiMod::Artifact.new(
     module_name: "app/greeter",
     source_path: "/src/app/greeter.iyi",
@@ -19,7 +20,16 @@ private def sample_artifact(imports = [] of String,
     flags: ["bits64", "linux"],
     imports: imports,
     exports: Crystal::IyiMod::Exports.new(exports, types, impls),
+    object_code: object_code,
   )
+end
+
+# Not text. An object file holds zero bytes, high bytes and byte sequences that
+# are not valid UTF-8, and a container that round-tripped it through a `String`
+# would corrupt every one of them — which is why this is the payload the round
+# trip below is checked with.
+private def sample_object_unit(name : String = "App::Greeter")
+  Crystal::IyiMod::ObjectUnit.new(name, Bytes[0x7F, 0x45, 0x4C, 0x46, 0x00, 0xFF, 0x80, 0x00])
 end
 
 private def signature(name : String,
@@ -273,6 +283,159 @@ describe Crystal::IyiMod do
     io = IO::Memory.new
     Crystal::IyiMod.dump sample_artifact, io
     io.to_s.should contain "not in this file yet"
+  end
+
+  it "round-trips object code byte for byte" do
+    unit = sample_object_unit
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(object_code: [unit]), path
+      read = Crystal::IyiMod.read(path, want_object_code: true).object_code
+
+      read.size.should eq 1
+      read.first.name.should eq "App::Greeter"
+      read.first.code.should eq unit.code
+    end
+  end
+
+  it "round-trips one unit per type, in order" do
+    units = [sample_object_unit("App::Greeter"), sample_object_unit("App::Greeter::Formal")]
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(object_code: units), path
+      read = Crystal::IyiMod.read(path, want_object_code: true).object_code
+      read.map(&.name).should eq ["App::Greeter", "App::Greeter::Formal"]
+    end
+  end
+
+  # The reader that matters most is `import`, and it is a front-end reader: it
+  # wants the declarations and has no use for the machine code. Reading the
+  # largest section in the file anyway would put it on the path of the pass the
+  # artifact exists to make fast, so it is seeked past unless asked for.
+  it "does not read object code unless asked" do
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(object_code: [sample_object_unit]), path
+
+      Crystal::IyiMod.read(path).object_code.should be_empty
+      Crystal::IyiMod.read(path, want_object_code: true).object_code.size.should eq 1
+    end
+  end
+
+  # Seeking past a section only works if what follows it is still found, so the
+  # skip is checked by reading something written *after* the object code — the
+  # exports, which the writer puts before it, and the header, which it puts
+  # first. A skip of the wrong length would lose both.
+  it "reads the rest of the file with the object code skipped" do
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(imports: ["std/list"],
+        exports: [signature("polite", ["name : String"], "String")],
+        object_code: [sample_object_unit]), path
+
+      read = Crystal::IyiMod.read(path)
+      read.module_name.should eq "app/greeter"
+      read.imports.should eq ["std/list"]
+      read.exports.functions.map(&.name).should eq ["polite"]
+    end
+  end
+
+  # A `--no-codegen` build writes an artifact with nothing to link. The section
+  # is left out rather than written empty, so that such a file is the same size
+  # it was before this section existed.
+  it "omits the object code section when there is none" do
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact, path
+      # Section count is the u32 after the 8-byte magic and the version.
+      count = Crystal::IyiMod::FORMAT.decode(UInt32, File.read(path).to_slice[12, 4])
+      count.should eq 3
+    end
+  end
+
+  it "dumps the units it carries, and says when it carries none" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact(object_code: [sample_object_unit]), io
+    io.to_s.should contain "App::Greeter — 8 bytes"
+
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact, io
+    io.to_s.should contain "object code   (none)"
+  end
+
+  # The only example here that compiles a real program, and the one thing the
+  # container specs above cannot check: that the name a unit is filed under is
+  # the name codegen gave it. Codegen emits one object file per owner type and
+  # names it after that type; an artifact that agreed on the bytes and not on
+  # the name would carry machine code nobody could match to a declaration.
+  it "carries the object code of a module's own type" do
+    with_tempdir("iyimod_object_code") do
+      Dir.mkdir_p "app"
+      File.write "app/greeter.iyi", <<-IYI
+        module app/greeter
+
+        pub def polite(name : String) : String
+          "Hello, " + name
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/greeter
+
+        puts App::Greeter.polite("world")
+        IYI
+
+      compiler = create_spec_compiler
+      # Chosen by the entry file's extension in `crystal build`, which is the
+      # command layer rather than the compiler, so a spec driving the compiler
+      # directly asks for it.
+      compiler.prelude = "iyi/prelude"
+      compiler.emit_iyimod = "mods"
+
+      with_temp_executable("iyimod-object-code") do |executable|
+        source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+        compiler.compile source, executable
+      end
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "greeter.iyimod"),
+        want_object_code: true)
+      unit = artifact.object_code.find { |candidate| candidate.name == "App::Greeter" }
+      unit.should_not be_nil
+      unit.not_nil!.code.should_not be_empty
+    end
+  end
+
+  # A build that generates no code has none to carry. Checked because the two
+  # cases are told apart by the flag the build was given and by nothing in the
+  # file, so an empty section here is the honest answer rather than a failure
+  # to collect.
+  it "carries no object code from a --no-codegen build" do
+    with_tempdir("iyimod_no_codegen") do
+      Dir.mkdir_p "app"
+      File.write "app/greeter.iyi", <<-IYI
+        module app/greeter
+
+        pub def polite(name : String) : String
+          "Hello, " + name
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/greeter
+
+        puts App::Greeter.polite("world")
+        IYI
+
+      compiler = create_spec_compiler
+      compiler.prelude = "iyi/prelude"
+      compiler.emit_iyimod = "mods"
+      compiler.no_codegen = true
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      compiler.compile source, "unused"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "greeter.iyimod"),
+        want_object_code: true)
+      artifact.object_code.should be_empty
+      artifact.exports.functions.map(&.name).should eq ["polite"]
+    end
   end
 
   it "round-trips exported types with their parameters and methods" do

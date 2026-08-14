@@ -273,9 +273,11 @@ module Crystal
         program.macro_expansion_error_hook.try &.call(ex.cause)
       end
 
-      write_iyimods program
+      prepared = prepare_iyimods program
 
       units = codegen program, node, sources, output_filename unless @no_codegen
+
+      write_iyimods program, prepared, units
 
       @progress_tracker.clear
       print_macro_run_stats(program)
@@ -368,9 +370,11 @@ module Crystal
         program.macro_expansion_error_hook.try &.call(ex.cause)
       end
 
-      write_iyimods program
+      prepared = prepare_iyimods program
 
       units = codegen program, node, source, output_filename unless @no_codegen
+
+      write_iyimods program, prepared, units
 
       @progress_tracker.clear
       print_macro_run_stats(program)
@@ -380,8 +384,9 @@ module Crystal
       Result.new program, node
     end
 
-    # iyi: writes a `.iyimod` per imported module (SPEC.md IV.1), when
-    # `--emit-iyimod` asked for it.
+    # iyi: describes a `.iyimod` per imported module (SPEC.md IV.1), when
+    # `--emit-iyimod` asked for it. Everything but the object code, which does
+    # not exist yet — see `write_iyimods`.
     #
     # Only imported modules. The entry file is a program rather than a
     # dependency, and nothing can import it — III.5 rule 1 puts its initialiser
@@ -391,12 +396,17 @@ module Crystal
     # lands at `DIR/app/greeter.iyimod` and the layout mirrors the source tree.
     # IV.6 #6's segment rule is what makes that safe: two module paths cannot
     # collide, so two modules cannot claim one artifact.
-    private def write_iyimods(program : Program) : Nil
+    #
+    # Run before codegen, because collecting a module's surface is where R-2 is
+    # enforced — an exported signature missing a block annotation is refused
+    # here. Refusing it after a full codegen and link would make the compiler
+    # spend the whole build on a program it had already decided not to write.
+    private def prepare_iyimods(program : Program) : Array({String, IyiMod::Artifact})?
       return unless dir = emit_iyimod
 
       flags = program.flags.to_a.sort!
 
-      program.iyi_module_paths.each do |filename, module_name|
+      program.iyi_module_paths.map do |filename, module_name|
         imports = program.iyi_module_imports[filename]?.try do |dependencies|
           dependencies.map { |dependency| program.iyi_module_paths[dependency]? || dependency }
         end
@@ -414,7 +424,26 @@ module Crystal
           exports: collect_iyi_exports(program, module_name, filename),
         )
 
-        IyiMod.write artifact, File.join(dir, "#{module_name}.iyimod")
+        {File.join(dir, "#{module_name}.iyimod"), artifact}
+      end
+    end
+
+    # iyi: attaches each module's object code and writes the artifacts.
+    #
+    # After codegen, because that is when the object files exist. Writing here
+    # also says something true: an artifact is written by a build that got all
+    # the way through, so a build that failed in codegen leaves the previous
+    # artifact in place rather than a newer one describing a program that does
+    # not link.
+    private def write_iyimods(program : Program, prepared : Array({String, IyiMod::Artifact})?,
+                              units : Array(CompilationUnit)?) : Nil
+      return unless prepared
+
+      units_by_name = units.try &.to_h { |unit| {unit.original_name, unit} }
+
+      prepared.each do |(path, artifact)|
+        artifact.object_code = collect_iyi_object_code(program, artifact.module_name, units_by_name)
+        IyiMod.write artifact, path
       end
     end
 
@@ -452,6 +481,76 @@ module Crystal
       impls = program.iyi_impls[filename]? || [] of IyiMod::ImplRecord
 
       IyiMod::Exports.new(functions, types, impls)
+    end
+
+    # iyi: the machine code for a module's own definitions, for `ObjectCode`
+    # (IV.1). Empty on a `--no-codegen` build, which generated none.
+    #
+    # Codegen already emits one LLVM module — and so one object file — per
+    # owner type, and the split is a partition: measured on the Kemal port, no
+    # symbol is defined by two of its 23 units. So a module's own code is a set
+    # of whole object files, identified by naming the types the module declares
+    # and taking the unit of each. A generic type contributes one unit per
+    # instantiation, and a module's own `pub def`s are owned by the module type
+    # itself, which is why that is in the set alongside the types under it.
+    #
+    # **Two gaps, both said out loud because neither is obvious from the file.**
+    #
+    # A module's bodies also instantiate *prelude* generics at its own types —
+    # `Array(Kemal::Router::Router::RouteDefinition)` — and those units are
+    # named after `Array`, not after anything this module declares. A consumer
+    # compiling against the artifact never sees the body that needs them, so
+    # nothing generates them and nothing else can: they are undefined at link.
+    # Twelve of the router's 41 undefined symbols are of this kind. They belong
+    # to this module by the same logic R-3 uses for impls, and attaching them
+    # is the next step rather than an oversight.
+    #
+    # And what is here is what the *consuming build* reached, not the module's
+    # whole surface. Codegen is demand-driven, so `app/greeter`'s artifact
+    # carries `polite` and not `title`, because `modules.iyi` calls one and not
+    # the other. That is `--emit-iyimod` living inside an ordinary build: a
+    # module compiled on its own would instantiate every exported def at the
+    # signature R-2 makes it write down, and it is exactly the command that
+    # cannot precede the artifact it produces.
+    private def collect_iyi_object_code(program : Program, module_name : String,
+                                        units_by_name : Hash(String, CompilationUnit)?) : Array(IyiMod::ObjectUnit)
+      code = [] of IyiMod::ObjectUnit
+      return code unless units_by_name
+      return code unless type = program.iyi_module_type(module_name)
+
+      names = [] of String
+      names << type.to_s
+      collect_iyi_unit_names type, names
+      names.sort!.uniq!
+
+      names.each do |name|
+        next unless unit = units_by_name[name]?
+        path = unit.object_name
+        next unless File.file?(path)
+        code << IyiMod::ObjectUnit.new(name, File.open(path, "rb", &.getb_to_end))
+      end
+      code
+    end
+
+    # The unit names of every type declared under *type*, recursively.
+    #
+    # A unit is named after the type that owns the methods in it, so an
+    # uninstantiated generic contributes nothing and an instantiated one
+    # contributes a name per instantiation. That is the shape of the problem
+    # rather than a limit of this walk: `List(T)` has no machine code, only
+    # `List(Int32)` does, and which instantiations exist is decided by whoever
+    # writes `List(Int32)` — which under separate compilation is the consumer,
+    # not this module. Those are `MonoBodies`' business (IV.2), not this
+    # section's.
+    private def collect_iyi_unit_names(type : ModuleType, names : Array(String)) : Nil
+      type.types?.try &.each_value do |declared|
+        if declared.is_a?(GenericType)
+          declared.each_instantiated_type { |instance| names << instance.to_s }
+        else
+          names << declared.to_s
+        end
+        collect_iyi_unit_names declared, names if declared.is_a?(ModuleType)
+      end
     end
 
     # A trait's methods are its whole point in the artifact: II.6 makes an impl
