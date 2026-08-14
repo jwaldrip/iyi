@@ -71,11 +71,11 @@ artifact alone leaves 0.47 s, of which class-var initializers and `main` are
 put it there. 0.47 s beats Crystal and does not beat Go. This item is the
 headline number, not a refinement of it.
 
-**3. A deliberately tiny prelude, written in iyi. Done — 833 lines.** Not a
-standard library: integers, booleans, a string, one sequence, one dictionary,
-`puts`. **Its scope is set by what the samples call and by nothing else** — a
-method enters the prelude because an existing sample needs it, never because it
-belongs there.
+**3. A deliberately tiny prelude, written in iyi. Done — 1,053 lines,
+primitives included.** Not a standard library: integers, booleans, a string,
+one sequence, one dictionary, `puts`. **Its scope is set by what the samples
+call and by nothing else** — a method enters the prelude because an existing
+sample needs it, never because it belongs there.
 
 The ceiling was not a guess. Crystal's own 0.1.0 shipped 8,161 lines of
 library, of which the core — `object`, `nil`, `bool`, `char`, `int`, `float`,
@@ -95,6 +95,25 @@ file is untouched.
 | front end, `hello.iyi` | 1.41 s → **0.13 s** |
 | whole build, `hello.iyi` | 2.10 s → **0.32 s** |
 | whole build, `webapp.iyi` | 2.17 s → **0.36 s** |
+
+**And then the same rule applied one level down.** With Crystal's prelude gone,
+0.11 s of the remaining 0.17 s front end was `src/primitives.cr` — not its 581
+lines but its shape: twelve numeric types crossed with each other is 2,580
+`@[Primitive]` definitions macro-expanded on every build. Measured by deleting
+the block and building again, which took the front end to 0.02 s.
+
+So iyi has its own. **`src/iyi/primitives.iyi` crosses five types** — `Int32`,
+`Int64`, `UInt8`, `UInt64`, `Float64`: the default integer, the one a byte
+count grows into, the byte, the one an address and a size are, and a float.
+That is 445 definitions, and it took the front end to 0.07 s. `Int8`, `Int16`,
+`Int128` and the unsigned middle exist as types and have no arithmetic;
+`1_i8 + 1_i8` is an undefined method. **This is a language-visible decision,
+not a library one** — it is the same rule as the rest of the prelude (a thing
+enters because a sample writes it) applied to the one file where the cost is
+quadratic. What it does not decide is implicit promotion: the five types cross
+each other exactly as Crystal's twelve do, so `1 + 1_i64` still works. Whether
+iyi keeps that or takes Go's line and demands an explicit conversion is open,
+and cheaper to answer now that the block is small enough to read.
 
 Three decisions made it that small, and each is a thing 0.1.0 does not have
 rather than a trick. **There is no `IO`**: `puts` writes to fd 1 and `to_s`
@@ -147,6 +166,10 @@ that would change what 0.1.0 looks like, and deferring it costs nothing.
    aspiration: IV.1a already ran a front end that never walks the prelude at
    0.049 s, and it emitted an object with an identical symbol table. 0.1.0's job
    is to make that configuration the ordinary one rather than an experiment.
+   **Met: 0.039 s.** Not by the route IV.1a took — the prelude is small enough
+   now that there is little left to cache — and two of the three things that
+   closed the gap were the prelude and its primitives. The third was the
+   instrument; see below.
 3. The end-to-end `crystal build` time is published in the same table even
    though LLVM and the linker dominate it, so that the claim cannot quietly
    become a front-end-only claim.
@@ -212,6 +235,40 @@ lines of prelude analysed from source on every build — which is exactly the
 thing `.iyimod` removes, and the prelude is now a module small enough to be
 one. Item 1 and item 2 are still what closes the last 3×.
 
+**The third run, and the target is met.** Two changes, one of them to the
+instrument:
+
+| program | stage | cold | warm |
+|---|---|---|---|
+| `hello.iyi` | front end (`--no-codegen`) | **0.04** | — |
+| `hello.iyi` | end to end | **0.25** | **0.25** |
+| `hello.go` | `go build` | 2.37 | 0.14 |
+| `webapp.iyi` | front end, iyi only | **0.05** | — |
+
+  measured 0.039 s against a 0.05 s target — **MET**.
+
+The first change was iyi's own `primitives.iyi`, above: 0.17 s → 0.07 s. The
+second was the instrument, and it has to be said plainly rather than banked.
+**The bench used to time `bin/crystal`**, a POSIX-sh wrapper that resolves
+symlinks with recursive shell functions, shells out to `uname` and `readlink`,
+prints which compiler it found, and then `exec`s the binary. It costs **30 ms**.
+`go build` is timed as a bare binary, so half of what was being compared was
+this repository's development ergonomics. The bench now asks the wrapper once
+for the two paths it knows and times the compiler: 0.07 s → 0.039 s.
+
+**So the honest reading is that the target is met by the compiler and not yet
+by `bin/crystal`**, which is still 0.066 s and is what a person in this
+checkout actually types. Shipping a binary rather than a shell script is a
+packaging job, not a compiler one, and it is not what this document is about —
+but it is 45% of the number until it is done.
+
+**What is left of the front end.** Of 0.039 s: about 0.020 s is the top-level
+pass over 1,053 lines of prelude and primitives, about 0.008 s is every other
+semantic pass together, and the rest is process startup. Item 1's artifact
+would carry the first term and item 2 addresses a term that is now 8 ms. The
+gap that made this project has closed to the point where the remaining costs
+are the ones every compiler has.
+
 ### What Crystal's own 0.1.0 looked like
 
 The scope above was drawn before checking it against the one release most
@@ -221,7 +278,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 95,010 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 833 prelude + 722 in samples |
+| Library | 8,161 lines (3,551 of it core) | 1,053 prelude + 722 in samples |
 | Specs | 21,146 lines | ~3,400 for iyi |
 | Samples | 24 **programs** | 8 **explanations** |
 | History | 3,165 commits over 21 months | 75 |
