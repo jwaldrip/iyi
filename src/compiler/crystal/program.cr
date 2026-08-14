@@ -96,6 +96,28 @@ module Crystal
     # source, or nil (SPEC.md IV.1). Set by `--use-iyimod`.
     property iyi_module_dir : String? = nil
 
+    # iyi: whether an imported artifact's `ObjectCode` is worth reading.
+    #
+    # False for a front-end-only build, which is most of them: the section is
+    # the largest thing in the file and a build that generates no code has no
+    # use for it, so it is seeked past. Set by the compiler from `--no-codegen`.
+    property iyi_wants_object_code : Bool = false
+
+    # iyi: the object files each imported artifact carried, by module path
+    # (SPEC.md IV.1g). What the linker is given in place of the code this build
+    # did not generate, because it never saw the bodies.
+    getter iyi_artifact_objects = {} of String => Array(IyiMod::ObjectUnit)
+
+    # iyi: types whose methods must be emitted as real functions because their
+    # module's `.iyimod` is being written (SPEC.md IV.1g).
+    #
+    # Codegen inlines a method whose body is a literal and emits no symbol for
+    # it. That is right for a whole-program build and wrong for a module that
+    # somebody else will link against: the consumer has no body to inline and
+    # calls the symbol, which the artifact then turns out not to define. Empty
+    # unless `--emit-iyimod` asked for artifacts.
+    getter iyi_exported_owners = Set(Type).new
+
     # iyi: the `using` directives each file's module unit writes, by absolute
     # filename and as written (SPEC.md II.3).
     #

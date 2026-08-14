@@ -536,7 +536,15 @@ class Crystal::Call
         # is the whole of what the artifact buys the front end: the call is
         # checked against the signature and the module's body is never seen.
         if match.def.iyi_from_artifact?
-          typed_def.type = typed_def.freeze_type || program.nil unless typed_def.type?
+          # Assigned rather than defaulted, and this is not a tidy-up. `type?`
+          # answers `@type || freeze_type`, so a def whose return annotation
+          # has been resolved *reads* as typed while `@type` is still nil —
+          # and `Def#mangled_name` reads `@type`. Guarding this on `type?`
+          # therefore left the front end correct and gave codegen a symbol
+          # without its return type on the end, which the artifact's own object
+          # file does not define. It failed at link, in a build nothing else
+          # could reach; a build that had linked would have been worse.
+          typed_def.type = typed_def.freeze_type || program.nil
           typed_defs << typed_def
           next
         end

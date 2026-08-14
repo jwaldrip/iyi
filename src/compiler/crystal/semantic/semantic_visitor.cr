@@ -298,12 +298,16 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
   private def import_artifact(node : ImportDecl, artifact_path : String) : Nil
     artifact =
       begin
-        IyiMod.read(artifact_path)
+        IyiMod.read(artifact_path, want_object_code: @program.iyi_wants_object_code)
       rescue ex : IyiMod::Error
         node.raise ex.message.to_s
       end
 
     check_artifact_matches node, artifact, artifact_path
+
+    unless artifact.object_code.empty?
+      @program.iyi_artifact_objects[artifact.module_name] = artifact.object_code
+    end
 
     source = String.build { |io| IyiMod.declarations(artifact, io) }
     parser = @program.new_parser(source)

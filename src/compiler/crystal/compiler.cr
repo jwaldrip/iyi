@@ -406,6 +406,16 @@ module Crystal
 
       flags = program.flags.to_a.sort!
 
+      # Before codegen, because that is what it is for: a method whose body is
+      # a literal is inlined and emits no symbol, and this build is producing
+      # code somebody else will call by name.
+      program.iyi_module_paths.each_value do |module_name|
+        if type = program.iyi_module_type(module_name)
+          program.iyi_exported_owners << type
+          collect_iyi_owners type, program.iyi_exported_owners
+        end
+      end
+
       program.iyi_module_paths.map do |filename, module_name|
         imports = program.iyi_module_imports[filename]?.try do |dependencies|
           dependencies.map { |dependency| program.iyi_module_paths[dependency]? || dependency }
@@ -550,6 +560,18 @@ module Crystal
           names << declared.to_s
         end
         collect_iyi_unit_names declared, names if declared.is_a?(ModuleType)
+      end
+    end
+
+    # The same walk as `collect_iyi_unit_names`, keeping the types rather than
+    # their names — `try_inline_call` is handed an owner, not a string.
+    private def collect_iyi_owners(type : ModuleType, owners : Set(Type)) : Nil
+      type.types?.try &.each_value do |declared|
+        owners << declared
+        if declared.is_a?(GenericType)
+          declared.each_instantiated_type { |instance| owners << instance }
+        end
+        collect_iyi_owners declared, owners if declared.is_a?(ModuleType)
       end
     end
 
@@ -832,6 +854,7 @@ module Crystal
       program.warnings = @warnings
       program.optimization_mode = @optimization_mode
       program.iyi_module_dir = @use_iyimod
+      program.iyi_wants_object_code = !@no_codegen
       program
     end
 
@@ -1123,6 +1146,7 @@ module Crystal
 
     private def codegen(program, units : Array(CompilationUnit), output_filename, output_dir)
       object_names = units.map &.object_filename
+      object_names.concat write_iyi_artifact_objects(program, output_dir)
 
       @progress_tracker.stage("Codegen (bc+obj)") do
         @progress_tracker.stage_progress_total = units.size
@@ -1154,6 +1178,37 @@ module Crystal
       end
 
       units
+    end
+
+    # iyi: unpacks the object files imported artifacts carried, into the same
+    # directory the build's own units go to, and returns their names for the
+    # link (SPEC.md IV.1g).
+    #
+    # Written out rather than handed to the linker from memory because a linker
+    # takes paths. They are named after the module and the unit so that two
+    # modules carrying a unit for the same type — which cannot happen under
+    # R-3, and which a corrupt or hand-made artifact could still ask for —
+    # collide as two files rather than as one silently overwritten.
+    private def write_iyi_artifact_objects(program, output_dir) : Array(String)
+      names = [] of String
+      extension = codegen_target.object_extension
+
+      program.iyi_artifact_objects.each do |module_name, units|
+        units.each do |unit|
+          name = "iyimod-#{safe_object_name(module_name)}-#{safe_object_name(unit.name)}#{extension}"
+          File.write File.join(output_dir, name), unit.code
+          names << name
+        end
+      end
+
+      names
+    end
+
+    # A module path or a type name as a filename. Neither is one — `app/greeter`
+    # has a separator in it and `List(Int32)` has parentheses — and the point is
+    # only that two different names cannot produce one file.
+    private def safe_object_name(name : String) : String
+      name.gsub(/[^A-Za-z0-9_]/) { |match| "-#{match[0].ord}" }
     end
 
     private def sequential_codegen(units)

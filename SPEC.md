@@ -63,13 +63,14 @@ the artifact everything here is a design document. The container, the `Header`,
 `--use-iyimod` now compiles an imported module from its artifact: seven of the
 eight samples compile with the imported module's source **deleted**.
 
-`ObjectCode` now carries a module's own machine code — the object files of the
-types it declares, which is what a build can link instead of re-generating.
-Three things still have to join them before a build can be produced rather than
-only typechecked, and IV.1g names all three: the prelude generics a module
-instantiates at its own types, everything `_main` holds on the module's behalf
-(its constants, its proc literals, its type ids), and the fact that a module
-compiled as somebody's dependency yields only the code that dependant reached.
+`ObjectCode` carries a module's own machine code, and **a program built from a
+module's artifact with the module's source deleted now runs**. That is the
+first thing here that produces a program rather than a typecheck. It holds for
+a module of plain functions over primitives and not yet for one that
+interpolates a string, declares a type or holds a constant: IV.1g measures the
+gap on `modules.iyi` at two undefined symbols, names the five things behind it,
+and names the one decision — symbol linkage for shared prelude instantiations —
+that the largest of them turns on.
 
 **2. The passes that still walk the prelude stop walking it (IV.1d).** The
 artifact alone leaves 0.47 s, of which class-var initializers and `main` are
@@ -1903,9 +1904,10 @@ is no body to visit and there is not meant to be one — R-2 guarantees the
 annotation is written, and IV.2 keeps the body out. That is the whole of what
 the front end gets, and it is also the boundary: a module read this way
 contributes **no initialiser**, because its top-level code is not a
-declaration and is not in the file. So `--use-iyimod` implies `--no-codegen`
-until `ObjectCode` is complete — it is now written but not yet read, and IV.1g
-names the three things still missing from it. IV.1a said the same thing from
+declaration and is not in the file. That is the boundary that remains: a module
+of plain functions now builds, links and runs from its artifact (IV.1g), and a
+module that has to *initialise* something still cannot, because its top-level
+code is not a declaration and never travelled. IV.1a said the same thing from
 the other direction —
 codegen needs the prelude's tree for reasons caching analysis does not remove.
 
@@ -1973,34 +1975,87 @@ type_id` among its **undefined** symbols. The number is resolved by the linker
 from a definition in `_main`, not baked into the code. Whoever assigns the ids
 defines the symbols, and everything else relocates against them.
 
-**What it does not carry yet, said plainly because none of it is visible in the
-file.**
+**And a program built from an artifact runs.** `--use-iyimod` no longer implies
+`--no-codegen`. A def read from a `.iyimod` is *declared* rather than defined —
+the same shape a `lib` function takes, and for the same reason: the body is
+somebody else's — the artifact's object files are unpacked into the build's
+own output directory, and the linker joins the two.
 
-1. **Prelude generics instantiated at this module's own types.** The router's
+```
+crystal build --emit-iyimod mods -o from-source main.iyi   # 42
+rm app/twice.iyi
+crystal build --use-iyimod  mods -o from-artifact main.iyi # 42
+```
+
+That is the first thing in this document that produces a program rather than a
+typecheck, and `spec/compiler/iyimod_spec.cr` runs both binaries and compares
+what they print.
+
+**Two bugs it found, both of the kind that would have linked and lied.**
+
+*A def read from an artifact must not be inlined.* Its body is absent, which
+reads to codegen as the simplest possible body — `Nop` is the first case
+`try_inline_call` matches — so a call to the module's code was being replaced
+by nothing at all. It did not link, because an absent body also has no type;
+had it, the program would have run and computed the wrong answer.
+
+*`type?` is not `@type`.* `ASTNode#type?` answers `@type || freeze_type`, so a
+def whose return annotation has been resolved reads as typed while `@type` is
+still nil — and `Def#mangled_name` reads `@type`. Setting the type only `unless
+type?` therefore left the front end correct and handed codegen a symbol with no
+return type on the end, which is not the symbol the artifact defines. The
+linker caught it. Nothing else would have.
+
+**What is still missing, measured on `modules.iyi`** — build it, delete
+`app/greeter.iyi` and `app/formal.iyi`, build again from the artifacts. **Four
+undefined symbols, now two.**
+
+1. **A method inlined away has no symbol to carry.** `title` returns a string
+   literal, so every call site inlined it and the producing build emitted no
+   function — but the consumer has no body to inline and calls it by name.
+   Two of the four. Fixed by not inlining a method whose module is writing an
+   artifact: a build producing code somebody else will call must define what it
+   is called by. The check asks the *instance* type, because a module-level
+   `def` is owned by the module's metaclass, which is most of what a module
+   exports.
+2. **Prelude methods the module's body needs and the consumer does not.**
+   `String::interpolation<String, String, String>` is in the prelude's `String`
+   unit, and the consumer generates its own `String` unit holding whatever *it*
+   instantiated. The remaining two, and the one with no cheap answer: carrying
+   the producer's whole `String` unit would define symbols the consumer also
+   defines, and the linker refuses that. Sub-unit granularity cannot be had by
+   copying bytes, so the choices are to give Crystal's functions `linkonce_odr`
+   linkage — which is what C++ and Rust do with template instantiations, and
+   which is sound here because the artifact's header already asserts the same
+   compiler, triple and flags — or to make a module's own unit closed over what
+   it calls. That is a decision, not an oversight, and it is the next one.
+3. **Prelude generics instantiated at this module's own types.** The router's
    body builds an `Array(Kemal::Router::Router::RouteDefinition)`, and that
    unit is named after `Array` — not after anything `kemal/router` declares —
-   so the rule above does not catch it. **Twelve of the router's 41 undefined
-   symbols are of this kind**, and nothing else can supply them: a consumer
-   compiling against the artifact never sees the body that needs them. They
-   belong to this module by the same logic R-3 uses for impls — the
-   instantiation exists because of this module and no other — and attaching
-   them is the next step.
-2. **Everything `_main` holds on the module's behalf.** The module's constants
+   so the ownership rule does not catch it. **Twelve of the router's 41
+   undefined symbols are of this kind**, and nothing else can supply them.
+   They belong to this module by the same logic R-3 uses for impls — the
+   instantiation exists because of this module and no other — so unlike (2)
+   this one has an owner and needs no linkage decision. `modules.iyi` does not
+   reach it: the only type its modules declare is a trait, which has no code of
+   its own until an impl answers it.
+4. **Everything `_main` holds on the module's behalf.** The module's constants
    (`Kemal::Dsl::APP` and its initialiser), its proc literals — named by source
-   file and line, `~procProc(…)@samples/iyi/kemal/router.iyi:210` — and the
-   type ids above are all emitted into the program's own unit. A consumer that
-   never opens the source cannot produce any of them.
-3. **What the *consuming* build reached, rather than the module's surface.**
-   Codegen is demand-driven, so `app/greeter`'s artifact carries `polite` and
-   not `title`: `modules.iyi` calls one and not the other. This is
-   `--emit-iyimod` living inside an ordinary build. A module compiled on its
-   own would instantiate every exported def at the signature R-2 makes it write
-   down — and compiling a module on its own is the command that cannot precede
-   the artifact it produces.
+   file and line, `~procProc(…)@samples/iyi/kemal/router.iyi:210` — and its
+   type ids are all emitted into the program's own unit. A consumer that never
+   opens the source cannot produce any of them. `modules.iyi` does not reach
+   this one either; the Kemal port does.
+5. **What the *consuming* build reached, rather than the module's surface.**
+   Codegen is demand-driven, so an artifact carries the code its dependant
+   asked for. This is `--emit-iyimod` living inside an ordinary build: a module
+   compiled on its own would instantiate every exported def at the signature
+   R-2 makes it write down — and compiling a module on its own is the command
+   that cannot precede the artifact it produces.
 
-So `--use-iyimod` still implies `--no-codegen`. The section is written and is
-not yet read by a build, which is the honest state: the bytes are there and
-three things have to join them before a program can be linked from them.
+So the mechanism is proved and the coverage is not. A module of plain
+functions over primitives builds, links and runs from its artifact today; a
+module that interpolates a string, declares a type or holds a constant does
+not, and each of those is one of the items above rather than a surprise.
 
 **A reader that does not want it does not pay for it.** `ObjectCode` is the
 largest section in the file and is written last; `IyiMod.read` seeks past it

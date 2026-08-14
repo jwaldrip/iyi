@@ -401,6 +401,51 @@ describe Crystal::IyiMod do
     end
   end
 
+  # The claim Part IV exists for, end to end: a program built from a module's
+  # artifact, with the module's source **deleted**, that runs and prints what
+  # the same program printed when it was built from source.
+  #
+  # The module is arithmetic on purpose. Everything it calls is a primitive and
+  # so is inlined into its own object file, which keeps this example about the
+  # mechanism rather than about IV.1g's remaining gap — a module whose body
+  # calls a prelude *method* needs a symbol the consumer may never instantiate,
+  # and that is measured in the SPEC rather than asserted here.
+  it "builds and runs a program from a module's artifact, source deleted" do
+    with_tempdir("iyimod_end_to_end") do
+      Dir.mkdir_p "app"
+      File.write "app/twice.iyi", <<-IYI
+        module app/twice
+
+        pub def twice(n : Int32) : Int32
+          n + n
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/twice
+
+        puts App::Twice.twice(21)
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "42"
+
+      File.delete "app/twice.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "42"
+    end
+  end
+
   # A build that generates no code has none to carry. Checked because the two
   # cases are told apart by the flag the build was given and by nothing in the
   # file, so an empty section here is the honest answer rather than a failure

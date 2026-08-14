@@ -463,6 +463,30 @@ class Crystal::CodeGenVisitor
   def try_inline_call(target_def, body, self_type, call_args)
     return false if target_def.is_a?(External)
 
+    # iyi: a def from a `.iyimod` has no body, and an absent body reads here as
+    # the simplest possible one — `Nop` is the first case below. Inlining it
+    # would replace a call to the module's code with nothing at all, which is
+    # the one way this design can be wrong quietly rather than loudly: the
+    # program links and computes the wrong answer. The body is not simple, it
+    # is elsewhere (SPEC.md IV.1g).
+    return false if target_def.iyi_from_artifact?
+
+    # iyi: and the same thing from the producing side. A method inlined at
+    # every call site emits no symbol, which is right for a whole-program build
+    # and wrong for one writing a `.iyimod`: the consumer cannot inline what it
+    # has no body for, so it calls a name this build decided not to define.
+    # Measured on `modules.iyi`: `title` returns a string literal, and two of
+    # the four symbols missing from the first artifact-linked build were it.
+    #
+    # Asked of the instance type, because a module-level `def` is owned by the
+    # module's *metaclass* — `App::Greeter::title` with a `::` in its symbol,
+    # not a `#` — and that is most of what a module exports.
+    unless @program.iyi_exported_owners.empty?
+      if owner = target_def.owner
+        return false if @program.iyi_exported_owners.includes?(owner.instance_type)
+      end
+    end
+
     case body
     when Nop, NilLiteral, BoolLiteral, CharLiteral, StringLiteral, NumberLiteral, SymbolLiteral
       return true unless @needs_value

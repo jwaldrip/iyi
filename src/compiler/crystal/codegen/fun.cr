@@ -94,7 +94,13 @@ class Crystal::CodeGenVisitor
 
       args = codegen_fun_signature(mangled_name, target_def, self_type, is_fun_literal, is_closure)
 
-      needs_body = !target_def.is_a?(External) || is_exported_fun
+      # iyi: a def read from a `.iyimod` is declared, not defined (SPEC.md
+      # IV.1g). Its machine code is in the artifact's `ObjectCode` and reaches
+      # the program through the linker, so what this build emits is the
+      # signature and nothing under it — the same shape a `lib` function takes,
+      # and for the same reason: the body is somebody else's.
+      needs_body = (!target_def.is_a?(External) || is_exported_fun) &&
+                   !target_def.iyi_from_artifact?
       if needs_body
         emit_def_debug_metadata target_def unless @debug.none?
         set_current_debug_location target_def if @debug.line_numbers?
