@@ -1,0 +1,100 @@
+# Text — SPEC.md, "0.1.0", item 3.
+#
+# The compiler declares `String`'s fields itself — `@bytesize`, `@length` and
+# `@c`, in that order, in `Program#initialize` — because codegen lays out
+# string literals before any prelude is read. So this file reopens a type that
+# already has its shape and only says what can be done with it.
+class String
+  # The three `Int32`s in front of the bytes: the type id, the byte count and
+  # the character count. Written by hand because that layout is codegen's, and
+  # a string built here has to be indistinguishable from one it emitted.
+  HEADER_SIZE = 12
+
+  # Allocates *bytesize* bytes, hands the buffer to the block to fill, and
+  # returns the string that results. The character count is scanned rather
+  # than asked for: a caller that knew it would have to be trusted, and every
+  # caller here is copying bytes it did not decode.
+  def self.new(bytesize : Int32, & : Pointer(UInt8) -> Nil) : String
+    memory = Pointer(UInt8).malloc((bytesize + HEADER_SIZE + 1).to_u64)
+    buffer = memory + HEADER_SIZE
+    yield buffer
+
+    header = memory.as(Pointer(Int32))
+    header[0] = "".crystal_type_id
+    header[1] = bytesize
+    header[2] = character_count(buffer, bytesize)
+    memory.as(String)
+  end
+
+  # UTF-8 continuation bytes are `10xxxxxx`; every other byte starts a
+  # character. That is the whole of the decoding this prelude does.
+  private def self.character_count(buffer : Pointer(UInt8), bytesize : Int32) : Int32
+    count = 0
+    index = 0
+    while index < bytesize
+      count = count + 1 if (buffer[index] & 192_u8) != 128_u8
+      index = index + 1
+    end
+    count
+  end
+
+  def bytesize : Int32
+    @bytesize
+  end
+
+  def size : Int32
+    @length
+  end
+
+  def empty? : Bool
+    @bytesize == 0
+  end
+
+  def to_unsafe : Pointer(UInt8)
+    pointerof(@c)
+  end
+
+  def to_s : String
+    self
+  end
+
+  def +(other : String) : String
+    return other if empty?
+    return self if other.empty?
+
+    String.new(bytesize + other.bytesize) do |buffer|
+      buffer.copy_from(to_unsafe, bytesize)
+      (buffer + bytesize).copy_from(other.to_unsafe, other.bytesize)
+    end
+  end
+
+  def ==(other : String) : Bool
+    return false unless bytesize == other.bytesize
+
+    index = 0
+    while index < bytesize
+      return false unless to_unsafe[index] == other.to_unsafe[index]
+      index = index + 1
+    end
+    true
+  end
+
+  # Interpolation is a call the compiler writes: `"a#{b}"` reaches here as
+  # `String.interpolation("a", b)` (`LiteralExpander#expand`). The overloads
+  # are what let the common shapes avoid work — a single string is itself.
+  def self.interpolation(value : String) : String
+    value
+  end
+
+  def self.interpolation(value) : String
+    value.to_s
+  end
+
+  def self.interpolation(*values : *T) : String forall T
+    result = ""
+    {% for index in 0...T.size %}
+      result = result + interpolation(values[{{ index }}])
+    {% end %}
+    result
+  end
+end

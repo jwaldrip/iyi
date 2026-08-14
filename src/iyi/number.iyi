@@ -1,0 +1,78 @@
+# Numbers — SPEC.md, "0.1.0", item 3.
+#
+# Arithmetic is not here: `primitives.cr` defines `+`, `-`, `*`, the
+# comparisons and the conversions as `@[Primitive]`s the compiler emits
+# instructions for. What is left is the two operators Crystal writes in
+# `int.cr` rather than in the compiler, and turning a number into text.
+struct Int32
+  def //(other : Int32) : Int32
+    unsafe_div(other)
+  end
+
+  def %(other : Int32) : Int32
+    unsafe_mod(other)
+  end
+
+  def - : Int32
+    0 - self
+  end
+
+  def to_s : String
+    to_i64.to_s
+  end
+
+  def hash : Int32
+    self
+  end
+end
+
+struct Int64
+  def //(other : Int64) : Int64
+    unsafe_div(other)
+  end
+
+  def %(other : Int64) : Int64
+    unsafe_mod(other)
+  end
+
+  def - : Int64
+    0_i64 - self
+  end
+
+  # Digits are written from the end backwards, which is the only order the
+  # arithmetic gives them in. The width is counted first so the string can be
+  # allocated once at its final size — this prelude has no builder to grow.
+  def to_s : String
+    return "0" if self == 0
+
+    negative = self < 0
+    magnitude = negative ? -self : self
+
+    digits = 1
+    limit = 10_i64
+    while magnitude >= limit
+      digits = digits + 1
+      # The last power of ten that fits: at that point every further digit is
+      # counted by the comparison itself.
+      break if limit > 922337203685477580_i64
+      limit = limit * 10_i64
+    end
+
+    bytesize = negative ? digits + 1 : digits
+    String.new(bytesize) do |buffer|
+      remaining = magnitude
+      index = bytesize - 1
+      while index >= 0
+        buffer[index] = 48_u8 + (remaining % 10_i64).to_u8
+        remaining = remaining // 10_i64
+        index = index - 1
+        break if negative && index == 0
+      end
+      buffer[0] = 45_u8 if negative
+    end
+  end
+
+  def hash : Int32
+    to_i32!
+  end
+end

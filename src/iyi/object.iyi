@@ -1,0 +1,36 @@
+# What every value can do — SPEC.md, "0.1.0", item 3.
+#
+# Small on purpose. `to_s` returns a `String` rather than taking an `IO`, which
+# is the single biggest saving against Crystal's core: an `IO` here would bring
+# buffering, encodings and a class hierarchy for the sake of `puts`.
+class Object
+  # The type's own name, which is what a value that has said nothing about
+  # itself can honestly print. A type that wants better defines its own.
+  def to_s : String
+    {{ @type.name.stringify }}
+  end
+
+  def ==(other) : Bool
+    false
+  end
+
+  def !=(other) : Bool
+    !(self == other)
+  end
+end
+
+struct Nil
+  def to_s : String
+    ""
+  end
+
+  def ==(other : Nil) : Bool
+    true
+  end
+end
+
+struct Bool
+  def to_s : String
+    self ? "true" : "false"
+  end
+end
