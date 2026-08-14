@@ -29,6 +29,9 @@ noise only ever adds, so the minimum is the better estimate of the floor.
 Limits, stated because they bound the result
 --------------------------------------------
 
+* **The compiler is timed as a binary**, not through `bin/crystal`. See the
+  comment on `CRYSTAL` below for why, and subtract nothing: the earlier runs
+  recorded in SPEC.md were timed through the wrapper and carry its 30 ms.
 * **The corpus is one program.** `hello` is the only pair where "the equivalent
   Go program" is unambiguous, and iyi has no larger program to offer: its
   samples explain rules rather than do work. `webapp.iyi` is timed too, but
@@ -52,7 +55,20 @@ import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-CRYSTAL = ROOT / "bin" / "crystal"
+
+# The compiler binary, not `bin/crystal`.
+#
+# `bin/crystal` is development scaffolding: a POSIX-sh script that resolves
+# symlinks with recursive shell functions, shells out to `uname` and `readlink`,
+# warns which compiler it found, and then `exec`s this binary. It costs **30 ms**
+# — half of what the front end costs now — and no released compiler would ship
+# it. `go build` is timed as a bare binary, so timing iyi through a shell
+# wrapper measures this repository's ergonomics against Go's compiler.
+#
+# It was worth timing while the front end cost 1.3 s and the wrapper was 2% of
+# it. At 0.03 s it is not.
+CRYSTAL = ROOT / ".build" / "crystal"
+WRAPPER = ROOT / "bin" / "crystal"
 
 # SPEC.md 0.1.0, "Done is a number": IV.1a already ran a front end that never
 # walks the prelude at 0.049 s and emitted an object with an identical symbol
@@ -60,6 +76,32 @@ CRYSTAL = ROOT / "bin" / "crystal"
 FRONT_END_TARGET = 0.05
 
 RUNS = 3
+
+
+def compiler_env():
+    """The environment `bin/crystal` would have set, asked for once.
+
+    The wrapper is what knows where this checkout's sources and its `libgc`
+    are. Asking it once and passing the answer to the binary is the same build
+    the wrapper would have run, without paying for the shell on every one.
+    """
+    result = subprocess.run(
+        [str(WRAPPER), "env", "CRYSTAL_PATH", "CRYSTAL_LIBRARY_PATH"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        return {"CRYSTAL_PATH": f"lib:{ROOT / 'src'}"}
+
+    lines = result.stdout.decode().split()
+    env = {}
+    if len(lines) > 0:
+        env["CRYSTAL_PATH"] = lines[0]
+    if len(lines) > 1:
+        env["CRYSTAL_LIBRARY_PATH"] = lines[1]
+    return env
+
+
+CRYSTAL_ENV = {}
 
 
 def best(runs, fn):
@@ -99,7 +141,9 @@ def time_crystal(source, out_dir, codegen, cold):
         if not codegen:
             argv.append("--no-codegen")
         argv.append(str(source))
-        return run(argv, env={"CRYSTAL_CACHE_DIR": str(cache)})
+        env = dict(CRYSTAL_ENV)
+        env["CRYSTAL_CACHE_DIR"] = str(cache)
+        return run(argv, env=env)
 
     if not cold:
         # Warm means the second build onward, so pay for the first here.
@@ -136,6 +180,8 @@ def show(value):
 def main():
     if not CRYSTAL.exists():
         sys.exit(f"no compiler at {CRYSTAL} — run `make crystal` first")
+
+    CRYSTAL_ENV.update(compiler_env())
 
     hello_iyi = ROOT / "samples" / "iyi" / "hello.iyi"
     webapp_iyi = ROOT / "samples" / "iyi" / "webapp.iyi"
@@ -177,7 +223,7 @@ def main():
         print()
         return 0
 
-    print(f"  NOT MET — {front_hello / FRONT_END_TARGET:.0f}x over.")
+    print(f"  NOT MET — {front_hello / FRONT_END_TARGET:.1f}x over.")
     print()
     print("  The prelude is iyi's own now (0.1.0 item 3), which is what took")
     print("  this from 26x over to here. What is left is that its 833 lines are")
