@@ -134,10 +134,13 @@ puts announce(Robot.new(9))
 # * `.iyimod` reaches the front end and stops there. `modules.iyi` and
 #   `immutable.iyi` compile with the imported module's source deleted, but a
 #   build that reads artifacts cannot yet produce a program, because the
-#   artifact carries declarations and no object code (SPEC.md IV.1f). This
-#   file imports nothing, so nothing about how it is compiled has changed:
-#   Crystal's 107,719-line prelude is still analysed from source in front of
-#   it, which is the 95% the whole design exists to remove.
+#   artifact carries declarations and no object code (SPEC.md IV.1f).
+#
+# * The prelude under this file is iyi's own, 833 lines of it, and that is why
+#   building it costs 0.32 s rather than 2.10 s. It is not a standard library
+#   and does not pretend to be one: no `Float64#to_s`, no `Range`, no `Set`,
+#   no formatting, and `raise` is a panic that prints and exits. What is in it
+#   is what a sample called for (SPEC.md, "0.1.0", item 3).
 #
 # See `modules.iyi` for `import` and `using` across files, `generics.iyi` for
 # implementing a trait for a generic type and for associated types, bounds and
