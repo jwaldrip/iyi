@@ -305,6 +305,23 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
 
     check_artifact_matches node, artifact, artifact_path
 
+    # III.5's initialiser is not a declaration, so it is not in the artifact
+    # and a module read from one contributes none. For a front-end build that
+    # costs nothing; for a build that produces a program it is the difference
+    # between right and wrong, and the wrongness is invisible — the program
+    # links and runs with the module's setup silently missing. Refused here,
+    # where the module and the reason are both nameable.
+    if artifact.has_initialiser && @program.iyi_wants_object_code
+      node.raise <<-MESSAGE
+        "#{artifact.module_name}" has module-level code to run, and a .iyimod
+        carries declarations rather than an initialiser (SPEC.md III.5, IV.1g).
+
+        A program built against this artifact would link and run with the
+        module never having set itself up. Build it from source, or pass
+        --no-codegen to typecheck against the artifact.
+        MESSAGE
+    end
+
     unless artifact.object_code.empty?
       @program.iyi_artifact_objects[artifact.module_name] = artifact.object_code
     end
@@ -369,7 +386,45 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       @iyi_importing.pop
     end
 
+    @program.iyi_module_initialisers << filename if iyi_initialiser?(parsed_nodes)
+
     FileNode.new(parsed_nodes, filename)
+  end
+
+  # iyi: whether a module's file has top-level code that has to *run* — a
+  # module initialiser in III.5's sense, as opposed to declarations.
+  #
+  # Deliberately conservative: anything this does not recognise as a
+  # declaration counts as an initialiser. Answering "no" wrongly gives a build
+  # that links and silently omits the module's setup, which is the worst
+  # outcome available here; answering "yes" wrongly gives a refusal that says
+  # why. A `.iyimod` carries declarations only, so this is what a codegen build
+  # reading one has to be told (SPEC.md IV.1g).
+  # A type's body is walked rather than taken as a declaration, and that is
+  # where the first version of this was wrong. `Parser#apply_module_header`
+  # wraps a whole module file in a `ModuleDef` for `A::B`, so treating a
+  # `ModuleDef` as a declaration made *every* module answer "no initialiser" —
+  # the flag was written, and always false. A body is also where a class
+  # variable's initialiser lives, which has to run for the same reason.
+  private def iyi_initialiser?(node : ASTNode) : Bool
+    case node
+    when Expressions
+      node.expressions.any? { |child| iyi_initialiser?(child) }
+    when ModuleDef, ClassDef, TraitDef, ImplDef, LibDef
+      iyi_initialiser?(node.body)
+    when EnumDef
+      node.members.any? { |member| iyi_initialiser?(member) }
+    when VisibilityModifier
+      # `pub struct List(T)` is a `VisibilityModifier` around the declaration,
+      # not a declaration — which made every module with a `pub` type read as
+      # having an initialiser, and refused three samples that were fine.
+      iyi_initialiser?(node.exp)
+    when Nop, ModuleHeader, ImportDecl, UsingDecl, Def, Macro, AnnotationDef,
+         Alias, TypeDeclaration, AssocTypeDecl, Annotation, Include, Extend
+      false
+    else
+      true
+    end
   end
 
   private def require_file(node : Require, filename : String)

@@ -432,6 +432,7 @@ module Crystal
           imports: imports || [] of String,
           usings: program.iyi_usings[filename]? || [] of String,
           exports: collect_iyi_exports(program, module_name, filename),
+          has_initialiser: program.iyi_module_initialisers.includes?(filename),
         )
 
         {File.join(dir, "#{module_name}.iyimod"), artifact}
@@ -544,21 +545,23 @@ module Crystal
 
     # The unit names of every type declared under *type*, recursively.
     #
-    # A unit is named after the type that owns the methods in it, so an
-    # uninstantiated generic contributes nothing and an instantiated one
-    # contributes a name per instantiation. That is the shape of the problem
-    # rather than a limit of this walk: `List(T)` has no machine code, only
-    # `List(Int32)` does, and which instantiations exist is decided by whoever
-    # writes `List(Int32)` — which under separate compilation is the consumer,
-    # not this module. Those are `MonoBodies`' business (IV.2), not this
-    # section's.
+    # A unit is named after the type that owns the methods in it, and **a
+    # generic type's instantiations are deliberately not here**. `List(T)` has
+    # no machine code; only `List(Int32)` does, and which instantiations exist
+    # is decided by whoever writes `List(Int32)` — under separate compilation
+    # the consumer, not this module. Those are `MonoBodies`' business (IV.2).
+    #
+    # Carrying them was tried and is wrong, in a way worth recording because it
+    # looks right. `--emit-iyimod` runs inside an ordinary build, so the
+    # producer's instantiations *are* the consumer's — it appears to work. It
+    # does not: `List(Int32)::new` is synthesized from `initialize` rather than
+    # read from the artifact, so the consumer generates its own and the link
+    # fails on a duplicate symbol. Carrying an instantiation would also be true
+    # only while the two builds are the same build, which is the arrangement
+    # this file exists to end.
     private def collect_iyi_unit_names(type : ModuleType, names : Array(String)) : Nil
       type.types?.try &.each_value do |declared|
-        if declared.is_a?(GenericType)
-          declared.each_instantiated_type { |instance| names << instance.to_s }
-        else
-          names << declared.to_s
-        end
+        names << declared.to_s unless declared.is_a?(GenericType)
         collect_iyi_unit_names declared, names if declared.is_a?(ModuleType)
       end
     end
@@ -567,10 +570,7 @@ module Crystal
     # their names — `try_inline_call` is handed an owner, not a string.
     private def collect_iyi_owners(type : ModuleType, owners : Set(Type)) : Nil
       type.types?.try &.each_value do |declared|
-        owners << declared
-        if declared.is_a?(GenericType)
-          declared.each_instantiated_type { |instance| owners << instance }
-        end
+        owners << declared unless declared.is_a?(GenericType)
         collect_iyi_owners declared, owners if declared.is_a?(ModuleType)
       end
     end

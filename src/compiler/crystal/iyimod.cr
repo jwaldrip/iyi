@@ -35,7 +35,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 7_u32
+  FORMAT_VERSION = 8_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -229,6 +229,15 @@ module Crystal::IyiMod
     # recorded. III.5's initialisation order is derivable from these.
     getter imports : Array(String)
 
+    # Whether the module has top-level code that has to run (III.5).
+    #
+    # In the artifact because it is what a consumer cannot find out any other
+    # way: the initialiser is not a declaration, so it is not in this file and
+    # a module read from here contributes none. Without the flag a build links
+    # a program whose module never set itself up — correct-looking, and wrong.
+    # With it, the build is refused and says so.
+    getter has_initialiser : Bool
+
     # The `using` directives the module writes, as written (II.3).
     #
     # Not part of the module's surface — nothing here is reachable through it —
@@ -258,7 +267,7 @@ module Crystal::IyiMod
 
     def initialize(@module_name, @source_path, @compiler_version, @target_triple,
                    @flags, @imports, @usings = [] of String, @exports = Exports.empty,
-                   @object_code = [] of ObjectUnit)
+                   @object_code = [] of ObjectUnit, @has_initialiser = false)
     end
   end
 
@@ -365,7 +374,7 @@ module Crystal::IyiMod
 
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
-        object_code)
+        object_code, header[:has_initialiser])
     end
   end
 
@@ -378,6 +387,7 @@ module Crystal::IyiMod
     io.puts "compiler      #{artifact.compiler_version}"
     io.puts "target        #{artifact.target_triple}"
     io.puts "flags         #{artifact.flags.empty? ? "(none)" : artifact.flags.join(", ")}"
+    io.puts "initialiser   #{artifact.has_initialiser ? "yes — cannot be linked against yet" : "none"}"
     if artifact.imports.empty?
       io.puts "imports       (none)"
     else
@@ -679,6 +689,7 @@ module Crystal::IyiMod
     write_string io, artifact.target_triple
     io.write_bytes artifact.flags.size.to_u32, FORMAT
     artifact.flags.each { |flag| write_string io, flag }
+    io.write_byte(artifact.has_initialiser ? 1_u8 : 0_u8)
     io.to_slice
   end
 
@@ -689,8 +700,10 @@ module Crystal::IyiMod
     compiler_version = read_string(io)
     target_triple = read_string(io)
     flags = Array(String).new(io.read_bytes(UInt32, FORMAT)) { read_string(io) }
+    has_initialiser = io.read_byte == 1_u8
     {module_name: module_name, source_path: source_path,
-     compiler_version: compiler_version, target_triple: target_triple, flags: flags}
+     compiler_version: compiler_version, target_triple: target_triple, flags: flags,
+     has_initialiser: has_initialiser}
   end
 
   private def self.encode_imports(artifact : Artifact) : Bytes

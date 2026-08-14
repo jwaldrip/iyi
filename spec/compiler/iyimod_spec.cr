@@ -152,6 +152,7 @@ describe Crystal::IyiMod do
         header.write value.to_slice
       end
       header.write_bytes 0_u32, format # no flags
+      header.write_byte 0_u8           # no initialiser
       payload = header.to_slice
 
       io.write Crystal::IyiMod::MAGIC
@@ -405,11 +406,9 @@ describe Crystal::IyiMod do
   # artifact, with the module's source **deleted**, that runs and prints what
   # the same program printed when it was built from source.
   #
-  # The module is arithmetic on purpose. Everything it calls is a primitive and
-  # so is inlined into its own object file, which keeps this example about the
-  # mechanism rather than about IV.1g's remaining gap — a module whose body
-  # calls a prelude *method* needs a symbol the consumer may never instantiate,
-  # and that is measured in the SPEC rather than asserted here.
+  # The module is arithmetic on purpose: everything it calls is a primitive, so
+  # this example is about the mechanism and nothing else. The example after it
+  # is the one that needs the closure.
   it "builds and runs a program from a module's artifact, source deleted" do
     with_tempdir("iyimod_end_to_end") do
       Dir.mkdir_p "app"
@@ -443,6 +442,153 @@ describe Crystal::IyiMod do
       consumer.use_iyimod = "mods"
       consumer.compile source, File.expand_path("from-artifact")
       `./from-artifact`.chomp.should eq "42"
+    end
+  end
+
+  # The closure (IV.1g): the module's body calls `String#+`, which lives in the
+  # prelude's `String` unit — a unit the artifact does not carry and one whose
+  # contents on the consumer's side are whatever *the consumer* instantiated.
+  # The consumer here never writes a `+`, so nothing would define it, and this
+  # is the build that failed to link before the module started carrying private
+  # copies of what it calls.
+  it "carries what a module's body calls but its consumer does not" do
+    with_tempdir("iyimod_closure") do
+      Dir.mkdir_p "app"
+      File.write "app/greeter.iyi", <<-IYI
+        module app/greeter
+
+        pub def polite(name : String) : String
+          "Hello, " + name
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/greeter
+
+        puts App::Greeter.polite("world")
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "Hello, world"
+
+      File.delete "app/greeter.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "Hello, world"
+    end
+  end
+
+  # III.5's initialiser is not a declaration, so it is not in the artifact and a
+  # module read from one contributes none. Refused rather than linked, because
+  # the alternative is a program that runs with the module's setup silently
+  # missing — which `init_order.iyi` did, and which is the worst outcome this
+  # file can produce.
+  it "refuses to generate code against a module that has an initialiser" do
+    with_tempdir("iyimod_initialiser") do
+      Dir.mkdir_p "boot"
+      File.write "boot/config.iyi", <<-IYI
+        module boot/config
+
+        puts "config is setting up"
+
+        pub def name : String
+          "iyi"
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import boot/config
+
+        puts Boot::Config.name
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "boot", "config.iyimod"))
+      artifact.has_initialiser.should be_true
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      expect_raises(Crystal::TypeException, /has module-level code to run/) do
+        consumer.compile source, File.expand_path("from-artifact")
+      end
+
+      # Front end only, which is what the artifact does carry: still fine.
+      checker = create_spec_compiler
+      checker.prelude = "iyi/prelude"
+      checker.use_iyimod = "mods"
+      checker.no_codegen = true
+      checker.compile source, File.expand_path("unused")
+    end
+  end
+
+  # The other half of the rule above, and the half that went wrong three times.
+  # A module whose top level is only declarations has no initialiser — and the
+  # declarations do not look like declarations from the outside: the file is
+  # wrapped in a `ModuleDef`, `pub struct` is a `VisibilityModifier` around one,
+  # and `type Elem = T` is an `AssocTypeDecl`. Each of those, taken for
+  # something that runs, refused a module that was fine.
+  it "does not mistake declarations for an initialiser" do
+    with_tempdir("iyimod_no_initialiser") do
+      Dir.mkdir_p "std"
+      File.write "std/hold.iyi", <<-IYI
+        module std/hold
+
+        pub trait Hold
+          type Item
+
+          abstract def item : Item
+        end
+
+        pub struct Box
+          @n : Int32
+
+          def initialize(@n : Int32)
+          end
+        end
+
+        impl Hold for Box
+          type Item = Int32
+
+          def item : Int32
+            @n
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/hold
+
+        using std/hold::{Hold}
+
+        puts Std::Hold::Box.new(7).item
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+
+      Crystal::IyiMod.read(File.join("mods", "std", "hold.iyimod")).has_initialiser.should be_false
     end
   end
 

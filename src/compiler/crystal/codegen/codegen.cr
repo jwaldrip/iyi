@@ -318,6 +318,12 @@ module Crystal
       @modules = {"" => @main_module_info} of String => ModuleInfo
       @types_to_modules = {} of Type => ModuleInfo
 
+      # iyi: the unit a callee should be copied into while emitting code that
+      # will travel in a `.iyimod` (SPEC.md IV.1g). Nil in every build that is
+      # not writing artifacts, which is every build that is not making a
+      # library out of a module.
+      @iyi_closure_host = nil.as(ModuleInfo?)
+
       set_internal_fun_debug_location(@main, MAIN_NAME, nil)
 
       @alloca_block, @entry_block = new_entry_block_chain "alloca", "entry"
@@ -539,6 +545,8 @@ module Crystal
       @unused_fun_defs.each do |node|
         codegen_fun node.real_name, node.external, @program, is_exported_fun: true
       end
+
+      iyi_define_all_type_ids unless @program.iyi_artifact_objects.empty?
 
       env_dump = ENV["DUMP"]?
       case env_dump

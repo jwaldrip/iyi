@@ -64,13 +64,16 @@ the artifact everything here is a design document. The container, the `Header`,
 eight samples compile with the imported module's source **deleted**.
 
 `ObjectCode` carries a module's own machine code, and **a program built from a
-module's artifact with the module's source deleted now runs**. That is the
-first thing here that produces a program rather than a typecheck. It holds for
-a module of plain functions over primitives and not yet for one that
-interpolates a string, declares a type or holds a constant: IV.1g measures the
-gap on `modules.iyi` at two undefined symbols, names the five things behind it,
-and names the one decision — symbol linkage for shared prelude instantiations —
-that the largest of them turns on.
+module's artifact with the module's source deleted now runs** — the first thing
+here that produces a program rather than a typecheck. `modules.iyi` builds,
+links and runs from its two modules' artifacts with both sources deleted, and
+prints what it printed from source.
+
+Coverage is the part that is not done. Of the five samples that import anything,
+that is one; `immutable` and `collections` each want 20 symbols that only
+`MonoBodies` can supply, `init_order` is refused because its modules have
+initialisers and an artifact carries none, and `webapp` is refused a step
+earlier by R-2. IV.1g measures all of it and names the four things left.
 
 **2. The passes that still walk the prelude stop walking it (IV.1d).** The
 artifact alone leaves 0.47 s, of which class-var initializers and `main` are
@@ -1905,10 +1908,10 @@ annotation is written, and IV.2 keeps the body out. That is the whole of what
 the front end gets, and it is also the boundary: a module read this way
 contributes **no initialiser**, because its top-level code is not a
 declaration and is not in the file. That is the boundary that remains: a module
-of plain functions now builds, links and runs from its artifact (IV.1g), and a
-module that has to *initialise* something still cannot, because its top-level
-code is not a declaration and never travelled. IV.1a said the same thing from
-the other direction —
+of ordinary functions and types now builds, links and runs from its artifact
+(IV.1g), and a module that has to *initialise* something is refused rather than
+linked, because the alternative is a program that runs with the setup missing.
+IV.1a said the same thing from the other direction —
 codegen needs the prelude's tree for reasons caching analysis does not remove.
 
 **Three things had to travel that the format did not carry**, each found by a
@@ -1954,10 +1957,21 @@ set of whole object files rather than a filter inside one, and carrying them is
 copying bytes rather than teaching codegen a second way to lay out a program.
 
 A module's units are the module type itself — where its own `pub def`s are
-owned — plus every type declared under it, recursively, with one unit per
-instantiation of a generic type. `kemal/router` owns five (`Router`, its three
-nested records, `Context`) and `kemal/dsl` one. `app/greeter`'s artifact comes
-out at 3,177 bytes, of which 2,736 are an ELF object defining `polite`.
+owned — plus every non-generic type declared under it, recursively.
+`kemal/router` owns five (`Router`, its three nested records, `Context`) and
+`kemal/dsl` one. `app/greeter`'s artifact comes out at 3,177 bytes, of which
+2,736 are an ELF object defining `polite`.
+
+**A generic type's instantiations are deliberately not among them**, and
+carrying them was tried first because it looks obviously right. `--emit-iyimod`
+runs inside an ordinary build, so the producer's instantiations *are* the
+consumer's, and `List(Int32)`'s unit appeared to belong in `std/list`'s
+artifact. It does not: `List(Int32)::new` is **synthesized** from `initialize`
+rather than read from the artifact, so the consumer generates its own copy and
+the link fails on a duplicate symbol. The deeper reason is that the appearance
+depends on the two builds being one build, which is the arrangement this file
+exists to end — which instantiations exist is decided by whoever writes
+`List(Int32)`. They are `MonoBodies`' business (IV.2).
 
 **Two properties had to hold for this to be possible at all, and both were
 checked rather than assumed.**
@@ -2006,62 +2020,110 @@ type?` therefore left the front end correct and handed codegen a symbol with no
 return type on the end, which is not the symbol the artifact defines. The
 linker caught it. Nothing else would have.
 
-**What is still missing, measured on `modules.iyi`** — build it, delete
-`app/greeter.iyi` and `app/formal.iyi`, build again from the artifacts. **Four
-undefined symbols, now two.**
+**Three more things had to travel, each found by the linker on `modules.iyi`** —
+build it, delete `app/greeter.iyi` and `app/formal.iyi`, build again from the
+artifacts. Four undefined symbols, then two, then none.
 
-1. **A method inlined away has no symbol to carry.** `title` returns a string
-   literal, so every call site inlined it and the producing build emitted no
-   function — but the consumer has no body to inline and calls it by name.
-   Two of the four. Fixed by not inlining a method whose module is writing an
-   artifact: a build producing code somebody else will call must define what it
-   is called by. The check asks the *instance* type, because a module-level
-   `def` is owned by the module's metaclass, which is most of what a module
-   exports.
-2. **Prelude methods the module's body needs and the consumer does not.**
-   `String::interpolation<String, String, String>` is in the prelude's `String`
-   unit, and the consumer generates its own `String` unit holding whatever *it*
-   instantiated. The remaining two, and the one with no cheap answer: carrying
-   the producer's whole `String` unit would define symbols the consumer also
-   defines, and the linker refuses that. Sub-unit granularity cannot be had by
-   copying bytes, so the choices are to give Crystal's functions `linkonce_odr`
-   linkage — which is what C++ and Rust do with template instantiations, and
-   which is sound here because the artifact's header already asserts the same
-   compiler, triple and flags — or to make a module's own unit closed over what
-   it calls. That is a decision, not an oversight, and it is the next one.
+*A method inlined away has no symbol to carry.* `title` returns a string
+literal, so every call site inlined it and the producing build emitted no
+function — but the consumer has no body to inline and calls it by name. Two of
+the four. A build writing an artifact therefore stops inlining the methods that
+artifact describes: code somebody else will call by name has to be defined. The
+check asks the *instance* type, because a module-level `def` is owned by the
+module's metaclass, which is most of what a module exports.
+
+*A module carries private copies of what it calls.* `String::interpolation
+<String, String, String>` is in the prelude's `String` unit, and the consumer's
+own `String` unit holds whatever *the consumer* instantiated, which need not
+include it. Carrying the producer's whole `String` unit is not an option — it
+would define symbols the consumer also defines, and the linker refuses that —
+and sub-unit granularity cannot be had by copying bytes. So the callee is
+copied into the module's own unit with **internal linkage**, transitively.
+
+The alternative was `linkonce_odr` on Crystal's functions, so duplicates merge
+at link — what C++ and Rust do with template instantiations, and sound here
+because the header already asserts the same compiler, triple and flags. It was
+rejected for reach: it changes codegen for **every** build in this fork to fix
+a problem that belongs to artifacts. The price of the private copy is
+duplication — each module carries its own `String::interpolation` — and one
+consequence worth knowing, that a proc taken to such a function has a different
+address on each side of the boundary. A C function is never copied: it is a
+declaration with no body whoever asks, and internal linkage on a declaration is
+invalid IR, which `write` and `exit` reach from the prelude's own `puts`.
+
+*And a program that links an artifact defines every type id.* The copy above
+brought its own undefined symbol — `String:type_id`, which the same program
+built from source resolves without trouble. Type-id globals are emitted on
+demand, so they exist only where *this* program wanted one, and a build cannot
+see from an object file which ones that object needs. It therefore defines them
+all. An `i32` per type is not a cost worth a cleverer answer, and the artifact
+must keep carrying a reference rather than a value: two programs number their
+types differently.
+
+**Where that leaves the eight samples.** Five import a module at all; the other
+three (`hello`, `generics`, `errors`) are single files and exercise nothing
+here.
+
+| sample | from its artifacts, source deleted |
+|---|---|
+| `modules` | **builds, links, runs, identical output** |
+| `immutable` | 20 undefined — generic instantiations |
+| `collections` | 20 undefined — trait default methods |
+| `init_order` | refused — the module has an initialiser |
+| `webapp` | refused at `--emit-iyimod` — R-2, `namespace` takes an unannotated block |
+
+So the mechanism is proved on one sample and the coverage is not. Four things
+stand between it and the rest, and none of them is a surprise:
+
+1. **`MonoBodies`.** Both 20-symbol failures are the same thing from two
+   directions. `immutable` needs `List(Int32)`'s methods, and an instantiation
+   belongs to whoever writes it. `collections` needs
+   `Samples::Collections::Nums@Std::Enumerable::Enumerable#to_a` — a trait
+   *default*, stencilled onto the consumer's own type, which is not a symbol
+   any producer could have emitted under any name. Neither can be an external
+   declaration; both need the body to travel, which is what IV.2 already lists
+   as one of the two deliberate exceptions.
+2. **The module's initialiser.** Not a declaration, so not in the artifact, so
+   a module read from one contributes none — and `init_order` linked and ran
+   with its modules' setup silently missing, which is the worst outcome this
+   file can produce. The artifact now records `has_initialiser` and a build
+   that would generate code against such a module is refused, naming the module
+   and why. Carrying the initialiser means carrying everything `_main` holds on
+   the module's behalf — its constants, its proc literals, its type ids — in
+   III.5's DAG order.
 3. **Prelude generics instantiated at this module's own types.** The router's
-   body builds an `Array(Kemal::Router::Router::RouteDefinition)`, and that
-   unit is named after `Array` — not after anything `kemal/router` declares —
-   so the ownership rule does not catch it. **Twelve of the router's 41
-   undefined symbols are of this kind**, and nothing else can supply them.
-   They belong to this module by the same logic R-3 uses for impls — the
-   instantiation exists because of this module and no other — so unlike (2)
-   this one has an owner and needs no linkage decision. `modules.iyi` does not
-   reach it: the only type its modules declare is a trait, which has no code of
-   its own until an impl answers it.
-4. **Everything `_main` holds on the module's behalf.** The module's constants
-   (`Kemal::Dsl::APP` and its initialiser), its proc literals — named by source
-   file and line, `~procProc(…)@samples/iyi/kemal/router.iyi:210` — and its
-   type ids are all emitted into the program's own unit. A consumer that never
-   opens the source cannot produce any of them. `modules.iyi` does not reach
-   this one either; the Kemal port does.
-5. **What the *consuming* build reached, rather than the module's surface.**
-   Codegen is demand-driven, so an artifact carries the code its dependant
-   asked for. This is `--emit-iyimod` living inside an ordinary build: a module
-   compiled on its own would instantiate every exported def at the signature
-   R-2 makes it write down — and compiling a module on its own is the command
-   that cannot precede the artifact it produces.
+   body builds an `Array(Kemal::Router::Router::RouteDefinition)`, and that unit
+   is named after `Array` — not after anything `kemal/router` declares — so the
+   ownership rule does not catch it. **Twelve of the router's 41 undefined
+   symbols are of this kind.** They belong to this module by the same logic R-3
+   uses for impls: the instantiation exists because of this module and no other.
+   None of the five samples reaches this; the Kemal port would.
+4. **What the *consuming* build reached, rather than the module's surface.**
+   Codegen is demand-driven, so an artifact carries the code its dependant asked
+   for. This is `--emit-iyimod` living inside an ordinary build: a module
+   compiled on its own would instantiate every exported def at the signature R-2
+   makes it write down — and compiling a module on its own is the command that
+   cannot precede the artifact it produces.
 
-So the mechanism is proved and the coverage is not. A module of plain
-functions over primitives builds, links and runs from its artifact today; a
-module that interpolates a string, declares a type or holds a constant does
-not, and each of those is one of the items above rather than a surprise.
+**Deciding "does this module have an initialiser" was wrong three times**, and
+each was the kind of mistake a spec cannot find by reasoning — the same class
+IV.6 records. The test walks a module's top level and calls anything it does not
+recognise as a declaration an initialiser, which is the safe direction: a
+refusal explains itself and a missing setup does not. What it did not recognise:
+the file is already wrapped in a `ModuleDef`, because `apply_module_header`
+turns `module a/b` into one, so **every** module answered "no initialiser" and
+the flag was written and always false. Then `pub struct List(T)` is a
+`VisibilityModifier` around the declaration, not a declaration, which refused
+three samples that were fine. Then `type Elem = T` is an `AssocTypeDecl`, which
+refused the two that have associated types. Each looked like the last bug and
+was a different one.
 
 **A reader that does not want it does not pay for it.** `ObjectCode` is the
 largest section in the file and is written last; `IyiMod.read` seeks past it
 unless asked, so `import` — the front-end reader this whole file exists to make
 fast — never allocates it. A `--no-codegen` build omits the section entirely
-rather than writing it empty.
+rather than writing it empty, and can still typecheck against a module whose
+initialiser rules out generating code.
 
 ### IV.1a What the artifact actually buys — measured
 

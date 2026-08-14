@@ -81,6 +81,17 @@ module Crystal
     # `top_level_semantic` empties it into the tree.
     property iyi_module_inits = [] of ASTNode
 
+    # iyi: the files whose module has top-level code that has to run, by
+    # absolute filename (SPEC.md III.5, IV.1g).
+    #
+    # `iyi_module_inits` holds the code and is emptied into the tree by the
+    # top-level pass; this survives it, because an artifact is written later
+    # and has to say whether the module it describes needs initialising. It
+    # cannot yet carry the initialiser itself, so a codegen build reading such
+    # an artifact is refused rather than given a program with the module's
+    # setup silently missing.
+    getter iyi_module_initialisers = Set(String).new
+
     # iyi: which modules each file imports, by absolute filename (SPEC.md
     # III.5 rule 2). `iyi_module_inits` is one order the DAG allows; these are
     # the edges, which is what makes every *other* order it allows computable.
