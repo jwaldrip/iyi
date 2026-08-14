@@ -8,6 +8,22 @@ module Crystal
     # Returns the program where this type belongs.
     getter program
 
+    # iyi: declared by a `.iyimod` rather than by this build's source (SPEC.md
+    # IV.1g).
+    #
+    # Set on the types an artifact exports, and false for everything else —
+    # including the *instantiations* of a generic type it exports, which is the
+    # distinction that makes this useful. The artifact carries object code for
+    # the non-generic types a module declares, so this build must declare their
+    # methods and define none of them; it carries no instantiation, so
+    # `List(Int32)` is compiled here like any other type.
+    #
+    # Without it a consumer defined `Greeter::new` — synthesized rather than
+    # read from the artifact, so nothing marked it as coming from one — while
+    # the artifact's object code defined it too, and the link failed on a
+    # duplicate symbol.
+    property? iyi_from_artifact = false
+
     def initialize(@program : Program)
     end
 

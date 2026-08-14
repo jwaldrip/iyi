@@ -150,11 +150,12 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     # Load-once. A module imported by several others is compiled once, and so
     # is initialised once — the second importer adds no entry to the list.
     if @program.requires.add?(filename)
-      if artifact_path
-        import_artifact(node, artifact_path)
-      else
-        @program.iyi_module_inits << import_file(node, filename)
-      end
+      @program.iyi_module_inits <<
+        if artifact_path
+          import_artifact(node, artifact_path)
+        else
+          import_file(node, filename)
+        end
     end
 
     expanded = Nop.new
@@ -295,7 +296,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
   # to order. That is the honest edge of what an artifact buys today: enough to
   # typecheck against, not enough to run, which is why a build that reads them
   # is a front-end-only build until `ObjectCode` exists (IV.1a).
-  private def import_artifact(node : ImportDecl, artifact_path : String) : Nil
+  private def import_artifact(node : ImportDecl, artifact_path : String) : ASTNode
     artifact =
       begin
         IyiMod.read(artifact_path, want_object_code: @program.iyi_wants_object_code)
@@ -341,6 +342,38 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       raise Error.new "while importing \"#{node.path.join('/')}\" from its .iyimod", ex
     ensure
       @iyi_importing.pop
+    end
+
+    # The declarations join the tree, exactly as a module read from source
+    # does. Accepting them here is enough for name lookup and no more: an
+    # instance variable's type is settled by `TypeDeclarationVisitor`, a
+    # separate pass over the *tree*, so `@items : Array(T)` read from an
+    # artifact and never spliced in was a declaration the compiler had parsed,
+    # accepted, and could not see — "can't infer the type of instance variable
+    # `@items`" on the line that assigns it.
+    #
+    # It is still not an initialiser. There is nothing here to run, which is
+    # what makes this safe: III.5 orders what modules *do*, and a file of
+    # declarations does nothing.
+    mark_iyi_artifact_types artifact
+
+    FileNode.new(parsed_nodes, artifact_path)
+  end
+
+  # iyi: marks the types an artifact declares, so codegen declares their
+  # methods rather than defining them (SPEC.md IV.1g).
+  #
+  # Done here, from the artifact's own list of exported types, rather than by
+  # threading a flag through the type-creation path: this is the one place that
+  # knows both which module was read from a `.iyimod` and which names it
+  # exported, and it is a walk over a handful of names rather than a check on
+  # every type a build makes.
+  private def mark_iyi_artifact_types(artifact : IyiMod::Artifact) : Nil
+    return if artifact.object_code.empty?
+    return unless scope = @program.iyi_module_type(artifact.module_name)
+
+    artifact.exports.types.each do |declaration|
+      scope.types?.try(&.[]?(declaration.name)).try &.iyi_from_artifact = true
     end
   end
 

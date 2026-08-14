@@ -488,6 +488,188 @@ describe Crystal::IyiMod do
     end
   end
 
+  # `MonoBodies`. A generic type's method exists once per instantiation, and
+  # the instantiations belong to whoever writes them — so no machine code the
+  # producer emits can serve a consumer, and the body is the only thing that
+  # can travel. The consumer here instantiates at a type the producer never
+  # did, which is the case that makes carrying the producer's object code no
+  # answer at all.
+  it "ships a generic type's bodies, and the consumer specialises them" do
+    with_tempdir("iyimod_mono_generic") do
+      Dir.mkdir_p "std"
+      File.write "std/box.iyi", <<-IYI
+        module std/box
+
+        pub struct Box(T)
+          @item : T
+
+          def initialize(@item : T)
+          end
+
+          def item : T
+            @item
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/box
+
+        puts Std::Box::Box(Int32).new(7).item
+        puts Std::Box::Box(String).new("seven").item
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "7\nseven"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "std", "box.iyimod"))
+      artifact.mono_bodies.keys.should contain "Box#item()"
+
+      File.delete "std/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "7\nseven"
+    end
+  end
+
+  # The other half of `MonoBodies`, and the half no producer could ever emit
+  # code for: a trait default is stencilled onto the implementing type, and the
+  # implementing type here is declared by the *consumer*. There is no name the
+  # producing build could have compiled it under.
+  it "ships a trait's default bodies, and the consumer stencils them" do
+    with_tempdir("iyimod_mono_trait") do
+      Dir.mkdir_p "std"
+      File.write "std/countable.iyi", <<-IYI
+        module std/countable
+
+        pub trait Countable
+          abstract def count : Int32
+
+          def doubled : Int32
+            count + count
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/countable
+
+        using std/countable::{Countable}
+
+        pub struct Three
+        end
+
+        impl Countable for Three
+          def count : Int32
+            3
+          end
+        end
+
+        puts Three.new.doubled
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "6"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "std", "countable.iyimod"))
+      artifact.mono_bodies.keys.should contain "Countable#doubled()"
+
+      File.delete "std/countable.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "6"
+    end
+  end
+
+  # And the boundary, which is what keeps the two mechanisms from colliding. An
+  # ordinary method of an ordinary type travels as machine code, so its body
+  # must **not** also travel: a consumer given both would compile a definition
+  # the artifact already carries, and the link would fail on a duplicate
+  # symbol. Kept as an example because nothing else says it out loud.
+  it "does not ship the body of a method that travels as machine code" do
+    with_tempdir("iyimod_mono_boundary") do
+      Dir.mkdir_p "app"
+      File.write "app/greeter.iyi", <<-IYI
+        module app/greeter
+
+        pub struct Greeter
+          def hello : String
+            "hello"
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/greeter
+
+        puts App::Greeter::Greeter.new.hello
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "greeter.iyimod"),
+        want_object_code: true)
+      artifact.mono_bodies.should be_empty
+      artifact.object_code.map(&.name).should contain "App::Greeter::Greeter"
+
+      File.delete "app/greeter.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "hello"
+    end
+  end
+
+  it "round-trips mono bodies" do
+    with_temporary_file do |path|
+      artifact = sample_artifact
+      artifact.mono_bodies["Box#item()"] = "@item\n"
+      Crystal::IyiMod.write artifact, path
+
+      Crystal::IyiMod.read(path).mono_bodies.should eq({"Box#item()" => "@item\n"})
+    end
+  end
+
+  it "renders a mono body under the declaration it belongs to" do
+    declaration = type_declaration("Box", "generic struct",
+      type_parameters: ["T"],
+      methods: [signature("item", return_type: "T")])
+
+    artifact = sample_artifact(types: [declaration])
+    artifact.mono_bodies["Box#item()"] = "@item"
+
+    io = IO::Memory.new
+    Crystal::IyiMod.declarations artifact, io
+
+    io.to_s.should contain "  def item : T\n    @item\n  end\n"
+  end
+
   # III.5's initialiser is not a declaration, so it is not in the artifact and a
   # module read from one contributes none. Refused rather than linked, because
   # the alternative is a program that runs with the module's setup silently

@@ -484,10 +484,39 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     # about them says where they came from. `impl Cmp for Int32` is why that
     # matters — the target is a prelude type this module does not export, so
     # recording them against it would lose them.
+    # iyi: whether this impl's bodies travel (`MonoBodies`, SPEC.md IV.1g).
+    #
+    # An impl defines methods *on its target*, so they are emitted into the
+    # target's unit — and the artifact carries a unit only for a non-generic
+    # type this module declares. Everywhere else the machine code ends up
+    # somewhere the artifact cannot reach, and the body has to travel instead:
+    #
+    # * a generic target, because a method exists once per instantiation and
+    #   the instantiations belong to whoever writes them;
+    # * a target this module does not declare, which is the case R-3 exists to
+    #   allow — `impl Cmp for Int32` in `std/traits` puts `cmp` in the
+    #   *prelude's* `Int32` unit, and carrying that whole unit would define
+    #   every `Int32` method the consumer also defines.
+    #
+    # And it must be *unless*, not *always*: an impl for a non-generic type
+    # this module declares already travels as machine code, and shipping the
+    # body as well makes the consumer define a symbol the artifact defines too.
+    file = @iyi_importing.last?
+    target_declared_here =
+      !!(file && target_type.locations.try &.any? { |location| location.filename == file })
+    bodies_travel = target_type.is_a?(GenericType) || !target_declared_here
+    container = IyiMod.mono_body_container(trait_type.to_s, target_type.to_s)
+
     impl_methods = [] of IyiMod::Signature
     iyi_impl_body_defs(node) do |a_def|
       a_def.iyi_from_impl = true
-      impl_methods << IyiMod.signature(a_def)
+      signature = IyiMod.signature(a_def)
+      impl_methods << signature
+
+      if bodies_travel && file
+        bodies = @program.iyi_mono_bodies[file] ||= {} of String => String
+        bodies[IyiMod.mono_body_key(container, signature)] = a_def.body.to_s
+      end
     end
 
     if file = @iyi_importing.last?

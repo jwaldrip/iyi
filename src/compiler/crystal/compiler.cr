@@ -421,6 +421,10 @@ module Crystal
           dependencies.map { |dependency| program.iyi_module_paths[dependency]? || dependency }
         end
 
+        # First, because collecting the surface is also what records which of
+        # its bodies have to travel.
+        exports = collect_iyi_exports(program, module_name, filename)
+
         artifact = IyiMod::Artifact.new(
           module_name: module_name,
           source_path: filename,
@@ -431,8 +435,9 @@ module Crystal
           flags: flags,
           imports: imports || [] of String,
           usings: program.iyi_usings[filename]? || [] of String,
-          exports: collect_iyi_exports(program, module_name, filename),
+          exports: exports,
           has_initialiser: program.iyi_module_initialisers.includes?(filename),
+          mono_bodies: program.iyi_mono_bodies[filename]? || {} of String => String,
         )
 
         {File.join(dir, "#{module_name}.iyimod"), artifact}
@@ -483,7 +488,7 @@ module Crystal
             if signatures = type.defs.try &.[]?(name)
               signatures.each { |item| functions << IyiMod.signature(item.def) }
             elsif exported_type = type.types?.try &.[]?(name)
-              types << iyi_type_declaration(name, exported_type)
+              types << iyi_type_declaration(program, filename, name, exported_type)
             end
           end
         end
@@ -577,16 +582,31 @@ module Crystal
 
     # A trait's methods are its whole point in the artifact: II.6 makes an impl
     # checkable against the trait's requirements, and a consumer can only run
-    # that check if the requirements travel. Its defaults travel as signatures
-    # too — the body stays behind, since the consumer calls it rather than
-    # reimplementing it.
-    private def iyi_type_declaration(name : String, type : Type) : IyiMod::TypeDecl
+    # that check if the requirements travel.
+    #
+    # A trait's **defaults travel with their bodies**, and so does every method
+    # of a generic type, because in both cases the consumer is what compiles
+    # them: a default is stencilled onto the implementing type and a generic's
+    # method exists once per instantiation. Neither has a symbol any producer
+    # could have emitted, which is what separates them from an ordinary method
+    # — that one keeps its body and arrives as machine code (IV.2, IV.1g).
+    private def iyi_type_declaration(program : Program, filename : String,
+                                     name : String, type : Type) : IyiMod::TypeDecl
+      travels = iyi_bodies_travel?(type)
       methods = [] of IyiMod::Signature
+
       type.as?(ModuleType).try &.defs.try &.each_value do |items|
         # A method an `impl` defined is the impl's, and travels in its record.
         # The distinction is invisible here — an impl works by defining methods
         # on the target — which is why it is marked where it is made.
-        items.each { |item| methods << IyiMod.signature(item.def) unless item.def.iyi_from_impl? }
+        items.each do |item|
+          next if item.def.iyi_from_impl?
+          signature = IyiMod.signature(item.def)
+          methods << signature
+          if travels && !item.def.abstract?
+            iyi_record_mono_body program, filename, name, signature, item.def
+          end
+        end
       end
       methods.sort_by! &.name
 
@@ -612,6 +632,35 @@ module Crystal
         fields: collect_iyi_fields(type),
         methods: methods,
       )
+    end
+
+    # iyi: whether *type*'s method bodies have to travel (`MonoBodies`).
+    #
+    # Two cases, and the same reason under both: the consumer is what compiles
+    # the method, so no machine code the producer emits could serve it. A
+    # generic type's method exists once per instantiation, and instantiations
+    # belong to whoever writes them. A trait's default is stencilled onto the
+    # implementing type, which the producer has never heard of —
+    # `Samples::Collections::Nums@Std::Enumerable::Enumerable#to_a` is not a
+    # symbol any producer could have emitted under any name.
+    private def iyi_bodies_travel?(type : Type) : Bool
+      type.is_a?(GenericType) || type.is_a?(TraitType)
+    end
+
+    # Records one body against `IyiMod.mono_body_key`.
+    #
+    # Source text rather than serialised IR, which is what IV.1's table asks
+    # for. It is the same choice `Exports` already made and for the same
+    # reason: the parser that read the module is the one that reads it back,
+    # and a second grammar here is a second thing to keep correct. The text is
+    # the *normalised* body rather than the file's, because that is what
+    # survives to this point — which makes it worth checking that what comes
+    # out still parses, and `spec/compiler/iyimod_spec.cr` does.
+    private def iyi_record_mono_body(program : Program, filename : String,
+                                     container : String, signature : IyiMod::Signature,
+                                     a_def : Def) : Nil
+      bodies = program.iyi_mono_bodies[filename] ||= {} of String => String
+      bodies[IyiMod.mono_body_key(container, signature)] = a_def.body.to_s
     end
 
     # iyi: a type's own instance variables, for `TypeDecl#fields` (IV.2).

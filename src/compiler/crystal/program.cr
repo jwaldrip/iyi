@@ -141,6 +141,17 @@ module Crystal
     # one.
     getter iyi_usings = {} of String => Array(String)
 
+    # iyi: the method bodies each file's module has to ship, by absolute
+    # filename and then by `IyiMod.mono_body_key` (SPEC.md IV.2, `MonoBodies`).
+    #
+    # A body travels when the consumer is the one that has to compile it: a
+    # method of a generic type, which exists once per instantiation and the
+    # instantiations are the consumer's, and a trait's default method, which is
+    # stencilled onto the implementing type and so has no symbol any producer
+    # could have emitted. Everything else stays behind and arrives as machine
+    # code in `ObjectCode`.
+    getter iyi_mono_bodies = {} of String => Hash(String, String)
+
     # iyi: the `(Trait, Type)` pairs each file provides, by absolute filename
     # (SPEC.md IV.2, "Impl records").
     #

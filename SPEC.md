@@ -69,11 +69,12 @@ here that produces a program rather than a typecheck. `modules.iyi` builds,
 links and runs from its two modules' artifacts with both sources deleted, and
 prints what it printed from source.
 
-Coverage is the part that is not done. Of the five samples that import anything,
-that is one; `immutable` and `collections` each want 20 symbols that only
-`MonoBodies` can supply, `init_order` is refused because its modules have
+Of the five samples that import anything, **three** do: `modules`, `immutable`
+— a generic type, a 575-line trait with an associated type, and a generic impl
+— and `collections`, where the trait is implemented by a type the artifact's
+module has never heard of. `init_order` is refused because its modules have
 initialisers and an artifact carries none, and `webapp` is refused a step
-earlier by R-2. IV.1g measures all of it and names the four things left.
+earlier by R-2. IV.1g measures all of it.
 
 **2. The passes that still walk the prelude stop walking it (IV.1d).** The
 artifact alone leaves 0.47 s, of which class-var initializers and `main` are
@@ -1807,7 +1808,7 @@ as valid is the worst failure mode a build cache has.
 | Imports | DAG edges, each with the interface hash it was compiled against |
 | Exports | types, signatures, traits, impls, constants |
 | Macro bodies | serialised AST for exported macros and derives |
-| Mono bodies | serialised typed IR for `@[Monomorphize]` items |
+| Mono bodies | the bodies a consumer has to compile — source text, not IR yet |
 | Object code | machine code for this module's own definitions |
 
 Binary, for read speed. A `iyi mod dump` producing text is required, not
@@ -1823,8 +1824,9 @@ IV.1f. `Exports` carries `pub def` signatures, exported type declarations with
 their parameters, associated types and methods, and impl records with what they
 answer, **and each type's own fields**. Layout templates, type descriptors and
 constants are not in it — those are what codegen needs rather than what the
-front end needs. `Hashes`, `MacroBodies` and `MonoBodies` are declared in the
-`Section` enum and unwritten.
+front end needs. **`MonoBodies` carries the bodies a consumer has to compile
+itself** (IV.1g). `Hashes` and `MacroBodies` are declared in the `Section` enum
+and unwritten.
 
 Fields were meant to be in that second list and are not, which is worth saying
 plainly because the reason is a bug rather than a change of mind. A consumer
@@ -2070,6 +2072,53 @@ all. An `i32` per type is not a cost worth a cleverer answer, and the artifact
 must keep carrying a reference rather than a value: two programs number their
 types differently.
 
+**Some bodies have to travel, and `MonoBodies` is which ones.** A module's
+machine code answers for a method the producer could compile. Two kinds it
+cannot, and they are the two exceptions IV.2 already names:
+
+- **A generic type's methods.** `List(Int32)#size` exists once per
+  instantiation and the instantiations belong to whoever writes them. A
+  consumer that writes `List(Float64)` needs a method the producer never made.
+- **A trait's default methods.** `to_a` is stencilled onto the implementing
+  type, and the implementing type may be the *consumer's*. There is no name
+  `Samples::Collections::Nums@Std::Enumerable::Enumerable#to_a` could have been
+  compiled under in the producing build, because `Nums` did not exist in it.
+
+Both ship their bodies as **source text**, rendered back into the declarations
+a consumer parses. IV.1's table asks for serialised typed IR, which is faster
+and is a second grammar to keep correct; text is the choice `Exports` already
+made, for the reason IV.1f gives, and IR can replace it without changing what
+travels.
+
+**An impl is the third case, and it is the one that fixes the rule.** An impl
+defines methods *on its target*, so they are emitted into the target's unit —
+and the artifact carries a unit only for a non-generic type the module
+declares. `impl Cmp for Int32` in `std/traits` therefore puts `cmp` in the
+*prelude's* `Int32` unit, which no artifact can carry without defining every
+other `Int32` method the consumer also defines. So an impl's bodies travel
+**unless** its target is a non-generic type this module declares — and the
+"unless" is not caution. Shipping them always makes the consumer compile a
+method the artifact's object code already defines, which is a duplicate symbol.
+
+**Two duplicates found by that boundary, both about a method nobody wrote.**
+`Greeter::new` is synthesized from `initialize` rather than read from an
+artifact, so nothing marked it as coming from one: the producer emitted it into
+`Greeter`'s unit and the consumer synthesized its own. The types an artifact
+declares are now marked, and codegen declares their methods rather than
+defining any — the artifact is authoritative for a type whose object code it
+carries. The mark is on the declared type and not on its instantiations, which
+is the distinction that makes it work: `List(T)` is the artifact's, and
+`List(Int32)` is compiled here like any other type.
+
+**And the artifact's declarations join the tree.** They were being parsed,
+accepted and thrown away, which is enough for name lookup and no more: an
+instance variable's type is settled by `TypeDeclarationVisitor`, a separate
+pass over the tree. So `@items : Array(T)` read from an artifact was a
+declaration the compiler had parsed, accepted, and could not see — "can't infer
+the type of instance variable `@items`" on the line that assigns it. A file of
+declarations still contributes no initialiser, because there is nothing in it
+to run; that is a property of the content, not of how it is plumbed.
+
 **Where that leaves the eight samples.** Five import a module at all; the other
 three (`hello`, `generics`, `errors`) are single files and exercise nothing
 here.
@@ -2077,23 +2126,14 @@ here.
 | sample | from its artifacts, source deleted |
 |---|---|
 | `modules` | **builds, links, runs, identical output** |
-| `immutable` | 20 undefined — generic instantiations |
-| `collections` | 20 undefined — trait default methods |
+| `immutable` | **the same** — a generic type, a 575-line trait, a generic impl |
+| `collections` | **the same** — the consumer's own type implementing the trait |
 | `init_order` | refused — the module has an initialiser |
 | `webapp` | refused at `--emit-iyimod` — R-2, `namespace` takes an unannotated block |
 
-So the mechanism is proved on one sample and the coverage is not. Four things
-stand between it and the rest, and none of them is a surprise:
+Three of the five, and the two that are left are named rather than mysterious:
 
-1. **`MonoBodies`.** Both 20-symbol failures are the same thing from two
-   directions. `immutable` needs `List(Int32)`'s methods, and an instantiation
-   belongs to whoever writes it. `collections` needs
-   `Samples::Collections::Nums@Std::Enumerable::Enumerable#to_a` — a trait
-   *default*, stencilled onto the consumer's own type, which is not a symbol
-   any producer could have emitted under any name. Neither can be an external
-   declaration; both need the body to travel, which is what IV.2 already lists
-   as one of the two deliberate exceptions.
-2. **The module's initialiser.** Not a declaration, so not in the artifact, so
+1. **The module's initialiser.** Not a declaration, so not in the artifact, so
    a module read from one contributes none — and `init_order` linked and ran
    with its modules' setup silently missing, which is the worst outcome this
    file can produce. The artifact now records `has_initialiser` and a build
@@ -2101,19 +2141,25 @@ stand between it and the rest, and none of them is a surprise:
    and why. Carrying the initialiser means carrying everything `_main` holds on
    the module's behalf — its constants, its proc literals, its type ids — in
    III.5's DAG order.
-3. **Prelude generics instantiated at this module's own types.** The router's
-   body builds an `Array(Kemal::Router::Router::RouteDefinition)`, and that unit
-   is named after `Array` — not after anything `kemal/router` declares — so the
-   ownership rule does not catch it. **Twelve of the router's 41 undefined
-   symbols are of this kind.** They belong to this module by the same logic R-3
-   uses for impls: the instantiation exists because of this module and no other.
-   None of the five samples reaches this; the Kemal port would.
-4. **What the *consuming* build reached, rather than the module's surface.**
-   Codegen is demand-driven, so an artifact carries the code its dependant asked
-   for. This is `--emit-iyimod` living inside an ordinary build: a module
-   compiled on its own would instantiate every exported def at the signature R-2
-   makes it write down — and compiling a module on its own is the command that
-   cannot precede the artifact it produces.
+2. **`webapp` is not this section's failure.** R-2 refuses `namespace` because
+   it is exported and takes a block it does not annotate, which is IV.2's rule
+   working: the body stays behind, so there is no `yield` left to infer the
+   block from. It has been true since before `ObjectCode` existed.
+
+And one thing none of the five reaches, which the Kemal port would:
+**prelude generics instantiated at this module's own types.** The router's body
+builds an `Array(Kemal::Router::Router::RouteDefinition)`, and that unit is
+named after `Array` — not after anything `kemal/router` declares — so the
+ownership rule does not catch it. **Twelve of the router's 41 undefined symbols
+are of this kind.** They belong to this module by the same logic R-3 uses for
+impls: the instantiation exists because of this module and no other.
+
+Underneath all of it stays the fact that **an artifact carries what the
+consuming build reached**, rather than the module's surface. Codegen is
+demand-driven and `--emit-iyimod` lives inside an ordinary build. A module
+compiled on its own would instantiate every exported def at the signature R-2
+makes it write down — and compiling a module on its own is the command that
+cannot precede the artifact it produces.
 
 **Deciding "does this module have an initialiser" was wrong three times**, and
 each was the kind of mistake a spec cannot find by reasoning — the same class
@@ -2507,6 +2553,17 @@ unexported.
 2. **`@[Monomorphize]` bodies.** The consumer specialises them, so it needs the
    body. This is the (b) path from II.6 and it is where incrementality is at
    risk — see IV.3.
+
+   **Built, and wider than the annotation suggests.** The set is not the items
+   somebody marked: it is every method a consumer has to compile, which the
+   compiler can work out for itself. A generic type's methods, because
+   instantiations belong to whoever writes them; a trait's defaults, because
+   they are stencilled onto the implementing type; and an impl's methods
+   *unless* its target is a non-generic type this module declares, because
+   otherwise they land in a unit the artifact cannot carry. `@[Monomorphize]`
+   remains the annotation for choosing to specialise something that would
+   otherwise be a dictionary call (II.6); it is not what decides whether a body
+   travels. See IV.1g.
 
 ### IV.3 Hashing — the part that decides whether builds are actually incremental
 

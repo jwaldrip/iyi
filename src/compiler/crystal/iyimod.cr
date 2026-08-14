@@ -35,7 +35,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 9_u32
+  FORMAT_VERSION = 10_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -137,6 +137,25 @@ module Crystal::IyiMod
     supertraits : Array(String),
     fields : Array({String, String}),
     methods : Array(Signature)
+
+  # How a body is found again on the far side.
+  #
+  # A container plus the whole of what distinguishes one overload from another,
+  # which is the parameter list and the block. Text rather than an index,
+  # because an index is a promise that two builds walked the same declarations
+  # in the same order, and nothing in the format makes that true.
+  def self.mono_body_key(container : String, signature : Signature) : String
+    String.build do |io|
+      io << container << '#' << signature.name
+      io << '(' << signature.parameters.join(", ") << ')'
+      io << signature.block_parameter
+    end
+  end
+
+  # The container half of the key, for an impl.
+  def self.mono_body_container(trait_name : String, type_name : String) : String
+    "#{trait_name} for #{type_name}"
+  end
 
   # One `(Trait, Type)` pair this module provides.
   #
@@ -278,9 +297,24 @@ module Crystal::IyiMod
     # reported without waiting for a link that was never going to happen.
     property object_code : Array(ObjectUnit)
 
+    # The bodies a consumer has to compile itself, by `mono_body_key`.
+    #
+    # The two exceptions IV.2 already allows, arriving: a method of a generic
+    # type and a trait's default method are both specialised by whoever uses
+    # them, so no producer can emit their machine code and the body is the only
+    # thing that can travel. Everything else keeps its body to itself.
+    #
+    # Carried as **source text**, like the declarations and for the same
+    # reason: the parser that read the module is the one that should read it
+    # back. IV.1's table says serialised typed IR, which is the faster answer
+    # and the one with a second grammar to keep correct; it can replace this
+    # without changing what travels.
+    getter mono_bodies : Hash(String, String)
+
     def initialize(@module_name, @source_path, @compiler_version, @target_triple,
                    @flags, @imports, @usings = [] of String, @exports = Exports.empty,
-                   @object_code = [] of ObjectUnit, @has_initialiser = false)
+                   @object_code = [] of ObjectUnit, @has_initialiser = false,
+                   @mono_bodies = {} of String => String)
     end
   end
 
@@ -295,6 +329,12 @@ module Crystal::IyiMod
     sections << {Section::Header, encode_header(artifact)}
     sections << {Section::Imports, encode_imports(artifact)}
     sections << {Section::Exports, encode_exports(artifact)}
+
+    # Between the declarations and the machine code, which is where it belongs:
+    # a front-end reader needs it and a linker does not.
+    unless artifact.mono_bodies.empty?
+      sections << {Section::MonoBodies, encode_mono_bodies(artifact)}
+    end
 
     # Last, and omitted when there is nothing in it. A consumer reading
     # `Exports` seeks past this section rather than through it, and the further
@@ -356,6 +396,7 @@ module Crystal::IyiMod
       imports = {imports: [] of String, usings: [] of String}
       exports = Exports.empty
       object_code = [] of ObjectUnit
+      mono_bodies = {} of String => String
 
       table.each do |(kind, length)|
         section = Section.from_value?(kind)
@@ -375,6 +416,7 @@ module Crystal::IyiMod
         when Section::Imports    then imports = decode_imports(payload)
         when Section::Exports    then exports = decode_exports(payload)
         when Section::ObjectCode then object_code = decode_object_code(payload)
+        when Section::MonoBodies then mono_bodies = decode_mono_bodies(payload)
         else
           # Written by a later compiler, or a section this one does not need.
           # Skipping is the point of the table.
@@ -387,7 +429,7 @@ module Crystal::IyiMod
 
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
-        object_code, header[:has_initialiser])
+        object_code, header[:has_initialiser], mono_bodies)
     end
   end
 
@@ -432,6 +474,14 @@ module Crystal::IyiMod
         record.assoc_types.each { |(name, answer)| io.puts "    type #{name} = #{answer}" }
         record.methods.each { |signature| io.puts "    #{render_signature(signature)}" }
       end
+    end
+
+    bodies = artifact.mono_bodies
+    if bodies.empty?
+      io.puts "mono bodies   (none)"
+    else
+      io.puts "mono bodies"
+      bodies.keys.sort!.each { |key| io.puts "  #{key}" }
     end
 
     object_code = artifact.object_code
@@ -497,6 +547,8 @@ module Crystal::IyiMod
       render_declaration io, signature, exported: true
     end
 
+    bodies = artifact.mono_bodies
+
     exports.types.each do |declaration|
       io << "\npub " << render_type_header(declaration) << '\n'
       declaration.assoc_types.each { |name| io << "  type " << name << '\n' }
@@ -505,7 +557,8 @@ module Crystal::IyiMod
       # unassigned, which is why they arrive declared rather than inferred.
       declaration.fields.each { |(name, type)| io << "  " << name << " : " << type << '\n' }
       declaration.methods.each do |signature|
-        render_declaration io, signature, indent: "  "
+        render_declaration io, signature, indent: "  ",
+          body: bodies[mono_body_key(declaration.name, signature)]?
       end
       io << "end\n"
     end
@@ -514,9 +567,13 @@ module Crystal::IyiMod
     # the requirement check reads the methods off the target rather than out of
     # the impl's body — which is what lets that body be empty here.
     exports.impls.each do |record|
+      container = mono_body_container(record.trait_name, record.type_name)
       io << '\n' << render_impl_header(record) << '\n'
       record.assoc_types.each { |(name, answer)| io << "  type " << name << " = " << answer << '\n' }
-      record.methods.each { |signature| render_declaration io, signature, indent: "  " }
+      record.methods.each do |signature|
+        render_declaration io, signature, indent: "  ",
+          body: bodies[mono_body_key(container, signature)]?
+      end
       io << "end\n"
     end
   end
@@ -594,6 +651,12 @@ module Crystal::IyiMod
   # a def taking `&block : A -> B` and calling it already takes.
   class DeclarationMarker < Visitor
     def visit(node : Def)
+      # A def whose body travelled is not a header: the consumer compiles it
+      # like any other, which is the whole point of `MonoBodies`. Marking it
+      # would turn the body it was given back into an external declaration and
+      # leave the symbol undefined again.
+      return false unless node.body.is_a?(Nop)
+
       node.iyi_from_artifact = true
       node.uses_block_arg = true if node.block_arg.try(&.restriction)
       false
@@ -605,13 +668,23 @@ module Crystal::IyiMod
   end
 
   private def self.render_declaration(io : IO, signature : Signature,
-                                      exported = false, indent = "") : Nil
+                                      exported = false, indent = "",
+                                      body : String? = nil) : Nil
     io << indent
     io << "pub " if exported
     io << render_signature(signature) << '\n'
     # An `abstract def` ends at its signature. Anything else needs the `end`
     # its absent body would have carried.
-    io << indent << "end\n" unless signature.required
+    return if signature.required
+
+    # A body only where one travelled (`MonoBodies`). Indented back under this
+    # declaration, because what is stored is the body the author wrote and the
+    # indentation it was written at is not a fact about it.
+    body.try &.each_line do |line|
+      io << indent << "  " << line << '\n'
+    end
+
+    io << indent << "end\n"
   end
 
   # A type's declaration line — `struct List(T)`, `trait Ord : Eq`.
@@ -734,6 +807,29 @@ module Crystal::IyiMod
   private def self.decode_imports(payload : Bytes)
     io = IO::Memory.new(payload)
     {imports: read_strings(io), usings: read_strings(io)}
+  end
+
+  private def self.encode_mono_bodies(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    bodies = artifact.mono_bodies
+    io.write_bytes bodies.size.to_u32, FORMAT
+    # Sorted, because a hash's order is not a fact about the module and an
+    # artifact that changed between two identical builds would defeat IV.3.
+    bodies.keys.sort!.each do |key|
+      write_string io, key
+      write_string io, bodies[key]
+    end
+    io.to_slice
+  end
+
+  private def self.decode_mono_bodies(payload : Bytes) : Hash(String, String)
+    io = IO::Memory.new(payload)
+    bodies = {} of String => String
+    io.read_bytes(UInt32, FORMAT).times do
+      key = read_string(io)
+      bodies[key] = read_string(io)
+    end
+    bodies
   end
 
   private def self.encode_object_code(artifact : Artifact) : Bytes
