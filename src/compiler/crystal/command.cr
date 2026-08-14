@@ -438,6 +438,7 @@ class Crystal::Command
     verbose = false
     check = false
     tallies = false
+    specified_prelude = false
 
     option_parser = parse_with_crystal_opts do |opts|
       opts.banner = "Usage: crystal #{command} [options] [programfile] [--] [arguments]\n\nOptions:"
@@ -576,6 +577,7 @@ class Crystal::Command
 
       opts.on("--prelude ", "Use given file as prelude") do |prelude|
         compiler.prelude = prelude
+        specified_prelude = true
       end
 
       # iyi: write a `.iyimod` per imported module into DIR (SPEC.md IV.1).
@@ -684,6 +686,16 @@ class Crystal::Command
       sources << Compiler::Source.new(filenames.shift, STDIN.gets_to_end)
     end
     sources.concat gather_sources(filenames)
+
+    # iyi: an iyi program gets iyi's prelude (SPEC.md, "0.1.0", item 3).
+    #
+    # Decided by the entry file's extension, which is the only thing the
+    # compiler knows before it reads anything. `--prelude` still wins, and a
+    # `.cr` file is untouched — the two languages share this compiler and do
+    # not share a standard library.
+    if !specified_prelude && sources.first?.try(&.filename.ends_with?(".iyi"))
+      compiler.prelude = "iyi/prelude"
+    end
 
     output_extension = compiler.cross_compile? ? compiler.codegen_target.object_extension : compiler.codegen_target.executable_extension
 

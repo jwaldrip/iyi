@@ -30,9 +30,8 @@ Limits, stated because they bound the result
 --------------------------------------------
 
 * **The corpus is one program.** `hello` is the only pair where "the equivalent
-  Go program" is unambiguous, and more to the point iyi has no other program: its
-  samples explain rules rather than do work, because the prelude to write real
-  ones with does not exist yet (0.1.0 item 3). `webapp.iyi` is timed too, but
+  Go program" is unambiguous, and iyi has no larger program to offer: its
+  samples explain rules rather than do work. `webapp.iyi` is timed too, but
   for iyi alone — its Kemal-shaped router against Go's `net/http` would compare
   three small files with a large precompiled stdlib package, which is not a
   like-for-like build.
@@ -180,10 +179,11 @@ def main():
 
     print(f"  NOT MET — {front_hello / FRONT_END_TARGET:.0f}x over.")
     print()
-    print("  Expected until Part IV lands. The front end still re-analyses the")
-    print("  prelude from source: `.iyimod` removes the top-level pass (item 1)")
-    print("  and the passes that re-walk the prelude are item 2. IV.1d has the")
-    print("  breakdown of what each is worth.")
+    print("  The prelude is iyi's own now (0.1.0 item 3), which is what took")
+    print("  this from 26x over to here. What is left is that its 833 lines are")
+    print("  still analysed from source on every build: `.iyimod` carries a")
+    print("  module's declarations and the prelude is now a module small enough")
+    print("  to be one (item 1), and the passes that re-walk it are item 2.")
     print()
     return 1
 

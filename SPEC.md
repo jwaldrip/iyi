@@ -71,22 +71,46 @@ artifact alone leaves 0.47 s, of which class-var initializers and `main` are
 put it there. 0.47 s beats Crystal and does not beat Go. This item is the
 headline number, not a refinement of it.
 
-**3. A deliberately tiny prelude, written in iyi.** Not a standard library:
-integers, floats, booleans, a string, one sequence, one dictionary, `puts`.
-While an iyi program `require`s Crystal's 107,719-line prelude the 95% prelude
-tax is still there and the benchmark measures a workaround rather than the
-thesis. **Its scope is set by what the samples call and by nothing else** — a
+**3. A deliberately tiny prelude, written in iyi. Done — 833 lines.** Not a
+standard library: integers, booleans, a string, one sequence, one dictionary,
+`puts`. **Its scope is set by what the samples call and by nothing else** — a
 method enters the prelude because an existing sample needs it, never because it
 belongs there.
 
-The ceiling is not a guess. Crystal's own 0.1.0 shipped 8,161 lines of library,
-of which the core — `object`, `nil`, `bool`, `char`, `int`, `float`, `number`,
-`string`, `array`, `hash`, `range`, `enumerable`, `comparable`, `io`,
+The ceiling was not a guess. Crystal's own 0.1.0 shipped 8,161 lines of
+library, of which the core — `object`, `nil`, `bool`, `char`, `int`, `float`,
+`number`, `string`, `array`, `hash`, `range`, `enumerable`, `comparable`, `io`,
 `pointer`, `exception`, `raise`, `main`, `prelude` — is **3,551 lines**. The
 rest is `json`, `yaml`, `http`, `option_parser`: libraries, not a prelude.
-**3,551 lines is the number to stay under**, measured in the same language
-family and for the same purpose. This is the item that decides the schedule;
-see below.
+3,551 lines was the number to stay under, measured in the same language family
+and for the same purpose. `src/iyi/` came in at 833, and **all eight samples
+run on it with output identical to what they print under Crystal's prelude**,
+which is the acceptance test: the samples are the documentation, so a prelude
+that changed what they printed would have changed what the documentation says.
+A `.iyi` entry file gets it by default; `--prelude` still wins, and a `.cr`
+file is untouched.
+
+| | measured |
+|---|---|
+| front end, `hello.iyi` | 1.41 s → **0.13 s** |
+| whole build, `hello.iyi` | 2.10 s → **0.32 s** |
+| whole build, `webapp.iyi` | 2.17 s → **0.36 s** |
+
+Three decisions made it that small, and each is a thing 0.1.0 does not have
+rather than a trick. **There is no `IO`**: `puts` writes to fd 1 and `to_s`
+returns a `String`, which removes buffering, encodings and the class hierarchy
+under them — the largest single saving against Crystal's core. **`raise` is a
+panic** (III.1.4): it prints and exits, so there is no unwinder, no personality
+function and no exception hierarchy, and the three `__crystal_*` symbols that a
+program with an `ensure` in it must link are stubs that say they cannot be
+reached. **Strings are ASCII** wherever a method has to look inside one —
+`upcase`, `starts_with?` — though `size` decodes UTF-8 properly, because a
+sample counts the characters of a word with an accent in it.
+
+What it is not: no `Float64#to_s`, no `Range`, no `Set`, no formatting, no
+`Comparable`, no deletion from a `Hash`, and `sort` is an insertion sort
+because the samples sort five elements. Each of those is absent because no
+sample asked, which is the rule doing its job rather than a list of regrets.
 
 **4. IV.6 #6, module naming. Done.** A module is declared `app/greeter` and
 reached `App::Greeter`. This appears in every line of user code and could not be
@@ -162,6 +186,32 @@ this on the previous instrument and it still holds on this one: user code is
 nearly free and the fixed prelude cost is the whole bill. It is why the target
 is set on a one-line program rather than a large one.
 
+**The second run, after item 3.** Same machine, same command, with iyi's own
+prelude (833 lines) in place of Crystal's 107,719:
+
+| program | stage | cold | warm |
+|---|---|---|---|
+| `hello.iyi` | front end (`--no-codegen`) | **0.17** | — |
+| `hello.iyi` | end to end | **0.38** | **0.37** |
+| `hello.go` | `go build` | 2.54 | 0.16 |
+| `webapp.iyi` | front end, iyi only | **0.18** | — |
+
+**The 11× warm gap is 2.3×**, and it went there by deleting a dependency
+rather than by making anything faster: nothing in the compiler changed for this
+row. The front end is 7.8× off its own previous number and 3× over the target
+rather than 26×.
+
+**Cold, iyi is now 6.7× faster than Go**, 0.38 against 2.54, because Go cold
+compiles its standard library and iyi cold compiles 833 lines. That reverses
+the first run's warning and replaces it with a smaller one: the comparison is
+only fair while iyi's library is this small, and it stops being flattering the
+moment iyi has one worth the name.
+
+**What is left is the same shape one order down.** 0.17 s of front end is 833
+lines of prelude analysed from source on every build — which is exactly the
+thing `.iyimod` removes, and the prelude is now a module small enough to be
+one. Item 1 and item 2 are still what closes the last 3×.
+
 ### What Crystal's own 0.1.0 looked like
 
 The scope above was drawn before checking it against the one release most
@@ -171,7 +221,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 95,010 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 722 |
+| Library | 8,161 lines (3,551 of it core) | 833 prelude + 722 in samples |
 | Specs | 21,146 lines | ~3,400 for iyi |
 | Samples | 24 **programs** | 8 **explanations** |
 | History | 3,165 commits over 21 months | 75 |
