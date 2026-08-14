@@ -69,12 +69,12 @@ here that produces a program rather than a typecheck. `modules.iyi` builds,
 links and runs from its two modules' artifacts with both sources deleted, and
 prints what it printed from source.
 
-Of the five samples that import anything, **three** do: `modules`, `immutable`
-— a generic type, a 575-line trait with an associated type, and a generic impl
-— and `collections`, where the trait is implemented by a type the artifact's
-module has never heard of. `init_order` is refused because its modules have
-initialisers and an artifact carries none, and `webapp` is refused a step
-earlier by R-2. IV.1g measures all of it.
+Of the five samples that import anything, **four** do — `modules`, `immutable`
+(a generic type, a 575-line trait with an associated type, a generic impl),
+`collections` (the trait implemented by a type the artifact's module has never
+heard of) and `init_order` (III.5's ordering, line for line). The fifth,
+`webapp`, is refused a step earlier by R-2 and has been since before this
+section existed. IV.1g measures all of it.
 
 **2. The passes that still walk the prelude stop walking it (IV.1d).** The
 artifact alone leaves 0.47 s, of which class-var initializers and `main` are
@@ -1809,6 +1809,7 @@ as valid is the worst failure mode a build cache has.
 | Exports | types, signatures, traits, impls, constants |
 | Macro bodies | serialised AST for exported macros and derives |
 | Mono bodies | the bodies a consumer has to compile — source text, not IR yet |
+| Initialiser | the module's own top-level code, as source text (IV.1g) |
 | Object code | machine code for this module's own definitions |
 
 Binary, for read speed. A `iyi mod dump` producing text is required, not
@@ -1825,8 +1826,8 @@ their parameters, associated types and methods, and impl records with what they
 answer, **and each type's own fields**. Layout templates, type descriptors and
 constants are not in it — those are what codegen needs rather than what the
 front end needs. **`MonoBodies` carries the bodies a consumer has to compile
-itself** (IV.1g). `Hashes` and `MacroBodies` are declared in the `Section` enum
-and unwritten.
+itself, and `Initialiser` the module's own top-level code** (IV.1g). `Hashes`
+and `MacroBodies` are declared in the `Section` enum and unwritten.
 
 Fields were meant to be in that second list and are not, which is worth saying
 plainly because the reason is a bug rather than a change of mind. A consumer
@@ -1918,12 +1919,12 @@ why it is printable.
 is no body to visit and there is not meant to be one — R-2 guarantees the
 annotation is written, and IV.2 keeps the body out. That is the whole of what
 the front end gets, and it is also the boundary: a module read this way
-contributes **no initialiser**, because its top-level code is not a
-declaration and is not in the file. That is the boundary that remains: a module
-of ordinary functions and types now builds, links and runs from its artifact
-(IV.1g), and a module that has to *initialise* something is refused rather than
-linked, because the alternative is a program that runs with the setup missing.
-IV.1a said the same thing from the other direction —
+contributes an **initialiser only because one now travels** in a section of its
+own (IV.1g) — its top-level code is not a declaration, so `Exports` was never
+going to hold it. What is still left behind is code inside a *type* body, and a
+build that would generate code against a module with one is refused rather than
+given a program that runs with the setup missing. IV.1a said the same thing
+from the other direction —
 codegen needs the prelude's tree for reasons caching analysis does not remove.
 
 **Three things had to travel that the format did not carry**, each found by a
@@ -2119,6 +2120,29 @@ the type of instance variable `@items`" on the line that assigns it. A file of
 declarations still contributes no initialiser, because there is nothing in it
 to run; that is a property of the content, not of how it is plumbed.
 
+**And the module's initialiser travels too.** It is the one part of a module
+that is neither a declaration nor the body of one, and III.5 is entirely about
+it: it has to *run*, in DAG order, before anything that imports the module.
+Nothing else can produce it — a consumer that never opens the source cannot
+invent the module's constants, its proc literals, or the statements between
+them. So it goes in a section of its own, as source text, rendered back inside
+the module's own namespace; the consumer parses it and it takes its place in
+the import order like any module read from source, because that order is over
+modules and not over text. `init_order.iyi` — whose whole subject is that
+ordering, and one of whose `import`s sits below a statement of its own — prints
+the same five lines in the same order from its artifacts as from source.
+
+The section is not in IV.1's table. The table had a row for declarations and a
+row for bodies of declarations and no row for this, which is the gap rather
+than an addition: a module is not only what it declares.
+
+**What still does not travel is code inside a *type* body** — a class
+variable's initialiser, which belongs to the type rather than to the module's
+top level. `has_initialiser` now means exactly that, and a build that would
+generate code against such a module is refused, naming the module and why. The
+distinction is worth the precision: the flag used to mean "has anything to run"
+and refused three modules that were fine.
+
 **Where that leaves the eight samples.** Five import a module at all; the other
 three (`hello`, `generics`, `errors`) are single files and exercise nothing
 here.
@@ -2128,23 +2152,14 @@ here.
 | `modules` | **builds, links, runs, identical output** |
 | `immutable` | **the same** — a generic type, a 575-line trait, a generic impl |
 | `collections` | **the same** — the consumer's own type implementing the trait |
-| `init_order` | refused — the module has an initialiser |
+| `init_order` | **the same** — including III.5's ordering, line for line |
 | `webapp` | refused at `--emit-iyimod` — R-2, `namespace` takes an unannotated block |
 
-Three of the five, and the two that are left are named rather than mysterious:
-
-1. **The module's initialiser.** Not a declaration, so not in the artifact, so
-   a module read from one contributes none — and `init_order` linked and ran
-   with its modules' setup silently missing, which is the worst outcome this
-   file can produce. The artifact now records `has_initialiser` and a build
-   that would generate code against such a module is refused, naming the module
-   and why. Carrying the initialiser means carrying everything `_main` holds on
-   the module's behalf — its constants, its proc literals, its type ids — in
-   III.5's DAG order.
-2. **`webapp` is not this section's failure.** R-2 refuses `namespace` because
-   it is exported and takes a block it does not annotate, which is IV.2's rule
-   working: the body stays behind, so there is no `yield` left to infer the
-   block from. It has been true since before `ObjectCode` existed.
+**Four of the five, and the fifth is not this section's failure.** R-2 refuses
+`namespace` because it is exported and takes a block it does not annotate,
+which is IV.2's rule working: the body stays behind, so there is no `yield`
+left to infer the block from. It has been true since before `ObjectCode`
+existed, and IV.2 already counts it as the one method the rule costs.
 
 And one thing none of the five reaches, which the Kemal port would:
 **prelude generics instantiated at this module's own types.** The router's body

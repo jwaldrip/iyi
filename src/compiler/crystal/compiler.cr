@@ -438,6 +438,7 @@ module Crystal
           exports: exports,
           has_initialiser: program.iyi_module_initialisers.includes?(filename),
           mono_bodies: program.iyi_mono_bodies[filename]? || {} of String => String,
+          initialiser: program.iyi_module_initialiser_source[filename]? || "",
         )
 
         {File.join(dir, "#{module_name}.iyimod"), artifact}

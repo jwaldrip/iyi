@@ -26,16 +26,16 @@ require "./config"
 #
 # ## What is not here yet
 #
-# `Hashes`, `MacroBodies` and `MonoBodies` are named in `Section` and not
-# written. The kinds are declared now so that a file written today is readable
-# by the compiler that adds them: an unknown section is skipped, a known one
-# that is absent is simply absent.
+# `Hashes` and `MacroBodies` are named in `Section` and not written. The kinds
+# are declared now so that a file written today is readable by the compiler
+# that adds them: an unknown section is skipped, a known one that is absent is
+# simply absent.
 module Crystal::IyiMod
   MAGIC = "IYIMOD\0\0".to_slice
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 10_u32
+  FORMAT_VERSION = 11_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -47,6 +47,11 @@ module Crystal::IyiMod
     MacroBodies = 5
     MonoBodies  = 6
     ObjectCode  = 7
+
+    # iyi: the module's own top-level code, as source text. Not in IV.1's
+    # table, which had no place for the one part of a module that is neither a
+    # declaration nor a body of one — see IV.1g.
+    Initialiser = 8
   end
 
   class Error < Crystal::Error
@@ -311,10 +316,24 @@ module Crystal::IyiMod
     # without changing what travels.
     getter mono_bodies : Hash(String, String)
 
+    # The module's own top-level code, as source text. Empty when it has none.
+    #
+    # The one part of a module that is neither a declaration nor the body of
+    # one, and the part III.5 is about: it has to *run*, in DAG order, before
+    # anything that imports this module. It travels because nothing else can
+    # produce it — a consumer that never opens the source cannot invent the
+    # module's constants, its proc literals, or the statements between them.
+    #
+    # Rendered back into the module's own namespace by `declarations`, so it
+    # arrives where it was written and takes its place in the import order like
+    # any module read from source. `has_initialiser` stays for what this cannot
+    # carry: code inside a *type* body, which belongs to the type.
+    getter initialiser : String
+
     def initialize(@module_name, @source_path, @compiler_version, @target_triple,
                    @flags, @imports, @usings = [] of String, @exports = Exports.empty,
                    @object_code = [] of ObjectUnit, @has_initialiser = false,
-                   @mono_bodies = {} of String => String)
+                   @mono_bodies = {} of String => String, @initialiser = "")
     end
   end
 
@@ -334,6 +353,10 @@ module Crystal::IyiMod
     # a front-end reader needs it and a linker does not.
     unless artifact.mono_bodies.empty?
       sections << {Section::MonoBodies, encode_mono_bodies(artifact)}
+    end
+
+    unless artifact.initialiser.empty?
+      sections << {Section::Initialiser, encode_initialiser(artifact)}
     end
 
     # Last, and omitted when there is nothing in it. A consumer reading
@@ -397,6 +420,7 @@ module Crystal::IyiMod
       exports = Exports.empty
       object_code = [] of ObjectUnit
       mono_bodies = {} of String => String
+      initialiser = ""
 
       table.each do |(kind, length)|
         section = Section.from_value?(kind)
@@ -416,7 +440,8 @@ module Crystal::IyiMod
         when Section::Imports    then imports = decode_imports(payload)
         when Section::Exports    then exports = decode_exports(payload)
         when Section::ObjectCode then object_code = decode_object_code(payload)
-        when Section::MonoBodies then mono_bodies = decode_mono_bodies(payload)
+        when Section::MonoBodies  then mono_bodies = decode_mono_bodies(payload)
+        when Section::Initialiser then initialiser = String.new(payload)
         else
           # Written by a later compiler, or a section this one does not need.
           # Skipping is the point of the table.
@@ -429,7 +454,7 @@ module Crystal::IyiMod
 
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
-        object_code, header[:has_initialiser], mono_bodies)
+        object_code, header[:has_initialiser], mono_bodies, initialiser)
     end
   end
 
@@ -442,7 +467,13 @@ module Crystal::IyiMod
     io.puts "compiler      #{artifact.compiler_version}"
     io.puts "target        #{artifact.target_triple}"
     io.puts "flags         #{artifact.flags.empty? ? "(none)" : artifact.flags.join(", ")}"
-    io.puts "initialiser   #{artifact.has_initialiser ? "yes — cannot be linked against yet" : "none"}"
+    if artifact.has_initialiser
+      io.puts "initialiser   has code this file cannot carry — cannot be linked against"
+    elsif artifact.initialiser.empty?
+      io.puts "initialiser   none"
+    else
+      io.puts "initialiser   #{artifact.initialiser.lines.size} line(s)"
+    end
     if artifact.imports.empty?
       io.puts "imports       (none)"
     else
@@ -575,6 +606,13 @@ module Crystal::IyiMod
           body: bodies[mono_body_key(container, signature)]?
       end
       io << "end\n"
+    end
+
+    # Last, so that everything it can name is already declared. Inside the
+    # module, because the parser wrapped this whole text in one — which is what
+    # puts the module's own code back in the namespace it was written in.
+    unless artifact.initialiser.empty?
+      io << '\n' << artifact.initialiser << '\n'
     end
   end
 
@@ -807,6 +845,10 @@ module Crystal::IyiMod
   private def self.decode_imports(payload : Bytes)
     io = IO::Memory.new(payload)
     {imports: read_strings(io), usings: read_strings(io)}
+  end
+
+  private def self.encode_initialiser(artifact : Artifact) : Bytes
+    artifact.initialiser.to_slice
   end
 
   private def self.encode_mono_bodies(artifact : Artifact) : Bytes

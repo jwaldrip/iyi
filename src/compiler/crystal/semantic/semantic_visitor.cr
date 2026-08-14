@@ -306,20 +306,20 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
 
     check_artifact_matches node, artifact, artifact_path
 
-    # III.5's initialiser is not a declaration, so it is not in the artifact
-    # and a module read from one contributes none. For a front-end build that
-    # costs nothing; for a build that produces a program it is the difference
-    # between right and wrong, and the wrongness is invisible — the program
-    # links and runs with the module's setup silently missing. Refused here,
-    # where the module and the reason are both nameable.
+    # A module's own top-level code travels and is compiled here. What does not
+    # is runnable code inside a *type* body — a class variable's initialiser,
+    # which belongs to the type — and a build given a module with one would
+    # link and run with that part silently missing. Refused here, where the
+    # module and the reason are both nameable.
     if artifact.has_initialiser && @program.iyi_wants_object_code
       node.raise <<-MESSAGE
-        "#{artifact.module_name}" has module-level code to run, and a .iyimod
-        carries declarations rather than an initialiser (SPEC.md III.5, IV.1g).
+        "#{artifact.module_name}" has code inside a type body that has to run,
+        and a .iyimod carries a module's own top level and no more (SPEC.md
+        III.5, IV.1g).
 
-        A program built against this artifact would link and run with the
-        module never having set itself up. Build it from source, or pass
-        --no-codegen to typecheck against the artifact.
+        A program built against this artifact would link and run with that part
+        never having happened. Build it from source, or pass --no-codegen to
+        typecheck against the artifact.
         MESSAGE
     end
 
@@ -419,7 +419,13 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       @iyi_importing.pop
     end
 
-    @program.iyi_module_initialisers << filename if iyi_initialiser?(parsed_nodes)
+    # The module's own top-level code, so the artifact can carry it, and
+    # separately whether any runnable code is somewhere this cannot reach —
+    # which is what a consumer has to be refused over rather than given a
+    # module that half sets itself up.
+    source = iyi_initialiser_source(parsed_nodes)
+    @program.iyi_module_initialiser_source[filename] = source unless source.empty?
+    @program.iyi_module_initialisers << filename if iyi_uncarried_initialiser?(parsed_nodes)
 
     FileNode.new(parsed_nodes, filename)
   end
@@ -457,6 +463,64 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       false
     else
       true
+    end
+  end
+
+  # iyi: the module's initialiser as source text, for the artifact (IV.1g).
+  #
+  # Only the module's *own* top level — this walks `Expressions` and the
+  # `ModuleDef` the file is wrapped in, and no further. Runnable code inside a
+  # type body is a class variable's initialiser, which belongs to that type and
+  # is not this; `iyi_initialiser?` still sees it, which is what leaves such a
+  # module refused rather than carried with a piece missing.
+  #
+  # In text order, because that is the order III.5 gives a module's own code.
+  private def iyi_initialiser_source(node : ASTNode) : String
+    statements = [] of ASTNode
+    iyi_collect_initialiser node, statements
+    statements.join('\n', &.to_s)
+  end
+
+  private def iyi_collect_initialiser(node : ASTNode, statements : Array(ASTNode)) : Nil
+    case node
+    when Expressions
+      node.expressions.each { |child| iyi_collect_initialiser child, statements }
+    when ModuleDef
+      iyi_collect_initialiser node.body, statements
+    when ClassDef, TraitDef, ImplDef, LibDef, EnumDef, Nop, ModuleHeader,
+         ImportDecl, UsingDecl, Def, Macro, AnnotationDef, Alias,
+         TypeDeclaration, AssocTypeDecl, Annotation, Include, Extend
+      # A declaration, or a body this does not reach into.
+    when VisibilityModifier
+      # Whole, not unwrapped: `pub APP = Router.new` is a constant this module
+      # exports, and dropping the `pub` on the way through would carry the
+      # value and lose the export.
+      statements << node if iyi_initialiser?(node.exp)
+    else
+      statements << node
+    end
+  end
+
+  # iyi: whether the module has runnable code `iyi_initialiser_source` leaves
+  # behind — which is the thing a consumer has to be refused over.
+  #
+  # A class variable's initialiser is the case: it belongs to the type rather
+  # than to the module's own top level, so it is not in the initialiser and a
+  # build given one would run with it missing.
+  private def iyi_uncarried_initialiser?(node : ASTNode) : Bool
+    case node
+    when Expressions
+      node.expressions.any? { |child| iyi_uncarried_initialiser?(child) }
+    when ModuleDef
+      iyi_uncarried_initialiser?(node.body)
+    when VisibilityModifier
+      iyi_uncarried_initialiser?(node.exp)
+    when ClassDef, TraitDef, ImplDef, LibDef
+      iyi_initialiser?(node.body)
+    when EnumDef
+      node.members.any? { |member| iyi_initialiser?(member) }
+    else
+      false
     end
   end
 

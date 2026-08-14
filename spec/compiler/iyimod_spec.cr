@@ -670,29 +670,98 @@ describe Crystal::IyiMod do
     io.to_s.should contain "  def item : T\n    @item\n  end\n"
   end
 
-  # III.5's initialiser is not a declaration, so it is not in the artifact and a
-  # module read from one contributes none. Refused rather than linked, because
-  # the alternative is a program that runs with the module's setup silently
-  # missing — which `init_order.iyi` did, and which is the worst outcome this
-  # file can produce.
-  it "refuses to generate code against a module that has an initialiser" do
+  # III.5's initialiser is the one part of a module that is neither a
+  # declaration nor the body of one, and it has to run — in DAG order, before
+  # anything that imports the module. It travels as source text and is compiled
+  # by the consumer, which is also what produces the module's constants and its
+  # proc literals: nothing else could have.
+  #
+  # Two modules, because one would not show the ordering. `boot/config` is
+  # imported by `boot/registry`, so it initialises first however the imports
+  # are written — and `boot/registry`'s own `import` sits *below* a statement
+  # of its own, which is the case III.5 rule 1 exists for.
+  it "carries a module's initialiser, in import order" do
     with_tempdir("iyimod_initialiser") do
       Dir.mkdir_p "boot"
       File.write "boot/config.iyi", <<-IYI
         module boot/config
 
-        puts "config is setting up"
+        puts "1. config"
 
         pub def name : String
           "iyi"
         end
         IYI
-      File.write "main.iyi", <<-IYI
-        module main
+      File.write "boot/registry.iyi", <<-IYI
+        module boot/registry
+
+        puts "2. registry, above its own import"
 
         import boot/config
 
-        puts Boot::Config.name
+        puts "3. registry, below it"
+
+        pub def greeting : String
+          Boot::Config.name
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import boot/registry
+
+        puts "4. main"
+        puts Boot::Registry.greeting
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      expected = "1. config\n2. registry, above its own import\n3. registry, below it\n4. main\niyi"
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq expected
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "boot", "registry.iyimod"))
+      artifact.has_initialiser.should be_false
+      artifact.initialiser.lines.size.should eq 2
+
+      File.delete "boot/config.iyi"
+      File.delete "boot/registry.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq expected
+    end
+  end
+
+  # What the initialiser does *not* reach: runnable code inside a type body
+  # belongs to the type, not to the module's top level, and nothing in the
+  # artifact holds it. Refused rather than linked, because the alternative is a
+  # program that runs with that part silently missing.
+  it "refuses to generate code against a module whose type body has to run" do
+    with_tempdir("iyimod_type_body") do
+      Dir.mkdir_p "boot"
+      File.write "boot/counter.iyi", <<-IYI
+        module boot/counter
+
+        pub struct Counter
+          @@count = 7
+
+          def count : Int32
+            @@count
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import boot/counter
+
+        puts Boot::Counter::Counter.new.count
         IYI
 
       source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
@@ -700,15 +769,16 @@ describe Crystal::IyiMod do
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
       producer.emit_iyimod = "mods"
-      producer.compile source, File.expand_path("from-source")
+      producer.no_codegen = true
+      producer.compile source, File.expand_path("unused")
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "boot", "config.iyimod"))
-      artifact.has_initialiser.should be_true
+      Crystal::IyiMod.read(File.join("mods", "boot", "counter.iyimod"))
+        .has_initialiser.should be_true
 
       consumer = create_spec_compiler
       consumer.prelude = "iyi/prelude"
       consumer.use_iyimod = "mods"
-      expect_raises(Crystal::TypeException, /has module-level code to run/) do
+      expect_raises(Crystal::TypeException, /has code inside a type body/) do
         consumer.compile source, File.expand_path("from-artifact")
       end
 
@@ -717,8 +787,44 @@ describe Crystal::IyiMod do
       checker.prelude = "iyi/prelude"
       checker.use_iyimod = "mods"
       checker.no_codegen = true
-      checker.compile source, File.expand_path("unused")
+      checker.compile source, File.expand_path("unused-too")
     end
+  end
+
+  it "round-trips a module's initialiser" do
+    with_temporary_file do |path|
+      artifact = Crystal::IyiMod::Artifact.new(
+        module_name: "boot/config",
+        source_path: "/src/boot/config.iyi",
+        compiler_version: "1.22.0-dev+abc1234",
+        target_triple: "x86_64-pc-linux-gnu",
+        flags: ["bits64"],
+        imports: [] of String,
+        initialiser: %(puts("one")\nputs("two")),
+      )
+      Crystal::IyiMod.write artifact, path
+
+      Crystal::IyiMod.read(path).initialiser.should eq %(puts("one")\nputs("two"))
+    end
+  end
+
+  it "renders the initialiser inside the module it belongs to" do
+    artifact = Crystal::IyiMod::Artifact.new(
+      module_name: "boot/config",
+      source_path: "/src/boot/config.iyi",
+      compiler_version: "1.22.0-dev+abc1234",
+      target_triple: "x86_64-pc-linux-gnu",
+      flags: [] of String,
+      imports: [] of String,
+      initialiser: %(puts("hello")),
+    )
+
+    io = IO::Memory.new
+    Crystal::IyiMod.declarations artifact, io
+    text = io.to_s
+
+    text.should start_with "module boot/config\n"
+    text.should contain %(puts("hello"))
   end
 
   # A consumer allocates the type, and allocating needs its size. Without the

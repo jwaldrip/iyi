@@ -81,16 +81,26 @@ module Crystal
     # `top_level_semantic` empties it into the tree.
     property iyi_module_inits = [] of ASTNode
 
-    # iyi: the files whose module has top-level code that has to run, by
-    # absolute filename (SPEC.md III.5, IV.1g).
+    # iyi: the files whose module has runnable code the artifact **cannot**
+    # carry, by absolute filename (SPEC.md III.5, IV.1g).
     #
-    # `iyi_module_inits` holds the code and is emptied into the tree by the
-    # top-level pass; this survives it, because an artifact is written later
-    # and has to say whether the module it describes needs initialising. It
-    # cannot yet carry the initialiser itself, so a codegen build reading such
-    # an artifact is refused rather than given a program with the module's
-    # setup silently missing.
+    # A module's own top level travels (see `iyi_module_initialiser_source`).
+    # A class variable's initialiser does not: it belongs to the type rather
+    # than to the module, and nothing in the artifact holds it. A codegen build
+    # reading such an artifact is refused rather than given a module that half
+    # sets itself up.
     getter iyi_module_initialisers = Set(String).new
+
+    # iyi: each module's own top-level code as source text, by absolute
+    # filename (SPEC.md III.5, IV.1g).
+    #
+    # `iyi_module_inits` holds the nodes and is emptied into the tree by the
+    # top-level pass; this survives it, because an artifact is written later
+    # and the initialiser is the one part of a module that is not a
+    # declaration and has to run anyway. The consumer parses it back into the
+    # module's own namespace and it takes its place in III.5's DAG order like
+    # any other module's, because that order is over modules and not over text.
+    getter iyi_module_initialiser_source = {} of String => String
 
     # iyi: which modules each file imports, by absolute filename (SPEC.md
     # III.5 rule 2). `iyi_module_inits` is one order the DAG allows; these are
