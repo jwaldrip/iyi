@@ -56,13 +56,14 @@ speed has shipped the cost and none of the benefit.
 
 ### In scope
 
-**1. `.iyimod`, end to end (IV.1). Started.** Not negotiable. R-1 is the rule
-the rest of the document is built on, and `import` still re-reads and
-re-analyses each module's source. Without the artifact everything here is a
-design document. The container, the `Header`, `Imports` and `Exports` sections,
-`--emit-iyimod` and `mod dump` are built, with `Exports` carrying signatures,
-type declarations and impl records. What is left is the half that matters most:
-a consumer that reads the file in place of the source, and object code.
+**1. `.iyimod`, end to end (IV.1). Front end done.** Not negotiable. R-1 is the
+rule the rest of the document is built on, and without the artifact everything
+here is a design document. The container, the `Header`, `Imports` and `Exports`
+sections, `--emit-iyimod` and `mod dump` are built, and `--use-iyimod` now
+compiles an imported module from its artifact: seven of the eight samples
+compile with the imported module's source **deleted**. What is left is object
+code, which is what makes such a build able to produce a program rather than
+only typecheck one.
 
 **2. The passes that still walk the prelude stop walking it (IV.1d).** The
 artifact alone leaves 0.47 s, of which class-var initializers and `main` are
@@ -1695,27 +1696,37 @@ as valid is the worst failure mode a build cache has.
 Binary, for read speed. A `iyi mod dump` producing text is required, not
 optional — an opaque cache format is one nobody can debug.
 
-**The container is built, and `Exports` carries the declarations.**
-`src/compiler/crystal/iyimod.cr` writes and reads magic, format version, a
-section table and the `Header`, `Imports` and `Exports` sections;
-`crystal build --emit-iyimod DIR` writes one per imported module, and
-`crystal mod dump FILE` prints it. `Exports` carries `pub def` signatures,
-exported type declarations with their parameters and methods, and impl records.
-Field lists, layout templates, type descriptors and constants are not in it —
-those are what codegen needs rather than what the front end needs, so they
-arrive with `ObjectCode`. `Hashes`, `MacroBodies` and `MonoBodies` are declared
-in the `Section` enum and unwritten.
+**The container is built, `Exports` carries the declarations, and a build can
+be compiled against them.** `src/compiler/crystal/iyimod.cr` writes and reads
+magic, format version, a section table and the `Header`, `Imports` and
+`Exports` sections; `crystal build --emit-iyimod DIR` writes one per imported
+module, `crystal mod dump FILE` prints it, and `crystal build --use-iyimod DIR`
+compiles an `import` from the artifact instead of the module's source — see
+IV.1f. `Exports` carries `pub def` signatures, exported type declarations with
+their parameters, associated types and methods, and impl records with what they
+answer. Field lists, layout templates, type descriptors and constants are not
+in it — those are what codegen needs rather than what the front end needs, so
+they arrive with `ObjectCode`. `Hashes`, `MacroBodies` and `MonoBodies` are
+declared in the `Section` enum and unwritten.
 
 `std/list` reads back as:
 
 ```
+imports
+  std/enumerable
+usings
+  std/enumerable::{Enumerable}
 exports
-  generic struct List(T)
+  struct List(T)
     def appended(item : T) : List(T)
     def at(index : Int32) : T
+    def concatenated(other : List(T)) : List(T)
+    def empty? : Bool
     def initialize(items : Array(T))
     def size : Int32
-  impl Std::Enumerable::Enumerable for Std::List::List(T)
+  impl Std::Enumerable::Enumerable for Std::List::List(T) forall T
+    type Elem = T
+    def each(& : (T -> Nil)) : Nil
 ```
 
 **A signature is stored as the annotation the author wrote**, not as a
@@ -1751,6 +1762,67 @@ covered in `spec/compiler/iyimod_spec.cr` rather than asserted here.
 milliseconds, against the **~1.0 s** its top-level analysis costs today —
 measured, not estimated, and 2× the 0.5 s this section claimed before anyone
 had run the experiment. See IV.1a for what that does and does not buy.
+
+### IV.1f Reading the artifact instead of the source
+
+`crystal build --use-iyimod DIR` resolves `import a/b` to `DIR/a/b.iyimod`
+where it would have opened `a/b.iyi`, and **does not open the source**. Not
+"prefers the artifact": the file need not exist. Seven of the eight samples
+compile with the imported module's source deleted, `immutable.iyi` among them —
+a generic type, a 575-line trait with an associated type, and a generic impl
+that answers it.
+
+**The artifact is rendered back to declarations and those are parsed.**
+`crystal mod dump --declarations` prints exactly the text the compiler reads,
+which for `std/list` is its `module`, its `import`, its `using`, `pub struct
+List(T)` with six headers and no bodies, and the impl with its `type Elem = T`.
+Text rather than a serialised AST because the signatures already are text: the
+parser that read the module is the one that should read its declarations back,
+and a second grammar for this file would be a second thing to keep correct. A
+diagnostic that points into a `.iyimod` names a line of that output, which is
+why it is printable.
+
+**A call to a def from an artifact is typed from its return annotation.** There
+is no body to visit and there is not meant to be one — R-2 guarantees the
+annotation is written, and IV.2 keeps the body out. That is the whole of what
+the front end gets, and it is also the boundary: a module read this way
+contributes **no initialiser**, because its top-level code is not a
+declaration and is not in the file. So `--use-iyimod` implies `--no-codegen`
+until `ObjectCode` exists. IV.1a said the same thing from the other direction —
+codegen needs the prelude's tree for reasons caching analysis does not remove.
+
+**Three things had to travel that the format did not carry**, each found by a
+real module rather than by reading:
+
+1. **The rest of the `def` line.** The block annotation, `forall`, `abstract`,
+   the receiver, and a parameter kept whole so its default value survives.
+   `Enumerable`'s `map(& : Elem -> U) : Array(U) forall U` needs three of the
+   five in one signature.
+2. **An impl's own methods.** They are the impl's, not the target's:
+   `impl Cmp for Int32` puts `cmp` on a prelude type this module does not
+   export, so recording it against the target loses it. This is also why
+   `each` appears under the impl in the dump above and not under `List`.
+3. **The module's `using` directives.** A signature is stored as the annotation
+   the author wrote, and an annotation is written in a context: `pub def
+   handle(ctx : Context)` resolves `Context` through a `using` further up the
+   file. `std/list` never noticed, because its signatures name only its own
+   types; the Kemal port's first exported signature does not. Carrying the
+   annotation without what resolves it was carrying half of it.
+
+**Measured**, best of 7 runs, `immutable.iyi`, top-level pass only:
+
+| | top level |
+|---|---|
+| prelude alone (empty program) | 0.886 s |
+| + `std` from source (722 lines) | 0.901 s |
+| + `std` from its `.iyimod` | 0.884 s |
+
+The 722 lines cost 15.5 ms from source and nothing measurable from their
+artifacts, so on the modules it is applied to the mechanism delivers what it
+promises. It is also invisible, because 0.886 s of prelude is next to it. That
+is the 95% prelude tax stated as a measurement rather than as an argument, and
+it is why item 3 of the 0.1.0 list — a prelude small enough to be one of these
+modules — is what decides the schedule and not this section.
 
 ### IV.1a What the artifact actually buys — measured
 
@@ -2070,14 +2142,38 @@ Two secondary results from the same instrument:
 - **Type descriptors.** A runtime type id per exported type. II.6 established
   that dictionaries carry type identity, not just pointer maps, because
   `select(type : U.class)` filters by runtime type.
-- **Signatures** of `pub` functions and methods. Parameters, return type, and
-  the `where` bounds from II.6.
+- **Signatures** of `pub` functions and methods. Parameters, return type, the
+  `where` bounds from II.6, and everything else on the `def` line: the block
+  annotation, `forall`, `abstract`, the receiver.
 - **Trait declarations.** Required methods, associated types, and the
   *signatures* of default methods.
-- **Impl records.** Every `(Trait, Type)` pair this module provides. This is
-  what lets a consumer answer "does `Customer` implement `ToJSON`?" without
-  reading `Customer`, which II.4 depends on.
+- **Impl records.** Every `(Trait, Type)` pair this module provides, with what
+  the impl answers — its `forall` parameters, its trait arguments, its
+  associated types, and the methods it defines. This is what lets a consumer
+  answer "does `Customer` implement `ToJSON`?" without reading `Customer`,
+  which II.4 depends on.
+- **The module's `using` directives.** Not part of its surface: nothing here is
+  reachable through them. Part of what its surface *means* — a signature is
+  stored as the annotation the author wrote (IV.1), and `pub def handle(ctx :
+  Context)` resolves `Context` through a `using` further up the file. The
+  annotation travels, so what resolves it has to travel with it.
 - **Exported constants**, with values where a value can appear in a type.
+
+**A block parameter is a parameter (R-2).** An exported `def` that takes a
+block has to say what the block is: `pub def namespace(path : String, &)` says
+a block arrives and nothing about it. Inside the module that is enough, because
+the `yield` is right there. Through an artifact it is not — the body stays
+behind, and what the block receives and returns is in it. Refused where the
+module is compiled rather than where it is read, because that is where the
+author can fix it.
+
+The count that decided it: **one exported signature in the samples out of about
+eighty** — Kemal's `Router#namespace`, which is also the case no annotation can
+express yet, since `with sub_router yield` changes what `self` means inside the
+block. So the rule costs one method today, and the method it costs is one whose
+type nothing in the language can currently write down. Whether `with … yield`
+gets a notation is open; until it does, a module that wants one keeps it
+unexported.
 
 **Out, deliberately:**
 

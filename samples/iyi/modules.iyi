@@ -100,9 +100,24 @@ puts App::Formal.title
 #   would both be `V1` — two paths naming one module (SPEC.md IV.6 #6).
 #
 # ---------------------------------------------------------------------------
-# Not yet implemented
+# Compiling this file without `app/greeter.iyi`
 # ---------------------------------------------------------------------------
 #
-# * Each imported module is still re-analysed from source. `.iyimod` — reading
-#   a module's exported signatures instead of its body — is the whole point of
-#   R-1 and is not built yet.
+# R-1 says a module that imports another reads its `.iyimod` and never opens
+# its source. That is not a claim about a future release:
+#
+#     ./bin/crystal build --no-codegen --emit-iyimod /tmp/mods samples/iyi/modules.iyi
+#     ./bin/crystal mod dump --declarations /tmp/mods/app/greeter.iyimod
+#     mv samples/iyi/app /tmp/app-elsewhere
+#     ./bin/crystal build --use-iyimod /tmp/mods samples/iyi/modules.iyi   # compiles
+#     mv /tmp/app-elsewhere samples/iyi/app
+#
+# The second command prints what the third one compiles against: `app/greeter`
+# with `pub def polite(name : String) : String`, `pub trait Greet` with its
+# requirement, and no bodies at all. `greeting` is not in it — it carries no
+# `pub`, and R-2b's "unreachable rather than absent from `using`" is the same
+# statement as "not in the artifact".
+#
+# * Not yet: object code. `--use-iyimod` implies `--no-codegen`, because the
+#   artifact carries what another module may call and not how it is done, so
+#   there is nothing in it to generate a program from (SPEC.md IV.1f).

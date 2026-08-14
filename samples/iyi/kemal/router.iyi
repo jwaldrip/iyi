@@ -115,6 +115,19 @@ pub class Router
 
   # `with sub_router yield` survives: the block's receiver type is known
   # statically, so it is not `instance_eval` and needs no open method set.
+  #
+  # It is also the one method in these samples that cannot be exported through
+  # a `.iyimod`, and the reason is worth reading here rather than in the error.
+  # `&` says a block arrives and nothing about it. That is enough while the
+  # `yield` below is in the same file and not enough for a module holding only
+  # this signature, so R-2 asks an exported `def` to annotate its block
+  # (SPEC.md IV.2) and `--emit-iyimod` refuses this one by name.
+  #
+  # No annotation would help yet: what makes this method a DSL is that the
+  # block's `self` becomes `sub_router`, and `& : … -> …` has nowhere to say
+  # so. Until it does, a module wanting `with … yield` keeps it unexported —
+  # which is why `crystal build --emit-iyimod DIR samples/iyi/webapp.iyi` is
+  # the one sample that stops here.
   pub def namespace(path : String, &) : Nil
     sub_router = Router.new
     with sub_router yield
