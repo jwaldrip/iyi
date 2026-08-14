@@ -48,9 +48,10 @@ private def type_declaration(name : String,
                              type_parameters = [] of String,
                              assoc_types = [] of String,
                              supertraits = [] of String,
+                             fields = [] of {String, String},
                              methods = [] of Crystal::IyiMod::Signature)
   Crystal::IyiMod::TypeDecl.new(name, kind, type_parameters, assoc_types,
-    supertraits, methods)
+    supertraits, fields, methods)
 end
 
 private def impl_record(trait_name : String,
@@ -283,7 +284,7 @@ describe Crystal::IyiMod do
   it "says what the format does not carry yet" do
     io = IO::Memory.new
     Crystal::IyiMod.dump sample_artifact, io
-    io.to_s.should contain "not in this file yet"
+    io.to_s.should contain "are not in this file"
   end
 
   it "round-trips object code byte for byte" do
@@ -536,6 +537,67 @@ describe Crystal::IyiMod do
       checker.no_codegen = true
       checker.compile source, File.expand_path("unused")
     end
+  end
+
+  # A consumer allocates the type, and allocating needs its size. Without the
+  # fields it read `pub struct Box` as a struct with none, and generated a
+  # `Box::new` that allocated nothing while the module's own code wrote to
+  # `@n` — memory corruption waiting for the rest of `ObjectCode` to stop
+  # failing at link, rather than a missing feature.
+  it "carries a type's fields" do
+    with_tempdir("iyimod_fields") do
+      Dir.mkdir_p "std"
+      File.write "std/box.iyi", <<-IYI
+        module std/box
+
+        pub struct Box(T)
+          @item : T
+          @count : Int32
+
+          def initialize(@item : T)
+            @count = 1
+          end
+
+          def item : T
+            @item
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/box
+
+        puts Std::Box::Box(Int32).new(7).item
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.no_codegen = true
+      producer.compile source, File.expand_path("unused")
+
+      declaration = Crystal::IyiMod.read(File.join("mods", "std", "box.iyimod"))
+        .exports.types.find! { |candidate| candidate.name == "Box" }
+
+      # Sorted, because a hash's order is not a fact about the type and an
+      # artifact that changed between two identical builds would defeat IV.3.
+      declaration.fields.should eq [{"@count", "Int32"}, {"@item", "T"}]
+    end
+  end
+
+  it "renders a type's fields into the declarations a consumer reads" do
+    declaration = type_declaration("List", "generic struct",
+      type_parameters: ["T"],
+      fields: [{"@items", "Array(T)"}],
+      methods: [signature("size", return_type: "Int32")])
+
+    io = IO::Memory.new
+    Crystal::IyiMod.declarations sample_artifact(types: [declaration]), io
+
+    io.to_s.should contain "pub struct List(T)\n  @items : Array(T)\n"
   end
 
   # The other half of the rule above, and the half that went wrong three times.

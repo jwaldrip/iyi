@@ -1821,10 +1821,20 @@ module, `crystal mod dump FILE` prints it, and `crystal build --use-iyimod DIR`
 compiles an `import` from the artifact instead of the module's source — see
 IV.1f. `Exports` carries `pub def` signatures, exported type declarations with
 their parameters, associated types and methods, and impl records with what they
-answer. Field lists, layout templates, type descriptors and constants are not
-in it — those are what codegen needs rather than what the front end needs, so
-they arrive with `ObjectCode`. `Hashes`, `MacroBodies` and `MonoBodies` are
-declared in the `Section` enum and unwritten.
+answer, **and each type's own fields**. Layout templates, type descriptors and
+constants are not in it — those are what codegen needs rather than what the
+front end needs. `Hashes`, `MacroBodies` and `MonoBodies` are declared in the
+`Section` enum and unwritten.
+
+Fields were meant to be in that second list and are not, which is worth saying
+plainly because the reason is a bug rather than a change of mind. A consumer
+does not need a field to typecheck a call — and it does need one to
+**allocate** the receiver. Without them `pub struct List(T)` read back as a
+struct with no fields, and the consumer generated a `List(Int32)::new` that
+allocated nothing while the module's own object code wrote to `@items`. That is
+memory corruption, standing behind a link error that happened to fire first.
+The line between "what the front end needs" and "what codegen needs" is not
+the line between what travels and what does not.
 
 **`ObjectCode` now carries a module's own machine code** — see IV.1g for what
 that turned out to mean and for the two things it does not yet carry.
@@ -2436,6 +2446,12 @@ Two secondary results from the same instrument:
 **In:**
 
 - **Type declarations.** Name, kind, generic parameters, field names and types.
+  **Built.** A field travels as its resolved type rather than as the annotation
+  the author wrote, which is a departure from how signatures travel and is
+  deliberate: a field is not part of the surface a consumer writes against, it
+  is what the consumer has to allocate. For a generic type the resolution is in
+  terms of its own parameters — `List(T)`'s `@items` is `Array(T)` — which is
+  what lets one declaration stencil at every instantiation.
 - **Layout templates.** Size, alignment, and pointer map — expressed as a
   *function of the type parameters' shapes*, not a fixed layout. `Array(T)` is
   three words regardless of `T`; `Tuple(Int32, String)` is not. R-4 needs the

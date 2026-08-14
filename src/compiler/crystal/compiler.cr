@@ -609,8 +609,36 @@ module Crystal
         type_parameters: type_parameters,
         assoc_types: assoc_types,
         supertraits: type.responds_to?(:supertraits) ? type.supertraits.map(&.to_s) : [] of String,
+        fields: collect_iyi_fields(type),
         methods: methods,
       )
+    end
+
+    # iyi: a type's own instance variables, for `TypeDecl#fields` (IV.2).
+    #
+    # Rendered from the resolved type rather than kept as the annotation the
+    # author wrote, which is a departure from how signatures travel and is
+    # deliberate: a field is not part of the surface a consumer writes against,
+    # it is what the consumer has to *allocate*, and the resolved type is the
+    # thing that answers that. For a generic type the resolution is in terms of
+    # its own parameters — `List(T)`'s `@items` is `Array(T)` — which is what
+    # lets the declaration stencil at any instantiation.
+    #
+    # Sorted, because a hash's order is not a fact about the type and an
+    # artifact that changed byte for byte between two identical builds would
+    # defeat IV.3's whole purpose before it is written.
+    private def collect_iyi_fields(type : Type) : Array({String, String})
+      fields = [] of {String, String}
+      return fields unless type.responds_to?(:instance_vars)
+
+      type.instance_vars.each do |name, variable|
+        # A variable whose type never resolved is a rule broken elsewhere, and
+        # recorded as `?` rather than guessed at — the same convention an
+        # unannotated signature takes, and equally visible in `mod dump`.
+        fields << {name, variable.type?.try(&.to_s) || "?"}
+      end
+      fields.sort_by! { |(name, _)| name }
+      fields
     end
 
     # Measures what a compile costs when the prelude has already been analysed,

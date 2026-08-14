@@ -35,7 +35,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 8_u32
+  FORMAT_VERSION = 9_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -117,12 +117,25 @@ module Crystal::IyiMod
   # same type internally, so a reader that merged them would ask an impl of
   # `Enumerable` to supply `Elem` at the `impl` line, which is the one place
   # II.6 says it does not go.
+  #
+  # *fields* is the type's own instance variables, `{"@items", "Array(T)"}`.
+  #
+  # An implementation detail that has to travel anyway, which IV.2 admits in as
+  # much: a consumer allocates the type, and allocating needs its size. Left
+  # out, a consumer read `pub struct List(T)` as a struct with no fields and
+  # generated a `List(Int32)::new` that allocated nothing while the module's
+  # own code wrote to `@items`. That is not a missing feature, it is memory
+  # corruption waiting for the rest of `ObjectCode` to stop failing at link.
+  #
+  # Inherited fields are not here. They belong to the supertype's declaration,
+  # and a consumer that has this type has that one too.
   record TypeDecl,
     name : String,
     kind : String,
     type_parameters : Array(String),
     assoc_types : Array(String),
     supertraits : Array(String),
+    fields : Array({String, String}),
     methods : Array(Signature)
 
   # One `(Trait, Type)` pair this module provides.
@@ -165,10 +178,10 @@ module Crystal::IyiMod
   #
   # ## What is not here yet
   #
-  # Layout templates, type descriptors, field lists and constants. The first
-  # three are what codegen needs rather than what the front end needs, so they
-  # arrive with object code; a consumer can typecheck a call against a
-  # signature without knowing how the receiver is laid out.
+  # Layout templates, type descriptors and constants. Field lists are here, and
+  # were the exception that proves the rule: a consumer can typecheck a call
+  # against a signature without knowing how the receiver is laid out, and it
+  # cannot *allocate* one.
   record Exports,
     functions : Array(Signature),
     types : Array(TypeDecl),
@@ -410,6 +423,7 @@ module Crystal::IyiMod
       exports.types.each do |declaration|
         io.puts "  #{render_type_header(declaration)}"
         declaration.assoc_types.each { |name| io.puts "    type #{name}" }
+        declaration.fields.each { |(name, type)| io.puts "    #{name} : #{type}" }
         declaration.methods.each { |signature| io.puts "    #{render_signature(signature)}" }
       end
 
@@ -433,11 +447,11 @@ module Crystal::IyiMod
     # to tell a field list that is absent from one that is empty.
     io.puts
     io.puts "note          format v#{FORMAT_VERSION} carries declarations,"
-    io.puts "              signatures, and the object code of this module's own"
-    io.puts "              types. Field lists, layout templates, type"
-    io.puts "              descriptors and constants are not in this file yet,"
-    io.puts "              and neither is the code for prelude generics this"
-    io.puts "              module instantiates (SPEC.md IV.2)."
+    io.puts "              signatures, field lists, and the object code of this"
+    io.puts "              module's own non-generic types. Layout templates,"
+    io.puts "              type descriptors and constants are not in this file"
+    io.puts "              yet, and neither are the bodies a consumer has to"
+    io.puts "              specialise (SPEC.md IV.2)."
   end
 
   # The artifact as the iyi declarations it was built from.
@@ -486,6 +500,10 @@ module Crystal::IyiMod
     exports.types.each do |declaration|
       io << "\npub " << render_type_header(declaration) << '\n'
       declaration.assoc_types.each { |name| io << "  type " << name << '\n' }
+      # Before the methods, where they are written and where a reader looks for
+      # them. They are also what a `def initialize` with no body leaves
+      # unassigned, which is why they arrive declared rather than inferred.
+      declaration.fields.each { |(name, type)| io << "  " << name << " : " << type << '\n' }
       declaration.methods.each do |signature|
         render_declaration io, signature, indent: "  "
       end
@@ -752,6 +770,7 @@ module Crystal::IyiMod
       write_strings io, declaration.type_parameters
       write_strings io, declaration.assoc_types
       write_strings io, declaration.supertraits
+      write_pairs io, declaration.fields
       write_signatures io, declaration.methods
     end
 
@@ -807,7 +826,8 @@ module Crystal::IyiMod
       parameters = read_strings(io)
       assoc_types = read_strings(io)
       supertraits = read_strings(io)
-      TypeDecl.new(name, kind, parameters, assoc_types, supertraits, read_signatures(io))
+      fields = read_pairs(io)
+      TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, read_signatures(io))
     end
 
     impls = Array(ImplRecord).new(io.read_bytes(UInt32, FORMAT)) do
