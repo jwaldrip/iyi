@@ -97,6 +97,12 @@ module Crystal
     # (useful to type-check a program)
     property? no_codegen = false
 
+    # iyi: whether this build's link is the one the compiler builds itself
+    # rather than the one `cc` builds for it, and whether that has already been
+    # tried and failed. See `iyi_direct_link_command`.
+    @iyi_direct_link = false
+    @iyi_link_driver_only = false
+
     # Maximum number of LLVM modules that are compiled in parallel
     property n_threads : Int32 = {% if Fiber.has_constant?(:ExecutionContext) %}
       Fiber::ExecutionContext.default_workers_count
@@ -1466,9 +1472,147 @@ module Crystal
         end
 
         link_flags = use_modern_linker(link_flags)
+        lib_flags = program.lib_flags(@cross_compile)
 
-        {DEFAULT_LINKER, %(#{DEFAULT_LINKER} "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} #{program.lib_flags(@cross_compile)}), object_names}
+        if direct = iyi_direct_link_command(object_names, output_filename, link_flags, lib_flags)
+          return direct
+        end
+
+        {DEFAULT_LINKER, %(#{DEFAULT_LINKER} "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} #{lib_flags}), object_names}
       end
+    end
+
+    # iyi: the link without the driver that works out how to do it.
+    #
+    # `cc` does not link. It computes a command — the dynamic linker's path,
+    # `Scrt1.o`, `crti.o`, `crtbeginS.o`, the `-L` directories, `-lgcc -lc` and
+    # the rest — and runs `collect2`, which scans the objects for constructors
+    # and runs `ld`. Measured here, linking `hello.iyi`: 0.129 s through `cc`
+    # and **0.014 s** running the same `ld` command directly. The linker is not
+    # the cost and never was; three of them come out between 0.009 s and
+    # 0.023 s. The driver and its scanner are 0.11 s of every build.
+    #
+    # So the driver is asked *once* for the command and the compiler runs `ld`
+    # itself from then on. `cc -###` prints that command without linking
+    # anything — including for object files that do not exist, which is what
+    # makes a reusable template possible: the placeholder marks where this
+    # build's objects go.
+    #
+    # `clang` does this already: it has no `collect2` and execs the linker
+    # itself, which is why it measures 0.092 s where `cc` measures 0.129 s.
+    # Skipping the scan is not a shortcut around something needed — a program
+    # linked this way runs, and every clang-linked binary on the machine was
+    # made without it.
+    #
+    # Nil when anything is unfamiliar, and the driver is used as before. The
+    # template is cached against the flags it was computed for; a link that
+    # fails with it is retried through the driver and the template is marked
+    # unusable, so a machine this does not suit pays one extra link once.
+    private def iyi_direct_link_command(object_names, output_filename, link_flags, lib_flags)
+      return nil if @cross_compile
+      return nil if @iyi_link_driver_only
+      return nil if ENV["CRYSTAL_LINK_DRIVER"]?
+      return nil unless DEFAULT_LINKER == "cc"
+
+      template = iyi_link_template(link_flags, lib_flags)
+      return nil unless template
+
+      linker, prefix, suffix = template
+      output = Process.quote_posix(output_filename)
+      command = "#{linker} #{prefix.gsub(IYI_LINK_OUTPUT, output)} \"${@}\" #{suffix.gsub(IYI_LINK_OUTPUT, output)}"
+      @iyi_direct_link = true
+      {linker, command, object_names}
+    end
+
+    # What stands where this build's objects and output go in the template.
+    IYI_LINK_OBJECTS = "IYI-OBJECTS-PLACEHOLDER.o"
+    IYI_LINK_OUTPUT  = "IYI-OUTPUT-PLACEHOLDER"
+
+    # The linker command the driver would have built, as {linker, before, after}.
+    private def iyi_link_template(link_flags, lib_flags)
+      key = ::Crystal::Digest::MD5.hexdigest(
+        "#{DEFAULT_LINKER}\n#{link_flags}\n#{lib_flags}\n#{codegen_target}\n1")
+      # One file per set of flags, rather than one file: two programs in a
+      # directory that link different libraries would otherwise take turns
+      # overwriting each other's answer and asking the driver again each time.
+      cache = CacheDir.instance.join("link-template-#{key}")
+
+      if File.file?(cache)
+        stored = File.read(cache).split('\n')
+        if stored[0]? == key
+          return nil if stored[1]? == "unusable"
+          if (linker = stored[1]?) && (prefix = stored[2]?) && (suffix = stored[3]?)
+            return {linker, prefix, suffix}
+          end
+        end
+      end
+
+      template = iyi_ask_driver_for_link_template(link_flags, lib_flags)
+      linker, prefix, suffix = template if template
+      File.write(cache, template ? "#{key}\n#{linker}\n#{prefix}\n#{suffix}" : "#{key}\nunusable") rescue nil
+      template
+    end
+
+    # Asks the driver what it would run, and turns it into a template.
+    #
+    # Everything it prints is kept except the parts that belong to the driver
+    # rather than to the link: the LTO plugin it loads into `collect2`, and the
+    # `-fuse-ld=` that told it which linker to pick — which is read here to
+    # pick the same one.
+    private def iyi_ask_driver_for_link_template(link_flags, lib_flags)
+      probe = "#{DEFAULT_LINKER} #{IYI_LINK_OBJECTS} -o #{IYI_LINK_OUTPUT} #{link_flags} #{lib_flags} -###"
+      printed = IO::Memory.new
+      status = Process.run(probe, shell: true, output: Process::Redirect::Close, error: printed)
+      return nil unless status.success?
+
+      line = printed.to_s.lines.reverse.find do |candidate|
+        candidate.includes?(IYI_LINK_OBJECTS) && candidate.includes?(IYI_LINK_OUTPUT)
+      end
+      return nil unless line
+
+      arguments = Process.parse_arguments(line.strip)
+      return nil if arguments.size < 3
+
+      linker = "ld"
+      kept = [] of String
+      skip_next = false
+      arguments.each_with_index do |argument, index|
+        next if index.zero?
+        if skip_next
+          skip_next = false
+          next
+        end
+        case argument
+        when "-plugin"
+          skip_next = true
+        when .starts_with?("-plugin-opt=")
+          # the driver's, not the link's
+        when .starts_with?("-fuse-ld=")
+          named = "ld.#{argument.lchop("-fuse-ld=")}"
+          return nil unless Process.find_executable(named)
+          linker = named
+        else
+          kept << argument
+        end
+      end
+
+      objects_at = kept.index(IYI_LINK_OBJECTS)
+      return nil unless objects_at
+      return nil unless Process.find_executable(linker)
+
+      before = kept[0, objects_at].map { |argument| Process.quote_posix(argument) }.join(' ')
+      after = kept[(objects_at + 1)..].map { |argument| Process.quote_posix(argument) }.join(' ')
+      {linker, before, after}
+    end
+
+    # Records that the template does not work here, so the next build does not
+    # try it. Called after a direct link failed and the driver succeeded.
+    private def iyi_disable_direct_link(link_flags, lib_flags) : Nil
+      key = ::Crystal::Digest::MD5.hexdigest(
+        "#{DEFAULT_LINKER}\n#{link_flags}\n#{lib_flags}\n#{codegen_target}\n1")
+      File.write(CacheDir.instance.join("link-template-#{key}"), "#{key}\nunusable") rescue nil
+      @iyi_direct_link = false
+      @iyi_link_driver_only = true
     end
 
     # Tests if `mold` or `lld` are available and prefers them as linkers over
@@ -1588,7 +1732,16 @@ module Crystal
 
       @progress_tracker.stage("Codegen (linking)") do
         Dir.cd(output_dir) do
-          run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true)
+          begin
+            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true)
+          rescue ex : CompilerError
+            # A link the compiler built itself, on a machine where that does
+            # not work: the driver is asked to do it instead and the template
+            # is marked unusable, so this is paid once rather than every build.
+            raise ex unless @iyi_direct_link
+            iyi_disable_direct_link(@link_flags || "", program.lib_flags(@cross_compile))
+            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true)
+          end
         end
       end
 

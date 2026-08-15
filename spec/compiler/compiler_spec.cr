@@ -35,6 +35,29 @@ describe "Compiler" do
     end
   end
 
+  # iyi: the link is the compiler's, not the driver's.
+  #
+  # `cc` does not link — it computes a command and runs `collect2`, which runs
+  # `ld`. Measured here: 0.129 s through the driver against 0.014 s running the
+  # same command directly, which is most of what a warm build costs (SPEC.md
+  # 0.1.0 item 2). The compiler asks the driver once, keeps the answer as a
+  # template, and runs `ld` itself. This is the file that holds the template,
+  # and the program above having run is what says the link it built works.
+  it "builds the link itself rather than asking the driver every time" do
+    with_temp_executable "compiler_spec_output" do |path|
+      Crystal::Command.run ["build"].concat(program_flags_options).concat([compiler_datapath("compiler_sample"), "-o", path])
+      Process.capture(path).should eq("Hello!")
+
+      # One file per set of link flags. Absent on a platform where this is not
+      # attempted, which is a fallback rather than a failure — but where it is
+      # attempted it must be usable.
+      templates = Dir.glob(File.join(Crystal::CacheDir.instance.dir, "link-template-*"))
+      templates.each do |template|
+        File.read(template).lines[1]?.should_not eq "unusable"
+      end
+    end
+  end
+
   it "runs subcommand in preference to a filename " do
     Dir.cd compiler_datapath do
       with_temp_executable "compiler_spec_output" do |path|

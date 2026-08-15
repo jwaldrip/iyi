@@ -130,25 +130,42 @@ came from compiling anything faster.
 What is left of the link is `ld` doing its job on eleven objects and libgc —
 0.132 s, and still 85% of what the compiler times.
 
-**And that part is not the compiler's either.** Linking a one-object C program
-on the same machine costs the same: 0.242 s against iyi's 0.268 s in the same
-minute, so eleven objects and a GC library are worth 26 ms over the smallest
-link this machine can be asked for. Running the exact command `cc` would run —
-`collect2`, LTO plugin and all — costs what running `cc` costs, and dropping the
-plugin is 22 ms of it. `-fuse-ld=gold`, `--single-module` and `--no-debug` are
-each worth 10–15% and none is a default worth changing. So the bench prints the
-floor as a row — one C object, through `cc` — and a figure for iyi's link is
-never read without it.
+**And that part was not the linker at all.** Linking a one-object C program on
+the same machine cost the same figure, so it was never about iyi's eleven
+objects — but it was not about `ld` either. Measured on the same objects in the
+same minute: `cc` takes **0.129 s**, and the command `cc` would run, with
+`collect2` replaced by the linker itself, takes **0.014 s** with `ld.bfd`,
+0.009 s with `ld.gold` and 0.023 s with `ld.lld`. Three linkers within 14 ms of
+each other, and a driver worth 0.11 s on top of any of them.
 
-**Which is the shape of the remaining work.** `go build` on this machine, warm,
-costs less than iyi's link alone. Go does not run `cc`; it links its own
-executables. Getting past this number means **not calling the system linker
-driver** — an internal linker, or a module's object code arriving already linked
-— rather than passing `cc` different flags. That is what "the link step" now
-names, and it is larger than everything above it. **Part V #9 prices the four
-ways out**, and the short version is that the cheapest costs nothing to build:
-merging iyi's own objects is 0.004 s of the 0.13 s, so an own linker would
-inherit the expensive part rather than remove it.
+`cc` does not link. It works out how to: the dynamic linker's path, `Scrt1.o`,
+`crti.o`, `crtbeginS.o`, the `-L` directories, `-lgcc -lc`, and then it runs
+`collect2`, which scans the objects for constructors before running `ld`. All of
+that is the same for every build on a machine, and all of it was being redone
+on every build.
+
+**So the compiler asks once and links for itself.** `cc -###` prints the command
+without running it — including for object files that do not exist, which is what
+makes it a template: a placeholder marks where this build's objects go. The
+template is cached against the flags it was computed for, the compiler runs `ld`
+itself from then on, and a link that fails with it is retried through the driver
+with the template marked unusable, so a machine this does not suit pays one
+extra link once. `CRYSTAL_LINK_DRIVER=1` forces the old path. `clang` has done
+this all along — it has no `collect2` and execs the linker itself, which is why
+it measures 0.092 s where `cc` measures 0.129 s.
+
+**What it is worth, on `hello.iyi`, warm:**
+
+| | before | after |
+|---|---|---|
+| the linking stage | 0.143 | **0.019** |
+| the whole build | 0.186 | **0.081** |
+
+The bench's own run, with a debug compiler on a busy machine, puts the warm
+build at 0.10 s against `go build`'s 0.13 s. **The gap this project exists to
+close is closed on this bench**, and what closed it was not compiling anything
+faster: it was not asking a compiler driver to work out the same link command
+several times a second.
 
 The front-end target this item was written to protect is met on the same run:
 0.041 s against 0.050 s, of which 0.018 s is a process linking LLVM before doing
@@ -3357,7 +3374,19 @@ Named honestly, so nobody mistakes this draft for complete.
    name and a `.dynsym` to build.
 
    That decomposition is the whole design question, because an own linker
-   inherits the 0.12 s rather than the 0.004 s. Four ways out, priced:
+   inherits the 0.12 s rather than the 0.004 s. Four ways out were priced —
+   and then the 0.12 s turned out not to be the link either.
+
+   **Answered: it was the driver, and the compiler now builds the link
+   itself.** `cc` takes 0.129 s where the command it would run takes 0.014 s
+   with `ld.bfd`, 0.009 s with `ld.gold` and 0.023 s with `ld.lld` — three
+   linkers within 14 ms of each other under a driver worth 0.11 s. The
+   compiler asks `cc -###` once for the command, caches it as a template and
+   runs `ld` from then on; the warm build goes 0.186 s → 0.081 s and the
+   linking stage 0.143 s → 0.019 s (0.1.0 item 2). What follows is the
+   costing as it stood before that, kept because the four routes are still the
+   map, and because (b) and (d) are what is left if the remaining 0.019 s ever
+   matters:
 
    **(a) A faster linker, which the compiler already prefers.**
    `use_modern_linker` looks for `mold`, then `ld.lld`, and passes

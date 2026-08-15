@@ -433,8 +433,10 @@ def main():
         print(f"  of the {stats_total:.3f} s the compiler times in a warm build, the link is "
               f"{link_taken:.3f} s — {link_taken / stats_total * 100:.0f}%")
         if link_floor:
-            print(f"    linking one C object here costs{show(link_floor)}, which is what that "
-                  f"figure is made of")
+            # Through `cc`, which is what a C program pays and what iyi paid
+            # until the compiler started building the link itself. Kept as the
+            # comparison it now is rather than the floor it used to be.
+            print(f"    linking one C object through cc costs{show(link_floor)} here")
         if alternatives:
             for name, measurement in alternatives:
                 print(f"    with -fuse-ld={name:<6}{show(measurement)}  against "
