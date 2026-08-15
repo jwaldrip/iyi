@@ -280,6 +280,36 @@ would carry the first term and item 2 addresses a term that is now 8 ms. The
 gap that made this project has closed to the point where the remaining costs
 are the ones every compiler has.
 
+**The Go column, at last, and it is not the one this project was expecting.**
+Item 1 of this section says the Go number is measured here or not had at all.
+Until now it was not had: `go` was not installed on the machine, and every run
+printed so. It is installed now — Go 1.25.2 — and the table is complete:
+
+| program | stage | cold | warm |
+|---|---|---|---|
+| `hello.iyi` | front end (`--no-codegen`) | 0.049 | — |
+| `hello.iyi` | front end, no LLVM linked | **0.03** | — |
+| `hello.iyi` | end to end | 0.21 | **0.19** |
+| `hello.go` | `go build` | 4.62 | **0.08** |
+
+**Warm, Go wins by 2.4×**, and warm is the number a person feels: 0.08 s against
+0.19 s. Cold, iyi is fifteen to twenty times faster — 0.21 s against 4.6 s — but
+that column is Go compiling its standard library into an empty cache, which is
+paid once per machine and is not a rebuild. Recording it flattering side up
+would be the kind of thing this document exists not to do.
+
+**And the front end is faster than Go's whole build.** 0.03 s of analysis
+against 0.08 s for parse, typecheck, codegen and link. So the claim as this
+project has been making it is true of *analysis* and false of *producing a
+binary*: of iyi's 0.19 s, about 0.14 s is LLVM at `-O0` and `cc`. Item 3 of
+this section put the end-to-end row in the table precisely so the claim could
+not quietly become a front-end-only claim, and this is that guard firing.
+
+**Which moves the next lever off the front end entirely.** Everything left in
+Part IV buys milliseconds of analysis against a 140 ms tail that belongs to a
+code generator and a linker. Go's answer to that tail is its own back end and
+its own linker; iyi's options are narrower and none of them is `.iyimod`.
+
 **The fourth run found nothing about the compiler and two things about the
 gate.** Run on the same checkout minutes apart, `bench/build_speed.py` said both
 MET and NOT MET.
