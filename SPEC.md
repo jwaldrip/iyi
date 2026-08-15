@@ -145,7 +145,10 @@ costs less than iyi's link alone. Go does not run `cc`; it links its own
 executables. Getting past this number means **not calling the system linker
 driver** — an internal linker, or a module's object code arriving already linked
 — rather than passing `cc` different flags. That is what "the link step" now
-names, and it is larger than everything above it.
+names, and it is larger than everything above it. **Part V #9 prices the four
+ways out**, and the short version is that the cheapest costs nothing to build:
+merging iyi's own objects is 0.004 s of the 0.13 s, so an own linker would
+inherit the expensive part rather than remove it.
 
 The front-end target this item was written to protect is met on the same run:
 0.041 s against 0.050 s, of which 0.018 s is a process linking LLVM before doing
@@ -3343,6 +3346,63 @@ Named honestly, so nobody mistakes this draft for complete.
    order, and no because a `defer` runs while the function is already returning
    (Appendix B #7). Both are built (III.1.4), along with one departure from Go:
    the scope is the block, not the function.
+
+9. **The link step — whose linker.** A warm build is 0.17 s and 0.13 s of it is
+   `cc`, which is 76% of the wall clock and the largest single thing left
+   (0.1.0 item 2). What it is *not* is iyi's own code. Linking a one-object C
+   program on this machine costs the same figure, and of iyi's link, merging
+   its eleven objects with `ld -r` costs **0.004 s**. Writing the 36 KB output
+   is another 0.004 s. **The remaining 0.12 s is the system part**: `Scrt1.o`,
+   `crti.o`, `crtbeginS.o`, `libgcc`, `libgc`, `libc.so.6`, a dynamic linker to
+   name and a `.dynsym` to build.
+
+   That decomposition is the whole design question, because an own linker
+   inherits the 0.12 s rather than the 0.004 s. Four ways out, priced:
+
+   **(a) A faster linker, which the compiler already prefers.**
+   `use_modern_linker` looks for `mold`, then `ld.lld`, and passes
+   `-fuse-ld=` for whichever it finds. Neither is installed here, so every
+   figure above is `ld.bfd`. **Cost: nothing to build.** It is a packaging
+   question, it is the first thing to try, and it is the only one of the four
+   that needs no design. One wrinkle from this session: the probe's answer is
+   cached against `PATH`, so a `mold` installed into a directory already on
+   `PATH` is picked up when `PATH` next changes, or when the cache file is
+   removed.
+
+   **(b) lld inside the compiler's own process.** The compiler already links
+   LLVM, and `lld` is the same project's linker with a library interface, so a
+   build could link without spawning anything and without the driver, the
+   `collect2` hop and the LTO plugin. **Cost: three to five days** — a C++ shim
+   beside `llvm_ext.cc`, translation of the flags the compiler already computes,
+   a fallback for platforms without it, and a build dependency on lld's
+   libraries pinned to the LLVM version, which is a second version coupling to
+   maintain. `liblldELF` is not installed here either, so this cannot be
+   measured before it is chosen.
+
+   **(c) iyi's own linker.** The 0.004 s says that merging what iyi emits is
+   nearly free; the 0.12 s says everything else belongs to the system part, and
+   an own linker has to do all of it — PIE start files, `libgcc`'s archives,
+   `libc`'s symbol versions, TLS, `.eh_frame` and its index, RELRO,
+   `--gc-sections`, and every dynamic table the loader reads. **Cost: months,
+   and a correctness burden that never ends** (lld's ELF port is tens of
+   thousands of lines; mold's is larger), for the same 0.12 s that (a) buys for
+   the price of a package. Go did this, and Go could: it owns its object
+   format, its runtime and its calling convention. iyi owns none of the three
+   while it emits LLVM objects and links against libc.
+
+   **(d) Not linking on a rebuild.** Patch the previous executable instead of
+   producing a new one, which is where the edit-build loop actually lives.
+   **Cost: weeks on top of (b) or (c)**, since it needs an in-process linker to
+   patch from, and it is the hardest of the four to be sure of — a stale byte
+   in a binary that runs is the worst failure mode in this document.
+
+   **What would change this ranking is one measurement nobody here can take: a
+   machine where `ld` is not this slow.** `go build` produces the equivalent
+   program end to end in 0.09 s on this machine, so the link alone costs more
+   than everything Go does; a native Linux box usually links this program in
+   0.01–0.02 s, and at that figure the question is closed by (a) and the rest
+   is not worth designing. **The recommendation is (a), then (b) if the number
+   survives it, and (c) for no reason this section can find.**
 
 ---
 
