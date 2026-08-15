@@ -2294,13 +2294,41 @@ here.
 | `immutable` | **the same** — a generic type, a 575-line trait, a generic impl |
 | `collections` | **the same** — the consumer's own type implementing the trait |
 | `init_order` | **the same** — including III.5's ordering, line for line |
-| `webapp` | refused at `--emit-iyimod` — R-2, `namespace` takes an unannotated block |
+| `webapp` | **writes its artifacts**; linking from them fails on two symbols — below |
 
-**Four of the five, and the fifth is not this section's failure.** R-2 refuses
-`namespace` because it is exported and takes a block it does not annotate,
-which is IV.2's rule working: the body stays behind, so there is no `yield`
-left to infer the block from. It has been true since before `ObjectCode`
-existed, and IV.2 already counts it as the one method the rule costs.
+**Four of the five run, and the fifth got as far as the linker for the first
+time.** `webapp` — the Kemal port — used to stop at `--emit-iyimod`, because
+R-2 refuses an exported `def` that does not describe its block and
+`Router#namespace` took `&` with `with sub_router yield` inside it. The port now
+passes the sub-router as a block parameter: `& : Router -> Nil`, and its caller
+writes `|admin|`. That is the rule costing something visible and being paid
+rather than avoided — a `namespace` that keeps `with` would have to stay
+unexported, which is a worse trade for a DSL than one extra parameter. Giving
+`with … yield` a notation stays open (IV.2); this is what an exported
+block-taking method looks like until it has one.
+
+**And behind that one were two more, both the same shape as everything else
+here: a module's object code referring to something the artifact does not
+carry.** Neither is about blocks.
+
+*A module's constants.* `kemal/dsl` writes `APP = Router.new`, and its unit
+calls through `Kemal::Dsl::APP` from every exported `get`, `post` and `mount`.
+The initialiser travels as source text and the consumer runs it, but the
+*symbol* does not: a constant's global is emitted where it is read, the
+consumer reads it only from machine code it did not compile, and nothing
+defines it. Six undefined references on a module of forty lines.
+
+*A module's proc literals.* `add_route` builds `->(ctx : Context) {
+block.call(ctx).into_body }`, and the symbol for it is named after the file and
+line it was written on — `~procProc(Context, String)@kemal/router.iyi:211`. The
+router's unit refers to it; the producing build emitted it somewhere the
+artifact does not carry. A name with a source location in it is also a name a
+consumer could not reproduce from the artifact, whose declarations arrive under
+a different filename.
+
+Both belong to IV.1g's rule rather than beside it: "a module's own code is the
+object files named after the types it declares" is what makes them missing, and
+what makes the type ids above missing was the same sentence.
 
 **And one thing none of the five reaches, which was expected to be a missing
 object file and turned out to be a missing number.** A module's body
@@ -2753,11 +2781,18 @@ author can fix it.
 
 The count that decided it: **one exported signature in the samples out of about
 eighty** — Kemal's `Router#namespace`, which is also the case no annotation can
-express yet, since `with sub_router yield` changes what `self` means inside the
-block. So the rule costs one method today, and the method it costs is one whose
-type nothing in the language can currently write down. Whether `with … yield`
-gets a notation is open; until it does, a module that wants one keeps it
-unexported.
+express, since `with sub_router yield` changes what `self` means inside the
+block.
+
+**And that one was paid rather than avoided.** The port now takes the
+sub-router as a block parameter — `& : Router -> Nil`, called with `|admin|` —
+which is a visible loss against Kemal's original and a smaller one than keeping
+`namespace` unexported would have been. The alternative is a notation for the
+block's `self`, something like `& : with Router -> Nil`, and it stays open: it
+would have to say that `self` becomes the annotated type *with the caller's own
+behind it*, which is what `with … yield` means. Nothing else in the samples
+asks for it, and what unblocking `namespace` bought was two further findings in
+IV.1g that no amount of reasoning about blocks would have produced.
 
 **Out, deliberately:**
 

@@ -46,8 +46,11 @@ users.get "/" do |env|
   "users index"
 end
 
-users.namespace "/admin" do
-  get "/dashboard" do |env|
+# The sub-router is a block parameter rather than the block's `self`: R-2 asks
+# an exported `def` to describe its block, and a block whose `self` changes is
+# the one shape no annotation can describe yet. See `kemal/router.iyi`.
+users.namespace "/admin" do |admin|
+  admin.get "/dashboard" do |env|
     "dashboard"
   end
 end

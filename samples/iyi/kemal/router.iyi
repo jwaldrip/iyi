@@ -113,24 +113,25 @@ pub class Router
     end
   {% end %}
 
-  # `with sub_router yield` survives: the block's receiver type is known
-  # statically, so it is not `instance_eval` and needs no open method set.
+  # The sub-router arrives as a block parameter, and Kemal's original hands it
+  # to the block as `self` instead — `with sub_router yield`. That is the one
+  # thing about this port that reads worse than what it ports, so the reason is
+  # here rather than in a commit message.
   #
-  # It is also the one method in these samples that cannot be exported through
-  # a `.iyimod`, and the reason is worth reading here rather than in the error.
-  # `&` says a block arrives and nothing about it. That is enough while the
-  # `yield` below is in the same file and not enough for a module holding only
-  # this signature, so R-2 asks an exported `def` to annotate its block
-  # (SPEC.md IV.2) and `--emit-iyimod` refuses this one by name.
+  # R-2 asks an exported `def` to say what its block is (SPEC.md IV.2): the
+  # body stays in this module, so a consumer reading only the signature has no
+  # `yield` left to infer from. `& : Router -> Nil` says it. `with sub_router
+  # yield` cannot be said at all — what makes it a DSL is that the block's
+  # `self` changes, and `& : … -> …` has nowhere to write that down.
   #
-  # No annotation would help yet: what makes this method a DSL is that the
-  # block's `self` becomes `sub_router`, and `& : … -> …` has nowhere to say
-  # so. Until it does, a module wanting `with … yield` keeps it unexported —
-  # which is why `crystal build --emit-iyimod DIR samples/iyi/webapp.iyi` is
-  # the one sample that stops here.
-  pub def namespace(path : String, &) : Nil
+  # So this is the rule costing something visible, and it is being paid rather
+  # than avoided: a `namespace` that keeps `with` would have to stay unexported,
+  # which is a worse trade for a DSL than one extra `|r|`. Giving `with … yield`
+  # a notation is open (SPEC.md IV.2); until it has one, this is what an
+  # exported block-taking method looks like.
+  pub def namespace(path : String, & : Router -> Nil) : Nil
     sub_router = Router.new
-    with sub_router yield
+    yield sub_router
     @sub_routers << SubRouter.new(path: path, router: sub_router)
   end
 
