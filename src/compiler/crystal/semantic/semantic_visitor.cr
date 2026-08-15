@@ -364,8 +364,50 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     # what makes this safe: III.5 orders what modules *do*, and a file of
     # declarations does nothing.
     mark_iyi_artifact_types artifact
+    number_iyi_artifact_types node, artifact
 
     FileNode.new(parsed_nodes, artifact_path)
+  end
+
+  # iyi: creates the types the artifact's object code refers to a type id of,
+  # so that this program numbers them (SPEC.md IV.1g).
+  #
+  # A type id is an external reference — the module's unit refers to
+  # `Array(Item):type_id` and the linker resolves it from a definition in this
+  # program's `_main`. This program defines one for every type it has, and
+  # `Array(Item)` is not among them: it exists in the producing build because
+  # of a body that stayed behind, and nothing in the declarations read here
+  # would ever create it. Naming it is enough — the type has to be numbered,
+  # not used, and creating it is what puts it in the numbering.
+  #
+  # Nothing to do for a build that generates no code: it links nothing, so it
+  # numbers nothing.
+  private def number_iyi_artifact_types(node : ImportDecl, artifact : IyiMod::Artifact) : Nil
+    return if artifact.object_code.empty?
+
+    artifact.type_ids.each do |name|
+      parser = @program.new_parser(name)
+      parser.next_token
+      type_node = parser.parse_bare_proc_type
+      parser.check :EOF
+      @program.lookup_type(type_node)
+    rescue CodeError
+      # A name this build cannot resolve, which today means an instantiation
+      # at a type the module keeps to itself: the declarations carry what a
+      # module exports, so `Array(Router::RouteDefinition)` arrives naming
+      # something that is not here. Refused with both names rather than left
+      # to the linker, which would report the mangled symbol and no module.
+      node.raise <<-MESSAGE
+        "#{artifact.module_name}" numbers `#{name}`, and this build cannot name it
+
+        Its object code refers to that type's id, which is resolved from a
+        definition in this program — so this program has to have the type. The
+        name comes from the module's own code and reaches something the module
+        does not export, which a .iyimod cannot carry yet (SPEC.md IV.1g).
+
+        Build the module from source, or export the type it names.
+        MESSAGE
+    end
   end
 
   # iyi: marks the types an artifact declares, so codegen declares their

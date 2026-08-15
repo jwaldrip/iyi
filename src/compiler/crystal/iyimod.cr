@@ -35,7 +35,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 11_u32
+  FORMAT_VERSION = 12_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -52,6 +52,10 @@ module Crystal::IyiMod
     # table, which had no place for the one part of a module that is neither a
     # declaration nor a body of one — see IV.1g.
     Initialiser = 8
+
+    # iyi: the types this module's object code refers to a type id of, by name.
+    # Not in IV.1's table either — see IV.1g.
+    TypeIds = 9
   end
 
   class Error < Crystal::Error
@@ -330,10 +334,30 @@ module Crystal::IyiMod
     # carry: code inside a *type* body, which belongs to the type.
     getter initialiser : String
 
+    # The types this module's object code refers to a type id of, by name.
+    #
+    # A type id is an external reference — the number belongs to the program,
+    # not to the module — so the unit that travels here leaves
+    # `Array(Item):type_id` undefined and the consumer's `_main` defines it.
+    # It can only define an id for a type it has, and `Array(Item)` exists in
+    # the producing build because of a body that stays behind: nothing the
+    # consumer reads would ever make it. So the name travels and the consumer
+    # instantiates it, which is enough — the type has to be *numbered*, not
+    # used.
+    #
+    # Names rather than numbers, for the reason the section exists: two
+    # programs number their types differently, and an artifact that carried a
+    # value would be carrying this build's numbering into somebody else's.
+    #
+    # Settable alongside `object_code`, and for the same reason: which ids a
+    # unit refers to is not known until it has been generated.
+    property type_ids : Array(String)
+
     def initialize(@module_name, @source_path, @compiler_version, @target_triple,
                    @flags, @imports, @usings = [] of String, @exports = Exports.empty,
                    @object_code = [] of ObjectUnit, @has_initialiser = false,
-                   @mono_bodies = {} of String => String, @initialiser = "")
+                   @mono_bodies = {} of String => String, @initialiser = "",
+                   @type_ids = [] of String)
     end
   end
 
@@ -357,6 +381,13 @@ module Crystal::IyiMod
 
     unless artifact.initialiser.empty?
       sections << {Section::Initialiser, encode_initialiser(artifact)}
+    end
+
+    # With the object code rather than with the declarations, because it is
+    # about the object code: a front-end reader has nothing to link and so
+    # nothing to number.
+    unless artifact.type_ids.empty?
+      sections << {Section::TypeIds, encode_type_ids(artifact)}
     end
 
     # Last, and omitted when there is nothing in it. A consumer reading
@@ -421,6 +452,7 @@ module Crystal::IyiMod
       object_code = [] of ObjectUnit
       mono_bodies = {} of String => String
       initialiser = ""
+      type_ids = [] of String
 
       table.each do |(kind, length)|
         section = Section.from_value?(kind)
@@ -442,6 +474,7 @@ module Crystal::IyiMod
         when Section::ObjectCode then object_code = decode_object_code(payload)
         when Section::MonoBodies  then mono_bodies = decode_mono_bodies(payload)
         when Section::Initialiser then initialiser = String.new(payload)
+        when Section::TypeIds     then type_ids = decode_type_ids(payload)
         else
           # Written by a later compiler, or a section this one does not need.
           # Skipping is the point of the table.
@@ -454,7 +487,7 @@ module Crystal::IyiMod
 
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
-        object_code, header[:has_initialiser], mono_bodies, initialiser)
+        object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids)
     end
   end
 
@@ -513,6 +546,12 @@ module Crystal::IyiMod
     else
       io.puts "mono bodies"
       bodies.keys.sort!.each { |key| io.puts "  #{key}" }
+    end
+
+    type_ids = artifact.type_ids
+    unless type_ids.empty?
+      io.puts "type ids"
+      type_ids.each { |name| io.puts "  #{name}" }
     end
 
     object_code = artifact.object_code
@@ -872,6 +911,16 @@ module Crystal::IyiMod
       bodies[key] = read_string(io)
     end
     bodies
+  end
+
+  private def self.encode_type_ids(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    write_strings io, artifact.type_ids
+    io.to_slice
+  end
+
+  private def self.decode_type_ids(payload : Bytes) : Array(String)
+    read_strings(IO::Memory.new(payload))
   end
 
   private def self.encode_object_code(artifact : Artifact) : Bytes

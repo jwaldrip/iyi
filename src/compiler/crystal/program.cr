@@ -152,6 +152,19 @@ module Crystal
     # unless `--emit-iyimod` asked for artifacts.
     getter iyi_exported_owners = Set(Type).new
 
+    # iyi: the types each object-code unit refers to a type id of, by unit name
+    # (SPEC.md IV.1g).
+    #
+    # A type id is an external reference — the number is the program's, not the
+    # module's — so a unit that travels in an artifact leaves `Array(Item):
+    # type_id` undefined and the consumer's `_main` defines it. It can only
+    # define ids for types it *has*, and `Array(Item)` exists in the producing
+    # build because of a body that stays behind. So which ones a unit refers to
+    # has to be collected here and carried, or the consumer has no way to know
+    # the type was ever wanted. Empty unless `--emit-iyimod` asked for
+    # artifacts.
+    getter iyi_unit_type_ids = {} of String => Set(Type)
+
     # iyi: the `using` directives each file's module unit writes, by absolute
     # filename and as written (SPEC.md II.3).
     #

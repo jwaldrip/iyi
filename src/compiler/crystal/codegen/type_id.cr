@@ -103,6 +103,16 @@ class Crystal::CodeGenVisitor
         global = @llvm_mod.globals.add(@llvm_context.int32, type_id_name)
         global.linkage = LLVM::Linkage::External
         global.global_constant = true
+
+        # iyi: which unit wanted it, so an artifact carrying that unit can say
+        # so (SPEC.md IV.1g). This is the reference the linker resolves from
+        # somebody else's `_main`, and the somebody else has to have the type
+        # before it can number it. Recorded only while writing artifacts —
+        # every other build defines what it refers to by construction.
+        unless @program.iyi_exported_owners.empty?
+          types = @program.iyi_unit_type_ids[@llvm_mod.name] ||= Set(Type).new
+          types << type
+        end
       end
     end
 

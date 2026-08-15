@@ -1826,8 +1826,9 @@ their parameters, associated types and methods, and impl records with what they
 answer, **and each type's own fields**. Layout templates, type descriptors and
 constants are not in it — those are what codegen needs rather than what the
 front end needs. **`MonoBodies` carries the bodies a consumer has to compile
-itself, and `Initialiser` the module's own top-level code** (IV.1g). `Hashes`
-and `MacroBodies` are declared in the `Section` enum and unwritten.
+itself, `Initialiser` the module's own top-level code, and `TypeIds` the types
+its object code numbers** (IV.1g). `Hashes` and `MacroBodies` are declared in
+the `Section` enum and unwritten.
 
 Fields were meant to be in that second list and are not, which is worth saying
 plainly because the reason is a bug rather than a change of mind. A consumer
@@ -2183,13 +2184,38 @@ which is IV.2's rule working: the body stays behind, so there is no `yield`
 left to infer the block from. It has been true since before `ObjectCode`
 existed, and IV.2 already counts it as the one method the rule costs.
 
-And one thing none of the five reaches, which the Kemal port would:
-**prelude generics instantiated at this module's own types.** The router's body
-builds an `Array(Kemal::Router::Router::RouteDefinition)`, and that unit is
-named after `Array` — not after anything `kemal/router` declares — so the
-ownership rule does not catch it. **Twelve of the router's 41 undefined symbols
-are of this kind.** They belong to this module by the same logic R-3 uses for
-impls: the instantiation exists because of this module and no other.
+**And one thing none of the five reaches, which was expected to be a missing
+object file and turned out to be a missing number.** A module's body
+instantiates prelude generics at its own types — the router's builds an
+`Array(Kemal::Router::Router::RouteDefinition)` — and that unit is named after
+`Array`, not after anything the module declares, so the ownership rule does not
+catch it. It does not have to: the closure above already copies a callee the
+emitting module does not own into the module's own unit, and a generic's
+instantiated methods are callees like any other. What the copy leaves behind is
+the **type id** it refers to. `Array(Item):type_id` is resolved from a
+definition in the consuming program, a program defines an id for every type it
+*has*, and `Array(Item)` is not among them: it exists in the producing build
+because of a body that stays behind, and nothing in the declarations a consumer
+reads would ever make it. Four undefined symbols on a module of nineteen lines,
+in a program whose every method resolved.
+
+So the artifact carries the **names** of the types its object code numbers, and
+the consumer instantiates them on `import`. Names rather than numbers, for the
+reason the section exists at all — two programs number their types differently.
+Only generic instances travel: everything else a module's code can name is
+either declared by this artifact or imported by the consumer for itself, and an
+instantiation is the one case with no declaration anywhere to arrive through.
+The type has to be *numbered*, not used, so making it is enough.
+
+**What that does not close is the instantiation at a type the module keeps to
+itself** — which is exactly the router's, whose `RouteDefinition` is a `private
+record`. The declarations carry what a module exports, so
+`Array(Router::RouteDefinition)` arrives naming something that is not there.
+The consumer refuses the `import`, naming the module and the type, rather than
+leaving it to a linker that would report a mangled symbol and no module at all.
+Carrying a module's unexported types — declared, unreachable, exactly as they
+are when the module is read from source — is what closes it, and is the next
+step rather than an oversight.
 
 Underneath all of it stays the fact that **an artifact carries what the
 consuming build reached**, rather than the module's surface. Codegen is

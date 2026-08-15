@@ -468,7 +468,9 @@ module Crystal
       units_by_name = units.try &.to_h { |unit| {unit.original_name, unit} }
 
       prepared.each do |(path, artifact)|
-        artifact.object_code = collect_iyi_object_code(program, artifact.module_name, units_by_name)
+        unit_names = iyi_unit_names(program, artifact.module_name)
+        artifact.object_code = collect_iyi_object_code(unit_names, units_by_name)
+        artifact.type_ids = collect_iyi_type_ids(program, unit_names)
         IyiMod.write artifact, path
       end
     end
@@ -520,42 +522,81 @@ module Crystal
     # instantiation, and a module's own `pub def`s are owned by the module type
     # itself, which is why that is in the set alongside the types under it.
     #
-    # **Two gaps, both said out loud because neither is obvious from the file.**
-    #
     # A module's bodies also instantiate *prelude* generics at its own types —
-    # `Array(Kemal::Router::Router::RouteDefinition)` — and those units are
-    # named after `Array`, not after anything this module declares. A consumer
-    # compiling against the artifact never sees the body that needs them, so
-    # nothing generates them and nothing else can: they are undefined at link.
-    # Twelve of the router's 41 undefined symbols are of this kind. They belong
-    # to this module by the same logic R-3 uses for impls, and attaching them
-    # is the next step rather than an oversight.
+    # `Array(Kemal::Router::Router::RouteDefinition)` — and that unit is named
+    # after `Array`, not after anything the module declares, so it is not here.
+    # It does not have to be: a callee the emitting module does not own is
+    # copied into the module's own unit with internal linkage, and a generic's
+    # instantiated methods are callees like any other. What the copy leaves
+    # behind is the type id it refers to, which is what `type_ids` carries.
     #
-    # And what is here is what the *consuming build* reached, not the module's
+    # What is here is what the *consuming build* reached, not the module's
     # whole surface. Codegen is demand-driven, so `app/greeter`'s artifact
     # carries `polite` and not `title`, because `modules.iyi` calls one and not
     # the other. That is `--emit-iyimod` living inside an ordinary build: a
     # module compiled on its own would instantiate every exported def at the
     # signature R-2 makes it write down, and it is exactly the command that
     # cannot precede the artifact it produces.
-    private def collect_iyi_object_code(program : Program, module_name : String,
+    private def collect_iyi_object_code(unit_names : Array(String),
                                         units_by_name : Hash(String, CompilationUnit)?) : Array(IyiMod::ObjectUnit)
       code = [] of IyiMod::ObjectUnit
       return code unless units_by_name
-      return code unless type = program.iyi_module_type(module_name)
 
-      names = [] of String
-      names << type.to_s
-      collect_iyi_unit_names type, names
-      names.sort!.uniq!
-
-      names.each do |name|
+      unit_names.each do |name|
         next unless unit = units_by_name[name]?
         path = unit.object_name
         next unless File.file?(path)
         code << IyiMod::ObjectUnit.new(name, File.open(path, "rb", &.getb_to_end))
       end
       code
+    end
+
+    # The names of the units a module's object code is made of: the module type
+    # itself, where its own `pub def`s are owned, and every non-generic type
+    # declared under it.
+    private def iyi_unit_names(program : Program, module_name : String) : Array(String)
+      names = [] of String
+      return names unless type = program.iyi_module_type(module_name)
+
+      names << type.to_s
+      collect_iyi_unit_names type, names
+      names.sort!.uniq!
+      names
+    end
+
+    # iyi: the types the module's object code refers to a type id of, by name,
+    # for `TypeIds` (SPEC.md IV.1g).
+    #
+    # A type id is resolved by the linker from a definition in the consuming
+    # program's `_main`, which is what lets one build's object file be linked
+    # by another's — and a program defines an id for every type it *has*. The
+    # types a module's own code numbers need not be among them:
+    # `Array(Item)` exists in the producing build because of a body that stays
+    # behind, and nothing the consumer reads would ever create it. So the name
+    # travels and the consumer instantiates it.
+    #
+    # Only generic instances. Everything else the code can name is either the
+    # module's own — declared by this artifact — or somebody's the consumer
+    # imports for itself, and in both cases the consumer has the type already.
+    # An instantiation is the case with no declaration anywhere to arrive
+    # through.
+    private def collect_iyi_type_ids(program : Program, unit_names : Array(String)) : Array(String)
+      names = Set(String).new
+      unit_names.each do |unit_name|
+        program.iyi_unit_type_ids[unit_name]?.try &.each do |type|
+          # A metaclass is numbered with its instance type, so instantiating
+          # the one defines both. `Array(Item).class:type_id` was the first of
+          # the two undefined symbols and the one that reads as a different
+          # problem.
+          instance = type.instance_type
+          next unless instance.is_a?(GenericInstanceType)
+          names << instance.to_s
+        end
+      end
+
+      # Sorted, because a set's order is not a fact about the module and an
+      # artifact that changed between two identical builds would defeat IV.3.
+      names.to_a.sort!
     end
 
     # The unit names of every type declared under *type*, recursively.

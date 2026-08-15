@@ -488,6 +488,132 @@ describe Crystal::IyiMod do
     end
   end
 
+  # A type id is an external reference, which is what lets one build's object
+  # file be linked by another's — and the definition comes from the consuming
+  # program, which defines an id for every type it *has*. `Array(Item)` is not
+  # one of them: it exists in the producing build because of a body that stays
+  # behind, and nothing in the declarations the consumer reads would ever make
+  # it. So `Array(App::Box::Item):type_id` was undefined at link, in a program
+  # whose every method resolved.
+  it "numbers the types a module's own code instantiates" do
+    with_tempdir("iyimod_type_ids") do
+      Dir.mkdir_p "app"
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        pub struct Item
+          @name : String
+
+          def initialize(@name : String)
+          end
+
+          def name : String
+            @name
+          end
+        end
+
+        pub def labels : String
+          items = Array(Item).new
+          items << Item.new("a")
+          items << Item.new("b")
+          items.map { |item| item.name }.join(", ")
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box.labels
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "a, b"
+
+      # The instantiation the consumer cannot reach any other way, named in the
+      # artifact so that it can make it.
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+      artifact.type_ids.should contain "Array(App::Box::Item)"
+
+      File.delete "app/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "a, b"
+    end
+  end
+
+  # The case the section cannot carry yet: the instantiation names a type the
+  # module keeps to itself, so the declarations the consumer reads do not have
+  # it and the name does not resolve. Refused at the `import`, naming the
+  # module and the type, rather than left to the linker — which would report a
+  # mangled symbol and no module at all.
+  it "refuses an artifact numbering a type its module does not export" do
+    with_tempdir("iyimod_type_ids_private") do
+      Dir.mkdir_p "app"
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        struct Secret
+          @n : Int32
+
+          def initialize(@n : Int32)
+          end
+
+          def n : Int32
+            @n
+          end
+        end
+
+        pub def total : Int32
+          items = Array(Secret).new
+          items << Secret.new(2)
+          items << Secret.new(3)
+          items[0].n + items[1].n
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box.total
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "5"
+
+      File.delete "app/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      expect_raises(Crystal::TypeException, /numbers `Array\(App::Box::Secret\)`/) do
+        consumer.compile source, File.expand_path("from-artifact")
+      end
+
+      # Front end only: it numbers nothing because it links nothing, so the
+      # module still typechecks from its artifact.
+      checker = create_spec_compiler
+      checker.prelude = "iyi/prelude"
+      checker.use_iyimod = "mods"
+      checker.no_codegen = true
+      checker.compile source, "unused"
+    end
+  end
+
   # A class method lives on the type's *metaclass*, so walking a type's own
   # defs dropped every one a module exported — `Counter.zero` was an undefined
   # method on the far side of an artifact that looked complete. And a field
@@ -869,6 +995,23 @@ describe Crystal::IyiMod do
       Crystal::IyiMod.write artifact, path
 
       Crystal::IyiMod.read(path).initialiser.should eq %(puts("one")\nputs("two"))
+    end
+  end
+
+  it "round-trips the types a module numbers" do
+    with_temporary_file do |path|
+      artifact = Crystal::IyiMod::Artifact.new(
+        module_name: "app/box",
+        source_path: "/src/app/box.iyi",
+        compiler_version: "1.22.0-dev+abc1234",
+        target_triple: "x86_64-pc-linux-gnu",
+        flags: ["bits64"],
+        imports: [] of String,
+        type_ids: ["Array(App::Box::Item)", "Pointer(App::Box::Item)"],
+      )
+      Crystal::IyiMod.write artifact, path
+
+      Crystal::IyiMod.read(path).type_ids.should eq ["Array(App::Box::Item)", "Pointer(App::Box::Item)"]
     end
   end
 
