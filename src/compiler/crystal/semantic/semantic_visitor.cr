@@ -534,7 +534,34 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
          Alias, TypeDeclaration, AssocTypeDecl, Annotation, Include, Extend
       false
     else
-      true
+      if expansion = iyi_expansion(node)
+        iyi_initialiser?(expansion)
+      else
+        true
+      end
+    end
+  end
+
+  # iyi: what a macro call turned into, or nil if this is not one.
+  #
+  # A macro call is not code until it is expanded, and what a module's macros
+  # expand to is mostly declarations: `getter name : String` is a `def` and a
+  # `record Route, method : String` is a struct. Reading the call itself made
+  # every module that writes one read as having runnable code in a type body,
+  # which refused the module — and `getter` is the shape of every real
+  # library, so the conservative answer was wrong on the ordinary case rather
+  # than on a corner of one.
+  #
+  # Asking is possible because the top-level pass has already run over these
+  # nodes by the time this does: the expansion is on the node. A call with
+  # none is what it looks like — `puts "hello"` in a type body is code that
+  # has to run, and a module with one is still refused.
+  private def iyi_expansion(node : ASTNode) : ASTNode?
+    case node
+    when Call
+      node.expanded
+    when ExpandableNode
+      node.expanded
     end
   end
 
@@ -569,7 +596,15 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       # value and lose the export.
       statements << node if iyi_initialiser?(node.exp)
     else
-      statements << node
+      # A macro call contributes what it expanded to rather than itself. The
+      # call would carry its declarations across as well, and those already
+      # travel in `Exports` — a consumer that re-expanded it would declare
+      # them twice.
+      if expansion = iyi_expansion(node)
+        iyi_collect_initialiser expansion, statements
+      else
+        statements << node
+      end
     end
   end
 

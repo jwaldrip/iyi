@@ -2254,6 +2254,19 @@ three samples that were fine. Then `type Elem = T` is an `AssocTypeDecl`, which
 refused the two that have associated types. Each looked like the last bug and
 was a different one.
 
+**And a fourth, which is where the safe direction stopped being safe.** A macro
+call is not a declaration, so `getter name : String` in a type body read as code
+that has to run and refused the module — and so did `private record Route, …`,
+which is how the router writes its three. That is not a corner: `getter` is the
+shape of every library anybody would write, so the conservative answer was wrong
+on the ordinary case. A macro call is not code *until it is expanded*, and by
+the time this test runs the top-level pass has expanded it, so the question can
+be asked of the expansion instead of the call. A `getter` is a `def` and a
+`record` is a struct, and both are declarations. The other direction is what
+makes that safe rather than merely convenient: a macro that expands to `puts` in
+a type body is still code in a type body, and the module is still refused. A
+call with no expansion is what it looks like, and is refused too.
+
 **A reader that does not want it does not pay for it.** `ObjectCode` is the
 largest section in the file and is written last; `IyiMod.read` seeks past it
 unless asked, so `import` — the front-end reader this whole file exists to make

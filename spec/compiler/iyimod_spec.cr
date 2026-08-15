@@ -1241,6 +1241,122 @@ describe Crystal::IyiMod do
     end
   end
 
+  # A macro call is not code until it is expanded, and what a module's macros
+  # expand to is mostly declarations. Reading the call itself made every module
+  # that writes a `getter` read as having code in a type body and refused it,
+  # which is the ordinary shape of a library rather than a corner of one.
+  it "does not mistake a macro call in a type body for an initialiser" do
+    with_tempdir("iyimod_macro_declarations") do
+      Dir.mkdir_p "app"
+      File.write "app/store.iyi", <<-IYI
+        module app/store
+
+        pub struct Item
+          getter name : String
+          getter price : Int32
+
+          def initialize(@name : String, @price : Int32)
+          end
+        end
+
+        pub class Store
+          private record Entry,
+            item : Item,
+            count : Int32
+
+          @entries : Array(Entry)
+
+          def initialize
+            @entries = Array(Entry).new
+          end
+
+          pub def add(name : String, price : Int32, count : Int32) : Nil
+            @entries << Entry.new(Item.new(name, price), count)
+          end
+
+          pub def total : Int32
+            sum = 0
+            @entries.each { |entry| sum = sum + entry.item.price * entry.count }
+            sum
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/store
+
+        store = App::Store::Store.new
+        store.add("a", 3, 2)
+        store.add("b", 5, 1)
+        puts store.total
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "11"
+
+      Crystal::IyiMod.read(File.join("mods", "app", "store.iyimod")).has_initialiser.should be_false
+
+      File.delete "app/store.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "11"
+    end
+  end
+
+  # And the other direction, which is what makes following the expansion safe:
+  # a macro that expands to something that has to *run* is still code in a type
+  # body, and a build that would generate against it is still refused.
+  it "sees the code a macro expands to in a type body" do
+    with_tempdir("iyimod_macro_code") do
+      Dir.mkdir_p "app"
+      File.write "app/thing.iyi", <<-IYI
+        module app/thing
+
+        pub class Thing
+          {% for word in ["one"] %}
+            puts {{ word }}
+          {% end %}
+
+          pub def n : Int32
+            1
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/thing
+
+        puts App::Thing::Thing.new.n
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+
+      Crystal::IyiMod.read(File.join("mods", "app", "thing.iyimod")).has_initialiser.should be_true
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      expect_raises(Crystal::TypeException, /has code inside a type body/) do
+        consumer.compile source, File.expand_path("from-artifact")
+      end
+    end
+  end
+
   # A build that generates no code has none to carry. Checked because the two
   # cases are told apart by the flag the build was given and by nothing in the
   # file, so an empty section here is the honest answer rather than a failure
