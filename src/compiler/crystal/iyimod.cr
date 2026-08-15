@@ -1,3 +1,4 @@
+require "crystal/digest/md5"
 require "./config"
 
 # iyi: `.iyimod`, the module artifact — SPEC.md Part IV.
@@ -35,7 +36,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 13_u32
+  FORMAT_VERSION = 14_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -59,6 +60,82 @@ module Crystal::IyiMod
   end
 
   class Error < Crystal::Error
+  end
+
+  # IV.3's three hashes — what decides whether a build is actually incremental.
+  #
+  # The property the split exists for: **changing a body must not change the
+  # interface hash.** One hash over the whole file would make every dependent
+  # rebuild for every edit, and the artifact would buy nothing but a slower
+  # first build.
+  #
+  # *interface* covers what a consumer typechecks against — the exports, the
+  # `using` directives that resolve their annotations, and which modules this
+  # one imports. A body is not in it, so editing one leaves every dependent's
+  # own artifact valid.
+  #
+  # *implementation* covers what a consumer *compiles*: the bodies that travel
+  # because it has to specialise them, and the module's initialiser, which is
+  # spliced into the consuming program and runs there. IV.3 says a change here
+  # need not make a dependent re-typecheck, only re-codegen; at module
+  # granularity there is no way to say that, so a dependent that has one of
+  # these edges is invalidated whole and told nothing finer.
+  #
+  # *source* is IV.3's Private — private types, ordinary bodies, everything
+  # that is neither of the above. At module granularity that is the module's
+  # own source text, which is also the thing that answers the first question a
+  # cache has: does this artifact still describe the file it was written from.
+  #
+  # **Computed from the front end alone**, before codegen. An artifact written
+  # by a `--no-codegen` build and one written by a full build describe the same
+  # module and must hash the same, or a build that typechecks would invalidate
+  # the artifact a build that generates code had just written.
+  record Hashes,
+    interface : String = "",
+    implementation : String = "",
+    source : String = "" do
+    def self.empty : Hashes
+      new
+    end
+
+    def empty? : Bool
+      interface.empty? && implementation.empty? && source.empty?
+    end
+  end
+
+  # A cache key rather than a signature, which is why MD5 is enough and why the
+  # compiler's own vendored copy is the one to use: `.iyimod` decides what to
+  # rebuild, and nothing downstream trusts an artifact it did not write.
+  def self.digest(value : String) : String
+    ::Crystal::Digest::MD5.hexdigest(value)
+  end
+
+  # IV.3's hashes for *artifact*, whose module was read from *source*.
+  #
+  # Taken from what the artifact carries rather than from the file it came
+  # from, which is what makes the interface hash mean anything: it is over the
+  # exports themselves, so an edit that does not reach them does not move it,
+  # and every dependent stays valid.
+  def self.hashes_for(artifact : Artifact, source : String) : Hashes
+    interface = IO::Memory.new
+    interface.write encode_exports(artifact)
+    write_strings interface, artifact.usings
+    # The edges, because which modules resolve a signature's names is part of
+    # what that signature means — not their hashes, which is what a *dependent*
+    # records about this module and would make this one move for a change it
+    # does not see.
+    write_strings interface, artifact.imports
+
+    implementation = IO::Memory.new
+    implementation.write encode_mono_bodies(artifact)
+    write_string implementation, artifact.initialiser
+    implementation.write_byte(artifact.has_initialiser ? 1_u8 : 0_u8)
+
+    Hashes.new(
+      interface: digest(interface.to_s),
+      implementation: digest(implementation.to_s),
+      source: digest(source),
+    )
   end
 
   # The value the `compiler_version` field is compared against.
@@ -374,11 +451,18 @@ module Crystal::IyiMod
     # unit refers to is not known until it has been generated.
     property type_ids : Array(String)
 
+    # IV.3's three hashes. See `Hashes`.
+    #
+    # Settable because they are computed *from* the rest of the artifact: the
+    # interface hash is over the exports this record already carries, so it can
+    # only be taken once they are in it.
+    property hashes : Hashes
+
     def initialize(@module_name, @source_path, @compiler_version, @target_triple,
                    @flags, @imports, @usings = [] of String, @exports = Exports.empty,
                    @object_code = [] of ObjectUnit, @has_initialiser = false,
                    @mono_bodies = {} of String => String, @initialiser = "",
-                   @type_ids = [] of String)
+                   @type_ids = [] of String, @hashes = Hashes.empty)
     end
   end
 
@@ -391,6 +475,11 @@ module Crystal::IyiMod
   def self.write(artifact : Artifact, path : String) : Nil
     sections = [] of {Section, Bytes}
     sections << {Section::Header, encode_header(artifact)}
+
+    # Second, right behind the header, because a build deciding what to rebuild
+    # reads these and nothing else: the section table lets it stop here.
+    sections << {Section::Hashes, encode_hashes(artifact)} unless artifact.hashes.empty?
+
     sections << {Section::Imports, encode_imports(artifact)}
     sections << {Section::Exports, encode_exports(artifact)}
 
@@ -474,6 +563,7 @@ module Crystal::IyiMod
       mono_bodies = {} of String => String
       initialiser = ""
       type_ids = [] of String
+      hashes = Hashes.empty
 
       table.each do |(kind, length)|
         section = Section.from_value?(kind)
@@ -496,6 +586,7 @@ module Crystal::IyiMod
         when Section::MonoBodies  then mono_bodies = decode_mono_bodies(payload)
         when Section::Initialiser then initialiser = String.new(payload)
         when Section::TypeIds     then type_ids = decode_type_ids(payload)
+        when Section::Hashes      then hashes = decode_hashes(payload)
         else
           # Written by a later compiler, or a section this one does not need.
           # Skipping is the point of the table.
@@ -508,7 +599,7 @@ module Crystal::IyiMod
 
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
-        object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids)
+        object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids, hashes)
     end
   end
 
@@ -528,6 +619,14 @@ module Crystal::IyiMod
     else
       io.puts "initialiser   #{artifact.initialiser.lines.size} line(s)"
     end
+    hashes = artifact.hashes
+    unless hashes.empty?
+      io.puts "hashes"
+      io.puts "  interface      #{hashes.interface}"
+      io.puts "  implementation #{hashes.implementation}"
+      io.puts "  source         #{hashes.source}"
+    end
+
     if artifact.imports.empty?
       io.puts "imports       (none)"
     else
@@ -973,6 +1072,19 @@ module Crystal::IyiMod
       bodies[key] = read_string(io)
     end
     bodies
+  end
+
+  private def self.encode_hashes(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    write_string io, artifact.hashes.interface
+    write_string io, artifact.hashes.implementation
+    write_string io, artifact.hashes.source
+    io.to_slice
+  end
+
+  private def self.decode_hashes(payload : Bytes) : Hashes
+    io = IO::Memory.new(payload)
+    Hashes.new(read_string(io), read_string(io), read_string(io))
   end
 
   private def self.encode_type_ids(artifact : Artifact) : Bytes

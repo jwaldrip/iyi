@@ -2664,6 +2664,23 @@ unexported.
 interface hash.** If it does, every dependent rebuilds and the entire benefit
 evaporates.
 
+**Written, and the property is a spec rather than a claim.** `Hashes` carries
+three digests, taken over what the artifact itself carries rather than over the
+file it came from — which is what makes the interface hash mean anything: it is
+over the exports, so an edit that does not reach them cannot move it. Editing a
+body leaves the interface and implementation hashes where they were and moves
+only the source hash; adding a `pub def` moves the interface hash. Both are in
+`spec/compiler/iyimod_spec.cr`.
+
+Two things the implementation settles that the table below leaves open. The
+digests are taken **from the front end alone**, before codegen: an artifact
+written by `--no-codegen` and one written by a full build describe the same
+module and have to hash the same, or a build that only typechecks would
+invalidate what a build that generated code had just written. And the module's
+**initialiser is implementation**, not interface — it is spliced into the
+consuming program and runs there, so a consumer that has compiled it has to
+compile it again when it changes.
+
 Three hashes, not one:
 
 | Hash | Covers | Changing it invalidates |

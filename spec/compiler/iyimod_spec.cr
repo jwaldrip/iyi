@@ -1090,6 +1090,87 @@ describe Crystal::IyiMod do
     end
   end
 
+  it "round-trips the hashes" do
+    with_temporary_file do |path|
+      artifact = Crystal::IyiMod::Artifact.new(
+        module_name: "app/box",
+        source_path: "/src/app/box.iyi",
+        compiler_version: "1.22.0-dev+abc1234",
+        target_triple: "x86_64-pc-linux-gnu",
+        flags: ["bits64"],
+        imports: [] of String,
+        hashes: Crystal::IyiMod::Hashes.new("iface", "impl", "src"),
+      )
+      Crystal::IyiMod.write artifact, path
+
+      read = Crystal::IyiMod.read(path).hashes
+      read.interface.should eq "iface"
+      read.implementation.should eq "impl"
+      read.source.should eq "src"
+    end
+  end
+
+  # The property IV.3 exists for, and the one that decides whether the artifact
+  # buys anything: **a body edit must not move the interface hash.** If it does,
+  # every dependent re-typechecks for every edit and an incremental build is a
+  # slower first build.
+  it "moves the interface hash for a signature and not for a body" do
+    with_tempdir("iyimod_hashes") do
+      Dir.mkdir_p "app"
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box.twice(21)
+        IYI
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      write_box = ->(body : String, extra : String) do
+        File.write "app/box.iyi", <<-IYI
+          module app/box
+
+          pub def twice(n : Int32) : Int32
+            #{body}
+          end
+          #{extra}
+          IYI
+      end
+
+      emit = -> do
+        compiler = create_spec_compiler
+        compiler.prelude = "iyi/prelude"
+        compiler.emit_iyimod = "mods"
+        compiler.no_codegen = true
+        compiler.compile source, "unused"
+        Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod")).hashes
+      end
+
+      write_box.call("n + n", "")
+      before = emit.call
+
+      # The same module, one body written differently.
+      write_box.call("n * 2", "")
+      after_body = emit.call
+
+      after_body.interface.should eq before.interface
+      after_body.implementation.should eq before.implementation
+      after_body.source.should_not eq before.source
+
+      # And a name added to the surface, which every dependent does have to
+      # hear about.
+      write_box.call("n * 2", <<-IYI)
+
+        pub def thrice(n : Int32) : Int32
+          n * 3
+        end
+        IYI
+      after_signature = emit.call
+
+      after_signature.interface.should_not eq after_body.interface
+    end
+  end
+
   it "round-trips the types a module numbers" do
     with_temporary_file do |path|
       artifact = Crystal::IyiMod::Artifact.new(

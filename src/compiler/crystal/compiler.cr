@@ -450,6 +450,13 @@ module Crystal
           initialiser: program.iyi_module_initialiser_source[filename]? || "",
         )
 
+        # Here rather than in `write_iyimods`, so that they are taken from the
+        # front end alone: an artifact from a `--no-codegen` build and one from
+        # a full build describe the same module and have to hash the same, or a
+        # build that only typechecks would invalidate what a build that
+        # generated code had just written (IV.3).
+        artifact.hashes = IyiMod.hashes_for(artifact, File.read(filename))
+
         {File.join(dir, "#{module_name}.iyimod"), artifact}
       end
     end
