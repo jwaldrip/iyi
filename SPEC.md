@@ -329,19 +329,44 @@ that does not.
 
 **That reorders what is left of this section.** Item 2 was written to remove
 passes that re-walk the prelude; those are now about 8 ms together, against 26
-ms spent bringing up a code generator the front end never calls. Three things
-could take that back, and only the third is in scope here:
+ms spent bringing up a code generator the front end never calls.
 
-- **A front end that does not link LLVM.** The number would fall to about
-  0.016 s, more than everything else in this document has bought. It needs
-  `Program` and the semantic passes to stop naming `LLVM` — 64 references
-  across nine files, most of them a target machine and a data layout — which is
-  a refactor, not a flag.
-- **An LLVM built without its option registry**, which is not iyi's to build.
-- **Not paying it per build**, which is IV.1d's daemon: a process that starts
-  once amortises a fixed 26 ms over every compile after the first. The daemon
-  was proposed to keep the prelude analysed; the larger thing it keeps is the
-  code generator loaded.
+**So the front end became a binary of its own, and it is built.**
+`make crystal-front` produces `.build/crystal-front`: the same parser, the same
+semantic passes, no LLVM linked. Measured against `crystal build --no-codegen`
+on the same machine, fifteen runs each after two discarded:
+
+| | full compiler | front end only |
+|---|---|---|
+| `hello.iyi` | 0.059 s | **0.028 s** |
+| `webapp.iyi` | 0.045 s | **0.035 s** |
+| starting up, doing nothing | 0.023 s | **0.0045 s** |
+
+Startup falls by a factor of five and the gated figure by half. What is left of
+`hello.iyi` is about 23 ms of analysis and 4.5 ms of a process starting, which
+is the shape the target was written to reach.
+
+**What it cost was smaller than the 64 references suggested.** Outside codegen
+the compiler names `LLVM` in four places and three are strings settled when the
+binary was built — the LLVM version, the host triple, and normalising a triple
+a user typed — so `llvm_shim.cr` bakes them in. The fourth is a target machine,
+wanted by one AVR flag. Two other things had to be absent rather than shimmed,
+and both say so when reached: `sizeof` and its neighbours, which are answered
+from LLVM's data layout, and `macro_run`, which compiles a program and runs it.
+Nothing in iyi's prelude or samples writes either. Two plain types had to move
+out of files that speak LLVM — `Compiler::OptimizationMode` into its own file,
+and `Const#initializer` behind the same flag.
+
+**And what it does not do is the rest of a build.** It parses, analyses,
+reports and exits; there is no object file, no linker and no cache, because
+those belong to the half that is missing. `crystal build` is unchanged.
+
+Two things could take the remaining 26 ms off a full build as well, and neither
+is this: **an LLVM built without its option registry**, which is not iyi's to
+build, and **not paying it per build**, which is IV.1d's daemon — a process
+that starts once amortises the fixed cost over every compile after the first.
+The daemon was proposed to keep the prelude analysed; the larger thing it keeps
+is the code generator loaded.
 
 ### What Crystal's own 0.1.0 looked like
 

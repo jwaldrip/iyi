@@ -198,6 +198,9 @@ docs: ## Generate standard library documentation
 .PHONY: crystal
 crystal: $(O)/$(CRYSTAL_BIN) ## Build the compiler [default]
 
+.PHONY: crystal-front
+crystal-front: $(O)/crystal-front$(EXE) ## iyi: build the front end, which links no LLVM
+
 .PHONY: crystal-daemon
 crystal-daemon: $(O)/$(CRYSTAL_DAEMON_BIN) ## Build the single-threaded build daemon
 
@@ -329,6 +332,20 @@ $(O)/$(CRYSTAL_BIN): $(DEPS) $(SOURCES)
 	@# NOTE: on MSYS2 it is not possible to overwrite a running program, so the compiler must be first built with
 	@# a different filename and then moved to the final destination.
 	$(if $(WINDOWS),mv $(O)/crystal-next.exe $@)
+
+# iyi: the front end on its own. Linking libLLVM costs 26 ms of load-time
+# initialisers whether or not anything generates code, and `--no-codegen` never
+# calls it — so this links none and starts in 6 ms rather than 39 (SPEC.md
+# 0.1.0, src/compiler/crystal/llvm_shim.cr).
+#
+# The host triple and the LLVM version are baked in from the compiler that has
+# LLVM, because without it there is nothing to ask.
+$(O)/crystal-front$(EXE): $(DEPS) $(SOURCES) $(O)/$(CRYSTAL_BIN)
+	@mkdir -p $(O)
+	$(EXPORTS) $(EXPORTS_BUILD) \
+	  CRYSTAL_CONFIG_TARGET="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^Default target: //p')" \
+	  CRYSTAL_CONFIG_LLVM_VERSION="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^LLVM: //p')" \
+	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_llvm -o $@ src/compiler/crystal_front.cr
 
 $(O)/$(CRYSTAL_DAEMON_BIN): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)

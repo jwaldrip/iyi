@@ -102,9 +102,14 @@ class Crystal::Program
 
     flags.add "bsd" if target.bsd?
 
-    if target.avr? && (cpu = target_machine.cpu.presence)
-      flags.add cpu
-    end
+    # iyi: the one place outside codegen that wants a target machine, and it
+    # wants a CPU name off it. A front-end build has no LLVM to make one with
+    # and no AVR program to compile with it (see `../llvm_shim.cr`).
+    {% unless flag?(:without_llvm) %}
+      if target.avr? && (cpu = target_machine.cpu.presence)
+        flags.add cpu
+      end
+    {% end %}
 
     flags
   end

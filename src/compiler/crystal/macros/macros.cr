@@ -67,6 +67,17 @@ class Crystal::Program
 
   record MacroRunResult, stdout : String, stderr : String, status : Process::Status
 
+  # iyi: `run` compiles a program and executes it, so a front end that links no
+  # LLVM cannot do it — and says so rather than failing somewhere in the middle
+  # of a build it cannot finish (see `../llvm_shim.cr`). II.10 measured this at
+  # +7.4 s per distinct script on a cold build; it is not on the path a front
+  # end is for.
+  {% if flag?(:without_llvm) %}
+    def macro_run(filename, args)
+      raise Crystal::Error.new("`run` needs a compiler that can generate code, and this one links no LLVM")
+    end
+  {% else %}
+
   def macro_run(filename, args)
     compiled_macro_run = @compiled_macros_cache[filename] ||= macro_compile(filename)
     compiled_file = compiled_macro_run.filename
@@ -173,6 +184,8 @@ class Crystal::Program
       host_compiler.debug = Crystal::Debug::None
     end
   end
+
+  {% end %}
 
   private def can_reuse_previous_compilation?(filename, executable_path, recorded_requires_path, requires_path)
     return false unless File.exists?(executable_path)

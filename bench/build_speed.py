@@ -98,6 +98,13 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 CRYSTAL = ROOT / ".build" / "crystal"
 WRAPPER = ROOT / "bin" / "crystal"
 
+# iyi: the front end as its own binary, when `make crystal-front` has built one.
+#
+# It is the same analysis without the code generator linked, so the row it adds
+# is what the target's figure looks like once the 0.026 s of libLLVM
+# initialisers is not in it. Timed rather than argued about.
+FRONT = ROOT / ".build" / "crystal-front"
+
 # SPEC.md 0.1.0, "Done is a number": IV.1a already ran a front end that never
 # walks the prelude at 0.049 s and emitted an object with an identical symbol
 # table. The target is to make that configuration the ordinary one.
@@ -315,6 +322,10 @@ def main():
         go_cold = time_go(hello_go, out, cold=True)
         go_warm = time_go(hello_go, out, cold=False)
 
+        front_only = None
+        if FRONT.exists():
+            front_only = best(GATE_RUNS, lambda: run([str(FRONT), str(hello_iyi)], env=CRYSTAL_ENV), warmup=2)
+
     # After the builds rather than before them, so it sees the machine in the
     # state they left it in. That errs towards calling the machine slow, which
     # is the direction to err in: it withholds a MET rather than inventing one.
@@ -335,6 +346,9 @@ def main():
     print(f"  hello.go       go build                   {show(go_cold)}  {show(go_warm)}")
     print("  " + "-" * 56)
     print(f"  webapp.iyi     front end (iyi only)       {show(front_webapp)}       —")
+    if front_only:
+        print("  " + "-" * 56)
+        print(f"  hello.iyi      front end, no LLVM linked  {show(front_only)}       —")
     print()
 
     if go_cold is None:

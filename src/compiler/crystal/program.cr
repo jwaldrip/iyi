@@ -1,4 +1,11 @@
-require "llvm"
+# iyi: a front-end build links no LLVM, because linking it costs 0.026 s of
+# load-time initialisers whether or not anything generates code — see
+# `llvm_shim.cr`.
+{% if flag?(:without_llvm) %}
+  require "./llvm_shim"
+{% else %}
+  require "llvm"
+{% end %}
 require "json"
 require "./types"
 require "crystal/digest/md5"
@@ -315,7 +322,17 @@ module Crystal
 
     getter predefined_constants = Array(Const).new
 
-    property compiler : Compiler?
+    # iyi: absent from a front-end build — a `Compiler` is the driver that
+    # generates code, and this is the binary that does not (see `llvm_shim.cr`).
+    # The passes that reach for it do so through `try`, so there it is nil
+    # rather than missing.
+    {% if flag?(:without_llvm) %}
+      def compiler : Nil
+        nil
+      end
+    {% else %}
+      property compiler : Compiler?
+    {% end %}
 
     property optimization_mode = Compiler::OptimizationMode::O0
 
@@ -551,7 +568,34 @@ module Crystal
       const
     end
 
-    property(target_machine : LLVM::TargetMachine) { codegen_target.to_target_machine }
+    # iyi: `sizeof` and its neighbours are answered from LLVM's data layout,
+    # which a front-end build has no library to ask. They live in `codegen.cr`
+    # with the typer that answers them, so without it they are simply absent —
+    # and the semantic pass calls them for a program that writes `sizeof`.
+    #
+    # Nothing in iyi's prelude or samples does. So this says what it cannot do,
+    # where a wrong number would travel into a constant and be believed. See
+    # `llvm_shim.cr`.
+    {% if flag?(:without_llvm) %}
+      {% for query in %w(size_of instance_size_of align_of instance_align_of) %}
+        def {{ query.id }}(type)
+          raise Crystal::Error.new("`{{ query.id }}` is answered from a data layout, and this compiler links no LLVM to hold one")
+        end
+      {% end %}
+
+      {% for query in %w(offset_of instance_offset_of) %}
+        def {{ query.id }}(type, element_index)
+          raise Crystal::Error.new("`{{ query.id }}` is answered from a data layout, and this compiler links no LLVM to hold one")
+        end
+      {% end %}
+    {% end %}
+
+    # iyi: absent from a front-end build, which is the point of one — a target
+    # machine is LLVM's, and the passes that ask for it are codegen's. The one
+    # exception outside codegen is an AVR flag; see `semantic/flags.cr`.
+    {% unless flag?(:without_llvm) %}
+      property(target_machine : LLVM::TargetMachine) { codegen_target.to_target_machine }
+    {% end %}
 
     def codegen_target=(@codegen_target : Codegen::Target) : Codegen::Target
       crystal.types["TARGET_TRIPLE"].as(Const).value.as(StringLiteral).value = codegen_target.to_s

@@ -2,6 +2,7 @@ require "option_parser"
 require "file_utils"
 require "colorize"
 require "crystal/digest/md5"
+require "./optimization_mode"
 {% if flag?(:msvc) %}
   require "./loader"
 {% end %}
@@ -119,44 +120,6 @@ module Crystal
     # compiled against it and never opens the module's source, which is R-1's
     # contract and the reason the file exists.
     property use_iyimod : String? = nil
-
-    # Optimization mode
-    enum OptimizationMode
-      # [default] no optimization, fastest compilation, slowest runtime
-      O0 = 0
-
-      # low, compilation slower than O0, runtime faster than O0
-      O1 = 1
-
-      # middle, compilation slower than O1, runtime faster than O1
-      O2 = 2
-
-      # high, slowest compilation, fastest runtime
-      # enables with --release flag
-      O3 = 3
-
-      # optimize for size, enables most O2 optimizations but aims for smaller
-      # code size
-      Os
-
-      # optimize aggressively for size rather than speed
-      Oz
-
-      def suffix
-        ".#{to_s.downcase}"
-      end
-
-      def self.from_level?(level : String) : self?
-        case level
-        when "0" then O0
-        when "1" then O1
-        when "2" then O2
-        when "3" then O3
-        when "s" then Os
-        when "z" then Oz
-        end
-      end
-    end
 
     # Sets the Optimization mode.
     property optimization_mode = OptimizationMode::O0
