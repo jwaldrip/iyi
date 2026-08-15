@@ -75,11 +75,43 @@ the Kemal port, which took the whole of IV.1g to reach. Each builds, links,
 runs, and prints what the build from source prints. IV.1g measures all of it,
 and records what was in the way.
 
-**2. The passes that still walk the prelude stop walking it (IV.1d).** The
-artifact alone leaves 0.47 s, of which class-var initializers and `main` are
-90%, because six of the eleven semantic passes re-walk the prelude AST whatever
-put it there. 0.47 s beats Crystal and does not beat Go. This item is the
-headline number, not a refinement of it.
+**2. The passes that still walk the prelude stop walking it (IV.1d). Measured
+away.** The claim this item was written on — 0.47 s left after the artifact, of
+which class-var initializers and `main` are 90% — was measured against Crystal's
+107,719-line prelude. Item 3 replaced that prelude with 1,053 lines of iyi, and
+the number this item exists to remove does not exist any more. From
+`bench/build_speed.py` on a release compiler, `hello.iyi`, seconds:
+
+| | |
+|---|---|
+| warm build | 0.26 |
+| of what the compiler times in it, the **link** | **0.260 — 93%** |
+| front end alone (`--no-codegen`) | 0.044, of which 0.019 is startup |
+| the same front end, no LLVM linked into the binary | 0.02 |
+| the same warm build with `-fuse-ld=gold` | **0.18** |
+| `go build`, warm | 0.09 |
+
+Inside that front end the top-level pass is 0.012 s and **the five passes this
+item asked to fix cost 0.4 ms between them** — 2% of what is left, where the
+item says 90%. That is the compiler's own `--stats`, per pass, on a warm build
+of a program that is one `puts`, which is the measurement the item is about: it
+asked those passes to stop walking *the prelude*. They cost more on a program
+with something in it — `main` is 4.6 ms on `hello.iyi` — and that difference is
+the user's own code being typed, which no cache of anything removes.
+
+**What replaced it is the linker, and it is not a refinement either.** All but
+7% of what a warm build spends is `cc`, on a program whose object files were
+every one of them reused and whose own code is three lines. The default link is
+also the slow one on this machine: `-fuse-ld=gold` takes the same build to
+0.18 s and produces a binary that prints what the other one prints, on
+`hello.iyi` and on `webapp` alike — the Kemal port lands at the same figure,
+because user code is still nearly free. That is a third of the wall clock from
+one flag, and it is one machine's linkers rather than a design, which is why it
+is a row in the bench rather than a default in the compiler.
+
+So this item becomes **the link step**, and the front-end target it was written
+to protect is already met: 0.043 s against 0.050 s, of which 0.021 s is startup
+that links LLVM into a binary that is about to do no codegen.
 
 **3. A deliberately tiny prelude, written in iyi. Done — 1,053 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
@@ -2807,6 +2839,18 @@ Two secondary results from the same instrument:
   the same as `puts "hi"`. At 19.5k lines user code finally dominates and the
   win falls to 1.7× — the prelude cache matters most to the small, frequent
   builds, which is where build-speed complaints come from.
+
+**Everything above was measured against a 107,719-line prelude, and item 3
+deleted it.** The table in this section is kept as what the instrument said at
+the time, because the reasoning it supports is still the reasoning — a pass that
+re-walks the prelude is a pass whose cost grows with the prelude. What changed is
+the multiplier. Re-measured on the release compiler with iyi's own 1,053-line
+prelude: the top-level pass is 0.012 s, and class-var initializers, `main`,
+instance-var initializers, cleanup and the recursive-struct check are **0.4 ms
+between them**. "Six of the eleven passes re-walk the prelude AST" is still true
+and no longer worth anything: the residual it describes is 2% of a front end that
+is itself 7% of a build. Scope item 2 records where the time went instead, which
+is the linker.
 
 ### IV.2 What goes in Exports — and what is deliberately kept out
 

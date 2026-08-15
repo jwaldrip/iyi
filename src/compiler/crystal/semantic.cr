@@ -44,7 +44,7 @@ class Crystal::Program
     end
 
     @progress_tracker.stage("Semantic (cvars initializers)") do
-      visit_class_vars_initializers(node)
+      Prof.span("cvars: node.accept") { visit_class_vars_initializers(node) }
     end
 
     # Check that class vars without an initializer are nilable,
@@ -53,16 +53,20 @@ class Crystal::Program
     also_check.try &.check_non_nilable_class_vars_without_initializers
 
     result = @progress_tracker.stage("Semantic (main)") do
-      visit_main(node, process_finished_hooks: true, cleanup: cleanup, visitor: main_visitor)
+      Prof.span("main: visit_main") do
+        visit_main(node, process_finished_hooks: true, cleanup: cleanup, visitor: main_visitor)
+      end
     end
 
     @progress_tracker.stage("Semantic (cleanup)") do
-      cleanup_types
-      cleanup_files
+      Prof.span("cleanup: types + files") do
+        cleanup_types
+        cleanup_files
+      end
     end
 
     @progress_tracker.stage("Semantic (recursive struct check)") do
-      RecursiveStructChecker.new(self).run
+      Prof.span("recursive struct check") { RecursiveStructChecker.new(self).run }
     end
 
     result
@@ -110,19 +114,23 @@ class Crystal::Program
     node = splice_iyi_module_initialisers(node)
 
     @progress_tracker.stage("Semantic (new)") do
-      define_new_methods(new_expansions)
+      Prof.span("new methods") { define_new_methods(new_expansions) }
     end
     node, processor = @progress_tracker.stage("Semantic (type declarations)") do
-      (processor || TypeDeclarationProcessor.new(self)).process(node)
+      Prof.span("type declarations") do
+        (processor || TypeDeclarationProcessor.new(self)).process(node)
+      end
     end
 
     @progress_tracker.stage("Semantic (abstract def check)") do
-      AbstractDefChecker.new(self).run
+      Prof.span("abstract def check") { AbstractDefChecker.new(self).run }
     end
 
     unless @program.has_flag?("no_restrictions_augmenter")
       @progress_tracker.stage("Semantic (restrictions augmenter)") do
-        node.accept RestrictionsAugmenter.new(self, new_expansions)
+        Prof.span("restrictions augmenter") do
+          node.accept RestrictionsAugmenter.new(self, new_expansions)
+        end
       end
     end
 

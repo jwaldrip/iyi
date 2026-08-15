@@ -76,6 +76,7 @@ Limits, stated because they bound the result
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -253,17 +254,25 @@ def run(argv, env=None, cwd=None):
     return result.returncode == 0
 
 
-def time_crystal(source, out_dir, codegen, cold, runs = RUNS):
-    """Time one `crystal build`, in a cache directory this bench owns."""
-    cache = out_dir / ("cache_cold" if cold else "cache_warm")
+def time_crystal(source, out_dir, codegen, cold, runs = RUNS, linker = None):
+    """Time one `crystal build`, in a cache directory this bench owns.
+
+    `linker` names an alternative to the one `cc` picks, timed the same way.
+    The warm build is mostly the link, so which linker is on the machine moves
+    this table more than anything in the compiler does.
+    """
+    suffix = f"_{linker}" if linker else ""
+    cache = out_dir / (("cache_cold" if cold else "cache_warm") + suffix)
 
     def once():
         if cold and cache.exists():
             shutil.rmtree(cache)
         cache.mkdir(parents=True, exist_ok=True)
-        argv = [str(CRYSTAL), "build", "-o", str(out_dir / "out")]
+        argv = [str(CRYSTAL), "build", "-o", str(out_dir / f"out{suffix}")]
         if not codegen:
             argv.append("--no-codegen")
+        if linker:
+            argv.append(f"--link-flags=-fuse-ld={linker}")
         argv.append(str(source))
         env = dict(CRYSTAL_ENV)
         env["CRYSTAL_CACHE_DIR"] = str(cache)
@@ -274,6 +283,45 @@ def time_crystal(source, out_dir, codegen, cold, runs = RUNS):
         cache.mkdir(parents=True, exist_ok=True)
         once()
     return best(runs, once, warmup=2 if runs > RUNS else 0)
+
+
+# Alternatives to whatever `cc` links with, fastest-first as they are usually
+# reported. Only the ones this machine has are timed: a row for a linker nobody
+# has is a claim about somebody else's machine.
+LINKERS = ("mold", "lld", "gold")
+
+
+def available_linkers():
+    return [name for name in LINKERS if shutil.which(f"ld.{name}") or shutil.which(name)]
+
+
+def link_seconds(source, out_dir):
+    """What the compiler says the link took, out of a warm build's total.
+
+    Asked of `--stats` rather than subtracted from the rows above, because the
+    subtraction would carry every difference between two runs into a figure
+    that is supposed to be one stage of one run.
+    """
+    cache = out_dir / "cache_stats"
+    cache.mkdir(parents=True, exist_ok=True)
+    argv = [str(CRYSTAL), "build", "--stats", "-o", str(out_dir / "out_stats"), str(source)]
+    env = dict(os.environ)
+    env.update(CRYSTAL_ENV)
+    env["CRYSTAL_CACHE_DIR"] = str(cache)
+    subprocess.run(argv, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    result = subprocess.run(argv, env=env, capture_output=True)
+    text = (result.stdout + result.stderr).decode("utf-8", "replace")
+    total = link = None
+    for line in text.splitlines():
+        found = re.search(r"(\d\d):(\d\d):(\d\d\.\d+)", line)
+        if not found:
+            continue
+        seconds = int(found.group(1)) * 3600 + int(found.group(2)) * 60 + float(found.group(3))
+        total = seconds if total is None else total + seconds
+        if "Codegen (linking)" in line:
+            link = seconds
+    return link, total
 
 
 def time_go(source, out_dir, cold):
@@ -326,6 +374,15 @@ def main():
         if FRONT.exists():
             front_only = best(GATE_RUNS, lambda: run([str(FRONT), str(hello_iyi)], env=CRYSTAL_ENV), warmup=2)
 
+        # Where the warm build actually goes, and what a different linker does
+        # about it. Both are measured here rather than described in SPEC.md,
+        # for the reason the Go column is.
+        link_taken, stats_total = link_seconds(hello_iyi, out)
+        alternatives = [
+            (name, time_crystal(hello_iyi, out, codegen=True, cold=False, linker=name))
+            for name in available_linkers()
+        ]
+
     # After the builds rather than before them, so it sees the machine in the
     # state they left it in. That errs towards calling the machine slow, which
     # is the direction to err in: it withholds a MET rather than inventing one.
@@ -350,6 +407,19 @@ def main():
         print("  " + "-" * 56)
         print(f"  hello.iyi      front end, no LLVM linked  {show(front_only)}       —")
     print()
+
+    if link_taken and stats_total:
+        # Of the stages the compiler times, which is not the wall clock above:
+        # starting the process is not a stage, and it is most of the rest.
+        print(f"  of the {stats_total:.3f} s the compiler times in a warm build, the link is "
+              f"{link_taken:.3f} s — {link_taken / stats_total * 100:.0f}%")
+        if alternatives:
+            for name, measurement in alternatives:
+                print(f"    with -fuse-ld={name:<6}{show(measurement)}  against "
+                      f"{show(e2e_warm)} from the linker cc picks")
+        else:
+            print("    no other linker on this machine to compare against")
+        print()
 
     if go_cold is None:
         print("  go was not found, so there is no head-to-head in this run.")
@@ -411,10 +481,11 @@ def main():
     print(f"  NOT MET — {fastest / FRONT_END_TARGET:.1f}x over.")
     print()
     print("  The prelude is iyi's own now (0.1.0 item 3), which is what took")
-    print("  this from 26x over to here. What is left is that its 833 lines are")
-    print("  still analysed from source on every build: `.iyimod` carries a")
-    print("  module's declarations and the prelude is now a module small enough")
-    print("  to be one (item 1), and the passes that re-walk it are item 2.")
+    print("  this from 26x over to here. What is left is startup and one pass:")
+    print("  the figure above is mostly a process that links LLVM before doing")
+    print("  no codegen, and the analysis under it is the top-level pass over a")
+    print("  prelude read from source on every build. The later passes are")
+    print("  measured and are not it — see SPEC.md 0.1.0 item 2.")
     print()
     return 1
 
