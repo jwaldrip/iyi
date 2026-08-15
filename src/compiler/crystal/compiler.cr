@@ -483,6 +483,7 @@ module Crystal
     private def collect_iyi_exports(program : Program, module_name : String,
                                     filename : String) : IyiMod::Exports
       functions = [] of IyiMod::Signature
+      carried_functions = [] of IyiMod::Signature
       types = [] of IyiMod::TypeDecl
 
       if type = program.iyi_module_type(module_name)
@@ -507,14 +508,35 @@ module Crystal
           end
         end
 
+        # And the defs it does not export, for the reason the types below
+        # travel: a body that travels calls them. An exported `run` that takes
+        # a block is compiled by the consumer, and it may call a `helper` this
+        # module kept to itself — a name nobody may reach is still a name the
+        # consumer has to typecheck a call against, and a block-taking one is
+        # a body it has to compile.
+        type.defs.try &.each do |name, items|
+          next if exported.try &.includes?(name)
+          items.each do |item|
+            next if item.def.abstract?
+            next if item.def.body.is_a?(Primitive)
+
+            signature = IyiMod.signature(item.def, check_block: false)
+            carried_functions << signature
+            if iyi_takes_block?(item.def)
+              iyi_record_mono_body program, filename, module_name, signature, item.def
+            end
+          end
+        end
+        carried_functions.sort_by! &.name
+
         # And the ones it does not export, which travel as names and layouts
         # rather than as a surface. See `iyi_carried_types`.
-        types.concat iyi_carried_types(type, exported)
+        types.concat iyi_carried_types(program, filename, type, exported)
       end
 
       impls = program.iyi_impls[filename]? || [] of IyiMod::ImplRecord
 
-      IyiMod::Exports.new(functions, types, impls)
+      IyiMod::Exports.new(functions, types, impls, carried_functions)
     end
 
     # iyi: the machine code for a module's own definitions, for `ObjectCode`
@@ -702,7 +724,7 @@ module Crystal
         fields: collect_iyi_fields(type),
         methods: methods,
         visibility: "pub",
-        types: iyi_carried_types(type),
+        types: iyi_carried_types(program, filename, type),
       )
     end
 
@@ -724,7 +746,8 @@ module Crystal
     # them would make R-2's block rule refuse a module over a *private*
     # method's unannotated block, which is a rule about what another module
     # reads.
-    private def iyi_carried_types(type : Type, carried : Set(String)? = nil) : Array(IyiMod::TypeDecl)
+    private def iyi_carried_types(program : Program, filename : String, type : Type,
+                                  carried : Set(String)? = nil) : Array(IyiMod::TypeDecl)
       declarations = [] of IyiMod::TypeDecl
       type.types?.try &.each do |name, declared|
         next if carried.try &.includes?(name)
@@ -767,9 +790,9 @@ module Crystal
           assoc_types: [] of String,
           supertraits: [] of String,
           fields: collect_iyi_fields(declared),
-          methods: iyi_carried_methods(declared),
+          methods: iyi_carried_methods(program, filename, name, declared),
           visibility: declared.private? ? "private" : "",
-          types: iyi_carried_types(declared),
+          types: iyi_carried_types(program, filename, declared),
         )
       end
       declarations.sort_by! &.name
@@ -827,27 +850,39 @@ module Crystal
       type.is_a?(GenericType) || type.is_a?(TraitType)
     end
 
-    # iyi: the methods of a type the module keeps to itself, as headers.
+    # iyi: the methods of a type the module keeps to itself.
     #
     # They travel because a *body* that travels calls them: the router's
     # `add_filter` is a block-taking method, so the consumer compiles it, and
     # it writes `FilterDefinition.new(kind: …)`. Without the signature the
     # consumer sees a `record` with no `initialize` and refuses the call.
     #
-    # Headers only — the machine code is in this module's own object code, and
+    # Headers, because the machine code is in this module's own object code and
     # the type is marked as the artifact's so the consumer declares rather than
-    # defines. R-2's block rule is not applied, because it is about what another
-    # module reads and nothing here is readable; a block-taking one is skipped
-    # instead, since compiling a call to it would need its body as well.
-    private def iyi_carried_methods(type : Type) : Array(IyiMod::Signature)
+    # defines — except for the one method that has no machine code here either.
+    # A block-taking method is instantiated with the caller's block inside it
+    # wherever it is written, and being unreachable does not change who the
+    # caller is: `run` travels, `run` calls `Hidden#tweak`, so the consumer
+    # compiles both. A header for it would promise a symbol nobody emitted.
+    #
+    # R-2's block rule is not applied to any of them, because it is about what
+    # another module reads and nothing here is readable. It costs nothing to
+    # skip: the annotation is what types a call to a def whose body stayed
+    # behind, and these bodies do not stay behind.
+    private def iyi_carried_methods(program : Program, filename : String,
+                                    container : String, type : Type) : Array(IyiMod::Signature)
       signatures = [] of IyiMod::Signature
       type.as?(ModuleType).try &.defs.try &.each_value do |items|
         items.each do |item|
           next if item.def.new?
           next if item.def.body.is_a?(Primitive)
-          next if iyi_takes_block?(item.def)
           next if item.def.abstract?
-          signatures << IyiMod.signature(item.def, check_block: false)
+
+          signature = IyiMod.signature(item.def, check_block: false)
+          signatures << signature
+          if iyi_takes_block?(item.def)
+            iyi_record_mono_body program, filename, container, signature, item.def
+          end
         end
       end
       signatures.sort_by! &.name

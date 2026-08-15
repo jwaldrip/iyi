@@ -36,7 +36,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 16_u32
+  FORMAT_VERSION = 17_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -339,16 +339,23 @@ module Crystal::IyiMod
   # were the exception that proves the rule: a consumer can typecheck a call
   # against a signature without knowing how the receiver is laid out, and it
   # cannot *allocate* one.
+  # *carried_functions* is the other half of the sentence above, and it arrived
+  # for the same reason a type the module keeps to itself did: a body that
+  # travels calls them. `run` takes a block, so the consumer compiles it, and
+  # `run` calls a `helper` the module never exported. They are rendered without
+  # `pub`, so the consumer declares them and may not name them — which is what
+  # they are when the module is read from source.
   record Exports,
     functions : Array(Signature),
     types : Array(TypeDecl),
-    impls : Array(ImplRecord) do
+    impls : Array(ImplRecord),
+    carried_functions : Array(Signature) = [] of Signature do
     def self.empty
       new([] of Signature, [] of TypeDecl, [] of ImplRecord)
     end
 
     def empty?
-      functions.empty? && types.empty? && impls.empty?
+      functions.empty? && types.empty? && impls.empty? && carried_functions.empty?
     end
   end
 
@@ -768,6 +775,14 @@ module Crystal::IyiMod
       io.puts "exports"
       exports.functions.each { |signature| io.puts "  #{render_signature(signature)}" }
 
+      # Named for what they are, because the dump renders an exported def and
+      # an unexported one the same way and the difference is the whole point of
+      # them being in a list of their own.
+      unless exports.carried_functions.empty?
+        io.puts "  # not exported, carried for the bodies that travel"
+        exports.carried_functions.each { |signature| io.puts "  #{render_signature(signature)}" }
+      end
+
       exports.types.each { |declaration| dump_type_declaration io, declaration, "  " }
 
       exports.impls.each do |record|
@@ -863,6 +878,16 @@ module Crystal::IyiMod
       # consumer is what instantiates it — the block is the consumer's code.
       # The container is the module's own path.
       render_declaration io, signature, exported: true,
+        body: bodies[mono_body_key(artifact.module_name, signature)]?
+    end
+
+    # And the ones it does not export, written as they were written: without
+    # `pub`, so the consumer has them and cannot name them. They are here
+    # because a body that travels may call one, and a block-taking one brings
+    # its body along for the reason every travelling body does.
+    exports.carried_functions.each do |signature|
+      io << '\n'
+      render_declaration io, signature,
         body: bodies[mono_body_key(artifact.module_name, signature)]?
     end
 
@@ -1310,6 +1335,8 @@ module Crystal::IyiMod
       write_signatures io, record.methods
     end
 
+    write_signatures io, artifact.exports.carried_functions
+
     io.to_slice
   end
 
@@ -1392,7 +1419,7 @@ module Crystal::IyiMod
         free_variable_bounds, assoc_types, read_signatures(io))
     end
 
-    Exports.new(functions, types, impls)
+    Exports.new(functions, types, impls, read_signatures(io))
   end
 
   private def self.write_strings(io : IO, values : Array(String)) : Nil

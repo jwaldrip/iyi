@@ -56,25 +56,24 @@ speed has shipped the cost and none of the benefit.
 
 ### In scope
 
-**1. `.iyimod`, end to end (IV.1). Front end done; object code started.** Not
-negotiable. R-1 is the rule the rest of the document is built on, and without
-the artifact everything here is a design document. The container, the `Header`,
-`Imports` and `Exports` sections, `--emit-iyimod` and `mod dump` are built, and
-`--use-iyimod` now compiles an imported module from its artifact: seven of the
-eight samples compile with the imported module's source **deleted**.
+**1. `.iyimod`, end to end (IV.1). Built.** Not negotiable. R-1 is the rule the
+rest of the document is built on, and without the artifact everything here is a
+design document. The container, the `Header`, `Imports` and `Exports` sections,
+`--emit-iyimod` and `mod dump` are built, and `--use-iyimod` compiles an
+imported module from its artifact: all eight samples compile with the imported
+module's source **deleted**.
 
 `ObjectCode` carries a module's own machine code, and **a program built from a
-module's artifact with the module's source deleted now runs** — the first thing
-here that produces a program rather than a typecheck. `modules.iyi` builds,
-links and runs from its two modules' artifacts with both sources deleted, and
-prints what it printed from source.
+module's artifact with the module's source deleted runs** — the thing here that
+produces a program rather than a typecheck.
 
-Of the five samples that import anything, **four** do — `modules`, `immutable`
-(a generic type, a 575-line trait with an associated type, a generic impl),
-`collections` (the trait implemented by a type the artifact's module has never
-heard of) and `init_order` (III.5's ordering, line for line). The fifth,
-`webapp`, is refused a step earlier by R-2 and has been since before this
-section existed. IV.1g measures all of it.
+Of the five samples that import anything, **all five** do — `modules`,
+`immutable` (a generic type, a 575-line trait with an associated type, a generic
+impl), `collections` (the trait implemented by a type the artifact's module has
+never heard of), `init_order` (III.5's ordering, line for line) and `webapp`,
+the Kemal port, which took the whole of IV.1g to reach. Each builds, links,
+runs, and prints what the build from source prints. IV.1g measures all of it,
+and records what was in the way.
 
 **2. The passes that still walk the prelude stop walking it (IV.1d).** The
 artifact alone leaves 0.47 s, of which class-var initializers and `main` are
@@ -1941,7 +1940,9 @@ module, `crystal mod dump FILE` prints it, and `crystal build --use-iyimod DIR`
 compiles an `import` from the artifact instead of the module's source — see
 IV.1f. `Exports` carries `pub def` signatures, exported type declarations with
 their parameters, associated types and methods, and impl records with what they
-answer, **and each type's own fields, in the order they were declared**. Layout
+answer, **each type's own fields, in the order they were declared**, and **the
+defs and types a module does not export**, which travel unreachable because a
+body that travels calls them (IV.1g). Layout
 templates and type descriptors are not in it — those are what codegen needs
 rather than what the front end needs. **`MonoBodies` carries the bodies a
 consumer has to compile itself, `Initialiser` the module's own top-level code,
@@ -2388,6 +2389,18 @@ offset the module's own code reads `@filters` from. Every route went somewhere
 nobody looked — `app.routes` came back empty — and then the program segfaulted.
 Declaration order is no less deterministic than sorted order, because
 `instance_vars` is insertion-ordered and the insertions are the declarations.
+
+**And one the samples do not reach, found by asking what the rule leaves open:
+the block-taking def a module does not export.** `pub def run` takes a block, so
+the consumer compiles it — and `run` calls a `helper` the module kept to itself,
+or a method on a type it never exported. Being unreachable changes nothing about
+who the caller is, so those bodies have to travel too, and a header for one
+would promise a symbol nobody emitted: the producer makes no machine code for a
+block-taking def wherever it is written. They travel in a list of their own and
+are rendered without `pub`, which is what keeps R-2b true — a consumer that
+names one is refused with the message it gets from source, having had the
+declaration all along. The same sentence covers both namespaces: the method on
+a carried type, and the def at the module's own top level.
 
 Both belong to IV.1g's rule rather than beside it: "a module's own code is the
 object files named after the types it declares" is what makes them missing, and

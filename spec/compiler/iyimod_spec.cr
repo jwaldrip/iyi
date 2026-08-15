@@ -725,6 +725,92 @@ describe Crystal::IyiMod do
     end
   end
 
+  # A body that travels calls what the module keeps to itself, and being
+  # unreachable does not change who compiles a block-taking def. Both shapes
+  # are here because they are one hole seen in two namespaces: a method on a
+  # type the module does not export, and a def at the module's own top level.
+  it "carries the unexported defs a travelling body calls" do
+    with_tempdir("iyimod_carried_defs") do
+      Dir.mkdir_p "app"
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        class Hidden
+          @n : Int32
+
+          def initialize(@n : Int32)
+          end
+
+          def tweak(&block : Int32 -> Int32) : Int32
+            block.call(@n)
+          end
+        end
+
+        def helper(start : Int32, &block : Int32 -> Int32) : Int32
+          Hidden.new(start).tweak(&block)
+        end
+
+        pub def run(start : Int32, &block : Int32 -> Int32) : Int32
+          helper(start, &block)
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box.run(5) { |n| n * 3 }
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "15"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+
+      # Kept out of `functions`, which is the module's surface and stays what a
+      # consumer may call.
+      artifact.exports.functions.map(&.name).should eq ["run"]
+      artifact.exports.carried_functions.map(&.name).should eq ["helper"]
+
+      # With their bodies, because a header would promise a symbol the producer
+      # never emitted: it makes no machine code for a block-taking def either.
+      artifact.mono_bodies.keys.should contain "app/box#helper(start : Int32)&block : (Int32 -> Int32)"
+      artifact.mono_bodies.keys.should contain "Hidden#tweak()&block : (Int32 -> Int32)"
+
+      File.delete "app/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "15"
+
+      # And carrying them leaves R-2b where it was: the consumer has them and
+      # may not name them, with the message it gets from source.
+      File.write "reach.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box.helper(5) { |n| n * 3 }
+        IYI
+      reaching = Crystal::Compiler::Source.new(File.expand_path("reach.iyi"), File.read("reach.iyi"))
+
+      refuser = create_spec_compiler
+      refuser.prelude = "iyi/prelude"
+      refuser.use_iyimod = "mods"
+      refuser.no_codegen = true
+      expect_raises(Crystal::TypeException, /does not export 'helper'/) do
+        refuser.compile reaching, "unused"
+      end
+    end
+  end
+
   # A constant is typed and initialised where it is *read*, and on the far side
   # of an artifact the only reader is machine code the consumer did not compile.
   # So `kemal/dsl`'s `APP` was declared, assigned by the initialiser that
