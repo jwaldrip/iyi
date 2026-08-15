@@ -676,9 +676,11 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
          TypeDeclaration, AssocTypeDecl, Annotation, Include, Extend
       # A declaration, or a body this does not reach into.
     when VisibilityModifier
-      # Whole, not unwrapped: `pub APP = Router.new` is a constant this module
-      # exports, and dropping the `pub` on the way through would carry the
-      # value and lose the export.
+      # Whole, not unwrapped. The modifier here is Crystal's `private` — `pub`
+      # is a flag on the declaration rather than a wrapper, and it does not take
+      # a constant at all (SPEC.md IV.2) — and a `private CONST = compute` is
+      # still the module's own code to run. Dropping the modifier on the way
+      # through would carry the value and change what it is.
       statements << node if iyi_initialiser?(node.exp)
     else
       # A macro call contributes what it expanded to rather than itself. The

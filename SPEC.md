@@ -2643,6 +2643,16 @@ Two secondary results from the same instrument:
   Context)` resolves `Context` through a `using` further up the file. The
   annotation travels, so what resolves it has to travel with it.
 - **Exported constants**, with values where a value can appear in a type.
+  **Not built, and not because it was forgotten.** `pub` takes a `def`, a
+  `class`, a `struct` and a `trait`, and refuses everything else — including a
+  constant and an `enum`. Nothing in this repository asks for either: there is
+  no `enum` in the prelude or in any sample, and the three module-level
+  constants that exist — `HTTP_METHODS`, `FILTER_METHODS`, `APP` — are read by
+  their own module and named by nobody else. That is item 3's rule applied
+  here: a thing enters because something writes it. What is worth saying is
+  that the *format* has been written as though both already travel, and this
+  paragraph is what keeps that from reading as a bug in the artifact rather
+  than a feature the language has not been asked for.
 
 **A block parameter is a parameter (R-2).** An exported `def` that takes a
 block has to say what the block is: `pub def namespace(path : String, &)` says
@@ -2714,7 +2724,7 @@ Three hashes, not one:
 
 | Hash | Covers | Changing it invalidates |
 |---|---|---|
-| **Interface** | exported signatures, layouts, type descriptors, trait declarations, impl records, exported constant types | every dependent must re-typecheck |
+| **Interface** | exported signatures, layouts, type descriptors, trait declarations, impl records, exported constant types (when there are any — see IV.2) | every dependent must re-typecheck |
 | **Implementation** | macro bodies, `@[Monomorphize]` bodies | only dependents that actually expand or specialise those items; no re-typechecking |
 | **Private** | everything else — private types, all ordinary bodies | nothing outside this module; dependents relink but do not recompile |
 

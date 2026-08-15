@@ -206,9 +206,12 @@ module Crystal::IyiMod
     free_variables : Array(String),
     required : Bool
 
-  # A type the module declares: `pub struct`, `pub class`, `pub trait`,
-  # `pub enum` — and, since the object code started travelling, the ones it
-  # does not export.
+  # A type the module declares: `pub struct`, `pub class`, `pub trait` — and,
+  # since the object code started travelling, the ones it does not export.
+  #
+  # Not `pub enum`, which the parser refuses: `pub` takes a def, a class, a
+  # struct and a trait and nothing else. There is no `enum` in the prelude or
+  # in any sample, so nothing has asked (SPEC.md IV.2).
   #
   # *visibility* is what was written, and it is what keeps R-2b true on the far
   # side: a type carried without `pub` is declared by the consumer and reachable
