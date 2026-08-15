@@ -134,9 +134,12 @@ GATE_RUNS = 15
 # Startup is not a complete probe either, and the report prints both numbers
 # rather than implying it is. What it does buy is a term worth knowing on its
 # own, and it is the larger one: **starting the compiler and doing nothing
-# costs 0.040 s here against a 0.045 s front end**. Four fifths of the figure
-# the target is set on is a process starting, not a line being analysed — which
-# is what item 1 and item 2 have left to work with, and it is not much.
+# costs 0.029 s here against a 0.042 s front end**, and 0.026 s of that is
+# linking libLLVM. Measured with a C program that does nothing: 0.001 s built
+# plainly, 0.026 s built with a `NEEDED` entry on libLLVM and no call to it.
+# So it is the library's own load-time initialisers, paid by every process that
+# links it whether or not it generates code — `clang --version` pays the same
+# 0.023 s. See SPEC.md 0.1.0.
 #
 # Re-record `STARTUP_BASELINE` when the machine changes, from the figure this
 # prints. It is a property of a machine and a binary, not of iyi.

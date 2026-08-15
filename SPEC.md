@@ -313,14 +313,35 @@ MET is worth more than its NOT MET, and a NOT MET from a machine that has been
 asleep is worth running again.
 
 **And measuring startup separately answered a question nobody had asked.**
-Starting the compiler and doing nothing — `crystal --version` — costs **0.040 s
-against a 0.045 s front end**. Four fifths of the number this target is set on
-is a process starting: loading a 37 MB binary, linking it, bringing up a
-runtime. The remaining fifth is every line of prelude and program this document
-has spent three runs shrinking. That reframes what items 1 and 2 have left to
-buy — a few milliseconds each — and it means the honest headline for a released
-iyi is a smaller binary and a faster start, not another pass removed from the
-front end.
+Starting the compiler and doing nothing — `crystal --version` — costs **0.029 s
+against a 0.042 s front end**. Two thirds of the number this target is set on is
+a process starting rather than a line being analysed.
+
+**It is not the binary, and it is not the loader. It is linking LLVM.** The
+dynamic loader accounts for 3.2M cycles of it — about a millisecond — by its own
+statistics. What the rest is took a control: a C program whose `main` returns
+zero costs **0.001 s** built plainly and **0.026 s** built with a `NEEDED` entry
+on `libLLVM.so` and no call to it. `clang --version` pays the same 0.023 s, and
+a small Crystal program with no LLVM pays 0.004 s. So it is libLLVM's own
+load-time initialisers, charged to every process that links the library whether
+or not it generates code — and `crystal build --no-codegen` is exactly a process
+that does not.
+
+**That reorders what is left of this section.** Item 2 was written to remove
+passes that re-walk the prelude; those are now about 8 ms together, against 26
+ms spent bringing up a code generator the front end never calls. Three things
+could take that back, and only the third is in scope here:
+
+- **A front end that does not link LLVM.** The number would fall to about
+  0.016 s, more than everything else in this document has bought. It needs
+  `Program` and the semantic passes to stop naming `LLVM` — 64 references
+  across nine files, most of them a target machine and a data layout — which is
+  a refactor, not a flag.
+- **An LLVM built without its option registry**, which is not iyi's to build.
+- **Not paying it per build**, which is IV.1d's daemon: a process that starts
+  once amortises a fixed 26 ms over every compile after the first. The daemon
+  was proposed to keep the prelude analysed; the larger thing it keeps is the
+  code generator loaded.
 
 ### What Crystal's own 0.1.0 looked like
 
