@@ -25,9 +25,9 @@ nor their `GOCACHE` is touched or warmed by this.
 
 Each figure is the **best** of N runs, not the mean: build time has a floor and
 noise only ever adds, so the minimum is the better estimate of the floor. The
-slowest run is reported alongside the target, because it is the only thing here
-that says whether the machine was quiet enough for three runs to have reached
-that floor.
+figure the target is decided on takes `GATE_RUNS` of them, because three did not
+reach that floor reliably, and the slowest is printed beside it so that a busy
+machine is visible rather than averaged in.
 
 Limits, stated because they bound the result
 --------------------------------------------
@@ -45,14 +45,21 @@ Limits, stated because they bound the result
   the same day, said MET or NOT MET. It now asks the compiler how it was built,
   prints the answer, and refuses to decide the target from a debug build rather
   than blaming the compiler for it.
-* **The machine's state matters more than either.** On one binary, minutes
-  apart, the front end measured 0.048 s cool, 0.109 s after sustained
-  compilation, and 0.061 s three minutes later — a wider spread than debug
-  against release. Best-of-N finds the floor on a quiet machine and a lower
-  ceiling on a busy one, so the slowest run is reported beside the fastest and a
-  run whose runs disagree by more than `QUIET` is called UNDECIDED. That catches
-  a machine doing something else; it does not catch one that is uniformly
-  throttled, which is why the figures here are only comparable within a run.
+* **The machine's state moves this more than anything the compiler does, and
+  it is not fully solved here.** On one binary, minutes apart, the front end
+  measured 0.048 s, 0.109 s and 0.061 s. Part of that was three samples being
+  too few — fifteen put the floor at 0.048, 0.042 and 0.045 s across three
+  sessions — so the gated figure now takes `GATE_RUNS` samples after two
+  discarded warm-up runs, and prints the slowest beside the fastest.
+
+  What remains after that is a pattern worth writing down rather than
+  averaging: **the first invocation after the machine has been idle reads about
+  40% high**, and the ones a minute later do not, with every sample in that
+  first invocation slow rather than a few of them. Neither probe here isolates
+  it — a fixed integer loop held to 4% across the same swing, and startup moves
+  with it only partly. So the honest reading of a single run is that a MET is
+  worth more than a NOT MET, and a NOT MET on a machine that has been asleep is
+  worth running again.
 * **The corpus is one program.** `hello` is the only pair where "the equivalent
   Go program" is unambiguous, and iyi has no larger program to offer: its
   samples explain rules rather than do work. `webapp.iyi` is timed too, but
@@ -98,6 +105,49 @@ FRONT_END_TARGET = 0.05
 
 RUNS = 3
 
+# Runs for the one figure the target is decided on.
+#
+# Three was too few, and the way that showed is the point: three consecutive
+# runs of this bench measured 0.062 s, 0.074 s and 0.046 s — across the target,
+# on one binary, minutes apart. Fifteen runs put the floor at 0.048, 0.042 and
+# 0.045 s in three sessions, while their medians ranged 0.048 to 0.070 and
+# their slowest reached 0.084. So the floor is reproducible and everything
+# above it is noise that more samples find their way under, which is what
+# best-of-N assumes and what three samples did not deliver.
+#
+# It costs about a second. The other rows keep `RUNS`, because nothing is
+# decided on them.
+GATE_RUNS = 15
+
+# What starting the compiler costs, and what it cost when the target was set.
+#
+# A figure in seconds is a claim about a machine, and this one measured 0.048 s
+# and 0.109 s on the same binary within an hour. Repeating the run does not fix
+# that: best-of-N finds the floor, and it is the floor that moves.
+#
+# The reference this bench divides by is **the compiler starting up and doing
+# nothing** — `crystal --version`: the same binary, the same loader, the same
+# runtime, none of the compiling. A fixed integer loop was tried first and
+# rejected on measurement: it held to within 4% across the period that moved
+# the compiler by 2x, so it is not a probe for whatever is moving.
+#
+# Startup is not a complete probe either, and the report prints both numbers
+# rather than implying it is. What it does buy is a term worth knowing on its
+# own, and it is the larger one: **starting the compiler and doing nothing
+# costs 0.040 s here against a 0.045 s front end**. Four fifths of the figure
+# the target is set on is a process starting, not a line being analysed — which
+# is what item 1 and item 2 have left to work with, and it is not much.
+#
+# Re-record `STARTUP_BASELINE` when the machine changes, from the figure this
+# prints. It is a property of a machine and a binary, not of iyi.
+STARTUP_BASELINE = 0.040
+STARTUP_ROUNDS = GATE_RUNS
+
+# How much slower than the baseline this machine may start the compiler before
+# the target stops meaning anything. The target is decided by a few percent, so
+# this is already generous.
+SLOW = 1.15
+
 
 def compiler_env():
     """The environment `bin/crystal` would have set, asked for once.
@@ -125,6 +175,15 @@ def compiler_env():
 CRYSTAL_ENV = {}
 
 
+def time_startup():
+    """The compiler starting and doing nothing — `--version`.
+
+    The same binary, the same loader, the same runtime, and no compiling: what
+    is left is the fixed cost every build here pays before it reads a line.
+    """
+    return best(STARTUP_ROUNDS, lambda: run([str(CRYSTAL), "--version"]))
+
+
 def compiler_build():
     """What the compiler says it is: its version line, and whether it is release.
 
@@ -144,16 +203,23 @@ def compiler_build():
     return version, "not built in release mode" not in text
 
 
-def best(runs, fn):
+def best(runs, fn, warmup = 0):
     """Fastest and slowest of `runs`, or None if the command failed.
 
-    The fastest is the figure; the slowest is kept because it is the only thing
-    in this report that says whether the machine was quiet. A build has a floor
-    and noise only ever adds, so the minimum is the better estimate — but on a
-    loaded machine three runs do not reach the floor, and a gate that reads
-    NOT MET because something else was compiling is the same defect as one that
-    reads MET because of how the compiler happened to be built.
+    The fastest is the figure; the slowest is kept because it is what says
+    whether the machine was quiet. A build has a floor and noise only ever
+    adds, so the minimum is the better estimate — but a gate that reads NOT MET
+    because something else was compiling is the same defect as one that reads
+    MET because of how the compiler happened to be built.
+
+    `warmup` runs are made and thrown away first. The first invocation in a
+    session measured half again what the ones after it did, and none of that
+    difference is the compiler: it is whatever the machine had to fetch before
+    it could run one.
     """
+    for _ in range(warmup):
+        if not fn():
+            return None
     times = []
     for _ in range(runs):
         started = time.monotonic()
@@ -177,7 +243,7 @@ def run(argv, env=None, cwd=None):
     return result.returncode == 0
 
 
-def time_crystal(source, out_dir, codegen, cold):
+def time_crystal(source, out_dir, codegen, cold, runs = RUNS):
     """Time one `crystal build`, in a cache directory this bench owns."""
     cache = out_dir / ("cache_cold" if cold else "cache_warm")
 
@@ -197,7 +263,7 @@ def time_crystal(source, out_dir, codegen, cold):
         # Warm means the second build onward, so pay for the first here.
         cache.mkdir(parents=True, exist_ok=True)
         once()
-    return best(RUNS, once)
+    return best(runs, once, warmup=2 if runs > RUNS else 0)
 
 
 def time_go(source, out_dir, cold):
@@ -225,12 +291,6 @@ def show(measurement):
     return "     —" if measurement is None else f"{measurement[0]:6.2f}"
 
 
-# How much slower the worst run may be than the best before the run is taken as
-# a measurement of the machine rather than of the compiler. A quiet machine
-# lands well inside this; a laptop with a build on the other core does not.
-QUIET = 1.5
-
-
 def main():
     if not CRYSTAL.exists():
         sys.exit(f"no compiler at {CRYSTAL} — run `make crystal` first")
@@ -245,17 +305,25 @@ def main():
     with tempfile.TemporaryDirectory(prefix="iyi-build-speed-") as tmp:
         out = pathlib.Path(tmp)
 
-        front_hello = time_crystal(hello_iyi, out, codegen=False, cold=True)
+        front_hello = time_crystal(hello_iyi, out, codegen=False, cold=True, runs=GATE_RUNS)
         front_webapp = time_crystal(webapp_iyi, out, codegen=False, cold=True)
         e2e_cold = time_crystal(hello_iyi, out, codegen=True, cold=True)
         e2e_warm = time_crystal(hello_iyi, out, codegen=True, cold=False)
         go_cold = time_go(hello_go, out, cold=True)
         go_warm = time_go(hello_go, out, cold=False)
 
+    # After the builds rather than before them, so it sees the machine in the
+    # state they left it in. That errs towards calling the machine slow, which
+    # is the direction to err in: it withholds a MET rather than inventing one.
+    startup, _ = time_startup()
+    factor = startup / STARTUP_BASELINE
+
     print()
     print("build speed — best of", RUNS, "runs, seconds")
     print()
     print(f"  compiler: {version}, {'release' if release else 'DEBUG'} build")
+    print(f"  startup:  {startup:.3f} s doing nothing, against a "
+          f"{STARTUP_BASELINE:.3f} s baseline — {factor:.2f}x")
     print()
     print("  program        stage                        cold    warm")
     print("  " + "-" * 56)
@@ -277,7 +345,12 @@ def main():
 
     print(f"  front-end target (SPEC.md 0.1.0): {FRONT_END_TARGET:.3f} s")
     print(f"  measured:                         {fastest:.3f} s")
-    print(f"  slowest of the {RUNS}:                 {slowest:.3f} s")
+    print(f"  slowest of the {GATE_RUNS}:                {slowest:.3f} s")
+    # Said out loud, because it is most of the figure above and none of it is
+    # analysis: what the front end costs over starting the compiler is the part
+    # `.iyimod` and the prelude move.
+    print(f"  of which startup:                 {startup:.3f} s, "
+          f"leaving {max(fastest - startup, 0.0):.3f} s of front end")
 
     # Measured, not judged. A debug build of the compiler is about 1.5x slower
     # here than a release one, and the target is decided by a few percent, so
@@ -299,15 +372,17 @@ def main():
         print()
         return 1
 
-    # Three runs do not reach the floor on a machine that is doing something
-    # else, and the gate is a command that passes rather than a judgement — so
-    # where the runs disagree this much, it says so instead of deciding.
-    if slowest > fastest * QUIET:
+    # A figure in seconds is a claim about a machine, so a machine measurably
+    # slower than the one the target was set on cannot answer for it either
+    # way. Reported with what the figure would have been at baseline speed,
+    # which is an estimate and is labelled as one.
+    if factor > SLOW:
         print()
-        print(f"  UNDECIDED — the slowest run is {slowest / fastest:.1f}x the fastest, so this")
-        print("  machine was busy and three runs did not reach the floor. What was")
-        print("  measured is the load, not the compiler. Run it again on a quiet")
-        print("  machine.")
+        print(f"  UNDECIDED — this machine starts the compiler {factor:.2f}x slower than")
+        print("  the one the target was recorded on, and startup is most of the")
+        print("  figure, so what is above is a measurement of the machine. Rest it")
+        print("  and run this again, or re-record the baseline if this is the")
+        print("  machine now.")
         print()
         return 1
 

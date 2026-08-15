@@ -297,17 +297,30 @@ decide the target from a debug build** rather than reporting the compiler as
 too slow.
 
 **The second was the machine, and it is the larger term.** On one binary,
-minutes apart, the front end measured **0.048 s cool, 0.109 s after sustained
-compilation, and 0.061 s three minutes later**. Best-of-three finds the floor on
-a quiet machine and a lower ceiling on a busy one. The bench now reports the
-slowest of its runs beside the fastest and calls a run UNDECIDED when they
-disagree by more than half — which catches a machine that is doing something
-else, and does not catch one that is uniformly throttled. **So the 0.039 s
-above is a rested-machine number**, and the honest form of the claim is that the
-target is met on a quiet machine by a release compiler. Making the figure
-independent of the machine's state needs a calibration run — a fixed workload
-timed alongside, so the compiler is reported relative to something rather than
-in seconds — and that is a bench change nobody has made yet.
+minutes apart, the front end measured **0.048 s, 0.109 s and 0.061 s**. Most of
+that turned out to be three samples rather than three machines: fifteen runs put
+the floor at 0.048, 0.042 and 0.045 s across three sessions whose medians ranged
+0.048 to 0.070. Best-of-N assumes the samples reach the floor, and three did
+not. The gated figure now takes fifteen after two discarded warm-up runs, and
+prints the slowest beside the fastest.
+
+**What is left of it is written down rather than averaged away.** The first
+invocation after the machine has been idle reads about 40% high — every sample
+in it, not a few — and the ones a minute later do not. Two probes were tried
+against that swing and neither isolates it: a fixed integer loop held to 4%
+across the same period, and startup moves with it only partly. So a single run's
+MET is worth more than its NOT MET, and a NOT MET from a machine that has been
+asleep is worth running again.
+
+**And measuring startup separately answered a question nobody had asked.**
+Starting the compiler and doing nothing — `crystal --version` — costs **0.040 s
+against a 0.045 s front end**. Four fifths of the number this target is set on
+is a process starting: loading a 37 MB binary, linking it, bringing up a
+runtime. The remaining fifth is every line of prelude and program this document
+has spent three runs shrinking. That reframes what items 1 and 2 have left to
+buy — a few milliseconds each — and it means the honest headline for a released
+iyi is a smaller binary and a faster start, not another pass removed from the
+front end.
 
 ### What Crystal's own 0.1.0 looked like
 
