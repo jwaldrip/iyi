@@ -390,20 +390,26 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       parser.next_token
       type_node = parser.parse_bare_proc_type
       parser.check :EOF
-      @program.lookup_type(type_node)
+      # Reaching what the module keeps to itself, which is what these names are
+      # made of: `Array(Router::RouteDefinition)` names a `private record` and
+      # the artifact carries it as one. R-2b is not weakened by that — the type
+      # arrives declared and unreachable, exactly as it is when the module is
+      # read from source, and this is the compiler restoring the module's own
+      # instantiation rather than anybody naming it.
+      @program.lookup_type(type_node, include_private: true)
     rescue CodeError
-      # A name this build cannot resolve, which today means an instantiation
-      # at a type the module keeps to itself: the declarations carry what a
-      # module exports, so `Array(Router::RouteDefinition)` arrives naming
-      # something that is not here. Refused with both names rather than left
-      # to the linker, which would report the mangled symbol and no module.
+      # A name this build cannot resolve. The module's own types travel with
+      # the artifact, unexported ones included, so what is left is an
+      # instantiation at somebody *else's* unexported type — reachable from
+      # neither module. Refused with both names rather than left to the linker,
+      # which would report the mangled symbol and no module at all.
       node.raise <<-MESSAGE
         "#{artifact.module_name}" numbers `#{name}`, and this build cannot name it
 
         Its object code refers to that type's id, which is resolved from a
-        definition in this program — so this program has to have the type. The
-        name comes from the module's own code and reaches something the module
-        does not export, which a .iyimod cannot carry yet (SPEC.md IV.1g).
+        definition in this program — so this program has to have the type. This
+        module's own types travel with its artifact, so the one it cannot name
+        belongs to a module that does not export it (SPEC.md IV.1g).
 
         Build the module from source, or export the type it names.
         MESSAGE
@@ -413,17 +419,33 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
   # iyi: marks the types an artifact declares, so codegen declares their
   # methods rather than defining them (SPEC.md IV.1g).
   #
+  # Marked whether or not the object code was read, because the mark answers a
+  # front-end question too: a type carried without `pub` arrives with fields
+  # and no `initialize` to assign them in, and the check that would call them
+  # nilable has to know where the declaration came from. Guarding this on the
+  # object code left that check firing on a `--no-codegen` build alone.
+  #
   # Done here, from the artifact's own list of exported types, rather than by
   # threading a flag through the type-creation path: this is the one place that
   # knows both which module was read from a `.iyimod` and which names it
   # exported, and it is a walk over a handful of names rather than a check on
   # every type a build makes.
   private def mark_iyi_artifact_types(artifact : IyiMod::Artifact) : Nil
-    return if artifact.object_code.empty?
     return unless scope = @program.iyi_module_type(artifact.module_name)
 
-    artifact.exports.types.each do |declaration|
-      scope.types?.try(&.[]?(declaration.name)).try &.iyi_from_artifact = true
+    mark_iyi_artifact_types scope, artifact.exports.types
+  end
+
+  # Recursive, because a type's declarations are types. A nested one is as much
+  # the artifact's as its container is — the object code carries the container's
+  # unit, and what a `private record` inside it declares is in that unit too.
+  private def mark_iyi_artifact_types(scope : Type, declarations : Array(IyiMod::TypeDecl)) : Nil
+    declarations.each do |declaration|
+      type = scope.types?.try &.[]?(declaration.name)
+      next unless type
+
+      type.iyi_from_artifact = true
+      mark_iyi_artifact_types type, declaration.types
     end
   end
 

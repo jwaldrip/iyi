@@ -35,7 +35,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 12_u32
+  FORMAT_VERSION = 13_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -113,7 +113,22 @@ module Crystal::IyiMod
     free_variables : Array(String),
     required : Bool
 
-  # An exported type: `pub struct`, `pub class`, `pub trait`, `pub enum`.
+  # A type the module declares: `pub struct`, `pub class`, `pub trait`,
+  # `pub enum` — and, since the object code started travelling, the ones it
+  # does not export.
+  #
+  # *visibility* is what was written, and it is what keeps R-2b true on the far
+  # side: a type carried without `pub` is declared by the consumer and reachable
+  # from nowhere, which is exactly what it is when the module is read from
+  # source. An unexported type travels at all because the module's own machine
+  # code refers to it — `Array(Secret):type_id` is resolved from a definition in
+  # the consuming program, and a program can only number a type it has.
+  #
+  # A type nobody may call travels as its name, its kind and its fields, and
+  # its methods stay behind: the consumer has no way to reach them, and the
+  # module's own object code already defines them. That is also why carrying
+  # them would be worse than useless — R-2's block rule would start refusing
+  # modules over a private method's unannotated block.
   #
   # For a trait, *methods* is what the trait requires and supplies — II.6's
   # abstract requirements and the signatures (not bodies) of its defaults,
@@ -138,6 +153,10 @@ module Crystal::IyiMod
   #
   # Inherited fields are not here. They belong to the supertype's declaration,
   # and a consumer that has this type has that one too.
+  # *types* is what this type declares in turn. A nested type belongs to its
+  # container rather than to the module's surface (R-2 governs the unit's own
+  # body), so it is rendered where it was written and carries the visibility it
+  # was written with.
   record TypeDecl,
     name : String,
     kind : String,
@@ -145,7 +164,9 @@ module Crystal::IyiMod
     assoc_types : Array(String),
     supertraits : Array(String),
     fields : Array({String, String}),
-    methods : Array(Signature)
+    methods : Array(Signature),
+    visibility : String = "pub",
+    types : Array(TypeDecl) = [] of TypeDecl
 
   # How a body is found again on the far side.
   #
@@ -526,12 +547,7 @@ module Crystal::IyiMod
       io.puts "exports"
       exports.functions.each { |signature| io.puts "  #{render_signature(signature)}" }
 
-      exports.types.each do |declaration|
-        io.puts "  #{render_type_header(declaration)}"
-        declaration.assoc_types.each { |name| io.puts "    type #{name}" }
-        declaration.fields.each { |(name, type)| io.puts "    #{name} : #{type}" }
-        declaration.methods.each { |signature| io.puts "    #{render_signature(signature)}" }
-      end
+      exports.types.each { |declaration| dump_type_declaration io, declaration, "  " }
 
       exports.impls.each do |record|
         io.puts "  #{render_impl_header(record)}"
@@ -620,17 +636,8 @@ module Crystal::IyiMod
     bodies = artifact.mono_bodies
 
     exports.types.each do |declaration|
-      io << "\npub " << render_type_header(declaration) << '\n'
-      declaration.assoc_types.each { |name| io << "  type " << name << '\n' }
-      # Before the methods, where they are written and where a reader looks for
-      # them. They are also what a `def initialize` with no body leaves
-      # unassigned, which is why they arrive declared rather than inferred.
-      declaration.fields.each { |(name, type)| io << "  " << name << " : " << type << '\n' }
-      declaration.methods.each do |signature|
-        render_declaration io, signature, indent: "  ",
-          body: bodies[mono_body_key(declaration.name, signature)]?
-      end
-      io << "end\n"
+      io << '\n'
+      render_type_declaration io, declaration, bodies
     end
 
     # After the types, because an impl needs its target declared and because
@@ -739,6 +746,16 @@ module Crystal::IyiMod
       false
     end
 
+    # Every path in this text was rendered from a type the producing build had
+    # resolved, and some of them name what the module keeps to itself: a
+    # carried type's field is `Array(Router::Route)` and `Route` is declared
+    # `private`. Marked so the lookup may reach it — R-2b governs what another
+    # module writes, and this is the module's own declaration arriving.
+    def visit(node : Path)
+      node.iyi_from_artifact = true
+      false
+    end
+
     def visit(node : ASTNode)
       true
     end
@@ -761,6 +778,51 @@ module Crystal::IyiMod
       io << indent << "  " << line << '\n'
     end
 
+    io << indent << "end\n"
+  end
+
+  # One type declaration in `mod dump`, and the types declared inside it.
+  #
+  # The visibility is shown, because "carried and unreachable" is a thing a
+  # reader of this file has to be able to tell from "carried and exported".
+  private def self.dump_type_declaration(io : IO, declaration : TypeDecl, indent : String) : Nil
+    prefix = declaration.visibility.empty? ? "" : "#{declaration.visibility} "
+    io.puts "#{indent}#{prefix}#{render_type_header(declaration)}"
+
+    inner = indent + "  "
+    declaration.assoc_types.each { |name| io.puts "#{inner}type #{name}" }
+    declaration.fields.each { |(name, type)| io.puts "#{inner}#{name} : #{type}" }
+    declaration.types.each { |nested| dump_type_declaration io, nested, inner }
+    declaration.methods.each { |signature| io.puts "#{inner}#{render_signature(signature)}" }
+  end
+
+  # One type declaration, and the types declared inside it.
+  #
+  # The visibility is written back as it was written: a type carried without
+  # `pub` is declared here and reachable from nowhere, which is what it is when
+  # the module is read from source rather than from this file. Nesting is kept
+  # for the same reason — a nested type belongs to its container, and iyi has
+  # no way to reopen the container to add one later.
+  def self.render_type_declaration(io : IO, declaration : TypeDecl,
+                                   bodies : Hash(String, String), indent = "") : Nil
+    io << indent
+    io << declaration.visibility << ' ' unless declaration.visibility.empty?
+    io << render_type_header(declaration) << '\n'
+
+    inner = indent + "  "
+    declaration.assoc_types.each { |name| io << inner << "type " << name << '\n' }
+
+    # Before the methods, where they are written and where a reader looks for
+    # them. They are also what a `def initialize` with no body leaves
+    # unassigned, which is why they arrive declared rather than inferred.
+    declaration.fields.each { |(name, type)| io << inner << name << " : " << type << '\n' }
+
+    declaration.types.each { |nested| render_type_declaration io, nested, bodies, inner }
+
+    declaration.methods.each do |signature|
+      render_declaration io, signature, indent: inner,
+        body: bodies[mono_body_key(declaration.name, signature)]?
+    end
     io << indent << "end\n"
   end
 
@@ -949,17 +1011,7 @@ module Crystal::IyiMod
     io = IO::Memory.new
     write_signatures io, artifact.exports.functions
 
-    types = artifact.exports.types
-    io.write_bytes types.size.to_u32, FORMAT
-    types.each do |declaration|
-      write_string io, declaration.name
-      write_string io, declaration.kind
-      write_strings io, declaration.type_parameters
-      write_strings io, declaration.assoc_types
-      write_strings io, declaration.supertraits
-      write_pairs io, declaration.fields
-      write_signatures io, declaration.methods
-    end
+    write_type_declarations io, artifact.exports.types
 
     impls = artifact.exports.impls
     io.write_bytes impls.size.to_u32, FORMAT
@@ -974,6 +1026,39 @@ module Crystal::IyiMod
     end
 
     io.to_slice
+  end
+
+  # Recursive, because a type's declarations are types: the nesting a module
+  # wrote is the nesting a consumer has to read back, and iyi cannot reopen a
+  # container to add one afterwards.
+  private def self.write_type_declarations(io : IO, types : Array(TypeDecl)) : Nil
+    io.write_bytes types.size.to_u32, FORMAT
+    types.each do |declaration|
+      write_string io, declaration.name
+      write_string io, declaration.kind
+      write_string io, declaration.visibility
+      write_strings io, declaration.type_parameters
+      write_strings io, declaration.assoc_types
+      write_strings io, declaration.supertraits
+      write_pairs io, declaration.fields
+      write_signatures io, declaration.methods
+      write_type_declarations io, declaration.types
+    end
+  end
+
+  private def self.read_type_declarations(io : IO) : Array(TypeDecl)
+    Array(TypeDecl).new(io.read_bytes(UInt32, FORMAT)) do
+      name = read_string(io)
+      kind = read_string(io)
+      visibility = read_string(io)
+      parameters = read_strings(io)
+      assoc_types = read_strings(io)
+      supertraits = read_strings(io)
+      fields = read_pairs(io)
+      methods = read_signatures(io)
+      TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
+        visibility, read_type_declarations(io))
+    end
   end
 
   private def self.write_signatures(io : IO, signatures : Array(Signature)) : Nil
@@ -1007,15 +1092,7 @@ module Crystal::IyiMod
     io = IO::Memory.new(payload)
     functions = read_signatures(io)
 
-    types = Array(TypeDecl).new(io.read_bytes(UInt32, FORMAT)) do
-      name = read_string(io)
-      kind = read_string(io)
-      parameters = read_strings(io)
-      assoc_types = read_strings(io)
-      supertraits = read_strings(io)
-      fields = read_pairs(io)
-      TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, read_signatures(io))
-    end
+    types = read_type_declarations(io)
 
     impls = Array(ImplRecord).new(io.read_bytes(UInt32, FORMAT)) do
       trait_name = read_string(io)

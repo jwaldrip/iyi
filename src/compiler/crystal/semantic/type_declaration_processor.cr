@@ -483,6 +483,13 @@ struct Crystal::TypeDeclarationProcessor
   private def nilable_instance_var?(owner, name)
     return false if @has_macro_def.includes?(owner)
 
+    # iyi: a type read from a `.iyimod` carries its fields and, when the module
+    # keeps it to itself, none of its methods — so there is no `initialize`
+    # here to assign them in. Assumed to assign everything, like a macro def
+    # and on the same grounds: the build that wrote the artifact already
+    # checked the real one (SPEC.md IV.1g).
+    return false if owner.is_a?(Type) && owner.iyi_from_artifact?
+
     non_nilable_vars = @non_nilable_instance_vars[owner]?
     !non_nilable_vars || (non_nilable_vars && !non_nilable_vars.includes?(name))
   end

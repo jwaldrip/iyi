@@ -2207,15 +2207,32 @@ either declared by this artifact or imported by the consumer for itself, and an
 instantiation is the one case with no declaration anywhere to arrive through.
 The type has to be *numbered*, not used, so making it is enough.
 
-**What that does not close is the instantiation at a type the module keeps to
-itself** — which is exactly the router's, whose `RouteDefinition` is a `private
-record`. The declarations carry what a module exports, so
-`Array(Router::RouteDefinition)` arrives naming something that is not there.
-The consumer refuses the `import`, naming the module and the type, rather than
-leaving it to a linker that would report a mangled symbol and no module at all.
-Carrying a module's unexported types — declared, unreachable, exactly as they
-are when the module is read from source — is what closes it, and is the next
-step rather than an oversight.
+**Which made a module's unexported types travel too** — the router's
+`RouteDefinition` is a `private record`, so `Array(Router::RouteDefinition)`
+named something the artifact did not have. A type nobody may call arrives as
+its name, its kind, its fields and its nesting, and **no methods**: the
+consumer cannot reach them and the module's object code already defines them,
+and carrying them would put R-2's block rule — a rule about what another module
+reads — in front of a private method's unannotated block. The visibility
+travels as it was written, which is what keeps R-2b true on the far side: the
+type is declared by the consumer and reachable from nowhere, exactly as it is
+when the module is read from source, and a consumer that names it is refused
+with the same message either way.
+
+Nesting travels because iyi cannot reopen a class to add a type to it later,
+and a type declared in a class belongs to the class rather than to the module's
+surface — R-2 governs the unit's own body. Two things follow from a private
+type being *written down*. The declarations name it — `@routes :
+Array(Router::Route)` — and a path in that text may reach it where a path in
+anybody's source may not, which is a mark on the path rather than a hole in the
+rule. And it arrives with fields and no `initialize` to assign them in, so it
+is assumed to assign everything, on the same grounds as a bodyless `initialize`
+above: the build that wrote the artifact already checked the real one.
+
+What is left is an instantiation at somebody *else's* unexported type, which
+neither module can name. The consumer refuses the `import`, naming the module
+and the type, rather than leaving it to a linker that would report a mangled
+symbol and no module at all.
 
 Underneath all of it stays the fact that **an artifact carries what the
 consuming build reached**, rather than the module's surface. Codegen is

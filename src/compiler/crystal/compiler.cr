@@ -492,18 +492,21 @@ module Crystal
       types = [] of IyiMod::TypeDecl
 
       if type = program.iyi_module_type(module_name)
-        if exported = type.exported_names
-          exported.to_a.sort!.each do |name|
-            # A name is a function or a type, never both: they share one
-            # namespace on the module, which is what makes `pub` a mark on a
-            # name rather than on a kind of declaration.
-            if signatures = type.defs.try &.[]?(name)
-              signatures.each { |item| functions << IyiMod.signature(item.def) }
-            elsif exported_type = type.types?.try &.[]?(name)
-              types << iyi_type_declaration(program, filename, name, exported_type)
-            end
+        exported = type.exported_names
+        exported.try &.to_a.sort!.each do |name|
+          # A name is a function or a type, never both: they share one
+          # namespace on the module, which is what makes `pub` a mark on a
+          # name rather than on a kind of declaration.
+          if signatures = type.defs.try &.[]?(name)
+            signatures.each { |item| functions << IyiMod.signature(item.def) }
+          elsif exported_type = type.types?.try &.[]?(name)
+            types << iyi_type_declaration(program, filename, name, exported_type)
           end
         end
+
+        # And the ones it does not export, which travel as names and layouts
+        # rather than as a surface. See `iyi_carried_types`.
+        types.concat iyi_carried_types(type, exported)
       end
 
       impls = program.iyi_impls[filename]? || [] of IyiMod::ImplRecord
@@ -679,7 +682,53 @@ module Crystal
         supertraits: type.responds_to?(:supertraits) ? type.supertraits.map(&.to_s) : [] of String,
         fields: collect_iyi_fields(type),
         methods: methods,
+        visibility: "pub",
+        types: iyi_carried_types(type),
       )
+    end
+
+    # iyi: the types declared under *type* that a consumer needs to have rather
+    # than to call, for `Exports` (SPEC.md IV.1g). *carried* is the names
+    # already travelling as part of the module's surface.
+    #
+    # A module's own machine code refers to them. `Array(Secret):type_id` is
+    # resolved from a definition in the consuming program and a program can
+    # only number a type it has, so a type this module keeps to itself still
+    # has to arrive — declared, and reachable from nowhere, which is exactly
+    # what it is when the module is read from source. Nested types travel for
+    # the same reason and inside their container, because R-2 governs the
+    # module unit's own body and a type declared in a class belongs to the
+    # class.
+    #
+    # Names, kinds, fields and nesting; no methods. The consumer cannot reach
+    # them and the module's object code already defines them — and carrying
+    # them would make R-2's block rule refuse a module over a *private*
+    # method's unannotated block, which is a rule about what another module
+    # reads.
+    private def iyi_carried_types(type : Type, carried : Set(String)? = nil) : Array(IyiMod::TypeDecl)
+      declarations = [] of IyiMod::TypeDecl
+      type.types?.try &.each do |name, declared|
+        next if carried.try &.includes?(name)
+
+        # A class or a struct, which is what has a layout and an id. A constant
+        # and an alias live in the same namespace and are neither: an alias is
+        # resolved away by the time a field records its type, and a constant is
+        # IV.2's business rather than this.
+        next unless declared.is_a?(ClassType) || declared.is_a?(EnumType)
+
+        declarations << IyiMod::TypeDecl.new(
+          name: name,
+          kind: declared.type_desc,
+          type_parameters: declared.as?(GenericType).try(&.type_vars) || [] of String,
+          assoc_types: [] of String,
+          supertraits: [] of String,
+          fields: collect_iyi_fields(declared),
+          methods: [] of IyiMod::Signature,
+          visibility: declared.private? ? "private" : "",
+          types: iyi_carried_types(declared),
+        )
+      end
+      declarations.sort_by! &.name
     end
 
     # One side of a type's methods — its own, or its metaclass's.

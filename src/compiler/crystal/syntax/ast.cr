@@ -1932,6 +1932,16 @@ module Crystal
     property? global : Bool
     property visibility = Visibility::Public
 
+    # iyi: written by a `.iyimod`'s renderer rather than by an author (SPEC.md
+    # IV.1g).
+    #
+    # Such a path may name a type the module keeps to itself — a field of a
+    # carried type is `Array(Router::Route)`, and `Route` is a `private record`.
+    # R-2b is about what another module may *write*: this is the module's own
+    # declaration arriving, and the type it names is unreachable to everyone
+    # who did not already have it in their object code.
+    property? iyi_from_artifact = false
+
     def initialize(@names : Array, @global = false)
     end
 
@@ -1964,6 +1974,7 @@ module Crystal
 
     def clone_without_location
       ident = Path.new(@names.clone, @global)
+      ident.iyi_from_artifact = @iyi_from_artifact
       ident
     end
 

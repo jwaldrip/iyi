@@ -550,12 +550,12 @@ describe Crystal::IyiMod do
     end
   end
 
-  # The case the section cannot carry yet: the instantiation names a type the
-  # module keeps to itself, so the declarations the consumer reads do not have
-  # it and the name does not resolve. Refused at the `import`, naming the
-  # module and the type, rather than left to the linker — which would report a
-  # mangled symbol and no module at all.
-  it "refuses an artifact numbering a type its module does not export" do
+  # A type the module keeps to itself still has to arrive, because its object
+  # code refers to it: `Array(Secret):type_id` is resolved from a definition in
+  # this program and a program can only number a type it has. So it travels as
+  # a declaration without `pub` — reachable from nowhere, which is exactly what
+  # it is when the module is read from source.
+  it "carries a type its module does not export" do
     with_tempdir("iyimod_type_ids_private") do
       Dir.mkdir_p "app"
       File.write "app/box.iyi", <<-IYI
@@ -595,22 +595,114 @@ describe Crystal::IyiMod do
       producer.compile source, File.expand_path("from-source")
       `./from-source`.chomp.should eq "5"
 
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+      secret = artifact.exports.types.find! { |declaration| declaration.name == "Secret" }
+      secret.visibility.should eq "private"
+      secret.fields.should eq [{"@n", "Int32"}]
+      # No methods: the consumer cannot reach them and the module's own object
+      # code already defines them.
+      secret.methods.should be_empty
+
       File.delete "app/box.iyi"
 
       consumer = create_spec_compiler
       consumer.prelude = "iyi/prelude"
       consumer.use_iyimod = "mods"
-      expect_raises(Crystal::TypeException, /numbers `Array\(App::Box::Secret\)`/) do
-        consumer.compile source, File.expand_path("from-artifact")
-      end
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "5"
 
-      # Front end only: it numbers nothing because it links nothing, so the
-      # module still typechecks from its artifact.
-      checker = create_spec_compiler
-      checker.prelude = "iyi/prelude"
-      checker.use_iyimod = "mods"
-      checker.no_codegen = true
-      checker.compile source, "unused"
+      # And carrying it does not make it reachable, which is the half R-2b is
+      # about: the consumer has the type and may not name it.
+      File.write "reach.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box::Secret.new(1).n
+        IYI
+      reaching = Crystal::Compiler::Source.new(File.expand_path("reach.iyi"), File.read("reach.iyi"))
+
+      refuser = create_spec_compiler
+      refuser.prelude = "iyi/prelude"
+      refuser.use_iyimod = "mods"
+      refuser.no_codegen = true
+      expect_raises(Crystal::TypeException, /does not export App::Box::Secret/) do
+        refuser.compile reaching, "unused"
+      end
+    end
+  end
+
+  # The router's shape: a `private record` inside an exported class. It belongs
+  # to the class rather than to the module's surface — R-2 governs the unit's
+  # own body — so it travels inside its container, and the field that names it
+  # travels with the name it was written with.
+  it "carries a type declared inside a carried type" do
+    with_tempdir("iyimod_nested_types") do
+      Dir.mkdir_p "app"
+      File.write "app/router.iyi", <<-IYI
+        module app/router
+
+        pub class Router
+          private struct Route
+            @method : String
+            @path : String
+
+            def initialize(@method : String, @path : String)
+            end
+          end
+
+          @routes : Array(Route)
+
+          def initialize
+            @routes = Array(Route).new
+          end
+
+          pub def add(method : String, path : String) : Nil
+            @routes << Route.new(method, path)
+          end
+
+          pub def count : Int32
+            @routes.size
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/router
+
+        router = App::Router::Router.new
+        router.add("GET", "/")
+        router.add("POST", "/x")
+        puts router.count
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "2"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "router.iyimod"))
+      router = artifact.exports.types.find! { |declaration| declaration.name == "Router" }
+      route = router.types.find! { |declaration| declaration.name == "Route" }
+      route.visibility.should eq "private"
+
+      # Rendered where it was written, because iyi cannot reopen `Router` to
+      # add it afterwards.
+      io = IO::Memory.new
+      Crystal::IyiMod.declarations artifact, io
+      io.to_s.should contain "  private struct Route"
+
+      File.delete "app/router.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "2"
     end
   end
 
@@ -1302,7 +1394,9 @@ describe Crystal::IyiMod do
     ), io
     text = io.to_s
 
-    text.should contain "  trait Greet"
+    # With its visibility, because "carried and unreachable" is a thing a
+    # reader of this file has to be able to tell from "carried and exported".
+    text.should contain "  pub trait Greet"
     text.should contain "    def greet : String"
     text.should contain "  impl Greet for User"
   end
@@ -1344,7 +1438,7 @@ describe Crystal::IyiMod do
     text = io.to_s
 
     # `generic` is how a type describes itself, not how anyone declares one.
-    text.should contain "  trait Enumerable : Cmp"
+    text.should contain "  pub trait Enumerable : Cmp"
     text.should contain "    type Elem"
     text.should contain "  impl Std::Enumerable::Enumerable for Std::List::List(T) forall T : Cmp"
     text.should contain "    type Elem = T"
