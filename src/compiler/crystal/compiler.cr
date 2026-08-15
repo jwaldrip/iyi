@@ -416,17 +416,22 @@ module Crystal
         end
       end
 
-      program.iyi_module_paths.map do |filename, module_name|
+      prepared = program.iyi_module_paths.map do |filename, module_name|
         # Both hashes, because a dependency may have arrived either way and the
         # edge is keyed on a filename regardless. Asking only the source one
         # left an import read from a `.iyimod` recorded as the path of that
         # file — an edge naming a build's directory layout rather than a
         # module, which the next build cannot resolve.
+        #
+        # The edges are named here and hashed below: what a dependency compiled
+        # in *this* build hashes to is only known once its own artifact has been
+        # described (IV.3).
         imports = program.iyi_module_imports[filename]?.try do |dependencies|
           dependencies.map do |dependency|
-            program.iyi_module_paths[dependency]? ||
-              program.iyi_artifact_modules[dependency]? ||
-              dependency
+            name = program.iyi_module_paths[dependency]? ||
+                   program.iyi_artifact_modules[dependency]? ||
+                   dependency
+            IyiMod::ImportEdge.new(name)
           end
         end
 
@@ -442,7 +447,7 @@ module Crystal
           compiler_version: IyiMod.compiler_version,
           target_triple: program.codegen_target.to_s,
           flags: flags,
-          imports: imports || [] of String,
+          imports: imports || [] of IyiMod::ImportEdge,
           usings: program.iyi_usings[filename]? || [] of String,
           exports: exports,
           has_initialiser: program.iyi_module_initialisers.includes?(filename),
@@ -459,6 +464,24 @@ module Crystal
 
         {File.join(dir, "#{module_name}.iyimod"), artifact}
       end
+
+      # Now that every module in this build has been hashed, each edge can say
+      # what the module on its far end hashed to — which is what lets the next
+      # build ask whether that is still true (IV.3). A dependency that arrived
+      # as an artifact is hashed already and was recorded when it was read.
+      hashes = {} of String => IyiMod::Hashes
+      prepared.each { |(_, artifact)| hashes[artifact.module_name] = artifact.hashes }
+      program.iyi_artifact_hashes.each { |name, digests| hashes[name] ||= digests }
+
+      prepared.each do |(_, artifact)|
+        artifact.imports = artifact.imports.map do |edge|
+          known = hashes[edge.module_name]?
+          next edge unless known
+          IyiMod::ImportEdge.new(edge.module_name, known.interface, known.implementation)
+        end
+      end
+
+      prepared
     end
 
     # iyi: attaches each module's object code and writes the artifacts.
@@ -1071,6 +1094,7 @@ module Crystal
       program.optimization_mode = @optimization_mode
       program.iyi_module_dir = @use_iyimod
       program.iyi_wants_object_code = !@no_codegen
+      program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
       program
     end
 

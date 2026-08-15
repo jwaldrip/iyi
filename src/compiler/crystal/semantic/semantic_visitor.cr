@@ -126,7 +126,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     # arriving: a module that has a `.iyimod` is compiled against it, and its
     # source is not opened — not read, not parsed, not analysed. The source
     # need not even be there.
-    artifact_path = iyi_artifact_path(path)
+    artifact_path = iyi_artifact_path(node, path)
 
     filename = artifact_path || resolve_import(path)
     unless filename
@@ -284,12 +284,93 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
   #
   # Nowhere at all unless `--use-iyimod` named a directory, so an ordinary
   # build is the one that was there before this existed.
-  private def iyi_artifact_path(path : String) : String?
+  private def iyi_artifact_path(node : ImportDecl, path : String) : String?
     dir = @program.iyi_module_dir
     return unless dir
 
     candidate = File.join(dir, "#{path}.iyimod")
-    File.file?(candidate) ? candidate : nil
+    return unless File.file?(candidate)
+
+    reason = iyi_artifact_stale(path, dir)
+    return candidate unless reason
+
+    # The artifact is no longer the module. A build that also writes artifacts
+    # is the incremental loop, and recompiling this module from its source —
+    # and rewriting the artifact on the way out — is what it asked for.
+    return nil if @program.iyi_rewrites_artifacts && resolve_import(path)
+
+    node.raise <<-MESSAGE
+      #{candidate} is not "#{path}" any more: #{reason}
+
+      An artifact is read only while it still describes its module, or a build
+      would compile against a surface nobody has and link code nobody wrote
+      (SPEC.md IV.3). Rebuild it with --emit-iyimod, or pass --emit-iyimod to
+      this build and let it rewrite what has moved.
+      MESSAGE
+  end
+
+  # iyi: why *module_path*'s artifact is no longer the module, or nil if it
+  # still is (SPEC.md IV.3).
+  #
+  # Two questions, and the second is the one that makes this a graph. Does the
+  # artifact still describe the source it was written from — which is what the
+  # source hash answers, and which is unasked when there is no source, since
+  # then the artifact is all there is. And is every module it was compiled
+  # against still the module it was compiled against: an edge records what the
+  # far end hashed to, so a dependency whose *interface* moved invalidates this
+  # one even though its own file has not been touched.
+  #
+  # Memoised on the program, because one module's answer is part of the answer
+  # for everything that imports it and the graph is walked from every entry.
+  private def iyi_artifact_stale(module_path : String, dir : String) : String?
+    staleness = @program.iyi_artifact_staleness
+    return staleness[module_path] if staleness.has_key?(module_path)
+
+    # Provisionally stale, so a cycle among the artifacts terminates. R-1
+    # forbids one in the source; a directory of stale artifacts is not the
+    # source and cannot be trusted to have kept the rule.
+    staleness[module_path] = "its imports form a cycle"
+    staleness[module_path] = iyi_compute_artifact_stale(module_path, dir)
+  end
+
+  private def iyi_compute_artifact_stale(module_path : String, dir : String) : String?
+    candidate = File.join(dir, "#{module_path}.iyimod")
+    return "there is no artifact for it" unless File.file?(candidate)
+
+    summary =
+      begin
+        IyiMod.read_summary(candidate)
+      rescue ex : IyiMod::Error
+        return ex.message.to_s
+      end
+
+    # An artifact from before the hashes existed cannot answer, and IV.5's
+    # equality on the header is checked where the artifact is read rather than
+    # here: this is about whether the file still describes its module, not
+    # about whether this compiler may adopt it at all.
+    return nil if summary.hashes.source.empty?
+
+    if source = resolve_import(module_path)
+      unless IyiMod.digest(File.read(source)) == summary.hashes.source
+        return "#{source} has changed since it was written"
+      end
+    end
+
+    summary.imports.each do |edge|
+      if reason = iyi_artifact_stale(edge.module_name, dir)
+        return "\"#{edge.module_name}\", which it imports, has: #{reason}"
+      end
+
+      dependency = IyiMod.read_summary(File.join(dir, "#{edge.module_name}.iyimod"))
+      unless dependency.hashes.interface == edge.interface
+        return "the surface of \"#{edge.module_name}\", which it imports, has changed"
+      end
+      unless dependency.hashes.implementation == edge.implementation
+        return "the bodies \"#{edge.module_name}\" ships for it to compile have changed"
+      end
+    end
+
+    nil
   end
 
   # iyi: compiles an imported module from its `.iyimod` (SPEC.md IV.1).
@@ -334,6 +415,10 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     unless artifact.object_code.empty?
       @program.iyi_artifact_objects[artifact.module_name] = artifact.object_code
     end
+
+    # What this module hashed to, for the artifacts this build writes: an edge
+    # records the far end's hashes whichever way the far end arrived (IV.3).
+    @program.iyi_artifact_hashes[artifact.module_name] = artifact.hashes
 
     source = String.build { |io| IyiMod.declarations(artifact, io) }
     parser = @program.new_parser(source)

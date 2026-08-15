@@ -130,6 +130,31 @@ module Crystal
     # source, or nil (SPEC.md IV.1). Set by `--use-iyimod`.
     property iyi_module_dir : String? = nil
 
+    # iyi: whether this build is writing artifacts as well as reading them
+    # (SPEC.md IV.3). Set by the compiler from `--emit-iyimod`.
+    #
+    # It decides what a *stale* artifact means. A build that only reads them
+    # asked to be compiled against artifacts, so one that no longer describes
+    # its module is an error that names what changed — quietly compiling the
+    # source instead would make such a build slower than it looks and prove
+    # nothing. A build that also writes them is the incremental loop itself:
+    # there, recompiling the module and rewriting its artifact is the whole
+    # point.
+    property iyi_rewrites_artifacts : Bool = false
+
+    # iyi: what each module read from a `.iyimod` hashed to (SPEC.md IV.3), by
+    # module path.
+    #
+    # Kept because an artifact this build *writes* records, for each module it
+    # imports, what that module hashed to — and a dependency may itself have
+    # arrived as an artifact rather than from source.
+    getter iyi_artifact_hashes = {} of String => IyiMod::Hashes
+
+    # iyi: why a module's artifact is not the module any more, or nil if it
+    # still is (SPEC.md IV.3). Memoised, because the answer for one module is
+    # part of the answer for everything that imports it.
+    getter iyi_artifact_staleness = {} of String => String?
+
     # iyi: whether an imported artifact's `ObjectCode` is worth reading.
     #
     # False for a front-end-only build, which is most of them: the section is

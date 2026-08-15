@@ -56,7 +56,7 @@ private def write_iyimod(dir : String, module_name : String,
     compiler_version: compiler_version,
     target_triple: reference.codegen_target.to_s,
     flags: reference.flags.to_a.sort!,
-    imports: imports,
+    imports: imports.map { |name| Crystal::IyiMod::ImportEdge.new(name) },
     exports: exports,
   )
   Crystal::IyiMod.write artifact, File.join(dir, "#{module_name}.iyimod")

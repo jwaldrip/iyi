@@ -18,7 +18,7 @@ private def sample_artifact(imports = [] of String,
     compiler_version: "1.22.0-dev+abc1234",
     target_triple: "x86_64-pc-linux-gnu",
     flags: ["bits64", "linux"],
-    imports: imports,
+    imports: imports.map { |name| Crystal::IyiMod::ImportEdge.new(name) },
     exports: Crystal::IyiMod::Exports.new(exports, types, impls),
     object_code: object_code,
   )
@@ -92,7 +92,7 @@ describe Crystal::IyiMod do
   it "round-trips import edges in order" do
     with_temporary_file do |path|
       Crystal::IyiMod.write sample_artifact(["std/list", "std/enumerable"]), path
-      Crystal::IyiMod.read(path).imports.should eq ["std/list", "std/enumerable"]
+      Crystal::IyiMod.read(path).import_names.should eq ["std/list", "std/enumerable"]
     end
   end
 
@@ -333,7 +333,7 @@ describe Crystal::IyiMod do
 
       read = Crystal::IyiMod.read(path)
       read.module_name.should eq "app/greeter"
-      read.imports.should eq ["std/list"]
+      read.import_names.should eq ["std/list"]
       read.exports.functions.map(&.name).should eq ["polite"]
     end
   end
@@ -1081,7 +1081,7 @@ describe Crystal::IyiMod do
         compiler_version: "1.22.0-dev+abc1234",
         target_triple: "x86_64-pc-linux-gnu",
         flags: ["bits64"],
-        imports: [] of String,
+        imports: [] of Crystal::IyiMod::ImportEdge,
         initialiser: %(puts("one")\nputs("two")),
       )
       Crystal::IyiMod.write artifact, path
@@ -1098,7 +1098,7 @@ describe Crystal::IyiMod do
         compiler_version: "1.22.0-dev+abc1234",
         target_triple: "x86_64-pc-linux-gnu",
         flags: ["bits64"],
-        imports: [] of String,
+        imports: [] of Crystal::IyiMod::ImportEdge,
         hashes: Crystal::IyiMod::Hashes.new("iface", "impl", "src"),
       )
       Crystal::IyiMod.write artifact, path
@@ -1171,6 +1171,151 @@ describe Crystal::IyiMod do
     end
   end
 
+  # An artifact is a cache, so it is read only while it still describes its
+  # module. Before the hashes it was read whichever way the source had moved,
+  # and a build could compile against a surface nobody had and link code
+  # nobody wrote — silently, with an exit status of nought.
+  it "reads an artifact only while it still describes its module" do
+    with_tempdir("iyimod_stale") do
+      Dir.mkdir_p "app"
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box.twice(21)
+        IYI
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        pub def twice(n : Int32) : Int32
+          n + n
+        end
+        IYI
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "42"
+
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        pub def twice(n : Int32) : Int32
+          n * 3
+        end
+        IYI
+
+      # A build that only reads artifacts is refused, and told what moved.
+      reader = create_spec_compiler
+      reader.prelude = "iyi/prelude"
+      reader.use_iyimod = "mods"
+      expect_raises(Crystal::TypeException, /has changed since it was written/) do
+        reader.compile source, File.expand_path("stale")
+      end
+
+      # A build that also writes them is the incremental loop: the module is
+      # compiled from its source and its artifact rewritten.
+      rewriter = create_spec_compiler
+      rewriter.prelude = "iyi/prelude"
+      rewriter.use_iyimod = "mods"
+      rewriter.emit_iyimod = "mods"
+      rewriter.compile source, File.expand_path("rebuilt")
+      `./rebuilt`.chomp.should eq "63"
+
+      # And what it wrote is read again without a word.
+      again = create_spec_compiler
+      again.prelude = "iyi/prelude"
+      again.use_iyimod = "mods"
+      again.compile source, File.expand_path("cached")
+      `./cached`.chomp.should eq "63"
+    end
+  end
+
+  # IV.3's whole point, in the shape that shows it: two programs over one graph,
+  # so that a dependency can be rebuilt while a dependent is not touched. A body
+  # edit under `app/outer` must leave its artifact valid; a surface edit must
+  # not.
+  it "keeps a dependent whose dependency changed only a body" do
+    with_tempdir("iyimod_interface_hash") do
+      Dir.mkdir_p "app"
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/outer
+
+        puts App::Outer.outer
+        IYI
+      File.write "leaf.iyi", <<-IYI
+        module leaf
+
+        import app/inner
+
+        puts App::Inner.inner
+        IYI
+      File.write "app/outer.iyi", <<-IYI
+        module app/outer
+
+        import app/inner
+
+        pub def outer : Int32
+          App::Inner.inner + 41
+        end
+        IYI
+      write_inner = ->(body : String, extra : String) do
+        File.write "app/inner.iyi", <<-IYI
+          module app/inner
+
+          pub def inner : Int32
+            #{body}
+          end
+          #{extra}
+          IYI
+      end
+
+      main = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      leaf = Crystal::Compiler::Source.new(File.expand_path("leaf.iyi"), File.read("leaf.iyi"))
+
+      build = ->(program : Crystal::Compiler::Source, output : String, emit : Bool) do
+        compiler = create_spec_compiler
+        compiler.prelude = "iyi/prelude"
+        compiler.use_iyimod = "mods"
+        compiler.emit_iyimod = "mods" if emit
+        compiler.compile program, File.expand_path(output)
+      end
+
+      write_inner.call("1", "")
+      build.call(main, "first", true)
+      `./first`.chomp.should eq "42"
+
+      # The other program rewrites `app/inner`'s artifact and leaves
+      # `app/outer`'s where it was.
+      write_inner.call("2", "")
+      build.call(leaf, "leaf-build", true)
+
+      # So `app/outer` is read from its artifact: the module it was compiled
+      # against hashes the same on its surface, and its new body arrives as
+      # machine code through the linker.
+      build.call(main, "kept", false)
+      `./kept`.chomp.should eq "43"
+
+      # A name added to that surface is a different matter.
+      write_inner.call("2", <<-IYI)
+
+        pub def other : Int32
+          3
+        end
+        IYI
+      build.call(leaf, "leaf-again", true)
+
+      expect_raises(Crystal::TypeException, /the surface of "app\/inner"/) do
+        build.call(main, "invalidated", false)
+      end
+    end
+  end
+
   it "round-trips the types a module numbers" do
     with_temporary_file do |path|
       artifact = Crystal::IyiMod::Artifact.new(
@@ -1179,7 +1324,7 @@ describe Crystal::IyiMod do
         compiler_version: "1.22.0-dev+abc1234",
         target_triple: "x86_64-pc-linux-gnu",
         flags: ["bits64"],
-        imports: [] of String,
+        imports: [] of Crystal::IyiMod::ImportEdge,
         type_ids: ["Array(App::Box::Item)", "Pointer(App::Box::Item)"],
       )
       Crystal::IyiMod.write artifact, path
@@ -1195,7 +1340,7 @@ describe Crystal::IyiMod do
       compiler_version: "1.22.0-dev+abc1234",
       target_triple: "x86_64-pc-linux-gnu",
       flags: [] of String,
-      imports: [] of String,
+      imports: [] of Crystal::IyiMod::ImportEdge,
       initialiser: %(puts("hello")),
     )
 
@@ -1530,7 +1675,7 @@ describe Crystal::IyiMod do
       consumer.compile source, "unused"
 
       artifact = Crystal::IyiMod.read(File.join("out", "app", "outer.iyimod"))
-      artifact.imports.should eq ["app/inner"]
+      artifact.import_names.should eq ["app/inner"]
     end
   end
 

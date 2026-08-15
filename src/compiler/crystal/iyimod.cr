@@ -103,6 +103,22 @@ module Crystal::IyiMod
     end
   end
 
+  # One edge of the import DAG, with what the module on the far end hashed to
+  # when this one was compiled against it (IV.3).
+  #
+  # The hashes are what makes an artifact a cache rather than a claim: a build
+  # that finds `app/box.iyimod` can ask whether the `std/list` it describes is
+  # the `std/list` this build has, and read the artifact only if it is.
+  #
+  # Both hashes, because a consumer depends on both halves of what a module
+  # gives it. The interface is what its own declarations were typechecked
+  # against; the implementation is the bodies it specialised and the
+  # initialiser it spliced in, which it compiled into its own object code.
+  record ImportEdge,
+    module_name : String,
+    interface : String = "",
+    implementation : String = ""
+
   # A cache key rather than a signature, which is why MD5 is enough and why the
   # compiler's own vendored copy is the one to use: `.iyimod` decides what to
   # rebuild, and nothing downstream trusts an artifact it did not write.
@@ -120,11 +136,11 @@ module Crystal::IyiMod
     interface = IO::Memory.new
     interface.write encode_exports(artifact)
     write_strings interface, artifact.usings
-    # The edges, because which modules resolve a signature's names is part of
-    # what that signature means — not their hashes, which is what a *dependent*
-    # records about this module and would make this one move for a change it
-    # does not see.
-    write_strings interface, artifact.imports
+    # The edges by name, because which modules resolve a signature's names is
+    # part of what that signature means — not their hashes, which are what a
+    # *dependent* records about this module and would make this one move for a
+    # change it does not see.
+    write_strings interface, artifact.import_names
 
     implementation = IO::Memory.new
     implementation.write encode_mono_bodies(artifact)
@@ -364,9 +380,19 @@ module Crystal::IyiMod
     # `prelude_cache_key`), and the same is true here: macros branch on flags.
     getter flags : Array(String)
 
-    # The module paths this module imports, in the order the DAG edges were
-    # recorded. III.5's initialisation order is derivable from these.
-    getter imports : Array(String)
+    # The modules this one imports, in the order the DAG edges were recorded,
+    # each with what it hashed to when this module was compiled against it.
+    # III.5's initialisation order is derivable from these.
+    # Settable, because an edge's hashes are filled in once every module in the
+    # build has been described: what a dependency compiled here hashes to is
+    # not known while this artifact is being built (IV.3).
+    property imports : Array(ImportEdge)
+
+    # The same, as module paths — which is all a reader that only wants to load
+    # them needs.
+    def import_names : Array(String)
+      imports.map &.module_name
+    end
 
     # Whether the module has top-level code that has to run (III.5).
     #
@@ -529,6 +555,74 @@ module Crystal::IyiMod
     end
   end
 
+  # The magic, the format version and the section table.
+  private def self.read_table(file : IO, path : String) : Array({UInt16, UInt32})
+    magic = Bytes.new(MAGIC.size)
+    file.read_fully?(magic) || raise Error.new("#{path} is too short to be a .iyimod")
+    raise Error.new("#{path} is not a .iyimod") unless magic == MAGIC
+
+    format_version = file.read_bytes(UInt32, FORMAT)
+    unless format_version == FORMAT_VERSION
+      raise Error.new("#{path} is .iyimod format v#{format_version}, this compiler writes v#{FORMAT_VERSION}")
+    end
+
+    count = file.read_bytes(UInt32, FORMAT)
+    Array({UInt16, UInt32}).new(count) do
+      kind = file.read_bytes(UInt16, FORMAT)
+      file.read_bytes(UInt16, FORMAT) # padding
+      {kind, file.read_bytes(UInt32, FORMAT)}
+    end
+  end
+
+  # What a build needs to decide whether to read the rest of *path* (IV.3): the
+  # header, the hashes, and the edges with what they were compiled against.
+  #
+  # Everything else is seeked past. That is the section table earning its keep
+  # on the path it matters most: a staleness check that had to page in the
+  # exports and the object code to answer would cost more than the analysis it
+  # saves, and it runs for every module in the graph including the ones it is
+  # about to decide are fine.
+  record Summary,
+    module_name : String,
+    compiler_version : String,
+    target_triple : String,
+    flags : Array(String),
+    hashes : Hashes,
+    imports : Array(ImportEdge)
+
+  def self.read_summary(path : String) : Summary
+    File.open(path, "rb") do |file|
+      table = read_table(file, path)
+
+      header = nil
+      hashes = Hashes.empty
+      imports = [] of ImportEdge
+
+      table.each do |(kind, length)|
+        section = Section.from_value?(kind)
+        unless section == Section::Header || section == Section::Hashes || section == Section::Imports
+          file.skip length
+          next
+        end
+
+        payload = Bytes.new(length)
+        file.read_fully?(payload) || raise Error.new("#{path} ends inside a section")
+        case section
+        when Section::Header  then header = decode_header(payload)
+        when Section::Hashes  then hashes = decode_hashes(payload)
+        when Section::Imports then imports = decode_imports(payload)[:imports]
+        end
+      end
+
+      unless header
+        raise Error.new("#{path} has no header section")
+      end
+
+      Summary.new(header[:module_name], header[:compiler_version],
+        header[:target_triple], header[:flags], hashes, imports)
+    end
+  end
+
   # Reads the artifact at *path*.
   #
   # Rejects rather than migrates: a file from another format or compiler version
@@ -540,24 +634,10 @@ module Crystal::IyiMod
   # in the file on the path of the pass this artifact exists to make fast.
   def self.read(path : String, want_object_code : Bool = false) : Artifact
     File.open(path, "rb") do |file|
-      magic = Bytes.new(MAGIC.size)
-      file.read_fully?(magic) || raise Error.new("#{path} is too short to be a .iyimod")
-      raise Error.new("#{path} is not a .iyimod") unless magic == MAGIC
-
-      format_version = file.read_bytes(UInt32, FORMAT)
-      unless format_version == FORMAT_VERSION
-        raise Error.new("#{path} is .iyimod format v#{format_version}, this compiler writes v#{FORMAT_VERSION}")
-      end
-
-      count = file.read_bytes(UInt32, FORMAT)
-      table = Array({UInt16, UInt32}).new(count) do
-        kind = file.read_bytes(UInt16, FORMAT)
-        file.read_bytes(UInt16, FORMAT)
-        {kind, file.read_bytes(UInt32, FORMAT)}
-      end
+      table = read_table(file, path)
 
       header = nil
-      imports = {imports: [] of String, usings: [] of String}
+      imports = {imports: [] of ImportEdge, usings: [] of String}
       exports = Exports.empty
       object_code = [] of ObjectUnit
       mono_bodies = {} of String => String
@@ -631,7 +711,13 @@ module Crystal::IyiMod
       io.puts "imports       (none)"
     else
       io.puts "imports"
-      artifact.imports.each { |name| io.puts "  #{name}" }
+      artifact.imports.each do |edge|
+        if edge.interface.empty?
+          io.puts "  #{edge.module_name}"
+        else
+          io.puts "  #{edge.module_name} — interface #{edge.interface}, implementation #{edge.implementation}"
+        end
+      end
     end
 
     unless artifact.usings.empty?
@@ -716,7 +802,7 @@ module Crystal::IyiMod
     # or source, at most once, cycle-checked.
     unless artifact.imports.empty?
       io << '\n'
-      artifact.imports.each { |name| io << "import " << name << '\n' }
+      artifact.import_names.each { |name| io << "import " << name << '\n' }
     end
 
     # Inside the module, where the parser keeps a `using` — it resolves names
@@ -1037,14 +1123,23 @@ module Crystal::IyiMod
 
   private def self.encode_imports(artifact : Artifact) : Bytes
     io = IO::Memory.new
-    write_strings io, artifact.imports
+    edges = artifact.imports
+    io.write_bytes edges.size.to_u32, FORMAT
+    edges.each do |edge|
+      write_string io, edge.module_name
+      write_string io, edge.interface
+      write_string io, edge.implementation
+    end
     write_strings io, artifact.usings
     io.to_slice
   end
 
   private def self.decode_imports(payload : Bytes)
     io = IO::Memory.new(payload)
-    {imports: read_strings(io), usings: read_strings(io)}
+    edges = Array(ImportEdge).new(io.read_bytes(UInt32, FORMAT)) do
+      ImportEdge.new(read_string(io), read_string(io), read_string(io))
+    end
+    {imports: edges, usings: read_strings(io)}
   end
 
   private def self.encode_initialiser(artifact : Artifact) : Bytes

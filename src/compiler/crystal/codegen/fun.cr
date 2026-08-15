@@ -139,17 +139,6 @@ class Crystal::CodeGenVisitor
 
       args = codegen_fun_signature(mangled_name, target_def, self_type, is_fun_literal, is_closure)
 
-      # iyi: a copy, private to the unit that will travel in the artifact.
-      #
-      # Never an `External`. A C function is a declaration with no body here
-      # whoever asks for it, and internal linkage on a declaration is invalid
-      # IR — `write` and `exit` reach this from the prelude's own `puts`. The
-      # linker resolves them from libc for the artifact exactly as it does for
-      # anyone else, so there is nothing to copy in the first place.
-      if iyi_internal && !target_def.is_a?(External)
-        context.fun.linkage = LLVM::Linkage::Internal
-      end
-
       # iyi: a def read from a `.iyimod` is declared, not defined (SPEC.md
       # IV.1g). Its machine code is in the artifact's `ObjectCode` and reaches
       # the program through the linker, so what this build emits is the
@@ -158,6 +147,22 @@ class Crystal::CodeGenVisitor
       needs_body = (!target_def.is_a?(External) || is_exported_fun) &&
                    !target_def.iyi_from_artifact? &&
                    !self_type.instance_type.iyi_from_artifact?
+
+      # iyi: a copy, private to the unit that will travel in the artifact.
+      #
+      # Only where there is a body to copy, because internal linkage on a
+      # declaration is invalid IR. Two kinds of declaration reach here. A C
+      # function is one whoever asks — `write` and `exit` do, from the
+      # prelude's own `puts` — and the linker resolves it from libc for the
+      # artifact as it does for anyone else. And a def read from another
+      # module's `.iyimod` is the other, which is what a build that reads one
+      # artifact while compiling another module from source hits: its machine
+      # code is in *that* module's artifact, so this unit refers to it by name
+      # and defines nothing.
+      if iyi_internal && needs_body
+        context.fun.linkage = LLVM::Linkage::Internal
+      end
+
       if needs_body
         emit_def_debug_metadata target_def unless @debug.none?
         set_current_debug_location target_def if @debug.line_numbers?

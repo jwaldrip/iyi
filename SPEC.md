@@ -2707,6 +2707,48 @@ incrementality outright.
 **Cache key** for a module: its own source hash, plus the interface hashes of
 all transitive imports, plus compiler version, target triple and build flags.
 
+**Built, and it is what turned `--use-iyimod` from a claim into a cache.** An
+artifact records, for every module it imports, what that module hashed to when
+it was compiled against it, so a build can ask two questions without opening
+anything it does not need: does this artifact still describe the source it was
+written from, and is every module it was compiled against still the module it
+was compiled against. Both are answered from the header, the hashes and the
+edges — the section table earns its keep here, because a staleness check that
+had to page in the exports and the object code to answer would cost more than
+the analysis it saves.
+
+**What a stale artifact means depends on what the build asked for.** A build
+that only reads them is refused, and told which module moved and how — quietly
+compiling the source instead would make a build that asked to be compiled
+against artifacts slower than it looks and prove nothing, which is IV.5's rule
+applied to a different kind of mismatch. A build that also writes them is the
+incremental loop itself: there, the stale module is compiled from its source and
+its artifact rewritten, and everything still true is read.
+
+**The property, demonstrated rather than asserted.** Two programs over one
+graph — `main → app/outer → app/inner` and `leaf → app/inner` — so that the
+dependency can be rebuilt while the dependent is not touched. Edit
+`app/inner`'s body, rebuild `leaf`: `app/outer`'s artifact is still read, and
+the program links the new body through the linker. Add a `pub def` to
+`app/inner` instead, and `app/outer` is refused by name. Both are in
+`spec/compiler/iyimod_spec.cr`.
+
+**One bug it found, in the build nothing had run before.** Reading one module
+from its artifact while compiling another from source is what an incremental
+build *is*, and it had never been done with codegen on. The closure copies a
+callee the emitting module does not own into its own unit with internal
+linkage — and a def read from a `.iyimod` has no body to copy, so the copy was
+a declaration with internal linkage, which is invalid IR. It is the same case
+the C functions already had, and the rule is now the one that covers both: a
+copy is private only where there is a body to copy.
+
+**Where it is pessimistic, and why that is the honest edge.** Within one
+invocation the compiler cannot know what a module it is about to recompile will
+hash to, so a dependent of a rebuilt module is recompiled too rather than
+checked against a hash that does not exist yet. Across invocations the finer
+answer is the one above — which is the arrangement a build driver has, and the
+reason the edges carry the hashes rather than the compiler carrying the graph.
+
 **Granularity — module-level, for Draft 0.** Adding an unused `pub def`
 invalidates dependents that never call it. That is pessimistic, and acceptable,
 because what re-typechecking costs is a metadata read, not body analysis — the
