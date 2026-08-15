@@ -197,6 +197,19 @@ module Crystal
     # artifacts.
     getter iyi_unit_type_ids = {} of String => Set(Type)
 
+    # iyi: the constants each object-code unit reads, by unit name (SPEC.md
+    # IV.1g).
+    #
+    # A constant is initialised only if something *read* it — `codegen_assign`
+    # asks `const.used?` — and what reads a module's constant on the far side of
+    # an artifact is the module's own machine code, which the consumer's
+    # semantic pass never sees. So `kemal/dsl`'s unit called through
+    # `Kemal::Dsl::APP` from every exported method and nothing defined it. The
+    # names travel and the consumer marks them used, which puts them back on the
+    # ordinary path: the initialiser is already spliced in III.5's order, so it
+    # runs where it should. Empty unless `--emit-iyimod` asked for artifacts.
+    getter iyi_unit_constants = {} of String => Set(Const)
+
     # iyi: the `using` directives each file's module unit writes, by absolute
     # filename and as written (SPEC.md II.3).
     #

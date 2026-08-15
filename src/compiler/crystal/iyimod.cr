@@ -36,7 +36,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 14_u32
+  FORMAT_VERSION = 15_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -57,6 +57,11 @@ module Crystal::IyiMod
     # iyi: the types this module's object code refers to a type id of, by name.
     # Not in IV.1's table either — see IV.1g.
     TypeIds = 9
+
+    # iyi: the constants this module's object code reads, by name. Same reason
+    # as `TypeIds` and a different question, so a section of its own — see
+    # IV.1g.
+    Constants = 10
   end
 
   class Error < Crystal::Error
@@ -480,6 +485,19 @@ module Crystal::IyiMod
     # unit refers to is not known until it has been generated.
     property type_ids : Array(String)
 
+    # The constants this module's object code reads, by name.
+    #
+    # A constant is initialised only where something read it, and on the far
+    # side of an artifact the only reader is machine code the consumer did not
+    # compile — so nothing marked `Kemal::Dsl::APP` used and nothing defined it,
+    # while every exported method in the unit called through it. The names
+    # travel and the consumer marks them used, which puts them back on the
+    # ordinary path: their initialiser is already in the module's own top level
+    # and already runs in III.5's order.
+    #
+    # Settable alongside `object_code`, and for the same reason.
+    property constants : Array(String)
+
     # IV.3's three hashes. See `Hashes`.
     #
     # Settable because they are computed *from* the rest of the artifact: the
@@ -491,7 +509,8 @@ module Crystal::IyiMod
                    @flags, @imports, @usings = [] of String, @exports = Exports.empty,
                    @object_code = [] of ObjectUnit, @has_initialiser = false,
                    @mono_bodies = {} of String => String, @initialiser = "",
-                   @type_ids = [] of String, @hashes = Hashes.empty)
+                   @type_ids = [] of String, @hashes = Hashes.empty,
+                   @constants = [] of String)
     end
   end
 
@@ -527,6 +546,10 @@ module Crystal::IyiMod
     # nothing to number.
     unless artifact.type_ids.empty?
       sections << {Section::TypeIds, encode_type_ids(artifact)}
+    end
+
+    unless artifact.constants.empty?
+      sections << {Section::Constants, encode_constants(artifact)}
     end
 
     # Last, and omitted when there is nothing in it. A consumer reading
@@ -646,6 +669,7 @@ module Crystal::IyiMod
       mono_bodies = {} of String => String
       initialiser = ""
       type_ids = [] of String
+      constants = [] of String
       hashes = Hashes.empty
 
       table.each do |(kind, length)|
@@ -669,6 +693,7 @@ module Crystal::IyiMod
         when Section::MonoBodies  then mono_bodies = decode_mono_bodies(payload)
         when Section::Initialiser then initialiser = String.new(payload)
         when Section::TypeIds     then type_ids = decode_type_ids(payload)
+        when Section::Constants   then constants = decode_constants(payload)
         when Section::Hashes      then hashes = decode_hashes(payload)
         else
           # Written by a later compiler, or a section this one does not need.
@@ -682,7 +707,8 @@ module Crystal::IyiMod
 
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
-        object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids, hashes)
+        object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
+        hashes, constants)
     end
   end
 
@@ -756,6 +782,12 @@ module Crystal::IyiMod
     unless type_ids.empty?
       io.puts "type ids"
       type_ids.each { |name| io.puts "  #{name}" }
+    end
+
+    constants = artifact.constants
+    unless constants.empty?
+      io.puts "constants"
+      constants.each { |name| io.puts "  #{name}" }
     end
 
     object_code = artifact.object_code
@@ -1183,6 +1215,16 @@ module Crystal::IyiMod
   private def self.decode_hashes(payload : Bytes) : Hashes
     io = IO::Memory.new(payload)
     Hashes.new(read_string(io), read_string(io), read_string(io))
+  end
+
+  private def self.encode_constants(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    write_strings io, artifact.constants
+    io.to_slice
+  end
+
+  private def self.decode_constants(payload : Bytes) : Array(String)
+    read_strings(IO::Memory.new(payload))
   end
 
   private def self.encode_type_ids(artifact : Artifact) : Bytes

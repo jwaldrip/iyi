@@ -427,6 +427,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     begin
       parsed_nodes = parser.parse
       parsed_nodes = @program.normalize(parsed_nodes, inside_exp: false)
+      read_iyi_artifact_constants artifact, parsed_nodes
       parsed_nodes.accept IyiMod::DeclarationMarker.new
       iyi_at_top_level { parsed_nodes.accept self }
     rescue ex : CodeError
@@ -498,6 +499,32 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
 
         Build the module from source, or export the type it names.
         MESSAGE
+    end
+  end
+
+  # iyi: reads the constants the artifact's object code reads, on its behalf
+  # (SPEC.md IV.1g).
+  #
+  # A constant is typed and initialised where it is *read* — `visit(Path)` types
+  # its value the first time, and `codegen_assign` initialises it only if
+  # `const.used?`. On the far side of an artifact the only reader is machine
+  # code this build did not compile, so `kemal/dsl`'s `APP` was declared,
+  # assigned in the initialiser that travelled, and never given a type or a
+  # symbol — every exported method in the unit called through a global nothing
+  # defined.
+  #
+  # Marking it used is not enough and was tried first: without a read its value
+  # has no type, and the next pass says it cannot infer one. So the compiler
+  # reads it, by appending the paths to the declarations before they are
+  # analysed. That costs one load in the consuming program and puts the
+  # constant back on the ordinary path — initialisation stays lazy and stays in
+  # III.5's order, because reading a constant is what initialises it.
+  private def read_iyi_artifact_constants(artifact : IyiMod::Artifact, nodes : ASTNode) : Nil
+    return if artifact.object_code.empty? || artifact.constants.empty?
+    return unless nodes.is_a?(Expressions)
+
+    artifact.constants.each do |name|
+      nodes.expressions << Path.new(name.split("::"), global: true)
     end
   end
 

@@ -464,6 +464,7 @@ module Crystal
         unit_names = iyi_unit_names(program, artifact.module_name)
         artifact.object_code = collect_iyi_object_code(unit_names, units_by_name)
         artifact.type_ids = collect_iyi_type_ids(program, unit_names)
+        artifact.constants = collect_iyi_constants(program, unit_names)
         IyiMod.write artifact, path
       end
     end
@@ -592,6 +593,22 @@ module Crystal
 
       # Sorted, because a set's order is not a fact about the module and an
       # artifact that changed between two identical builds would defeat IV.3.
+      names.to_a.sort!
+    end
+
+    # iyi: the constants the module's object code reads, by name, for
+    # `Constants` (SPEC.md IV.1g).
+    #
+    # A constant is initialised where something reads it — `codegen_assign`
+    # asks `const.used?` — and the reader on the far side of an artifact is
+    # machine code the consumer never analysed. So the names travel and the
+    # consumer marks them used; the initialiser that assigns them is already in
+    # the module's own top level and already runs in III.5's order.
+    private def collect_iyi_constants(program : Program, unit_names : Array(String)) : Array(String)
+      names = Set(String).new
+      unit_names.each do |unit_name|
+        program.iyi_unit_constants[unit_name]?.try &.each { |const| names << const.to_s }
+      end
       names.to_a.sort!
     end
 

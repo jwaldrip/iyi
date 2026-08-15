@@ -2311,20 +2311,32 @@ block-taking method looks like until it has one.
 here: a module's object code referring to something the artifact does not
 carry.** Neither is about blocks.
 
-*A module's constants.* `kemal/dsl` writes `APP = Router.new`, and its unit
-calls through `Kemal::Dsl::APP` from every exported `get`, `post` and `mount`.
-The initialiser travels as source text and the consumer runs it, but the
-*symbol* does not: a constant's global is emitted where it is read, the
-consumer reads it only from machine code it did not compile, and nothing
-defines it. Six undefined references on a module of forty lines.
+*A module's constants* — **fixed.** `kemal/dsl` writes `APP = Router.new`, and
+its unit calls through `Kemal::Dsl::APP` from every exported `get`, `post` and
+`mount`. The initialiser travels as source text and the consumer runs it, but
+the *symbol* did not: a constant is typed and initialised where it is **read**,
+the only reader on this side is machine code the consumer did not compile, and
+nothing defined it. Six undefined references on a module of forty lines.
 
-*A module's proc literals.* `add_route` builds `->(ctx : Context) {
+The names now travel in a `Constants` section and the consumer reads them on the
+module's behalf — the paths are appended to the declarations before they are
+analysed. Marking them used was tried first and is not enough: without a read
+the constant's value has no type, and the next pass says it cannot infer one.
+Reading costs one load in the consuming program and puts the constant back on
+the ordinary path, where initialisation stays lazy and stays in III.5's order,
+because reading a constant is what initialises it.
+
+*A module's proc literals* — **open, and now the only thing between the Kemal
+port and a program.** `add_route` builds `->(ctx : Context) {
 block.call(ctx).into_body }`, and the symbol for it is named after the file and
 line it was written on — `~procProc(Context, String)@kemal/router.iyi:211`. The
 router's unit refers to it; the producing build emitted it somewhere the
 artifact does not carry. A name with a source location in it is also a name a
 consumer could not reproduce from the artifact, whose declarations arrive under
-a different filename.
+a different filename — so this one is not a list of names to carry, the way the
+type ids and the constants were. Either the definitions travel with the unit
+that refers to them, or proc literals stop being named by where they were
+written.
 
 Both belong to IV.1g's rule rather than beside it: "a module's own code is the
 object files named after the types it declares" is what makes them missing, and

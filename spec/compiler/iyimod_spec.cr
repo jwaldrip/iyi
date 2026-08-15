@@ -632,6 +632,63 @@ describe Crystal::IyiMod do
     end
   end
 
+  # A constant is typed and initialised where it is *read*, and on the far side
+  # of an artifact the only reader is machine code the consumer did not compile.
+  # So `kemal/dsl`'s `APP` was declared, assigned by the initialiser that
+  # travelled, and never given a symbol — every exported method in the unit
+  # called through a global nothing defined.
+  it "carries the constants a module's own code reads" do
+    with_tempdir("iyimod_constants") do
+      Dir.mkdir_p "app"
+      File.write "app/counter.iyi", <<-IYI
+        module app/counter
+
+        pub struct Tally
+          @n : Int32
+
+          def initialize(@n : Int32)
+          end
+
+          def n : Int32
+            @n
+          end
+        end
+
+        START = Tally.new(40)
+
+        pub def total : Int32
+          START.n + 2
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/counter
+
+        puts App::Counter.total
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "42"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "counter.iyimod"))
+      artifact.constants.should eq ["App::Counter::START"]
+
+      File.delete "app/counter.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "42"
+    end
+  end
+
   # The router's shape: a `private record` inside an exported class. It belongs
   # to the class rather than to the module's surface — R-2 governs the unit's
   # own body — so it travels inside its container, and the field that names it
