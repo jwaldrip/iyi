@@ -2037,14 +2037,19 @@ body that travels calls them (IV.1g). Layout
 templates and type descriptors are not in it — those are what codegen needs
 rather than what the front end needs. **`MonoBodies` carries the bodies a
 consumer has to compile itself, `Initialiser` the module's own top-level code,
-`TypeIds` the types its object code numbers, and `Constants` the names that code
-reads** (IV.1g). `MacroBodies` is declared in the `Section` enum and unwritten,
-which is now something a build can walk into: a body that travels may call a
-macro of its own module, and the consumer gets the call without the macro. It
-is refused where it is written, with the declaration shown — an error whose
-location is in the declarations reads them out of the text the build parsed,
-because the file that location names is binary and showing "the line" showed
-the bytes of the container.
+`TypeIds` the types its object code numbers, `Constants` the names that code
+reads, and `MacroBodies` the macros a travelling body expands** (IV.1g). Every
+section the `Section` enum names is written now.
+
+`MacroBodies` was the last one, and what put it there was a body that travels:
+the consumer compiles a block-taking `run`, `run` writes `twice(n)`, and `twice`
+is a macro of the module `run` came from. A macro has no machine code to arrive
+as and no `pub` to be exported with, so it travels as source text on the two
+things that can declare one — the module and a type — and arrives ahead of the
+bodies that call it, because a macro is read before it is called. All of them
+rather than a chosen few: none is reachable from outside, so they are there for
+the bodies to expand against, exactly as the unexported defs beside them are
+there to typecheck against.
 
 Fields were meant to be in that second list and are not, which is worth saying
 plainly because the reason is a bug rather than a change of mind. A consumer
@@ -2991,6 +2996,13 @@ IV.1g that no amount of reasoning about blocks would have produced.
    (II.4), so that module needs `std/json`'s macro body in order to run it.
    Macros are compile-time code; shipping them is loading a plugin, not reading
    an implementation.
+
+   **Built, and the reason turned out to be nearer than `derive`.** A body that
+   travels may call a macro of its own module, so the macros travel with it —
+   all of them, on the module and on each type, as source text. None is
+   reachable: `pub` does not take a macro, so what arrives is a plugin the
+   consumer runs and cannot name. `derive` will need the same section and one
+   more thing, which is a way to say which macros another module may run.
 2. **`@[Monomorphize]` bodies.** The consumer specialises them, so it needs the
    body. This is the (b) path from II.6 and it is where incrementality is at
    risk — see IV.3.

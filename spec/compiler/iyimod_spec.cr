@@ -281,10 +281,16 @@ describe Crystal::IyiMod do
 
   # The format still stops short of what codegen needs, and a reader has no way
   # to tell an absent field list from an empty one, so the dump says so.
-  it "says what the format does not carry yet" do
+  # For a long time this note said what the format was still missing, because a
+  # reader has no way to tell an absent field list from an empty one. Every
+  # section the enum names is written now, so it says what is in the file.
+  it "says what the format carries" do
     io = IO::Memory.new
     Crystal::IyiMod.dump sample_artifact, io
-    io.to_s.should contain "are not in this file"
+    text = io.to_s
+    text.should contain "carries declarations"
+    text.should contain "the macros"
+    text.should contain "bodies a consumer has to compile for itself"
   end
 
   it "round-trips object code byte for byte" do
@@ -811,15 +817,13 @@ describe Crystal::IyiMod do
     end
   end
 
-  # An error in the declarations has a location in them, and the file that
-  # location names is binary — so the line it showed was the bytes of the
-  # container the declarations travelled in. The text is what the build read
-  # and the text is what it shows.
-  it "shows the declaration an error is in, not the bytes of the artifact" do
-    with_tempdir("iyimod_error_source") do
+  # A macro has no machine code to arrive as and no `pub` to be exported with,
+  # and a body that travels calls one: the consumer compiles `run`, `run`
+  # writes `twice(n)`, and `twice` is a macro of the module `run` came from.
+  # Both places one can be written are here, because they are one rule.
+  it "carries the macros a travelling body expands" do
+    with_tempdir("iyimod_macro_bodies") do
       Dir.mkdir_p "app"
-      # A macro is the case that reaches this: `MacroBodies` is unwritten, so a
-      # travelling body that calls one arrives with the call and without it.
       File.write "app/box.iyi", <<-IYI
         module app/box
 
@@ -827,7 +831,22 @@ describe Crystal::IyiMod do
           ({{x}} + {{x}})
         end
 
-        pub def run(n : Int32, &block : Int32 -> Int32) : Int32
+        pub class Box
+          macro double(x)
+            ({{x}} * 2)
+          end
+
+          @n : Int32
+
+          def initialize(@n : Int32)
+          end
+
+          def run(&block : Int32 -> Int32) : Int32
+            block.call(double(@n))
+          end
+        end
+
+        pub def run_module(n : Int32, &block : Int32 -> Int32) : Int32
           block.call(twice(n))
         end
         IYI
@@ -836,7 +855,8 @@ describe Crystal::IyiMod do
 
         import app/box
 
-        puts App::Box.run(5) { |n| n + 1 }
+        puts App::Box::Box.new(5).run { |n| n + 1 }
+        puts App::Box.run_module(5) { |n| n + 1 }
         IYI
 
       source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
@@ -845,21 +865,89 @@ describe Crystal::IyiMod do
       producer.prelude = "iyi/prelude"
       producer.emit_iyimod = "mods"
       producer.compile source, File.expand_path("from-source")
-      `./from-source`.chomp.should eq "11"
+      `./from-source`.chomp.should eq "11\n11"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+      artifact.macro_bodies.size.should eq 1
+      artifact.macro_bodies.first.should start_with "macro twice"
+
+      # On the type it was declared on, because that is where it is looked up.
+      box = artifact.exports.types.find! { |declaration| declaration.name == "Box" }
+      box.macros.size.should eq 1
+      box.macros.first.should start_with "macro double"
 
       File.delete "app/box.iyi"
 
       consumer = create_spec_compiler
       consumer.prelude = "iyi/prelude"
       consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "11\n11"
+    end
+  end
+
+  # An error in the declarations has a location in them, and the file that
+  # location names is binary — so the line it showed was the bytes of the
+  # container the declarations travelled in. The text is what the build read
+  # and the text is what it shows.
+  it "shows the declaration an error is in, not the bytes of the artifact" do
+    with_tempdir("iyimod_error_source") do
+      Dir.mkdir_p "app"
+      # A generic's body travels and the consumer instantiates it, so a type
+      # the producer never tried is where this lands: the error is in a line of
+      # the module's, reported to somebody who does not have the module.
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        pub struct Box(T)
+          @item : T
+
+          def initialize(@item : T)
+          end
+
+          def doubled : T
+            @item + @item
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box::Box(Int32).new(21).doubled
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "42"
+
+      File.delete "app/box.iyi"
+
+      File.write "bad.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box::Box(Bool).new(true).doubled
+        IYI
+      bad = Crystal::Compiler::Source.new(File.expand_path("bad.iyi"), File.read("bad.iyi"))
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
       consumer.no_codegen = true
 
-      error = expect_raises(Crystal::TypeException, /undefined method 'twice'/) do
-        consumer.compile source, File.expand_path("unused")
+      error = expect_raises(Crystal::TypeException, /undefined method '\+' for Bool/) do
+        consumer.compile bad, File.expand_path("unused")
       end
 
       rendered = error.to_s
-      rendered.should contain "block.call(twice(n))"
+      rendered.should contain "@item + @item"
       rendered.should contain "box.iyimod"
       # The bytes the artifact starts with, which is what used to be shown.
       rendered.should_not contain "IYIMOD"

@@ -27,16 +27,14 @@ require "./config"
 #
 # ## What is not here yet
 #
-# `Hashes` and `MacroBodies` are named in `Section` and not written. The kinds
-# are declared now so that a file written today is readable by the compiler
-# that adds them: an unknown section is skipped, a known one that is absent is
-# simply absent.
+# Every section named in `Section` is written now. An unknown one is skipped and
+# a known one that is absent is simply absent, which is what the table is for.
 module Crystal::IyiMod
   MAGIC = "IYIMOD\0\0".to_slice
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 17_u32
+  FORMAT_VERSION = 18_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -149,6 +147,9 @@ module Crystal::IyiMod
 
     implementation = IO::Memory.new
     implementation.write encode_mono_bodies(artifact)
+    # With the bodies rather than with the exports: a macro is not reachable
+    # from another module, and editing one changes what a consumer compiles.
+    implementation.write encode_macro_bodies(artifact)
     write_string implementation, artifact.initialiser
     implementation.write_byte(artifact.has_initialiser ? 1_u8 : 0_u8)
 
@@ -274,7 +275,8 @@ module Crystal::IyiMod
     methods : Array(Signature),
     visibility : String = "pub",
     types : Array(TypeDecl) = [] of TypeDecl,
-    value : String = ""
+    value : String = "",
+    macros : Array(String) = [] of String
 
   # How a body is found again on the far side.
   #
@@ -466,6 +468,23 @@ module Crystal::IyiMod
     # without changing what travels.
     getter mono_bodies : Hash(String, String)
 
+    # The macros this module declares, as source text.
+    #
+    # A macro has no machine code to arrive as, and a body that travels may
+    # call one: the consumer compiles `run`, `run` writes `twice(n)`, and
+    # `twice` is a macro of the module that `run` came from. Without them the
+    # artifact is refused on a name its own module has.
+    #
+    # All of them, rather than the ones somebody marked: `pub` does not take a
+    # macro, so none of these is reachable from outside — they are here for the
+    # bodies that travel to expand against, exactly as the unexported defs
+    # beside them are here to typecheck against.
+    #
+    # Source text, like the bodies and the initialiser and for the same reason:
+    # IV.1's table says serialised AST, which is the faster answer and the one
+    # with a second grammar to keep correct.
+    getter macro_bodies : Array(String)
+
     # The module's own top-level code, as source text. Empty when it has none.
     #
     # The one part of a module that is neither a declaration nor the body of
@@ -524,7 +543,7 @@ module Crystal::IyiMod
                    @object_code = [] of ObjectUnit, @has_initialiser = false,
                    @mono_bodies = {} of String => String, @initialiser = "",
                    @type_ids = [] of String, @hashes = Hashes.empty,
-                   @constants = [] of String)
+                   @constants = [] of String, @macro_bodies = [] of String)
     end
   end
 
@@ -547,6 +566,12 @@ module Crystal::IyiMod
 
     # Between the declarations and the machine code, which is where it belongs:
     # a front-end reader needs it and a linker does not.
+    # Before the bodies, because a body may call one of them and a reader that
+    # stops early should have the smaller thing.
+    unless artifact.macro_bodies.empty?
+      sections << {Section::MacroBodies, encode_macro_bodies(artifact)}
+    end
+
     unless artifact.mono_bodies.empty?
       sections << {Section::MonoBodies, encode_mono_bodies(artifact)}
     end
@@ -681,6 +706,7 @@ module Crystal::IyiMod
       exports = Exports.empty
       object_code = [] of ObjectUnit
       mono_bodies = {} of String => String
+      macro_bodies = [] of String
       initialiser = ""
       type_ids = [] of String
       constants = [] of String
@@ -705,6 +731,7 @@ module Crystal::IyiMod
         when Section::Exports    then exports = decode_exports(payload)
         when Section::ObjectCode then object_code = decode_object_code(payload)
         when Section::MonoBodies  then mono_bodies = decode_mono_bodies(payload)
+        when Section::MacroBodies then macro_bodies = decode_macro_bodies(payload)
         when Section::Initialiser then initialiser = String.new(payload)
         when Section::TypeIds     then type_ids = decode_type_ids(payload)
         when Section::Constants   then constants = decode_constants(payload)
@@ -722,7 +749,7 @@ module Crystal::IyiMod
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
         object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
-        hashes, constants)
+        hashes, constants, macro_bodies)
     end
   end
 
@@ -792,6 +819,14 @@ module Crystal::IyiMod
       end
     end
 
+    macros = artifact.macro_bodies
+    if macros.empty?
+      io.puts "macros        (none)"
+    else
+      io.puts "macros"
+      macros.each { |source| io.puts "  #{source.lines.first? || ""}" }
+    end
+
     bodies = artifact.mono_bodies
     if bodies.empty?
       io.puts "mono bodies   (none)"
@@ -826,10 +861,10 @@ module Crystal::IyiMod
     io.puts
     io.puts "note          format v#{FORMAT_VERSION} carries declarations,"
     io.puts "              signatures, field lists in declaration order, the"
-    io.puts "              constants this module's own code reads, the bodies a"
-    io.puts "              consumer has to compile for itself, and the object"
-    io.puts "              code of this module's own non-generic types. Macro"
-    io.puts "              bodies are not in this file yet (SPEC.md IV.2)."
+    io.puts "              constants this module's own code reads, the macros"
+    io.puts "              and bodies a consumer has to compile for itself, and"
+    io.puts "              the object code of this module's own non-generic"
+    io.puts "              types (SPEC.md IV.2)."
   end
 
   # The artifact as the iyi declarations it was built from.
@@ -871,6 +906,12 @@ module Crystal::IyiMod
 
     exports = artifact.exports
     bodies = artifact.mono_bodies
+
+    # First, because a macro has to be defined before the code that calls it is
+    # read, and the bodies below are full of code that calls them.
+    artifact.macro_bodies.each do |source|
+      io << '\n' << source << '\n'
+    end
 
     exports.functions.each do |signature|
       io << '\n'
@@ -1058,6 +1099,7 @@ module Crystal::IyiMod
     return if declaration.kind == "alias"
 
     inner = indent + "  "
+    declaration.macros.each { |source| io.puts "#{inner}#{source.lines.first? || ""}" }
     declaration.assoc_types.each { |name| io.puts "#{inner}type #{name}" }
     declaration.fields.each { |(name, type)| io.puts "#{inner}#{name} : #{type}" }
     declaration.types.each { |nested| dump_type_declaration io, nested, inner }
@@ -1082,6 +1124,13 @@ module Crystal::IyiMod
     return if declaration.kind == "alias"
 
     inner = indent + "  "
+
+    # Before everything the type declares, because a macro is read before it is
+    # called and what it is called from is below it.
+    declaration.macros.each do |source|
+      source.each_line { |line| io << inner << line << '\n' }
+    end
+
     declaration.assoc_types.each { |name| io << inner << "type " << name << '\n' }
 
     # Before the methods, where they are written and where a reader looks for
@@ -1252,6 +1301,16 @@ module Crystal::IyiMod
     io.to_slice
   end
 
+  private def self.encode_macro_bodies(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    write_strings io, artifact.macro_bodies
+    io.to_slice
+  end
+
+  private def self.decode_macro_bodies(payload : Bytes) : Array(String)
+    read_strings(IO::Memory.new(payload))
+  end
+
   private def self.decode_mono_bodies(payload : Bytes) : Hash(String, String)
     io = IO::Memory.new(payload)
     bodies = {} of String => String
@@ -1354,6 +1413,7 @@ module Crystal::IyiMod
       write_strings io, declaration.assoc_types
       write_strings io, declaration.supertraits
       write_pairs io, declaration.fields
+      write_strings io, declaration.macros
       write_signatures io, declaration.methods
       write_type_declarations io, declaration.types
     end
@@ -1369,9 +1429,10 @@ module Crystal::IyiMod
       assoc_types = read_strings(io)
       supertraits = read_strings(io)
       fields = read_pairs(io)
+      macros = read_strings(io)
       methods = read_signatures(io)
       TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
-        visibility, read_type_declarations(io), value)
+        visibility, read_type_declarations(io), value, macros)
     end
   end
 

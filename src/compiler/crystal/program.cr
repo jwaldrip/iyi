@@ -233,6 +233,16 @@ module Crystal
     # code in `ObjectCode`.
     getter iyi_mono_bodies = {} of String => Hash(String, String)
 
+    # iyi: the macros each file declares, as source text, by absolute filename
+    # (SPEC.md IV.1, `MacroBodies`).
+    #
+    # A macro is not code that runs, so nothing about it can arrive as machine
+    # code — and a body that travels may call one. `run` takes a block, so the
+    # consumer compiles it; if `run` writes `twice(n)` and `twice` is a macro
+    # this module declared, the consumer has the call and not the macro, and
+    # the artifact is refused on a name the module has.
+    getter iyi_macro_bodies = {} of String => Array(String)
+
     # iyi: the `(Trait, Type)` pairs each file provides, by absolute filename
     # (SPEC.md IV.2, "Impl records").
     #

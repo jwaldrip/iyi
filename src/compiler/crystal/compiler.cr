@@ -415,6 +415,7 @@ module Crystal
           exports: exports,
           has_initialiser: program.iyi_module_initialisers.includes?(filename),
           mono_bodies: program.iyi_mono_bodies[filename]? || {} of String => String,
+          macro_bodies: collect_iyi_macros(program, module_name),
           initialiser: program.iyi_module_initialiser_source[filename]? || "",
         )
 
@@ -725,6 +726,7 @@ module Crystal
         methods: methods,
         visibility: "pub",
         types: iyi_carried_types(program, filename, type),
+        macros: iyi_macros_on(type),
       )
     end
 
@@ -793,6 +795,7 @@ module Crystal
           methods: iyi_carried_methods(program, filename, name, declared),
           visibility: declared.private? ? "private" : "",
           types: iyi_carried_types(program, filename, declared),
+          macros: iyi_macros_on(declared),
         )
       end
       declarations.sort_by! &.name
@@ -903,6 +906,39 @@ module Crystal
     # the *normalised* body rather than the file's, because that is what
     # survives to this point — which makes it worth checking that what comes
     # out still parses, and `spec/compiler/iyimod_spec.cr` does.
+    # iyi: the macros a module declares, as source text, for `MacroBodies`
+    # (SPEC.md IV.1).
+    #
+    # A macro is not a declaration a consumer may reach — `pub` does not take
+    # one — and it is not code that could arrive as machine code either. It
+    # travels because a *body* that travels calls it: the consumer compiles a
+    # block-taking `run`, `run` writes `twice(n)`, and `twice` is this module's
+    # macro. Without it the artifact is refused on a name its own module has.
+    #
+    # Rendered from the node rather than sliced out of the file, which is what
+    # the bodies beside it do. What the parser produced is what a parser can
+    # read back, and the alternative — remembering where in the file it was —
+    # is a fact about a file the consumer does not have.
+    #
+    # Read off the *metaclass*, which is where a macro is declared: `macro
+    # twice` in a module body is added to the module's metaclass, the same way
+    # `def self.zero` is, and the type's own `macros` is empty for a file full
+    # of them.
+    private def collect_iyi_macros(program : Program, module_name : String) : Array(String)
+      iyi_macros_on(program.iyi_module_type(module_name))
+    end
+
+    # The macros declared on one type, which is the same question one level in:
+    # a class may declare a macro and a method of that class may call it, and
+    # the method's body is what travels.
+    private def iyi_macros_on(type : Type?) : Array(String)
+      sources = [] of String
+      type.try &.metaclass.as?(ModuleType).try &.macros.try &.each_value do |overloads|
+        overloads.each { |a_macro| sources << a_macro.to_s }
+      end
+      sources.sort!
+    end
+
     private def iyi_record_mono_body(program : Program, filename : String,
                                      container : String, signature : IyiMod::Signature,
                                      a_def : Def) : Nil
