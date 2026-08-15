@@ -280,6 +280,35 @@ would carry the first term and item 2 addresses a term that is now 8 ms. The
 gap that made this project has closed to the point where the remaining costs
 are the ones every compiler has.
 
+**The fourth run found nothing about the compiler and two things about the
+gate.** Run on the same checkout minutes apart, `bench/build_speed.py` said both
+MET and NOT MET.
+
+**The first was how `.build/crystal` had been built.** The compiler is itself a
+Crystal program, and a debug build of it is **1.5× slower** — 0.104 s against
+0.068 s, measured by alternating the two binaries so that the machine's state
+cancels, which is what the first attempt at this number did not do and why it
+read 2.2×. The target is decided by a few percent, so the build mode decides
+the gate. `make crystal release=1` does not settle it either: make takes an
+existing binary for up to date whatever it was built with, and says nothing.
+The bench now asks the compiler how it was built — the compiler already knows,
+and `--version` says so — prints the answer above the table, and **refuses to
+decide the target from a debug build** rather than reporting the compiler as
+too slow.
+
+**The second was the machine, and it is the larger term.** On one binary,
+minutes apart, the front end measured **0.048 s cool, 0.109 s after sustained
+compilation, and 0.061 s three minutes later**. Best-of-three finds the floor on
+a quiet machine and a lower ceiling on a busy one. The bench now reports the
+slowest of its runs beside the fastest and calls a run UNDECIDED when they
+disagree by more than half — which catches a machine that is doing something
+else, and does not catch one that is uniformly throttled. **So the 0.039 s
+above is a rested-machine number**, and the honest form of the claim is that the
+target is met on a quiet machine by a release compiler. Making the figure
+independent of the machine's state needs a calibration run — a fixed workload
+timed alongside, so the compiler is reported relative to something rather than
+in seconds — and that is a bench change nobody has made yet.
+
 ### What Crystal's own 0.1.0 looked like
 
 The scope above was drawn before checking it against the one release most

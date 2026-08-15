@@ -24,7 +24,10 @@ pointed at a temporary cache directory, so neither the user's `~/.cache/crystal`
 nor their `GOCACHE` is touched or warmed by this.
 
 Each figure is the **best** of N runs, not the mean: build time has a floor and
-noise only ever adds, so the minimum is the better estimate of the floor.
+noise only ever adds, so the minimum is the better estimate of the floor. The
+slowest run is reported alongside the target, because it is the only thing here
+that says whether the machine was quiet enough for three runs to have reached
+that floor.
 
 Limits, stated because they bound the result
 --------------------------------------------
@@ -32,6 +35,24 @@ Limits, stated because they bound the result
 * **The compiler is timed as a binary**, not through `bin/crystal`. See the
   comment on `CRYSTAL` below for why, and subtract nothing: the earlier runs
   recorded in SPEC.md were timed through the wrapper and carry its 30 ms.
+* **The compiler has to be a release build, and this says so.** The compiler is
+  itself a Crystal program, and a debug build of it is **1.5x** slower here —
+  measured by alternating the two binaries so the machine's state cancels, 7
+  rounds, 0.104 s against 0.068 s. That is an order of magnitude more than the
+  margin the target is decided by. The gate used to depend on how
+  `.build/crystal` happened to have been built, which is a fact nobody wrote
+  down and the report did not carry: the same command, in the same checkout, on
+  the same day, said MET or NOT MET. It now asks the compiler how it was built,
+  prints the answer, and refuses to decide the target from a debug build rather
+  than blaming the compiler for it.
+* **The machine's state matters more than either.** On one binary, minutes
+  apart, the front end measured 0.048 s cool, 0.109 s after sustained
+  compilation, and 0.061 s three minutes later — a wider spread than debug
+  against release. Best-of-N finds the floor on a quiet machine and a lower
+  ceiling on a busy one, so the slowest run is reported beside the fastest and a
+  run whose runs disagree by more than `QUIET` is called UNDECIDED. That catches
+  a machine doing something else; it does not catch one that is uniformly
+  throttled, which is why the figures here are only comparable within a run.
 * **The corpus is one program.** `hello` is the only pair where "the equivalent
   Go program" is unambiguous, and iyi has no larger program to offer: its
   samples explain rules rather than do work. `webapp.iyi` is timed too, but
@@ -104,8 +125,35 @@ def compiler_env():
 CRYSTAL_ENV = {}
 
 
+def compiler_build():
+    """What the compiler says it is: its version line, and whether it is release.
+
+    The compiler already knows — `Crystal::Config.description` prints a line
+    saying so when it was not built in release mode — so this asks rather than
+    guesses at a binary's size or its build flags. A timing that does not say
+    which compiler produced it is not a measurement, and the gate is a command
+    that passes rather than a judgement, so the command has to know.
+    """
+    result = subprocess.run(
+        [str(CRYSTAL), "--version"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    text = result.stdout.decode("utf-8", "replace")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    version = lines[0] if lines else "unknown"
+    return version, "not built in release mode" not in text
+
+
 def best(runs, fn):
-    """Best of `runs`, or None if the command failed."""
+    """Fastest and slowest of `runs`, or None if the command failed.
+
+    The fastest is the figure; the slowest is kept because it is the only thing
+    in this report that says whether the machine was quiet. A build has a floor
+    and noise only ever adds, so the minimum is the better estimate — but on a
+    loaded machine three runs do not reach the floor, and a gate that reads
+    NOT MET because something else was compiling is the same defect as one that
+    reads MET because of how the compiler happened to be built.
+    """
     times = []
     for _ in range(runs):
         started = time.monotonic()
@@ -114,7 +162,7 @@ def best(runs, fn):
         if not ok:
             return None
         times.append(elapsed)
-    return min(times)
+    return min(times), max(times)
 
 
 def run(argv, env=None, cwd=None):
@@ -173,8 +221,14 @@ def time_go(source, out_dir, cold):
     return best(RUNS, once)
 
 
-def show(value):
-    return "     —" if value is None else f"{value:6.2f}"
+def show(measurement):
+    return "     —" if measurement is None else f"{measurement[0]:6.2f}"
+
+
+# How much slower the worst run may be than the best before the run is taken as
+# a measurement of the machine rather than of the compiler. A quiet machine
+# lands well inside this; a laptop with a build on the other core does not.
+QUIET = 1.5
 
 
 def main():
@@ -182,6 +236,7 @@ def main():
         sys.exit(f"no compiler at {CRYSTAL} — run `make crystal` first")
 
     CRYSTAL_ENV.update(compiler_env())
+    version, release = compiler_build()
 
     hello_iyi = ROOT / "samples" / "iyi" / "hello.iyi"
     webapp_iyi = ROOT / "samples" / "iyi" / "webapp.iyi"
@@ -200,6 +255,8 @@ def main():
     print()
     print("build speed — best of", RUNS, "runs, seconds")
     print()
+    print(f"  compiler: {version}, {'release' if release else 'DEBUG'} build")
+    print()
     print("  program        stage                        cold    warm")
     print("  " + "-" * 56)
     print(f"  hello.iyi      front end (--no-codegen)   {show(front_hello)}       —")
@@ -216,14 +273,50 @@ def main():
     if front_hello is None:
         sys.exit("front end did not build; nothing to check against the target")
 
+    fastest, slowest = front_hello
+
     print(f"  front-end target (SPEC.md 0.1.0): {FRONT_END_TARGET:.3f} s")
-    print(f"  measured:                         {front_hello:.3f} s")
-    if front_hello <= FRONT_END_TARGET:
+    print(f"  measured:                         {fastest:.3f} s")
+    print(f"  slowest of the {RUNS}:                 {slowest:.3f} s")
+
+    # Measured, not judged. A debug build of the compiler is about 1.5x slower
+    # here than a release one, and the target is decided by a few percent, so
+    # the number above says more about how this binary was built than about
+    # whether iyi meets its target.
+    if not release:
+        print()
+        print("  UNDECIDED — this compiler was not built in release mode, so what")
+        print("  was timed is a debug build of the compiler rather than the")
+        print("  compiler. That is about 1.5x on this bench, against a target")
+        print("  decided by a few percent. Build it and run this again:")
+        print()
+        print("    rm -f .build/crystal && make crystal release=1")
+        print()
+        print("  The `rm` is not decoration. make takes an existing binary for")
+        print("  up to date whatever it was built with, so `make crystal")
+        print("  release=1` on its own can leave a debug build in place and say")
+        print("  nothing about it.")
+        print()
+        return 1
+
+    # Three runs do not reach the floor on a machine that is doing something
+    # else, and the gate is a command that passes rather than a judgement — so
+    # where the runs disagree this much, it says so instead of deciding.
+    if slowest > fastest * QUIET:
+        print()
+        print(f"  UNDECIDED — the slowest run is {slowest / fastest:.1f}x the fastest, so this")
+        print("  machine was busy and three runs did not reach the floor. What was")
+        print("  measured is the load, not the compiler. Run it again on a quiet")
+        print("  machine.")
+        print()
+        return 1
+
+    if fastest <= FRONT_END_TARGET:
         print("  MET.")
         print()
         return 0
 
-    print(f"  NOT MET — {front_hello / FRONT_END_TARGET:.1f}x over.")
+    print(f"  NOT MET — {fastest / FRONT_END_TARGET:.1f}x over.")
     print()
     print("  The prelude is iyi's own now (0.1.0 item 3), which is what took")
     print("  this from 26x over to here. What is left is that its 833 lines are")
