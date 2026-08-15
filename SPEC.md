@@ -165,6 +165,13 @@ none need not pay it (IV.1a), and making the ordinary compiler not pay it means
 loading the code generator when codegen is asked for rather than when the
 process starts.
 
+Linking LLVM statically instead was tried first, on the theory that the cost is
+the shared object rather than what is in it. It is not a route on this system:
+the archives are installed and `LLVM_LDFLAGS="$(llvm-config-19 --libs
+--system-libs --ldflags --link-static)"` produces a link that fails, and making
+it succeed is a packaging problem rather than an answer to the measurement
+above. The initialisers would run either way.
+
 **3. A deliberately tiny prelude, written in iyi. Done — 1,053 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
 one sequence, one dictionary, `puts`. **Its scope is set by what the samples
