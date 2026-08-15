@@ -324,6 +324,24 @@ def link_seconds(source, out_dir):
     return link, total
 
 
+def time_link_floor(out_dir):
+    """What linking anything at all costs here: one C object, through `cc`.
+
+    The row exists because the link is most of a warm build, and a figure for
+    it means nothing without knowing what the machine charges for a link. iyi's
+    own link is eleven objects and libgc; if this row is close to it, the time
+    is the platform's rather than the compiler's.
+    """
+    if shutil.which("cc") is None:
+        return None
+    source = out_dir / "link_floor.c"
+    source.write_text('#include <stdio.h>\nint main(void){puts("hi");return 0;}\n')
+    obj = out_dir / "link_floor.o"
+    if not run(["cc", "-c", str(source), "-o", str(obj)]):
+        return None
+    return best(RUNS, lambda: run(["cc", str(obj), "-o", str(out_dir / "link_floor")]), warmup=1)
+
+
 def time_go(source, out_dir, cold):
     if shutil.which("go") is None:
         return None
@@ -378,6 +396,7 @@ def main():
         # about it. Both are measured here rather than described in SPEC.md,
         # for the reason the Go column is.
         link_taken, stats_total = link_seconds(hello_iyi, out)
+        link_floor = time_link_floor(out)
         alternatives = [
             (name, time_crystal(hello_iyi, out, codegen=True, cold=False, linker=name))
             for name in available_linkers()
@@ -413,6 +432,9 @@ def main():
         # starting the process is not a stage, and it is most of the rest.
         print(f"  of the {stats_total:.3f} s the compiler times in a warm build, the link is "
               f"{link_taken:.3f} s — {link_taken / stats_total * 100:.0f}%")
+        if link_floor:
+            print(f"    linking one C object here costs{show(link_floor)}, which is what that "
+                  f"figure is made of")
         if alternatives:
             for name, measurement in alternatives:
                 print(f"    with -fuse-ld={name:<6}{show(measurement)}  against "

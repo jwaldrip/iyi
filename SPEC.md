@@ -128,10 +128,28 @@ project exists to close is 1.7× where it was 2.9× this morning, and none of it
 came from compiling anything faster.
 
 What is left of the link is `ld` doing its job on eleven objects and libgc —
-0.132 s, and still 85% of what the compiler times. So this item becomes **the
-link step**, with the search out of the way and nothing else in front of it. The
-front-end target it was written to protect is met: 0.041 s against 0.050 s, of
-which 0.018 s is a process linking LLVM before doing no codegen.
+0.132 s, and still 85% of what the compiler times.
+
+**And that part is not the compiler's either.** Linking a one-object C program
+on the same machine costs the same: 0.242 s against iyi's 0.268 s in the same
+minute, so eleven objects and a GC library are worth 26 ms over the smallest
+link this machine can be asked for. Running the exact command `cc` would run —
+`collect2`, LTO plugin and all — costs what running `cc` costs, and dropping the
+plugin is 22 ms of it. `-fuse-ld=gold`, `--single-module` and `--no-debug` are
+each worth 10–15% and none is a default worth changing. So the bench prints the
+floor as a row — one C object, through `cc` — and a figure for iyi's link is
+never read without it.
+
+**Which is the shape of the remaining work.** `go build` on this machine, warm,
+costs less than iyi's link alone. Go does not run `cc`; it links its own
+executables. Getting past this number means **not calling the system linker
+driver** — an internal linker, or a module's object code arriving already linked
+— rather than passing `cc` different flags. That is what "the link step" now
+names, and it is larger than everything above it.
+
+The front-end target this item was written to protect is met on the same run:
+0.041 s against 0.050 s, of which 0.018 s is a process linking LLVM before doing
+no codegen.
 
 **3. A deliberately tiny prelude, written in iyi. Done — 1,053 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
