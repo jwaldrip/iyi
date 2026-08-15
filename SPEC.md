@@ -151,6 +151,20 @@ The front-end target this item was written to protect is met on the same run:
 0.041 s against 0.050 s, of which 0.018 s is a process linking LLVM before doing
 no codegen.
 
+**And that 0.018 s is measured too, because it is the second-largest thing left
+and it is not analysis.** An empty C program starts in 0.002 s. The same empty C
+program, linked so that `libLLVM.so.19.1` is *loaded* and nothing in it is
+called, starts in **0.025 s**. The compiler starts in 0.031 s and the front end
+built without a code generator starts in 0.008 s. Those four figures are one
+minute's, and it was a slower minute than the table above — the ratio between
+them is the measurement, not the absolute. The dynamic loader is 1 ms of it — `LD_DEBUG=statistics` counts
+331,639 relative relocations and 2.9M cycles — so what is left is libLLVM's own
+static initialisers, running in every `crystal` process whether or not it will
+generate code. `crystal-front` is the standing proof that a build that generates
+none need not pay it (IV.1a), and making the ordinary compiler not pay it means
+loading the code generator when codegen is asked for rather than when the
+process starts.
+
 **3. A deliberately tiny prelude, written in iyi. Done — 1,053 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
 one sequence, one dictionary, `puts`. **Its scope is set by what the samples
