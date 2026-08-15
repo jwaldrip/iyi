@@ -417,8 +417,17 @@ module Crystal
       end
 
       program.iyi_module_paths.map do |filename, module_name|
+        # Both hashes, because a dependency may have arrived either way and the
+        # edge is keyed on a filename regardless. Asking only the source one
+        # left an import read from a `.iyimod` recorded as the path of that
+        # file — an edge naming a build's directory layout rather than a
+        # module, which the next build cannot resolve.
         imports = program.iyi_module_imports[filename]?.try do |dependencies|
-          dependencies.map { |dependency| program.iyi_module_paths[dependency]? || dependency }
+          dependencies.map do |dependency|
+            program.iyi_module_paths[dependency]? ||
+              program.iyi_artifact_modules[dependency]? ||
+              dependency
+          end
         end
 
         # First, because collecting the surface is also what records which of

@@ -113,6 +113,19 @@ module Crystal
     # modules, so it needs the way back (SPEC.md IV.1).
     getter iyi_module_paths = {} of String => String
 
+    # iyi: the same, for a module that arrived as an artifact — keyed by the
+    # `.iyimod`'s own path (SPEC.md IV.1).
+    #
+    # Two hashes rather than one because they answer different questions.
+    # `iyi_module_paths` is the set `--emit-iyimod` writes from, and a module
+    # read from a `.iyimod` must not be in it: it already has an artifact and
+    # this build has not seen enough of it to write another. But the import
+    # edges are keyed on filenames whichever way the module arrived, so naming
+    # those edges needs the way back for both — without this, an artifact's
+    # `Imports` section records `mods/std/list.iyimod` where it means
+    # `std/list`.
+    getter iyi_artifact_modules = {} of String => String
+
     # iyi: where to look for a `.iyimod` before falling back to a module's
     # source, or nil (SPEC.md IV.1). Set by `--use-iyimod`.
     property iyi_module_dir : String? = nil

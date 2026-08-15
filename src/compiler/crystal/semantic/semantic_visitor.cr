@@ -140,7 +140,15 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     # Only a module read from source: `iyi_module_paths` is the list
     # `--emit-iyimod` writes from, and a module that arrived as an artifact
     # already has one.
-    @program.iyi_module_paths[filename] ||= path unless artifact_path
+    #
+    # The way back from a filename to a module path is still needed for both
+    # kinds, because the DAG edges below are keyed on filenames — so an
+    # artifact's goes in a hash of its own rather than in the emit list.
+    if artifact_path
+      @program.iyi_artifact_modules[artifact_path] ||= path
+    else
+      @program.iyi_module_paths[filename] ||= path
+    end
 
     # One edge of the import DAG. Recorded even when the module is already
     # loaded: the second importer adds no initialiser, but it does constrain

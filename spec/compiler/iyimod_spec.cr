@@ -1043,6 +1043,65 @@ describe Crystal::IyiMod do
     end
   end
 
+  # An edge names a module, and it has to name one whichever way the module on
+  # the far end arrived. The edges are kept by filename because load-once is,
+  # so writing one out means looking the filename back up — and the lookup used
+  # to ask only the modules read from source, which left an import resolved
+  # from a `.iyimod` recorded as that file's path. `mods/app/inner.iyimod` is
+  # this build's directory layout, not a module anybody else can resolve.
+  it "records an import read from an artifact as the module it is" do
+    with_tempdir("iyimod_artifact_edge") do
+      Dir.mkdir_p "app"
+      File.write "app/inner.iyi", <<-IYI
+        module app/inner
+
+        pub def inner : Int32
+          1
+        end
+        IYI
+      File.write "app/outer.iyi", <<-IYI
+        module app/outer
+
+        import app/inner
+
+        pub def outer : Int32
+          App::Inner.inner
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/outer
+
+        puts App::Outer.outer
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.no_codegen = true
+      producer.compile source, "unused"
+
+      # Only the leaf keeps its artifact, so the second build reads `app/inner`
+      # from a `.iyimod` and `app/outer` from source — which is the shape an
+      # incremental build has, and the only one where the edge is written by a
+      # module whose dependency did not come from source.
+      File.delete File.join("mods", "app", "outer.iyimod")
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.emit_iyimod = "out"
+      consumer.no_codegen = true
+      consumer.compile source, "unused"
+
+      artifact = Crystal::IyiMod.read(File.join("out", "app", "outer.iyimod"))
+      artifact.imports.should eq ["app/inner"]
+    end
+  end
+
   it "round-trips exported types with their parameters and methods" do
     declaration = type_declaration("List", "generic struct",
       type_parameters: ["T"],
