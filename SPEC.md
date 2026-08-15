@@ -84,12 +84,12 @@ the number this item exists to remove does not exist any more. From
 
 | | |
 |---|---|
-| warm build | 0.26 |
-| of what the compiler times in it, the **link** | **0.260 — 93%** |
-| front end alone (`--no-codegen`) | 0.044, of which 0.019 is startup |
+| warm build | **0.17** — it was 0.26 before the fix below |
+| of what the compiler times in it, the **link** | **0.132 — 85%** |
+| front end alone (`--no-codegen`) | 0.041, of which 0.018 is startup |
 | the same front end, no LLVM linked into the binary | 0.02 |
-| the same warm build with `-fuse-ld=gold` | **0.18** |
-| `go build`, warm | 0.09 |
+| the same warm build with `-fuse-ld=gold` | 0.17 — the same, and that is the finding |
+| `go build`, warm | 0.10 |
 
 Inside that front end the top-level pass is 0.012 s and **the five passes this
 item asked to fix cost 0.4 ms between them** — 2% of what is left, where the
@@ -99,19 +99,39 @@ asked those passes to stop walking *the prelude*. They cost more on a program
 with something in it — `main` is 4.6 ms on `hello.iyi` — and that difference is
 the user's own code being typed, which no cache of anything removes.
 
-**What replaced it is the linker, and it is not a refinement either.** All but
-7% of what a warm build spends is `cc`, on a program whose object files were
-every one of them reused and whose own code is three lines. The default link is
-also the slow one on this machine: `-fuse-ld=gold` takes the same build to
-0.18 s and produces a binary that prints what the other one prints, on
-`hello.iyi` and on `webapp` alike — the Kemal port lands at the same figure,
-because user code is still nearly free. That is a third of the wall clock from
-one flag, and it is one machine's linkers rather than a design, which is why it
-is a row in the bench rather than a default in the compiler.
+**What replaced it is the link — and a third of what looked like the link was
+not the link.** Nearly everything a warm build spends is inside the linking
+stage, on a program whose object files were every one of them reused and whose
+own code is three lines. The first reading of that was wrong, and the way it was
+wrong is worth the space: the stage measured 0.29 s by default and 0.18 s with
+`--link-flags=-fuse-ld=gold`, which says the default linker is the slow one.
+Running the compiler's own link command by hand takes **0.13 s with either
+linker**. The flag was not choosing a faster linker. It was skipping a search.
 
-So this item becomes **the link step**, and the front-end target it was written
-to protect is already met: 0.043 s against 0.050 s, of which 0.021 s is startup
-that links LLVM into a binary that is about to do no codegen.
+Before linking, `use_modern_linker` looks for `mold`, then for `ld.lld`, and
+prefers whichever it finds — and it returns without looking if the flags already
+name a linker, which is what `-fuse-ld=gold` did. `Process.find_executable`
+walks `PATH`, and a name that is *not* on `PATH` costs a stat in every entry of
+it. That is a millisecond on an ordinary Linux box. Under WSL, where `PATH`
+carries nineteen Windows directories on a filesystem that answers a stat in
+about 6 ms, it is **0.062 s per search, twice per build**. A third of every
+build was the compiler looking for two linkers that were not installed, and the
+flag that appeared to fix it only skipped the looking.
+
+**Fixed, and the fix is a cache rather than a policy.** The answer is written
+next to the object cache and read back while the `PATH` it was found under is
+unchanged; changing `PATH` asks again. The default build and the
+`-fuse-ld=gold` build now measure the same, which is the result that says the
+linker was never the difference. A warm build of `hello.iyi` went from 0.26 s to
+**0.17 s** for twenty lines of caching, against Go's 0.10 s: the gap this
+project exists to close is 1.7× where it was 2.9× this morning, and none of it
+came from compiling anything faster.
+
+What is left of the link is `ld` doing its job on eleven objects and libgc —
+0.132 s, and still 85% of what the compiler times. So this item becomes **the
+link step**, with the search out of the way and nothing else in front of it. The
+front-end target it was written to protect is met: 0.041 s against 0.050 s, of
+which 0.018 s is a process linking LLVM before doing no codegen.
 
 **3. A deliberately tiny prelude, written in iyi. Done — 1,053 lines,
 primitives included.** Not a standard library: integers, booleans, a string,

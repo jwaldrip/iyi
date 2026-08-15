@@ -1442,13 +1442,59 @@ module Crystal
       return link_flags unless DEFAULT_LINKER == "cc"
       return link_flags if link_flags.includes?("-fuse-ld=")
 
-      if Process.find_executable("mold")
-        link_flags + " -fuse-ld=mold"
-      elsif Process.find_executable("ld.lld")
-        link_flags + " -fuse-ld=lld"
-      else
-        link_flags
+      flag = modern_linker_flag
+      flag.empty? ? link_flags : link_flags + " " + flag
+    end
+
+    # iyi: which of `mold` and `lld` this machine has, asked once per `PATH`
+    # rather than once per build.
+    #
+    # `Process.find_executable` walks `PATH`, and a name that is *not* there
+    # costs a stat in every entry of it. That is a millisecond on an ordinary
+    # Linux box and it is not one under WSL, where `PATH` carries the Windows
+    # directories and a stat across that filesystem takes about 6 ms: measured
+    # here, 0.062 s to fail to find `mold` and the same again to fail to find
+    # `ld.lld`. Two searches, every build, on a warm build whose whole figure
+    # is 0.30 s — **a third of it went looking for linkers nobody installed**,
+    # and it was invisible because passing any `-fuse-ld=` skips this and made
+    # the alternative look like the faster linker.
+    #
+    # The answer is written next to the object cache and read back while the
+    # `PATH` it was found under is unchanged. Changing `PATH` re-asks, which is
+    # what installing one of these usually does; installing one *into* a
+    # directory already on `PATH` does not, and the escape hatches are
+    # `--link-flags=-fuse-ld=mold` and deleting the file.
+    private def modern_linker_flag : String
+      path = ENV["PATH"]? || ""
+      key = ::Crystal::Digest::MD5.hexdigest(path)
+      cache = CacheDir.instance.join("linker-probe")
+
+      if remembered = File.file?(cache) ? File.read(cache).split('\n', 2) : nil
+        return remembered[1]? || "" if remembered[0]? == key
       end
+
+      answer =
+        if Process.find_executable("mold")
+          "-fuse-ld=mold"
+        elsif Process.find_executable("ld.lld")
+          "-fuse-ld=lld"
+        else
+          ""
+        end
+
+      # Written and then renamed, because builds share a cache directory and a
+      # half-written answer read by another one is a build linked with
+      # something nobody chose. A cache that cannot be written at all is a slow
+      # build rather than a failed one, which is the right way round for
+      # something nobody asked for.
+      begin
+        staging = "#{cache}.#{Process.pid}"
+        File.write(staging, "#{key}\n#{answer}")
+        File.rename(staging, cache)
+      rescue
+      end
+
+      answer
     end
 
     private GCC_RESPONSE_FILE_TR = {
