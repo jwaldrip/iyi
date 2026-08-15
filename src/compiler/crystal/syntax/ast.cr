@@ -1466,6 +1466,16 @@ module Crystal
     # is why one that reads artifacts cannot yet generate code.
     property? iyi_from_artifact = false
 
+    # iyi: read from a `.iyimod` *with* its body, from `MonoBodies` (SPEC.md
+    # IV.1g).
+    #
+    # The opposite of the flag above, and the reason both are needed: a def
+    # arrives with a body when it is one the consumer has to compile — a
+    # generic type's method, a trait's default, a method that takes a block.
+    # The type it is on came from the artifact either way, so the type is no
+    # longer enough to say whose machine code this is.
+    property? iyi_body_travelled = false
+
     property? macro_def : Bool
     property? calls_super = false
     property? calls_initialize = false
@@ -1500,6 +1510,7 @@ module Crystal
       a_def.assigns_special_var = assigns_special_var?
       a_def.iyi_from_impl = iyi_from_impl?
       a_def.iyi_from_artifact = iyi_from_artifact?
+      a_def.iyi_body_travelled = iyi_body_travelled?
       a_def.name_location = name_location
       a_def.visibility = visibility
       a_def.free_var_bounds = @free_var_bounds.clone

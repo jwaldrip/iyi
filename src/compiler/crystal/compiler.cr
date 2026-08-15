@@ -492,7 +492,16 @@ module Crystal
           # namespace on the module, which is what makes `pub` a mark on a
           # name rather than on a kind of declaration.
           if signatures = type.defs.try &.[]?(name)
-            signatures.each { |item| functions << IyiMod.signature(item.def) }
+            signatures.each do |item|
+              signature = IyiMod.signature(item.def)
+              functions << signature
+              # A module's own `pub def` that takes a block is the consumer's
+              # to compile for the same reason, and the module name is the
+              # container the far side looks it up under.
+              if iyi_takes_block?(item.def) && !item.def.abstract?
+                iyi_record_mono_body program, filename, module_name, signature, item.def
+              end
+            end
           elsif exported_type = type.types?.try &.[]?(name)
             types << iyi_type_declaration(program, filename, name, exported_type)
           end
@@ -720,10 +729,35 @@ module Crystal
       type.types?.try &.each do |name, declared|
         next if carried.try &.includes?(name)
 
+        # An alias has neither a layout nor an id, and it travels for the other
+        # reason a declaration does: the text that travels names it. A carried
+        # record's `handler : Handler` is what the module was written with, and
+        # a consumer without the alias reads it as an undefined constant. It
+        # arrives as what it resolved to, which is also how a field's type
+        # arrives — the name it was written as resolved where the module was
+        # read from source, and this file is read somewhere else.
+        if declared.is_a?(AliasType)
+          declared.process_value
+          if aliased = declared.aliased_type?
+            declarations << IyiMod::TypeDecl.new(
+              name: name,
+              kind: declared.type_desc,
+              type_parameters: [] of String,
+              assoc_types: [] of String,
+              supertraits: [] of String,
+              fields: [] of {String, String},
+              methods: [] of IyiMod::Signature,
+              visibility: declared.private? ? "private" : "",
+              types: [] of IyiMod::TypeDecl,
+              value: aliased.to_s,
+            )
+          end
+          next
+        end
+
         # A class or a struct, which is what has a layout and an id. A constant
-        # and an alias live in the same namespace and are neither: an alias is
-        # resolved away by the time a field records its type, and a constant is
-        # IV.2's business rather than this.
+        # lives in the same namespace and is neither, and it is IV.2's business
+        # rather than this.
         next unless declared.is_a?(ClassType) || declared.is_a?(EnumType)
 
         declarations << IyiMod::TypeDecl.new(
@@ -733,7 +767,7 @@ module Crystal
           assoc_types: [] of String,
           supertraits: [] of String,
           fields: collect_iyi_fields(declared),
-          methods: [] of IyiMod::Signature,
+          methods: iyi_carried_methods(declared),
           visibility: declared.private? ? "private" : "",
           types: iyi_carried_types(declared),
         )
@@ -769,7 +803,11 @@ module Crystal
 
           signature = IyiMod.signature(item.def)
           methods << signature
-          if travels && !item.def.abstract?
+          # A block-taking def travels whatever type it is on: it is
+          # instantiated with the caller's block inside it, so the consumer is
+          # what compiles it — the same reason a generic's method and a trait's
+          # default travel (SPEC.md IV.1g).
+          if (travels || iyi_takes_block?(item.def)) && !item.def.abstract?
             iyi_record_mono_body program, filename, container, signature, item.def
           end
         end
@@ -787,6 +825,38 @@ module Crystal
     # symbol any producer could have emitted under any name.
     private def iyi_bodies_travel?(type : Type) : Bool
       type.is_a?(GenericType) || type.is_a?(TraitType)
+    end
+
+    # iyi: the methods of a type the module keeps to itself, as headers.
+    #
+    # They travel because a *body* that travels calls them: the router's
+    # `add_filter` is a block-taking method, so the consumer compiles it, and
+    # it writes `FilterDefinition.new(kind: …)`. Without the signature the
+    # consumer sees a `record` with no `initialize` and refuses the call.
+    #
+    # Headers only — the machine code is in this module's own object code, and
+    # the type is marked as the artifact's so the consumer declares rather than
+    # defines. R-2's block rule is not applied, because it is about what another
+    # module reads and nothing here is readable; a block-taking one is skipped
+    # instead, since compiling a call to it would need its body as well.
+    private def iyi_carried_methods(type : Type) : Array(IyiMod::Signature)
+      signatures = [] of IyiMod::Signature
+      type.as?(ModuleType).try &.defs.try &.each_value do |items|
+        items.each do |item|
+          next if item.def.new?
+          next if item.def.body.is_a?(Primitive)
+          next if iyi_takes_block?(item.def)
+          next if item.def.abstract?
+          signatures << IyiMod.signature(item.def, check_block: false)
+        end
+      end
+      signatures.sort_by! &.name
+    end
+
+    # iyi: whether a def is instantiated per call site because it takes a
+    # block — `&block : …` or a bare `yield` (SPEC.md IV.1g).
+    private def iyi_takes_block?(a_def : Def) : Bool
+      !!(a_def.block_arg || a_def.block_arity)
     end
 
     # Records one body against `IyiMod.mono_body_key`.
@@ -815,9 +885,18 @@ module Crystal
     # its own parameters — `List(T)`'s `@items` is `Array(T)` — which is what
     # lets the declaration stencil at any instantiation.
     #
-    # Sorted, because a hash's order is not a fact about the type and an
-    # artifact that changed byte for byte between two identical builds would
-    # defeat IV.3's whole purpose before it is written.
+    # In the order they were declared, which is not a presentation choice: it
+    # is the layout. A field's offset is its position in this list, so the two
+    # builds have to agree on it — sorting them by name was deterministic and
+    # wrong, and it went unnoticed for as long as nothing the consumer compiled
+    # touched a field of a type it had only imported. A block-taking method's
+    # body is the first thing that does: the consumer's `add_route` wrote
+    # `@routes` at the offset the producer's code reads `@filters` from.
+    #
+    # Deterministic all the same. What the sort was guarding against is a
+    # hash's order being an accident, and this one is not — `instance_vars` is
+    # insertion-ordered and the insertions are the declarations, in the order
+    # the module's author wrote them.
     private def collect_iyi_fields(type : Type) : Array({String, String})
       fields = [] of {String, String}
       return fields unless type.responds_to?(:instance_vars)
@@ -828,7 +907,6 @@ module Crystal
         # unannotated signature takes, and equally visible in `mod dump`.
         fields << {name, variable.type?.try(&.to_s) || "?"}
       end
-      fields.sort_by! { |(name, _)| name }
       fields
     end
 

@@ -20,6 +20,22 @@ class Crystal::CodeGenVisitor
   def target_def_fun(target_def, self_type) : LLVMTypedFunction
     mangled_name = target_def.mangled_name(@program, self_type)
 
+    # iyi: a method that takes a block is instantiated with the caller's block
+    # inlined into it, so its machine code belongs to whoever wrote the block
+    # and not to the module that declared the method (SPEC.md IV.1g).
+    #
+    # Emitted here, private to this unit, and so absent from the artifact —
+    # which is what the consumer needs, because it makes its own from the body
+    # that travels in `MonoBodies`. Left in the module's own unit it was a
+    # duplicate symbol for a block the producer happened to write, and a
+    # missing one for every block it did not.
+    if iyi_block_instantiated?(target_def, self_type)
+      here = ModuleInfo.new(@llvm_mod, @llvm_typer, self.builder)
+      func = typed_fun?(@llvm_mod, mangled_name) ||
+             codegen_fun(mangled_name, target_def, self_type, fun_module_info: here, iyi_internal: true)
+      return check_mod_fun @llvm_mod, mangled_name, func
+    end
+
     # iyi: while emitting code for a module whose `.iyimod` is being written, a
     # callee that module does not own is *copied* into the module's own unit
     # with internal linkage, rather than left as a reference to a unit the
@@ -43,6 +59,15 @@ class Crystal::CodeGenVisitor
 
     func = typed_fun?(self_type_mod, mangled_name) || codegen_fun(mangled_name, target_def, self_type)
     check_mod_fun self_type_mod, mangled_name, func
+  end
+
+  # iyi: whether this def's machine code is the caller's rather than the
+  # module's — a block-taking method of a module whose artifact is being
+  # written (SPEC.md IV.1g).
+  private def iyi_block_instantiated?(target_def, self_type) : Bool
+    return false if @program.iyi_exported_owners.empty?
+    return false unless target_def.block_arg || target_def.block_arity
+    @program.iyi_exported_owners.includes?(self_type.instance_type)
   end
 
   # The unit a callee should be copied into, or nil to route it normally.
@@ -144,9 +169,20 @@ class Crystal::CodeGenVisitor
       # the program through the linker, so what this build emits is the
       # signature and nothing under it — the same shape a `lib` function takes,
       # and for the same reason: the body is somebody else's.
+      #
+      # The type it is written on answers the same question for the methods
+      # that arrived as headers. Two things on such a type are still this
+      # build's to compile, and both are here because a body travelled: the def
+      # that carried it — `Router#get` takes a block, so the producer emitted
+      # no symbol for it — and a proc literal written inside that body, whose
+      # `self` is the artifact's type and whose code was never anywhere else.
+      compiled_elsewhere = self_type.instance_type.iyi_from_artifact? &&
+                           !target_def.iyi_body_travelled? &&
+                           !is_fun_literal
+
       needs_body = (!target_def.is_a?(External) || is_exported_fun) &&
                    !target_def.iyi_from_artifact? &&
-                   !self_type.instance_type.iyi_from_artifact?
+                   !compiled_elsewhere
 
       # iyi: a copy, private to the unit that will travel in the artifact.
       #

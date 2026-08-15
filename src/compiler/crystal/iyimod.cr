@@ -36,7 +36,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 15_u32
+  FORMAT_VERSION = 16_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -258,6 +258,12 @@ module Crystal::IyiMod
   # container rather than to the module's surface (R-2 governs the unit's own
   # body), so it is rendered where it was written and carries the visibility it
   # was written with.
+  #
+  # *value* is what an `alias` is equal to, and it is empty for everything
+  # else. An alias has neither a layout nor an id, and it travels anyway,
+  # because a declaration that does names it: a carried record's `handler :
+  # Handler` is the text the module was written with, and a consumer without
+  # the alias reads it as an undefined constant.
   record TypeDecl,
     name : String,
     kind : String,
@@ -267,7 +273,8 @@ module Crystal::IyiMod
     fields : Array({String, String}),
     methods : Array(Signature),
     visibility : String = "pub",
-    types : Array(TypeDecl) = [] of TypeDecl
+    types : Array(TypeDecl) = [] of TypeDecl,
+    value : String = ""
 
   # How a body is found again on the far side.
   #
@@ -803,11 +810,11 @@ module Crystal::IyiMod
     # to tell a field list that is absent from one that is empty.
     io.puts
     io.puts "note          format v#{FORMAT_VERSION} carries declarations,"
-    io.puts "              signatures, field lists, and the object code of this"
-    io.puts "              module's own non-generic types. Layout templates,"
-    io.puts "              type descriptors and constants are not in this file"
-    io.puts "              yet, and neither are the bodies a consumer has to"
-    io.puts "              specialise (SPEC.md IV.2)."
+    io.puts "              signatures, field lists in declaration order, the"
+    io.puts "              constants this module's own code reads, the bodies a"
+    io.puts "              consumer has to compile for itself, and the object"
+    io.puts "              code of this module's own non-generic types. Macro"
+    io.puts "              bodies are not in this file yet (SPEC.md IV.2)."
   end
 
   # The artifact as the iyi declarations it was built from.
@@ -848,12 +855,16 @@ module Crystal::IyiMod
     end
 
     exports = artifact.exports
+    bodies = artifact.mono_bodies
+
     exports.functions.each do |signature|
       io << '\n'
-      render_declaration io, signature, exported: true
+      # A module's own `pub def` that takes a block ships its body, because the
+      # consumer is what instantiates it — the block is the consumer's code.
+      # The container is the module's own path.
+      render_declaration io, signature, exported: true,
+        body: bodies[mono_body_key(artifact.module_name, signature)]?
     end
-
-    bodies = artifact.mono_bodies
 
     exports.types.each do |declaration|
       io << '\n'
@@ -891,8 +902,12 @@ module Crystal::IyiMod
   # annotation, `Array(U)` does not resolve without the `forall` that
   # introduced `U`, and an `abstract def` a consumer took for a definition is a
   # requirement it would never be told it had missed.
-  def self.signature(a_def : Def) : Signature
-    check_block_annotated a_def
+  # *check_block* is R-2's rule, and it applies to what another module reads.
+  # A type the module keeps to itself is read by nobody, so its methods travel
+  # without it — they are there for a body that travels to typecheck against,
+  # not for anyone to call.
+  def self.signature(a_def : Def, check_block : Bool = true) : Signature
+    check_block_annotated a_def if check_block
 
     parameters = a_def.args.map_with_index do |arg, index|
       a_def.splat_index == index ? "*#{arg}" : arg.to_s
@@ -959,7 +974,14 @@ module Crystal::IyiMod
       # like any other, which is the whole point of `MonoBodies`. Marking it
       # would turn the body it was given back into an external declaration and
       # leave the symbol undefined again.
-      return false unless node.body.is_a?(Nop)
+      #
+      # It is marked as the other thing instead, because the type it is on came
+      # from the artifact and codegen reads that as "somebody else's machine
+      # code". True of the type's ordinary methods and not of this one.
+      unless node.body.is_a?(Nop)
+        node.iyi_body_travelled = true
+        return false
+      end
 
       node.iyi_from_artifact = true
       node.uses_block_arg = true if node.block_arg.try(&.restriction)
@@ -1008,6 +1030,7 @@ module Crystal::IyiMod
   private def self.dump_type_declaration(io : IO, declaration : TypeDecl, indent : String) : Nil
     prefix = declaration.visibility.empty? ? "" : "#{declaration.visibility} "
     io.puts "#{indent}#{prefix}#{render_type_header(declaration)}"
+    return if declaration.kind == "alias"
 
     inner = indent + "  "
     declaration.assoc_types.each { |name| io.puts "#{inner}type #{name}" }
@@ -1028,6 +1051,10 @@ module Crystal::IyiMod
     io << indent
     io << declaration.visibility << ' ' unless declaration.visibility.empty?
     io << render_type_header(declaration) << '\n'
+
+    # An alias is the whole declaration, and there is nothing to close: it
+    # names a type rather than declaring one.
+    return if declaration.kind == "alias"
 
     inner = indent + "  "
     declaration.assoc_types.each { |name| io << inner << "type " << name << '\n' }
@@ -1067,6 +1094,12 @@ module Crystal::IyiMod
         io << " : "
         supertraits.join(io, ", ")
       end
+
+      # `alias Handler = Context -> String`. The right-hand side is the type
+      # the alias resolved to rather than the text it was written as, for the
+      # reason a field's type is: this file is read where the module was not,
+      # and a name that resolved there may not resolve here.
+      io << " = " << declaration.value if declaration.kind == "alias"
     end
   end
 
@@ -1288,6 +1321,7 @@ module Crystal::IyiMod
     types.each do |declaration|
       write_string io, declaration.name
       write_string io, declaration.kind
+      write_string io, declaration.value
       write_string io, declaration.visibility
       write_strings io, declaration.type_parameters
       write_strings io, declaration.assoc_types
@@ -1302,6 +1336,7 @@ module Crystal::IyiMod
     Array(TypeDecl).new(io.read_bytes(UInt32, FORMAT)) do
       name = read_string(io)
       kind = read_string(io)
+      value = read_string(io)
       visibility = read_string(io)
       parameters = read_strings(io)
       assoc_types = read_strings(io)
@@ -1309,7 +1344,7 @@ module Crystal::IyiMod
       fields = read_pairs(io)
       methods = read_signatures(io)
       TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
-        visibility, read_type_declarations(io))
+        visibility, read_type_declarations(io), value)
     end
   end
 

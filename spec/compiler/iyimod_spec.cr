@@ -599,9 +599,12 @@ describe Crystal::IyiMod do
       secret = artifact.exports.types.find! { |declaration| declaration.name == "Secret" }
       secret.visibility.should eq "private"
       secret.fields.should eq [{"@n", "Int32"}]
-      # No methods: the consumer cannot reach them and the module's own object
-      # code already defines them.
-      secret.methods.should be_empty
+      # Headers, and only headers. The consumer cannot reach them and the
+      # module's own object code already defines them — but a body that
+      # travels calls them, and a call it cannot typecheck is refused before
+      # anything gets as far as being unreachable.
+      secret.methods.map(&.name).sort!.should eq ["initialize", "n"]
+      secret.methods.each { |signature| signature.required.should be_false }
 
       File.delete "app/box.iyi"
 
@@ -629,6 +632,96 @@ describe Crystal::IyiMod do
       expect_raises(Crystal::TypeException, /does not export App::Box::Secret/) do
         refuser.compile reaching, "unused"
       end
+    end
+  end
+
+  # A method that takes a block is instantiated with the caller's block inlined
+  # into it, so its machine code belongs to whoever wrote the block. The
+  # producer emits none — it would be a duplicate for a block it happened to
+  # write and missing for every block it did not — and the body travels instead,
+  # for the reason a generic's method and a trait's default do (SPEC.md IV.1g).
+  it "carries the body of a method that takes a block" do
+    with_tempdir("iyimod_block_bodies") do
+      Dir.mkdir_p "app"
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        pub class Box
+          alias Step = Int32 -> Int32
+
+          private record Entry,
+            step : Step
+
+          getter label : String
+          @entries : Array(Entry)
+
+          def initialize(@label : String)
+            @entries = [] of Entry
+          end
+
+          def add(&block : Int32 -> Int32) : Nil
+            @entries << Entry.new(step: block)
+          end
+
+          def run(start : Int32) : Int32
+            total = start
+            @entries.each { |entry| total = entry.step.call(total) }
+            total
+          end
+        end
+
+        pub def boxed(label : String, &block : Int32 -> Int32) : Box
+          box = Box.new(label)
+          box.add(&block)
+          box
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        box = App::Box.boxed("doubling") { |n| n * 2 }
+        box.add { |n| n + 1 }
+        puts box.label
+        puts box.run(5)
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "doubling\n11"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+
+      # Whatever the def is written on: a module's own `pub def` and a method
+      # of an exported class are the same case.
+      artifact.mono_bodies.keys.should contain "app/box#boxed(label : String)&block : (Int32 -> Int32)"
+      artifact.mono_bodies.keys.should contain "Box#add()&block : (Int32 -> Int32)"
+
+      box = artifact.exports.types.find! { |declaration| declaration.name == "Box" }
+
+      # Declaration order, because it is the layout the consumer's copy of
+      # `add` writes `@entries` at and the module's own `run` reads it from.
+      box.fields.map { |(name, _)| name }.should eq ["@label", "@entries"]
+
+      # The alias travels because a declaration that travels names it: the
+      # carried record's `step : Step` is the text this module was written
+      # with, and a consumer without the alias reads an undefined constant.
+      step = box.types.find! { |nested| nested.name == "Step" }
+      step.kind.should eq "alias"
+      step.value.should eq "Proc(Int32, Int32)"
+
+      File.delete "app/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "doubling\n11"
     end
   end
 
@@ -1452,9 +1545,11 @@ describe Crystal::IyiMod do
       declaration = Crystal::IyiMod.read(File.join("mods", "std", "box.iyimod"))
         .exports.types.find! { |candidate| candidate.name == "Box" }
 
-      # Sorted, because a hash's order is not a fact about the type and an
-      # artifact that changed between two identical builds would defeat IV.3.
-      declaration.fields.should eq [{"@count", "Int32"}, {"@item", "T"}]
+      # In the order they were declared, because that order is the layout: a
+      # field's offset is its position in this list, and a consumer compiling a
+      # body of this module's has to reach the same field the module's own
+      # object code does.
+      declaration.fields.should eq [{"@item", "T"}, {"@count", "Int32"}]
     end
   end
 

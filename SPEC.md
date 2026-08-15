@@ -1941,12 +1941,12 @@ module, `crystal mod dump FILE` prints it, and `crystal build --use-iyimod DIR`
 compiles an `import` from the artifact instead of the module's source — see
 IV.1f. `Exports` carries `pub def` signatures, exported type declarations with
 their parameters, associated types and methods, and impl records with what they
-answer, **and each type's own fields**. Layout templates, type descriptors and
-constants are not in it — those are what codegen needs rather than what the
-front end needs. **`MonoBodies` carries the bodies a consumer has to compile
-itself, `Initialiser` the module's own top-level code, and `TypeIds` the types
-its object code numbers** (IV.1g). `Hashes` and `MacroBodies` are declared in
-the `Section` enum and unwritten.
+answer, **and each type's own fields, in the order they were declared**. Layout
+templates and type descriptors are not in it — those are what codegen needs
+rather than what the front end needs. **`MonoBodies` carries the bodies a
+consumer has to compile itself, `Initialiser` the module's own top-level code,
+`TypeIds` the types its object code numbers, and `Constants` the names that code
+reads** (IV.1g). `MacroBodies` is declared in the `Section` enum and unwritten.
 
 Fields were meant to be in that second list and are not, which is worth saying
 plainly because the reason is a bug rather than a change of mind. A consumer
@@ -1959,7 +1959,8 @@ The line between "what the front end needs" and "what codegen needs" is not
 the line between what travels and what does not.
 
 **`ObjectCode` now carries a module's own machine code** — see IV.1g for what
-that turned out to mean and for the two things it does not yet carry.
+that turned out to mean, and for everything that turned out to be standing
+behind it.
 
 `std/list` reads back as:
 
@@ -2294,10 +2295,9 @@ here.
 | `immutable` | **the same** — a generic type, a 575-line trait, a generic impl |
 | `collections` | **the same** — the consumer's own type implementing the trait |
 | `init_order` | **the same** — including III.5's ordering, line for line |
-| `webapp` | **writes its artifacts**; linking from them fails on two symbols — below |
+| `webapp` | **the same** — the Kemal port, blocks and all |
 
-**Four of the five run, and the fifth got as far as the linker for the first
-time.** `webapp` — the Kemal port — used to stop at `--emit-iyimod`, because
+**All five run.** `webapp` — the Kemal port — used to stop at `--emit-iyimod`, because
 R-2 refuses an exported `def` that does not describe its block and
 `Router#namespace` took `&` with `with sub_router yield` inside it. The port now
 passes the sub-router as a block parameter: `& : Router -> Nil`, and its caller
@@ -2350,9 +2350,44 @@ mistake seen from either side.
 
 So a block-taking method belongs with a generic type's methods and a trait's
 defaults in IV.2's list: **its body has to travel and its machine code must
-not**. `iyi_bodies_travel?` asks that question of a *type* today, and this is
-the case that makes it a question about a `def`. Until it is, the Kemal port
-links no further.
+not**. `iyi_bodies_travel?` asked that question of a *type*, and this is the
+case that makes it a question about a `def` as well — whatever the def is
+written on, a module's own `pub def` and a method of an exported class alike.
+**Built.** The producer emits each instantiation into the unit that called it,
+private to that unit, so no symbol for one leaves the artifact; the body travels
+in `MonoBodies`; and the consumer compiles its own from the block it wrote.
+
+**And behind that one, three more** — each of them invisible until a consumer
+started compiling a body against a type it had only ever imported.
+
+*The aliases a declaration names* — **carried.** `Router` writes `alias Handler
+= Context -> String`, and the private records that travel take a `handler :
+Handler`. The text travels, so the name has to resolve on the far side, and it
+did not: an alias has neither a layout nor an id, which is the reason it was
+left out, and the reason it travels anyway is the other one a declaration does —
+something else's text names it. It arrives as what it resolved to rather than as
+what was written, on the same grounds as a field's type: the name resolved where
+the module was read from source, and this file is read somewhere else.
+
+*Whose machine code a def is* — **a question about the def, and not only about
+the type.** Codegen asked whether `self_type` came from an artifact and, if it
+did, emitted a signature with nothing under it. That is right for every method
+that arrived as a header and wrong for the two things that did not: the def
+whose body travelled, and a proc literal written inside that body. `add_route`
+builds one, and its `self` is the artifact's type while its code has never been
+anywhere but here.
+
+*A field's offset is its position in the list* — **so the list travels in
+declaration order.** The fields were sorted by name, for a good reason: a hash's
+order is not a fact about a type, and an artifact that changed between two
+identical builds would defeat IV.3. But the order *is* the layout, and sorting
+it was wrong in a way nothing could see for as long as everything a consumer
+compiled kept its hands off an imported type's fields. A travelled body is the
+first thing that does not: the consumer's `add_route` wrote `@routes` at the
+offset the module's own code reads `@filters` from. Every route went somewhere
+nobody looked — `app.routes` came back empty — and then the program segfaulted.
+Declaration order is no less deterministic than sorted order, because
+`instance_vars` is insertion-ordered and the insertions are the declarations.
 
 Both belong to IV.1g's rule rather than beside it: "a module's own code is the
 object files named after the types it declares" is what makes them missing, and
@@ -2842,9 +2877,11 @@ IV.1g that no amount of reasoning about blocks would have produced.
    somebody marked: it is every method a consumer has to compile, which the
    compiler can work out for itself. A generic type's methods, because
    instantiations belong to whoever writes them; a trait's defaults, because
-   they are stencilled onto the implementing type; and an impl's methods
-   *unless* its target is a non-generic type this module declares, because
-   otherwise they land in a unit the artifact cannot carry. `@[Monomorphize]`
+   they are stencilled onto the implementing type; an impl's methods *unless*
+   its target is a non-generic type this module declares, because otherwise
+   they land in a unit the artifact cannot carry; and **any def that takes a
+   block**, wherever it is written, because it is instantiated with the
+   caller's block inside it and the caller is the consumer. `@[Monomorphize]`
    remains the annotation for choosing to specialise something that would
    otherwise be a dictionary call (II.6); it is not what decides whether a body
    travels. See IV.1g.
