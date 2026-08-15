@@ -423,6 +423,9 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     source = String.build { |io| IyiMod.declarations(artifact, io) }
     parser = @program.new_parser(source)
     parser.filename = artifact_path
+    # The path is where these declarations came from and not a file anyone can
+    # read them out of, so the text goes where an error will look for it.
+    Crystal.register_iyi_declarations artifact_path, source
     @iyi_importing << artifact_path
     begin
       parsed_nodes = parser.parse

@@ -811,6 +811,61 @@ describe Crystal::IyiMod do
     end
   end
 
+  # An error in the declarations has a location in them, and the file that
+  # location names is binary — so the line it showed was the bytes of the
+  # container the declarations travelled in. The text is what the build read
+  # and the text is what it shows.
+  it "shows the declaration an error is in, not the bytes of the artifact" do
+    with_tempdir("iyimod_error_source") do
+      Dir.mkdir_p "app"
+      # A macro is the case that reaches this: `MacroBodies` is unwritten, so a
+      # travelling body that calls one arrives with the call and without it.
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        macro twice(x)
+          ({{x}} + {{x}})
+        end
+
+        pub def run(n : Int32, &block : Int32 -> Int32) : Int32
+          block.call(twice(n))
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box.run(5) { |n| n + 1 }
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "11"
+
+      File.delete "app/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.no_codegen = true
+
+      error = expect_raises(Crystal::TypeException, /undefined method 'twice'/) do
+        consumer.compile source, File.expand_path("unused")
+      end
+
+      rendered = error.to_s
+      rendered.should contain "block.call(twice(n))"
+      rendered.should contain "box.iyimod"
+      # The bytes the artifact starts with, which is what used to be shown.
+      rendered.should_not contain "IYIMOD"
+    end
+  end
+
   # A constant is typed and initialised where it is *read*, and on the far side
   # of an artifact the only reader is machine code the consumer did not compile.
   # So `kemal/dsl`'s `APP` was declared, assigned by the initialiser that

@@ -1947,7 +1947,13 @@ templates and type descriptors are not in it — those are what codegen needs
 rather than what the front end needs. **`MonoBodies` carries the bodies a
 consumer has to compile itself, `Initialiser` the module's own top-level code,
 `TypeIds` the types its object code numbers, and `Constants` the names that code
-reads** (IV.1g). `MacroBodies` is declared in the `Section` enum and unwritten.
+reads** (IV.1g). `MacroBodies` is declared in the `Section` enum and unwritten,
+which is now something a build can walk into: a body that travels may call a
+macro of its own module, and the consumer gets the call without the macro. It
+is refused where it is written, with the declaration shown — an error whose
+location is in the declarations reads them out of the text the build parsed,
+because the file that location names is binary and showing "the line" showed
+the bytes of the container.
 
 Fields were meant to be in that second list and are not, which is worth saying
 plainly because the reason is a bug rather than a change of mind. A consumer

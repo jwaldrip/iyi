@@ -75,6 +75,29 @@ module Crystal
     end
   end
 
+  # iyi: text a build parsed under a filename that is not a file to read.
+  #
+  # The declarations from a `.iyimod` are parsed under the artifact's own path,
+  # so that a location points at the module an error came from rather than at
+  # nothing. The artifact is binary, so showing "the line" showed the bytes of
+  # the container the declarations travelled in — a screen of mojibake under a
+  # message that was otherwise exact. The text is registered here on the way in
+  # and found here on the way out.
+  #
+  # Keyed by that path and overwritten at each import, which is what keeps it
+  # honest in a process that serves more than one build: the declarations are
+  # registered before anything can be typechecked against them, so the entry an
+  # error reads is the one this build read.
+  @@iyi_declaration_lines = {} of String => Array(String)
+
+  def self.register_iyi_declarations(filename : String, source : String) : Nil
+    @@iyi_declaration_lines[filename] = source.lines
+  end
+
+  def self.iyi_declaration_lines?(filename : String) : Array(String)?
+    @@iyi_declaration_lines[filename]?
+  end
+
   module ErrorFormat
     MACRO_LINES_TO_SHOW               = 3
     OFFSET_FROM_LINE_NUMBER_DECORATOR = 6
@@ -84,7 +107,7 @@ module Crystal
       in VirtualFile
         return format_macro_error(filename)
       in String
-        if File.file?(filename)
+        if Crystal.iyi_declaration_lines?(filename) || File.file?(filename)
           return format_error_from_file(filename)
         end
       in Nil
@@ -148,7 +171,7 @@ module Crystal
     end
 
     def format_error_from_file(filename : String)
-      lines = File.read_lines(filename)
+      lines = Crystal.iyi_declaration_lines?(filename) || File.read_lines(filename)
       formatted_error = format_error(
         filename: @filename,
         lines: lines,
@@ -190,7 +213,9 @@ module Crystal
       in Nil
         nil
       in String
-        if File.file? filename
+        if lines = Crystal.iyi_declaration_lines?(filename)
+          lines
+        elsif File.file? filename
           File.read_lines(filename)
         else
           nil
