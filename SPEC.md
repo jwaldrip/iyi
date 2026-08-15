@@ -332,9 +332,12 @@ only fair while iyi's library is this small, and it stops being flattering the
 moment iyi has one worth the name.
 
 **What is left is the same shape one order down.** 0.17 s of front end is 833
-lines of prelude analysed from source on every build — which is exactly the
-thing `.iyimod` removes, and the prelude is now a module small enough to be
-one. Item 1 and item 2 are still what closes the last 3×.
+lines of prelude analysed from source on every build, and the reading here at
+the time was that `.iyimod` removes exactly that. It does not: an artifact is
+declarations in text, and a consumer parses them and runs the top-level pass
+over them the same way. Measured in IV.1a once the artifact existed, on the
+largest import graph here, and it is worth nothing at this size. What removes
+the prelude's analysis is keeping it rather than serialising it — the daemon.
 
 **The third run, and the target is met.** Two changes, one of them to the
 instrument:
@@ -2114,10 +2117,13 @@ is for: a consumer wanting `Exports` must not have to page in `ObjectCode` to
 reach it, and forward compatibility falls out of the same property. Both are
 covered in `spec/compiler/iyimod_spec.cr` rather than asserted here.
 
-**Target:** reading the prelude's `.iyimod` should cost single-digit
-milliseconds, against the **~1.0 s** its top-level analysis costs today —
-measured, not estimated, and 2× the 0.5 s this section claimed before anyone
-had run the experiment. See IV.1a for what that does and does not buy.
+**Target, and what became of it:** reading the prelude's `.iyimod` was to cost
+single-digit milliseconds against the **~1.0 s** its top-level analysis cost
+when that was written. Item 3 took the analysis to 0.010 s by deleting 107,719
+lines of prelude, and IV.1a's re-measurement then took the target away: reading
+an artifact is parsing text and running the top-level pass over it, which is
+what reading the source was. The prelude is not made into an artifact, and the
+reason is a measurement rather than a preference.
 
 ### IV.1f Reading the artifact instead of the source
 
@@ -2643,6 +2649,46 @@ code comes from the artifact, not from re-analysing its source. The front end an
 codegen need the prelude for *different reasons*, and only the front end's reason
 is removed by caching analysis. Anyone building this will hit the same error and
 should not conclude from it that the design is unsound.
+
+**Measured again, now that it exists and the prelude is 1,053 lines: at this
+scale the artifact buys no measurable time.** `bench/artifact_speed.py` builds
+the Kemal port — the largest import graph here — from four modules' source and
+then from four modules' artifacts with every one of those sources deleted. The
+front end is the same figure either way, run after run, within a few percent.
+The full builds move by more than that between two runs of the same column, so
+this machine cannot separate them at all: what is being compared is smaller than
+what the machine does to any measurement of it.
+
+The reason it comes out this way is that **an artifact does not remove the pass
+that costs**. What it removes is reading a module's source and typing its
+bodies. What it does not remove is parsing — the declarations are text, and they
+arrive as text — or the top-level pass, which runs over those declarations
+exactly as it would have run over the source. At 107,719 lines the difference
+between "the source" and "its declarations" was three orders of magnitude. At
+400 it is nothing, and the parse of the declarations can cost more than the
+parse of the module.
+
+One thing the bench did find, and it was a defect rather than a difference: the
+consumer wrote every object file it unpacks out of an artifact on **every**
+build, to link bytes identical to the ones it linked last time. Six files on
+this program. It writes them only when they are not already there now, which is
+verified by the filesystem rather than by a stopwatch — a second build of an
+unchanged program rewrites none of the six, where it used to rewrite all of
+them.
+
+**So it decides the prelude question, which was the next item on the list.**
+Making the prelude an artifact would leave its 0.010 s top-level pass exactly
+where it is, because that pass is over declarations either way, and would save
+only the macro expansion — `primitives.iyi` writes 445 definitions from a loop
+over five types, and an artifact would carry them already written out. What
+removes the prelude's cost is not serialising the analysis but *keeping* it,
+which is the daemon (IV.1d): analysed types in memory, no parse and no pass.
+
+None of this is an argument against the artifact. It is the argument for what
+the artifact is actually for — R-1, so that a module compiles against
+declarations rather than source; IV.3, so that a build knows what to redo; and
+`ObjectCode`, so that a consumer links a module it never compiled. Speed at this
+size was never among them, and saying so is cheaper than measuring it twice.
 
 ### IV.1b End to end, with a real binary at the end
 

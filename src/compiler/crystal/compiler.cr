@@ -1611,7 +1611,24 @@ module Crystal
       program.iyi_artifact_objects.each do |module_name, units|
         units.each do |unit|
           name = "iyimod-#{safe_object_name(module_name)}-#{safe_object_name(unit.name)}#{extension}"
-          File.write File.join(output_dir, name), unit.code
+          path = File.join(output_dir, name)
+
+          # Only when it is not already there. This runs on every build, and
+          # the file it writes is a copy of bytes that came out of an artifact
+          # whose hash the build already checked — so the second build of an
+          # unchanged program was writing the module's machine code out again
+          # to link exactly what it linked last time. Measured on the Kemal
+          # port: a warm build from artifacts was 10% slower than the same
+          # build from source, and this was the difference.
+          #
+          # Sized first because a size that differs settles it without reading,
+          # and the bytes after that because a truncated or half-written copy
+          # from a killed build has to be replaced rather than linked.
+          info = File.info?(path)
+          same = info && info.size == unit.code.size &&
+                 File.open(path, "rb", &.getb_to_end) == unit.code
+          File.write(path, unit.code) unless same
+
           names << name
         end
       end
