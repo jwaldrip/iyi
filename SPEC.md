@@ -2326,17 +2326,33 @@ Reading costs one load in the consuming program and puts the constant back on
 the ordinary path, where initialisation stays lazy and stays in III.5's order,
 because reading a constant is what initialises it.
 
-*A module's proc literals* — **open, and now the only thing between the Kemal
-port and a program.** `add_route` builds `->(ctx : Context) {
-block.call(ctx).into_body }`, and the symbol for it is named after the file and
-line it was written on — `~procProc(Context, String)@kemal/router.iyi:211`. The
-router's unit refers to it; the producing build emitted it somewhere the
-artifact does not carry. A name with a source location in it is also a name a
-consumer could not reproduce from the artifact, whose declarations arrive under
-a different filename — so this one is not a list of names to carry, the way the
-type ids and the constants were. Either the definitions travel with the unit
-that refers to them, or proc literals stop being named by where they were
-written.
+*A module's proc literals* — **fixed, and not by carrying a list.** `add_route`
+builds `->(ctx : Context) { block.call(ctx).into_body }`, and the symbol for it
+is named after the file and line it was written on —
+`~procProc(Context, String)@kemal/router.iyi:211`. A proc literal is emitted
+into `_main`, so the router's unit referred to a definition in a module the
+artifact does not carry; and a name with a source location in it is one the
+consumer could not have reproduced either, since its declarations arrive under
+another filename. So the definition goes where the code that made it goes:
+while a unit that will travel is being emitted, its proc literals are emitted
+into that unit, private to it. Same answer, and the same reason, as the callees
+the closure already copies.
+
+**And behind that, the rule this section has been circling.** With the procs in
+place the port fails twice more, and both are one thing: a method that takes a
+block is instantiated *with the caller's block inlined into it* —
+`Kemal::Dsl::before_all<&Proc(Context, Nil)>`. The producing build made those
+instantiations because `webapp.iyi` called them, so they are in the unit the
+artifact carries; the consuming build makes its own, because the block is its
+own code. One is a duplicate symbol and the other — `Router#namespace` with a
+block the producer never wrote — is an undefined one, and they are the same
+mistake seen from either side.
+
+So a block-taking method belongs with a generic type's methods and a trait's
+defaults in IV.2's list: **its body has to travel and its machine code must
+not**. `iyi_bodies_travel?` asks that question of a *type* today, and this is
+the case that makes it a question about a `def`. Until it is, the Kemal port
+links no further.
 
 Both belong to IV.1g's rule rather than beside it: "a module's own code is the
 object files named after the types it declares" is what makes them missing, and

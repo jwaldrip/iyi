@@ -782,8 +782,30 @@ module Crystal
         node.def.set_type node.return_type
       end
 
-      the_fun = codegen_fun fun_literal_name, node.def, context.type, fun_module_info: @main_module_info, is_fun_literal: true, is_closure: is_closure
-      the_fun = check_main_fun fun_literal_name, the_fun
+      # iyi: into the unit that is travelling, when one is (SPEC.md IV.1g).
+      #
+      # A proc literal is otherwise emitted into `_main`, and the unit that
+      # creates one refers to it from there — which is fine for a program and
+      # not for an artifact: the router's unit called
+      # `~procProc(Context, String)@kemal/router.iyi:211` and the producing
+      # build had left the definition in a module nothing carries. Nor could
+      # the consumer make its own, because the name has the file and line it
+      # was written on in it and the consumer reads declarations under another
+      # filename.
+      #
+      # So it goes where the code that made it goes, private to that unit —
+      # the same answer, and the same reason, as the callees the closure
+      # already copies.
+      host = @iyi_closure_host
+      the_fun = codegen_fun fun_literal_name, node.def, context.type,
+        fun_module_info: host || @main_module_info, is_fun_literal: true,
+        is_closure: is_closure, iyi_internal: !host.nil?
+      the_fun =
+        if host
+          check_mod_fun host.mod, fun_literal_name, the_fun
+        else
+          check_main_fun fun_literal_name, the_fun
+        end
 
       set_current_debug_location(node) if @debug.line_numbers?
       fun_ptr = cast_to_void_pointer(the_fun.func)
