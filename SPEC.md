@@ -165,12 +165,37 @@ none need not pay it (IV.1a), and making the ordinary compiler not pay it means
 loading the code generator when codegen is asked for rather than when the
 process starts.
 
-Linking LLVM statically instead was tried first, on the theory that the cost is
-the shared object rather than what is in it. It is not a route on this system:
-the archives are installed and `LLVM_LDFLAGS="$(llvm-config-19 --libs
---system-libs --ldflags --link-static)"` produces a link that fails, and making
-it succeed is a packaging problem rather than an answer to the measurement
-above. The initialisers would run either way.
+**Two routes to not paying it were tried, and neither is cheap.**
+
+*Load the library when codegen asks for it.* The bindings are a `lib LibLLVM`,
+so the library is a `NEEDED` entry and the loader maps it before `main` — the
+question is whether the entry can be dropped and the library `dlopen`ed at the
+first call. It cannot, not this way: linking with
+`--unresolved-symbols=ignore-all` and `-z lazy` produces a binary the loader
+refuses to start at all — *unexpected PLT reloc type 0x00* — because what the
+linker leaves behind for an undefined symbol is not something lazy binding can
+finish. Deferring it properly means resolving every LLVM function through
+`dlsym` into a table of pointers, which is a rewrite of upstream's `lib
+LibLLVM` and a permanent divergence from it.
+
+*Link LLVM statically, so that the linker keeps only what is reached.* This one
+works, and it is worth less than it looks. `LLVM_LDFLAGS` with
+`--link-static` builds a compiler once `-lPolly` (not installed here) is
+dropped and `zstd` is named by its soname, and the result is a 129 MB binary
+that starts in 0.020 s against the shared build's 0.022 s. The reason so
+little moves is that the compiler *reaches* five targets — `to_target_machine`
+names x86, aarch64, arm, avr and webassembly — so five targets' initialisers are
+linked in and run. Measured on a C program that calls exactly those
+initialisers: 0.013 s through the shared monolith, 0.006 s statically with the
+five, 0.004 s statically with x86 alone.
+
+So the 0.018 s breaks down as about 0.002 s of Crystal runtime, 0.006 s of
+target initialisers the compiler genuinely reaches, and the rest the monolith's
+— every target LLVM ships, in a process that will use one. **Static linking
+takes the last part and leaves the middle**, which is 2-5 ms measured, for 75 MB
+of binary. It is not made the default on that trade, and the middle needs the
+initialisers to run *later* rather than not at all — which is the `dlsym` table
+above, and a larger piece of work than the number it wins.
 
 **3. A deliberately tiny prelude, written in iyi. Done — 1,053 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
