@@ -636,6 +636,29 @@ across every pass, codegen 115 ms, link 55 ms. Nothing in that list is the
 prelude, the artifact or the driver — it is the compiler compiling, which is the
 first time in this document that has been the answer.
 
+**And one of those terms is paid for work that is then thrown away.** After a
+one-line edit at 300 types the compiler reports `305/306 .o files were reused`
+— the per-unit cache doing exactly what it is for — and still spends 87 ms in
+`Codegen (crystal)`, which is building the LLVM IR for all 306 units. The IR is
+what the hash is taken *from*, so every unit is generated in order to discover
+that 305 of them did not need to be. What the cache saves is the back end after
+that point: `bc+obj` falls to 42 ms, of which most is bookkeeping over 306
+units, and the link is 60 ms for 306 objects.
+
+The obvious alternative is one module, and it is not better: measured both ways,
+unchanged source favours `--single-module` (0.257 s against 0.316 s, fewer files
+to check and one object to link) and **a real one-line edit favours the unit per
+type** (0.390 s against 0.505 s), which is the case that matters and the reason
+the default is what it is. The first attempt at this comparison said the
+opposite, because its "edit" for the first iteration rewrote the file with the
+text it already had; the number that came out was a warm build with nothing to
+do, and `min` picked it.
+
+So the work worth removing is generating IR for a unit whose object is going to
+be reused, and that needs a unit's *inputs* fingerprinted rather than its
+output — a dependency-tracking problem, not an optimisation. It is written down
+here rather than started.
+
 ### What Crystal's own 0.1.0 looked like
 
 The scope above was drawn before checking it against the one release most
