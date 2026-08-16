@@ -4,16 +4,38 @@
 what does a language look like when separate compilation is a rule instead of a
 feature?**
 
+Thirty modules. 7,208 lines. Change one line and build it again:
+
+| | iyi | Crystal | `go build` |
+|---|---|---|---|
+| **rebuild after one edit** | **0.17 s** | 1.24 s | 0.24 s |
+
+**That is the same program three times and the same compiler binary twice.**
+One script writes it in all three languages, and the benchmark will not start
+the clock until the three binaries print the same number. The Crystal column is
+no straw man: it is this compiler, compiling this program, under the rule that
+a class stays open until the last line of the last file, so every build has to
+read every file. Take that one rule away and the edit you just made costs
+**7x less**. Go is there because Go is good at this and is the bar worth
+clearing.
+
 The syntax stays. Union types, nil-safety, blocks, local inference: all kept.
 What changes is the compilation model, and everything that model forces.
 
 The design lives in [SPEC.md](SPEC.md). It is a working document, not a manual.
-It records what was measured, what was tried and thrown away, and why.
+It records what was measured, what was tried and thrown away, and why. Every
+number above comes out of `python3 bench/incremental.py` on one idle Linux
+machine, best of 7, and none of them is quoted from anywhere else.
+
+**Where it loses, said here rather than left to be found.** A warm full build
+of one 6,900-line program is 0.22 s against `go build`'s 0.08 s: iyi is quick
+where fixed costs are the bill and quick on the loop, and it is not quick at
+compiling a lot of code it has never seen. The [measured section](#what-it-costs-measured)
+has both halves.
 
 This is `0.1.0` in the sense of "the first thing that proves the claim". It is
 not ready for your project: no IO beyond `puts`, no concurrency, no package
-manager, Linux x86-64 only. [What is not here](#what-is-not-here) says the rest,
-and it is worth reading before the numbers are.
+manager, Linux x86-64 only. [What is not here](#what-is-not-here) says the rest.
 
 ## The program that makes the argument
 
@@ -84,30 +106,33 @@ $ iyi build --use-iyimod mods samples/iyi/webapp.iyi    # builds, links, runs, s
 ## What it costs, measured
 
 **The loop a person is actually in.** Nobody uses a language through full
-builds; they use it through changing a line and building again. Thirty
-modules, 300 types, 7,208 lines, written in both languages by one generator
-and refused unless the two binaries print the same number before anything is
+builds; they use it through changing a line and building again. Thirty modules,
+300 types, 7,208 lines, written in all three languages by one generator and
+refused unless the three binaries print the same number before anything is
 timed. Best of 7 on one idle Linux machine, release compiler, seconds:
 
-| what changed | iyi | `go build` |
-|---|---|---|
-| **one module's body** | **0.17** | 0.20 |
-| the entry file only | **0.15** | 0.21 |
-| nothing at all | 0.15 | 0.09 |
-| nothing cached anywhere | 0.74 | 3.89 |
-| the same edit, *without* artifacts | 0.29 | — |
+| what changed | iyi | Crystal | `go build` |
+|---|---|---|---|
+| **one module's body** | **0.17** | 1.24 | 0.24 |
+| the entry file only | **0.15** | 1.27 | 0.29 |
+| nothing at all | 0.16 | 1.17 | 0.09 |
+| nothing cached anywhere | 0.72 | 2.15 | 3.72 |
+| the same edit, *without* artifacts | 0.29 | — | — |
 
-**That last row is R-1's whole argument with a price on it.** Build the same
-edit with all thirty modules read from source and it costs 0.29 s; with the
-`.iyimod` files in hand the other twenty-nine arrive as declarations instead
-of source and it costs 0.17 s. The rule pays 1.7x on the loop it was written
-for, and it pays more as the code you are *not* editing grows.
+**Read the Crystal column as the price of one rule.** It is this compiler
+binary compiling this program, and it cannot do better: a Crystal class is open
+until the last line of the last file, so no build can trust anything it read
+last time. Nothing in that column moves whatever you edit, which is the point.
 
-**Go is the column to stand next to because Go is good at this.** Being 15%
-ahead of it is not the headline; being in the same class is. The last row is
-what the same edit costs with the rule switched off, and a compiler without it
-pays that on every build there will ever be. Run it yourself with
-`python3 bench/incremental.py`.
+**Read the last row as the price of R-1.** Build the same edit with all thirty
+modules read from source and it costs 0.29 s; with the `.iyimod` files in hand
+the other twenty-nine arrive as declarations instead of source and it costs
+0.17 s. The rule pays 1.7x on the loop it was written for, and it pays more as
+the code you are *not* editing grows.
+
+**Read the cold row with one caveat.** `go build` from nothing compiles its own
+dependencies once, which iyi has none of yet; the 3.72 s is honest for a first
+build on a fresh machine and it is not a claim about Go's compiler.
 
 **Now the less flattering number, and it is a full build.** `python3
 bench/build_speed.py`, same machine, warm:

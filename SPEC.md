@@ -3295,26 +3295,33 @@ timed in this document before this section was a *whole* build, and nobody uses
 a language through whole builds.
 
 `bench/incremental.py` builds a project rather than a file: 30 modules, 300
-types, 7,208 lines, written by one generator in iyi and in Go, and refused if
-the two binaries do not print the same number. Then it changes one line and
-builds again. Best of 7, seconds, release compiler, idle machine:
+types, 7,208 lines, written by one generator in iyi, in Crystal and in Go, and
+refused if the three binaries do not print the same number. Then it changes one
+line and builds again. Best of 7, seconds, release compiler, idle machine:
 
-| what changed | iyi | `go build` |
-|---|---|---|
-| nothing cached anywhere | 0.74 | 3.89 |
-| nothing at all | 0.15 | 0.09 |
-| **one module's body** | **0.17** | **0.20** |
-| the entry file only | 0.15 | 0.21 |
-| the same edit, without artifacts | 0.29 | — |
+| what changed | iyi | Crystal | `go build` |
+|---|---|---|---|
+| nothing cached anywhere | 0.72 | 2.15 | 3.72 |
+| nothing at all | 0.16 | 1.17 | 0.09 |
+| **one module's body** | **0.17** | **1.24** | **0.24** |
+| the entry file only | 0.15 | 1.27 | 0.29 |
+| the same edit, without artifacts | 0.29 | — | — |
 
-**Three things fall out of it, and the third is the one to keep.**
+**Four things fall out of it, and the last is the one to keep.**
 
-**The loop is where iyi wins, and it is the first row here that is not a fixed
-cost.** 0.17 s against Go's 0.20 s for the same edit to the same program.
-Go is not slow at this; Go is the reason this design exists. Beating it by 15%
-on a project this size is not a headline, and the headline is not the point:
-the point is that the two are *in the same class*, which no Crystal build of
-this program is.
+**The Crystal column is the whole argument in one number, and it is this
+compiler.** The same binary compiles that column; the difference is the
+language it is compiling. A Crystal class is open until the last line of the
+last file, so no build may trust anything it read last time, and every rebuild
+of this program costs 1.24 s no matter what moved in it. The same edit under
+R-1 and R-3 costs 0.17 s. **7.3x, on the language this is a fork of, measured
+rather than argued** — and it is the number this document has been promising
+since its first page.
+
+**The loop is also where iyi holds against Go.** 0.17 s against 0.24 s for the
+same edit to the same program. Go is not slow at this; Go is the reason this
+design exists. Being ahead by a quarter on a project this size is not the
+headline: being in the same class is.
 
 **The last row is R-1's argument with a price on it.** The same edit, built
 without artifacts so that all 30 modules are read and analysed from source,
@@ -3773,7 +3780,8 @@ For traceability, since several rules here rest on numbers rather than taste.
 | A second implementation of the language is what an interpreter costs | Crystal's interpreter stops on `samples/iyi/hello.iyi` line 12 at the module header, and 0 of the fork's 153 commits had touched it against 7,840 lines of parser and semantic change (V.11) |
 | A prefix is not a parent directory | working in `/tmp/x/crystal` with a cache at `/tmp/x/crystal-cache`, every object file was written to `-cache/…`; the same "No such file or directory" the cleaner race produces, from a different cause (V.10) |
 | A build's cache directory can be deleted underneath it | the cleaner keeps the ten most recently modified directories and runs after every compile; removing one mid-codegen reproduces both failures, the single-threaded path included, and reading the `compiler.lock` the build already holds fixes it (V.10) |
-| The edit loop is where R-1 pays, and it pays 1.7x | one module edited in a 30-module, 7,208-line project: 0.17 s with artifacts, 0.29 s without, against `go build`'s 0.20 s for the same edit (IV.3a) |
+| A module as the unit of compilation is worth 7.3x over Crystal | the same program, the same compiler binary, one module edited: 1.24 s as Crystal, 0.17 s as iyi, against `go build`'s 0.24 s (IV.3a) |
+| The edit loop is where R-1 pays, and it pays 1.7x | one module edited in a 30-module, 7,208-line project: 0.17 s with artifacts, 0.29 s without, against `go build`'s 0.24 s for the same edit (IV.3a) |
 | The path/name mapping needed more than snake_case | `camelcase` drops an underscore before a digit, so `v_1` and `v1` both give `V1`; requiring each group to start with a letter removes that and three sibling collisions (IV.6 #6) |
 
 ## Appendix B: Decisions awaiting your call
