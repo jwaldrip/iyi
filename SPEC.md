@@ -3186,6 +3186,18 @@ is the linker.
   paragraph is what keeps that from reading as a bug in the artifact rather
   than a feature the language has not been asked for.
 
+**R-3 is refused where somebody reaches for it.** The way a Crystal programmer
+adds a method to an imported type is a qualified declaration: `struct
+App::A::Point` inside their own module. iyi has no open classes, so that path
+does not resolve, and the compiler used to do the helpful thing and create
+`Main::App`, `Main::App::A` and a second `Point` inside them. The program then
+failed somewhere else with `wrong number of arguments for
+'Main::App::A::Point.new'`, which names neither the rule nor the type the author
+meant. It is refused at the declaration now, naming both, and pointing at the
+`impl` that R-3 does allow. A file's own namespace is untouched, and so is
+`module app/formal` beside `module app/greeter`, which share `App` because the
+parser wrote both.
+
 **R-2 is enforced where the artifact is written, and until recently only half
 of it was.** The block rule below was checked and the rest was not: `pub def
 greet(name)` compiled, the artifact recorded `def greet(name)`, and the cost

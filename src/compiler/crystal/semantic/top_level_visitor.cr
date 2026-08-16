@@ -2042,10 +2042,61 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       else
         prefix = path.clone
         prefix.names.pop
+        iyi_check_not_reopening(node, path, prefix)
         lookup_type_def_name_creating_modules prefix
       end
 
     check_type_is_type_container(scope, path)
+  end
+
+  # iyi: R-3, at the declaration that tries to get around it.
+  #
+  # `struct App::A::Point` inside another module is what somebody writes when
+  # they want to add a method to a type they imported. Crystal reads it as
+  # reopening. iyi cannot, so the path does not resolve here and the next few
+  # lines would helpfully create `Main::App`, `Main::App::A` and a second
+  # `Point` in them. The program then fails somewhere else entirely, with
+  # `wrong number of arguments for 'Main::App::A::Point.new'`, and the reader
+  # has no way back to the rule they broke.
+  #
+  # So: if the path names a type that exists somewhere this file can see, the
+  # declaration is refused here instead. Only for `.iyi` files, because a
+  # qualified declaration is exactly how a `.cr` file reopens a type, which is
+  # a thing Crystal has and iyi does not.
+  private def iyi_check_not_reopening(node : ASTNode, path : Path, prefix : Path) : Nil
+    filename = path.location.try(&.filename)
+    return unless filename.is_a?(String) && filename.ends_with?(".iyi")
+
+    # `module app/formal` is a qualified declaration the parser wrote, not one
+    # the author did, and two modules under `app/` share the namespace by
+    # design. The marker is the parser's own.
+    return if node.responds_to?(:iyi_unit?) && node.iyi_unit?
+
+    # The namespace being declared into, and then the type itself: `struct
+    # App::A::Point` is refused because `App::A` is somebody else's, and
+    # `struct App::A` because `App::A` is.
+    existing = [prefix, path].compact_map do |candidate|
+      current_type.lookup_path(candidate).as?(Type) || program.lookup_path(candidate).as?(Type)
+    end.first?
+    return unless existing
+
+    # A namespace this file declared is its own to add to.
+    locations = existing.locations
+    return if locations.try &.any? { |location| location.filename == filename }
+
+    declared_in = locations.try(&.first?).try(&.filename)
+    where = declared_in.is_a?(String) ? " (declared in `#{declared_in}`)" : ""
+
+    path.raise <<-MSG
+      `#{path}` already exists#{where}, and this file cannot add to it
+
+      R-3: iyi has no open classes. A type's methods are the ones its own module
+      declares, which is what lets a consumer answer "does this type implement
+      that trait?" by reading one `.iyimod` instead of the whole program.
+
+      Add the method where the type is declared, or write `impl Trait for #{path}`
+      here, which R-3 allows when the trait is this module's.
+      MSG
   end
 
   def check_type_is_type_container(scope, path)

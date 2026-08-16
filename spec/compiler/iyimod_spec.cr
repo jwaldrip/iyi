@@ -641,6 +641,73 @@ describe Crystal::IyiMod do
     end
   end
 
+  # R-3 says there are no open classes, and the way somebody reaches for one is
+  # a qualified declaration: `struct App::A::Point` inside their own module.
+  # Crystal reads that as reopening. iyi cannot, so it used to create a second
+  # `Point` under `Main::App::A` and fail later with `wrong number of arguments
+  # for 'Main::App::A::Point.new'`, which names neither the rule nor the type
+  # the author meant.
+  it "refuses a declaration that adds to another module's namespace" do
+    with_tempdir("iyi_r3_reopen") do
+      Dir.mkdir_p "app"
+      File.write "app/a.iyi", <<-IYI
+        module app/a
+
+        pub struct Point
+          getter x : Int32
+
+          def initialize(@x : Int32)
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/a
+
+        struct App::A::Point
+          def doubled : Int32
+            x * 2
+          end
+        end
+
+        puts App::A::Point.new(2).doubled
+        IYI
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      compiler = create_spec_compiler
+      compiler.prelude = "iyi/prelude"
+      compiler.no_codegen = true
+      expect_raises(Crystal::TypeException, /`App::A::Point` already exists.*cannot add to it/m) do
+        compiler.compile source, "unused"
+      end
+
+      # A file's own namespace is its own to declare into, and two modules
+      # under `app/` share `App` by design: neither is reopening.
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/a
+
+        module Helpers
+        end
+
+        struct Helpers::Thing
+          def n : Int32
+            7
+          end
+        end
+
+        puts Helpers::Thing.new.n + App::A::Point.new(2).x
+        IYI
+      allowed = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      ok = create_spec_compiler
+      ok.prelude = "iyi/prelude"
+      ok.compile allowed, File.expand_path("allowed")
+      `./allowed`.chomp.should eq "9"
+    end
+  end
+
   # R-2 was a rule the format assumed and nothing checked, and the cost of that
   # landed on the consumer: `pub def greet(name)` compiled, the artifact
   # recorded `def greet(name)`, and a build reading it typed the call from a
