@@ -78,6 +78,7 @@ import os
 import pathlib
 import re
 import shutil
+import sys as _sys
 import subprocess
 import sys
 import tempfile
@@ -112,6 +113,15 @@ FRONT = ROOT / ".build" / "crystal-front"
 FRONT_END_TARGET = 0.05
 
 RUNS = 3
+
+# The second pair, generated rather than written: see
+# `bench/build_speed/generate_pair.py` for why, and for what it emits. 300
+# types is about 6,900 lines of iyi and 6,000 of Go — enough that user code is
+# the bill rather than the fixed costs, which is the thing `hello` cannot say.
+MEDIUM_TYPES = 300
+
+_sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "build_speed"))
+import generate_pair  # noqa: E402
 
 # Runs for the one figure the target is decided on.
 #
@@ -324,6 +334,37 @@ def link_seconds(source, out_dir):
     return link, total
 
 
+def same_program(iyi_source, go_source, out_dir):
+    """Whether the generated pair really is one program, asked of the binaries.
+
+    The pair is generated from one loop, so the two files are the same shape by
+    construction — but "by construction" is the kind of claim this bench exists
+    to replace with a run. Both are built and both are run, and if they print
+    different things the rows are dropped rather than reported.
+    """
+    cache = out_dir / "cache_same"
+    cache.mkdir(parents=True, exist_ok=True)
+    iyi_binary, go_binary = out_dir / "same_iyi", out_dir / "same_go"
+
+    if not run([str(CRYSTAL), "build", "-o", str(iyi_binary), str(iyi_source)],
+               env={**CRYSTAL_ENV, "CRYSTAL_CACHE_DIR": str(cache)}):
+        return None
+    if shutil.which("go") is None:
+        return None
+    if not run(["go", "build", "-o", str(go_binary), go_source.name],
+               env={"GOCACHE": str(out_dir / "gocache_same"), "GOFLAGS": "-mod=mod"},
+               cwd=str(go_source.parent)):
+        return None
+
+    printed = []
+    for binary in (iyi_binary, go_binary):
+        result = subprocess.run([str(binary)], capture_output=True)
+        if result.returncode != 0:
+            return None
+        printed.append(result.stdout)
+    return printed[0] == printed[1]
+
+
 def time_link_floor(out_dir):
     """What linking anything at all costs here: one C object, through `cc`.
 
@@ -395,6 +436,21 @@ def main():
         # Where the warm build actually goes, and what a different linker does
         # about it. Both are measured here rather than described in SPEC.md,
         # for the reason the Go column is.
+        # The pair that has user code in it. Written into the temp directory
+        # rather than the repository, because ten thousand generated lines in
+        # git are a thing nobody reads and everybody diffs.
+        medium_iyi, medium_go = generate_pair.write_pair(out, MEDIUM_TYPES)
+        medium_agrees = same_program(medium_iyi, medium_go, out)
+        if medium_agrees:
+            medium_front = time_crystal(medium_iyi, out, codegen=False, cold=True)
+            medium_cold = time_crystal(medium_iyi, out, codegen=True, cold=True)
+            medium_warm = time_crystal(medium_iyi, out, codegen=True, cold=False)
+            medium_go_cold = time_go(medium_go, out, cold=True)
+            medium_go_warm = time_go(medium_go, out, cold=False)
+        else:
+            medium_front = medium_cold = medium_warm = None
+            medium_go_cold = medium_go_warm = None
+
         link_taken, stats_total = link_seconds(hello_iyi, out)
         link_floor = time_link_floor(out)
         alternatives = [
@@ -420,6 +476,16 @@ def main():
     print(f"  hello.iyi      front end (--no-codegen)   {show(front_hello)}       —")
     print(f"  hello.iyi      end to end                 {show(e2e_cold)}  {show(e2e_warm)}")
     print(f"  hello.go       go build                   {show(go_cold)}  {show(go_warm)}")
+    print("  " + "-" * 56)
+    if medium_agrees:
+        lines = f"{MEDIUM_TYPES} types"
+        print(f"  medium.iyi     front end (--no-codegen)   {show(medium_front)}       —")
+        print(f"  medium.iyi     end to end                 {show(medium_cold)}  {show(medium_warm)}")
+        print(f"  medium.go      go build                   {show(medium_go_cold)}  {show(medium_go_warm)}")
+        print(f"                 generated pair, {lines}, verified to print the same")
+    elif medium_agrees is False:
+        print("  medium.iyi/.go the generated pair printed different things —")
+        print("                 not timed, because it is not one program")
     print("  " + "-" * 56)
     print(f"  webapp.iyi     front end (iyi only)       {show(front_webapp)}       —")
     if front_only:
