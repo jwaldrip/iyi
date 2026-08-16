@@ -1513,6 +1513,12 @@ module Crystal
       return nil if @iyi_link_driver_only
       return nil if ENV["CRYSTAL_LINK_DRIVER"]?
       return nil unless DEFAULT_LINKER == "cc"
+      # Where it has been measured, and nowhere else. The shape this parses is
+      # a GNU driver's: `collect2`, an LTO plugin, `-fuse-ld=`. A macOS `cc`
+      # prints `ld64` with different arguments, and the template would either
+      # fail and fall back — one wasted link per set of flags — or work by
+      # accident. Somebody with the machine to measure it can widen this.
+      return nil unless codegen_target.linux?
 
       template = iyi_link_template(link_flags, lib_flags)
       return nil unless template
