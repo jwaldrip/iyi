@@ -641,6 +641,57 @@ describe Crystal::IyiMod do
     end
   end
 
+  # R-2 was a rule the format assumed and nothing checked, and the cost of that
+  # landed on the consumer: `pub def greet(name)` compiled, the artifact
+  # recorded `def greet(name)`, and a build reading it typed the call from a
+  # return type that was not there. The producer emitted `greet<String>:String`
+  # and the consumer asked the linker for `greet<String>:Nil`.
+  it "refuses an exported def that does not write its types down" do
+    with_tempdir("iyimod_r2") do
+      Dir.mkdir_p "app"
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/a
+
+        puts App::A.greet("x")
+        IYI
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      write = ->(body : String) do
+        File.write "app/a.iyi", "module app/a\n\n#{body}\n"
+        compiler = create_spec_compiler
+        compiler.prelude = "iyi/prelude"
+        compiler.emit_iyimod = "mods"
+        compiler.no_codegen = true
+        compiler
+      end
+
+      expect_raises(Crystal::TypeException, /`greet` is exported and does not say what `name` is/) do
+        write.call("pub def greet(name)\n  \"hi \#{name}\"\nend").compile source, "unused"
+      end
+
+      expect_raises(Crystal::TypeException, /`greet` is exported and does not say what it returns/) do
+        write.call("pub def greet(name : String)\n  \"hi \#{name}\"\nend").compile source, "unused"
+      end
+
+      # Written down, and the same program builds from the artifact and prints
+      # what the build from source prints.
+      compiler = write.call("pub def greet(name : String) : String\n  \"hi \#{name}\"\nend")
+      compiler.no_codegen = false
+      compiler.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "hi x"
+
+      File.delete "app/a.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "hi x"
+    end
+  end
+
   # A method that takes a block is instantiated with the caller's block inlined
   # into it, so its machine code belongs to whoever wrote the block. The
   # producer emits none — it would be a duplicate for a block it happened to

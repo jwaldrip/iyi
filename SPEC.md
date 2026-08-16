@@ -3186,6 +3186,21 @@ is the linker.
   paragraph is what keeps that from reading as a bug in the artifact rather
   than a feature the language has not been asked for.
 
+**R-2 is enforced where the artifact is written, and until recently only half
+of it was.** The block rule below was checked and the rest was not: `pub def
+greet(name)` compiled, the artifact recorded `def greet(name)`, and the cost
+landed on somebody else. A consumer types a call from the return type alone,
+since the body stays behind, so it inferred `Nil` and asked the linker for
+`greet<String>:Nil` while this module had emitted `greet<String>:String`. The
+module's own build was clean and the consumer's failed on a mangled symbol that
+named no rule. Both halves are checked now, at the same place, and the message
+names R-2 and the parameter.
+
+Two things are exempt and both for the same reason: the type is already written
+down somewhere a consumer reads. `initialize` answers the type it is defined on,
+a setter answers what it was handed, and a method inside an `impl` is checked
+against the trait's `abstract def`, which is where its types are.
+
 **A block parameter is a parameter (R-2).** An exported `def` that takes a
 block has to say what the block is: `pub def namespace(path : String, &)` says
 a block arrives and nothing about it. Inside the module that is enough, because

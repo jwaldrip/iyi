@@ -973,7 +973,10 @@ module Crystal::IyiMod
   # without it — they are there for a body that travels to typecheck against,
   # not for anyone to call.
   def self.signature(a_def : Def, check_block : Bool = true) : Signature
-    check_block_annotated a_def if check_block
+    if check_block
+      check_block_annotated a_def
+      check_types_written a_def
+    end
 
     parameters = a_def.args.map_with_index do |arg, index|
       a_def.splat_index == index ? "*#{arg}" : arg.to_s
@@ -1024,6 +1027,55 @@ module Crystal::IyiMod
       `yield` left to infer the block from.
 
       Annotate it — `& : Elem -> Nil` — or leave the def unexported.
+      MSG
+  end
+
+  # iyi: R-2 itself, at the place the artifact is written.
+  #
+  # "Everything a module exports carries full parameter and return types" was a
+  # rule the format assumed and nothing checked. What that cost is paid by the
+  # consumer rather than by the author: `pub def greet(name)` compiles, the
+  # artifact records `def greet(name)`, and a build that reads it types the call
+  # from a return type that is not there. The producer emitted
+  # `greet<String>:String` and the consumer asks for `greet<String>:Nil`, so the
+  # module's own build is fine and somebody else's fails at the linker, naming a
+  # mangled symbol and no rule.
+  #
+  # `initialize` is exempt: it answers the type it is defined on, and writing
+  # that down would be the one annotation a reader cannot get wrong. So is a
+  # setter, which answers what it was handed.
+  private def self.check_types_written(a_def : Def) : Nil
+    # A method in an `impl` is not asked twice. The trait already wrote the
+    # types down (`abstract def show : String`), the impl is checked against
+    # them, and a consumer types the call from the trait rather than from here.
+    return if a_def.iyi_from_impl?
+
+    untyped = a_def.args.reject(&.restriction).map(&.name)
+    unless untyped.empty?
+      a_def.raise <<-MSG
+        `#{a_def.name}` is exported and does not say what #{untyped.size == 1 ? "`#{untyped.first}` is" : "#{untyped.map { |name| "`#{name}`" }.join(", ")} are"}
+
+        R-2 asks an exported signature for full types, so that a module reading \
+        it from a `.iyimod` infers nothing. Nothing here can be recovered from \
+        the body, because the body is what stays behind.
+
+        Annotate the parameter, or leave the def unexported.
+        MSG
+    end
+
+    return if a_def.return_type
+    return if a_def.name == "initialize"
+    return if a_def.name.ends_with?('=')
+
+    a_def.raise <<-MSG
+      `#{a_def.name}` is exported and does not say what it returns
+
+      R-2 asks an exported signature for full types. A consumer types a call to \
+      this from the return type alone, since the body stays in this module: \
+      without one it infers `Nil`, and the symbol it then asks the linker for is \
+      not the symbol this module emitted.
+
+      Annotate the return type, or leave the def unexported.
       MSG
   end
 
