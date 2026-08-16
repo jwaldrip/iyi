@@ -1,9 +1,25 @@
 name: iyi
 
-# What iyi adds to Crystal, checked on its own. The other workflows in this
-# directory test the compiler this one is a fork of; none of them compiles a
-# `.iyi` file, reads a `.iyimod`, or deletes a module's source to see whether
-# the artifact was enough.
+# The only workflow this fork runs.
+#
+# Crystal's own CI is a matrix of platforms, package managers, LLVM versions and
+# release jobs for a project that ships all of them. iyi is Linux x86-64, ships
+# one tarball, and has one claim to protect. What was here before spent minutes
+# on macOS, Windows, MinGW and wasm runs that nobody read and that no failure
+# here would have been acted on. CI that cannot fail for a reason somebody will
+# act on is not a test, it is weather.
+#
+# What is left, and why each one is here:
+#
+#   iyi       the rules, the artifact, the import path: this fork's own work
+#   crystal   Crystal's own suites, because the fork edits Crystal's compiler
+#             and its standard library, and that is the net under both
+#   samples   every sample, then the same programs built again with the modules'
+#             source deleted, which is R-1 taken literally
+#   targets   the platform files the standard library still carries, type-checked
+#             by cross-compiling: an edit to `src/lib_c` or `src/crystal/system`
+#             is invisible on this machine until somebody builds for that machine
+#   binary    the thing a person downloads, unpacked somewhere else and run
 on: [push, pull_request]
 
 permissions: {}
@@ -13,11 +29,11 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
-  specs:
+  iyi:
     runs-on: ubuntu-24.04
     container:
       image: crystallang/crystal:1.21.0-build
-    name: "iyi specs"
+    name: "The rules, the artifact and the import path"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -30,13 +46,41 @@ jobs:
       - name: Formatted
         run: ./bin/crystal tool format --check src spec
 
-      - name: The rules, the artifact and the import path
+      - name: iyi's own specs
         run: |
           ./bin/crystal spec \
             spec/compiler/iyimod_spec.cr \
             spec/compiler/iyi_import_spec.cr \
             spec/compiler/semantic/iyi_spec.cr \
             spec/compiler/compiler_spec.cr
+
+  crystal:
+    runs-on: ubuntu-24.04
+    container:
+      image: crystallang/crystal:1.21.0-build
+    name: "Crystal's own specs, which this fork can break"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build the compiler
+        run: make crystal
+
+      # The parser, the semantic passes and the codegen are shared with the
+      # language this is a fork of. Every rule iyi adds is a change to them.
+      - name: Compiler specs
+        run: make compiler_spec
+
+      - name: Primitives specs
+        run: make primitives_spec
+
+      # The prelude iyi ships is its own, but the compiler is still a Crystal
+      # program and is built with this library.
+      - name: Standard library specs
+        run: make std_spec threads=1
+        env:
+          CRYSTAL_WORKERS: 1
 
   samples:
     runs-on: ubuntu-24.04
@@ -65,6 +109,40 @@ jobs:
       # print.
       - name: Build the samples again with their modules' source deleted
         run: bash bench/samples_roundtrip.sh
+
+  targets:
+    runs-on: ubuntu-24.04
+    container:
+      image: crystallang/crystal:1.21.0-build
+    name: "The platforms the library still carries"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build the compiler
+        run: make crystal
+
+      # Cross-compiling type-checks that platform's `src/lib_c` and
+      # `src/crystal/system` without needing the platform. It emits an object
+      # and links nothing, so a missing library on this runner is not a
+      # failure and a missing declaration is.
+      - name: Type-check the standard library for each target
+        run: |
+          echo 'puts "hi"' > /tmp/hi.cr
+          status=0
+          for target in x86_64-linux-gnu x86_64-linux-musl aarch64-linux-gnu \
+                        arm-linux-gnueabihf x86_64-darwin aarch64-darwin \
+                        x86_64-w64-mingw32 x86_64-windows-msvc; do
+            printf '== %-24s' "$target"
+            if ./bin/crystal build --cross-compile --target "$target" \
+                 -o "/tmp/cross-$target" /tmp/hi.cr > "/tmp/log-$target" 2>&1; then
+              echo ok
+            else
+              echo FAILED; cat "/tmp/log-$target"; status=1
+            fi
+          done
+          exit $status
 
   binary:
     runs-on: ubuntu-24.04

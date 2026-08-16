@@ -1,11 +1,15 @@
 # Reporting a Vulnerability
 
-Should you find any security-related issue, please _do not share them openly_ in
-the issue tracker. We have a dedicated mailbox where we keep track of them:
+This is a pre-release fork of [Crystal](https://github.com/crystal-lang/crystal)
+and it has no users to protect yet. It is not built for production and the
+README says so.
 
-<security@manas.tech>
+**If the issue is in Crystal**, which is most of this code, report it to
+Crystal: <security@manas.tech>. That is their mailbox and their process, and it
+reaches everybody the bug actually affects.
 
-You can encrypt your message via [Keybase](https://keybase.io/encrypt) (set
-recipient `crystal`) or with our [PGP key](https://crystal-lang.org/community/crystal-pgp-key.txt)
-(fingerprint `5995 C83C D754 BE44 8164 1929 0961 7FD3 7CC0 6B54`)
-also available on [Keybase server](https://keybase.io/crystal/pgp_keys.asc).
+**If the issue is in what this fork added** — the `.iyimod` artifact reader, the
+import path, the rules in [SPEC.md](SPEC.md) — open a private security advisory
+on this repository, or an ordinary issue if it is not sensitive. A malformed or
+hostile `.iyimod` is the interesting case: the reader is the one place here that
+parses something a program did not write itself.

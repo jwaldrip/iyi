@@ -174,7 +174,7 @@ simple_smoke_test: $(O)/std_spec$(EXE)
 smoke_test: ## Build std specs, compiler specs and compiler as a smoke test
 smoke_test: $(O)/std_spec$(EXE) $(O)/compiler_spec$(EXE) $(O)/$(CRYSTAL_BIN)
 
-SHELLCHECK_SOURCES := $(wildcard **/*.sh) $(wildcard **/*.bash) bin/crystal bin/ci bin/check-compiler-flag scripts/git/pre-commit
+SHELLCHECK_SOURCES := $(wildcard **/*.sh) $(wildcard **/*.bash) bin/crystal bin/check-compiler-flag scripts/git/pre-commit
 
 .PHONY: lint-shellcheck
 lint-shellcheck:
