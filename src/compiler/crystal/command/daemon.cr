@@ -56,14 +56,14 @@ class Crystal::Command
       daemon_build
     when "--help", "-h"
       puts <<-USAGE
-        Usage: crystal daemon [start|build] [switches]
+        Usage: #{Command.program_name} daemon [start|build] [switches]
 
         Analyses the prelude once and forks a child per build, so a build does
         not re-analyse it. Start a daemon in one terminal and send builds to it
         from another:
 
-            crystal daemon start
-            crystal daemon build hello.cr
+            #{Command.program_name} daemon start
+            #{Command.program_name} daemon build hello.iyi
 
         Command:
             start (default)      run the daemon in the foreground
@@ -72,8 +72,9 @@ class Crystal::Command
         Switches:
             --socket PATH        socket to listen on / connect to
 
-        Set CRYSTAL_DAEMON_SOCKET and an ordinary `crystal build` is served by
-        that daemon too, falling back to a normal build if it is not there.
+        Set CRYSTAL_DAEMON_SOCKET and an ordinary `#{Command.program_name} build`
+        is served by that daemon too, falling back to a normal build if it is
+        not there.
         USAGE
       exit
     else
@@ -174,7 +175,7 @@ class Crystal::Command
       preanalysed = Compiler.new.preanalyse_prelude
       Compiler.preanalysed[preanalysed.key] = preanalysed
 
-      STDERR.puts "crystal daemon listening on #{path}"
+      STDERR.puts "#{Command.program_name} daemon listening on #{path}"
       STDERR.puts "prelude analysed in #{elapsed.elapsed.total_seconds.round(3)}s"
       STDERR.flush
 
@@ -451,7 +452,7 @@ class Crystal::Command
         STDERR.puts "crystal: daemon at #{path} did not answer, building without it"
         return
       end
-      abort! "no daemon listening on #{path} (start one with `crystal daemon start`)", :FAILURE
+      abort! "no daemon listening on #{path} (start one with `#{Command.program_name} daemon start`)", :FAILURE
     end
 
     # The child runs a full command line, so put back the subcommand this one

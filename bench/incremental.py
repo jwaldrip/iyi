@@ -282,7 +282,11 @@ def main():
     iyi = Iyi(iyi_root, work / "cache")
     crystal = Crystal(crystal_root, work / "crystal-cache")
     go = Go(go_root, work / "gocache")
-    languages = (iyi, crystal, go)
+    languages = [iyi, crystal, go]
+
+    # No daemon column. It was measured — one module edited, 0.18–0.28 s built
+    # normally against 0.20–0.24 s through it — and it buys nothing now that
+    # the prelude it existed to hold is 1,053 lines (SPEC.md IV.1d).
 
     # One program, or nothing here means anything.
     for lang in languages:
@@ -310,17 +314,20 @@ def main():
     print(f"  after the same edit, all three print the same thing: "
           f"{'yes' if same_after else 'NO — nothing below counts'}")
     print()
-    print("  what changed                        iyi    crystal   go build")
-    print("  " + "-" * 58)
+    names = [lang.name for lang in languages]
+    header = "  what changed                  " + "".join(f"{name:>14}" for name in names)
+    print(header)
+    print("  " + "-" * (len(header) - 2))
     for key, label in (("cold", "nothing cached anywhere"),
                        ("warm", "nothing at all"),
                        ("module", "one module's body"),
                        ("main", "the entry file only")):
-        print(f"  {label:32}{show(figures['iyi'][key])}"
-              f"     {show(figures['crystal'][key])}     {show(figures['go build'][key])}")
-    print("  " + "-" * 58)
-    print(f"  {'the same edit, no artifacts':32}"
-          f"{show(figures['iyi']['module_from_source'])}          —          —")
+        row = "".join(f"{show(figures[name][key]):>14}" for name in names)
+        print(f"  {label:28}{row}")
+    print("  " + "-" * (len(header) - 2))
+    blank = "".join(f"{'—':>14}" for _ in names[1:])
+    print(f"  {'the same edit, no artifacts':28}"
+          f"{show(figures['iyi']['module_from_source']):>14}{blank}")
     print("  (what R-1 buys on the loop is the difference between that row and")
     print("   `one module's body`: every other module read as declarations")
     print("   instead of source)")

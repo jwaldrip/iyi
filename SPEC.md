@@ -2999,11 +2999,33 @@ The other honest limit: codegen's own prelude cost is untouched: 0.7 s of the
 2.2 s build, now the dominant term, and reducing it is the object-code
 section's job, which Crystal's existing `.o` reuse already does part of.
 
-### IV.1d The daemon. The measurement, shipped
+### IV.1d The daemon. The measurement, shipped, and then outlived
 
-`crystal daemon` analyses the prelude once and forks a child per build, so the
-1.9× above is available to an actual user without `.iyimod` existing. Measured
-on `hello.iyi`, five consecutive builds with the output deleted each time:
+**Read this section knowing how it ends.** The daemon was built to hold
+Crystal's 107,719-line prelude analysed between builds, and it did, and then
+0.1.0 item 3 replaced that prelude with 1,053 lines of iyi and left it nothing
+to hold. Measured again on the edit loop of IV.3a, 30 modules and 7,208 lines,
+each build checked to produce a program that prints what the edit says it
+should:
+
+| | one module edited, rebuilt |
+|---|---|
+| `iyi build` | 0.18–0.28 s |
+| the same through the daemon | 0.20–0.24 s |
+
+**Nothing, within the noise, and a socket round trip to pay for it.** The term
+it removes is prelude analysis, and iyi's prelude is small enough that
+analysing it is no longer a term. So the daemon stays in the compiler, where it
+is Crystal's to use on Crystal's prelude, and `iyi` does not offer it: a
+command that costs a terminal and buys nothing is not a command.
+
+The measurement that follows is the one that built it, kept because it was true
+and because the shape — *a thing measured, shipped, and then made pointless by
+the next thing measured* — is the second time this document has had to record
+it (0.1.0 item 2 is the first).
+
+Measured on `hello.iyi`, five consecutive builds with the output deleted each
+time:
 
 | | |
 |---|---|
@@ -3778,6 +3800,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | A first release's prelude is ~3.5k lines | Crystal 0.1.0 shipped 8,161 lines of library, 3,551 of it the core that a prelude is; the rest is `json`/`yaml`/`http` |
 | Self-hosting only gets more expensive | Crystal self-hosted at 24,984 lines of compiler and 8,161 of library, before its 0.1.0; iyi's fork starts at 95,010 and 196,217, and is 87,421 after the interpreter came out (Appendix B.2, V.11) |
 | A second implementation of the language is what an interpreter costs | Crystal's interpreter stops on `samples/iyi/hello.iyi` line 12 at the module header, and 0 of the fork's 153 commits had touched it against 7,840 lines of parser and semantic change (V.11) |
+| The daemon's win did not survive the prelude | it removed prelude analysis, and iyi's prelude is 1,053 lines: one module edited in a 7,208-line project costs 0.18–0.28 s built normally and 0.20–0.24 s through the daemon (IV.1d) |
 | A prefix is not a parent directory | working in `/tmp/x/crystal` with a cache at `/tmp/x/crystal-cache`, every object file was written to `-cache/…`; the same "No such file or directory" the cleaner race produces, from a different cause (V.10) |
 | A build's cache directory can be deleted underneath it | the cleaner keeps the ten most recently modified directories and runs after every compile; removing one mid-codegen reproduces both failures, the single-threaded path included, and reading the `compiler.lock` the build already holds fixes it (V.10) |
 | A module as the unit of compilation is worth 7.3x over Crystal | the same program, the same compiler binary, one module edited: 1.24 s as Crystal, 0.17 s as iyi, against `go build`'s 0.24 s (IV.3a) |
