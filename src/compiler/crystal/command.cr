@@ -220,6 +220,14 @@ class Crystal::Command
   rescue ex : CompilerError
     print_error ex.message
     ::exit ex.status
+  rescue ex : IO::Error
+    # iyi: `mod dump big.iyimod | head` is somebody reading, not a bug in a
+    # compiler. The reader closing the pipe is how `head` says it has enough,
+    # and every other tool on the machine treats it as the end of the output
+    # rather than as a crash with a backtrace and an invitation to file an
+    # issue. Anything else that reaches here still does.
+    raise ex unless ex.os_error == Errno::EPIPE
+    ::exit 0
   rescue ex
     report_warnings
 

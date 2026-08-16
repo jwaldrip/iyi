@@ -198,6 +198,9 @@ docs: ## Generate standard library documentation
 .PHONY: crystal
 crystal: $(O)/$(CRYSTAL_BIN) ## Build the compiler [default]
 
+.PHONY: iyi
+iyi: $(O)/iyi$(EXE) ## iyi: build the compiler under its own name
+
 .PHONY: crystal-front
 crystal-front: $(O)/crystal-front$(EXE) ## iyi: build the front end, which links no LLVM
 
@@ -332,6 +335,14 @@ $(O)/$(CRYSTAL_BIN): $(DEPS) $(SOURCES)
 	@# NOTE: on MSYS2 it is not possible to overwrite a running program, so the compiler must be first built with
 	@# a different filename and then moved to the final destination.
 	$(if $(WINDOWS),mv $(O)/crystal-next.exe $@)
+
+# iyi: the same compiler under its own name — the commands iyi has, a usage
+# line that names them, and a version that says what it is a fork of. It links
+# what `crystal` links, because it *is* `crystal`; what differs is the surface.
+$(O)/iyi$(EXE): $(DEPS) $(SOURCES)
+	$(call check_llvm_config)
+	@mkdir -p $(O)
+	$(EXPORTS) $(EXPORTS_BUILD) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $@ src/compiler/iyi.cr
 
 # iyi: the front end on its own. Linking libLLVM costs 26 ms of load-time
 # initialisers whether or not anything generates code, and `--no-codegen` never
