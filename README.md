@@ -257,12 +257,13 @@ exports
 ## What it costs, measured
 
 `python3 bench/build_speed.py` produces this table. The README does not quote
-numbers it cannot reproduce. One Linux machine, release compiler, warm builds:
+numbers it cannot reproduce. One Linux machine with nothing else running,
+release compiler, warm builds:
 
 | program | iyi | `go build` |
 |---|---|---|
-| `hello` (5 lines) | **0.07 s** | 0.10 s |
-| generated pair, 6,900 lines | 0.23 s | **0.09 s** |
+| `hello` (5 lines) | **0.06 s** | 0.08 s |
+| generated pair, 6,900 lines | 0.22 s | **0.08 s** |
 
 **Read the second row before quoting the first.** iyi wins where fixed costs are
 the whole bill. It loses once there is a program to compile, at roughly 25 ms
@@ -271,7 +272,8 @@ per thousand lines, against a Go build that barely moves at all.
 Both halves of that second pair come out of one generator
 (`bench/build_speed/generate_pair.py`), and the bench refuses to time them
 unless the two binaries print the same thing. The front end on its own is
-0.024 s for `hello`, against a target of 0.050 s.
+0.034 s for `hello`, against a target of 0.050 s, and 0.018 s of that is the
+compiler process starting up before it reads anything.
 
 ## What is not here
 

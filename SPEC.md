@@ -342,10 +342,25 @@ that would change what 0.1.0 looks like, and deferring it costs nothing.
    aspiration: IV.1a already ran a front end that never walks the prelude at
    0.049 s, and it emitted an object with an identical symbol table. 0.1.0's job
    is to make that configuration the ordinary one rather than an experiment.
-   **Met: 0.039 s.** Not by the route IV.1a took. The prelude is small enough
+   **Met: 0.034 s.** Not by the route IV.1a took. The prelude is small enough
    now that there is little left to cache, and two of the three things that
    closed the gap were the prelude and its primitives. The third was the
    instrument; see below.
+
+   The figure was 0.039 s when this was written and it read **0.063 s, NOT
+   MET** twice on one afternoon, on a binary that had changed only by
+   deletions. Both readings were the same machine compiling something else at
+   the time, and the bench has a guard for exactly that: it divides by what the
+   compiler costs to start and does nothing when the machine is too slow to
+   answer. The guard could not fire, because the reference it divides by was
+   recorded when the compiler still carried the interpreter, the playground and
+   the documentation generator. That binary started in 0.040 s and this one
+   starts in 0.018 s, so every run looked 0.71x — comfortably faster than the
+   machine the target was set on — and the bench went ahead and decided. **A
+   stale baseline is worse than no baseline**: it does not report a wrong
+   number, it turns off the check that would have refused to report one. It is
+   re-recorded, and the comment beside it now says the binary counts as much as
+   the machine.
 3. The end-to-end `crystal build` time is published in the same table even
    though LLVM and the linker dominate it, so that the claim cannot quietly
    become a front-end-only claim.

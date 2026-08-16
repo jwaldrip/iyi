@@ -159,9 +159,23 @@ GATE_RUNS = 15
 # links it whether or not it generates code — `clang --version` pays the same
 # 0.023 s. See SPEC.md 0.1.0.
 #
-# Re-record `STARTUP_BASELINE` when the machine changes, from the figure this
-# prints. It is a property of a machine and a binary, not of iyi.
-STARTUP_BASELINE = 0.040
+# Re-record `STARTUP_BASELINE` when the machine changes **or the binary does**,
+# from the figure this prints. It is a property of a machine and a binary, not
+# of iyi, and a stale one is worse than none: it silently switches the guard
+# below off.
+#
+# That is not hypothetical. This sat at 0.040 s, recorded when the compiler
+# still carried the interpreter, the playground and the documentation
+# generator. Today's binary starts in 0.018 s, so every run divided by a
+# reference nearly twice its own size, reported "0.71x — faster than the
+# machine the target was set on", and went on to decide. Two runs on a
+# machine that was busy compiling something else then reported **NOT MET at
+# 0.063 s** against a 0.050 s target. The same bench on the same binary an
+# hour later, with nothing else running, measured **0.037 s and MET**. The
+# guard existed for exactly that run and could not fire.
+#
+# Recorded 2026-08-16: release compiler 68e24da0a, machine idle, on mains.
+STARTUP_BASELINE = 0.018
 STARTUP_ROUNDS = GATE_RUNS
 
 # How much slower than the baseline this machine may start the compiler before
