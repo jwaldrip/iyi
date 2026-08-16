@@ -16,7 +16,6 @@
 *.pdb
 *.exe
 /.build/
-/samples/.build/
 /docs/
 /man/
 

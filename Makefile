@@ -184,10 +184,6 @@ lint-shellcheck:
 all_spec: $(O)/all_spec$(EXE) ## Run all specs (note: this builds a huge program; `test` recipe builds individual binaries and is recommended for reduced resource usage)
 	$(O)/all_spec$(EXE) $(SPEC_FLAGS)
 
-.PHONY: samples
-samples: ## Build example programs
-	$(MAKE) -C samples
-
 .PHONY: docs
 docs: ## Generate standard library documentation
 	$(call check_llvm_config)
