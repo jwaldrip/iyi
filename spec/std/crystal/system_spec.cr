@@ -27,7 +27,7 @@ describe "Crystal::System" do
     end
 
     # TODO: investigate why this prints `(???)`
-    pending_interpreted "supports %p" do
+    it "supports %p" do
       printf_to_s("%p,%p,%p", Pointer(Void).new(0x0), Pointer(Void).new(0x1234), Pointer(Void).new(UInt64::MAX)).should eq("0x0,0x1234,0xffffffffffffffff")
     end
 
@@ -36,7 +36,7 @@ describe "Crystal::System" do
     end
 
     # BUG: missing downcast_distinct from Tuple(Int64 | UInt64, Int64 | UInt64, Int64 | UInt64, Int64 | UInt64) to Tuple(Int64, Int64, Int64, Int64)
-    pending_interpreted "supports %l width" do
+    it "supports %l width" do
       values = {LibC::Long::MIN, LibC::Long::MAX, LibC::LongLong::MIN, LibC::LongLong::MAX}
       printf_to_s("%ld,%ld,%lld,%lld", *values).should eq(values.join(','))
 

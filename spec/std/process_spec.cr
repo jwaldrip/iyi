@@ -77,20 +77,13 @@ end
 
 private def to_splat(cmd)
   # Splatting in literals was only introduced in Crystal 1.1
-  # FIXME: The interpreter still doesn't support it (#13183).
-  {% if compare_versions(Crystal::VERSION, "1.1.0") >= 0 && !flag?(:interpreted) %}
+  {% if compare_versions(Crystal::VERSION, "1.1.0") >= 0 %}
     {cmd[0], *cmd[1]}
   {% else %}
     args = cmd[1]
     {cmd[0], args[0], args[1]}
   {% end %}
 end
-
-# interpreted code doesn't receive SIGCHLD for `#wait` to work (#12241)
-{% if flag?(:interpreted) && !flag?(:win32) %}
-  pending Process
-  {% skip_file %}
-{% end %}
 
 describe Process do
   describe ".new (args)" do
@@ -878,7 +871,6 @@ describe Process do
     end
 
     it "doesn't capture closed stderr" do
-      # FIXME: Autocasting breaks in the interpreter
       result = Process.capture_result(to_ary(shell_command("1>&2 echo hello")), error: Process::Redirect::Close)
       result.status.success?.should be_true
       result.output?.should eq ""
@@ -979,7 +971,6 @@ describe Process do
     end
 
     it "doesn't capture closed stderr" do
-      # FIXME: Autocasting breaks in the interpreter
       result = Process.capture_result?(to_ary(shell_command("1>&2 echo hello")), error: Process::Redirect::Close).should be_a(Process::Result)
       result.status.success?.should be_true
       result.output?.should eq ""

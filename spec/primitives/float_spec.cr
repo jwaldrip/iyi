@@ -1,6 +1,5 @@
 require "spec"
 require "../support/number"
-require "../support/interpreted"
 
 describe "Primitives: Float" do
   {% for op in %w(== != < <= > >=) %}

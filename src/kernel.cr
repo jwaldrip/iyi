@@ -603,7 +603,7 @@ end
   Crystal::EventLoop::IOCP.start_forwarder_thread
 {% end %}
 
-{% unless flag?(:interpreted) || flag?(:wasm32) %}
+{% unless flag?(:wasm32) %}
   {% if !flag?(:without_mt) && !flag?(:preview_mt) || flag?(:execution_context) %}
     Fiber::ExecutionContext.init_default_context
   {% else %}
@@ -624,8 +624,4 @@ end
   {% else %}
     Crystal::System::Signal.setup_default_handlers
   {% end %}
-{% end %}
-
-{% if flag?(:interpreted) && flag?(:unix) && Crystal::Interpreter.class.has_method?(:signal_descriptor) %}
-  Crystal::System::Signal.setup_default_handlers
 {% end %}

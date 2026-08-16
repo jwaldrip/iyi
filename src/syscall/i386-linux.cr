@@ -1,4 +1,4 @@
-{% skip_file unless flag?(:linux) && flag?(:i386) && !flag?(:interpreted) %}
+{% skip_file unless flag?(:linux) && flag?(:i386) %}
 
 module Syscall
   # :nodoc:

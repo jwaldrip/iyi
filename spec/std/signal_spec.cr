@@ -3,8 +3,6 @@
 require "./spec_helper"
 require "signal"
 
-{% skip_file if flag?(:interpreted) && !Crystal::Interpreter.class.has_method?(:signal) %}
-
 describe "Signal" do
   typeof(Signal::ABRT.reset)
   typeof(Signal::ABRT.ignore)

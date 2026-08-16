@@ -27,7 +27,6 @@ struct Exception::CallStack
     Crystal::System::Signal.setup_seh_handler
   end
 
-  {% if flag?(:interpreted) %} @[Primitive(:interpreter_call_stack_unwind)] {% end %}
   protected def self.unwind : Array(Void*)
     # unlike DWARF, this is required on Windows to even be able to produce
     # correct stack traces, so we do it here but not in `libunwind.cr`

@@ -1,8 +1,7 @@
 require "../spec_helper"
 require "../../support/thread"
 
-# interpreter doesn't support threads yet (#14287)
-pending_interpreted describe: Thread::Mutex do
+describe Thread::Mutex do
   it "synchronizes" do
     a = 0
     mutex = Thread::Mutex.new

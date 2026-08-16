@@ -159,9 +159,6 @@ class Crystal::Loader
       # DLL search order is used if *dll_full_path* is nil; consider getting rid
       # of the current working directory altogether
       # (https://docs.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order)
-      #
-      # Note that the compiler's directory and PATH are effectively searched
-      # twice when coming from the interpreter
       load_dll?(dll)
     end
   end

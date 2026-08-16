@@ -327,7 +327,7 @@ been taken rather than a thing still to do.
 III.4 in its entirety: structured concurrency is specified and it is not on
 the critical path of the claim. III.5 rule 5's measurement. Cross-version
 `.iyimod` compatibility (IV.5 already says this). A package manager. A standard
-library. Self-hosting: the compiler is 95,010 lines and iyi's own library is
+library. Self-hosting: the compiler is 87,421 lines and iyi's own library is
 722, so this is not a near thing and pretending otherwise sets the wrong
 priorities. Of the calls still open in Appendix B, only #1 is a taste decision
 that would change what 0.1.0 looks like, and deferring it costs nothing.
@@ -678,7 +678,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 95,010 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 87,421 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 1,053 prelude + 722 in samples |
 | Specs | 21,146 lines | ~3,400 for iyi |
 | Samples | 24 **programs** | 8 **explanations** |
@@ -3626,6 +3626,43 @@ Named honestly, so nobody mistakes this draft for complete.
     threads'. It is upstream, any Crystal user who builds two things at once can
     reach it, and that is where the fix belongs as well.
 
+11. **The interpreter. Removed.** Crystal ships one, and the fork inherited it:
+    11,377 lines under `src/compiler/crystal/interpreter`, 380 more of libffi
+    bindings, 7,981 lines of specs, a CI workflow that builds it and runs the
+    standard library's specs under it four ways, and a libffi build dependency
+    on every platform.
+
+    **What it was worth here, measured before deciding.** It was already
+    compiled out: the Makefile passes `-Dwithout_interpreter` unless asked
+    otherwise, so no shipped binary contained it. It cannot run iyi. Given the
+    simplest program in `samples/`, it stops on line 12 with `BUG: missing
+    interpret for Crystal::ModuleHeader`, which is R-1, the first rule this
+    language has. And nobody had noticed: of the 153 commits between the fork
+    and this one, **none** touched the interpreter, while the parser, the AST
+    and the semantic passes took 7,840 lines of change. It interprets Crystal,
+    and the fork stopped writing Crystal a long time ago.
+
+    That is the argument, and it is not about the 11k lines. **An interpreter is
+    a second implementation of the language's semantics.** Traits with defaults,
+    `impl`, `using`, error unions, `defer`, and the module header all have to
+    exist twice or the second copy quietly means something else. The fork is not
+    finished changing the language, so the price is not paid once.
+
+    The cost of losing it is one thing, named honestly: compile-time evaluation
+    has to start somewhere, and `macro_run` still costs +7.4 s per script
+    (II.10). But the half that would have been reused is the machine
+    (instructions, primitives, memory, casts), and the half that decides what a
+    program *means* is `interpreter/compiler.cr`, 3,550 lines that would have to
+    be rewritten for iyi whatever happened. It is in the history, one
+    `git revert` away, and it will be a better starting point when there is an
+    iyi to interpret.
+
+    What came out: the compiler is 99,253 → **87,421 lines** (11.9%), specs
+    211,749 → 203,640, one CI workflow and four interpreter steps in others, the
+    `reply` shard, and libffi. The shipped binary does not change size, because
+    it never had it. What stays: the *macro* interpreter, which is a different
+    thing that runs at compile time and is what makes `{% %}` work.
+
 ---
 
 ## Appendix: What measurement settled
@@ -3654,7 +3691,8 @@ For traceability, since several rules here rest on numbers rather than taste.
 | Coherence costs nothing at build time | the import DAG plus the orphan rule make duplicate impls unrepresentable (IV.4) |
 | The gap to Go is the warm build, and it is 11× | `hello`: cold 2.20 s vs Go's 1.98 s, warm 1.96 s vs Go's 0.18 s. Crystal's cache holds codegen only, so the 1.32 s front end is paid on every build (`bench/build_speed.py`) |
 | A first release's prelude is ~3.5k lines | Crystal 0.1.0 shipped 8,161 lines of library, 3,551 of it the core that a prelude is; the rest is `json`/`yaml`/`http` |
-| Self-hosting only gets more expensive | Crystal self-hosted at 24,984 lines of compiler and 8,161 of library, before its 0.1.0; iyi's fork starts at 95,010 and 196,217 (Appendix B.2) |
+| Self-hosting only gets more expensive | Crystal self-hosted at 24,984 lines of compiler and 8,161 of library, before its 0.1.0; iyi's fork starts at 95,010 and 196,217, and is 87,421 after the interpreter came out (Appendix B.2, V.11) |
+| A second implementation of the language is what an interpreter costs | Crystal's interpreter stops on `samples/iyi/hello.iyi` line 12 at the module header, and 0 of the fork's 153 commits had touched it against 7,840 lines of parser and semantic change (V.11) |
 | A build's cache directory can be deleted underneath it | the cleaner keeps the ten most recently modified directories and runs after every compile; removing one mid-codegen reproduces both failures, the single-threaded path included, and reading the `compiler.lock` the build already holds fixes it (V.10) |
 | The path/name mapping needed more than snake_case | `camelcase` drops an underscore before a digit, so `v_1` and `v1` both give `V1`; requiring each group to start with a letter removes that and three sibling collisions (IV.6 #6) |
 
@@ -3672,13 +3710,16 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 8 | Structured concurrency only, no bare spawn (III.4.1) | yes. It is `defer` applied to a task set, so it costs no new mechanism, and it makes Go's commonest bug unrepresentable. The price is that a task cannot outlive its scope, which is a taste call |
 | 9 | ~~`Share` marker vs Erlang-style no sharing (III.4.4)~~ | **Decided: `Share`, on the count**: III.4.7 found the feared class empty and clean-sheet iyi code 77% shareable as written, 100% given a shareable immutable collection. That collection is now a stdlib obligation, not a nicety |
 | 10 | ~~**Is iyi ever meant to be self-hosted?**~~ | **Decided: no.** iyi's compiler is and remains a Crystal program. The language's claim is what it compiles, not what compiles it. See B.2 |
+| 11 | ~~**Keep Crystal's interpreter?**~~ | **Decided: no, and removed.** It was compiled out already, it cannot run an iyi program past the module header, and no commit of this fork had touched it in 153. An interpreter is a second implementation of the semantics, and the semantics are still moving. See V.11 |
 
 ### B.2: The one decision the fork already made: **SETTLED: not a self-hosting project**
 
 Crystal's compiler was written in Crystal before its 0.1.0, when the compiler
 was 24,984 lines and the library 8,161. iyi begins from a fork: 95,010 lines of
 compiler and 196,217 of library, none of it written in iyi, and none of it
-compilable by iyi's own rules. The Appendix's own count says 77 of 484 types
+compilable by iyi's own rules. The compiler is 87,421 lines since V.11 took the
+interpreter out, which is the same decision read forward: a second
+implementation of the language is a cost, and this fork does not pay it twice. The Appendix's own count says 77 of 484 types
 are reopened across module boundaries, `String` by five modules.
 
 The fork was the right call and it is why iyi has a working backend, a GC and a

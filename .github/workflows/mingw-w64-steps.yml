@@ -46,7 +46,7 @@ jobs:
 
       - name: Build Crystal
         shell: msys2 {0}
-        run: make crystal interpreter=1 release=1
+        run: make crystal release=1
 
       - name: Package Crystal
         shell: msys2 {0}
@@ -148,12 +148,6 @@ jobs:
         run: |
           export CRYSTAL_SPEC_COMPILER_BIN="$(which crystal.exe)"
           make compiler_spec
-
-      - name: Run interpreter specs
-        shell: msys2 {0}
-        run: |
-          export CRYSTAL_SPEC_COMPILER_BIN="$(which crystal.exe)"
-          make interpreter_spec
 
       - name: Run primitives specs
         shell: msys2 {0}

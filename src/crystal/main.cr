@@ -142,10 +142,7 @@ end
     Crystal.main(argc, argv)
   end
 
-  {% if flag?(:interpreted) %}
-    # the interpreter doesn't call Crystal.main(&)
-    Crystal.init_runtime
-  {% elsif flag?(:win32) %}
+  {% if flag?(:win32) %}
     require "./system/win32/wmain"
   {% elsif flag?(:wasi) %}
     require "./system/wasi/main"

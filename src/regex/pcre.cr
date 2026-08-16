@@ -22,9 +22,7 @@ module Regex::PCRE
     raise ArgumentError.new("#{String.new(errptr)} at #{erroffset}") if @re.null?
     @extra = LibPCRE.study(@re, LibPCRE::STUDY_JIT_COMPILE, out studyerrptr)
     if @extra.null? && studyerrptr
-      {% unless flag?(:interpreted) %}
-        LibPCRE.free.call @re.as(Void*)
-      {% end %}
+      LibPCRE.free.call @re.as(Void*)
       raise ArgumentError.new("#{String.new(studyerrptr)}")
     end
     LibPCRE.full_info(@re, nil, LibPCRE::INFO_CAPTURECOUNT, out @captures)
@@ -124,17 +122,13 @@ module Regex::PCRE
 
   def finalize
     LibPCRE.free_study @extra
-    {% unless flag?(:interpreted) %}
-      LibPCRE.free.call @re.as(Void*)
-    {% end %}
+    LibPCRE.free.call @re.as(Void*)
   end
 
   protected def self.error_impl(source)
     re = LibPCRE.compile(source, LibPCRE::UTF8 | LibPCRE::DUPNAMES, out errptr, out erroffset, nil)
     if re
-      {% unless flag?(:interpreted) %}
-        LibPCRE.free.call re.as(Void*)
-      {% end %}
+      LibPCRE.free.call re.as(Void*)
       nil
     else
       "#{String.new(errptr)} at #{erroffset}"

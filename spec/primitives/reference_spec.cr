@@ -1,5 +1,4 @@
 require "spec"
-require "../support/interpreted"
 
 private abstract class Base
 end
@@ -56,10 +55,7 @@ describe "Primitives: reference" do
       base = Foo.pre_initialize(foo_buffer).as(Base)
       base.should be_a(Foo)
       base.as(typeof(Foo.crystal_instance_type_id)*).value.should eq(Foo.crystal_instance_type_id)
-      {% unless flag?(:interpreted) %}
-        # FIXME: `Object#crystal_type_id` is incorrect for virtual types in the interpreter (#14967)
-        base.crystal_type_id.should eq(Foo.crystal_instance_type_id)
-      {% end %}
+      base.crystal_type_id.should eq(Foo.crystal_instance_type_id)
     end
 
     it "runs inline instance initializers" do

@@ -49,7 +49,7 @@ module Iyi
 
   # The ones that belong to Crystal and are still in the binary underneath.
   # Named rather than swallowed, because "unknown command" would be a lie.
-  CRYSTAL_ONLY = %w(init play docs spec i interactive)
+  CRYSTAL_ONLY = %w(init play docs spec)
 
   def self.description : String
     String.build do |io|

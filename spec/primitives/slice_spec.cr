@@ -1,6 +1,5 @@
 require "spec"
 require "../support/number"
-require "../support/interpreted"
 
 private module Foo
   def self.foo
@@ -27,7 +26,7 @@ describe "Primitives: Slice" do
     {% end %}
 
     {% for num, suffix in BUILTIN_NUMBER_SUFFIXES %}
-      pending_interpreted {{ "creates a read-only Slice of #{num}" }} do
+      it {{ "creates a read-only Slice of #{num}" }} do
         slice = Slice.literal(1_{{ suffix.id }}, 2_{{ suffix.id }}, 3_{{ suffix.id }})
         slice.should be_a(Slice({{ num }}))
         slice.to_a.should eq([1, 2, 3] of {{ num }})

@@ -116,9 +116,7 @@ struct Exception::CallStack
   end
 end
 
-{% if flag?(:interpreted) %}
-  require "./call_stack/interpreter"
-{% elsif flag?(:win32) && !flag?(:gnu) %}
+{% if flag?(:win32) && !flag?(:gnu) %}
   require "./call_stack/stackwalk"
 {% elsif flag?(:wasm32) %}
   require "./call_stack/null"

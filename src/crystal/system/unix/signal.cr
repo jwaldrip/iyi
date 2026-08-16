@@ -29,21 +29,17 @@ module Crystal::System::Signal
     @@mutex.synchronize do
       unless @@handlers[signal]?
         @@sigset << signal
-        {% if flag?(:interpreted) && Crystal::Interpreter.class.has_method?(:signal) %}
-          Crystal::Interpreter.signal(signal.value, 2)
-        {% else %}
-          action = LibC::Sigaction.new
+        action = LibC::Sigaction.new
 
-          # restart some interrupted syscalls (read, write, accept, ...) instead
-          # of returning EINTR:
-          action.sa_flags = LibC::SA_RESTART
+        # restart some interrupted syscalls (read, write, accept, ...) instead
+        # of returning EINTR:
+        action.sa_flags = LibC::SA_RESTART
 
-          action.sa_sigaction = LibC::SigactionHandlerT.new do |value, _, _|
-            FileDescriptor.write_fully(writer.fd, pointerof(value)) unless writer.closed?
-          end
-          LibC.sigemptyset(pointerof(action.@sa_mask))
-          LibC.sigaction(signal, pointerof(action), nil)
-        {% end %}
+        action.sa_sigaction = LibC::SigactionHandlerT.new do |value, _, _|
+          FileDescriptor.write_fully(writer.fd, pointerof(value)) unless writer.closed?
+        end
+        LibC.sigemptyset(pointerof(action.@sa_mask))
+        LibC.sigaction(signal, pointerof(action), nil)
       end
       @@handlers[signal] = handler
     end
@@ -73,16 +69,7 @@ module Crystal::System::Signal
     else
       @@mutex.synchronize do
         @@handlers.delete(signal)
-        {% if flag?(:interpreted) && Crystal::Interpreter.class.has_method?(:signal) %}
-          h = case handler
-              when LibC::SIG_DFL then 0
-              when LibC::SIG_IGN then 1
-              else                    2
-              end
-          Crystal::Interpreter.signal(signal.value, h)
-        {% else %}
-          LibC.signal(signal, handler)
-        {% end %}
+        LibC.signal(signal, handler)
         @@sigset.delete(signal)
       end
     end
@@ -149,11 +136,7 @@ module Crystal::System::Signal
     ::Signal.each do |signal|
       next unless @@sigset.includes?(signal)
 
-      {% if flag?(:interpreted) && Crystal::Interpreter.class.has_method?(:signal) %}
-        Crystal::Interpreter.signal(signal.value, 0)
-      {% else %}
-        LibC.signal(signal, LibC::SIG_DFL)
-      {% end %}
+      LibC.signal(signal, LibC::SIG_DFL)
     end
   ensure
     {% if flag?(:without_mt) %}
@@ -169,13 +152,11 @@ module Crystal::System::Signal
     @@pipe[1]
   end
 
-  {% unless flag?(:interpreted) %}
-    # :nodoc:
-    def self.writer=(writer : IO::FileDescriptor)
-      @@pipe = {@@pipe[0], writer}
-      writer
-    end
-  {% end %}
+  # :nodoc:
+  def self.writer=(writer : IO::FileDescriptor)
+    @@pipe = {@@pipe[0], writer}
+    writer
+  end
 
   private def self.fatal(message : String)
     STDERR.puts("FATAL: #{message}, exiting")
@@ -227,14 +208,7 @@ module Crystal::System::Signal
     @@sigset.clear
     start_loop
 
-    {% if flag?(:interpreted) && Interpreter.class.has_method?(:signal_descriptor) %}
-      # replace the interpreter's writer pipe with the interpreted, so signals
-      # will be received by the interpreter, but handled by the interpreted
-      # signal loop
-      Crystal::Interpreter.signal_descriptor(@@pipe[1].fd)
-    {% else %}
-      ::Signal::PIPE.ignore
-    {% end %}
+    ::Signal::PIPE.ignore
 
     ::Signal::CHLD.reset
   end

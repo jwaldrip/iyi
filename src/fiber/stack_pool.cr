@@ -12,13 +12,6 @@ class Fiber
     # If *protect* is true, guards all top pages (pages with the lowest address
     # values) in the allocated stacks; accessing them triggers an error
     # condition, allowing stack overflows on non-main fibers to be detected.
-    #
-    # Interpreter stacks grow upwards (pushing values increases the stack
-    # pointer value) rather than downwards, so *protect* must be false.
-    #
-    # Interpreter keeps an internal list of stacks and musn't consider
-    # `Thread.current.dead_fiber_stack` for recycle which is handled by the
-    # scheduler's fiber stack pool where the interpreter runs.
     def initialize(@protect : Bool = true, @reuse_dead_fiber_stack : Bool = true)
       @deque = Deque(Stack).new
     end
