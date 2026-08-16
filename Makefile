@@ -110,6 +110,10 @@ CRYSTAL_BIN := crystal$(EXE)
 # child a broken one. `crystal daemon start` execs this binary.
 CRYSTAL_DAEMON_BIN := crystal-daemon$(EXE)
 
+# iyi: what a downloadable build of iyi is called.
+IYI_VERSION := 0.1.0-dev
+IYI_PACKAGE := iyi-$(IYI_VERSION)-$(shell uname -s | tr A-Z a-z)-$(shell uname -m)
+
 DESTDIR ?=
 PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
@@ -238,6 +242,41 @@ install: install_compiler install_man install_completions
 uninstall: ## Uninstall the Crystal compiler package from DESTDIR
 uninstall: uninstall_compiler uninstall_man uninstall_completions
 
+# iyi: the binary and its prelude, and nothing else — an iyi program requires
+# only the prelude and the prelude requires only itself, so what is installed
+# beside `bin/iyi` is 56 KB rather than a standard library.
+.PHONY: install_iyi
+install_iyi: ## iyi: install `iyi` and its prelude at DESTDIR
+install_iyi: $(O)/iyi$(EXE)
+	$(INSTALL) -d -m 0755 "$(DESTDIR)$(BINDIR)/"
+	$(INSTALL) -m 0755 "$(O)/iyi$(EXE)" "$(DESTDIR)$(BINDIR)/iyi$(EXE)"
+
+	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/iyi/src"
+	cp -R -p $(if $(deref_symlinks),-L,-P) src/iyi "$(DESTDIR)$(DATADIR)/iyi/src/iyi"
+
+	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/licenses/iyi/"
+	$(INSTALL) -m 644 LICENSE "$(DESTDIR)$(DATADIR)/licenses/iyi/LICENSE"
+	$(INSTALL) -m 644 NOTICE.md "$(DESTDIR)$(DATADIR)/licenses/iyi/NOTICE.md"
+
+.PHONY: uninstall_iyi
+uninstall_iyi: ## iyi: remove what install_iyi installed
+	rm -f "$(DESTDIR)$(BINDIR)/iyi$(EXE)"
+	rm -rf "$(DESTDIR)$(DATADIR)/iyi"
+	rm -rf "$(DESTDIR)$(DATADIR)/licenses/iyi"
+
+# iyi: the same layout in a file somebody can download. Relocatable, because
+# the binary finds its prelude relative to itself.
+.PHONY: iyi-tarball
+iyi-tarball: ## iyi: build a relocatable tarball at $(O)
+iyi-tarball: $(O)/iyi$(EXE)
+	rm -rf "$(O)/iyi-package"
+	$(MAKE) install_iyi DESTDIR="$(CURDIR)/$(O)/iyi-package" PREFIX=""
+	$(INSTALL) -m 644 README.md "$(O)/iyi-package/share/iyi/README.md"
+	$(INSTALL) -m 644 SPEC.md "$(O)/iyi-package/share/iyi/SPEC.md"
+	cp -R -p samples/iyi "$(O)/iyi-package/share/iyi/samples"
+	tar -czf "$(O)/$(IYI_PACKAGE).tar.gz" -C "$(O)/iyi-package" .
+	@echo "wrote $(O)/$(IYI_PACKAGE).tar.gz"
+
 .PHONY: install_compiler
 install_compiler: $(O)/$(CRYSTAL_BIN)
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(BINDIR)/"
@@ -339,10 +378,15 @@ $(O)/$(CRYSTAL_BIN): $(DEPS) $(SOURCES)
 # iyi: the same compiler under its own name — the commands iyi has, a usage
 # line that names them, and a version that says what it is a fork of. It links
 # what `crystal` links, because it *is* `crystal`; what differs is the surface.
+# Its prelude is its own, and it is 56 KB: `iyi` installed as `bin/iyi` finds
+# `share/iyi/src/iyi/prelude.iyi` beside it and needs nothing else — no
+# `CRYSTAL_PATH`, no standard library, because an iyi program requires only the
+# prelude and the prelude requires only itself.
 $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
-	$(EXPORTS) $(EXPORTS_BUILD) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $@ src/compiler/iyi.cr
+	$(EXPORTS) $(EXPORTS_BUILD) CRYSTAL_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../src' \
+	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $@ src/compiler/iyi.cr
 
 # iyi: the front end on its own. Linking libLLVM costs 26 ms of load-time
 # initialisers whether or not anything generates code, and `--no-codegen` never

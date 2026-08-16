@@ -26,11 +26,34 @@ to compile for itself, and its machine code, in one file. R-3 is what makes a
 consumer able to answer "does this type implement that trait?" without reading
 anything else.
 
+## Getting it
+
+```console
+$ tar -xzf iyi-0.1.0-dev-linux-x86_64.tar.gz -C ~/.local
+$ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
+```
+
+The tarball is relocatable: `bin/iyi` finds its prelude — 56 KB of it — beside
+itself, so there is nothing to configure and no `CRYSTAL_PATH` to set. What it
+needs on the machine is a C toolchain (`cc`, which iyi asks once for the link
+command and then bypasses) and **libgc**, which every program it produces links
+against: `apt install libgc-dev` or your system's equivalent.
+
+Building it instead needs LLVM 19 and a Crystal compiler to bootstrap:
+
+```console
+$ make iyi                # .build/iyi
+$ make iyi-tarball        # .build/iyi-0.1.0-dev-<os>-<arch>.tar.gz
+$ sudo make install_iyi   # PREFIX=/usr/local by default
+```
+
+`make crystal` builds the same compiler under its Crystal name, which is what
+the specs and the bench use.
+
 ## What works today
 
 ```console
-$ make crystal                            # needs LLVM 19 and a Crystal to bootstrap
-$ ./bin/crystal run samples/iyi/hello.iyi
+$ ./bin/crystal run samples/iyi/hello.iyi   # or: iyi run samples/iyi/hello.iyi
 Hello, iyi!
 HELLO, IYI!
 BEEP 42
@@ -49,16 +72,18 @@ router, which is the one program here that looks like real code.
 **Separate compilation, from the command line:**
 
 ```console
-$ ./bin/crystal build --emit-iyimod mods samples/iyi/webapp.iyi   # writes mods/kemal/router.iyimod, ...
-$ ./bin/crystal mod dump mods/kemal/router.iyimod                 # reads one back, as text
-$ rm -rf samples/iyi/kemal                                        # delete the library's source
-$ ./bin/crystal build --use-iyimod mods samples/iyi/webapp.iyi    # still builds, links and runs
+$ iyi build --emit-iyimod mods samples/iyi/webapp.iyi   # writes mods/kemal/router.iyimod, ...
+$ iyi mod dump mods/kemal/router.iyimod                 # reads one back, as text
+$ rm -rf samples/iyi/kemal                              # delete the library's source
+$ iyi build --use-iyimod mods samples/iyi/webapp.iyi    # still builds, links and runs
 ```
 
 That last step is the whole point: the consumer never opens the module's source,
-and the program it produces prints what the build from source prints. Five of
-the eight samples do this in `bench/`-adjacent scripts and in
-`spec/compiler/iyimod_spec.cr`.
+and the program it produces prints what the build from source prints.
+`bash bench/samples_roundtrip.sh` does it for the five samples that import
+anything — deleting each module's source before the second build, because that
+deletion is the only way to be sure — and `spec/compiler/iyimod_spec.cr` checks
+the same property on programs written for it.
 
 ## What it costs, measured
 
