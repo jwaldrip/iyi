@@ -1539,9 +1539,9 @@ module Crystal
 
       if File.file?(cache)
         stored = File.read(cache).split('\n')
-        if stored[0]? == key
-          return nil if stored[1]? == "unusable"
-          if (linker = stored[1]?) && (prefix = stored[2]?) && (suffix = stored[3]?)
+        if stored[0]? == key && stored[1]? == iyi_link_inputs_fingerprint(stored[3]?)
+          return nil if stored[2]? == "unusable"
+          if (linker = stored[2]?) && (prefix = stored[3]?) && (suffix = stored[4]?)
             return {linker, prefix, suffix}
           end
         end
@@ -1549,8 +1549,36 @@ module Crystal
 
       template = iyi_ask_driver_for_link_template(link_flags, lib_flags)
       linker, prefix, suffix = template if template
-      File.write(cache, template ? "#{key}\n#{linker}\n#{prefix}\n#{suffix}" : "#{key}\nunusable") rescue nil
+      stamp = iyi_link_inputs_fingerprint(prefix)
+      File.write(cache, template ? "#{key}\n#{stamp}\n#{linker}\n#{prefix}\n#{suffix}" : "#{key}\n#{stamp}\nunusable") rescue nil
       template
+    end
+
+    # What the template was computed against, so that a toolchain moving under
+    # it is noticed rather than linked with.
+    #
+    # The template names absolute paths — `Scrt1.o`, `crti.o`, `crtbeginS.o`
+    # and the directories around them — and a `libc` or `gcc` upgrade changes
+    # them. Each is stat'ed, which is microseconds on files this local, and the
+    # answer goes in beside the template: if one has moved, the driver is asked
+    # again. Without this, an upgrade turns into a link failure, then a
+    # fallback, and then a build that quietly uses the slow path for as long as
+    # the flags stay the same.
+    private def iyi_link_inputs_fingerprint(prefix : String?) : String
+      return "" unless prefix
+      stamped = String.build do |io|
+        prefix.split(' ').each do |token|
+          next unless token.ends_with?(".o") && token.starts_with?('/')
+          io << token << ':'
+          if info = File.info?(token)
+            io << info.size << ':' << info.modification_time.to_unix
+          else
+            io << "gone"
+          end
+          io << '\n'
+        end
+      end
+      ::Crystal::Digest::MD5.hexdigest(stamped)
     end
 
     # Asks the driver what it would run, and turns it into a template.
@@ -1610,7 +1638,9 @@ module Crystal
     private def iyi_disable_direct_link(link_flags, lib_flags) : Nil
       key = ::Crystal::Digest::MD5.hexdigest(
         "#{DEFAULT_LINKER}\n#{link_flags}\n#{lib_flags}\n#{codegen_target}\n1")
-      File.write(CacheDir.instance.join("link-template-#{key}"), "#{key}\nunusable") rescue nil
+      # An empty fingerprint, which is what a template with no inputs has: the
+      # reader computes the same for this file and so believes it.
+      File.write(CacheDir.instance.join("link-template-#{key}"), "#{key}\n\nunusable") rescue nil
       @iyi_direct_link = false
       @iyi_link_driver_only = true
     end
@@ -1819,10 +1849,27 @@ module Crystal
       wg = WaitGroup.new
       mutex = Sync::Mutex.new
 
+      # iyi: kept, and raised after the workers are done.
+      #
+      # An exception in a spawned fiber prints itself and takes the fiber down,
+      # and the build carried on to the link — which then reported the object
+      # files nobody had written as the linker failing to find them. That is a
+      # codegen failure told as a link failure, and it cost an hour of reading
+      # linker output. The forking path already reports its workers' failures;
+      # this is the same, for the threads.
+      failure = nil.as(Exception?)
+
       n_threads.times do
         wg.spawn do
           while unit = channel.receive?
-            unit.compile(isolate_context: true)
+            begin
+              unit.compile(isolate_context: true)
+            rescue ex
+              # Kept receiving rather than returning: a worker that stops
+              # leaves the sender blocked on a channel nobody drains.
+              mutex.synchronize { failure ||= ex }
+              next
+            end
             mutex.synchronize { @progress_tracker.stage_progress += 1 }
           end
         end
@@ -1845,6 +1892,10 @@ module Crystal
       channel.close
 
       wg.wait
+
+      if ex = failure
+        raise CompilerError.new("a codegen thread failed: #{ex.message} (#{ex.class})")
+      end
     end
 
     private def fork_codegen(units, n_threads)
