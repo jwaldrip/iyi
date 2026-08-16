@@ -1,71 +1,111 @@
-# Crystal
+# iyi
 
-[![Linux CI Build Status](https://github.com/crystal-lang/crystal/workflows/Linux%20CI/badge.svg)](https://github.com/crystal-lang/crystal/actions?query=workflow%3A%22Linux+CI%22+event%3Apush+branch%3Amaster)
-[![macOS CI Build Status](https://github.com/crystal-lang/crystal/workflows/macOS%20CI/badge.svg)](https://github.com/crystal-lang/crystal/actions?query=workflow%3A%22macOS+CI%22+event%3Apush+branch%3Amaster)
-[![AArch64 CI Build Status](https://github.com/crystal-lang/crystal/workflows/AArch64%20CI/badge.svg)](https://github.com/crystal-lang/crystal/actions?query=workflow%3A%22AArch64+CI%22+event%3Apush+branch%3Amaster)
-[![Windows CI Build Status](https://github.com/crystal-lang/crystal/workflows/Windows%20CI/badge.svg)](https://github.com/crystal-lang/crystal/actions?query=workflow%3A%22Windows+CI%22+event%3Apush+branch%3Amaster)
-[![CircleCI Build Status](https://circleci.com/gh/crystal-lang/crystal/tree/master.svg?style=shield)](https://circleci.com/gh/crystal-lang/crystal)
-[![Join the chat at https://gitter.im/crystal-lang/crystal](https://badges.gitter.im/crystal-lang/crystal.svg)](https://gitter.im/crystal-lang/crystal)
-[![Code Triagers Badge](https://www.codetriage.com/crystal-lang/crystal/badges/users.svg)](https://www.codetriage.com/crystal-lang/crystal)
+**A fork of [Crystal](https://crystal-lang.org) that answers one question: what
+does a language look like if separate compilation is a rule rather than a
+feature?**
 
----
+Crystal's syntax, union types, nil-safety and blocks are kept as they are. What
+changes is the compilation model — and everything that model forces. The design
+is in [SPEC.md](SPEC.md), which is a working document rather than a manual: it
+records what was measured, what was tried and abandoned, and why.
 
-[![Crystal - Born and raised at Manas](doc/assets/crystal-born-and-raised.svg)](https://manas.tech/)
+This is `0.1.0` in the sense of "the first thing that proves the claim", not in
+the sense of "ready for your project". Read the limits before the numbers.
 
-Crystal is a programming language with the following goals:
+## The rules the rest follows from
 
-- Have a syntax similar to Ruby (but compatibility with it is not a goal)
-- Statically type-checked but without having to specify the type of variables or method arguments.
-- Be able to call C code by writing bindings to it in Crystal.
-- Have compile-time evaluation and generation of code, to avoid boilerplate code.
-- Compile to efficient native code.
+| Rule | |
+|---|---|
+| **R-1** | A module is the unit of compilation. `import` forms a DAG. Compiling a module reads its dependencies' **declarations**, never their bodies. |
+| **R-2** | Everything a module exports (`pub`) writes down full parameter and return types. Unexported code infers as usual. |
+| **R-2b** | `using` brings exported names into unqualified scope — written by the consumer, not by the library. |
+| **R-3** | No open classes. `impl Trait for Type` lives in the module that declares the trait or the type. |
 
-## Why?
+R-1 is what a `.iyimod` is: a module's declarations, the bodies a consumer has
+to compile for itself, and its machine code, in one file. R-3 is what makes a
+consumer able to answer "does this type implement that trait?" without reading
+anything else.
 
-We love Ruby's efficiency for writing code.
+## What works today
 
-We love C's efficiency for running code.
+```console
+$ make crystal                            # needs LLVM 19 and a Crystal to bootstrap
+$ ./bin/crystal run samples/iyi/hello.iyi
+Hello, iyi!
+HELLO, IYI!
+BEEP 42
+Hello, crystal!
+BEEP 7
+-> BEEP 9
+```
 
-We want the best of both worlds.
+Eight sample programs live in [`samples/iyi`](samples/iyi) and each one is
+documentation for a part of the design: `hello` (traits and `impl`), `modules`
+(`import` and `using`), `generics`, `errors`, `collections` (a trait ported from
+`Enumerable`, implemented twice), `immutable`, `init_order` (initialisation
+order across a module graph) and `webapp` — a port of the [Kemal](https://kemalcr.com)
+router, which is the one program here that looks like real code.
 
-We want the compiler to understand what we mean without having to specify types everywhere.
+**Separate compilation, from the command line:**
 
-We want full OOP.
+```console
+$ ./bin/crystal build --emit-iyimod mods samples/iyi/webapp.iyi   # writes mods/kemal/router.iyimod, ...
+$ ./bin/crystal mod dump mods/kemal/router.iyimod                 # reads one back, as text
+$ rm -rf samples/iyi/kemal                                        # delete the library's source
+$ ./bin/crystal build --use-iyimod mods samples/iyi/webapp.iyi    # still builds, links and runs
+```
 
-Oh, and we don't want to write C code to make the code run faster.
+That last step is the whole point: the consumer never opens the module's source,
+and the program it produces prints what the build from source prints. Five of
+the eight samples do this in `bench/`-adjacent scripts and in
+`spec/compiler/iyimod_spec.cr`.
 
-## Project Status
+## What it costs, measured
 
-Within a major version, language features won't be removed or changed in any way that could prevent a Crystal program written with that version from compiling and working. The built-in standard library might be enriched, but it will always be done with backwards compatibility in mind.
+`python3 bench/build_speed.py` produces the table below rather than this file
+quoting one. On one Linux machine, release compiler, warm builds:
 
-Development of the Crystal language is possible thanks to the community's effort and the continued support of [84codes](https://www.84codes.com/) and every other [sponsor](https://crystal-lang.org/sponsors).
+| program | iyi | `go build` |
+|---|---|---|
+| `hello` (5 lines) | **0.07 s** | 0.10 s |
+| generated pair, 6,900 lines | 0.23 s | **0.09 s** |
 
-## Installing
+Both halves of the second pair are generated from one loop
+(`bench/build_speed/generate_pair.py`) and the bench refuses to time them unless
+the two binaries print the same thing. **Read the second row before quoting the
+first**: iyi wins where fixed costs are the whole bill and loses once there is a
+program, at roughly 25 ms per thousand lines against a Go build that barely
+moves. The front end alone is 0.024 s on `hello`, against a 0.050 s target.
 
-[Follow these installation instructions](https://crystal-lang.org/install)
+## What is not here
 
-## Try it online
+- **No IO beyond `puts`.** The prelude is 1,053 lines on purpose: integers,
+  booleans, a string, one sequence, one dictionary. No files, no sockets, no
+  formatting.
+- **No concurrency.** III.4 of SPEC.md specifies structured concurrency,
+  scope-owned cancellation and a `Share` marker; none of it is built.
+- **No package manager, no standard library, no self-hosting.**
+- **Linux x86-64 only.** Other targets are Crystal's and untested here.
+- **Artifacts are version-locked.** A `.iyimod` from another compiler build is
+  rejected and rebuilt, never migrated.
+- **`derive` macros do not cross modules yet**, though a module's own macros
+  travel with its artifact.
 
-[play.crystal-lang.org](https://play.crystal-lang.org/)
+## Where things are
 
-## Documentation
+| | |
+|---|---|
+| [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
+| [`samples/iyi`](samples/iyi) | eight programs, each documenting a part of it |
+| [`src/iyi`](src/iyi) | the prelude, 1,053 lines |
+| [`src/compiler/crystal/iyimod.cr`](src/compiler/crystal/iyimod.cr) | the artifact format |
+| [`bench/build_speed.py`](bench/build_speed.py) | the numbers above, and the gate that fails until they hold |
+| [README.crystal.md](README.crystal.md) | Crystal's own README, kept |
 
-- [Language Reference](http://crystal-lang.org/reference)
-- [Standard library API](https://crystal-lang.org/api)
-- [Roadmap](https://github.com/crystal-lang/crystal/wiki/Roadmap)
+## Licence and provenance
 
-## Community
-
-Have any questions or suggestions? Ask on the [Crystal Forum](https://forum.crystal-lang.org), on our [Gitter channel](https://gitter.im/crystal-lang/crystal) or IRC channel [#crystal-lang](https://web.libera.chat/#crystal-lang) at irc.libera.chat, or on Stack Overflow under the [crystal-lang](http://stackoverflow.com/questions/tagged/crystal-lang) tag. There is also an archived [Google Group](https://groups.google.com/forum/?fromgroups#!forum/crystal-lang).
-
-## Contributing
-
-The Crystal repository is hosted at [crystal-lang/crystal](https://github.com/crystal-lang/crystal) on GitHub.
-
-Read the general [Contributing guide](https://github.com/crystal-lang/crystal/blob/master/CONTRIBUTING.md), and then:
-
-1. Fork it (<https://github.com/crystal-lang/crystal/fork>)
-2. Create your feature branch (`git checkout -b my-new-feature`)
-3. Commit your changes (`git commit -am 'Add some feature'`)
-4. Push to the branch (`git push origin my-new-feature`)
-5. Create a new Pull Request
+iyi is a fork of the Crystal compiler and carries Crystal's licence and
+copyright: Apache 2.0, Copyright 2012-2026 Manas Technology Solutions. See
+[LICENSE](LICENSE) and [NOTICE.md](NOTICE.md). Everything here that is not
+Crystal's is a change to Crystal's source, and the compiler still identifies
+itself as `Crystal 1.22.0-dev` because it is one.
