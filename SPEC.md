@@ -427,6 +427,17 @@ checkout actually types. Shipping a binary rather than a shell script is a
 packaging job, not a compiler one, and it is not what this document is about —
 but it is 45% of the number until it is done.
 
+**Most of it turned out not to need the packaging job.** Alternating the old
+script and a new one in the same directory, three rounds: **0.076 s against
+0.044 s**. Four processes came out, none of which had to be there. The largest
+started the *installed* compiler to read one string — `crystal env
+CRYSTAL_LIBRARY_PATH`, 0.020 s — and that answer is now kept in `.build`, keyed
+by the compiler that gave it. The others were `tput` deciding whether to colour
+a message nobody may be reading, `uname` answering which binary to look for, and
+`dirname`/`realpath` doing what `${path%/*}` and `pwd -P` do without forking.
+What is left is about 0.018 s of shell over a 0.026 s binary, and *that* is the
+packaging job.
+
 **What is left of the front end.** Of 0.039 s: about 0.020 s is the top-level
 pass over 1,053 lines of prelude and primitives, about 0.008 s is every other
 semantic pass together, and the rest is process startup. Item 1's artifact
