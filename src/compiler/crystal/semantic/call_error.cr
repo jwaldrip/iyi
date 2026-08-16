@@ -594,6 +594,58 @@ class Crystal::Call
     io << '\n'
   end
 
+  # iyi: what "undefined method" means most often in this language.
+  #
+  # R-2b keeps an imported module's names qualified until the file writes
+  # `using`, so the commonest way to reach this error is to import a module and
+  # call one of its functions the way every other language would. The compiler
+  # knows the name, knows which module has it and knows whether it is `pub`;
+  # "undefined local variable or method 'polite'" says none of the three.
+  #
+  # Nothing here fires for a Crystal program: `iyi_unit?` is false for every
+  # Crystal module, so the search finds nobody and the message is unchanged.
+  private def iyi_out_of_reach_hint(def_name : String, obj) : String?
+    return nil if obj
+
+    exporting = [] of Type
+    hiding = [] of Type
+    iyi_each_unit(program) do |mod|
+      next unless mod.defs.try &.has_key?(def_name)
+      (mod.exported_name?(def_name) ? exporting : hiding) << mod
+    end
+
+    unless exporting.empty?
+      written = exporting.map { |mod| iyi_written_path(mod) }
+      qualified = "#{exporting.first}.#{def_name}"
+      return "`#{def_name}` is exported by #{written.map { |path| "`#{path}`" }.join(" and ")}, " \
+             "and this file has not written `using`. Add `using #{written.first}` " \
+             "to bring its names in unqualified, or call it as `#{qualified}` " \
+             "(SPEC.md R-2b)"
+    end
+
+    unless hiding.empty?
+      written = iyi_written_path(hiding.first)
+      return "`#{written}` declares `#{def_name}` and does not mark it `pub`, " \
+             "so it is the module's own and no other module can reach it " \
+             "(SPEC.md R-2)"
+    end
+
+    nil
+  end
+
+  # The written form of a unit's path: `App::Greeter` is `app/greeter`, which
+  # is what a `using` is spelled with and what the file is called.
+  private def iyi_written_path(type : Type) : String
+    type.to_s.split("::").map(&.underscore).join('/')
+  end
+
+  private def iyi_each_unit(type, &block : ModuleType ->) : Nil
+    type.types?.try &.each_value do |nested|
+      block.call(nested) if nested.is_a?(ModuleType) && nested.iyi_unit?
+      iyi_each_unit(nested, &block)
+    end
+  end
+
   private def raise_undefined_method(owner, def_name, obj)
     check_macro_wrong_number_of_arguments(owner, def_name)
 
@@ -644,6 +696,11 @@ class Crystal::Call
         else
           msg << "Did you mean '#{similar_name}'?"
         end
+      end
+
+      # iyi: the name is usually not missing, it is out of reach.
+      if hint = iyi_out_of_reach_hint(def_name, obj)
+        msg << '\n' << hint
       end
 
       # Check if it's an instance variable that was never assigned a value

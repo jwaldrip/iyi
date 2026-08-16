@@ -63,6 +63,65 @@ private def write_iyimod(dir : String, module_name : String,
 end
 
 describe "Semantic: iyi import" do
+  # iyi: what the compiler says the first time somebody meets these rules.
+  # Each of these used to answer with a fact about the compiler's internals —
+  # an undefined constant nobody wrote, a name it could not find — rather than
+  # with the rule that was broken and what to write instead.
+  describe "the message a rule gives the first time it is met" do
+    it "tells a file that `using` a module it has not imported to import it" do
+      with_iyi_modules({
+        "main.iyi"    => "module app/main\n\nusing app/dep\n",
+        "app/dep.iyi" => "module app/dep\n\npub def value : Int32\n  2\nend\n",
+      }) do
+        expect_raises(Crystal::TypeException, /needs `import app\/dep` above it/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
+    it "says which module exports a name that is imported but not used" do
+      with_iyi_modules({
+        "main.iyi"    => "module app/main\n\nimport app/dep\n\nvalue\n",
+        "app/dep.iyi" => "module app/dep\n\npub def value : Int32\n  2\nend\n",
+      }) do
+        expect_raises(Crystal::TypeException, /`value` is exported by `app\/dep`/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
+    it "says when the name is there and was not marked `pub`" do
+      with_iyi_modules({
+        "main.iyi"    => "module app/main\n\nimport app/dep\nusing app/dep\n\nsecret\n",
+        "app/dep.iyi" => "module app/dep\n\ndef secret : Int32\n  2\nend\n",
+      }) do
+        expect_raises(Crystal::TypeException, /does not mark it `pub`/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
+    it "refuses a library `require` and names `import` instead" do
+      with_iyi_modules({
+        "main.iyi" => "module app/main\n\nrequire \"json\"\n",
+      }) do
+        expect_raises(Crystal::TypeException, /iyi has no `require`/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
+    it "says where it looked for a module that is not there" do
+      with_iyi_modules({
+        "main.iyi" => "module app/main\n\nimport app/ghost\n",
+      }) do
+        expect_raises(Crystal::TypeException, /this one is `app\/ghost.iyi`/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+  end
+
   # An `import` written below other code used to declare the module inside the
   # importing one — `Samples::InitOrder::Boot::Registry` — which compiled,
   # because the importing file reaches it under the same name either way. The

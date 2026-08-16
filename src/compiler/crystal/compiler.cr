@@ -313,7 +313,7 @@ module Crystal
     def preanalyse_prelude : Preanalysed
       program = new_program([Source.new("", "")] of Source)
       location = Location.new(program.filename, 1, 1)
-      node = program.normalize(Expressions.new([Require.new(prelude).at(location)] of ASTNode))
+      node = program.normalize(Expressions.new([Require.new(prelude).tap(&.iyi_prelude=(true)).at(location)] of ASTNode))
       node, processor = program.top_level_semantic(node)
       @progress_tracker.clear
       Preanalysed.new(program, node, processor, prelude_cache_key)
@@ -1059,7 +1059,7 @@ module Crystal
 
         prelude_elapsed = Time.instant
         location = Location.new(program.filename, 1, 1)
-        prelude_node = program.normalize(Expressions.new([Require.new(prelude).at(location)] of ASTNode))
+        prelude_node = program.normalize(Expressions.new([Require.new(prelude).tap(&.iyi_prelude=(true)).at(location)] of ASTNode))
         prelude_node, prelude_processor = program.top_level_semantic(prelude_node)
         if full
           # Keep what it returns: the cleanup transformer rewrites the tree, and
@@ -1245,7 +1245,7 @@ module Crystal
 
         # Prepend the prelude to the parsed program
         location = Location.new(program.filename, 1, 1)
-        nodes = Expressions.new([Require.new(prelude).at(location), nodes] of ASTNode)
+        nodes = Expressions.new([Require.new(prelude).tap(&.iyi_prelude=(true)).at(location), nodes] of ASTNode)
 
         # And normalize
         program.normalize(nodes)

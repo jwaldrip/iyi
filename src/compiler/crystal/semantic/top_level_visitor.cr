@@ -274,6 +274,23 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     check_outside_exp node, "use `using`"
 
     path = Path.new(node.path.map(&.camelcase)).at(node)
+
+    # iyi: `using` reaches a module this file has imported, and the error for
+    # forgetting the import used to be "undefined constant App::Greeter" —
+    # a name the author never wrote, about a rule they had not met. Two
+    # different mistakes hide behind it, so they are told apart here.
+    written = node.path.join('/')
+    unless current_type.lookup_type?(path, allow_typeof: false)
+      if resolve_import(written)
+        node.raise "`#{written}` is not imported here. `using` brings in the " \
+                   "names of a module this file has already imported, so this " \
+                   "needs `import #{written}` above it (SPEC.md R-1, R-2b)"
+      else
+        node.raise "can't find module '#{written}'. A module's path is its " \
+                   "file's path, so this one is `#{written}.iyi`"
+      end
+    end
+
     used_type = lookup_type(path)
 
     # `is_a?(ModuleType)` would not do: classes and structs are `ModuleType`s

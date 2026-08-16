@@ -47,6 +47,19 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     filename = node.string
     relative_to = location.try &.original_filename
 
+    # iyi: `require "json"` in a `.iyi` file used to load Crystal's standard
+    # library and fail somewhere inside it, on a syntax this parser does not
+    # have — a syntax error in a file the author never opened, about a library
+    # that is not part of this language. A relative require is left alone: it
+    # is file inclusion inside one unit, which is how the prelude is written.
+    if !node.iyi_prelude? && relative_to.try(&.ends_with?(".iyi")) && !filename.starts_with?('.')
+      node.raise "iyi has no `require`. A module is reached with " \
+                 "`import #{filename}`, and it is a path to a file rather than " \
+                 "a library name (SPEC.md R-1). There is no standard library " \
+                 "to require: the prelude is what a program gets, and README.md " \
+                 "says what is in it"
+    end
+
     # Remember that the program depends on this require
     @program.record_require(filename, relative_to)
 
@@ -130,7 +143,12 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
 
     filename = artifact_path || resolve_import(path)
     unless filename
-      node.raise "can't find module '#{path}'"
+      # iyi: say where it looked. A module's path *is* its file's path (IV.6),
+      # and somebody meeting that rule for the first time is owed the mapping
+      # rather than left to infer it from a name in quotes.
+      node.raise "can't find module '#{path}'. A module's path is its file's " \
+                 "path, so this one is `#{path}.iyi`, resolved from the " \
+                 "directory of the file being built and then from `CRYSTAL_PATH`"
     end
 
     @program.record_require(path, relative_to)

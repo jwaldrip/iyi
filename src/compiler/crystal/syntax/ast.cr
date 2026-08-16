@@ -1790,11 +1790,18 @@ module Crystal
   class Require < ASTNode
     property string : String
 
+    # iyi: the one the compiler writes itself, to load the prelude. A `require`
+    # in a `.iyi` file is refused and told about `import`; this is not one the
+    # author wrote.
+    property? iyi_prelude = false
+
     def initialize(@string)
     end
 
     def clone_without_location
-      Require.new(@string)
+      node = Require.new(@string)
+      node.iyi_prelude = iyi_prelude?
+      node
     end
 
     def_equals_and_hash string
