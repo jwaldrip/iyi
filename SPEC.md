@@ -659,6 +659,16 @@ be reused, and that needs a unit's *inputs* fingerprinted rather than its
 output — a dependency-tracking problem, not an optimisation. It is written down
 here rather than started.
 
+**The front end was asked the same question and answered that there is nothing
+wrong with it.** At 150, 300, 600 and 1,200 types — 3,462 to 27,612 lines — parse
+goes 0.026, 0.048, 0.092, 0.165 s and `main` goes 0.029, 0.056, 0.114, 0.236 s:
+linear in both, with the top-level pass flat at 0.026–0.041 s because what it
+walks is the prelude rather than the program. About 6 µs a line to parse and
+8.5 µs a line to type, on a debug compiler. There is no quadratic hiding in
+there and so nothing to remove; what is left is the cost of the implementation,
+which is a project rather than a fix, and this document would rather say so than
+imply a bug it has not found.
+
 ### What Crystal's own 0.1.0 looked like
 
 The scope above was drawn before checking it against the one release most
