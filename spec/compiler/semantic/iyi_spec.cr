@@ -2556,6 +2556,30 @@ describe "Semantic: iyi" do
   # iyi: `pub` — what a module exports (R-2), and what `using` may reach
   # (R-2b). Only a `module app/greeter` compilation unit has a surface; a
   # Crystal module never wrote `pub`, so the `using` specs above are unaffected.
+  describe "what a trait mismatch says" do
+    # A trait is not a class, so "not Dog" is only half an answer: it says the
+    # argument is wrong and not what would make it right. R-3 says exactly
+    # where the `impl` may go, and the message names both places.
+    it "names the impl to write, and the two modules it may live in" do
+      assert_error <<-CRYSTAL, "Write `impl"
+        module app/thing
+
+        trait Speaker
+          abstract def speak : String
+        end
+
+        pub struct Dog
+        end
+
+        def hear(s : Speaker) : String
+          s.speak
+        end
+
+        hear(Dog.new)
+        CRYSTAL
+    end
+  end
+
   describe "pub" do
     # R-2 is a rule of the language, so it is asked at the `pub def`. It used
     # to be asked only where the artifact is written, which meant

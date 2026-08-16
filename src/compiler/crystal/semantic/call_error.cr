@@ -371,6 +371,20 @@ class Crystal::Call
         str << "expected argument #{argument_description} to '#{full_name(owner, def_name)}' to be "
         to_sentence(str, expected_types, " or ")
         str << ", not #{actual_type.devirtualize}"
+
+        # iyi: a trait is not a class, so "not Dog" is the whole answer only if
+        # the reader already knows that the way to satisfy it is an `impl`
+        # written somewhere specific. R-3 says where: with the trait, or with
+        # the type. Nowhere else, and the message names both.
+        if wanted = expected_types.find { |type| type.is_a?(Type) && type.trait? }
+          actual = actual_type.devirtualize
+          str.puts
+          str.puts
+          str << "`#{actual}` does not implement `#{wanted}`. Write "
+          str << "`impl #{wanted} for #{actual}` in the module that declares "
+          str << "`#{wanted}` or in the one that declares `#{actual}` — R-3 "
+          str << "allows those two and no others (SPEC.md IV.4)"
+        end
       end
     end
   end
