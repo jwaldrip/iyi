@@ -432,6 +432,93 @@ module Crystal
       false
     end
 
+    def visit(node : ModuleHeader)
+      @str << "module " << node.path.join('/')
+      false
+    end
+
+    def visit(node : ImportDecl)
+      @str << "import " << node.path.join('/')
+      false
+    end
+
+    def visit(node : UsingDecl)
+      @str << "using " << node.path.join("::")
+      if names = node.names
+        @str << "::{" << names.join(", ") << '}'
+      end
+      false
+    end
+
+    def visit(node : TraitDef)
+      @str << "pub " if node.exported?
+      @str << "trait "
+      node.name.accept self
+      if type_vars = node.type_vars
+        @str << '(' << type_vars.join(", ") << ')'
+      end
+      if supertraits = node.supertraits
+        @str << " : "
+        supertraits.each_with_index do |supertrait, i|
+          @str << ", " if i > 0
+          supertrait.accept self
+        end
+      end
+      newline
+      accept_with_indent(node.body)
+      append_indent
+      @str << "end"
+      false
+    end
+
+    def visit(node : Propagate)
+      node.exp.accept self
+      @str << '!'
+      false
+    end
+
+    def visit(node : Defer)
+      @str << "defer "
+      node.exp.accept self
+      false
+    end
+
+    def visit(node : Recover)
+      node.exp.accept self
+      if default = node.default
+        @str << ".or("
+        default.accept self
+        @str << ')'
+      else
+        @str << ".or_panic"
+      end
+      false
+    end
+
+    def visit(node : AssocTypeDecl)
+      @str << "type " << node.name
+      if value = node.value
+        @str << " = "
+        value.accept self
+      end
+      false
+    end
+
+    def visit(node : ImplDef)
+      @str << "impl "
+      node.trait.accept self
+      @str << " for "
+      node.target.accept self
+      if type_vars = node.type_vars
+        @str << " forall " << type_vars.join(", ")
+      end
+      newline
+      accept_with_indent(node.body)
+      append_indent
+      @str << "end"
+      false
+    end
+
     def visit(node : ModuleDef)
       @str << "module "
       node.name.accept self

@@ -123,6 +123,14 @@ module Crystal::System::Signal
     end
   ensure
     @@pipe = IO.pipe(read_blocking: false, write_blocking: true)
+
+    # The reader has to be restarted along with the pipe. Only the forking
+    # thread survives a fork, so the "signal-loop" fiber started by
+    # `setup_default_handlers` is not running in the child, and the old one it
+    # inherited is holding the reader we just closed. Without this, a signal
+    # handler writes into a pipe nobody reads: the child never learns that a
+    # subprocess exited and `Process#wait` blocks forever.
+    start_loop
   end
 
   # Resets signal handlers to `SIG_DFL`. This avoids the child to receive

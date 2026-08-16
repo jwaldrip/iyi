@@ -1,0 +1,185 @@
+# The one sequence — SPEC.md, "0.1.0", item 3.
+#
+# `Array` is a compiler-known generic class, like `String`: an array literal is
+# lowered to `Array(T).unsafe_build` and `to_unsafe` before any of this is
+# read (`LiteralExpander#expand`), so those two names are not ours to choose.
+#
+# A buffer, a size and a capacity. Growth doubles, which is the only policy
+# that keeps a run of `<<` linear, and there is no shrinking: nothing in the
+# samples removes elements.
+class Array(T)
+  @size : Int32
+  @capacity : Int32
+  @buffer : Pointer(T)
+
+  def initialize
+    @size = 0
+    @capacity = 0
+    @buffer = Pointer(T).new(0_u64)
+  end
+
+  def initialize(capacity : Int32)
+    @size = 0
+    @capacity = capacity
+    @buffer = capacity == 0 ? Pointer(T).new(0_u64) : Pointer(T).malloc(capacity.to_u64)
+  end
+
+  # An array of *capacity* elements that are not written yet. The literal
+  # expander fills them through `to_unsafe` immediately afterwards, which is
+  # why this is allowed to hand out a size it has not stored anything at.
+  def self.unsafe_build(capacity : Int32) : Array(T)
+    array = Array(T).new(capacity)
+    array.unsafe_set_size(capacity)
+    array
+  end
+
+  # :nodoc:
+  def unsafe_set_size(size : Int32) : Nil
+    @size = size
+  end
+
+  def to_unsafe : Pointer(T)
+    @buffer
+  end
+
+  def size : Int32
+    @size
+  end
+
+  def empty? : Bool
+    @size == 0
+  end
+
+  def <<(value : T) : Array(T)
+    grow if @size == @capacity
+    @buffer[@size] = value
+    @size = @size + 1
+    self
+  end
+
+  def [](index : Int32) : T
+    raise "index out of range" if index < 0 || index >= @size
+    @buffer[index]
+  end
+
+  def []=(index : Int32, value : T) : T
+    raise "index out of range" if index < 0 || index >= @size
+    @buffer[index] = value
+  end
+
+  def each(& : T -> Nil) : Nil
+    index = 0
+    while index < @size
+      yield @buffer[index]
+      index = index + 1
+    end
+  end
+
+  # Here rather than on `Enumerable`: the trait is iyi's, written in
+  # `samples/iyi/std`, and every one of its methods that returns a sequence
+  # returns one of these. So an `Array` is what a sample ends up holding, and
+  # `join` is what it ends up calling.
+  def join(separator : String) : String
+    result = ""
+    first = true
+    each do |value|
+      result = result + separator unless first
+      result = result + value.to_s
+      first = false
+    end
+    result
+  end
+
+  # No zero to start from — that would need a trait this prelude does not
+  # have — so an empty array is a panic rather than a 0. The trait's own `sum`
+  # does have one (`Num.zero`) and answers for the empty case.
+  def sum : T
+    raise "sum of an empty array" if empty?
+
+    total = @buffer[0]
+    index = 1
+    while index < @size
+      total = total + @buffer[index]
+      index = index + 1
+    end
+    total
+  end
+
+  def map(& : T -> U) : Array(U) forall U
+    result = Array(U).new(@size)
+    each { |value| result << yield value }
+    result
+  end
+
+  def concat(other : Array(T)) : Array(T)
+    other.each { |value| self << value }
+    self
+  end
+
+  def last? : T?
+    empty? ? nil : @buffer[@size - 1]
+  end
+
+  # Removes and returns the first element, moving the rest down. Linear, which
+  # is what an array without a head offset costs; `each_cons` in the trait is
+  # the one caller and its window is `n` long.
+  def shift : T
+    raise "shift of an empty array" if empty?
+
+    value = @buffer[0]
+    index = 1
+    while index < @size
+      @buffer[index - 1] = @buffer[index]
+      index = index + 1
+    end
+    @size = @size - 1
+    value
+  end
+
+  # Insertion sort: the samples sort five elements, and a merge sort would be
+  # three times the lines to be slower at that size.
+  def sort(& : T, T -> Int32) : Array(T)
+    result = dup
+    index = 1
+    while index < result.size
+      value = result[index]
+      slot = index - 1
+      while slot >= 0 && (yield result[slot], value) > 0
+        result[slot + 1] = result[slot]
+        slot = slot - 1
+      end
+      result[slot + 1] = value
+      index = index + 1
+    end
+    result
+  end
+
+  def dup : Array(T)
+    copy = Array(T).new(@size)
+    each { |value| copy << value }
+    copy
+  end
+
+  def ==(other : Array(T)) : Bool
+    return false unless @size == other.size
+
+    index = 0
+    while index < @size
+      return false unless @buffer[index] == other[index]
+      index = index + 1
+    end
+    true
+  end
+
+  private def grow : Nil
+    capacity = @capacity == 0 ? 4 : @capacity * 2
+    buffer = Pointer(T).malloc(capacity.to_u64)
+    index = 0
+    while index < @size
+      buffer[index] = @buffer[index]
+      index = index + 1
+    end
+    @buffer = buffer
+    @capacity = capacity
+  end
+end

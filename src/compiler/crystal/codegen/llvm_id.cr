@@ -36,6 +36,17 @@ module Crystal
       assign_id_to_metaclass(program.object)
     end
 
+    # iyi: every type this program has assigned an id to.
+    #
+    # A build that links an artifact's object code has to define the type-id
+    # globals that code refers to, and cannot learn from an object file which
+    # ones those are — so it defines them all (SPEC.md IV.1g). The numbering is
+    # the *program's*, which is why the artifact carries a reference and never
+    # a value: two programs number their types differently.
+    def each_type(&)
+      @ids.each_key { |type| yield type }
+    end
+
     def type_id(type : TypeDefType)
       type_id(type.typedef)
     end

@@ -169,7 +169,11 @@ module Crystal
   end
 
   class Const
-    property initializer : LLVM::Value?
+    # iyi: the emitted value, which only codegen sets and only a build that
+    # links LLVM has a type for (see `../llvm_shim.cr`).
+    {% unless flag?(:without_llvm) %}
+      property initializer : LLVM::Value?
+    {% end %}
 
     # Was this constant already read during the codegen phase?
     # If not, and we are at the place that declares the constant, we can

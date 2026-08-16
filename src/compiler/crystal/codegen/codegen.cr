@@ -156,9 +156,9 @@ module Crystal
                 frame_pointers = FramePointers::Auto)
       visitor = CodeGenVisitor.new self, node, single_module: single_module,
         debug: debug, frame_pointers: frame_pointers
-      visitor.accept node
-      visitor.process_finished_hooks
-      visitor.finish
+      Prof.span("  codegen: visitor.accept") { visitor.accept node }
+      Prof.span("  codegen: finished hooks") { visitor.process_finished_hooks }
+      Prof.span("  codegen: visitor.finish") { visitor.finish }
 
       visitor.modules
     end
@@ -317,6 +317,12 @@ module Crystal
       @main_module_info = ModuleInfo.new(@main_mod, @main_llvm_typer, @builder)
       @modules = {"" => @main_module_info} of String => ModuleInfo
       @types_to_modules = {} of Type => ModuleInfo
+
+      # iyi: the unit a callee should be copied into while emitting code that
+      # will travel in a `.iyimod` (SPEC.md IV.1g). Nil in every build that is
+      # not writing artifacts, which is every build that is not making a
+      # library out of a module.
+      @iyi_closure_host = nil.as(ModuleInfo?)
 
       set_internal_fun_debug_location(@main, MAIN_NAME, nil)
 
@@ -539,6 +545,8 @@ module Crystal
       @unused_fun_defs.each do |node|
         codegen_fun node.real_name, node.external, @program, is_exported_fun: true
       end
+
+      iyi_define_all_type_ids unless @program.iyi_artifact_objects.empty?
 
       env_dump = ENV["DUMP"]?
       case env_dump
@@ -774,8 +782,30 @@ module Crystal
         node.def.set_type node.return_type
       end
 
-      the_fun = codegen_fun fun_literal_name, node.def, context.type, fun_module_info: @main_module_info, is_fun_literal: true, is_closure: is_closure
-      the_fun = check_main_fun fun_literal_name, the_fun
+      # iyi: into the unit that is travelling, when one is (SPEC.md IV.1g).
+      #
+      # A proc literal is otherwise emitted into `_main`, and the unit that
+      # creates one refers to it from there — which is fine for a program and
+      # not for an artifact: the router's unit called
+      # `~procProc(Context, String)@kemal/router.iyi:211` and the producing
+      # build had left the definition in a module nothing carries. Nor could
+      # the consumer make its own, because the name has the file and line it
+      # was written on in it and the consumer reads declarations under another
+      # filename.
+      #
+      # So it goes where the code that made it goes, private to that unit —
+      # the same answer, and the same reason, as the callees the closure
+      # already copies.
+      host = @iyi_closure_host
+      the_fun = codegen_fun fun_literal_name, node.def, context.type,
+        fun_module_info: host || @main_module_info, is_fun_literal: true,
+        is_closure: is_closure, iyi_internal: !host.nil?
+      the_fun =
+        if host
+          check_mod_fun host.mod, fun_literal_name, the_fun
+        else
+          check_main_fun fun_literal_name, the_fun
+        end
 
       set_current_debug_location(node) if @debug.line_numbers?
       fun_ptr = cast_to_void_pointer(the_fun.func)
@@ -905,6 +935,22 @@ module Crystal
 
     def visit(node : ModuleDef)
       accept node.body
+      @last = llvm_nil
+      false
+    end
+
+    # iyi: like `ModuleDef` — the body is what carries code, and the trait and
+    # target paths are declarations rather than expressions, so they are never
+    # typed and must not be walked.
+    def visit(node : ImplDef | TraitDef)
+      accept node.body
+      @last = llvm_nil
+      false
+    end
+
+    # iyi: `type Elem` is answered at declaration time; nothing of it survives
+    # into the code.
+    def visit(node : AssocTypeDecl)
       @last = llvm_nil
       false
     end

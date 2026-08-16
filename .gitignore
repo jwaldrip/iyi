@@ -35,3 +35,7 @@ devenv.local.yaml
 
 # pre-commit
 .pre-commit-config.yaml
+
+# Python bytecode from bench helpers
+__pycache__/
+*.pyc

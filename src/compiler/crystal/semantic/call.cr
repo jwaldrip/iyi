@@ -261,6 +261,79 @@ class Crystal::Call
     matches = check_tuple_indexer(owner, def_name, args, arg_types)
     matches ||= lookup_matches_checking_expansion(owner, signature, search_in_parents, with_autocast: with_autocast)
 
+    # iyi: before falling back to the top level, walk the enclosing lexical
+    # scopes. This is the step Crystal has no equivalent of, and both halves
+    # of it exist for the same reason: in iyi a module is a compilation unit,
+    # so the functions in scope for a type are the ones its module declares
+    # and the ones its module brought in with `using` — not, as in Crystal,
+    # only what the type inherits plus the top level.
+    #
+    # At each scope, in order:
+    #
+    #   1. the scope's own functions, so a type nested in a module can call
+    #      the module's helpers unqualified;
+    #   2. the modules that scope brought in with `using` (SPEC.md II.3).
+    #
+    # That order is II.3's rule that a local definition beats a used one, and
+    # the outward walk is what makes a nearer scope win over a farther one.
+    # Neither could be an `include`: including reaches this module's own scope
+    # but not the types nested in it, and it would settle a clash between two
+    # used modules silently, by ancestor order.
+    #
+    # Both halves resolve through a METACLASS, not through the module itself.
+    # A module's functions are written `pub def` in its body and reached as
+    # `App::Greeter.polite`, thanks to the `extend self` the module header
+    # desugars to. Choosing the metaclass is what makes the resolved call
+    # correct and not merely findable: a non-generic metaclass is not
+    # `passed_as_self?`, so codegen passes no receiver at all, whereas
+    # resolving against the module would hand the def whatever `self` the
+    # caller happened to have — a `User` instance, say, which then fails the
+    # `DefInstanceContainer` cast in `#instantiate`.
+    #
+    # Costs nothing for code that is not iyi: `iyi_unit?` is false and the
+    # `using` list is lazily allocated, so each scope is two loads and the
+    # walk ends at `program`.
+    #
+    # NOTE: the walk must stop at `program`, which is its own namespace
+    # (`Program` is constructed with `super(self, self, "main")`). Walking past
+    # it loops forever. Stopping there is also correct: a `using` at file top
+    # level lands on `program` itself, and the existing top-level fallback
+    # below already covers that case.
+    using_owner = nil
+    if matches.empty? && !obj && search_in_toplevel
+      # The walk starts at the owner itself, because a `using` written in a
+      # type's own body belongs to that type. `instance_type` turns
+      # `Main.class` — the owner of code in a module body — back into `Main`,
+      # which is where the directive was recorded.
+      scope_type = owner.instance_type
+      enclosing = false
+
+      while scope_type
+        # Own functions, but only for a scope that lexically *encloses* the
+        # call: the owner's own defs were already searched above, and going
+        # through its metaclass here would reach `new` and `allocate` from an
+        # instance method, which is not iyi scoping but a new way to be wrong.
+        if enclosing && scope_type.iyi_unit?
+          scope_matches = lookup_matches_owned_by(scope_type, signature, search_in_parents, with_autocast)
+          if scope_matches
+            matches = scope_matches
+            using_owner = scope_type.metaclass
+            break
+          end
+        end
+
+        if (used = scope_type.using_modules?) &&
+           (found = lookup_using_matches(used, def_name, signature, search_in_parents, with_autocast))
+          matches, using_owner = found
+          break
+        end
+
+        break if scope_type == program
+        scope_type = scope_type.is_a?(NamedType) ? scope_type.namespace : nil
+        enclosing = true
+      end
+    end
+
     # If we didn't find a match and this call doesn't have a receiver,
     # and we are not at the top level, let's try searching the top-level
     if matches.empty? && !obj && owner != program && search_in_toplevel
@@ -302,7 +375,9 @@ class Crystal::Call
     end
 
     # If this call is an implicit call to self
-    if !obj && !program_matches && !owner.is_a?(Program)
+    # (a call resolved through `using` is not: its receiver is a module, and
+    # codegen passes no receiver for it at all)
+    if !obj && !program_matches && !using_owner && !owner.is_a?(Program)
       parent_visitor.check_self_closured
     end
 
@@ -311,7 +386,7 @@ class Crystal::Call
       attach_subclass_observer instance_type.base_type
     end
 
-    instantiate signature, matches, owner, self_type, with_autocast
+    instantiate signature, matches, using_owner || owner, self_type, with_autocast
   end
 
   def lookup_matches_checking_expansion(owner, signature, search_in_parents = true, with_autocast = false)
@@ -354,6 +429,47 @@ class Crystal::Call
     matches
   end
 
+  # iyi: resolves a signature against the functions *mod* itself declares,
+  # or nil if it declares none that match.
+  #
+  # The lookup runs on the metaclass, because that is where `extend self` puts
+  # a module's functions, but the result is then restricted to defs `mod`
+  # owns. A metaclass inherits from `Module` and `Object`, so without that
+  # restriction a call named like `to_s` that had failed everywhere else would
+  # silently bind there instead of being reported as undefined.
+  private def lookup_matches_owned_by(mod : Type, signature, search_in_parents, with_autocast)
+    matches = lookup_matches_with_signature(mod.metaclass, signature, search_in_parents, with_autocast)
+    return nil if matches.empty?
+    return nil unless matches.all? { |match| match.def.owner == mod }
+    matches
+  end
+
+  # iyi: resolves *def_name* against the modules `using` brought into a scope,
+  # returning the matches together with the owner they must be instantiated
+  # under, or nil if none of them provides it.
+  #
+  # Two used modules providing the same name is an error here, at the call,
+  # and only for the name actually called — SPEC.md II.3. The mirror of
+  # `Type#lookup_using_path_item`, which does the same for type names.
+  private def lookup_using_matches(used : Array(UsingModule), def_name, signature, search_in_parents, with_autocast)
+    found = nil
+
+    used.each do |using_module|
+      next unless using_module.exports?(def_name)
+
+      used_matches = lookup_matches_owned_by(using_module.type, signature, search_in_parents, with_autocast)
+      next unless used_matches
+
+      if found
+        raise "'#{def_name}' is ambiguous here: it is exported by both #{found[1].instance_type} and #{using_module.type}. Qualify the call, or narrow one of the `using` directives."
+      end
+
+      found = {used_matches, using_module.type.metaclass}
+    end
+
+    found
+  end
+
   def lookup_matches_with_signature(owner, signature, search_in_parents, with_autocast)
     if search_in_parents
       owner.lookup_matches(signature, analyze_all: with_autocast)
@@ -373,6 +489,13 @@ class Crystal::Call
       check_visibility match
 
       yield_vars, block_arg_type = match_block_arg(match)
+
+      # iyi: checked here rather than during overload matching because a free
+      # variable can be bound by the block's return type — `&block : Ctx -> B`
+      # — which `match_block_arg` has only just resolved.
+      check_free_var_bounds match
+      check_where_bounds match
+
       use_cache = !block || match.def.block_arg
 
       if block && match.def.block_arg
@@ -403,6 +526,27 @@ class Crystal::Call
 
         if typed_def_return_type = typed_def.return_type
           check_return_type(typed_def, typed_def_return_type, match, match_owner)
+        end
+
+        # iyi: a def read from a `.iyimod` has no body to visit (SPEC.md IV.1).
+        #
+        # Its type is the return annotation `check_return_type` just resolved,
+        # which R-2 guarantees is there — a constructor being the one case that
+        # writes none, and its result is not what the caller reads anyway. This
+        # is the whole of what the artifact buys the front end: the call is
+        # checked against the signature and the module's body is never seen.
+        if match.def.iyi_from_artifact?
+          # Assigned rather than defaulted, and this is not a tidy-up. `type?`
+          # answers `@type || freeze_type`, so a def whose return annotation
+          # has been resolved *reads* as typed while `@type` is still nil —
+          # and `Def#mangled_name` reads `@type`. Guarding this on `type?`
+          # therefore left the front end correct and gave codegen a symbol
+          # without its return type on the end, which the artifact's own object
+          # file does not define. It failed at link, in a build nothing else
+          # could reach; a build that had linked would have been worse.
+          typed_def.type = typed_def.freeze_type || program.nil
+          typed_defs << typed_def
+          next
         end
 
         bubbling_exception do
@@ -1097,6 +1241,62 @@ class Crystal::Call
 
   private def cant_infer_block_return_type
     raise "can't infer block return type, try to cast the block body with `as`. See: https://crystal-lang.org/reference/syntax_and_semantics/as.html#usage-for-when-the-compiler-cant-infer-the-type-of-a-block"
+  end
+
+  # iyi: `def add_route(&block : Ctx -> B) forall B : IntoBody` (SPEC.md II.7
+  # rule 3, II.8).
+  #
+  # A bound on a *method*'s free variable is not the conditional-impl problem
+  # a bound on an impl's parameter is. The method exists either way; all this
+  # asks is whether the type the variable just bound to implements the trait.
+  # So it is one check at the call site, with nothing to defer.
+  #
+  # Reported as an error rather than as a failed match: under R-3 a type's
+  # method set is closed, so "Int32 does not implement IntoBody" is the true
+  # reason, and "no overload matches" would hide it.
+  private def check_free_var_bounds(match)
+    bounds = match.def.free_var_bounds
+    return unless bounds
+
+    bounds.each do |name, bound_node|
+      bound_type = match.context.bound_free_var?(name)
+      next unless bound_type.is_a?(Type)
+
+      trait_type = lookup_node_type(match.context, bound_node)
+
+      unless trait_type.trait?
+        bound_node.raise "can't bound #{name} by #{trait_type}, it's a #{trait_type.type_desc}. A bound is a trait, and nothing else — see SPEC.md II.7"
+      end
+
+      unless bound_type.implements?(trait_type)
+        raise "#{bound_type} does not implement #{trait_type}, required by `#{name}` in `#{match.def.name}`"
+      end
+    end
+  end
+
+  # iyi: `def max : Elem where Elem : Comparable` (SPEC.md II.6).
+  #
+  # Unlike a `forall` bound, the bounded name is not one this method
+  # introduced: it is an associated type of the trait the method is written in,
+  # so by the time a call matches it is already a type. About a quarter of
+  # `Enumerable` is valid only for some element types, and this is what lets
+  # the trait say so instead of duck-typing and failing at instantiation.
+  private def check_where_bounds(match)
+    bounds = match.def.where_bounds
+    return unless bounds
+
+    bounds.each do |name, bound_node|
+      bound_type = lookup_node_type(match.context, Path.new([name]).at(bound_node))
+      trait_type = lookup_node_type(match.context, bound_node)
+
+      unless trait_type.trait?
+        bound_node.raise "can't bound #{name} by #{trait_type}, it's a #{trait_type.type_desc}. A bound is a trait, and nothing else — see SPEC.md II.7"
+      end
+
+      unless bound_type.implements?(trait_type)
+        raise "#{bound_type} does not implement #{trait_type}, required by `where #{name} : #{trait_type}` in `#{match.def.name}`"
+      end
+    end
   end
 
   private def lookup_node_type(context, node)

@@ -1,0 +1,239 @@
+# Implementing a trait for a generic type — SPEC.md II.7.
+#
+#   ./bin/crystal run samples/iyi/generics.iyi
+
+module samples/generics
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Box(T)
+  getter value : T
+
+  def initialize(@value : T)
+  end
+end
+
+# `forall T` introduces the parameter, and it is required. Without it, whether
+# `T` names a new parameter or a type already in scope would depend on what
+# happens to be imported — so a library could change what this impl means by
+# adding an export. Rust requires the same binder for the same reason.
+impl Show for Box(T) forall T
+  def show : String
+    "Box(#{value})"
+  end
+end
+
+pub struct Pair(A, B)
+  getter first : A
+  getter second : B
+
+  def initialize(@first : A, @second : B)
+  end
+end
+
+# `Pair` declared its parameters `A, B`; this impl calls them `X, Y`. The names
+# are the impl's own and bind positionally, so an impl states arity and not
+# vocabulary — what a type chose to call its parameters is its own business.
+# Crystal requires a reopened generic to repeat the declared names; that leaks
+# the declaration's naming into every impl of it.
+impl Show for Pair(X, Y) forall X, Y
+  def show : String
+    "#{label(first)}, #{label(second)}"
+  end
+
+  def label(v : X) : String
+    "first=#{v}"
+  end
+
+  def label(v : Y) : String
+    "second=#{v}"
+  end
+end
+
+puts Box.new(42).show
+puts Box.new("hello").show
+puts Pair.new(1, "two").show
+
+# One impl covers every instantiation, so instantiations of the same generic
+# dispatch through the trait together.
+shown = [Box.new(1), Box.new("two"), Pair.new(3, "four")] of Show
+shown.each { |s| puts s.show }
+
+# ---------------------------------------------------------------------------
+# Associated types — SPEC.md II.6
+# ---------------------------------------------------------------------------
+#
+# `type Elem` declares a type the *impl* answers, not one the caller picks. A
+# collection iterates one way, so its element type is an output of the impl;
+# making it a parameter would leave a call on the collection ambiguous about
+# which impl it meant. This is the shape `Enumerable` needs: 130 methods
+# written against `Elem`, on one `abstract def each`.
+
+pub trait Container
+  type Elem
+
+  abstract def first : Elem
+
+  # A default method. `Elem` resolves to whatever the impl answered, so this
+  # one body serves every implementer without being written per type.
+  def pair : Array(Elem)
+    [first, first]
+  end
+end
+
+pub struct Names
+  def initialize
+  end
+end
+
+impl Container for Names
+  type Elem = String
+
+  def first : String
+    "ada"
+  end
+end
+
+pub struct Counts
+  def initialize
+  end
+end
+
+impl Container for Counts
+  type Elem = Int32
+
+  def first : Int32
+    42
+  end
+end
+
+puts Names.new.pair.join(", ")
+puts Counts.new.pair.sum
+
+# ---------------------------------------------------------------------------
+# Bounds and requirements — SPEC.md II.6
+# ---------------------------------------------------------------------------
+#
+# About a quarter of `Enumerable` is valid only for some element types: `max`
+# needs `Comparable`, `sum` needs `Numeric`, `tally` needs `Hashable`. `where`
+# says so. Crystal duck-types these and fails at instantiation naming neither
+# the bound nor the element type.
+
+pub trait Cmp
+  abstract def cmp(other : self) : Int32
+end
+
+# `Ord : Cmp` requires an implementer to implement `Cmp` too. A requirement,
+# not an inclusion: implementing `Ord` does not hand a type `Cmp`'s methods,
+# it insists the type has its own `impl Cmp for` it. Were it an include, every
+# implementer of `Ord` would satisfy `Cmp` with no impl anywhere — the open
+# class hole R-3 exists to close.
+pub trait Ord : Cmp
+  type Item
+
+  abstract def item : Item
+
+  # `Ord` never declares `cmp`; the requirement is what guarantees it is there.
+  def beats(other : self) : Bool
+    cmp(other) > 0
+  end
+
+  # Valid only when the item type is comparable. `Ranked` answers `Item` with
+  # `Score`, which implements `Cmp`, so this one is callable there.
+  def best : Item where Item : Cmp
+    item
+  end
+end
+
+pub struct Score
+  getter n : Int32
+
+  def initialize(@n : Int32)
+  end
+end
+
+impl Cmp for Score
+  def cmp(other : self) : Int32
+    n - other.n
+  end
+end
+
+pub struct Ranked
+  getter n : Int32
+
+  def initialize(@n : Int32)
+  end
+end
+
+impl Cmp for Ranked
+  def cmp(other : self) : Int32
+    n - other.n
+  end
+end
+
+impl Ord for Ranked
+  type Item = Score
+
+  def item : Score
+    Score.new(n)
+  end
+end
+
+puts Ranked.new(2).beats(Ranked.new(1))
+puts Ranked.new(7).best.n
+
+# ---------------------------------------------------------------------------
+# What this sample would report as an error
+# ---------------------------------------------------------------------------
+#
+# * `impl Ord for X` with no `impl Cmp for X` before it — the error names the
+#   required trait. The impls have to be written in dependency order, because
+#   the check runs where the impl is and nothing has looked ahead.
+#
+# * `Ranked.new(1).best` if `Item` were answered with a type that does not
+#   implement `Cmp` — the error names the element type and the bound, which is
+#   the whole reason the bound is written.
+#
+# * A second `impl Container for Names` — a trait with associated types is
+#   implementable only once for a type. That restriction *is* the difference
+#   from a parameter: a second answer for `Elem` would make `Names.new.first`
+#   ambiguous. A trait with parameters has no such rule, because several impls
+#   are the point of having parameters.
+#
+# * `impl Container for Names` with no `type Elem = ...` — the error names the
+#   associated type left unanswered.
+#
+# * `type Elem = String` written in the trait — a trait declares an associated
+#   type, it does not answer it.
+#
+# * `impl Show for Box(T)` without `forall T` — the error names the binder and
+#   writes out the line you meant.
+#
+# * `impl Show for Box(Int32)` — iyi has no specialised impls. Overlapping
+#   impls need a rule for which one wins, and that rule has to stay sound when
+#   the two live in modules compiled separately; Rust has wanted this for a
+#   decade and it is still unstable, and Java cannot express it at all.
+#   Refusing it is what keeps `Box(T)`'s method set knowable without knowing T.
+#
+# * `impl Show for T forall T : Show` — a blanket impl, refused for the reason
+#   open classes are: it lets a distant module add methods to every type.
+#
+# ---------------------------------------------------------------------------
+# Not yet implemented
+# ---------------------------------------------------------------------------
+#
+# * `forall T : Show` parses but is rejected. A bound makes the impl
+#   conditional, and a conditional impl has to be checked where the type is
+#   instantiated rather than where the impl is written.
+#
+# * Under R-4 an impl on a generic type should be compiled once per GC shape
+#   rather than once per instantiation. Today this monomorphises, exactly the
+#   way Crystal does.
+#
+# * Two impls of the same *parameterised* trait for one type collide when their
+#   methods take the same arguments: `impl Into(String) for U` and
+#   `impl Into(Int32) for U` both define `into`, and the second silently wins.
+#   Parameters exist for exactly this case, so it needs an answer — Rust's is
+#   to pick the impl from the type the call site expects.

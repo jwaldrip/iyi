@@ -1839,7 +1839,19 @@ module Crystal
         node.raise "can't return from constant"
       end
 
-      typed_def = @typed_def || node.raise("can't return from top level")
+      typed_def = @typed_def || begin
+        # iyi: a `!` here is a propagation out of a module's initialisation,
+        # which III.5 refuses. Reported as the rule rather than as a stray
+        # `return`, which is what the expansion happens to be made of.
+        if node.from_propagate?
+          node.raise <<-MSG
+            `!` can't propagate out of a module's initialisation
+
+            A module's top-level expressions run when the module is initialised, and there is nothing there to return to. If it can fail it is not initialisation, it is work — put it in a function the program calls when it is ready to handle the failure. See SPEC.md III.5.
+            MSG
+        end
+        node.raise "can't return from top level"
+      end
 
       if typed_def.captured_block?
         node.raise "can't return from captured block, use next"
@@ -1874,8 +1886,42 @@ module Crystal
       end
     end
 
+    # iyi: `expr!`, `.or` and `.or_panic` all expand to an `is_a?(::Error)`, and
+    # this is where their operand is judged (SPEC.md III.1.1, III.1.3). Both
+    # degenerate cases are rejected rather than given a surprising meaning —
+    # without this, any of the three on a type with no error member compiles and
+    # silently does nothing, which is the opposite of what anyone writes it for.
+    private def check_error_union_operand(node : IsA, construct : String)
+      type = node.obj.type?
+      return unless type
+
+      members = type.is_a?(UnionType) ? type.union_types : [type] of Type
+      errors, values = members.partition &.error?
+
+      if errors.empty?
+        verb = construct == "!" ? "propagate" : "recover"
+        section = construct == "!" ? "III.1" : "III.1.3"
+        node.raise "`#{construct}` has no error to #{verb}: no member of #{type} implements `Error`. `#{construct}` is for a union with an error member — see SPEC.md #{section}"
+      end
+
+      if values.empty?
+        case construct
+        when "!"
+          node.raise "`!` can never produce a value: every member of #{type} implements `Error`. A function that never succeeds returns `NoReturn` — see SPEC.md III.1.1"
+        when ".or"
+          node.raise "`.or` can only ever return its default: every member of #{type} implements `Error`. A function that never succeeds returns `NoReturn` — see SPEC.md III.1.3"
+        else
+          node.raise "`.or_panic` can never produce a value: every member of #{type} implements `Error`. A function that never succeeds returns `NoReturn` — see SPEC.md III.1.3"
+        end
+      end
+    end
+
     def visit(node : IsA)
       node.obj.accept self
+
+      if construct = node.error_construct
+        check_error_union_operand(node, construct)
+      end
 
       @in_type_args += 1
       @inside_is_a = true

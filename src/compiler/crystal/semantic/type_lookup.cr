@@ -41,8 +41,13 @@ class Crystal::Type
   # ```
   #
   # If `self` is `Foo` and `Bar(Baz)` is given, the result will be `Foo::Bar(Baz)`.
-  def lookup_type(node : ASTNode, self_type = self.instance_type, allow_typeof = true, free_vars : Hash(String, TypeVar)? = nil, find_root_generic_type_parameters = true) : Type
-    TypeLookup.new(self, self_type, true, allow_typeof, free_vars, find_root_generic_type_parameters).lookup(node).not_nil!
+  #
+  # iyi: *include_private* reaches a type its namespace keeps to itself, which
+  # is how a module's unexported types are written down (R-2b). Nothing a user
+  # writes may name one; the compiler restoring a module's own instantiation
+  # from its `.iyimod` is not a user (SPEC.md IV.1g).
+  def lookup_type(node : ASTNode, self_type = self.instance_type, allow_typeof = true, free_vars : Hash(String, TypeVar)? = nil, find_root_generic_type_parameters = true, include_private = false) : Type
+    TypeLookup.new(self, self_type, true, allow_typeof, free_vars, find_root_generic_type_parameters, include_private: include_private).lookup(node).not_nil!
   end
 
   # Similar to `lookup_type`, but returns `nil` if a type can't be found.
@@ -62,7 +67,7 @@ class Crystal::Type
   end
 
   private struct TypeLookup
-    def initialize(@root : Type, @self_type : Type, @raise : Bool, @allow_typeof : Bool, @free_vars : Hash(String, TypeVar)? = nil, @find_root_generic_type_parameters = true, @remove_alias = true)
+    def initialize(@root : Type, @self_type : Type, @raise : Bool, @allow_typeof : Bool, @free_vars : Hash(String, TypeVar)? = nil, @find_root_generic_type_parameters = true, @remove_alias = true, @include_private = false)
       @in_generic_args = 0
 
       # If we are looking types inside a non-instantiated generic type,
@@ -127,7 +132,7 @@ class Crystal::Type
           type = free_var.lookup_path(node.names[1..-1], lookup_in_namespace: false, location: node.location)
         end
       else
-        type = @root.lookup_path(node)
+        type = @root.lookup_path(node, include_private: @include_private || node.iyi_from_artifact?)
       end
 
       if type.is_a?(Type)

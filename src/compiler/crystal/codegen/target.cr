@@ -1,4 +1,11 @@
-require "llvm"
+# iyi: see `../llvm_shim.cr`. A triple is a string with three parts in it, and
+# the front end reads them to decide flags; only turning one into a target
+# machine needs the library.
+{% if flag?(:without_llvm) %}
+  require "../llvm_shim"
+{% else %}
+  require "llvm"
+{% end %}
 require "../error"
 
 class Crystal::Codegen::Target
@@ -196,6 +203,10 @@ class Crystal::Codegen::Target
     environment_parts.any? { |part| part == "eabi" || part == "eabihf" }
   end
 
+  # iyi: absent from a front-end build, which links no LLVM to make one with
+  # (see `../llvm_shim.cr`).
+  {% unless flag?(:without_llvm) %}
+
   def to_target_machine(cpu = "", features = "", optimization_mode = Compiler::OptimizationMode::O0,
                         code_model = LLVM::CodeModel::Default) : LLVM::TargetMachine
     case @architecture
@@ -248,6 +259,8 @@ class Crystal::Codegen::Target
     machine.enable_global_isel = false
     machine
   end
+
+  {% end %}
 
   def to_s(io : IO) : Nil
     io << architecture << '-' << vendor << '-' << environment

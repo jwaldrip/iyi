@@ -1,0 +1,69 @@
+# Module initialisation order: SPEC.md III.5.
+#
+#   ./bin/crystal run samples/iyi/init_order.iyi
+#
+# Prints its five lines in the order they are numbered, and the numbering is
+# the whole point — none of it comes from where the `import` directives are
+# written. A module's top-level expressions are its initialiser (rule 3), and
+# a module initialises after every module it imports (rule 1).
+
+module samples/init_order
+
+# Written above the imports on purpose, and it still runs after both modules
+# below have initialised. The compiler holds a module's initialiser apart from
+# the site that imported it and puts them in the order the import DAG forces:
+# `boot/config` before `boot/registry` because the second imports the first,
+# and this file last because it imports both.
+puts "4. samples/init_order, above its own `import` lines"
+
+import boot/registry
+import boot/config
+
+puts "5. #{Boot::Registry.greeting}"
+
+# ---------------------------------------------------------------------------
+# What this sample does not promise
+# ---------------------------------------------------------------------------
+#
+# * The order of two modules that do not import each other. Rule 2 says that
+#   order is *unobservable*, not merely unspecified — a module can only name
+#   what it imports (R-1), reach what that module exports (R-2), and reopen
+#   nothing (R-3), so an initialiser has nothing of an unrelated module to
+#   look at. Nothing here prints from two independent modules, because that
+#   would be documenting an order the spec refuses to have — and debug builds
+#   shuffle it, so the documentation would be wrong most of the time. Build
+#   with `--release` to get the load order back, or `IYI_INIT_SEED=1` to get
+#   the same shuffled one twice.
+#
+# * Anything about the second `import` above. `boot/config` was already loaded
+#   by `boot/registry`, so naming it here adds an edge and nothing else: a
+#   module imported by several others is compiled once and initialised once.
+#
+# ---------------------------------------------------------------------------
+# What this sample would report as an error
+# ---------------------------------------------------------------------------
+#
+# * A top-level expression that propagates an error with `!`. Initialisation
+#   may not fail (rule 4): if it can fail it is not initialisation, it is work,
+#   and work belongs in a function the program calls when it is ready to handle
+#   the failure. The error names III.5.
+#
+# * An import cycle. `import` forms a DAG (R-1), and a cycle has no order that
+#   satisfies rule 1 — each module would have to initialise after the other.
+#   The error names the cycle. Adding `import boot/registry` to `boot/config`
+#   reports `boot/registry -> boot/config -> boot/registry`, the chain as it
+#   was walked, not as it was written.
+#
+# * An `import` inside a `def` — `can't import inside def`, reported by the
+#   parser. Inside any other expression the semantic pass reports `can't import
+#   dynamically` instead. Rule 1 needs the import graph to be a DAG the
+#   compiler can see before it runs anything.
+#
+# ---------------------------------------------------------------------------
+# Not yet implemented
+# ---------------------------------------------------------------------------
+#
+# * A module's initialiser as something an artifact could store. The compiler
+#   holds the modules' *nodes* apart from their import sites, which is what
+#   rules 1 and 2 needed, but `.iyimod` needs the step after: a callable
+#   initialiser in the module's own object code (SPEC.md Part IV).

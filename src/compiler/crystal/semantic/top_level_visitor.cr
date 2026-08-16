@@ -196,6 +196,9 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       scope.types[name] = type
     end
 
+    record_export scope, name, node.exported?
+    type.private = true if unexported_in_unit?(scope, node.exported?)
+
     node.resolved_type = type
 
     process_annotations(annotations) do |annotation_type, ann|
@@ -255,6 +258,686 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     false
   end
 
+  # iyi: `using app/greeter`, `using app/greeter::{polite}` (SPEC.md II.3)
+  #
+  # Brings a module's exported names into unqualified scope — written by the
+  # consumer, not performed by the library. This is only a record: the two
+  # lookups that matter consult it directly, `Call#lookup_using_matches` for
+  # methods and `Type#lookup_using_path_item` for type names. Nothing is added
+  # to the ancestor chain, which is what keeps `using` from re-exporting.
+  #
+  # The record lands on `current_type`, so the directive reaches exactly the
+  # scope it was written in and no further: both lookups walk outward from
+  # where the name is used, so a `using` in a module covers the types nested
+  # inside it, and stops at the module's edge.
+  def visit(node : UsingDecl)
+    check_outside_exp node, "use `using`"
+
+    path = Path.new(node.path.map(&.camelcase)).at(node)
+    used_type = lookup_type(path)
+
+    # `is_a?(ModuleType)` would not do: classes and structs are `ModuleType`s
+    # too, and `using` a struct is meaningless. Nor would `module?` alone: a
+    # trait is a module type, but it exports no names to bring into scope —
+    # its methods are reached through the receiver's impl, which II.3 rule 1
+    # keeps entirely out of `using`'s namespace.
+    if used_type.trait?
+      node.raise "can't `using` #{used_type}, it's a trait. Trait methods are resolved from the receiver's type, never from a `using` — see SPEC.md II.3"
+    end
+
+    unless used_type.is_a?(ModuleType) && used_type.module?
+      node.raise "can't `using` #{used_type}, it's a #{used_type.type_desc}"
+    end
+
+    # R-2b: `using` reaches a module's *exported* names. Reported here rather
+    # than left to fail at the point of use, because the selective form names
+    # what it wants and the author can be told which of those they cannot have.
+    if names = node.names
+      unexported = names.reject { |name| used_type.exported_name?(name) }
+      unless unexported.empty?
+        node.raise "#{used_type} does not export #{unexported.map { |name| "`#{name}`" }.join(", ")}. `using` reaches only what a module marks `pub` — add `pub` to the declaration if it is meant to be part of the module's surface (SPEC.md R-2b)"
+      end
+    end
+
+    # iyi: the directive as written, for the artifact (SPEC.md IV.2). Only the
+    # module unit's own, because only its own reach the signatures the artifact
+    # carries — one written inside a nested type resolves names there and
+    # nowhere a consumer will look.
+    if (file = @iyi_importing.last?) && current_type.iyi_unit?
+      names = node.names
+      selection = names ? "::{#{names.join(", ")}}" : ""
+      (@program.iyi_usings[file] ||= [] of String) << "#{node.path.join('/')}#{selection}"
+    end
+
+    current_type.add_using_module(used_type, node.names)
+
+    false
+  end
+
+  # iyi: `trait Greet ... end`
+  #
+  # A trait is its own type — `TraitType` — but a *subclass* of the module
+  # type, so that requirements, default methods, impl registration and
+  # dispatch on a trait-typed value all keep running on machinery that is
+  # already correct. See `Type#trait?` for why the distinction is drawn at
+  # the declaration and use sites rather than in the type hierarchy.
+  def visit(node : TraitDef)
+    check_outside_exp node, "declare trait"
+
+    annotations = read_annotations
+
+    scope, name, type = lookup_type_def(node)
+
+    if type
+      type = type.remove_alias
+      unless type.trait?
+        node.raise "#{name} is not a trait, it's a #{type.type_desc}"
+      end
+      type = type.as(ModuleType)
+    else
+      type_vars = node.type_vars
+      assoc_types = node.assoc_types
+
+      if type_vars && assoc_types
+        clashing = assoc_types & type_vars
+        unless clashing.empty?
+          node.raise "#{name} declares #{clashing.sort.join(", ")} both as a parameter and as an associated type"
+        end
+      end
+
+      if type_vars || assoc_types
+        generic = GenericTraitType.new @program, scope, name, (type_vars || [] of String) + (assoc_types || [] of String)
+        generic.assoc_types = assoc_types || [] of String
+        type = generic
+      else
+        type = TraitType.new @program, scope, name
+      end
+      scope.types[name] = type
+    end
+
+    type.private = true if node.visibility.private?
+
+    record_export scope, name, node.exported?
+    type.private = true if unexported_in_unit?(scope, node.exported?)
+
+    resolve_supertraits node, type
+
+    node.resolved_type = type
+
+    attach_doc type, node, annotations
+
+    process_annotations(annotations) do |annotation_type, ann|
+      type.add_annotation(annotation_type, ann)
+    end
+
+    pushing_type(type) do
+      node.body.accept self
+    end
+
+    false
+  end
+
+  # iyi: `pub` — record *name* on the enclosing module's public surface (R-2).
+  #
+  # Only an iyi compilation unit has one. What it marks is the whole of what
+  # another module may reach, because `.iyimod` carries the exports and nothing
+  # else: a name left unmarked has to be unreachable, or the metadata would not
+  # be enough to compile against (SPEC.md IV.2).
+  private def record_export(scope, name : String, exported : Bool)
+    return unless exported
+
+    mod = scope.as?(ModuleType)
+    return unless mod && mod.iyi_unit?
+
+    mod.add_exported_name(name)
+  end
+
+  # iyi: whether *scope* is a module unit that left this declaration unmarked,
+  # so it is the module's own and no other module may reach it (R-2).
+  #
+  # Only the unit's own body is governed. A `def` inside a `pub trait` or a
+  # `pub struct` declared in that body belongs to the trait or the struct, not
+  # to the module's surface: `Enumerable`'s `to_a` carries no `pub` and has to
+  # stay callable on every implementer.
+  private def unexported_in_unit?(scope, exported : Bool) : Bool
+    return false if exported
+
+    mod = scope.as?(ModuleType)
+    !!(mod && mod.iyi_unit?)
+  end
+
+  # iyi: `trait Ord : Eq` (SPEC.md II.6).
+  private def resolve_supertraits(node : TraitDef, type)
+    supertraits = node.supertraits
+    return unless supertraits
+    return unless type.is_a?(TraitSupertraits)
+
+    resolved = [] of Type
+    supertraits.each do |supertrait_node|
+      supertrait = lookup_type(supertrait_node)
+
+      unless supertrait.trait?
+        supertrait_node.raise "can't require #{supertrait}, it's a #{supertrait.type_desc}. A trait can only require another trait"
+      end
+
+      if supertrait == type
+        supertrait_node.raise "#{type} can't require itself"
+      end
+
+      if resolved.includes?(supertrait)
+        supertrait_node.raise "#{type} already requires #{supertrait}"
+      end
+
+      resolved << supertrait
+    end
+
+    type.supertraits = resolved
+  end
+
+  # iyi: `impl Greet for User ... end`, `impl Greet for Box(T) forall T`
+  #
+  # Desugars to reopening the target type, defining the methods on it, and
+  # including the trait.
+  def visit(node : ImplDef)
+    check_outside_exp node, "declare impl"
+
+    annotations = read_annotations
+
+    # What follows `impl` has to be a trait. A module is not implementable:
+    # it has no requirements to satisfy, and R-3 has nothing to check for it.
+    trait_type = lookup_type(node.trait)
+    unless trait_type.trait?
+      node.trait.raise "can't implement #{trait_type}, it's a #{trait_type.type_desc}. Only a trait can be implemented"
+    end
+
+    check_impl_trait_args node, trait_type
+
+    target_type =
+      if type_vars = node.type_vars
+        resolve_generic_impl_target(node, type_vars)
+      else
+        check_generic_impl_without_forall(node)
+        lookup_type(node.target)
+      end
+
+    # Checked before `is_a?(ModuleType)`, which a trait would satisfy.
+    if target_type.trait?
+      node.target.raise "can't implement #{trait_type} for #{target_type}, it's a trait. A trait is implemented for a type, and a trait is not one — to give every implementer of #{target_type} a default #{trait_type}, iyi has no blanket impls (SPEC.md II.7)"
+    end
+
+    unless target_type.is_a?(ModuleType)
+      node.target.raise "can't implement a trait for #{target_type}, it's a #{target_type.type_desc}"
+    end
+
+    check_impl_coherence node, trait_type, target_type
+
+    # iyi: one row of the artifact's impl records (SPEC.md IV.2). Recorded
+    # against the file that declares it, which R-3 guarantees is the trait's
+    # module or the type's — so a consumer holding both files holds every impl
+    # that can exist for the pair.
+    #
+    # The trait and the target are recorded resolved, since that is the pair
+    # coherence is about; everything else is recorded as written, because it is
+    # what a consumer needs in order to state the impl again.
+    # The methods are the impl's own, and are marked as such: once the body is
+    # accepted below they are defs on the target like any other, and nothing
+    # about them says where they came from. `impl Cmp for Int32` is why that
+    # matters — the target is a prelude type this module does not export, so
+    # recording them against it would lose them.
+    # iyi: whether this impl's bodies travel (`MonoBodies`, SPEC.md IV.1g).
+    #
+    # An impl defines methods *on its target*, so they are emitted into the
+    # target's unit — and the artifact carries a unit only for a non-generic
+    # type this module declares. Everywhere else the machine code ends up
+    # somewhere the artifact cannot reach, and the body has to travel instead:
+    #
+    # * a generic target, because a method exists once per instantiation and
+    #   the instantiations belong to whoever writes them;
+    # * a target this module does not declare, which is the case R-3 exists to
+    #   allow — `impl Cmp for Int32` in `std/traits` puts `cmp` in the
+    #   *prelude's* `Int32` unit, and carrying that whole unit would define
+    #   every `Int32` method the consumer also defines.
+    #
+    # And it must be *unless*, not *always*: an impl for a non-generic type
+    # this module declares already travels as machine code, and shipping the
+    # body as well makes the consumer define a symbol the artifact defines too.
+    file = @iyi_importing.last?
+    target_declared_here =
+      !!(file && target_type.locations.try &.any? { |location| location.filename == file })
+    bodies_travel = target_type.is_a?(GenericType) || !target_declared_here
+    container = IyiMod.mono_body_container(trait_type.to_s, target_type.to_s)
+
+    impl_methods = [] of IyiMod::Signature
+    iyi_impl_body_defs(node) do |a_def|
+      a_def.iyi_from_impl = true
+      signature = IyiMod.signature(a_def)
+      impl_methods << signature
+
+      if bodies_travel && file
+        bodies = @program.iyi_mono_bodies[file] ||= {} of String => String
+        bodies[IyiMod.mono_body_key(container, signature)] = a_def.body.to_s
+      end
+    end
+
+    if file = @iyi_importing.last?
+      (@program.iyi_impls[file] ||= [] of IyiMod::ImplRecord) << IyiMod::ImplRecord.new(
+        trait_name: trait_type.to_s,
+        type_name: target_type.to_s,
+        trait_arguments: node.trait_args.try(&.map(&.to_s)) || [] of String,
+        free_variables: node.type_vars || [] of String,
+        free_variable_bounds: node.type_var_bounds.try(&.map { |name, bound| {name, bound.to_s} }) || [] of {String, String},
+        assoc_types: node.assoc_types.try(&.map { |name, answer| {name, answer.to_s} }) || [] of {String, String},
+        methods: impl_methods,
+      )
+    end
+
+    node.resolved_type = target_type
+
+    process_annotations(annotations) do |annotation_type, ann|
+      target_type.add_annotation(annotation_type, ann)
+    end
+
+    # Define the methods on the target type.
+    pushing_type(target_type) do
+      node.body.accept self
+    end
+
+    # Record that the target implements the trait. Reuses `include`, which is
+    # why `TraitType` is a module type — and `from_impl` is what keeps this
+    # path open now that a written `include` of a trait is refused.
+    assoc_args = check_impl_assoc_types node, trait_type, target_type
+    check_single_impl node, trait_type, target_type
+    check_impl_supertraits node, trait_type, target_type
+
+    args = (node.trait_args || [] of ASTNode) + (assoc_args || [] of ASTNode)
+    trait_name =
+      if args.empty?
+        node.trait
+      else
+        Generic.new(node.trait, args).at(node.trait)
+      end
+    include_node = Include.new(trait_name).at(node)
+    # iyi: where II.6's associated types meet II.7's generic impls.
+    #
+    # `impl Enumerable for List(T) forall T` answers `type Elem = T`, and that
+    # `T` becomes an argument of the `include` written here — but it names a
+    # parameter of `List`, which is not in scope where the impl was written.
+    # Pushing the target's scope would find it and lose the trait, whose name
+    # lives in the impl's own module. So the parameters are passed as free
+    # variables instead, which is what resolving a superclass inside a generic
+    # already does.
+    include_in target_type, include_node, :included,
+      from_impl: true, free_vars: impl_target_free_vars(target_type)
+
+    check_impl_requirements node, trait_type, target_type
+
+    false
+  end
+
+  # iyi: the `def`s written directly in an impl's body.
+  #
+  # Directly: anything deeper belongs to a type declared in there and is not
+  # the impl's answer to the trait.
+  private def iyi_impl_body_defs(node : ImplDef, &)
+    body = node.body
+    expressions = body.is_a?(Expressions) ? body.expressions : [body]
+    expressions.each do |expression|
+      expression = expression.exp if expression.is_a?(VisibilityModifier)
+      yield expression if expression.is_a?(Def)
+    end
+  end
+
+  # iyi: `type Elem` outside a trait or an impl body. The parser marks the ones
+  # that sit directly in such a body; anything else reaching here is nested
+  # inside a type declared in that body, where it means nothing.
+  def visit(node : AssocTypeDecl)
+    unless node.in_type_body?
+      node.raise "an associated type can only be declared directly in a trait or an impl body"
+    end
+    false
+  end
+
+  # iyi: `impl Into(String) for User` — the arguments a parameterised trait is
+  # implemented at (SPEC.md II.6).
+  #
+  # Checked here rather than left to the include below, whose error says
+  # "including" and names no impl. The arity check is worth doing eagerly for
+  # the same reason `check_impl_requirements` is: the impl is where the author
+  # can fix it, and it needs nothing but this node and the trait's declaration.
+  private def check_impl_trait_args(node : ImplDef, trait_type)
+    trait_args = node.trait_args
+
+    unless trait_type.is_a?(GenericType)
+      if trait_args
+        node.trait.raise "can't implement #{trait_type} with type arguments, it's not a generic trait"
+      end
+      return
+    end
+
+    # An associated type is not a parameter: it is answered in the impl's body,
+    # not written here. So the arity checked is the parameter count.
+    params = trait_type.is_a?(GenericTraitType) ? trait_type.trait_params : trait_type.type_vars
+
+    if params.empty?
+      if trait_args
+        node.trait.raise "can't implement #{trait_type} with type arguments, it has no parameters"
+      end
+      return
+    end
+
+    unless trait_args
+      node.trait.raise "type arguments must be specified when implementing #{trait_type}, one for each of #{params.join(", ")}"
+    end
+
+    if trait_args.size != params.size
+      node.trait.raise "wrong number of type arguments for #{trait_type} (given #{trait_args.size}, expected #{params.size})"
+    end
+  end
+
+  # iyi: `type Elem = String` in an impl — the answer to an associated type the
+  # trait declared (SPEC.md II.6). Returns the answers in declaration order,
+  # which is the order they are appended to the trait's type vars.
+  private def check_impl_assoc_types(node : ImplDef, trait_type, target_type) : Array(ASTNode)?
+    declared = trait_type.is_a?(GenericTraitType) ? trait_type.assoc_types : [] of String
+    given = node.assoc_types
+
+    if declared.empty?
+      if given
+        node.raise "#{trait_type} declares no associated types, so this impl has nothing to answer with `type #{given.first_key}`"
+      end
+      return nil
+    end
+
+    given ||= {} of String => ASTNode
+
+    unknown = given.keys.reject { |assoc_name| declared.includes?(assoc_name) }
+    unless unknown.empty?
+      node.raise "#{trait_type} declares no associated type named #{unknown.sort.join(", ")}. It declares: #{declared.join(", ")}"
+    end
+
+    missing = declared.reject { |assoc_name| given.has_key?(assoc_name) }
+    unless missing.empty?
+      node.raise "impl #{trait_type} for #{target_type} does not answer #{missing.size == 1 ? "an associated type" : "associated types"} the trait declares: #{missing.join(", ")}"
+    end
+
+    declared.map { |assoc_name| given[assoc_name] }
+  end
+
+  # iyi: `trait Ord : Eq` — an impl of `Ord` needs an impl of `Eq` for the same
+  # type to exist already (SPEC.md II.6).
+  #
+  # Checked at the impl, like the required methods are, and for the same
+  # reason: it needs this node and the trait's declaration, never a global
+  # pass. The cost is that the impls have to be written in dependency order,
+  # since nothing has run yet that would know about a later one.
+  #
+  # Transitivity comes for free. If `Eq` itself required `Show`, the
+  # `impl Eq for N` this one insists on was checked the same way.
+  private def check_impl_supertraits(node : ImplDef, trait_type, target_type)
+    return unless trait_type.is_a?(TraitSupertraits)
+
+    missing = trait_type.supertraits.reject { |supertrait| target_type.implements?(supertrait) }
+    return if missing.empty?
+
+    node.raise "impl #{trait_type} for #{target_type} needs #{missing.size == 1 ? "an impl" : "impls"} of #{missing.join(", ")} for #{target_type} first: #{trait_type} requires its implementers to implement #{missing.size == 1 ? "it" : "them"} — see SPEC.md II.6"
+  end
+
+  # iyi: a trait whose only type vars are associated ones can be implemented at
+  # most once for a type (SPEC.md II.6).
+  #
+  # This is the whole difference between an associated type and a parameter. If
+  # a second impl could answer `Elem` differently, `arr.map` would be ambiguous
+  # about which impl it meant — which is exactly what making the element type a
+  # parameter would have cost. Where the trait does have parameters, several
+  # impls are the point, so they are left alone.
+  private def check_single_impl(node : ImplDef, trait_type, target_type)
+    return unless trait_type.is_a?(GenericTraitType)
+    return if trait_type.assoc_types.empty?
+    return unless trait_type.trait_params.empty?
+
+    return unless target_type.ancestors.any? do |ancestor|
+                    ancestor.is_a?(GenericModuleInstanceType) && ancestor.generic_type == trait_type
+                  end
+
+    node.raise "#{target_type} already implements #{trait_type}, and a trait with associated types can be implemented only once for a type: #{trait_type.assoc_types.join(", ")} #{trait_type.assoc_types.size == 1 ? "is an output" : "are outputs"} of the impl, so a second answer would make a call on #{target_type} ambiguous — see SPEC.md II.6"
+  end
+
+  # iyi: `impl Greet for Box(T)` and `impl Greet for Box(Int32)`, both without
+  # `forall` (SPEC.md II.7). Neither is legal, and each is wrong in its own
+  # way, so each gets its own error.
+  private def check_generic_impl_without_forall(node : ImplDef)
+    target = node.target
+    return unless target.is_a?(Generic)
+
+    # Left alone, the first fails with "undefined constant T" — which
+    # describes the mechanism, not the mistake. Requiring the binder is a
+    # deliberate decision, so it should be possible to learn it from the error.
+    unbound = target.type_vars.compact_map do |arg|
+      next unless arg.is_a?(Path) && !arg.global? && arg.names.size == 1
+      name = arg.names.first
+      name unless current_type.lookup_path(arg)
+    end
+
+    unless unbound.empty?
+      node.target.raise "#{unbound.join(", ")} #{unbound.size == 1 ? "is" : "are"} not a type here. To implement #{node.trait} for every #{target.name}, introduce the parameters with `forall`: `impl #{node.trait} for #{target} forall #{unbound.join(", ")}`"
+    end
+
+    # Everything resolved, so this asks to implement the trait for one
+    # instantiation only. See SPEC.md II.7 for why iyi has no specialisation.
+    node.target.raise "can't implement #{node.trait} for #{target} alone: iyi has no specialised impls, so a trait is implemented for #{target.name} once, for every instantiation. Write `impl #{node.trait} for #{target.name}(T) forall T`"
+  end
+
+  # iyi: resolves the target of `impl Greet for Box(T) forall T` (SPEC.md II.7).
+  #
+  # `forall` is required, and this is the reason: without it, whether `T` in
+  # `Box(T)` is a new parameter or a type already in scope would depend on
+  # what happens to be imported, so a library could change the meaning of a
+  # consumer's impl by adding an export. Rust takes the same position for the
+  # same reason.
+  #
+  # The names are the impl's own, bound positionally to the target's
+  # parameters, so an impl states arity and not vocabulary — what a type chose
+  # to call its parameters is its own business. Reopening the type is how the
+  # methods get defined, and Crystal resolves parameters inside a reopened
+  # generic by name, so a differing name is renamed in the body here.
+  private def resolve_generic_impl_target(node : ImplDef, type_vars : Array(String))
+    target = node.target
+
+    # A blanket impl — the target is the parameter itself. Checked before
+    # anything else because refusing it is permanent, where the unimplemented
+    # pieces below are not.
+    if target.is_a?(Path) && !target.global? && target.names.size == 1 && type_vars.includes?(target.names.first)
+      node.target.raise "can't implement #{node.trait} for every type. A blanket impl lets one module add methods to types it has never heard of, which is the open-class problem traits exist to remove — implement #{node.trait} for each type instead"
+    end
+
+    if bounds = node.type_var_bounds
+      names = bounds.keys.join(", ")
+      node.raise "trait bounds on impl type parameters (`forall #{names} : ...`) are not implemented yet"
+    end
+
+    unless target.is_a?(Generic)
+      node.target.raise "#{node.target} takes no type parameters, so `forall #{type_vars.join(", ")}` has nothing to bind"
+    end
+
+    base = lookup_type(target.name)
+    unless base.is_a?(GenericType)
+      target.name.raise "#{base} is not a generic type"
+    end
+
+    declared = base.type_vars
+    args = target.type_vars
+
+    if args.size != declared.size
+      node.target.raise "wrong number of type vars for #{base} (given #{args.size}, expected #{declared.size})"
+    end
+
+    # Every argument must be one of the `forall` names, each used once. A
+    # concrete argument — `impl Show for Box(Int32)` — is refused rather than
+    # treated as specialisation: see SPEC.md II.7.
+    renames = {} of String => String
+    args.each_with_index do |arg, index|
+      unless arg.is_a?(Path) && !arg.global? && arg.names.size == 1 && type_vars.includes?(arg.names.first)
+        arg.raise "expected one of the type parameters introduced by `forall` (#{type_vars.join(", ")}); iyi has no specialised impls, so a concrete type here is not a narrower impl but an error"
+      end
+
+      name = arg.names.first
+      if renames.has_key?(name)
+        arg.raise "type parameter #{name} is bound twice; each of #{base}'s parameters needs its own"
+      end
+      renames[name] = declared[index]
+    end
+
+    unused = type_vars.reject { |name| renames.has_key?(name) }
+    unless unused.empty?
+      node.raise "`forall` introduces #{unused.join(", ")}, which #{unused.size == 1 ? "is" : "are"} never used in #{node.target}"
+    end
+
+    unless renames.all? { |from, to| from == to }
+      node.body = node.body.transform(TypeParamRenamer.new(renames))
+    end
+
+    base
+  end
+
+  # iyi: rewrites an impl's own type-parameter names to the ones the target
+  # was declared with, so that `impl Greet for Box(U) forall U` works on a
+  # `Box(T)` — the names an impl chooses are local to it.
+  #
+  # Renaming can capture: if the body already refers to something called `T`
+  # meaning anything else, the rewrite would silently make it the type
+  # parameter. That is refused rather than risked.
+  private class TypeParamRenamer < Crystal::Transformer
+    def initialize(@renames : Hash(String, String))
+      @targets = @renames.values.to_set - @renames.keys.to_set
+    end
+
+    def transform(node : Crystal::Path)
+      return node if node.global? || node.names.size != 1
+
+      name = node.names.first
+      if @targets.includes?(name)
+        node.raise "#{name} is what this impl's target declared its type parameter as, so it can't also be used as a name here; rename the `forall` parameter to #{name}"
+      end
+
+      if (renamed = @renames[name]?)
+        Crystal::Path.new([renamed]).at(node)
+      else
+        node
+      end
+    end
+
+    # `Def#return_type` is not walked by the base transformer, and `def get : T`
+    # is exactly where an impl's type parameter appears.
+    def transform(node : Crystal::Def)
+      if return_type = node.return_type
+        node.return_type = return_type.transform(self)
+      end
+      super
+    end
+  end
+
+  # iyi: R-3's orphan rule — an `impl` must live in the module that defines
+  # the trait or the module that defines the type.
+  #
+  # SPEC.md IV.4 shows what the restriction buys: with it in force, no two
+  # modules can define the same impl, because each would have to name a
+  # declaration of the other and so import it, and R-1's import graph is a
+  # DAG. That is what removes the need for a global coherence pass — and it is
+  # the rule doing the work, not the DAG. The DAG alone forbids nothing here:
+  # a third module that imports both is free to write the impl, and so is a
+  # fourth, and the two would differ with no error and no link-time complaint.
+  #
+  # `namespace` is the defining module because that is what the `module`
+  # header desugars to, so a declaration's module is simply the type enclosing
+  # it.
+  #
+  # The top level is not a module, and treating it as one is what used to make
+  # the rule vacuous: `Error` is the compiler's and belongs to no module,
+  # `String` is the prelude's and belongs to none either, so
+  # `impl Error for String` satisfied "inside the module that defines the
+  # trait" from anywhere at all — and two modules could both write it, which is
+  # the exact thing R-3 exists to prevent. So a side only counts when there is
+  # a real module on it to be inside of.
+  #
+  # The one place the top level still answers is a program that never writes a
+  # module header: it is a single compilation unit, there is no other module
+  # for an impl to have gone in, and the rule has nothing to say.
+  private def check_impl_coherence(node, trait_type, target_type)
+    return if current_type.is_a?(Program)
+
+    trait_module = trait_type.namespace
+    target_module = target_type.namespace
+    return if inside_module?(trait_module) || inside_module?(target_module)
+
+    places = [] of String
+    places << "the module that defines the trait (#{trait_module})" unless trait_module.is_a?(Program)
+    places << "the module that defines the type (#{target_module})" unless target_module.is_a?(Program)
+
+    if places.empty?
+      node.raise "can't implement #{trait_type} for #{target_type} in #{current_type}: neither belongs to a module, so there is no module this impl could be at home in. Every module that can name both is free to write it, and they would disagree with no error and no complaint at link time. This is R-3, the orphan rule — see SPEC.md IV.4"
+    end
+
+    node.raise "can't implement #{trait_type} for #{target_type} in #{current_type}: an impl must live in #{places.join(" or ")}. This is R-3, the orphan rule, and it is what lets coherence be checked without a global pass — see SPEC.md IV.4"
+  end
+
+  # iyi: whether *mod* is a module the current type is inside of. The top level
+  # is not one: nobody owns it, so being "in" it settles nothing.
+  private def inside_module?(mod : Type) : Bool
+    !mod.is_a?(Program) && within?(current_type, mod)
+  end
+
+  # iyi: `abstract def` in a trait is a requirement the impl has to satisfy
+  # (SPEC.md II.6), and this is what makes it one.
+  #
+  # Crystal's own abstract-def check would eventually complain, but it reports
+  # at the point the type is first *used* and names the type — saying nothing
+  # about which impl was supposed to provide the method, and only if the type
+  # is used at all. Checked here the error lands on the impl and names what is
+  # missing. This is a local check: it needs the trait's declaration and this
+  # impl, never a global pass, which is what R-1 requires of it.
+  #
+  # Satisfied by the method existing on the target, not strictly by this impl
+  # block defining it: a `def show` written on the struct itself lives in the
+  # type's own module, which is exactly where R-3 would let an impl live, so
+  # there is no coherence hole in accepting it.
+  private def check_impl_requirements(node : ImplDef, trait_type, target_type)
+    missing = missing_requirements(trait_type, target_type)
+
+    # iyi: `abstract def self.zero : self` — a class-level requirement.
+    # Checked separately because `include` carries instance methods only, so
+    # the trait's metaclass defs never reach the target's and there is nothing
+    # here for the impl to have inherited: it has to have written them.
+    missing.concat missing_requirements(trait_type.metaclass, target_type.metaclass).map { |name| "self.#{name}" }
+
+    return if missing.empty?
+
+    missing.sort!
+    node.raise "impl #{trait_type} for #{target_type} is missing #{missing.size == 1 ? "a method" : "methods"} required by the trait: #{missing.join(", ")}"
+  end
+
+  private def missing_requirements(trait_type, target_type) : Array(String)
+    defs = trait_type.defs
+    return [] of String unless defs
+
+    defs.compact_map do |name, list|
+      next unless list.any? &.def.abstract?
+      # Rejecting abstract defs skips the requirement itself, which the target
+      # now inherits through the include this impl just performed.
+      name if target_type.lookup_defs(name).none? { |a_def| !a_def.abstract? }
+    end
+  end
+
+  # Whether *type* is *mod*, or is nested somewhere inside it.
+  private def within?(type : Type, mod : Type) : Bool
+    scope = type
+    while scope
+      return true if scope == mod
+      break if scope == @program
+      scope = scope.is_a?(NamedType) ? scope.namespace : nil
+    end
+    false
+  end
+
   def visit(node : ModuleDef)
     check_outside_exp node, "declare module"
 
@@ -289,6 +972,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     end
 
     type.private = true if node.visibility.private?
+    type.iyi_unit = true if node.iyi_unit?
 
     node.resolved_type = type
 
@@ -479,7 +1163,15 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
         node.raise "can't define abstract def on non-abstract #{target_type.type_desc}"
       end
       if target_type.metaclass?
-        node.raise "can't define abstract def on metaclass"
+        # iyi: a trait may require a class-level method —
+        # `abstract def self.zero : self` (SPEC.md II.6). Without it a trait
+        # cannot express an identity, so `sum` and `product` have to be given
+        # one by every caller. Everywhere else the rejection stands: an
+        # abstract def on a metaclass has nobody it could oblige, because only
+        # a trait has implementers whose class methods are checked.
+        unless current_type.trait?
+          node.raise "can't define abstract def on metaclass"
+        end
       end
     end
 
@@ -491,7 +1183,15 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       node.raise "enums can't define an `initialize` method, try using `def self.new`"
     end
 
+    # iyi: a module-level `def` left unmarked is the module's own (R-2).
+    # Crystal's private visibility is exactly the rule R-2 needs — reachable
+    # unqualified from inside the module, refused through the module's name
+    # from outside — so it is set here rather than reimplemented.
+    node.visibility = :private if is_instance_method && unexported_in_unit?(current_type, node.exported?)
+
     target_type.add_def node
+
+    record_export current_type, node.name, node.exported?
 
     node.set_type @program.nil
 
@@ -1128,10 +1828,35 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     false
   end
 
-  def include_in(current_type, node, kind : HookKind)
+  # iyi: *from_impl* is set by `visit(ImplDef)`, the one caller that may
+  # legitimately include a trait. Everywhere else the caller is a written
+  # `include` or `extend`, and including a trait is what R-3 removes: a type
+  # acquires a trait by having an impl, which the orphan rule can check.
+  # iyi: the target's own type parameters, so an impl's `include` can name them
+  # (SPEC.md II.6 × II.7). Nil for a non-generic target, which is every impl
+  # that has nothing to bind.
+  private def impl_target_free_vars(target_type) : Hash(String, TypeVar)?
+    return nil unless target_type.is_a?(GenericType)
+
+    free_vars = {} of String => TypeVar
+    target_type.type_vars.each do |type_var|
+      free_vars[type_var] = target_type.type_parameter(type_var)
+    end
+    free_vars
+  end
+
+  def include_in(current_type, node, kind : HookKind, from_impl = false, free_vars = nil)
     node_name = node.name
 
-    type = lookup_type(node_name)
+    type = lookup_type(node_name, free_vars: free_vars)
+
+    # Checked before the generic branch: a bare `include Into` on a generic
+    # trait is a trait mistake, not a missing-type-arguments one.
+    if type.trait? && !from_impl
+      directive = kind.extended? ? "extend" : "include"
+      node_name.raise "can't #{directive} #{type}, it's a trait. A type implements a trait by having an `impl #{type} for #{current_type.instance_type}`, which is what lets the orphan rule check it — see SPEC.md R-3"
+    end
+
     case type
     when GenericModuleType
       node.raise "generic type arguments must be specified when including #{type}"

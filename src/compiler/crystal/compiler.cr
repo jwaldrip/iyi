@@ -2,6 +2,7 @@ require "option_parser"
 require "file_utils"
 require "colorize"
 require "crystal/digest/md5"
+require "./optimization_mode"
 {% if flag?(:msvc) %}
   require "./loader"
 {% end %}
@@ -96,6 +97,12 @@ module Crystal
     # (useful to type-check a program)
     property? no_codegen = false
 
+    # iyi: whether this build's link is the one the compiler builds itself
+    # rather than the one `cc` builds for it, and whether that has already been
+    # tried and failed. See `iyi_direct_link_command`.
+    @iyi_direct_link = false
+    @iyi_link_driver_only = false
+
     # Maximum number of LLVM modules that are compiled in parallel
     property n_threads : Int32 = {% if Fiber.has_constant?(:ExecutionContext) %}
       Fiber::ExecutionContext.default_workers_count
@@ -110,43 +117,15 @@ module Crystal
     # the source file to compile.
     property prelude = "prelude"
 
-    # Optimization mode
-    enum OptimizationMode
-      # [default] no optimization, fastest compilation, slowest runtime
-      O0 = 0
+    # iyi: directory to write a `.iyimod` per imported module into, or nil
+    # (SPEC.md IV.1). Set by `--emit-iyimod`.
+    property emit_iyimod : String? = nil
 
-      # low, compilation slower than O0, runtime faster than O0
-      O1 = 1
-
-      # middle, compilation slower than O1, runtime faster than O1
-      O2 = 2
-
-      # high, slowest compilation, fastest runtime
-      # enables with --release flag
-      O3 = 3
-
-      # optimize for size, enables most O2 optimizations but aims for smaller
-      # code size
-      Os
-
-      # optimize aggressively for size rather than speed
-      Oz
-
-      def suffix
-        ".#{to_s.downcase}"
-      end
-
-      def self.from_level?(level : String) : self?
-        case level
-        when "0" then O0
-        when "1" then O1
-        when "2" then O2
-        when "3" then O3
-        when "s" then Os
-        when "z" then Oz
-        end
-      end
-    end
+    # iyi: directory to read a `.iyimod` per imported module from, or nil
+    # (SPEC.md IV.1). Set by `--use-iyimod`. An import that finds one there is
+    # compiled against it and never opens the module's source, which is R-1's
+    # contract and the reason the file exists.
+    property use_iyimod : String? = nil
 
     # Sets the Optimization mode.
     property optimization_mode = OptimizationMode::O0
@@ -230,11 +209,126 @@ module Crystal
       compile_configure_program(source, output_filename) { }
     end
 
+    # Compiles against an already-analysed prelude. This is the same split the
+    # fork probe measures (SPEC.md IV.1a): the top-level pass runs over the user
+    # file only, and every pass after it runs over both trees, because they walk
+    # the prelude for reasons caching its analysis does not remove.
+    private def compile_with_preanalysed_prelude(pre : Preanalysed, sources : Array(Source),
+                                                 output_filename : String, & : Program -> Nil) : Result
+      program = pre.program
+
+      # The prelude was analysed against a placeholder filename. Adopt this
+      # build's, so that anything derived from it — `__temp_` prefixes, error
+      # locations — matches what a normal compile would produce.
+      program.filename = sources.first.filename
+      program.compiler = self
+      program.progress_tracker = @progress_tracker
+      yield program
+
+      node = @progress_tracker.stage("Parse") do
+        nodes = sources.map do |source|
+          program.requires.add source.filename
+          parse(program, source).as(ASTNode)
+        end
+        program.normalize(Expressions.from(nodes))
+      end
+
+      begin
+        node, processor = program.top_level_semantic(node, processor: pre.processor)
+        node = program.semantic_after_top_level(
+          Expressions.from([pre.node, node] of ASTNode), processor,
+          cleanup: !no_cleanup?)
+      rescue ex : SkipMacroCodeCoverageException
+        program.macro_expansion_error_hook.try &.call(ex.cause)
+      end
+
+      prepared = prepare_iyimods program
+
+      units = codegen program, node, sources, output_filename unless @no_codegen
+
+      write_iyimods program, prepared, units
+
+      @progress_tracker.clear
+      print_macro_run_stats(program)
+      print_codegen_stats(units)
+
+      Result.new program, node
+    end
+
+    # A prelude analysed ahead of a build, for a later compile to adopt instead
+    # of analysing it again. The build daemon produces one before forking; the
+    # child adopts it, which is where its speed comes from.
+    class Preanalysed
+      getter program : Program
+      getter node : ASTNode
+      getter processor : TypeDeclarationProcessor
+      getter key : String
+
+      # Every file the prelude pulled in, with the modification time it had when
+      # it was read. A daemon outlives edits to its own sources, so serving a
+      # build from an analysis of a since-edited prelude is the one way it can
+      # be silently, confusingly wrong.
+      getter fingerprint : Hash(String, Time)
+
+      def initialize(@program, @node, @processor, @key)
+        @fingerprint = {} of String => Time
+        @program.requires.each do |filename|
+          if info = File.info?(filename)
+            @fingerprint[filename] = info.modification_time
+          end
+        end
+      end
+
+      # Whether the prelude on disk has moved out from under this analysis.
+      # Files added since are not detectable from here — a new `require` in an
+      # edited file shows up as that file's own mtime changing, which is what
+      # actually triggers the reload.
+      def stale? : Bool
+        @fingerprint.any? do |filename, mtime|
+          info = File.info?(filename)
+          info.nil? || info.modification_time != mtime
+        end
+      end
+    end
+
+    # Set in the daemon before it forks, adopted by the child. Keyed by
+    # `prelude_cache_key`, because a prelude analysed under one set of flags
+    # cannot serve a build under another — macros branch on flags.
+    class_property preanalysed = {} of String => Preanalysed
+
+    # Everything that changes what the prelude analyses *to*. Macros branch on
+    # flags, so a build whose key differs cannot adopt a prelude analysed under
+    # another one and has to analyse its own.
+    def prelude_cache_key : String
+      String.build do |io|
+        io << prelude << '|' << codegen_target << '|' << @optimization_mode << '|'
+        io << debug << '|' << static? << '|' << wants_doc? << '|'
+        io << @flags.sort.join(',')
+      end
+    end
+
+    # Analyses the prelude on its own, so a later compile can start from it.
+    # The filename is a placeholder: the build that adopts this has its own, and
+    # sets it before compiling.
+    def preanalyse_prelude : Preanalysed
+      program = new_program([Source.new("", "")] of Source)
+      location = Location.new(program.filename, 1, 1)
+      node = program.normalize(Expressions.new([Require.new(prelude).at(location)] of ASTNode))
+      node, processor = program.top_level_semantic(node)
+      @progress_tracker.clear
+      Preanalysed.new(program, node, processor, prelude_cache_key)
+    end
+
     # :ditto:
     #
     # Yields a `Program` instance before compiling.
     def compile_configure_program(source : Source | Array(Source), output_filename : String, & : Program -> Nil) : Result
       source = [source] unless source.is_a?(Array)
+      return prelude_fork_probe(source, output_filename) if ENV["IYI_FORK_PROBE"]?
+
+      if pre = Compiler.preanalysed[prelude_cache_key]?
+        return compile_with_preanalysed_prelude(pre, source, output_filename) { |program| yield program }
+      end
       program = new_program(source)
       yield program
       node = parse program, source
@@ -245,13 +339,843 @@ module Crystal
         program.macro_expansion_error_hook.try &.call(ex.cause)
       end
 
+      prepared = prepare_iyimods program
+
       units = codegen program, node, source, output_filename unless @no_codegen
+
+      write_iyimods program, prepared, units
 
       @progress_tracker.clear
       print_macro_run_stats(program)
       print_codegen_stats(units)
+      Prof.report
 
       Result.new program, node
+    end
+
+    # iyi: describes a `.iyimod` per imported module (SPEC.md IV.1), when
+    # `--emit-iyimod` asked for it. Everything but the object code, which does
+    # not exist yet — see `write_iyimods`.
+    #
+    # Only imported modules. The entry file is a program rather than a
+    # dependency, and nothing can import it — III.5 rule 1 puts its initialiser
+    # last for the same reason.
+    #
+    # The file is named after the module path with `/` kept, so `app/greeter`
+    # lands at `DIR/app/greeter.iyimod` and the layout mirrors the source tree.
+    # IV.6 #6's segment rule is what makes that safe: two module paths cannot
+    # collide, so two modules cannot claim one artifact.
+    #
+    # Run before codegen, because collecting a module's surface is where R-2 is
+    # enforced — an exported signature missing a block annotation is refused
+    # here. Refusing it after a full codegen and link would make the compiler
+    # spend the whole build on a program it had already decided not to write.
+    private def prepare_iyimods(program : Program) : Array({String, IyiMod::Artifact})?
+      return unless dir = emit_iyimod
+
+      flags = program.flags.to_a.sort!
+
+      # Before codegen, because that is what it is for: a method whose body is
+      # a literal is inlined and emits no symbol, and this build is producing
+      # code somebody else will call by name.
+      program.iyi_module_paths.each_value do |module_name|
+        if type = program.iyi_module_type(module_name)
+          program.iyi_exported_owners << type
+          collect_iyi_owners type, program.iyi_exported_owners
+        end
+      end
+
+      prepared = program.iyi_module_paths.map do |filename, module_name|
+        # Both hashes, because a dependency may have arrived either way and the
+        # edge is keyed on a filename regardless. Asking only the source one
+        # left an import read from a `.iyimod` recorded as the path of that
+        # file — an edge naming a build's directory layout rather than a
+        # module, which the next build cannot resolve.
+        #
+        # The edges are named here and hashed below: what a dependency compiled
+        # in *this* build hashes to is only known once its own artifact has been
+        # described (IV.3).
+        imports = program.iyi_module_imports[filename]?.try do |dependencies|
+          dependencies.map do |dependency|
+            name = program.iyi_module_paths[dependency]? ||
+                   program.iyi_artifact_modules[dependency]? ||
+                   dependency
+            IyiMod::ImportEdge.new(name)
+          end
+        end
+
+        # First, because collecting the surface is also what records which of
+        # its bodies have to travel.
+        exports = collect_iyi_exports(program, module_name, filename)
+
+        artifact = IyiMod::Artifact.new(
+          module_name: module_name,
+          source_path: filename,
+          # Not `Config.description`: that is the multi-line `--version` banner,
+          # and this field is compared for equality (IV.5).
+          compiler_version: IyiMod.compiler_version,
+          target_triple: program.codegen_target.to_s,
+          flags: flags,
+          imports: imports || [] of IyiMod::ImportEdge,
+          usings: program.iyi_usings[filename]? || [] of String,
+          exports: exports,
+          has_initialiser: program.iyi_module_initialisers.includes?(filename),
+          mono_bodies: program.iyi_mono_bodies[filename]? || {} of String => String,
+          macro_bodies: collect_iyi_macros(program, module_name),
+          initialiser: program.iyi_module_initialiser_source[filename]? || "",
+        )
+
+        # Here rather than in `write_iyimods`, so that they are taken from the
+        # front end alone: an artifact from a `--no-codegen` build and one from
+        # a full build describe the same module and have to hash the same, or a
+        # build that only typechecks would invalidate what a build that
+        # generated code had just written (IV.3).
+        artifact.hashes = IyiMod.hashes_for(artifact, File.read(filename))
+
+        {File.join(dir, "#{module_name}.iyimod"), artifact}
+      end
+
+      # Now that every module in this build has been hashed, each edge can say
+      # what the module on its far end hashed to — which is what lets the next
+      # build ask whether that is still true (IV.3). A dependency that arrived
+      # as an artifact is hashed already and was recorded when it was read.
+      hashes = {} of String => IyiMod::Hashes
+      prepared.each { |(_, artifact)| hashes[artifact.module_name] = artifact.hashes }
+      program.iyi_artifact_hashes.each { |name, digests| hashes[name] ||= digests }
+
+      prepared.each do |(_, artifact)|
+        artifact.imports = artifact.imports.map do |edge|
+          known = hashes[edge.module_name]?
+          next edge unless known
+          IyiMod::ImportEdge.new(edge.module_name, known.interface, known.implementation)
+        end
+      end
+
+      prepared
+    end
+
+    # iyi: attaches each module's object code and writes the artifacts.
+    #
+    # After codegen, because that is when the object files exist. Writing here
+    # also says something true: an artifact is written by a build that got all
+    # the way through, so a build that failed in codegen leaves the previous
+    # artifact in place rather than a newer one describing a program that does
+    # not link.
+    private def write_iyimods(program : Program, prepared : Array({String, IyiMod::Artifact})?,
+                              units : Array(CompilationUnit)?) : Nil
+      return unless prepared
+
+      units_by_name = units.try &.to_h { |unit| {unit.original_name, unit} }
+
+      prepared.each do |(path, artifact)|
+        unit_names = iyi_unit_names(program, artifact.module_name)
+        artifact.object_code = collect_iyi_object_code(unit_names, units_by_name)
+        artifact.type_ids = collect_iyi_type_ids(program, unit_names)
+        artifact.constants = collect_iyi_constants(program, unit_names)
+        IyiMod.write artifact, path
+      end
+    end
+
+    # iyi: a module's public surface, for the artifact's `Exports` (IV.2).
+    #
+    # `pub` records a *name* on the module (R-2), so this walks those names and
+    # takes the signature of each `def` they resolve to. A name can carry
+    # several overloads and each is its own signature.
+    #
+    # Parameter and return types are the annotations as written. R-2 requires
+    # them on anything exported, so an export missing one is not a signature to
+    # infer but a rule that was broken somewhere else; it is recorded as `?`
+    # rather than guessed at, which keeps that visible in `mod dump` instead of
+    # inventing a type the author never wrote.
+    private def collect_iyi_exports(program : Program, module_name : String,
+                                    filename : String) : IyiMod::Exports
+      functions = [] of IyiMod::Signature
+      carried_functions = [] of IyiMod::Signature
+      types = [] of IyiMod::TypeDecl
+
+      if type = program.iyi_module_type(module_name)
+        exported = type.exported_names
+        exported.try &.to_a.sort!.each do |name|
+          # A name is a function or a type, never both: they share one
+          # namespace on the module, which is what makes `pub` a mark on a
+          # name rather than on a kind of declaration.
+          if signatures = type.defs.try &.[]?(name)
+            signatures.each do |item|
+              signature = IyiMod.signature(item.def)
+              functions << signature
+              # A module's own `pub def` that takes a block is the consumer's
+              # to compile for the same reason, and the module name is the
+              # container the far side looks it up under.
+              if iyi_takes_block?(item.def) && !item.def.abstract?
+                iyi_record_mono_body program, filename, module_name, signature, item.def
+              end
+            end
+          elsif exported_type = type.types?.try &.[]?(name)
+            types << iyi_type_declaration(program, filename, name, exported_type)
+          end
+        end
+
+        # And the defs it does not export, for the reason the types below
+        # travel: a body that travels calls them. An exported `run` that takes
+        # a block is compiled by the consumer, and it may call a `helper` this
+        # module kept to itself — a name nobody may reach is still a name the
+        # consumer has to typecheck a call against, and a block-taking one is
+        # a body it has to compile.
+        type.defs.try &.each do |name, items|
+          next if exported.try &.includes?(name)
+          items.each do |item|
+            next if item.def.abstract?
+            next if item.def.body.is_a?(Primitive)
+
+            signature = IyiMod.signature(item.def, check_block: false)
+            carried_functions << signature
+            if iyi_takes_block?(item.def)
+              iyi_record_mono_body program, filename, module_name, signature, item.def
+            end
+          end
+        end
+        carried_functions.sort_by! &.name
+
+        # And the ones it does not export, which travel as names and layouts
+        # rather than as a surface. See `iyi_carried_types`.
+        types.concat iyi_carried_types(program, filename, type, exported)
+      end
+
+      impls = program.iyi_impls[filename]? || [] of IyiMod::ImplRecord
+
+      IyiMod::Exports.new(functions, types, impls, carried_functions)
+    end
+
+    # iyi: the machine code for a module's own definitions, for `ObjectCode`
+    # (IV.1). Empty on a `--no-codegen` build, which generated none.
+    #
+    # Codegen already emits one LLVM module — and so one object file — per
+    # owner type, and the split is a partition: measured on the Kemal port, no
+    # symbol is defined by two of its 23 units. So a module's own code is a set
+    # of whole object files, identified by naming the types the module declares
+    # and taking the unit of each. A generic type contributes one unit per
+    # instantiation, and a module's own `pub def`s are owned by the module type
+    # itself, which is why that is in the set alongside the types under it.
+    #
+    # A module's bodies also instantiate *prelude* generics at its own types —
+    # `Array(Kemal::Router::Router::RouteDefinition)` — and that unit is named
+    # after `Array`, not after anything the module declares, so it is not here.
+    # It does not have to be: a callee the emitting module does not own is
+    # copied into the module's own unit with internal linkage, and a generic's
+    # instantiated methods are callees like any other. What the copy leaves
+    # behind is the type id it refers to, which is what `type_ids` carries.
+    #
+    # What is here is what the *consuming build* reached, not the module's
+    # whole surface. Codegen is demand-driven, so `app/greeter`'s artifact
+    # carries `polite` and not `title`, because `modules.iyi` calls one and not
+    # the other. That is `--emit-iyimod` living inside an ordinary build: a
+    # module compiled on its own would instantiate every exported def at the
+    # signature R-2 makes it write down, and it is exactly the command that
+    # cannot precede the artifact it produces.
+    private def collect_iyi_object_code(unit_names : Array(String),
+                                        units_by_name : Hash(String, CompilationUnit)?) : Array(IyiMod::ObjectUnit)
+      code = [] of IyiMod::ObjectUnit
+      return code unless units_by_name
+
+      unit_names.each do |name|
+        next unless unit = units_by_name[name]?
+        path = unit.object_name
+        next unless File.file?(path)
+        code << IyiMod::ObjectUnit.new(name, File.open(path, "rb", &.getb_to_end))
+      end
+      code
+    end
+
+    # The names of the units a module's object code is made of: the module type
+    # itself, where its own `pub def`s are owned, and every non-generic type
+    # declared under it.
+    private def iyi_unit_names(program : Program, module_name : String) : Array(String)
+      names = [] of String
+      return names unless type = program.iyi_module_type(module_name)
+
+      names << type.to_s
+      collect_iyi_unit_names type, names
+      names.sort!.uniq!
+      names
+    end
+
+    # iyi: the types the module's object code refers to a type id of, by name,
+    # for `TypeIds` (SPEC.md IV.1g).
+    #
+    # A type id is resolved by the linker from a definition in the consuming
+    # program's `_main`, which is what lets one build's object file be linked
+    # by another's — and a program defines an id for every type it *has*. The
+    # types a module's own code numbers need not be among them:
+    # `Array(Item)` exists in the producing build because of a body that stays
+    # behind, and nothing the consumer reads would ever create it. So the name
+    # travels and the consumer instantiates it.
+    #
+    # Only generic instances. Everything else the code can name is either the
+    # module's own — declared by this artifact — or somebody's the consumer
+    # imports for itself, and in both cases the consumer has the type already.
+    # An instantiation is the case with no declaration anywhere to arrive
+    # through.
+    private def collect_iyi_type_ids(program : Program, unit_names : Array(String)) : Array(String)
+      names = Set(String).new
+      unit_names.each do |unit_name|
+        program.iyi_unit_type_ids[unit_name]?.try &.each do |type|
+          # A metaclass is numbered with its instance type, so instantiating
+          # the one defines both. `Array(Item).class:type_id` was the first of
+          # the two undefined symbols and the one that reads as a different
+          # problem.
+          instance = type.instance_type
+          next unless instance.is_a?(GenericInstanceType)
+          names << instance.to_s
+        end
+      end
+
+      # Sorted, because a set's order is not a fact about the module and an
+      # artifact that changed between two identical builds would defeat IV.3.
+      names.to_a.sort!
+    end
+
+    # iyi: the constants the module's object code reads, by name, for
+    # `Constants` (SPEC.md IV.1g).
+    #
+    # A constant is initialised where something reads it — `codegen_assign`
+    # asks `const.used?` — and the reader on the far side of an artifact is
+    # machine code the consumer never analysed. So the names travel and the
+    # consumer marks them used; the initialiser that assigns them is already in
+    # the module's own top level and already runs in III.5's order.
+    private def collect_iyi_constants(program : Program, unit_names : Array(String)) : Array(String)
+      names = Set(String).new
+      unit_names.each do |unit_name|
+        program.iyi_unit_constants[unit_name]?.try &.each { |const| names << const.to_s }
+      end
+      names.to_a.sort!
+    end
+
+    # The unit names of every type declared under *type*, recursively.
+    #
+    # A unit is named after the type that owns the methods in it, and **a
+    # generic type's instantiations are deliberately not here**. `List(T)` has
+    # no machine code; only `List(Int32)` does, and which instantiations exist
+    # is decided by whoever writes `List(Int32)` — under separate compilation
+    # the consumer, not this module. Those are `MonoBodies`' business (IV.2).
+    #
+    # Carrying them was tried and is wrong, in a way worth recording because it
+    # looks right. `--emit-iyimod` runs inside an ordinary build, so the
+    # producer's instantiations *are* the consumer's — it appears to work. It
+    # does not: `List(Int32)::new` is synthesized from `initialize` rather than
+    # read from the artifact, so the consumer generates its own and the link
+    # fails on a duplicate symbol. Carrying an instantiation would also be true
+    # only while the two builds are the same build, which is the arrangement
+    # this file exists to end.
+    private def collect_iyi_unit_names(type : ModuleType, names : Array(String)) : Nil
+      type.types?.try &.each_value do |declared|
+        names << declared.to_s unless declared.is_a?(GenericType)
+        collect_iyi_unit_names declared, names if declared.is_a?(ModuleType)
+      end
+    end
+
+    # The same walk as `collect_iyi_unit_names`, keeping the types rather than
+    # their names — `try_inline_call` is handed an owner, not a string.
+    private def collect_iyi_owners(type : ModuleType, owners : Set(Type)) : Nil
+      type.types?.try &.each_value do |declared|
+        owners << declared unless declared.is_a?(GenericType)
+        collect_iyi_owners declared, owners if declared.is_a?(ModuleType)
+      end
+    end
+
+    # A trait's methods are its whole point in the artifact: II.6 makes an impl
+    # checkable against the trait's requirements, and a consumer can only run
+    # that check if the requirements travel.
+    #
+    # A trait's **defaults travel with their bodies**, and so does every method
+    # of a generic type, because in both cases the consumer is what compiles
+    # them: a default is stencilled onto the implementing type and a generic's
+    # method exists once per instantiation. Neither has a symbol any producer
+    # could have emitted, which is what separates them from an ordinary method
+    # — that one keeps its body and arrives as machine code (IV.2, IV.1g).
+    private def iyi_type_declaration(program : Program, filename : String,
+                                     name : String, type : Type) : IyiMod::TypeDecl
+      travels = iyi_bodies_travel?(type)
+      methods = [] of IyiMod::Signature
+
+      # Both sides of the type. A `def self.zero` is stored on the metaclass
+      # rather than on the type, so walking only the type's own defs dropped
+      # every class method a module exported — `Counter.zero` was an undefined
+      # method on the far side of an artifact that looked complete.
+      #
+      # The two are told apart by the signature's receiver, which
+      # `render_signature` already writes back as `def self.zero`. Nothing else
+      # needs to know: to a consumer it is one more name on the type.
+      iyi_collect_type_methods program, filename, name, type, travels, methods
+      iyi_collect_type_methods program, filename, name, type.metaclass, travels, methods
+      methods.sort_by! &.name
+
+      # A generic trait's type variables are its parameters followed by its
+      # associated types, which is how they are stored and not how they are
+      # declared. They are split apart again here, because II.6 makes them
+      # different things to a consumer: it supplies the first at the `impl`
+      # line and answers the second in the body.
+      if generic_trait = type.as?(GenericTraitType)
+        type_parameters = generic_trait.trait_params
+        assoc_types = generic_trait.assoc_types
+      else
+        type_parameters = type.as?(GenericType).try(&.type_vars) || [] of String
+        assoc_types = [] of String
+      end
+
+      IyiMod::TypeDecl.new(
+        name: name,
+        kind: type.type_desc,
+        type_parameters: type_parameters,
+        assoc_types: assoc_types,
+        supertraits: type.responds_to?(:supertraits) ? type.supertraits.map(&.to_s) : [] of String,
+        fields: collect_iyi_fields(type),
+        methods: methods,
+        visibility: "pub",
+        types: iyi_carried_types(program, filename, type),
+        macros: iyi_macros_on(type),
+      )
+    end
+
+    # iyi: the types declared under *type* that a consumer needs to have rather
+    # than to call, for `Exports` (SPEC.md IV.1g). *carried* is the names
+    # already travelling as part of the module's surface.
+    #
+    # A module's own machine code refers to them. `Array(Secret):type_id` is
+    # resolved from a definition in the consuming program and a program can
+    # only number a type it has, so a type this module keeps to itself still
+    # has to arrive — declared, and reachable from nowhere, which is exactly
+    # what it is when the module is read from source. Nested types travel for
+    # the same reason and inside their container, because R-2 governs the
+    # module unit's own body and a type declared in a class belongs to the
+    # class.
+    #
+    # Names, kinds, fields and nesting; no methods. The consumer cannot reach
+    # them and the module's object code already defines them — and carrying
+    # them would make R-2's block rule refuse a module over a *private*
+    # method's unannotated block, which is a rule about what another module
+    # reads.
+    private def iyi_carried_types(program : Program, filename : String, type : Type,
+                                  carried : Set(String)? = nil) : Array(IyiMod::TypeDecl)
+      declarations = [] of IyiMod::TypeDecl
+      type.types?.try &.each do |name, declared|
+        next if carried.try &.includes?(name)
+
+        # An alias has neither a layout nor an id, and it travels for the other
+        # reason a declaration does: the text that travels names it. A carried
+        # record's `handler : Handler` is what the module was written with, and
+        # a consumer without the alias reads it as an undefined constant. It
+        # arrives as what it resolved to, which is also how a field's type
+        # arrives — the name it was written as resolved where the module was
+        # read from source, and this file is read somewhere else.
+        if declared.is_a?(AliasType)
+          declared.process_value
+          if aliased = declared.aliased_type?
+            declarations << IyiMod::TypeDecl.new(
+              name: name,
+              kind: declared.type_desc,
+              type_parameters: [] of String,
+              assoc_types: [] of String,
+              supertraits: [] of String,
+              fields: [] of {String, String},
+              methods: [] of IyiMod::Signature,
+              visibility: declared.private? ? "private" : "",
+              types: [] of IyiMod::TypeDecl,
+              value: aliased.to_s,
+            )
+          end
+          next
+        end
+
+        # A class or a struct, which is what has a layout and an id. A constant
+        # lives in the same namespace and is neither, and it is IV.2's business
+        # rather than this.
+        next unless declared.is_a?(ClassType) || declared.is_a?(EnumType)
+
+        declarations << IyiMod::TypeDecl.new(
+          name: name,
+          kind: declared.type_desc,
+          type_parameters: declared.as?(GenericType).try(&.type_vars) || [] of String,
+          assoc_types: [] of String,
+          supertraits: [] of String,
+          fields: collect_iyi_fields(declared),
+          methods: iyi_carried_methods(program, filename, name, declared),
+          visibility: declared.private? ? "private" : "",
+          types: iyi_carried_types(program, filename, declared),
+          macros: iyi_macros_on(declared),
+        )
+      end
+      declarations.sort_by! &.name
+    end
+
+    # One side of a type's methods — its own, or its metaclass's.
+    #
+    # `new` is skipped. It is synthesized from `initialize` rather than written,
+    # so the consumer generates its own from the `initialize` this artifact
+    # does carry; carrying it as well would declare a method the consumer also
+    # defines, and for a type whose object code travels it would be defined
+    # twice over.
+    private def iyi_collect_type_methods(program : Program, filename : String,
+                                         container : String, type : Type,
+                                         travels : Bool,
+                                         methods : Array(IyiMod::Signature)) : Nil
+      type.as?(ModuleType).try &.defs.try &.each_value do |items|
+        # A method an `impl` defined is the impl's, and travels in its record.
+        # The distinction is invisible here — an impl works by defining methods
+        # on the target — which is why it is marked where it is made.
+        items.each do |item|
+          next if item.def.iyi_from_impl?
+          next if item.def.new?
+
+          # `allocate` is put on every metaclass by the compiler, not by the
+          # author, and the consumer's compiler puts one there too. Anything
+          # whose body is a `Primitive` is the compiler's rather than the
+          # module's, and describing it as part of the module's surface would
+          # be describing this compiler instead.
+          next if item.def.body.is_a?(Primitive)
+
+          signature = IyiMod.signature(item.def)
+          methods << signature
+          # A block-taking def travels whatever type it is on: it is
+          # instantiated with the caller's block inside it, so the consumer is
+          # what compiles it — the same reason a generic's method and a trait's
+          # default travel (SPEC.md IV.1g).
+          if (travels || iyi_takes_block?(item.def)) && !item.def.abstract?
+            iyi_record_mono_body program, filename, container, signature, item.def
+          end
+        end
+      end
+    end
+
+    # iyi: whether *type*'s method bodies have to travel (`MonoBodies`).
+    #
+    # Two cases, and the same reason under both: the consumer is what compiles
+    # the method, so no machine code the producer emits could serve it. A
+    # generic type's method exists once per instantiation, and instantiations
+    # belong to whoever writes them. A trait's default is stencilled onto the
+    # implementing type, which the producer has never heard of —
+    # `Samples::Collections::Nums@Std::Enumerable::Enumerable#to_a` is not a
+    # symbol any producer could have emitted under any name.
+    private def iyi_bodies_travel?(type : Type) : Bool
+      type.is_a?(GenericType) || type.is_a?(TraitType)
+    end
+
+    # iyi: the methods of a type the module keeps to itself.
+    #
+    # They travel because a *body* that travels calls them: the router's
+    # `add_filter` is a block-taking method, so the consumer compiles it, and
+    # it writes `FilterDefinition.new(kind: …)`. Without the signature the
+    # consumer sees a `record` with no `initialize` and refuses the call.
+    #
+    # Headers, because the machine code is in this module's own object code and
+    # the type is marked as the artifact's so the consumer declares rather than
+    # defines — except for the one method that has no machine code here either.
+    # A block-taking method is instantiated with the caller's block inside it
+    # wherever it is written, and being unreachable does not change who the
+    # caller is: `run` travels, `run` calls `Hidden#tweak`, so the consumer
+    # compiles both. A header for it would promise a symbol nobody emitted.
+    #
+    # R-2's block rule is not applied to any of them, because it is about what
+    # another module reads and nothing here is readable. It costs nothing to
+    # skip: the annotation is what types a call to a def whose body stayed
+    # behind, and these bodies do not stay behind.
+    private def iyi_carried_methods(program : Program, filename : String,
+                                    container : String, type : Type) : Array(IyiMod::Signature)
+      signatures = [] of IyiMod::Signature
+      type.as?(ModuleType).try &.defs.try &.each_value do |items|
+        items.each do |item|
+          next if item.def.new?
+          next if item.def.body.is_a?(Primitive)
+          next if item.def.abstract?
+
+          signature = IyiMod.signature(item.def, check_block: false)
+          signatures << signature
+          if iyi_takes_block?(item.def)
+            iyi_record_mono_body program, filename, container, signature, item.def
+          end
+        end
+      end
+      signatures.sort_by! &.name
+    end
+
+    # iyi: whether a def is instantiated per call site because it takes a
+    # block — `&block : …` or a bare `yield` (SPEC.md IV.1g).
+    private def iyi_takes_block?(a_def : Def) : Bool
+      !!(a_def.block_arg || a_def.block_arity)
+    end
+
+    # Records one body against `IyiMod.mono_body_key`.
+    #
+    # Source text rather than serialised IR, which is what IV.1's table asks
+    # for. It is the same choice `Exports` already made and for the same
+    # reason: the parser that read the module is the one that reads it back,
+    # and a second grammar here is a second thing to keep correct. The text is
+    # the *normalised* body rather than the file's, because that is what
+    # survives to this point — which makes it worth checking that what comes
+    # out still parses, and `spec/compiler/iyimod_spec.cr` does.
+    # iyi: the macros a module declares, as source text, for `MacroBodies`
+    # (SPEC.md IV.1).
+    #
+    # A macro is not a declaration a consumer may reach — `pub` does not take
+    # one — and it is not code that could arrive as machine code either. It
+    # travels because a *body* that travels calls it: the consumer compiles a
+    # block-taking `run`, `run` writes `twice(n)`, and `twice` is this module's
+    # macro. Without it the artifact is refused on a name its own module has.
+    #
+    # Rendered from the node rather than sliced out of the file, which is what
+    # the bodies beside it do. What the parser produced is what a parser can
+    # read back, and the alternative — remembering where in the file it was —
+    # is a fact about a file the consumer does not have.
+    #
+    # Read off the *metaclass*, which is where a macro is declared: `macro
+    # twice` in a module body is added to the module's metaclass, the same way
+    # `def self.zero` is, and the type's own `macros` is empty for a file full
+    # of them.
+    private def collect_iyi_macros(program : Program, module_name : String) : Array(String)
+      iyi_macros_on(program.iyi_module_type(module_name))
+    end
+
+    # The macros declared on one type, which is the same question one level in:
+    # a class may declare a macro and a method of that class may call it, and
+    # the method's body is what travels.
+    private def iyi_macros_on(type : Type?) : Array(String)
+      sources = [] of String
+      type.try &.metaclass.as?(ModuleType).try &.macros.try &.each_value do |overloads|
+        overloads.each { |a_macro| sources << a_macro.to_s }
+      end
+      sources.sort!
+    end
+
+    private def iyi_record_mono_body(program : Program, filename : String,
+                                     container : String, signature : IyiMod::Signature,
+                                     a_def : Def) : Nil
+      bodies = program.iyi_mono_bodies[filename] ||= {} of String => String
+      bodies[IyiMod.mono_body_key(container, signature)] = a_def.body.to_s
+    end
+
+    # iyi: a type's own instance variables, for `TypeDecl#fields` (IV.2).
+    #
+    # Rendered from the resolved type rather than kept as the annotation the
+    # author wrote, which is a departure from how signatures travel and is
+    # deliberate: a field is not part of the surface a consumer writes against,
+    # it is what the consumer has to *allocate*, and the resolved type is the
+    # thing that answers that. For a generic type the resolution is in terms of
+    # its own parameters — `List(T)`'s `@items` is `Array(T)` — which is what
+    # lets the declaration stencil at any instantiation.
+    #
+    # In the order they were declared, which is not a presentation choice: it
+    # is the layout. A field's offset is its position in this list, so the two
+    # builds have to agree on it — sorting them by name was deterministic and
+    # wrong, and it went unnoticed for as long as nothing the consumer compiled
+    # touched a field of a type it had only imported. A block-taking method's
+    # body is the first thing that does: the consumer's `add_route` wrote
+    # `@routes` at the offset the producer's code reads `@filters` from.
+    #
+    # Deterministic all the same. What the sort was guarding against is a
+    # hash's order being an accident, and this one is not — `instance_vars` is
+    # insertion-ordered and the insertions are the declarations, in the order
+    # the module's author wrote them.
+    private def collect_iyi_fields(type : Type) : Array({String, String})
+      fields = [] of {String, String}
+      return fields unless type.responds_to?(:instance_vars)
+
+      type.instance_vars.each do |name, variable|
+        # A variable whose type never resolved is a rule broken elsewhere, and
+        # recorded as `?` rather than guessed at — the same convention an
+        # unannotated signature takes, and equally visible in `mod dump`.
+        fields << {name, variable.type?.try(&.to_s) || "?"}
+      end
+      fields
+    end
+
+    # Measures what a compile costs when the prelude has already been analysed,
+    # gated behind IYI_FORK_PROBE=1. Temporary instrumentation, like `Prof`.
+    #
+    # The parent runs the top-level passes over the prelude alone and forks. The
+    # child then compiles the user program against a `Program` that already has
+    # the prelude in it, so restoring the prelude costs it a `fork` — around a
+    # millisecond, a floor no serialised `.iyimod` can beat. The child's elapsed
+    # time is therefore the ceiling of the whole `.iyimod` idea, obtainable
+    # without designing the format.
+    #
+    # Front-end only: the child stops after semantic analysis. Codegen and
+    # linking are LLVM's and the linker's problem, and `.iyimod`'s object-code
+    # section addresses them separately.
+    #
+    # Known limit: compiling the compiler itself still fails under both models —
+    # a `NilAssertionError` in `add_instance_var_initializer` under the artifact
+    # model, and an error during the top-level pass under the full one. The
+    # split runs `TypeDeclarationProcessor` twice, and part of its work is
+    # global rather than per-tree, so the second run does not see everything the
+    # first established. The nine smaller programs in the gate do not exercise
+    # that. This is the next thing to fix before the probe becomes a build
+    # daemon, and it is a real defect rather than a measurement caveat.
+    #
+    # Set IYI_FORK_TRACE=1 to see how far the child gets, and
+    # IYI_FORK_SELFTEST=1 to check the runtime facilities a build needs (file
+    # write, flock, subprocess) before it starts.
+    #
+    # Two models, because they answer different questions:
+    #
+    # * `IYI_FORK_PROBE=1` — the artifact exactly as Part IV describes it. The
+    #   parent runs only the *top-level* passes over the prelude, so the child
+    #   still walks the combined tree in every pass after that, and three passes
+    #   still walk the whole type graph. That residual is the work a `.iyimod`
+    #   would not remove on its own.
+    #
+    # * `IYI_FORK_PROBE=full` — the artifact *plus* prelude-aware passes. The
+    #   parent analyses the prelude completely and the child touches only its
+    #   own nodes. This prices IV.1a's third row: what the later passes would
+    #   have to become for the front end to reach its floor.
+    #
+    #   It is 10× faster than the artifact model on the small programs in the
+    #   gate, where it also reports what a normal compile reports and emits an
+    #   object with an identical symbol table.
+    #
+    #   It does not work on real code, and the reason is structural rather than
+    #   incidental: analysing the prelude *through `main`* and then declaring new
+    #   types into it re-enters machinery that assumes declaration precedes
+    #   typing. Subclassing a prelude type is enough to trip it — see SPEC.md
+    #   IV.1e. Part IV's artifact carries types and signatures, not typed method
+    #   bodies, so this model measures more than `.iyimod` restores. Treat its
+    #   numbers as a ceiling on a configuration that does not work.
+    #
+    #   One trap, because it looks like a soundness failure and is not. Give
+    #   codegen only the user tree and it dies with:
+    #
+    #     Missing __crystal_raise_overflow function
+    #
+    #   That is a `fun` in `src/raise.cr`, and codegen emits `fun`s and top-level
+    #   code by walking the AST — so the prelude's tree has to reach codegen no
+    #   matter what the front end did with it. That is the artifact's
+    #   object-code section, not its analysis cache: the two need the prelude for
+    #   different reasons.
+    private def prelude_fork_probe(sources : Array(Source), output_filename : String) : NoReturn
+      {% unless flag?(:without_mt) %}
+        STDERR.puts "IYI_FORK_PROBE needs a single-threaded compiler: make crystal sequential_codegen=1"
+        exit 1
+      {% else %}
+        program = new_program(sources)
+        full = ENV["IYI_FORK_PROBE"]? == "full"
+
+        prelude_elapsed = Time.instant
+        location = Location.new(program.filename, 1, 1)
+        prelude_node = program.normalize(Expressions.new([Require.new(prelude).at(location)] of ASTNode))
+        prelude_node, prelude_processor = program.top_level_semantic(prelude_node)
+        if full
+          # Keep what it returns: the cleanup transformer rewrites the tree, and
+          # codegen needs the rewritten one — the original still holds an
+          # unexpanded `require`.
+          prelude_node = program.semantic_after_top_level(prelude_node, prelude_processor, cleanup: !no_cleanup?)
+        end
+        prelude_taken = prelude_elapsed.elapsed
+        @progress_tracker.clear
+
+        probe_trace "[probe] parent: forking\n"
+        pid = Crystal::System::Process.fork do
+          probe_trace "[probe] child: alive\n"
+          if ENV["IYI_FORK_SELFTEST"]?
+            # Which runtime facility does a forked child actually lose? Each of
+            # these is something a build needs, so whichever hangs is the one
+            # standing between the probe and a real build daemon.
+            probe_trace "[probe] selftest: file write\n"
+            File.write("/tmp/iyi_probe_selftest", "x")
+            probe_trace "[probe] selftest: flock\n"
+            File.open("/tmp/iyi_probe_selftest", "w") { |f| f.flock_exclusive { } }
+            probe_trace "[probe] selftest: subprocess\n"
+            ::Process.run("true", shell: true)
+            probe_trace "[probe] selftest: all passed\n"
+          end
+          child_elapsed = Time.instant
+          begin
+            nodes = sources.map do |source|
+              program.requires.add source.filename
+              parse(program, source).as(ASTNode)
+            end
+            probe_trace "[probe] child: parsed\n"
+            user_node = program.normalize(Expressions.from(nodes))
+
+            # Continue with the parent's processor: `Socket` is declared here but
+            # includes `IO::Buffered`, which was declared there, and only a
+            # shared processor gives the class the module's instance variables.
+            user_node, processor = program.top_level_semantic(user_node, processor: prelude_processor)
+            probe_trace "[probe] child: top level done\n"
+
+            result = if full
+              # Prelude fully analysed in the parent, including its class-var
+              # check, so the child finishes over its own nodes alone.
+              program.semantic_after_top_level(user_node, processor, cleanup: !no_cleanup?)
+            else
+              # The prelude was processed by the parent's own processor, so its
+              # class-var check has to be threaded through as well, or the child
+              # would skip a check a normal compile performs.
+              combined = Expressions.from([prelude_node, user_node] of ASTNode)
+              program.semantic_after_top_level(combined, processor,
+                cleanup: !no_cleanup?, also_check: prelude_processor)
+            end
+            probe_trace "[probe] child: semantic done\n"
+
+            # Proving the child's typed program is *codegen-able* is a stronger
+            # claim than proving it reports the same diagnostics, so
+            # IYI_FORK_CODEGEN=1 goes on to emit object code. Pair it with
+            # `--cross-compile` and expect it to write the object and then hang:
+            # everything after the emit spawns a subprocess, which is the one
+            # thing the forked child cannot do. Kill it and compare the object.
+            #
+            # It is a verification tool, not a timing one — it never completes,
+            # so it stays off by default and out of every measurement.
+            if !@no_codegen && ENV["IYI_FORK_CODEGEN"]?
+              # Codegen emits `fun` definitions and top-level code by walking the
+              # AST, so it needs the prelude's tree even when the front end did
+              # not. That is not a fudge: it is what Part IV's object-code
+              # section means — the prelude's machine code comes from the
+              # artifact rather than from re-analysing its source. Skipping the
+              # prelude in the *front end* is the claim under test; skipping it
+              # in codegen too would just be leaving the program half-emitted.
+              to_emit = full ? Expressions.from([prelude_node, result] of ASTNode) : result
+              codegen program, to_emit, sources, output_filename
+              probe_trace "[probe] child: codegen done\n"
+            end
+          rescue ex : Crystal::CodeError
+            # Same decision the driver makes in `Command#run`, so the child's
+            # diagnostics are byte-identical to a normal compile's.
+            ex.color = color? && Colorize.default_enabled?(STDOUT, STDERR)
+            ex.error_trace = show_error_trace?
+            STDERR.puts ex
+            report_probe(prelude_taken, child_elapsed.elapsed)
+            STDOUT.flush
+            STDERR.flush
+            LibC._exit 1
+          end
+
+          report_probe(prelude_taken, child_elapsed.elapsed)
+          STDOUT.flush
+          STDERR.flush
+          LibC._exit 0
+        end
+
+        status = ::Process.new(Crystal::System::Process.new(pid.not_nil!)).wait
+        exit status.exit_code
+      {% end %}
+    end
+
+    # Unbuffered and allocation-free, so it still reports if the child is wedged
+    # on the event loop or on the collector. Pass string literals only.
+    # Resolved in the parent, before the fork, so the child never has to touch
+    # ENV (which allocates) just to decide whether to trace.
+    PROBE_TRACE = !ENV["IYI_FORK_TRACE"]?.nil?
+
+    private def probe_trace(msg : String) : Nil
+      return unless PROBE_TRACE
+      LibC.write(2, msg.to_unsafe.as(Void*), LibC::SizeT.new(msg.bytesize))
+    end
+
+    private def report_probe(prelude_taken : Time::Span, child_taken : Time::Span) : Nil
+      @progress_tracker.clear
+      Prof.report
+      STDERR.puts
+      STDERR.puts "=== IYI_FORK_PROBE ==="
+      STDERR.puts "prelude top level (parent, paid once) #{prelude_taken}"
+      STDERR.puts "front end with prelude already analysed #{child_taken}"
     end
 
     # Runs the semantic pass on the given source, without generating an
@@ -303,6 +1227,9 @@ module Crystal
       program.progress_tracker = @progress_tracker
       program.warnings = @warnings
       program.optimization_mode = @optimization_mode
+      program.iyi_module_dir = @use_iyimod
+      program.iyi_wants_object_code = !@no_codegen
+      program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
       program
     end
 
@@ -545,9 +1472,183 @@ module Crystal
         end
 
         link_flags = use_modern_linker(link_flags)
+        lib_flags = program.lib_flags(@cross_compile)
 
-        {DEFAULT_LINKER, %(#{DEFAULT_LINKER} "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} #{program.lib_flags(@cross_compile)}), object_names}
+        if direct = iyi_direct_link_command(object_names, output_filename, link_flags, lib_flags)
+          return direct
+        end
+
+        {DEFAULT_LINKER, %(#{DEFAULT_LINKER} "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} #{lib_flags}), object_names}
       end
+    end
+
+    # iyi: the link without the driver that works out how to do it.
+    #
+    # `cc` does not link. It computes a command — the dynamic linker's path,
+    # `Scrt1.o`, `crti.o`, `crtbeginS.o`, the `-L` directories, `-lgcc -lc` and
+    # the rest — and runs `collect2`, which scans the objects for constructors
+    # and runs `ld`. Measured here, linking `hello.iyi`: 0.129 s through `cc`
+    # and **0.014 s** running the same `ld` command directly. The linker is not
+    # the cost and never was; three of them come out between 0.009 s and
+    # 0.023 s. The driver and its scanner are 0.11 s of every build.
+    #
+    # So the driver is asked *once* for the command and the compiler runs `ld`
+    # itself from then on. `cc -###` prints that command without linking
+    # anything — including for object files that do not exist, which is what
+    # makes a reusable template possible: the placeholder marks where this
+    # build's objects go.
+    #
+    # `clang` does this already: it has no `collect2` and execs the linker
+    # itself, which is why it measures 0.092 s where `cc` measures 0.129 s.
+    # Skipping the scan is not a shortcut around something needed — a program
+    # linked this way runs, and every clang-linked binary on the machine was
+    # made without it.
+    #
+    # Nil when anything is unfamiliar, and the driver is used as before. The
+    # template is cached against the flags it was computed for; a link that
+    # fails with it is retried through the driver and the template is marked
+    # unusable, so a machine this does not suit pays one extra link once.
+    private def iyi_direct_link_command(object_names, output_filename, link_flags, lib_flags)
+      return nil if @cross_compile
+      return nil if @iyi_link_driver_only
+      return nil if ENV["CRYSTAL_LINK_DRIVER"]?
+      return nil unless DEFAULT_LINKER == "cc"
+      # Where it has been measured, and nowhere else. The shape this parses is
+      # a GNU driver's: `collect2`, an LTO plugin, `-fuse-ld=`. A macOS `cc`
+      # prints `ld64` with different arguments, and the template would either
+      # fail and fall back — one wasted link per set of flags — or work by
+      # accident. Somebody with the machine to measure it can widen this.
+      return nil unless codegen_target.linux?
+
+      template = iyi_link_template(link_flags, lib_flags)
+      return nil unless template
+
+      linker, prefix, suffix = template
+      output = Process.quote_posix(output_filename)
+      command = "#{linker} #{prefix.gsub(IYI_LINK_OUTPUT, output)} \"${@}\" #{suffix.gsub(IYI_LINK_OUTPUT, output)}"
+      @iyi_direct_link = true
+      {linker, command, object_names}
+    end
+
+    # What stands where this build's objects and output go in the template.
+    IYI_LINK_OBJECTS = "IYI-OBJECTS-PLACEHOLDER.o"
+    IYI_LINK_OUTPUT  = "IYI-OUTPUT-PLACEHOLDER"
+
+    # The linker command the driver would have built, as {linker, before, after}.
+    private def iyi_link_template(link_flags, lib_flags)
+      key = ::Crystal::Digest::MD5.hexdigest(
+        "#{DEFAULT_LINKER}\n#{link_flags}\n#{lib_flags}\n#{codegen_target}\n1")
+      # One file per set of flags, rather than one file: two programs in a
+      # directory that link different libraries would otherwise take turns
+      # overwriting each other's answer and asking the driver again each time.
+      cache = CacheDir.instance.join("link-template-#{key}")
+
+      if File.file?(cache)
+        stored = File.read(cache).split('\n')
+        if stored[0]? == key && stored[1]? == iyi_link_inputs_fingerprint(stored[3]?)
+          return nil if stored[2]? == "unusable"
+          if (linker = stored[2]?) && (prefix = stored[3]?) && (suffix = stored[4]?)
+            return {linker, prefix, suffix}
+          end
+        end
+      end
+
+      template = iyi_ask_driver_for_link_template(link_flags, lib_flags)
+      linker, prefix, suffix = template if template
+      stamp = iyi_link_inputs_fingerprint(prefix)
+      File.write(cache, template ? "#{key}\n#{stamp}\n#{linker}\n#{prefix}\n#{suffix}" : "#{key}\n#{stamp}\nunusable") rescue nil
+      template
+    end
+
+    # What the template was computed against, so that a toolchain moving under
+    # it is noticed rather than linked with.
+    #
+    # The template names absolute paths — `Scrt1.o`, `crti.o`, `crtbeginS.o`
+    # and the directories around them — and a `libc` or `gcc` upgrade changes
+    # them. Each is stat'ed, which is microseconds on files this local, and the
+    # answer goes in beside the template: if one has moved, the driver is asked
+    # again. Without this, an upgrade turns into a link failure, then a
+    # fallback, and then a build that quietly uses the slow path for as long as
+    # the flags stay the same.
+    private def iyi_link_inputs_fingerprint(prefix : String?) : String
+      return "" unless prefix
+      stamped = String.build do |io|
+        prefix.split(' ').each do |token|
+          next unless token.ends_with?(".o") && token.starts_with?('/')
+          io << token << ':'
+          if info = File.info?(token)
+            io << info.size << ':' << info.modification_time.to_unix
+          else
+            io << "gone"
+          end
+          io << '\n'
+        end
+      end
+      ::Crystal::Digest::MD5.hexdigest(stamped)
+    end
+
+    # Asks the driver what it would run, and turns it into a template.
+    #
+    # Everything it prints is kept except the parts that belong to the driver
+    # rather than to the link: the LTO plugin it loads into `collect2`, and the
+    # `-fuse-ld=` that told it which linker to pick — which is read here to
+    # pick the same one.
+    private def iyi_ask_driver_for_link_template(link_flags, lib_flags)
+      probe = "#{DEFAULT_LINKER} #{IYI_LINK_OBJECTS} -o #{IYI_LINK_OUTPUT} #{link_flags} #{lib_flags} -###"
+      printed = IO::Memory.new
+      status = Process.run(probe, shell: true, output: Process::Redirect::Close, error: printed)
+      return nil unless status.success?
+
+      line = printed.to_s.lines.reverse.find do |candidate|
+        candidate.includes?(IYI_LINK_OBJECTS) && candidate.includes?(IYI_LINK_OUTPUT)
+      end
+      return nil unless line
+
+      arguments = Process.parse_arguments(line.strip)
+      return nil if arguments.size < 3
+
+      linker = "ld"
+      kept = [] of String
+      skip_next = false
+      arguments.each_with_index do |argument, index|
+        next if index.zero?
+        if skip_next
+          skip_next = false
+          next
+        end
+        case argument
+        when "-plugin"
+          skip_next = true
+        when .starts_with?("-plugin-opt=")
+          # the driver's, not the link's
+        when .starts_with?("-fuse-ld=")
+          named = "ld.#{argument.lchop("-fuse-ld=")}"
+          return nil unless Process.find_executable(named)
+          linker = named
+        else
+          kept << argument
+        end
+      end
+
+      objects_at = kept.index(IYI_LINK_OBJECTS)
+      return nil unless objects_at
+      return nil unless Process.find_executable(linker)
+
+      before = kept[0, objects_at].map { |argument| Process.quote_posix(argument) }.join(' ')
+      after = kept[(objects_at + 1)..].map { |argument| Process.quote_posix(argument) }.join(' ')
+      {linker, before, after}
+    end
+
+    # Records that the template does not work here, so the next build does not
+    # try it. Called after a direct link failed and the driver succeeded.
+    private def iyi_disable_direct_link(link_flags, lib_flags) : Nil
+      key = ::Crystal::Digest::MD5.hexdigest(
+        "#{DEFAULT_LINKER}\n#{link_flags}\n#{lib_flags}\n#{codegen_target}\n1")
+      # An empty fingerprint, which is what a template with no inputs has: the
+      # reader computes the same for this file and so believes it.
+      File.write(CacheDir.instance.join("link-template-#{key}"), "#{key}\n\nunusable") rescue nil
+      @iyi_direct_link = false
+      @iyi_link_driver_only = true
     end
 
     # Tests if `mold` or `lld` are available and prefers them as linkers over
@@ -557,13 +1658,59 @@ module Crystal
       return link_flags unless DEFAULT_LINKER == "cc"
       return link_flags if link_flags.includes?("-fuse-ld=")
 
-      if Process.find_executable("mold")
-        link_flags + " -fuse-ld=mold"
-      elsif Process.find_executable("ld.lld")
-        link_flags + " -fuse-ld=lld"
-      else
-        link_flags
+      flag = modern_linker_flag
+      flag.empty? ? link_flags : link_flags + " " + flag
+    end
+
+    # iyi: which of `mold` and `lld` this machine has, asked once per `PATH`
+    # rather than once per build.
+    #
+    # `Process.find_executable` walks `PATH`, and a name that is *not* there
+    # costs a stat in every entry of it. That is a millisecond on an ordinary
+    # Linux box and it is not one under WSL, where `PATH` carries the Windows
+    # directories and a stat across that filesystem takes about 6 ms: measured
+    # here, 0.062 s to fail to find `mold` and the same again to fail to find
+    # `ld.lld`. Two searches, every build, on a warm build whose whole figure
+    # is 0.30 s — **a third of it went looking for linkers nobody installed**,
+    # and it was invisible because passing any `-fuse-ld=` skips this and made
+    # the alternative look like the faster linker.
+    #
+    # The answer is written next to the object cache and read back while the
+    # `PATH` it was found under is unchanged. Changing `PATH` re-asks, which is
+    # what installing one of these usually does; installing one *into* a
+    # directory already on `PATH` does not, and the escape hatches are
+    # `--link-flags=-fuse-ld=mold` and deleting the file.
+    private def modern_linker_flag : String
+      path = ENV["PATH"]? || ""
+      key = ::Crystal::Digest::MD5.hexdigest(path)
+      cache = CacheDir.instance.join("linker-probe")
+
+      if remembered = File.file?(cache) ? File.read(cache).split('\n', 2) : nil
+        return remembered[1]? || "" if remembered[0]? == key
       end
+
+      answer =
+        if Process.find_executable("mold")
+          "-fuse-ld=mold"
+        elsif Process.find_executable("ld.lld")
+          "-fuse-ld=lld"
+        else
+          ""
+        end
+
+      # Written and then renamed, because builds share a cache directory and a
+      # half-written answer read by another one is a build linked with
+      # something nobody chose. A cache that cannot be written at all is a slow
+      # build rather than a failed one, which is the right way round for
+      # something nobody asked for.
+      begin
+        staging = "#{cache}.#{Process.pid}"
+        File.write(staging, "#{key}\n#{answer}")
+        File.rename(staging, cache)
+      rescue
+      end
+
+      answer
     end
 
     private GCC_RESPONSE_FILE_TR = {
@@ -594,6 +1741,7 @@ module Crystal
 
     private def codegen(program, units : Array(CompilationUnit), output_filename, output_dir)
       object_names = units.map &.object_filename
+      object_names.concat write_iyi_artifact_objects(program, output_dir)
 
       @progress_tracker.stage("Codegen (bc+obj)") do
         @progress_tracker.stage_progress_total = units.size
@@ -620,11 +1768,68 @@ module Crystal
 
       @progress_tracker.stage("Codegen (linking)") do
         Dir.cd(output_dir) do
-          run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true)
+          begin
+            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true)
+          rescue ex : CompilerError
+            # A link the compiler built itself, on a machine where that does
+            # not work: the driver is asked to do it instead and the template
+            # is marked unusable, so this is paid once rather than every build.
+            raise ex unless @iyi_direct_link
+            iyi_disable_direct_link(@link_flags || "", program.lib_flags(@cross_compile))
+            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true)
+          end
         end
       end
 
       units
+    end
+
+    # iyi: unpacks the object files imported artifacts carried, into the same
+    # directory the build's own units go to, and returns their names for the
+    # link (SPEC.md IV.1g).
+    #
+    # Written out rather than handed to the linker from memory because a linker
+    # takes paths. They are named after the module and the unit so that two
+    # modules carrying a unit for the same type — which cannot happen under
+    # R-3, and which a corrupt or hand-made artifact could still ask for —
+    # collide as two files rather than as one silently overwritten.
+    private def write_iyi_artifact_objects(program, output_dir) : Array(String)
+      names = [] of String
+      extension = codegen_target.object_extension
+
+      program.iyi_artifact_objects.each do |module_name, units|
+        units.each do |unit|
+          name = "iyimod-#{safe_object_name(module_name)}-#{safe_object_name(unit.name)}#{extension}"
+          path = File.join(output_dir, name)
+
+          # Only when it is not already there. This runs on every build, and
+          # the file it writes is a copy of bytes that came out of an artifact
+          # whose hash the build already checked — so the second build of an
+          # unchanged program was writing the module's machine code out again
+          # to link exactly what it linked last time. Measured on the Kemal
+          # port: a warm build from artifacts was 10% slower than the same
+          # build from source, and this was the difference.
+          #
+          # Sized first because a size that differs settles it without reading,
+          # and the bytes after that because a truncated or half-written copy
+          # from a killed build has to be replaced rather than linked.
+          info = File.info?(path)
+          same = info && info.size == unit.code.size &&
+                 File.open(path, "rb", &.getb_to_end) == unit.code
+          File.write(path, unit.code) unless same
+
+          names << name
+        end
+      end
+
+      names
+    end
+
+    # A module path or a type name as a filename. Neither is one — `app/greeter`
+    # has a separator in it and `List(Int32)` has parentheses — and the point is
+    # only that two different names cannot produce one file.
+    private def safe_object_name(name : String) : String
+      name.gsub(/[^A-Za-z0-9_]/) { |match| "-#{match[0].ord}" }
     end
 
     private def sequential_codegen(units)
@@ -650,10 +1855,27 @@ module Crystal
       wg = WaitGroup.new
       mutex = Sync::Mutex.new
 
+      # iyi: kept, and raised after the workers are done.
+      #
+      # An exception in a spawned fiber prints itself and takes the fiber down,
+      # and the build carried on to the link — which then reported the object
+      # files nobody had written as the linker failing to find them. That is a
+      # codegen failure told as a link failure, and it cost an hour of reading
+      # linker output. The forking path already reports its workers' failures;
+      # this is the same, for the threads.
+      failure = nil.as(Exception?)
+
       n_threads.times do
         wg.spawn do
           while unit = channel.receive?
-            unit.compile(isolate_context: true)
+            begin
+              unit.compile(isolate_context: true)
+            rescue ex
+              # Kept receiving rather than returning: a worker that stops
+              # leaves the sender blocked on a channel nobody drains.
+              mutex.synchronize { failure ||= ex }
+              next
+            end
             mutex.synchronize { @progress_tracker.stage_progress += 1 }
           end
         end
@@ -676,6 +1898,10 @@ module Crystal
       channel.close
 
       wg.wait
+
+      if ex = failure
+        raise CompilerError.new("a codegen thread failed: #{ex.message} (#{ex.class})")
+      end
     end
 
     private def fork_codegen(units, n_threads)

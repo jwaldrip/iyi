@@ -64,6 +64,28 @@ class Crystal::CodeGenVisitor
     type_id(type)
   end
 
+  # iyi: defines a type-id global for every type in the program (SPEC.md IV.1g).
+  #
+  # An artifact's object code refers to type ids by name, and this build has no
+  # way to see which names an object file needs. Emitted on demand, they exist
+  # only where *this* program happened to want one — which is why linking
+  # against `String#+` from a module failed on `String:type_id` while the same
+  # program built from source linked fine. An `i32` per type is not a cost worth
+  # a cleverer answer.
+  def iyi_define_all_type_ids : Nil
+    @program.llvm_id.each_type do |type|
+      next if type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
+
+      name = "#{type.llvm_name}:type_id"
+      next if @main_mod.globals[name]?
+
+      global = @main_mod.globals.add(@main_llvm_context.int32, name)
+      global.linkage = LLVM::Linkage::Internal if @single_module
+      global.initializer = @main_llvm_context.int32.const_int(@program.llvm_id.type_id(type))
+      global.global_constant = true
+    end
+  end
+
   private def type_id_impl(type)
     type_id_name = "#{type.llvm_name}:type_id"
 
@@ -81,6 +103,16 @@ class Crystal::CodeGenVisitor
         global = @llvm_mod.globals.add(@llvm_context.int32, type_id_name)
         global.linkage = LLVM::Linkage::External
         global.global_constant = true
+
+        # iyi: which unit wanted it, so an artifact carrying that unit can say
+        # so (SPEC.md IV.1g). This is the reference the linker resolves from
+        # somebody else's `_main`, and the somebody else has to have the type
+        # before it can number it. Recorded only while writing artifacts —
+        # every other build defines what it refers to by construction.
+        unless @program.iyi_exported_owners.empty?
+          types = @program.iyi_unit_type_ids[@llvm_mod.name] ||= Set(Type).new
+          types << type
+        end
       end
     end
 

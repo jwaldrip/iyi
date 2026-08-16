@@ -1,0 +1,147 @@
+# The first iyi program.
+#
+#   ./bin/crystal run samples/iyi/hello.iyi
+#
+# Everything below compiles and runs today. What is still missing is listed at
+# the bottom — this file is meant to stay honest about how far the
+# implementation actually reaches.
+
+# R-1: the compilation-unit header. A module is the unit of compilation and of
+# recompilation; `import` edges between modules form a DAG. Reading a module's
+# `.iyimod` is what will one day replace re-analysing its source.
+module samples/hello
+
+# R-3: a trait is a named set of requirements. `abstract def` marks a method an
+# implementer must provide. Traits replace Crystal's open classes: a type's
+# method set is knowable without reading the whole program.
+pub trait Greet
+  abstract def greet : String
+end
+
+pub trait Loud
+  abstract def shout : String
+end
+
+# R-2: `pub` marks a declaration as exported, and exported declarations carry
+# full signatures. That signature is the module's contract, and the only thing
+# a consumer ever needs to read.
+pub struct User
+  getter name : String
+
+  def initialize(@name : String)
+  end
+end
+
+pub struct Robot
+  getter id : Int32
+
+  def initialize(@id : Int32)
+  end
+end
+
+# `impl Trait for Type` — the replacement for reopening a class. R-3's orphan
+# rule requires it to live in the module defining either the trait or the
+# type, and that is enforced: both are defined right here. `modules.iyi` shows
+# the cross-module case, where the choice actually costs something.
+impl Greet for User
+  def greet : String
+    "Hello, #{name}!"
+  end
+end
+
+# A type may implement several traits...
+impl Loud for User
+  def shout : String
+    greet.upcase
+  end
+end
+
+# ...and a trait may be implemented by several types.
+impl Greet for Robot
+  def greet : String
+    "BEEP #{id}"
+  end
+end
+
+# `impl` is the only way to give a type a trait. SPEC.md II.8 — each of these
+# is refused, and each for its own reason:
+#
+#   struct User
+#     include Greet     # a type acquires a trait by having an impl, whose
+#   end                 # location R-3 can check; `include` has no such rule
+#
+#   using samples/hello/greet   # a trait exports no names to bring into
+#                               # scope — a trait method is resolved from the
+#                               # receiver, never from a `using`
+#
+#   impl Greet for Loud         # a blanket impl in disguise
+#
+# And leaving a requirement unmet is an error where the impl is written, not
+# where the type is later used:
+#
+#   impl Loud for Robot
+#   end
+#   # => impl Loud for Robot is missing a method required by the trait: shout
+
+# Not exported. No signature required, because nothing outside this module can
+# depend on it — inference inside a module costs only what the module costs.
+def describe(item)
+  item.greet
+end
+
+# A trait bound on a method's own type parameter — SPEC.md II.7 rule 3. The
+# method exists for every `T`; the bound is checked where `T` binds, so a call
+# with a type that does not implement `Greet` is rejected at that call:
+#
+#   announce(42)
+#   # => Int32 does not implement Samples::Hello::Greet, required by `T`
+#   #    in `announce`
+#
+# This is the shape Kemal's router needs: `&block : Context -> B forall
+# B : IntoBody` replaces a per-request runtime type check with one at compile
+# time. Note this is *not* the impl-level bound below — nothing here is
+# conditional.
+pub def announce(item : T) : String forall T : Greet
+  "-> #{item.greet}"
+end
+
+# Ruby ergonomics, unchanged and free to compile: blocks, string
+# interpolation, everything-is-an-expression, local inference.
+puts User.new("iyi").greet
+puts User.new("iyi").shout
+puts Robot.new(42).greet
+
+# A trait as a type: both implementers dispatch through it.
+crowd = [User.new("crystal"), Robot.new(7)] of Greet
+crowd.each { |member| puts describe(member) }
+
+puts announce(Robot.new(9))
+
+# ---------------------------------------------------------------------------
+# Not yet implemented
+# ---------------------------------------------------------------------------
+#
+# * Trait bounds on a generic *impl*'s parameters (`impl Show for Box(T)
+#   forall T : Show`) parse but are rejected — unlike the bound on `announce`
+#   above, which works. A bound on an impl makes the impl conditional:
+#   `Box(Int32)` would implement `Show` only if `Int32` did, which has to be
+#   checked where the type is instantiated rather than where the impl is
+#   written. A different mechanism, and the harder of the two.
+#
+# * Dictionary-passing generics is unimplemented: `announce` above is
+#   monomorphised the way Crystal monomorphises it.
+#
+# * `.iyimod` reaches the front end and stops there. `modules.iyi` and
+#   `immutable.iyi` compile with the imported module's source deleted, but a
+#   build that reads artifacts cannot yet produce a program, because the
+#   artifact carries declarations and no object code (SPEC.md IV.1f).
+#
+# * The prelude under this file is iyi's own, 833 lines of it, and that is why
+#   building it costs 0.32 s rather than 2.10 s. It is not a standard library
+#   and does not pretend to be one: no `Float64#to_s`, no `Range`, no `Set`,
+#   no formatting, and `raise` is a panic that prints and exits. What is in it
+#   is what a sample called for (SPEC.md, "0.1.0", item 3).
+#
+# See `modules.iyi` for `import` and `using` across files, `generics.iyi` for
+# implementing a trait for a generic type and for associated types, bounds and
+# requirements, and `collections.iyi` for `Enumerable` ported onto all of it.

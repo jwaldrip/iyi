@@ -1421,6 +1421,17 @@ module Crystal
   #
   class Def < ASTNode
     property free_vars : Array(String)?
+    # iyi: `def f(x : T) forall T : Show` — the trait each free variable is
+    # bounded by, if any (SPEC.md II.7 rule 3).
+    #
+    # Unlike a bound on an *impl*'s parameter, this one makes nothing
+    # conditional: the method exists either way, and the bound is a check
+    # performed where the free variable binds to a concrete type.
+    property free_var_bounds : Hash(String, ASTNode)?
+    # iyi: `def max : Elem where Elem : Comparable` — a bound on a name the
+    # method did not introduce, which is how a trait says a default method is
+    # only valid for some answers to its associated types (SPEC.md II.6).
+    property where_bounds : Hash(String, ASTNode)?
     property receiver : ASTNode?
     property name : String
     property args : Array(Arg)
@@ -1435,6 +1446,35 @@ module Crystal
     property splat_index : Int32?
     property doc : String?
     property visibility = Visibility::Public
+    # iyi: `pub def` — exported, so it appears in `.iyimod` (R-2).
+    property? exported = false
+
+    # iyi: written in an `impl` body (SPEC.md IV.2).
+    #
+    # An impl defines its methods on the target type, so by the time anything
+    # looks at them they are the target's like any other. This is the only
+    # record that they were the impl's, and the artifact needs it: `impl Cmp
+    # for Int32` puts a method on a type its module does not export.
+    property? iyi_from_impl = false
+
+    # iyi: read from a `.iyimod` rather than from source (SPEC.md IV.1).
+    #
+    # There is no body under this signature and there is not meant to be one:
+    # the artifact carries what another module may call, not how it is done. A
+    # call to it is typed from its return annotation, which R-2 guarantees is
+    # written down. That is exactly as far as an artifact takes a build, and it
+    # is why one that reads artifacts cannot yet generate code.
+    property? iyi_from_artifact = false
+
+    # iyi: read from a `.iyimod` *with* its body, from `MonoBodies` (SPEC.md
+    # IV.1g).
+    #
+    # The opposite of the flag above, and the reason both are needed: a def
+    # arrives with a body when it is one the consumer has to compile — a
+    # generic type's method, a trait's default, a method that takes a block.
+    # The type it is on came from the artifact either way, so the type is no
+    # longer enough to say whose machine code this is.
+    property? iyi_body_travelled = false
 
     property? macro_def : Bool
     property? calls_super = false
@@ -1468,8 +1508,13 @@ module Crystal
       a_def.calls_previous_def = calls_previous_def?
       a_def.uses_block_arg = uses_block_arg?
       a_def.assigns_special_var = assigns_special_var?
+      a_def.iyi_from_impl = iyi_from_impl?
+      a_def.iyi_from_artifact = iyi_from_artifact?
+      a_def.iyi_body_travelled = iyi_body_travelled?
       a_def.name_location = name_location
       a_def.visibility = visibility
+      a_def.free_var_bounds = @free_var_bounds.clone
+      a_def.where_bounds = @where_bounds.clone
       a_def
     end
 
@@ -1683,6 +1728,12 @@ module Crystal
     property obj : ASTNode
     property const : ASTNode
     property? nil_check : Bool
+    # iyi: the construct this check was written by — `"!"`, `".or"` or
+    # `".or_panic"` — so that the semantic phase can judge the operand and name
+    # it in the message. An `is_a?` the author wrote is nobody's business and
+    # leaves this nil; one a compiler-known construct wrote has rules
+    # (SPEC.md III.1.1).
+    property error_construct : String? = nil
 
     def initialize(@obj, @const, @nil_check = false)
     end
@@ -1693,7 +1744,9 @@ module Crystal
     end
 
     def clone_without_location
-      IsA.new(@obj.clone, @const.clone, @nil_check)
+      clone = IsA.new(@obj.clone, @const.clone, @nil_check)
+      clone.error_construct = error_construct
+      clone
     end
 
     def_equals_and_hash @obj, @const, @nil_check
@@ -1794,6 +1847,11 @@ module Crystal
     property whens : Array(When)
     property else : ASTNode?
     property? exhaustive : Bool
+    # iyi: whether `it` names the value being matched inside every branch
+    # (SPEC.md III.1.1). Decided by the parser, because the bodies have to be
+    # parsed knowing `it` is a variable rather than a call; the expander is what
+    # assigns it.
+    property? binds_it = false
 
     def initialize(@cond : ASTNode?, @whens : Array(When), @else : ASTNode?, @exhaustive : Bool)
       @whens.each do |wh|
@@ -1808,7 +1866,9 @@ module Crystal
     end
 
     def clone_without_location
-      Case.new(@cond.clone, @whens.clone, @else.clone, @exhaustive)
+      clone = Case.new(@cond.clone, @whens.clone, @else.clone, @exhaustive)
+      clone.binds_it = binds_it?
+      clone
     end
 
     def_equals_and_hash @exhaustive, @cond, @whens, @else
@@ -1883,6 +1943,16 @@ module Crystal
     property? global : Bool
     property visibility = Visibility::Public
 
+    # iyi: written by a `.iyimod`'s renderer rather than by an author (SPEC.md
+    # IV.1g).
+    #
+    # Such a path may name a type the module keeps to itself — a field of a
+    # carried type is `Array(Router::Route)`, and `Route` is a `private record`.
+    # R-2b is about what another module may *write*: this is the module's own
+    # declaration arriving, and the type it names is unreachable to everyone
+    # who did not already have it in their object code.
+    property? iyi_from_artifact = false
+
     def initialize(@names : Array, @global = false)
     end
 
@@ -1915,6 +1985,7 @@ module Crystal
 
     def clone_without_location
       ident = Path.new(@names.clone, @global)
+      ident.iyi_from_artifact = @iyi_from_artifact
       ident
     end
 
@@ -1949,6 +2020,8 @@ module Crystal
     property? abstract : Bool
     property? struct : Bool
     property visibility = Visibility::Public
+    # iyi: `pub class` / `pub struct` — exported (R-2).
+    property? exported = false
 
     def initialize(@name, body = nil, @superclass = nil, @type_vars = nil, @abstract = false, @struct = false, @splat_index = nil)
       @body = Expressions.from body
@@ -1985,6 +2058,267 @@ module Crystal
   #       body
   #     'end'
   #
+  # iyi: `trait Greet ... end`
+  #
+  # A named set of required methods, associated types and default methods.
+  # Replaces Crystal's mixin modules; see SPEC.md R-3 and II.6.
+  class TraitDef < ASTNode
+    property name : Path
+    property body : ASTNode
+    property type_vars : Array(String)?
+    # `type Elem` — the associated types this trait declares, in the order
+    # they are written. Collected by the parser rather than found while
+    # visiting the body, because the trait's type has to be created before the
+    # body is visited and these are part of what it is.
+    property assoc_types : Array(String)?
+    # `trait Ord : Eq` — the traits an implementer must already implement.
+    # A requirement, not an inclusion: `Ord` does not hand its implementers
+    # `Eq`'s methods, it insists they have their own `impl Eq for ...`, which
+    # is what keeps R-3 the only way a type acquires a trait.
+    property supertraits : Array(ASTNode)?
+    property name_location : Location?
+    property doc : String?
+    property visibility = Visibility::Public
+    # `pub trait` — exported from the module, so it appears in `.iyimod`.
+    property? exported = false
+
+    def initialize(@name, body = nil, @type_vars = nil, @exported = false, @assoc_types = nil, @supertraits = nil)
+      @body = Expressions.from body
+    end
+
+    def accept_children(visitor)
+      @supertraits.try &.each &.accept visitor
+      @body.accept visitor
+    end
+
+    def clone_without_location
+      clone = TraitDef.new(@name, @body.clone, @type_vars.clone, @exported, @assoc_types.clone, @supertraits.clone)
+      clone.name_location = name_location
+      clone
+    end
+
+    def_equals_and_hash @name, @body, @type_vars, @exported, @assoc_types, @supertraits
+  end
+
+  # iyi: `read(path)!` — propagate an error member out of the enclosing method
+  # (SPEC.md III.1.2).
+  #
+  # If the value is a non-error member of its union, the expression evaluates to
+  # it; if it is an error member, it is returned from the enclosing method. Kept
+  # as a node of its own rather than desugared at parse time so that `to_s` and
+  # the formatter still write the operator the author wrote; the normalizer
+  # expands it.
+  class Propagate < ASTNode
+    property exp : ASTNode
+
+    def initialize(@exp)
+    end
+
+    def accept_children(visitor)
+      @exp.accept visitor
+    end
+
+    def clone_without_location
+      Propagate.new(@exp.clone)
+    end
+
+    def_equals_and_hash @exp
+  end
+
+  # iyi: `defer f.close` — cleanup that runs however the scope is left
+  # (SPEC.md III.1.4).
+  #
+  # `begin`/`ensure` stopped covering cleanup once errors became values returned
+  # early, because the interesting exit is now an ordinary `return` in the
+  # middle of a body. `defer` names the cleanup where the resource is acquired
+  # instead of wrapping everything after it in a block.
+  #
+  # Kept as a node of its own rather than desugared at parse time so that `to_s`
+  # writes back what the author wrote; the normalizer expands it.
+  class Defer < ASTNode
+    property exp : ASTNode
+
+    def initialize(@exp)
+    end
+
+    def accept_children(visitor)
+      @exp.accept visitor
+    end
+
+    def clone_without_location
+      Defer.new(@exp.clone)
+    end
+
+    def_equals_and_hash @exp
+  end
+
+  # iyi: `read_port().or(8080)` and `read_port().or_panic` — take the value out
+  # of an error union without writing a `case` (SPEC.md III.1.3).
+  #
+  # These cannot be ordinary methods, which is why they are a node. By II.1 an
+  # ordinary call on `Int32 | ConfigError` would require *both* members to
+  # implement it, and a method every error type has to supply is exactly what
+  # this design is avoiding. So the compiler knows them, and `or` / `or_panic`
+  # are not names an iyi program can use for anything else.
+  #
+  # `default` is nil for `.or_panic`, which has no value to fall back to.
+  class Recover < ASTNode
+    property exp : ASTNode
+    property default : ASTNode?
+
+    def initialize(@exp, @default = nil)
+    end
+
+    def panic?
+      @default.nil?
+    end
+
+    def accept_children(visitor)
+      @exp.accept visitor
+      @default.try &.accept visitor
+    end
+
+    def clone_without_location
+      Recover.new(@exp.clone, @default.clone)
+    end
+
+    def_equals_and_hash @exp, @default
+  end
+
+  # iyi: `type Elem` in a trait, `type Elem = String` in an impl (SPEC.md II.6).
+  #
+  # An associated type is an *output* of the impl, not an input the caller
+  # picks: a collection iterates one way, so `arr.map` must not have to say
+  # which element type it means. That is the whole difference from a trait
+  # parameter, and it is why a trait with associated types can be implemented
+  # only once for a given type.
+  class AssocTypeDecl < ASTNode
+    property name : String
+    # The type the impl supplies. `nil` in a trait, which declares the name
+    # and requires each impl to answer it.
+    property value : ASTNode?
+    # Set by the parser on the declarations that sit directly in a trait or
+    # impl body — the only place one means anything. Anything else carrying
+    # this node is rejected in the semantic phase.
+    property? in_type_body = false
+    property name_location : Location?
+    property doc : String?
+
+    def initialize(@name, @value = nil)
+    end
+
+    def accept_children(visitor)
+      @value.try &.accept visitor
+    end
+
+    def clone_without_location
+      clone = AssocTypeDecl.new(@name, @value.clone)
+      clone.in_type_body = in_type_body?
+      clone.name_location = name_location
+      clone
+    end
+
+    def_equals_and_hash @name, @value
+  end
+
+  # iyi: `impl Greet for User ... end`, `impl Greet for Box(T) forall T`
+  #
+  # Coherence (R-3): must live in the module defining the trait or the type.
+  # SPEC.md IV.4 shows the import DAG makes duplicate impls unrepresentable.
+  class ImplDef < ASTNode
+    property trait : Path
+    # `impl Into(String) for User` — the arguments a parameterised trait is
+    # implemented at (SPEC.md II.6). Kept beside the path rather than folded
+    # into a `Generic` node, because the checks that follow — coherence and
+    # the required-method check — need the trait's own type, not an
+    # instantiation of it.
+    property trait_args : Array(ASTNode)?
+    # Named `target` rather than `type`: ASTNode already declares
+    # `@type : Crystal::Type?` for the inferred type of every node.
+    property target : ASTNode
+    property body : ASTNode
+    # The names introduced by `forall`. They are the impl's own, bound
+    # positionally to the target's parameters — see SPEC.md II.7.
+    property type_vars : Array(String)?
+    # `forall T : Show` — the trait each parameter is bounded by, if any.
+    property type_var_bounds : Hash(String, ASTNode)?
+    # `type Elem = String` — the answer this impl gives to each associated
+    # type the trait declares.
+    property assoc_types : Hash(String, ASTNode)?
+    property name_location : Location?
+    property doc : String?
+    property visibility = Visibility::Public
+
+    def initialize(@trait, @target, body = nil, @type_vars = nil, @type_var_bounds = nil, @trait_args = nil, @assoc_types = nil)
+      @body = Expressions.from body
+    end
+
+    def accept_children(visitor)
+      @trait.accept visitor
+      @trait_args.try &.each &.accept visitor
+      @target.accept visitor
+      @body.accept visitor
+    end
+
+    def clone_without_location
+      clone = ImplDef.new(@trait.clone, @target.clone, @body.clone, @type_vars.clone, @type_var_bounds.clone, @trait_args.clone, @assoc_types.clone)
+      clone.name_location = name_location
+      clone
+    end
+
+    def_equals_and_hash @trait, @trait_args, @target, @body, @type_vars, @type_var_bounds, @assoc_types
+  end
+
+  # iyi: `module app/user` — the compilation-unit header (R-1).
+  #
+  # Must be the first statement in a file. Unlike Crystal's `module`, this
+  # declares which module the file belongs to and has no body.
+  class ModuleHeader < ASTNode
+    property path : Array(String)
+
+    def initialize(@path)
+    end
+
+    def clone_without_location
+      ModuleHeader.new(@path.dup)
+    end
+
+    def_equals_and_hash @path
+  end
+
+  # iyi: `import std/json`
+  class ImportDecl < ASTNode
+    property path : Array(String)
+
+    def initialize(@path)
+    end
+
+    def clone_without_location
+      ImportDecl.new(@path.dup)
+    end
+
+    def_equals_and_hash @path
+  end
+
+  # iyi: `using kemal::dsl` / `using kemal::dsl::{get, post}`
+  #
+  # Brings exported names into unqualified scope. Written by the consumer,
+  # never by the library; see SPEC.md II.3.
+  class UsingDecl < ASTNode
+    property path : Array(String)
+    # nil means "everything exported"; otherwise the selected names.
+    property names : Array(String)?
+
+    def initialize(@path, @names = nil)
+    end
+
+    def clone_without_location
+      UsingDecl.new(@path.dup, @names.dup)
+    end
+
+    def_equals_and_hash @path, @names
+  end
+
   class ModuleDef < ASTNode
     property name : Path
     property body : ASTNode
@@ -1993,6 +2327,15 @@ module Crystal
     property name_location : Location?
     property doc : String?
     property visibility = Visibility::Public
+
+    # iyi: true when this node came from a `module app/greeter` header rather
+    # than from Crystal's `module` keyword. The two are not the same thing: an
+    # iyi module is a compilation unit whose `def`s are functions in lexical
+    # scope, so a type nested inside it may call them unqualified. Crystal
+    # modules do not work that way, and existing `.cr` code must keep
+    # resolving exactly as it does now — hence the flag rather than a change
+    # in how modules behave.
+    property? iyi_unit = false
 
     def initialize(@name, body = nil, @type_vars = nil, @splat_index = nil)
       @body = Expressions.from body
@@ -2005,6 +2348,7 @@ module Crystal
     def clone_without_location
       clone = ModuleDef.new(@name, @body.clone, @type_vars.clone, @splat_index)
       clone.name_location = name_location
+      clone.iyi_unit = iyi_unit?
       clone
     end
 
@@ -2490,8 +2834,15 @@ module Crystal
   end
 
   class Return < ControlExpression
+    # iyi: set on the `return` that `expr!` expands into, so that a propagation
+    # with nowhere to return to can be reported as the rule it breaks rather
+    # than as a stray `return` (SPEC.md III.5).
+    property? from_propagate = false
+
     def clone_without_location
-      Return.new(@exp.clone)
+      clone = Return.new(@exp.clone)
+      clone.from_propagate = from_propagate?
+      clone
     end
   end
 

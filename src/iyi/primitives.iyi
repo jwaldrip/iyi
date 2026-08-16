@@ -1,0 +1,220 @@
+# What the compiler emits instructions for — SPEC.md, "0.1.0", item 3.
+#
+# A `@[Primitive]` method has no body on purpose: the annotation names an
+# instruction the code generator writes at the call site. So this file is not
+# an implementation, it is the list of machine operations iyi admits, and its
+# shape is a language decision rather than a library one.
+#
+# **This is iyi's list, not Crystal's.** `src/primitives.cr` declares twelve
+# numeric types and crosses them with each other, which is 2,580 definitions
+# expanded on every build and **0.11 s of a 0.17 s front end** — measured by
+# deleting the block and building again. iyi crosses five, which is 445.
+#
+# The five are `Int32`, `Int64`, `UInt8`, `UInt64` and `Float64`: the default
+# integer, the one a byte count grows into, the byte itself, the one an address
+# and a size are, and a float. `Int8`, `Int16`, `Int128` and the unsigned
+# middle exist as types and have no arithmetic, because no sample writes one —
+# the same rule the rest of the prelude is built on. Writing `1_i8 + 1_i8` is
+# an "undefined method" and that is the honest answer: 0.1.0 does not have
+# eight-bit arithmetic rather than having it slowly.
+class Object
+  @[Primitive(:class)]
+  def class
+  end
+
+  # The runtime type id. `String.new` writes it into the header of a string it
+  # builds, which is how a string built at run time becomes indistinguishable
+  # from one codegen laid out.
+  @[Primitive(:object_crystal_type_id)]
+  def crystal_type_id : Int32
+  end
+end
+
+class Reference
+  @[Primitive(:object_id)]
+  def object_id : UInt64
+  end
+end
+
+class Class
+  @[Primitive(:class_crystal_instance_type_id)]
+  def crystal_instance_type_id : Int32
+  end
+end
+
+struct Bool
+  @[Primitive(:binary)]
+  def ==(other : Bool) : Bool
+  end
+
+  @[Primitive(:binary)]
+  def !=(other : Bool) : Bool
+  end
+end
+
+struct Char
+  @[Primitive(:convert)]
+  def ord : Int32
+  end
+
+  {% for op in %w(== != < <= > >=) %}
+    @[Primitive(:binary)]
+    def {{ op.id }}(other : Char) : Bool
+    end
+  {% end %}
+end
+
+struct Symbol
+  @[Primitive(:binary)]
+  def ==(other : Symbol) : Bool
+  end
+
+  @[Primitive(:binary)]
+  def !=(other : Symbol) : Bool
+  end
+
+  @[Primitive(:convert)]
+  def to_i : Int32
+  end
+
+  @[Primitive(:symbol_to_s)]
+  def to_s : String
+  end
+end
+
+struct Pointer(T)
+  @[Primitive(:pointer_malloc)]
+  def self.malloc(size : UInt64)
+  end
+
+  @[Primitive(:pointer_new)]
+  def self.new(address : UInt64)
+  end
+
+  @[Primitive(:pointer_get)]
+  def value : T
+  end
+
+  @[Primitive(:pointer_set)]
+  def value=(value : T)
+  end
+
+  @[Primitive(:pointer_address)]
+  def address : UInt64
+  end
+
+  @[Primitive(:pointer_realloc)]
+  def realloc(size : UInt64) : self
+  end
+
+  @[Primitive(:pointer_add)]
+  def +(offset : Int64) : self
+  end
+
+  @[Primitive(:pointer_diff)]
+  def -(other : self) : Int64
+  end
+end
+
+struct Proc
+  @[Primitive(:proc_call)]
+  @[Raises]
+  def call(*args : *T) : R
+  end
+end
+
+{% begin %}
+  {% ints = %w(Int32 Int64 UInt8 UInt64) %}
+  {% floats = %w(Float64) %}
+  {% nums = %w(Int32 Int64 UInt8 UInt64 Float64) %}
+  {% binaries = %w(+ - *) %}
+
+  {% for num in nums %}
+    struct {{ num.id }}
+      # The checked form raises on overflow — which in this prelude is a panic,
+      # since `__crystal_raise_overflow` prints and exits (SPEC.md III.1.4).
+      # The `!` form is the same instruction without the check.
+      {% for name, type in {
+                             to_i:  Int32,
+                             to_f:  Float64,
+                             to_i32: Int32,
+                             to_i64: Int64,
+                             to_u8:  UInt8,
+                             to_u64: UInt64,
+                             to_f64: Float64,
+                           } %}
+        @[::Primitive(:convert)]
+        @[Raises]
+        def {{ name.id }} : {{ type }}
+        end
+
+        @[::Primitive(:unchecked_convert)]
+        def {{ name.id }}! : {{ type }}
+        end
+      {% end %}
+
+      {% for num2 in nums %}
+        {% for op in %w(== != < <= > >=) %}
+          @[::Primitive(:binary)]
+          def {{ op.id }}(other : {{ num2.id }}) : Bool
+          end
+        {% end %}
+      {% end %}
+    end
+  {% end %}
+
+  {% for int in ints %}
+    struct {{ int.id }}
+      @[::Primitive(:unchecked_convert)]
+      def unsafe_chr : Char
+      end
+
+      {% for int2 in ints %}
+        {% for op in binaries %}
+          @[::Primitive(:binary)]
+          @[Raises]
+          def {{ op.id }}(other : {{ int2.id }}) : self
+          end
+
+          @[::Primitive(:binary)]
+          def &{{ op.id }}(other : {{ int2.id }}) : self
+          end
+        {% end %}
+
+        {% for op in %w(| & ^ unsafe_shl unsafe_shr unsafe_div unsafe_mod) %}
+          @[::Primitive(:binary)]
+          def {{ op.id }}(other : {{ int2.id }}) : self
+          end
+        {% end %}
+      {% end %}
+
+      {% for float in floats %}
+        {% for op in binaries %}
+          @[::Primitive(:binary)]
+          def {{ op.id }}(other : {{ float.id }}) : {{ float.id }}
+          end
+        {% end %}
+      {% end %}
+    end
+  {% end %}
+
+  {% for float in floats %}
+    struct {{ float.id }}
+      {% for num in nums %}
+        {% for op in binaries %}
+          @[::Primitive(:binary)]
+          def {{ op.id }}(other : {{ num.id }}) : self
+          end
+        {% end %}
+
+        @[::Primitive(:binary)]
+        def fdiv(other : {{ num.id }}) : self
+        end
+      {% end %}
+
+      @[::Primitive(:binary)]
+      def /(other : {{ float.id }}) : {{ float.id }}
+      end
+    end
+  {% end %}
+{% end %}

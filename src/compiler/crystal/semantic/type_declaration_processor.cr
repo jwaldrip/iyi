@@ -195,6 +195,15 @@ struct Crystal::TypeDeclarationProcessor
       var.add_annotation(annotation_type, ann)
     end
 
+    # Redeclaring must not lose an initializer that was already computed for
+    # this variable. Only a split analysis can get here with one — declarations
+    # are processed before initializers are visited, so within a single run the
+    # existing var never has one — and dropping it would both fail the
+    # non-nilable check and leave the variable uninitialized at runtime.
+    if (existing = vars[name]?) && (existing_initializer = existing.initializer)
+      var.initializer = existing_initializer
+    end
+
     vars[name] = var
 
     var
@@ -385,7 +394,22 @@ struct Crystal::TypeDeclarationProcessor
     # If a superclass already defines this variable we ignore
     # the guessed type information for subclasses
     supervar = owner.lookup_instance_var?(name)
-    return if supervar
+    if supervar
+      # Unless this is a module that already carries the variable and has since
+      # gained a type that includes it. That happens when the analysis is split
+      # across runs — the fork probe, and any `.iyimod` restoring a module the
+      # current run then includes — where the module was processed while
+      # `raw_including_types` was still empty. Returning here would leave the
+      # including type without the variable, and it only fails much later, when
+      # the initializer is attached. In a single run this is unreachable: the
+      # module cannot already own the variable the first time it is processed.
+      if supervar.owner == owner && (owner.is_a?(NonGenericModuleType) || owner.is_a?(GenericModuleType))
+        owner.raw_including_types.try &.each do |including_type|
+          process_owner_guessed_instance_var_declaration(including_type, name, type_info)
+        end
+      end
+      return
+    end
 
     case owner
     when NonGenericClassType
@@ -459,6 +483,13 @@ struct Crystal::TypeDeclarationProcessor
   private def nilable_instance_var?(owner, name)
     return false if @has_macro_def.includes?(owner)
 
+    # iyi: a type read from a `.iyimod` carries its fields and, when the module
+    # keeps it to itself, none of its methods — so there is no `initialize`
+    # here to assign them in. Assumed to assign everything, like a macro def
+    # and on the same grounds: the build that wrote the artifact already
+    # checked the real one (SPEC.md IV.1g).
+    return false if owner.is_a?(Type) && owner.iyi_from_artifact?
+
     non_nilable_vars = @non_nilable_instance_vars[owner]?
     !non_nilable_vars || (non_nilable_vars && !non_nilable_vars.includes?(name))
   end
@@ -514,6 +545,12 @@ struct Crystal::TypeDeclarationProcessor
     # super or assign all of those variables
     if ancestor_non_nilable
       infos.each do |info|
+        # iyi: an `initialize` read from a `.iyimod` is a header — there is no
+        # body for it to assign in, and the build that wrote the artifact
+        # already checked that the real one assigns everything. Treated like a
+        # macro def below, and for the same reason (SPEC.md IV.1g).
+        next if info.def.iyi_from_artifact?
+
         unless info.def.calls_super? || info.def.calls_previous_def? || info.def.calls_initialize? || info.def.macro_def?
           ancestor_non_nilable.each do |name|
             # If the variable is initialized outside, it's OK
@@ -554,6 +591,10 @@ struct Crystal::TypeDeclarationProcessor
         # Assume a macro def initializes all of them
         # (will be checked later)
         next if info.def.macro_def?
+
+        # iyi: and an `initialize` from a `.iyimod` for the same reason — it is
+        # a header with no body, and the artifact's own build checked it.
+        next if info.def.iyi_from_artifact?
 
         # Similarly, calling previous_def would have the vars initialized
         # in the other def

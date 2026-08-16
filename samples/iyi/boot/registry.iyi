@@ -1,0 +1,21 @@
+# A module whose `import` is deliberately NOT the first thing in the file.
+# See `../init_order.iyi`.
+module boot/registry
+
+# This statement belongs to `boot/registry`'s initialiser, and `boot/registry`
+# initialises after every module it imports (SPEC.md III.5 rule 1). So
+# `boot/config`'s line is already printed by the time this one runs, even
+# though the `import` that names it is written below.
+#
+# Rule 1 is about modules, not about lines. It used to be about lines: `import`
+# expanded the module's nodes where the directive stood, so this print really
+# did run before `boot/config` had done anything.
+puts "2. boot/registry, above its own `import` line"
+
+import boot/config
+
+puts "3. boot/registry, below it"
+
+pub def greeting : String
+  "Hello, #{Boot::Config.name}."
+end

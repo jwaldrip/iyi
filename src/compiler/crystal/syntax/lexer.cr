@@ -16,6 +16,13 @@ module Crystal
     property line_number : Int32
     property column_number : Int32
     property wants_symbol : Bool
+
+    # iyi: true while lexing a `.iyi` file, where `!` is not part of an
+    # identifier (SPEC III.1.7, decision A). Derived from the filename rather
+    # than passed in, because every parser that reads a file from disk sets
+    # `filename` immediately after construction and nothing else needs to know.
+    property? iyi = false
+
     @filename : String | VirtualFile | Nil
     @stacked_filename : String | VirtualFile | Nil
     @token_end_location : Location?
@@ -95,6 +102,7 @@ module Crystal
 
     def filename=(filename)
       @filename = filename
+      @iyi = filename.is_a?(String) && filename.ends_with?(".iyi")
     end
 
     def next_token
@@ -683,6 +691,22 @@ module Crystal
         case next_char
         when 'f'
           return check_ident_or_keyword(:if, start)
+        when 'm'
+          case next_char
+          when 'p'
+            case next_char
+            when 'l'
+              return check_ident_or_keyword(:impl, start)
+            when 'o'
+              if char_sequence?('r', 't')
+                return check_ident_or_keyword(:import, start)
+              end
+            else
+              # scan_ident
+            end
+          else
+            # scan_ident
+          end
         when 'n'
           if ident_part_or_end?(peek_next_char)
             case next_char
@@ -797,6 +821,10 @@ module Crystal
           if char_sequence?('i', 'n', 't', 'e', 'r', 'o', 'f')
             return check_ident_or_keyword(:pointerof, start)
           end
+        when 'u'
+          if char_sequence?('b')
+            return check_ident_or_keyword(:pub, start)
+          end
         when 'r'
           case next_char
           when 'i'
@@ -884,8 +912,17 @@ module Crystal
             return check_ident_or_keyword(:then, start)
           end
         when 'r'
-          if char_sequence?('u', 'e')
-            return check_ident_or_keyword(:true, start)
+          case next_char
+          when 'u'
+            if char_sequence?('e')
+              return check_ident_or_keyword(:true, start)
+            end
+          when 'a'
+            if char_sequence?('i', 't')
+              return check_ident_or_keyword(:trait, start)
+            end
+          else
+            # scan_ident
           end
         when 'y'
           if char_sequence?('p', 'e')
@@ -903,7 +940,8 @@ module Crystal
         end
         scan_ident(start)
       when 'u'
-        if next_char == 'n'
+        case next_char
+        when 'n'
           case next_char
           when 'i'
             case next_char
@@ -929,6 +967,12 @@ module Crystal
           else
             # scan_ident
           end
+        when 's'
+          if char_sequence?('i', 'n', 'g')
+            return check_ident_or_keyword(:using, start)
+          end
+        else
+          # scan_ident
         end
         scan_ident(start)
       when 'v'
@@ -1141,7 +1185,10 @@ module Crystal
         next_char
       end
       if current_char.in?('?', '!') && peek_next_char != '='
-        next_char
+        # iyi: `!` is not part of a name (SPEC.md III.1.7). It is left for the
+        # parser, which reads it as the propagation operator after an
+        # expression and refuses it after a `def` name.
+        next_char unless @iyi && current_char == '!'
       end
       @token.type = :IDENT
       @token.value = string_range_from_pool(start)

@@ -4127,5 +4127,453 @@ module Crystal
       node = parser.parse.as(Call)
       node.args_in_brackets?.should be_true
     end
+
+    describe "iyi" do
+      it "scopes a module header's contents into a namespace" do
+        # `module app/greeter` is rewritten to `ModuleDef(App::Greeter)` at
+        # parse time, so the whole semantic phase needs no changes. `import`
+        # stays outside it: an imported file carries its own header, and
+        # processing it while scoped inside this one would nest the two.
+        nodes = parse("module app/greeter\nimport app/user\nusing app/other\ndef polite\nend").as(Expressions)
+        nodes.expressions[0].should be_a(ModuleHeader)
+        nodes.expressions[1].should be_a(ImportDecl)
+
+        mod = nodes.expressions[2].as(ModuleDef)
+        mod.name.should eq(Path.new(["App", "Greeter"]))
+        mod.iyi_unit?.should be_true
+
+        body = mod.body.as(Expressions).expressions
+        # `extend self`, so a module-level `def` is a function of the module.
+        body[0].should be_a(Extend)
+        body[1].should be_a(UsingDecl)
+        body[2].should be_a(Def)
+      end
+
+      it "leaves a Crystal module alone" do
+        mod = parse("module Foo\nend").as(ModuleDef)
+        mod.iyi_unit?.should be_false
+      end
+
+      it_parses "import app/user", ImportDecl.new(["app", "user"])
+      it_parses "using app/greeter", UsingDecl.new(["app", "greeter"], nil)
+      it_parses "using app/greeter::{polite}", UsingDecl.new(["app", "greeter"], ["polite"])
+      it_parses "using app/greeter::{polite, Greet}", UsingDecl.new(["app", "greeter"], ["polite", "Greet"])
+      it_parses "using a/b/c", UsingDecl.new(["a", "b", "c"], nil)
+
+      assert_syntax_error "using app/greeter::polite", "expecting token '{'"
+      assert_syntax_error "using app/greeter::{}", "expected a name to bring into scope"
+      assert_syntax_error "using app/greeter::{polite,}", "expected a name to bring into scope"
+
+      # iyi: a module path segment has to survive the round trip to the type
+      # name it is reached by, `app/greeter` <-> `App::Greeter` (SPEC.md IV.6
+      # #6). `camelcase` makes an upper-case letter only where a group starts,
+      # so requiring every group to start with a letter is what makes the name
+      # splittable back into a path.
+      it "parses a module path whose segments round-trip to a type name" do
+        {
+          "app/json_parser" => ["app", "json_parser"],
+          "app/v1"          => ["app", "v1"],
+          "app/x9y"         => ["app", "x9y"],
+          "a_b_c"           => ["a_b_c"],
+        }.each do |path, segments|
+          nodes = parse("module #{path}").as(Expressions)
+          nodes.expressions[0].as(ModuleHeader).path.should eq(segments)
+        end
+      end
+
+      # `v_1` and `v1` would both be `V1`: the underscore before a digit is
+      # dropped. This is the case that makes plain snake_case insufficient.
+      assert_syntax_error "module app/v_1", "not lower-case snake_case"
+      assert_syntax_error "module app/my__greeter", "not lower-case snake_case"
+      assert_syntax_error "module app/my_", "not lower-case snake_case"
+      assert_syntax_error "module app/fooBar", "not lower-case snake_case"
+
+      # Checked at the one gate all three directives pass through.
+      assert_syntax_error "import app/v_1", "not lower-case snake_case"
+      assert_syntax_error "using app/v_1", "not lower-case snake_case"
+
+      it_parses "trait Greet\nend", TraitDef.new(Path.new(["Greet"]))
+      it_parses "pub trait Greet\nend", TraitDef.new(Path.new(["Greet"]), exported: true)
+
+      it "parses an impl" do
+        node = parse("impl Greet for User\ndef greet\nend\nend").as(ImplDef)
+        node.trait.should eq(Path.new(["Greet"]))
+        node.target.should eq(Path.new(["User"]))
+        node.type_vars.should be_nil
+      end
+
+      # iyi: `trait Ord : Eq` — a trait requiring another trait (SPEC.md II.6).
+      it "parses a supertrait" do
+        node = parse("trait Ord : Eq\nend").as(TraitDef)
+        node.supertraits.should eq([Path.new(["Eq"])] of ASTNode)
+      end
+
+      it "parses several supertraits" do
+        node = parse("trait Ord : Eq, Show\nend").as(TraitDef)
+        node.supertraits.should eq([Path.new(["Eq"]), Path.new(["Show"])] of ASTNode)
+      end
+
+      it "parses a supertrait on a trait with parameters" do
+        node = parse("trait Into(T) : Show\nend").as(TraitDef)
+        node.type_vars.should eq(["T"])
+        node.supertraits.should eq([Path.new(["Show"])] of ASTNode)
+      end
+
+      it "parses a namespaced supertrait" do
+        node = parse("trait Ord : App::Cmp::Eq\nend").as(TraitDef)
+        node.supertraits.should eq([Path.new(["App", "Cmp", "Eq"])] of ASTNode)
+      end
+
+      it "leaves a trait without supertraits alone" do
+        parse("trait Greet\nend").as(TraitDef).supertraits.should be_nil
+      end
+
+      assert_syntax_error "trait Ord :\nend", "expecting token 'CONST'"
+
+      # iyi: `type Elem` — an associated type (SPEC.md II.6).
+      it "parses an associated type declared by a trait" do
+        node = parse("trait Container\ntype Elem\nend").as(TraitDef)
+        node.assoc_types.should eq(["Elem"])
+        decl = node.body.as(AssocTypeDecl)
+        decl.name.should eq("Elem")
+        decl.value.should be_nil
+      end
+
+      it "parses the answer an impl gives" do
+        node = parse("impl Container for N\ntype Elem = String\nend").as(ImplDef)
+        node.assoc_types.should eq({"Elem" => Path.new(["String"])} of String => ASTNode)
+      end
+
+      it "leaves a trait and an impl without associated types alone" do
+        parse("trait Greet\nend").as(TraitDef).assoc_types.should be_nil
+        parse("impl Greet for User\nend").as(ImplDef).assoc_types.should be_nil
+      end
+
+      it "keeps `type` a method call outside a trait or an impl" do
+        # Crystal has no statement-level `type` outside `lib`, so this has
+        # always been a call and stays one.
+        parse("type Elem").should be_a(Call)
+      end
+
+      assert_syntax_error "trait Container\ntype Elem = String\nend",
+        "a trait declares an associated type, it does not answer it"
+      assert_syntax_error "impl Container for N\ntype Elem\nend",
+        "an impl has to answer the associated type Elem"
+      assert_syntax_error "impl Container for N\ntype Elem = String\ntype Elem = Int32\nend",
+        "duplicate associated type Elem"
+      assert_syntax_error "trait Container\ntype Elem\ntype Elem\nend",
+        "duplicate associated type Elem"
+
+      it "parses an impl of a trait with parameters" do
+        node = parse("impl Into(String) for User\nend").as(ImplDef)
+        node.trait.should eq(Path.new(["Into"]))
+        node.trait_args.should eq([Path.new(["String"])] of ASTNode)
+        node.target.should eq(Path.new(["User"]))
+      end
+
+      it "parses nested type arguments on the trait" do
+        node = parse("impl Into(Array(String)) for User\nend").as(ImplDef)
+        node.trait_args.should eq([Generic.new(Path.new(["Array"]), [Path.new(["String"])] of ASTNode)] of ASTNode)
+      end
+
+      it "leaves an impl without parameters alone" do
+        parse("impl Greet for User\nend").as(ImplDef).trait_args.should be_nil
+      end
+
+      it "parses a generic impl" do
+        node = parse("impl Show for Box(T) forall T\nend").as(ImplDef)
+        node.target.should eq(Generic.new(Path.new(["Box"]), [Path.new(["T"])] of ASTNode))
+        node.type_vars.should eq(["T"])
+        node.type_var_bounds.should be_nil
+      end
+
+      it "parses a generic impl with several parameters" do
+        node = parse("impl Show for Pair(X, Y) forall X, Y\nend").as(ImplDef)
+        node.type_vars.should eq(["X", "Y"])
+      end
+
+      it "parses bounds on a generic impl" do
+        node = parse("impl Show for Pair(X, Y) forall X : Show, Y\nend").as(ImplDef)
+        node.type_vars.should eq(["X", "Y"])
+        node.type_var_bounds.should eq({"X" => Path.new(["Show"])})
+      end
+
+      assert_syntax_error "impl Show for Box(T) forall\nend", "expecting token 'CONST'"
+      assert_syntax_error "impl Show for Box(T) forall T :\nend", "expecting token 'CONST'"
+
+      it "parses a bound on a def's free variable" do
+        node = parse("def f(x : T) forall T : Show\nend").as(Def)
+        node.free_vars.should eq(["T"])
+        node.free_var_bounds.should eq({"T" => Path.new(["Show"])})
+      end
+
+      it "parses a bound on the return type of a block parameter" do
+        # The shape the Kemal router is written in: the bound is on what the
+        # block returns, not on anything in the parameter list.
+        node = parse("def add_route(path : String, &block : Ctx -> B) : Nil forall B : IntoBody\nend").as(Def)
+        node.free_vars.should eq(["B"])
+        node.free_var_bounds.should eq({"B" => Path.new(["IntoBody"])})
+      end
+
+      it "parses a namespaced bound" do
+        node = parse("def f(x : T) forall T : App::Show::Showable\nend").as(Def)
+        node.free_var_bounds.should eq({"T" => Path.new(["App", "Show", "Showable"])})
+      end
+
+      it "parses a forall list where only some names are bounded" do
+        node = parse("def f(a : A, b : B) forall A : Show, B\nend").as(Def)
+        node.free_vars.should eq(["A", "B"])
+        node.free_var_bounds.should eq({"A" => Path.new(["Show"])})
+      end
+
+      it "leaves an unbounded forall alone" do
+        node = parse("def f(x : T) forall T\nend").as(Def)
+        node.free_vars.should eq(["T"])
+        node.free_var_bounds.should be_nil
+      end
+
+      assert_syntax_error "def f(x : T) forall T :\nend", "expecting token 'CONST'"
+
+      # iyi: `where Elem : Comparable` — a bound on a name the method did not
+      # introduce (SPEC.md II.6).
+      it "parses a where bound" do
+        node = parse("def max : Elem where Elem : Comparable\nend").as(Def)
+        node.where_bounds.should eq({"Elem" => Path.new(["Comparable"])} of String => ASTNode)
+        node.free_vars.should be_nil
+      end
+
+      it "parses several where bounds" do
+        node = parse("def go : Nil where Elem : Show, Key : Hashable\nend").as(Def)
+        node.where_bounds.should eq({
+          "Elem" => Path.new(["Show"]),
+          "Key"  => Path.new(["Hashable"]),
+        } of String => ASTNode)
+      end
+
+      it "parses a namespaced where bound" do
+        node = parse("def go : Nil where Elem : App::Show::Showable\nend").as(Def)
+        node.where_bounds.should eq({"Elem" => Path.new(["App", "Show", "Showable"])} of String => ASTNode)
+      end
+
+      it "parses forall and where on the same def" do
+        # They do different jobs: `forall` introduces U, `where` bounds Elem,
+        # which the enclosing trait introduced.
+        node = parse("def both(x : U) : U forall U where Elem : Cmp\nend").as(Def)
+        node.free_vars.should eq(["U"])
+        node.where_bounds.should eq({"Elem" => Path.new(["Cmp"])} of String => ASTNode)
+      end
+
+      it "leaves a def without where bounds alone" do
+        parse("def f\nend").as(Def).where_bounds.should be_nil
+      end
+
+      assert_syntax_error "def go : Nil where Elem : Cmp, Elem : Cmp\nend",
+        "duplicate `where` bound for Elem"
+      assert_syntax_error "def go : Nil where Elem\nend", "expecting token ':'"
+      assert_syntax_error "def go : Nil where\nend", "expecting token 'CONST'"
+
+      # `!` is not part of a name in iyi (SPEC III.1.7, decision A), so that
+      # postfix `!` is free to mean error propagation. The mode comes from the
+      # file extension: the very same source stays legal Crystal.
+      it "rejects `!` at the end of a def name" do
+        # The one place the naming convention is still explained: after a `def`
+        # name there is nothing to propagate, so a stray-token error would be
+        # useless to whoever wrote a Crystal-style mutating name.
+        expect_raises(SyntaxException, "`!` can't be part of a name in iyi") do
+          parse("def sort!\nend", filename: "x.iyi")
+        end
+      end
+
+      it "rejects `!` at the end of a def name with a receiver" do
+        expect_raises(SyntaxException, "`!` can't be part of a name in iyi") do
+          parse("def self.sort!\nend", filename: "x.iyi")
+        end
+      end
+
+      # iyi: `expr!` — the propagation operator the name was freed for
+      # (SPEC.md III.1.2). At a call site `!` is now the operator, which is the
+      # whole reason it was taken out of names.
+      it "reads `!` after a call as propagation" do
+        node = parse("a.sort!", filename: "x.iyi").as(Propagate)
+        node.exp.should be_a(Call)
+        node.exp.as(Call).name.should eq("sort")
+      end
+
+      it "reads `!` after a call with arguments" do
+        parse("read(path)!", filename: "x.iyi").as(Propagate).exp.as(Call).name.should eq("read")
+      end
+
+      it "chains a method onto a propagated value" do
+        node = parse("read(path)!.strip", filename: "x.iyi").as(Call)
+        node.name.should eq("strip")
+        node.obj.should be_a(Propagate)
+      end
+
+      it "propagates twice in one expression" do
+        node = parse("parse(read(path)!)!", filename: "x.iyi").as(Propagate)
+        node.exp.as(Call).args[0].should be_a(Propagate)
+      end
+
+      it "leaves `!` with a space before it as the unary operator" do
+        # `f !x` has always meant `f(!x)`, and still does: only an attached
+        # `!` propagates.
+        node = parse("f !x", filename: "x.iyi").as(Call)
+        node.name.should eq("f")
+        node.args[0].should be_a(Not)
+      end
+
+      it "leaves a Crystal file's `!` alone" do
+        parse("a.sort!", filename: "x.cr").as(Call).name.should eq("sort!")
+      end
+
+      it "keeps `!` in a name in a Crystal file" do
+        parse("def sort!\nend", filename: "x.cr").as(Def).name.should eq("sort!")
+      end
+
+      it "leaves the other uses of `!` and `?` alone" do
+        parse("!a", filename: "x.iyi").should eq(Not.new("a".call))
+        parse("a != b", filename: "x.iyi").as(Call).name.should eq("!=")
+        parse("a.empty?", filename: "x.iyi").as(Call).name.should eq("empty?")
+      end
+
+      # iyi: `.or(default)` and `.or_panic` (SPEC.md III.1.3). Recognised by
+      # name rather than dispatched, because by II.1 an ordinary call on
+      # `Int32 | ConfigError` would demand the method from *both* members.
+      it "reads `.or` as recovery" do
+        node = parse("read(path).or(8080)", filename: "x.iyi").as(Recover)
+        node.exp.as(Call).name.should eq("read")
+        node.default.should eq(8080.int32)
+        node.panic?.should be_false
+      end
+
+      it "reads `.or_panic` as recovery with no default" do
+        node = parse("read(path).or_panic", filename: "x.iyi").as(Recover)
+        node.exp.as(Call).name.should eq("read")
+        node.default.should be_nil
+        node.panic?.should be_true
+      end
+
+      it "accepts empty parentheses after `.or_panic`" do
+        parse("read(path).or_panic()", filename: "x.iyi").as(Recover).panic?.should be_true
+      end
+
+      it "requires a default in parentheses after `.or`" do
+        expect_raises(SyntaxException, "`.or` takes the default to use when the value is an error") do
+          parse("read(path).or 8080", filename: "x.iyi")
+        end
+      end
+
+      it "chains a method onto a recovered value" do
+        node = parse("read(path).or(8080).to_s", filename: "x.iyi").as(Call)
+        node.name.should eq("to_s")
+        node.obj.should be_a(Recover)
+      end
+
+      it "recovers from a propagated value" do
+        parse("read(path)!.or(8080)", filename: "x.iyi").as(Recover).exp.should be_a(Propagate)
+      end
+
+      it "writes recovery back the way it was written" do
+        parse("read(path).or(8080)", filename: "x.iyi").to_s.should eq("read(path).or(8080)")
+        parse("read(path).or_panic", filename: "x.iyi").to_s.should eq("read(path).or_panic")
+      end
+
+      # iyi: `method_missing` is gone (SPEC.md III.3). It needs a method set
+      # open to names nobody declared, and R-3 closes that by construction.
+      it "rejects `macro method_missing`" do
+        expect_raises(SyntaxException, "`method_missing` doesn't exist in iyi") do
+          parse("macro method_missing(call)\n  0\nend", filename: "x.iyi")
+        end
+      end
+
+      it "rejects `macro method_missing` inside a type" do
+        expect_raises(SyntaxException, "`method_missing` doesn't exist in iyi") do
+          parse("struct Ghost\n  macro method_missing(call)\n    0\n  end\nend", filename: "x.iyi")
+        end
+      end
+
+      it "leaves other macros and other hooks alone" do
+        parse("macro gen\n  0\nend", filename: "x.iyi").as(Macro).name.should eq("gen")
+        parse("macro finished\n  0\nend", filename: "x.iyi").as(Macro).name.should eq("finished")
+      end
+
+      it "keeps `method_missing` in a Crystal file" do
+        parse("macro method_missing(call)\n  0\nend", filename: "x.cr").as(Macro).name.should eq("method_missing")
+      end
+
+      # iyi: `defer` (SPEC.md III.1.4). Recognised by name, so it is reserved in
+      # an iyi program and only there.
+      it "reads `defer`" do
+        node = parse("defer f.close", filename: "x.iyi").as(Defer)
+        node.exp.as(Call).name.should eq("close")
+      end
+
+      it "writes `defer` back the way it was written" do
+        parse("defer f.close", filename: "x.iyi").to_s.should eq("defer f.close")
+      end
+
+      it "refuses `!` inside a `defer`" do
+        # A `defer` runs while the scope is already being left, possibly
+        # carrying an error of its own — Appendix B #7.
+        expect_raises(SyntaxException, "`!` can't propagate out of a `defer`") do
+          parse("defer close(f)!", filename: "x.iyi")
+        end
+      end
+
+      it "still propagates after the `defer` body has been parsed" do
+        node = parse("defer f.close\nread(p)!", filename: "x.iyi").as(Expressions)
+        node.expressions[0].should be_a(Defer)
+        node.expressions[1].should be_a(Propagate)
+      end
+
+      it "leaves a Crystal file's `defer` as an ordinary name" do
+        parse("defer = 7", filename: "x.cr").as(Assign).target.as(Var).name.should eq("defer")
+        parse("defer f.close", filename: "x.cr").as(Call).name.should eq("defer")
+      end
+
+      # iyi: `it` in a `case` branch (SPEC.md III.1.1). The parser is what has to
+      # know, because this is where an identifier is decided to be a variable
+      # rather than a call.
+      it "reads `it` in a case branch as a variable" do
+        node = parse("case x\nin Int32 then it\nend", filename: "x.iyi").as(Case)
+        node.binds_it?.should be_true
+        node.whens[0].body.should be_a(Var)
+      end
+
+      it "reads `it` in a `when` branch and in the else" do
+        node = parse("case x\nwhen Int32 then it\nelse it\nend", filename: "x.iyi").as(Case)
+        node.whens[0].body.should be_a(Var)
+        node.else.should be_a(Var)
+      end
+
+      it "leaves `it` alone where a case has a tuple subject" do
+        # No single value to name, so it is left a call rather than given one of
+        # the elements.
+        node = parse("case {a, b}\nin {Int32, Int32} then it\nend", filename: "x.iyi").as(Case)
+        node.binds_it?.should be_false
+        node.whens[0].body.should be_a(Call)
+      end
+
+      it "leaves `it` alone in a case with no subject" do
+        node = parse("case\nwhen a then it\nend", filename: "x.iyi").as(Case)
+        node.binds_it?.should be_false
+        node.whens[0].body.should be_a(Call)
+      end
+
+      it "leaves a Crystal file's `it` as an ordinary call" do
+        node = parse("case x\nwhen Int32 then it\nend", filename: "x.cr").as(Case)
+        node.binds_it?.should be_false
+        node.whens[0].body.should be_a(Call)
+      end
+
+      it "leaves a Crystal file's `.or` as an ordinary call" do
+        # The gate really is the file extension: nothing here reserves the name
+        # for a program that never asked for iyi.
+        node = parse("read(path).or(8080)", filename: "x.cr").as(Call)
+        node.name.should eq("or")
+        node.args[0].should eq(8080.int32)
+        parse("read(path).or_panic", filename: "x.cr").as(Call).name.should eq("or_panic")
+      end
+    end
   end
 end

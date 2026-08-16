@@ -19,10 +19,78 @@ class Crystal::CodeGenVisitor
 
   def target_def_fun(target_def, self_type) : LLVMTypedFunction
     mangled_name = target_def.mangled_name(@program, self_type)
+
+    # iyi: a method that takes a block is instantiated with the caller's block
+    # inlined into it, so its machine code belongs to whoever wrote the block
+    # and not to the module that declared the method (SPEC.md IV.1g).
+    #
+    # Emitted here, private to this unit, and so absent from the artifact —
+    # which is what the consumer needs, because it makes its own from the body
+    # that travels in `MonoBodies`. Left in the module's own unit it was a
+    # duplicate symbol for a block the producer happened to write, and a
+    # missing one for every block it did not.
+    if iyi_block_instantiated?(target_def, self_type)
+      here = ModuleInfo.new(@llvm_mod, @llvm_typer, self.builder)
+      func = typed_fun?(@llvm_mod, mangled_name) ||
+             codegen_fun(mangled_name, target_def, self_type, fun_module_info: here, iyi_internal: true)
+      return check_mod_fun @llvm_mod, mangled_name, func
+    end
+
+    # iyi: while emitting code for a module whose `.iyimod` is being written, a
+    # callee that module does not own is *copied* into the module's own unit
+    # with internal linkage, rather than left as a reference to a unit the
+    # artifact does not carry (SPEC.md IV.1g).
+    #
+    # `String::interpolation<String, String, String>` is the case: it lives in
+    # the prelude's `String` unit, and the consumer's own `String` unit holds
+    # whatever the consumer instantiated, which need not include it. Carrying
+    # the producer's `String` unit instead would define symbols the consumer
+    # also defines, which the linker refuses; a private copy conflicts with
+    # nothing. The price is duplication — each module carries its own copy —
+    # and one consequence worth knowing: a proc taken to such a function has a
+    # different address on each side of the boundary.
+    if host = iyi_closure_host(self_type)
+      func = typed_fun?(host.mod, mangled_name) ||
+             codegen_fun(mangled_name, target_def, self_type, fun_module_info: host, iyi_internal: true)
+      return check_mod_fun host.mod, mangled_name, func
+    end
+
     self_type_mod = type_module(self_type).mod
 
     func = typed_fun?(self_type_mod, mangled_name) || codegen_fun(mangled_name, target_def, self_type)
     check_mod_fun self_type_mod, mangled_name, func
+  end
+
+  # iyi: whether this def's machine code is the caller's rather than the
+  # module's — a block-taking method of a module whose artifact is being
+  # written (SPEC.md IV.1g).
+  private def iyi_block_instantiated?(target_def, self_type) : Bool
+    return false if @program.iyi_exported_owners.empty?
+    return false unless target_def.block_arg || target_def.block_arity
+    @program.iyi_exported_owners.includes?(self_type.instance_type)
+  end
+
+  # The unit a callee should be copied into, or nil to route it normally.
+  #
+  # Nil unless this build is writing artifacts and is currently emitting code
+  # that will travel in one. A callee the emitting module *does* own routes
+  # normally, because its own unit travels in the artifact too.
+  private def iyi_closure_host(self_type) : ModuleInfo?
+    host = @iyi_closure_host
+    return nil unless host
+    return nil if @program.iyi_exported_owners.includes?(self_type.instance_type)
+    host
+  end
+
+  # The unit that callees of a function on *self_type* should close into.
+  #
+  # Emitting a module's own method opens a closure at that method's unit;
+  # emitting a copy already inside one keeps it, so the closure is transitive —
+  # a copied prelude method's own callees are copied alongside it.
+  private def iyi_closure_host_for(self_type, fun_module_info) : ModuleInfo?
+    return nil if @program.iyi_exported_owners.empty?
+    return fun_module_info if @program.iyi_exported_owners.includes?(self_type.instance_type)
+    @iyi_closure_host
   end
 
   def main_fun(name)
@@ -61,7 +129,7 @@ class Crystal::CodeGenVisitor
     typed_fun
   end
 
-  def codegen_fun(mangled_name, target_def, self_type, is_exported_fun = false, fun_module_info = type_module(self_type), is_fun_literal = false, is_closure = false)
+  def codegen_fun(mangled_name, target_def, self_type, is_exported_fun = false, fun_module_info = type_module(self_type), is_fun_literal = false, is_closure = false, iyi_internal = false)
     old_position = insert_block
     old_entry_block = @entry_block
     old_alloca_block = @alloca_block
@@ -74,6 +142,7 @@ class Crystal::CodeGenVisitor
     old_builder = self.builder
     old_debug_location = @current_debug_location
     old_fun = context.fun
+    old_iyi_closure_host = @iyi_closure_host
 
     old_needs_value = @needs_value
 
@@ -91,10 +160,45 @@ class Crystal::CodeGenVisitor
       @rescue_block = nil
       @catch_pad = nil
       @needs_value = true
+      @iyi_closure_host = iyi_closure_host_for(self_type, fun_module_info)
 
       args = codegen_fun_signature(mangled_name, target_def, self_type, is_fun_literal, is_closure)
 
-      needs_body = !target_def.is_a?(External) || is_exported_fun
+      # iyi: a def read from a `.iyimod` is declared, not defined (SPEC.md
+      # IV.1g). Its machine code is in the artifact's `ObjectCode` and reaches
+      # the program through the linker, so what this build emits is the
+      # signature and nothing under it — the same shape a `lib` function takes,
+      # and for the same reason: the body is somebody else's.
+      #
+      # The type it is written on answers the same question for the methods
+      # that arrived as headers. Two things on such a type are still this
+      # build's to compile, and both are here because a body travelled: the def
+      # that carried it — `Router#get` takes a block, so the producer emitted
+      # no symbol for it — and a proc literal written inside that body, whose
+      # `self` is the artifact's type and whose code was never anywhere else.
+      compiled_elsewhere = self_type.instance_type.iyi_from_artifact? &&
+                           !target_def.iyi_body_travelled? &&
+                           !is_fun_literal
+
+      needs_body = (!target_def.is_a?(External) || is_exported_fun) &&
+                   !target_def.iyi_from_artifact? &&
+                   !compiled_elsewhere
+
+      # iyi: a copy, private to the unit that will travel in the artifact.
+      #
+      # Only where there is a body to copy, because internal linkage on a
+      # declaration is invalid IR. Two kinds of declaration reach here. A C
+      # function is one whoever asks — `write` and `exit` do, from the
+      # prelude's own `puts` — and the linker resolves it from libc for the
+      # artifact as it does for anyone else. And a def read from another
+      # module's `.iyimod` is the other, which is what a build that reads one
+      # artifact while compiling another module from source hits: its machine
+      # code is in *that* module's artifact, so this unit refers to it by name
+      # and defines nothing.
+      if iyi_internal && needs_body
+        context.fun.linkage = LLVM::Linkage::Internal
+      end
+
       if needs_body
         emit_def_debug_metadata target_def unless @debug.none?
         set_current_debug_location target_def if @debug.line_numbers?
@@ -205,6 +309,7 @@ class Crystal::CodeGenVisitor
       @entry_block = old_entry_block
       @alloca_block = old_alloca_block
       @needs_value = old_needs_value
+      @iyi_closure_host = old_iyi_closure_host
 
       if @debug.line_numbers?
         # set_current_debug_location associates a scope from the current fun,

@@ -1,4 +1,11 @@
-require "llvm"
+# iyi: a front-end build links no LLVM, because linking it costs 0.026 s of
+# load-time initialisers whether or not anything generates code — see
+# `llvm_shim.cr`.
+{% if flag?(:without_llvm) %}
+  require "./llvm_shim"
+{% else %}
+  require "llvm"
+{% end %}
 require "json"
 require "./types"
 require "crystal/digest/md5"
@@ -71,6 +78,191 @@ module Crystal
     # All required files. The set stores absolute files. This way
     # files loaded by `require` nodes are only processed once.
     getter requires = Set(String).new
+
+    # iyi: the imported modules of the program, in the order their initialisers
+    # must run (SPEC.md III.5 rule 1).
+    #
+    # `import` fills this rather than expanding the module where it was
+    # written, so a module's top-level code is held apart from the site that
+    # imported it and the compiler is the one that decides when it runs.
+    # `top_level_semantic` empties it into the tree.
+    property iyi_module_inits = [] of ASTNode
+
+    # iyi: the files whose module has runnable code the artifact **cannot**
+    # carry, by absolute filename (SPEC.md III.5, IV.1g).
+    #
+    # A module's own top level travels (see `iyi_module_initialiser_source`).
+    # A class variable's initialiser does not: it belongs to the type rather
+    # than to the module, and nothing in the artifact holds it. A codegen build
+    # reading such an artifact is refused rather than given a module that half
+    # sets itself up.
+    getter iyi_module_initialisers = Set(String).new
+
+    # iyi: each module's own top-level code as source text, by absolute
+    # filename (SPEC.md III.5, IV.1g).
+    #
+    # `iyi_module_inits` holds the nodes and is emptied into the tree by the
+    # top-level pass; this survives it, because an artifact is written later
+    # and the initialiser is the one part of a module that is not a
+    # declaration and has to run anyway. The consumer parses it back into the
+    # module's own namespace and it takes its place in III.5's DAG order like
+    # any other module's, because that order is over modules and not over text.
+    getter iyi_module_initialiser_source = {} of String => String
+
+    # iyi: which modules each file imports, by absolute filename (SPEC.md
+    # III.5 rule 2). `iyi_module_inits` is one order the DAG allows; these are
+    # the edges, which is what makes every *other* order it allows computable.
+    getter iyi_module_imports = {} of String => Array(String)
+
+    # iyi: the module path each imported file was named by, e.g.
+    # `/…/app/greeter.iyi => "app/greeter"`. The edges above are keyed on
+    # filenames because that is what load-once is keyed on; a `.iyimod` names
+    # modules, so it needs the way back (SPEC.md IV.1).
+    getter iyi_module_paths = {} of String => String
+
+    # iyi: the same, for a module that arrived as an artifact — keyed by the
+    # `.iyimod`'s own path (SPEC.md IV.1).
+    #
+    # Two hashes rather than one because they answer different questions.
+    # `iyi_module_paths` is the set `--emit-iyimod` writes from, and a module
+    # read from a `.iyimod` must not be in it: it already has an artifact and
+    # this build has not seen enough of it to write another. But the import
+    # edges are keyed on filenames whichever way the module arrived, so naming
+    # those edges needs the way back for both — without this, an artifact's
+    # `Imports` section records `mods/std/list.iyimod` where it means
+    # `std/list`.
+    getter iyi_artifact_modules = {} of String => String
+
+    # iyi: where to look for a `.iyimod` before falling back to a module's
+    # source, or nil (SPEC.md IV.1). Set by `--use-iyimod`.
+    property iyi_module_dir : String? = nil
+
+    # iyi: whether this build is writing artifacts as well as reading them
+    # (SPEC.md IV.3). Set by the compiler from `--emit-iyimod`.
+    #
+    # It decides what a *stale* artifact means. A build that only reads them
+    # asked to be compiled against artifacts, so one that no longer describes
+    # its module is an error that names what changed — quietly compiling the
+    # source instead would make such a build slower than it looks and prove
+    # nothing. A build that also writes them is the incremental loop itself:
+    # there, recompiling the module and rewriting its artifact is the whole
+    # point.
+    property iyi_rewrites_artifacts : Bool = false
+
+    # iyi: what each module read from a `.iyimod` hashed to (SPEC.md IV.3), by
+    # module path.
+    #
+    # Kept because an artifact this build *writes* records, for each module it
+    # imports, what that module hashed to — and a dependency may itself have
+    # arrived as an artifact rather than from source.
+    getter iyi_artifact_hashes = {} of String => IyiMod::Hashes
+
+    # iyi: why a module's artifact is not the module any more, or nil if it
+    # still is (SPEC.md IV.3). Memoised, because the answer for one module is
+    # part of the answer for everything that imports it.
+    getter iyi_artifact_staleness = {} of String => String?
+
+    # iyi: whether an imported artifact's `ObjectCode` is worth reading.
+    #
+    # False for a front-end-only build, which is most of them: the section is
+    # the largest thing in the file and a build that generates no code has no
+    # use for it, so it is seeked past. Set by the compiler from `--no-codegen`.
+    property iyi_wants_object_code : Bool = false
+
+    # iyi: the object files each imported artifact carried, by module path
+    # (SPEC.md IV.1g). What the linker is given in place of the code this build
+    # did not generate, because it never saw the bodies.
+    getter iyi_artifact_objects = {} of String => Array(IyiMod::ObjectUnit)
+
+    # iyi: types whose methods must be emitted as real functions because their
+    # module's `.iyimod` is being written (SPEC.md IV.1g).
+    #
+    # Codegen inlines a method whose body is a literal and emits no symbol for
+    # it. That is right for a whole-program build and wrong for a module that
+    # somebody else will link against: the consumer has no body to inline and
+    # calls the symbol, which the artifact then turns out not to define. Empty
+    # unless `--emit-iyimod` asked for artifacts.
+    getter iyi_exported_owners = Set(Type).new
+
+    # iyi: the types each object-code unit refers to a type id of, by unit name
+    # (SPEC.md IV.1g).
+    #
+    # A type id is an external reference — the number is the program's, not the
+    # module's — so a unit that travels in an artifact leaves `Array(Item):
+    # type_id` undefined and the consumer's `_main` defines it. It can only
+    # define ids for types it *has*, and `Array(Item)` exists in the producing
+    # build because of a body that stays behind. So which ones a unit refers to
+    # has to be collected here and carried, or the consumer has no way to know
+    # the type was ever wanted. Empty unless `--emit-iyimod` asked for
+    # artifacts.
+    getter iyi_unit_type_ids = {} of String => Set(Type)
+
+    # iyi: the constants each object-code unit reads, by unit name (SPEC.md
+    # IV.1g).
+    #
+    # A constant is initialised only if something *read* it — `codegen_assign`
+    # asks `const.used?` — and what reads a module's constant on the far side of
+    # an artifact is the module's own machine code, which the consumer's
+    # semantic pass never sees. So `kemal/dsl`'s unit called through
+    # `Kemal::Dsl::APP` from every exported method and nothing defined it. The
+    # names travel and the consumer marks them used, which puts them back on the
+    # ordinary path: the initialiser is already spliced in III.5's order, so it
+    # runs where it should. Empty unless `--emit-iyimod` asked for artifacts.
+    getter iyi_unit_constants = {} of String => Set(Const)
+
+    # iyi: the `using` directives each file's module unit writes, by absolute
+    # filename and as written (SPEC.md II.3).
+    #
+    # In the artifact because a signature is stored as the annotation the
+    # author wrote, and an annotation is written in a context: `pub def
+    # handle(ctx : Context)` means what it means because of a `using` further
+    # up the file. Carrying the annotation without the context that resolves it
+    # was enough for `std/list`, whose signatures name only its own types, and
+    # not for the Kemal port, whose first exported signature names an imported
+    # one.
+    getter iyi_usings = {} of String => Array(String)
+
+    # iyi: the method bodies each file's module has to ship, by absolute
+    # filename and then by `IyiMod.mono_body_key` (SPEC.md IV.2, `MonoBodies`).
+    #
+    # A body travels when the consumer is the one that has to compile it: a
+    # method of a generic type, which exists once per instantiation and the
+    # instantiations are the consumer's, and a trait's default method, which is
+    # stencilled onto the implementing type and so has no symbol any producer
+    # could have emitted. Everything else stays behind and arrives as machine
+    # code in `ObjectCode`.
+    getter iyi_mono_bodies = {} of String => Hash(String, String)
+
+    # iyi: the macros each file declares, as source text, by absolute filename
+    # (SPEC.md IV.1, `MacroBodies`).
+    #
+    # A macro is not code that runs, so nothing about it can arrive as machine
+    # code — and a body that travels may call one. `run` takes a block, so the
+    # consumer compiles it; if `run` writes `twice(n)` and `twice` is a macro
+    # this module declared, the consumer has the call and not the macro, and
+    # the artifact is refused on a name the module has.
+    getter iyi_macro_bodies = {} of String => Array(String)
+
+    # iyi: the `(Trait, Type)` pairs each file provides, by absolute filename
+    # (SPEC.md IV.2, "Impl records").
+    #
+    # Collected as they are declared rather than recovered afterwards, because
+    # an impl leaves no record of its own: it works by making the target type
+    # include the trait, and by the time analysis is over that is
+    # indistinguishable from any other ancestor.
+    getter iyi_impls = {} of String => Array(IyiMod::ImplRecord)
+
+    # iyi: the type a module path denotes — `"app/greeter"` to `App::Greeter`.
+    #
+    # Resolved by segment rather than remembered, which is only safe because
+    # IV.6 #6 made the path-to-name mapping injective: two module paths cannot
+    # denote one type, so this lookup cannot answer for the wrong module.
+    def iyi_module_type(module_path : String) : ModuleType?
+      module_path.split('/').reduce(self.as(ModuleType?)) do |scope, segment|
+        return nil unless scope
+        scope.types?.try(&.[]?(segment.camelcase)).as?(ModuleType)
+      end
+    end
 
     # All created unions in a program, indexed by an array of opaque
     # ids of each type in the union. The array (the key) is sorted
@@ -153,7 +345,17 @@ module Crystal
 
     getter predefined_constants = Array(Const).new
 
-    property compiler : Compiler?
+    # iyi: absent from a front-end build — a `Compiler` is the driver that
+    # generates code, and this is the binary that does not (see `llvm_shim.cr`).
+    # The passes that reach for it do so through `try`, so there it is nil
+    # rather than missing.
+    {% if flag?(:without_llvm) %}
+      def compiler : Nil
+        nil
+      end
+    {% else %}
+      property compiler : Compiler?
+    {% end %}
 
     property optimization_mode = Compiler::OptimizationMode::O0
 
@@ -283,6 +485,17 @@ module Crystal
       types["Experimental"] = @experimental_annotation = AnnotationType.new self, self, "Experimental"
       types["TargetFeature"] = @target_feature_annotation = AnnotationType.new self, self, "TargetFeature"
 
+      # iyi: the marker that makes a union member an error member (SPEC.md
+      # III.1.1). Created here rather than declared in the prelude because the
+      # compiler has to recognise this exact trait — `!`, `.or` and `.or_panic`
+      # all ask whether a member implements it — and a name the prelude happened
+      # to define could be shadowed or replaced. Nothing else about it is
+      # special: it is an ordinary trait, implemented with an ordinary `impl`.
+      types["Error"] = @error_trait = TraitType.new self, self, "Error"
+      error_message = Def.new("message", return_type: Path.global(["String"]))
+      error_message.abstract = true
+      error_trait.add_def error_message
+
       define_crystal_constants
 
       # definition in `macros/types.cr`
@@ -378,7 +591,34 @@ module Crystal
       const
     end
 
-    property(target_machine : LLVM::TargetMachine) { codegen_target.to_target_machine }
+    # iyi: `sizeof` and its neighbours are answered from LLVM's data layout,
+    # which a front-end build has no library to ask. They live in `codegen.cr`
+    # with the typer that answers them, so without it they are simply absent —
+    # and the semantic pass calls them for a program that writes `sizeof`.
+    #
+    # Nothing in iyi's prelude or samples does. So this says what it cannot do,
+    # where a wrong number would travel into a constant and be believed. See
+    # `llvm_shim.cr`.
+    {% if flag?(:without_llvm) %}
+      {% for query in %w(size_of instance_size_of align_of instance_align_of) %}
+        def {{ query.id }}(type)
+          raise Crystal::Error.new("`{{ query.id }}` is answered from a data layout, and this compiler links no LLVM to hold one")
+        end
+      {% end %}
+
+      {% for query in %w(offset_of instance_offset_of) %}
+        def {{ query.id }}(type, element_index)
+          raise Crystal::Error.new("`{{ query.id }}` is answered from a data layout, and this compiler links no LLVM to hold one")
+        end
+      {% end %}
+    {% end %}
+
+    # iyi: absent from a front-end build, which is the point of one — a target
+    # machine is LLVM's, and the passes that ask for it are codegen's. The one
+    # exception outside codegen is an AVR flag; see `semantic/flags.cr`.
+    {% unless flag?(:without_llvm) %}
+      property(target_machine : LLVM::TargetMachine) { codegen_target.to_target_machine }
+    {% end %}
 
     def codegen_target=(@codegen_target : Codegen::Target) : Codegen::Target
       crystal.types["TARGET_TRIPLE"].as(Const).value.as(StringLiteral).value = codegen_target.to_s
@@ -568,7 +808,8 @@ module Crystal
                      packed_annotation thread_local_annotation no_inline_annotation target_feature_annotation
                      always_inline_annotation naked_annotation returns_twice_annotation
                      raises_annotation primitive_annotation call_convention_annotation
-                     flags_annotation link_annotation extern_annotation deprecated_annotation experimental_annotation) %}
+                     flags_annotation link_annotation extern_annotation deprecated_annotation experimental_annotation
+                     error_trait) %}
       def {{name.id}}
         @{{name.id}}.not_nil!
       end

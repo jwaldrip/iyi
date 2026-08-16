@@ -42,6 +42,15 @@ module Crystal
     def transform(node : Expressions)
       exps = [] of ASTNode
       node.expressions.each do |exp|
+        # iyi: a `defer` is left standing here on purpose. What it defers past
+        # is everything after it in *this* list, which is only known once the
+        # list is complete — see `apply_defers` below.
+        if exp.is_a?(Defer)
+          exp.exp = exp.exp.transform(self)
+          exps << exp
+          next
+        end
+
         new_exp = exp.transform(self)
         if new_exp
           if new_exp.is_a?(Expressions)
@@ -52,6 +61,7 @@ module Crystal
         end
         break if @dead_code
       end
+      exps = apply_defers(exps)
       case exps.size
       when 0
         Nop.new
@@ -59,6 +69,61 @@ module Crystal
         node.expressions = exps
         node
       end
+    end
+
+    # iyi: `defer` — cleanup that runs however the scope is left
+    # (SPEC.md III.1.4).
+    #
+    # From:
+    #
+    #     a
+    #     defer x
+    #     b
+    #
+    # To:
+    #
+    #     a
+    #     begin
+    #       b
+    #     ensure
+    #       x
+    #     end
+    #
+    # `ensure` already runs on a normal exit, on a `return` through it, and on
+    # an unwind — which is the whole of what III.1.4 asks for, because `!`
+    # expands to a `return` (III.1.2) and a panic is currently a raise. So this
+    # needs no new machinery at all; it needs the *shape* changed, because
+    # `begin`/`ensure` makes you wrap everything after the acquisition while
+    # `defer` names the cleanup at the acquisition.
+    #
+    # **LIFO falls out of the nesting.** A second `defer` is expanded inside the
+    # first one's body, so its `ensure` is the inner one and runs first — the
+    # reverse of acquisition order, which is the only order that can be right
+    # when a later resource was built from an earlier one.
+    #
+    # **The scope is the block, not the function.** This is a deliberate
+    # departure from Go, and it is the shape of the lowering rather than an
+    # extra rule: a `defer` in a loop body runs at the end of each iteration
+    # instead of piling up until the function returns, which is Go's
+    # best-known wart with the feature.
+    private def apply_defers(exps : Array(ASTNode)) : Array(ASTNode)
+      index = exps.index { |exp| exp.is_a?(Defer) }
+      return exps unless index
+
+      deferred = exps[index].as(Defer)
+      rest = apply_defers(exps[(index + 1)..])
+      handler = ExceptionHandler.new(rest, ensure: deferred.exp).at(deferred)
+
+      head = exps[0...index]
+      head << handler
+      head
+    end
+
+    # A `defer` that is not one of several expressions — the whole of a body,
+    # say — has nothing after it to defer past, so all that is left of it is
+    # the cleanup itself, still guarded so that it runs on an unwind.
+    def transform(node : Defer)
+      ExceptionHandler.new(Nop.new, ensure: node.exp.transform(self)).at(node)
     end
 
     def transform(node : Call)
@@ -183,6 +248,92 @@ module Crystal
     #     else
     #       bar
     #     end
+    # iyi: `read(path)!` — propagate an error member (SPEC.md III.1.2).
+    #
+    # From:
+    #
+    #     read(path)!
+    #
+    # To:
+    #
+    #     tmp = read(path)
+    #     return tmp if tmp.is_a?(::Error)
+    #     tmp
+    #
+    # No type information is needed here, and that is the point. `Error` is an
+    # ordinary trait, so `is_a?` narrows the value in what follows to the
+    # union's non-error members — which is exactly "if the value is a non-error
+    # member, `expr!` evaluates to it". And "the enclosing function's return
+    # type must already include E" is not a rule this has to enforce: it is the
+    # ordinary return-type check on the `return` it just wrote.
+    #
+    # `::Error` rather than `Error`, so that a module of its own with that name
+    # cannot change what the operator means.
+    def transform(node : Propagate)
+      exp = node.exp.transform(self)
+      temp_var = program.new_temp_var
+
+      assign = Assign.new(temp_var.clone, exp).at(node)
+      check = IsA.new(temp_var.clone, Path.global(["Error"]).at(node)).at(node)
+      check.error_construct = "!"
+      returned = Return.new(temp_var.clone).at(node)
+      returned.from_propagate = true
+      propagate = If.new(check, returned).at(node)
+
+      Expressions.new([assign, propagate, temp_var.clone] of ASTNode).at(node)
+    end
+
+    # iyi: `read_port().or(8080)` and `read_port().or_panic` (SPEC.md III.1.3).
+    #
+    # From:
+    #
+    #     read_port().or(8080)          read_port().or_panic
+    #
+    # To:
+    #
+    #     tmp = read_port()             tmp = read_port()
+    #     if tmp.is_a?(::Error)         if tmp.is_a?(::Error)
+    #       8080                          ::raise tmp.message
+    #     else                          else
+    #       tmp                           tmp
+    #     end                           end
+    #
+    # Same trick as `Propagate` above, and for the same reason: `is_a?` already
+    # narrows both ways, so the result type falls out instead of being computed.
+    # `.or` yields the default unioned with the non-error members; `.or_panic`
+    # yields the non-error members alone, because `raise` is `NoReturn`.
+    #
+    # `tmp.message` is only reached where `tmp` has been narrowed to the error
+    # members, and every one of those implements `Error` — so by II.1 the union
+    # implements it too and `message` dispatches without either branch of this
+    # having to know which error it holds.
+    #
+    # The default is evaluated only when there is an error to recover from,
+    # which is what a reader of `||` would expect.
+    #
+    # `::raise` is a stand-in: panics (III.1.4) are not built yet, so the
+    # "unwrap of this design" currently unwinds as a Crystal exception. When
+    # panics land, this is the one line that changes.
+    def transform(node : Recover)
+      exp = node.exp.transform(self)
+      temp_var = program.new_temp_var
+
+      assign = Assign.new(temp_var.clone, exp).at(node)
+      check = IsA.new(temp_var.clone, Path.global(["Error"]).at(node)).at(node)
+      check.error_construct = node.panic? ? ".or_panic" : ".or"
+
+      recovery =
+        if default = node.default
+          default.transform(self)
+        else
+          Call.global("raise", Call.new(temp_var.clone, "message").at(node)).at(node)
+        end
+
+      value = If.new(check, recovery, temp_var.clone).at(node)
+
+      Expressions.new([assign, value] of ASTNode).at(node)
+    end
+
     def transform(node : Unless)
       If.new(node.cond, node.else, node.then).transform(self).at(node)
     end

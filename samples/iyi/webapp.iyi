@@ -1,0 +1,61 @@
+# The Sinatra feel, kept — but written by the consumer rather than injected by
+# the library. This is the whole argument of SPEC.md II.3 in one file.
+module samples/webapp
+
+import kemal/dsl
+import kemal/router
+
+using kemal/dsl
+using kemal/router::{Router, Context}
+
+before_all do |env|
+  nil
+end
+
+get "/" do |env|
+  "home"
+end
+
+get "/users" do |env|
+  "all users"
+end
+
+post "/users" do |env|
+  "created"
+end
+
+# A route may return anything implementing `IntoBody`, which is strictly more
+# than Kemal allows: Kemal coerces non-String results to "" at runtime.
+get "/count" do |env|
+  42
+end
+
+# A route returning a type with no impl is refused where it is written:
+#
+#   get "/bad" do |env|
+#     [1, 2, 3]
+#   end
+#   # => Array(Int32) does not implement Kemal::Router::IntoBody,
+#   #    required by `B` in `get`
+#
+# Kemal cannot say this. `HTTP::Server::Context -> _` accepts the block and
+# silently returns an empty body on every request.
+
+users = Router.new
+users.get "/" do |env|
+  "users index"
+end
+
+# The sub-router is a block parameter rather than the block's `self`: R-2 asks
+# an exported `def` to describe its block, and a block whose `self` changes is
+# the one shape no annotation can describe yet. See `kemal/router.iyi`.
+users.namespace "/admin" do |admin|
+  admin.get "/dashboard" do |env|
+    "dashboard"
+  end
+end
+
+mount "/v1", users
+
+app.routes.each { |route| puts "#{route[0]} #{route[1]}" }
+puts app.dispatch(Context.new("GET", "/count"))

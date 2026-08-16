@@ -1,0 +1,2210 @@
+require "../spec_helper"
+require "./spec_helper"
+
+# iyi: the `.iyimod` container — SPEC.md IV.1.
+#
+# The contract these guard is that an artifact is either understood exactly or
+# refused. A build cache whose worst case is "read something plausible and
+# carried on" is the failure IV.1 is written to avoid, so the rejections below
+# matter at least as much as the round trip.
+private def sample_artifact(imports = [] of String,
+                            exports = [] of Crystal::IyiMod::Signature,
+                            types = [] of Crystal::IyiMod::TypeDecl,
+                            impls = [] of Crystal::IyiMod::ImplRecord,
+                            object_code = [] of Crystal::IyiMod::ObjectUnit)
+  Crystal::IyiMod::Artifact.new(
+    module_name: "app/greeter",
+    source_path: "/src/app/greeter.iyi",
+    compiler_version: "1.22.0-dev+abc1234",
+    target_triple: "x86_64-pc-linux-gnu",
+    flags: ["bits64", "linux"],
+    imports: imports.map { |name| Crystal::IyiMod::ImportEdge.new(name) },
+    exports: Crystal::IyiMod::Exports.new(exports, types, impls),
+    object_code: object_code,
+  )
+end
+
+# Not text. An object file holds zero bytes, high bytes and byte sequences that
+# are not valid UTF-8, and a container that round-tripped it through a `String`
+# would corrupt every one of them — which is why this is the payload the round
+# trip below is checked with.
+private def sample_object_unit(name : String = "App::Greeter")
+  Crystal::IyiMod::ObjectUnit.new(name, Bytes[0x7F, 0x45, 0x4C, 0x46, 0x00, 0xFF, 0x80, 0x00])
+end
+
+private def signature(name : String,
+                      parameters = [] of String,
+                      return_type = "",
+                      block_parameter = "",
+                      free_variables = [] of String,
+                      receiver = "",
+                      required = false)
+  Crystal::IyiMod::Signature.new(name, receiver, parameters, block_parameter,
+    return_type, free_variables, required)
+end
+
+private def type_declaration(name : String,
+                             kind : String,
+                             type_parameters = [] of String,
+                             assoc_types = [] of String,
+                             supertraits = [] of String,
+                             fields = [] of {String, String},
+                             methods = [] of Crystal::IyiMod::Signature)
+  Crystal::IyiMod::TypeDecl.new(name, kind, type_parameters, assoc_types,
+    supertraits, fields, methods)
+end
+
+private def impl_record(trait_name : String,
+                        type_name : String,
+                        trait_arguments = [] of String,
+                        free_variables = [] of String,
+                        free_variable_bounds = [] of {String, String},
+                        assoc_types = [] of {String, String},
+                        methods = [] of Crystal::IyiMod::Signature)
+  Crystal::IyiMod::ImplRecord.new(trait_name, type_name, trait_arguments,
+    free_variables, free_variable_bounds, assoc_types, methods)
+end
+
+private def with_temporary_file(&)
+  path = File.tempname("iyimod", ".iyimod")
+  begin
+    yield path
+  ensure
+    File.delete?(path)
+  end
+end
+
+describe Crystal::IyiMod do
+  it "round-trips an artifact" do
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact, path
+      read = Crystal::IyiMod.read(path)
+
+      read.module_name.should eq "app/greeter"
+      read.source_path.should eq "/src/app/greeter.iyi"
+      read.compiler_version.should eq "1.22.0-dev+abc1234"
+      read.target_triple.should eq "x86_64-pc-linux-gnu"
+      read.flags.should eq ["bits64", "linux"]
+      read.imports.should be_empty
+    end
+  end
+
+  it "round-trips import edges in order" do
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(["std/list", "std/enumerable"]), path
+      Crystal::IyiMod.read(path).import_names.should eq ["std/list", "std/enumerable"]
+    end
+  end
+
+  # Atomic replacement is the property IV.1 picks a single-file container for:
+  # a half-written artifact that a later build reads as valid is the worst
+  # failure a cache has, because it is wrong and nothing about it looks broken.
+  it "leaves no temporary file behind" do
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact, path
+      Dir[File.join(File.dirname(path), "#{File.basename(path)}.*.tmp")].should be_empty
+    end
+  end
+
+  it "refuses a file that is not a .iyimod" do
+    with_temporary_file do |path|
+      File.write path, "this is not an artifact"
+      expect_raises(Crystal::IyiMod::Error, /is not a \.iyimod/) do
+        Crystal::IyiMod.read(path)
+      end
+    end
+  end
+
+  it "refuses a file too short to hold the magic" do
+    with_temporary_file do |path|
+      File.write path, "IYI"
+      expect_raises(Crystal::IyiMod::Error, /too short/) do
+        Crystal::IyiMod.read(path)
+      end
+    end
+  end
+
+  # IV.5: rejected and rebuilt, never migrated.
+  it "refuses another format version" do
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact, path
+      bytes = File.read(path).to_slice.dup
+      # The version is the u32 right after the 8-byte magic.
+      Crystal::IyiMod::FORMAT.encode(99_u32, bytes[8, 4])
+      File.write path, bytes
+
+      expect_raises(Crystal::IyiMod::Error, /format v99/) do
+        Crystal::IyiMod.read(path)
+      end
+    end
+  end
+
+  # The section table exists so a reader can take what it needs and seek past
+  # the rest — that is what will let a consumer read `Exports` without paging in
+  # `ObjectCode`. Forward compatibility falls out of the same property, so it is
+  # checked here rather than assumed when the later sections arrive.
+  it "skips a section it does not know" do
+    with_temporary_file do |path|
+      io = IO::Memory.new
+      format = Crystal::IyiMod::FORMAT
+      header = IO::Memory.new
+      {"app/greeter", "/src/app/greeter.iyi", "1.0", "triple"}.each do |value|
+        header.write_bytes value.bytesize.to_u32, format
+        header.write value.to_slice
+      end
+      header.write_bytes 0_u32, format # no flags
+      header.write_byte 0_u8           # no initialiser
+      payload = header.to_slice
+
+      io.write Crystal::IyiMod::MAGIC
+      io.write_bytes Crystal::IyiMod::FORMAT_VERSION, format
+      io.write_bytes 2_u32, format
+      io.write_bytes Crystal::IyiMod::Section::Header.value, format
+      io.write_bytes 0_u16, format
+      io.write_bytes payload.size.to_u32, format
+      io.write_bytes 4242_u16, format # a kind no compiler has ever defined
+      io.write_bytes 0_u16, format
+      io.write_bytes 3_u32, format
+      io.write payload
+      io.write "xyz".to_slice
+
+      File.write path, io.to_slice
+      Crystal::IyiMod.read(path).module_name.should eq "app/greeter"
+    end
+  end
+
+  it "refuses an artifact with no header" do
+    with_temporary_file do |path|
+      io = IO::Memory.new
+      io.write Crystal::IyiMod::MAGIC
+      io.write_bytes Crystal::IyiMod::FORMAT_VERSION, Crystal::IyiMod::FORMAT
+      io.write_bytes 0_u32, Crystal::IyiMod::FORMAT
+      File.write path, io.to_slice
+
+      expect_raises(Crystal::IyiMod::Error, /no header/) do
+        Crystal::IyiMod.read(path)
+      end
+    end
+  end
+
+  it "dumps as text" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact(["std/list"]), io
+    text = io.to_s
+
+    text.should contain "module        app/greeter"
+    text.should contain "  std/list"
+  end
+
+  # R-2: everything exported carries full parameter and return types, which is
+  # why the signature can be the annotation as written rather than a rendering
+  # of an inferred type.
+  it "round-trips exported signatures" do
+    signatures = [
+      signature("polite", ["name : String"], "String"),
+      signature("title", return_type: "String"),
+      signature("pair", ["a : Int32", "b : Array(String)"], "Tuple(Int32, String)"),
+    ]
+
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(exports: signatures), path
+      read = Crystal::IyiMod.read(path).exports.functions
+
+      read.size.should eq 3
+      read[0].name.should eq "polite"
+      read[0].parameters.should eq ["name : String"]
+      read[0].return_type.should eq "String"
+      read[1].parameters.should be_empty
+      read[2].parameters.should eq ["a : Int32", "b : Array(String)"]
+      read[2].return_type.should eq "Tuple(Int32, String)"
+    end
+  end
+
+  # Everything a consumer needs and the source's `def` line carries. Each of
+  # these was absent from the format until a consumer that reads the artifact
+  # instead of the source went looking for it: without the block annotation
+  # there is no `yield` left to infer a block from, without the `forall` the
+  # return type does not resolve, and an `abstract def` read as a definition is
+  # a requirement nobody is told they missed.
+  it "round-trips the rest of a def's header" do
+    signatures = [
+      signature("map", ["a : Int32"], "Array(U)",
+        block_parameter: "& : (Elem -> U)", free_variables: ["U"]),
+      signature("each", return_type: "Nil",
+        block_parameter: "& : (Elem -> Nil)", required: true),
+      signature("zero", return_type: "self", receiver: "self"),
+      signature("push", ["*values : T", "**options"]),
+    ]
+
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(exports: signatures), path
+      read = Crystal::IyiMod.read(path).exports.functions
+
+      read[0].block_parameter.should eq "& : (Elem -> U)"
+      read[0].free_variables.should eq ["U"]
+      read[0].required.should be_false
+      read[1].required.should be_true
+      read[2].receiver.should eq "self"
+      read[3].parameters.should eq ["*values : T", "**options"]
+    end
+  end
+
+  it "dumps a def's header the way it was written" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact(exports: [
+      signature("map", ["a : Int32"], "Array(U)",
+        block_parameter: "& : (Elem -> U)", free_variables: ["U"]),
+      signature("each", return_type: "Nil",
+        block_parameter: "& : (Elem -> Nil)", required: true),
+      signature("zero", return_type: "self", receiver: "self"),
+    ]), io
+    text = io.to_s
+
+    text.should contain "  def map(a : Int32, & : (Elem -> U)) : Array(U) forall U"
+    # A block parameter alone still gets the parentheses it needs.
+    text.should contain "  abstract def each(& : (Elem -> Nil)) : Nil"
+    text.should contain "  def self.zero : self"
+  end
+
+  it "dumps a signature the way it was written" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact(exports: [
+      signature("polite", ["name : String"], "String"),
+      signature("title", return_type: "String"),
+    ]), io
+    text = io.to_s
+
+    text.should contain "  def polite(name : String) : String"
+    # No empty parens for a function that takes nothing.
+    text.should contain "  def title : String"
+  end
+
+  # The format still stops short of what codegen needs, and a reader has no way
+  # to tell an absent field list from an empty one, so the dump says so.
+  # For a long time this note said what the format was still missing, because a
+  # reader has no way to tell an absent field list from an empty one. Every
+  # section the enum names is written now, so it says what is in the file.
+  it "says what the format carries" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact, io
+    text = io.to_s
+    text.should contain "carries declarations"
+    text.should contain "the macros"
+    text.should contain "bodies a consumer has to compile for itself"
+  end
+
+  it "round-trips object code byte for byte" do
+    unit = sample_object_unit
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(object_code: [unit]), path
+      read = Crystal::IyiMod.read(path, want_object_code: true).object_code
+
+      read.size.should eq 1
+      read.first.name.should eq "App::Greeter"
+      read.first.code.should eq unit.code
+    end
+  end
+
+  it "round-trips one unit per type, in order" do
+    units = [sample_object_unit("App::Greeter"), sample_object_unit("App::Greeter::Formal")]
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(object_code: units), path
+      read = Crystal::IyiMod.read(path, want_object_code: true).object_code
+      read.map(&.name).should eq ["App::Greeter", "App::Greeter::Formal"]
+    end
+  end
+
+  # The reader that matters most is `import`, and it is a front-end reader: it
+  # wants the declarations and has no use for the machine code. Reading the
+  # largest section in the file anyway would put it on the path of the pass the
+  # artifact exists to make fast, so it is seeked past unless asked for.
+  it "does not read object code unless asked" do
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(object_code: [sample_object_unit]), path
+
+      Crystal::IyiMod.read(path).object_code.should be_empty
+      Crystal::IyiMod.read(path, want_object_code: true).object_code.size.should eq 1
+    end
+  end
+
+  # Seeking past a section only works if what follows it is still found, so the
+  # skip is checked by reading something written *after* the object code — the
+  # exports, which the writer puts before it, and the header, which it puts
+  # first. A skip of the wrong length would lose both.
+  it "reads the rest of the file with the object code skipped" do
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(imports: ["std/list"],
+        exports: [signature("polite", ["name : String"], "String")],
+        object_code: [sample_object_unit]), path
+
+      read = Crystal::IyiMod.read(path)
+      read.module_name.should eq "app/greeter"
+      read.import_names.should eq ["std/list"]
+      read.exports.functions.map(&.name).should eq ["polite"]
+    end
+  end
+
+  # A `--no-codegen` build writes an artifact with nothing to link. The section
+  # is left out rather than written empty, so that such a file is the same size
+  # it was before this section existed.
+  it "omits the object code section when there is none" do
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact, path
+      # Section count is the u32 after the 8-byte magic and the version.
+      count = Crystal::IyiMod::FORMAT.decode(UInt32, File.read(path).to_slice[12, 4])
+      count.should eq 3
+    end
+  end
+
+  it "dumps the units it carries, and says when it carries none" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact(object_code: [sample_object_unit]), io
+    io.to_s.should contain "App::Greeter — 8 bytes"
+
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact, io
+    io.to_s.should contain "object code   (none)"
+  end
+
+  # The only example here that compiles a real program, and the one thing the
+  # container specs above cannot check: that the name a unit is filed under is
+  # the name codegen gave it. Codegen emits one object file per owner type and
+  # names it after that type; an artifact that agreed on the bytes and not on
+  # the name would carry machine code nobody could match to a declaration.
+  it "carries the object code of a module's own type" do
+    with_tempdir("iyimod_object_code") do
+      Dir.mkdir_p "app"
+      File.write "app/greeter.iyi", <<-IYI
+        module app/greeter
+
+        pub def polite(name : String) : String
+          "Hello, " + name
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/greeter
+
+        puts App::Greeter.polite("world")
+        IYI
+
+      compiler = create_spec_compiler
+      # Chosen by the entry file's extension in `crystal build`, which is the
+      # command layer rather than the compiler, so a spec driving the compiler
+      # directly asks for it.
+      compiler.prelude = "iyi/prelude"
+      compiler.emit_iyimod = "mods"
+
+      with_temp_executable("iyimod-object-code") do |executable|
+        source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+        compiler.compile source, executable
+      end
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "greeter.iyimod"),
+        want_object_code: true)
+      unit = artifact.object_code.find { |candidate| candidate.name == "App::Greeter" }
+      unit.should_not be_nil
+      unit.not_nil!.code.should_not be_empty
+    end
+  end
+
+  # The claim Part IV exists for, end to end: a program built from a module's
+  # artifact, with the module's source **deleted**, that runs and prints what
+  # the same program printed when it was built from source.
+  #
+  # The module is arithmetic on purpose: everything it calls is a primitive, so
+  # this example is about the mechanism and nothing else. The example after it
+  # is the one that needs the closure.
+  it "builds and runs a program from a module's artifact, source deleted" do
+    with_tempdir("iyimod_end_to_end") do
+      Dir.mkdir_p "app"
+      File.write "app/twice.iyi", <<-IYI
+        module app/twice
+
+        pub def twice(n : Int32) : Int32
+          n + n
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/twice
+
+        puts App::Twice.twice(21)
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "42"
+
+      File.delete "app/twice.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "42"
+    end
+  end
+
+  # The closure (IV.1g): the module's body calls `String#+`, which lives in the
+  # prelude's `String` unit — a unit the artifact does not carry and one whose
+  # contents on the consumer's side are whatever *the consumer* instantiated.
+  # The consumer here never writes a `+`, so nothing would define it, and this
+  # is the build that failed to link before the module started carrying private
+  # copies of what it calls.
+  it "carries what a module's body calls but its consumer does not" do
+    with_tempdir("iyimod_closure") do
+      Dir.mkdir_p "app"
+      File.write "app/greeter.iyi", <<-IYI
+        module app/greeter
+
+        pub def polite(name : String) : String
+          "Hello, " + name
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/greeter
+
+        puts App::Greeter.polite("world")
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "Hello, world"
+
+      File.delete "app/greeter.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "Hello, world"
+    end
+  end
+
+  # A type id is an external reference, which is what lets one build's object
+  # file be linked by another's — and the definition comes from the consuming
+  # program, which defines an id for every type it *has*. `Array(Item)` is not
+  # one of them: it exists in the producing build because of a body that stays
+  # behind, and nothing in the declarations the consumer reads would ever make
+  # it. So `Array(App::Box::Item):type_id` was undefined at link, in a program
+  # whose every method resolved.
+  it "numbers the types a module's own code instantiates" do
+    with_tempdir("iyimod_type_ids") do
+      Dir.mkdir_p "app"
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        pub struct Item
+          @name : String
+
+          def initialize(@name : String)
+          end
+
+          def name : String
+            @name
+          end
+        end
+
+        pub def labels : String
+          items = Array(Item).new
+          items << Item.new("a")
+          items << Item.new("b")
+          items.map { |item| item.name }.join(", ")
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box.labels
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "a, b"
+
+      # The instantiation the consumer cannot reach any other way, named in the
+      # artifact so that it can make it.
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+      artifact.type_ids.should contain "Array(App::Box::Item)"
+
+      File.delete "app/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "a, b"
+    end
+  end
+
+  # A type the module keeps to itself still has to arrive, because its object
+  # code refers to it: `Array(Secret):type_id` is resolved from a definition in
+  # this program and a program can only number a type it has. So it travels as
+  # a declaration without `pub` — reachable from nowhere, which is exactly what
+  # it is when the module is read from source.
+  it "carries a type its module does not export" do
+    with_tempdir("iyimod_type_ids_private") do
+      Dir.mkdir_p "app"
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        struct Secret
+          @n : Int32
+
+          def initialize(@n : Int32)
+          end
+
+          def n : Int32
+            @n
+          end
+        end
+
+        pub def total : Int32
+          items = Array(Secret).new
+          items << Secret.new(2)
+          items << Secret.new(3)
+          items[0].n + items[1].n
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box.total
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "5"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+      secret = artifact.exports.types.find! { |declaration| declaration.name == "Secret" }
+      secret.visibility.should eq "private"
+      secret.fields.should eq [{"@n", "Int32"}]
+      # Headers, and only headers. The consumer cannot reach them and the
+      # module's own object code already defines them — but a body that
+      # travels calls them, and a call it cannot typecheck is refused before
+      # anything gets as far as being unreachable.
+      secret.methods.map(&.name).sort!.should eq ["initialize", "n"]
+      secret.methods.each { |signature| signature.required.should be_false }
+
+      File.delete "app/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "5"
+
+      # And carrying it does not make it reachable, which is the half R-2b is
+      # about: the consumer has the type and may not name it.
+      File.write "reach.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box::Secret.new(1).n
+        IYI
+      reaching = Crystal::Compiler::Source.new(File.expand_path("reach.iyi"), File.read("reach.iyi"))
+
+      refuser = create_spec_compiler
+      refuser.prelude = "iyi/prelude"
+      refuser.use_iyimod = "mods"
+      refuser.no_codegen = true
+      expect_raises(Crystal::TypeException, /does not export App::Box::Secret/) do
+        refuser.compile reaching, "unused"
+      end
+    end
+  end
+
+  # A method that takes a block is instantiated with the caller's block inlined
+  # into it, so its machine code belongs to whoever wrote the block. The
+  # producer emits none — it would be a duplicate for a block it happened to
+  # write and missing for every block it did not — and the body travels instead,
+  # for the reason a generic's method and a trait's default do (SPEC.md IV.1g).
+  it "carries the body of a method that takes a block" do
+    with_tempdir("iyimod_block_bodies") do
+      Dir.mkdir_p "app"
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        pub class Box
+          alias Step = Int32 -> Int32
+
+          private record Entry,
+            step : Step
+
+          getter label : String
+          @entries : Array(Entry)
+
+          def initialize(@label : String)
+            @entries = [] of Entry
+          end
+
+          def add(&block : Int32 -> Int32) : Nil
+            @entries << Entry.new(step: block)
+          end
+
+          def run(start : Int32) : Int32
+            total = start
+            @entries.each { |entry| total = entry.step.call(total) }
+            total
+          end
+        end
+
+        pub def boxed(label : String, &block : Int32 -> Int32) : Box
+          box = Box.new(label)
+          box.add(&block)
+          box
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        box = App::Box.boxed("doubling") { |n| n * 2 }
+        box.add { |n| n + 1 }
+        puts box.label
+        puts box.run(5)
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "doubling\n11"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+
+      # Whatever the def is written on: a module's own `pub def` and a method
+      # of an exported class are the same case.
+      artifact.mono_bodies.keys.should contain "app/box#boxed(label : String)&block : (Int32 -> Int32)"
+      artifact.mono_bodies.keys.should contain "Box#add()&block : (Int32 -> Int32)"
+
+      box = artifact.exports.types.find! { |declaration| declaration.name == "Box" }
+
+      # Declaration order, because it is the layout the consumer's copy of
+      # `add` writes `@entries` at and the module's own `run` reads it from.
+      box.fields.map { |(name, _)| name }.should eq ["@label", "@entries"]
+
+      # The alias travels because a declaration that travels names it: the
+      # carried record's `step : Step` is the text this module was written
+      # with, and a consumer without the alias reads an undefined constant.
+      step = box.types.find! { |nested| nested.name == "Step" }
+      step.kind.should eq "alias"
+      step.value.should eq "Proc(Int32, Int32)"
+
+      File.delete "app/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "doubling\n11"
+    end
+  end
+
+  # A body that travels calls what the module keeps to itself, and being
+  # unreachable does not change who compiles a block-taking def. Both shapes
+  # are here because they are one hole seen in two namespaces: a method on a
+  # type the module does not export, and a def at the module's own top level.
+  it "carries the unexported defs a travelling body calls" do
+    with_tempdir("iyimod_carried_defs") do
+      Dir.mkdir_p "app"
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        class Hidden
+          @n : Int32
+
+          def initialize(@n : Int32)
+          end
+
+          def tweak(&block : Int32 -> Int32) : Int32
+            block.call(@n)
+          end
+        end
+
+        def helper(start : Int32, &block : Int32 -> Int32) : Int32
+          Hidden.new(start).tweak(&block)
+        end
+
+        pub def run(start : Int32, &block : Int32 -> Int32) : Int32
+          helper(start, &block)
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box.run(5) { |n| n * 3 }
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "15"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+
+      # Kept out of `functions`, which is the module's surface and stays what a
+      # consumer may call.
+      artifact.exports.functions.map(&.name).should eq ["run"]
+      artifact.exports.carried_functions.map(&.name).should eq ["helper"]
+
+      # With their bodies, because a header would promise a symbol the producer
+      # never emitted: it makes no machine code for a block-taking def either.
+      artifact.mono_bodies.keys.should contain "app/box#helper(start : Int32)&block : (Int32 -> Int32)"
+      artifact.mono_bodies.keys.should contain "Hidden#tweak()&block : (Int32 -> Int32)"
+
+      File.delete "app/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "15"
+
+      # And carrying them leaves R-2b where it was: the consumer has them and
+      # may not name them, with the message it gets from source.
+      File.write "reach.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box.helper(5) { |n| n * 3 }
+        IYI
+      reaching = Crystal::Compiler::Source.new(File.expand_path("reach.iyi"), File.read("reach.iyi"))
+
+      refuser = create_spec_compiler
+      refuser.prelude = "iyi/prelude"
+      refuser.use_iyimod = "mods"
+      refuser.no_codegen = true
+      expect_raises(Crystal::TypeException, /does not export 'helper'/) do
+        refuser.compile reaching, "unused"
+      end
+    end
+  end
+
+  # A macro has no machine code to arrive as and no `pub` to be exported with,
+  # and a body that travels calls one: the consumer compiles `run`, `run`
+  # writes `twice(n)`, and `twice` is a macro of the module `run` came from.
+  # Both places one can be written are here, because they are one rule.
+  it "carries the macros a travelling body expands" do
+    with_tempdir("iyimod_macro_bodies") do
+      Dir.mkdir_p "app"
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        macro twice(x)
+          ({{x}} + {{x}})
+        end
+
+        pub class Box
+          macro double(x)
+            ({{x}} * 2)
+          end
+
+          @n : Int32
+
+          def initialize(@n : Int32)
+          end
+
+          def run(&block : Int32 -> Int32) : Int32
+            block.call(double(@n))
+          end
+        end
+
+        pub def run_module(n : Int32, &block : Int32 -> Int32) : Int32
+          block.call(twice(n))
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box::Box.new(5).run { |n| n + 1 }
+        puts App::Box.run_module(5) { |n| n + 1 }
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "11\n11"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+      artifact.macro_bodies.size.should eq 1
+      artifact.macro_bodies.first.should start_with "macro twice"
+
+      # On the type it was declared on, because that is where it is looked up.
+      box = artifact.exports.types.find! { |declaration| declaration.name == "Box" }
+      box.macros.size.should eq 1
+      box.macros.first.should start_with "macro double"
+
+      File.delete "app/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "11\n11"
+    end
+  end
+
+  # An error in the declarations has a location in them, and the file that
+  # location names is binary — so the line it showed was the bytes of the
+  # container the declarations travelled in. The text is what the build read
+  # and the text is what it shows.
+  it "shows the declaration an error is in, not the bytes of the artifact" do
+    with_tempdir("iyimod_error_source") do
+      Dir.mkdir_p "app"
+      # A generic's body travels and the consumer instantiates it, so a type
+      # the producer never tried is where this lands: the error is in a line of
+      # the module's, reported to somebody who does not have the module.
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        pub struct Box(T)
+          @item : T
+
+          def initialize(@item : T)
+          end
+
+          def doubled : T
+            @item + @item
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box::Box(Int32).new(21).doubled
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "42"
+
+      File.delete "app/box.iyi"
+
+      File.write "bad.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box::Box(Bool).new(true).doubled
+        IYI
+      bad = Crystal::Compiler::Source.new(File.expand_path("bad.iyi"), File.read("bad.iyi"))
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.no_codegen = true
+
+      error = expect_raises(Crystal::TypeException, /undefined method '\+' for Bool/) do
+        consumer.compile bad, File.expand_path("unused")
+      end
+
+      rendered = error.to_s
+      rendered.should contain "@item + @item"
+      rendered.should contain "box.iyimod"
+      # The bytes the artifact starts with, which is what used to be shown.
+      rendered.should_not contain "IYIMOD"
+    end
+  end
+
+  # A constant is typed and initialised where it is *read*, and on the far side
+  # of an artifact the only reader is machine code the consumer did not compile.
+  # So `kemal/dsl`'s `APP` was declared, assigned by the initialiser that
+  # travelled, and never given a symbol — every exported method in the unit
+  # called through a global nothing defined.
+  it "carries the constants a module's own code reads" do
+    with_tempdir("iyimod_constants") do
+      Dir.mkdir_p "app"
+      File.write "app/counter.iyi", <<-IYI
+        module app/counter
+
+        pub struct Tally
+          @n : Int32
+
+          def initialize(@n : Int32)
+          end
+
+          def n : Int32
+            @n
+          end
+        end
+
+        START = Tally.new(40)
+
+        pub def total : Int32
+          START.n + 2
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/counter
+
+        puts App::Counter.total
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "42"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "counter.iyimod"))
+      artifact.constants.should eq ["App::Counter::START"]
+
+      File.delete "app/counter.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "42"
+    end
+  end
+
+  # The router's shape: a `private record` inside an exported class. It belongs
+  # to the class rather than to the module's surface — R-2 governs the unit's
+  # own body — so it travels inside its container, and the field that names it
+  # travels with the name it was written with.
+  it "carries a type declared inside a carried type" do
+    with_tempdir("iyimod_nested_types") do
+      Dir.mkdir_p "app"
+      File.write "app/router.iyi", <<-IYI
+        module app/router
+
+        pub class Router
+          private struct Route
+            @method : String
+            @path : String
+
+            def initialize(@method : String, @path : String)
+            end
+          end
+
+          @routes : Array(Route)
+
+          def initialize
+            @routes = Array(Route).new
+          end
+
+          pub def add(method : String, path : String) : Nil
+            @routes << Route.new(method, path)
+          end
+
+          pub def count : Int32
+            @routes.size
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/router
+
+        router = App::Router::Router.new
+        router.add("GET", "/")
+        router.add("POST", "/x")
+        puts router.count
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "2"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "router.iyimod"))
+      router = artifact.exports.types.find! { |declaration| declaration.name == "Router" }
+      route = router.types.find! { |declaration| declaration.name == "Route" }
+      route.visibility.should eq "private"
+
+      # Rendered where it was written, because iyi cannot reopen `Router` to
+      # add it afterwards.
+      io = IO::Memory.new
+      Crystal::IyiMod.declarations artifact, io
+      io.to_s.should contain "  private struct Route"
+
+      File.delete "app/router.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "2"
+    end
+  end
+
+  # A class method lives on the type's *metaclass*, so walking a type's own
+  # defs dropped every one a module exported — `Counter.zero` was an undefined
+  # method on the far side of an artifact that looked complete. And a field
+  # with a bodyless `initialize` is the shape no sample has: the artifact's
+  # `initialize` has no body to assign `@n` in, which read as leaving it
+  # nilable and refused the module outright.
+  it "carries a type's class methods, and its bodyless initialize" do
+    with_tempdir("iyimod_class_methods") do
+      Dir.mkdir_p "std"
+      File.write "std/counter.iyi", <<-IYI
+        module std/counter
+
+        pub struct Counter
+          @n : Int32
+
+          def initialize(@n : Int32)
+          end
+
+          def self.zero : Counter
+            Counter.new(0)
+          end
+
+          def n : Int32
+            @n
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/counter
+
+        puts Std::Counter::Counter.zero.n
+        puts Std::Counter::Counter.new(5).n
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "0\n5"
+
+      declaration = Crystal::IyiMod.read(File.join("mods", "std", "counter.iyimod"))
+        .exports.types.find! { |candidate| candidate.name == "Counter" }
+
+      declaration.methods.find { |m| m.name == "zero" }.try(&.receiver).should eq "self"
+
+      # `allocate` is put on every metaclass by the compiler and `new` is
+      # synthesized from `initialize`; describing either as part of the
+      # module's surface would be describing this compiler instead.
+      declaration.methods.map(&.name).should eq ["initialize", "n", "zero"]
+
+      File.delete "std/counter.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "0\n5"
+    end
+  end
+
+  # `MonoBodies`. A generic type's method exists once per instantiation, and
+  # the instantiations belong to whoever writes them — so no machine code the
+  # producer emits can serve a consumer, and the body is the only thing that
+  # can travel. The consumer here instantiates at a type the producer never
+  # did, which is the case that makes carrying the producer's object code no
+  # answer at all.
+  it "ships a generic type's bodies, and the consumer specialises them" do
+    with_tempdir("iyimod_mono_generic") do
+      Dir.mkdir_p "std"
+      File.write "std/box.iyi", <<-IYI
+        module std/box
+
+        pub struct Box(T)
+          @item : T
+
+          def initialize(@item : T)
+          end
+
+          def item : T
+            @item
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/box
+
+        puts Std::Box::Box(Int32).new(7).item
+        puts Std::Box::Box(String).new("seven").item
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "7\nseven"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "std", "box.iyimod"))
+      artifact.mono_bodies.keys.should contain "Box#item()"
+
+      File.delete "std/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "7\nseven"
+    end
+  end
+
+  # The other half of `MonoBodies`, and the half no producer could ever emit
+  # code for: a trait default is stencilled onto the implementing type, and the
+  # implementing type here is declared by the *consumer*. There is no name the
+  # producing build could have compiled it under.
+  it "ships a trait's default bodies, and the consumer stencils them" do
+    with_tempdir("iyimod_mono_trait") do
+      Dir.mkdir_p "std"
+      File.write "std/countable.iyi", <<-IYI
+        module std/countable
+
+        pub trait Countable
+          abstract def count : Int32
+
+          def doubled : Int32
+            count + count
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/countable
+
+        using std/countable::{Countable}
+
+        pub struct Three
+        end
+
+        impl Countable for Three
+          def count : Int32
+            3
+          end
+        end
+
+        puts Three.new.doubled
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "6"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "std", "countable.iyimod"))
+      artifact.mono_bodies.keys.should contain "Countable#doubled()"
+
+      File.delete "std/countable.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "6"
+    end
+  end
+
+  # And the boundary, which is what keeps the two mechanisms from colliding. An
+  # ordinary method of an ordinary type travels as machine code, so its body
+  # must **not** also travel: a consumer given both would compile a definition
+  # the artifact already carries, and the link would fail on a duplicate
+  # symbol. Kept as an example because nothing else says it out loud.
+  it "does not ship the body of a method that travels as machine code" do
+    with_tempdir("iyimod_mono_boundary") do
+      Dir.mkdir_p "app"
+      File.write "app/greeter.iyi", <<-IYI
+        module app/greeter
+
+        pub struct Greeter
+          def hello : String
+            "hello"
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/greeter
+
+        puts App::Greeter::Greeter.new.hello
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "greeter.iyimod"),
+        want_object_code: true)
+      artifact.mono_bodies.should be_empty
+      artifact.object_code.map(&.name).should contain "App::Greeter::Greeter"
+
+      File.delete "app/greeter.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "hello"
+    end
+  end
+
+  it "round-trips mono bodies" do
+    with_temporary_file do |path|
+      artifact = sample_artifact
+      artifact.mono_bodies["Box#item()"] = "@item\n"
+      Crystal::IyiMod.write artifact, path
+
+      Crystal::IyiMod.read(path).mono_bodies.should eq({"Box#item()" => "@item\n"})
+    end
+  end
+
+  it "renders a mono body under the declaration it belongs to" do
+    declaration = type_declaration("Box", "generic struct",
+      type_parameters: ["T"],
+      methods: [signature("item", return_type: "T")])
+
+    artifact = sample_artifact(types: [declaration])
+    artifact.mono_bodies["Box#item()"] = "@item"
+
+    io = IO::Memory.new
+    Crystal::IyiMod.declarations artifact, io
+
+    io.to_s.should contain "  def item : T\n    @item\n  end\n"
+  end
+
+  # III.5's initialiser is the one part of a module that is neither a
+  # declaration nor the body of one, and it has to run — in DAG order, before
+  # anything that imports the module. It travels as source text and is compiled
+  # by the consumer, which is also what produces the module's constants and its
+  # proc literals: nothing else could have.
+  #
+  # Two modules, because one would not show the ordering. `boot/config` is
+  # imported by `boot/registry`, so it initialises first however the imports
+  # are written — and `boot/registry`'s own `import` sits *below* a statement
+  # of its own, which is the case III.5 rule 1 exists for.
+  it "carries a module's initialiser, in import order" do
+    with_tempdir("iyimod_initialiser") do
+      Dir.mkdir_p "boot"
+      File.write "boot/config.iyi", <<-IYI
+        module boot/config
+
+        puts "1. config"
+
+        pub def name : String
+          "iyi"
+        end
+        IYI
+      File.write "boot/registry.iyi", <<-IYI
+        module boot/registry
+
+        puts "2. registry, above its own import"
+
+        import boot/config
+
+        puts "3. registry, below it"
+
+        pub def greeting : String
+          Boot::Config.name
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import boot/registry
+
+        puts "4. main"
+        puts Boot::Registry.greeting
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      expected = "1. config\n2. registry, above its own import\n3. registry, below it\n4. main\niyi"
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq expected
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "boot", "registry.iyimod"))
+      artifact.has_initialiser.should be_false
+      artifact.initialiser.lines.size.should eq 2
+
+      File.delete "boot/config.iyi"
+      File.delete "boot/registry.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq expected
+    end
+  end
+
+  # What the initialiser does *not* reach: runnable code inside a type body
+  # belongs to the type, not to the module's top level, and nothing in the
+  # artifact holds it. Refused rather than linked, because the alternative is a
+  # program that runs with that part silently missing.
+  it "refuses to generate code against a module whose type body has to run" do
+    with_tempdir("iyimod_type_body") do
+      Dir.mkdir_p "boot"
+      File.write "boot/counter.iyi", <<-IYI
+        module boot/counter
+
+        pub struct Counter
+          @@count = 7
+
+          def count : Int32
+            @@count
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import boot/counter
+
+        puts Boot::Counter::Counter.new.count
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.no_codegen = true
+      producer.compile source, File.expand_path("unused")
+
+      Crystal::IyiMod.read(File.join("mods", "boot", "counter.iyimod"))
+        .has_initialiser.should be_true
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      expect_raises(Crystal::TypeException, /has code inside a type body/) do
+        consumer.compile source, File.expand_path("from-artifact")
+      end
+
+      # Front end only, which is what the artifact does carry: still fine.
+      checker = create_spec_compiler
+      checker.prelude = "iyi/prelude"
+      checker.use_iyimod = "mods"
+      checker.no_codegen = true
+      checker.compile source, File.expand_path("unused-too")
+    end
+  end
+
+  it "round-trips a module's initialiser" do
+    with_temporary_file do |path|
+      artifact = Crystal::IyiMod::Artifact.new(
+        module_name: "boot/config",
+        source_path: "/src/boot/config.iyi",
+        compiler_version: "1.22.0-dev+abc1234",
+        target_triple: "x86_64-pc-linux-gnu",
+        flags: ["bits64"],
+        imports: [] of Crystal::IyiMod::ImportEdge,
+        initialiser: %(puts("one")\nputs("two")),
+      )
+      Crystal::IyiMod.write artifact, path
+
+      Crystal::IyiMod.read(path).initialiser.should eq %(puts("one")\nputs("two"))
+    end
+  end
+
+  it "round-trips the hashes" do
+    with_temporary_file do |path|
+      artifact = Crystal::IyiMod::Artifact.new(
+        module_name: "app/box",
+        source_path: "/src/app/box.iyi",
+        compiler_version: "1.22.0-dev+abc1234",
+        target_triple: "x86_64-pc-linux-gnu",
+        flags: ["bits64"],
+        imports: [] of Crystal::IyiMod::ImportEdge,
+        hashes: Crystal::IyiMod::Hashes.new("iface", "impl", "src"),
+      )
+      Crystal::IyiMod.write artifact, path
+
+      read = Crystal::IyiMod.read(path).hashes
+      read.interface.should eq "iface"
+      read.implementation.should eq "impl"
+      read.source.should eq "src"
+    end
+  end
+
+  # The property IV.3 exists for, and the one that decides whether the artifact
+  # buys anything: **a body edit must not move the interface hash.** If it does,
+  # every dependent re-typechecks for every edit and an incremental build is a
+  # slower first build.
+  it "moves the interface hash for a signature and not for a body" do
+    with_tempdir("iyimod_hashes") do
+      Dir.mkdir_p "app"
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box.twice(21)
+        IYI
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      write_box = ->(body : String, extra : String) do
+        File.write "app/box.iyi", <<-IYI
+          module app/box
+
+          pub def twice(n : Int32) : Int32
+            #{body}
+          end
+          #{extra}
+          IYI
+      end
+
+      emit = -> do
+        compiler = create_spec_compiler
+        compiler.prelude = "iyi/prelude"
+        compiler.emit_iyimod = "mods"
+        compiler.no_codegen = true
+        compiler.compile source, "unused"
+        Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod")).hashes
+      end
+
+      write_box.call("n + n", "")
+      before = emit.call
+
+      # The same module, one body written differently.
+      write_box.call("n * 2", "")
+      after_body = emit.call
+
+      after_body.interface.should eq before.interface
+      after_body.implementation.should eq before.implementation
+      after_body.source.should_not eq before.source
+
+      # And a name added to the surface, which every dependent does have to
+      # hear about.
+      write_box.call("n * 2", <<-IYI)
+
+        pub def thrice(n : Int32) : Int32
+          n * 3
+        end
+        IYI
+      after_signature = emit.call
+
+      after_signature.interface.should_not eq after_body.interface
+    end
+  end
+
+  # An artifact is a cache, so it is read only while it still describes its
+  # module. Before the hashes it was read whichever way the source had moved,
+  # and a build could compile against a surface nobody had and link code
+  # nobody wrote — silently, with an exit status of nought.
+  it "reads an artifact only while it still describes its module" do
+    with_tempdir("iyimod_stale") do
+      Dir.mkdir_p "app"
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/box
+
+        puts App::Box.twice(21)
+        IYI
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        pub def twice(n : Int32) : Int32
+          n + n
+        end
+        IYI
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "42"
+
+      File.write "app/box.iyi", <<-IYI
+        module app/box
+
+        pub def twice(n : Int32) : Int32
+          n * 3
+        end
+        IYI
+
+      # A build that only reads artifacts is refused, and told what moved.
+      reader = create_spec_compiler
+      reader.prelude = "iyi/prelude"
+      reader.use_iyimod = "mods"
+      expect_raises(Crystal::TypeException, /has changed since it was written/) do
+        reader.compile source, File.expand_path("stale")
+      end
+
+      # A build that also writes them is the incremental loop: the module is
+      # compiled from its source and its artifact rewritten.
+      rewriter = create_spec_compiler
+      rewriter.prelude = "iyi/prelude"
+      rewriter.use_iyimod = "mods"
+      rewriter.emit_iyimod = "mods"
+      rewriter.compile source, File.expand_path("rebuilt")
+      `./rebuilt`.chomp.should eq "63"
+
+      # And what it wrote is read again without a word.
+      again = create_spec_compiler
+      again.prelude = "iyi/prelude"
+      again.use_iyimod = "mods"
+      again.compile source, File.expand_path("cached")
+      `./cached`.chomp.should eq "63"
+    end
+  end
+
+  # IV.3's whole point, in the shape that shows it: two programs over one graph,
+  # so that a dependency can be rebuilt while a dependent is not touched. A body
+  # edit under `app/outer` must leave its artifact valid; a surface edit must
+  # not.
+  it "keeps a dependent whose dependency changed only a body" do
+    with_tempdir("iyimod_interface_hash") do
+      Dir.mkdir_p "app"
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/outer
+
+        puts App::Outer.outer
+        IYI
+      File.write "leaf.iyi", <<-IYI
+        module leaf
+
+        import app/inner
+
+        puts App::Inner.inner
+        IYI
+      File.write "app/outer.iyi", <<-IYI
+        module app/outer
+
+        import app/inner
+
+        pub def outer : Int32
+          App::Inner.inner + 41
+        end
+        IYI
+      write_inner = ->(body : String, extra : String) do
+        File.write "app/inner.iyi", <<-IYI
+          module app/inner
+
+          pub def inner : Int32
+            #{body}
+          end
+          #{extra}
+          IYI
+      end
+
+      main = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      leaf = Crystal::Compiler::Source.new(File.expand_path("leaf.iyi"), File.read("leaf.iyi"))
+
+      build = ->(program : Crystal::Compiler::Source, output : String, emit : Bool) do
+        compiler = create_spec_compiler
+        compiler.prelude = "iyi/prelude"
+        compiler.use_iyimod = "mods"
+        compiler.emit_iyimod = "mods" if emit
+        compiler.compile program, File.expand_path(output)
+      end
+
+      write_inner.call("1", "")
+      build.call(main, "first", true)
+      `./first`.chomp.should eq "42"
+
+      # The other program rewrites `app/inner`'s artifact and leaves
+      # `app/outer`'s where it was.
+      write_inner.call("2", "")
+      build.call(leaf, "leaf-build", true)
+
+      # So `app/outer` is read from its artifact: the module it was compiled
+      # against hashes the same on its surface, and its new body arrives as
+      # machine code through the linker.
+      build.call(main, "kept", false)
+      `./kept`.chomp.should eq "43"
+
+      # A name added to that surface is a different matter.
+      write_inner.call("2", <<-IYI)
+
+        pub def other : Int32
+          3
+        end
+        IYI
+      build.call(leaf, "leaf-again", true)
+
+      expect_raises(Crystal::TypeException, /the surface of "app\/inner"/) do
+        build.call(main, "invalidated", false)
+      end
+    end
+  end
+
+  it "round-trips the types a module numbers" do
+    with_temporary_file do |path|
+      artifact = Crystal::IyiMod::Artifact.new(
+        module_name: "app/box",
+        source_path: "/src/app/box.iyi",
+        compiler_version: "1.22.0-dev+abc1234",
+        target_triple: "x86_64-pc-linux-gnu",
+        flags: ["bits64"],
+        imports: [] of Crystal::IyiMod::ImportEdge,
+        type_ids: ["Array(App::Box::Item)", "Pointer(App::Box::Item)"],
+      )
+      Crystal::IyiMod.write artifact, path
+
+      Crystal::IyiMod.read(path).type_ids.should eq ["Array(App::Box::Item)", "Pointer(App::Box::Item)"]
+    end
+  end
+
+  it "renders the initialiser inside the module it belongs to" do
+    artifact = Crystal::IyiMod::Artifact.new(
+      module_name: "boot/config",
+      source_path: "/src/boot/config.iyi",
+      compiler_version: "1.22.0-dev+abc1234",
+      target_triple: "x86_64-pc-linux-gnu",
+      flags: [] of String,
+      imports: [] of Crystal::IyiMod::ImportEdge,
+      initialiser: %(puts("hello")),
+    )
+
+    io = IO::Memory.new
+    Crystal::IyiMod.declarations artifact, io
+    text = io.to_s
+
+    text.should start_with "module boot/config\n"
+    text.should contain %(puts("hello"))
+  end
+
+  # A consumer allocates the type, and allocating needs its size. Without the
+  # fields it read `pub struct Box` as a struct with none, and generated a
+  # `Box::new` that allocated nothing while the module's own code wrote to
+  # `@n` — memory corruption waiting for the rest of `ObjectCode` to stop
+  # failing at link, rather than a missing feature.
+  it "carries a type's fields" do
+    with_tempdir("iyimod_fields") do
+      Dir.mkdir_p "std"
+      File.write "std/box.iyi", <<-IYI
+        module std/box
+
+        pub struct Box(T)
+          @item : T
+          @count : Int32
+
+          def initialize(@item : T)
+            @count = 1
+          end
+
+          def item : T
+            @item
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/box
+
+        puts Std::Box::Box(Int32).new(7).item
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.no_codegen = true
+      producer.compile source, File.expand_path("unused")
+
+      declaration = Crystal::IyiMod.read(File.join("mods", "std", "box.iyimod"))
+        .exports.types.find! { |candidate| candidate.name == "Box" }
+
+      # In the order they were declared, because that order is the layout: a
+      # field's offset is its position in this list, and a consumer compiling a
+      # body of this module's has to reach the same field the module's own
+      # object code does.
+      declaration.fields.should eq [{"@item", "T"}, {"@count", "Int32"}]
+    end
+  end
+
+  it "renders a type's fields into the declarations a consumer reads" do
+    declaration = type_declaration("List", "generic struct",
+      type_parameters: ["T"],
+      fields: [{"@items", "Array(T)"}],
+      methods: [signature("size", return_type: "Int32")])
+
+    io = IO::Memory.new
+    Crystal::IyiMod.declarations sample_artifact(types: [declaration]), io
+
+    io.to_s.should contain "pub struct List(T)\n  @items : Array(T)\n"
+  end
+
+  # The other half of the rule above, and the half that went wrong three times.
+  # A module whose top level is only declarations has no initialiser — and the
+  # declarations do not look like declarations from the outside: the file is
+  # wrapped in a `ModuleDef`, `pub struct` is a `VisibilityModifier` around one,
+  # and `type Elem = T` is an `AssocTypeDecl`. Each of those, taken for
+  # something that runs, refused a module that was fine.
+  it "does not mistake declarations for an initialiser" do
+    with_tempdir("iyimod_no_initialiser") do
+      Dir.mkdir_p "std"
+      File.write "std/hold.iyi", <<-IYI
+        module std/hold
+
+        pub trait Hold
+          type Item
+
+          abstract def item : Item
+        end
+
+        pub struct Box
+          @n : Int32
+
+          def initialize(@n : Int32)
+          end
+        end
+
+        impl Hold for Box
+          type Item = Int32
+
+          def item : Int32
+            @n
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/hold
+
+        using std/hold::{Hold}
+
+        puts Std::Hold::Box.new(7).item
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+
+      Crystal::IyiMod.read(File.join("mods", "std", "hold.iyimod")).has_initialiser.should be_false
+    end
+  end
+
+  # A macro call is not code until it is expanded, and what a module's macros
+  # expand to is mostly declarations. Reading the call itself made every module
+  # that writes a `getter` read as having code in a type body and refused it,
+  # which is the ordinary shape of a library rather than a corner of one.
+  it "does not mistake a macro call in a type body for an initialiser" do
+    with_tempdir("iyimod_macro_declarations") do
+      Dir.mkdir_p "app"
+      File.write "app/store.iyi", <<-IYI
+        module app/store
+
+        pub struct Item
+          getter name : String
+          getter price : Int32
+
+          def initialize(@name : String, @price : Int32)
+          end
+        end
+
+        pub class Store
+          private record Entry,
+            item : Item,
+            count : Int32
+
+          @entries : Array(Entry)
+
+          def initialize
+            @entries = Array(Entry).new
+          end
+
+          pub def add(name : String, price : Int32, count : Int32) : Nil
+            @entries << Entry.new(Item.new(name, price), count)
+          end
+
+          pub def total : Int32
+            sum = 0
+            @entries.each { |entry| sum = sum + entry.item.price * entry.count }
+            sum
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/store
+
+        store = App::Store::Store.new
+        store.add("a", 3, 2)
+        store.add("b", 5, 1)
+        puts store.total
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "11"
+
+      Crystal::IyiMod.read(File.join("mods", "app", "store.iyimod")).has_initialiser.should be_false
+
+      File.delete "app/store.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "11"
+    end
+  end
+
+  # And the other direction, which is what makes following the expansion safe:
+  # a macro that expands to something that has to *run* is still code in a type
+  # body, and a build that would generate against it is still refused.
+  it "sees the code a macro expands to in a type body" do
+    with_tempdir("iyimod_macro_code") do
+      Dir.mkdir_p "app"
+      File.write "app/thing.iyi", <<-IYI
+        module app/thing
+
+        pub class Thing
+          {% for word in ["one"] %}
+            puts {{ word }}
+          {% end %}
+
+          pub def n : Int32
+            1
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/thing
+
+        puts App::Thing::Thing.new.n
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+
+      Crystal::IyiMod.read(File.join("mods", "app", "thing.iyimod")).has_initialiser.should be_true
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      expect_raises(Crystal::TypeException, /has code inside a type body/) do
+        consumer.compile source, File.expand_path("from-artifact")
+      end
+    end
+  end
+
+  # A build that generates no code has none to carry. Checked because the two
+  # cases are told apart by the flag the build was given and by nothing in the
+  # file, so an empty section here is the honest answer rather than a failure
+  # to collect.
+  it "carries no object code from a --no-codegen build" do
+    with_tempdir("iyimod_no_codegen") do
+      Dir.mkdir_p "app"
+      File.write "app/greeter.iyi", <<-IYI
+        module app/greeter
+
+        pub def polite(name : String) : String
+          "Hello, " + name
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/greeter
+
+        puts App::Greeter.polite("world")
+        IYI
+
+      compiler = create_spec_compiler
+      compiler.prelude = "iyi/prelude"
+      compiler.emit_iyimod = "mods"
+      compiler.no_codegen = true
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      compiler.compile source, "unused"
+
+      artifact = Crystal::IyiMod.read(File.join("mods", "app", "greeter.iyimod"),
+        want_object_code: true)
+      artifact.object_code.should be_empty
+      artifact.exports.functions.map(&.name).should eq ["polite"]
+    end
+  end
+
+  # An edge names a module, and it has to name one whichever way the module on
+  # the far end arrived. The edges are kept by filename because load-once is,
+  # so writing one out means looking the filename back up — and the lookup used
+  # to ask only the modules read from source, which left an import resolved
+  # from a `.iyimod` recorded as that file's path. `mods/app/inner.iyimod` is
+  # this build's directory layout, not a module anybody else can resolve.
+  it "records an import read from an artifact as the module it is" do
+    with_tempdir("iyimod_artifact_edge") do
+      Dir.mkdir_p "app"
+      File.write "app/inner.iyi", <<-IYI
+        module app/inner
+
+        pub def inner : Int32
+          1
+        end
+        IYI
+      File.write "app/outer.iyi", <<-IYI
+        module app/outer
+
+        import app/inner
+
+        pub def outer : Int32
+          App::Inner.inner
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/outer
+
+        puts App::Outer.outer
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.no_codegen = true
+      producer.compile source, "unused"
+
+      # Only the leaf keeps its artifact, so the second build reads `app/inner`
+      # from a `.iyimod` and `app/outer` from source — which is the shape an
+      # incremental build has, and the only one where the edge is written by a
+      # module whose dependency did not come from source.
+      File.delete File.join("mods", "app", "outer.iyimod")
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.emit_iyimod = "out"
+      consumer.no_codegen = true
+      consumer.compile source, "unused"
+
+      artifact = Crystal::IyiMod.read(File.join("out", "app", "outer.iyimod"))
+      artifact.import_names.should eq ["app/inner"]
+    end
+  end
+
+  it "round-trips exported types with their parameters and methods" do
+    declaration = type_declaration("List", "generic struct",
+      type_parameters: ["T"],
+      methods: [signature("at", ["index : Int32"], "T")])
+
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(types: [declaration]), path
+      read = Crystal::IyiMod.read(path).exports.types
+
+      read.size.should eq 1
+      read[0].name.should eq "List"
+      read[0].kind.should eq "generic struct"
+      read[0].type_parameters.should eq ["T"]
+      read[0].methods.map(&.name).should eq ["at"]
+    end
+  end
+
+  # II.4 depends on this record: it is what lets a consumer answer "does
+  # `Customer` implement `ToJSON`?" without reading `Customer`.
+  it "round-trips impl records" do
+    impls = [
+      impl_record("Std::Traits::Cmp", "Int32"),
+      impl_record("Std::Enumerable::Enumerable", "Std::List::List(T)",
+        free_variables: ["T"], assoc_types: [{"Elem", "T"}]),
+    ]
+
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(impls: impls), path
+      read = Crystal::IyiMod.read(path).exports.impls
+
+      read.map(&.trait_name).should eq ["Std::Traits::Cmp", "Std::Enumerable::Enumerable"]
+      read.map(&.type_name).should eq ["Int32", "Std::List::List(T)"]
+      read[1].free_variables.should eq ["T"]
+      read[1].assoc_types.should eq [{"Elem", "T"}]
+    end
+  end
+
+  # A constructor's result is its type and nobody writes it down, so an absent
+  # return type is recorded as absent rather than filled in with a guess.
+  it "renders a signature with no return annotation without one" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact(exports: [
+      signature("initialize", ["items : Array(T)"]),
+    ]), io
+
+    io.to_s.should contain "  def initialize(items : Array(T))\n"
+  end
+
+  it "dumps a type declaration and an impl" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact(
+      types: [type_declaration("Greet", "trait",
+        methods: [signature("greet", return_type: "String")])],
+      impls: [impl_record("Greet", "User")],
+    ), io
+    text = io.to_s
+
+    # With its visibility, because "carried and unreachable" is a thing a
+    # reader of this file has to be able to tell from "carried and exported".
+    text.should contain "  pub trait Greet"
+    text.should contain "    def greet : String"
+    text.should contain "  impl Greet for User"
+  end
+
+  # II.6 keeps a trait's parameters and its associated types apart — the first
+  # is supplied at the `impl` line and the second is answered in its body — so
+  # an artifact that merged them would ask for `Elem` in the one place II.6
+  # says it does not go.
+  it "round-trips a trait's parameters, associated types and supertraits" do
+    declaration = type_declaration("Enumerable", "generic trait",
+      type_parameters: ["K"],
+      assoc_types: ["Elem"],
+      supertraits: ["Std::Traits::Cmp"],
+      methods: [signature("each", return_type: "Nil",
+        block_parameter: "& : (Elem -> Nil)", required: true)])
+
+    with_temporary_file do |path|
+      Crystal::IyiMod.write sample_artifact(types: [declaration]), path
+      read = Crystal::IyiMod.read(path).exports.types[0]
+
+      read.type_parameters.should eq ["K"]
+      read.assoc_types.should eq ["Elem"]
+      read.supertraits.should eq ["Std::Traits::Cmp"]
+    end
+  end
+
+  it "dumps a trait and an impl as they were declared" do
+    io = IO::Memory.new
+    Crystal::IyiMod.dump sample_artifact(
+      types: [type_declaration("Enumerable", "generic trait",
+        assoc_types: ["Elem"],
+        supertraits: ["Cmp"],
+        methods: [signature("each", return_type: "Nil", required: true)])],
+      impls: [impl_record("Std::Enumerable::Enumerable", "Std::List::List(T)",
+        free_variables: ["T"],
+        free_variable_bounds: [{"T", "Cmp"}],
+        assoc_types: [{"Elem", "T"}])],
+    ), io
+    text = io.to_s
+
+    # `generic` is how a type describes itself, not how anyone declares one.
+    text.should contain "  pub trait Enumerable : Cmp"
+    text.should contain "    type Elem"
+    text.should contain "  impl Std::Enumerable::Enumerable for Std::List::List(T) forall T : Cmp"
+    text.should contain "    type Elem = T"
+  end
+
+  # What `import` compiles against instead of the module's source (R-1). It is
+  # iyi rather than a second grammar, so the parser that read the module reads
+  # its declarations back.
+  it "renders the declarations a consumer compiles against" do
+    io = IO::Memory.new
+    Crystal::IyiMod.declarations sample_artifact(
+      exports: [signature("polite", ["name : String"], "String")],
+      types: [type_declaration("Greet", "trait",
+        methods: [signature("greet", return_type: "String", required: true)])],
+      impls: [impl_record("Greet", "User")],
+    ), io
+    text = io.to_s
+
+    text.should contain "module app/greeter"
+    # A body is absent, not empty: a call is typed from the return annotation,
+    # which is what makes this enough for the front end and nothing else.
+    text.should contain "pub def polite(name : String) : String\nend\n"
+    text.should contain "pub trait Greet\n  abstract def greet : String\nend\n"
+    # An `abstract def` ends at its signature and takes no `end` of its own.
+    text.should_not contain "abstract def greet : String\n  end"
+    text.should contain "impl Greet for User\nend\n"
+    # The impl comes after the type it targets, because the requirement check
+    # reads the methods off the target rather than out of the impl's body.
+    text.index("pub trait Greet").not_nil!.should be < text.index("impl Greet for User").not_nil!
+  end
+
+  it "renders a generic type and the impl that answers its associated type" do
+    io = IO::Memory.new
+    Crystal::IyiMod.declarations sample_artifact(
+      types: [type_declaration("List", "generic struct", type_parameters: ["T"],
+        methods: [signature("each", return_type: "Nil", block_parameter: "& : (T -> Nil)")])],
+      impls: [impl_record("Std::Enumerable::Enumerable", "Std::List::List(T)",
+        free_variables: ["T"], assoc_types: [{"Elem", "T"}])],
+    ), io
+    text = io.to_s
+
+    text.should contain "pub struct List(T)"
+    text.should contain "  def each(& : (T -> Nil)) : Nil\n  end\n"
+    text.should contain "impl Std::Enumerable::Enumerable for Std::List::List(T) forall T\n  type Elem = T\nend\n"
+  end
+end

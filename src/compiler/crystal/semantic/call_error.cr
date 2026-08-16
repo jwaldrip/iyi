@@ -24,6 +24,13 @@ class Crystal::Path
   def raise_undefined_constant(type)
     private_const = type.lookup_path(self, include_private: true)
     if private_const
+      # iyi: a type an iyi module left unmarked is closed by `pub` rather than
+      # by Crystal's `private`, so say which word is missing (SPEC.md R-2).
+      namespace = private_const.is_a?(Type) ? private_const.namespace : nil
+      if namespace && namespace.iyi_unit?
+        self.raise("#{namespace} does not export #{private_const}. Only what a module marks `pub` is reachable from outside it — see SPEC.md R-2")
+      end
+
       self.raise("private constant #{private_const} referenced")
     end
 
@@ -965,7 +972,12 @@ class Crystal::Call
           return
         end
 
-        raise "private method '#{match.def.name}' called for #{match.def.owner}"
+        owner = match.def.owner
+        if owner.is_a?(ModuleType) && owner.iyi_unit?
+          raise "#{owner} does not export '#{match.def.name}'. Only what a module marks `pub` is reachable from outside it — see SPEC.md R-2"
+        end
+
+        raise "private method '#{match.def.name}' called for #{owner}"
       end
     when .protected?
       scope_type = scope.instance_type

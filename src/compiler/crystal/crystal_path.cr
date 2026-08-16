@@ -133,6 +133,15 @@ module Crystal
 
     def each_file_expansion(filename, relative_to, &)
       relative_filename = "#{relative_to}/#{filename}"
+
+      # iyi: a `require` may name an iyi file, and it wins over a `.cr` of the
+      # same name — the precedence `import` already uses, for the same reason.
+      # `--prelude` resolves through here, and 0.1.0's prelude is written in
+      # iyi (SPEC.md, "0.1.0", item 3).
+      unless relative_filename.ends_with?(".cr")
+        yield relative_filename.ensure_suffix(".iyi")
+      end
+
       # Check if .cr file exists.
       yield relative_filename.ensure_suffix(".cr")
 

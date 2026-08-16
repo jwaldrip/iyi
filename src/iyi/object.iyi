@@ -1,0 +1,77 @@
+# What every value can do — SPEC.md, "0.1.0", item 3.
+#
+# Small on purpose. `to_s` returns a `String` rather than taking an `IO`, which
+# is the single biggest saving against Crystal's core: an `IO` here would bring
+# buffering, encodings and a class hierarchy for the sake of `puts`.
+class Object
+  # The type's own name, which is what a value that has said nothing about
+  # itself can honestly print. A type that wants better defines its own.
+  def to_s : String
+    {{ @type.name.stringify }}
+  end
+
+  # What a value looks like written down rather than printed. The two differ
+  # for `nil` and for strings, which is the whole reason a sample reaches for
+  # it: `#{value.inspect}` is how it shows that a value is absent.
+  def inspect : String
+    to_s
+  end
+
+  # Every type is usable as a `Hash` key, and one that has not said how it
+  # hashes hashes to its type. That is correct and useless — every value of
+  # such a type lands in one slot — which is the honest default: a type that
+  # is used as a key defines `hash`.
+  def hash : Int32
+    crystal_type_id
+  end
+
+  # `value.in?(a, b)` — the Kemal port's way of writing an alternation. On
+  # `Object` because it is about the value, not about any one type of it.
+  def in?(*values : *T) : Bool forall T
+    {% for index in 0...T.size %}
+      return true if self == values[{{ index }}]
+    {% end %}
+    false
+  end
+
+  def ==(other) : Bool
+    false
+  end
+
+  def !=(other) : Bool
+    !(self == other)
+  end
+end
+
+struct Nil
+  def to_s : String
+    ""
+  end
+
+  def inspect : String
+    "nil"
+  end
+
+  def ==(other : Nil) : Bool
+    true
+  end
+end
+
+struct Symbol
+  # `case … when :before` compares with `===`, which on an ordinary value is
+  # `==`. Defined on `Object` in Crystal; here it is only ever reached on a
+  # symbol, so it is here.
+  def ===(other) : Bool
+    self == other
+  end
+
+  def hash : Int32
+    to_i
+  end
+end
+
+struct Bool
+  def to_s : String
+    self ? "true" : "false"
+  end
+end

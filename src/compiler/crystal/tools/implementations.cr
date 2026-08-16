@@ -16,9 +16,9 @@ module Crystal
     def to_text(io)
       io.puts message
       implementations.try do |arr|
-        arr.each do |impl|
-          io.puts "#{impl.filename}:#{impl.line}:#{impl.column}"
-          expanded = impl.expands
+        arr.each do |implem|
+          io.puts "#{implem.filename}:#{implem.line}:#{implem.column}"
+          expanded = implem.expands
           while expanded
             io.puts " ~> macro #{expanded.macro}: #{expanded.filename}:#{expanded.line}:#{expanded.column}"
             expanded = expanded.expands

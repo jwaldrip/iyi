@@ -1,0 +1,10 @@
+# A second module, exporting a `title` of its own. See `../modules.iyi`.
+module app/formal
+
+pub def title : String
+  "esteemed colleague"
+end
+
+pub def address(name : String) : String
+  "Good day, #{name}."
+end

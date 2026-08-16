@@ -1,0 +1,3022 @@
+require "../../spec_helper"
+
+# Semantics of the iyi declarations: `module` headers, `using`, and `impl`.
+#
+# `import` is not covered here — it resolves against files on disk, so it is
+# exercised by `samples/iyi/modules.iyi` rather than by this file. Everything
+# else needs only that the used module exist, so these specs declare it
+# directly instead of importing it.
+describe "Semantic: iyi" do
+  describe "using" do
+    it "resolves a function of a used module from module top level" do
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Greeter
+            extend self
+
+            def polite
+              1
+            end
+          end
+        end
+
+        module Consumer
+          using app/greeter
+
+          def self.go
+            polite
+          end
+        end
+
+        Consumer.go
+        CRYSTAL
+    end
+
+    it "resolves a function of a used module from a nested type" do
+      # The case `include` cannot cover: the directive is on `Consumer`, and
+      # `Consumer::User` is not on `Consumer`'s ancestor chain.
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Greeter
+            extend self
+
+            def polite
+              1
+            end
+          end
+        end
+
+        module Consumer
+          using app/greeter
+
+          struct User
+            def greet
+              polite
+            end
+          end
+        end
+
+        Consumer::User.new.greet
+        CRYSTAL
+    end
+
+    it "resolves a type of a used module" do
+      assert_type(<<-CRYSTAL) { types["Consumer"].types["User"] }
+        module App
+          module Greeter
+            module Greet
+            end
+          end
+        end
+
+        module Consumer
+          using app/greeter
+
+          struct User
+            include Greet
+          end
+        end
+
+        Consumer::User.new
+        CRYSTAL
+    end
+
+    it "does not re-export what it brought in" do
+      # `using` is written by the consumer, so importing the consumer must not
+      # be a way to reach what the consumer used.
+      assert_error <<-CRYSTAL, "undefined method 'polite'"
+        module App
+          module Greeter
+            extend self
+
+            def polite
+              1
+            end
+          end
+        end
+
+        module Consumer
+          using app/greeter
+        end
+
+        Consumer.polite
+        CRYSTAL
+    end
+
+    it "does not reach a name the selective form left out" do
+      assert_error <<-CRYSTAL, "undefined local variable or method 'polite'"
+        module App
+          module Greeter
+            extend self
+
+            def polite
+              1
+            end
+
+            def title
+              2
+            end
+          end
+        end
+
+        module Consumer
+          using app/greeter::{title}
+
+          polite
+        end
+        CRYSTAL
+    end
+
+    it "reaches a name the selective form listed" do
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Greeter
+            extend self
+
+            def polite
+              1
+            end
+
+            def title
+              2
+            end
+          end
+        end
+
+        module Consumer
+          using app/greeter::{polite}
+
+          def self.go
+            polite
+          end
+        end
+
+        Consumer.go
+        CRYSTAL
+    end
+
+    it "takes type names in the selective form too" do
+      assert_type(<<-CRYSTAL) { types["Consumer"].types["User"] }
+        module App
+          module Greeter
+            module Greet
+            end
+
+            module Loud
+            end
+          end
+        end
+
+        module Consumer
+          using app/greeter::{Greet}
+
+          struct User
+            include Greet
+          end
+        end
+
+        Consumer::User.new
+        CRYSTAL
+    end
+
+    it "does not reach a type the selective form left out" do
+      assert_error <<-CRYSTAL, "undefined constant Loud"
+        module App
+          module Greeter
+            module Greet
+            end
+
+            module Loud
+            end
+          end
+        end
+
+        module Consumer
+          using app/greeter::{Greet}
+
+          struct User
+            include Loud
+          end
+        end
+        CRYSTAL
+    end
+  end
+
+  describe "using conflicts (SPEC.md II.3)" do
+    it "reports an ambiguous function at the point of use" do
+      assert_error <<-CRYSTAL, "'title' is ambiguous here"
+        module App
+          module Greeter
+            extend self
+
+            def title
+              1
+            end
+          end
+
+          module Formal
+            extend self
+
+            def title
+              2
+            end
+          end
+        end
+
+        module Consumer
+          using app/greeter
+          using app/formal
+
+          def self.go
+            title
+          end
+        end
+
+        Consumer.go
+        CRYSTAL
+    end
+
+    it "reports an ambiguous type at the point of use" do
+      assert_error <<-CRYSTAL, "'Greet' is ambiguous here"
+        module App
+          module Greeter
+            module Greet
+            end
+          end
+
+          module Formal
+            module Greet
+            end
+          end
+        end
+
+        module Consumer
+          using app/greeter
+          using app/formal
+
+          struct User
+            include Greet
+          end
+        end
+        CRYSTAL
+    end
+
+    it "does not report two used modules that merely could clash" do
+      # Two modules exporting one name is not by itself a mistake. Nothing is
+      # wrong until a name is written that could mean either.
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Greeter
+            extend self
+
+            def title
+              1
+            end
+
+            def polite
+              1
+            end
+          end
+
+          module Formal
+            extend self
+
+            def title
+              2
+            end
+          end
+        end
+
+        module Consumer
+          using app/greeter
+          using app/formal
+
+          def self.go
+            polite
+          end
+        end
+
+        Consumer.go
+        CRYSTAL
+    end
+
+    it "resolves an otherwise ambiguous name once one directive is narrowed" do
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Greeter
+            extend self
+
+            def title
+              1
+            end
+          end
+
+          module Formal
+            extend self
+
+            def title
+              true
+            end
+
+            def address
+              2
+            end
+          end
+        end
+
+        module Consumer
+          using app/greeter
+          using app/formal::{address}
+
+          def self.go
+            title
+          end
+        end
+
+        Consumer.go
+        CRYSTAL
+    end
+
+    # II.3's other rule, and the one that keeps a library from breaking its
+    # consumers by adding an export. Checked from inside a nested type,
+    # because that is where getting the search order wrong shows up.
+    #
+    # It needs a module header, so nothing in the source is at top level and
+    # there is no last expression to assert a type on. The `: Bool` return
+    # restriction is the assertion instead: only one of the two candidates
+    # satisfies it, so which one was chosen decides whether this compiles.
+    # The pair of specs is what pins it down — the second shows the used
+    # function really is found when there is no local one to beat it.
+    it "lets a local definition beat a used one, from a nested type" do
+      assert_no_errors <<-CRYSTAL
+        module app/consumer
+
+        module App
+          module Greeter
+            extend self
+
+            def polite
+              1
+            end
+          end
+        end
+
+        using app/greeter
+
+        def polite
+          true
+        end
+
+        struct User
+          def greet : Bool
+            polite
+          end
+        end
+
+        User.new.greet
+        CRYSTAL
+    end
+
+    it "falls back to the used one when there is no local definition" do
+      assert_error <<-CRYSTAL, "must return Bool"
+        module app/consumer
+
+        module App
+          module Greeter
+            extend self
+
+            def polite
+              1
+            end
+          end
+        end
+
+        using app/greeter
+
+        struct User
+          def greet : Bool
+            polite
+          end
+        end
+
+        User.new.greet
+        CRYSTAL
+    end
+
+    it "raises on `using` of something that is not a module" do
+      assert_error <<-CRYSTAL, %(can't `using` App::Greeter, it's a struct)
+        module App
+          struct Greeter
+          end
+        end
+
+        module Consumer
+          using app/greeter
+        end
+        CRYSTAL
+    end
+  end
+
+  describe "module header" do
+    it "puts a module's own functions in scope for the types declared in it" do
+      # An iyi module is a compilation unit, so its `def`s are functions in
+      # lexical scope. Crystal modules do not work this way, which is what the
+      # next spec pins down.
+      assert_no_errors <<-CRYSTAL
+        module app/thing
+
+        def helper
+          1
+        end
+
+        struct T
+          def go : Int32
+            helper
+          end
+        end
+
+        T.new.go
+        CRYSTAL
+    end
+
+    it "leaves a Crystal module scoping exactly as it was" do
+      assert_error <<-CRYSTAL, "undefined local variable or method 'helper'"
+        module Thing
+          extend self
+
+          def helper
+            1
+          end
+
+          struct T
+            def go
+              helper
+            end
+          end
+        end
+
+        Thing::T.new.go
+        CRYSTAL
+    end
+  end
+
+  describe "traits are their own type (SPEC.md R-3)" do
+    it "refuses to reopen a struct as a trait" do
+      assert_error <<-CRYSTAL, "Foo is not a trait, it's a struct"
+        module App
+          struct Foo
+          end
+
+          trait Foo
+            abstract def show
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses to reopen a module as a trait" do
+      assert_error <<-CRYSTAL, "Greet is not a trait, it's a module"
+        module App
+          module Greet
+          end
+
+          trait Greet
+            abstract def greet
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses to `include` a trait" do
+      # The whole point of R-3: a type acquires a trait through an impl, whose
+      # location the orphan rule can check. `include` has no such rule.
+      assert_error <<-CRYSTAL, "can't include App::Show::Showable, it's a trait"
+        module App
+          module Show
+            trait Showable
+              abstract def show
+            end
+
+            struct Foo
+              include Showable
+
+              def show
+                1
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses to `extend` a trait" do
+      assert_error <<-CRYSTAL, "can't extend App::Show::Showable, it's a trait"
+        module App
+          module Show
+            trait Showable
+              abstract def show
+            end
+
+            struct Foo
+              extend Showable
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "still lets an impl register the trait" do
+      # `impl` reaches the same machinery `include` does, so refusing the
+      # written directive must not close the path the impl needs.
+      assert_type(<<-CRYSTAL) { bool }
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+              def show : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Show::Foo.new.is_a?(App::Show::Showable)
+        CRYSTAL
+    end
+
+    it "refuses to `using` a trait" do
+      assert_error <<-CRYSTAL, "can't `using` App::Show::Showable, it's a trait"
+        module App
+          module Show
+            trait Showable
+              abstract def show
+            end
+          end
+        end
+
+        module Consumer
+          using app/show/showable
+        end
+        CRYSTAL
+    end
+
+    it "still lets the selective form name a trait" do
+      # `using app/show::{Showable}` uses the *module* and selects a type name
+      # from it, which is II.3 working as specified — only naming the trait as
+      # the used module itself is refused.
+      assert_type(<<-CRYSTAL) { types["App"].types["Show"].types["Foo"] }
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+              def show : Int32
+                1
+              end
+            end
+          end
+        end
+
+        module Consumer
+          using app/show::{Showable, Foo}
+
+          def self.build : Showable
+            Foo.new
+          end
+        end
+
+        Consumer.build
+        CRYSTAL
+    end
+
+    it "refuses to implement a module" do
+      assert_error <<-CRYSTAL, "can't implement App::Greeter, it's a module. Only a trait can be implemented"
+        module App
+          module Greeter
+          end
+
+          struct Foo
+          end
+
+          impl Greeter for Foo
+            def greet
+              1
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses to implement a trait for a trait" do
+      # A blanket impl in disguise: it would give every implementer of one
+      # trait a second one, from a module that has heard of neither.
+      assert_error <<-CRYSTAL, "it's a trait"
+        module App
+          module Show
+            trait Showable
+              abstract def show
+            end
+
+            trait Loud
+              abstract def shout
+            end
+
+            impl Showable for Loud
+              def show
+                1
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports a requirement the impl does not satisfy, at the impl" do
+      # Crystal's abstract-def check reports at the point the type is first
+      # used and names the type. This names the impl and the method.
+      assert_error <<-CRYSTAL, "impl App::Show::Showable for App::Show::Foo is missing a method required by the trait: show"
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports every missing requirement at once" do
+      assert_error <<-CRYSTAL, "is missing methods required by the trait: shout, show"
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+              abstract def shout : Int32
+
+              def loud : Int32
+                shout
+              end
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "does not report a requirement an unused type leaves unimplemented" do
+      # The point of checking at the impl: today this compiles clean, because
+      # Crystal only reports an unimplemented abstract where the type is used.
+      assert_error <<-CRYSTAL, "is missing a method required by the trait: show"
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            struct Unused
+            end
+
+            impl Showable for Unused
+            end
+          end
+        end
+
+        1
+        CRYSTAL
+    end
+
+    it "accepts a requirement satisfied by a default method" do
+      # A trait method with a body is not a requirement, so an impl that
+      # defines only the abstract one is complete.
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+
+              def shown : Int32
+                show
+              end
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+              def show : Int32
+                21
+              end
+            end
+          end
+        end
+
+        App::Show::Foo.new.shown
+        CRYSTAL
+    end
+
+    it "keeps a trait usable as a type restriction" do
+      # The reason `TraitType` subclasses the module type rather than replacing
+      # it: a value typed by the trait still dispatches to the impl.
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+              def show : Int32
+                1
+              end
+            end
+
+            def self.render(x : Showable) : Int32
+              x.show
+            end
+          end
+        end
+
+        App::Show.render(App::Show::Foo.new)
+        CRYSTAL
+    end
+  end
+
+  describe "impl coherence (R-3)" do
+    it "allows an impl in the module that defines the trait" do
+      assert_type(<<-CRYSTAL) { types["App"].types["Data"].types["Foo"] }
+        module App
+          module Data
+            struct Foo
+            end
+          end
+
+          module Show
+            trait Showable
+              abstract def show
+            end
+
+            impl Showable for App::Data::Foo
+              def show
+                1
+              end
+            end
+          end
+        end
+
+        App::Data::Foo.new
+        CRYSTAL
+    end
+
+    it "allows an impl in the module that defines the type" do
+      assert_type(<<-CRYSTAL) { types["App"].types["Data"].types["Foo"] }
+        module App
+          module Show
+            trait Showable
+              abstract def show
+            end
+          end
+
+          module Data
+            struct Foo
+            end
+
+            impl App::Show::Showable for Foo
+              def show
+                1
+              end
+            end
+          end
+        end
+
+        App::Data::Foo.new
+        CRYSTAL
+    end
+
+    it "refuses an impl in a module that defines neither" do
+      # The case the import DAG does not rule out on its own: a third module
+      # that can name both is free to write the impl, and so is a fourth.
+      assert_error <<-CRYSTAL, "an impl must live in the module that defines the trait"
+        module App
+          module Show
+            trait Showable
+              abstract def show
+            end
+          end
+
+          module Data
+            struct Foo
+            end
+          end
+
+          module Orphan
+            impl App::Show::Showable for App::Data::Foo
+              def show
+                1
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses an impl where neither declaration belongs to a module" do
+      # The top level is not a module. Treating it as one is what used to make
+      # the rule vacuous for `Error`, which the compiler owns, and for a
+      # prelude type: every module was trivially "inside" it.
+      assert_error <<-CRYSTAL, "neither belongs to a module, so there is no module this impl could be at home in", filename: "x.iyi"
+        module App
+          module Orphan
+            impl Error for String
+              def message : String
+                self
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses an impl of a module-less trait outside the type's module" do
+      # With no module on the trait's side, only the type's side is left to
+      # satisfy — and this impl is in neither.
+      assert_error <<-CRYSTAL, "an impl must live in the module that defines the type (App::Data)", filename: "x.iyi"
+        module App
+          module Data
+            struct Foo
+            end
+          end
+
+          module Orphan
+            impl Error for App::Data::Foo
+              def message : String
+                "x"
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "allows an impl of a module-less trait in the type's own module" do
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { types["App"].types["Data"].types["Foo"] }
+        module App
+          module Data
+            struct Foo
+            end
+
+            impl Error for Foo
+              def message : String
+                "x"
+              end
+            end
+          end
+        end
+
+        App::Data::Foo.new
+        CRYSTAL
+    end
+
+    it "allows an impl for a module-less type from the trait's own module" do
+      # Implementing a trait you own for a type you do not is the other side of
+      # the rule, and it stays open — this is how `std/traits` reaches `Int32`.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            impl Showable for Int32
+              def show : Int32
+                1
+              end
+            end
+          end
+        end
+
+        1
+        CRYSTAL
+    end
+
+    it "is vacuous when neither declaration is in a module" do
+      # A program that never writes a module header is one compilation unit,
+      # so there is no other module for an impl to have gone in.
+      assert_type(<<-CRYSTAL) { types["Foo"] }
+        trait Showable
+          abstract def show
+        end
+
+        struct Foo
+        end
+
+        impl Showable for Foo
+          def show
+            1
+          end
+        end
+
+        Foo.new
+        CRYSTAL
+    end
+  end
+
+  describe "generic impls (SPEC.md II.7)" do
+    it "implements a trait for every instantiation of a generic type" do
+      assert_type(<<-CRYSTAL) { int32 }
+        trait Showable
+          abstract def show
+        end
+
+        struct Box(T)
+          def initialize(@value : T)
+          end
+
+          def value
+            @value
+          end
+        end
+
+        impl Showable for Box(T) forall T
+          def show
+            value
+          end
+        end
+
+        Box.new(1).show
+        CRYSTAL
+    end
+
+    it "binds the impl's own parameter names positionally" do
+      # `Pair` declared `A, B`; the impl calls them `X, Y`. An impl states
+      # arity, not vocabulary — Crystal requires a reopened generic to repeat
+      # the declared names, which leaks a type's private naming.
+      assert_type(<<-CRYSTAL) { bool }
+        trait Showable
+          abstract def show
+        end
+
+        struct Pair(A, B)
+          def initialize(@first : A, @second : B)
+          end
+
+          def second
+            @second
+          end
+        end
+
+        impl Showable for Pair(X, Y) forall X, Y
+          def show : Y
+            second
+          end
+        end
+
+        Pair.new(1, true).show
+        CRYSTAL
+    end
+
+    it "requires the binder" do
+      assert_error <<-CRYSTAL, "introduce the parameters with `forall`"
+        trait Showable
+          abstract def show
+        end
+
+        struct Box(T)
+        end
+
+        impl Showable for Box(T)
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a specialised impl" do
+      assert_error <<-CRYSTAL, "iyi has no specialised impls"
+        trait Showable
+          abstract def show
+        end
+
+        struct Box(T)
+        end
+
+        impl Showable for Box(Int32)
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a concrete argument alongside a binder" do
+      assert_error <<-CRYSTAL, "iyi has no specialised impls"
+        trait Showable
+          abstract def show
+        end
+
+        struct Pair(A, B)
+        end
+
+        impl Showable for Pair(T, Int32) forall T
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a blanket impl" do
+      assert_error <<-CRYSTAL, "can't implement Showable for every type"
+        trait Showable
+          abstract def show
+        end
+
+        impl Showable for T forall T
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a blanket impl before complaining about its bound" do
+      # Refusing the blanket form is permanent; the bound being unimplemented
+      # is not. The permanent answer is the more useful one.
+      assert_error <<-CRYSTAL, "can't implement Showable for every type"
+        trait Showable
+          abstract def show
+        end
+
+        impl Showable for T forall T : Showable
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "rejects bounds as unimplemented" do
+      assert_error <<-CRYSTAL, "trait bounds on impl type parameters"
+        trait Showable
+          abstract def show
+        end
+
+        struct Box(T)
+        end
+
+        impl Showable for Box(T) forall T : Showable
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "checks arity" do
+      assert_error <<-CRYSTAL, "wrong number of type vars"
+        trait Showable
+          abstract def show
+        end
+
+        struct Box(T)
+        end
+
+        impl Showable for Box(T, U) forall T, U
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses binding one parameter twice" do
+      assert_error <<-CRYSTAL, "is bound twice"
+        trait Showable
+          abstract def show
+        end
+
+        struct Pair(A, B)
+        end
+
+        impl Showable for Pair(T, T) forall T
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses an unused binder name" do
+      assert_error <<-CRYSTAL, "which is never used"
+        trait Showable
+          abstract def show
+        end
+
+        struct Box(T)
+        end
+
+        impl Showable for Box(T) forall T, U
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a rename that would capture" do
+      # `Pair` declared `A`; renaming the impl's `X` to `A` would silently turn
+      # a body reference to `A` into the type parameter.
+      assert_error <<-CRYSTAL, "can't also be used as a name here"
+        trait Showable
+          abstract def show
+        end
+
+        struct A
+        end
+
+        struct Pair(A, B)
+        end
+
+        impl Showable for Pair(X, Y) forall X, Y
+          def show
+            A.new
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses `forall` on a target that takes no parameters" do
+      assert_error <<-CRYSTAL, "has nothing to bind"
+        trait Showable
+          abstract def show
+        end
+
+        struct Foo
+        end
+
+        impl Showable for Foo forall T
+          def show
+            1
+          end
+        end
+        CRYSTAL
+    end
+  end
+
+  # A bound on a *method*'s free variable, which is a different mechanism from
+  # a bound on an impl's parameter: the method exists either way, so there is
+  # one check where the variable binds and nothing to defer. The impl form
+  # stays unimplemented — see the `describe` above.
+  describe "trait bounds on a method (SPEC.md II.7)" do
+    it "accepts a call whose bound type implements the trait" do
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            struct Foo
+            end
+
+            impl Showable for Foo
+              def show : Int32
+                1
+              end
+            end
+
+            def self.render(x : T) : Int32 forall T : Showable
+              x.show
+            end
+          end
+        end
+
+        App::Show.render(App::Show::Foo.new)
+        CRYSTAL
+    end
+
+    it "refuses a call whose bound type does not implement the trait" do
+      assert_error <<-CRYSTAL, "Char does not implement App::Show::Showable, required by `T` in `render`"
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            def self.render(x : T) : Int32 forall T : Showable
+              1
+            end
+          end
+        end
+
+        App::Show.render('a')
+        CRYSTAL
+    end
+
+    it "binds through a block's return type" do
+      # The shape the Kemal router needs: nothing in the parameter list
+      # mentions the bounded variable.
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Router
+            trait IntoBody
+              abstract def into_body : Int32
+            end
+
+            impl IntoBody for Char
+              def into_body : Int32
+                1
+              end
+            end
+
+            # The body does not call the block: the spec harness runs a
+            # minimal prelude with no `Proc#call`, and what is under test is
+            # where `B` binds, not what the body does with it.
+            def self.add_route(&block : Int32 -> B) : Int32 forall B : IntoBody
+              1
+            end
+          end
+        end
+
+        App::Router.add_route { |x| 'a' }
+        CRYSTAL
+    end
+
+    it "refuses a block whose return type does not implement the trait" do
+      assert_error <<-CRYSTAL, "Bool does not implement App::Router::IntoBody, required by `B` in `add_route`"
+        module App
+          module Router
+            trait IntoBody
+              abstract def into_body : Int32
+            end
+
+            def self.add_route(&block : Int32 -> B) : Int32 forall B : IntoBody
+              1
+            end
+          end
+        end
+
+        App::Router.add_route { |x| true }
+        CRYSTAL
+    end
+
+    it "checks only the names that carry a bound" do
+      assert_error <<-CRYSTAL, "does not implement App::Show::Showable, required by `A` in `pair`"
+        module App
+          module Show
+            trait Showable
+              abstract def show : Int32
+            end
+
+            impl Showable for Char
+              def show : Int32
+                1
+              end
+            end
+
+            def self.pair(a : A, b : B) : Int32 forall A : Showable, B
+              a.show
+            end
+          end
+        end
+
+        App::Show.pair('a', true)
+        App::Show.pair(true, 'a')
+        CRYSTAL
+    end
+
+    it "refuses a bound that is not a trait" do
+      assert_error <<-CRYSTAL, "can't bound T by App::Helpers, it's a module. A bound is a trait, and nothing else"
+        module App
+          module Helpers
+          end
+
+          def self.f(x : T) : Int32 forall T : Helpers
+            1
+          end
+        end
+
+        App.f(1)
+        CRYSTAL
+    end
+  end
+
+  # iyi: `trait Ord : Eq` — a trait requiring another trait (SPEC.md II.6).
+  # A requirement, not an inclusion, so a type still acquires `Eq` only by
+  # having an `impl Eq for` it — which is what keeps R-3 the only route in.
+  describe "supertraits" do
+    it "lets a default method call a method the required trait provides" do
+      # `Ord` never declares `eq`. It is the requirement that guarantees the
+      # implementer has one.
+      assert_type(<<-CRYSTAL) { bool }
+        module App
+          module Cmp
+            trait Eq
+              abstract def eq : Bool
+            end
+
+            trait Ord : Eq
+              abstract def key : Int32
+
+              def same : Bool
+                eq
+              end
+            end
+
+            struct N
+              def initialize
+              end
+            end
+
+            impl Eq for N
+              def eq : Bool
+                true
+              end
+            end
+
+            impl Ord for N
+              def key : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Cmp::N.new.same
+        CRYSTAL
+    end
+
+    it "reports a required trait the type does not implement" do
+      assert_error <<-CRYSTAL, "needs an impl of App::Cmp::Eq for App::Cmp::N first"
+        module App
+          module Cmp
+            trait Eq
+              abstract def eq : Bool
+            end
+
+            trait Ord : Eq
+              abstract def key : Int32
+            end
+
+            struct N
+            end
+
+            impl Ord for N
+              def key : Int32
+                1
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "does not let implementing the requiring trait confer the required one" do
+      # The reason this is a requirement rather than an `include`: if `Ord`
+      # included `Eq`, every implementer of `Ord` would satisfy `Eq` with no
+      # impl anywhere, which is the open-class hole R-3 closes.
+      assert_error <<-CRYSTAL, "needs an impl of App::Cmp::Eq for App::Cmp::M first"
+        module App
+          module Cmp
+            trait Eq
+              abstract def eq : Bool
+            end
+
+            trait Ord : Eq
+              abstract def key : Int32
+            end
+
+            struct N
+              def initialize
+              end
+            end
+
+            impl Eq for N
+              def eq : Bool
+                true
+              end
+            end
+
+            impl Ord for N
+              def key : Int32
+                1
+              end
+            end
+
+            struct M
+            end
+
+            impl Ord for M
+              def key : Int32
+                2
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports every required trait that is missing at once" do
+      assert_error <<-CRYSTAL, "needs impls of App::Cmp::Eq, App::Cmp::Show for App::Cmp::N first"
+        module App
+          module Cmp
+            trait Eq
+              abstract def eq : Bool
+            end
+
+            trait Show
+              abstract def show : String
+            end
+
+            trait Ord : Eq, Show
+              abstract def key : Int32
+            end
+
+            struct N
+            end
+
+            impl Ord for N
+              def key : Int32
+                1
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a requirement that is not a trait" do
+      assert_error <<-CRYSTAL, "can't require App::Cmp::Helpers, it's a module. A trait can only require another trait"
+        module App
+          module Cmp
+            module Helpers
+            end
+
+            trait Ord : Helpers
+              abstract def key : Int32
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a trait that requires itself" do
+      assert_error <<-CRYSTAL, "App::Cmp::Ord can't require itself"
+        module App
+          module Cmp
+            trait Ord : Ord
+              abstract def key : Int32
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses the same requirement twice" do
+      assert_error <<-CRYSTAL, "App::Cmp::Ord already requires App::Cmp::Eq"
+        module App
+          module Cmp
+            trait Eq
+              abstract def eq : Bool
+            end
+
+            trait Ord : Eq, Eq
+              abstract def key : Int32
+            end
+          end
+        end
+        CRYSTAL
+    end
+  end
+
+  # iyi: `type Elem` — an associated type (SPEC.md II.6). It is an output of the
+  # impl, not an input the caller picks, which is why a trait that declares one
+  # can be implemented only once for a type.
+  describe "associated types" do
+    it "resolves the trait's own signatures through the impl's answer" do
+      assert_type(<<-CRYSTAL) { string }
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+
+              def describe : Elem
+                first
+              end
+            end
+
+            struct Names
+              def initialize
+              end
+            end
+
+            impl Container for Names
+              type Elem = String
+
+              def first : String
+                "ada"
+              end
+            end
+          end
+        end
+
+        App::Coll::Names.new.describe
+        CRYSTAL
+    end
+
+    it "lets two types answer it differently" do
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+            end
+
+            struct Names
+              def initialize
+              end
+            end
+
+            impl Container for Names
+              type Elem = String
+
+              def first : String
+                "ada"
+              end
+            end
+
+            struct Counts
+              def initialize
+              end
+            end
+
+            impl Container for Counts
+              type Elem = Int32
+
+              def first : Int32
+                42
+              end
+            end
+          end
+        end
+
+        App::Coll::Counts.new.first
+        CRYSTAL
+    end
+
+    it "checks the impl's signature against its own answer" do
+      assert_error <<-CRYSTAL, "must return String"
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+            end
+
+            struct Names
+              def initialize
+              end
+            end
+
+            impl Container for Names
+              type Elem = String
+
+              def first : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Coll::Names.new.first
+        CRYSTAL
+    end
+
+    it "reports an associated type the impl does not answer" do
+      assert_error <<-CRYSTAL, "impl App::Coll::Container for App::Coll::Names does not answer an associated type the trait declares: Elem"
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+            end
+
+            struct Names
+            end
+
+            impl Container for Names
+              def first : String
+                "ada"
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports an answer the trait never asked for" do
+      assert_error <<-CRYSTAL, "App::Coll::Container declares no associated type named Key. It declares: Elem"
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+            end
+
+            struct Names
+            end
+
+            impl Container for Names
+              type Elem = String
+              type Key = Int32
+
+              def first : String
+                "ada"
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses a second impl of the same trait for one type" do
+      # The whole difference from a parameter: a second answer would make a
+      # call on the type ambiguous about which impl it meant.
+      assert_error <<-CRYSTAL, "already implements App::Coll::Container, and a trait with associated types can be implemented only once for a type"
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+            end
+
+            struct Names
+              def initialize
+              end
+            end
+
+            impl Container for Names
+              type Elem = String
+
+              def first : String
+                "ada"
+              end
+            end
+
+            impl Container for Names
+              type Elem = Int32
+
+              def first : Int32
+                1
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "refuses one declared anywhere but a trait or an impl body" do
+      assert_error <<-CRYSTAL, "an associated type can only be declared directly in a trait or an impl body"
+        module App
+          module Coll
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+            end
+
+            struct Names
+            end
+
+            impl Container for Names
+              type Elem = String
+
+              struct Inner
+                type Nested = Int32
+              end
+
+              def first : String
+                "ada"
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "allows a default method bounded on the associated type" do
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Coll
+            trait Cmp
+              abstract def cmp : Int32
+            end
+
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+
+              def biggest : Elem where Elem : Cmp
+                first
+              end
+            end
+
+            struct Score
+              def initialize
+              end
+            end
+
+            impl Cmp for Score
+              def cmp : Int32
+                1
+              end
+            end
+
+            struct Scores
+              def initialize
+              end
+            end
+
+            impl Container for Scores
+              type Elem = Score
+
+              def first : Score
+                Score.new
+              end
+            end
+          end
+        end
+
+        App::Coll::Scores.new.biggest.cmp
+        CRYSTAL
+    end
+
+    it "reports an element type that does not meet the bound" do
+      # The point of the bound: Crystal duck-types these and fails at
+      # instantiation, naming neither the bound nor the element type.
+      assert_error <<-CRYSTAL, "Int32 does not implement App::Coll::Cmp, required by `where Elem : App::Coll::Cmp` in `biggest`"
+        module App
+          module Coll
+            trait Cmp
+              abstract def cmp : Int32
+            end
+
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+
+              def biggest : Elem where Elem : Cmp
+                first
+              end
+            end
+
+            struct Raw
+              def initialize
+              end
+            end
+
+            impl Container for Raw
+              type Elem = Int32
+
+              def first : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Coll::Raw.new.biggest
+        CRYSTAL
+    end
+
+    it "leaves an unbounded method alone on the same trait" do
+      # Only the bounded method is restricted; the rest of the trait stays
+      # available whatever the element type is.
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Coll
+            trait Cmp
+              abstract def cmp : Int32
+            end
+
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+
+              def biggest : Elem where Elem : Cmp
+                first
+              end
+
+              def any : Elem
+                first
+              end
+            end
+
+            struct Raw
+              def initialize
+              end
+            end
+
+            impl Container for Raw
+              type Elem = Int32
+
+              def first : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Coll::Raw.new.any
+        CRYSTAL
+    end
+
+    it "refuses a where bound that is not a trait" do
+      assert_error <<-CRYSTAL, "can't bound Elem by App::Coll::Helpers, it's a module. A bound is a trait, and nothing else"
+        module App
+          module Coll
+            module Helpers
+            end
+
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+
+              def go : Elem where Elem : Helpers
+                first
+              end
+            end
+
+            struct Raw
+              def initialize
+              end
+            end
+
+            impl Container for Raw
+              type Elem = Int32
+
+              def first : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Coll::Raw.new.go
+        CRYSTAL
+    end
+
+    it "refuses a name that is both a parameter and an associated type" do
+      assert_error <<-CRYSTAL, "declares T both as a parameter and as an associated type"
+        module App
+          module Coll
+            trait Both(T)
+              type T
+
+              abstract def go : T
+            end
+          end
+        end
+        CRYSTAL
+    end
+  end
+
+  # iyi: errors are ordinary union members (SPEC.md III.1). `Error` is the
+  # compiler's own marker trait: what makes a member an error member is that
+  # its type implements it, which needs no new syntax and no new type machinery.
+  describe "errors" do
+    it "lets a module implement the compiler's Error trait" do
+      assert_type(<<-CRYSTAL) { types["App"].types["Fails"].types["IOError"] }
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+          end
+        end
+
+        App::Fails::IOError.new
+        CRYSTAL
+    end
+
+    it "checks Error's own requirement" do
+      assert_error <<-CRYSTAL, "impl Error for App::Fails::Bad is missing a method required by the trait: message"
+        module App
+          module Fails
+            struct Bad
+            end
+
+            impl Error for Bad
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports an error member left unhandled" do
+      # III.1.3, and the main ergonomic argument for the whole approach:
+      # adding an error member turns every incomplete `case` into an error.
+      assert_error <<-CRYSTAL, "case is not exhaustive"
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read : String | IOError
+              IOError.new
+            end
+
+            def self.go : Int32
+              result = read
+              case result
+              in String then 1
+              end
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
+
+    it "propagates an error member out of the enclosing method" do
+      # III.1.2. `read` can fail; `load` says so in its own return type, and
+      # `!` is what carries the failure across without a `case`. The filename
+      # matters: `!` is the operator only in a `.iyi` file.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { union_of(int32, types["App"].types["Fails"].types["IOError"]) }
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read(missing : Bool) : String | IOError
+              return IOError.new if missing
+              "contents"
+            end
+
+            # `length` takes a `String`, so this only matches if `!` narrowed
+            # `text` to the union's non-error member. Without the narrowing it
+            # would still be `String | IOError` and no overload would match.
+            def self.length(s : String) : Int32
+              1
+            end
+
+            def self.load(missing : Bool) : Int32 | IOError
+              text = read(missing)!
+              length(text)
+            end
+          end
+        end
+
+        App::Fails.load(false)
+        CRYSTAL
+    end
+
+    it "refuses to propagate where there is no error member" do
+      # III.1.1's degenerate cases are rejected rather than given a surprising
+      # meaning: without this, `!` here compiles and silently does nothing.
+      assert_error <<-CRYSTAL, "`!` has no error to propagate: no member of (Int32 | Nil) implements `Error`", filename: "x.iyi"
+        module App
+          module Fails
+            def self.maybe(missing : Bool) : Int32?
+              return nil if missing
+              1
+            end
+
+            def self.go : Int32?
+              maybe(false)!
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
+
+    it "refuses to propagate where every member is an error" do
+      assert_error <<-CRYSTAL, "`!` can never produce a value: every member of App::Fails::IOError implements `Error`", filename: "x.iyi"
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.always : IOError
+              IOError.new
+            end
+
+            def self.go : IOError
+              always!
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
+
+    it "reports an enclosing return type that does not admit the error" do
+      # Not a rule the operator enforces: it is the ordinary return-type check
+      # on the `return` the expansion wrote.
+      assert_error <<-CRYSTAL, "must return String but it is returning App::Fails::IOError", filename: "x.iyi"
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read(missing : Bool) : String | IOError
+              return IOError.new if missing
+              "contents"
+            end
+
+            def self.go : String
+              read(false)!
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
+
+    it "does not make Nil an error" do
+      # III.1.5: absence and failure stay distinct, so `T?` is not an error
+      # union and nothing here touches it.
+      assert_type(<<-CRYSTAL) { nilable int32 }
+        module App
+          module Fails
+            def self.maybe(missing : Bool) : Int32?
+              return nil if missing
+              1
+            end
+          end
+        end
+
+        App::Fails.maybe(false)
+        CRYSTAL
+    end
+
+    # iyi: a module's initialisation may not fail (SPEC.md III.5). Already
+    # rejected before this, but through Crystal's rule about `return` — which
+    # is what the expansion happens to be made of, and explains nothing.
+    it "refuses to propagate out of a module's initialisation" do
+      assert_error <<-CRYSTAL, "`!` can't propagate out of a module's initialisation", filename: "x.iyi"
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read(missing : Bool) : Int32 | IOError
+              return IOError.new if missing
+              1
+            end
+          end
+        end
+
+        App::Fails.read(false)!
+        CRYSTAL
+    end
+
+    it "still reports a plain top-level `return` as itself" do
+      assert_error "return", "can't return from top level", filename: "x.iyi"
+    end
+
+    # iyi: `defer` (SPEC.md III.1.4). The shape of the expansion is specced in
+    # `spec/compiler/normalize/defer_spec.cr`; what matters here is that it
+    # leaves the scope's type alone — the cleanup is an `ensure`, and an
+    # `ensure` contributes nothing to a value.
+    it "leaves the value of the scope alone" do
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Res
+            def self.close : Char
+              'x'
+            end
+
+            def self.go : Int32
+              defer close
+              1
+            end
+          end
+        end
+
+        App::Res.go
+        CRYSTAL
+    end
+
+    it "keeps a defer in a method that propagates" do
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { union_of(int32, types["App"].types["Res"].types["IOError"]) }
+        module App
+          module Res
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.close : Char
+              'x'
+            end
+
+            def self.open(missing : Bool) : Int32 | IOError
+              return IOError.new if missing
+              1
+            end
+
+            def self.go(missing : Bool) : Int32 | IOError
+              defer close
+              open(missing)!
+            end
+          end
+        end
+
+        App::Res.go(false)
+        CRYSTAL
+    end
+
+    # iyi: `it` in a `case` branch (SPEC.md III.1.1). An assignment, not new
+    # machinery, so it picks up the narrowing the branch already did.
+    it "binds `it` to the value a case is matching, narrowed per branch" do
+      # `length` takes a `String`, so this only compiles if `it` is the narrowed
+      # value and not the whole union.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read(missing : Bool) : String | IOError
+              return IOError.new if missing
+              "contents"
+            end
+
+            def self.length(s : String) : Int32
+              1
+            end
+
+            def self.go(missing : Bool) : Int32
+              case read(missing)
+              in String  then length(it)
+              in IOError then length(it.message)
+              end
+            end
+          end
+        end
+
+        App::Fails.go(false)
+        CRYSTAL
+    end
+
+    it "binds `it` in a `when` branch and in the else" do
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Fails
+            def self.go(n : Int32) : Int32
+              case n
+              when Int32 then it
+              else            it
+              end
+            end
+          end
+        end
+
+        App::Fails.go(1)
+        CRYSTAL
+    end
+
+    it "leaves `it` undefined where a case has a tuple subject" do
+      # There is no single value to name, so `it` is left a call rather than
+      # bound to one of the elements.
+      assert_error <<-CRYSTAL, "undefined local variable or method 'it'", filename: "x.iyi"
+        module App
+          module Fails
+            def self.go(a : Int32, b : Int32) : Int32
+              case {a, b}
+              in {Int32, Int32} then it
+              end
+            end
+          end
+        end
+
+        App::Fails.go(1, 2)
+        CRYSTAL
+    end
+
+    it "leaves `it` undefined in a Crystal file" do
+      assert_error <<-CRYSTAL, "undefined local variable or method 'it'"
+        module App
+          module Fails
+            def self.go(n : Int32) : Int32
+              case n
+              when Int32 then it
+              else            n
+              end
+            end
+          end
+        end
+
+        App::Fails.go(1)
+        CRYSTAL
+    end
+
+    # iyi: `.or(default)` and `.or_panic` — III.1.3's two conveniences, for
+    # where a `case` is overkill. Compiler-known rather than trait methods:
+    # by II.1 an ordinary call on `Int32 | IOError` would need *both* members
+    # to implement it, which is the thing this design avoids.
+    it "recovers from an error with a default" do
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read_port(missing : Bool) : Int32 | IOError
+              return IOError.new if missing
+              1234
+            end
+
+            def self.port(missing : Bool) : Int32
+              read_port(missing).or(8080)
+            end
+          end
+        end
+
+        App::Fails.port(true)
+        CRYSTAL
+    end
+
+    it "widens the result when the default is of another type" do
+      # Nothing computes this: the expansion is an `if`, so the result is the
+      # union of the default and what `is_a?(::Error)` left on the other side.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { union_of(int32, char) }
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read_port(missing : Bool) : Int32 | IOError
+              return IOError.new if missing
+              1234
+            end
+
+            def self.port(missing : Bool) : Int32 | Char
+              read_port(missing).or('x')
+            end
+          end
+        end
+
+        App::Fails.port(true)
+        CRYSTAL
+    end
+
+    it "recovers by panicking, leaving only the non-error members" do
+      # `raise` is `NoReturn`, so the error branch contributes nothing to the
+      # type. Defined here because the semantic harness runs without a prelude.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        def raise(message : String) : NoReturn
+          while true
+          end
+        end
+
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.read_port(missing : Bool) : Int32 | IOError
+              return IOError.new if missing
+              1234
+            end
+
+            def self.port(missing : Bool) : Int32
+              read_port(missing).or_panic
+            end
+          end
+        end
+
+        App::Fails.port(false)
+        CRYSTAL
+    end
+
+    it "reaches `message` across a union of several error types" do
+      # `.or_panic` calls `message` on the narrowed value, which here holds two
+      # unrelated error types. That resolves by II.1: both implement `Error`,
+      # so their union does, and the marker trait carries the call.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        def raise(message : String) : NoReturn
+          while true
+          end
+        end
+
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            struct ParseError
+              def initialize
+              end
+            end
+
+            impl Error for ParseError
+              def message : String
+                "bad"
+              end
+            end
+
+            def self.read(missing : Bool, bad : Bool) : Int32 | IOError | ParseError
+              return IOError.new if missing
+              return ParseError.new if bad
+              1234
+            end
+
+            def self.port(missing : Bool, bad : Bool) : Int32
+              read(missing, bad).or_panic
+            end
+          end
+        end
+
+        App::Fails.port(false, false)
+        CRYSTAL
+    end
+
+    it "refuses to recover where there is no error member" do
+      assert_error <<-CRYSTAL, "`.or` has no error to recover: no member of (Int32 | Nil) implements `Error`", filename: "x.iyi"
+        module App
+          module Fails
+            def self.maybe(missing : Bool) : Int32?
+              return nil if missing
+              1
+            end
+
+            def self.go : Int32?
+              maybe(false).or(0)
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
+
+    it "refuses to recover where every member is an error" do
+      # The default would be the only outcome, which is dead code dressed up as
+      # a fallback — rejected for the same reason `!` rejects this operand.
+      assert_error <<-CRYSTAL, "`.or` can only ever return its default: every member of App::Fails::IOError implements `Error`", filename: "x.iyi"
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.always : IOError
+              IOError.new
+            end
+
+            def self.go : Int32
+              always.or(0)
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
+
+    it "refuses to panic-recover where every member is an error" do
+      assert_error <<-CRYSTAL, "`.or_panic` can never produce a value: every member of App::Fails::IOError implements `Error`", filename: "x.iyi"
+        def raise(message : String) : NoReturn
+          while true
+          end
+        end
+
+        module App
+          module Fails
+            struct IOError
+              def initialize
+              end
+            end
+
+            impl Error for IOError
+              def message : String
+                "boom"
+              end
+            end
+
+            def self.always : IOError
+              IOError.new
+            end
+
+            def self.go : Int32
+              always.or_panic
+            end
+          end
+        end
+
+        App::Fails.go
+        CRYSTAL
+    end
+  end
+
+  # iyi: `pub` — what a module exports (R-2), and what `using` may reach
+  # (R-2b). Only a `module app/greeter` compilation unit has a surface; a
+  # Crystal module never wrote `pub`, so the `using` specs above are unaffected.
+  describe "pub" do
+    it "refuses a selective `using` of a name the module does not export" do
+      assert_error <<-CRYSTAL, "App::Greeter does not export `internal`"
+        module app/greeter
+
+        pub def polite : Int32
+          1
+        end
+
+        def internal : Int32
+          2
+        end
+
+        module Consumer
+          using app/greeter::{internal}
+        end
+        CRYSTAL
+    end
+
+    it "names every unexported name the directive asked for" do
+      assert_error <<-CRYSTAL, "does not export `internal`, `Hidden`"
+        module app/greeter
+
+        def internal : Int32
+          2
+        end
+
+        trait Hidden
+          abstract def go : Int32
+        end
+
+        module Consumer
+          using app/greeter::{internal, Hidden}
+        end
+        CRYSTAL
+    end
+
+    it "allows a selective `using` of exported names" do
+      # `semantic` rather than `assert_type`: a `module app/greeter` header
+      # scopes the whole rest of the source into the module, so the last
+      # expression is inside it and the program's type is the module's, not the
+      # call's. What is being asserted here is that nothing raises.
+      semantic(<<-CRYSTAL)
+        module app/greeter
+
+        pub def polite : Int32
+          1
+        end
+
+        pub trait Greet
+          abstract def greet : Int32
+        end
+
+        module Consumer
+          using app/greeter::{polite, Greet}
+
+          def self.go : Int32
+            polite
+          end
+        end
+
+        Consumer.go
+        CRYSTAL
+    end
+
+    # A bare `using app/greeter` reaching only the exported names cannot be
+    # written here for the same reason: the header scopes the rest of the
+    # source into the module, so any consumer declared after it is *inside*
+    # the module and sees its names lexically — which is right, R-2 is about
+    # what another module reaches. `samples/iyi/modules.iyi` is a separate
+    # file and is where that half is exercised.
+
+    it "refuses a qualified call to a name the module does not export" do
+      assert_error <<-CRYSTAL, "App::Greeter does not export 'helper'. Only what a module marks `pub` is reachable from outside it"
+        module app/greeter
+
+        pub def polite : Int32
+          helper
+        end
+
+        def helper : Int32
+          1
+        end
+
+        module Consumer
+          def self.go : Int32
+            App::Greeter.helper
+          end
+        end
+
+        Consumer.go
+        CRYSTAL
+    end
+
+    it "refuses a qualified reference to a type the module does not export" do
+      assert_error <<-CRYSTAL, "does not export App::Greeter::Closed"
+        module app/greeter
+
+        struct Closed
+          def initialize
+          end
+        end
+
+        module Consumer
+          def self.go : App::Greeter::Closed
+            App::Greeter::Closed.new
+          end
+        end
+
+        Consumer.go
+        CRYSTAL
+    end
+
+    it "leaves the methods of an exported type alone" do
+      # The carve-out that matters: only the unit's own body carries `pub`. A
+      # `def` inside a `pub trait` belongs to the trait — `Enumerable#to_a`
+      # writes no `pub` and has to stay callable on every implementer.
+      semantic(<<-CRYSTAL)
+        module std/enumerable
+
+        pub trait Container
+          type Elem
+
+          abstract def first : Elem
+
+          def again : Elem
+            first
+          end
+        end
+
+        pub struct Nums
+          def initialize
+          end
+        end
+
+        impl Container for Nums
+          type Elem = Int32
+
+          def first : Int32
+            1
+          end
+        end
+
+        Nums.new.again
+        CRYSTAL
+    end
+
+    it "leaves a Crystal module's names alone" do
+      # A Crystal module has no `pub` and so no surface to enforce. Were the
+      # rule applied to it, every `using` of one would reach nothing.
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Plain
+            extend self
+
+            def helper : Int32
+              1
+            end
+          end
+
+          module Consumer
+            using app/plain::{helper}
+
+            def self.go : Int32
+              helper
+            end
+          end
+        end
+
+        App::Consumer.go
+        CRYSTAL
+    end
+  end
+
+  # iyi: `abstract def self.zero : self` — a trait requiring a class-level
+  # method (SPEC.md II.6). Needed for an identity: `Enumerable#sum` has no
+  # element to ask when the collection is empty.
+  describe "class-level requirements" do
+    it "lets a default method reach the requirement through an associated type" do
+      assert_type(<<-CRYSTAL) { int32 }
+        module App
+          module Coll
+            trait Num
+              abstract def self.zero : self
+              abstract def add(other : self) : self
+            end
+
+            impl Num for Int32
+              def self.zero : self
+                0
+              end
+
+              def add(other : self) : self
+                self + other
+              end
+            end
+
+            trait Container
+              type Elem
+
+              abstract def first : Elem
+
+              def start : Elem where Elem : Num
+                Elem.zero
+              end
+            end
+
+            struct Nums
+              def initialize
+              end
+            end
+
+            impl Container for Nums
+              type Elem = Int32
+
+              def first : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Coll::Nums.new.start
+        CRYSTAL
+    end
+
+    it "reports a class-level requirement the impl does not satisfy" do
+      # Named `self.zero`, because that is what has to be written to fix it.
+      assert_error <<-CRYSTAL, "is missing a method required by the trait: self.zero"
+        module App
+          module Coll
+            trait Num
+              abstract def self.zero : self
+              abstract def add(other : self) : self
+            end
+
+            struct Money
+              def initialize
+              end
+            end
+
+            impl Num for Money
+              def add(other : self) : self
+                Money.new
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports instance and class requirements together" do
+      assert_error <<-CRYSTAL, "is missing methods required by the trait: add, self.zero"
+        module App
+          module Coll
+            trait Num
+              abstract def self.zero : self
+              abstract def add(other : self) : self
+            end
+
+            struct Money
+            end
+
+            impl Num for Money
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "still refuses an abstract class method outside a trait" do
+      # A trait is the only type whose implementers have their class methods
+      # checked; anywhere else the requirement would oblige nobody.
+      assert_error <<-CRYSTAL, "can't define abstract def on metaclass"
+        abstract class Base
+          abstract def self.make : self
+        end
+        CRYSTAL
+    end
+  end
+
+  # iyi: `impl Into(String) for User` — a trait with parameters (SPEC.md II.6).
+  # Parameters are the form to reach for where several impls for one type are
+  # the point; associated types are the form for a single answer per type.
+  describe "parameterised traits" do
+    it "implements a trait at a type argument" do
+      assert_type(<<-CRYSTAL) { string }
+        module App
+          module Conv
+            trait Into(T)
+              abstract def into : T
+            end
+
+            struct User
+              def initialize
+              end
+            end
+
+            impl Into(String) for User
+              def into : String
+                "u"
+              end
+            end
+          end
+        end
+
+        App::Conv::User.new.into
+        CRYSTAL
+    end
+
+    it "checks the impl's signature against the type argument" do
+      # The argument is not decoration: `Into(String)` instantiates the trait,
+      # so the requirement being satisfied is `into : String`.
+      assert_error <<-CRYSTAL, "must return String"
+        module App
+          module Conv
+            trait Into(T)
+              abstract def into : T
+            end
+
+            struct User
+              def initialize
+              end
+            end
+
+            impl Into(String) for User
+              def into : Int32
+                1
+              end
+            end
+          end
+        end
+
+        App::Conv::User.new.into
+        CRYSTAL
+    end
+
+    it "reports a missing type argument at the impl" do
+      assert_error <<-CRYSTAL, "type arguments must be specified when implementing App::Conv::Into(T), one for each of T"
+        module App
+          module Conv
+            trait Into(T)
+              abstract def into : T
+            end
+
+            struct User
+            end
+
+            impl Into for User
+              def into : String
+                "u"
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    # iyi: II.7 × II.6. A generic impl answering an associated type with its own
+    # parameter. Both halves were built long before they were ever written
+    # together, and the meeting failed on `undefined constant T`.
+    it "answers an associated type with the impl's own type parameter" do
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Coll
+            trait Holder
+              type Elem
+              abstract def get : Elem
+            end
+
+            struct Box(T)
+              @value : T
+
+              def initialize(@value : T)
+              end
+            end
+
+            impl Holder for Box(T) forall T
+              type Elem = T
+
+              def get : T
+                @value
+              end
+            end
+
+            def self.go : Int32
+              Box(Int32).new(1).get
+            end
+          end
+        end
+
+        App::Coll.go
+        CRYSTAL
+    end
+
+    it "keeps the trait's own name resolvable from the impl's module" do
+      # The fix must not reach for the target's scope: `Cmp` lives where the
+      # impl was written, and `Int32` has never heard of it.
+      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+        module App
+          module Traits
+            trait Sized
+              abstract def measure : Int32
+            end
+
+            impl Sized for Int32
+              def measure : Int32
+                1
+              end
+            end
+
+            def self.go : Int32
+              1.measure
+            end
+          end
+        end
+
+        App::Traits.go
+        CRYSTAL
+    end
+
+    it "reports type arguments given to a trait that has no parameters" do
+      assert_error <<-CRYSTAL, "can't implement App::Conv::Plain with type arguments, it's not a generic trait"
+        module App
+          module Conv
+            trait Plain
+              abstract def go : Int32
+            end
+
+            struct User
+            end
+
+            impl Plain(String) for User
+              def go : Int32
+                1
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+
+    it "reports the wrong number of type arguments" do
+      assert_error <<-CRYSTAL, "wrong number of type arguments for App::Conv::Into(T) (given 2, expected 1)"
+        module App
+          module Conv
+            trait Into(T)
+              abstract def into : T
+            end
+
+            struct User
+            end
+
+            impl Into(String, Int32) for User
+              def into : String
+                "u"
+              end
+            end
+          end
+        end
+        CRYSTAL
+    end
+  end
+end

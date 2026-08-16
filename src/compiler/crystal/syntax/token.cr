@@ -26,6 +26,8 @@ module Crystal
     FOR
     FUN
     IF
+    IMPL
+    IMPORT
     IN
     INCLUDE
     INSTANCE_ALIGNOF
@@ -43,6 +45,7 @@ module Crystal
     POINTEROF
     PRIVATE
     PROTECTED
+    PUB
     REQUIRE
     RESCUE
     RESPONDS_TO_QUESTION
@@ -53,6 +56,7 @@ module Crystal
     STRUCT
     SUPER
     THEN
+    TRAIT
     TRUE
     TYPE
     TYPEOF
@@ -60,6 +64,7 @@ module Crystal
     UNION
     UNLESS
     UNTIL
+    USING
     VERBATIM
     WHEN
     WHILE

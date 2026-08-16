@@ -1,0 +1,5 @@
+[33mUsing compiled compiler at .build/crystal[0m
+
+=== IYI_FORK_PROBE ===
+prelude top level (parent, paid once) 00:00:01.136919249
+front end with prelude already analysed 00:00:01.293286693

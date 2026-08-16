@@ -8,6 +8,22 @@ module Crystal
     # Returns the program where this type belongs.
     getter program
 
+    # iyi: declared by a `.iyimod` rather than by this build's source (SPEC.md
+    # IV.1g).
+    #
+    # Set on the types an artifact exports, and false for everything else —
+    # including the *instantiations* of a generic type it exports, which is the
+    # distinction that makes this useful. The artifact carries object code for
+    # the non-generic types a module declares, so this build must declare their
+    # methods and define none of them; it carries no instantiation, so
+    # `List(Int32)` is compiled here like any other type.
+    #
+    # Without it a consumer defined `Greeter::new` — synthesized rather than
+    # read from the artifact, so nothing marked it as coming from one — while
+    # the artifact's object code defined it too, and the link failed on a
+    # duplicate symbol.
+    property? iyi_from_artifact = false
+
     def initialize(@program : Program)
     end
 
@@ -19,6 +35,41 @@ module Crystal
     # Returns all locations where this type is declared
     def locations : Array(Location)?
       nil
+    end
+
+    # iyi: the `using` directives written in this type's body, or nil if there
+    # are none — which is every type in every program that does not use iyi.
+    # Defined here, rather than only on `ModuleType`, so that name lookup can
+    # ask any type without first checking what kind of type it is.
+    # Overridden in `ModuleType`.
+    def using_modules? : Array(UsingModule)?
+      nil
+    end
+
+    # iyi: true for a module declared with a `module app/greeter` header — a
+    # compilation unit, not a Crystal mixin. Its `def`s are functions in
+    # lexical scope: a type nested inside may call them unqualified. Crystal
+    # modules must keep resolving as they do today, so this is what the
+    # difference is keyed on. Overridden in `ModuleType`.
+    def iyi_unit? : Bool
+      false
+    end
+
+    # iyi: whether this type is an *error member* when it appears in a union —
+    # that is, whether it implements the `Error` marker trait (SPEC.md III.1.1).
+    #
+    # `Nil` does not implement it, which is III.1.5: absence and failure stay
+    # distinct, and `T?` is not an error union.
+    def error? : Bool
+      implements?(program.error_trait)
+    end
+
+    # iyi: whether *name* is part of this type's public surface — what `pub`
+    # marks (R-2). Only an iyi compilation unit has one; a Crystal module never
+    # wrote `pub`, so everything it declares stays reachable exactly as it does
+    # today. Overridden in `ModuleType`.
+    def exported_name?(name : String) : Bool
+      true
     end
 
     # An opaque id of every type. 0 for Nil, non zero for others, so we can
@@ -85,6 +136,61 @@ module Crystal
     # (only applicable for C structs)
     def packed?
       false
+    end
+
+    # Approximate Go-style "GC shape" of this type's *value representation*.
+    # Two types with the same shape occupy memory identically, so a generic
+    # body specialised for one could serve the other under dictionary passing.
+    #
+    # Deliberately conservative: named structs are never collapsed together,
+    # so any saving derived from this is a LOWER bound.
+    # Crystal's type graph contains cycles, so both shape functions are
+    # depth-bounded. At the limit they fall back to the exact type name,
+    # which never collapses — so the guard can only make a measured
+    # collapse ratio more conservative, never inflate it.
+    SHAPE_MAX_DEPTH = 6
+
+    def gc_shape(depth = 0) : String
+      return "X:#{self}" if depth > SHAPE_MAX_DEPTH
+
+      t = remove_typedef
+      return "PTR" if t.pointer?
+      return "PTR" if t.reference_like?
+
+      case t
+      when ProcInstanceType then "PROC"
+      when PrimitiveType    then "SCALAR#{t.bytes}"
+      when MetaclassType, GenericClassInstanceMetaclassType,
+           GenericModuleInstanceMetaclassType, VirtualMetaclassType
+        "META"
+      when UnionType
+        "UNION(#{t.union_types.map(&.gc_shape(depth + 1)).uniq!.sort!.join("|")})"
+      else
+        "ST:#{t}"
+      end
+    end
+
+    # The key Go would actually stencil on: the value shape, plus the shapes
+    # of any type arguments. Without the type arguments `Array(User).new` and
+    # `Array(Int32).new` would wrongly collapse — both receivers are pointers,
+    # but the generated code differs because the element shapes differ.
+    def inst_shape(depth = 0) : String
+      return "X:#{self}" if depth > SHAPE_MAX_DEPTH
+
+      t = remove_typedef
+
+      case t
+      when GenericInstanceType
+        vars = t.type_vars.values.map do |node|
+          node.is_a?(Var) && (vt = node.type?) ? vt.inst_shape(depth + 1) : "?"
+        end
+        vars.empty? ? t.gc_shape(depth) : "#{t.gc_shape(depth)}<#{vars.join(",")}>"
+      when MetaclassType, GenericClassInstanceMetaclassType,
+           GenericModuleInstanceMetaclassType, VirtualMetaclassType
+        "META<#{t.instance_type.inst_shape(depth + 1)}>"
+      else
+        t.gc_shape(depth)
+      end
     end
 
     # Returns `true` if this type inherits from `Reference` or if this
@@ -171,6 +277,18 @@ module Crystal
     end
 
     def module?
+      false
+    end
+
+    # iyi: true for a type declared with `trait Greet ... end` (SPEC.md R-3).
+    #
+    # A trait *is* a module structurally — it carries required and default
+    # methods, it is what an implementing type includes, and a value can be
+    # typed by it — so `module?` stays true and every restriction, dispatch
+    # and codegen path keeps working unchanged. What this predicate adds is
+    # the ability to refuse the things a trait is not: `include Greet`,
+    # `using Greet`, and `impl SomeModule for X`.
+    def trait?
       false
     end
 
@@ -893,11 +1011,29 @@ module Crystal
     getter(def_instances) { {} of DefInstanceKey => Def }
 
     def add_def_instance(key, typed_def)
+      Prof.instantiation(self, key, typed_def) if Prof.enabled?
       def_instances[key] = typed_def
     end
 
     def lookup_def_instance(key)
       def_instances[key]?
+    end
+  end
+
+  # iyi: one `using` directive in effect somewhere (SPEC.md II.3) — the module
+  # it names, plus the names taken from it when the selective form
+  # (`using app/greeter::{polite}`) was written. A nil `names` is the whole
+  # form: every name the module exports.
+  record UsingModule, type : Type, names : Array(String)? do
+    def exports?(name : String) : Bool
+      # R-2b: a module's *exported* names. Checked before the selective list,
+      # because `using app/greeter::{internal}` naming something unexported is
+      # already an error at the directive — this is the lookup, and by the time
+      # it runs there is nothing left to find.
+      return false unless type.exported_name?(name)
+
+      names = @names
+      names.nil? || names.includes?(name)
     end
   end
 
@@ -907,6 +1043,46 @@ module Crystal
     getter macros : Hash(String, Array(Macro))?
     getter hooks : Array(Hook)?
     getter(parents) { [] of Type }
+
+    # iyi: modules brought into unqualified scope here by `using` (SPEC.md II.3).
+    #
+    # Kept out of `parents` on purpose. `include` is the obvious shortcut and
+    # is wrong in four ways at once: it does not reach types nested inside
+    # this one, it re-exports (whoever imports this module would reach the
+    # used names *through* it), it cannot express the selective form, and it
+    # settles a clash between two used modules silently by ancestor order
+    # instead of reporting it at the point of use. A separate list searched
+    # explicitly gets all four right, and leaves lookup untouched for any code
+    # that never writes `using`.
+    getter(using_modules) { [] of UsingModule }
+
+    def add_using_module(type : Type, names : Array(String)?)
+      using_modules << UsingModule.new(type, names)
+    end
+
+    def using_modules? : Array(UsingModule)?
+      @using_modules
+    end
+
+    # iyi: see `Type#iyi_unit?`.
+    property? iyi_unit = false
+
+    # iyi: the names this module marked `pub` (R-2). Nil until something is
+    # exported, which is every module in every program that does not use iyi.
+    getter exported_names : Set(String)?
+
+    def add_exported_name(name : String)
+      names = @exported_names ||= Set(String).new
+      names << name
+    end
+
+    # iyi: see `Type#exported_name?`.
+    def exported_name?(name : String) : Bool
+      return true unless iyi_unit?
+
+      names = @exported_names
+      names ? names.includes?(name) : false
+    end
 
     def add_def(a_def)
       a_def.owner = self
@@ -1099,7 +1275,8 @@ module Crystal
       meta_vars ||= MetaVars.new
 
       unless self.is_a?(GenericType)
-        instance_var = lookup_instance_var(name)
+        instance_var = lookup_instance_var?(name) ||
+                       raise "BUG: #{self} has no instance var #{name} when adding its initializer"
         instance_var.bind_to(value)
       end
 
@@ -1191,6 +1368,38 @@ module Crystal
 
     def add_instance_var_initializer(name, value, meta_vars)
       add_instance_var_initializer @including_types, name, value, meta_vars
+    end
+  end
+
+  # iyi: `trait Greet ... end` (SPEC.md R-3, II.6).
+  #
+  # A subclass rather than a sibling of `ModuleType`, because everything a
+  # trait has to do at the type level is what a module already does: a value
+  # can be typed by it, an impl registers through `including_types`, and a
+  # call on a trait-typed receiver dispatches through `remove_indirection`.
+  # Rebuilding that would mean reimplementing restriction matching, union
+  # dispatch and codegen for no gain — see `Type#trait?`.
+  # iyi: `trait Ord : Eq` — the traits an implementer must already implement
+  # (SPEC.md II.6).
+  #
+  # Held as a requirement rather than as an include: including `Eq` would make
+  # every implementer of `Ord` satisfy `implements?(Eq)` without an
+  # `impl Eq for ...` anywhere, which is the open-class hole R-3 closes. A
+  # default method in `Ord` can still call `Eq`'s methods, because a module's
+  # body resolves against the type it is included in.
+  module TraitSupertraits
+    property supertraits = [] of Type
+  end
+
+  class TraitType < NonGenericModuleType
+    include TraitSupertraits
+
+    def trait?
+      true
+    end
+
+    def type_desc
+      "trait"
     end
   end
 
@@ -1884,6 +2093,55 @@ module Crystal
     end
   end
 
+  # iyi: `trait Into(T) ... end` — a trait with parameters, and/or
+  # `type Elem` — a trait with associated types (SPEC.md II.6).
+  #
+  # Both are carried as type vars, because what a trait's own signatures and
+  # default bodies need from them is identical and Crystal already resolves a
+  # type var through an include. They differ in where the argument comes from:
+  # a parameter is written at the impl's `impl Into(String) for ...`, an
+  # associated type is answered in its body with `type Elem = String`. The
+  # associated ones are appended after the parameters, so `type_vars` minus
+  # `assoc_types` is the parameter list.
+  class GenericTraitType < GenericModuleType
+    include TraitSupertraits
+
+    # The names declared with `type`, in declaration order.
+    property assoc_types = [] of String
+
+    # The parameters, which are everything the impl writes in parentheses.
+    def trait_params : Array(String)
+      type_vars[0, type_vars.size - assoc_types.size]
+    end
+
+    # Only the parameters are printed. An associated type is a type var by
+    # implementation and not by design, and naming it in every error message
+    # would tell the reader to write something they must not write.
+    def to_s_with_options(io : IO, skip_union_parens : Bool = false, generic_args : Bool = true, codegen : Bool = false) : Nil
+      params = trait_params
+      if generic_args && !params.empty?
+        super(io, skip_union_parens, generic_args: false, codegen: codegen)
+        io << '('
+        params.each_with_index do |param, i|
+          io << ", " if i > 0
+          io << '*' if i == splat_index
+          param.to_s(io)
+        end
+        io << ')'
+      else
+        super(io, skip_union_parens, generic_args: false, codegen: codegen)
+      end
+    end
+
+    def trait?
+      true
+    end
+
+    def type_desc
+      "generic trait"
+    end
+  end
+
   # A generic class type, like Array(T).
   class GenericClassType < ClassType
     include GenericType
@@ -2204,7 +2462,7 @@ module Crystal
 
     delegate leaf?, depth, defs, macros,
       type_desc, namespace, lookup_new_in_ancestors?,
-      splat_index, double_variadic?, to: @generic_type
+      splat_index, double_variadic?, trait?, to: @generic_type
 
     def add_including_type(type)
       return if type.unbound?

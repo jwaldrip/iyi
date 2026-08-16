@@ -46,6 +46,13 @@ module Crystal
       @in_macro_expression = false
       @stop_on_yield = 0
       @inside_c_struct = false
+      # iyi: true while parsing the immediate body of a trait or an impl, which
+      # is the only place `type Elem` declares an associated type rather than
+      # calling a method named `type`.
+      @inside_trait_or_impl = false
+      # iyi: depth of `defer` bodies being parsed, which is where `!` is
+      # refused (SPEC.md III.1.4, Appendix B #7).
+      @inside_defer = 0
       @wants_doc = false
       @doc_enabled = false
       @no_type_declaration = 0
@@ -84,7 +91,66 @@ module Crystal
     def parse
       next_token_skip_statement_end
 
-      parse_expressions.tap { check :EOF }
+      nodes = parse_expressions.tap { check :EOF }
+      apply_module_header(nodes)
+    end
+
+    # iyi: `module app/greeter` scopes everything after it in the file.
+    #
+    # Desugared here rather than in semantic analysis, because a header
+    # applies to the rest of the file while `current_type` is managed with
+    # nested blocks — the two do not line up. Rewriting
+    #
+    #     module app/greeter
+    #     <rest>
+    #
+    # into `ModuleDef(App::Greeter, <rest>)` means the whole semantic phase
+    # needs no changes at all.
+    #
+    # NOTE: path segments are capitalised to form the namespace, because
+    # Crystal type names must be constants. `app/greeter` is reachable as
+    # `App::Greeter`. That mismatch between how a module is declared and how
+    # it is named is a wart the spec still has to settle.
+    private def apply_module_header(nodes : ASTNode) : ASTNode
+      expressions =
+        case nodes
+        when Expressions then nodes.expressions
+        else                  [nodes]
+        end
+
+      header = expressions.first?
+      return nodes unless header.is_a?(ModuleHeader)
+
+      rest = expressions[1..]
+
+      # `import` stays at FILE level, outside the namespace. An imported file
+      # carries its own `module` header, and processing it while scoped inside
+      # this module would nest the two — `app/main` importing `app/greeter`
+      # would create `App::Main::App::Greeter`.
+      #
+      # `using` deliberately stays INSIDE, because it affects name resolution
+      # within this module and should not leak to whoever imports it.
+      directives = [] of ASTNode
+      while (first = rest.first?) && first.is_a?(ImportDecl)
+        directives << rest.shift
+      end
+
+      path = Path.new(header.path.map(&.camelcase))
+      path.at(header)
+
+      # `extend self` so a module-level `pub def` is callable on the module
+      # (`App::Greeter.polite`) rather than being an instance method of it.
+      # In iyi a module is a compilation unit, not a mixin, so its functions
+      # belong to the module itself.
+      extend_self = Extend.new(Self.new).at(header)
+      body = [extend_self] of ASTNode + rest
+
+      module_def = ModuleDef.new(path, Expressions.from(body))
+      module_def.iyi_unit = true
+      module_def.at(header)
+      module_def.end_location = header.end_location
+
+      Expressions.from([header] of ASTNode + directives + [module_def] of ASTNode)
     end
 
     def parse(mode : ParseMode)
@@ -664,9 +730,29 @@ module Crystal
     end
 
     def parse_atomic_method_suffix(atomic, location)
+      # iyi: whether a `!` here is attached to what precedes it. A space before
+      # it makes it the unary operator it has always been, so `f !x` keeps
+      # meaning `f(!x)` and only `f(x)!` propagates.
+      attached = true
+
       while true
         case @token.type
+        when .op_bang?
+          break unless attached && iyi?
+          if @inside_defer > 0
+            raise <<-MSG, @token
+              `!` can't propagate out of a `defer`
+
+              A `defer` runs while the scope is already being left, and may be
+              carrying an error of its own. Handle the failure here — `.or_panic`
+              or ignore it — see SPEC.md III.1.4.
+              MSG
+          end
+          check_void_value atomic, location
+          atomic = Propagate.new(atomic).at(location)
+          next_token
         when .space?
+          attached = false
           next_token
         when .newline?
           # In these cases we don't want to chain a call
@@ -712,6 +798,8 @@ module Crystal
             atomic = parse_atomic_method_suffix_special(atomic, location)
           elsif @token.type.op_lsquare?
             return parse_atomic_method_suffix(atomic, location)
+          elsif iyi? && @token.type.ident? && @token.value.to_s.in?("or", "or_panic")
+            atomic = parse_iyi_recover(atomic).at(location)
           else
             name = case @token.type
                    when .ident?, .const?
@@ -902,6 +990,66 @@ module Crystal
       end
 
       IsA.new(atomic, type).at_end(end_location)
+    end
+
+    # iyi: `defer f.close` (SPEC.md III.1.4).
+    #
+    # Recognised by name, so `defer` is a reserved word in an iyi program and
+    # only there — a Crystal file keeps it as an ordinary identifier.
+    #
+    # The body may not propagate. A `defer` runs while the scope is already
+    # being left, possibly carrying an error of its own, so a second error
+    # leaving from here is the error-during-error problem — the ugliest corner
+    # of every language that has taken it on (Appendix B #7).
+    def parse_defer
+      location = @token.location
+      next_token_skip_space
+
+      @inside_defer += 1
+      begin
+        exp = parse_op_assign
+      ensure
+        @inside_defer -= 1
+      end
+
+      Defer.new(exp).at(location).at_end(exp)
+    end
+
+    # iyi: `.or(default)` and `.or_panic` (SPEC.md III.1.3).
+    #
+    # Recognised by name here, which is what "compiler-known" costs: `or` and
+    # `or_panic` are reserved in an iyi program. Gated on `iyi?`, so a Crystal
+    # file that calls a method of either name is untouched.
+    def parse_iyi_recover(atomic)
+      panic = @token.value.to_s == "or_panic"
+      end_location = token_end_location
+      next_token
+
+      if panic
+        # `.or_panic()` is allowed but pointless; there is nothing to pass.
+        if @token.type.op_lparen?
+          next_token_skip_space_or_newline
+          check :OP_RPAREN
+          end_location = token_end_location
+          next_token
+        end
+
+        return Recover.new(atomic).at_end(end_location)
+      end
+
+      skip_space
+      unless @token.type.op_lparen?
+        unexpected_token "expected '(': `.or` takes the default to use when the value is an error"
+      end
+
+      next_token_skip_space_or_newline
+      default = parse_op_assign
+      skip_space_or_newline
+      check :OP_RPAREN
+      end_location = token_end_location
+      next_token
+
+      Recover.new(atomic, default).at_end(end_location)
     end
 
     def parse_as(atomic, klass = Cast)
@@ -1171,8 +1319,47 @@ module Crystal
           when .module?
             check_type_declaration do
               check_not_inside_def("can't define module") do
+                # `parse_module_def` returns a ModuleHeader instead when the
+                # name is a lowercase path (iyi) rather than a CONST (Crystal).
                 parse_module_def
               end
+            end
+          when .trait?
+            check_type_declaration do
+              check_not_inside_def("can't define trait") do
+                parse_trait_def
+              end
+            end
+          when .impl?
+            check_type_declaration do
+              check_not_inside_def("can't define impl") do
+                parse_impl_def
+              end
+            end
+          when .import?
+            check_type_declaration do
+              check_not_inside_def("can't import") { parse_import }
+            end
+          when .using?
+            check_type_declaration do
+              check_not_inside_def("can't use `using`") { parse_using }
+            end
+          when .pub?
+            check_type_declaration do
+              check_not_inside_def("can't export") { parse_pub }
+            end
+          when .type?
+            # Outside a trait or an impl this stays what it has always been: a
+            # call to a method named `type`. Crystal's own `type X = Y` has its
+            # own parse loop inside `lib`, and never reaches here.
+            if @inside_trait_or_impl
+              check_type_declaration do
+                check_not_inside_def("can't declare an associated type") do
+                  parse_assoc_type
+                end
+              end
+            else
+              set_visibility parse_var_or_call
             end
           when .enum?
             check_type_declaration do
@@ -1237,6 +1424,8 @@ module Crystal
           else
             set_visibility parse_var_or_call
           end
+        elsif iyi? && @token.value == "defer"
+          parse_defer
         else
           set_visibility parse_var_or_call
         end
@@ -1818,13 +2007,424 @@ module Crystal
       {type_vars, splat_index}
     end
 
-    def parse_module_def
+    # iyi: a slash-separated lowercase path, e.g. `app/user`, `std/json`.
+    # Distinguishable from Crystal's `module Foo` because that takes a CONST.
+    def parse_module_path : Array(String)
+      segments = [] of String
+      check Token::Kind::IDENT
+      segments << check_module_path_segment(@token.value.to_s)
+
+      # After an identifier the lexer would treat `/` as the start of a regex
+      # literal, so `app/user` lexes as `app` followed by DELIMITER_START.
+      # Module paths are the one place `/` is a separator, so suppress regex
+      # mode for the duration.
+      @wants_regex = false
+      next_token
+
+      while @token.type.op_slash?
+        @wants_regex = false
+        next_token
+        check Token::Kind::IDENT
+        segments << check_module_path_segment(@token.value.to_s)
+        @wants_regex = false
+        next_token
+      end
+
+      @wants_regex = true
+      skip_space
+      segments
+    end
+
+    # iyi: a module path segment is `[a-z][a-z0-9]*` with single `_` between
+    # groups (SPEC.md IV.6 #6).
+    #
+    # A module is declared `app/greeter` and reached `App::Greeter`, and the
+    # two notations are kept in step by making the mapping between them
+    # reversible rather than by unifying them. `camelcase` upper-cases the
+    # first character of each underscore-separated group and drops the
+    # underscores, so a name is split back into a path at every upper-case
+    # letter — but only if every group starts with a letter, which is what
+    # this enforces.
+    #
+    # Plain `snake_case` is not enough, which is the reason this is checked
+    # rather than assumed: `camelcase` drops an underscore that precedes a
+    # digit, so `v_1` and `v1` both give `V1`. Doubled, leading and trailing
+    # underscores collide the same way.
+    private def check_module_path_segment(segment : String) : String
+      start_of_group = true
+      valid = segment.each_char do |char|
+        if start_of_group
+          break false unless char.ascii_lowercase?
+          start_of_group = false
+        elsif char == '_'
+          start_of_group = true
+        elsif !(char.ascii_lowercase? || char.ascii_number?)
+          break false
+        end
+      end
+
+      # `start_of_group` is still set for an empty segment or a trailing `_`.
+      if valid == false || start_of_group
+        raise <<-MSG, @token.line_number, @token.column_number
+          module path segment '#{segment}' is not lower-case snake_case
+
+          A module declared `app/greeter` is reached as `App::Greeter`, so the \
+          path and the type name have to determine each other: every segment \
+          is a lower-case letter followed by letters and digits, with single \
+          `_` between groups. Otherwise two paths can name one module — `v_1` \
+          and `v1` would both be `V1`. See SPEC.md IV.6 #6.
+          MSG
+      end
+
+      segment
+    end
+
+    # iyi: `module app/user` — compilation-unit header (R-1).
+    # Crystal's `module Foo ... end` still parses; the two are told apart by
+    # whether the name is a CONST or a lowercase IDENT.
+    def parse_module_header
+      location = @token.location
+      next_token_skip_space
+      path = parse_module_path
+      header = ModuleHeader.new(path)
+      header.at(location)
+      header.end_location = token_end_location
+      header
+    end
+
+    # iyi: `import std/json`
+    def parse_import
+      location = @token.location
+      next_token_skip_space
+      path = parse_module_path
+      node = ImportDecl.new(path)
+      node.at(location)
+      node.end_location = token_end_location
+      node
+    end
+
+    # iyi: `using app/greeter`, `using app/greeter::{polite, Greet}` (SPEC.md II.3)
+    #
+    # The module is written in the same path form as `import`. Both name a
+    # module, so they should look the same; the spec's original
+    # `using kemal::dsl` mixed two notations for one concept.
+    #
+    # `::{...}` then narrows what the directive brings in. The names are taken
+    # as written and matched as written, so the list may hold both method
+    # names and type names — to the consumer they are just names.
+    def parse_using
+      location = @token.location
+      next_token_skip_space
+      path = parse_module_path
+      names = parse_using_names if @token.type.op_colon_colon?
+
+      node = UsingDecl.new(path, names)
+      node.at(location)
+      node.end_location = token_end_location
+      node
+    end
+
+    private def parse_using_names : Array(String)
+      next_token
+      check Token::Kind::OP_LCURLY
+
+      names = [] of String
+      next_token_skip_space_or_newline
+      loop do
+        unless @token.type.ident? || @token.type.const?
+          raise "expected a name to bring into scope", @token.line_number, @token.column_number
+        end
+        names << @token.value.to_s
+        next_token_skip_space_or_newline
+        break unless @token.type.op_comma?
+        next_token_skip_space_or_newline
+      end
+      check Token::Kind::OP_RCURLY
+
+      next_token_skip_space
+      names
+    end
+
+    # iyi: `pub` marks a declaration as exported (R-2). Exported declarations
+    # appear in the module's `.iyimod` and must carry full type signatures.
+    def parse_pub
+      pub_location = @token.location
+      next_token_skip_space
+
+      unless @token.type.ident?
+        raise "expected a declaration after `pub`", @token.line_number, @token.column_number
+      end
+
+      node =
+        case @token.value
+        when Keyword::TRAIT
+          parse_trait_def(exported: true)
+        when Keyword::DEF
+          a_def = parse_def
+          a_def.exported = true
+          a_def
+        when Keyword::CLASS
+          cls = parse_class_def
+          cls.exported = true if cls.is_a?(ClassDef)
+          cls
+        when Keyword::STRUCT
+          cls = parse_class_def is_struct: true
+          cls.exported = true if cls.is_a?(ClassDef)
+          cls
+        else
+          raise "can't apply `pub` to #{@token}", @token.line_number, @token.column_number
+        end
+
+      node.at(pub_location)
+      node
+    end
+
+    # iyi: `type Elem` in a trait, `type Elem = String` in an impl (SPEC.md II.6).
+    def parse_assoc_type
+      doc = @token.doc
+      next_token_skip_space_or_newline
+
+      name_location = @token.location
+      name = check_const
+      next_token_skip_space
+
+      value = nil
+      if @token.type.op_eq?
+        next_token_skip_space_or_newline
+        value = parse_bare_proc_type
+        skip_space
+      end
+
+      decl = AssocTypeDecl.new(name, value)
+      decl.name_location = name_location
+      decl.doc = doc
+      decl
+    end
+
+    # The body of a trait or an impl, parsed with `type` meaning an associated
+    # type declaration.
+    private def parse_trait_or_impl_body
+      old = @inside_trait_or_impl
+      @inside_trait_or_impl = true
+      body = parse_expressions
+      @inside_trait_or_impl = old
+      body
+    end
+
+    # iyi: the associated types a trait declares (SPEC.md II.6).
+    #
+    # Collected here rather than found while visiting, because the trait's type
+    # is created before its body is visited and these are part of what it is.
+    private def collect_trait_assoc_types(body) : Array(String)?
+      names = nil
+      each_assoc_type_decl(body) do |decl, location|
+        if decl.value
+          raise "a trait declares an associated type, it does not answer it: write `type #{decl.name}`, and let each impl say what it is", location
+        end
+        names ||= [] of String
+        if names.includes?(decl.name)
+          raise "duplicate associated type #{decl.name}", location
+        end
+        names << decl.name
+      end
+      names
+    end
+
+    # iyi: the answers an impl gives (SPEC.md II.6).
+    private def collect_impl_assoc_types(body) : Hash(String, ASTNode)?
+      types = nil
+      each_assoc_type_decl(body) do |decl, location|
+        value = decl.value
+        unless value
+          raise "an impl has to answer the associated type #{decl.name}: write `type #{decl.name} = ...`", location
+        end
+        types ||= {} of String => ASTNode
+        if types.has_key?(decl.name)
+          raise "duplicate associated type #{decl.name}", location
+        end
+        types[decl.name] = value
+      end
+      types
+    end
+
+    # Only the declarations sitting directly in the body count. One nested
+    # inside a type declared in that body is marked by nobody, and the semantic
+    # phase rejects it there.
+    private def each_assoc_type_decl(body, & : AssocTypeDecl, Location ->)
+      case body
+      when AssocTypeDecl
+        body.in_type_body = true
+        yield body, assoc_type_location(body)
+      when Expressions
+        body.expressions.each do |exp|
+          next unless exp.is_a?(AssocTypeDecl)
+          exp.in_type_body = true
+          yield exp, assoc_type_location(exp)
+        end
+      end
+    end
+
+    private def assoc_type_location(decl : AssocTypeDecl) : Location
+      decl.name_location || decl.location || @token.location
+    end
+
+    # iyi: `trait Greet ... end` (SPEC.md R-3, II.6)
+    def parse_trait_def(exported = false)
       @type_nest += 1
 
       location = @token.location
       doc = @token.doc
 
       next_token_skip_space_or_newline
+
+      name_location = @token.location
+      name = parse_path
+      found_space = @token.type.space?
+      skip_space
+
+      type_vars, _ = parse_type_vars
+      skip_space
+
+      # iyi: `trait Ord : Eq, Show` — the traits an implementer must already
+      # implement (SPEC.md II.6). `:` reads as "bounded by" here exactly as it
+      # does in `forall T : Show` and `where Elem : Cmp`.
+      supertraits = nil
+      if @token.type.op_colon?
+        next_token_skip_space_or_newline
+        supertraits = [] of ASTNode
+        loop do
+          supertraits << parse_path
+          skip_space
+          break unless @token.type.op_comma?
+          next_token_skip_space_or_newline
+        end
+      end
+
+      check(StatementEnd) if type_vars || supertraits || !found_space
+      skip_statement_end
+
+      body = push_visibility { parse_trait_or_impl_body }
+
+      end_location = token_end_location
+      check_ident :end
+      next_token_skip_space
+
+      @type_nest -= 1
+
+      assoc_types = collect_trait_assoc_types(body)
+
+      trait_def = TraitDef.new name, body, type_vars, exported, assoc_types, supertraits
+      trait_def.doc = doc
+      trait_def.name_location = name_location
+      trait_def.end_location = end_location
+      trait_def.at(location)
+      trait_def
+    end
+
+    # iyi: `impl Greet for User ... end`, `impl Greet for Box(T) forall T`,
+    # `impl Show for Box(T) forall T : Show` (SPEC.md II.7),
+    # `impl Into(String) for User` (SPEC.md II.6)
+    def parse_impl_def
+      @type_nest += 1
+
+      location = @token.location
+      doc = @token.doc
+
+      next_token_skip_space_or_newline
+
+      name_location = @token.location
+
+      # Parsed as a type rather than a path, so that a parameterised trait
+      # reuses the same argument grammar every other type position uses —
+      # `impl Into(Array(String)) for User` needs no rule of its own. It stops
+      # before `for` for the same reason the target below stops before
+      # `forall`: neither is a type token.
+      trait_node = parse_bare_proc_type
+      trait_path, trait_args =
+        case trait_node
+        when Path
+          {trait_node, nil}
+        when Generic
+          name = trait_node.name
+          unless name.is_a?(Path)
+            raise "expected a trait name after `impl`", name_location
+          end
+          {name, trait_node.type_vars}
+        else
+          raise "expected a trait name after `impl`", name_location
+        end
+      skip_space
+
+      check_ident :for
+      next_token_skip_space_or_newline
+
+      target = parse_bare_proc_type
+      skip_space
+
+      type_vars = nil
+      type_var_bounds = nil
+      if @token.type.ident? && @token.value == "forall"
+        next_token_skip_space
+        type_vars = [] of String
+        loop do
+          check Token::Kind::CONST
+          name = @token.value.to_s
+          type_vars << name
+          next_token_skip_space
+
+          # `forall T : Show` — the bound is a trait, and nothing else. There
+          # is no separate constraint language to learn: what you can bound by
+          # is what you can implement.
+          if @token.type.op_colon?
+            next_token_skip_space_or_newline
+            type_var_bounds ||= {} of String => ASTNode
+            type_var_bounds[name] = parse_path
+            skip_space
+          end
+
+          break unless @token.type.op_comma?
+          next_token_skip_space_or_newline
+        end
+      end
+
+      skip_statement_end
+
+      body = push_visibility { parse_trait_or_impl_body }
+
+      end_location = token_end_location
+      check_ident :end
+      next_token_skip_space
+
+      @type_nest -= 1
+
+      assoc_types = collect_impl_assoc_types(body)
+
+      impl_def = ImplDef.new trait_path, target, body, type_vars, type_var_bounds, trait_args, assoc_types
+      impl_def.doc = doc
+      impl_def.name_location = name_location
+      impl_def.end_location = end_location
+      impl_def.at(location)
+      impl_def
+    end
+
+    def parse_module_def
+      location = @token.location
+      doc = @token.doc
+
+      next_token_skip_space_or_newline
+
+      # iyi: `module app/user` — compilation-unit header, lowercase path and no
+      # body. Crystal's `module Foo ... end` takes a CONST, so the token type
+      # after `module` is enough to tell them apart without lookahead.
+      if @token.type.ident?
+        path = parse_module_path
+        header = ModuleHeader.new(path)
+        header.at(location)
+        header.end_location = token_end_location
+        return header
+      end
+
+      @type_nest += 1
 
       name_location = @token.location
       name = parse_path
@@ -2865,6 +3465,14 @@ module Crystal
         skip_statement_end
       end
 
+      # iyi: `it` names the value being matched inside every branch
+      # (SPEC.md III.1.1). It has to be declared before the bodies are parsed,
+      # because that is where an identifier is decided to be a variable rather
+      # than a call. A tuple subject has no single value to name, so it is left
+      # out rather than given one of its elements.
+      binds_it = iyi? && !cond.nil? && !cond.is_a?(TupleLiteral)
+      push_var_name "it" if binds_it
+
       whens = [] of When
       a_else = nil
       exhaustive = nil
@@ -2977,7 +3585,9 @@ module Crystal
         end
       end
 
-      Case.new(cond, whens, a_else, exhaustive.nil? ? false : exhaustive).at_end(end_location)
+      node = Case.new(cond, whens, a_else, exhaustive.nil? ? false : exhaustive).at_end(end_location)
+      node.binds_it = binds_it
+      node
     end
 
     def check_valid_exhaustive_expression(exp)
@@ -3239,6 +3849,7 @@ module Crystal
       # that in regular statements states for delimiters
       # here must be treated as method names.
       name = consume_def_or_macro_name
+      check_iyi_method_missing name
 
       with_isolated_var_scope do
         name_location = @token.location
@@ -3707,6 +4318,7 @@ module Crystal
         name = @token.value.to_s
 
         equals_sign, _ = consume_def_equals_sign
+        check_iyi_def_bang
         name = "#{name}=" if equals_sign
         last_was_space = @token.type.space?
         skip_space
@@ -3739,6 +4351,7 @@ module Crystal
 
           name_location = @token.location
           equals_sign, _ = consume_def_equals_sign
+          check_iyi_def_bang
           name = "#{name}=" if equals_sign
           last_was_space = @token.type.space?
           skip_space
@@ -3859,9 +4472,17 @@ module Crystal
       end
 
       skip_space
+      free_var_bounds = nil
       if @token.type.ident? && @token.value == "forall"
         next_token_skip_space
-        free_vars = parse_def_free_vars
+        free_vars, free_var_bounds = parse_def_free_vars
+      end
+
+      skip_space
+      where_bounds = nil
+      if @token.type.ident? && @token.value == "where"
+        next_token_skip_space
+        where_bounds = parse_where_bounds
       end
 
       if is_abstract
@@ -3895,10 +4516,83 @@ module Crystal
       @doc_enabled = @wants_doc
 
       node = Def.new name, params, body, receiver, block_param, return_type, @is_macro_def, @block_arity, is_abstract, splat_index, double_splat: double_splat, free_vars: free_vars
+      node.free_var_bounds = free_var_bounds
+      node.where_bounds = where_bounds
       node.name_location = name_location
       set_visibility node
       node.end_location = end_location
       node
+    end
+
+    # iyi: `def max : Elem where Elem : Comparable` (SPEC.md II.6).
+    #
+    # `forall` introduces a name and may bound it; `where` bounds a name that
+    # is already in scope — an associated type of the enclosing trait. Keeping
+    # the two separate keeps `forall`'s rule intact: a name it did not
+    # introduce is not its business.
+    private def parse_where_bounds : Hash(String, ASTNode)
+      bounds = {} of String => ASTNode
+      loop do
+        check Token::Kind::CONST
+        name = @token.value.to_s
+        if bounds.has_key?(name)
+          raise "duplicate `where` bound for #{name}", @token
+        end
+        next_token_skip_space
+
+        check :OP_COLON
+        next_token_skip_space_or_newline
+
+        bounds[name] = parse_path
+        skip_space
+
+        break unless @token.type.op_comma?
+        next_token_skip_space_or_newline
+      end
+      bounds
+    end
+
+    # iyi: `def sort!` (SPEC.md III.1.7, decision A).
+    #
+    # `!` is no longer part of a name, so by here it has been left as its own
+    # token. After a `def` name there is nothing to propagate, and the author
+    # almost certainly meant a Crystal-style mutating name — so this is the one
+    # place that still explains the convention rather than reporting a stray
+    # token.
+    private def check_iyi_def_bang
+      return unless iyi? && @token.type.op_bang?
+
+      raise <<-MSG, @token
+        `!` can't be part of a name in iyi
+
+        Name the mutating form after the plain verb and the non-mutating form
+        after the participle — `sort` mutates, `sorted` returns a new value.
+        Postfix `!` propagates an error, and a name has none.
+        MSG
+    end
+
+    # iyi: `macro method_missing` (SPEC.md III.3).
+    #
+    # It requires an open method set, and R-3 closes that by construction: a
+    # type's methods are its own module's declarations plus its impls, all
+    # known from export metadata. A hook that answers calls nobody declared
+    # would make that set unknowable, which is the one thing the compilation
+    # model needs it to be.
+    #
+    # Cheap to give up, and counted rather than assumed: one occurrence in the
+    # whole Crystal standard library — the hook definition itself — none in
+    # Kemal, against `responds_to?` across 34 files.
+    private def check_iyi_method_missing(name)
+      return unless iyi? && name == "method_missing"
+
+      raise <<-MSG, @token
+        `method_missing` doesn't exist in iyi
+
+        It needs a method set that is open to names nobody declared, and R-3
+        closes that: a type's methods are what its module declares plus its
+        impls. Use compile-time `responds_to?`, which is what Crystal code
+        reaches for anyway — see SPEC.md III.3.
+        MSG
     end
 
     def check_valid_def_name
@@ -3913,8 +4607,13 @@ module Crystal
       end
     end
 
-    def parse_def_free_vars
+    # Returns the free variable names and, for iyi, the trait each one is
+    # bounded by — `forall B : IntoBody` (SPEC.md II.7 rule 3). A bound is a
+    # trait path and nothing else: there is no separate constraint language,
+    # so what you can bound by is what you can implement.
+    def parse_def_free_vars : {Array(String), Hash(String, ASTNode)?}
       free_vars = [] of String
+      bounds = nil
       while true
         check :CONST
         free_var = @token.value.to_s
@@ -3922,6 +4621,14 @@ module Crystal
         free_vars << free_var
 
         next_token_skip_space
+
+        if @token.type.op_colon?
+          next_token_skip_space_or_newline
+          bounds ||= {} of String => ASTNode
+          bounds[free_var] = parse_path
+          skip_space
+        end
+
         if @token.type.op_comma?
           next_token_skip_space
           check :CONST
@@ -3929,7 +4636,7 @@ module Crystal
           break
         end
       end
-      free_vars
+      {free_vars, bounds}
     end
 
     def compute_block_arg_yields(block_arg)

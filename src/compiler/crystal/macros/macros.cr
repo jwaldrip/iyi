@@ -23,8 +23,8 @@ class Crystal::Program
     check_call_to_deprecated_macro a_macro, call
 
     interpreter = MacroInterpreter.new self, scope, path_lookup || scope, a_macro, call, a_def, in_macro: true
-    a_macro.body.accept interpreter
-    {interpreter.to_s, interpreter.macro_expansion_pragmas}
+    Prof.span("  macro: interpret") { a_macro.body.accept interpreter }
+    {Prof.span("  macro: to_s (stringify)") { interpreter.to_s }, interpreter.macro_expansion_pragmas}
   rescue ex
     raise ex if @program.macro_expansion_error_hook.nil?
 
@@ -37,8 +37,8 @@ class Crystal::Program
   def expand_macro(node : ASTNode, scope : Type, path_lookup : Type? = nil, free_vars = nil, a_def : Def? = nil)
     interpreter = MacroInterpreter.new self, scope, path_lookup || scope, node.location, def: a_def, in_macro: false
     interpreter.free_vars = free_vars
-    node.accept interpreter
-    {interpreter.to_s, interpreter.macro_expansion_pragmas}
+    Prof.span("  macro: interpret") { node.accept interpreter }
+    {Prof.span("  macro: to_s (stringify)") { interpreter.to_s }, interpreter.macro_expansion_pragmas}
   rescue ex
     raise ex if @program.macro_expansion_error_hook.nil?
 
@@ -61,11 +61,22 @@ class Crystal::Program
     parser.fun_nest = 1 if current_def && current_def.is_a?(External)
     parser.type_nest = 1 if inside_type
     parser.wants_doc = @program.wants_doc?
-    generated_node = yield parser
-    normalize(generated_node, inside_exp: inside_exp, current_def: current_def)
+    generated_node = Prof.span("  macro: reparse") { yield parser }
+    Prof.span("  macro: normalize") { normalize(generated_node, inside_exp: inside_exp, current_def: current_def) }
   end
 
   record MacroRunResult, stdout : String, stderr : String, status : Process::Status
+
+  # iyi: `run` compiles a program and executes it, so a front end that links no
+  # LLVM cannot do it — and says so rather than failing somewhere in the middle
+  # of a build it cannot finish (see `../llvm_shim.cr`). II.10 measured this at
+  # +7.4 s per distinct script on a cold build; it is not on the path a front
+  # end is for.
+  {% if flag?(:without_llvm) %}
+    def macro_run(filename, args)
+      raise Crystal::Error.new("`run` needs a compiler that can generate code, and this one links no LLVM")
+    end
+  {% else %}
 
   def macro_run(filename, args)
     compiled_macro_run = @compiled_macros_cache[filename] ||= macro_compile(filename)
@@ -173,6 +184,8 @@ class Crystal::Program
       host_compiler.debug = Crystal::Debug::None
     end
   end
+
+  {% end %}
 
   private def can_reuse_previous_compilation?(filename, executable_path, recorded_requires_path, requires_path)
     return false unless File.exists?(executable_path)

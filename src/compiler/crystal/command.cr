@@ -41,6 +41,7 @@ class Crystal::Command
         env                      print Crystal environment information
         eval                     eval code from args or standard input
         i/interactive            starts interactive Crystal
+        mod                      inspect a .iyimod module artifact
         play                     starts Crystal playground server
         run (default)            build and run program
         spec                     build and run specs (in spec directory)
@@ -93,6 +94,11 @@ class Crystal::Command
       init
     when "build".starts_with?(command)
       options.shift
+      # A daemon named by the environment serves ordinary builds too, so the
+      # speed does not depend on remembering to type `daemon build`.
+      if socket = daemon_socket_from_env
+        daemon_build(socket, fallback: true)
+      end
       build
       report_warnings
       exit 1 if warnings_fail_on_exit?
@@ -137,6 +143,12 @@ class Crystal::Command
     when command == "clear_cache"
       options.shift
       clear_cache
+    when command == "daemon"
+      options.shift
+      daemon
+    when command == "mod"
+      options.shift
+      mod
     when "help".starts_with?(command), "--help" == command, "-h" == command
       puts USAGE
       exit
@@ -208,6 +220,14 @@ class Crystal::Command
   rescue ex : CompilerError
     print_error ex.message
     ::exit ex.status
+  rescue ex : IO::Error
+    # iyi: `mod dump big.iyimod | head` is somebody reading, not a bug in a
+    # compiler. The reader closing the pipe is how `head` says it has enough,
+    # and every other tool on the machine treats it as the end of the output
+    # rather than as a crash with a backtrace and an invitation to file an
+    # issue. Anything else that reaches here still does.
+    raise ex unless ex.os_error == Errno::EPIPE
+    ::exit 0
   rescue ex
     report_warnings
 
@@ -266,6 +286,17 @@ class Crystal::Command
   private def build
     config = create_compiler "build"
     config.compile
+  end
+
+  # The compiler a `crystal build` with these arguments would use, so the daemon
+  # can analyse the prelude those flags imply and have it ready next time.
+  #
+  # Only ever called with arguments a build has already parsed successfully:
+  # option parsing exits the process on bad input, and doing that in a daemon
+  # would take it down on a client's typo.
+  protected def prelude_compiler_for_build : Compiler
+    options.shift if options.first? == "build"
+    create_compiler("build").compiler
   end
 
   private def hierarchy
@@ -415,6 +446,7 @@ class Crystal::Command
     verbose = false
     check = false
     tallies = false
+    specified_prelude = false
 
     option_parser = parse_with_crystal_opts do |opts|
       opts.banner = "Usage: crystal #{command} [options] [programfile] [--] [arguments]\n\nOptions:"
@@ -553,6 +585,28 @@ class Crystal::Command
 
       opts.on("--prelude ", "Use given file as prelude") do |prelude|
         compiler.prelude = prelude
+        specified_prelude = true
+      end
+
+      # iyi: write a `.iyimod` per imported module into DIR (SPEC.md IV.1).
+      #
+      # Emitting from an ordinary build rather than from a "compile this module
+      # alone" command, because compiling a module alone is the thing the
+      # artifact is *for* and cannot precede it.
+      opts.on("--emit-iyimod DIR", "iyi: write a .iyimod per imported module into DIR") do |dir|
+        compiler.emit_iyimod = dir
+      end
+
+      # iyi: read imported modules from DIR's `.iyimod` files (SPEC.md IV.1).
+      #
+      # No longer implies `--no-codegen`: an artifact carries its module's own
+      # object code, the defs it declares are emitted as external declarations,
+      # and the linker joins the two. IV.1g names what is still missing from
+      # that, and what is missing shows up as an undefined symbol at link —
+      # which is the honest failure for this stage, and a great deal more
+      # useful than refusing to try.
+      opts.on("--use-iyimod DIR", "iyi: compile imported modules from DIR's .iyimod files") do |dir|
+        compiler.use_iyimod = dir
       end
 
       unless no_codegen
@@ -638,6 +692,16 @@ class Crystal::Command
       sources << Compiler::Source.new(filenames.shift, STDIN.gets_to_end)
     end
     sources.concat gather_sources(filenames)
+
+    # iyi: an iyi program gets iyi's prelude (SPEC.md, "0.1.0", item 3).
+    #
+    # Decided by the entry file's extension, which is the only thing the
+    # compiler knows before it reads anything. `--prelude` still wins, and a
+    # `.cr` file is untouched — the two languages share this compiler and do
+    # not share a standard library.
+    if !specified_prelude && sources.first?.try(&.filename.ends_with?(".iyi"))
+      compiler.prelude = "iyi/prelude"
+    end
 
     output_extension = compiler.cross_compile? ? compiler.codegen_target.object_extension : compiler.codegen_target.executable_extension
 

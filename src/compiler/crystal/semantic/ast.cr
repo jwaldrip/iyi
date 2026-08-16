@@ -671,7 +671,8 @@ module Crystal
                    ArrayLiteral HashLiteral RegexLiteral RangeLiteral
                    Case StringInterpolation
                    MacroExpression MacroIf MacroFor MacroVerbatim MultiAssign
-                   SizeOf InstanceSizeOf AlignOf InstanceAlignOf OffsetOf Global Require Select) %}
+                   SizeOf InstanceSizeOf AlignOf InstanceAlignOf OffsetOf Global Require Select
+                   ImportDecl) %}
     class {{name.id}}
       include ExpandableNode
     end
@@ -682,6 +683,16 @@ module Crystal
   end
 
   class ModuleDef
+    property! resolved_type : ModuleType
+  end
+
+  class TraitDef
+    property! resolved_type : ModuleType
+  end
+
+  class ImplDef
+    # The type the trait is implemented for. For a generic impl this is the
+    # uninstantiated generic type — `Box`, not `Box(Int32)`.
     property! resolved_type : ModuleType
   end
 

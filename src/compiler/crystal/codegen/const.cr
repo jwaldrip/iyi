@@ -242,6 +242,16 @@ class Crystal::CodeGenVisitor
   def read_const_pointer(const)
     const.read = true
 
+    # iyi: which unit read it, so an artifact carrying that unit can say so
+    # (SPEC.md IV.1g). A constant is initialised only where something read it,
+    # and on the far side of an artifact the only reader is machine code the
+    # consumer did not compile. Recorded only while writing artifacts.
+    unless @program.iyi_exported_owners.empty?
+      if @llvm_mod != @main_mod
+        (@program.iyi_unit_constants[@llvm_mod.name] ||= Set(Const).new) << const
+      end
+    end
+
     if !const.needs_init_flag?
       global_name = const.llvm_name
       global = declare_const(const)

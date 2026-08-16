@@ -1,0 +1,70 @@
+module std/traits
+
+pub trait Cmp
+  abstract def cmp(other : self) : Int32
+
+  def lt(other : self) : Bool
+    cmp(other) < 0
+  end
+
+  def gt(other : self) : Bool
+    cmp(other) > 0
+  end
+end
+
+pub trait Num : Cmp
+  # Class-level requirements. `Enumerable#sum` and `#product` need an additive
+  # and a multiplicative identity, and an identity belongs to the type, not to
+  # any value of it — there is no element to ask when the collection is empty.
+  abstract def self.zero : self
+  abstract def self.one : self
+
+  abstract def add(other : self) : self
+  abstract def mul(other : self) : self
+end
+
+pub trait Hashable
+  abstract def hash_key : Int32
+end
+
+impl Cmp for Int32
+  def cmp(other : self) : Int32
+    self - other
+  end
+end
+
+impl Num for Int32
+  def self.zero : self
+    0
+  end
+
+  def self.one : self
+    1
+  end
+
+  def add(other : self) : self
+    self + other
+  end
+
+  def mul(other : self) : self
+    self * other
+  end
+end
+
+impl Hashable for Int32
+  def hash_key : Int32
+    self
+  end
+end
+
+impl Cmp for String
+  def cmp(other : self) : Int32
+    self <=> other
+  end
+end
+
+impl Hashable for String
+  def hash_key : Int32
+    size
+  end
+end
