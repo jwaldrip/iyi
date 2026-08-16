@@ -11,7 +11,9 @@ The design lives in [SPEC.md](SPEC.md). It is a working document, not a manual.
 It records what was measured, what was tried and thrown away, and why.
 
 This is `0.1.0` in the sense of "the first thing that proves the claim". It is
-not ready for your project. Read the limits before the numbers.
+not ready for your project: no IO beyond `puts`, no concurrency, no package
+manager, Linux x86-64 only. [What is not here](#what-is-not-here) says the rest,
+and it is worth reading before the numbers are.
 
 ## The program that makes the argument
 
@@ -78,6 +80,50 @@ $ iyi build --emit-iyimod mods samples/iyi/webapp.iyi   # writes kemal/router.iy
 $ rm -rf samples/iyi/kemal                              # the library's source, gone
 $ iyi build --use-iyimod mods samples/iyi/webapp.iyi    # builds, links, runs, same output
 ```
+
+## What it costs, measured
+
+**The loop a person is actually in.** Nobody uses a language through full
+builds; they use it through changing a line and building again. Thirty
+modules, 300 types, 7,208 lines, written in both languages by one generator
+and refused unless the two binaries print the same number before anything is
+timed. Best of 7 on one idle Linux machine, release compiler, seconds:
+
+| what changed | iyi | `go build` |
+|---|---|---|
+| **one module's body** | **0.17** | 0.20 |
+| the entry file only | **0.15** | 0.21 |
+| nothing at all | 0.15 | 0.09 |
+| nothing cached anywhere | 0.74 | 3.89 |
+| the same edit, *without* artifacts | 0.29 | — |
+
+**That last row is R-1's whole argument with a price on it.** Build the same
+edit with all thirty modules read from source and it costs 0.29 s; with the
+`.iyimod` files in hand the other twenty-nine arrive as declarations instead
+of source and it costs 0.17 s. The rule pays 1.7x on the loop it was written
+for, and it pays more as the code you are *not* editing grows.
+
+**Go is the column to stand next to because Go is good at this.** Being 15%
+ahead of it is not the headline; being in the same class is. The last row is
+what the same edit costs with the rule switched off, and a compiler without it
+pays that on every build there will ever be. Run it yourself with
+`python3 bench/incremental.py`.
+
+**Now the less flattering number, and it is a full build.** `python3
+bench/build_speed.py`, same machine, warm:
+
+| program | iyi | `go build` |
+|---|---|---|
+| `hello` (5 lines) | **0.06 s** | 0.08 s |
+| generated pair, 6,900 lines | 0.22 s | **0.08 s** |
+
+**Read that second row before quoting the first.** iyi wins where fixed costs
+are the whole bill and loses once there is a program to compile from scratch,
+at roughly 25 ms per thousand lines. Both halves of the pair come out of one
+generator, and the bench refuses to time them unless the two binaries print
+the same thing. The front end on its own is 0.034 s for `hello` against a
+target of 0.050 s, and 0.018 s of that is the compiler process starting up
+before it reads anything.
 
 ## The rules everything follows from
 
@@ -254,45 +300,6 @@ exports
     def initialize(method : String, path : String)
 ```
 
-## What it costs, measured
-
-`python3 bench/build_speed.py` produces this table. The README does not quote
-numbers it cannot reproduce. One Linux machine with nothing else running,
-release compiler, warm builds:
-
-| program | iyi | `go build` |
-|---|---|---|
-| `hello` (5 lines) | **0.06 s** | 0.08 s |
-| generated pair, 6,900 lines | 0.22 s | **0.08 s** |
-
-**Read the second row before quoting the first.** iyi wins where fixed costs are
-the whole bill. It loses once there is a program to compile, at roughly 25 ms
-per thousand lines, against a Go build that barely moves at all.
-
-Both halves of that second pair come out of one generator
-(`bench/build_speed/generate_pair.py`), and the bench refuses to time them
-unless the two binaries print the same thing. The front end on its own is
-0.034 s for `hello`, against a target of 0.050 s, and 0.018 s of that is the
-compiler process starting up before it reads anything.
-
-**Now the row that is actually the claim.** Nobody uses a language through
-full builds; they use it through the loop of changing a line and building
-again. Thirty modules, 300 types, 7,208 lines, written in both languages by
-`bench/incremental/generate_project.py` and checked to print the same number
-before anything is timed (`python3 bench/incremental.py`):
-
-| what changed | iyi | `go build` |
-|---|---|---|
-| nothing cached anywhere | 0.74 s | 3.89 s |
-| **one module's body** | **0.17 s** | 0.20 s |
-| the entry file only | **0.15 s** | 0.21 s |
-| the same edit, without artifacts | 0.29 s | — |
-
-**The last row is R-1's whole argument, priced.** With the `.iyimod` files in
-hand the other 29 modules arrive as declarations instead of source, and the
-same edit costs 0.17 s instead of 0.29 s. What is left is not analysis: 0.018 s
-of it is the process starting and most of the rest is the link.
-
 ## What is not here
 
 - **No IO beyond `puts`.** The prelude is 1,053 lines on purpose: integers,
@@ -315,7 +322,8 @@ of it is the process starting and most of the rest is the link.
 | [`samples/iyi`](samples/iyi) | eight programs, each documenting a part of it |
 | [`src/iyi`](src/iyi) | the prelude, 1,053 lines |
 | [`src/compiler/crystal/iyimod.cr`](src/compiler/crystal/iyimod.cr) | the artifact format |
-| [`bench/build_speed.py`](bench/build_speed.py) | the numbers above, and the gate that fails until they hold |
+| [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
+| [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |
 | [README.crystal.md](README.crystal.md) | Crystal's own README, kept |
 
 ## Licence and provenance
