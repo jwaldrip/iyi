@@ -81,9 +81,12 @@ written on — 0.47 s left after the artifact, of which class-var initializers a
 `main` are 90% — was measured against Crystal's 107,719-line prelude. Item 3
 replaced that prelude with 1,053 lines of iyi, and the number this item exists
 to remove does not exist any more. What the item became is the link, and the
-link is now 0.026 s of a 0.09 s warm build that beats `go build`'s 0.12 s on the
-same machine. From `bench/build_speed.py` on a release compiler, `hello.iyi`,
-seconds — the middle column is where this morning started:
+link is now 0.026 s of a 0.09 s warm build of `hello.iyi`, against `go build`'s
+0.12 s on the same machine. **That is a win at the size of `hello` and the
+bench's second pair says so**: at 6,900 lines the same comparison is 0.23 s
+against 0.09 s, because what was removed here was fixed cost. From
+`bench/build_speed.py` on a release compiler, `hello.iyi`, seconds — the middle
+column is where this morning started:
 
 | | before | after |
 |---|---|---|
@@ -293,16 +296,26 @@ snake_case" turned out not to be enough — `v_1` and `v1` both give `V1`.
 **5. A benchmark that produces the claim, and a check that fails until it
 holds. Built.** `bench/` already priced macros and `Share`; build speed was the
 one number the project exists for and the one with no committed harness.
-`bench/build_speed.py` is it, and its first run is below. Its corpus is one
+`bench/build_speed.py` is it, and its first run is below. Its corpus was one
 program, because `hello` is the only pair where "the equivalent Go program" is
-unambiguous and because iyi has no other program to offer — which makes growing
+unambiguous and because iyi had no other program to offer — which made growing
 that corpus a dependency of this item on item 3, not a nicety.
+
+**Grown, and the ambiguity is gone rather than argued away.** The second pair is
+generated: `bench/build_speed/generate_pair.py` emits the iyi and the Go halves
+from one loop, and the bench runs both and refuses to time them unless they
+print the same thing. At 300 types it is about 6,900 lines, which is the size at
+which user code is the bill rather than the fixed costs — and the first
+measurement of it takes back the warm win the previous run recorded. See "Done
+is a number" below.
 
 **Where the five stand.** One is built and the eight samples compile with the
 imported module's source deleted. Two is answered: the passes it named cost
 0.4 ms, and the two things that did cost — a `PATH` search per build and a
-driver rebuilding the same link command — are fixed, which is what took the warm
-build to 0.09 s against Go's 0.12 s. Three, four and five are done. **What
+driver rebuilding the same link command — are fixed, which is what took
+`hello.iyi`'s warm build to 0.09 s against Go's 0.12 s. Three and four are done;
+five is done and its second pair is what says that win is a win at that size —
+at 6,900 lines Go is ahead 0.09 s to 0.23 s, and iyi is what grows. **What
 remains for a release is not on this list**: III.4's concurrency is specified
 and unbuilt, and III.5's "no import for side effects" is the one rule here with
 a cost and no measurement. Everything else in this section is a number that has
@@ -591,6 +604,37 @@ paragraph above about a machine that has been idle reading high is the same
 observation, and the same conclusion follows — a NOT MET from a machine that
 has just finished a compile is worth running again, and a target decided by 4%
 is a target the next machine will decide differently.
+
+**The sixth run had a second program in it, and it takes the previous
+paragraph's headline back.** Item 5 said the corpus was one program because
+`hello` is the only pair whose Go equivalent is unarguable, and that growing it
+waited on item 3. `bench/build_speed/generate_pair.py` grows it without the
+argument: both halves come out of one loop — 300 structs with two fields, an
+arithmetic method, a method taking another of its kind, a name, and a main that
+adds up what they answer — so they are the same shape by construction, and the
+bench builds and runs both and drops the rows unless they print the same thing.
+About 6,900 lines of iyi, 6,000 of Go. On a release compiler:
+
+| program | stage | cold | warm |
+|---|---|---|---|
+| `hello.iyi` | end to end | 0.18 | **0.07** |
+| `hello.go` | `go build` | 3.30 | 0.10 |
+| `medium.iyi` (6,900 lines) | front end (`--no-codegen`) | 0.10 | — |
+| `medium.iyi` | end to end | 0.58 | **0.23** |
+| `medium.go` | `go build` | 3.66 | **0.09** |
+
+**Go's warm build does not move and iyi's does.** Across a 6,900-line
+difference Go went 0.10 s → 0.09 s; iyi went 0.07 s → 0.23 s, and at 13,800
+lines it is 0.42 s against Go's 0.087 s. So the warm win recorded above is a
+win at the size of `hello` and nothing more: it came from removing fixed costs,
+and fixed costs are the whole bill only while the program is one line. Per
+thousand lines of this program iyi costs about 25 ms and Go costs nothing
+anyone here can measure.
+
+Where those milliseconds go, at 300 types and warm: parse 55 ms, semantic 87 ms
+across every pass, codegen 115 ms, link 55 ms. Nothing in that list is the
+prelude, the artifact or the driver — it is the compiler compiling, which is the
+first time in this document that has been the answer.
 
 ### What Crystal's own 0.1.0 looked like
 
