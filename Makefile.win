@@ -139,15 +139,6 @@ smoke_test: $(O)\std_spec.exe $(O)\compiler_spec.exe $(O)\crystal.exe
 all_spec: $(O)\all_spec.exe ## Run all specs (note: this builds a huge program; `test` recipe builds individual binaries and is recommended for reduced resource usage)
 	$(O)\all_spec $(SPEC_FLAGS)
 
-.PHONY: samples
-samples: ## Build example programs
-	$(MAKE) -C samples -f $(MAKEFILE_LIST)
-
-.PHONY: docs
-docs: ## Generate standard library documentation
-	$(call check_llvm_config)
-	.\bin\crystal docs src\docs_main.cr $(DOCS_OPTIONS) --project-name=Crystal --project-version=$(CRYSTAL_VERSION) --source-refname=$(CRYSTAL_CONFIG_BUILD_COMMIT)
-
 .PHONY: crystal
 crystal: $(O)\crystal.exe ## Build the compiler [default]
 
@@ -198,17 +189,6 @@ uninstall_compiler:
 
 	$(call RM,"$(BINDIR)\crystal.exe")
 	$(call RM,"$(BINDIR)\crystal.pdb")
-
-.PHONY: install_docs
-install_docs: docs ## Install docs at prefix
-	$(call MKDIR,"$(DATADIR)")
-	$(call INSTALLDIR,docs,"$(DATADIR)\docs")
-	$(call INSTALLDIR,samples,"$(DATADIR)\examples")
-
-.PHONY: uninstall_docs
-uninstall_docs: ## Uninstall docs from prefix
-	$(call RMDIR,"$(DATADIR)\docs")
-	$(call RMDIR,"$(DATADIR)\examples")
 
 $(O)\all_spec.exe: $(DEPS) $(SOURCES) $(SPEC_SOURCES)
 	$(call check_llvm_config)
@@ -267,7 +247,6 @@ clean: clean_crystal ## Clean up built directories and files
 .PHONY: clean_crystal
 clean_crystal: ## Clean up crystal built files
 	$(call RMDIR,"$(O)")
-	$(call RMDIR,docs)
 
 .PHONY: clean_cache
 clean_cache: ## Clean up CRYSTAL_CACHE_DIR files
@@ -284,8 +263,6 @@ rc: ## Write compiler resource script to standard output
 	echo #include ^<windows.h^>& \
 	echo.& \
 	set "_dir=$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" & \
-	echo 1 ICON ^"!_dir:/=\\!src\\compiler\\crystal\\tools\\playground\\public\\favicon.ico^"& \
-	echo.& \
 	echo VS_VERSION_INFO VERSIONINFO& \
 	echo     PRODUCTVERSION $(ver_comma),0& \
 	echo     FILEVERSION    $(ver_comma),1& \

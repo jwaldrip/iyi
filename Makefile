@@ -394,7 +394,6 @@ clean: clean_crystal clean_man ## Clean up built directories and files
 .PHONY: clean_crystal
 clean_crystal: ## Clean up crystal built files
 	rm -rf $(O)
-	rm -rf ./docs
 
 .PHONY: clean_man
 clean_man:
