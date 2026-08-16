@@ -113,8 +113,6 @@ class Crystal::Scheduler
 
     {% if flag?(:preview_mt) %}
       GC.lock_read
-    {% elsif flag?(:interpreted) %}
-      # No need to change the stack bottom!
     {% else %}
       GC.set_stackbottom(fiber.@stack.bottom)
     {% end %}
@@ -246,9 +244,7 @@ class Crystal::Scheduler
     end
   {% else %}
     def self.init : Nil
-      {% unless flag?(:interpreted) %}
-        Thread.current.scheduler.spawn_stack_pool_collector
-      {% end %}
+      Thread.current.scheduler.spawn_stack_pool_collector
     end
   {% end %}
 

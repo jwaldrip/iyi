@@ -51,9 +51,6 @@ jobs:
       - name: Test
         run: bin/ci build
 
-      - name: Test interpreter
-        run: bin/ci with_build_env 'make interpreter_spec'
-
   test-std:
     runs-on: macos-26
     strategy:

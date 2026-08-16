@@ -117,14 +117,12 @@ class Fiber
 
               resume(scheduler.main_fiber)
 
-              {% unless flag?(:interpreted) %}
-                if (stack = Thread.current.dead_fiber_stack?) && stack.reusable?
-                  # release pending fiber stack left after swapcontext; we don't
-                  # know which stack pool to return it to, and it may not even
-                  # have one (e.g. isolated fiber stack)
-                  Crystal::System::Fiber.free_stack(stack.pointer, stack.size)
-                end
-              {% end %}
+              if (stack = Thread.current.dead_fiber_stack?) && stack.reusable?
+                # release pending fiber stack left after swapcontext; we don't
+                # know which stack pool to return it to, and it may not even
+                # have one (e.g. isolated fiber stack)
+                Crystal::System::Fiber.free_stack(stack.pointer, stack.size)
+              end
             end
 
             @mutex.synchronize do

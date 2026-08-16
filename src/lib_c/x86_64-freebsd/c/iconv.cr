@@ -4,8 +4,7 @@ lib LibC
   type IconvT = Void*
 
   # Although FreeBSD libc provides iconv_XXXX functions, they are just compatibility symbols,
-  # not directly visible via dlsym(3). Use FreeBSD-specific exported symbols so iconv also
-  # works in the interpreter.
+  # not directly visible via dlsym(3). Use the FreeBSD-specific exported symbols instead.
   fun iconv = __bsd_iconv(x0 : IconvT, x1 : Char**, x2 : SizeT*, x3 : Char**, x4 : SizeT*) : SizeT
   fun iconv_close = __bsd_iconv_close(x0 : IconvT) : Int
   fun iconv_open = __bsd_iconv_open(x0 : Char*, x1 : Char*) : IconvT

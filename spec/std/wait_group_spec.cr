@@ -173,26 +173,23 @@ describe WaitGroup do
     completed.should eq [true] * 10
   end
 
-  # the test takes far too much time for the interpreter to complete
-  {% unless flag?(:interpreted) %}
-    it "stress add/done/wait" do
-      wg = WaitGroup.new
+  it "stress add/done/wait" do
+    wg = WaitGroup.new
 
-      1000.times do
-        counter = Atomic(Int32).new(0)
+    1000.times do
+      counter = Atomic(Int32).new(0)
 
-        2.times do
-          wg.add(1)
+      2.times do
+        wg.add(1)
 
-          spawn do
-            counter.add(1)
-            wg.done
-          end
+        spawn do
+          counter.add(1)
+          wg.done
         end
-
-        wg.wait
-        counter.get.should eq(2)
       end
+
+      wg.wait
+      counter.get.should eq(2)
     end
-  {% end %}
+  end
 end

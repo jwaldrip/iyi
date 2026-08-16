@@ -108,10 +108,7 @@ class Fiber
   # *name* is an optional and used only as an internal reference.
   def self.new(name : String? = nil, {% if !flag?(:without_mt) && !flag?(:preview_mt) || flag?(:execution_context) %}execution_context : ExecutionContext = ExecutionContext.current,{% end %} &proc : ->) : self
     stack =
-      {% if flag?(:interpreted) %}
-        # the interpreter is managing the stacks
-        Stack.new(Pointer(Void).null, Pointer(Void).null)
-      {% elsif !flag?(:without_mt) && !flag?(:preview_mt) || flag?(:execution_context) %}
+      {% if !flag?(:without_mt) && !flag?(:preview_mt) || flag?(:execution_context) %}
         execution_context.stack_pool.checkout
       {% else %}
         Crystal::Scheduler.stack_pool.checkout
@@ -135,15 +132,7 @@ class Fiber
   def initialize(stack : Void*, thread)
     @proc = Proc(Void).new { }
 
-    # TODO: should creating a new context for the main fiber also be platform specific?
-    # It's the same for all platforms except for the interpreted mode.
-    @context =
-      {% if flag?(:interpreted) %}
-        # In interpreted mode the stack_top variable actually points to a fiber
-        Context.new(Crystal::Interpreter.current_fiber)
-      {% else %}
-        Context.new(_fiber_get_stack_top)
-      {% end %}
+    @context = Context.new(_fiber_get_stack_top)
 
     thread.gc_thread_handler, stack_bottom = GC.current_thread_stack_bottom
     @stack = Stack.new(stack, stack_bottom)
@@ -187,18 +176,15 @@ class Fiber
 
     @alive = false
 
-    # the interpreter is managing the stacks
-    {% unless flag?(:interpreted) %}
-      {% if !flag?(:without_mt) && !flag?(:preview_mt) || flag?(:execution_context) %}
-        # do not prematurely release the stack before we switch to another fiber
-        if stack = Thread.current.dying_fiber(self)
-          # we can however release the stack of a previously dying fiber (we
-          # since swapped context)
-          execution_context.stack_pool.release(stack)
-        end
-      {% else %}
-        Crystal::Scheduler.stack_pool.release(@stack)
-      {% end %}
+    {% if !flag?(:without_mt) && !flag?(:preview_mt) || flag?(:execution_context) %}
+      # do not prematurely release the stack before we switch to another fiber
+      if stack = Thread.current.dying_fiber(self)
+        # we can however release the stack of a previously dying fiber (we
+        # since swapped context)
+        execution_context.stack_pool.release(stack)
+      end
+    {% else %}
+      Crystal::Scheduler.stack_pool.release(@stack)
     {% end %}
 
     Fiber.suspend

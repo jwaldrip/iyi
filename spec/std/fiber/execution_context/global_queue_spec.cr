@@ -89,8 +89,7 @@ describe Fiber::ExecutionContext::GlobalQueue do
     end
   end
 
-  # interpreter doesn't support threads yet (#14287)
-  pending_interpreted describe: "thread safety" do
+  describe "thread safety" do
     it "one by one", tags: %w[slow] do
       {% if flag?(:win32) && flag?(:aarch64) %}
         pending! "CI/WIN32/CLANGARM64 always fails"

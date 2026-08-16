@@ -40,7 +40,6 @@ class Crystal::Command
         docs                     generate documentation
         env                      print Crystal environment information
         eval                     eval code from args or standard input
-        i/interactive            starts interactive Crystal
         mod                      inspect a .iyimod module artifact
         play                     starts Crystal playground server
         run (default)            build and run program
@@ -123,14 +122,6 @@ class Crystal::Command
     when command == "eval"
       options.shift
       eval
-    when command.in?("i", "interactive")
-      options.shift
-      {% if flag?(:without_interpreter) %}
-        STDERR.puts "Crystal was compiled without interpreter support"
-        exit 1
-      {% else %}
-        repl
-      {% end %}
     when command == "run"
       options.shift
       run_command(single_file: false)

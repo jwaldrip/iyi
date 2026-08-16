@@ -6,7 +6,7 @@ require "c/stdlib"
 {% if flag?(:msvc) %}
   @[Link({{ flag?(:static) ? "libcmt" : "msvcrt" }})]
   @[Link(ldflags: "/ENTRY:wmainCRTStartup")]
-{% elsif flag?(:gnu) && !flag?(:interpreted) %}
+{% elsif flag?(:gnu) %}
   @[Link(ldflags: "-municode")]
 {% end %}
 lib LibCrystalMain

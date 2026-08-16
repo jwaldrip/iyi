@@ -1,4 +1,4 @@
-{% skip_file unless flag?(:linux) && !flag?(:interpreted) %}
+{% skip_file unless flag?(:linux) %}
 
 require "c/unistd"
 require "syscall"

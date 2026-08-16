@@ -190,8 +190,6 @@ describe OpenSSL::SSL::Socket do
   end
 
   it "calls on_server_name callback with client hostname" do
-    pending_interpreted!("Leads to invalid memory access")
-
     tcp_server = TCPServer.new("127.0.0.1", 0)
     server_context, client_context = ssl_context_pair
 
@@ -218,8 +216,6 @@ describe OpenSSL::SSL::Socket do
   end
 
   it "handles exception in on_server_name callback" do
-    pending_interpreted!("Leads to invalid memory access")
-
     tcp_server = TCPServer.new("127.0.0.1", 0)
     server_context, client_context = ssl_context_pair
 

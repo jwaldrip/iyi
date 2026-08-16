@@ -1,8 +1,7 @@
 require "./spec_helper"
 require "../support/thread"
 
-# interpreter doesn't support threads yet (#14287)
-pending_interpreted describe: Thread do
+describe Thread do
   it "allows passing an argumentless fun to execute" do
     a = 0
     thread = Thread.new { a = 1; 10 }

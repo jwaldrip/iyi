@@ -3,7 +3,6 @@ require "../support/tempfile"
 require "../support/fibers"
 require "../support/win32"
 require "../support/wasm32"
-require "../support/interpreted"
 
 def datapath(*components)
   File.join("spec", "std", "data", *components)
@@ -78,9 +77,6 @@ def spawn_and_check(before : Proc(_), file = __FILE__, line = __LINE__, &block :
 end
 
 def compile_file(source_file, *, bin_name = "executable_file", flags = %w(), file = __FILE__, &)
-  # can't use backtick in interpreted code (#12241)
-  pending_interpreted! "Unable to compile Crystal code in interpreted code"
-
   with_temp_executable(bin_name, file: file) do |executable_file|
     compiler = ENV["CRYSTAL_SPEC_COMPILER_BIN"]? || "bin/crystal"
     args = ["build"] + flags + ["-o", executable_file, source_file]
@@ -102,9 +98,6 @@ def compile_file(source_file, *, bin_name = "executable_file", flags = %w(), fil
 end
 
 def assert_compile_error(source, expected_error, *, flags = %w(), file = __FILE__, line = __LINE__)
-  # can't use backtick in interpreted code (#12241)
-  pending_interpreted! "Unable to compile Crystal code in interpreted code"
-
   with_tempfile("source_file", file: file) do |source_file|
     File.write(source_file, source)
 

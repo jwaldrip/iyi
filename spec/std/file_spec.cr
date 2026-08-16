@@ -49,8 +49,7 @@ describe "File" do
   end
 
   {% if LibC.has_method?(:mkfifo) && !flag?(:darwin) %}
-    # interpreter doesn't support threads yet (#14287)
-    pending_interpreted "can read/write fifo file without blocking" do
+    it "can read/write fifo file without blocking" do
       path = File.tempname("chardev")
       ret = LibC.mkfifo(path, File::DEFAULT_CREATE_PERMISSIONS)
       raise RuntimeError.from_errno("mkfifo") unless ret == 0

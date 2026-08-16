@@ -90,9 +90,7 @@ private def traverse_eh_table(leb, start, ip, actions, &)
   nil
 end
 
-{% if flag?(:interpreted) %}
-  # interpreter does not need `__crystal_personality`
-{% elsif flag?(:win32) && !flag?(:gnu) %}
+{% if flag?(:win32) && !flag?(:gnu) %}
   require "exception/lib_unwind"
 
   {% begin %}
@@ -222,7 +220,7 @@ end
   {% end %}
 {% end %}
 
-{% unless flag?(:interpreted) || (flag?(:win32) && !flag?(:gnu)) || flag?(:wasm32) %}
+{% unless (flag?(:win32) && !flag?(:gnu)) || flag?(:wasm32) %}
   # :nodoc:
   @[Raises]
   fun __crystal_raise(unwind_ex : LibUnwind::Exception*) : NoReturn
@@ -269,13 +267,11 @@ end
 
 {% if flag?(:win32) && !flag?(:gnu) %}
   # :nodoc:
-  {% if flag?(:interpreted) %} @[Primitive(:interpreter_raise_without_backtrace)] {% end %}
   def raise_without_backtrace(exception : Exception) : NoReturn
     LibC._CxxThrowException(pointerof(exception).as(Void*), throw_info)
   end
 {% else %}
   # :nodoc:
-  {% if flag?(:interpreted) %} @[Primitive(:interpreter_raise_without_backtrace)] {% end %}
   def raise_without_backtrace(exception : Exception) : NoReturn
     unwind_ex = Pointer(LibUnwind::Exception).malloc
     unwind_ex.value.exception_class = LibC::SizeT.zero
@@ -296,18 +292,11 @@ fun __crystal_raise_overflow : NoReturn
   raise OverflowError.new
 end
 
-{% if flag?(:interpreted) %}
-  # :nodoc:
-  def __crystal_raise_cast_failed(obj, type_name : String, location : String)
-    raise TypeCastError.new("Cast from #{obj.class} to #{type_name} failed, at #{location}")
+# :nodoc:
+fun __crystal_raise_cast_failed(from_type : Void*, to_type : Void*, location : Void*) : NoReturn
+  if location
+    raise TypeCastError.new("Cast from #{from_type.as(String)} to #{to_type.as(String)} failed, at #{location.as(String)}")
+  else
+    raise TypeCastError.new("Cast from #{from_type.as(String)} to #{to_type.as(String)} failed")
   end
-{% else %}
-  # :nodoc:
-  fun __crystal_raise_cast_failed(from_type : Void*, to_type : Void*, location : Void*) : NoReturn
-    if location
-      raise TypeCastError.new("Cast from #{from_type.as(String)} to #{to_type.as(String)} failed, at #{location.as(String)}")
-    else
-      raise TypeCastError.new("Cast from #{from_type.as(String)} to #{to_type.as(String)} failed")
-    end
-  end
-{% end %}
+end
