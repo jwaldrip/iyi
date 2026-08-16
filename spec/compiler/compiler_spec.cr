@@ -58,6 +58,51 @@ describe "Compiler" do
     end
   end
 
+  # iyi: the cache cleaner asks before it deletes.
+  #
+  # It keeps the ten most recently modified directories in the cache and
+  # removes the rest, and it runs at the end of every compile. A build's
+  # directory stops looking recent while its units sit in an optimization
+  # pass, writing nothing — so with enough builds around, one compiler process
+  # deleted the directory another was writing its object files into. That
+  # arrived as "No such file or directory" from the object emitter, or as a
+  # linker asking for a `_main.o0.o` nobody had written: a lost hour reading
+  # linker output for something the linker had not done.
+  #
+  # A build already says it is using its directory. It holds `compiler.lock`
+  # there for the whole of codegen and linking; the cleaner reads it now.
+  it "keeps a cache directory another compile is working in" do
+    with_tempfile("cache-in-use") do |root|
+      Dir.mkdir_p(root)
+
+      working, idle = File.join(root, "working"), File.join(root, "idle")
+      [working, idle].each do |dir|
+        Dir.mkdir_p(dir)
+        File.write(File.join(dir, "program.o"), "")
+        File.write(File.join(dir, "compiler.lock"), "")
+      end
+
+      cache = Crystal::CacheDir.instance
+      cache.directory_in_use?(working).should be_false # a lock nobody holds
+
+      # Both are the oldest in a cache of twelve, so the rule above would have
+      # both of them; one of them is being written to.
+      12.times { |i| Dir.mkdir_p(File.join(root, "newer-#{i}")) }
+
+      File.open(File.join(working, "compiler.lock"), "r") do |lock|
+        lock.flock_exclusive(blocking: false)
+        cache.directory_in_use?(working).should be_true
+
+        cache.cleanup(root)
+
+        File.exists?(File.join(working, "program.o")).should be_true
+        Dir.exists?(idle).should be_false
+      end
+
+      cache.directory_in_use?(working).should be_false # released with the file
+    end
+  end
+
   it "runs subcommand in preference to a filename " do
     Dir.cd compiler_datapath do
       with_temp_executable "compiler_spec_output" do |path|

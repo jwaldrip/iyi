@@ -3594,6 +3594,38 @@ Named honestly, so nobody mistakes this draft for complete.
    is not worth designing. **The recommendation is (a), then (b) if the number
    survives it, and (c) for no reason this section can find.**
 
+10. **Two compilers at once.** Builds run while other builds were running
+    failed at the link, asking for a `_main.o0.o` nobody had written, and once
+    with "No such file or directory" out of the object emitter. Neither message
+    named the cause, and an hour went into reading linker output for something
+    the linker had not done. It was blamed on parallel codegen, because that is
+    what the failing builds had in common.
+
+    **Answered: the cache cleaner was deleting a running build's directory.**
+    Crystal keeps the ten most recently modified directories in the cache and
+    removes the rest, at the end of every compile. A build's directory stops
+    looking recent while its units sit in an optimization pass writing nothing,
+    so with ten other builds inside that window, one compiler process removes
+    the directory another is writing its object files into. Reproduced
+    deliberately by removing the directory mid-codegen: the same two failures,
+    and the single-threaded path fails the same way, which is what cleared
+    parallel codegen of the charge. It was never a race between threads; it was
+    a race between processes.
+
+    A build already declares the directory is its own. It holds `compiler.lock`
+    there for the whole of codegen and linking, and the cleaner now reads it
+    (`cache_dir.cr`, spec in `spec/compiler/compiler_spec.cr`). Checked against
+    unpatched Crystal on the same setup: the held directory is deleted there and
+    kept here, and an equally old directory nobody holds is still evicted, so
+    the cache still shrinks.
+
+    Two smaller things came out of the same hour. A codegen thread that raised
+    used to print its exception and leave the build to fail later at the link,
+    so the failure is now kept and raised as what it is. And it is worth saying
+    what the bug was not: not the artifact's, not this fork's, and not the
+    threads'. It is upstream, any Crystal user who builds two things at once can
+    reach it, and that is where the fix belongs as well.
+
 ---
 
 ## Appendix: What measurement settled
@@ -3623,6 +3655,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | The gap to Go is the warm build, and it is 11× | `hello`: cold 2.20 s vs Go's 1.98 s, warm 1.96 s vs Go's 0.18 s. Crystal's cache holds codegen only, so the 1.32 s front end is paid on every build (`bench/build_speed.py`) |
 | A first release's prelude is ~3.5k lines | Crystal 0.1.0 shipped 8,161 lines of library, 3,551 of it the core that a prelude is; the rest is `json`/`yaml`/`http` |
 | Self-hosting only gets more expensive | Crystal self-hosted at 24,984 lines of compiler and 8,161 of library, before its 0.1.0; iyi's fork starts at 95,010 and 196,217 (Appendix B.2) |
+| A build's cache directory can be deleted underneath it | the cleaner keeps the ten most recently modified directories and runs after every compile; removing one mid-codegen reproduces both failures, the single-threaded path included, and reading the `compiler.lock` the build already holds fixes it (V.10) |
 | The path/name mapping needed more than snake_case | `camelcase` drops an underscore before a digit, so `v_1` and `v1` both give `V1`; requiring each group to start with a letter removes that and three sibling collisions (IV.6 #6) |
 
 ## Appendix B: Decisions awaiting your call

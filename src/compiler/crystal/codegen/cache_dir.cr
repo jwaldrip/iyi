@@ -50,9 +50,9 @@ module Crystal
     end
 
     # Keeps the 10 most recently used directories in the cache,
-    # and removes all others.
-    def cleanup
-      dir = compute_dir
+    # and removes all others. Directories a compiler is working in right now
+    # are kept whatever their age (see `#directory_in_use?`).
+    def cleanup(dir = compute_dir)
       entries = gather_cache_entries(dir)
       cleanup_dirs(entries)
     end
@@ -125,7 +125,37 @@ module Crystal
         .sort_by! { |dir| File.info?(dir).try(&.modification_time) || Time.unix(0) }
         .reverse!
         .skip(10)
-        .each { |name| FileUtils.rm_rf(name) }
+        .each { |name| FileUtils.rm_rf(name) unless directory_in_use?(name) }
+    end
+
+    # iyi: whether a compiler is working in this directory right now.
+    #
+    # The rule above is "keep the ten most recently used", and a directory's
+    # last use is read from its modification time — which stops moving while a
+    # build sits in an optimization pass, writing nothing. Ten other builds in
+    # that window and this one's directory was deleted underneath it, from
+    # another process, mid-codegen. What came out was an object file that could
+    # not be written, or a linker asking for object files nobody had written.
+    #
+    # A build already says it is using its directory: it holds `compiler.lock`
+    # there for the whole of codegen and linking. This asks.
+    def directory_in_use?(dir : String) : Bool
+      lock = File.join(dir, "compiler.lock")
+      return false unless File.exists?(lock)
+
+      File.open(lock, "r") do |file|
+        begin
+          file.flock_exclusive(blocking: false)
+        rescue IO::Error
+          return true
+        end
+        file.flock_unlock
+      end
+      false
+    rescue File::Error
+      # The directory answered nothing we can read. Deleting it is the one
+      # thing that can lose someone else's work, so don't.
+      true
     end
 
     private def gather_cache_entries(dir)
