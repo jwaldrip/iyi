@@ -10,7 +10,14 @@ module Crystal
           return file_prefix
         end
       end
-      return base_file
+      # iyi: the directory is a prefix of the string without being a prefix of
+      # the path. Working in `/tmp/x/crystal` with a cache in
+      # `/tmp/x/crystal-cache`, chopping gives `-cache/…`: a relative path to
+      # nowhere. The compiler then tries to write an object file there and
+      # reports "No such file or directory", which is how this was found —
+      # after being blamed on parallel codegen, on the cache cleaner and on a
+      # debug build in turn. Only a separator makes a prefix a directory.
+      return filename
     end
     filename
   end

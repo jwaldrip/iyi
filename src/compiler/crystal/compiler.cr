@@ -2296,6 +2296,12 @@ module Crystal
         compiler.optimize llvm_mod, target_machine unless compiler.optimization_mode.o0?
         target_machine.emit_obj_to_file llvm_mod, temporary_object_name
         File.rename(temporary_object_name, object_name)
+      rescue ex
+        # iyi: name the file. LLVM reports "No such file or directory" and
+        # nothing else, which says neither which file nor which of the two
+        # steps above, and that is an hour of somebody's evening.
+        raise CompilerError.new(
+          "#{ex.message} while writing #{temporary_object_name} for unit #{@name}")
       end
 
       private def dump_llvm_ir

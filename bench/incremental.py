@@ -11,6 +11,13 @@ packages and answers it well. Both projects here come out of one generator
 (`bench/incremental/generate_project.py`) and print the same number, checked
 before anything is timed and again after the edits.
 
+Three columns, because two of the comparisons matter and they are different
+questions. **Go** is the language that does this well and the one to stand next
+to. **Crystal** is the language this is a fork of, compiled here by the same
+binary: it has no unit of compilation smaller than the program, because a class
+is open until the last line of the last file, and that is the thing SPEC.md's
+rules exist to make untrue.
+
 What is measured, for each language:
 
 * **cold**       nothing cached anywhere. iyi gets a fresh `CRYSTAL_CACHE_DIR`,
@@ -148,6 +155,49 @@ class Iyi:
         return run(["./out"], self.root).stdout.decode().strip()
 
 
+class Crystal:
+    """The same program as Crystal compiles it, with the same binary.
+
+    This is the comparison the fork is actually about. Crystal has no unit of
+    compilation smaller than the program: every build reads every file and
+    analyses all of it, because a class is open until the last line of the last
+    file. The rules in SPEC.md exist to make that untrue, and this column is
+    what they are worth.
+    """
+
+    name = "crystal"
+
+    def __init__(self, root, cache):
+        self.root, self.cache = root, cache
+        self.main = root / "main.cr"
+        self.part = root / "parts" / "mod0.cr"
+
+    def env(self):
+        return dict(CRYSTAL_ENV, CRYSTAL_CACHE_DIR=str(self.cache))
+
+    def full(self):
+        return [str(CRYSTAL), "build", "-o", "out", "main.cr"]
+
+    incremental = full
+
+    def clear_cache(self):
+        shutil.rmtree(self.cache, ignore_errors=True)
+
+    def edit_module(self, constant):
+        text = re.sub(r"edit_point = \d+", f"edit_point = {constant}",
+                      self.part.read_text(), count=1)
+        self.part.write_text(text)
+
+    def edit_main(self, index):
+        text = self.main.read_text()
+        marker = "# edit "
+        text = "\n".join(line for line in text.splitlines() if not line.startswith(marker))
+        self.main.write_text(text + f"\n{marker}{index}\n")
+
+    def output(self):
+        return run(["./out"], self.root).stdout.decode().strip()
+
+
 class Go:
     name = "go build"
 
@@ -228,45 +278,49 @@ def main():
         return 1
 
     work = pathlib.Path(tempfile.mkdtemp(prefix="iyi-incremental-"))
-    iyi_root, go_root = write_project(work)
+    iyi_root, go_root, crystal_root = write_project(work)
     iyi = Iyi(iyi_root, work / "cache")
+    crystal = Crystal(crystal_root, work / "crystal-cache")
     go = Go(go_root, work / "gocache")
+    languages = (iyi, crystal, go)
 
     # One program, or nothing here means anything.
-    iyi.clear_cache(), go.clear_cache()
-    timed(iyi.full(), iyi.root, iyi.env())
-    timed(go.full(), go.root, go.env())
-    if iyi.output() != go.output():
-        print(f"the two programs printed {iyi.output()!r} and {go.output()!r}")
+    for lang in languages:
+        lang.clear_cache()
+        timed(lang.full(), lang.root, lang.env())
+    printed = {lang.name: lang.output() for lang in languages}
+    if len(set(printed.values())) != 1:
+        print(f"the programs printed {printed}")
         return 1
-    agreed = iyi.output()
+    agreed = printed[iyi.name]
 
-    figures = {lang.name: measure(lang) for lang in (iyi, go)}
+    figures = {lang.name: measure(lang) for lang in languages}
 
-    # Both were edited the same way; they still have to agree.
-    iyi.edit_module(3), go.edit_module(3)
-    timed(iyi.incremental(), iyi.root, iyi.env())
-    timed(go.full(), go.root, go.env())
-    same_after = iyi.output() == go.output()
+    # All three were edited the same way; they still have to agree.
+    for lang in languages:
+        lang.edit_module(3)
+        timed(lang.incremental(), lang.root, lang.env())
+    same_after = len({lang.output() for lang in languages}) == 1
 
     lines = sum(len(p.read_text().splitlines()) for p in iyi_root.rglob("*.iyi"))
     print()
     print(f"the edit loop — best of {RUNS}, seconds")
     print()
-    print(f"  30 modules, 300 types, {lines} lines, both printing {agreed}")
-    print(f"  after the same edit, both print the same thing: "
+    print(f"  30 modules, 300 types, {lines} lines, all three printing {agreed}")
+    print(f"  after the same edit, all three print the same thing: "
           f"{'yes' if same_after else 'NO — nothing below counts'}")
     print()
-    print("  what changed                        iyi   go build")
-    print("  " + "-" * 48)
+    print("  what changed                        iyi    crystal   go build")
+    print("  " + "-" * 58)
     for key, label in (("cold", "nothing cached anywhere"),
                        ("warm", "nothing at all"),
                        ("module", "one module's body"),
                        ("main", "the entry file only")):
-        print(f"  {label:32}{show(figures['iyi'][key])}    {show(figures['go build'][key])}")
-    print("  " + "-" * 48)
+        print(f"  {label:32}{show(figures['iyi'][key])}"
+              f"     {show(figures['crystal'][key])}     {show(figures['go build'][key])}")
+    print("  " + "-" * 58)
     print(f"  {'the same edit, no artifacts':32}"
-          f"{show(figures['iyi']['module_from_source'])}       —")
+          f"{show(figures['iyi']['module_from_source'])}          —          —")
     print("  (what R-1 buys on the loop is the difference between that row and")
     print("   `one module's body`: every other module read as declarations")
     print("   instead of source)")

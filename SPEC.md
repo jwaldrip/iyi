@@ -3685,6 +3685,25 @@ Named honestly, so nobody mistakes this draft for complete.
     threads'. It is upstream, any Crystal user who builds two things at once can
     reach it, and that is where the fix belongs as well.
 
+    **The same message, a second cause, and this one explains the reports that
+    started it.** `Crystal.relative_filename` shortens a path by chopping the
+    working directory off the front of it, and it chopped whenever the path
+    merely *began with* the directory's name. Build in `/tmp/x/crystal` with a
+    cache in `/tmp/x/crystal-cache` — a sibling, not a child — and every object
+    file is written to `-cache/…`, which is nowhere. LLVM says "No such file or
+    directory" and names nothing, so the build fails exactly as it does when
+    somebody deletes the directory. Only a separator makes a prefix a
+    directory; it says so now, with a spec in `spec/compiler/util_spec.cr`.
+
+    The cleaner race above is real and reproducible by removing a directory by
+    hand while a build writes into it. What it is not is the thing that caused
+    the failures that started the hunt, which were runs whose cache directory
+    sat beside the working directory under a name beginning the same way. Two
+    confident wrong answers before the right one — parallel codegen, then the
+    cleaner — and the reason both were possible is that the message named no
+    file. `compile_to_object` names it now, and this is the third bug in this
+    document found by making an error say what it was doing.
+
 11. **The interpreter. Removed.** Crystal ships one, and the fork inherited it:
     11,377 lines under `src/compiler/crystal/interpreter`, 380 more of libffi
     bindings, 7,981 lines of specs, a CI workflow that builds it and runs the
@@ -3752,6 +3771,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | A first release's prelude is ~3.5k lines | Crystal 0.1.0 shipped 8,161 lines of library, 3,551 of it the core that a prelude is; the rest is `json`/`yaml`/`http` |
 | Self-hosting only gets more expensive | Crystal self-hosted at 24,984 lines of compiler and 8,161 of library, before its 0.1.0; iyi's fork starts at 95,010 and 196,217, and is 87,421 after the interpreter came out (Appendix B.2, V.11) |
 | A second implementation of the language is what an interpreter costs | Crystal's interpreter stops on `samples/iyi/hello.iyi` line 12 at the module header, and 0 of the fork's 153 commits had touched it against 7,840 lines of parser and semantic change (V.11) |
+| A prefix is not a parent directory | working in `/tmp/x/crystal` with a cache at `/tmp/x/crystal-cache`, every object file was written to `-cache/…`; the same "No such file or directory" the cleaner race produces, from a different cause (V.10) |
 | A build's cache directory can be deleted underneath it | the cleaner keeps the ten most recently modified directories and runs after every compile; removing one mid-codegen reproduces both failures, the single-threaded path included, and reading the `compiler.lock` the build already holds fixes it (V.10) |
 | The edit loop is where R-1 pays, and it pays 1.7x | one module edited in a 30-module, 7,208-line project: 0.17 s with artifacts, 0.29 s without, against `go build`'s 0.20 s for the same edit (IV.3a) |
 | The path/name mapping needed more than snake_case | `camelcase` drops an underscore before a digit, so `v_1` and `v1` both give `V1`; requiring each group to start with a letter removes that and three sibling collisions (IV.6 #6) |
