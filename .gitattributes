@@ -2,6 +2,15 @@
 
 *.cr text eol=lf
 
+# iyi: `.iyi` is Crystal's grammar with a different compilation model, so GitHub
+# should read it the way the compiler does. Without this the samples, which are
+# the documentation, render as plain text.
+*.iyi text eol=lf linguist-language=Crystal
+
+# A module artifact is binary. Without this GitHub tries to render one and git
+# tries to diff it.
+*.iyimod binary
+
 ## Sourced-in dependencies
 
 lib/** linguist-vendored
