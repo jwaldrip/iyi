@@ -206,60 +206,58 @@ class Crystal::Codegen::Target
   # iyi: absent from a front-end build, which links no LLVM to make one with
   # (see `../llvm_shim.cr`).
   {% unless flag?(:without_llvm) %}
+    def to_target_machine(cpu = "", features = "", optimization_mode = Compiler::OptimizationMode::O0,
+                          code_model = LLVM::CodeModel::Default) : LLVM::TargetMachine
+      case @architecture
+      when "i386", "x86_64"
+        LLVM.init_x86
+      when "aarch64"
+        LLVM.init_aarch64
+      when "arm"
+        LLVM.init_arm
 
-  def to_target_machine(cpu = "", features = "", optimization_mode = Compiler::OptimizationMode::O0,
-                        code_model = LLVM::CodeModel::Default) : LLVM::TargetMachine
-    case @architecture
-    when "i386", "x86_64"
-      LLVM.init_x86
-    when "aarch64"
-      LLVM.init_aarch64
-    when "arm"
-      LLVM.init_arm
+        # Enable most conservative FPU for hard-float capable targets, unless a
+        # CPU is defined (it will most certainly enable a better FPU) or
+        # features contains a floating-point definition.
+        if cpu.empty? && !features.includes?("fp") && armhf?
+          features += "+vfp2"
+        end
+      when "avr"
+        LLVM.init_avr
 
-      # Enable most conservative FPU for hard-float capable targets, unless a
-      # CPU is defined (it will most certainly enable a better FPU) or
-      # features contains a floating-point definition.
-      if cpu.empty? && !features.includes?("fp") && armhf?
-        features += "+vfp2"
+        if cpu.blank?
+          # the ABI call convention, codegen and the linker need to known the CPU model
+          raise Target::Error.new("AVR targets must declare a CPU model, for example --mcpu=atmega328p")
+        end
+      when "wasm32"
+        LLVM.init_webassembly
+      else
+        raise Target::Error.new("Unsupported architecture for target triple: #{self}")
       end
-    when "avr"
-      LLVM.init_avr
 
-      if cpu.blank?
-        # the ABI call convention, codegen and the linker need to known the CPU model
-        raise Target::Error.new("AVR targets must declare a CPU model, for example --mcpu=atmega328p")
+      opt_level = case optimization_mode
+                  in .o3?             then LLVM::CodeGenOptLevel::Aggressive
+                  in .o2?, .os?, .oz? then LLVM::CodeGenOptLevel::Default
+                  in .o1?             then LLVM::CodeGenOptLevel::Less
+                  in .o0?             then LLVM::CodeGenOptLevel::None
+                  end
+
+      if embedded?
+        reloc = LLVM::RelocMode::Static
+      else
+        reloc = LLVM::RelocMode::PIC
       end
-    when "wasm32"
-      LLVM.init_webassembly
-    else
-      raise Target::Error.new("Unsupported architecture for target triple: #{self}")
+
+      target = LLVM::Target.from_triple(self.to_s)
+      machine = target.create_target_machine(self.to_s, cpu: cpu, features: features, opt_level: opt_level, reloc: reloc, code_model: code_model).not_nil!
+      # FIXME: We need to disable global isel until https://reviews.llvm.org/D80898 is released,
+      # or we fixed generating values for 0 sized types.
+      # When removing this, also remove it from the ABI specs and jit compiler.
+      # See https://github.com/crystal-lang/crystal/issues/9297#issuecomment-636512270
+      # for background info
+      machine.enable_global_isel = false
+      machine
     end
-
-    opt_level = case optimization_mode
-                in .o3?             then LLVM::CodeGenOptLevel::Aggressive
-                in .o2?, .os?, .oz? then LLVM::CodeGenOptLevel::Default
-                in .o1?             then LLVM::CodeGenOptLevel::Less
-                in .o0?             then LLVM::CodeGenOptLevel::None
-                end
-
-    if embedded?
-      reloc = LLVM::RelocMode::Static
-    else
-      reloc = LLVM::RelocMode::PIC
-    end
-
-    target = LLVM::Target.from_triple(self.to_s)
-    machine = target.create_target_machine(self.to_s, cpu: cpu, features: features, opt_level: opt_level, reloc: reloc, code_model: code_model).not_nil!
-    # FIXME: We need to disable global isel until https://reviews.llvm.org/D80898 is released,
-    # or we fixed generating values for 0 sized types.
-    # When removing this, also remove it from the ABI specs and jit compiler.
-    # See https://github.com/crystal-lang/crystal/issues/9297#issuecomment-636512270
-    # for background info
-    machine.enable_global_isel = false
-    machine
-  end
-
   {% end %}
 
   def to_s(io : IO) : Nil

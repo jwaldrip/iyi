@@ -192,6 +192,7 @@ class Crystal::Command
       end
     {% end %}
   end
+
   {% if flag?(:without_mt) %}
     # `poll(2)`, because the server has to wait on many descriptors from a single
     # fiber. Crystal has no `IO.select`, and a fiber per stream is what broke the
@@ -405,7 +406,6 @@ class Crystal::Command
     io.write(bytes)
     io.flush
   end
-
 
   # Identifies the running server's own executable, so a rebuild is noticed.
   # The version string alone cannot see it: two builds of the same commit

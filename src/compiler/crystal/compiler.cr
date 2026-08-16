@@ -1101,17 +1101,17 @@ module Crystal
             probe_trace "[probe] child: top level done\n"
 
             result = if full
-              # Prelude fully analysed in the parent, including its class-var
-              # check, so the child finishes over its own nodes alone.
-              program.semantic_after_top_level(user_node, processor, cleanup: !no_cleanup?)
-            else
-              # The prelude was processed by the parent's own processor, so its
-              # class-var check has to be threaded through as well, or the child
-              # would skip a check a normal compile performs.
-              combined = Expressions.from([prelude_node, user_node] of ASTNode)
-              program.semantic_after_top_level(combined, processor,
-                cleanup: !no_cleanup?, also_check: prelude_processor)
-            end
+                       # Prelude fully analysed in the parent, including its class-var
+                       # check, so the child finishes over its own nodes alone.
+                       program.semantic_after_top_level(user_node, processor, cleanup: !no_cleanup?)
+                     else
+                       # The prelude was processed by the parent's own processor, so its
+                       # class-var check has to be threaded through as well, or the child
+                       # would skip a check a normal compile performs.
+                       combined = Expressions.from([prelude_node, user_node] of ASTNode)
+                       program.semantic_after_top_level(combined, processor,
+                         cleanup: !no_cleanup?, also_check: prelude_processor)
+                     end
             probe_trace "[probe] child: semantic done\n"
 
             # Proving the child's typed program is *codegen-able* is a stronger

@@ -70,7 +70,7 @@ describe "Semantic: iyi import" do
   # `Boot::Registry` at the top level and wrote an artifact with no exports.
   it "declares an imported module at the top level wherever the import is written" do
     with_iyi_modules({
-      "main.iyi"    => <<-IYI,
+      "main.iyi" => <<-IYI,
         module app/main
 
         def own : Int32
@@ -133,7 +133,7 @@ describe "Semantic: iyi import" do
             1
           end
           IYI
-        "main.iyi"    => <<-IYI,
+        "main.iyi" => <<-IYI,
           module app/main
 
           import app/dep
@@ -162,7 +162,7 @@ describe "Semantic: iyi import" do
             1
           end
           IYI
-        "main.iyi"    => <<-IYI,
+        "main.iyi" => <<-IYI,
           module app/main
 
           import app/dep
@@ -240,7 +240,7 @@ describe "Semantic: iyi import" do
             1
           end
           IYI
-        "main.iyi"    => <<-IYI,
+        "main.iyi" => <<-IYI,
           module app/main
 
           import app/dep
