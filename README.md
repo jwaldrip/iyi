@@ -134,6 +134,13 @@ the code you are *not* editing grows.
 dependencies once, which iyi has none of yet; the 3.72 s is honest for a first
 build on a fresh machine and it is not a claim about Go's compiler.
 
+**And one sentence about the machine.** These seconds come from one Linux box
+in a state its own reference accepts: starting the compiler and doing nothing
+costs what it cost when the target was set. The same box on a slower session
+reads 0.22, 1.81 and 0.27 on the first row, and the bench says so when it
+happens rather than letting the seconds pass for the language. The columns are
+what to read against each other: all three pay the same machine.
+
 **Now the less flattering number, and it is a full build.** `python3
 bench/build_speed.py`, same machine, warm:
 

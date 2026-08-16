@@ -233,6 +233,43 @@ class Go:
         return run(["./out"], self.root).stdout.decode().strip()
 
 
+# What starting the compiler and doing nothing costs on the machine the
+# published figures were measured on. `build_speed.py` divides by the same
+# number and refuses to decide its target when the machine is more than 15%
+# off it; this bench compares three columns that all pay the machine equally,
+# so a slow session does not invalidate the comparison — only the seconds.
+# It says which it is rather than leaving a reader to assume.
+STARTUP_BASELINE = 0.018
+SLOW = 1.15
+
+
+def startup_cost(rounds = 5):
+    best = None
+    for _ in range(rounds):
+        start = time.perf_counter()
+        subprocess.run([str(CRYSTAL), "--version"], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+        best = min(best or 1e9, time.perf_counter() - start)
+    return best
+
+
+def compiler_build():
+    """The compiler's version line, and whether it was built in release mode.
+
+    `build_speed.py` asks this because its figure decides a release gate. This
+    one asks because a debug compiler reads this table as iyi 0.26 s against
+    Crystal's 4.27 s, where a release one reads 0.17 s against 1.24 s: both
+    columns are the same binary, so a debug build flatters iyi by a factor it
+    did not earn. Which is a mistake made here once, with the numbers already
+    written down somewhere else.
+    """
+    result = subprocess.run([str(CRYSTAL), "--version"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    text = result.stdout.decode("utf-8", "replace")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return (lines[0] if lines else "unknown"), "not built in release mode" not in text
+
+
 def measure(lang):
     """Cold, warm, one edited module, edited main. Seconds, best of RUNS."""
     figures = {}
@@ -277,6 +314,20 @@ def main():
         print("needs `go` on PATH: this bench is a comparison, not a figure")
         return 1
 
+    version, release = compiler_build()
+    if not release:
+        print()
+        print(f"  {version}, and it is a DEBUG build.")
+        print()
+        print("  Nothing is timed. A debug compiler is about 1.5x on iyi's own")
+        print("  column and about 3x on Crystal's, so the table would read as a")
+        print("  claim about this language and be a claim about how the binary")
+        print("  was built. Build it and run this again:")
+        print()
+        print("    rm -f .build/crystal && make crystal release=1")
+        print()
+        return 1
+
     work = pathlib.Path(tempfile.mkdtemp(prefix="iyi-incremental-"))
     iyi_root, go_root, crystal_root = write_project(work)
     iyi = Iyi(iyi_root, work / "cache")
@@ -310,6 +361,11 @@ def main():
     print()
     print(f"the edit loop — best of {RUNS}, seconds")
     print()
+    startup = startup_cost()
+    factor = startup / STARTUP_BASELINE
+    print(f"  compiler: {version}, release build")
+    print(f"  startup:  {startup:.3f} s doing nothing, against a "
+          f"{STARTUP_BASELINE:.3f} s baseline — {factor:.2f}x")
     print(f"  30 modules, 300 types, {lines} lines, all three printing {agreed}")
     print(f"  after the same edit, all three print the same thing: "
           f"{'yes' if same_after else 'NO — nothing below counts'}")
@@ -331,6 +387,12 @@ def main():
     print("  (what R-1 buys on the loop is the difference between that row and")
     print("   `one module's body`: every other module read as declarations")
     print("   instead of source)")
+    if factor > SLOW:
+        print()
+        print(f"  This machine starts the compiler {factor:.2f}x slower than the one the")
+        print("  published figures came from, so read the columns against each other")
+        print("  rather than the seconds against a number somebody else wrote down.")
+        print("  All three columns pay the same machine.")
     print()
     print(f"  workdir {work}")
     return 0

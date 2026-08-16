@@ -3352,6 +3352,15 @@ loop it was written for**, and it pays it on a 7,208-line project — the figure
 grows with the code that is *not* being edited, which is the whole of any real
 program.
 
+**The seconds are a machine, the columns are the language.** The table above
+was measured in a state this machine's own reference accepts — starting the
+compiler and doing nothing costs what it cost when 0.1.0's target was recorded.
+A session later, the same three columns on the same binaries read 0.22, 1.81
+and 0.27 on the edited-module row: everything 1.4x, the ratios where they were.
+`bench/incremental.py` prints that factor and says which of the two kinds of
+run produced its table, because a comparison survives a slow machine and a
+figure in seconds does not.
+
 **What is left is not analysis, which is why this stops here.** Of the 0.17 s,
 0.018 s is the compiler process starting and most of the remainder is the
 link (0.1.0 item 2 measured the same shape on `hello`). Editing one module of
