@@ -76,20 +76,26 @@ runs, and prints what the build from source prints. IV.1g measures all of it,
 and records what was in the way.
 
 **2. The passes that still walk the prelude stop walking it (IV.1d). Measured
-away.** The claim this item was written on — 0.47 s left after the artifact, of
-which class-var initializers and `main` are 90% — was measured against Crystal's
-107,719-line prelude. Item 3 replaced that prelude with 1,053 lines of iyi, and
-the number this item exists to remove does not exist any more. From
-`bench/build_speed.py` on a release compiler, `hello.iyi`, seconds:
+away, and what was actually in the way is fixed.** The claim this item was
+written on — 0.47 s left after the artifact, of which class-var initializers and
+`main` are 90% — was measured against Crystal's 107,719-line prelude. Item 3
+replaced that prelude with 1,053 lines of iyi, and the number this item exists
+to remove does not exist any more. What the item became is the link, and the
+link is now 0.026 s of a 0.09 s warm build that beats `go build`'s 0.12 s on the
+same machine. From `bench/build_speed.py` on a release compiler, `hello.iyi`,
+seconds — the middle column is where this morning started:
 
-| | |
-|---|---|
-| warm build | **0.17** — it was 0.26 before the fix below |
-| of what the compiler times in it, the **link** | **0.132 — 85%** |
-| front end alone (`--no-codegen`) | 0.041, of which 0.018 is startup |
-| the same front end, no LLVM linked into the binary | 0.02 |
-| the same warm build with `-fuse-ld=gold` | 0.17 — the same, and that is the finding |
-| `go build`, warm | 0.10 |
+| | before | after |
+|---|---|---|
+| warm build | 0.26 | **0.09** |
+| of what the compiler times in it, the **link** | 0.132 — 85% | **0.026 — 45%** |
+| front end alone (`--no-codegen`) | 0.041 | 0.047, of which 0.023 is startup |
+| the same front end, no LLVM linked into the binary | 0.02 | 0.03 |
+| `go build`, warm | 0.10 | 0.12 |
+
+Two things were in the way and neither was analysis: a search for a linker
+nobody installed, and a driver working out the same link command on every
+build. Both are below.
 
 Inside that front end the top-level pass is 0.012 s and **the five passes this
 item asked to fix cost 0.4 ms between them** — 2% of what is left, where the
@@ -291,6 +297,16 @@ one number the project exists for and the one with no committed harness.
 program, because `hello` is the only pair where "the equivalent Go program" is
 unambiguous and because iyi has no other program to offer — which makes growing
 that corpus a dependency of this item on item 3, not a nicety.
+
+**Where the five stand.** One is built and the eight samples compile with the
+imported module's source deleted. Two is answered: the passes it named cost
+0.4 ms, and the two things that did cost — a `PATH` search per build and a
+driver rebuilding the same link command — are fixed, which is what took the warm
+build to 0.09 s against Go's 0.12 s. Three, four and five are done. **What
+remains for a release is not on this list**: III.4's concurrency is specified
+and unbuilt, and III.5's "no import for side effects" is the one rule here with
+a cost and no measurement. Everything else in this section is a number that has
+been taken rather than a thing still to do.
 
 ### Out of scope, stated so it is not argued twice
 
@@ -535,6 +551,35 @@ build, and **not paying it per build**, which is IV.1d's daemon — a process
 that starts once amortises the fixed cost over every compile after the first.
 The daemon was proposed to keep the prelude analysed; the larger thing it keeps
 is the code generator loaded.
+
+**The fifth run, and the warm column changed hands.** The 140 ms tail that the
+Go comparison above assigned to "a code generator and a linker" was neither: it
+was `cc` working out how to link, on every build. The compiler asks the driver
+once now and runs `ld` itself (0.1.0 item 2), and the same bench on a release
+compiler says:
+
+| program | stage | cold | warm |
+|---|---|---|---|
+| `hello.iyi` | front end (`--no-codegen`) | 0.05 | — |
+| `hello.iyi` | front end, no LLVM linked | 0.03 | — |
+| `hello.iyi` | end to end | 0.24 | **0.09** |
+| `hello.go` | `go build` | 4.15 | 0.12 |
+| `webapp.iyi` | front end, iyi only | 0.06 | — |
+
+  measured 0.047 s against a 0.05 s target — **MET**.
+
+**Warm, iyi is now ahead**: 0.09 s against 0.12 s, where the run before this one
+had it 0.19 s against 0.08 s. Nothing in the front end moved to do it. Of what
+the compiler times in that warm build, the link is 0.026 s of 0.058 s — 45%,
+where it was 93% this morning.
+
+**And the gate is inside this machine's noise, which is worth saying rather than
+picking the run that flatters.** Two release runs minutes apart measured 0.047 s
+and 0.052 s against a 0.050 s target: MET and NOT MET on one binary. The
+paragraph above about a machine that has been idle reading high is the same
+observation, and the same conclusion follows — a NOT MET from a machine that
+has just finished a compile is worth running again, and a target decided by 4%
+is a target the next machine will decide differently.
 
 ### What Crystal's own 0.1.0 looked like
 
