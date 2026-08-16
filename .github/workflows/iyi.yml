@@ -1,0 +1,90 @@
+name: iyi
+
+# What iyi adds to Crystal, checked on its own. The other workflows in this
+# directory test the compiler this one is a fork of; none of them compiles a
+# `.iyi` file, reads a `.iyimod`, or deletes a module's source to see whether
+# the artifact was enough.
+on: [push, pull_request]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  specs:
+    runs-on: ubuntu-24.04
+    container:
+      image: crystallang/crystal:1.21.0-build
+    name: "iyi specs"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build the compiler
+        run: make crystal
+
+      - name: The rules, the artifact and the import path
+        run: |
+          ./bin/crystal spec \
+            spec/compiler/iyimod_spec.cr \
+            spec/compiler/iyi_import_spec.cr \
+            spec/compiler/semantic/iyi_spec.cr \
+            spec/compiler/compiler_spec.cr
+
+  samples:
+    runs-on: ubuntu-24.04
+    container:
+      image: crystallang/crystal:1.21.0-build
+    name: "Samples, from source and from artifacts"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build the compiler
+        run: make crystal
+
+      # Each sample documents a part of the design, so a sample that stops
+      # running is a part of the design that stopped working.
+      - name: Run every sample
+        run: |
+          for sample in samples/iyi/*.iyi; do
+            echo "== $sample"
+            ./bin/crystal run "$sample"
+          done
+
+      # The claim R-1 makes, taken literally: build, delete the modules'
+      # source, build again from the artifacts, compare what the two programs
+      # print.
+      - name: Build the samples again with their modules' source deleted
+        run: bash bench/samples_roundtrip.sh
+
+  binary:
+    runs-on: ubuntu-24.04
+    container:
+      image: crystallang/crystal:1.21.0-build
+    name: "The iyi binary and its tarball"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build the compiler
+        run: make crystal
+
+      - name: Build `iyi` and package it
+        run: make iyi iyi-tarball
+
+      # What a person who downloads it does: unpack it somewhere else and run a
+      # program. Nothing here may need this checkout, a CRYSTAL_PATH, or a
+      # Crystal on the machine.
+      - name: Unpack the tarball somewhere else and compile with it
+        run: |
+          mkdir -p /tmp/unpacked
+          tar -xzf .build/iyi-*-linux-*.tar.gz -C /tmp/unpacked
+          cd /tmp
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run /tmp/unpacked/share/iyi/samples/hello.iyi
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi version
