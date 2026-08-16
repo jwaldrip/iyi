@@ -50,10 +50,13 @@ describe "`crystal`" do
         .output.should(contain("Usage: crystal build"))
     end
 
-    it "accepts command prefix for docs" do
-      Process.capture_result(crystal, "do", "--help")
+    # iyi: `docs` was the other prefix tested here, and the documentation
+    # generator is gone (SPEC.md V.11). `mod` is this fork's own command and
+    # takes its place.
+    it "accepts command prefix for mod" do
+      Process.capture_result(crystal, "mo", "--help")
         .should(be_success)
-        .output.should(contain("Usage: crystal docs"))
+        .output.should(contain("Usage: crystal mod"))
     end
 
     it "accepts command prefix for spec" do

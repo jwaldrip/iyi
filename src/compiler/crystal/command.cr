@@ -30,6 +30,14 @@ class Crystal::Command
     SOFTWARE_ERROR = 1
   end
 
+  # iyi: what this binary is called when it tells somebody how to call it.
+  #
+  # The same compiler ships under two names, and a person running `iyi mod`
+  # was told "Usage: crystal mod" — the name of a program they had not
+  # installed. `src/compiler/iyi.cr` sets this; nothing else does, so `crystal`
+  # says `crystal`.
+  class_property program_name : String = "crystal"
+
   USAGE = <<-USAGE
     Usage: crystal [command] [switches] [program file] [--] [arguments]
 
@@ -51,7 +59,7 @@ class Crystal::Command
     USAGE
 
   COMMANDS_USAGE = <<-USAGE
-    Usage: crystal tool [tool] [switches] [program file] [--] [arguments]
+    Usage: #{Command.program_name} tool [tool] [switches] [program file] [--] [arguments]
 
     Tool:
         context                  show context for given location
@@ -123,7 +131,9 @@ class Crystal::Command
     when command == "daemon"
       options.shift
       daemon
-    when command == "mod"
+      # iyi: prefixes, like every other command here. `mo` and `m` reach it, and
+      # nothing else in this list starts with an `m`.
+    when "mod".starts_with?(command)
       options.shift
       mod
     when "help".starts_with?(command), "--help" == command, "-h" == command
@@ -426,7 +436,7 @@ class Crystal::Command
     specified_prelude = false
 
     option_parser = parse_with_crystal_opts do |opts|
-      opts.banner = "Usage: crystal #{command} [options] [programfile] [--] [arguments]\n\nOptions:"
+      opts.banner = "Usage: #{Command.program_name} #{command} [options] [programfile] [--] [arguments]\n\nOptions:"
 
       unless no_codegen
         unless run
@@ -722,8 +732,15 @@ class Crystal::Command
 
   private def gather_sources(filenames)
     filenames.map do |filename|
-      filename = File.expand_path(filename)
-      Compiler::Source.new(filename, File.read(filename))
+      expanded = File.expand_path(filename)
+      # iyi: the commonest thing to get wrong about a command is the name of
+      # the file, and the answer to it was "Error: Error opening file with
+      # mode 'r': '/…/typo.iyi': No such file or directory" — the word Error
+      # twice, a mode nobody asked about, and the path spelled out twice over.
+      unless File.file?(expanded)
+        abort! "no such file: #{filename}", :USAGE_ERROR
+      end
+      Compiler::Source.new(expanded, File.read(expanded))
     end
   rescue exc : IO::Error
     abort! exc, :CODE_ERROR

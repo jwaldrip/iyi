@@ -82,6 +82,15 @@ jobs:
             spec/compiler/semantic/iyi_spec.cr \
             spec/compiler/compiler_spec.cr
 
+      # The command surface and the build daemon, which is iyi's own (SPEC.md
+      # IV.1d) and which nothing else here runs. It caught two things the day
+      # it was added: a spec still asking for a command this fork removed, and
+      # `mod` refusing the prefixes every other command accepts.
+      - name: The commands, and the daemon
+        run: |
+          export CRYSTAL_PATH="lib:$(pwd)/src"
+          make -o .build/crystal cli_spec
+
   compiler-specs:
     needs: build
     runs-on: ubuntu-24.04

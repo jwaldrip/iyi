@@ -5,7 +5,7 @@ class Crystal::Command
     verbose = false
     OptionParser.parse(@options) do |opts|
       opts.banner = <<-'BANNER'
-        Usage: crystal clear_cache
+        Usage: #{Command.program_name} clear_cache
 
         Clears the compiler cache
 

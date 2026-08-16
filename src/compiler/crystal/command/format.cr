@@ -12,7 +12,7 @@ class Crystal::Command
 
     OptionParser.parse(@options) do |opts|
       opts.banner = <<-USAGE
-        Usage: crystal tool format [options] [- | file or directory ...]
+        Usage: #{Command.program_name} tool format [options] [- | file or directory ...]
 
         Formats Crystal code in place.
 

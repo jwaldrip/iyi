@@ -63,6 +63,10 @@ module Iyi
   end
 
   def self.run(options = ARGV) : Nil
+    # The delegated commands print their own usage, and it used to name the
+    # binary underneath instead of the one that was typed.
+    Crystal::Command.program_name = "iyi"
+
     command = options.first?
 
     case command

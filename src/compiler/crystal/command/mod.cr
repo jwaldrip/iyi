@@ -12,15 +12,16 @@ class Crystal::Command
       options.shift
       mod_dump
     when nil, "--help", "-h"
-      puts MOD_USAGE
+      puts mod_usage
       exit
     else
       abort! "unknown mod subcommand: #{options.first}", :USAGE_ERROR
     end
   end
 
-  MOD_USAGE = <<-USAGE
-    Usage: crystal mod [subcommand]
+  private def mod_usage
+    <<-USAGE
+    Usage: #{Command.program_name} mod [subcommand]
 
     Subcommand:
         dump FILE                print a .iyimod as text
@@ -30,8 +31,9 @@ class Crystal::Command
 
     A .iyimod is a module's compiled interface: what another module reads
     instead of this one's source (SPEC.md Part IV). Produced by
-    `crystal build --emit-iyimod DIR`.
+    `#{Command.program_name} build --emit-iyimod DIR`.
     USAGE
+  end
 
   private def mod_dump
     # Not a flag on the command, because it selects between two whole outputs:

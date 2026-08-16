@@ -7,7 +7,7 @@ class Crystal::Command
     program_args = [] of String
 
     parse_with_crystal_opts do |opts|
-      opts.banner = "Usage: crystal eval [options] [source]\n\nOptions:"
+      opts.banner = "Usage: #{Command.program_name} eval [options] [source]\n\nOptions:"
       setup_simple_compiler_options compiler, opts
 
       opts.unknown_args do |before_dash, after_dash|
