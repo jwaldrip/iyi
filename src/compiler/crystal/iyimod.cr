@@ -1030,7 +1030,14 @@ module Crystal::IyiMod
       MSG
   end
 
-  # iyi: R-2 itself, at the place the artifact is written.
+  # iyi: R-2 itself, asked in two places.
+  #
+  # This one is called when the artifact is written, which is where an
+  # unchecked export does its damage, and again from the top-level visitor when
+  # a module-level `pub def` is declared, which is where the author is. Asking
+  # only at the artifact meant `pub def twice(x)` compiled all day and failed
+  # the first time somebody packaged the module — a rule of the language
+  # reported as a packaging error.
   #
   # "Everything a module exports carries full parameter and return types" was a
   # rule the format assumed and nothing checked. What that cost is paid by the
@@ -1044,7 +1051,7 @@ module Crystal::IyiMod
   # `initialize` is exempt: it answers the type it is defined on, and writing
   # that down would be the one annotation a reader cannot get wrong. So is a
   # setter, which answers what it was handed.
-  private def self.check_types_written(a_def : Def) : Nil
+  def self.check_types_written(a_def : Def) : Nil
     # A method in an `impl` is not asked twice. The trait already wrote the
     # types down (`abstract def show : String`), the impl is checked against
     # them, and a consumer types the call from the trait rather than from here.

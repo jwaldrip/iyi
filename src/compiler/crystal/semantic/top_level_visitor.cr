@@ -1193,6 +1193,13 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
 
     record_export current_type, node.name, node.exported?
 
+    # iyi: R-2, at the line the author is looking at. `IyiMod` asks the same
+    # question again when it writes the artifact, because an artifact can be
+    # written by a build that never saw this file.
+    if node.exported? && (mod = current_type.as?(ModuleType)) && mod.iyi_unit?
+      IyiMod.check_types_written(node)
+    end
+
     node.set_type @program.nil
 
     if is_instance_method

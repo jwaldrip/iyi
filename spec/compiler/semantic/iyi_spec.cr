@@ -2557,6 +2557,45 @@ describe "Semantic: iyi" do
   # (R-2b). Only a `module app/greeter` compilation unit has a surface; a
   # Crystal module never wrote `pub`, so the `using` specs above are unaffected.
   describe "pub" do
+    # R-2 is a rule of the language, so it is asked at the `pub def`. It used
+    # to be asked only where the artifact is written, which meant
+    # `pub def twice(x)` compiled all day and failed the first time somebody
+    # packaged the module: a rule of the language reported as a packaging
+    # error, at a build that need not be the author's.
+    it "asks an exported def for its types where it is written" do
+      assert_error <<-CRYSTAL, "`twice` is exported and does not say what `x` is"
+        module app/thing
+
+        pub def twice(x)
+          x + x
+        end
+        CRYSTAL
+    end
+
+    it "asks an exported def what it returns" do
+      assert_error <<-CRYSTAL, "`twice` is exported and does not say what it returns"
+        module app/thing
+
+        pub def twice(x : Int32)
+          x + x
+        end
+        CRYSTAL
+    end
+
+    it "leaves an unexported def to infer, which is the point of the mark" do
+      assert_no_errors <<-CRYSTAL
+        module app/thing
+
+        def twice(x)
+          x + x
+        end
+
+        pub def four : Int32
+          twice(2)
+        end
+        CRYSTAL
+    end
+
     it "refuses a selective `using` of a name the module does not export" do
       assert_error <<-CRYSTAL, "App::Greeter does not export `internal`"
         module app/greeter
