@@ -275,6 +275,24 @@ unless the two binaries print the same thing. The front end on its own is
 0.034 s for `hello`, against a target of 0.050 s, and 0.018 s of that is the
 compiler process starting up before it reads anything.
 
+**Now the row that is actually the claim.** Nobody uses a language through
+full builds; they use it through the loop of changing a line and building
+again. Thirty modules, 300 types, 7,208 lines, written in both languages by
+`bench/incremental/generate_project.py` and checked to print the same number
+before anything is timed (`python3 bench/incremental.py`):
+
+| what changed | iyi | `go build` |
+|---|---|---|
+| nothing cached anywhere | 0.74 s | 3.89 s |
+| **one module's body** | **0.17 s** | 0.20 s |
+| the entry file only | **0.15 s** | 0.21 s |
+| the same edit, without artifacts | 0.29 s | — |
+
+**The last row is R-1's whole argument, priced.** With the `.iyimod` files in
+hand the other 29 modules arrive as declarations instead of source, and the
+same edit costs 0.17 s instead of 0.29 s. What is left is not analysis: 0.018 s
+of it is the process starting and most of the rest is the link.
+
 ## What is not here
 
 - **No IO beyond `puts`.** The prelude is 1,053 lines on purpose: integers,

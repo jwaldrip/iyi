@@ -3287,6 +3287,50 @@ IV.1g that no amount of reasoning about blocks would have produced.
    otherwise be a dictionary call (II.6); it is not what decides whether a body
    travels. See IV.1g.
 
+### IV.3a What the loop costs, against the language that does this well
+
+The property above is a spec: a body edit does not move the interface hash, so
+dependents are not rebuilt. What it was not, until now, is a number. Everything
+timed in this document before this section was a *whole* build, and nobody uses
+a language through whole builds.
+
+`bench/incremental.py` builds a project rather than a file: 30 modules, 300
+types, 7,208 lines, written by one generator in iyi and in Go, and refused if
+the two binaries do not print the same number. Then it changes one line and
+builds again. Best of 7, seconds, release compiler, idle machine:
+
+| what changed | iyi | `go build` |
+|---|---|---|
+| nothing cached anywhere | 0.74 | 3.89 |
+| nothing at all | 0.15 | 0.09 |
+| **one module's body** | **0.17** | **0.20** |
+| the entry file only | 0.15 | 0.21 |
+| the same edit, without artifacts | 0.29 | — |
+
+**Three things fall out of it, and the third is the one to keep.**
+
+**The loop is where iyi wins, and it is the first row here that is not a fixed
+cost.** 0.17 s against Go's 0.20 s for the same edit to the same program.
+Go is not slow at this; Go is the reason this design exists. Beating it by 15%
+on a project this size is not a headline, and the headline is not the point:
+the point is that the two are *in the same class*, which no Crystal build of
+this program is.
+
+**The last row is R-1's argument with a price on it.** The same edit, built
+without artifacts so that all 30 modules are read and analysed from source,
+costs 0.29 s. With the artifacts it costs 0.17 s. **The rule pays 1.7x on the
+loop it was written for**, and it pays it on a 7,208-line project — the figure
+grows with the code that is *not* being edited, which is the whole of any real
+program.
+
+**What is left is not analysis, which is why this stops here.** Of the 0.17 s,
+0.018 s is the compiler process starting and most of the remainder is the
+link (0.1.0 item 2 measured the same shape on `hello`). Editing one module of
+thirty costs about 0.02 s over editing nothing. There is no version of this
+table where making the front end faster moves the number a person feels; the
+next thing that would is not compiling at all on a rebuild, which is V.9 (d)
+and is priced there at weeks.
+
 ### IV.3 Hashing. The part that decides whether builds are actually incremental
 
 **The property that matters: changing a function body must not change the
@@ -3709,6 +3753,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | Self-hosting only gets more expensive | Crystal self-hosted at 24,984 lines of compiler and 8,161 of library, before its 0.1.0; iyi's fork starts at 95,010 and 196,217, and is 87,421 after the interpreter came out (Appendix B.2, V.11) |
 | A second implementation of the language is what an interpreter costs | Crystal's interpreter stops on `samples/iyi/hello.iyi` line 12 at the module header, and 0 of the fork's 153 commits had touched it against 7,840 lines of parser and semantic change (V.11) |
 | A build's cache directory can be deleted underneath it | the cleaner keeps the ten most recently modified directories and runs after every compile; removing one mid-codegen reproduces both failures, the single-threaded path included, and reading the `compiler.lock` the build already holds fixes it (V.10) |
+| The edit loop is where R-1 pays, and it pays 1.7x | one module edited in a 30-module, 7,208-line project: 0.17 s with artifacts, 0.29 s without, against `go build`'s 0.20 s for the same edit (IV.3a) |
 | The path/name mapping needed more than snake_case | `camelcase` drops an underscore before a digit, so `v_1` and `v1` both give `V1`; requiring each group to start with a letter removes that and three sibling collisions (IV.6 #6) |
 
 ## Appendix B: Decisions awaiting your call
