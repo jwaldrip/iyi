@@ -39,7 +39,6 @@ target             ?= ## Cross-compilation target
 check              ?= ## Enable only check when running format
 order              ?= random## Enable order for spec execution (values: "default" | "random" | seed number)
 deref_symlinks     ?= ## Dereference symbolic links for `make install`
-docs_sanitizer     ?= ## Enable sanitization for documentation generation
 sequential_codegen ?= $(if $(filter 0,$(supports_mt)),true,)## Enforce sequential codegen in compiler builds.
 
 O            := .build
@@ -47,7 +46,7 @@ SOURCES      := $(shell find src -name '*.cr')
 SPEC_SOURCES := $(shell find spec -name '*.cr')
 MAN1PAGES    := $(patsubst doc/man/%.adoc,man/%.1,$(wildcard doc/man/*.adoc))
 override FLAGS += -D strict_multi_assign -D preview_overload_order $(if $(release),--release )$(if $(stats),--stats )$(if $(progress),--progress )$(if $(threads),--threads $(threads) )$(if $(debug),-d )$(if $(static),--static )$(if $(LDFLAGS),--link-flags="$(LDFLAGS)" )$(if $(target),--cross-compile --target $(target) )
-override COMPILER_FLAGS += $(if $(docs_sanitizer),,-Dwithout_libxml2 ) -Dwithout_openssl -Dwithout_zlib$(if $(sequential_codegen), -Dwithout_mt,)
+override COMPILER_FLAGS +=  -Dwithout_openssl -Dwithout_zlib$(if $(sequential_codegen), -Dwithout_mt,)
 SPEC_WARNINGS_OFF := --exclude-warnings spec/std --exclude-warnings spec/compiler --exclude-warnings spec/primitives --exclude-warnings src/float/printer --exclude-warnings src/random.cr
 override SPEC_FLAGS += $(if $(verbose),-v )$(if $(junit_output),--junit_output $(junit_output) )$(if $(order),--order=$(order) )
 CRYSTAL_CONFIG_LIBRARY_PATH := '$$ORIGIN/../lib/crystal'
@@ -184,12 +183,6 @@ lint-shellcheck:
 all_spec: $(O)/all_spec$(EXE) ## Run all specs (note: this builds a huge program; `test` recipe builds individual binaries and is recommended for reduced resource usage)
 	$(O)/all_spec$(EXE) $(SPEC_FLAGS)
 
-.PHONY: docs
-docs: ## Generate standard library documentation
-	$(call check_llvm_config)
-	./bin/crystal docs src/docs_main.cr $(DOCS_OPTIONS) --project-name=Crystal --project-version=$(CRYSTAL_VERSION) --source-refname=$(CRYSTAL_CONFIG_BUILD_COMMIT)
-	cp -R -P -p doc/ docs/
-
 .PHONY: crystal
 crystal: $(O)/$(CRYSTAL_BIN) ## Build the compiler [default]
 
@@ -317,18 +310,6 @@ install_dlls: $(O)/$(CRYSTAL_BIN) ## Install the compiler's dependent DLLs at DE
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(BINDIR)/"
 	@ldd $(O)/$(CRYSTAL_BIN) | grep -iv ' => /c/windows/system32' | sed 's/.* => //; s/ (.*//' | xargs -t -i $(INSTALL) -m 0755 '{}' "$(DESTDIR)$(BINDIR)/"
 endif
-
-.PHONY: install_docs
-install_docs: docs ## Install docs at DESTDIR
-	$(INSTALL) -d -m 0755 $(DESTDIR)$(DOCDIR)
-
-	cp -R -P -p docs "$(DESTDIR)$(DOCDIR)/docs"
-	cp -R -P -p samples "$(DESTDIR)$(DOCDIR)/examples"
-
-.PHONY: uninstall_docs
-uninstall_docs: ## Uninstall docs from DESTDIR
-	rm -rf "$(DESTDIR)$(DOCDIR)/docs"
-	rm -rf "$(DESTDIR)$(DOCDIR)/examples"
 
 $(O)/all_spec$(EXE): $(DEPS) $(SOURCES) $(SPEC_SOURCES)
 	$(call check_llvm_config)

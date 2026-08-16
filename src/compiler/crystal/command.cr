@@ -37,11 +37,9 @@ class Crystal::Command
         init                     generate a new project
         build                    build an executable
         clear_cache              clear the compiler cache
-        docs                     generate documentation
         env                      print Crystal environment information
         eval                     eval code from args or standard input
         mod                      inspect a .iyimod module artifact
-        play                     starts Crystal playground server
         run (default)            build and run program
         spec                     build and run specs (in spec directory)
         tool                     run a tool
@@ -101,21 +99,9 @@ class Crystal::Command
       build
       report_warnings
       exit 1 if warnings_fail_on_exit?
-    when "play".starts_with?(command)
-      options.shift
-      {% if flag?(:without_playground) %}
-        puts "Crystal was compiled without playground support"
-        puts "Try the online code evaluation and sharing tool at https://play.crystal-lang.org"
-        exit 1
-      {% else %}
-        playground
-      {% end %}
     when "deps".starts_with?(command)
       STDERR.puts "Please use 'shards': 'crystal deps' has been removed"
       exit 1
-    when "docs".starts_with?(command)
-      options.shift
-      docs
     when command == "env"
       options.shift
       env

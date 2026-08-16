@@ -6,10 +6,10 @@
 # has, a usage line that names them, and a version that says what it is built
 # from.
 #
-# The commands left out are left out on purpose. `init`, `play`, `docs` and
-# `spec` belong to a language with a package layout, a playground, a
-# documentation site and a spec runner; iyi has none of the four, and a command
-# that half-works is worse than one that says where it went.
+# The commands left out are left out on purpose. `init` and `spec` belong to a
+# language with a package layout and a spec runner, and iyi has neither. The
+# playground and the documentation generator are not here at all: they went the
+# way the interpreter went, for the reason SPEC.md V.11 gives.
 {% raise("Please use `make iyi` to build it, or set the i_know_what_im_doing flag if you know what you're doing") unless env("CRYSTAL_HAS_WRAPPER") || flag?("i_know_what_im_doing") %}
 
 require "log"
@@ -53,7 +53,7 @@ module Iyi
 
   # The ones that belong to Crystal and are still in the binary underneath.
   # Named rather than swallowed, because "unknown command" would be a lie.
-  CRYSTAL_ONLY = %w(init play docs spec)
+  CRYSTAL_ONLY = %w(init spec)
 
   def self.description : String
     String.build do |io|

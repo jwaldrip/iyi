@@ -9,13 +9,6 @@ description: |
 
 crystal: ">= 1.0"
 
-dependencies:
-  markd:
-    github: icyleaf/markd
-  sanitize:
-    github: straight-shoota/sanitize
-    commit: 75c141b619c77956e88f557149566cd28876398b
-
 license: Apache-2.0 WITH Swift-exception
 
 repository: https://github.com/crystal-lang/crystal
