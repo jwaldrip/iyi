@@ -26,6 +26,10 @@ jobs:
       - name: Build the compiler
         run: make crystal
 
+      # Caught by hand once already, on files this fork wrote.
+      - name: Formatted
+        run: ./bin/crystal tool format --check src spec
+
       - name: The rules, the artifact and the import path
         run: |
           ./bin/crystal spec \

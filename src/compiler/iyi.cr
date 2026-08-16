@@ -44,6 +44,10 @@ module Iyi
     SPEC.md for the design and README.md for what is and is not here.
     USAGE
 
+  # What the binary calls itself. The Makefile holds the number and passes it
+  # in, so a released binary cannot disagree with the tarball it came in.
+  VERSION = {{ env("IYI_VERSION") || "0.1.0-dev" }}
+
   # The ones that are this compiler doing this compiler's job.
   DELEGATED = %w(build run mod env clear_cache eval tool)
 
@@ -53,7 +57,7 @@ module Iyi
 
   def self.description : String
     String.build do |io|
-      io << "iyi 0.1.0-dev, a fork of " << Crystal::Config.description.lines.first
+      io << "iyi " << VERSION << ", a fork of " << Crystal::Config.description.lines.first
       io << "\n\nThe compiler was not built in release mode." unless Crystal::Config.release_mode?
     end
   end

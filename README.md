@@ -115,6 +115,13 @@ $ make iyi-tarball        # .build/iyi-0.1.0-dev-<os>-<arch>.tar.gz
 $ sudo make install_iyi   # PREFIX=/usr/local by default
 ```
 
+What a release build is, in one line, since the version belongs to the binary
+and the tarball alike:
+
+```console
+$ make iyi iyi-tarball release=1 IYI_VERSION=0.1.0
+```
+
 `make crystal` builds the same compiler under its Crystal name. That is the one
 the specs and the bench use.
 
