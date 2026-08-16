@@ -181,20 +181,23 @@ through one. And **libgc**, which every program iyi produces links against:
 Building it instead needs LLVM 19 and a Crystal compiler to bootstrap from:
 
 ```console
-$ make iyi                # .build/iyi
-$ make iyi-tarball        # .build/iyi-0.1.0-dev-<os>-<arch>.tar.gz
-$ sudo make install_iyi   # PREFIX=/usr/local by default
+$ make                    # the compiler, and `iyi` itself
+$ ./bin/iyi run samples/iyi/hello.iyi
 ```
 
-What a release build is, in one line, since the version belongs to the binary
-and the tarball alike:
+`./bin/iyi` is how you run the fork out of a checkout: it finds `.build/iyi`
+and nothing else has to be set. The rest:
 
 ```console
-$ make iyi iyi-tarball release=1 IYI_VERSION=0.1.0
+$ make iyi-tarball        # .build/iyi-0.1.0-dev-<os>-<arch>.tar.gz
+$ sudo make install_iyi   # PREFIX=/usr/local by default
+$ make iyi iyi-tarball release=1 IYI_VERSION=0.1.0   # what a release build is
 ```
 
-`make crystal` builds the same compiler under its Crystal name. That is the one
-the specs and the bench use.
+`make` also builds the same compiler under Crystal's name, as `.build/crystal`
+with `./bin/crystal` in front of it. That is the one the specs and the bench
+use, and the one that compiles `.cr` files, because underneath this is still
+Crystal's compiler.
 
 ## More of the language
 

@@ -143,13 +143,18 @@ jobs:
           path: .build
       - run: chmod +x .build/crystal
 
+      # Built here so that what runs the samples is the binary a person
+      # downloads, not the compiler under its Crystal name.
+      - name: Build `iyi`
+        run: make -o .build/crystal iyi
+
       # Each sample documents a part of the design, so a sample that stops
       # running is a part of the design that stopped working.
       - name: Run every sample
         run: |
           for sample in samples/iyi/*.iyi; do
             echo "== $sample"
-            ./bin/crystal run "$sample"
+            ./bin/iyi run "$sample"
           done
 
       # The claim R-1 makes, taken literally: build, delete the modules'

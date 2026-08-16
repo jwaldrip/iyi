@@ -12,12 +12,14 @@
 #
 #     bash bench/samples_roundtrip.sh
 #
-# Needs a built compiler (`make crystal`). Exits non-zero if any sample fails to
-# build either way, or prints something different from its artifacts.
+# Needs `make` (which builds both the compiler and `iyi`). It runs `iyi` rather
+# than `crystal` because these are iyi programs and that is the binary a person
+# has. Exits non-zero if any sample fails to build either way, or prints
+# something different from its artifacts.
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-CRYSTAL="$REPO/bin/crystal"
+IYI="$REPO/bin/iyi"
 WORK="$(mktemp -d)"
 
 # The five that import a module. `hello`, `generics` and `errors` are single
@@ -30,7 +32,7 @@ cd "$WORK" || exit 1
 status=0
 
 for sample in $SAMPLES; do
-  if ! "$CRYSTAL" build --emit-iyimod mods -o "from-source-$sample" "$sample.iyi" >"emit-$sample.log" 2>&1; then
+  if ! "$IYI" build --emit-iyimod mods -o "from-source-$sample" "$sample.iyi" >"emit-$sample.log" 2>&1; then
     echo "$sample: writing artifacts failed"
     tail -5 "emit-$sample.log"
     status=1
@@ -45,7 +47,7 @@ rm -rf app std boot kemal
 
 for sample in $SAMPLES; do
   [ -f "from-source-$sample" ] || continue
-  if ! "$CRYSTAL" build --use-iyimod mods -o "from-artifact-$sample" "$sample.iyi" >"use-$sample.log" 2>&1; then
+  if ! "$IYI" build --use-iyimod mods -o "from-artifact-$sample" "$sample.iyi" >"use-$sample.log" 2>&1; then
     echo "$sample: building from artifacts failed"
     tail -12 "use-$sample.log"
     status=1

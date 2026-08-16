@@ -4,7 +4,7 @@ all: ##
 
 # Recipes for this Makefile
 
-## Build the compiler
+## Build the compiler and `iyi`, then run a program with ./bin/iyi
 ##   $ make
 ## Build the compiler with progress output
 ##   $ make progress=1
@@ -141,7 +141,9 @@ check_llvm_config = $(eval \
 	)
 
 .PHONY: all
-all: crystal
+# iyi: both names, because a plain `make` that leaves you with a binary called
+# `crystal` and nothing called `iyi` is a confusing way to build iyi.
+all: crystal iyi
 
 .PHONY: test
 test: spec ## Run tests
@@ -184,10 +186,10 @@ all_spec: $(O)/all_spec$(EXE) ## Run all specs (note: this builds a huge program
 	$(O)/all_spec$(EXE) $(SPEC_FLAGS)
 
 .PHONY: crystal
-crystal: $(O)/$(CRYSTAL_BIN) ## Build the compiler [default]
+crystal: $(O)/$(CRYSTAL_BIN) ## Build the compiler under Crystal's name (specs and bench use this one)
 
 .PHONY: iyi
-iyi: $(O)/iyi$(EXE) ## iyi: build the compiler under its own name
+iyi: $(O)/iyi$(EXE) ## iyi: build `iyi` itself, runnable as ./bin/iyi [default, with crystal]
 
 .PHONY: crystal-front
 crystal-front: $(O)/crystal-front$(EXE) ## iyi: build the front end, which links no LLVM
@@ -355,6 +357,7 @@ $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 	$(EXPORTS) $(EXPORTS_BUILD) CRYSTAL_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../src' \
 	  IYI_VERSION="$(IYI_VERSION)" \
 	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $@ src/compiler/iyi.cr
+	@echo "built $@ — run it as ./bin/iyi"
 
 # iyi: the front end on its own. Linking libLLVM costs 26 ms of load-time
 # initialisers whether or not anything generates code, and `--no-codegen` never

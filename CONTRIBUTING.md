@@ -11,12 +11,14 @@ tracker, not here; what belongs here is anything about the rules in
 You need LLVM 19, a Crystal compiler to bootstrap from, and libgc.
 
 ```console
-$ make crystal            # the compiler, as .build/crystal
-$ make iyi                # the same compiler under its own name
+$ make                    # both binaries: .build/crystal and .build/iyi
+$ ./bin/iyi run samples/iyi/hello.iyi
 ```
 
-`bin/crystal` runs the built compiler with this checkout's sources on its path,
-which is what every command below assumes.
+Two names, and they are not the same program. `./bin/iyi` is the fork: it takes
+`build`, `run` and `mod`, and it is what a person who downloads the tarball
+has. `./bin/crystal` is Crystal's own wrapper around the same compiler, it
+still compiles `.cr` files, and it is what the specs and the bench below use.
 
 ## What has to pass
 
