@@ -2018,21 +2018,38 @@ module Crystal
       # literal, so `app/user` lexes as `app` followed by DELIMITER_START.
       # Module paths are the one place `/` is a separator, so suppress regex
       # mode for the duration.
-      @wants_regex = false
+      #
+      # `@wants_regex` alone was not enough, and the way it failed is worth
+      # keeping. A token whose text *begins* with a keyword — `libs`, `defs`,
+      # `endpoint`, `class1` — leaves the lexer through an early `return` that
+      # skips the reset of `@slash_is_regex`, and that flag is the one the
+      # slash is judged by. So `module endpoint/handler` lexed its `/` as the
+      # start of a regex and did not parse, while `module app/user` did.
+      # Ordinary names, and the failure was a syntax error pointing at the
+      # slash.
+      suppress_regex
       next_token
 
       while @token.type.op_slash?
-        @wants_regex = false
+        suppress_regex
         next_token
         check Token::Kind::IDENT
         segments << check_module_path_segment(@token.value.to_s)
-        @wants_regex = false
+        suppress_regex
         next_token
       end
 
       @wants_regex = true
       skip_space
       segments
+    end
+
+    # iyi: both flags, because the lexer reads one of them and the parser sets
+    # the other, and a keyword-prefixed identifier skips the reset that would
+    # have kept them in step.
+    private def suppress_regex : Nil
+      @wants_regex = false
+      slash_is_not_regex!
     end
 
     # iyi: a module path segment is `[a-z][a-z0-9]*` with single `_` between

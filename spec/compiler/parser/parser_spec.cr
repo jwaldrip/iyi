@@ -4181,6 +4181,29 @@ module Crystal
         end
       end
 
+      # A segment that *starts* with a keyword leaves the lexer through an
+      # early return which skips the reset of `@slash_is_regex`, so the `/`
+      # after it was read as the start of a regex literal and the file did not
+      # parse. `module app/user` worked and `module endpoint/handler` did not,
+      # which is a syntax error on an ordinary name.
+      it "parses a path whose segments begin with a keyword" do
+        {
+          "endpoint/handler" => ["endpoint", "handler"],
+          "libs/parser"      => ["libs", "parser"],
+          "defs/thing"       => ["defs", "thing"],
+          "class1/x"         => ["class1", "x"],
+          "app/ifs"          => ["app", "ifs"],
+        }.each do |path, segments|
+          nodes = parse("module #{path}").as(Expressions)
+          nodes.expressions[0].as(ModuleHeader).path.should eq(segments)
+        end
+
+        nodes = parse("module app/x\nimport libs/parser\nusing endpoint/handler\ndef f\nend").as(Expressions)
+        nodes.expressions[1].as(ImportDecl).path.should eq(["libs", "parser"])
+        body = nodes.expressions[2].as(ModuleDef).body.as(Expressions).expressions
+        body[1].as(UsingDecl).path.should eq(["endpoint", "handler"])
+      end
+
       # `v_1` and `v1` would both be `V1`: the underscore before a digit is
       # dropped. This is the case that makes plain snake_case insufficient.
       assert_syntax_error "module app/v_1", "not lower-case snake_case"
