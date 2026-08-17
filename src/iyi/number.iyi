@@ -5,11 +5,18 @@
 # instructions for. What is left is the two operators Crystal writes in
 # `int.cr` rather than in the compiler, and turning a number into text.
 struct Int32
+  # The zero is checked here rather than left to the processor. `1 // 0` used
+  # to reach `unsafe_div`, trap, and kill the program with "Process terminated
+  # because of a floating-point system exception" — an integer division
+  # reported by the operating system as a floating-point fault, which is a
+  # sentence nobody can act on.
   def //(other : Int32) : Int32
+    raise "division by zero" if other == 0
     unsafe_div(other)
   end
 
   def %(other : Int32) : Int32
+    raise "modulo by zero" if other == 0
     unsafe_mod(other)
   end
 
@@ -36,10 +43,12 @@ end
 
 struct Int64
   def //(other : Int64) : Int64
+    raise "division by zero" if other == 0
     unsafe_div(other)
   end
 
   def %(other : Int64) : Int64
+    raise "modulo by zero" if other == 0
     unsafe_mod(other)
   end
 
