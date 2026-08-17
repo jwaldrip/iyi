@@ -1,0 +1,81 @@
+# Changelog
+
+## 0.1.0 — unreleased
+
+The first release. There is nothing to compare it against, so this says what is
+in it rather than what changed, and what a later version will have to keep
+faith with.
+
+### The language
+
+Four rules, and everything else follows from them (SPEC.md):
+
+- **R-1** A module is the unit of compilation. `import` forms a DAG, and
+  compiling a module reads its imports' declarations, never their bodies.
+- **R-2** Everything a module exports (`pub`) writes down full parameter and
+  return types.
+- **R-2b** `using` brings exported names into unqualified scope, written by the
+  consumer.
+- **R-3** No open classes. `impl Trait for Type` lives in the module that
+  declares the trait or the one that declares the type.
+
+Traits with defaults and associated types, generic impls with `forall`, errors
+as ordinary union members with `!` propagation, `defer` scoped to the block,
+and Crystal's syntax otherwise: union types, nil-safety, blocks, local
+inference, macros.
+
+### The artifact
+
+`.iyimod` **format v19**. A module's declarations, its macros, the bodies that
+have to travel, its object code, and a checksum per section. Artifacts are
+version-locked: one written by another build of the compiler is refused and
+rebuilt, never migrated, so a later version bumping this number is expected
+rather than a breakage.
+
+`iyi build --emit-iyimod DIR` writes them, `--use-iyimod DIR` builds against
+them, and `iyi mod dump` prints one as text.
+
+### The tool
+
+`iyi` takes `build`, `run`, `mod`, `env`, `clear_cache`, `eval`, `tool`,
+`version` and `help`. `crystal` is the same compiler under its own name, and it
+still compiles `.cr` files.
+
+### Measured
+
+One machine, release compiler, best of seven, seconds. A 30-module,
+7,208-line project, rebuilt after changing one line in one module:
+
+| | iyi | Crystal | `go build` |
+|---|---|---|---|
+| rebuild after one edit | **0.13** | 1.17 | 0.16 |
+
+The same edit with every module read from source instead of from artifacts
+costs 0.23 s, which is what R-1 is worth on this project. A full build of a
+6,900-line program from scratch is 0.24 s against `go build`'s 0.09 s, which is
+where iyi loses. `python3 bench/incremental.py` and `python3
+bench/build_speed.py` print both, and refuse to time programs that do not agree
+on their output.
+
+### Not in this release
+
+No IO beyond `puts`. No concurrency: SPEC.md III.4 specifies it and none of it
+is built. No package manager, no standard library, no self-hosting. Linux
+x86-64 only. `derive` macros do not cross modules. The prelude's collections
+are small, and `a[-1]` raises rather than indexing from the end.
+
+### Provenance
+
+A fork of [Crystal](https://github.com/crystal-lang/crystal) at 1.22.0-dev,
+Apache 2.0 with Swift exception, Copyright 2012-2026 Manas Technology
+Solutions. The backend, the GC and the type checker are Crystal's work.
+
+Two bugs in Crystal's own compiler were found here and fixed in this fork; they
+belong upstream and are separate commits for that reason:
+
+- `Crystal.relative_filename` chopped the working directory off any path that
+  merely began with its name, so a build in `/x/crystal` with a cache in
+  `/x/crystal-cache` wrote its object files to `-cache/…`.
+- The cache cleaner deleted the directory of a build that was still running,
+  because it keeps the ten most recently modified directories and a build stops
+  looking recent while its units sit in an optimization pass.

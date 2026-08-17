@@ -515,6 +515,7 @@ the design, or argue with a number. Not somebody with a program to ship.
 | [`src/compiler/crystal/iyimod.cr`](src/compiler/crystal/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |
+| [CHANGELOG.md](CHANGELOG.md) | what is in a release, and what a later one has to keep faith with |
 | [README.crystal.md](README.crystal.md) | Crystal's own README, kept |
 
 ## Licence and provenance
