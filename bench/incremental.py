@@ -270,48 +270,68 @@ def compiler_build():
     return (lines[0] if lines else "unknown"), "not built in release mode" not in text
 
 
-# The picture is written by the same run that prints the table, so it cannot
-# drift from it. `python3 bench/incremental.py --svg doc/assets/edit-loop.svg`
-# after a run on a machine the reference accepts, and commit both.
-def write_svg(path, figures, names, lines):
+# The same run, drawn as what it feels like: three builds starting together and
+# finishing when they finish. Real time, so the bar that crawls is crawling at
+# the speed a person waits at. Written by `--svg`, and the only thing here
+# that is not measured is the terminal around it.
+def write_svg_animated(path, figures, names, lines):
     row = "module"
-    values = [(name, figures[name][row]) for name in names if figures[name].get(row)]
-    if not values:
+    runs = [(name, figures[name][row]) for name in names if figures[name].get(row)]
+    if not runs:
         return
-    shown = {"crystal": "Crystal", "go build": "go build", "iyi": "iyi"}
-    values = [(shown.get(name, name), value) for name, value in values]
-    widest = max(value for _, value in values)
-    bar_max, left, top, step, height = 420, 132, 74, 46, 30
-    width, tall = left + bar_max + 96, top + step * len(values) + 24
+    # The commands as the bench runs them, with iyi's artifact flags elided
+    # rather than dropped: `…` is `--use-iyimod mods --emit-iyimod mods`, and a
+    # picture that hid them would be claiming an ergonomics this does not have.
+    shown = {"iyi": ("iyi build … -o app main.iyi", "#3fb950"),
+             "crystal": ("crystal build -o app main.cr", "#d29922"),
+             "go build": ("go build -o app .", "#58a6ff")}
+    slowest = max(seconds for _, seconds in runs)
+    start, hold, loop = 0.45, 1.15, 0.45 + max(seconds for _, seconds in runs) + 1.15
+    left, top, step, bar_left, bar_max, height = 26, 76, 34, 400, 250, 15
+    width, tall = bar_left + bar_max + 92, top + step * len(runs) + 26
 
-    bars = []
-    for index, (name, value) in enumerate(values):
+    css, body = [], []
+    for index, (name, seconds) in enumerate(runs):
+        label, colour = shown.get(name, (name, "#8c959f"))
         y = top + index * step
-        length = max(6, round(bar_max * value / widest))
-        fill = "url(#iyi)" if index == 0 else "var(--other)"
-        bars.append(
-            f'<text x="{left - 12}" y="{y + 20}" class="name">{name}</text>'
-            f'<rect x="{left}" y="{y}" width="{length}" height="{height}" rx="4" fill="{fill}"/>'
-            f'<text x="{left + length + 12}" y="{y + 21}" class="value">{value:.2f} s</text>')
-
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {tall}" width="{width}" height="{tall}" role="img" aria-label="rebuild after one edit: {', '.join(f'{n} {v:.2f} seconds' for n, v in values)}">
-  <style>
-    :root {{ --fg: #1f2328; --dim: #656d76; --bg: #ffffff; --other: #8c959f; }}
-    @media (prefers-color-scheme: dark) {{
-      :root {{ --fg: #e6edf3; --dim: #8d96a0; --bg: #0d1117; --other: #6e7681; }}
+        length = max(8, round(bar_max * seconds / slowest))
+        pct_start = 100 * start / loop
+        pct_done = 100 * (start + seconds) / loop
+        css.append(f"""
+    @keyframes fill{index} {{
+      0%, {pct_start:.2f}% {{ transform: scaleX(0); }}
+      {pct_done:.2f}%, 100% {{ transform: scaleX(1); }}
     }}
-    text {{ font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }}
-    .title {{ font-size: 17px; font-weight: 700; fill: var(--fg); }}
-    .sub {{ font-size: 12.5px; fill: var(--dim); }}
-    .name {{ font-size: 13.5px; fill: var(--fg); text-anchor: end; }}
-    .value {{ font-size: 13.5px; font-weight: 600; fill: var(--fg); }}
+    @keyframes show{index} {{
+      0%, {pct_done:.2f}% {{ opacity: 0; }}
+      {min(pct_done + 1, 100):.2f}%, 100% {{ opacity: 1; }}
+    }}
+    .bar{index} {{ transform-origin: {bar_left}px 0; animation: fill{index} {loop:.2f}s linear infinite; }}
+    .time{index} {{ animation: show{index} {loop:.2f}s linear infinite; }}""")
+        body.append(
+            f'<text x="{left}" y="{y + 12}" class="cmd"><tspan class="prompt">$ </tspan>{label}</text>'
+            f'<rect x="{bar_left}" y="{y}" width="{bar_max}" height="{height}" rx="3" class="track"/>'
+            f'<rect x="{bar_left}" y="{y}" width="{length}" height="{height}" rx="3" fill="{colour}" class="bar{index}"/>'
+            f'<text x="{bar_left + length + 10}" y="{y + 12}" class="time time{index}" fill="{colour}">{seconds:.2f} s</text>')
+
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {tall}" width="{width}" height="{tall}" role="img" aria-label="{', '.join(f'{n} {v:.2f} seconds' for n, v in runs)} to rebuild after one edit">
+  <style>
+    :root {{ --fg: #1f2328; --dim: #656d76; --bg: #ffffff; --track: #eaeef2; }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{ --fg: #e6edf3; --dim: #8d96a0; --bg: #0d1117; --track: #21262d; }}
+    }}
+    text {{ font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; }}
+    .head {{ font-size: 13px; fill: var(--dim); }}
+    .cmd {{ fill: var(--fg); }}
+    .prompt {{ fill: var(--dim); }}
+    .time {{ font-weight: 600; }}
+    .track {{ fill: var(--track); }}{''.join(css)}
   </style>
-  <defs><linearGradient id="iyi" x1="0" x2="1"><stop offset="0" stop-color="#2da44e"/><stop offset="1" stop-color="#3fb950"/></linearGradient></defs>
-  <rect width="{width}" height="{tall}" fill="var(--bg)"/>
-  <text x="{left - 12}" y="30" class="title" text-anchor="end">Rebuild after one edit</text>
-  <text x="{left}" y="30" class="title">{lines:,} lines, 30 modules, one line changed</text>
-  <text x="{left}" y="50" class="sub">seconds, best of {RUNS}, one machine, release compilers</text>
-  {''.join(bars)}
+  <rect width="{width}" height="{tall}" rx="8" fill="var(--bg)"/>
+  <circle cx="22" cy="24" r="5" fill="#ff5f57"/><circle cx="40" cy="24" r="5" fill="#febc2e"/><circle cx="58" cy="24" r="5" fill="#28c840"/>
+  <text x="76" y="28" class="head">one line changed in one of 30 modules, {lines:,} lines</text>
+  <text x="{left}" y="58" class="head">rebuilt three ways, at the speed you wait at</text>
+  {''.join(body)}
 </svg>
 """
     target = pathlib.Path(path)
@@ -444,7 +464,7 @@ def main():
         print("  rather than the seconds against a number somebody else wrote down.")
         print("  All three columns pay the same machine.")
     if "--svg" in sys.argv:
-        write_svg(sys.argv[sys.argv.index("--svg") + 1], figures, names, lines)
+        write_svg_animated(sys.argv[sys.argv.index("--svg") + 1], figures, names, lines)
 
     print()
     print(f"  workdir {work}")

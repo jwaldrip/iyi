@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 742 204" width="742" height="204" role="img" aria-label="iyi 0.13 seconds, crystal 1.17 seconds, go build 0.16 seconds to rebuild after one edit">
+  <style>
+    :root { --fg: #1f2328; --dim: #656d76; --bg: #ffffff; --track: #eaeef2; }
+    @media (prefers-color-scheme: dark) {
+      :root { --fg: #e6edf3; --dim: #8d96a0; --bg: #0d1117; --track: #21262d; }
+    }
+    text { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; }
+    .head { font-size: 13px; fill: var(--dim); }
+    .cmd { fill: var(--fg); }
+    .prompt { fill: var(--dim); }
+    .time { font-weight: 600; }
+    .track { fill: var(--track); }
+    @keyframes fill0 {
+      0%, 16.25% { transform: scaleX(0); }
+      20.94%, 100% { transform: scaleX(1); }
+    }
+    @keyframes show0 {
+      0%, 20.94% { opacity: 0; }
+      21.94%, 100% { opacity: 1; }
+    }
+    .bar0 { transform-origin: 400px 0; animation: fill0 2.77s linear infinite; }
+    .time0 { animation: show0 2.77s linear infinite; }
+    @keyframes fill1 {
+      0%, 16.25% { transform: scaleX(0); }
+      58.48%, 100% { transform: scaleX(1); }
+    }
+    @keyframes show1 {
+      0%, 58.48% { opacity: 0; }
+      59.48%, 100% { opacity: 1; }
+    }
+    .bar1 { transform-origin: 400px 0; animation: fill1 2.77s linear infinite; }
+    .time1 { animation: show1 2.77s linear infinite; }
+    @keyframes fill2 {
+      0%, 16.25% { transform: scaleX(0); }
+      22.02%, 100% { transform: scaleX(1); }
+    }
+    @keyframes show2 {
+      0%, 22.02% { opacity: 0; }
+      23.02%, 100% { opacity: 1; }
+    }
+    .bar2 { transform-origin: 400px 0; animation: fill2 2.77s linear infinite; }
+    .time2 { animation: show2 2.77s linear infinite; }
+  </style>
+  <rect width="742" height="204" rx="8" fill="var(--bg)"/>
+  <circle cx="22" cy="24" r="5" fill="#ff5f57"/><circle cx="40" cy="24" r="5" fill="#febc2e"/><circle cx="58" cy="24" r="5" fill="#28c840"/>
+  <text x="76" y="28" class="head">one line changed in one of 30 modules, 7,208 lines</text>
+  <text x="26" y="58" class="head">rebuilt three ways, at the speed you wait at</text>
+  <text x="26" y="88" class="cmd"><tspan class="prompt">$ </tspan>iyi build … -o app main.iyi</text><rect x="400" y="76" width="250" height="15" rx="3" class="track"/><rect x="400" y="76" width="28" height="15" rx="3" fill="#3fb950" class="bar0"/><text x="438" y="88" class="time time0" fill="#3fb950">0.13 s</text><text x="26" y="122" class="cmd"><tspan class="prompt">$ </tspan>crystal build -o app main.cr</text><rect x="400" y="110" width="250" height="15" rx="3" class="track"/><rect x="400" y="110" width="250" height="15" rx="3" fill="#d29922" class="bar1"/><text x="660" y="122" class="time time1" fill="#d29922">1.17 s</text><text x="26" y="156" class="cmd"><tspan class="prompt">$ </tspan>go build -o app .</text><rect x="400" y="144" width="250" height="15" rx="3" class="track"/><rect x="400" y="144" width="34" height="15" rx="3" fill="#58a6ff" class="bar2"/><text x="444" y="156" class="time time2" fill="#58a6ff">0.16 s</text>
+</svg>

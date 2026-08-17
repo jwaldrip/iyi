@@ -46,7 +46,10 @@ end
 
 Change that line and build again. Best of seven, one Linux machine, seconds:
 
-<img src="doc/assets/edit-loop.svg" alt="rebuild after one edit: iyi 0.13 s, Crystal 1.17 s, go build 0.16 s" width="648">
+<img src="doc/assets/edit-loop.anim.svg" alt="rebuild after one edit: iyi 0.13 s, Crystal 1.17 s, go build 0.16 s" width="742">
+
+<sup>The bars run in real time, and `…` is `--use-iyimod mods --emit-iyimod mods`.
+Drawn by the run that measured it: `python3 bench/incremental.py --svg doc/assets/edit-loop.anim.svg`.</sup>
 
 | | iyi | Crystal | `go build` |
 |---|---|---|---|
