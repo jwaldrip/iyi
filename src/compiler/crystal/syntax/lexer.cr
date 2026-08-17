@@ -65,6 +65,13 @@ module Crystal
 
     def initialize(string, string_pool : StringPool? = nil, warnings : WarningCollection? = nil)
       @warnings = warnings || WarningCollection.new
+
+      # iyi: a byte order mark is what a Windows editor leaves at the front of
+      # a file, and it was lexed as an identifier: `module app/user` answered
+      # "undefined local variable or method 'a'", pointing at the slash. It
+      # carries no meaning in UTF-8, so it is skipped rather than explained.
+      string = string.lchop('\uFEFF') if string.is_a?(String)
+
       @reader = Char::Reader.new(string)
       check_reader_error
       @token = Token.new

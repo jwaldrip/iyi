@@ -147,6 +147,16 @@ private def it_lexes_global_match_data_index(globals)
 end
 
 describe "Lexer" do
+  # iyi: a byte order mark is what a Windows editor leaves at the front of a
+  # file. It was lexed as an identifier, so `module app/user` answered
+  # "undefined local variable or method 'a'" and pointed at the slash.
+  it "skips a leading byte order mark" do
+    lexer = Lexer.new("\uFEFFputs 1")
+    token = lexer.next_token
+    token.type.should eq(Crystal::Token::Kind::IDENT)
+    token.value.should eq("puts")
+  end
+
   it_lexes "", :EOF
   it_lexes " ", :SPACE
   it_lexes "\t", :SPACE
