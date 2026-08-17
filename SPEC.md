@@ -342,7 +342,7 @@ that would change what 0.1.0 looks like, and deferring it costs nothing.
    aspiration: IV.1a already ran a front end that never walks the prelude at
    0.049 s, and it emitted an object with an identical symbol table. 0.1.0's job
    is to make that configuration the ordinary one rather than an experiment.
-   **Met: 0.034 s.** Not by the route IV.1a took. The prelude is small enough
+   **Met: 0.039 s.** Not by the route IV.1a took. The prelude is small enough
    now that there is little left to cache, and two of the three things that
    closed the gap were the prelude and its primitives. The third was the
    instrument; see below.
@@ -3323,11 +3323,11 @@ line and builds again. Best of 7, seconds, release compiler, idle machine:
 
 | what changed | iyi | Crystal | `go build` |
 |---|---|---|---|
-| nothing cached anywhere | 0.72 | 2.15 | 3.72 |
-| nothing at all | 0.16 | 1.17 | 0.09 |
-| **one module's body** | **0.17** | **1.24** | **0.24** |
-| the entry file only | 0.15 | 1.27 | 0.29 |
-| the same edit, without artifacts | 0.29 | — | — |
+| nothing cached anywhere | 0.71 | 2.22 | 3.93 |
+| nothing at all | 0.14 | 1.27 | 0.09 |
+| **one module's body** | **0.16** | **1.29** | **0.19** |
+| the entry file only | 0.15 | 1.34 | 0.20 |
+| the same edit, without artifacts | 0.28 | — | — |
 
 **Four things fall out of it, and the last is the one to keep.**
 
@@ -3335,19 +3335,21 @@ line and builds again. Best of 7, seconds, release compiler, idle machine:
 compiler.** The same binary compiles that column; the difference is the
 language it is compiling. A Crystal class is open until the last line of the
 last file, so no build may trust anything it read last time, and every rebuild
-of this program costs 1.24 s no matter what moved in it. The same edit under
-R-1 and R-3 costs 0.17 s. **7.3x, on the language this is a fork of, measured
+of this program costs 1.29 s no matter what moved in it. The same edit under
+R-1 and R-3 costs 0.16 s. **8x, on the language this is a fork of, measured
 rather than argued** — and it is the number this document has been promising
 since its first page.
 
-**The loop is also where iyi holds against Go.** 0.17 s against 0.24 s for the
-same edit to the same program. Go is not slow at this; Go is the reason this
-design exists. Being ahead by a quarter on a project this size is not the
+**The loop is also where iyi holds against Go.** 0.16 s against 0.19 s for the
+same edit to the same program, and 0.17 against 0.24 on the session before
+this one: Go's column moves as much as iyi's, which is the answer to what a
+single run of either would prove. Go is not slow at this; Go is the reason
+this design exists. Being ahead by a fifth on a project this size is not the
 headline: being in the same class is.
 
 **The last row is R-1's argument with a price on it.** The same edit, built
 without artifacts so that all 30 modules are read and analysed from source,
-costs 0.29 s. With the artifacts it costs 0.17 s. **The rule pays 1.7x on the
+costs 0.28 s. With the artifacts it costs 0.16 s. **The rule pays 1.7x on the
 loop it was written for**, and it pays it on a 7,208-line project — the figure
 grows with the code that is *not* being edited, which is the whole of any real
 program.
@@ -3361,7 +3363,7 @@ and 0.27 on the edited-module row: everything 1.4x, the ratios where they were.
 run produced its table, because a comparison survives a slow machine and a
 figure in seconds does not.
 
-**What is left is not analysis, which is why this stops here.** Of the 0.17 s,
+**What is left is not analysis, which is why this stops here.** Of the 0.16 s,
 0.018 s is the compiler process starting and most of the remainder is the
 link (0.1.0 item 2 measured the same shape on `hello`). Editing one module of
 thirty costs about 0.02 s over editing nothing. There is no version of this
@@ -3812,8 +3814,8 @@ For traceability, since several rules here rest on numbers rather than taste.
 | The daemon's win did not survive the prelude | it removed prelude analysis, and iyi's prelude is 1,053 lines: one module edited in a 7,208-line project costs 0.18–0.28 s built normally and 0.20–0.24 s through the daemon (IV.1d) |
 | A prefix is not a parent directory | working in `/tmp/x/crystal` with a cache at `/tmp/x/crystal-cache`, every object file was written to `-cache/…`; the same "No such file or directory" the cleaner race produces, from a different cause (V.10) |
 | A build's cache directory can be deleted underneath it | the cleaner keeps the ten most recently modified directories and runs after every compile; removing one mid-codegen reproduces both failures, the single-threaded path included, and reading the `compiler.lock` the build already holds fixes it (V.10) |
-| A module as the unit of compilation is worth 7.3x over Crystal | the same program, the same compiler binary, one module edited: 1.24 s as Crystal, 0.17 s as iyi, against `go build`'s 0.24 s (IV.3a) |
-| The edit loop is where R-1 pays, and it pays 1.7x | one module edited in a 30-module, 7,208-line project: 0.17 s with artifacts, 0.29 s without, against `go build`'s 0.24 s for the same edit (IV.3a) |
+| A module as the unit of compilation is worth 8x over Crystal | the same program, the same compiler binary, one module edited: 1.29 s as Crystal, 0.16 s as iyi, against `go build`'s 0.19 s (IV.3a) |
+| The edit loop is where R-1 pays, and it pays 1.7x | one module edited in a 30-module, 7,208-line project: 0.16 s with artifacts, 0.28 s without, against `go build`'s 0.19 s for the same edit (IV.3a) |
 | The path/name mapping needed more than snake_case | `camelcase` drops an underscore before a digit, so `v_1` and `v1` both give `V1`; requiring each group to start with a letter removes that and three sibling collisions (IV.6 #6) |
 
 ## Appendix B: Decisions awaiting your call

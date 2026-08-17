@@ -8,7 +8,7 @@ Thirty modules. 7,208 lines. Change one line and build it again:
 
 | | iyi | Crystal | `go build` |
 |---|---|---|---|
-| **rebuild after one edit** | **0.17 s** | 1.24 s | 0.24 s |
+| **rebuild after one edit** | **0.16 s** | 1.29 s | 0.19 s |
 
 **That is the same program three times and the same compiler binary twice.**
 One script writes it in all three languages, and the benchmark will not start
@@ -16,7 +16,7 @@ the clock until the three binaries print the same number. The Crystal column is
 no straw man: it is this compiler, compiling this program, under the rule that
 a class stays open until the last line of the last file, so every build has to
 read every file. Take that one rule away and the edit you just made costs
-**7x less**. Go is there because Go is good at this and is the bar worth
+**8x less**. Go is there because Go is good at this and is the bar worth
 clearing.
 
 The syntax stays. Union types, nil-safety, blocks, local inference: all kept.
@@ -28,7 +28,7 @@ number above comes out of `python3 bench/incremental.py` on one idle Linux
 machine, best of 7, and none of them is quoted from anywhere else.
 
 **Where it loses, said here rather than left to be found.** A warm full build
-of one 6,900-line program is 0.22 s against `go build`'s 0.08 s: iyi is quick
+of one 6,900-line program is 0.24 s against `go build`'s 0.09 s: iyi is quick
 where fixed costs are the bill and quick on the loop, and it is not quick at
 compiling a lot of code it has never seen. The [measured section](#what-it-costs-measured)
 has both halves.
@@ -113,11 +113,11 @@ timed. Best of 7 on one idle Linux machine, release compiler, seconds:
 
 | what changed | iyi | Crystal | `go build` |
 |---|---|---|---|
-| **one module's body** | **0.17** | 1.24 | 0.24 |
-| the entry file only | **0.15** | 1.27 | 0.29 |
-| nothing at all | 0.16 | 1.17 | 0.09 |
-| nothing cached anywhere | 0.72 | 2.15 | 3.72 |
-| the same edit, *without* artifacts | 0.29 | — | — |
+| **one module's body** | **0.16** | 1.29 | 0.19 |
+| the entry file only | **0.15** | 1.34 | 0.20 |
+| nothing at all | 0.14 | 1.27 | 0.09 |
+| nothing cached anywhere | 0.71 | 2.22 | 3.93 |
+| the same edit, *without* artifacts | 0.28 | — | — |
 
 **Read the Crystal column as the price of one rule.** It is this compiler
 binary compiling this program, and it cannot do better: a Crystal class is open
@@ -125,14 +125,16 @@ until the last line of the last file, so no build can trust anything it read
 last time. Nothing in that column moves whatever you edit, which is the point.
 
 **Read the last row as the price of R-1.** Build the same edit with all thirty
-modules read from source and it costs 0.29 s; with the `.iyimod` files in hand
+modules read from source and it costs 0.28 s; with the `.iyimod` files in hand
 the other twenty-nine arrive as declarations instead of source and it costs
-0.17 s. The rule pays 1.7x on the loop it was written for, and it pays more as
+0.16 s. The rule pays 1.7x on the loop it was written for, and it pays more as
 the code you are *not* editing grows.
 
 **Read the cold row with one caveat.** `go build` from nothing compiles its own
-dependencies once, which iyi has none of yet; the 3.72 s is honest for a first
-build on a fresh machine and it is not a claim about Go's compiler.
+dependencies once, which iyi has none of yet; the 3.93 s is honest for a first
+build on a fresh machine and it is not a claim about Go's compiler. Go is
+quicker than it was on the run before this one, which is why these are the
+numbers here: a table nobody chose is worth more than the flattering one.
 
 **And one sentence about the machine.** These seconds come from one Linux box
 in a state its own reference accepts: starting the compiler and doing nothing
@@ -146,8 +148,8 @@ bench/build_speed.py`, same machine, warm:
 
 | program | iyi | `go build` |
 |---|---|---|
-| `hello` (5 lines) | **0.06 s** | 0.08 s |
-| generated pair, 6,900 lines | 0.22 s | **0.08 s** |
+| `hello` (5 lines) | **0.07 s** | 0.08 s |
+| generated pair, 6,900 lines | 0.24 s | **0.09 s** |
 
 **Read that second row before quoting the first.** iyi wins where fixed costs
 are the whole bill and loses once there is a program to compile from scratch,
@@ -155,7 +157,8 @@ at roughly 25 ms per thousand lines. Both halves of the pair come out of one
 generator, and the bench refuses to time them unless the two binaries print
 the same thing. The front end on its own is 0.034 s for `hello` against a
 target of 0.050 s, and 0.018 s of that is the compiler process starting up
-before it reads anything.
+before it reads anything. Both tables come out of the same session, on a
+machine the benches' own reference accepts.
 
 ## The rules everything follows from
 
