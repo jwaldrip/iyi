@@ -1,16 +1,18 @@
-name: crystal
-version: 1.22.0-dev
+name: iyi
+version: 0.1.0-dev
 
 authors:
+  - Serdar Dogruyol
   - Crystal Core Team <crystal@manas.tech>
 
 description: |
-  The Crystal standard library and compiler.
+  iyi, a fork of the Crystal compiler in which separate compilation is a rule.
+  The compiler still reports itself as Crystal, because that is what it is.
 
 crystal: ">= 1.0"
 
 license: Apache-2.0 WITH Swift-exception
 
-repository: https://github.com/crystal-lang/crystal
-homepage: https://crystal-lang.org/
-documentation: https://crystal-lang.org/docs
+repository: https://github.com/sdogruyol/iyi
+homepage: https://github.com/sdogruyol/iyi
+documentation: https://github.com/sdogruyol/iyi/blob/master/SPEC.md

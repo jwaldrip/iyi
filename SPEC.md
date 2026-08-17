@@ -38,6 +38,32 @@ kept unchanged from Crystal. They cost the compiler nothing.
 
 ## 0.1.0: what the first release has to prove
 
+### What it shipped, in numbers that are current
+
+**Everything else in this document is a record of how these were arrived at,
+including tables that were true at the time and are not any more.** When a
+figure here disagrees with one further down, this one is the release's.
+Measured 2026-08-17 on one Linux box, release compiler, in a state the benches'
+own reference accepts.
+
+| | |
+|---|---|
+| edit one module, rebuild (30 modules, 7,208 lines) | **iyi 0.13 s**, Crystal 1.17 s, `go build` 0.16 s |
+| the same edit with no artifacts | 0.23 s, which is what R-1 is worth here |
+| warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
+| front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
+| starting the compiler and doing nothing | 0.018 s of that |
+| prelude | 1,184 lines, ceiling 3,551 |
+| compiler | 84,068 lines, none of it written in iyi |
+| artifact format | `.iyimod` v19, checksum per section |
+| samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
+| what runs in CI | iyi's specs, Crystal's 13,798 compiler examples, the standard library's, the CLI's, the samples, eight cross-compile targets, the tarball |
+
+`python3 bench/incremental.py` and `python3 bench/build_speed.py` print the
+first four rows and refuse to time programs that do not agree on their output.
+
+### Scope
+
 Everything below this line is design. This section is scope, and it is here
 because the rest of the document is easier to read once it is known which parts
 of it the first release is allowed to need.

@@ -31,6 +31,7 @@ module Iyi
         mod                      inspect a .iyimod module artifact
         env                      print environment information
         clear_cache              clear the compiler cache
+        tool                     formatter and editor tools, Crystal's
         version                  print the version
         help                     print this text
 
@@ -49,11 +50,16 @@ module Iyi
   VERSION = {{ env("IYI_VERSION") || "0.1.0-dev" }}
 
   # The ones that are this compiler doing this compiler's job.
-  DELEGATED = %w(build run mod env clear_cache eval tool)
+  DELEGATED = %w(build run mod env clear_cache tool)
 
   # The ones that belong to Crystal and are still in the binary underneath.
   # Named rather than swallowed, because "unknown command" would be a lie.
-  CRYSTAL_ONLY = %w(init spec)
+  #
+  # `eval` is here because of what it compiles: it has no filename, so it gets
+  # Crystal's prelude and Crystal's rules, and `iyi eval 'require "json"'`
+  # worked. A command that answers in another language is worse than one that
+  # says where it went.
+  CRYSTAL_ONLY = %w(init spec eval)
 
   def self.description : String
     String.build do |io|

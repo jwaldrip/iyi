@@ -37,9 +37,11 @@ them, and `iyi mod dump` prints one as text.
 
 ### The tool
 
-`iyi` takes `build`, `run`, `mod`, `env`, `clear_cache`, `eval`, `tool`,
-`version` and `help`. `crystal` is the same compiler under its own name, and it
-still compiles `.cr` files.
+`iyi` takes `build`, `run`, `mod`, `env`, `clear_cache`, `tool`, `version` and
+`help`. `crystal` is the same compiler under its own name, and it still
+compiles `.cr` files. `eval` is deliberately not on iyi's list: it has no
+filename, so it gets Crystal's prelude and Crystal's rules, and a command that
+answers in another language is worse than one that says where it went.
 
 ### Measured
 
@@ -63,13 +65,17 @@ No IO beyond `puts`. No concurrency: SPEC.md III.4 specifies it and none of it
 is built. No package manager, no standard library, no self-hosting. Linux
 x86-64 only. `derive` macros do not cross modules. The prelude is 1,184 lines
 and its collections are small, and `a[-1]` raises rather than indexing from the
-end.
+end. The formatter is Crystal's and does not know iyi's syntax: `iyi tool
+format` says so and leaves `.iyi` files alone.
 
 ### Provenance
 
 A fork of [Crystal](https://github.com/crystal-lang/crystal) at 1.22.0-dev,
 Apache 2.0 with Swift exception, Copyright 2012-2026 Manas Technology
-Solutions. The backend, the GC and the type checker are Crystal's work.
+Solutions. The backend, the GC and the type checker are Crystal's work. The
+compiler reports itself as `Crystal 1.22.0-dev` because that is what it is, and
+it is bootstrapped by released Crystal 1.21.0, which is the version CI pins
+and the one to install if you are building this from source.
 
 Two bugs in Crystal's own compiler were found here and fixed in this fork; they
 belong upstream and are separate commits for that reason:

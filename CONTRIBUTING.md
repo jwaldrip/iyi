@@ -43,9 +43,10 @@ table and exits non-zero while the front-end target is unmet. SPEC.md records
 what was measured and what was thrown away for the reason it records; a claim
 without a measurement does not go in it.
 
-**A sample or a spec, where the change is about the language.** The eight
-programs in `samples/iyi` are each there to document one part of the design, and
-they run in CI.
+**A sample or a spec, where the change is about the language.** The programs in
+`samples/iyi` each document one part of the design, and they run in CI. The
+prelude grows only when one of them needs something, which is why `basics.iyi`
+exists: it is the first half hour, written down.
 
 **Crystal's licence and copyright stay.** Everything here is a change to
 Crystal's source: Apache 2.0, Copyright 2012-2026 Manas Technology Solutions.

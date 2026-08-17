@@ -55,7 +55,7 @@ further defined and clarified by project maintainers.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported by contacting the project maintainers in private or by sending an email to [crystal@manas.tech](mailto:crystal@manas.tech). All
+reported by opening a private security advisory on [this repository](https://github.com/sdogruyol/iyi/security/advisories) or by contacting its owner. This is Crystal's code of conduct text, kept; the address is this fork's because the people are. All
 complaints will be reviewed and investigated and will result in a response that
 is deemed necessary and appropriate to the circumstances. The project team is
 obligated to maintain confidentiality with regard to the reporter of an incident.
