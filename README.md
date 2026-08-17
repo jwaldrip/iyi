@@ -1,6 +1,6 @@
 # iyi
 
-[![iyi](https://github.com/sdogruyol/crystal/actions/workflows/iyi.yml/badge.svg)](https://github.com/sdogruyol/crystal/actions/workflows/iyi.yml)
+[![iyi](https://github.com/sdogruyol/iyi/actions/workflows/iyi.yml/badge.svg)](https://github.com/sdogruyol/iyi/actions/workflows/iyi.yml)
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
 
 **A fork of [Crystal](https://crystal-lang.org) built to answer one question:
@@ -46,9 +46,11 @@ end
 
 Change that line and build again. Best of seven, one Linux machine, seconds:
 
+<img src="doc/assets/edit-loop.svg" alt="rebuild after one edit: iyi 0.13 s, Crystal 1.17 s, go build 0.16 s" width="648">
+
 | | iyi | Crystal | `go build` |
 |---|---|---|---|
-| **rebuild after one edit** | **0.16** | 1.29 | 0.19 |
+| **rebuild after one edit** | **0.13** | 1.17 | 0.16 |
 
 **Three builds of the same program, by the same compiler binary twice.** All
 three print the same total, and `bench/incremental.py` refuses to start the
@@ -56,7 +58,7 @@ clock until they do. The Crystal column is no straw man: it is this compiler,
 under the rule iyi drops. A Crystal class is open until the last line of the
 last file, so no build may trust anything it read last time and every rebuild
 reads all 7,208 lines again. Take that one rule away and the line you just
-changed costs **8x less**. Go is in the table because Go is good at exactly
+changed costs **9x less**. Go is in the table because Go is good at exactly
 this, and is the bar worth clearing.
 
 The syntax stays: union types, nil-safety, blocks, local inference. What
@@ -147,24 +149,25 @@ binaries print the same total. Best of 7, release compiler, one idle Linux box
 
 | what changed | iyi | Crystal | `go build` |
 |---|---|---|---|
-| **one module's body** | **0.16** | 1.29 | 0.19 |
-| the entry file only | **0.15** | 1.34 | 0.20 |
-| nothing at all | 0.14 | 1.27 | 0.09 |
-| nothing cached anywhere | 0.71 | 2.22 | 3.93 |
-| the same edit, *without* artifacts | 0.28 | — | — |
+| **one module's body** | **0.13** | 1.17 | 0.16 |
+| the entry file only | **0.12** | 1.15 | 0.16 |
+| nothing at all | 0.12 | 1.14 | 0.08 |
+| nothing cached anywhere | 0.61 | 1.97 | 3.09 |
+| the same edit, *without* artifacts | 0.23 | — | — |
 
 **The last row is R-1 with a price on it.** The same edit with all thirty
-modules read from source costs 0.28 s; with the `.iyimod` files in hand the
-other twenty-nine arrive as declarations and it costs 0.16 s. The rule pays
-1.7x on the loop it was written for, and pays more as the code you are *not*
+modules read from source costs 0.23 s; with the `.iyimod` files in hand the
+other twenty-nine arrive as declarations and it costs 0.13 s. The rule pays
+1.8x on the loop it was written for, and pays more as the code you are *not*
 editing grows.
 
 **Two caveats, both against us.** `go build` from nothing compiles its own
-dependencies once, which iyi has none of, so the 3.93 s is a first build on a
+dependencies once, which iyi has none of, so the 3.09 s is a first build on a
 fresh machine rather than a claim about Go's compiler. And these seconds are a
-machine: on a slower session the first row reads 0.22, 1.81 and 0.27, which the
-bench says out loud when it happens. Read the columns against each other, since
-all three pay the same machine.
+machine, not a language: two sessions this machine's own reference accepts read
+0.13 / 1.17 / 0.16 and 0.16 / 1.29 / 0.19 on the first row, and a tired session
+reads 0.22 / 1.81 / 0.27. The ratios hold across all three. Read the columns
+against each other, since they pay the same machine together.
 
 **The full build, which is the row iyi loses.** `python3 bench/build_speed.py`,
 same session:

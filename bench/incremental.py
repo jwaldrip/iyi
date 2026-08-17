@@ -270,6 +270,54 @@ def compiler_build():
     return (lines[0] if lines else "unknown"), "not built in release mode" not in text
 
 
+# The picture is written by the same run that prints the table, so it cannot
+# drift from it. `python3 bench/incremental.py --svg doc/assets/edit-loop.svg`
+# after a run on a machine the reference accepts, and commit both.
+def write_svg(path, figures, names, lines):
+    row = "module"
+    values = [(name, figures[name][row]) for name in names if figures[name].get(row)]
+    if not values:
+        return
+    widest = max(value for _, value in values)
+    bar_max, left, top, step, height = 420, 132, 74, 46, 30
+    width, tall = left + bar_max + 96, top + step * len(values) + 24
+
+    bars = []
+    for index, (name, value) in enumerate(values):
+        y = top + index * step
+        length = max(6, round(bar_max * value / widest))
+        fill = "url(#iyi)" if index == 0 else "var(--other)"
+        bars.append(
+            f'<text x="{left - 12}" y="{y + 20}" class="name">{name}</text>'
+            f'<rect x="{left}" y="{y}" width="{length}" height="{height}" rx="4" fill="{fill}"/>'
+            f'<text x="{left + length + 12}" y="{y + 21}" class="value">{value:.2f} s</text>')
+
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {tall}" width="{width}" height="{tall}" role="img" aria-label="rebuild after one edit: {', '.join(f'{n} {v:.2f} seconds' for n, v in values)}">
+  <style>
+    :root {{ --fg: #1f2328; --dim: #656d76; --bg: #ffffff; --other: #8c959f; }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{ --fg: #e6edf3; --dim: #8d96a0; --bg: #0d1117; --other: #6e7681; }}
+    }}
+    text {{ font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }}
+    .title {{ font-size: 17px; font-weight: 700; fill: var(--fg); }}
+    .sub {{ font-size: 12.5px; fill: var(--dim); }}
+    .name {{ font-size: 13.5px; fill: var(--fg); text-anchor: end; }}
+    .value {{ font-size: 13.5px; font-weight: 600; fill: var(--fg); }}
+  </style>
+  <defs><linearGradient id="iyi" x1="0" x2="1"><stop offset="0" stop-color="#2da44e"/><stop offset="1" stop-color="#3fb950"/></linearGradient></defs>
+  <rect width="{width}" height="{tall}" fill="var(--bg)"/>
+  <text x="{left - 12}" y="30" class="title" text-anchor="end">Rebuild after one edit</text>
+  <text x="{left}" y="30" class="title">{lines:,} lines, 30 modules, one line changed</text>
+  <text x="{left}" y="50" class="sub">seconds, best of {RUNS}, one machine, release compilers</text>
+  {''.join(bars)}
+</svg>
+"""
+    target = pathlib.Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(svg)
+    print(f"  wrote {path}")
+
+
 def measure(lang):
     """Cold, warm, one edited module, edited main. Seconds, best of RUNS."""
     figures = {}
@@ -393,6 +441,9 @@ def main():
         print("  published figures came from, so read the columns against each other")
         print("  rather than the seconds against a number somebody else wrote down.")
         print("  All three columns pay the same machine.")
+    if "--svg" in sys.argv:
+        write_svg(sys.argv[sys.argv.index("--svg") + 1], figures, names, lines)
+
     print()
     print(f"  workdir {work}")
     return 0
