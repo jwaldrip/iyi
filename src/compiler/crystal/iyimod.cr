@@ -34,7 +34,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 18_u32
+  FORMAT_VERSION = 19_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -127,6 +127,26 @@ module Crystal::IyiMod
   # rebuild, and nothing downstream trusts an artifact it did not write.
   def self.digest(value : String) : String
     ::Crystal::Digest::MD5.hexdigest(value)
+  end
+
+  # iyi: what the section table records so a damaged section is refused rather
+  # than compiled against (IV.1, format v19).
+  #
+  # A single flipped byte in an artifact used to build: seven times out of ten
+  # it landed somewhere that changed nothing, and the other three reached the
+  # linker, which failed with a message that never mentioned the artifact. A
+  # compiled artifact travels — copied into a CI cache, downloaded, restored
+  # from a backup — and the reader is the last place that can still tell.
+  #
+  # Per section rather than per file, because a front-end read seeks past the
+  # object code and hashing the whole file would put the largest section back
+  # on the path this format exists to keep short. A section that is not read is
+  # not checked, and nothing is compiled against it either.
+  def self.checksum(payload : Bytes) : UInt64
+    bytes = ::Crystal::Digest::MD5.digest(payload)
+    value = 0_u64
+    8.times { |index| value = (value << 8) | bytes[index] }
+    value
   end
 
   # IV.3's hashes for *artifact*, whose module was read from *source*.
@@ -610,6 +630,7 @@ module Crystal::IyiMod
           file.write_bytes kind.value, FORMAT
           file.write_bytes 0_u16, FORMAT # padding, keeps entries 8-byte aligned
           file.write_bytes payload.size.to_u32, FORMAT
+          file.write_bytes checksum(payload), FORMAT
         end
         sections.each { |(_, payload)| file.write payload }
       end
@@ -620,8 +641,16 @@ module Crystal::IyiMod
     end
   end
 
+  # iyi: a section read is a section checked (format v19).
+  private def self.verify(path : String, section : Section?, payload : Bytes, sum : UInt64) : Nil
+    return if checksum(payload) == sum
+    name = section ? section.to_s : "an unknown"
+    raise Error.new("#{path}: the #{name} section is damaged, its checksum does " \
+                    "not match what was written. Rebuild it with `--emit-iyimod`")
+  end
+
   # The magic, the format version and the section table.
-  private def self.read_table(file : IO, path : String) : Array({UInt16, UInt32})
+  private def self.read_table(file : IO, path : String) : Array({UInt16, UInt32, UInt64})
     magic = Bytes.new(MAGIC.size)
     file.read_fully?(magic) || raise Error.new("#{path} is too short to be a .iyimod")
     raise Error.new("#{path} is not a .iyimod") unless magic == MAGIC
@@ -632,10 +661,10 @@ module Crystal::IyiMod
     end
 
     count = file.read_bytes(UInt32, FORMAT)
-    Array({UInt16, UInt32}).new(count) do
+    Array({UInt16, UInt32, UInt64}).new(count) do
       kind = file.read_bytes(UInt16, FORMAT)
       file.read_bytes(UInt16, FORMAT) # padding
-      {kind, file.read_bytes(UInt32, FORMAT)}
+      {kind, file.read_bytes(UInt32, FORMAT), file.read_bytes(UInt64, FORMAT)}
     end
   end
 
@@ -663,7 +692,7 @@ module Crystal::IyiMod
       hashes = Hashes.empty
       imports = [] of ImportEdge
 
-      table.each do |(kind, length)|
+      table.each do |(kind, length, sum)|
         section = Section.from_value?(kind)
         unless section == Section::Header || section == Section::Hashes || section == Section::Imports
           file.skip length
@@ -672,6 +701,7 @@ module Crystal::IyiMod
 
         payload = Bytes.new(length)
         file.read_fully?(payload) || raise Error.new("#{path} ends inside a section")
+        verify(path, section, payload, sum)
         case section
         when Section::Header  then header = decode_header(payload)
         when Section::Hashes  then hashes = decode_hashes(payload)
@@ -724,7 +754,7 @@ module Crystal::IyiMod
       constants = [] of String
       hashes = Hashes.empty
 
-      table.each do |(kind, length)|
+      table.each do |(kind, length, sum)|
         section = Section.from_value?(kind)
 
         # The table's whole purpose, taken literally: a front-end-only build
@@ -737,6 +767,7 @@ module Crystal::IyiMod
 
         payload = Bytes.new(length)
         file.read_fully?(payload) || raise Error.new("#{path} ends inside a section")
+        verify(path, section, payload, sum)
         case section
         when Section::Header      then header = decode_header(payload)
         when Section::Imports     then imports = decode_imports(payload)

@@ -111,6 +111,22 @@ describe Crystal::IyiMod do
       end
     end
 
+    it "refuses a section whose bytes changed under it" do
+      # A compiled artifact travels: into a CI cache, over a network, out of a
+      # backup. One flipped byte used to build seven times out of ten and reach
+      # the linker the other three, which failed without mentioning the file.
+      with_temporary_file do |path|
+        Crystal::IyiMod.write sample_artifact, path
+        bytes = File.read(path).to_slice.dup
+        bytes[bytes.size - 3] ^= 0xFF_u8
+        File.write(path, bytes)
+
+        expect_raises(Crystal::IyiMod::Error, /damaged|checksum/) do
+          Crystal::IyiMod.read(path)
+        end
+      end
+    end
+
     it "refuses something that was never a .iyimod" do
       with_temporary_file do |path|
         File.write(path, "this is not an artifact\n")
@@ -202,17 +218,21 @@ describe Crystal::IyiMod do
       header.write_byte 0_u8           # no initialiser
       payload = header.to_slice
 
+      unknown = "xyz".to_slice
+
       io.write Crystal::IyiMod::MAGIC
       io.write_bytes Crystal::IyiMod::FORMAT_VERSION, format
       io.write_bytes 2_u32, format
       io.write_bytes Crystal::IyiMod::Section::Header.value, format
       io.write_bytes 0_u16, format
       io.write_bytes payload.size.to_u32, format
+      io.write_bytes Crystal::IyiMod.checksum(payload), format
       io.write_bytes 4242_u16, format # a kind no compiler has ever defined
       io.write_bytes 0_u16, format
-      io.write_bytes 3_u32, format
+      io.write_bytes unknown.size.to_u32, format
+      io.write_bytes Crystal::IyiMod.checksum(unknown), format
       io.write payload
-      io.write "xyz".to_slice
+      io.write unknown
 
       File.write path, io.to_slice
       Crystal::IyiMod.read(path).module_name.should eq "app/greeter"

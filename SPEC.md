@@ -3372,6 +3372,30 @@ table where making the front end faster moves the number a person feels; the
 next thing that would is not compiling at all on a rebuild, which is V.9 (d)
 and is priced there at weeks.
 
+### IV.2a The checksum, and what it is not for
+
+**Format v19 records a 64-bit checksum per section in the table, and a section
+that is read is checked.** Found by damaging artifacts on purpose: a single
+flipped byte in a `.iyimod` written by this compiler used to build **seven
+times out of ten**, with the program still printing the right answer because
+the byte had landed somewhere that changed nothing. The other three reached the
+linker, which failed with a message that never mentioned the artifact. Now all
+twelve of twelve are refused, each naming the file and the section.
+
+**Per section rather than per file**, because a front-end read seeks past the
+object code and hashing the whole file would put the largest section back on
+the path IV.1 exists to keep short. The consequence is stated rather than
+hidden: a build with `--no-codegen` compiles happily against an artifact whose
+`ObjectCode` is damaged, because it never reads it, and the build that links is
+the one that refuses. A section nobody reads is a section nothing is compiled
+against.
+
+**This is not a signature.** MD5 folded to eight bytes catches a bit flip, a
+truncated copy and a partial write; it catches nobody who wants to write a
+`.iyimod` on purpose, and the format does not pretend otherwise. R-1 already
+says a consumer trusts an artifact's declarations, so an artifact from an
+untrusted source is a decision made before the reader ever sees it.
+
 ### IV.3 Hashing. The part that decides whether builds are actually incremental
 
 **The property that matters: changing a function body must not change the
@@ -3813,6 +3837,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | Self-hosting only gets more expensive | Crystal self-hosted at 24,984 lines of compiler and 8,161 of library, before its 0.1.0; iyi's fork starts at 95,010 and 196,217, and is 87,421 after the interpreter came out (Appendix B.2, V.11) |
 | A second implementation of the language is what an interpreter costs | Crystal's interpreter stops on `samples/iyi/hello.iyi` line 12 at the module header, and 0 of the fork's 153 commits had touched it against 7,840 lines of parser and semantic change (V.11) |
 | The daemon's win did not survive the prelude | it removed prelude analysis, and iyi's prelude is 1,053 lines: one module edited in a 7,208-line project costs 0.18–0.28 s built normally and 0.20–0.24 s through the daemon (IV.1d) |
+| A compiled artifact needs its own checksum | one flipped byte in a `.iyimod` built silently 7 times out of 10 and reached the linker the other 3; per-section checksums in format v19 refuse 12 of 12 and name the section (IV.2a) |
 | A prefix is not a parent directory | working in `/tmp/x/crystal` with a cache at `/tmp/x/crystal-cache`, every object file was written to `-cache/…`; the same "No such file or directory" the cleaner race produces, from a different cause (V.10) |
 | A build's cache directory can be deleted underneath it | the cleaner keeps the ten most recently modified directories and runs after every compile; removing one mid-codegen reproduces both failures, the single-threaded path included, and reading the `compiler.lock` the build already holds fixes it (V.10) |
 | A module as the unit of compilation is worth 8x to 9x over Crystal | the same program, the same compiler binary, one module edited: 1.17 s as Crystal, 0.13 s as iyi, against `go build`'s 0.16 s, and 1.29 / 0.16 / 0.19 an hour earlier (IV.3a) |
