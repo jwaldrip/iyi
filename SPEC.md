@@ -3364,6 +3364,28 @@ everything moves together and the ratios stay.
 run produced its table, because a comparison survives a slow machine and a
 figure in seconds does not.
 
+**What the rule is worth as the project grows, and where it is worth nothing.**
+The table above is one project. Five, from the same generator, each timed the
+same way: edit one module, rebuild with the artifacts, then rebuild the same
+edit with every module read from source. A debug compiler, so read the ratios
+rather than the seconds:
+
+| project | with artifacts | from source | |
+|---|---|---|---|
+| 30 modules of 1 type, 997 lines | 0.13 | 0.14 | 1.1x |
+| 300 modules of 1 type, 9,907 lines | 0.47 | 0.68 | 1.4x |
+| 30 modules of 10 types, 7,207 lines | 0.27 | 0.48 | 1.8x |
+| 60 modules of 10 types, 14,407 lines | 0.42 | 0.85 | 2.0x |
+| 120 modules of 10 types, 28,807 lines | 0.77 | 1.61 | 2.1x |
+
+**It is the lines, not the modules.** Three hundred modules of one type each buy
+1.4x; thirty modules with ten types each buy 1.8x on a third of the files. And
+below a certain size it is a loss: a project of 300 five-line modules rebuilt
+in 0.30 s from source and 0.35 s from artifacts, because reading a `.iyimod`
+costs more than parsing five lines. R-1 pays for the analysis it skips, so it
+pays where there is analysis to skip, and a module small enough to read at a
+glance is one the compiler can read at a glance too.
+
 **What is left is not analysis, which is why this stops here.** Of the 0.13 s,
 0.018 s is the compiler process starting and most of the remainder is the
 link (0.1.0 item 2 measured the same shape on `hello`). Editing one module of
@@ -3837,6 +3859,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | Self-hosting only gets more expensive | Crystal self-hosted at 24,984 lines of compiler and 8,161 of library, before its 0.1.0; iyi's fork starts at 95,010 and 196,217, and is 87,421 after the interpreter came out (Appendix B.2, V.11) |
 | A second implementation of the language is what an interpreter costs | Crystal's interpreter stops on `samples/iyi/hello.iyi` line 12 at the module header, and 0 of the fork's 153 commits had touched it against 7,840 lines of parser and semantic change (V.11) |
 | The daemon's win did not survive the prelude | it removed prelude analysis, and iyi's prelude is 1,053 lines: one module edited in a 7,208-line project costs 0.18–0.28 s built normally and 0.20–0.24 s through the daemon (IV.1d) |
+| R-1 pays for lines, not for modules | 30 modules of 10 types buy 1.8x and 300 modules of one type buy 1.4x; a project of 300 five-line modules is a 0.86x *loss*, because reading an artifact costs more than parsing five lines (IV.3a) |
 | One file is one module, and it had to be said | a second `module a/b` header in a file was accepted: the file emitted one artifact under the first name carrying both modules' exports, and the second module had none (IV.6) |
 | A compiled artifact needs its own checksum | one flipped byte in a `.iyimod` built silently 7 times out of 10 and reached the linker the other 3; per-section checksums in format v19 refuse 12 of 12 and name the section (IV.2a) |
 | A prefix is not a parent directory | working in `/tmp/x/crystal` with a cache at `/tmp/x/crystal-cache`, every object file was written to `-cache/…`; the same "No such file or directory" the cleaner race produces, from a different cause (V.10) |
