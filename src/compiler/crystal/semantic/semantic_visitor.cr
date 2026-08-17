@@ -317,8 +317,13 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     # and rewriting the artifact on the way out — is what it asked for.
     return nil if @program.iyi_rewrites_artifacts && resolve_import(path)
 
+    # iyi: the reason gets its own sentence. It used to be spliced into "is not
+    # X any more", which reads as staleness — and a truncated file is not
+    # stale, it is broken, and the two want different things done about them.
     node.raise <<-MESSAGE
-      #{candidate} is not "#{path}" any more: #{reason}
+      #{candidate} cannot be read as "#{path}".
+
+      #{reason}
 
       An artifact is read only while it still describes its module, or a build
       would compile against a surface nobody has and link code nobody wrote
@@ -409,6 +414,18 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
         IyiMod.read(artifact_path, want_object_code: @program.iyi_wants_object_code)
       rescue ex : IyiMod::Error
         node.raise ex.message.to_s
+      rescue ex : Crystal::Error
+        raise ex
+      rescue ex
+        # iyi: a `.iyimod` is the one input here that nobody typed, and the
+        # reader assumed it was one it had written. Truncate one and it left an
+        # `IO::EOFError` and a stack trace; flip a byte inside a name and a
+        # regex complained about UTF-8. Neither names the file, and both read
+        # as a compiler bug rather than as a damaged file.
+        node.raise "#{artifact_path} is not a readable .iyimod: #{ex.message} " \
+                   "(#{ex.class}). It is damaged, truncated, or was written by " \
+                   "something that is not this compiler. Rebuild it with " \
+                   "`--emit-iyimod`"
       end
 
     check_artifact_matches node, artifact, artifact_path

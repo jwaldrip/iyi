@@ -686,6 +686,18 @@ module Crystal::IyiMod
       Summary.new(header[:module_name], header[:compiler_version],
         header[:target_triple], header[:flags], hashes, imports)
     end
+  rescue ex : Error
+    raise ex
+  rescue ex : IO::EOFError
+    # iyi: a `.iyimod` is the one input here that nobody typed, and this
+    # reader assumed it was one this compiler had written. Truncate one and
+    # `skip` raised `IO::EOFError` with a stack trace, naming no file and
+    # reading as a compiler bug rather than as a damaged file.
+    raise Error.new("#{path} is truncated: it ends in the middle of a .iyimod")
+  rescue ex
+    raise Error.new("#{path} is not a readable .iyimod: #{ex.message} (#{ex.class}). " \
+                    "It is damaged, or was written by something that is not this " \
+                    "compiler; rebuild it with `--emit-iyimod`")
   end
 
   # Reads the artifact at *path*.
@@ -751,6 +763,18 @@ module Crystal::IyiMod
         object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
         hashes, constants, macro_bodies)
     end
+  rescue ex : Error
+    raise ex
+  rescue ex : IO::EOFError
+    # iyi: a `.iyimod` is the one input here that nobody typed, and this
+    # reader assumed it was one this compiler had written. Truncate one and
+    # `skip` raised `IO::EOFError` with a stack trace, naming no file and
+    # reading as a compiler bug rather than as a damaged file.
+    raise Error.new("#{path} is truncated: it ends in the middle of a .iyimod")
+  rescue ex
+    raise Error.new("#{path} is not a readable .iyimod: #{ex.message} (#{ex.class}). " \
+                    "It is damaged, or was written by something that is not this " \
+                    "compiler; rebuild it with `--emit-iyimod`")
   end
 
   # Text for `crystal mod dump` — under the eventual `iyi` binary this is

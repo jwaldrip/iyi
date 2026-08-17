@@ -75,6 +75,52 @@ private def with_temporary_file(&)
 end
 
 describe Crystal::IyiMod do
+  # iyi: a `.iyimod` is the one input the compiler reads that nobody typed.
+  # Truncated ones used to leave `IO::EOFError` and a stack trace, which names
+  # no file and reads as a compiler bug rather than as a damaged file.
+  describe "a damaged file" do
+    it "is refused rather than crashed on, at every length" do
+      with_temporary_file do |path|
+        Crystal::IyiMod.write sample_artifact, path
+        whole = File.read(path).to_slice
+
+        [1, 8, 64, whole.size // 2, whole.size - 1].each do |cut|
+          File.write(path, whole[0, cut])
+          expect_raises(Crystal::IyiMod::Error, /#{Regex.escape(path)}/) do
+            Crystal::IyiMod.read(path)
+          end
+          expect_raises(Crystal::IyiMod::Error, /#{Regex.escape(path)}/) do
+            Crystal::IyiMod.read_summary(path)
+          end
+        end
+      end
+    end
+
+    it "says where it ran out when it ends inside the file" do
+      with_temporary_file do |path|
+        Crystal::IyiMod.write sample_artifact, path
+        whole = File.read(path).to_slice
+        File.write(path, whole[0, whole.size - 4])
+
+        # Two wordings, both true: the reader knows it ran out inside a
+        # section when the table said how long the section was, and knows only
+        # that it ran out when the table itself is short.
+        expect_raises(Crystal::IyiMod::Error, /truncated|ends inside/) do
+          Crystal::IyiMod.read(path)
+        end
+      end
+    end
+
+    it "refuses something that was never a .iyimod" do
+      with_temporary_file do |path|
+        File.write(path, "this is not an artifact\n")
+        expect_raises(Crystal::IyiMod::Error, /not a .iyimod|too short/) do
+          Crystal::IyiMod.read(path)
+        end
+      end
+    end
+  end
+
   it "round-trips an artifact" do
     with_temporary_file do |path|
       Crystal::IyiMod.write sample_artifact, path
