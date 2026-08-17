@@ -278,6 +278,8 @@ def write_svg(path, figures, names, lines):
     values = [(name, figures[name][row]) for name in names if figures[name].get(row)]
     if not values:
         return
+    shown = {"crystal": "Crystal", "go build": "go build", "iyi": "iyi"}
+    values = [(shown.get(name, name), value) for name, value in values]
     widest = max(value for _, value in values)
     bar_max, left, top, step, height = 420, 132, 74, 46, 30
     width, tall = left + bar_max + 96, top + step * len(values) + 24
