@@ -118,6 +118,22 @@ module Crystal
         else                  [nodes]
         end
 
+      # iyi: one file, one module (R-1, IV.6). A second header was accepted and
+      # quietly wrong: the file emitted a single artifact under the first
+      # module's name carrying *both* modules' exports, so the second module's
+      # functions were exported by the first and the second had no artifact at
+      # all. A module's path is its file's path, and a file has one path.
+      expressions.each_with_index do |node, index|
+        next if index == 0 || !node.is_a?(ModuleHeader)
+        location = node.location
+        raise "a file declares one module, and this one already declares " \
+              "`#{expressions.first?.as?(ModuleHeader).try(&.path.join('/')) || "no module"}`. " \
+              "A module is a compilation unit and its path is its file's path " \
+              "(SPEC.md R-1, IV.6), so `#{node.path.join('/')}` belongs in " \
+              "`#{node.path.join('/')}.iyi`",
+          location.try(&.line_number) || 1, location.try(&.column_number) || 1
+      end
+
       header = expressions.first?
       return nodes unless header.is_a?(ModuleHeader)
 

@@ -4181,6 +4181,13 @@ module Crystal
         end
       end
 
+      # iyi: one file, one module. A second header used to be accepted, and the
+      # file emitted a single artifact under the first module's name carrying
+      # both modules' exports: the second module's functions were exported by
+      # the first, and the second had no artifact at all.
+      assert_syntax_error "module app/one\nmodule app/two", "a file declares one module"
+      assert_syntax_error "module app/one\n\nputs 1\n\nmodule app/two", "a file declares one module"
+
       # A segment that *starts* with a keyword leaves the lexer through an
       # early return which skips the reset of `@slash_is_regex`, so the `/`
       # after it was read as the start of a regex literal and the file did not
