@@ -1,8 +1,11 @@
 # iyi
 
+[![iyi](https://github.com/sdogruyol/crystal/actions/workflows/iyi.yml/badge.svg)](https://github.com/sdogruyol/crystal/actions/workflows/iyi.yml)
+[![licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
+
 **A fork of [Crystal](https://crystal-lang.org) built to answer one question:
 what does a language look like when separate compilation is a rule instead of a
-feature?**
+feature?** (*iyi* is Turkish for "good".)
 
 Here is the program the numbers below are about. One script writes it three
 times, in iyi, in Crystal and in Go, from the same set of numbers:
@@ -185,7 +188,8 @@ quicker than it was on the run before this one, which is why these are the
 numbers here: a table nobody chose is worth more than the flattering one.
 
 **And one sentence about the machine.** These seconds come from one Linux box
-in a state its own reference accepts: starting the compiler and doing nothing
+(an AMD Ryzen AI 9 465 under WSL2, LLVM 19.1.7, Go 1.25.2) in a state its own
+reference accepts: starting the compiler and doing nothing
 costs what it cost when the target was set. The same box on a slower session
 reads 0.22, 1.81 and 0.27 on the first row, and the bench says so when it
 happens rather than letting the seconds pass for the language. The columns are
@@ -222,6 +226,17 @@ has to compile for itself, and its machine code, in one file. R-3 is what lets a
 consumer answer "does this type implement that trait?" without reading anything
 else.
 
+```mermaid
+flowchart LR
+    S["app/greeter.iyi<br/>source"] -->|"iyi build --emit-iyimod"| A["app/greeter.iyimod<br/>declarations · macros · object code"]
+    A -->|"iyi build --use-iyimod"| P["your program<br/>type-checked, linked, run"]
+    S -.->|"never read by the consumer"| P
+```
+
+The dotted line is the whole design. A consumer type-checks against the
+declarations and links against the object code, and the source of the module it
+imports may not exist on the machine at all.
+
 ## Getting it
 
 ```console
@@ -231,6 +246,51 @@ $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 
 The tarball is relocatable. `bin/iyi` finds its prelude beside itself, all 56 KB
 of it, so there is nothing to configure and no `CRYSTAL_PATH` to set.
+
+### Your first module, and then the rule that matters
+
+Two files. `app/greeter.iyi` is a module, and its path is its file's path:
+
+```crystal
+module app/greeter
+
+pub def polite(name : String) : String
+  "Hello, #{name}."
+end
+```
+
+`main.iyi` imports it, and then asks for its names by writing `using`. The
+library does not get to put them there:
+
+```crystal
+module main
+
+import app/greeter
+using app/greeter
+
+puts polite("world")
+```
+
+```console
+$ iyi run main.iyi
+Hello, world.
+```
+
+Now the part the language is for. Build it once, keeping each module's
+artifact, then **delete the library's source** and build again:
+
+```console
+$ iyi build --emit-iyimod mods -o hello main.iyi
+$ rm -r app                                     # the library, gone
+$ iyi build --use-iyimod mods -o hello main.iyi
+$ ./hello
+Hello, world.
+```
+
+The second build never sees `polite`'s body. It reads
+`mods/app/greeter.iyimod`, which carries the declarations it type-checks
+against and the machine code it links, and that is R-1: a module compiles
+against what its imports *say*, not against what they *do*.
 
 Two things have to be on the machine. A C toolchain, because the link goes
 through one. And **libgc**, which every program iyi produces links against:
@@ -347,6 +407,49 @@ Missing types:
  - Samples::Errors::ParseError
 ```
 
+## When you break a rule
+
+The rules are new, so the compiler explains them rather than reporting that
+something was not found. Import a module and call one of its functions the way
+every other language would:
+
+```console
+Error: undefined method 'polite' for App::Main:Module
+
+`polite` is exported by `app/greeter`, and this file has not written `using`.
+Add `using app/greeter` to bring its names in unqualified, or call it as
+`App::Greeter.polite` (SPEC.md R-2b)
+```
+
+Write the `using` and forget the `import`:
+
+```console
+Error: `app/greeter` is not imported here. `using` brings in the names of a
+module this file has already imported, so this needs `import app/greeter`
+above it (SPEC.md R-1, R-2b)
+```
+
+Call something the module kept for itself:
+
+```console
+Error: `app/greeter` declares `internal` and does not mark it `pub`, so it is
+the module's own and no other module can reach it (SPEC.md R-2)
+```
+
+And the one R-3 exists for, when an `impl` is written in a module that owns
+neither the trait nor the type:
+
+```console
+Error: can't implement Lib::Shape::Drawable for Lib::Shape::Circle in App::Main:
+an impl must live in the module that defines the trait (Lib::Shape) or the
+module that defines the type (Lib::Shape). This is R-3, the orphan rule, and it
+is what lets coherence be checked without a global pass
+```
+
+Every one of those messages names the rule and the line to write. That is not
+politeness: a language whose rules are unfamiliar has to teach them at the
+moment they are broken, or it has invented a new way to be stuck.
+
 ## The samples
 
 ```console
@@ -385,6 +488,54 @@ exports
     @path : String
     def initialize(method : String, path : String)
 ```
+
+## Coming from Crystal
+
+The syntax is Crystal's. What moved is where things may be written, and each
+move is one of the four rules:
+
+| Crystal | iyi | why |
+|---|---|---|
+| `require "foo"` pulls a file into the program | `import app/foo` names a module, and the module's path is its file's path | R-1: a module is a unit, so it has a name rather than a location in a concatenation |
+| a `require`d file's names are simply *there* | `using app/foo` brings them in, written by the consumer | R-2b: a library cannot take a name in your file |
+| reopen any class, anywhere, including `String` | you may not reopen | R-3: what a type is, is settled where it is written |
+| `include`/`extend` a module into a class | `trait` and `impl Trait for Type`, in the trait's module or the type's | R-3's orphan rule, which is what makes coherence checkable without reading the program |
+| `abstract def` in a module | `abstract def` in a `trait`, and the trait is a type | II.6 |
+| everything is public unless `private` | everything is the module's own unless `pub`, and `pub` writes its types | R-2 |
+| shards, `shard.yml` | nothing yet | no package manager in 0.1.0 |
+| macros | kept, and they travel in the artifact | |
+| `Nil`, union types, blocks, local inference | kept, unchanged | |
+
+A `.cr` file still compiles: this is Crystal's compiler, and `./bin/crystal`
+runs it under its own name. The rules above apply to `.iyi` files.
+
+## Questions you are about to ask
+
+**Is this meant to replace Crystal?** No. It is one question asked as a fork
+because it cannot be asked as a patch: separate compilation is not a feature
+you add to a language with open classes, it is a rule the language has to be
+designed around. Crystal is not going to drop open classes, and it should not.
+
+**Will it merge back?** The measurements might. The bug fixes in Crystal's own
+compiler that this fork found should, and they are separate commits for that
+reason. The rules will not, and are not offered.
+
+**Can I use shards?** No. There is no package manager, and a `.iyi` module
+cannot `require` a Crystal library: R-2 needs written types at the boundary
+and R-3 needs the type to be closed, and a shard is written under neither.
+
+**Is the syntax stable?** No. 0.1.0 exists to make the claim checkable, and
+the parts of SPEC.md marked PROPOSED are exactly the parts that will move.
+
+**Why is it Linux x86-64 only?** Nothing about the design is: it is where the
+measurements were taken and where CI runs. The standard library still carries
+Crystal's other platforms and CI type-checks them for eight targets.
+
+**Why "iyi"?** It is Turkish for "good", and it is two syllables that were not
+taken. A first release should be honest about being called what it is called.
+
+**Who is this for right now?** Somebody who wants to check the claim, read the
+design, or argue with a number. Not somebody with a program to ship.
 
 ## What is not here
 
