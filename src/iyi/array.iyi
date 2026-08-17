@@ -154,6 +154,44 @@ class Array(T)
     result
   end
 
+  # `first` on an empty array is a mistake rather than a nil: the array knows
+  # it is empty and so does whoever wrote the call. `last?` above answers the
+  # other question, and is the one the trait defaults use.
+  def first : T
+    raise "first of an empty array" if empty?
+    @buffer[0]
+  end
+
+  def select(& : T -> Bool) : Array(T)
+    result = Array(T).new(@size)
+    each { |value| result << value if yield value }
+    result
+  end
+
+  def reject(& : T -> Bool) : Array(T)
+    result = Array(T).new(@size)
+    each { |value| result << value unless yield value }
+    result
+  end
+
+  def includes?(value : T) : Bool
+    each { |element| return true if element == value }
+    false
+  end
+
+  def reduce(initial : U, & : U, T -> U) : U forall U
+    accumulator = initial
+    each { |value| accumulator = yield accumulator, value }
+    accumulator
+  end
+
+  # `sort` takes the comparison, `sorted` is the one for elements that already
+  # compare — SPEC.md III.1.7(A)'s pair, with the name that says a copy comes
+  # back.
+  def sorted : Array(T)
+    sort { |a, b| a < b ? -1 : (a == b ? 0 : 1) }
+  end
+
   def dup : Array(T)
     copy = Array(T).new(@size)
     each { |value| copy << value }

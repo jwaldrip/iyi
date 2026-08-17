@@ -409,11 +409,13 @@ a new way to be stuck.
 
 ## The samples
 
-Eight programs in [`samples/iyi`](samples/iyi), each documenting a part of the
+Nine programs in [`samples/iyi`](samples/iyi), each documenting a part of the
 design rather than showing off: `hello` (traits and `impl`), `modules`
 (`import` and `using` across files), `generics`, `errors`, `collections`,
 `immutable` (a shareable collection and the copy that makes it safe),
-`init_order` and `webapp`.
+`init_order` and `webapp`. And `basics`, which documents nothing: it is the six
+programs a person writes in their first half hour, and it is there because the
+prelude grows only when a program in this repository needs something.
 
 R-1 is checked rather than asserted. `bash bench/samples_roundtrip.sh` builds
 the five samples that import anything, deletes every imported module's source,
@@ -487,15 +489,15 @@ the design, or argue with a number. Not somebody with a program to ship.
 
 ## What is not here
 
-- **No IO beyond `puts`.** The prelude is 1,053 lines on purpose: integers,
-  booleans, a string, one sequence, one dictionary. No files, no sockets, no
-  formatting.
+- **No IO beyond `puts`.** The prelude is 1,184 lines on purpose: integers,
+  booleans, a string, one sequence, one dictionary, one range. No files, no
+  sockets, no formatting.
 - **The prelude's collections are smaller than Crystal's, and one habit
-  differs.** A method is in there because a sample needed it, so `first` and
-  most of what you reach for is not; `samples/iyi/std/enumerable.iyi` is where
-  the rest is being written, as trait defaults. And `a[-1]` does not index from
-  the end: it raises, the way an index past the end does. Nothing indexes from
-  the end in iyi yet.
+  differs.** A method is in there because a program in this repository needed
+  it, so most of what you reach for is not;
+  `samples/iyi/std/enumerable.iyi` is where the rest is being written, as trait
+  defaults. And `a[-1]` does not index from the end: it raises, the way an
+  index past the end does. Nothing indexes from the end in iyi yet.
 - **No concurrency.** SPEC.md III.4 specifies structured concurrency,
   scope-owned cancellation and a `Share` marker. None of it is built.
 - **No package manager, no standard library, no self-hosting.**
@@ -510,8 +512,8 @@ the design, or argue with a number. Not somebody with a program to ship.
 | | |
 |---|---|
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
-| [`samples/iyi`](samples/iyi) | eight programs, each documenting a part of it |
-| [`src/iyi`](src/iyi) | the prelude, 1,053 lines |
+| [`samples/iyi`](samples/iyi) | nine programs, eight documenting a part of it and one being a first half hour |
+| [`src/iyi`](src/iyi) | the prelude, 1,184 lines |
 | [`src/compiler/crystal/iyimod.cr`](src/compiler/crystal/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |

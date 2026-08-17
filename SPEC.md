@@ -226,11 +226,23 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 1,053 lines,
+**3. A deliberately tiny prelude, written in iyi. Done: 1,184 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
-one sequence, one dictionary, `puts`. **Its scope is set by what the samples
-call and by nothing else**. A method enters the prelude because an existing
-sample needs it, never because it belongs there.
+one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
+samples call and by nothing else**. A method enters the prelude because an
+existing sample needs it, never because it belongs there.
+
+**The rule held; the samples were the thing that was wrong.** Writing the six
+programs a person writes before they write a module found `(1..10).each`
+answering "wrong number of arguments for `Range(B, E).new`" — the compiler
+expands a range literal to a constructor and the prelude had never defined the
+type — along with no `first`, no `select`, no `includes?` on either a string or
+an array, and no `sorted`. None of those is a library ambition; each is the
+second or third line of somebody's first program. So the answer was a sample
+rather than an exception to the rule: `samples/iyi/basics.iyi` is that half
+hour, it is in the samples the prelude is measured against, and the prelude
+grew 131 lines to run it. The ceiling is unmoved and the trigger is unchanged:
+a program in this repository needs it.
 
 The ceiling was not a guess. Crystal's own 0.1.0 shipped 8,161 lines of
 library. Its core is **3,551 lines** of that: `object`, `nil`, `bool`, `char`,
@@ -239,7 +251,7 @@ library. Its core is **3,551 lines** of that: `object`, `nil`, `bool`, `char`,
 is `json`, `yaml`, `http` and `option_parser`, which are libraries rather than a
 prelude.
 3,551 lines was the number to stay under, measured in the same language family
-and for the same purpose. `src/iyi/` came in at 833, and **all eight samples
+and for the same purpose. `src/iyi/` came in at 833, and **all the samples
 run on it with output identical to what they print under Crystal's prelude**,
 which is the acceptance test: the samples are the documentation, so a prelude
 that changed what they printed would have changed what the documentation says.
@@ -694,7 +706,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 87,421 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 1,053 prelude + 722 in samples |
+| Library | 8,161 lines (3,551 of it core) | 1,184 prelude + 722 in samples |
 | Specs | 21,146 lines | ~3,400 for iyi |
 | Samples | 24 **programs** | 8 **explanations** |
 | History | 3,165 commits over 21 months | 75 |

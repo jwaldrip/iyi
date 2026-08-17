@@ -129,6 +129,38 @@ class String
     end
   end
 
+  # The other half of `upcase`, ASCII for the same reason.
+  def downcase : String
+    String.new(bytesize) do |buffer|
+      index = 0
+      while index < bytesize
+        byte = to_unsafe[index]
+        byte = byte + 32_u8 if byte >= 65_u8 && byte <= 90_u8
+        buffer[index] = byte
+        index = index + 1
+      end
+    end
+  end
+
+  # Substring search, the naive way: the strings a sample holds are short
+  # enough that the loop is the answer and an index would be the question.
+  def includes?(other : String) : Bool
+    return true if other.bytesize == 0
+    return false if other.bytesize > bytesize
+
+    start = 0
+    limit = bytesize - other.bytesize
+    while start <= limit
+      index = 0
+      while index < other.bytesize && to_unsafe[start + index] == other.to_unsafe[index]
+        index = index + 1
+      end
+      return true if index == other.bytesize
+      start = start + 1
+    end
+    false
+  end
+
   def ==(other : String) : Bool
     return false unless bytesize == other.bytesize
 

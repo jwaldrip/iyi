@@ -61,8 +61,9 @@ on their output.
 
 No IO beyond `puts`. No concurrency: SPEC.md III.4 specifies it and none of it
 is built. No package manager, no standard library, no self-hosting. Linux
-x86-64 only. `derive` macros do not cross modules. The prelude's collections
-are small, and `a[-1]` raises rather than indexing from the end.
+x86-64 only. `derive` macros do not cross modules. The prelude is 1,184 lines
+and its collections are small, and `a[-1]` raises rather than indexing from the
+end.
 
 ### Provenance
 

@@ -1,0 +1,53 @@
+# The first half hour — what a person writes before they write anything real.
+#
+#   ./bin/iyi run samples/iyi/basics.iyi
+#
+# The other samples each document a rule. This one documents nothing: it is
+# here because the prelude grows only when a program in this repository needs
+# something (SPEC.md 0.1.0 item 3), and a person meeting the language writes
+# these six programs before they write a module. Every method this file calls
+# is one somebody reached for in their first half hour and did not find.
+module samples/basics
+
+# 1. Counting, with a range rather than a `while`.
+total = 0
+(1..10).each { |i| total = total + i }
+puts total # => 55
+
+# 2. FizzBuzz, because it is the first thing anybody types.
+(1..15).each do |i|
+  if i % 15 == 0
+    puts "FizzBuzz"
+  elsif i % 3 == 0
+    puts "Fizz"
+  elsif i % 5 == 0
+    puts "Buzz"
+  else
+    puts i
+  end
+end
+
+# 3. Picking things out of a list.
+numbers = [3, 1, 4, 1, 5, 9, 2, 6]
+puts numbers.first                          # => 3
+puts numbers.select { |n| n > 3 }.join(",") # => 4,5,9,6
+puts numbers.includes?(9)                   # => true
+puts numbers.sorted.join(",")               # => 1,1,2,3,4,5,6,9
+
+# 4. Adding them up two ways.
+puts numbers.sum                            # => 31
+puts numbers.reduce(0) { |a, b| a + b }     # => 31
+
+# 5. Text.
+greeting = "Hello, World"
+puts greeting.downcase                      # => hello, world
+puts greeting.includes?("World")            # => true
+puts greeting.size                          # => 12
+
+# 6. Counting words, which is where a dictionary earns its place.
+counts = {} of String => Int32
+["a", "b", "a", "c", "a"].each do |word|
+  counts[word] = (counts[word]? || 0) + 1
+end
+puts counts["a"] # => 3
+puts counts.size # => 3

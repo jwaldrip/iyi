@@ -23,6 +23,7 @@ require "./object"
 require "./number"
 require "./string"
 require "./array"
+require "./range"
 require "./hash"
 
 lib LibC
