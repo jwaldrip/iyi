@@ -434,6 +434,12 @@ exports
     def initialize(method : String, path : String)
 ```
 
+And it is checked when it is read. Each section carries a checksum, so a
+`.iyimod` that was truncated by a full disk, half-copied into a cache or
+damaged in transit is refused by name rather than compiled against: a single
+flipped byte used to build seven times out of ten, and reach the linker the
+other three with an error that never mentioned the artifact.
+
 ## Coming from Crystal
 
 The syntax is Crystal's. What moved is where things may be written, and each
