@@ -67,6 +67,29 @@ describe "Semantic: iyi import" do
   # Each of these used to answer with a fact about the compiler's internals —
   # an undefined constant nobody wrote, a name it could not find — rather than
   # with the rule that was broken and what to write instead.
+  # iyi: R-1 says a module is loaded at most once. Two paths to the same module
+  # is the ordinary shape of a graph, and a module initialised twice would run
+  # its top level twice — which III.5's ordering is written to prevent.
+  it "loads a module once however many paths reach it" do
+    with_iyi_modules({
+      "main.iyi"      => "module main\n\nimport app/left\nimport app/right\nusing app/left\n\npair\n",
+      "app/left.iyi"  => "module app/left\n\nimport app/base\nusing app/base\n\npub def pair : Int32\n  value\nend\n",
+      "app/right.iyi" => "module app/right\n\nimport app/base\n",
+      "app/base.iyi"  => "module app/base\n\npub def value : Int32\n  41\nend\n",
+    }) do
+      program = semantic_iyi("main.iyi")
+
+      # Keyed by filename, one entry per module, whichever path reached it.
+      program.iyi_module_paths.values.sort.should eq ["app/base", "app/left", "app/right"]
+      program.iyi_module_paths.values.count("app/base").should eq 1
+
+      # Both importers still record the edge, because the second one adds no
+      # initialiser and does constrain where the first one's may be moved to.
+      importers = program.iyi_module_imports.select { |_, edges| edges.any?(&.ends_with?("app/base.iyi")) }
+      importers.size.should eq 2
+    end
+  end
+
   describe "the message a rule gives the first time it is met" do
     it "tells a file that `using` a module it has not imported to import it" do
       with_iyi_modules({
