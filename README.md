@@ -4,28 +4,74 @@
 what does a language look like when separate compilation is a rule instead of a
 feature?**
 
-Thirty modules. 7,208 lines. Change one line and build it again:
+Here is the program the numbers below are about. One script writes it three
+times, in iyi, in Crystal and in Go, from the same set of numbers:
+
+* **30 modules**, one file each, 10 types per module: 300 types, **7,208
+  lines**. Every type holds two integers and answers three methods (an
+  arithmetic one, one that takes another of its own kind, one that returns a
+  name).
+* **one `main`** that calls a function in all thirty modules, adds up what they
+  answer, and prints the total.
+* **the edit**: a single number, in one function, in one of the thirty modules.
+
+One of the thirty, as iyi, with nine of its ten types left out. The Crystal and
+Go halves say the same thing in their own syntax:
+
+```crystal
+module parts/mod0
+
+pub struct Widget0
+  @a : Int32
+  @b : Int32
+
+  def initialize(@a : Int32, @b : Int32)
+  end
+
+  def score : Int32
+    ((@a * 3) + (@b * 5)) % 1000
+  end
+
+  def blend(other : Widget0) : Int32
+    (score + other.score) % 1000
+  end
+end
+
+pub def total0 : Int32
+  edit_point = 0            # the line the benchmark changes, then rebuilds
+  w0 = Widget0.new(0, 0)
+  (edit_point + w0.score + w0.blend(w0)) % 100000
+end
+```
+
+Change that line and build again. Best of seven, one Linux machine, seconds:
 
 | | iyi | Crystal | `go build` |
 |---|---|---|---|
-| **rebuild after one edit** | **0.16 s** | 1.29 s | 0.19 s |
+| **rebuild after one edit** | **0.16** | 1.29 | 0.19 |
 
-**That is the same program three times and the same compiler binary twice.**
-One script writes it in all three languages, and the benchmark will not start
-the clock until the three binaries print the same number. The Crystal column is
-no straw man: it is this compiler, compiling this program, under the rule that
-a class stays open until the last line of the last file, so every build has to
-read every file. Take that one rule away and the edit you just made costs
-**8x less**. Go is there because Go is good at this and is the bar worth
-clearing.
+**Three builds of the same program, by the same compiler binary twice.** All
+three print the same total, and the benchmark refuses to start the clock until
+they do. That check is what makes them one program rather than three programs
+with the same name.
+
+The Crystal column is no straw man. It is this compiler, compiling this
+program, under the rule iyi drops: a Crystal class is open until the last line
+of the last file, so no build may trust anything it read last time and every
+rebuild reads all 7,208 lines again. Take that one rule away and the line you
+just changed costs **8x less** to rebuild. Go is in the table because Go is
+good at exactly this, and is the bar worth clearing.
+
+Run it yourself: `python3 bench/incremental.py`, generator in
+[`bench/incremental/generate_project.py`](bench/incremental/generate_project.py).
 
 The syntax stays. Union types, nil-safety, blocks, local inference: all kept.
 What changes is the compilation model, and everything that model forces.
 
 The design lives in [SPEC.md](SPEC.md). It is a working document, not a manual.
-It records what was measured, what was tried and thrown away, and why. Every
-number above comes out of `python3 bench/incremental.py` on one idle Linux
-machine, best of 7, and none of them is quoted from anywhere else.
+It records what was measured, what was tried and thrown away, and why. No number
+in this README is quoted from anywhere else: each one is printed by a command in
+this repository, and the command is named next to it.
 
 **Where it loses, said here rather than left to be found.** A warm full build
 of one 6,900-line program is 0.24 s against `go build`'s 0.09 s: iyi is quick
@@ -106,10 +152,12 @@ $ iyi build --use-iyimod mods samples/iyi/webapp.iyi    # builds, links, runs, s
 ## What it costs, measured
 
 **The loop a person is actually in.** Nobody uses a language through full
-builds; they use it through changing a line and building again. Thirty modules,
-300 types, 7,208 lines, written in all three languages by one generator and
-refused unless the three binaries print the same number before anything is
-timed. Best of 7 on one idle Linux machine, release compiler, seconds:
+builds; they use it through changing a line and building again. This is the
+project from the top of the README in full: 30 modules of 10 types, one `main`
+calling into every one of them, 7,208 lines, written three times by
+`bench/incremental/generate_project.py` and refused unless the three binaries
+print the same total. The rows are what changed before each build. Best of 7 on
+one idle Linux machine, release compiler, seconds:
 
 | what changed | iyi | Crystal | `go build` |
 |---|---|---|---|
