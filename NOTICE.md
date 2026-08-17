@@ -10,11 +10,10 @@ otherwise:
 Please see [REUSE.toml](REUSE.toml) and [LICENSE](LICENSE) for additional
 copyright and licensing information.
 
-- This repository includes vendored libraries (shards) in `/lib/` which have
-  their own licenses. See [REUSE.toml](REUSE.toml) for details.
-- Crystal playground includes vendored libraries with their own licenses. See
-  [src/compiler/crystal/tools/playground/public/vendor/REUSE.toml](src/compiler/crystal/tools/playground/public/vendor/REUSE.toml)
-  for details.
+- A shard installed into `/lib/` carries its own licence. See
+  [REUSE.toml](REUSE.toml) for details. iyi vendors none: `markd` and
+  `sanitize` went with the documentation generator, `reply` with the
+  interpreter.
 
 ## External libraries information
 

@@ -7,22 +7,10 @@ path = ["**"]
 SPDX-FileCopyrightText = "Copyright 2012-2026 Manas Technology Solutions."
 SPDX-License-Identifier = "Apache-2.0 WITH Swift-exception"
 
-# Unset license information for vendored libraries ("shards"). They either
-# provide their own information or there's a specific section in this file.
+# iyi: nothing is vendored any more. `markd` and `sanitize` went with the
+# documentation generator and `reply` with the interpreter's REPL, so the
+# entries that named them are gone rather than pointing at directories that
+# are not there. `lib/*/**` stays: a shard installed into this checkout still
+# carries its own licence.
 [[annotations]]
 path = ["lib/*/**"]
-
-[[annotations]]
-path = "lib/markd/**"
-SPDX-FileCopyrightText = "Copyright (c) 2017-present icyleaf"
-SPDX-License-Identifier = "MIT"
-
-[[annotations]]
-path = "lib/reply/**"
-SPDX-FileCopyrightText = "Copyright (c) 2022 I3oris <boris31.resch@gmail.com>"
-SPDX-License-Identifier = "MIT"
-
-[[annotations]]
-path = "lib/sanitize/**"
-SPDX-FileCopyrightText = "Copyright (c) 2020 Johannes Müller <straightshoota@gmail.com>"
-SPDX-License-Identifier = "Apache-2.0"
