@@ -581,6 +581,17 @@ class Crystal::Command
       # alone" command, because compiling a module alone is the thing the
       # artifact is *for* and cannot precede it.
       opts.on("--emit-iyimod DIR", "iyi: write a .iyimod per imported module into DIR") do |dir|
+        # iyi: answered here rather than by `Dir.mkdir_p` half an hour into a
+        # build. A path that names a file, or a directory nobody may write to,
+        # used to arrive as `Unable to create directory` and a stack trace.
+        if File.exists?(dir) && !File.directory?(dir)
+          abort! "--emit-iyimod needs a directory, and #{dir} is a file", :USAGE_ERROR
+        end
+        begin
+          Dir.mkdir_p(dir)
+        rescue ex : File::Error
+          abort! "--emit-iyimod cannot use #{dir}: #{ex.os_error.try(&.message) || ex.message}", :USAGE_ERROR
+        end
         compiler.emit_iyimod = dir
       end
 
@@ -593,6 +604,13 @@ class Crystal::Command
       # which is the honest failure for this stage, and a great deal more
       # useful than refusing to try.
       opts.on("--use-iyimod DIR", "iyi: compile imported modules from DIR's .iyimod files") do |dir|
+        # iyi: a module with no artifact is ordinary — the first build of the
+        # loop has none at all, and compiles from source. A *directory* that is
+        # not there is a typo, and it used to be ignored: the build compiled
+        # every module from source and looked like it had used artifacts.
+        unless File.directory?(dir)
+          abort! "--use-iyimod needs a directory of .iyimod files, and there is no #{dir}", :USAGE_ERROR
+        end
         compiler.use_iyimod = dir
       end
 
