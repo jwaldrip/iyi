@@ -1904,6 +1904,30 @@ module Crystal
         node.raise "`#{construct}` has no error to #{verb}: no member of #{type} implements `Error`. `#{construct}` is for a union with an error member — see SPEC.md #{section}"
       end
 
+      # iyi: `!` hands the error to the caller, so the enclosing signature has
+      # to have somewhere to put it. Without this the mistake arrives as
+      # Crystal's ordinary "must return Int32 but it is returning IOError",
+      # which is true and says nothing about the operator that put it there or
+      # about the two ways out.
+      if construct == "!" && (enclosing = @typed_def) && (restriction = enclosing.return_type)
+        declared = begin
+          current_type.lookup_type?(restriction, allow_typeof: false)
+        rescue
+          nil
+        end
+
+        if declared
+          declared_members = declared.is_a?(UnionType) ? declared.union_types : [declared] of Type
+          unless declared_members.any?(&.error?)
+            node.raise "`!` propagates #{errors.map(&.to_s).join(" or ")} out of " \
+                       "`#{enclosing.name}`, and `#{enclosing.name}` returns " \
+                       "#{declared}, which has no error member. Give it one " \
+                       "(`#{declared} | #{errors.first}`), or handle the error here " \
+                       "with `case` — see SPEC.md III.1"
+          end
+        end
+      end
+
       if values.empty?
         case construct
         when "!"

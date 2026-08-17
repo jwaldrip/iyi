@@ -2083,9 +2083,11 @@ describe "Semantic: iyi" do
     end
 
     it "reports an enclosing return type that does not admit the error" do
-      # Not a rule the operator enforces: it is the ordinary return-type check
-      # on the `return` the expansion wrote.
-      assert_error <<-CRYSTAL, "must return String but it is returning App::Fails::IOError", filename: "x.iyi"
+      # It used to be the ordinary return-type check on the `return` the
+      # expansion wrote: "must return String but it is returning IOError",
+      # which is true and mentions neither the operator that put it there nor
+      # the two ways out. The operator asks the enclosing signature itself now.
+      assert_error <<-CRYSTAL, "`!` propagates App::Fails::IOError out of `go`", filename: "x.iyi"
         module App
           module Fails
             struct IOError
