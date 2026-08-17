@@ -11,15 +11,12 @@ Here is the program the numbers below are about. One script writes it three
 times, in iyi, in Crystal and in Go, from the same set of numbers:
 
 * **30 modules**, one file each, 10 types per module: 300 types, **7,208
-  lines**. Every type holds two integers and answers three methods (an
-  arithmetic one, one that takes another of its own kind, one that returns a
-  name).
+  lines**.
 * **one `main`** that calls a function in all thirty modules, adds up what they
   answer, and prints the total.
 * **the edit**: a single number, in one function, in one of the thirty modules.
 
-One of the thirty, as iyi, with nine of its ten types left out. The Crystal and
-Go halves say the same thing in their own syntax:
+One of the thirty, as iyi, with nine of its ten types left out:
 
 ```crystal
 module parts/mod0
@@ -54,37 +51,25 @@ Change that line and build again. Best of seven, one Linux machine, seconds:
 | **rebuild after one edit** | **0.16** | 1.29 | 0.19 |
 
 **Three builds of the same program, by the same compiler binary twice.** All
-three print the same total, and the benchmark refuses to start the clock until
-they do. That check is what makes them one program rather than three programs
-with the same name.
+three print the same total, and `bench/incremental.py` refuses to start the
+clock until they do. The Crystal column is no straw man: it is this compiler,
+under the rule iyi drops. A Crystal class is open until the last line of the
+last file, so no build may trust anything it read last time and every rebuild
+reads all 7,208 lines again. Take that one rule away and the line you just
+changed costs **8x less**. Go is in the table because Go is good at exactly
+this, and is the bar worth clearing.
 
-The Crystal column is no straw man. It is this compiler, compiling this
-program, under the rule iyi drops: a Crystal class is open until the last line
-of the last file, so no build may trust anything it read last time and every
-rebuild reads all 7,208 lines again. Take that one rule away and the line you
-just changed costs **8x less** to rebuild. Go is in the table because Go is
-good at exactly this, and is the bar worth clearing.
+The syntax stays: union types, nil-safety, blocks, local inference. What
+changes is the compilation model, and everything that model forces. The design
+is in [SPEC.md](SPEC.md), which records what was measured, what was thrown away
+and why; no number in this README is quoted from anywhere else, and the command
+that prints each one is named beside it.
 
-Run it yourself: `python3 bench/incremental.py`, generator in
-[`bench/incremental/generate_project.py`](bench/incremental/generate_project.py).
-
-The syntax stays. Union types, nil-safety, blocks, local inference: all kept.
-What changes is the compilation model, and everything that model forces.
-
-The design lives in [SPEC.md](SPEC.md). It is a working document, not a manual.
-It records what was measured, what was tried and thrown away, and why. No number
-in this README is quoted from anywhere else: each one is printed by a command in
-this repository, and the command is named next to it.
-
-**Where it loses, said here rather than left to be found.** A warm full build
-of one 6,900-line program is 0.24 s against `go build`'s 0.09 s: iyi is quick
-where fixed costs are the bill and quick on the loop, and it is not quick at
-compiling a lot of code it has never seen. The [measured section](#what-it-costs-measured)
-has both halves.
-
-This is `0.1.0` in the sense of "the first thing that proves the claim". It is
-not ready for your project: no IO beyond `puts`, no concurrency, no package
-manager, Linux x86-64 only. [What is not here](#what-is-not-here) says the rest.
+**Where it loses**, said here rather than left to be found: a full build of a
+6,900-line program from scratch is 0.24 s against `go build`'s 0.09 s. And this
+is `0.1.0` in the sense of "the first thing that proves the claim", not
+something to write a program in: no IO beyond `puts`, no concurrency, no
+package manager, Linux x86-64 only.
 
 ## The program that makes the argument
 
@@ -155,12 +140,10 @@ $ iyi build --use-iyimod mods samples/iyi/webapp.iyi    # builds, links, runs, s
 ## What it costs, measured
 
 **The loop a person is actually in.** Nobody uses a language through full
-builds; they use it through changing a line and building again. This is the
-project from the top of the README in full: 30 modules of 10 types, one `main`
-calling into every one of them, 7,208 lines, written three times by
-`bench/incremental/generate_project.py` and refused unless the three binaries
-print the same total. The rows are what changed before each build. Best of 7 on
-one idle Linux machine, release compiler, seconds:
+builds. This is the project from the top of the README, all of it: 30 modules,
+7,208 lines, written three times by one generator and refused unless the three
+binaries print the same total. Best of 7, release compiler, one idle Linux box
+(AMD Ryzen AI 9 465 under WSL2, LLVM 19.1.7, Go 1.25.2), seconds:
 
 | what changed | iyi | Crystal | `go build` |
 |---|---|---|---|
@@ -170,47 +153,32 @@ one idle Linux machine, release compiler, seconds:
 | nothing cached anywhere | 0.71 | 2.22 | 3.93 |
 | the same edit, *without* artifacts | 0.28 | — | — |
 
-**Read the Crystal column as the price of one rule.** It is this compiler
-binary compiling this program, and it cannot do better: a Crystal class is open
-until the last line of the last file, so no build can trust anything it read
-last time. Nothing in that column moves whatever you edit, which is the point.
+**The last row is R-1 with a price on it.** The same edit with all thirty
+modules read from source costs 0.28 s; with the `.iyimod` files in hand the
+other twenty-nine arrive as declarations and it costs 0.16 s. The rule pays
+1.7x on the loop it was written for, and pays more as the code you are *not*
+editing grows.
 
-**Read the last row as the price of R-1.** Build the same edit with all thirty
-modules read from source and it costs 0.28 s; with the `.iyimod` files in hand
-the other twenty-nine arrive as declarations instead of source and it costs
-0.16 s. The rule pays 1.7x on the loop it was written for, and it pays more as
-the code you are *not* editing grows.
+**Two caveats, both against us.** `go build` from nothing compiles its own
+dependencies once, which iyi has none of, so the 3.93 s is a first build on a
+fresh machine rather than a claim about Go's compiler. And these seconds are a
+machine: on a slower session the first row reads 0.22, 1.81 and 0.27, which the
+bench says out loud when it happens. Read the columns against each other, since
+all three pay the same machine.
 
-**Read the cold row with one caveat.** `go build` from nothing compiles its own
-dependencies once, which iyi has none of yet; the 3.93 s is honest for a first
-build on a fresh machine and it is not a claim about Go's compiler. Go is
-quicker than it was on the run before this one, which is why these are the
-numbers here: a table nobody chose is worth more than the flattering one.
-
-**And one sentence about the machine.** These seconds come from one Linux box
-(an AMD Ryzen AI 9 465 under WSL2, LLVM 19.1.7, Go 1.25.2) in a state its own
-reference accepts: starting the compiler and doing nothing
-costs what it cost when the target was set. The same box on a slower session
-reads 0.22, 1.81 and 0.27 on the first row, and the bench says so when it
-happens rather than letting the seconds pass for the language. The columns are
-what to read against each other: all three pay the same machine.
-
-**Now the less flattering number, and it is a full build.** `python3
-bench/build_speed.py`, same machine, warm:
+**The full build, which is the row iyi loses.** `python3 bench/build_speed.py`,
+same session:
 
 | program | iyi | `go build` |
 |---|---|---|
 | `hello` (5 lines) | **0.07 s** | 0.08 s |
 | generated pair, 6,900 lines | 0.24 s | **0.09 s** |
 
-**Read that second row before quoting the first.** iyi wins where fixed costs
-are the whole bill and loses once there is a program to compile from scratch,
-at roughly 25 ms per thousand lines. Both halves of the pair come out of one
-generator, and the bench refuses to time them unless the two binaries print
-the same thing. The front end on its own is 0.034 s for `hello` against a
-target of 0.050 s, and 0.018 s of that is the compiler process starting up
-before it reads anything. Both tables come out of the same session, on a
-machine the benches' own reference accepts.
+iyi is quick where fixed costs are the whole bill and quick on the loop, and it
+is not quick at compiling a lot of code it has never seen: roughly 25 ms per
+thousand lines. The front end alone is 0.034 s for `hello` against a target of
+0.050 s, and 0.018 s of that is the process starting up before it reads
+anything.
 
 ## The rules everything follows from
 
@@ -299,23 +267,14 @@ through one. And **libgc**, which every program iyi produces links against:
 Building it instead needs LLVM 19 and a Crystal compiler to bootstrap from:
 
 ```console
-$ make                    # the compiler, and `iyi` itself
-$ ./bin/iyi run samples/iyi/hello.iyi
+$ make                                  # the compiler, and `iyi` itself
+$ ./bin/iyi run samples/iyi/hello.iyi   # run it out of the checkout
+$ sudo make install_iyi                 # or install it, PREFIX=/usr/local
 ```
 
-`./bin/iyi` is how you run the fork out of a checkout: it finds `.build/iyi`
-and nothing else has to be set. The rest:
-
-```console
-$ make iyi-tarball        # .build/iyi-0.1.0-dev-<os>-<arch>.tar.gz
-$ sudo make install_iyi   # PREFIX=/usr/local by default
-$ make iyi iyi-tarball release=1 IYI_VERSION=0.1.0   # what a release build is
-```
-
-`make` also builds the same compiler under Crystal's name, as `.build/crystal`
-with `./bin/crystal` in front of it. That is the one the specs and the bench
-use, and the one that compiles `.cr` files, because underneath this is still
-Crystal's compiler.
+`make` also builds the same compiler under Crystal's name, as `./bin/crystal`.
+That one compiles `.cr` files and is what the specs and the benches use,
+because underneath this is still Crystal's compiler.
 
 ## More of the language
 
@@ -345,9 +304,9 @@ puts Box.new(41).show                  # => Box(41)
 puts Box.new("hi").show                # => Box(hi)
 ```
 
-The `forall` is not ceremony. Drop it and whether `T` names a new parameter or a
-type already in scope would depend on what the file imports. A library could
-then change the meaning of your `impl` by adding an export.
+`forall` is not ceremony: without it, whether `T` names a new parameter or a
+type already in scope would depend on what the file imports, and a library
+could change the meaning of your `impl` by adding an export.
 
 **One `each`, fifty-seven methods.** `samples/iyi/std/enumerable.iyi` is
 `Enumerable` ported to a trait: one requirement, 57 defaults. Implement the
@@ -409,9 +368,8 @@ Missing types:
 
 ## When you break a rule
 
-The rules are new, so the compiler explains them rather than reporting that
-something was not found. Import a module and call one of its functions the way
-every other language would:
+The rules are new, so the compiler teaches them where they are broken. Import a
+module and call one of its functions the way every other language would:
 
 ```console
 Error: undefined method 'polite' for App::Main:Module
@@ -429,15 +387,8 @@ module this file has already imported, so this needs `import app/greeter`
 above it (SPEC.md R-1, R-2b)
 ```
 
-Call something the module kept for itself:
-
-```console
-Error: `app/greeter` declares `internal` and does not mark it `pub`, so it is
-the module's own and no other module can reach it (SPEC.md R-2)
-```
-
-And the one R-3 exists for, when an `impl` is written in a module that owns
-neither the trait nor the type:
+Write an `impl` in a module that owns neither the trait nor the type, which is
+the one R-3 exists for:
 
 ```console
 Error: can't implement Lib::Shape::Drawable for Lib::Shape::Circle in App::Main:
@@ -446,36 +397,24 @@ module that defines the type (Lib::Shape). This is R-3, the orphan rule, and it
 is what lets coherence be checked without a global pass
 ```
 
-Every one of those messages names the rule and the line to write. That is not
-politeness: a language whose rules are unfamiliar has to teach them at the
-moment they are broken, or it has invented a new way to be stuck.
+Each one names the rule and the line to write. A language whose rules are
+unfamiliar has to teach them at the moment they are broken, or it has invented
+a new way to be stuck.
 
 ## The samples
 
-```console
-$ iyi run samples/iyi/hello.iyi
-Hello, iyi!
-HELLO, IYI!
-BEEP 42
-Hello, crystal!
-BEEP 7
--> BEEP 9
-```
+Eight programs in [`samples/iyi`](samples/iyi), each documenting a part of the
+design rather than showing off: `hello` (traits and `impl`), `modules`
+(`import` and `using` across files), `generics`, `errors`, `collections`,
+`immutable` (a shareable collection and the copy that makes it safe),
+`init_order` and `webapp`.
 
-Eight programs live in [`samples/iyi`](samples/iyi). Each one documents a part
-of the design rather than showing off: `hello` (traits and `impl`), `modules`
-(`import` and `using` across files), `generics`, `errors`, `collections` (the
-trait above, implemented twice for different element types), `immutable` (a
-shareable collection, and the copy that makes it safe), `init_order`
-(initialisation order across a module graph), and `webapp`.
+R-1 is checked rather than asserted. `bash bench/samples_roundtrip.sh` builds
+the five samples that import anything, deletes every imported module's source,
+builds again from the artifacts and compares what the two programs print. CI
+runs it on every push.
 
-Compiling against declarations instead of source is checked, not asserted.
-`bash bench/samples_roundtrip.sh` builds the five samples that import anything,
-deletes every imported module's source, builds again from the artifacts, and
-compares what the two programs print. `spec/compiler/iyimod_spec.cr` checks the
-same property on programs written for it.
-
-Artifacts are readable:
+An artifact is readable:
 
 ```console
 $ iyi mod dump mods/kemal/router.iyimod | head -20
@@ -516,9 +455,9 @@ because it cannot be asked as a patch: separate compilation is not a feature
 you add to a language with open classes, it is a rule the language has to be
 designed around. Crystal is not going to drop open classes, and it should not.
 
-**Will it merge back?** The measurements might. The bug fixes in Crystal's own
-compiler that this fork found should, and they are separate commits for that
-reason. The rules will not, and are not offered.
+**Will it merge back?** The bug fixes this fork found in Crystal's own
+compiler should, and they are separate commits for that reason. The rules will
+not, and are not offered.
 
 **Can I use shards?** No. There is no package manager, and a `.iyi` module
 cannot `require` a Crystal library: R-2 needs written types at the boundary
@@ -527,15 +466,12 @@ and R-3 needs the type to be closed, and a shard is written under neither.
 **Is the syntax stable?** No. 0.1.0 exists to make the claim checkable, and
 the parts of SPEC.md marked PROPOSED are exactly the parts that will move.
 
-**Why is it Linux x86-64 only?** Nothing about the design is: it is where the
-measurements were taken and where CI runs. The standard library still carries
-Crystal's other platforms and CI type-checks them for eight targets.
+**Why Linux x86-64 only?** Nothing in the design is: it is where the
+measurements were taken and where CI runs. The library still carries Crystal's
+other platforms, and CI type-checks eight targets.
 
-**Why "iyi"?** It is Turkish for "good", and it is two syllables that were not
-taken. A first release should be honest about being called what it is called.
-
-**Who is this for right now?** Somebody who wants to check the claim, read the
-design, or argue with a number. Not somebody with a program to ship.
+**Who is this for right now?** Somebody who wants to check the claim, read
+the design, or argue with a number. Not somebody with a program to ship.
 
 ## What is not here
 
