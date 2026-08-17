@@ -490,6 +490,12 @@ the design, or argue with a number. Not somebody with a program to ship.
 - **No IO beyond `puts`.** The prelude is 1,053 lines on purpose: integers,
   booleans, a string, one sequence, one dictionary. No files, no sockets, no
   formatting.
+- **The prelude's collections are smaller than Crystal's, and one habit
+  differs.** A method is in there because a sample needed it, so `first` and
+  most of what you reach for is not; `samples/iyi/std/enumerable.iyi` is where
+  the rest is being written, as trait defaults. And `a[-1]` does not index from
+  the end: it raises, the way an index past the end does. Nothing indexes from
+  the end in iyi yet.
 - **No concurrency.** SPEC.md III.4 specifies structured concurrency,
   scope-owned cancellation and a `Share` marker. None of it is built.
 - **No package manager, no standard library, no self-hosting.**
