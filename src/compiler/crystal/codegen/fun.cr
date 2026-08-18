@@ -176,7 +176,18 @@ class Crystal::CodeGenVisitor
       # that carried it — `Router#get` takes a block, so the producer emitted
       # no symbol for it — and a proc literal written inside that body, whose
       # `self` is the artifact's type and whose code was never anywhere else.
+      #
+      # A generic type is the exception, and the producer's own rule is why.
+      # An artifact carries a unit for every non-generic type the module
+      # declares and none for a generic one (`collect_iyi_unit_names`), so a
+      # generic's instantiated methods are in nobody's object code: the
+      # producer emitted only the instantiations its own bodies reached, and
+      # `Box(Int32)` is a type the *consumer* made. `Box.new(42)` is the call
+      # that finds this, because inference makes `new` a method on `Box(T)` —
+      # the artifact's own type — while `Box(Int32).new(42)` is owned by an
+      # instance and was never marked. Both are this build's to compile.
       compiled_elsewhere = self_type.instance_type.iyi_from_artifact? &&
+                           !self_type.instance_type.is_a?(GenericType) &&
                            !target_def.iyi_body_travelled? &&
                            !is_fun_literal
 

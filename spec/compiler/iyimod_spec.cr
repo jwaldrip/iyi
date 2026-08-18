@@ -518,6 +518,61 @@ describe Crystal::IyiMod do
     end
   end
 
+  # A generic the consumer instantiates, which is the one type an artifact
+  # carries no object code for.
+  #
+  # `collect_iyi_unit_names` gives a module's object code a unit per non-generic
+  # type it declares and none for a generic one, because a generic has machine
+  # code only once somebody picks its arguments. The consumer is who picks them
+  # here, so `Box(Int32)`'s methods are the consumer's to compile — and the
+  # marking that says "this type's code is in the artifact" was reading the
+  # generic itself, which made the consumer declare a `new` nobody defined.
+  #
+  # Written twice on purpose. `Box(Int32).new` is owned by the instance, which
+  # was never marked and always worked; `Box.new(42)` infers the argument, and
+  # inference makes `new` a method on `Box(T)` — the artifact's own type. Only
+  # the second one linked undefined, so only the second one is the regression.
+  it "builds a generic from an artifact whether or not its argument is written" do
+    with_tempdir("iyimod_generic_instance") do
+      Dir.mkdir_p "app"
+      File.write "app/boxes.iyi", <<-IYI
+        module app/boxes
+
+        pub struct Box(T)
+          getter value : T
+
+          def initialize(@value : T)
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/boxes
+
+        written = App::Boxes::Box(Int32).new(21)
+        inferred = App::Boxes::Box.new(21)
+        puts written.value + inferred.value
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "42"
+
+      File.delete "app/boxes.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "42"
+    end
+  end
+
   # The closure (IV.1g): the module's body calls `String#+`, which lives in the
   # prelude's `String` unit — a unit the artifact does not carry and one whose
   # contents on the consumer's side are whatever *the consumer* instantiated.

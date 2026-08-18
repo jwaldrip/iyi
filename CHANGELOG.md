@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A generic imported from an artifact links again when its type argument is
+  inferred.** `Box(Int32).new(42)` always worked and `Box.new(42)` did not.
+  Inference makes `new` a method on `Box(T)`, which is the artifact's own type,
+  and the rule that says "this type's machine code is in the artifact" was
+  reading the generic itself. An artifact carries a unit for every non-generic
+  type a module declares and none for a generic one, because a generic has
+  machine code only once somebody picks its arguments, and the consumer is who
+  picks them. So the consumer declared a `new` that nothing defined and the
+  program failed to link, saying `undefined reference to Box(T)::new<Int32>`.
+  The consumer's rule now matches the producer's. Reported after 0.1.0 went
+  out.
+
 ## 0.1.0 — 2026-08-18
 
 The first release. There is nothing to compare it against, so this says what is
