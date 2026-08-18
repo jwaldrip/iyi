@@ -70,9 +70,11 @@ jobs:
           path: .build
       - run: chmod +x .build/crystal
 
-      # Caught by hand once already, on files this fork wrote.
+      # Caught by hand once already, on files this fork wrote. `samples` is
+      # here because the formatter knows iyi now: before that it refused every
+      # `.iyi` file, so checking them would have checked nothing.
       - name: Formatted
-        run: ./bin/crystal tool format --check src spec
+        run: ./bin/crystal tool format --check src spec samples
 
       - name: iyi's own specs
         run: |
