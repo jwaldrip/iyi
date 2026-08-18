@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## 0.1.0 — 2026-08-18
 
 The first release. There is nothing to compare it against, so this says what is
 in it rather than what changed, and what a later version will have to keep

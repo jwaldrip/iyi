@@ -214,7 +214,7 @@ imports may not exist on the machine at all.
 ## Getting it
 
 ```console
-$ tar -xzf iyi-0.1.0-dev-linux-x86_64.tar.gz -C ~/.local
+$ tar -xzf iyi-0.1.0-linux-x86_64.tar.gz -C ~/.local
 $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 

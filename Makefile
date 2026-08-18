@@ -109,7 +109,7 @@ CRYSTAL_BIN := crystal$(EXE)
 CRYSTAL_DAEMON_BIN := crystal-daemon$(EXE)
 
 # iyi: what a downloadable build of iyi is called.
-IYI_VERSION ?= 0.1.0-dev
+IYI_VERSION ?= 0.1.0
 IYI_PACKAGE := iyi-$(IYI_VERSION)-$(shell uname -s | tr A-Z a-z)-$(shell uname -m)
 
 DESTDIR ?=
