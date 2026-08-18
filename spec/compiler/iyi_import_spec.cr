@@ -307,9 +307,40 @@ describe "Semantic: iyi import" do
       }) do |root|
         write_iyimod root, "app/dep", exports, compiler_version: "0.0.0+nope"
 
-        expect_raises(Crystal::TypeException, /written by compiler 0\.0\.0\+nope/) do
+        expect_raises(Crystal::TypeException, /written by iyi 0\.0\.0\+nope/) do
           semantic_iyi("main.iyi", iyi_module_dir: root)
         end
+      end
+    end
+
+    # IV.5, the other half: what two compilers have to agree on is the release
+    # they are, not the commit they were built from. Written with the version
+    # on the page rather than with `IyiMod.compiler_version`, because a spec
+    # that asks the compiler what it is would pass however that is answered —
+    # including by going back to naming a build nobody else has.
+    it "reads an artifact from another build of the same release" do
+      # The rule from both sides of a release, so this spec says the same thing
+      # the day the version becomes a `-dev` one again: a named release is the
+      # whole identity, and a version between two releases names no compiler,
+      # so it keeps the build commit.
+      version = Crystal::Config.iyi_version
+      if version.ends_with?("-dev")
+        Crystal::IyiMod.compiler_version.should start_with("#{version}+")
+      else
+        Crystal::IyiMod.compiler_version.should eq version
+      end
+
+      with_iyi_modules({
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+          IYI
+      }) do |root|
+        write_iyimod root, "app/dep", exports,
+          compiler_version: Crystal::IyiMod.compiler_version
+
+        semantic_iyi("main.iyi", iyi_module_dir: root)
       end
     end
 

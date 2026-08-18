@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Changed
+
+- **An artifact is read by the release that wrote it, not by the build.** A
+  `.iyimod` was locked to the exact compiler build, commit and all, so two
+  builds of the same version refused each other's modules and handing one to
+  somebody meant handing them your compiler too. The identity is now the
+  released version, the target and the flags: every build of iyi 0.1.0 reads
+  every other build's artifacts on the same target under the same flags. A
+  `-dev` version keeps the commit, because it names no release. The version
+  comes from `src/IYI_VERSION`, which is also what the binary reports and what
+  the tarball is named after.
+
 ### Added
 
 - **`iyi tool format` formats iyi.** The formatter is Crystal's and knew none

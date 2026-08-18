@@ -3661,10 +3661,32 @@ count should stay small.
 
 ### IV.5 Versioning
 
-Format version in the header. **Compiler version must match exactly** for
-Draft 0. A `.iyimod` built by a different compiler is rejected and rebuilt, not
-migrated. Cross-version metadata compatibility is a large, permanent surface and
-there is no reason to take it on before 1.0.
+Format version in the header, and it is not migrated: a `.iyimod` whose format
+number is not this compiler's is rejected and rebuilt. Cross-version metadata
+compatibility is a large, permanent surface and there is no reason to take it
+on before 1.0.
+
+**What two compilers have to agree on is the release, the target and the
+flags.** Every build of iyi 0.1.0 reads every other build's artifacts, on the
+same target and under the same flags. That is what makes a module something to
+hand to somebody: the artifact is the unit R-1 compiles against, and a unit
+only its own build could open would be a cache with extra steps.
+
+The three are one rule and not three. Macros branch on flags, so an artifact
+built under one set answers questions differently from one built under
+another; object code is a target's; and a release number is what names a
+compiler in public.
+
+**A development version keeps the build commit, and that is the same rule
+rather than an exception to it.** `0.2.0-dev` is not a release: it names every
+compiler between two of them, and two of those can disagree about anything at
+all. So `0.1.0` is an identity and `0.2.0-dev+9bcbb359f` is one, while
+`0.2.0-dev` on its own is not, and a build that carries it interoperates with
+nothing but itself.
+
+The version is iyi's, read from `src/IYI_VERSION` at compile time rather than
+from the environment, because two binaries in this repository write artifacts
+and an equality test between them cannot depend on how each was invoked.
 
 ---
 

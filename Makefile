@@ -109,7 +109,7 @@ CRYSTAL_BIN := crystal$(EXE)
 CRYSTAL_DAEMON_BIN := crystal-daemon$(EXE)
 
 # iyi: what a downloadable build of iyi is called.
-IYI_VERSION ?= 0.1.0
+IYI_VERSION ?= $(shell cat src/IYI_VERSION)
 IYI_PACKAGE := iyi-$(IYI_VERSION)-$(shell uname -s | tr A-Z a-z)-$(shell uname -m)
 
 DESTDIR ?=
@@ -355,7 +355,6 @@ $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
 	$(EXPORTS) $(EXPORTS_BUILD) CRYSTAL_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../src' \
-	  IYI_VERSION="$(IYI_VERSION)" \
 	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $@ src/compiler/iyi.cr
 	@echo "built $@ — run it as ./bin/iyi"
 

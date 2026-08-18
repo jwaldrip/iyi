@@ -610,7 +610,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
                                      artifact_path : String) : Nil
     expected = IyiMod.compiler_version
     unless artifact.compiler_version == expected
-      node.raise "#{artifact_path} was written by compiler #{artifact.compiler_version}, this is #{expected}. A .iyimod is rejected and rebuilt, never migrated (SPEC.md IV.5) — rebuild it with --emit-iyimod"
+      node.raise "#{artifact_path} was written by iyi #{artifact.compiler_version}, this is #{expected}. Artifacts are read by the release that wrote them: same version, same target, same flags. A .iyimod is rejected and rebuilt, never migrated (SPEC.md IV.5) — rebuild it with --emit-iyimod"
     end
 
     target = @program.codegen_target.to_s

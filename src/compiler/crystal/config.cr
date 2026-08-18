@@ -8,6 +8,17 @@ module Crystal
       {{ read_file("#{__DIR__}/../../VERSION").chomp }}
     end
 
+    # iyi: the fork's own version, which is not Crystal's.
+    #
+    # A file rather than an environment variable because two binaries in this
+    # repository write `.iyimod` artifacts and IV.5 makes the version an
+    # equality test between them. `crystal` built without the variable and
+    # `iyi` built with it would disagree about what they are, and the disagreement
+    # would show up as an artifact one of them refuses to read.
+    def self.iyi_version
+      {{ read_file("#{__DIR__}/../../IYI_VERSION").chomp }}
+    end
+
     def self.description
       String.build do |io|
         io << "Crystal " << version

@@ -502,8 +502,10 @@ the design, or argue with a number. Not somebody with a program to ship.
   scope-owned cancellation and a `Share` marker. None of it is built.
 - **No package manager, no standard library, no self-hosting.**
 - **Linux x86-64 only.** Other targets belong to Crystal and are untested here.
-- **Artifacts are version-locked.** A `.iyimod` written by another build of the
-  compiler is rejected and rebuilt, never migrated.
+- **Artifacts are locked to a release, a target and a flag set.** Every build
+  of iyi 0.1.0 reads every other build's `.iyimod` files on the same target and
+  under the same flags; anything else is rejected and rebuilt, never migrated.
+  A `-dev` version is not a release and interoperates with nothing but itself.
 - **`derive` macros do not cross modules yet.** A module's own macros do travel
   with its artifact.
 
