@@ -183,13 +183,30 @@ class Crystal::CodeGenVisitor
       # and for the same reason: the body is somebody else's.
       #
       # The type it is written on answers the same question for the methods
-      # that arrived as headers. Two things on such a type are still this
-      # build's to compile, and both are here because a body travelled: the def
-      # that carried it — `Router#get` takes a block, so the producer emitted
-      # no symbol for it — and a proc literal written inside that body, whose
+      # that arrived as headers. Three things on such a type are still this
+      # build's to compile. Two are here because a body travelled: the def that
+      # carried it — `Router#get` takes a block, so the producer emitted no
+      # symbol for it — and a proc literal written inside that body, whose
       # `self` is the artifact's type and whose code was never anywhere else.
+      #
+      # The third is a *generic* type the artifact declares, and it is here
+      # because no object code could have travelled for it at all. An artifact
+      # carries a unit only for a non-generic type (SPEC.md IV.2): a generic's
+      # methods exist once per instantiation and the instantiations belong to
+      # whoever writes them, so the bodies travel in `MonoBodies` instead. The
+      # mark is on `Box(T)` and not on `Box(Int32)`, which is what makes an
+      # explicit `Box(Int32).new` compile here — but `Box.new(1)` infers its
+      # type argument, and Crystal looks `new` up on the *uninstantiated*
+      # generic's metaclass, where the mark said the body was somebody else's
+      # and no `MonoBodies` entry claimed it back: `new` is synthesized from
+      # `initialize` rather than read, so only `initialize` was marked as
+      # having travelled. The result was a link against
+      # `Box(T)::new<Int32>`, a symbol no build ever emits.
+      generic_from_artifact = self_type.instance_type.is_a?(GenericType)
+
       compiled_elsewhere = self_type.instance_type.iyi_from_artifact? &&
                            !target_def.iyi_body_travelled? &&
+                           !generic_from_artifact &&
                            !is_fun_literal
 
       needs_body = (!target_def.is_a?(External) || is_exported_fun) &&

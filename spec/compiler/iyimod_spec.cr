@@ -1386,6 +1386,82 @@ describe Crystal::IyiMod do
     end
   end
 
+  # The same generic, constructed the way the language documents it: `Box.new(7)`
+  # rather than `Box(Int32).new(7)`. Crystal looks `new` up on the metaclass of
+  # the *uninstantiated* generic and infers the type argument from the call, so
+  # this takes a different path through codegen than the spec above — and it is
+  # the path that was broken while every check in this repository passed. The
+  # artifact's mark said `Box(T)`'s methods were compiled elsewhere, `new` is
+  # synthesized from `initialize` rather than read from `MonoBodies` so nothing
+  # claimed it back, and the build asked the linker for `Box(T)::new<Int32>`:
+  # a symbol neither side ever emits.
+  #
+  # Both forms are here on purpose. They are one language feature and two code
+  # paths, and only one of them was covered.
+  it "instantiates a generic from an artifact with inferred type arguments" do
+    with_tempdir("iyimod_mono_generic_inferred") do
+      Dir.mkdir_p "std"
+      File.write "std/box.iyi", <<-IYI
+        module std/box
+
+        pub struct Box(T)
+          @item : T
+
+          def initialize(@item : T)
+          end
+
+          def item : T
+            @item
+          end
+        end
+
+        pub class Cell(T)
+          @item : T
+
+          def initialize(@item : T)
+          end
+
+          def item : T
+            @item
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/box
+        using std/box::{Box, Cell}
+
+        puts Box.new(7).item
+        puts Box.new("seven").item
+        puts Cell.new(9).item
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "7\nseven\n9"
+
+      # No object code could have travelled for either type, which is why the
+      # bodies had to (SPEC.md IV.2).
+      artifact = Crystal::IyiMod.read(File.join("mods", "std", "box.iyimod"))
+      artifact.object_code.should be_empty
+      artifact.mono_bodies.keys.should contain "Box#item()"
+      artifact.mono_bodies.keys.should contain "Cell#item()"
+
+      File.delete "std/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "7\nseven\n9"
+    end
+  end
+
   # The other half of `MonoBodies`, and the half no producer could ever emit
   # code for: a trait default is stencilled onto the implementing type, and the
   # implementing type here is declared by the *consumer*. There is no name the
