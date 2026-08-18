@@ -971,6 +971,15 @@ Consequences:
   collection requires interior-pointer discipline throughout, and Crystal's
   `to_unsafe`/`Pointer` idioms are pervasive. Defer.
 
+**Amended by III.9, and the amendment makes this cheaper than it reads.** "A
+precise collector" is two requirements. R-4 needs to know which words *inside an
+object of a given shape* are pointers, which is a table the compiler computes
+anyway. It does not need to know which *stack slots* hold pointers, which is the
+expensive half: stack maps, a frame walker, and correctness under every
+optimisation the back end runs. `gcry` has measured that half and found it is
+not even an RSS win. So the prerequisite stands and the bill is a table, not an
+epic. See III.9.
+
 ### II.6 Traits × the standard library: **SETTLED by porting `Enumerable`**
 
 `Enumerable` is the load-bearing abstraction of Crystal's stdlib: 2,350 lines,
@@ -2600,6 +2609,86 @@ artifact had no object code to be compiled elsewhere into, and the synthesized
 `new` fell through the gap. **The collector work and the cross-module generic
 work are the same work**, and that is the argument for doing the collector, not
 the seven symbols.
+
+#### Two kinds of precision, and II.5 only needs the cheap one
+
+II.5 says "R-4 requires a precise collector" and reads as one requirement. It is
+two, they cost very different amounts, and the expensive one is not the one R-4
+asks for.
+
+- **Precise heap layout.** Which words *inside an object of a given shape* are
+  pointers. This is what "the pointer map travels with the shape" means and it is
+  the whole of R-4's requirement. A compiler knows it exactly, for every type,
+  because it computed the layout.
+- **Precise stack roots.** Which *stack slots* hold pointers. This needs stack
+  maps from codegen, a frame walker at runtime, and correctness under every
+  optimisation the back end performs. It is what people mean by "a precise GC"
+  and R-4 does not need it.
+
+Conflating them makes the collector look like the largest item in this document.
+Separated, the part R-4 waits on is a table the compiler already has.
+
+#### `gcry`, and the division of labour it implies
+
+[gcry](https://github.com/sdogruyol/gcry) is Crystal's collector written in
+Crystal: conservative, non-moving mark and sweep, shipped as a shard, plugged in
+with `-Dgc_none` and a reopened `module GC`. Measured against Boehm on Kemal:
+**~87% throughput at ~0.80x post-GC RSS on Linux**, and it runs process GC on
+Linux and macOS with no compiler fork. That last property is its design centre
+and it is stated as a non-goal to break: "precise / moving / compacting GC
+without stack maps + write barriers from the compiler".
+
+**Which is exactly the constraint iyi does not have.** gcry refuses to fork the
+compiler; iyi *is* the fork. The two projects are therefore complementary in a
+way worth stating precisely, because it decides who should write what.
+
+What gcry has that iyi would otherwise write from nothing: an `mmap` heap with
+size classes and large-object spans, chunk release, stop-the-world across threads
+and fibers on two platforms, root discovery including static ranges and the
+suspended-register cases that took it to v0.19 to close, finalizers, fork
+reinitialisation, weak references, metrics, and a fuzz and soak apparatus. None
+of that is interesting to rewrite and all of it is the part that is easy to get
+subtly wrong.
+
+What iyi has that gcry had to counterfeit: **`src/gcry/layout.cr` is a
+`type_id` to pointer-offset table, and gcry has to reverse-engineer it from
+outside the compiler.** It walks `Reference` subclasses with a macro, keeps a
+blacklist of prefixes whose layout it cannot trust (`Crystal::`, `LibC::`),
+hardcodes the field offsets of Crystal's `Hash` internals, and falls back to
+conservative word-scanning whenever it is unsure. Every one of those is a
+workaround for not being the compiler. iyi emits the same table exactly, for
+every type, with no macro walk, no blacklist, no hardcoded stdlib offsets and no
+fallback, because computing layouts is something it already did.
+
+So the recommendation is not "write a collector". It is: **adopt gcry, and pay it
+back with the layouts it cannot see.** That gets R-4's requirement, the cheap
+kind of precision, from a table the compiler emits into a section gcry reads,
+and it leaves the stack-map epic where gcry's own measurements put it. Their
+`GCRY_PRECISE_STACK` work is correctness-stable and **not an RSS win** (~2x);
+what actually closed the fat-app gap was finalizer correctness and a retain
+policy, not precision. That is a result worth inheriting rather than rediscovering.
+
+**Three things about the fit that are iyi's problem, not gcry's.**
+
+1. **The seam is different and simpler.** gcry reopens Crystal's `module GC` and
+   hooks its fibers. iyi's prelude has neither: it declares four functions and
+   wires `__crystal_malloc64` and friends to them. So adoption is pointing those
+   four at gcry's allocator, and none of the `GC` facade is needed.
+2. **It cannot arrive as a shard.** gcry is Crystal, iyi's prelude is `.iyi`, and
+   III.6 is explicit that a shard needs a written binding. A collector is the
+   runtime rather than a library, so the honest form is vendoring it into this
+   tree under its licence, not depending on it.
+3. **It raises the floor, and the gate will say so.** gcry needs `mmap`,
+   `munmap`, signals and `pthread_atfork`, so III.10's seven symbols become
+   more. That is not a regression, it is the trade: a C library the machine must
+   already have becomes syscalls plus code iyi ships. `bench/dependency_floor.sh`
+   will fail on the commit that does it, which is correct, and the commit adds
+   the new symbols to the list with this section as the reason.
+
+One piece of luck worth naming: iyi has no concurrency (III.4 is unbuilt), so it
+would adopt gcry in the simplest configuration gcry supports, single-threaded
+with no fibers and no execution contexts. The half of that project which is
+hardest to be sure of is the half iyi does not need yet.
 
 #### What the compiler depends on, which is a different list
 
@@ -4504,6 +4593,8 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 17 | **Regex: PCRE semantics or RE2's? (III.10)** | RE2's. Linear time, no backreferences, no lookbehind. A language selling "the compiler will not surprise you" should not ship a library that takes exponential time on ordinary input, and Go already took this trade |
 | 18 | **TLS (III.10)** | none in 0.x; an OpenSSL binding as a package if something needs it sooner; own it eventually, TLS 1.3 only, and not before there is something to protect and somebody to audit it. What must not happen is OpenSSL reachable from the prelude |
 | 19 | **Is "no C library in the prelude" a rule or a habit? (III.10)** | a rule, and it is checked: `bench/dependency_floor.sh` fails in CI when a program grows a symbol. Proven to fail by adding a `lib LibM` call to a sample |
+| 20 | **Write a collector, or adopt `gcry`? (III.9)** | adopt, and pay it back in layouts. gcry has the heap, the STW, the roots, the finalizers and two platforms; what it lacks is the one thing only a compiler can give it, and iyi is a compiler. Writing a second collector to obtain a worse version of `layout.cr` is the expensive way to be independent |
+| 21 | **Precise stack roots (III.9)** | no, and not on a schedule. R-4 needs heap-layout precision, which is a table. gcry's own measurements say stack-map precision is correctness-stable and not an RSS win, and that result is worth inheriting rather than repeating |
 
 ### B.2: The one decision the fork already made: **SETTLED: not a self-hosting project**
 
