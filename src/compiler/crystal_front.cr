@@ -79,8 +79,10 @@ module Crystal::Front
 
     node = program.new_parser(source).tap(&.filename = filename).parse
     location = Location.new(filename, 1, 1)
+    # Flagged as the prelude's own `require`, because a `.iyi` file is not
+    # allowed one and the refusal does not know the compiler wrote this line.
     node = program.normalize(
-      Expressions.new([Require.new(prelude_for(filename)).at(location), node] of ASTNode))
+      Expressions.new([Require.new(prelude_for(filename)).tap(&.iyi_prelude=(true)).at(location), node] of ASTNode))
 
     program.requires.add filename
     program.semantic node, cleanup: true
