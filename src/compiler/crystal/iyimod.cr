@@ -1141,6 +1141,48 @@ module Crystal::IyiMod
       MSG
   end
 
+  # iyi: R-2 reaches a method the module kept to itself, once the artifact
+  # carries its object code (SPEC.md IV.2).
+  #
+  # `iyi_carried_methods` skips the check above on the reasoning that an
+  # unexported type "is read by nobody". A `pub` signature naming that type is
+  # how it stops being true:
+  #
+  #     struct Hidden          # not pub
+  #       getter n             # so R-2 never asked, and this infers
+  #     end
+  #
+  #     pub def make : Hidden  # and now a consumer holds one
+  #
+  # The consumer resolves `Hidden` from the artifact, calls `make`, and calls
+  # `n` on what it gets back. It types that call from the header, which says no
+  # return type, so it infers `Nil` and asks the linker for `Hidden#n:Nil`. The
+  # artifact's object code defines `Hidden#n:Int32`. The module's own build is
+  # fine and somebody else's fails on a mangled symbol — the same shape as the
+  # exported case, reached through a type rather than through a def.
+  #
+  # Only for a body that stays behind. A block-taking method is compiled by
+  # whoever writes the block, so its body travels and the consumer infers the
+  # return type from it, exactly as the producer did.
+  def self.check_carried_types_written(a_def : Def, type_name : String) : Nil
+    return if a_def.iyi_from_impl?
+    return if a_def.return_type
+    return if a_def.name == "initialize"
+    return if a_def.name.ends_with?('=')
+
+    a_def.raise <<-MSG
+      `#{type_name}##{a_def.name}` does not say what it returns, and `#{type_name}` travels in this module's `.iyimod`
+
+      `#{type_name}` is not exported, so R-2 did not ask its methods for types. \
+      Something exported names it — a `pub` signature, or a body that travels — \
+      so a consumer holds one and calls this. It types the call from the header \
+      the artifact carries: without a return type it infers `Nil`, and the \
+      symbol it asks the linker for is not the one this module emitted.
+
+      Annotate the return type. `getter n : Int32` writes it for a getter.
+      MSG
+  end
+
   # Marks a parsed reconstruction as what it is.
   #
   # A `def` from an artifact is a header: a call to it is typed from its return

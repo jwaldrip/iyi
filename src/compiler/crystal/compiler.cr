@@ -874,10 +874,17 @@ module Crystal
     # caller is: `run` travels, `run` calls `Hidden#tweak`, so the consumer
     # compiles both. A header for it would promise a symbol nobody emitted.
     #
-    # R-2's block rule is not applied to any of them, because it is about what
-    # another module reads and nothing here is readable. It costs nothing to
-    # skip: the annotation is what types a call to a def whose body stayed
-    # behind, and these bodies do not stay behind.
+    # R-2's *block* rule is not applied to any of them, because a block is
+    # typed by the body that takes it and these bodies travel with the type.
+    #
+    # The return type is a different matter, and skipping it was a bug. "Nothing
+    # here is readable" holds only until an exported signature names the type:
+    # then a consumer holds one, calls a method on it, and types that call from
+    # the header this writes. A header with no return type infers `Nil` and asks
+    # for a symbol this module never emitted, which is R-2's own failure mode
+    # arriving through a type instead of through a def. So a body that stays
+    # behind has to say what it answers; one that travels is inferred by
+    # whoever compiles it, as it was here.
     private def iyi_carried_methods(program : Program, filename : String,
                                     container : String, type : Type) : Array(IyiMod::Signature)
       signatures = [] of IyiMod::Signature
@@ -891,6 +898,8 @@ module Crystal
           signatures << signature
           if iyi_takes_block?(item.def)
             iyi_record_mono_body program, filename, container, signature, item.def
+          else
+            IyiMod.check_carried_types_written item.def, type.to_s
           end
         end
       end

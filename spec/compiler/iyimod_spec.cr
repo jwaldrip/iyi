@@ -825,6 +825,86 @@ describe Crystal::IyiMod do
     end
   end
 
+  # The same rule, reached through a type instead of through a def. An
+  # unexported type's methods were never asked for types, on the reasoning that
+  # nobody outside the module can read them — which stops being true the moment
+  # an exported signature names the type, because then a consumer holds one and
+  # calls it. The artifact carries the type's object code, so the header and the
+  # symbol have to agree, and `def n` with no return type infers `Nil` while the
+  # producer emitted `Int32`.
+  it "refuses a carried type's method that does not say what it returns" do
+    with_tempdir("iyimod_r2_carried") do
+      Dir.mkdir_p "app"
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/a
+
+        puts App::A.make.n
+        IYI
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      write = ->(getter_line : String) do
+        File.write "app/a.iyi", <<-IYI
+          module app/a
+
+          struct Hidden
+            #{getter_line}
+
+            def initialize(@n : Int32)
+            end
+          end
+
+          pub def make : Hidden
+            Hidden.new(7)
+          end
+          IYI
+        compiler = create_spec_compiler
+        compiler.prelude = "iyi/prelude"
+        compiler.emit_iyimod = "mods"
+        compiler
+      end
+
+      expect_raises(Crystal::TypeException, /`App::A::Hidden#n` does not say what it returns/) do
+        write.call("getter n").compile source, "unused"
+      end
+
+      # And it is only asked of a build that writes an artifact: without one
+      # there is no header for anyone to read and the inference is this module's
+      # own business.
+      File.write "app/a.iyi", <<-IYI
+        module app/a
+
+        struct Hidden
+          getter n
+
+          def initialize(@n : Int32)
+          end
+        end
+
+        pub def make : Hidden
+          Hidden.new(7)
+        end
+        IYI
+      plain = create_spec_compiler
+      plain.prelude = "iyi/prelude"
+      plain.compile source, File.expand_path("plain")
+      `./plain`.chomp.should eq "7"
+
+      # Annotated, the program crosses the boundary.
+      write.call("getter n : Int32").compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "7"
+
+      File.delete "app/a.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "7"
+    end
+  end
+
   # A method that takes a block is instantiated with the caller's block inlined
   # into it, so its machine code belongs to whoever wrote the block. The
   # producer emits none — it would be a duplicate for a block it happened to
