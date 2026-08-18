@@ -35,14 +35,14 @@ puts numbers.includes?(9)                   # => true
 puts numbers.sorted.join(",")               # => 1,1,2,3,4,5,6,9
 
 # 4. Adding them up two ways.
-puts numbers.sum                            # => 31
-puts numbers.reduce(0) { |a, b| a + b }     # => 31
+puts numbers.sum                        # => 31
+puts numbers.reduce(0) { |a, b| a + b } # => 31
 
 # 5. Text.
 greeting = "Hello, World"
-puts greeting.downcase                      # => hello, world
-puts greeting.includes?("World")            # => true
-puts greeting.size                          # => 12
+puts greeting.downcase           # => hello, world
+puts greeting.includes?("World") # => true
+puts greeting.size               # => 12
 
 # 6. Counting words, which is where a dictionary earns its place.
 counts = {} of String => Int32

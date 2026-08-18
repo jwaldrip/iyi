@@ -502,9 +502,6 @@ the design, or argue with a number. Not somebody with a program to ship.
   scope-owned cancellation and a `Share` marker. None of it is built.
 - **No package manager, no standard library, no self-hosting.**
 - **Linux x86-64 only.** Other targets belong to Crystal and are untested here.
-- **The formatter does not know iyi's syntax.** It is Crystal's, and a module
-  header, `pub`, `trait` or `impl` stops it. `iyi tool format` says so and
-  leaves the file alone rather than reporting a bug in itself.
 - **Artifacts are version-locked.** A `.iyimod` written by another build of the
   compiler is rejected and rebuilt, never migrated.
 - **`derive` macros do not cross modules yet.** A module's own macros do travel

@@ -135,8 +135,8 @@ end
       # since `__crystal_raise_overflow` prints and exits (SPEC.md III.1.4).
       # The `!` form is the same instruction without the check.
       {% for name, type in {
-                             to_i:  Int32,
-                             to_f:  Float64,
+                             to_i:   Int32,
+                             to_f:   Float64,
                              to_i32: Int32,
                              to_i64: Int64,
                              to_u8:  UInt8,

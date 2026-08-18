@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **`iyi tool format` formats iyi.** The formatter is Crystal's and knew none
+  of iyi's syntax, so a module header, a `pub`, a `trait`, an `impl`, a
+  `using`, a bounded `forall`, a `where`, a `defer`, a `!` or an `.or` sent it
+  into "there's a bug formatting this file". It knows all of them now, and a
+  directory is searched for `.iyi` files as well as `.cr` ones. The prelude and
+  the nine samples format to themselves, which is the test that made the last
+  three of those show up.
+
 ### Fixed
 
 - **A generic imported from an artifact links again when its type argument is
