@@ -172,6 +172,12 @@ jobs:
       - name: Build the samples again with their modules' source deleted
         run: bash bench/samples_roundtrip.sh
 
+      # A library arriving with a feature is a decision, and this is where it
+      # gets noticed. Seven undefined symbols in any iyi program (SPEC.md III.9),
+      # and a new one fails here rather than on somebody's machine.
+      - name: The dependency floor
+        run: bash bench/dependency_floor.sh
+
   targets:
     needs: build
     runs-on: ubuntu-24.04

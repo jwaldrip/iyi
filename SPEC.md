@@ -2646,6 +2646,133 @@ that need nothing.
 3. Raw syscalls for `write` and `exit` on Linux, which the tree can already do.
 4. Nothing about LLVM, and nothing about self-hosting.
 
+### III.10 Every library Crystal needs, and iyi's answer for each: **PROPOSED**
+
+III.9's seven symbols are true and they are also flattering, because they are
+the floor of a language with no IO, no concurrency, no regex, no TLS and no
+serialisation. **Every dependency below arrives attached to a feature**, and the
+decision about it has to be taken when the feature is written rather than after,
+for the reason II.5 gives about the collector: a library that is already reached
+from a hundred places is not a decision any more.
+
+This section exists so the decision is taken once, in a list, from Crystal's own
+published inventory rather than from whatever turns up.
+
+**The principle, stated once so the table can be short: iyi owns everything
+above libc, and libc is optional.** That is Go's position and Go's evidence is
+the whole argument. `CGO_ENABLED=0` produces a static binary that depends on
+nothing; `crypto/tls`, `encoding/xml`, `encoding/json`, `math/big`, `regexp` and
+`compress/flate` are all written in Go; the runtime talks to the kernel
+directly. None of that is purity. It buys cross-compilation that works from any
+machine to any target, one artifact per target rather than a matrix against
+system libraries, no build that fails because a header is missing, no version
+skew between a package and a `.so`, and a container image with nothing in it.
+All of those are developer experience, which is the thing being competed for.
+
+#### The inventory
+
+From Crystal's own *Required libraries* page, plus every `@[Link]` in this tree.
+"Reachable" means reachable from an iyi program today.
+
+| Library | What it is for | Reachable | iyi's answer |
+|---|---|---|---|
+| libc | everything | yes: `write`, `exit`, `memset` | keep, and make it optional on Linux via raw syscalls |
+| Boehm GC | allocation | yes: 4 entry points | **own it.** II.5 already requires a precise collector for R-4 |
+| compiler-rt builtins | 128-bit divide, float conversion, overflow-checked multiply | no | **already owned**: `src/crystal/compiler_rt/` ports them to Crystal. Keep porting |
+| libunwind / libgcc | exception backtraces | no | own the walk. III.1 is what makes this cheap: errors are union members, so only a panic unwinds |
+| libevent | event loop | no | **never adopt it.** Crystal already wrote native backends and libevent is its default only on OpenBSD, NetBSD, Dragonfly and Solaris |
+| pthread | threads | no | kernel calls directly, as Go does. Arrives with III.4 |
+| libdl | `dlopen` | no | do not offer dynamic loading |
+| libm | `sqrt`, `pow` | no | LLVM intrinsics where they exist, iyi where they do not |
+| libiconv | encoding conversion | no | never. UTF-8 only, which is Go's answer and already iyi's |
+| PCRE2 | `Regex` | no | own it, and take RE2's semantics rather than Perl's |
+| OpenSSL (libssl, libcrypto) | TLS, digests | no | digests **already owned** (`src/crystal/digest/`). TLS: not in 0.x, own it eventually, a binding never in the prelude |
+| zlib | `Compress` | no | own it. DEFLATE is a known quantity and arrives with HTTP |
+| libxml2 | `XML` | no | no XML in the prelude. A package, written in iyi |
+| libyaml | `YAML` | no | same, and Go ships no YAML at all |
+| GMP / MPIR | `BigInt`, `BigFloat` | no | own it or do without. Go's `math/big` is Go |
+| libffi | the interpreter's FFI | no | gone with the interpreter (V.11) |
+| LLVM, libstdc++ | the compiler's back end | no | compiler only. Part V.9 and B.2 |
+
+**Two of them are already answered by work in this tree and neither was on
+anybody's list.** `compiler_rt` is ported to Crystal, so the routines LLVM emits
+calls to are iyi's own code rather than a link against clang's runtime. And MD5
+and SHA1 are Crystal implementations in `src/crystal/digest/`, which is why the
+artifact's hashing needs no libcrypto. The pattern to notice is that both were
+cheap and both removed a dependency permanently.
+
+#### The four that need a real decision
+
+Everything else in the table is either already owned or a feature not to offer.
+These four are where the work is.
+
+**1. The event loop, and it is the cheapest big win because it is already
+done.** `src/crystal/event_loop/` carries `epoll`, `kqueue`, `io_uring`, `iocp`,
+`polling` and `wasi` backends beside the `libevent` one. Crystal moved off
+libevent for mainstream platforms and iyi inherits that for free. What matters is
+the timing: **III.4 is proposed and unbuilt**, so the choice of what structured
+concurrency is written against is live right now, and the only wrong answer is
+the one that reaches for libevent because it is the shortest path. Adopting it
+would put a C library under every concurrent iyi program, permanently, to save
+work that has already been done by somebody else.
+
+**2. The collector.** III.9 and II.5. Nothing to add except that it is first,
+because R-4 waits on it.
+
+**3. Regex, and the semantics are the interesting part.** Owning PCRE2 removes a
+dependency from iyi programs *and* from the compiler, which links it today. But
+writing a regex engine is a choice about the language, not a port: PCRE
+backtracks and can be made to take exponential time on ordinary-looking input,
+which is the standard denial-of-service in every language that ships it. Go
+refused that and took RE2's guarantee instead: linear time, at the cost of
+backreferences and lookbehind. **Recommendation: take Go's trade.** A language
+whose selling point is that the compiler will not surprise you should not ship a
+library that surprises you at runtime. Say what is missing in the documentation
+and mean it.
+
+**4. TLS, which is the one to be honest about.** This is the largest library iyi
+would ever write and the only one where being wrong is a vulnerability rather
+than a bug. Three options, in order of how much they cost: no TLS in 0.x, which
+is where the language is anyway; a binding to OpenSSL as a package under III.6,
+which is available immediately and never belongs in the prelude; and a TLS 1.3
+implementation in iyi, modern ciphers only, which is the eventual answer and
+should not be attempted until there is something to protect and somebody to
+audit it. What must not happen is OpenSSL becoming reachable from the prelude,
+because that is the version nobody can back out of.
+
+#### The rule, so this is not re-litigated per library
+
+**No C library may be reachable from the prelude.** A binding to one is a
+package (III.6, III.7), never a prelude feature. That keeps the floor a property
+of the language rather than a habit of whoever wrote the last commit, and unlike
+most rules in this document it is checkable by a machine.
+
+**So it is checked.** `bench/dependency_floor.sh` builds every sample, reads the
+undefined symbols out of each binary, and fails when the union grows past the
+seven. It runs in CI beside the roundtrip check. Proven to fail the only way that
+counts: adding a two-line `lib LibM` call to `hello.iyi` makes it exit non-zero
+naming `sqrt`, and removing it makes it pass again.
+
+A new symbol is not automatically wrong, and the script says so. It is a
+dependency being taken on, and the way to take one on is to add it to the list in
+the same commit, which is a sentence somebody has to write and a reviewer gets to
+read. What the check refuses is the other version, where a library arrives with a
+feature and nobody finds out until a build fails on a machine that does not have
+it.
+
+#### Where zero is not reachable, said plainly
+
+On Linux this bottoms out at nothing: the kernel is the interface, `src/syscall/`
+already issues raw syscalls, and a static binary with no libc is a normal thing
+to produce. **On macOS it does not.** Apple's only supported interface is
+libSystem, raw syscalls are explicitly not a stable ABI, and a binary that makes
+them is one OS release from breaking. So the floor there is libSystem and that is
+Apple's rule rather than a gap in this design. Windows is the same story with a
+different name.
+
+The honest form of the claim is therefore: **no dependency iyi chose**, and on
+Linux no dependency at all.
+
 ---
 
 ## Part IV: `.iyimod`, the module artifact
@@ -4304,6 +4431,15 @@ Named honestly, so nobody mistakes this draft for complete.
     in any iyi program, four of them the allocator. The collector is the only
     open item and II.5 already required it for R-4, so it is not dependency
     hygiene. Self-hosting stays where B.2 put it.
+16. ~~**Every other C library.**~~ **Specified in III.10**: Crystal's published
+    inventory, one line each, with the principle that iyi owns everything above
+    libc and libc is optional. Two were already answered by work nobody had
+    counted: `compiler_rt` is ported to Crystal and the digests are Crystal, so
+    neither clang's runtime nor libcrypto is linked. The event loop is the
+    cheapest of the remaining four because Crystal already wrote the native
+    backends, and III.4 being unbuilt is why the choice is live. And the rule is
+    checked rather than asserted: `bench/dependency_floor.sh` fails in CI when a
+    program grows a symbol.
 
 ---
 
@@ -4364,6 +4500,10 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 13 | **Does the registry serve prebuilt artifacts? (III.7)** | yes, but last, and never as the only form. Source is primary and the artifact is a cache keyed on the four-tuple the format already enforces. It also cannot ship before a whole-artifact signature exists, since an artifact reaching the linker is code execution |
 | 14 | **A `Docs` section in the artifact? (III.7, III.8)** | yes. It is what makes `iyi doc` and the index possible without the deleted generator, and it is the one addition that serves two claims at once |
 | 15 | **Does the daemon become the language server's process? (III.8)** | yes, or it goes in `CRYSTAL_ONLY`. It was measured against builds and withdrawn; an editor is the workload its pre-analysed state was actually for. What it must not stay is maintained and unreachable |
+| 16 | **Does III.4 use libevent or the native backends? (III.10)** | native, and it is not close. Crystal already wrote `epoll`, `kqueue`, `io_uring` and `iocp` backends and libevent is its default only on four platforms iyi does not target. Adopting it would put a C library under every concurrent iyi program to save work already done |
+| 17 | **Regex: PCRE semantics or RE2's? (III.10)** | RE2's. Linear time, no backreferences, no lookbehind. A language selling "the compiler will not surprise you" should not ship a library that takes exponential time on ordinary input, and Go already took this trade |
+| 18 | **TLS (III.10)** | none in 0.x; an OpenSSL binding as a package if something needs it sooner; own it eventually, TLS 1.3 only, and not before there is something to protect and somebody to audit it. What must not happen is OpenSSL reachable from the prelude |
+| 19 | **Is "no C library in the prelude" a rule or a habit? (III.10)** | a rule, and it is checked: `bench/dependency_floor.sh` fails in CI when a program grows a symbol. Proven to fail by adding a `lib LibM` call to a sample |
 
 ### B.2: The one decision the fork already made: **SETTLED: not a self-hosting project**
 
