@@ -2227,6 +2227,425 @@ and so is the cycle refusal R-1 asserted and the compiler did not perform.
 Rule 5 is the one with a real cost and no measurement behind it yet, and it is
 the one to be suspicious of.
 
+### III.6 Crystal interoperation: **PROPOSED**
+
+The question, asked as "how does iyi use a shard without rebuilding it every
+build, the way Gleam uses an Elixir package?"
+
+**What Gleam actually does, because the precedent is narrower than it sounds.**
+A Gleam function may be declared with no body and an
+`@external(erlang, "module", "function")` annotation. The developer writes the
+Gleam type. The compiler does not check it against the Erlang function, and
+cannot: Erlang has no types to check against. A wrong annotation is not a
+compile error, it is a crash at the call. Gleam's guarantee stops at that edge
+and Gleam says so. What Gleam gets for it is the whole BEAM ecosystem, and the
+trade is judged worth it by everybody using it.
+
+**iyi's version of the problem is harder in one way and much easier in
+another.** Easier: there is no foreign function interface here at all. A shard
+and an `.iyi` module are compiled by the same compiler, into the same object
+format, with the same calling convention, against the same collector. A Crystal
+method and an iyi method are the same machine code, and the only question is
+what the type checker is told about it.
+
+Harder: what it has to be told does not exist. Three of the four rules are
+broken by ordinary shard code.
+
+- **R-2 has nothing to read.** `def parse(str)` is idiomatic Crystal and carries
+  no types. Crystal recovers them by inference over the whole program, which is
+  exactly the thing R-1 refuses to do.
+- **R-3 is broken on purpose.** The Appendix's own count: 77 of 484 types are
+  reopened across module boundaries, `String` by five modules. A shard does not
+  merely lack types at its edge, it *changes types iyi has closed*, and the
+  coherence check in IV.4 has no way to see that it happened.
+- **R-5 does not survive.** A shard's macros are written against a global view.
+
+So the boundary cannot be a `require`. It has to be a place where the four rules
+are restated by hand for exactly the surface being used.
+
+**The proposal: an `extern module`, and the shard compiled once behind it.**
+
+```crystal
+extern module vendor/http from shard "http_client"
+
+pub def get(url : String) : String          # R-2 written here, by the consumer
+pub struct Response                          # named, not reopened
+  pub def status : Int32
+end
+```
+
+One build compiles the shard under Crystal's rules and writes a `.iyimod` whose
+`Exports` are the binding's signatures and whose `ObjectCode` is the shard's.
+From that point the artifact is an ordinary artifact: version-locked as IV.5
+locks everything, hashed as IV.3 hashes everything, read by IV.1f like any
+other. **The shard is compiled once per artifact, not once per build**, which is
+the whole of what was asked.
+
+**Four rules the boundary has to carry, and they are not negotiable.**
+
+1. **The binding asserts and is not checked, and this is written down where a
+   person will read it.** If the signature is wrong the failure is an undefined
+   symbol, or worse, a call that returns something of another type. This is
+   Gleam's trade taken deliberately rather than discovered. The alternative
+   (check the binding against Crystal's inferred types) is available and is the
+   better second version: the compiler *has* those types, because it inferred
+   them to compile the shard.
+2. **The shard's opens stay inside the shard.** It may reopen `String` for its
+   own use; those methods are not visible to iyi and must not be, because a
+   consumer reading the artifact cannot see them and R-3's coherence answer
+   depends on that being the whole story.
+3. **No generic may cross unmonomorphised.** A binding names `Array(Int32)`, not
+   `Array(T)`. A shard's generic body is not compilable under iyi's rules, so
+   `MonoBodies` cannot carry it, and what travels has to be code the producing
+   build already emitted.
+4. **No macros cross.** R-5, unchanged.
+
+**Why this is cheaper to build than it looks.** The mechanism that records an
+inferred type as though it had been written already exists and is already load
+bearing: `IyiMod.signature` renders a carried type's methods into the artifact,
+and the check that they must carry their return types is what stops a consumer
+asking the linker for a symbol nobody emitted. `iyi wrap <shard>` writing a
+binding skeleton from the shard's inferred surface is the same operation aimed
+at a different input.
+
+**What it does not give, said here rather than found later.** No type checking of
+the shard's interior. No `require` from an `.iyi` file, ever. No transitive
+shards for free: a shard's own dependencies are compiled into it or the binding
+does not link. And no answer at all for a shard whose interface *is* macros,
+which is a large fraction of the ones worth wanting.
+
+### III.7 Packages, and discoverability: **PROPOSED**
+
+Shards is the part of Crystal a person meets second and it is the part that
+decides whether they stay. This section is longer than it wants to be because
+the interesting half is not resolution, it is **discovery**, and iyi holds one
+asset for that which no other ecosystem does.
+
+**The asset, stated first.** Every other package registry indexes either prose
+or source. `pkg.go.dev` is the best of them and it does not build anything: it
+parses with `go/ast` and `go/doc` and extracts what it can, degrading when the
+code will not compile. iyi does not have to parse or build, because **R-2 means
+every exported signature is already written down, and IV.2 already puts it in a
+file**. `iyi mod dump` prints an exact API surface today, from an artifact,
+without a compiler run and without the source existing. An index built from that
+is not a best effort at the API, it *is* the API.
+
+That is worth more now than it would have been five years ago. A model writing
+iyi code needs exact signatures; given prose it invents them. An endpoint that
+returns a module's `Exports` as data is a better answer to that than any amount
+of documentation, it needs no new mechanism, and it falls out of a rule that is
+already built for another reason.
+
+**One gap, and it is small.** The artifact carries no doc comments: there is no
+`doc` field on `Signature` or `TypeDecl` and nothing in `IyiMod.declarations`
+renders one. So a `Docs` section is the enabling change for both this and for
+`iyi doc` (III.8). It is additive, it is text, and it is what the format already
+does with everything else.
+
+#### Identity, resolution, integrity
+
+Three decisions, each taken from the language that already got it right.
+
+**Identity is the import path, and the import path is a URL.** R-1 already says a
+module's name is its file's path. Extend the same rule outward, as Go does:
+`github.com/user/thing/http` is the repository, the module and the import, with
+no central registry owning the namespace. This kills name squatting, needs no
+registry to be up in order to build, and means a fork is a different module
+rather than an argument. Major versions take a path suffix, `/v2`, so two major
+versions of one library coexist in a program instead of being a resolution
+failure. iyi gets this cheaper than Go did, because a module already *is* a path.
+
+**Resolution is minimal version selection, not a solver.** For each module in the
+graph, take the highest of the minimum versions anything asked for. That is the
+whole algorithm. It is deterministic, it needs no SAT solver, it produces no
+lockfile to conflict in a merge, and adding a dependency cannot silently upgrade
+an unrelated one. Shards uses a solver and inherits every solver's failure mode:
+two runs of the same manifest can disagree, and the diagnostic when it fails is
+about the solver rather than about the program.
+
+**Integrity is a second file, and it is not a lockfile.** `iyi.mod` is policy: the
+minimums, written by a person. `iyi.sum` is fact: content hashes, written by the
+tool, and its only job is to notice that what arrived is not what arrived last
+time. Go's split, for Go's reason: merging two branches that each added a
+dependency should be a merge of two manifests, not a fight over a resolved tree.
+
+#### The part that is genuinely new: shipping the artifact
+
+`install` in every ecosystem worth copying means *download source, then build*.
+iyi could mean *download*, because IV.1g puts object code in the artifact. Before
+claiming that, here is why nobody else does it.
+
+| ecosystem | ships | keyed on | on a miss |
+|---|---|---|---|
+| Cargo | source only | n/a | n/a |
+| Hex | source only, no `.beam` | n/a | n/a |
+| Swift binary frameworks | `.xcframework` | compiler, platform, `BUILD_LIBRARY_FOR_DISTRIBUTION` | no standard fallback |
+| Stack | cached objects | build-plan hash | rebuild |
+| Nix substituters | any output | full input derivation hash, signed | rebuild from source |
+
+Cargo's reasons are the honest ones and they are three: feature flags mean a
+dependency has no single compiled form; platform fragmentation is worse than a
+target triple (glibc against musl on the same triple); and source-first is what
+lets a person read what they are about to run.
+
+**iyi answers the first two already, and the answer is enforced rather than
+promised.** An artifact records the compiler version *and build commit*, the
+target triple, and the flag set, and refuses to be read under any other. Proven
+by trying it: a debug artifact offered to a `--release` build is refused by name,
+with the reason, because macros branch on flags. So iyi's cache key is not a
+guess to be designed, it is the four-tuple the format already carries:
+
+> **`{format version, compiler version+commit, target triple, flag set}`**
+
+Which makes the design Nix's rather than Swift's: key on the whole input, sign
+it, publish as many as are worth publishing, and **fall back to source on a
+miss**. A miss is then a build, which is what every other ecosystem does every
+time. The registry serves one source tarball and N artifacts, N grows with how
+many compilers and targets are worth precompiling for, and nothing breaks when
+N is zero.
+
+Cargo's third reason stands and is not answered by any of this: an artifact
+cannot be read. So **source is the primary form and the artifact is a cache**,
+never the only thing published, and a build must be able to reproduce the
+artifact from the source it claims to be. That is what the hashes in IV.3 are
+for, and it is the property that has to be checked rather than asserted.
+
+**And it changes the security model, which IV.2a is explicit about not being
+designed for.** The per-section checksum is 64 bits of MD5 and it is there to
+catch a truncated file, which it does. A file that travels between machines is a
+different threat: an artifact carries object code that goes to the linker and
+macro source the compiler expands, so a hostile one is arbitrary code execution
+at build time. Distribution therefore needs a whole-artifact signature and a
+published key, in the same commit that first serves an artifact to anybody. Until
+then artifacts are a local cache and the registry serves source.
+
+#### What not to build
+
+- **No install-time scripts.** They are the supply chain's largest hole and there
+  is no reason to inherit it. A package is source and artifacts, and building it
+  runs the compiler and nothing else.
+- **No central name registry.** Identity is the path (above), so the registry is
+  a cache and an index, and losing it loses discovery rather than the ability to
+  build.
+- **No version solver.** See above; MVS or nothing.
+- **No transitive `using`.** R-2b says the consumer writes it. A dependency
+  cannot bring names into scope, and a package manager is not a reason to
+  reopen that.
+
+#### The first version, in order
+
+1. `iyi.mod`, MVS over path identity, source only, no registry: a fetcher and a
+   resolver. This is enough to have dependencies at all.
+2. `iyi.sum`, and reproducing an artifact from source to check it.
+3. The `Docs` section, and `iyi doc` reading artifacts (III.8).
+4. The index: `Exports` served as data, which is the discovery claim.
+5. Signed artifact distribution, only with 4 in place, because an index that
+   cannot say what a package's API is has nothing to serve.
+
+Artifact distribution is deliberately last. It is the differentiator and it is
+worth nothing until there is something to install.
+
+### III.8 Tooling: **PROPOSED**
+
+Go's developer experience is not one thing, it is a small set of verbs that
+always work: build, test, fmt, vet, doc, get. The verbs are unremarkable
+individually. What makes them the bar is that none of them has a bad day.
+
+Measured against that, iyi has `build`, `run`, `mod`, `env`, `clear_cache` and
+`tool`. What follows is what is missing, in the order the missing pieces should
+be built, with the reason each is where it is.
+
+#### 1. The formatter, which is first because it is nearly free
+
+`iyi tool format` refuses an `.iyi` file and exits non-zero. That is honest and
+it is also the sharpest thing on this list: `gofmt` is load bearing in Go's
+culture rather than decorative, and it ended style as a category of argument. A
+language competing on developer experience that cannot format its own source is
+arguing for a position it has not taken.
+
+**The work is bounded and countable.** The formatter is an AST visitor with 99
+`visit` overloads and none for iyi's nodes. There are nine of those nodes:
+`ModuleHeader`, `ImportDecl`, `UsingDecl`, `TraitDef`, `ImplDef`,
+`AssocTypeDecl`, `Propagate`, `Defer`, `Recover`, and every one of them already
+has `to_s`, `clone_without_location` and `accept_children`, because IV.6's parser
+work needed them. So this is nine visit methods against an interface that
+already exists, plus the idempotency tests the formatter has for everything else.
+
+Two consequences worth naming. Formatting has to be **exit-code correct** for a
+directory containing both `.cr` and `.iyi` files, because today's non-zero exit
+means no repository can put `iyi tool format` in CI at all. And CI's existing
+`tool format --check src spec` covers Crystal source only, so nothing formats
+`src/iyi` or `samples/iyi`, which is where the language's own examples live.
+
+#### 2. A language server, and why iyi can have a good one
+
+This is the item where the compilation model pays a dividend nobody designed it
+for.
+
+**A language server for Crystal is hard for the same reason Crystal's rebuilds
+are slow: there is no unit smaller than the program.** Answering "what is the
+type here" means analysing everything, every time, because a class is open until
+the last line of the last file. That is the rule iyi drops.
+
+What R-1 leaves is exactly a language server's inner loop: **one module,
+type-checked against declarations, with the rest of the program absent.** That
+is not a thing to build, it is what `--use-iyimod` already does on every build,
+and IV.1f is the specification of it.
+
+What exists to build on, all of it reachable through `iyi tool` today:
+`context` answers the type of an expression at a cursor, `implementations`
+answers a call's definitions, `hierarchy` answers the type tree, `dependencies`
+answers the import graph, `expand` answers a macro, `unreachable` answers dead
+code. Those are hover, go-to-definition, symbol tree, and a diagnostics source,
+in all but name and protocol. `iyi tool context` on a sample answers with the
+right type today.
+
+What they lack is a process. Each pays full startup and full prelude analysis to
+answer one question, and an editor asks one on every keystroke.
+
+**Which is the thing the fork already built and then withdrew.** IV.1d's daemon
+holds a UNIX socket, speaks a framed protocol, keeps pre-analysed prelude state
+keyed by flag set, and serves builds from it. Two of the three things a language
+server needs are in there and working. The third, keeping a `Program`
+between requests rather than forking per build, is the part IV.1d never needed
+and an editor cannot do without. The daemon was measured, found not to pay for
+*builds*, and stopped being offered. **It is the wrong conclusion for the wrong
+consumer:** an editor session asks thousands of questions where a build asks one,
+which is precisely the workload the pre-analysed state was for.
+
+Two honest notes against it. It forks a child per build, so the reuse is the
+transport and the prelude cache rather than the analysis. And it is currently
+unreachable: `iyi` does not list `daemon`, so 487 lines and its spec are
+maintained and unreachable under the name a person types. If it is not going to
+become this, it belongs in `CRYSTAL_ONLY` with `init` and `spec`, named rather
+than silently absent.
+
+#### 3. The rest of the verbs, and which are design consequences
+
+| Go | iyi today | what it needs |
+|---|---|---|
+| `go build` | `iyi build` | nothing |
+| `go run` | `iyi run` | nothing |
+| `gofmt` | refuses `.iyi` | nine visit methods (above) |
+| `go vet` | `tool unreachable`, `tool flags` | a verb, not new analysis |
+| `go doc` | nothing; the generator was deleted (V.11's reasoning) | the `Docs` section from III.7, then a renderer over artifacts |
+| `go test` | `spec` redirects to Crystal | a runner, and it is not small: it needs a stdlib with assertions and a process model |
+| `go get`, `go mod` | nothing | III.7 |
+| `go doc` offline | nothing | falls out of artifacts: declarations are already local |
+
+`test` is the one that is a real project rather than a gap, and it is the one a
+person notices second. Nothing here proposes an answer for it; it is named so the
+list is honest.
+
+One thing that is a bug rather than a design question: `iyi tool` prints
+`Usage: crystal tool`, because the name fix reaches the top-level commands and
+not the subcommand's own usage.
+
+#### Order, and why this order
+
+1. **Formatter.** Cheapest, most visible, unblocks a CI format gate.
+2. **An in-process single-module analysis API.** The thing both the language
+   server and `iyi doc` need, and the only item here that is architecture rather
+   than plumbing.
+3. **The language server** over that: hover, definition, diagnostics, symbols.
+4. **`Docs` in the artifact, and `iyi doc`**, which is also III.7's index, so it
+   is one piece of work serving two claims.
+
+`test` and a package manager are both larger than any of these and neither is
+blocked by them.
+
+### III.9 The dependency floor: **MEASURED; the collector is the only item**
+
+"Zero external dependencies" is two questions that have been asked as one. They
+have different answers and only one of them is open.
+
+#### What an iyi program depends on, counted
+
+Every undefined symbol in a linked iyi program, and the list is the same for
+`hello.iyi` and for the Kemal port:
+
+```
+GC_init  GC_malloc  GC_malloc_atomic  GC_realloc      # libgc
+write  exit  memset                                   # libc
+```
+
+Seven symbols, four of them the allocator. Checked on all nine samples:
+identical set every time. The shared libraries are `libgc` and
+the platform's libc, and nothing else. Crystal's own `hello` additionally pulls
+`libiconv`, which iyi's `String` has no reason to want.
+
+So **an iyi program with no external dependencies is four allocator entry points
+and three libc calls.** That is not a project. Two thirds of it is already in
+the tree: `src/gc/none.cr` implements the four over `malloc` in 227 lines, and
+`src/syscall/x86_64-linux.cr` already issues raw Linux syscalls, so `write` and
+`exit` need no libc either. `memset` is `memset`.
+
+One thing to fix wherever this is taken up: `-Dgc_none` has no effect on an iyi
+program. The prelude declares `@[Link("gc")]` directly rather than going through
+the selection in `src/gc.cr`, so the flag is accepted and ignored. That line is
+where the choice belongs.
+
+#### The collector is not hygiene, it is R-4
+
+The reason to care is already in this document and it is not dependency count.
+**II.5 ruled that R-4 requires a precise collector**: shape-based stencilling
+needs a per-shape pointer map, Boehm is conservative and cannot supply one, and
+so "replace Boehm" is a prerequisite of R-4 rather than a runtime decision to be
+taken later. III.2 records the shape: precise, generational, non-moving.
+
+R-4 is also the rule with nothing behind it. Nothing in the compiler mentions
+`Monomorphize`, a dictionary or a GC shape, and the two defects fixed most
+recently were both on the boundary R-4 governs: a generic type read from an
+artifact had no object code to be compiled elsewhere into, and the synthesized
+`new` fell through the gap. **The collector work and the cross-module generic
+work are the same work**, and that is the argument for doing the collector, not
+the seven symbols.
+
+#### What the compiler depends on, which is a different list
+
+```
+libLLVM  libc++  libpcre2  libgc  libiconv  libSystem
+```
+
+Two of those are sheddable and neither is interesting: `pcre2` is the compiler's
+own regex, `iconv` is string encoding. `libc++` arrives with LLVM. **LLVM is the
+list**, and Part V.9 already priced what owning the back end would cost while
+declining to own the linker, for reasons that apply here with more force.
+
+#### Self-hosting, which is settled, and the thing it is being confused with
+
+B.2 settled it: iyi is not a self-hosting project. The argument is that Crystal
+paid for self-hosting at 33k lines total and iyi would pay at 291k, against rules
+that forbid the style most of those lines are written in. That argument is
+unchanged and nothing in this section reopens it.
+
+But "the only thing needed to build iyi is iyi" is a narrower claim than B.2
+answers, and worth separating so the question stops being asked as one:
+
+- **Porting this compiler to iyi.** What B.2 declined. 291k lines, and the
+  Appendix's count of reopened types is the reason: the source is written in the
+  style R-3 exists to forbid.
+- **A bootstrap chain**: a released iyi built by the previous released iyi.
+  This does not require porting anything. It requires *a* compiler for iyi
+  written in iyi, which is a much smaller target than the fork, because it has
+  to compile one language rather than two. Go's own path is the evidence and it
+  is not the flattering version: `gc` stayed a C compiler until Go 1.5, and the
+  transition was a mechanical translation rather than a rewrite.
+
+The second is not scheduled and should not be. It needs a standard library with
+IO, which does not exist, and every line of it is a line not spent on the four
+rules. **What is worth saying is that the program floor above does not depend on
+it at all**: seven symbols is reachable while the compiler stays a Crystal
+program, and a compiler that needs LLVM to build itself can still emit binaries
+that need nothing.
+
+#### Order
+
+1. Route the prelude's allocator through the flag, so `gc_none` means something.
+2. A precise, non-moving collector, because II.5 already requires one for R-4.
+3. Raw syscalls for `write` and `exit` on Linux, which the tree can already do.
+4. Nothing about LLVM, and nothing about self-hosting.
+
 ---
 
 ## Part IV: `.iyimod`, the module artifact
@@ -3866,6 +4285,26 @@ Named honestly, so nobody mistakes this draft for complete.
     it never had it. What stays: the *macro* interpreter, which is a different
     thing that runs at compile time and is what makes `{% %}` work.
 
+12. ~~**Using Crystal code.**~~ **Specified in III.6**: an `extern module` that
+    restates R-2 by hand for the surface being used, the shard compiled once
+    behind it into an ordinary artifact, and the boundary unchecked in the first
+    version the way Gleam's is. Three of the four rules are broken by ordinary
+    shard code, which is why it cannot be a `require`.
+13. ~~**Dependencies and discovery.**~~ **Specified in III.7**: path identity,
+    minimal version selection, a manifest and a sums file, source as the primary
+    form and the artifact as a signed cache keyed on the four-tuple the format
+    already enforces. The discovery half is the part with an advantage: R-2 means
+    an index built from declarations is exact rather than parsed.
+14. ~~**Tooling.**~~ **Specified in III.8**: the formatter first because it is
+    nine visit methods against an interface that already exists, then an
+    in-process single-module analysis API, then a language server over it. R-1 is
+    what makes that server cheap, and it is the one dividend of the compilation
+    model nobody designed for.
+15. ~~**The dependency floor.**~~ **Measured in III.9**: seven undefined symbols
+    in any iyi program, four of them the allocator. The collector is the only
+    open item and II.5 already required it for R-4, so it is not dependency
+    hygiene. Self-hosting stays where B.2 put it.
+
 ---
 
 ## Appendix: What measurement settled
@@ -3921,6 +4360,10 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 9 | ~~`Share` marker vs Erlang-style no sharing (III.4.4)~~ | **Decided: `Share`, on the count**: III.4.7 found the feared class empty and clean-sheet iyi code 77% shareable as written, 100% given a shareable immutable collection. That collection is now a stdlib obligation, not a nicety |
 | 10 | ~~**Is iyi ever meant to be self-hosted?**~~ | **Decided: no.** iyi's compiler is and remains a Crystal program. The language's claim is what it compiles, not what compiles it. See B.2 |
 | 11 | ~~**Keep Crystal's interpreter?**~~ | **Decided: no, and removed.** It was compiled out already, it cannot run an iyi program past the module header, and no commit of this fork had touched it in 153. An interpreter is a second implementation of the semantics, and the semantics are still moving. See V.11 |
+| 12 | **Is a Crystal binding checked or trusted? (III.6)** | trusted for the first version, checked for the second. Gleam trusts and says so, and the compiler already holds the inferred types the check would need, so this is an order-of-work call rather than a permanent one |
+| 13 | **Does the registry serve prebuilt artifacts? (III.7)** | yes, but last, and never as the only form. Source is primary and the artifact is a cache keyed on the four-tuple the format already enforces. It also cannot ship before a whole-artifact signature exists, since an artifact reaching the linker is code execution |
+| 14 | **A `Docs` section in the artifact? (III.7, III.8)** | yes. It is what makes `iyi doc` and the index possible without the deleted generator, and it is the one addition that serves two claims at once |
+| 15 | **Does the daemon become the language server's process? (III.8)** | yes, or it goes in `CRYSTAL_ONLY`. It was measured against builds and withdrawn; an editor is the workload its pre-analysed state was actually for. What it must not stay is maintained and unreachable |
 
 ### B.2: The one decision the fork already made: **SETTLED: not a self-hosting project**
 
