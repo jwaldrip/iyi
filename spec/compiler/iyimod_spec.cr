@@ -1441,6 +1441,71 @@ describe Crystal::IyiMod do
     end
   end
 
+  # The rest of what crosses the boundary once a consumer picks the arguments.
+  #
+  # The spec above and the one at the top of this file both write `Box(Int32)`,
+  # which is the form that was never in doubt: an instance is a type the
+  # consumer made and nothing marked it as the artifact's. These are the three
+  # shapes where the generic itself is the owner, so each one asks the same
+  # question the linker asked, on a different path. A method with its own
+  # `forall`, whose specialisation is picked twice over; an `impl` written on
+  # the generic, whose method is reached through the trait; and an instance of
+  # an instance, which numbers a type nothing declared.
+  it "specialises an imported generic however the consumer reaches it" do
+    with_tempdir("iyimod_generic_reach") do
+      Dir.mkdir_p "std"
+      File.write "std/box.iyi", <<-IYI
+        module std/box
+
+        pub trait Show
+          abstract def show : String
+        end
+
+        pub struct Box(T)
+          getter value : T
+
+          def initialize(@value : T)
+          end
+
+          def map(& : T -> U) : Box(U) forall U
+            Box(U).new(yield value)
+          end
+        end
+
+        impl Show for Box(T) forall T
+          def show : String
+            "shown"
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/box
+
+        puts Std::Box::Box.new(21).map { |v| v + v }.value
+        puts Std::Box::Box.new(1).show
+        puts Std::Box::Box.new(Std::Box::Box.new(5)).value.value
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "42\nshown\n5"
+
+      File.delete "std/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "42\nshown\n5"
+    end
+  end
+
   # The other half of `MonoBodies`, and the half no producer could ever emit
   # code for: a trait default is stencilled onto the implementing type, and the
   # implementing type here is declared by the *consumer*. There is no name the
