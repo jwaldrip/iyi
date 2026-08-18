@@ -22,9 +22,16 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 WORK="$(mktemp -d)"
 
-# The five that import a module. `hello`, `generics` and `errors` are single
-# files and exercise nothing here.
-SAMPLES="modules immutable collections init_order webapp"
+# The six that import a module. `hello` and `errors` are single files and
+# exercise nothing here.
+#
+# `generics` earns its place: it imports `std/carton`, a generic type whose
+# artifact carries no machine code, and constructs it both as `Carton(Int32).new`
+# and as `Carton.new(1)`. Those are two lookups, and while this list held only
+# the explicit form a consumer could not build the inferred one at all — the
+# form the README teaches. A check that cannot fail on the shape people write
+# is not checking the rule, it is agreeing with it.
+SAMPLES="modules immutable collections init_order webapp generics"
 
 cp -r "$REPO/samples/iyi/." "$WORK/"
 cd "$WORK" || exit 1

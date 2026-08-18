@@ -1,0 +1,34 @@
+# A generic type, and a trait implemented for it, in a module of their own —
+# so that something imports a generic rather than declaring one beside itself.
+#
+# `generics.iyi` declares its own `Box(T)` and can therefore say nothing about
+# the boundary. This module exists to be on the other side of one: what a
+# consumer gets here is six headers and the bodies it has to compile, and no
+# machine code at all, because a generic's methods exist once per instantiation
+# and the instantiations belong to whoever writes them (SPEC.md IV.2).
+
+module std/carton
+
+pub trait Labelled
+  abstract def label : String
+end
+
+pub struct Carton(T)
+  getter contents : T
+
+  def initialize(@contents : T)
+  end
+
+  # Not exported, and not asked for types by R-2 — but the artifact carries
+  # this type's declaration, so a header for it travels and has to agree with
+  # the symbol this module emitted. Hence the annotation.
+  def described : String
+    "carton of #{contents}"
+  end
+end
+
+impl Labelled for Carton(T) forall T
+  def label : String
+    described
+  end
+end

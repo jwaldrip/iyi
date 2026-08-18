@@ -4,6 +4,9 @@
 
 module samples/generics
 
+import std/carton
+using std/carton::{Carton, Labelled}
+
 pub trait Show
   abstract def show : String
 end
@@ -183,6 +186,30 @@ end
 
 puts Ranked.new(2).beats(Ranked.new(1))
 puts Ranked.new(7).best.n
+
+# ---------------------------------------------------------------------------
+# A generic from another module — SPEC.md IV.2, and R-1
+# ---------------------------------------------------------------------------
+#
+# Everything above declares its generic in this file, which is the case that
+# says nothing about separate compilation. `Carton(T)` is imported, and the
+# artifact `std/carton.iyimod` carries no machine code for it: a generic's
+# methods exist once per instantiation, so the bodies travel and this file
+# compiles the ones it asks for.
+#
+# Both ways of naming an instantiation are here on purpose. `Carton(Int32).new`
+# says which one it wants; `Carton.new(1)` infers it from the argument, which
+# is a different lookup — `new` is found on the *uninstantiated* generic's
+# metaclass and it was the form that did not survive the boundary, while every
+# check in this repository wrote the explicit one.
+puts Carton(Int32).new(2).label
+puts Carton.new(1).label
+puts Carton.new("tea").label
+
+# And the trait reaches an imported generic the same way it reaches a local
+# one: one impl, every instantiation, dispatching together.
+cartons = [Carton.new(3), Carton.new("cocoa")] of Labelled
+cartons.each { |c| puts c.label }
 
 # ---------------------------------------------------------------------------
 # What this sample would report as an error
