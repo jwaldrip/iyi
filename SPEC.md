@@ -4012,14 +4012,31 @@ Named honestly, so nobody mistakes this draft for complete.
       inside it — 16 of Kemal's 27 types travel that way, `new` withheld.
       A struct cannot: its size is its fields.
 
-    **And where it stops, which is a rule of this language rather than a bug.**
-    Kemal reaches everything through constants — `Config::INSTANCE`,
-    `HANDLERS`, one per handler — and `pub` does not take a constant, so
-    nothing a consumer could name hands it the objects. 22 types and 50
-    methods travel; almost none of them is reachable, because the thing that
-    would hand you one does not. That is the same gap this part already names
-    under "Exported constants", now with a shard behind it: it is the next
-    thing to build, not a workaround to find.
+    **Kemal hands out everything through constants, and a constant is
+    storage.** `Config::INSTANCE`, one `INSTANCE` per handler: a declaration
+    can name a type but not a global somebody else's object file holds. So the
+    generator writes a function per constant into the shim it already
+    generates, and functions cross like any other:
+
+        module Kemal
+          extend self
+
+          def config_instance : Kemal::Config
+            Kemal::Config::INSTANCE
+          end
+        end
+
+    `extend self` rather than `def self.`, because that is what an iyi module
+    header desugars to and the two sides have to agree on one symbol:
+    `Kemal@Kemal::config_instance` against `Kemal::config_instance`, which is
+    the same distinction that makes a module function what it is.
+
+    **Measured, on Kemal 1.12.0**: 15 module functions, 22 types carrying 50
+    methods, and an iyi program that reads the framework's own configuration —
+    `Kemal`, `3000`, `development`, `true`. What is left is the standard
+    library's vocabulary: 104 signatures still wait on `HTTP::Server::Context`,
+    `IO`, `HTTP::Handler` and a dozen more, and that is a decision per type
+    rather than a gap a generator can close.
 
 ---
 

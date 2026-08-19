@@ -237,6 +237,9 @@ module Crystal
     end
 
     types = type_declarations program, methods, root
+    accessors = constant_accessors program, root, types
+
+    signatures.concat accessors.map(&.[0])
 
     artifact = IyiMod::Artifact.new(
       module_name: root.downcase,
@@ -252,7 +255,7 @@ module Crystal
     IyiMod.write artifact, path
 
     keep_path = File.join(dir, "#{root.downcase}_keep.cr")
-    File.write keep_path, keep_file(program, root, signatures, types, dir)
+    File.write keep_path, keep_file(program, root, signatures, types, accessors, dir)
 
     io.puts
     carried = types.sum { |declaration| declaration.methods.size }
@@ -303,6 +306,67 @@ module Crystal
     io.puts "call by name. The symbols are local until that `objcopy`, and"
     io.puts "global is what a consumer links against. Nothing here goes through"
     io.puts "a C ABI: the two sides are one compiler and mangle names alike."
+  end
+
+  # The way to a shard's objects, which is the thing a boundary was missing.
+  #
+  # A library hands out what it has through constants — `Config::INSTANCE`,
+  # one handler apiece — and a constant is storage in the shard's own object
+  # rather than something a declaration can name. A function is not: it crosses
+  # like any other. So this writes one per constant, on the shard's own module,
+  # and the artifact declares it.
+  #
+  # `Kemal::Config::INSTANCE` becomes `Kemal.config_instance`, which is a name
+  # a consumer can guess from the constant's own.
+  private def self.constant_accessors(program : Program, root : String,
+                                      types : Array(IyiMod::TypeDecl)) : Array({IyiMod::Signature, String})
+    known = Set(String).new
+    types.each { |declaration| collect_known declaration, "#{root}::", known }
+
+    accessors = [] of {IyiMod::Signature, String}
+    root_type = program.types?.try &.[]?(root)
+    return accessors unless root_type.is_a?(NamedType)
+
+    collect_constants root_type, root, "", known, accessors
+    accessors
+  end
+
+  private def self.collect_constants(owner : NamedType, root : String, prefix : String,
+                                     known : Set(String),
+                                     accessors : Array({IyiMod::Signature, String})) : Nil
+    owner.types?.try &.each do |name, type|
+      case type
+      when Const
+        answer = type.value.type?
+        next unless answer
+
+        answer = answer.devirtualize.to_s
+        next unless nameable?(answer, root)
+        # Only a type that travelled: a name under the shard's own namespace is
+        # writable only if the artifact carries it.
+        next unless answer == root || !answer.starts_with?("#{root}::") || known.includes?(answer)
+
+        accessor = "#{prefix}#{name}".downcase
+        constant = "#{root}::#{prefix.gsub("_", "::")}#{name}"
+        constant = "#{root}::#{name}" if prefix.empty?
+
+        accessors << {
+          IyiMod::Signature.new(
+            name: accessor,
+            receiver: "",
+            parameters: [] of String,
+            block_parameter: "",
+            return_type: answer,
+            free_variables: [] of String,
+            required: false,
+          ),
+          constant,
+        }
+      when NamedType
+        next if type.is_a?(GenericType)
+        collect_constants type, root, "#{prefix}#{name}_", known, accessors
+      end
+    end
   end
 
   # The types the shard declares, with the methods that can be written down.
@@ -537,7 +601,9 @@ module Crystal
   # is what puts them there.
   private def self.keep_file(program : Program, root : String,
                              signatures : Array(IyiMod::Signature),
-                             types : Array(IyiMod::TypeDecl), dir : String) : String
+                             types : Array(IyiMod::TypeDecl),
+                             accessors : Array({IyiMod::Signature, String}),
+                             dir : String) : String
     # Relative, and written from where this file will sit: Crystal refuses an
     # absolute path in a `require`, and the shard is not on `CRYSTAL_PATH`.
     source = ::Path[File.expand_path(program.filename || "")]
@@ -549,10 +615,30 @@ module Crystal
       io << "# Written by `crystal tool bind`. Never called, and never edited:\n"
       io << "# it exists so that codegen emits the methods a consumer will call.\n"
       io << "require \"" << relative << "\"\n\n"
+      unless accessors.empty?
+        io << "# One function per constant the shard hands its objects out\n"
+        io << "# through. A constant is storage; a function crosses.\n"
+        io << "#\n"
+        io << "# `extend self` rather than `def self.`, because that is what an\n"
+        io << "# iyi module header desugars to and the two have to agree on the\n"
+        io << "# symbol: one writes `Kemal@Kemal::x`, the other `Kemal::x`.\n"
+        io << "module " << root << "\n"
+        io << "  extend self\n\n"
+        accessors.each do |(signature, constant)|
+          io << "  def " << signature.name << " : " << signature.return_type << "\n"
+          io << "    " << constant << "\n"
+          io << "  end\n"
+        end
+        io << "end\n\n"
+      end
+
       io << "fun __bind_keep : Nil\n"
       counter = 0
       signatures.each do |signature|
         counter = keep_call(io, root, signature, counter)
+      end
+      accessors.each do |(signature, _)|
+        io << "  " << root << "." << signature.name << "\n"
       end
       types.each_with_index do |declaration, index|
         qualified = "#{root}::#{declaration.name}"
