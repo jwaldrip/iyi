@@ -86,6 +86,17 @@ module Crystal
       @vars[name] = value
     end
 
+    # iyi: the REPL asks this so a later line can treat a name as a Var
+    # rather than a Call. Crystal's parser has no session, so `x` in
+    # `x * 7` is a method call unless we rewrite it (SPEC.md III.11).
+    def var?(name : String) : Bool
+      @vars.has_key?(name)
+    end
+
+    def var_names : Array(String)
+      @vars.keys
+    end
+
     # Calls the program's `interpreted_node_hook` hook with the macro ASTNode that was interpreted.
     def interpreted_hook(node : ASTNode, *, location custom_location : Location? = nil) : ASTNode
       @program.interpreted_node_hook.try &.call(node, false, false, custom_location)

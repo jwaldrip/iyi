@@ -16,19 +16,20 @@ and `-Dgc_none` still works and selects the default's allocator. The flag used
 to be accepted and ignored, because the prelude declared `@[Link("gc")]`
 directly; that was fixed first, then the default was flipped.
 
-The compiler lost `libiconv` (the Makefile passes `-Dwithout_iconv`) and keeps
-`libgc` and `pcre2`, both now measured rather than assumed. `-Dgc_none` was
-tried on the compiler itself and is not viable: it emits invalid IR ("Load
-operand must be a pointer", from `LLVM::Module#verify`) on some runs and dies
-in `main_user_code` on others, being a long walk over ASTs with parallel
-codegen and fibers under an allocator that never frees. Six internal regex uses
-were rewritten to string operations and pcre2 is still linked, because
-macro-level regex is a language feature: `macros/methods.cr` implements `=~`,
-`gsub`, `match`, `scan` and `split` over a `RegexLiteral`, and
-`semantic/literal_expander.cr` expands a user's regex literal. SPEC.md III.9
-and III.10 carry both findings, Appendix B holds the two calls they imply, and
-`bench/dependency_floor.sh` now checks the linked libraries beside the symbols,
-for the default build and for `-Dgc_boehm`, and fails when either grows.
+The compiler lost `libiconv` (the Makefile passes `-Dwithout_iconv`) and
+keeps `libgc` and, still, `pcre2`. `-Dgc_none` was tried on the compiler
+itself and is not viable: it emits invalid IR ("Load operand must be a
+pointer", from `LLVM::Module#verify`) on some runs and dies in
+`main_user_code` on others, being a long walk over ASTs with parallel
+codegen and fibers under an allocator that never frees. Compiler source
+no longer calls the stdlib `Regex`: macro-level regex runs on
+`src/compiler/crystal/rx.cr` (Appendix B #22). The binary still links
+`libpcre2-8.0.dylib` because Crystal's prelude `require "regex"` is
+enough to emit `@[Link("pcre2-8")]`. That leftover is a later commit,
+not a silent pass.
+`bench/dependency_floor.sh` now checks the linked libraries beside the
+symbols, for the default build and for `-Dgc_boehm`, and fails when either
+grows.
 
 iyi is no longer Linux x86-64 only. One compiler now emits for seven triples
 on four platforms: Linux x86_64 and aarch64, macOS x86_64 and aarch64, Windows
@@ -43,14 +44,67 @@ emitted objects. macOS x86_64 and aarch64: `exit`, `malloc`, `memset`,
 `realloc`, `write`, all libSystem. Windows msvc: `ExitProcess`,
 `GetProcessHeap`, `GetStdHandle`, `HeapAlloc`, `HeapReAlloc`, `WriteFile`, all
 kernel32, and the gnu triple adds `main`. wasm32-wasi: `wasi_fd_write` and
-`wasi_proc_exit`, which are WASI imports, plus `malloc` and `realloc` from
-wasi-libc; the wasm linker globals (`memory_base`, `stack_pointer`,
-`table_base`, `indirect_function_table`) are linker plumbing, not
-dependencies.
+`wasi_proc_exit`, which are WASI imports. `malloc` and `realloc` are gone:
+the prelude binds `llvm.wasm.memory.grow.i32` as a two-argument `fun` and
+bump-allocates over grown pages. An earlier finding that Crystal cannot
+reach `memory.grow` was an arity error, not an impossibility. The wasm
+linker globals (`memory_base`, `stack_pointer`, `table_base`,
+`indirect_function_table`) are linker plumbing, not dependencies.
 
 The compiler binary still links libLLVM, libc++, libpcre2, libgc and
-libSystem, so this floor is a property of what iyi builds rather than of what
-builds it. SPEC.md III.9 records why the compiler keeps its own collector.
+libSystem. The floor is a property of what iyi builds rather than of
+what builds it. SPEC.md III.9 records why the compiler keeps its own
+collector, and why pcre2 has not yet left the toolchain binary.
+
+Five decisions are recorded in SPEC.md Appendix B #20 through #26.
+
+Macro-level regex now runs on iyi's own engine, `src/compiler/crystal/rx.cr`,
+with RE2 semantics, differentially verified against pcre2 (#22). Compiler
+source no longer constructs a stdlib `Regex`. The compiler binary still
+links libpcre2, because the Crystal prelude's `require "regex"` emits
+`@[Link("pcre2-8")]` even when nothing calls it. What it costs a macro
+author: no in-pattern backreferences, no lookaround. A macro that uses
+one fails with a named error rather than quietly meaning something else,
+and no pattern, in a program or at compile time, can take exponential
+time.
+
+iyi writes its own garbage collector (#20), overruling the earlier plan to
+adopt gcry and pay it back in layouts. The goal is the owner's: control over
+concurrency, parallelism and performance, and owning the collector is the
+only path to it; gcry was hints about what has already been tried to pull
+Crystal off Boehm, and its measurements (~87% throughput at ~0.80x post-GC
+RSS against Boehm; precise stack roots correctness-stable and not an RSS
+win) are inherited as prior art rather than repeated. The bill is the bill:
+heap, stop-the-world, roots, finalizers and platforms are rebuilt in this
+tree. Until that collector reaches the stage that serves parallel codegen,
+the compiler keeps bdw-gc (#24, superseded and restated). The default build
+still allocates and never collects (#23): a long-running program grows
+without bound, `-Dgc_boehm` is the opt-in, and no 0.1.0 program is
+long-running, because there is no IO beyond `puts` and no concurrency.
+
+The interpreter comes back, on a different base (#25, reopening #11):
+`iyi repl` starts, reads a line, evaluates it on the 781-line macro
+interpreter, prints the result, and survives a bad line. Session
+variables persist across lines: each line is a fresh parse unit, so a
+bare `x` is a Call until the REPL rewrites names it already holds into
+Vars. Not the 11,377-line revert, which cannot run an iyi program past
+its module header. No C interop, so no libffi, and that is enforced:
+libffi is on `bench/dependency_floor.sh`'s denylist, and the gate was
+proven to fire by adding to a sample the exact `@[Link("ffi")]` shape a
+naive revert would produce. It failed at three independent layers,
+reporting the gained symbol `ffi_prep_cif`, the gained library
+`libffi.8.dylib`, and the denylist hit.
+
+wasm32 grows its own heap (#26). The prelude binds
+`llvm.wasm.memory.grow.i32` as a two-argument `fun` (memory index, then
+page delta) and bump-allocates over the grown pages. `malloc` and
+`realloc` are gone from the emitted `.wasm`; the remaining undefined
+symbols are the WASI imports `wasi_fd_write` and `wasi_proc_exit`, plus
+linker globals. An earlier probe used the one-argument form, failed
+verification, and was misread as "Crystal cannot bind this intrinsic".
+The two-argument form lowers to `memory.grow 0`. Accepting wasi-libc as
+the platform runtime, or documenting wasm32 as a qualified target, were
+both rejected.
 
 ## 0.1.0 — 2026-08-18
 

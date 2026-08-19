@@ -9,7 +9,9 @@
 # The commands left out are left out on purpose. `init` and `spec` belong to a
 # language with a package layout and a spec runner, and iyi has neither. The
 # playground and the documentation generator are not here at all: they went the
-# way the interpreter went, for the reason SPEC.md V.11 gives.
+# way the interpreter went, for the reason SPEC.md V.11 gives. The interpreter
+# itself came back as the `repl` slice, on the macro evaluator rather than the
+# removed runtime one, which is the call SPEC.md III.11 records.
 {% raise("Please use `make iyi` to build it, or set the i_know_what_im_doing flag if you know what you're doing") unless env("CRYSTAL_HAS_WRAPPER") || flag?("i_know_what_im_doing") %}
 
 require "log"
@@ -29,6 +31,7 @@ module Iyi
         build                    build an executable
         run                      build and run a program (default)
         mod                      inspect a .iyimod module artifact
+        repl                     a session: one line in, its value out
         env                      print environment information
         clear_cache              clear the compiler cache
         tool                     formatter and editor tools, Crystal's
@@ -50,7 +53,7 @@ module Iyi
   VERSION = {{ env("IYI_VERSION") || "0.1.0" }}
 
   # The ones that are this compiler doing this compiler's job.
-  DELEGATED = %w(build run mod env clear_cache tool)
+  DELEGATED = %w(build run mod repl env clear_cache tool)
 
   # The ones that belong to Crystal and are still in the binary underneath.
   # Named rather than swallowed, because "unknown command" would be a lie.

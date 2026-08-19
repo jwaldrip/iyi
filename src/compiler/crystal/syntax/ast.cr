@@ -694,11 +694,29 @@ module Crystal
     end
   end
 
+  # iyi: the flags a regex literal carries, owned by the compiler. This was the
+  # stdlib's `Regex::CompileOptions`, which tied the AST to `regex.cr`, the file
+  # that links pcre2; the bit values stay pcre2's so a `.cr` program still reads
+  # the same `Regex::Options` number it always did (SPEC.md III.10, Appendix B
+  # #22). MULTILINE keeps Crystal's meaning, PCRE2's MULTILINE and DOTALL
+  # together, which is why it is 6 and not 2.
+  @[Flags]
+  enum RegexOptions
+    None        =           0
+    IGNORE_CASE = 0x0000_0001
+    MULTILINE   = 0x0000_0006
+    EXTENDED    = 0x0000_0008
+    # Never set by the parser. @[Flags] inspect prints All when every
+    # member is on, and imx is those three bits; a reserved member
+    # keeps the inspect naming the flags a literal actually carried.
+    Reserved = 0x4000_0000
+  end
+
   class RegexLiteral < ASTNode
     property value : ASTNode
-    property options : Regex::CompileOptions
+    property options : RegexOptions
 
-    def initialize(@value, @options = Regex::CompileOptions::None)
+    def initialize(@value, @options = RegexOptions::None)
     end
 
     def accept_children(visitor)
@@ -714,7 +732,7 @@ module Crystal
     def pretty_print(pp) : Nil
       pp_type(pp, "RegexLiteral[", "]") do
         value.pretty_print(pp)
-        pp_option(pp, options, default: Regex::CompileOptions::None)
+        pp_option(pp, options, default: RegexOptions::None)
       end
     end
   end

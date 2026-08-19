@@ -1,6 +1,6 @@
 require "../../support/syntax"
 
-private def regex(string, options = Regex::CompileOptions::None)
+private def regex(string, options = RegexOptions::None)
   string = StringLiteral.new(string) if string.is_a?(String)
   RegexLiteral.new(string, options)
 end
@@ -1599,10 +1599,10 @@ module Crystal
     it_parses "1.!(\n)", Not.new(1.int32)
 
     it_parses "/foo/", regex("foo")
-    it_parses "/foo/i", regex("foo", Regex::CompileOptions::IGNORE_CASE)
-    it_parses "/foo/m", regex("foo", Regex::CompileOptions::MULTILINE)
-    it_parses "/foo/x", regex("foo", Regex::CompileOptions::EXTENDED)
-    it_parses "/foo/imximx", regex("foo", Regex::CompileOptions::IGNORE_CASE | Regex::CompileOptions::MULTILINE | Regex::CompileOptions::EXTENDED)
+    it_parses "/foo/i", regex("foo", RegexOptions::IGNORE_CASE)
+    it_parses "/foo/m", regex("foo", RegexOptions::MULTILINE)
+    it_parses "/foo/x", regex("foo", RegexOptions::EXTENDED)
+    it_parses "/foo/imximx", regex("foo", RegexOptions::IGNORE_CASE | RegexOptions::MULTILINE | RegexOptions::EXTENDED)
     it_parses "/fo\\so/", regex("fo\\so")
     it_parses "/fo\#{1}o/", RegexLiteral.new(StringInterpolation.new(["fo".string, 1.int32, "o".string] of ASTNode))
     it_parses "/(fo\#{\"bar\"}\#{1}o)/", RegexLiteral.new(StringInterpolation.new(["(fo".string, "bar".string, 1.int32, "o)".string] of ASTNode))
@@ -2410,7 +2410,12 @@ module Crystal
 
     assert_syntax_error "macro foo(x : Int32); end"
 
-    assert_syntax_error "/foo)/", "invalid regex"
+    # iyi: pcre2 is off the compiler, so the parser no longer validates a
+    # pattern it cannot promise semantics for (SPEC.md III.10). An invalid
+    # pattern now fails where it is used: the macro engine refuses it by name,
+    # a `.cr` program's own Regex raises at startup, a `.iyi` literal is
+    # refused by the expander.
+    it_parses "/foo)/", regex("foo)")
     assert_syntax_error "def =\nend"
     assert_syntax_error "def foo; A = 1; end", "dynamic constant assignment. Constants can only be declared at the top level or inside other types."
     assert_syntax_error "{1, ->{ |x| x } }", "unexpected token: \"|\", proc literals specify their parameters like this: ->(x : Type) { ... }"
@@ -2968,9 +2973,8 @@ module Crystal
         "%Q[" => "aAb".string,
         "%["  => "aAb".string,
         "\""  => "aAb".string,
-        "%r[" => "invalid regex",
-        "/"   => "invalid regex",
-        "%x[" => command("aAb"),
+        "%r[" => regex("a\\u{41}b"),
+        "/"   => regex("a\\u{41}b"),
         "`"   => command("aAb"),
         "%w[" => string_array("a\\u{41}b".string),
         "%W[" => string_array("aAb".string),
@@ -3101,10 +3105,10 @@ module Crystal
         "%|"  => "a[b]c".string,
         "\""  => "a[b]c".string,
         "%r[" => "Unterminated regular expression", # ref #5403
-        "%r{" => "invalid regex: missing terminating ] for character class at 6",
-        "%r|" => "invalid regex: missing terminating ] for character class at 6",
-        "/"   => "invalid regex: missing terminating ] for character class at 6",
-        "%x[" => "Unterminated command literal", # ref #5403
+        "%r{" => regex("a[b\\]c"),                  # iyi: no parse-time pattern check, so the unterminated class is the engine's to refuse (SPEC.md III.10)
+        "%r|" => regex("a[b\\]c"),                  # iyi: no parse-time pattern check, so the unterminated class is the engine's to refuse (SPEC.md III.10)
+        "/"   => regex("a[b\\]c"),                  # iyi: no parse-time pattern check, so the unterminated class is the engine's to refuse (SPEC.md III.10)
+        "%x[" => "Unterminated command literal",    # ref #5403
         "%x{" => command("a[b]c".string),
         "%x|" => command("a[b]c".string),
         "`"   => command("a[b]c"),

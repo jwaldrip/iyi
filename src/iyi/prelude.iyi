@@ -116,7 +116,7 @@ require "./hash"
     std_handle = -10 if fd == 0
     written = uninitialized Int32
     if LibC.WriteFile(LibC.GetStdHandle(std_handle), buffer,
-                      count.to_i32, pointerof(written), nil) == 0
+         count.to_i32, pointerof(written), nil) == 0
       return -1_i64
     end
     written.to_i64
@@ -163,10 +163,10 @@ require "./hash"
   end
 {% else %}
   {% raise "iyi: this target is not one iyi's prelude has platform bindings for. " \
-            "iyi supports Linux (x86_64, aarch64) via raw syscalls, macOS via " \
-            "libSystem, Windows via the Win32 API and wasm32-wasi via the WASI " \
-            "imports. Teach src/iyi/prelude.iyi a branch for this platform rather " \
-            "than linking something absent." %}
+           "iyi supports Linux (x86_64, aarch64) via raw syscalls, macOS via " \
+           "libSystem, Windows via the Win32 API and wasm32-wasi via the WASI " \
+           "imports. Teach src/iyi/prelude.iyi a branch for this platform rather " \
+           "than linking something absent." %}
 {% end %}
 
 # The allocator, selected rather than declared, because the selection has to be
@@ -465,66 +465,126 @@ require "./hash"
       destination
     end
   {% elsif flag?(:wasm32) %}
-    # iyi: The allocator on wasm32-wasi is wasi-libc's `malloc` and `realloc`,
-    # and that is a recorded finding rather than a settled choice. The
-    # objective says a program iyi builds needs nothing a person installs,
-    # and on wasm the platform's own interface is the WASI imports plus the
-    # linear memory itself, so the right allocator here would be a bump
-    # pointer over `memory.grow` pages, same shape as the Linux branch's
-    # arena. What was checked for reaching it, and what is missing:
+    # iyi: The default heap on wasm32-wasi is a bump pointer over
+    # `memory.grow` pages, the same arena shape as the Linux branch, and it
+    # closes the dependency floor's last finding on this target (SPEC.md
+    # III.9): `malloc` and `realloc` were the two undefined names in a wasm32
+    # object that are not the platform's own imports, and they came from
+    # wasi-libc, which is a libc a toolchain brings rather than an interface
+    # the platform guarantees. The linear memory is the platform's allocator
+    # here, so the arena grows it the same way the Linux branch mmaps.
+    # Allocate, never free; `free` is bound nowhere on any path, and a
+    # program that outlives its memory is what allocating without collecting
+    # asks for.
     #
-    # * No binding exists to get there: `src/intrinsics.cr`,
-    #   `src/crystal/system/wasi/` and `src/lib_c/wasm32-wasi/` contain no
-    #   `memory_grow`, `memory_size` or `wasm_memory` — no `Intrinsics`
-    #   entry and no `@[Primitive]` reaches the instruction.
-    # * Binding the LLVM intrinsic by name was tried, because a `fun`
-    #   declaration is the one way Crystal can name an external symbol:
-    #   `fun memory_grow = "llvm.wasm.memory.grow.i32"(delta : Int32) : Int32`
-    #   alongside `llvm.wasm.memory.size.i32`. Codegen accepts the
-    #   declaration and module verification refuses the call: "Callsite was
-    #   not defined with variable arguments!" — so a `fun` cannot bind an
-    #   LLVM intrinsic by name in this compiler.
-    # * Inline `asm` is no path either: Crystal's `asm` does not support the
-    #   wasm backend for this target.
-    #
-    # wasm32 therefore needs wasi-libc's allocator until the language can
-    # reach `memory.grow`, and `malloc` and `realloc` stay the two names in
-    # this target's undefined list that are not the platform's own imports.
-    # wasi-libc ships with every WASI toolchain (wasi-sdk, wasmtime's rust
-    # toolchain, the LLVM wasm runtimes), so its allocator is not a library a
-    # person installs; it is the closest thing wasm32 has to libSystem's
-    # allocator on macOS. `src/gc.cr` already treats wasm32 as implying no
-    # collector, which is what this path is.
-    #
-    # The clear after `malloc` is the entry point's contract rather than a fix
-    # for something seen: `GC.malloc` is documented as allocating *and
-    # clearing*, `malloc` does not clear, and `gc/none.cr` clears for exactly
-    # that reason (crystal-lang/crystal#14678). `malloc_atomic` is the call
-    # without the clear, which is what the atomic variant means on both sides.
-    # `free` is not bound because nothing frees, and a program that outlives
-    # its memory is what allocating without collecting asks for. SizeT is
-    # 32-bit on wasm32; it is declared Int32 because iyi's primitives carry
-    # arithmetic on Int32/Int64/UInt8/UInt64 only, and Int32 is the same 32
-    # bits at the ABI, so the sizes cross here rather than in the caller.
-    lib LibC
-      fun malloc(size : Int32) : Void*
-      fun realloc(pointer : Void*, size : Int32) : Void*
+    # Reaching `memory.grow` needed one binding, written below rather than in
+    # `src/intrinsics.cr` for two measured reasons. `LibIntrinsics` there
+    # proves a plain `fun` whose external name is an `llvm.` name reaches a
+    # real LLVM intrinsic (`llvm.debugtrap`, `llvm.memcpy` and
+    # `llvm.x86.sse2.pause` all bind exactly that way), but this prelude
+    # requires nothing outside `src/iyi/` ("0.1.0", item 3), so a binding in
+    # compiler source would be unreachable from here. The signature is the
+    # other finding, measured against this tree's LLVM with hand-written IR:
+    # the intrinsic registers as `i32 (i32, i32)`, memory index then page
+    # delta, and the one-argument form the earlier probe tried is an arity
+    # error the verifier words as "Callsite was not defined with variable
+    # arguments!", which that probe recorded as a `fun` being unable to bind
+    # an LLVM intrinsic at all. It can, with both arguments. An
+    # `@[Primitive]` is the rejected alternative: a compiler rebuild and a
+    # declaration in `primitives.iyi`, a language-surface file, for what this
+    # C-shaped binding reaches. `memory.size` is not bound because
+    # `memory.grow` answers the only fact it carries: its result is the
+    # previous size in pages, which is exactly where the grown region
+    # starts. The index argument is 0 because a wasm32-wasi module has
+    # exactly one linear memory and 0 names it; the backend turns it into
+    # the instruction's memarg immediate, so it is not even a runtime
+    # operand.
+    lib LibWasmMem
+      fun memory_grow = "llvm.wasm.memory.grow.i32"(memory_index : Int32, delta_pages : Int32) : Int32
+    end
+
+    # Pages are 64 KiB. A request larger than one page rounds up to the whole
+    # pages it needs and gets a region of its own; `memory.grow` answers -1
+    # when the engine refuses the growth, and a failure is answered rather
+    # than wrapped, because read as a page count -1 would seat the cursor
+    # 64 KiB below any memory the engine ever handed out, which is heap
+    # corruption wearing a success, so it takes the same write-and-exit the
+    # Linux branch's failed `mmap` takes. Every size rides in the eight bytes
+    # under the pointer exactly as on Linux, because `realloc` has no other
+    # way to know how much to copy, and the eight bytes keep every user
+    # pointer 8-aligned; grow regions are page-aligned and the bump is always
+    # a multiple of 8, so the header store stays aligned too. Fresh pages are
+    # zeroed by the wasm spec itself, so `__crystal_malloc64`'s documented
+    # clear comes from the engine rather than a second pass over the bytes,
+    # the same standing Linux's `MAP_ANONYMOUS` zero-fill has there: nothing
+    # is handed out twice, so nothing can be dirtier than the engine left it,
+    # and the atomic variant is the same memory for the same reason. The
+    # cursor and what is left of the region are `UInt64` class variables on
+    # `IyiHeap` for the Linux branch's reasons, which hold here word for
+    # word: `$` globals are refused, a `fun` body cannot reach `@@` state,
+    # and literal initializers fold into the LLVM global's static zero, so
+    # zero means "grow on the first allocation" rather than a value startup
+    # code installs.
+    class IyiHeap
+      @@cursor : UInt64 = 0_u64
+      @@left : UInt64 = 0_u64
+
+      def self.alloc(size : UInt64) : Void*
+        bytes = size.to_i64
+        remainder = bytes % 8
+        bytes = bytes + (8 - remainder) if remainder > 0
+        bytes = bytes + 8
+
+        if @@left < bytes.to_u64
+          pages = bytes // 65536
+          pages = pages + 1 if bytes % 65536 > 0
+          previous = LibWasmMem.memory_grow(0, pages.to_i32)
+          if previous < 0
+            __iyi_write(1, "iyi: out of memory\n".to_unsafe.as(Void*), 19_u64)
+            __iyi_exit(1)
+          end
+          @@cursor = previous.to_u64.unsafe_shl(16)
+          @@left = pages.to_u64.unsafe_shl(16)
+        end
+
+        block = Pointer(Void).new(@@cursor)
+        @@cursor = @@cursor + bytes.to_u64
+        @@left = @@left - bytes.to_u64
+        block.as(Pointer(UInt64)).value = size
+        block + 8_i64
+      end
+
+      # Allocate-and-copy rather than growth in place, because nothing frees
+      # and the old size rides in the eight bytes under the pointer, which is
+      # the only place that knows it.
+      def self.realloc(pointer : Void*, size : UInt64) : Void*
+        return alloc(size) if pointer.address == 0
+        old_size = Pointer(UInt64).new(pointer.address - 8).value
+        new_pointer = alloc(size)
+        source = pointer.as(Pointer(UInt8))
+        destination = new_pointer.as(Pointer(UInt8))
+        limit = old_size < size ? old_size : size
+        index = 0_u64
+        while index < limit
+          (destination + index.to_i64).value = (source + index.to_i64).value
+          index = index + 1
+        end
+        new_pointer
+      end
     end
 
     # Codegen emits calls to these by name for every allocation, so they are not
     # optional and their names are not ours to choose.
     fun __crystal_malloc64(size : UInt64) : Void*
-      pointer = LibC.malloc(size.to_i32)
-      memset(pointer, 0, size.to_i32)
-      pointer
+      IyiHeap.alloc(size)
     end
 
     fun __crystal_malloc_atomic64(size : UInt64) : Void*
-      LibC.malloc(size.to_i32)
+      IyiHeap.alloc(size)
     end
 
     fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
-      LibC.realloc(pointer, size.to_i32)
+      IyiHeap.realloc(pointer, size)
     end
 
     # `memset` is defined locally because codegen itself reaches for the name
@@ -557,8 +617,8 @@ require "./hash"
     end
   {% else %}
     {% raise "iyi: this target has no allocator binding in iyi's prelude. " \
-              "Teach src/iyi/prelude.iyi a branch for this platform rather than " \
-              "linking something absent." %}
+             "Teach src/iyi/prelude.iyi a branch for this platform rather than " \
+             "linking something absent." %}
   {% end %}
 {% end %}
 
