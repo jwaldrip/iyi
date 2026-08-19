@@ -346,6 +346,110 @@ describe "Semantic: iyi import" do
       end
     end
 
+    # `pub macro` (R-2b): every macro a module writes already travels, because
+    # a body that travels may call one. What `pub` adds is a name the consumer
+    # may say, and these are the four answers that make up the rule.
+    it "runs a macro another module exported" do
+      with_iyi_modules({
+        "app/dep.iyi" => <<-IYI,
+          module app/dep
+
+          pub macro declare(name)
+            def {{name.id}} : Int32
+              1
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+          using app/dep
+
+          declare(made)
+          IYI
+      }) do
+        semantic_iyi("main.iyi")
+      end
+    end
+
+    it "runs an exported macro through the module's name" do
+      with_iyi_modules({
+        "app/dep.iyi" => <<-IYI,
+          module app/dep
+
+          pub macro declare(name)
+            def {{name.id}} : Int32
+              1
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+
+          App::Dep.declare(made)
+          IYI
+      }) do
+        semantic_iyi("main.iyi")
+      end
+    end
+
+    it "refuses an unexported macro by name, as it refuses an unexported def" do
+      with_iyi_modules({
+        "app/dep.iyi" => <<-IYI,
+          module app/dep
+
+          macro declare(name)
+            def {{name.id}} : Int32
+              1
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+
+          App::Dep.declare(made)
+          IYI
+      }) do
+        expect_raises(Crystal::TypeException, /does not export 'declare'/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
+    it "leaves an unexported macro out of what `using` brings in" do
+      with_iyi_modules({
+        "app/dep.iyi" => <<-IYI,
+          module app/dep
+
+          macro declare(name)
+            def {{name.id}} : Int32
+              1
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+          using app/dep
+
+          declare("made")
+          IYI
+      }) do
+        # The argument is a literal so that what fails is the name of the
+        # macro. `declare(made)` would be read as a call taking a variable
+        # nobody declared, and fail one word earlier for a different reason.
+        expect_raises(Crystal::TypeException, /undefined method 'declare'/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
     it "falls back to the source when there is no artifact" do
       with_iyi_modules({
         "app/dep.iyi" => <<-IYI,

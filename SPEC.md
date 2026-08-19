@@ -3326,10 +3326,29 @@ IV.1g that no amount of reasoning about blocks would have produced.
 
    **Built, and the reason turned out to be nearer than `derive`.** A body that
    travels may call a macro of its own module, so the macros travel with it,
-   all of them, on the module and on each type, as source text. None is
-   reachable: `pub` does not take a macro, so what arrives is a plugin the
-   consumer runs and cannot name. `derive` will need the same section and one
-   more thing, which is a way to say which macros another module may run.
+   all of them, on the module and on each type, as source text.
+
+   **`pub macro` is the way to say which of them another module may run, and
+   it is built.** A marked macro is reachable exactly as a `pub def` is:
+   unqualified after `using`, or through the module's name. An unmarked one is
+   the module's own and is refused by the same sentence an unmarked `def` gets.
+   What it exports is a name and an arity rather than types, because a macro
+   takes syntax and returns syntax and there is no type to write down — the one
+   place R-2's "write the types" has nothing to ask for.
+
+   Closing this found the hole under it: a macro's visibility was never set, so
+   before `pub macro` existed **every** module's macros were already callable
+   through its name. They travel so that a travelling body can call one, and
+   that made them a surface nobody wrote and nobody could have refused.
+
+   **Macros are not hygienic, and `pub macro` exports that too.** A macro is
+   pasted text, so `pub macro shadow` writing `tmp = 99` assigns to the
+   consumer's `tmp` if it has one, which was measured rather than assumed. This
+   is Crystal's semantics kept whole, and it is a real hole in what R-2
+   promises: an export whose surface is a name and an arity can still reach
+   anything the caller can name. Hygiene is a rename of every name a macro
+   introduces, it would part this fork from the macro semantics its own prelude
+   is written in, and it is not built.
 2. **`@[Monomorphize]` bodies.** The consumer specialises them, so it needs the
    body. This is the (b) path from II.6 and it is where incrementality is at
    risk: see IV.3.

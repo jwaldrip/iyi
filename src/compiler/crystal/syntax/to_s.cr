@@ -932,6 +932,9 @@ module Crystal
     end
 
     def visit(node : Macro)
+      # iyi: a macro travels in an artifact as this text, so what marks it
+      # exported has to be in the text (R-2b, SPEC.md IV.4).
+      @str << "pub " if node.exported?
       @str << "macro "
       @str << node.name.to_s
       if node.args.size > 0 || node.block_arg || node.double_splat

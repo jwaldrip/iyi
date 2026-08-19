@@ -20,6 +20,20 @@ releases names no compiler.
 
 ### Added
 
+- **`pub macro`, so a macro can cross a module boundary.** Every macro a module
+  writes already travelled in its artifact, because a body that travels may
+  call one, but none of them was reachable: `pub` did not take a macro. A
+  marked one is now reachable exactly as a `pub def` is, unqualified after
+  `using` or through the module's name, and it works against an artifact with
+  the module's source deleted. What it exports is a name and an arity, because
+  a macro takes syntax and returns syntax.
+
+  Two things worth knowing. Closing this found the hole under it: a macro's
+  visibility was never set, so **every** module's macros were already callable
+  through its name — that is refused now, with the sentence an unexported `def`
+  gets. And macros are not hygienic, so a `pub macro` that writes `tmp = 99`
+  assigns to the consumer's `tmp`; SPEC.md IV.4 says so in full.
+
 - **`iyi tool format` formats iyi.** The formatter is Crystal's and knew none
   of iyi's syntax, so a module header, a `pub`, a `trait`, an `impl`, a
   `using`, a bounded `forall`, a `where`, a `defer`, a `!` or an `.or` sent it

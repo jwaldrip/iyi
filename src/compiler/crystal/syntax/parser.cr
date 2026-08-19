@@ -2204,6 +2204,10 @@ module Crystal
           cls = parse_class_def is_struct: true
           cls.exported = true if cls.is_a?(ClassDef)
           cls
+        when Keyword::MACRO
+          a_macro = parse_macro
+          a_macro.exported = true if a_macro.is_a?(Macro)
+          a_macro
         else
           raise "can't apply `pub` to #{@token}", @token.line_number, @token.column_number
         end

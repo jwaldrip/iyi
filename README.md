@@ -506,8 +506,9 @@ the design, or argue with a number. Not somebody with a program to ship.
   of iyi 0.1.0 reads every other build's `.iyimod` files on the same target and
   under the same flags; anything else is rejected and rebuilt, never migrated.
   A `-dev` version is not a release and interoperates with nothing but itself.
-- **`derive` macros do not cross modules yet.** A module's own macros do travel
-  with its artifact.
+- **Macros are not hygienic.** `pub macro` exports a name and an arity, and a
+  macro is pasted text, so one that writes `tmp = 99` assigns to your `tmp` if
+  you have one. That is Crystal's semantics kept whole.
 
 ## Where things are
 
