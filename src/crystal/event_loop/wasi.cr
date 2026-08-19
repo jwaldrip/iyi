@@ -13,8 +13,36 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
 
   # Runs the event loop.
   def run(blocking : Bool) : Bool
-    raise NotImplementedError.new("Crystal::Wasi::EventLoop.run")
+    raise NotImplementedError.new("Crystal::EventLoop::Wasi#run")
   end
+
+  # iyi: the execution-context surface, which this class never grew.
+  #
+  # `Crystal::EventLoop` gained `run(blocking, &)`, `lock?(&)` and `interrupt?`
+  # behind the same flags that select execution contexts, and the Wasi
+  # implementation was not updated with it, so the whole standard library
+  # stopped cross-compiling to `wasm32-wasi`: the error is that the abstract
+  # `run(blocking : Bool, & : (Fiber ->))` is unimplemented, and it fires while
+  # type-checking any Crystal program for that target.
+  #
+  # Raising rather than working, because none of the loop works on wasm32 yet:
+  # every wait here already raises, `poll_oneoff` is a TODO throughout the file,
+  # and a body that silently returned would claim an event loop that is not
+  # there. What this restores is the ability to compile for the target at all,
+  # which is what an out-of-the-box platform claim needs first.
+  {% if !flag?(:without_mt) && !flag?(:preview_mt) || flag?(:execution_context) %}
+    def run(blocking : Bool, & : Fiber ->) : Nil
+      raise NotImplementedError.new("Crystal::EventLoop::Wasi#run(blocking, &)")
+    end
+
+    def lock?(&) : Bool
+      raise NotImplementedError.new("Crystal::EventLoop::Wasi#lock?")
+    end
+
+    def interrupt? : Bool
+      raise NotImplementedError.new("Crystal::EventLoop::Wasi#interrupt?")
+    end
+  {% end %}
 
   def interrupt : Nil
     raise NotImplementedError.new("Crystal::Wasi::EventLoop.interrupt")

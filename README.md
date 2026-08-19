@@ -278,6 +278,18 @@ today, and then libgc is that program's one dependency. The link still goes
 through a C toolchain, so a compiler on the machine is the one thing a build
 needs.
 
+**And the binary travels as one file.** On Linux, `iyi build --static` passes
+`-static` to the C toolchain, and the object it links has zero undefined
+symbols (`nm -u` prints nothing), so the binary comes out with no dynamic
+loader at all: copy it to a bare Linux and run it, the way a Go binary
+travels. On macOS that is not on offer, and it is said here rather than left
+to be found: Apple ships no static libc, and the linker refuses, `ld: library
+'crt0.o' not found`. The default build there links one library, `libSystem`,
+part of the OS, so the file still copies to another Mac and runs. Windows is
+the same shape, importing only `kernel32`, which ships with the machine, and
+`--static` links the static CRT there. A wasm32 build is one self-contained
+module already.
+
 Building it instead needs LLVM 19 and a Crystal compiler to bootstrap from:
 
 ```console
