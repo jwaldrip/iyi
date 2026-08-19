@@ -145,12 +145,62 @@ require "./hash"
     #
     # One MiB a chunk, and an allocation bigger than that gets a chunk of its
     # own. The kernel rounds `length` up to a page, so the chunk size is not
-    # rounded here. The cursor and what is left of the chunk are globals
-    # because they are the allocator's whole state; both start at zero, which
-    # means "mmap on the first allocation", not a value any startup code has
-    # to install.
-    $iyi_heap_cursor : Pointer(Void) = Pointer(Void).new(0_u64)
-    $iyi_heap_left : UInt64 = 0_u64
+    # rounded here.
+    #
+    # The cursor and what is left of the chunk are the allocator's whole
+    # state, held as class variables on `IyiHeap` because the language has
+    # nothing else to hold them in: `$` globals are refused outright, and a
+    # `fun` body cannot reach `@@` state. Both are `UInt64` with literal
+    # initializers, which codegen folds into the LLVM global's static zero
+    # rather than a runtime init call, so what a plain global would have
+    # meant is kept: both start at zero, which means "mmap on the first
+    # allocation", not a value any startup code has to install. The
+    # allocation entry points below must stay `fun`s because codegen calls
+    # them by C name, so they forward one frame deep into class methods;
+    # that frame is the price of the only state-carrying construct the
+    # language offers.
+    class IyiHeap
+      @@cursor : UInt64 = 0_u64
+      @@left : UInt64 = 0_u64
+
+      def self.alloc(size : UInt64) : Void*
+        bytes = size.to_i64
+        remainder = bytes % 8
+        bytes = bytes + (8 - remainder) if remainder > 0
+        bytes = bytes + 8
+
+        if @@left < bytes.to_u64
+          chunk = 1048576_i64
+          chunk = bytes if bytes > chunk
+          @@cursor = __iyi_mmap(chunk.to_u64).address
+          @@left = chunk.to_u64
+        end
+
+        block = Pointer(Void).new(@@cursor)
+        @@cursor = @@cursor + bytes.to_u64
+        @@left = @@left - bytes.to_u64
+        block.as(Pointer(UInt64)).value = size
+        block + 8_i64
+      end
+
+      # Allocate-and-copy rather than growth in place, because nothing frees
+      # and the old size rides in the eight bytes under the pointer, which is
+      # the only place that knows it.
+      def self.realloc(pointer : Void*, size : UInt64) : Void*
+        return alloc(size) if pointer.address == 0
+        old_size = Pointer(UInt64).new(pointer.address - 8).value
+        new_pointer = alloc(size)
+        source = pointer.as(Pointer(UInt8))
+        destination = new_pointer.as(Pointer(UInt8))
+        limit = old_size < size ? old_size : size
+        index = 0_u64
+        while index < limit
+          (destination + index.to_i64).value = (source + index.to_i64).value
+          index = index + 1
+        end
+        new_pointer
+      end
+    end
 
     fun __iyi_mmap(length : UInt64) : Pointer(Void)
       result = uninitialized Int64
@@ -177,49 +227,47 @@ require "./hash"
       Pointer(Void).new(result.to_u64)
     end
 
-    fun __iyi_alloc(size : UInt64) : Void*
-      bytes = size.to_i64
-      remainder = bytes % 8
-      bytes = bytes + (8 - remainder) if remainder > 0
-      bytes = bytes + 8
-
-      if $iyi_heap_left < bytes.to_u64
-        chunk = 1048576_i64
-        chunk = bytes if bytes > chunk
-        $iyi_heap_cursor = __iyi_mmap(chunk.to_u64)
-        $iyi_heap_left = chunk.to_u64
-      end
-
-      block = $iyi_heap_cursor
-      $iyi_heap_cursor = $iyi_heap_cursor + bytes
-      $iyi_heap_left = $iyi_heap_left - bytes.to_u64
-      block.as(Pointer(UInt64)).value = size
-      block + 8_i64
-    end
-
     # Codegen emits calls to these by name for every allocation, so they are not
     # optional and their names are not ours to choose.
     fun __crystal_malloc64(size : UInt64) : Void*
-      __iyi_alloc(size)
+      IyiHeap.alloc(size)
     end
 
     fun __crystal_malloc_atomic64(size : UInt64) : Void*
-      __iyi_alloc(size)
+      IyiHeap.alloc(size)
     end
 
     fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
-      return __iyi_alloc(size) if pointer.address == 0
-      old_size = Pointer(UInt64).new(pointer.address - 8).value
-      new_pointer = __iyi_alloc(size)
-      source = pointer.as(Pointer(UInt8))
-      destination = new_pointer.as(Pointer(UInt8))
-      limit = old_size < size ? old_size : size
-      index = 0_u64
-      while index < limit
-        (destination + index.to_i64).value = (source + index.to_i64).value
-        index = index + 1
+      IyiHeap.realloc(pointer, size)
+    end
+
+    # `memset` is libc's on the other paths, and here it is the one libc name
+    # left that codegen itself reaches for: `pre_initialize_aggregate` and
+    # `generic_array_malloc` lower to the LLVM `llvm.memset` intrinsic, which
+    # LLVM expands inline only while the size is a constant it can see; with
+    # a runtime size it emits a call to C `memset` anyway. A definition with
+    # the same name and signature is the only thing that can intercept that,
+    # so the name, the types and the return are libc's rather than ours. The
+    # bulk goes eight bytes at a time because every cleared allocation
+    # funnels through here; the byte loop carries only the tail, and the
+    # pattern word is the byte tiled eight wide.
+    fun memset(destination : Void*, value : Int32, count : UInt64) : Void*
+      byte = value.to_u8!
+      word = byte.to_u64 * 0x0101010101010101_u64
+      words = destination.as(Pointer(UInt64))
+      filled = 0_u64
+      while filled + 8_u64 <= count
+        words.value = word
+        words = words + 8_i64
+        filled = filled + 8_u64
       end
-      new_pointer
+      bytes = words.as(Pointer(UInt8))
+      while filled < count
+        bytes.value = byte
+        bytes = bytes + 1_i64
+        filled = filled + 1_u64
+      end
+      destination
     end
   {% else %}
     # libc's allocator and no collection at all, which is what `src/gc/none.cr`
