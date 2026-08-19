@@ -7,8 +7,12 @@ abstract class Crystal::ABI
   def initialize(target_machine : LLVM::TargetMachine)
     @target_data = target_machine.data_layout
     triple = target_machine.triple
-    @osx = !!(triple =~ /apple/)
-    @windows = !!(triple =~ /windows/)
+    # iyi: substring tests, not regexes — an unanchored `/apple/` never meant
+    # more than `includes?`, and the compiler's own code must not be what
+    # keeps pcre2 linked (zero-dep). The ABI dispatch in `from` below still
+    # holds this file's other regexes.
+    @osx = triple.includes?("apple")
+    @windows = triple.includes?("windows")
   end
 
   def self.from(target_machine : LLVM::TargetMachine) : self

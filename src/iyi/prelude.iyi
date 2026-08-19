@@ -26,68 +26,88 @@ require "./array"
 require "./range"
 require "./hash"
 
-lib LibC
-  fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
-  fun exit(status : Int32) : NoReturn
-end
+{% if flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+  # iyi: On Linux, libc is not bound at all. The dependency floor (SPEC.md
+  # III.9) named seven undefined symbols in a default program and five of them
+  # were libc's; the kernel's syscall ABI is a stable contract, so `write` and
+  # `exit` are one `syscall` instruction each rather than a PLT hop. Same move
+  # Go makes with CGO_ENABLED=0. The numbers and register conventions are the
+  # ones `src/syscall/x86_64-linux.cr` and `src/syscall/aarch64-linux.cr`
+  # carry for the compiler's own runtime, written out here rather than
+  # required because the prelude is iyi's own world ("0.1.0", item 3) and
+  # requiring compiler source into a program would be a dependency of exactly
+  # the kind this removes.
+  #
+  # `exit_group` rather than `exit`: the kernel's `exit` retires one thread,
+  # `exit_group` retires the process. 0.1.0 has one thread, so the difference
+  # is unobservable, and exit_group is what a program that grows threads
+  # wants its panic path to mean.
+  def __iyi_write(fd : Int32, buffer : Void*, count : UInt64) : Int64
+    result = uninitialized Int64
+    {% if flag?(:x86_64) %}
+      asm("syscall" : "={rax}"(result)
+                    : "{rax}"(1_i64), "{rdi}"(fd.to_i64), "{rsi}"(buffer), "{rdx}"(count)
+                    : "rcx", "r11", "memory"
+                    : "volatile")
+    {% else %}
+      asm("svc #0" : "={x0}"(result)
+                   : "{x8}"(64_i64), "{x0}"(fd.to_i64), "{x1}"(buffer), "{x2}"(count)
+                   : "memory"
+                   : "volatile")
+    {% end %}
+    result
+  end
 
-# The collector, the way Crystal's own 0.1.0 had it. Twelve lines of binding
-# buys real collection, which is what lets the samples be read as programs
-# rather than as demonstrations that happen to exit before it matters.
+  def __iyi_exit(status : Int32) : NoReturn
+    {% if flag?(:x86_64) %}
+      asm("syscall" :: "{rax}"(231_i64), "{rdi}"(status.to_i64) : "rcx", "r11", "memory" : "volatile")
+    {% else %}
+      asm("svc #0" :: "{x8}"(94_i64), "{x0}"(status.to_i64) : "memory" : "volatile")
+    {% end %}
+    while true
+    end
+  end
+{% else %}
+  # iyi: everywhere but Linux the bindings are libc's and stay exactly as they
+  # were. Apple documents libSystem as the only supported interface and raw
+  # syscalls as explicitly not a stable ABI on Darwin, so libSystem here is
+  # Apple's rule rather than a gap in this design; Go links libSystem on
+  # darwin for the same reason, and CGO_ENABLED=0 buys nothing there either.
+  lib LibC
+    fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
+    fun exit(status : Int32) : NoReturn
+  end
+
+  def __iyi_write(fd : Int32, buffer : Void*, count : UInt64) : Int64
+    LibC.write(fd, buffer, count)
+  end
+
+  def __iyi_exit(status : Int32) : NoReturn
+    LibC.exit(status)
+  end
+{% end %}
+
+# The allocator, selected rather than declared, because the selection has to be
+# a real seam a different allocator is swapped in at. Boehm was the default and
+# `-Dgc_none`, a flag this compiler already answers to (`src/gc.cr` reads it to
+# require `gc/none` instead of `gc/boehm`), only opted out of it: a prelude
+# that bound `GC_malloc` conditionally accepted the flag, linked the collector
+# anyway and said nothing about it, and a flag that is accepted and ignored is
+# worse than one that is refused. The dependency floor then measured the
+# collector as the last library a default `iyi build` could not refuse (SPEC.md
+# III.9), so the default is inverted: a plain build allocates and never
+# collects, which is the exact contract `-Dgc_none` already had, and
+# `-Dgc_boehm` restores the twelve lines of binding below along with the
+# collection they buy. `-Dgc_none` still selects the default, so nothing that
+# passes it changes meaning. A real collector is not dropped by this, it is
+# III.9's open item: adopt one and pay it back in layouts (SPEC.md B.1, table
+# row 20).
 #
-# Selected rather than declared, because `-Dgc_none` is a flag this compiler
-# already answers to: `src/gc.cr` reads it to require `gc/none` instead of
-# `gc/boehm`. A prelude that binds `GC_malloc` unconditionally accepted the
-# flag, linked the collector anyway and said nothing about it, and a flag that
-# is accepted and ignored is worse than one that is refused. This is also the
-# seam a different allocator is swapped in at, so it has to be a real one.
-#
-# Written out twice rather than put behind a `GC` module the way the standard
+# Written out in full rather than put behind a `GC` module the way the standard
 # library has it. There are four call sites and all of them are in this file,
 # so the module would buy nothing but a frame on every allocation of a build
 # that is not optimised.
-{% if flag?(:gc_none) %}
-  # libc's allocator and no collection at all, which is what `src/gc/none.cr`
-  # is: `malloc` and `realloc` under the same three entry points, less the
-  # parts 0.1.0 has nothing to say to (threads, finalizers, statistics).
-  #
-  # The clear after `malloc` is the entry point's contract rather than a fix
-  # for something seen: `GC.malloc` is documented as allocating *and clearing*,
-  # libc's `malloc` does not clear, and `gc/none.cr` clears for exactly that
-  # reason (crystal-lang/crystal#14678). Nothing here would notice it missing
-  # today, because codegen clears what it routes through this name anyway
-  # (`pre_initialize_aggregate` and `generic_array_malloc` both memset), so the
-  # clear is a second pass over the same bytes. It stays because the name is
-  # reachable from any `.iyi` file and a swapped allocator that quietly weakens
-  # the contract is the failure this flag is being fixed for, in miniature.
-  #
-  # `malloc_atomic` is that call without the clear, which is what the atomic
-  # variant means on both sides: `GC_malloc_atomic` does not clear either, so
-  # this is the same memory the collector's build hands back. `free` is not
-  # bound because nothing frees, and a program that outlives its memory is
-  # what `-Dgc_none` asks for.
-  lib LibC
-    fun malloc(size : UInt64) : Void*
-    fun realloc(pointer : Void*, size : UInt64) : Void*
-    fun memset(destination : Void*, value : Int32, count : UInt64) : Void*
-  end
-
-  # Codegen emits calls to these by name for every allocation, so they are not
-  # optional and their names are not ours to choose.
-  fun __crystal_malloc64(size : UInt64) : Void*
-    pointer = LibC.malloc(size)
-    LibC.memset(pointer, 0, size)
-    pointer
-  end
-
-  fun __crystal_malloc_atomic64(size : UInt64) : Void*
-    LibC.malloc(size)
-  end
-
-  fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
-    LibC.realloc(pointer, size)
-  end
-{% else %}
+{% if flag?(:gc_boehm) %}
   @[Link("gc")]
   lib LibGC
     fun init = GC_init
@@ -109,6 +129,140 @@ end
   fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
     LibGC.realloc(pointer, size)
   end
+{% else %}
+  {% if flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+    # iyi: The default heap on Linux is a bump pointer over `mmap` regions:
+    # allocate, never free, which is the contract the libc path below already
+    # has (`free` is not bound there for the same reason, and a program that
+    # outlives its memory is what allocating without collecting asks for).
+    # `MAP_ANONYMOUS` guarantees zero-fill, so `__crystal_malloc64`'s
+    # documented clear comes from the mapping itself rather than a second pass
+    # over the bytes: nothing is handed out twice, so nothing can be dirtier
+    # than the kernel left it, and the atomic variant is therefore the same
+    # memory on this path too. Each pointer carries its size in the eight
+    # bytes under it, because `realloc` has no other way to know how much to
+    # copy, and the eight bytes also keep every user pointer 8-aligned.
+    #
+    # One MiB a chunk, and an allocation bigger than that gets a chunk of its
+    # own. The kernel rounds `length` up to a page, so the chunk size is not
+    # rounded here. The cursor and what is left of the chunk are globals
+    # because they are the allocator's whole state; both start at zero, which
+    # means "mmap on the first allocation", not a value any startup code has
+    # to install.
+    $iyi_heap_cursor : Pointer(Void) = Pointer(Void).new(0_u64)
+    $iyi_heap_left : UInt64 = 0_u64
+
+    fun __iyi_mmap(length : UInt64) : Pointer(Void)
+      result = uninitialized Int64
+      {% if flag?(:x86_64) %}
+        # PROT_READ|PROT_WRITE = 3, MAP_PRIVATE|MAP_ANONYMOUS = 0x22.
+        asm("syscall" : "={rax}"(result)
+                      : "{rax}"(9_i64), "{rdi}"(0_i64), "{rsi}"(length), "{rdx}"(3_i64),
+                        "{r10}"(34_i64), "{r8}"(-1_i64), "{r9}"(0_i64)
+                      : "rcx", "r11", "memory"
+                      : "volatile")
+      {% else %}
+        asm("svc #0" : "={x0}"(result)
+                     : "{x8}"(222_i64), "{x0}"(0_i64), "{x1}"(length), "{x2}"(3_i64),
+                       "{x3}"(34_i64), "{x4}"(-1_i64), "{x5}"(0_i64)
+                     : "memory"
+                     : "volatile")
+      {% end %}
+      # A failed raw syscall answers with -errno in the result register rather
+      # than a flag: -4095..-1 is errno's whole range.
+      if result < 0 && result >= -4095
+        __iyi_write(1, "iyi: out of memory\n".to_unsafe.as(Void*), 19_u64)
+        __iyi_exit(1)
+      end
+      Pointer(Void).new(result.to_u64)
+    end
+
+    fun __iyi_alloc(size : UInt64) : Void*
+      bytes = size.to_i64
+      remainder = bytes % 8
+      bytes = bytes + (8 - remainder) if remainder > 0
+      bytes = bytes + 8
+
+      if $iyi_heap_left < bytes.to_u64
+        chunk = 1048576_i64
+        chunk = bytes if bytes > chunk
+        $iyi_heap_cursor = __iyi_mmap(chunk.to_u64)
+        $iyi_heap_left = chunk.to_u64
+      end
+
+      block = $iyi_heap_cursor
+      $iyi_heap_cursor = $iyi_heap_cursor + bytes
+      $iyi_heap_left = $iyi_heap_left - bytes.to_u64
+      block.as(Pointer(UInt64)).value = size
+      block + 8_i64
+    end
+
+    # Codegen emits calls to these by name for every allocation, so they are not
+    # optional and their names are not ours to choose.
+    fun __crystal_malloc64(size : UInt64) : Void*
+      __iyi_alloc(size)
+    end
+
+    fun __crystal_malloc_atomic64(size : UInt64) : Void*
+      __iyi_alloc(size)
+    end
+
+    fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
+      return __iyi_alloc(size) if pointer.address == 0
+      old_size = Pointer(UInt64).new(pointer.address - 8).value
+      new_pointer = __iyi_alloc(size)
+      source = pointer.as(Pointer(UInt8))
+      destination = new_pointer.as(Pointer(UInt8))
+      limit = old_size < size ? old_size : size
+      index = 0_u64
+      while index < limit
+        (destination + index.to_i64).value = (source + index.to_i64).value
+        index = index + 1
+      end
+      new_pointer
+    end
+  {% else %}
+    # libc's allocator and no collection at all, which is what `src/gc/none.cr`
+    # is: `malloc` and `realloc` under the same three entry points, less the
+    # parts 0.1.0 has nothing to say to (threads, finalizers, statistics).
+    #
+    # The clear after `malloc` is the entry point's contract rather than a fix
+    # for something seen: `GC.malloc` is documented as allocating *and clearing*,
+    # libc's `malloc` does not clear, and `gc/none.cr` clears for exactly that
+    # reason (crystal-lang/crystal#14678). Nothing here would notice it missing
+    # today, because codegen clears what it routes through this name anyway
+    # (`pre_initialize_aggregate` and `generic_array_malloc` both memset), so the
+    # clear is a second pass over the same bytes. It stays because the name is
+    # reachable from any `.iyi` file and a swapped allocator that quietly weakens
+    # the contract is the failure this default is being watched for, in miniature.
+    #
+    # `malloc_atomic` is that call without the clear, which is what the atomic
+    # variant means on both sides: `GC_malloc_atomic` does not clear either, so
+    # this is the same memory the collector's build hands back. `free` is not
+    # bound because nothing frees, and a program that outlives its memory is
+    # what allocating without collecting asks for.
+    lib LibC
+      fun malloc(size : UInt64) : Void*
+      fun realloc(pointer : Void*, size : UInt64) : Void*
+      fun memset(destination : Void*, value : Int32, count : UInt64) : Void*
+    end
+
+    # Codegen emits calls to these by name for every allocation, so they are not
+    # optional and their names are not ours to choose.
+    fun __crystal_malloc64(size : UInt64) : Void*
+      pointer = LibC.malloc(size)
+      LibC.memset(pointer, 0, size)
+      pointer
+    end
+
+    fun __crystal_malloc_atomic64(size : UInt64) : Void*
+      LibC.malloc(size)
+    end
+
+    fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
+      LibC.realloc(pointer, size)
+    end
+  {% end %}
 {% end %}
 
 # Codegen emits a call to this on every overflowing operation, so a program
@@ -119,7 +273,7 @@ end
 # reaching it would mean something is unwinding, and nothing here unwinds.
 fun __crystal_personality
   print "iyi: __crystal_personality called, which cannot happen\n"
-  LibC.exit(1)
+  __iyi_exit(1)
 end
 
 # Reached from the same landing pad, for the same reason, and just as
@@ -127,7 +281,7 @@ end
 # thrown, and nothing here throws.
 fun __crystal_get_exception(exception : Void*) : UInt64
   print "iyi: __crystal_get_exception called, which cannot happen\n"
-  LibC.exit(1)
+  __iyi_exit(1)
   0_u64
 end
 
@@ -137,12 +291,12 @@ end
 @[Raises]
 fun __crystal_raise(exception : Void*) : NoReturn
   print "iyi: __crystal_raise called, which cannot happen\n"
-  LibC.exit(1)
+  __iyi_exit(1)
 end
 
 fun __crystal_raise_overflow : NoReturn
   print "iyi: arithmetic overflow\n"
-  LibC.exit(1)
+  __iyi_exit(1)
 end
 
 struct Pointer(T)
@@ -175,11 +329,11 @@ def raise(message : String) : NoReturn
   print "iyi: panic: "
   print message
   print "\n"
-  LibC.exit(1)
+  __iyi_exit(1)
 end
 
 def print(text : String) : Nil
-  LibC.write(1, text.to_unsafe.as(Void*), text.bytesize.to_u64)
+  __iyi_write(1, text.to_unsafe.as(Void*), text.bytesize.to_u64)
 end
 
 def print(value) : Nil
@@ -201,10 +355,10 @@ lib LibCrystalMain
 end
 
 fun main(argc : Int32, argv : UInt8**) : Int32
-  # There is nothing to start under `-Dgc_none`, and nothing missing either:
-  # `gc/none.cr`'s `GC.init` sets up thread suspend and resume, and 0.1.0 has
-  # one thread.
-  {% unless flag?(:gc_none) %}
+  # There is nothing to start under the default allocator, and nothing missing
+  # either: `gc/none.cr`'s `GC.init` sets up thread suspend and resume, and
+  # 0.1.0 has one thread. Only Boehm has an `init` worth calling.
+  {% if flag?(:gc_boehm) %}
     LibGC.init
   {% end %}
   LibCrystalMain.__crystal_main(argc, argv)

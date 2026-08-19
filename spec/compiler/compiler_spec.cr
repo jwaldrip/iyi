@@ -157,51 +157,71 @@ describe "Compiler" do
     end
   end
 
-  # iyi: `-Dgc_none` is a flag with a program behind it.
+  # iyi: the collector is opt-in, and `-Dgc_boehm` is the opt.
   #
   # The prelude bound `@[Link("gc")] lib LibGC` whatever the flags said and
-  # wired the three allocation entry points straight to it, so
-  # `iyi build -Dgc_none` took the flag, put `-lgc` in the link and called
-  # `GC_malloc` anyway. `nm -u` on the two binaries said so plainly: the same
-  # four `GC_*` symbols in both, which is the equality the example after this
-  # one refuses. A flag that is accepted and ignored is worse than one that is
-  # refused, and this is the seam a different allocator is swapped in at.
+  # wired the three allocation entry points straight to it, so `-Dgc_none` took
+  # the flag, put `-lgc` in the link and called `GC_malloc` anyway. That is
+  # fixed, and then the default was inverted on top of it: bdw-gc is on
+  # Crystal's required-libraries list and an iyi program is not allowed to need
+  # anything on that list, so a plain build allocates without it and
+  # `-Dgc_boehm` is how a program that wants real collection asks.
   #
   # Asked of `link_annotations` rather than of the binary because that is the
-  # compiler's own answer to "which libraries does this program need", and it
-  # is the same answer on every platform. The output comparison is the other
-  # half: a build that dropped the collector and no longer ran is not a fix.
-  it "leaves the collector out of the link under -Dgc_none" do
-    with_tempdir("iyi-gc-none-link") do
+  # compiler's own answer to "which libraries does this program need", and it is
+  # the same answer on every platform. The output comparison is the other half:
+  # a build that dropped the collector and no longer ran is not a fix.
+  it "needs no collector by default, and links one for -Dgc_boehm" do
+    with_tempdir("iyi-gc-default-link") do
       File.write "allocating.iyi", IYI_ALLOCATING_PROGRAM
       source = Crystal::Compiler::Source.new(
         File.expand_path("allocating.iyi"), File.read("allocating.iyi"))
 
-      collected = iyi_compiler.compile(source, File.expand_path("collected"))
-      linked_libraries(collected).should contain "gc"
+      uncollected = iyi_compiler.compile(source, File.expand_path("uncollected"))
+      linked_libraries(uncollected).should_not contain "gc"
 
-      uncollected = iyi_compiler
-      uncollected.flags << "gc_none"
-      linked_libraries(uncollected.compile(source, File.expand_path("uncollected")))
-        .should_not contain "gc"
+      collected = iyi_compiler
+      collected.flags << "gc_boehm"
+      linked_libraries(collected.compile(source, File.expand_path("collected")))
+        .should contain "gc"
 
       Process.capture(File.expand_path("uncollected"))
         .should eq Process.capture(File.expand_path("collected"))
     end
   end
 
-  # The same claim at the layer a person checks it at, and the one the flag is
-  # named for: no `GC_*` left to resolve. libc's allocator arrives in their
-  # place, which is the trade `-Dgc_none` is, so `malloc` is asserted too:
-  # "fewer GC symbols" would also pass a prelude that quietly stopped
-  # allocating.
-  it "resolves no GC_ symbol under -Dgc_none" do
+  # `-Dgc_none` still means what it meant, so nothing that passes it breaks: it
+  # selects the same allocator the default now uses.
+  it "keeps -Dgc_none as an alias of the default" do
+    with_tempdir("iyi-gc-none-alias") do
+      File.write "allocating.iyi", IYI_ALLOCATING_PROGRAM
+      source = Crystal::Compiler::Source.new(
+        File.expand_path("allocating.iyi"), File.read("allocating.iyi"))
+
+      aliased = iyi_compiler
+      aliased.flags << "gc_none"
+      linked_libraries(aliased.compile(source, File.expand_path("aliased")))
+        .should_not contain "gc"
+
+      # Against the default build rather than a literal, so the fixture can
+      # change without this example quietly asserting the old one.
+      iyi_compiler.compile(source, File.expand_path("plain"))
+      Process.capture(File.expand_path("aliased"))
+        .should eq Process.capture(File.expand_path("plain"))
+    end
+  end
+
+  # The same claim at the layer a person checks it at: a plain build, no flags,
+  # and no `GC_*` left to resolve. libc's allocator arrives in their place on
+  # darwin, which is the trade, so `malloc` is asserted too: "fewer GC symbols"
+  # would also pass a prelude that quietly stopped allocating.
+  it "resolves no GC_ symbol in a plain build" do
     pending! "nm is not available" unless nm_available?
 
-    with_tempdir("iyi-gc-none-symbols") do
+    with_tempdir("iyi-gc-default-symbols") do
       File.write "allocating.iyi", IYI_ALLOCATING_PROGRAM
       Crystal::Command.run ["build"].concat(program_flags_options)
-        .concat(["-Dgc_none", "allocating.iyi", "-o", File.expand_path("uncollected")])
+        .concat(["allocating.iyi", "-o", File.expand_path("uncollected")])
 
       symbols = undefined_symbols(File.expand_path("uncollected"))
       symbols.select(&.starts_with?("GC_")).should be_empty

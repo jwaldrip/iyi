@@ -266,9 +266,17 @@ The second build never sees `polite`'s body. It reads
 against and the machine code it links, and that is R-1: a module compiles
 against what its imports *say*, not against what they *do*.
 
-Two things have to be on the machine. A C toolchain, because the link goes
-through one. And **libgc**, which every program iyi produces links against:
-`apt install libgc-dev`, or your system's equivalent.
+What a program iyi builds depends on: on Linux, nothing. The prelude issues
+its own syscalls for `write`, `exit` and the allocator, so a plain `iyi build`
+needs no libc; on macOS it links `libSystem`, because that is Apple's only
+supported interface. Crystal's compiler needs thirteen libraries installed to
+link what it builds. A program iyi builds reaches none of them: no libgc, no
+libevent, no openssl, no zlib, none of it. The price is that the default
+allocator never collects; memory is taken and not given back until the
+collector lands. `-Dgc_boehm` opts a program into bdw-gc and real collection
+today, and then libgc is that program's one dependency. The link still goes
+through a C toolchain, so a compiler on the machine is the one thing a build
+needs.
 
 Building it instead needs LLVM 19 and a Crystal compiler to bootstrap from:
 

@@ -267,10 +267,21 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
   private def iyi_module_name(filename : String) : String
     root = project_root
     if root && filename.starts_with?("#{root}/")
-      filename[(root.size + 1)..].sub(/\.(iyi|cr)$/, "")
+      strip_source_suffix(filename[(root.size + 1)..])
     else
       filename
     end
+  end
+
+  # iyi: the `sub(/\.(iyi|cr)$/, "")` above, by hand — the compiler's own
+  # code has no business invoking a regex engine for a suffix strip
+  # (zero-dep). A regex `$` also matches just before one final newline, so
+  # "x.cr\n" used to become "x\n", not "x"; kept that.
+  private def strip_source_suffix(name : String) : String
+    length = name.size - (name.ends_with?('\n') ? 1 : 0)
+    suffix_size = 4 if length >= 4 && name[length - 4, 4] == ".iyi"
+    suffix_size ||= 3 if length >= 3 && name[length - 3, 3] == ".cr"
+    suffix_size ? name[0, length - suffix_size] + name[length..] : name
   end
 
   # iyi: an imported module is declared at the top level (R-1).

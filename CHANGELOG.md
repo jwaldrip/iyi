@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+An iyi program needs no libgc. A plain `iyi build` links the platform libc and
+nothing else, and its undefined symbols are five libc calls (`write`, `exit`,
+`memset`, `malloc`, `realloc`) where 0.1.0's list was seven, four of them the
+allocator. On Linux the prelude now issues raw syscalls for `write`, `exit` and
+the allocator (`mmap`), so a Linux program should need no libc at all.
+
+The price is that the default does not collect. The prelude's allocator
+selection is inverted: a plain build binds `src/gc/none.cr`, which allocates
+over `malloc` and `realloc` and never frees, `-Dgc_boehm` opts back into real
+collection (`libgc.1.dylib` and the four `GC_*` symbols, exactly as before),
+and `-Dgc_none` still works and selects the default's allocator. The flag used
+to be accepted and ignored, because the prelude declared `@[Link("gc")]`
+directly; that was fixed first, then the default was flipped.
+
+The compiler lost `libiconv` (the Makefile passes `-Dwithout_iconv`) and keeps
+`libgc` and `pcre2`, both now measured rather than assumed. `-Dgc_none` was
+tried on the compiler itself and is not viable: it emits invalid IR ("Load
+operand must be a pointer", from `LLVM::Module#verify`) on some runs and dies
+in `main_user_code` on others, being a long walk over ASTs with parallel
+codegen and fibers under an allocator that never frees. Six internal regex uses
+were rewritten to string operations and pcre2 is still linked, because
+macro-level regex is a language feature: `macros/methods.cr` implements `=~`,
+`gsub`, `match`, `scan` and `split` over a `RegexLiteral`, and
+`semantic/literal_expander.cr` expands a user's regex literal. SPEC.md III.9
+and III.10 carry both findings, Appendix B holds the two calls they imply, and
+`bench/dependency_floor.sh` now checks the linked libraries beside the symbols,
+for the default build and for `-Dgc_boehm`, and fails when either grows.
+
 ## 0.1.0 — 2026-08-18
 
 The first release. There is nothing to compare it against, so this says what is

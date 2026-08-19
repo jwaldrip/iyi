@@ -128,11 +128,30 @@ class Crystal::Codegen::Target
   end
 
   def freebsd_version
-    if @environment =~ /freebsd(\d+)\.\d+/
-      $1.to_i
-    else
-      nil
+    # iyi: `/freebsd(\d+)\.\d+/` parsed by hand — the compiler itself must not
+    # keep a regex engine on its link line just to read a triple (zero-dep).
+    # Unanchored like the regex: the first `freebsd` whose digit run is
+    # followed by `.` and another digit, so `gnufreebsd13.2` reads 13 too.
+    # Digits stay ASCII; the UCP `\d` the regex really ran could also match
+    # Unicode digits, but `$1.to_i` raised on those anyway.
+    offset = 0
+    while found = @environment.index("freebsd", offset)
+      digits_start = found + 7
+      digits_end = digits_start
+      while @environment[digits_end]?.try(&.ascii_number?)
+        digits_end += 1
+      end
+
+      if digits_end > digits_start &&
+         @environment[digits_end]? == '.' &&
+         @environment[digits_end + 1]?.try(&.ascii_number?)
+        return @environment[digits_start...digits_end].to_i
+      end
+
+      offset = found + 1
     end
+
+    nil
   end
 
   def dragonfly?

@@ -2570,29 +2570,35 @@ have different answers and only one of them is open.
 
 #### What an iyi program depends on, counted
 
-Every undefined symbol in a linked iyi program, and the list is the same for
-`hello.iyi` and for the Kemal port:
+Every undefined symbol in a linked iyi program, plain `iyi build`, measured on
+darwin arm64:
 
 ```
-GC_init  GC_malloc  GC_malloc_atomic  GC_realloc      # libgc
-write  exit  memset                                   # libc
+write  exit  memset  malloc  realloc      # libc
 ```
 
-Seven symbols, four of them the allocator. Checked on all nine samples:
-identical set every time. The shared libraries are `libgc` and
-the platform's libc, and nothing else. Crystal's own `hello` additionally pulls
-`libiconv`, which iyi's `String` has no reason to want.
+Five symbols, all of them libc, and the one shared library is the platform's
+libc. The list this section was written on was seven, four of them the
+allocator: `libgc.1.dylib` beside libc, carrying `GC_init`, `GC_malloc`,
+`GC_malloc_atomic` and `GC_realloc`. That library is gone from the default, and
+the four went with it: the prelude selects `src/gc/none.cr`, which allocates
+over `malloc` and `realloc` and never frees. Crystal's own `hello` additionally
+pulls `libiconv`, which iyi's `String` has no reason to want, and the compiler
+dropped that one too (`-Dwithout_iconv`).
 
-So **an iyi program with no external dependencies is four allocator entry points
-and three libc calls.** That is not a project. Two thirds of it is already in
-the tree: `src/gc/none.cr` implements the four over `malloc` in 227 lines, and
-`src/syscall/x86_64-linux.cr` already issues raw Linux syscalls, so `write` and
-`exit` need no libc either. `memset` is `memset`.
+So **an iyi program's dependency is libc, five calls of it, and on Linux not
+even that**: the prelude issues raw syscalls there for `write`, `exit` and the
+allocator (`mmap`), so a Linux program should need no libc at all. What
+dropping libgc bought is the open item below and it is not free: the default
+allocates and never collects.
 
-One thing to fix wherever this is taken up: `-Dgc_none` has no effect on an iyi
-program. The prelude declares `@[Link("gc")]` directly rather than going through
-the selection in `src/gc.cr`, so the flag is accepted and ignored. That line is
-where the choice belongs.
+`-Dgc_none` used to have no effect on an iyi program. The prelude declared
+`@[Link("gc")]` directly rather than going through the selection in `src/gc.cr`,
+so the flag was accepted and ignored, and the fix was routing that selection.
+Then the default was inverted: the libc allocator is what a plain `iyi build`
+binds, `-Dgc_boehm` is the opt-in that restores real collection, `libgc.1.dylib`
+and the four `GC_*` symbols and all, and `-Dgc_none` still works and selects the
+same allocator as the default, so nothing that passes it breaks.
 
 #### The collector is not hygiene, it is R-4
 
@@ -2607,8 +2613,9 @@ R-4 is also the rule with nothing behind it. Nothing in the compiler mentions
 recently were both on the boundary R-4 governs: a generic type read from an
 artifact had no object code to be compiled elsewhere into, and the synthesized
 `new` fell through the gap. **The collector work and the cross-module generic
-work are the same work**, and that is the argument for doing the collector, not
-the seven symbols.
+work are the same work**, and that is the argument for doing the collector. The
+dependency count was never it, and the default build is the proof: libgc left
+without one, by not collecting, and the collector is owed anyway.
 
 #### Two kinds of precision, and II.5 only needs the cheap one
 
@@ -2679,11 +2686,13 @@ policy, not precision. That is a result worth inheriting rather than rediscoveri
    runtime rather than a library, so the honest form is vendoring it into this
    tree under its licence, not depending on it.
 3. **It raises the floor, and the gate will say so.** gcry needs `mmap`,
-   `munmap`, signals and `pthread_atfork`, so III.10's seven symbols become
-   more. That is not a regression, it is the trade: a C library the machine must
-   already have becomes syscalls plus code iyi ships. `bench/dependency_floor.sh`
-   will fail on the commit that does it, which is correct, and the commit adds
-   the new symbols to the list with this section as the reason.
+   `munmap`, signals and `pthread_atfork`, so the default build's five libc
+   symbols become more. That is not a regression, it is the trade: a default
+   that does not collect becomes one that does, paying syscalls plus code iyi
+   ships for it.
+   `bench/dependency_floor.sh` will fail on the commit that does it, which is
+   correct, and the commit adds the new symbols to the list with this section
+   as the reason.
 
 One piece of luck worth naming: iyi has no concurrency (III.4 is unbuilt), so it
 would adopt gcry in the simplest configuration gcry supports, single-threaded
@@ -2693,11 +2702,18 @@ hardest to be sure of is the half iyi does not need yet.
 #### What the compiler depends on, which is a different list
 
 ```
-libLLVM  libc++  libpcre2  libgc  libiconv  libSystem
+libLLVM  libc++  libpcre2  libgc  libSystem
 ```
 
-Two of those are sheddable and neither is interesting: `pcre2` is the compiler's
-own regex, `iconv` is string encoding. `libc++` arrives with LLVM. **LLVM is the
+`iconv` left: the Makefile builds with `-Dwithout_iconv`, because iyi's
+`String` has no encoding conversion and so the compiler had no reason to want it
+either. `pcre2` stays, and the reason is not the compiler's own regex: six
+internal uses were rewritten to string operations, but macro-level regex is a
+language feature, so the library cannot leave the compiler without cutting what
+a user's macro can do (III.10 has the finding, Appendix B #22 the call). `libgc`
+stays, and not for want of trying: `-Dgc_none` was built and is not viable for
+the compiler itself (III.10 has the evidence), so the compiler keeps a collector
+and the programs it builds do not. `libc++` arrives with LLVM. **LLVM is the
 list**, and Part V.9 already priced what owning the back end would cost while
 declining to own the linker, for reasons that apply here with more force.
 
@@ -2724,20 +2740,24 @@ answers, and worth separating so the question stops being asked as one:
 The second is not scheduled and should not be. It needs a standard library with
 IO, which does not exist, and every line of it is a line not spent on the four
 rules. **What is worth saying is that the program floor above does not depend on
-it at all**: seven symbols is reachable while the compiler stays a Crystal
-program, and a compiler that needs LLVM to build itself can still emit binaries
-that need nothing.
+it at all**: it is measured, not projected, on a compiler that is still a
+Crystal program, and a compiler that needs LLVM to build itself emits binaries
+whose only library is the platform libc, on Linux not even that.
 
 #### Order
 
-1. Route the prelude's allocator through the flag, so `gc_none` means something.
+1. ~~Route the prelude's allocator through the flag, so `gc_none` means
+   something.~~ Done, and then inverted: the libc allocator is the default and
+   `-Dgc_boehm` is the opt-in.
 2. A precise, non-moving collector, because II.5 already requires one for R-4.
-3. Raw syscalls for `write` and `exit` on Linux, which the tree can already do.
+3. ~~Raw syscalls for `write` and `exit` on Linux, which the tree can already
+   do.~~ Done, and further than written: the prelude issues the raw syscalls
+   for `write`, `exit` and the allocator (`mmap`) on Linux.
 4. Nothing about LLVM, and nothing about self-hosting.
 
 ### III.10 Every library Crystal needs, and iyi's answer for each: **PROPOSED**
 
-III.9's seven symbols are true and they are also flattering, because they are
+III.9's five symbols are true and they are also flattering, because they are
 the floor of a language with no IO, no concurrency, no regex, no TLS and no
 serialisation. **Every dependency below arrives attached to a feature**, and the
 decision about it has to be taken when the feature is written rather than after,
@@ -2765,16 +2785,16 @@ From Crystal's own *Required libraries* page, plus every `@[Link]` in this tree.
 
 | Library | What it is for | Reachable | iyi's answer |
 |---|---|---|---|
-| libc | everything | yes: `write`, `exit`, `memset` | keep, and make it optional on Linux via raw syscalls |
-| Boehm GC | allocation | yes: 4 entry points | **own it.** II.5 already requires a precise collector for R-4 |
+| libc | everything | yes: `write`, `exit`, `memset`, `malloc`, `realloc` | keep. On Linux the prelude already issues the raw syscalls, so a program should need no libc at all |
+| Boehm GC | allocation | no: the default allocates over libc and never collects; `-Dgc_boehm` opts back in | **own it.** II.5 already requires a precise collector for R-4, and the default holding the floor does not collect |
 | compiler-rt builtins | 128-bit divide, float conversion, overflow-checked multiply | no | **already owned**: `src/crystal/compiler_rt/` ports them to Crystal. Keep porting |
 | libunwind / libgcc | exception backtraces | no | own the walk. III.1 is what makes this cheap: errors are union members, so only a panic unwinds |
 | libevent | event loop | no | **never adopt it.** Crystal already wrote native backends and libevent is its default only on OpenBSD, NetBSD, Dragonfly and Solaris |
 | pthread | threads | no | kernel calls directly, as Go does. Arrives with III.4 |
 | libdl | `dlopen` | no | do not offer dynamic loading |
 | libm | `sqrt`, `pow` | no | LLVM intrinsics where they exist, iyi where they do not |
-| libiconv | encoding conversion | no | never. UTF-8 only, which is Go's answer and already iyi's |
-| PCRE2 | `Regex` | no | own it, and take RE2's semantics rather than Perl's |
+| libiconv | encoding conversion | no | never. UTF-8 only, which is Go's answer and already iyi's. The compiler dropped it too (`-Dwithout_iconv`) |
+| PCRE2 | `Regex` | no | own it, and take RE2's semantics rather than Perl's. Stays linked to the compiler while macro-level regex is a language feature (Appendix B #22) |
 | OpenSSL (libssl, libcrypto) | TLS, digests | no | digests **already owned** (`src/crystal/digest/`). TLS: not in 0.x, own it eventually, a binding never in the prelude |
 | zlib | `Compress` | no | own it. DEFLATE is a known quantity and arrives with HTTP |
 | libxml2 | `XML` | no | no XML in the prelude. A package, written in iyi |
@@ -2805,12 +2825,29 @@ the one that reaches for libevent because it is the shortest path. Adopting it
 would put a C library under every concurrent iyi program, permanently, to save
 work that has already been done by somebody else.
 
-**2. The collector.** III.9 and II.5. Nothing to add except that it is first,
-because R-4 waits on it.
+**2. The collector.** III.9 and II.5, and the ground moved under it: the default
+no longer links libgc, so the floor has stopped arguing for the collector and
+what is left is the reason that was always the real one, R-4. The price already
+being paid is that a default iyi program allocates and never frees, which
+`-Dgc_boehm` escapes for any program that wants collection now. One shortcut is
+closed by measurement: **`-Dgc_none` is not viable for the compiler itself.** It
+was built and tried, and the compiler emits invalid IR ("Load operand must be a
+pointer", from `LLVM::Module#verify`) on some runs and dies in `main_user_code`
+on others, because it is a long walk over ASTs with parallel codegen and fibers
+under an allocator that never frees. So the compiler keeps a collector and the
+programs it builds do not, and a collected default arrives through the real
+collector, not through the flag.
 
 **3. Regex, and the semantics are the interesting part.** Owning PCRE2 removes a
-dependency from iyi programs *and* from the compiler, which links it today. But
-writing a regex engine is a choice about the language, not a port: PCRE
+dependency from iyi programs *and* from the compiler, which links it today. The
+program half is writing the engine; the compiler half has a wall in it that is
+now measured. Six internal regex uses were rewritten to string operations and
+pcre2 is still linked, because macro-level regex is a language feature:
+`macros/methods.cr` implements `=~`, `gsub`, `match`, `scan` and `split` over a
+`RegexLiteral`, and `semantic/literal_expander.cr` expands a user's regex
+literal. Removing pcre2 would remove what a user's macro can do, which is a
+language decision rather than a build flag, and it is Appendix B #22's to make.
+But writing a regex engine is a choice about the language, not a port: PCRE
 backtracks and can be made to take exponential time on ordinary-looking input,
 which is the standard denial-of-service in every language that ships it. Go
 refused that and took RE2's guarantee instead: linear time, at the cost of
@@ -2837,8 +2874,11 @@ of the language rather than a habit of whoever wrote the last commit, and unlike
 most rules in this document it is checkable by a machine.
 
 **So it is checked.** `bench/dependency_floor.sh` builds every sample, reads the
-undefined symbols out of each binary, and fails when the union grows past the
-seven. It runs in CI beside the roundtrip check. Proven to fail the only way that
+undefined symbols and the linked libraries out of each binary, does the same for
+the collector build (`-Dgc_boehm`), and fails when either list grows past what
+this section records: five libc symbols and the platform libc alone for the
+default, `libgc` and the four `GC_*` entry points back for the collector build.
+It runs in CI beside the roundtrip check. Proven to fail the only way that
 counts: adding a two-line `lib LibM` call to `hello.iyi` makes it exit non-zero
 naming `sqrt`, and removing it makes it pass again.
 
@@ -2851,16 +2891,20 @@ it.
 
 #### Where zero is not reachable, said plainly
 
-On Linux this bottoms out at nothing: the kernel is the interface, `src/syscall/`
-already issues raw syscalls, and a static binary with no libc is a normal thing
+On Linux this bottoms out at nothing, and it is no longer a projection: the
+kernel is the interface, the prelude issues the raw syscalls itself for `write`,
+`exit` and the allocator (`mmap`), so a Linux program should need no libc at
+all, and a static binary with no libc is a normal thing
 to produce. **On macOS it does not.** Apple's only supported interface is
 libSystem, raw syscalls are explicitly not a stable ABI, and a binary that makes
-them is one OS release from breaking. So the floor there is libSystem and that is
-Apple's rule rather than a gap in this design. Windows is the same story with a
+them is one OS release from breaking. So the floor there is libSystem and that
+is Apple's rule rather than a gap in this design; Go links libSystem on darwin
+for the same reason. Windows is the same story with a
 different name.
 
-The honest form of the claim is therefore: **no dependency iyi chose**, and on
-Linux no dependency at all.
+The honest form of the claim is therefore: **no dependency iyi chose**, and it
+is now a measurement rather than a promise: on Linux no dependency at all, on
+darwin the platform libc, five calls of it.
 
 ---
 
@@ -4516,10 +4560,11 @@ Named honestly, so nobody mistakes this draft for complete.
     in-process single-module analysis API, then a language server over it. R-1 is
     what makes that server cheap, and it is the one dividend of the compilation
     model nobody designed for.
-15. ~~**The dependency floor.**~~ **Measured in III.9**: seven undefined symbols
-    in any iyi program, four of them the allocator. The collector is the only
-    open item and II.5 already required it for R-4, so it is not dependency
-    hygiene. Self-hosting stays where B.2 put it.
+15. ~~**The dependency floor.**~~ **Measured in III.9**: five undefined symbols
+    in any iyi program, all of them libc, and on Linux not even those. libgc
+    left the default to buy that, so the default allocates and never collects;
+    the collector is the only open item and II.5 already required it for R-4, so
+    it is not dependency hygiene. Self-hosting stays where B.2 put it.
 16. ~~**Every other C library.**~~ **Specified in III.10**: Crystal's published
     inventory, one line each, with the principle that iyi owns everything above
     libc and libc is optional. Two were already answered by work nobody had
@@ -4528,7 +4573,8 @@ Named honestly, so nobody mistakes this draft for complete.
     cheapest of the remaining four because Crystal already wrote the native
     backends, and III.4 being unbuilt is why the choice is live. And the rule is
     checked rather than asserted: `bench/dependency_floor.sh` fails in CI when a
-    program grows a symbol.
+    program grows a symbol or a linked library, on the default build and on
+    `-Dgc_boehm`.
 
 ---
 
@@ -4592,9 +4638,11 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 16 | **Does III.4 use libevent or the native backends? (III.10)** | native, and it is not close. Crystal already wrote `epoll`, `kqueue`, `io_uring` and `iocp` backends and libevent is its default only on four platforms iyi does not target. Adopting it would put a C library under every concurrent iyi program to save work already done |
 | 17 | **Regex: PCRE semantics or RE2's? (III.10)** | RE2's. Linear time, no backreferences, no lookbehind. A language selling "the compiler will not surprise you" should not ship a library that takes exponential time on ordinary input, and Go already took this trade |
 | 18 | **TLS (III.10)** | none in 0.x; an OpenSSL binding as a package if something needs it sooner; own it eventually, TLS 1.3 only, and not before there is something to protect and somebody to audit it. What must not happen is OpenSSL reachable from the prelude |
-| 19 | **Is "no C library in the prelude" a rule or a habit? (III.10)** | a rule, and it is checked: `bench/dependency_floor.sh` fails in CI when a program grows a symbol. Proven to fail by adding a `lib LibM` call to a sample |
+| 19 | **Is "no C library in the prelude" a rule or a habit? (III.10)** | a rule, and it is checked: `bench/dependency_floor.sh` fails in CI when a program grows a symbol or a linked library, on the default build and on `-Dgc_boehm`. Proven to fail by adding a `lib LibM` call to a sample |
 | 20 | **Write a collector, or adopt `gcry`? (III.9)** | adopt, and pay it back in layouts. gcry has the heap, the STW, the roots, the finalizers and two platforms; what it lacks is the one thing only a compiler can give it, and iyi is a compiler. Writing a second collector to obtain a worse version of `layout.cr` is the expensive way to be independent |
 | 21 | **Precise stack roots (III.9)** | no, and not on a schedule. R-4 needs heap-layout precision, which is a table. gcry's own measurements say stack-map precision is correctness-stable and not an RSS win, and that result is worth inheriting rather than repeating |
+| 22 | **Keep macro-level regex, and pcre2 on the compiler with it? (III.9, III.10)** | keep, until the owned engine from #17 lands. `macros/methods.cr` implements `=~`, `gsub`, `match`, `scan` and `split` over a `RegexLiteral` and `semantic/literal_expander.cr` expands a user's regex literal, so pcre2 cannot leave the compiler without cutting what a user's macro can do. The alternative is a language decision, macros seeing string operations instead, and it should not be taken to shed a compiler-side dependency that no program links |
+| 23 | **Is a default that does not collect acceptable until the collector lands? (III.9)** | yes, with the price stated plainly: a default iyi program allocates over libc and never frees, so a long-running one grows without bound, and `-Dgc_boehm` is the escape hatch. This buys the program floor, libc alone and nothing on Linux, and answers nothing about the collector: II.5 still requires a precise one for R-4, and #20 is still the recommendation |
 
 ### B.2: The one decision the fork already made: **SETTLED: not a self-hosting project**
 
