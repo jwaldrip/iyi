@@ -3956,12 +3956,25 @@ Named honestly, so nobody mistakes this draft for complete.
       `Crystal.main_user_code`, with the object's own `main` localised so the
       host keeps the entry point. With it, a constant and a class variable both
       answer correctly.
-    - **Layout is shared and invariants are not.** Crystal reads `@length == 0`
+    - **Layout is shared and invariants were not.** Crystal reads `@length == 0`
       on a non-empty string as "not counted yet" and scans; this prelude
-      returns the field. So a string built by Crystal's `to_json` printed
+      returned the field. So a string built by Crystal's `to_json` printed
       correctly through iyi's `puts` and answered `size` **0**. No error, a
-      wrong number: the sharpest argument there is for a boundary that declares
-      rather than a link that assumes.
+      wrong number. **Fixed**: `String#size` counts when the field is unset,
+      which is free for every string this prelude makes itself, because it
+      fills the field. The same call now answers 7.
+
+    **What crosses is more than a `fun`, and this is the finding the rest
+    rests on.** The two sides mangle names identically, being one compiler:
+    `Lib::Greeter.polite(String) : String` compiles to
+    `*Lib::Greeter@Lib::Greeter::polite<String>:String` from Crystal source
+    and from iyi source alike. So the boundary needs no C ABI at all. Measured
+    end to end: a `.iyimod` written by `--no-codegen` (declarations, no object
+    code), an object compiled from Crystal source with its symbol globalised,
+    and an iyi program built with `--use-iyimod` against the first and linked
+    against the second. It passes an iyi `String` in, gets one back, and
+    prints it. `lib`'s C-types-only rule is not in the way because nothing
+    goes through `lib`.
 
     **Where this is going.** `lib` carries C types only — Crystal's own rule,
     and it refuses `String` — so a real API cannot cross that way. It does not
