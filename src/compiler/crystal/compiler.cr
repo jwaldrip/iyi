@@ -1720,9 +1720,15 @@ module Crystal
       "\\": "\\\\",
     }
 
+    # iyi: linker flags may run `` `command` ``. Compiled once here, not per
+    # call, and through Crystal::Rx, the compiler's own engine, so this file is
+    # not one of the reasons pcre2 stays on the link line (SPEC.md III.10).
+    private BACKTICK_SUBCOMMAND = Rx::Pattern.compile("`(.*?)`")
+
     private def expand_lib_flags(lib_flags)
-      lib_flags.gsub(/`(.*?)`/) do
-        command = $1
+      Rx.gsub(lib_flags, BACKTICK_SUBCOMMAND) do |match|
+        # The group sits between the two backticks, so it always participated.
+        command = match[1].not_nil!
         begin
           error_io = IO::Memory.new
           output = Process.run(command, shell: true, output: :pipe, error: error_io) do |process|

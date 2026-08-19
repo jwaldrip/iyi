@@ -549,20 +549,29 @@ module Crystal
       iyi_define_all_type_ids unless @program.iyi_artifact_objects.empty?
 
       env_dump = ENV["DUMP"]?
+      dump_llvm_regex : Rx::Pattern? = nil
       case env_dump
       when Nil
         # Nothing
       when "1"
         dump_all_llvm = true
       else
-        dump_llvm_regex = Regex.new(env_dump)
+        # iyi: DUMP holds a pattern a person typed, and Crystal::Rx refuses what
+        # it does not implement rather than matching it with other semantics
+        # (SPEC.md III.10). Refusal is one line naming the pattern and the
+        # reason, never a backtrace from inside the engine.
+        begin
+          dump_llvm_regex = Rx::Pattern.compile(env_dump)
+        rescue ex : Rx::SyntaxError
+          raise CompilerError.new("invalid pattern in DUMP=#{env_dump.inspect}: #{ex.message} (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)", :USAGE_ERROR)
+        end
       end
 
       @modules.each do |name, info|
         mod = info.mod
         push_debug_info_metadata(mod) unless @debug.none?
 
-        mod.dump if dump_all_llvm || name =~ dump_llvm_regex
+        mod.dump if dump_all_llvm || dump_llvm_regex.try &.matches?(name)
 
         # Always run verifications so we can catch bugs earlier and more often.
         # We can probably remove this, or only enable this when compiling in

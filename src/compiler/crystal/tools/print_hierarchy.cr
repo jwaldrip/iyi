@@ -19,10 +19,25 @@ module Crystal
 
     @llvm_typer : LLVMTyper
 
+    # iyi: declared, not inferred: `compile_exp` rescues `Rx::SyntaxError`, and
+    # an assignment from a method with its own rescue leaves the inferred type
+    # at Nil.
+    @exp : Rx::Pattern?
+
     def initialize(@program : Program, exp : String?)
-      @exp = exp ? Regex.new(exp) : nil
+      @exp = exp ? compile_exp(exp) : nil
       @targets = Set(Type).new
       @llvm_typer = @program.llvm_typer
+    end
+
+    # iyi: `tool hierarchy -e` takes a pattern from a person, and Crystal::Rx
+    # refuses what it does not implement rather than matching it with other
+    # semantics (SPEC.md III.10). Refusal is one line naming the pattern and the
+    # reason, never a backtrace from inside the engine.
+    private def compile_exp(exp)
+      Rx::Pattern.compile(exp)
+    rescue ex : Rx::SyntaxError
+      raise CompilerError.new("invalid pattern #{exp.inspect} for -e: #{ex.message} (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)", :USAGE_ERROR)
     end
 
     def execute
@@ -50,7 +65,7 @@ module Crystal
     end
 
     def compute_target(type : NonGenericClassType, exp, must_include)
-      if must_include || (type.full_name =~ exp)
+      if must_include || exp.matches?(type.full_name)
         @targets << type
         must_include = true
       end
@@ -66,7 +81,7 @@ module Crystal
     end
 
     def compute_target(type : GenericClassType, exp, must_include)
-      if must_include || (type.full_name =~ exp)
+      if must_include || exp.matches?(type.full_name)
         @targets << type
         must_include = true
       end

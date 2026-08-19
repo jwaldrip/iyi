@@ -201,8 +201,13 @@ class Crystal::Loader
 
   # Returns whether *dll* names an API set according to:
   # https://learn.microsoft.com/en-us/windows/win32/apiindex/windows-apisets#api-set-contract-names
+  # iyi: compiled once through Crystal::Rx, the compiler's own engine, so this
+  # file is not one of the reasons pcre2 stays on the link line (SPEC.md
+  # III.10).
+  private API_SET_DLL = Rx::Pattern.compile("^(?:api-|ext-)[a-zA-Z0-9-]*l\\d+-\\d+-\\d+\\.dll$")
+
   private def api_set?(dll)
-    dll.to_s.matches?(/^(?:api-|ext-)[a-zA-Z0-9-]*l\d+-\d+-\d+\.dll$/)
+    API_SET_DLL.matches?(dll.to_s)
   end
 
   private def module_filename(handle)
