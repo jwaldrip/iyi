@@ -1240,6 +1240,7 @@ module Crystal
 
     private def new_program(sources)
       @program = program = Program.new
+      program.iyi_prelude = prelude.ends_with?("iyi/prelude")
       program.compiler = self
       program.filename = sources.first.filename
       program.codegen_target = codegen_target

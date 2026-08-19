@@ -36,13 +36,16 @@ module Iyi
         help                     print this text
 
     Switches worth knowing:
+        --crystal                build against Crystal's standard library
         --emit-iyimod DIR        write a .iyimod per imported module into DIR
         --use-iyimod DIR         compile imports from DIR's .iyimod files
         --no-codegen             analyse only, produce nothing
         --release                optimise, and take longer about it
 
-    A `.iyi` entry file gets iyi's prelude; `--prelude` still wins. See
-    SPEC.md for the design and README.md for what is and is not here.
+    A `.iyi` entry file gets iyi's prelude; `--crystal` gives it Crystal's
+    instead, and there `require "kemal"` means what it means in Crystal. The
+    rules do not change with the library. See SPEC.md for the design and
+    README.md for what is and is not here.
     USAGE
 
   # What the binary calls itself, read from `src/IYI_VERSION` — the same file

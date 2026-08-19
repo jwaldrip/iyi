@@ -52,12 +52,14 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     # have — a syntax error in a file the author never opened, about a library
     # that is not part of this language. A relative require is left alone: it
     # is file inclusion inside one unit, which is how the prelude is written.
-    if !node.iyi_prelude? && relative_to.try(&.ends_with?(".iyi")) && !filename.starts_with?('.')
+    if !node.iyi_prelude? && @program.iyi_prelude? &&
+       relative_to.try(&.ends_with?(".iyi")) && !filename.starts_with?('.')
       node.raise "iyi has no `require`. A module is reached with " \
                  "`import #{filename}`, and it is a path to a file rather than " \
                  "a library name (SPEC.md R-1). There is no standard library " \
                  "to require: the prelude is what a program gets, and README.md " \
-                 "says what is in it"
+                 "says what is in it. A program built `--prelude=prelude` has " \
+                 "one, and there `require` means what it means in Crystal"
     end
 
     # Remember that the program depends on this require

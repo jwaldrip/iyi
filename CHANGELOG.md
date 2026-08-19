@@ -20,6 +20,18 @@ releases names no compiler.
 
 ### Added
 
+- **`iyi build --crystal` compiles a program against Crystal's standard
+  library, so `require` reaches the ecosystem.** A `.iyi` file refused
+  `require` because there was nothing to require: the prelude is what a program
+  gets. That reason stops being true when the prelude is Crystal's. The rules
+  do not change with the library — the module header, `pub`, `import`, `using`,
+  traits and `impl` are all still there, and a shard is ordinary Crystal
+  compiled into the program.
+
+  A Kemal server written this way serves HTTP. What it gives up is R-1 for that
+  dependency: the shard is read from source, so the edit loop pays for it the
+  way Crystal does. Your own modules are unaffected.
+
 - **`pub` takes a constant.** `pub LIMIT = 42` is reachable through the
   module's name; an unmarked constant is the module's own and is refused by the
   sentence an unmarked `def` gets. Nothing was added to the artifact format,

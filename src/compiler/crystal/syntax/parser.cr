@@ -146,8 +146,13 @@ module Crystal
       #
       # `using` deliberately stays INSIDE, because it affects name resolution
       # within this module and should not leak to whoever imports it.
+      # A `require` comes out with them, and for a plainer reason than
+      # `import`'s: a require is file level in Crystal, and leaving it inside
+      # the module this header desugars to loaded the required file *into* the
+      # module. `require "json"` under `module web` made json's `class String`
+      # mean `Web::String`, and the error was about a type nobody wrote.
       directives = [] of ASTNode
-      while (first = rest.first?) && first.is_a?(ImportDecl)
+      while (first = rest.first?) && (first.is_a?(ImportDecl) || first.is_a?(Require))
         directives << rest.shift
       end
 

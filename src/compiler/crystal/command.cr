@@ -598,6 +598,17 @@ class Crystal::Command
       # Emitting from an ordinary build rather than from a "compile this module
       # alone" command, because compiling a module alone is the thing the
       # artifact is *for* and cannot precede it.
+      # iyi: which standard library this program has.
+      #
+      # `--prelude` is the mechanism and this is the question: a program built
+      # with it gets Crystal's library, so `require` reaches the ecosystem and
+      # means what it means in Crystal. The rules that make a module a module
+      # are untouched — they are the language's, and a prelude is a library.
+      opts.on("--crystal", "iyi: build against Crystal's standard library, so `require` works") do
+        compiler.prelude = "prelude"
+        specified_prelude = true
+      end
+
       opts.on("--iyi-keep NAMESPACE", "iyi: define rather than inline the methods under NAMESPACE") do |root|
         compiler.iyi_keep = root
       end

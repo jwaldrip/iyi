@@ -184,6 +184,16 @@ module Crystal
     # unless `--emit-iyimod` asked for artifacts.
     getter iyi_exported_owners = Set(Type).new
 
+    # iyi: true when this program was built against iyi's own prelude.
+    #
+    # `require` is refused in a `.iyi` file because there is no standard
+    # library to require — and that reason stops being true the moment the
+    # prelude is Crystal's. A program built `--prelude=prelude` has one, so a
+    # `.iyi` file in it may reach a shard the way a `.cr` file does. The rules
+    # that make a module a module are unaffected: they are the language's, and
+    # the prelude is a library.
+    property? iyi_prelude = true
+
     # iyi: the types each object-code unit refers to a type id of, by unit name
     # (SPEC.md IV.1g).
     #

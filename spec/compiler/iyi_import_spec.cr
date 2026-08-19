@@ -493,6 +493,25 @@ describe "Semantic: iyi import" do
       end
     end
 
+    # `require` is refused in a `.iyi` file because there is nothing to
+    # require: the prelude is what a program gets. That reason stops being true
+    # when the prelude is Crystal's, and a program built `--crystal` has one.
+    # The rules are unaffected either way: they are the language's, and a
+    # prelude is a library.
+    it "refuses `require` while iyi's own prelude is what a program has" do
+      with_iyi_modules({
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          require "json"
+          IYI
+      }) do
+        expect_raises(Crystal::TypeException, /iyi has no `require`/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
     it "falls back to the source when there is no artifact" do
       with_iyi_modules({
         "app/dep.iyi" => <<-IYI,
