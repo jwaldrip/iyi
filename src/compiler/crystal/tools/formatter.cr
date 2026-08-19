@@ -9,6 +9,9 @@ module Crystal
     def self.format(source, filename = nil, report_warnings : IO? = nil, flags : Array(String)? = nil)
       parser = Parser.new(source)
       parser.filename = filename
+      # iyi: the formatter writes what the file says, so it needs the tree the
+      # file spells rather than the one the compiler wants (SPEC.md IV.6).
+      parser.desugar_module_header = false
       nodes = parser.parse
 
       # the formatter merely parses the same source again, it shouldn't
@@ -17,7 +20,13 @@ module Crystal
         parser.warnings.report(report_warnings)
       end
 
-      formatter = new(source, flags: flags)
+      # iyi: the same filename the parser got, because the lexer derives iyi
+      # mode from it and the two have to agree about what a token is. Without
+      # it the parser reads `to_i32!` as a call and a propagation operator
+      # (SPEC.md III.1.7) while the formatter's own lexer reads one identifier
+      # ending in `!`, and every node after that point is written from a token
+      # stream that has drifted.
+      formatter = new(source, filename: filename, flags: flags)
       formatter.skip_space_or_newline
       nodes.accept formatter
       formatter.finish
@@ -102,8 +111,16 @@ module Crystal
     property indent
     property subformat_nesting = 0
 
-    def initialize(source, @flags : Array(String)? = nil)
+    # iyi: kept because a macro body is formatted by a nested parser and a
+    # nested formatter, and both of them have to be told what the parser at the
+    # top was told, or iyi mode stops at the first `{% %}`.
+    getter filename : String | VirtualFile | Nil
+
+    def initialize(source, @filename = nil, @flags : Array(String)? = nil)
       @lexer = Lexer.new(source)
+      # iyi: before the first token is read, because the assignment is what puts
+      # the lexer in iyi mode and the first token may already depend on it.
+      @lexer.filename = filename
       @lexer.comments_enabled = true
       @lexer.count_whitespace = true
       @lexer.wants_raw = true
@@ -1386,6 +1403,8 @@ module Crystal
       @inside_def += 1
       @vars.push Set(String).new
 
+      # iyi: `pub def` (R-2). Written first because that is where it is read.
+      write_keyword :pub, " " if node.exported?
       write_keyword :abstract, " " if node.abstract?
 
       write_keyword :def, " ", skip_space_or_newline: false
@@ -1435,9 +1454,45 @@ module Crystal
           check :CONST
           write free_var
           next_token
+
+          # iyi: `forall T : Show` — the trait the variable is bounded by
+          # (SPEC.md II.7 rule 3). Written here because the bound belongs to
+          # the name rather than to the list.
+          if bound = node.free_var_bounds.try &.[free_var]?
+            skip_space
+            write_token " ", :OP_COLON, " "
+            skip_space_or_newline
+            accept bound
+          end
+
           skip_space_or_newline if last_index != i
           if @token.type.op_comma?
             write ", "
+            next_token_skip_space_or_newline
+          end
+        end
+      end
+
+      # iyi: `def best : Item where Item : Cmp` — a bound on a name this method
+      # did not introduce, which is how a trait says a default is only valid for
+      # some answers to its associated types (SPEC.md II.6). `where` is an
+      # identifier rather than a keyword, for the reason `forall` is.
+      if where_bounds = node.where_bounds
+        skip_space
+        write " where "
+        next_token_skip_space
+
+        where_bounds.each_with_index do |(name, bound), i|
+          check :CONST
+          write name
+          next_token
+          skip_space
+          write_token " ", :OP_COLON, " "
+          skip_space_or_newline
+          accept bound
+
+          if @token.type.op_comma?
+            write ", " unless i == where_bounds.size - 1
             next_token_skip_space_or_newline
           end
         end
@@ -2217,10 +2272,10 @@ module Crystal
       end
 
       parser = Parser.new(source, var_scopes: @vars.clone)
-      # parser.filename = formatter.filename
+      parser.filename = @filename
       nodes = parser.parse(mode)
 
-      formatter = Formatter.new(source)
+      formatter = Formatter.new(source, filename: @filename)
       formatter.inside_lib = @inside_lib
       formatter.inside_enum = @inside_enum
       formatter.inside_struct_or_union = @inside_struct_or_union
@@ -3407,6 +3462,227 @@ module Crystal
       false
     end
 
+    # iyi: the nodes R-1, R-2, R-2b and R-3 added to the grammar (SPEC.md IV.6).
+    #
+    # Nine of them, and they are here rather than in a file of their own because
+    # the formatter is one visitor walking one token stream: a node whose tokens
+    # nobody consumes desynchronises every node after it. Each of these consumes
+    # exactly what the parser consumed, which is why the shapes below mirror
+    # `parse_module_path`, `parse_using` and `parse_trait_def` rather than
+    # reading the node's fields and printing them.
+
+    # `module app/greeter`, `import app/greeter`, and the path half of `using`.
+    #
+    # The slash is the interesting part. After an identifier the lexer would
+    # read `/` as the start of a regex literal, so the parser suppresses regex
+    # mode for the length of a module path and this has to do the same or
+    # `import app/user` formats as far as `app` and then lexes the rest of the
+    # file as a regular expression.
+    private def format_iyi_module_path : Nil
+      check :IDENT
+      write @token.value
+      @lexer.suppress_regex!
+      next_token
+
+      while @token.type.op_slash?
+        write "/"
+        @lexer.suppress_regex!
+        next_token
+        check :IDENT
+        write @token.value
+        @lexer.suppress_regex!
+        next_token
+      end
+    end
+
+    def visit(node : ModuleHeader)
+      write_keyword :module, " "
+      format_iyi_module_path
+      false
+    end
+
+    def visit(node : ImportDecl)
+      write_keyword :import, " "
+      format_iyi_module_path
+      false
+    end
+
+    # `using app/greeter` or `using app/greeter::{polite, Greet}`.
+    #
+    # The name list is written as the author wrote it, one space after each
+    # comma and none inside the braces, which is the only formatting decision
+    # here: the names themselves are matched as written (SPEC.md II.3) so
+    # nothing may reorder or case-fold them.
+    def visit(node : UsingDecl)
+      write_keyword :using, " "
+      format_iyi_module_path
+
+      if @token.type.op_colon_colon?
+        write_token :OP_COLON_COLON
+        write_token :OP_LCURLY
+        skip_space_or_newline
+
+        while @token.type.ident? || @token.type.const?
+          write @token.value
+          next_token_skip_space_or_newline
+          break unless @token.type.op_comma?
+          write ", "
+          next_token_skip_space_or_newline
+        end
+
+        write_token :OP_RCURLY
+      end
+
+      false
+    end
+
+    # `pub trait Show`, `trait Ord : Cmp`, `pub trait Into(T)`.
+    def visit(node : TraitDef)
+      write_keyword :pub, " " if node.exported?
+      write_keyword :trait, " "
+
+      accept node.name
+      format_type_vars node.type_vars, nil
+
+      if supertraits = node.supertraits
+        skip_space_or_newline
+        write_token " ", :OP_COLON, " "
+        skip_space_or_newline
+
+        supertraits.each_with_index do |supertrait, i|
+          accept supertrait
+          unless last?(i, supertraits)
+            skip_space_or_newline
+            write_token :OP_COMMA
+            write " "
+            skip_space_or_newline
+          end
+        end
+      end
+
+      format_nested_with_end node.body
+
+      false
+    end
+
+    # `impl Show for Box(T) forall T`, and `impl Into(String) for User`.
+    #
+    # `forall` is not a keyword: the parser matches it as an identifier, because
+    # making it one would take the name away from every Crystal file this
+    # compiler still has to parse. So it is written as the identifier it is.
+    def visit(node : ImplDef)
+      write_keyword :impl, " "
+
+      accept node.trait
+
+      if trait_args = node.trait_args
+        skip_space
+        write_token :OP_LPAREN
+        skip_space_or_newline
+        trait_args.each_with_index do |arg, i|
+          accept arg
+          unless last?(i, trait_args)
+            skip_space_or_newline
+            write_token :OP_COMMA
+            write " "
+            skip_space_or_newline
+          end
+        end
+        write_token :OP_RPAREN
+      end
+
+      skip_space_or_newline
+      write_keyword " ", :for, " "
+      skip_space_or_newline
+
+      accept node.target
+
+      if type_vars = node.type_vars
+        skip_space_or_newline
+        write " forall "
+        next_token_skip_space_or_newline
+
+        type_vars.each_with_index do |type_var, i|
+          write @token.value
+          next_token_skip_space_or_newline
+
+          if bound = node.type_var_bounds.try &.[type_var]?
+            write_token " ", :OP_COLON, " "
+            skip_space_or_newline
+            accept bound
+          end
+
+          if @token.type.op_comma?
+            write ", " unless last?(i, type_vars)
+            next_token_skip_space_or_newline
+          end
+        end
+      end
+
+      format_nested_with_end node.body
+
+      false
+    end
+
+    # `type Elem` in a trait, `type Elem = Int32` in an impl.
+    def visit(node : AssocTypeDecl)
+      write_keyword :type, " "
+
+      write @token.value
+      next_token_skip_space
+
+      if value = node.value
+        write_token " ", :OP_EQ, " "
+        skip_space_or_newline
+        accept value
+      end
+
+      false
+    end
+
+    # `read(path)!` — postfix, so the operand is written first.
+    def visit(node : Propagate)
+      accept node.exp
+      skip_space
+      write_token :OP_BANG
+      false
+    end
+
+    # `defer close(handle)`. An identifier rather than a keyword, for the reason
+    # `forall` is.
+    def visit(node : Defer)
+      write @token.value
+      write " "
+      next_token_skip_space
+      accept node.exp
+      false
+    end
+
+    # `load(path).or(0)` and `load(path).or_panic`.
+    def visit(node : Recover)
+      accept node.exp
+      skip_space
+      write_token :OP_PERIOD
+      write @token.value
+      next_token
+
+      if default = node.default
+        write_token :OP_LPAREN
+        skip_space_or_newline
+        accept default
+        skip_space_or_newline
+        write_token :OP_RPAREN
+      elsif @token.type.op_lparen?
+        # `.or_panic()` parses and means nothing extra, so it is written the way
+        # `foo.bar()` is: without the parentheses.
+        next_token_skip_space_or_newline
+        check :OP_RPAREN
+        next_token
+      end
+
+      false
+    end
+
     def visit(node : AnnotationDef)
       write_keyword :annotation, " "
 
@@ -3431,6 +3707,8 @@ module Crystal
     end
 
     def visit(node : ClassDef)
+      # iyi: `pub struct` and `pub class` (R-2).
+      write_keyword :pub, " " if node.exported?
       write_keyword :abstract, " " if node.abstract?
       write_keyword (node.struct? ? Keyword::STRUCT : Keyword::CLASS), " "
 

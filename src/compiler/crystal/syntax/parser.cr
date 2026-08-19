@@ -88,11 +88,22 @@ module Crystal
       @doc_enabled = wants_doc
     end
 
+    # iyi: false gives the tree the file actually contains, header and all,
+    # rather than the one semantic analysis wants.
+    #
+    # `apply_module_header` is a desugaring: it wraps everything after the
+    # header in a `ModuleDef` that no source line spells and prepends an
+    # `extend self` that nobody wrote. That is right for compiling and wrong for
+    # any tool that has to line the tree up against the tokens, which is what
+    # the formatter does. Compiling is the default, so nothing that compiles
+    # changes.
+    property? desugar_module_header = true
+
     def parse
       next_token_skip_statement_end
 
       nodes = parse_expressions.tap { check :EOF }
-      apply_module_header(nodes)
+      desugar_module_header? ? apply_module_header(nodes) : nodes
     end
 
     # iyi: `module app/greeter` scopes everything after it in the file.
@@ -2060,12 +2071,11 @@ module Crystal
       segments
     end
 
-    # iyi: both flags, because the lexer reads one of them and the parser sets
-    # the other, and a keyword-prefixed identifier skips the reset that would
-    # have kept them in step.
+    # iyi: the two flags a module path's `/` is judged by. `Lexer#suppress_regex!`
+    # is the one implementation; a keyword-prefixed identifier skips the reset
+    # that would otherwise have kept them in step.
     private def suppress_regex : Nil
-      @wants_regex = false
-      slash_is_not_regex!
+      suppress_regex!
     end
 
     # iyi: a module path segment is `[a-z][a-z0-9]*` with single `_` between

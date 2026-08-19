@@ -1093,6 +1093,23 @@ module Crystal
       @slash_is_regex = false
     end
 
+    # iyi: in a module path the `/` is a separator, and every reader of one has
+    # to say so before advancing (SPEC.md IV.6).
+    #
+    # Both flags, because they are consulted in that order by the `when '/'`
+    # branch: `@slash_is_regex` is what an explicit call sets, and `@wants_regex`
+    # is what the slash falls back to when the next character is not whitespace,
+    # which is exactly the `app/greeter` case. Setting only the first leaves
+    # `app` followed by a regex literal running to the next `/` in the file.
+    #
+    # Here rather than in the parser because the parser is no longer the only
+    # thing that walks a module path: the formatter does too, and it inherits
+    # nothing from the parser.
+    def suppress_regex! : Nil
+      @wants_regex = false
+      @slash_is_regex = false
+    end
+
     def consume_comment(start_pos)
       skip_comment
       @token.type = :COMMENT
