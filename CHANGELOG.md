@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+Master is `0.2.0-dev`, and under the rule below that means every build of it
+interoperates with nothing but itself. That is the point: a version between two
+releases names no compiler.
+
 ### Changed
 
 - **An artifact is read by the release that wrote it, not by the build.** A

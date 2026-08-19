@@ -3684,6 +3684,13 @@ all. So `0.1.0` is an identity and `0.2.0-dev+9bcbb359f` is one, while
 `0.2.0-dev` on its own is not, and a build that carries it interoperates with
 nothing but itself.
 
+A build told no commit at all — compiled outside a checkout, or by something
+that does not pass one — has nothing to add, so its `-dev` version stands
+alone and is the weakest identity here: it will read another such build's
+artifacts. That is the honest end of a best-effort answer rather than a hole
+worth closing, because the case it covers is a compiler nobody released and
+nobody can name.
+
 The version is iyi's, read from `src/IYI_VERSION` at compile time rather than
 from the environment, because two binaries in this repository write artifacts
 and an equality test between them cannot depend on how each was invoked.

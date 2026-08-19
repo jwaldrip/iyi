@@ -42,7 +42,9 @@ deref_symlinks     ?= ## Dereference symbolic links for `make install`
 sequential_codegen ?= $(if $(filter 0,$(supports_mt)),true,)## Enforce sequential codegen in compiler builds.
 
 O            := .build
-SOURCES      := $(shell find src -name '*.cr')
+# iyi: the two version files are compiled in with `read_file`, so a build that
+# does not depend on them says the old number after the number changes.
+SOURCES      := $(shell find src -name '*.cr') src/VERSION src/IYI_VERSION
 SPEC_SOURCES := $(shell find spec -name '*.cr')
 MAN1PAGES    := $(patsubst doc/man/%.adoc,man/%.1,$(wildcard doc/man/*.adoc))
 override FLAGS += -D strict_multi_assign -D preview_overload_order $(if $(release),--release )$(if $(stats),--stats )$(if $(progress),--progress )$(if $(threads),--threads $(threads) )$(if $(debug),-d )$(if $(static),--static )$(if $(LDFLAGS),--link-flags="$(LDFLAGS)" )$(if $(target),--cross-compile --target $(target) )

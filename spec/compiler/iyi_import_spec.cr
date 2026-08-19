@@ -324,9 +324,11 @@ describe "Semantic: iyi import" do
       # whole identity, and a version between two releases names no compiler,
       # so it keeps the build commit.
       version = Crystal::Config.iyi_version
-      if version.ends_with?("-dev")
-        Crystal::IyiMod.compiler_version.should start_with("#{version}+")
+      if version.ends_with?("-dev") && (commit = Crystal::Config.build_commit)
+        Crystal::IyiMod.compiler_version.should eq "#{version}+#{commit}"
       else
+        # A released version, or a build that was told no commit — this spec
+        # binary is one, being compiled without the variable the Makefile sets.
         Crystal::IyiMod.compiler_version.should eq version
       end
 
