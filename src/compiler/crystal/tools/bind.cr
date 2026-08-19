@@ -39,6 +39,8 @@ module Crystal
     params : Array({String, String}),
     returns : String?,
     receiver : String,
+    # The block parameter as written, `&block : Context -> B`, or empty.
+    written_block : String,
     # What the return type turned out to be, once the method was instantiated
     # on purpose, or the reason it could not be.
     inferred : String?,
@@ -49,6 +51,10 @@ module Crystal
       types = params.map { |(_, restriction)| restriction }
       answer = returns || inferred
       types << answer if answer
+      # The restriction only. `&block : Int32 -> Int32` names one type and one
+      # parameter, and reading the parameter as a type made every annotated
+      # block look like it mentioned something nobody declared.
+      types << written_block.split(" : ", 2).last unless written_block.empty?
       types
     end
 
@@ -229,7 +235,7 @@ module Crystal
         name: method.name,
         receiver: "",
         parameters: method.params.map { |(name, restriction)| "#{name} : #{restriction}" },
-        block_parameter: "",
+        block_parameter: method.written_block,
         return_type: (method.returns || method.inferred).not_nil!,
         free_variables: [] of String,
         required: false,
@@ -519,7 +525,7 @@ module Crystal
             # instance method with the right name and the wrong reach.
             receiver: on_metaclass && method.receiver.empty? ? "self" : method.receiver,
             parameters: method.params.map { |(argument, restriction)| "#{argument} : #{restriction}" },
-            block_parameter: "",
+            block_parameter: method.written_block,
             return_type: (method.returns || method.inferred).not_nil!,
             free_variables: [] of String,
             required: false,
@@ -589,8 +595,37 @@ module Crystal
     end
     io << "  " << target << "." << signature.name
     io << "(" << args.join(", ") << ")" unless args.empty?
+
+    # A block-taking method is compiled per block *type*, and the type is in
+    # the symbol: `twice<Int32, &Proc(Int32, Int32)>`. So one is emitted here
+    # by passing a block of the annotated type, and every consumer that writes
+    # a block of that type calls the same name. A block whose output is `_` has
+    # no annotated type and no single symbol, which is why it never got here.
+    unless signature.block_parameter.empty?
+      inputs, output = block_shape signature.block_parameter
+      names = inputs.map_with_index { |_, index| "b#{counter + index}" }
+      counter += inputs.size
+      io << " { "
+      io << "|" << names.join(", ") << "| " unless names.empty?
+      if output.empty? || output == "Nil"
+        io << "nil"
+      else
+        io << "r#{counter} = uninitialized " << output << "; r#{counter}"
+        counter += 1
+      end
+      io << " }"
+    end
+
     io << "\n"
     counter
+  end
+
+  # `&block : Int32, String -> Bool` read as its inputs and its output.
+  private def self.block_shape(written : String) : {Array(String), String}
+    restriction = written.split(" : ", 2).last.strip.lchop('(').rchop(')')
+    head, _, tail = restriction.partition("->")
+    inputs = head.split(',').map(&.strip).reject(&.empty?)
+    {inputs, tail.strip}
   end
 
   # A file that calls everything and is never called.
@@ -761,6 +796,9 @@ module Crystal
       params: a_def.args.map { |arg| {arg.name, arg.restriction.try(&.to_s) || "?"} },
       returns: a_def.return_type.try(&.to_s),
       receiver: a_def.receiver.try(&.to_s) || "",
+      # `&block : Context -> B` travels as written. A block whose type nobody
+      # wrote cannot: R-2 asks the block for its types like everything else.
+      written_block: a_def.block_arg.try { |argument| argument.restriction ? "&#{argument}" : "" } || "",
     )
   end
 
@@ -777,7 +815,15 @@ module Crystal
   # one: its type depends on what the caller passes, so there is no single
   # answer to read.
   private def self.infer_return(owner : Type, a_def : Def) : {String?, String?}
-    return {nil, "takes a block"} if a_def.block_arg || a_def.block_arity
+    # A block whose own type is written is not the problem; one whose output is
+    # `_`, or which was never annotated, is. What such a method returns depends
+    # on what the caller passes, and there is no single answer to read.
+    if block_arg = a_def.block_arg
+      restriction = block_arg.restriction
+      return {nil, "block is not annotated"} unless restriction
+      return {nil, "block returns `_`"} if restriction.to_s.includes?("_")
+    end
+    return {nil, "yields without a block parameter"} if a_def.block_arity && !a_def.block_arg
     return {nil, "splat"} if a_def.splat_index || a_def.double_splat
     return {nil, "generic type"} if owner.instance_type.is_a?(GenericType)
     return {nil, "abstract"} if a_def.abstract?

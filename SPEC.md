@@ -4031,12 +4031,26 @@ Named honestly, so nobody mistakes this draft for complete.
     `Kemal@Kemal::config_instance` against `Kemal::config_instance`, which is
     the same distinction that makes a module function what it is.
 
+    **A block crosses when its type is written, and that is not a detail.** A
+    block-taking method is compiled per block *type*, and the type is in the
+    symbol — `twice<Int32, &Proc(Int32, Int32)>` — so every consumer writing a
+    block of the annotated type calls the one name the shard emitted. Measured:
+    `twice(21) { |n| n }` runs across the boundary.
+
+    A block written `-> _` has no such type. Each caller's block returns
+    something else, each is a different symbol, and none of them is in the
+    shard's object. **That is 32 of Kemal's 43 block-takers, and it is the
+    whole DSL**: `get`, `post`, `error`, the filters. The hand port in
+    `samples/iyi/kemal/` answers it with `forall B : IntoBody`, which is a
+    person deciding what a route may return — R-2 asking its question, not a
+    gap a generator can close.
+
     **Measured, on Kemal 1.12.0**: 15 module functions, 22 types carrying 50
     methods, and an iyi program that reads the framework's own configuration —
-    `Kemal`, `3000`, `development`, `true`. What is left is the standard
-    library's vocabulary: 104 signatures still wait on `HTTP::Server::Context`,
-    `IO`, `HTTP::Handler` and a dozen more, and that is a decision per type
-    rather than a gap a generator can close.
+    `Kemal`, `3000`, `development`, `true`. What is left is two decisions per
+    API rather than any missing machinery: what a `-> _` block returns, and
+    what `HTTP::Server::Context` and a dozen more become on this side. 104
+    signatures wait on the second.
 
 ---
 
