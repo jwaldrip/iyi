@@ -12,7 +12,7 @@ class Crystal::Command
 
     OptionParser.parse(@options) do |opts|
       opts.banner = <<-USAGE
-        Usage: #{Command.program_name} tool format [options] [- | file or directory ...]
+        Usage: #{Crystal.program_name} tool format [options] [- | file or directory ...]
 
         Formats Crystal code in place.
 
@@ -173,7 +173,7 @@ class Crystal::Command
         @stderr.puts
         print_error "couldn't format '#{filename}', please report a bug including the contents of it: https://github.com/crystal-lang/crystal/issues"
       else
-        print_error "there's a bug formatting '#{filename}', to show more information, please run:\n\n  $ crystal tool format --show-backtrace #{@format_stdin ? "-" : "'#{filename}'"}\n"
+        print_error "there's a bug formatting '#{filename}', to show more information, please run:\n\n  $ #{Crystal.program_name} tool format --show-backtrace #{@format_stdin ? "-" : "'#{filename}'"}\n"
       end
       @status_code = 1
     end

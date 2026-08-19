@@ -4,7 +4,7 @@ require "../syntax/ast"
 class Crystal::Command
   private def flags
     OptionParser.parse(@options) do |opts|
-      opts.banner = "Usage: crystal tool flags [path...]\n\nOptions:"
+      opts.banner = "Usage: #{Crystal.program_name} tool flags [path...]\n\nOptions:"
 
       opts.on("-h", "--help", "Show this message") do
         puts opts

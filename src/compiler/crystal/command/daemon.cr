@@ -56,14 +56,14 @@ class Crystal::Command
       daemon_build
     when "--help", "-h"
       puts <<-USAGE
-        Usage: #{Command.program_name} daemon [start|build] [switches]
+        Usage: #{Crystal.program_name} daemon [start|build] [switches]
 
         Analyses the prelude once and forks a child per build, so a build does
         not re-analyse it. Start a daemon in one terminal and send builds to it
         from another:
 
-            #{Command.program_name} daemon start
-            #{Command.program_name} daemon build hello.iyi
+            #{Crystal.program_name} daemon start
+            #{Crystal.program_name} daemon build hello.iyi
 
         Command:
             start (default)      run the daemon in the foreground
@@ -72,7 +72,7 @@ class Crystal::Command
         Switches:
             --socket PATH        socket to listen on / connect to
 
-        Set CRYSTAL_DAEMON_SOCKET and an ordinary `#{Command.program_name} build`
+        Set CRYSTAL_DAEMON_SOCKET and an ordinary `#{Crystal.program_name} build`
         is served by that daemon too, falling back to a normal build if it is
         not there.
         USAGE
@@ -136,7 +136,7 @@ class Crystal::Command
     return nil if socket.nil? || socket.empty?
 
     unless File.exists?(socket)
-      STDERR.puts "crystal: no daemon at #{socket}, building without it"
+      STDERR.puts "#{Crystal.program_name}: no daemon at #{socket}, building without it"
       return nil
     end
 
@@ -175,7 +175,7 @@ class Crystal::Command
       preanalysed = Compiler.new.preanalyse_prelude
       Compiler.preanalysed[preanalysed.key] = preanalysed
 
-      STDERR.puts "#{Command.program_name} daemon listening on #{path}"
+      STDERR.puts "#{Crystal.program_name} daemon listening on #{path}"
       STDERR.puts "prelude analysed in #{elapsed.elapsed.total_seconds.round(3)}s"
       STDERR.flush
 
@@ -449,10 +449,10 @@ class Crystal::Command
       client = UNIXSocket.new(path)
     rescue ex : Socket::Error | File::Error
       if fallback
-        STDERR.puts "crystal: daemon at #{path} did not answer, building without it"
+        STDERR.puts "#{Crystal.program_name}: daemon at #{path} did not answer, building without it"
         return
       end
-      abort! "no daemon listening on #{path} (start one with `#{Command.program_name} daemon start`)", :FAILURE
+      abort! "no daemon listening on #{path} (start one with `#{Crystal.program_name} daemon start`)", :FAILURE
     end
 
     # The child runs a full command line, so put back the subcommand this one

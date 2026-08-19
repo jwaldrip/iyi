@@ -21,7 +21,7 @@ class Crystal::Command
 
   private def mod_usage
     <<-USAGE
-    Usage: #{Command.program_name} mod [subcommand]
+    Usage: #{Crystal.program_name} mod [subcommand]
 
     Subcommand:
         dump FILE                print a .iyimod as text
@@ -31,7 +31,7 @@ class Crystal::Command
 
     A .iyimod is a module's compiled interface: what another module reads
     instead of this one's source (SPEC.md Part IV). Produced by
-    `#{Command.program_name} build --emit-iyimod DIR`.
+    `#{Crystal.program_name} build --emit-iyimod DIR`.
     USAGE
   end
 

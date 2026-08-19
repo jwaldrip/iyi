@@ -4,8 +4,11 @@ class Crystal::Command
   private def clear_cache
     verbose = false
     OptionParser.parse(@options) do |opts|
-      opts.banner = <<-'BANNER'
-        Usage: #{Command.program_name} clear_cache
+      # iyi: an interpolating heredoc. It was `<<-'BANNER'`, which interpolates
+      # nothing, so `clear_cache --help` printed the interpolation as source
+      # text under both names.
+      opts.banner = <<-BANNER
+        Usage: #{Crystal.program_name} clear_cache
 
         Clears the compiler cache
 

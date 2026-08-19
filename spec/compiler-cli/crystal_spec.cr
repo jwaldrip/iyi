@@ -17,6 +17,51 @@ describe "`crystal`" do
     end
   end
 
+  # iyi: the other half of what `iyi_spec.cr` asserts. The binary reads the name
+  # it was invoked as, so a change that made `iyi` right by writing `iyi` into
+  # the text would break every one of these.
+  describe "usage text names the running program" do
+    it "in the tool list" do
+      Process.capture_result(crystal, "tool")
+        .should(be_success)
+        .output.should(contain("Usage: crystal tool [tool] [switches] [program file] [--] [arguments]"))
+        .should_not(contain("iyi"))
+    end
+
+    it "in the tool list asked for by --help" do
+      Process.capture_result(crystal, "tool", "--help")
+        .should(be_success)
+        .output.should(contain("Usage: crystal tool [tool]"))
+    end
+
+    it "in an individual tool's help" do
+      Process.capture_result(crystal, "tool", "flags", "--help")
+        .should(be_success)
+        .output.should(contain("Usage: crystal tool flags"))
+    end
+
+    it "in the formatter's help" do
+      Process.capture_result(crystal, "tool", "format", "--help")
+        .should(be_success)
+        .output.should(contain("Usage: crystal tool format"))
+    end
+
+    it "in clear_cache's banner, which interpolated nothing at all" do
+      Process.capture_result(crystal, "clear_cache", "--help")
+        .should(be_success)
+        .output.should(contain("Usage: crystal clear_cache"))
+        .should_not(contain("program_name"))
+    end
+
+    # `.cr.txt`, like `syntax-error.cr.txt`: a `.cr` fixture the formatter is
+    # meant to complain about would fail `tool format --check` on this repo.
+    it "when a warning names the formatter to run" do
+      Process.capture_result(crystal, "build", "--no-codegen", fixture_path("space-before-colon.cr.txt"))
+        .should(be_success)
+        .error.should(contain("run `crystal tool format` to fix this"))
+    end
+  end
+
   describe "filename argument" do
     it "runs a single Crystal file argument" do
       Process.capture_result(crystal, fixture_path("hello-world.cr"))

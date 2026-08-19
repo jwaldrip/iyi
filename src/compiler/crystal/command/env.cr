@@ -39,7 +39,7 @@ class Crystal::Command
 
   private def env_usage
     <<-USAGE
-    Usage: #{Command.program_name} env [var ...]
+    Usage: #{Crystal.program_name} env [var ...]
 
     Prints Crystal environment information.
 

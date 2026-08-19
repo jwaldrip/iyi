@@ -342,7 +342,8 @@ $(O)/primitives_spec$(EXE): $(O)/$(CRYSTAL_BIN) $(DEPS) $(SOURCES) $(SPEC_SOURCE
 	@mkdir -p $(O)
 	$(EXPORT_CC) ./bin/crystal build $(FLAGS) $(SPEC_WARNINGS_OFF) -o $@ spec/primitives_spec.cr
 
-$(O)/cli_spec$(EXE): $(O)/$(CRYSTAL_BIN) $(O)/$(CRYSTAL_DAEMON_BIN) $(DEPS) $(SOURCES) $(SPEC_SOURCES)
+# iyi: `.build/iyi` too, because the CLI specs drive both names of the binary.
+$(O)/cli_spec$(EXE): $(O)/$(CRYSTAL_BIN) $(O)/iyi$(EXE) $(O)/$(CRYSTAL_DAEMON_BIN) $(DEPS) $(SOURCES) $(SPEC_SOURCES)
 	@mkdir -p $(O)
 	$(EXPORT_CC) ./bin/crystal build $(FLAGS) $(SPEC_WARNINGS_OFF) -o $@ spec/cli_spec.cr
 

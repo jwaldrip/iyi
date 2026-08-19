@@ -73,8 +73,10 @@ module Iyi
 
   def self.run(options = ARGV) : Nil
     # The delegated commands print their own usage, and it used to name the
-    # binary underneath instead of the one that was typed.
-    Crystal::Command.program_name = "iyi"
+    # binary underneath instead of the one that was typed. Set before anything
+    # reads it, which is why it is a property and not a constant: a constant
+    # holding the same text would have been built before this line ran.
+    Crystal.program_name = "iyi"
 
     command = options.first?
 

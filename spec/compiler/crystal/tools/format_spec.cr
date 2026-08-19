@@ -72,6 +72,24 @@ describe Crystal::Command::FormatCommand do
     stderr.to_s.should contain("there's a bug formatting 'STDIN', to show more information, please run:\n\n  $ crystal tool format --show-backtrace -")
   end
 
+  # iyi: twin of the assertion above. The hint names a command for the reader to
+  # run, so it has to name the program they are running, and the case above
+  # cannot tell a name that is read from one that is written in.
+  it "formats stdin (bug, under the fork's name)" do
+    stdin = IO::Memory.new ""
+    stdout = IO::Memory.new
+    stderr = IO::Memory.new
+
+    Crystal.program_name = "iyi"
+    format_command = BuggyFormatCommand.new(["-"], stdin: stdin, stdout: stdout, stderr: stderr)
+    format_command.run
+    format_command.status_code.should eq(1)
+    stdout.to_s.should be_empty
+    stderr.to_s.should contain("there's a bug formatting 'STDIN', to show more information, please run:\n\n  $ iyi tool format --show-backtrace -")
+  ensure
+    Crystal.program_name = "crystal"
+  end
+
   it "formats stdin (bug + show-backtrace)" do
     stdin = IO::Memory.new ""
     stdout = IO::Memory.new

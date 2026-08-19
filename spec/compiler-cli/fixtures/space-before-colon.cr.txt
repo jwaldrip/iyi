@@ -1,0 +1,2 @@
+count: Int32 = 1
+puts count

@@ -30,14 +30,10 @@ class Crystal::Command
     SOFTWARE_ERROR = 1
   end
 
-  # iyi: what this binary is called when it tells somebody how to call it.
-  #
-  # The same compiler ships under two names, and a person running `iyi mod`
-  # was told "Usage: crystal mod" — the name of a program they had not
-  # installed. `src/compiler/iyi.cr` sets this; nothing else does, so `crystal`
-  # says `crystal`.
-  class_property program_name : String = "crystal"
-
+  # iyi: this usage text names `crystal` and means it. It lists `init`, `spec`
+  # and `eval`, which only the `crystal` binary has, and iyi prints its own
+  # usage rather than ever reaching here. The name the shared banners use lives
+  # in `./program_name`.
   USAGE = <<-USAGE
     Usage: crystal [command] [switches] [program file] [--] [arguments]
 
@@ -56,23 +52,6 @@ class Crystal::Command
 
     Run a command followed by --help to see command specific information, ex:
         crystal <command> --help
-    USAGE
-
-  COMMANDS_USAGE = <<-USAGE
-    Usage: #{Command.program_name} tool [tool] [switches] [program file] [--] [arguments]
-
-    Tool:
-        context                  show context for given location
-        dependencies             show file dependency tree
-        expand                   show macro expansion for given location
-        flags                    print all macro `flag?` values
-        format                   format project, directories and/or files
-        hierarchy                show type hierarchy
-        implementations          show implementations for given call in location
-        macro_code_coverage      generate a macro code coverage report
-        types                    show type of main variables
-        unreachable              show methods that are never called
-        --help, -h               show this help
     USAGE
 
   def self.run(options = ARGV)
@@ -231,7 +210,7 @@ class Crystal::Command
     tool = options.first?
     case
     when !tool
-      puts COMMANDS_USAGE
+      puts commands_usage
       exit
     when "context".starts_with?(tool)
       options.shift
@@ -264,11 +243,34 @@ class Crystal::Command
       options.shift
       macro_code_coverage
     when "--help" == tool, "-h" == tool
-      puts COMMANDS_USAGE
+      puts commands_usage
       exit
     else
       abort! "unknown tool: #{tool}", :USAGE_ERROR
     end
+  end
+
+  # iyi: a method, not a constant. As a constant the interpolation ran during
+  # constant initialisation, which is before `Iyi.run` has set the name, so
+  # `iyi tool` printed "Usage: crystal tool". `env_usage` and `mod_usage` were
+  # already methods for the same reason.
+  private def commands_usage
+    <<-USAGE
+    Usage: #{Crystal.program_name} tool [tool] [switches] [program file] [--] [arguments]
+
+    Tool:
+        context                  show context for given location
+        dependencies             show file dependency tree
+        expand                   show macro expansion for given location
+        flags                    print all macro `flag?` values
+        format                   format project, directories and/or files
+        hierarchy                show type hierarchy
+        implementations          show implementations for given call in location
+        macro_code_coverage      generate a macro code coverage report
+        types                    show type of main variables
+        unreachable              show methods that are never called
+        --help, -h               show this help
+    USAGE
   end
 
   private def init
@@ -441,7 +443,7 @@ class Crystal::Command
     specified_prelude = false
 
     option_parser = parse_with_crystal_opts do |opts|
-      opts.banner = "Usage: #{Command.program_name} #{command} [options] [programfile] [--] [arguments]\n\nOptions:"
+      opts.banner = "Usage: #{Crystal.program_name} #{command} [options] [programfile] [--] [arguments]\n\nOptions:"
 
       unless no_codegen
         unless run

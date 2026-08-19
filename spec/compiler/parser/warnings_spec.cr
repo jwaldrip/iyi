@@ -69,6 +69,18 @@ describe "Parser warnings" do
       assert_parser_warning("def foo: Foo\nend", "warning in /test.cr:1\nWarning: space required before colon in return type restriction (run `crystal tool format` to fix this)")
       assert_no_parser_warning("def foo : Foo\nend")
     end
+
+    # iyi: the hint names a program to run, so it has to name the program that
+    # is running. Every case above spells `crystal` because that is the default,
+    # which cannot tell a name that is read from a name that is written in.
+    it "names the running program rather than `crystal`" do
+      Crystal.program_name = "iyi"
+      assert_parser_warning("x: Int32", "Warning: space required before colon in type declaration (run `iyi tool format` to fix this)")
+      assert_parser_warning("def foo: Foo\nend", "Warning: space required before colon in return type restriction (run `iyi tool format` to fix this)")
+      assert_parser_warning("def foo(&: Foo)\nend", "Warning: space required before colon in type restriction (run `iyi tool format` to fix this)")
+    ensure
+      Crystal.program_name = "crystal"
+    end
   end
 
   it "warns on single-letter macro lowercase fresh variables with indices" do
