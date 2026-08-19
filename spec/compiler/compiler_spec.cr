@@ -1,6 +1,48 @@
 require "../spec_helper"
 require "./spec_helper"
 
+# iyi: an allocating iyi program, for the `-Dgc_none` examples below.
+#
+# It allocates through both entry points a program can reach: the array
+# literal's buffer holds `String`s and so goes through `__crystal_malloc64`,
+# the `<<` past its capacity allocates another, and `join` builds a string
+# through `__crystal_malloc_atomic64`. A program that only printed a literal
+# would link the collector and never call it, and would pass either way.
+private IYI_ALLOCATING_PROGRAM = <<-IYI
+  words = ["gc", "none"]
+  words << "flag"
+  puts words.join("-")
+  puts words.size
+  IYI
+
+# The libraries the link would name, as the compiler sees them after semantic:
+# `Program#link_annotations` reads the `@[Link]` of every `lib` a program
+# actually used, which is the question "does this binary need libgc" asked
+# without a platform's object format in the way.
+private def linked_libraries(result : Crystal::Compiler::Result) : Array(String)
+  result.program.link_annotations.compact_map(&.lib)
+end
+
+private def iyi_compiler
+  compiler = create_spec_compiler
+  # Chosen by the entry file's extension in `iyi build`, which is the command
+  # layer rather than the compiler, so a spec driving the compiler asks for it.
+  compiler.prelude = "iyi/prelude"
+  compiler
+end
+
+# Undefined symbols, by name, with the leading underscore Mach-O puts on a C
+# name and ELF does not, and without the `U` column ELF's `nm` prints.
+private def undefined_symbols(path : String) : Array(String)
+  Process.capture(["nm", "-u", path]).lines.compact_map do |line|
+    line.split.last?.try(&.lchop('_'))
+  end
+end
+
+private def nm_available?
+  !!Process.find_executable("nm")
+end
+
 describe "Compiler" do
   it "has a valid version" do
     SemanticVersion.parse(Crystal::Config.version)
@@ -112,6 +154,59 @@ describe "Compiler" do
 
         Process.capture(path).should eq("Hello!")
       end
+    end
+  end
+
+  # iyi: `-Dgc_none` is a flag with a program behind it.
+  #
+  # The prelude bound `@[Link("gc")] lib LibGC` whatever the flags said and
+  # wired the three allocation entry points straight to it, so
+  # `iyi build -Dgc_none` took the flag, put `-lgc` in the link and called
+  # `GC_malloc` anyway. `nm -u` on the two binaries said so plainly: the same
+  # four `GC_*` symbols in both, which is the equality the example after this
+  # one refuses. A flag that is accepted and ignored is worse than one that is
+  # refused, and this is the seam a different allocator is swapped in at.
+  #
+  # Asked of `link_annotations` rather than of the binary because that is the
+  # compiler's own answer to "which libraries does this program need", and it
+  # is the same answer on every platform. The output comparison is the other
+  # half: a build that dropped the collector and no longer ran is not a fix.
+  it "leaves the collector out of the link under -Dgc_none" do
+    with_tempdir("iyi-gc-none-link") do
+      File.write "allocating.iyi", IYI_ALLOCATING_PROGRAM
+      source = Crystal::Compiler::Source.new(
+        File.expand_path("allocating.iyi"), File.read("allocating.iyi"))
+
+      collected = iyi_compiler.compile(source, File.expand_path("collected"))
+      linked_libraries(collected).should contain "gc"
+
+      uncollected = iyi_compiler
+      uncollected.flags << "gc_none"
+      linked_libraries(uncollected.compile(source, File.expand_path("uncollected")))
+        .should_not contain "gc"
+
+      Process.capture(File.expand_path("uncollected"))
+        .should eq Process.capture(File.expand_path("collected"))
+    end
+  end
+
+  # The same claim at the layer a person checks it at, and the one the flag is
+  # named for: no `GC_*` left to resolve. libc's allocator arrives in their
+  # place, which is the trade `-Dgc_none` is, so `malloc` is asserted too:
+  # "fewer GC symbols" would also pass a prelude that quietly stopped
+  # allocating.
+  it "resolves no GC_ symbol under -Dgc_none" do
+    pending! "nm is not available" unless nm_available?
+
+    with_tempdir("iyi-gc-none-symbols") do
+      File.write "allocating.iyi", IYI_ALLOCATING_PROGRAM
+      Crystal::Command.run ["build"].concat(program_flags_options)
+        .concat(["-Dgc_none", "allocating.iyi", "-o", File.expand_path("uncollected")])
+
+      symbols = undefined_symbols(File.expand_path("uncollected"))
+      symbols.select(&.starts_with?("GC_")).should be_empty
+      symbols.should contain "malloc"
+      symbols.should contain "realloc"
     end
   end
 end

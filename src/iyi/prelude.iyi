@@ -34,27 +34,82 @@ end
 # The collector, the way Crystal's own 0.1.0 had it. Twelve lines of binding
 # buys real collection, which is what lets the samples be read as programs
 # rather than as demonstrations that happen to exit before it matters.
-@[Link("gc")]
-lib LibGC
-  fun init = GC_init
-  fun malloc = GC_malloc(size : UInt64) : Void*
-  fun malloc_atomic = GC_malloc_atomic(size : UInt64) : Void*
-  fun realloc = GC_realloc(pointer : Void*, size : UInt64) : Void*
-end
+#
+# Selected rather than declared, because `-Dgc_none` is a flag this compiler
+# already answers to: `src/gc.cr` reads it to require `gc/none` instead of
+# `gc/boehm`. A prelude that binds `GC_malloc` unconditionally accepted the
+# flag, linked the collector anyway and said nothing about it, and a flag that
+# is accepted and ignored is worse than one that is refused. This is also the
+# seam a different allocator is swapped in at, so it has to be a real one.
+#
+# Written out twice rather than put behind a `GC` module the way the standard
+# library has it. There are four call sites and all of them are in this file,
+# so the module would buy nothing but a frame on every allocation of a build
+# that is not optimised.
+{% if flag?(:gc_none) %}
+  # libc's allocator and no collection at all, which is what `src/gc/none.cr`
+  # is: `malloc` and `realloc` under the same three entry points, less the
+  # parts 0.1.0 has nothing to say to (threads, finalizers, statistics).
+  #
+  # The clear after `malloc` is the entry point's contract rather than a fix
+  # for something seen: `GC.malloc` is documented as allocating *and clearing*,
+  # libc's `malloc` does not clear, and `gc/none.cr` clears for exactly that
+  # reason (crystal-lang/crystal#14678). Nothing here would notice it missing
+  # today, because codegen clears what it routes through this name anyway
+  # (`pre_initialize_aggregate` and `generic_array_malloc` both memset), so the
+  # clear is a second pass over the same bytes. It stays because the name is
+  # reachable from any `.iyi` file and a swapped allocator that quietly weakens
+  # the contract is the failure this flag is being fixed for, in miniature.
+  #
+  # `malloc_atomic` is that call without the clear, which is what the atomic
+  # variant means on both sides: `GC_malloc_atomic` does not clear either, so
+  # this is the same memory the collector's build hands back. `free` is not
+  # bound because nothing frees, and a program that outlives its memory is
+  # what `-Dgc_none` asks for.
+  lib LibC
+    fun malloc(size : UInt64) : Void*
+    fun realloc(pointer : Void*, size : UInt64) : Void*
+    fun memset(destination : Void*, value : Int32, count : UInt64) : Void*
+  end
 
-# Codegen emits calls to these by name for every allocation, so they are not
-# optional and their names are not ours to choose.
-fun __crystal_malloc64(size : UInt64) : Void*
-  LibGC.malloc(size)
-end
+  # Codegen emits calls to these by name for every allocation, so they are not
+  # optional and their names are not ours to choose.
+  fun __crystal_malloc64(size : UInt64) : Void*
+    pointer = LibC.malloc(size)
+    LibC.memset(pointer, 0, size)
+    pointer
+  end
 
-fun __crystal_malloc_atomic64(size : UInt64) : Void*
-  LibGC.malloc_atomic(size)
-end
+  fun __crystal_malloc_atomic64(size : UInt64) : Void*
+    LibC.malloc(size)
+  end
 
-fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
-  LibGC.realloc(pointer, size)
-end
+  fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
+    LibC.realloc(pointer, size)
+  end
+{% else %}
+  @[Link("gc")]
+  lib LibGC
+    fun init = GC_init
+    fun malloc = GC_malloc(size : UInt64) : Void*
+    fun malloc_atomic = GC_malloc_atomic(size : UInt64) : Void*
+    fun realloc = GC_realloc(pointer : Void*, size : UInt64) : Void*
+  end
+
+  # Codegen emits calls to these by name for every allocation, so they are not
+  # optional and their names are not ours to choose.
+  fun __crystal_malloc64(size : UInt64) : Void*
+    LibGC.malloc(size)
+  end
+
+  fun __crystal_malloc_atomic64(size : UInt64) : Void*
+    LibGC.malloc_atomic(size)
+  end
+
+  fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
+    LibGC.realloc(pointer, size)
+  end
+{% end %}
 
 # Codegen emits a call to this on every overflowing operation, so a program
 # cannot link without it. It aborts rather than raising: 0.1.0's `raise` is a
@@ -146,7 +201,12 @@ lib LibCrystalMain
 end
 
 fun main(argc : Int32, argv : UInt8**) : Int32
-  LibGC.init
+  # There is nothing to start under `-Dgc_none`, and nothing missing either:
+  # `gc/none.cr`'s `GC.init` sets up thread suspend and resume, and 0.1.0 has
+  # one thread.
+  {% unless flag?(:gc_none) %}
+    LibGC.init
+  {% end %}
   LibCrystalMain.__crystal_main(argc, argv)
   0
 end
