@@ -2699,6 +2699,31 @@ would adopt gcry in the simplest configuration gcry supports, single-threaded
 with no fibers and no execution contexts. The half of that project which is
 hardest to be sure of is the half iyi does not need yet.
 
+#### Where the gcry recommendation holds: the language, not the compiler
+
+The recommendation above is for the language, meaning the programs iyi builds,
+and it does not hold for the compiler, and the reason is threading rather than
+anything about the collector's quality. gcry ships proven and measured for
+`ExecutionContext` parallelism 1. The iyi compiler is not a parallelism-1
+program: it runs parallel codegen over fibers. In gcry that path is a supported
+opt-in measured at ~79% on one benchmark, with parallel mark and TLAB-on both
+still marked experimental in its `DESIGN.md`. Everything else about vendoring
+it for the compiler is moderate: roughly 60 files of pure Crystal, MIT, no
+external dependencies, nothing obviously version sensitive against this tree's
+1.22.0-dev. The one axis that is load-bearing here is the one that is not
+proven.
+
+Two ways through. Keep bdw-gc on the compiler, or build the compiler with
+sequential codegen so gcry's proven configuration applies. The second trades
+compile speed for a dependency, and compile speed is the entire thesis of this
+project, so it is the wrong trade. **Recommendation: the compiler keeps
+bdw-gc, recorded as an exception carrying this reason (Appendix B #24), and
+the question is revisited when gcry's parallel path leaves experimental.** The
+asymmetry is real rather than convenient: the programs the compiler builds are
+single-threaded, because III.4 is unbuilt, and the compiler itself is not,
+which is how one collector can be right for a language and wrong for its
+compiler.
+
 #### What the compiler depends on, which is a different list
 
 ```
@@ -2711,9 +2736,12 @@ either. `pcre2` stays, and the reason is not the compiler's own regex: six
 internal uses were rewritten to string operations, but macro-level regex is a
 language feature, so the library cannot leave the compiler without cutting what
 a user's macro can do (III.10 has the finding, Appendix B #22 the call). `libgc`
-stays, and not for want of trying: `-Dgc_none` was built and is not viable for
-the compiler itself (III.10 has the evidence), so the compiler keeps a collector
-and the programs it builds do not. `libc++` arrives with LLVM. **LLVM is the
+stays, and not for want of trying: `-Dgc_none` was built and is not viable
+for the compiler itself (III.10 has the evidence), and gcry cannot take the
+library's place on the compiler today, for the threading reason above. So the
+compiler keeps a collector and the programs it builds do not, and the one it
+keeps is a recorded exception (Appendix B #24) rather than an unexamined
+habit. `libc++` arrives with LLVM. **LLVM is the
 list**, and Part V.9 already priced what owning the back end would cost while
 declining to own the linker, for reasons that apply here with more force.
 
@@ -2838,6 +2866,16 @@ under an allocator that never frees. So the compiler keeps a collector and the
 programs it builds do not, and a collected default arrives through the real
 collector, not through the flag.
 
+That finding now has a boundary drawn around it. **The gcry adoption III.9
+recommends (Appendix B #20) is for the language, the runtime iyi programs run
+on, and it does not reach the compiler.** gcry is proven and measured at
+`ExecutionContext` parallelism 1 and the compiler runs parallel codegen over
+fibers, and the way to make the compiler fit gcry's proven configuration,
+sequential codegen, spends compile speed to shed a dependency, which is the
+wrong trade in a project whose thesis is compile speed. III.9 has the
+measurement; bdw-gc stays on the compiler as a recorded exception (Appendix B
+#24) until gcry's parallel path leaves experimental.
+
 **3. Regex, and the semantics are the interesting part.** Owning PCRE2 removes a
 dependency from iyi programs *and* from the compiler, which links it today. The
 program half is writing the engine; the compiler half has a wall in it that is
@@ -2905,6 +2943,59 @@ different name.
 The honest form of the claim is therefore: **no dependency iyi chose**, and it
 is now a measurement rather than a promise: on Linux no dependency at all, on
 darwin the platform libc, five calls of it.
+
+### III.11 The interpreter, again: **PROPOSED; reopens Appendix B #11**
+
+This reopens a decision the document had settled, so it says what changed, and
+what changed is not the evidence. V.11 removed Crystal's interpreter and
+Appendix B #11 decided no, and the findings still stand: it was compiled out
+already, no commit of this fork had touched it in 153, it could not run an iyi
+program past the module header, and an interpreter is a second implementation
+of the semantics, a price that keeps being paid while the language moves.
+**What changed is that the owner asked for one, with Elixir's `iex` as the
+reference.** A REPL is a developer-experience claim, which is the thing this
+project competes on, so the question stops being whether to want it and
+becomes what it costs and which base keeps the cost down.
+
+**The conflict with the dependency objective is libffi, and libffi is C
+interop.** libffi is on Crystal's own required-libraries list, "used for
+implementing binary interfaces in the interpreter", so a naive revert of the
+removed interpreter would put back exactly the kind of dependency III.9 and
+III.10 exist to keep out. It is needed for one thing only: interpreted code
+calling out to C. An interpreter that does not offer C calls needs no libffi,
+which is Elixir's model, and a first iyi REPL has nothing to call out to
+anyway, the only C in a program being the prelude's own primitives. So the
+shape is fixed by the objective: **no C interop in a session, no libffi**, and
+C calls, if they ever reach a REPL, arrive as a compiled escape hatch rather
+than an interpreted one.
+
+**The base is the macro interpreter, not the revert.** The removed runtime
+interpreter is 11,377 lines and interprets Crystal, which is why it stops at
+`BUG: missing interpret for Crystal::ModuleHeader` on line 12 of the simplest
+sample. The macro interpreter that stayed,
+`src/compiler/crystal/macros/interpreter.cr`, is 781 lines, is a complete AST
+evaluator, and already resolves types, which is the hard half of the distance
+between accepting a line and running it. Extending it for iyi's nine new AST
+nodes and two `Def` clauses is a second implementation of the semantics either
+way, which is what V.11 objected to, but it starts from 781 lines rather than
+11,377, and from code that already runs iyi's macros rather than from code
+that never ran an iyi program. V.11's parting line, that the removed
+interpreter is in the history and "a better starting point when there is an
+iyi to interpret", is overtaken by that: there is an iyi to interpret now, and
+the smaller evaluator is in the tree.
+
+**R-1 helps a REPL, and R-3 costs it one habit.** A module is the unit of
+compilation and imports read declarations rather than bodies, so what a
+session must recompile after an edit is bounded by the module graph, where
+Crystal's whole-program model offers a REPL no boundary at all and
+re-elaborates the world per line. The costs are stated beside it: every
+session needs a module header, because that is where R-1 keeps declarations,
+and open class extension, which is what a REPL user reaches for to patch a
+running program, is forbidden by R-3. An `iex` for iyi answers with `impl`,
+and is a smaller REPL than Ruby's on purpose.
+
+Appendix B #25 holds the call: build it on the macro interpreter without C
+interop, or leave it out. The recommendation is build.
 
 ---
 
@@ -4630,7 +4721,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 8 | Structured concurrency only, no bare spawn (III.4.1) | yes. It is `defer` applied to a task set, so it costs no new mechanism, and it makes Go's commonest bug unrepresentable. The price is that a task cannot outlive its scope, which is a taste call |
 | 9 | ~~`Share` marker vs Erlang-style no sharing (III.4.4)~~ | **Decided: `Share`, on the count**: III.4.7 found the feared class empty and clean-sheet iyi code 77% shareable as written, 100% given a shareable immutable collection. That collection is now a stdlib obligation, not a nicety |
 | 10 | ~~**Is iyi ever meant to be self-hosted?**~~ | **Decided: no.** iyi's compiler is and remains a Crystal program. The language's claim is what it compiles, not what compiles it. See B.2 |
-| 11 | ~~**Keep Crystal's interpreter?**~~ | **Decided: no, and removed.** It was compiled out already, it cannot run an iyi program past the module header, and no commit of this fork had touched it in 153. An interpreter is a second implementation of the semantics, and the semantics are still moving. See V.11 |
+| 11 | ~~**Keep Crystal's interpreter?**~~ | **Decided: no, and removed.** It was compiled out already, it cannot run an iyi program past the module header, and no commit of this fork had touched it in 153. An interpreter is a second implementation of the semantics, and the semantics are still moving. See V.11. **Reopened by III.11, as #25** |
 | 12 | **Is a Crystal binding checked or trusted? (III.6)** | trusted for the first version, checked for the second. Gleam trusts and says so, and the compiler already holds the inferred types the check would need, so this is an order-of-work call rather than a permanent one |
 | 13 | **Does the registry serve prebuilt artifacts? (III.7)** | yes, but last, and never as the only form. Source is primary and the artifact is a cache keyed on the four-tuple the format already enforces. It also cannot ship before a whole-artifact signature exists, since an artifact reaching the linker is code execution |
 | 14 | **A `Docs` section in the artifact? (III.7, III.8)** | yes. It is what makes `iyi doc` and the index possible without the deleted generator, and it is the one addition that serves two claims at once |
@@ -4643,6 +4734,8 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 21 | **Precise stack roots (III.9)** | no, and not on a schedule. R-4 needs heap-layout precision, which is a table. gcry's own measurements say stack-map precision is correctness-stable and not an RSS win, and that result is worth inheriting rather than repeating |
 | 22 | **Keep macro-level regex, and pcre2 on the compiler with it? (III.9, III.10)** | keep, until the owned engine from #17 lands. `macros/methods.cr` implements `=~`, `gsub`, `match`, `scan` and `split` over a `RegexLiteral` and `semantic/literal_expander.cr` expands a user's regex literal, so pcre2 cannot leave the compiler without cutting what a user's macro can do. The alternative is a language decision, macros seeing string operations instead, and it should not be taken to shed a compiler-side dependency that no program links |
 | 23 | **Is a default that does not collect acceptable until the collector lands? (III.9)** | yes, with the price stated plainly: a default iyi program allocates over libc and never frees, so a long-running one grows without bound, and `-Dgc_boehm` is the escape hatch. This buys the program floor, libc alone and nothing on Linux, and answers nothing about the collector: II.5 still requires a precise one for R-4, and #20 is still the recommendation |
+| 24 | **Keep bdw-gc on the compiler? (III.9, III.10)** | yes, recorded as an exception carrying the reason. gcry is the right collector for the language (#20) and cannot carry the compiler today: it is proven and measured at `ExecutionContext` parallelism 1, the compiler runs parallel codegen over fibers, and gcry's parallel path is an opt-in with parallel mark and TLAB-on still marked experimental. The alternative, building the compiler with sequential codegen to fit the proven configuration, spends compile speed to shed a dependency, and compile speed is the thesis. Revisit when gcry's parallel path leaves experimental |
+| 25 | **Build the interpreter on the macro interpreter, without C interop? (III.11)** | yes. This reopens #11 on the owner's ask, with `iex` as the reference; the evidence that removed the old one still stands. The base is `src/compiler/crystal/macros/interpreter.cr`, 781 lines, a complete AST evaluator that already resolves types, extended for iyi's nine new AST nodes and two `Def` clauses, not the 11,377-line revert that cannot run iyi past the module header. No C interop, so no libffi: libffi is needed only for interpreted code calling C, and a session does not offer it. R-1 bounds what a session recompiles to the module graph; R-3 takes open-class patching away from the prompt |
 
 ### B.2: The one decision the fork already made: **SETTLED: not a self-hosting project**
 

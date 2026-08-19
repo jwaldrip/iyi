@@ -30,6 +30,28 @@ and III.10 carry both findings, Appendix B holds the two calls they imply, and
 `bench/dependency_floor.sh` now checks the linked libraries beside the symbols,
 for the default build and for `-Dgc_boehm`, and fails when either grows.
 
+iyi is no longer Linux x86-64 only. One compiler now emits for seven triples
+on four platforms: Linux x86_64 and aarch64, macOS x86_64 and aarch64, Windows
+msvc and gnu, and wasm32-wasi. The floor held on every one, measured rather
+than promised: `llvm-nm --undefined-only` against the artifact each target
+actually emits (`.o` for ELF and Mach-O, `.obj` for Windows, `.wasm` for
+wasm32), three programs per triple.
+
+Linux x86_64 and aarch64: no undefined symbols at all. Not "no libc", nothing,
+which is what the raw-syscall paragraph above projected, now measured on the
+emitted objects. macOS x86_64 and aarch64: `exit`, `malloc`, `memset`,
+`realloc`, `write`, all libSystem. Windows msvc: `ExitProcess`,
+`GetProcessHeap`, `GetStdHandle`, `HeapAlloc`, `HeapReAlloc`, `WriteFile`, all
+kernel32, and the gnu triple adds `main`. wasm32-wasi: `wasi_fd_write` and
+`wasi_proc_exit`, which are WASI imports, plus `malloc` and `realloc` from
+wasi-libc; the wasm linker globals (`memory_base`, `stack_pointer`,
+`table_base`, `indirect_function_table`) are linker plumbing, not
+dependencies.
+
+The compiler binary still links libLLVM, libc++, libpcre2, libgc and
+libSystem, so this floor is a property of what iyi builds rather than of what
+builds it. SPEC.md III.9 records why the compiler keeps its own collector.
+
 ## 0.1.0 — 2026-08-18
 
 The first release. There is nothing to compare it against, so this says what is
