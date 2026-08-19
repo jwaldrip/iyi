@@ -598,6 +598,10 @@ class Crystal::Command
       # Emitting from an ordinary build rather than from a "compile this module
       # alone" command, because compiling a module alone is the thing the
       # artifact is *for* and cannot precede it.
+      opts.on("--iyi-keep NAMESPACE", "iyi: define rather than inline the methods under NAMESPACE") do |root|
+        compiler.iyi_keep = root
+      end
+
       opts.on("--emit-iyimod DIR", "iyi: write a .iyimod per imported module into DIR") do |dir|
         # iyi: answered here rather than by `Dir.mkdir_p` half an hour into a
         # build. A path that names a file, or a directory nobody may write to,

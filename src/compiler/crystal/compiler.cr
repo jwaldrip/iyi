@@ -121,6 +121,16 @@ module Crystal
     # (SPEC.md IV.1). Set by `--emit-iyimod`.
     property emit_iyimod : String? = nil
 
+    # iyi: a namespace whose methods this build must define rather than inline.
+    #
+    # `--emit-iyimod` already says this about iyi modules, and the reason is the
+    # same one: a method whose body is a literal is inlined and emits no symbol,
+    # which is right for a whole-program build and wrong for one producing code
+    # somebody else will call by name. A Crystal shard bound by `tool bind` is
+    # that second thing and has no iyi modules to key on, so it says which
+    # namespace it is producing.
+    property iyi_keep : String? = nil
+
     # iyi: directory to read a `.iyimod` per imported module from, or nil
     # (SPEC.md IV.1). Set by `--use-iyimod`. An import that finds one there is
     # compiled against it and never opens the module's source, which is R-1's
@@ -243,6 +253,7 @@ module Crystal
       end
 
       prepared = prepare_iyimods program
+      keep_iyi_namespace program
 
       units = codegen program, node, sources, output_filename unless @no_codegen
 
@@ -340,6 +351,7 @@ module Crystal
       end
 
       prepared = prepare_iyimods program
+      keep_iyi_namespace program
 
       units = codegen program, node, source, output_filename unless @no_codegen
 
@@ -370,6 +382,18 @@ module Crystal
     # enforced — an exported signature missing a block annotation is refused
     # here. Refusing it after a full codegen and link would make the compiler
     # spend the whole build on a program it had already decided not to write.
+    # iyi: `--iyi-keep Kemal`, the same rule `prepare_iyimods` applies to a
+    # module it is writing, applied to a namespace named on the command line.
+    private def keep_iyi_namespace(program : Program) : Nil
+      return unless root = iyi_keep
+
+      type = program.types?.try &.[]?(root)
+      return unless type.is_a?(ModuleType)
+
+      program.iyi_exported_owners << type
+      collect_iyi_owners type, program.iyi_exported_owners
+    end
+
     private def prepare_iyimods(program : Program) : Array({String, IyiMod::Artifact})?
       return unless dir = emit_iyimod
 

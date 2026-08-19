@@ -38,6 +38,7 @@ module Crystal
     location : String,
     params : Array({String, String}),
     returns : String?,
+    receiver : String,
     # What the return type turned out to be, once the method was instantiated
     # on purpose, or the reason it could not be.
     inferred : String?,
@@ -235,6 +236,8 @@ module Crystal
       )
     end
 
+    types = type_declarations program, methods, root
+
     artifact = IyiMod::Artifact.new(
       module_name: root.downcase,
       source_path: program.filename || "",
@@ -242,17 +245,19 @@ module Crystal
       target_triple: program.codegen_target.to_s,
       flags: program.flags.to_a.sort!,
       imports: [] of IyiMod::ImportEdge,
-      exports: IyiMod::Exports.new(signatures, [] of IyiMod::TypeDecl, [] of IyiMod::ImplRecord),
+      exports: IyiMod::Exports.new(signatures, types, [] of IyiMod::ImplRecord),
     )
 
     path = File.join(dir, "#{root.downcase}.iyimod")
     IyiMod.write artifact, path
 
     keep_path = File.join(dir, "#{root.downcase}_keep.cr")
-    File.write keep_path, keep_file(program, root, signatures, dir)
+    File.write keep_path, keep_file(program, root, signatures, types, dir)
 
     io.puts
-    io.puts "wrote #{path}: #{signatures.size} module functions"
+    carried = types.sum { |declaration| declaration.methods.size }
+    io.puts "wrote #{path}: #{signatures.size} module functions, " \
+            "#{types.size} types carrying #{carried} methods"
     io.puts "wrote #{keep_path}"
     io.puts
     io.puts "The artifact carries declarations and no object code, because the"
@@ -260,14 +265,101 @@ module Crystal
     io.puts "middle one is why the file above exists: Crystal compiles what a"
     io.puts "program uses, and a library nobody calls compiles to nothing."
     io.puts
-    io.puts "  crystal build --emit obj -o shard #{keep_path}"
+    io.puts "  crystal build --emit obj --iyi-keep #{root} -o shard #{keep_path}"
     io.puts "  nm shard.o | sed -n 's/^[0-9a-f]* t \\(\\*#{root}[@:].*\\)$/\\1/p' > shard.syms"
     io.puts "  objcopy --localize-symbol=main $(sed 's/^/--globalize-symbol=/' shard.syms) shard.o shard-ready.o"
     io.puts "  iyi build --use-iyimod #{dir} -o app app.iyi --link-flags shard-ready.o"
     io.puts
-    io.puts "The symbols are local until that `objcopy`, and global is what a"
-    io.puts "consumer links against. Nothing here goes through a C ABI: the two"
-    io.puts "sides are one compiler and mangle names the same way."
+    io.puts "`--iyi-keep` is not decoration: a getter whose body is one instance"
+    io.puts "variable is inlined at every call site and emits no symbol, which"
+    io.puts "is right for a whole program and wrong for code somebody else will"
+    io.puts "call by name. The symbols are local until that `objcopy`, and"
+    io.puts "global is what a consumer links against. Nothing here goes through"
+    io.puts "a C ABI: the two sides are one compiler and mangle names alike."
+  end
+
+  # The types the shard declares, with the methods that can be written down.
+  #
+  # A method on a type is where most of a shard's surface lives, and it is the
+  # half that could not travel while an artifact carried module functions
+  # alone. What a consumer needs is what `TypeDecl` already asks for: the name,
+  # the kind, the fields — a consumer allocates the type and allocating needs
+  # its size — and the signatures.
+  #
+  # Non-generic only. A generic's methods exist once per instantiation and have
+  # no symbol a producer could have emitted, so they travel as bodies rather
+  # than as declarations (IV.2), and that is a different piece of work.
+  private def self.type_declarations(program : Program, methods : Array(BindMethod),
+                                     root : String) : Array(IyiMod::TypeDecl)
+    by_owner = methods.group_by(&.owner)
+    declarations = [] of IyiMod::TypeDecl
+
+    root_type = program.types?.try &.[]?(root)
+    return declarations unless root_type.is_a?(NamedType)
+
+    root_type.types?.try &.each do |name, type|
+      next unless type.is_a?(NamedType)
+      next if type.is_a?(GenericType)
+
+      signatures = [] of IyiMod::Signature
+      {% begin %}{% end %}
+      { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
+        by_owner[owner]?.try &.each do |method|
+          next unless method.verdict.ready? || method.inferred
+          next unless method.signature_types.all? { |t| nameable?(t, root) }
+
+          signatures << IyiMod::Signature.new(
+            name: method.name,
+            # `new` is synthesized from `initialize` and carries no receiver of
+            # its own, so a class method would arrive on the far side as an
+            # instance method with the right name and the wrong reach.
+            receiver: on_metaclass && method.receiver.empty? ? "self" : method.receiver,
+            parameters: method.params.map { |(argument, restriction)| "#{argument} : #{restriction}" },
+            block_parameter: "",
+            return_type: (method.returns || method.inferred).not_nil!,
+            free_variables: [] of String,
+            required: false,
+          )
+        end
+      end
+
+      fields = [] of {String, String}
+      if type.responds_to?(:instance_vars)
+        type.instance_vars.each do |field, variable|
+          fields << {field, variable.type?.try(&.to_s) || "?"}
+        end
+      end
+
+      declarations << IyiMod::TypeDecl.new(
+        name: name,
+        kind: type.type_desc,
+        type_parameters: [] of String,
+        assoc_types: [] of String,
+        supertraits: [] of String,
+        fields: fields,
+        methods: signatures.sort_by(&.name),
+        visibility: "pub",
+      )
+    end
+
+    declarations
+  end
+
+  # One call, with a name for each argument. Returns the next counter, because
+  # every name in this file has to be its own.
+  private def self.keep_call(io : IO, target : String, signature : IyiMod::Signature,
+                             counter : Int32) : Int32
+    args = signature.parameters.map do |parameter|
+      type = parameter.split(" : ").last
+      name = "a#{counter}"
+      counter += 1
+      io << "  " << name << " = uninitialized " << type << "\n"
+      name
+    end
+    io << "  " << target << "." << signature.name
+    io << "(" << args.join(", ") << ")" unless args.empty?
+    io << "\n"
+    counter
   end
 
   # A file that calls everything and is never called.
@@ -277,7 +369,8 @@ module Crystal
   # method a *consumer* will call is in no object file at all. Naming them here
   # is what puts them there.
   private def self.keep_file(program : Program, root : String,
-                             signatures : Array(IyiMod::Signature), dir : String) : String
+                             signatures : Array(IyiMod::Signature),
+                             types : Array(IyiMod::TypeDecl), dir : String) : String
     # Relative, and written from where this file will sit: Crystal refuses an
     # absolute path in a `require`, and the shard is not on `CRYSTAL_PATH`.
     source = ::Path[File.expand_path(program.filename || "")]
@@ -290,16 +383,18 @@ module Crystal
       io << "# it exists so that codegen emits the methods a consumer will call.\n"
       io << "require \"" << relative << "\"\n\n"
       io << "fun __bind_keep : Nil\n"
-      signatures.each_with_index do |signature, index|
-        args = signature.parameters.map_with_index do |parameter, position|
-          type = parameter.split(" : ").last
-          name = "a#{index}_#{position}"
-          io << "  " << name << " = uninitialized " << type << "\n"
-          name
+      counter = 0
+      signatures.each do |signature|
+        counter = keep_call(io, root, signature, counter)
+      end
+      types.each_with_index do |declaration, index|
+        qualified = "#{root}::#{declaration.name}"
+        receiver = "t#{index}"
+        io << "  " << receiver << " = uninitialized " << qualified << "\n"
+        declaration.methods.each do |signature|
+          target = signature.receiver.empty? ? receiver : qualified
+          counter = keep_call(io, target, signature, counter)
         end
-        io << "  " << root << "." << signature.name
-        io << "(" << args.join(", ") << ")" unless args.empty?
-        io << "\n"
       end
       io << "end\n"
     end
@@ -412,6 +507,7 @@ module Crystal
       refused: refused,
       params: a_def.args.map { |arg| {arg.name, arg.restriction.try(&.to_s) || "?"} },
       returns: a_def.return_type.try(&.to_s),
+      receiver: a_def.receiver.try(&.to_s) || "",
     )
   end
 
