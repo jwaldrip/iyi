@@ -1052,7 +1052,17 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       macro_scope = macro_scope.remove_alias
 
       the_macro = macro_scope.metaclass.lookup_macro(node.name, node.args, node.named_args)
-      node.raise "private macro '#{node.name}' called for #{obj}" if the_macro.is_a?(Macro) && the_macro.visibility.private?
+      if the_macro.is_a?(Macro) && the_macro.visibility.private?
+        # iyi: the same answer an unexported `def` gets, because it is the same
+        # rule. A module's macros travel so that a travelling body can call
+        # one, and `pub` is what makes one the consumer's to call (R-2).
+        owner = the_macro.owner
+        if owner.is_a?(ModuleType) && owner.instance_type.as?(ModuleType).try(&.iyi_unit?)
+          node.raise "#{owner.instance_type} does not export '#{node.name}'. Only what a module marks `pub` is reachable from outside it — see SPEC.md R-2"
+        end
+
+        node.raise "private macro '#{node.name}' called for #{obj}"
+      end
     when Nil
       return false if node.super? || node.previous_def?
       the_macro = node.lookup_macro

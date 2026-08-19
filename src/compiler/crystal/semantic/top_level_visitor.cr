@@ -1108,12 +1108,23 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       return false
     end
 
+    # iyi: an unmarked macro is the module's own, the same as an unmarked `def`
+    # (R-2). Without this a module's macros were reachable through its name from
+    # anywhere — they travel in the artifact so that a travelling body can call
+    # one, and a consumer could call one too, which is a surface nobody wrote.
+    node.visibility = :private if unexported_in_unit?(current_type, node.exported?)
+
     target = current_type.metaclass.as(ModuleType)
     begin
       target.add_macro node
     rescue ex : Crystal::CodeError
       node.raise ex.message
     end
+
+    # iyi: `pub macro` — recorded on the module rather than on the metaclass the
+    # macro itself lives on, because the export surface is the module's and
+    # `using` asks the module what it exports (R-2b).
+    record_export current_type, node.name, node.exported?
 
     false
   end
