@@ -3983,6 +3983,34 @@ Named honestly, so nobody mistakes this draft for complete.
     `.iyimod`. That is the boundary worth building, and R-1 is what makes it
     cheap: the shard is compiled once and the edit loop never reads it again.
 
+    **Built far enough to run Kemal's own code.** `crystal tool bind
+    --emit-iyimod` writes the artifact and the file that makes the machine code
+    exist, and an iyi program built against the first and linked against the
+    second called `Kemal::ExceptionPage.for_production_exception` and printed
+    the page Kemal returns in production. Four things had to be true and each
+    was found by trying:
+
+    - **Codegen is demand-driven**, so a library nobody calls compiles to
+      nothing. The generated keep file names every exported method and is never
+      called.
+    - **A getter whose body is one instance variable is inlined** and emits no
+      symbol. `--emit-iyimod` already suppressed that for iyi modules;
+      `--iyi-keep NAMESPACE` says the same about a bound shard.
+    - **Symbols are local until an `objcopy`** globalises them.
+    - **A reference type can cross without its fields.** A pointer is a
+      pointer, so a consumer that never allocates one needs nothing of what is
+      inside it — 16 of Kemal's 27 types travel that way, `new` withheld.
+      A struct cannot: its size is its fields.
+
+    **And where it stops, which is a rule of this language rather than a bug.**
+    Kemal reaches everything through constants — `Config::INSTANCE`,
+    `HANDLERS`, one per handler — and `pub` does not take a constant, so
+    nothing a consumer could name hands it the objects. 22 types and 50
+    methods travel; almost none of them is reachable, because the thing that
+    would hand you one does not. That is the same gap this part already names
+    under "Exported constants", now with a shard behind it: it is the next
+    thing to build, not a workaround to find.
+
 ---
 
 ## Appendix: What measurement settled

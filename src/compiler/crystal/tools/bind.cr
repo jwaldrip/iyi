@@ -256,6 +256,33 @@ module Crystal
 
     io.puts
     carried = types.sum { |declaration| declaration.methods.size }
+    unless @@handle_types.empty?
+      io.puts
+      io.puts "crossed as handles, without their fields: #{@@handle_types.size}"
+      io.puts "  a reference is a pointer, so a consumer that never allocates"
+      io.puts "  one does not need to know what is inside it. `new` is not"
+      io.puts "  exported for these, which is what keeps that true."
+    end
+
+    unless @@nested_namespaces.empty?
+      io.puts
+      io.puts "namespaces skipped whole: #{@@nested_namespaces.sort.join(", ")}"
+      io.puts "  what they hold has to travel as nested declarations."
+    end
+
+    unless @@opaque_types.empty?
+      io.puts
+      io.puts "left out, because their fields name what an iyi program cannot:"
+      @@opaque_types.sort.first(12).each { |name| io.puts "  #{root}::#{name}" }
+      if @@opaque_types.size > 12
+        io.puts "  ... and #{@@opaque_types.size - 12} more"
+      end
+      io.puts
+      io.puts "These are the per-type decisions a boundary is made of. A type"
+      io.puts "the consumer only holds can cross as a handle; one it allocates"
+      io.puts "needs its fields, and its fields need their types."
+    end
+
     io.puts "wrote #{path}: #{signatures.size} module functions, " \
             "#{types.size} types carrying #{carried} methods"
     io.puts "wrote #{keep_path}"
@@ -289,6 +316,17 @@ module Crystal
   # Non-generic only. A generic's methods exist once per instantiation and have
   # no symbol a producer could have emitted, so they travel as bodies rather
   # than as declarations (IV.2), and that is a different piece of work.
+  # The types whose fields name something an iyi program cannot, filled in by
+  # `type_declarations` and reported beside the artifact it wrote.
+  @@opaque_types = [] of String
+
+  # The reference types that crossed without their fields: a consumer holds one
+  # and calls through it, and never makes one.
+  @@handle_types = [] of String
+
+  # The namespaces skipped whole, with whatever they hold.
+  @@nested_namespaces = [] of String
+
   private def self.type_declarations(program : Program, methods : Array(BindMethod),
                                      root : String) : Array(IyiMod::TypeDecl)
     by_owner = methods.group_by(&.owner)
@@ -297,9 +335,111 @@ module Crystal
     root_type = program.types?.try &.[]?(root)
     return declarations unless root_type.is_a?(NamedType)
 
-    root_type.types?.try &.each do |name, type|
-      next unless type.is_a?(NamedType)
+    collect_declarations root_type, by_owner, root, declarations
+    prune_dangling declarations, root
+  end
+
+  # Nothing may name a type that did not travel.
+  #
+  # `nameable?` answers "could an iyi program write this name", and for a type
+  # under the shard's own namespace it used to answer yes on the strength of
+  # the name alone. That is true only if the type is *here*: `Kemal::Router`
+  # holds an `Array(Kemal::Router::RouteDefinition)` and that record is a
+  # struct whose fields name `HTTP::Server::Context`, so it stays behind and
+  # the artifact named a constant nobody had. Repeated to a fixed point,
+  # because dropping one type can strand the field that named it.
+  private def self.prune_dangling(declarations : Array(IyiMod::TypeDecl),
+                                  root : String) : Array(IyiMod::TypeDecl)
+    loop do
+      known = Set(String).new
+      declarations.each { |declaration| collect_known declaration, "#{root}::", known }
+
+      pruned = [] of IyiMod::TypeDecl
+      declarations.each do |declaration|
+        kept = prune_declaration declaration, "#{root}::", known, root
+        pruned << kept if kept
+      end
+
+      break declarations if pruned.size == declarations.size &&
+                            pruned.sum(&.methods.size) == declarations.sum(&.methods.size) &&
+                            pruned.sum(&.fields.size) == declarations.sum(&.fields.size)
+      declarations = pruned
+    end
+  end
+
+  private def self.collect_known(declaration : IyiMod::TypeDecl, prefix : String,
+                                 known : Set(String)) : Nil
+    known << "#{prefix}#{declaration.name}"
+    declaration.types.each do |nested|
+      collect_known nested, "#{prefix}#{declaration.name}::", known
+    end
+  end
+
+  private def self.prune_declaration(declaration : IyiMod::TypeDecl, prefix : String,
+                                     known : Set(String), root : String) : IyiMod::TypeDecl?
+    resolvable = ->(text : String) do
+      text.scan(/[A-Za-z_][A-Za-z0-9_:]*/).all? do |match|
+        part = match[0]
+        next true if part == "class"
+        next true unless part == root || part.starts_with?("#{root}::")
+        known.includes?(part)
+      end
+    end
+
+    fields = declaration.fields.select { |(_, type_name)| resolvable.call(type_name) }
+    if fields.size != declaration.fields.size
+      # A struct is its fields, so one that cannot carry them cannot travel.
+      return nil unless declaration.kind == "class"
+      fields = [] of {String, String}
+    end
+
+    methods = declaration.methods.select do |signature|
+      (signature.parameters + [signature.return_type]).all? { |text| resolvable.call(text) }
+    end
+    methods = methods.reject { |signature| signature.name == "new" } if fields.empty? && !declaration.fields.empty?
+
+    nested = [] of IyiMod::TypeDecl
+    declaration.types.each do |child|
+      kept = prune_declaration child, "#{prefix}#{declaration.name}::", known, root
+      nested << kept if kept
+    end
+
+    IyiMod::TypeDecl.new(
+      name: declaration.name,
+      kind: declaration.kind,
+      type_parameters: declaration.type_parameters,
+      assoc_types: declaration.assoc_types,
+      supertraits: declaration.supertraits,
+      fields: fields,
+      methods: methods,
+      visibility: declaration.visibility,
+      types: nested,
+    )
+  end
+
+  # One level, and then the level under it.
+  #
+  # A nested type is not a detail: `Kemal::Router` holds an
+  # `Array(Kemal::Router::RouteDefinition)`, so a consumer that has the first
+  # and not the second cannot read the field it was given. `TypeDecl` carries
+  # nested declarations for exactly this, and a walk that stopped at the top
+  # produced an artifact naming a constant nobody had.
+  private def self.collect_declarations(owner_type : NamedType, by_owner, root : String,
+                                        declarations : Array(IyiMod::TypeDecl)) : Nil
+    owner_type.types?.try &.each do |name, type|
+      # A constant lives in the same table as a type — `Kemal::VERSION` is in
+      # here — and asking one for its instance variables is how this found out.
+      next unless type.is_a?(ModuleType)
       next if type.is_a?(GenericType)
+
+      # `pub` takes a def, a class, a struct and a trait — not a module, which
+      # is what a nested namespace like `Kemal::Exceptions` is. What it holds
+      # has to travel as its own nested declarations, and this walk does not go
+      # there yet.
+      unless type.is_a?(ClassType)
+        @@nested_namespaces << name
+        next
+      end
 
       signatures = [] of IyiMod::Signature
       {% begin %}{% end %}
@@ -324,11 +464,39 @@ module Crystal
       end
 
       fields = [] of {String, String}
-      if type.responds_to?(:instance_vars)
+      if type.is_a?(InstanceVarContainer)
         type.instance_vars.each do |field, variable|
           fields << {field, variable.type?.try(&.to_s) || "?"}
         end
       end
+
+      # A field is not optional the way a method is. A consumer allocates the
+      # type, and allocating needs its size, so a type whose fields name the
+      # standard library cannot cross as a declaration at all — it can only
+      # cross as a handle the consumer never allocates, which is a decision
+      # somebody has to make per type rather than a gap a tool can close.
+      foreign_fields = fields.map { |(_, type_name)| type_name }
+        .reject { |type_name| nameable?(type_name, root) }
+
+      # A reference type is a pointer to the consumer, so it can cross without
+      # its fields as long as the consumer never allocates one: it holds what
+      # the shard handed it and calls methods through it. A struct cannot —
+      # its size *is* its fields — so one whose fields name the standard
+      # library stays behind.
+      handle = !foreign_fields.empty?
+      if handle
+        unless type.is_a?(ClassType) && !type.struct?
+          @@opaque_types << name
+          next
+        end
+
+        fields = [] of {String, String}
+        signatures.reject! { |signature| signature.name == "new" }
+        @@handle_types << name
+      end
+
+      nested = [] of IyiMod::TypeDecl
+      collect_declarations type, by_owner, root, nested
 
       declarations << IyiMod::TypeDecl.new(
         name: name,
@@ -339,10 +507,9 @@ module Crystal
         fields: fields,
         methods: signatures.sort_by(&.name),
         visibility: "pub",
+        types: nested,
       )
     end
-
-    declarations
   end
 
   # One call, with a name for each argument. Returns the next counter, because
@@ -549,7 +716,10 @@ module Crystal
     type = call.type?
     return {nil, "no type"} unless type
 
-    {type.to_s, nil}
+    # `Foo+` is how a virtual type prints, and it is a fact about this build's
+    # dispatch rather than a name anybody can write down. A declaration says
+    # `Foo`, which is what the call site means and what parses.
+    {type.devirtualize.to_s, nil}
   rescue ex : Crystal::CodeError
     {nil, ex.message.to_s.lines.first?.to_s}
   rescue ex
