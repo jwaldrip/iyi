@@ -62,6 +62,7 @@ class Crystal::Command
     Usage: #{Command.program_name} tool [tool] [switches] [program file] [--] [arguments]
 
     Tool:
+        bind                     say what a Crystal shard would cost as an iyi module
         context                  show context for given location
         dependencies             show file dependency tree
         expand                   show macro expansion for given location
@@ -240,6 +241,9 @@ class Crystal::Command
     when "expand".starts_with?(tool)
       options.shift
       expand
+    when "bind" == tool
+      options.shift
+      bind
     when "hierarchy".starts_with?(tool)
       options.shift
       hierarchy
@@ -284,6 +288,19 @@ class Crystal::Command
   protected def prelude_compiler_for_build : Compiler
     options.shift if options.first? == "build"
     create_compiler("build").compiler
+  end
+
+  # iyi: what it would take to put a Crystal shard behind an iyi boundary.
+  #
+  # `-e` names the shard's own namespace, borrowed from `hierarchy` because it
+  # is the same question — which types are this shard's — asked for a different
+  # reason. Not `top_level`, because a signature's return type is only known
+  # once the method has been instantiated, and that is the whole measurement.
+  private def bind
+    config, result = compile_no_codegen "tool bind", hierarchy: true
+    @progress_tracker.stage("Tool (bind)") do
+      Crystal.print_bind result.program, config.hierarchy_exp, STDOUT
+    end
   end
 
   private def hierarchy
