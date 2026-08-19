@@ -302,6 +302,18 @@ $ sudo make install_iyi                 # or install it, PREFIX=/usr/local
 That one compiles `.cr` files and is what the specs and the benches use,
 because underneath this is still Crystal's compiler.
 
+**And the compiler itself links four libraries.** Crystal's required-libraries
+list is thirteen long. `otool -L` on the `iyi` binary prints libLLVM, libc++,
+libgc and libSystem, and nothing else. LLVM is the back end and libc++ arrives
+with it. libgc is there because `-Dgc_none` was tried on the compiler and does
+not survive it: invalid IR on some runs, a crash in `main_user_code` on others.
+pcre2 was the fifth entry. It was held there by regex literals in four stdlib
+files the compiler compiles into itself; macro-level regex now runs on iyi's
+own engine, those four files parse by hand, and the library is off the line.
+`bench/dependency_floor.sh` holds the compiler to that list on every run and
+forbids `libpcre` outright. SPEC.md III.10 has the story, the verification and
+what it cost.
+
 ## More of the language
 
 **Traits, and impls for a generic type.** Nothing to reopen, nothing to monkey

@@ -35,8 +35,8 @@ class Process
     args.join(' ') do |arg|
       if arg.empty?
         "''"
-      elsif arg.matches? %r([^a-zA-Z0-9%+,\-./:=@_]) # not all characters are safe, needs quoting
-        "'" + arg.gsub("'", %('"'"')) + "'"          # %(foo'ba#r) becomes %('foo'"'"'ba#r')
+      elsif posix_quoting_needed?(arg)      # not all characters are safe, needs quoting
+        "'" + arg.gsub("'", %('"'"')) + "'" # %(foo'ba#r) becomes %('foo'"'"'ba#r')
       else
         arg
       end
@@ -46,6 +46,29 @@ class Process
   # Shell-quotes one item, same as `quote_posix({arg})`.
   def self.quote_posix(arg : String) : String
     quote_posix({arg})
+  end
+
+  # iyi: the `matches? %r([^a-zA-Z0-9%+,\-./:=@_])` that `quote_posix` used,
+  # byte by byte, so that quoting one linker argument stops pulling PCRE2 into
+  # every binary that shells out (SPEC.md III.10, Appendix B #22). Bytes rather
+  # than chars because the safe set is ASCII: every byte of a multi-byte
+  # character is >= 0x80 and unsafe on its own terms, the same verdict the
+  # regex reached, and this way nothing is decoded and no intermediate string
+  # is built. This runs once per argument handed to the linker.
+  #
+  # One deliberate difference, and it is a fix. `Regex` compiles with UTF and
+  # `pcre2_match` was not given NO_UTF_CHECK, so an argument that is not valid
+  # UTF-8 raised `ArgumentError: Regex match error: UTF-8 error` rather than
+  # being quoted. POSIX filenames are byte strings, so the compiler can be
+  # handed one. An illegal byte is now simply outside the safe set and the
+  # argument gets quoted, which is what the shell needs anyway.
+  private def self.posix_quoting_needed?(arg : String) : Bool
+    arg.each_byte do |byte|
+      char = byte.unsafe_chr
+      return true unless char.ascii_alphanumeric? ||
+                         char.in?('%', '+', ',', '-', '.', '/', ':', '=', '@', '_')
+    end
+    false
   end
 
   # :nodoc:

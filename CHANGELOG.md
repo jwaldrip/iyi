@@ -17,19 +17,16 @@ to be accepted and ignored, because the prelude declared `@[Link("gc")]`
 directly; that was fixed first, then the default was flipped.
 
 The compiler lost `libiconv` (the Makefile passes `-Dwithout_iconv`) and
-keeps `libgc` and, still, `pcre2`. `-Dgc_none` was tried on the compiler
+`libpcre2`, and keeps `libgc`. `-Dgc_none` was tried on the compiler
 itself and is not viable: it emits invalid IR ("Load operand must be a
 pointer", from `LLVM::Module#verify`) on some runs and dies in
 `main_user_code` on others, being a long walk over ASTs with parallel
-codegen and fibers under an allocator that never frees. Compiler source
-no longer calls the stdlib `Regex`: macro-level regex runs on
-`src/compiler/crystal/rx.cr` (Appendix B #22). The binary still links
-`libpcre2-8.0.dylib` because Crystal's prelude `require "regex"` is
-enough to emit `@[Link("pcre2-8")]`. That leftover is a later commit,
-not a silent pass.
+codegen and fibers under an allocator that never frees. How pcre2 came off,
+and what it cost, is in the regex paragraph below.
 `bench/dependency_floor.sh` now checks the linked libraries beside the
 symbols, for the default build and for `-Dgc_boehm`, and fails when either
-grows.
+grows. It checks the compiler binary too, against an allowlist and against
+a denylist that now carries `libpcre`.
 
 iyi is no longer Linux x86-64 only. One compiler now emits for seven triples
 on four platforms: Linux x86_64 and aarch64, macOS x86_64 and aarch64, Windows
@@ -51,22 +48,85 @@ reach `memory.grow` was an arity error, not an impossibility. The wasm
 linker globals (`memory_base`, `stack_pointer`, `table_base`,
 `indirect_function_table`) are linker plumbing, not dependencies.
 
-The compiler binary still links libLLVM, libc++, libpcre2, libgc and
-libSystem. The floor is a property of what iyi builds rather than of
-what builds it. SPEC.md III.9 records why the compiler keeps its own
-collector, and why pcre2 has not yet left the toolchain binary.
+The compiler binary links libLLVM, libc++, libgc and libSystem, and that is
+the whole list. `otool -L .build/iyi` prints those four; `.build/crystal`,
+the same compiler under Crystal's name, prints the same four. The floor is a
+property of what iyi builds rather than of what builds it, and the toolchain
+binary is now LLVM plus a collector plus the platform. SPEC.md III.9 records
+why the compiler keeps that collector, and III.10 how pcre2 left.
 
 Five decisions are recorded in SPEC.md Appendix B #20 through #26.
 
 Macro-level regex now runs on iyi's own engine, `src/compiler/crystal/rx.cr`,
-with RE2 semantics, differentially verified against pcre2 (#22). Compiler
-source no longer constructs a stdlib `Regex`. The compiler binary still
-links libpcre2, because the Crystal prelude's `require "regex"` emits
-`@[Link("pcre2-8")]` even when nothing calls it. What it costs a macro
-author: no in-pattern backreferences, no lookaround. A macro that uses
-one fails with a named error rather than quietly meaning something else,
-and no pattern, in a program or at compile time, can take exponential
-time.
+with RE2 semantics, differentially verified against pcre2 (#22). What it costs
+a macro author: no in-pattern backreferences, no lookaround. A macro that uses
+one fails with a named error rather than quietly meaning something else, and
+no pattern, in a program or at compile time, can take exponential time.
+
+**And `libpcre2` is off the compiler.** `otool -L .build/iyi` lists libLLVM,
+libc++, libgc and libSystem, nothing else, and `nm -u .build/iyi` leaves none
+of the thirteen `pcre2_*` symbols it used to. An earlier draft of this file
+blamed the leftover on Crystal's prelude, `require "regex"` emitting
+`@[Link("pcre2-8")]` even when nothing calls it. That diagnosis was wrong: an
+unused `@[Link]` does not put a library on the link line. The cause was ten
+reachable regex literals, and it was read out of the binary rather than
+reasoned about. `--emit llvm-ir` on the compiler shows ten expanded regex
+constants, `$Regex:0` through `$Regex:9`, and their patterns identify four
+stdlib files the compiler compiles into itself.
+
+Those four now parse by hand, with no engine, and none of them calls
+`Crystal::Rx`, because the stdlib does not get to reach into compiler
+internals:
+
+- `src/option_parser.cr`, seven literals in `parse_flag_definition`, reached
+  from `compiler.cr`, `loader.cr` and most of `command/*`. Verified by a
+  20,633-case differential against the original seven regexes, 0 mismatches.
+- `src/process/shell.cr`, one literal in `Process.quote_posix`, reached
+  because the compiler shells out to the linker. Verified by a 194,690-input
+  differential covering every Unicode scalar to U+2FFFF, 0 mismatches, plus a
+  live `/bin/sh` round trip of 18 hostile arguments.
+- `src/semantic_version.cr`, `VERSION_PATTERN`, reached from
+  `macros/methods.cr` for the `compare_versions` macro method. `valid?` and
+  `parse?` now share one scanner so they cannot drift, and one pre-existing
+  asymmetry is preserved on purpose:
+  `valid?("99999999999999999999999.1.1")` is true while `parse?` raises
+  `ArgumentError` out of `to_i`.
+- `src/spec/cli.cr`, two uses rather than one, reached because
+  `command/spec.cr` requires `spec/cli` so `crystal spec --help` can print
+  the runner's options. `--location` is one literal. `-e/--example` was
+  `Regex.new(Regex.escape(pattern))`, which is substring matching written the
+  long way.
+
+**`-e/--example` is a breaking change to a stdlib public API.**
+`Spec::CLI#pattern` was `Regex?` and is now `String?`, and
+`Spec::Item#matches_pattern?` and `filter_by_pattern` now take a `String`,
+with `=~` replaced by `includes?`. The behaviour is identical, because
+`Regex.escape` had already reduced every pattern to a literal substring, but
+the type is not, so anybody calling those directly gets a compile error rather
+than a deprecation.
+
+Two findings along the way are worth more than the dependency, because
+rediscovering either costs real time. PCRE2 in this tree is compiled with
+`UCP`, so its `\s` is Unicode and `Char#whitespace?` is a different predicate:
+the two agree on every character except U+0085 NEL, which `option_parser.cr`
+now names explicitly. The differential found that boundary rather than assuming
+it: an earlier run reported 1,114 mismatches and every one of them contained
+U+0085. The same flag makes `\d` mean `\p{Nd}`, so `--location` used to accept
+a non-ASCII digit as a line number and deliberately no longer does. Second: in
+`/\A(.+?)\:(\d+)\Z/` the lazy `(.+?)` reads as "shortest prefix" and is not
+one. `(\d+)\Z` has to reach the end and `:` is not a digit, so the engine
+backtracks until the LAST colon is the split, which makes `a:1:2` file `a:1`
+line 2. A `split(':')`, or any leftmost scan, gets that wrong.
+
+The gate closed behind it. `libpcre2` came off `ALLOWED_LIBS_COMPILER` in
+`bench/dependency_floor.sh` and `libpcre` went onto `FORBIDDEN`, so the
+compiler binary is held to the same denylist as the programs it builds. Proven
+to fail rather than assumed to: injecting a reachable regex literal back into
+`option_parser.cr` makes the gate exit non-zero at both layers, naming the
+gained library and naming the denylist hit. The first probe was invalid and
+was discarded rather than written up as a weak gate. It used an unused
+constant, and Crystal does not instantiate an unreachable constant, so no
+library came back.
 
 iyi writes its own garbage collector (#20), overruling the earlier plan to
 adopt gcry and pay it back in layouts. The goal is the owner's: control over

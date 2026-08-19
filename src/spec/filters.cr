@@ -5,8 +5,12 @@ require "./context"
 module Spec
   module Item
     # :nodoc:
-    def matches_pattern?(pattern : Regex) : Bool
-      !!(@description =~ pattern)
+    #
+    # iyi: was `pattern : Regex` with `@description =~ pattern`. `-e` builds
+    # its pattern with `Regex.escape`, so the match was always literal and
+    # this is the same test without pcre2 (Appendix B #22).
+    def matches_pattern?(pattern : String) : Bool
+      @description.includes?(pattern)
     end
 
     # :nodoc:
@@ -43,7 +47,7 @@ module Spec
     end
 
     # :nodoc:
-    def filter_by_pattern(pattern : Regex)
+    def filter_by_pattern(pattern : String)
       children.select!(&.filter_by_pattern(pattern))
     end
 
@@ -83,7 +87,7 @@ module Spec
     #
     # Filters a context and its children by pattern.
     # Returns `true` if the context matches the pattern, `false` otherwise.
-    def filter_by_pattern(pattern : Regex) : Bool
+    def filter_by_pattern(pattern : String) : Bool
       return true if matches_pattern?(pattern)
 
       children.select!(&.filter_by_pattern(pattern))
@@ -181,7 +185,7 @@ module Spec
     #
     # Returns `true` if the example matches the pattern,
     # `false` otherwise.
-    def filter_by_pattern(pattern : Regex) : Bool
+    def filter_by_pattern(pattern : String) : Bool
       matches_pattern?(pattern)
     end
 

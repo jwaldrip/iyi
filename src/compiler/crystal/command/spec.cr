@@ -16,7 +16,7 @@ class Crystal::Command
   # iyi: the two fixed patterns `crystal spec` matched arguments with. They
   # were regex literals, which is pcre2 on the compiler's link line, so they
   # compile once through Crystal::Rx instead (SPEC.md III.10, Appendix B #22).
-  private SPEC_FILE = Rx::Pattern.compile("\\.cr(\\:\\d+)?\\Z")
+  private SPEC_FILE     = Rx::Pattern.compile("\\.cr(\\:\\d+)?\\Z")
   private SPEC_LOCATION = Rx::Pattern.compile("\\A(.+?)\\:(\\d+)\\Z")
 
   private def spec
