@@ -3914,6 +3914,62 @@ Named honestly, so nobody mistakes this draft for complete.
     it never had it. What stays: the *macro* interpreter, which is a different
     thing that runs at compile time and is what makes `{% %}` work.
 
+12. **The Crystal ecosystem, and what a shard would cost.** Ten thousand
+    shards exist and none of them is written to iyi's rules, so "run them
+    directly" is not a compatibility problem, it is the four rules: `require`
+    against R-1, inference against R-2, monkey patching against R-3, and
+    Crystal's 8,161-line standard library against a 1,184-line prelude.
+
+    What is measurable is narrower and better than that framing suggests, and
+    it was measured on **Kemal 1.12.0**, which compiles under this compiler
+    unchanged, dependencies and all.
+
+    **What the surface looks like.** `crystal tool bind -e Kemal` reads a
+    shard and sorts its public methods three ways: written down already,
+    writable by a machine, and needing a human. Kemal's 273 come out 74, 182
+    and 17. The machine's share is not a guess — the tool instantiates each
+    method whose parameters carry types and reads what it returns, which
+    answered **125 return types nobody had written**. The 57 it refused are
+    mostly honest: 40 take a block, and what a block-taking method returns
+    depends on the block.
+
+    **What blocks the rest.** 95 signatures can be written today; 104 wait on
+    a type an iyi program cannot name, and the tool sorts those by what each
+    one would unlock. `HTTP::Server::Context` is first and unlocks 16, then
+    `IO` (9), `HTTP::Handler` (6), `Radix::Tree` (5). **Eight declarations
+    unlock 49 of the 104.** That the head of that list is `Context` is the
+    same answer the hand port reached in `samples/iyi/kemal/`: the framework's
+    whole user-facing surface hangs on one type.
+
+    **What crosses, measured.** The compiler is the same compiler, so a
+    Crystal object links into an iyi program and the standard library works
+    inside it: a `fun` calling `{"a" => 1}.to_json` answered correctly from an
+    iyi `puts`. Objects cross too, because `String` is the *compiler's* type
+    in both worlds — the prelude reopens what `Program#initialize` laid out.
+    Two things do not cross by themselves, and both were found by trying:
+
+    - **A separately compiled object brings its own runtime state.** Its
+      `Crystal::Once`, `Thread` and `Fiber` are not the host's, its constants
+      are filled by its own `__crystal_main`, and nothing runs it: reading one
+      constant segfaults. The fix is mechanical and is the shim a generator
+      writes — `fun shard_init(argc, argv)` calling `Crystal.init_runtime` and
+      `Crystal.main_user_code`, with the object's own `main` localised so the
+      host keeps the entry point. With it, a constant and a class variable both
+      answer correctly.
+    - **Layout is shared and invariants are not.** Crystal reads `@length == 0`
+      on a non-empty string as "not counted yet" and scans; this prelude
+      returns the field. So a string built by Crystal's `to_json` printed
+      correctly through iyi's `puts` and answered `size` **0**. No error, a
+      wrong number: the sharpest argument there is for a boundary that declares
+      rather than a link that assumes.
+
+    **Where this is going.** `lib` carries C types only — Crystal's own rule,
+    and it refuses `String` — so a real API cannot cross that way. It does not
+    have to: an artifact already carries declarations *and* object code, and a
+    shard compiled once with generated declarations is the same shape as a
+    `.iyimod`. That is the boundary worth building, and R-1 is what makes it
+    cheap: the shard is compiled once and the edit loop never reads it again.
+
 ---
 
 ## Appendix: What measurement settled
