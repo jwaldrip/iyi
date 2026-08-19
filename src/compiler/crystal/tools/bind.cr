@@ -67,7 +67,8 @@ module Crystal
   # and saying which is most of what a boundary costs.
   BIND_PRELUDE = %w(String Int32 Int64 UInt8 UInt32 UInt64 Float64 Bool Nil Char Symbol Array Hash Range Pointer Void)
 
-  def self.print_bind(program : Program, root : String?, io : IO) : Nil
+  def self.print_bind(program : Program, root : String?, io : IO,
+                      artifact_dir : String? = nil) : Nil
     unless root
       io.puts "tool bind needs the shard's own namespace: -e Kemal"
       return
@@ -107,6 +108,7 @@ module Crystal
     io.puts "  #{(mechanical * 100.0 / methods.size).round(1)}% of the surface needs no human."
 
     emit_module methods, root, io
+    write_artifact program, methods, root, artifact_dir, io if artifact_dir
 
     return if human.zero?
 
@@ -192,6 +194,115 @@ module Crystal
     io.puts
     lines.sort.each { |line| io.puts line }
     io.puts "# --- end ---"
+  end
+
+  # The artifact itself: declarations a consumer type-checks against.
+  #
+  # There is nothing new in it. The two sides mangle names identically, being
+  # one compiler — `Lib::Greeter.polite(String) : String` is
+  # `*Lib::Greeter@Lib::Greeter::polite<String>:String` compiled from either
+  # language — so a shard's object file already defines the symbols an iyi
+  # consumer would call. What was missing was a `.iyimod` saying they exist.
+  #
+  # Module functions only for now, which is the shape that was proved end to
+  # end. A method on a type needs a `TypeDecl` beside it, and that is the next
+  # thing this has to learn.
+  private def self.write_artifact(program : Program, methods : Array(BindMethod),
+                                  root : String, dir : String, io : IO) : Nil
+    # Both spellings of "on the module itself". A module written with
+    # `extend self` — which is what an iyi module header desugars to, and what
+    # a Crystal library writes by hand for the same reason — defines its
+    # functions on the module and reaches them through the metaclass, so the
+    # owner recorded here is one or the other depending on which side wrote it.
+    owners = {root, "#{root}:Module"}
+    signatures = [] of IyiMod::Signature
+    seen = Set(String).new
+
+    methods.each do |method|
+      next unless owners.includes?(method.owner)
+      next unless seen.add?(method.name)
+      next unless method.verdict.ready? || method.inferred
+      next unless method.signature_types.all? { |t| nameable?(t, root) }
+
+      signatures << IyiMod::Signature.new(
+        name: method.name,
+        receiver: "",
+        parameters: method.params.map { |(name, restriction)| "#{name} : #{restriction}" },
+        block_parameter: "",
+        return_type: (method.returns || method.inferred).not_nil!,
+        free_variables: [] of String,
+        required: false,
+      )
+    end
+
+    artifact = IyiMod::Artifact.new(
+      module_name: root.downcase,
+      source_path: program.filename || "",
+      compiler_version: IyiMod.compiler_version,
+      target_triple: program.codegen_target.to_s,
+      flags: program.flags.to_a.sort!,
+      imports: [] of IyiMod::ImportEdge,
+      exports: IyiMod::Exports.new(signatures, [] of IyiMod::TypeDecl, [] of IyiMod::ImplRecord),
+    )
+
+    path = File.join(dir, "#{root.downcase}.iyimod")
+    IyiMod.write artifact, path
+
+    keep_path = File.join(dir, "#{root.downcase}_keep.cr")
+    File.write keep_path, keep_file(program, root, signatures, dir)
+
+    io.puts
+    io.puts "wrote #{path}: #{signatures.size} module functions"
+    io.puts "wrote #{keep_path}"
+    io.puts
+    io.puts "The artifact carries declarations and no object code, because the"
+    io.puts "machine code is the shard's own. Three steps make it, and the"
+    io.puts "middle one is why the file above exists: Crystal compiles what a"
+    io.puts "program uses, and a library nobody calls compiles to nothing."
+    io.puts
+    io.puts "  crystal build --emit obj -o shard #{keep_path}"
+    io.puts "  nm shard.o | sed -n 's/^[0-9a-f]* t \\(\\*#{root}[@:].*\\)$/\\1/p' > shard.syms"
+    io.puts "  objcopy --localize-symbol=main $(sed 's/^/--globalize-symbol=/' shard.syms) shard.o shard-ready.o"
+    io.puts "  iyi build --use-iyimod #{dir} -o app app.iyi --link-flags shard-ready.o"
+    io.puts
+    io.puts "The symbols are local until that `objcopy`, and global is what a"
+    io.puts "consumer links against. Nothing here goes through a C ABI: the two"
+    io.puts "sides are one compiler and mangle names the same way."
+  end
+
+  # A file that calls everything and is never called.
+  #
+  # Codegen is demand-driven, which is right for a program and wrong for a
+  # library: the shard's own build emits only what its own code reaches, so a
+  # method a *consumer* will call is in no object file at all. Naming them here
+  # is what puts them there.
+  private def self.keep_file(program : Program, root : String,
+                             signatures : Array(IyiMod::Signature), dir : String) : String
+    # Relative, and written from where this file will sit: Crystal refuses an
+    # absolute path in a `require`, and the shard is not on `CRYSTAL_PATH`.
+    source = ::Path[File.expand_path(program.filename || "")]
+    base = ::Path[File.expand_path(dir)]
+    relative = source.relative_to?(base).try(&.to_s) || source.to_s
+    relative = "./#{relative}" unless relative.starts_with?(".")
+
+    String.build do |io|
+      io << "# Written by `crystal tool bind`. Never called, and never edited:\n"
+      io << "# it exists so that codegen emits the methods a consumer will call.\n"
+      io << "require \"" << relative << "\"\n\n"
+      io << "fun __bind_keep : Nil\n"
+      signatures.each_with_index do |signature, index|
+        args = signature.parameters.map_with_index do |parameter, position|
+          type = parameter.split(" : ").last
+          name = "a#{index}_#{position}"
+          io << "  " << name << " = uninitialized " << type << "\n"
+          name
+        end
+        io << "  " << root << "." << signature.name
+        io << "(" << args.join(", ") << ")" unless args.empty?
+        io << "\n"
+      end
+      io << "end\n"
+    end
   end
 
   # The foreign types one signature waits on.
