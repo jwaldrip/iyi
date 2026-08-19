@@ -450,6 +450,49 @@ describe "Semantic: iyi import" do
       end
     end
 
+    # `pub` on a constant (R-2). A module's own top level travels as source, so
+    # the mark travels by being written back out — there is nothing in the
+    # format for it, which is why these are the whole of the rule.
+    it "reads a constant another module exported" do
+      with_iyi_modules({
+        "app/dep.iyi" => <<-IYI,
+          module app/dep
+
+          pub LIMIT = 42
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+
+          App::Dep::LIMIT
+          IYI
+      }) do
+        semantic_iyi("main.iyi")
+      end
+    end
+
+    it "refuses an unmarked constant, as it refuses an unmarked def" do
+      with_iyi_modules({
+        "app/dep.iyi" => <<-IYI,
+          module app/dep
+
+          SECRET = 42
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+
+          App::Dep::SECRET
+          IYI
+      }) do
+        expect_raises(Crystal::TypeException, /does not export App::Dep::SECRET/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
     it "falls back to the source when there is no artifact" do
       with_iyi_modules({
         "app/dep.iyi" => <<-IYI,

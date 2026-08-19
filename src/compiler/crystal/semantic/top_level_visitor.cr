@@ -1634,6 +1634,13 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     const.declared_type = declared_type
     const.private = true if target.visibility.private?
 
+    # iyi: an unmarked constant is the module's own, the same as an unmarked
+    # `def` (R-2). Without this every constant a module declared was reachable
+    # through its name — `Kemal::Config::INSTANCE` and the rest — which is a
+    # surface nobody wrote and nobody could refuse.
+    const.private = true if unexported_in_unit?(scope, target.exported?)
+    record_export scope, name, target.exported?
+
     process_annotations(annotations) do |annotation_type, ann|
       # annotations on constants are inaccessible in macros so we only add deprecations
       const.add_annotation(annotation_type, ann) if annotation_type == @program.deprecated_annotation

@@ -3249,10 +3249,20 @@ is the linker.
   stored as the annotation the author wrote (IV.1), and `pub def handle(ctx :
   Context)` resolves `Context` through a `using` further up the file. The
   annotation travels, so what resolves it has to travel with it.
-- **Exported constants**, with values where a value can appear in a type.
-  **Not built, and not because it was forgotten.** `pub` takes a `def`, a
-  `class`, a `struct` and a `trait`, and refuses everything else, including a
-  constant and an `enum`. Nothing in this repository asks for either: there is
+- **Exported constants.** **Built.** `pub LIMIT = 42` is reachable through the
+  module's name and an unmarked constant is not, which is the same sentence an
+  unmarked `def` gets. Nothing was added to the format: a module's own top
+  level already travels as source text, so the mark travels by being written
+  back out, exactly as `pub macro` does.
+
+  Closing it found the hole under it, the third of its kind: a constant's
+  visibility was never set from `pub`, so **every** constant a module declared
+  was reachable through its name. A shard is where that shows: Kemal hands out
+  every object it has through one, and the boundary in Part V item 12 could
+  read 22 of its types and reach none of them.
+
+  `pub` still refuses an `enum`. There is none in the prelude or in any sample,
+  so nothing has asked. Nothing in this repository asks for either: there is
   no `enum` in the prelude or in any sample, and the three module-level
   constants that exist (`HTTP_METHODS`, `FILTER_METHODS`, `APP`) are read by
   their own module and named by nobody else. That is item 3's rule applied

@@ -789,6 +789,10 @@ module Crystal
     end
 
     def visit(node : Assign)
+      # iyi: a module's top level travels as source, so `pub` on a constant has
+      # to be in the text (R-2, SPEC.md IV.2).
+      target = node.target
+      @str << "pub " if target.is_a?(Path) && target.exported?
       node.target.accept self
       @str << " = "
 

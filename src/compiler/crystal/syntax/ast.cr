@@ -1090,6 +1090,12 @@ module Crystal
       target.visibility = visibility
     end
 
+    # iyi: `pub` on a constant, forwarded the way visibility is.
+    def exported=(exported : Bool)
+      target = @target
+      target.exported = exported if target.is_a?(Path)
+    end
+
     def accept_children(visitor)
       @target.accept visitor
       @value.accept visitor
@@ -1957,6 +1963,13 @@ module Crystal
     property names : Array(String)
     property? global : Bool
     property visibility = Visibility::Public
+    # iyi: `pub LIMIT = 42` — a constant a consumer may name (R-2).
+    #
+    # On the path rather than on the `Assign`, because that is where a
+    # constant's visibility already lives and `Assign#visibility=` already
+    # forwards there. A module's own top level travels as source text, so this
+    # reaches a consumer by being written back out.
+    property? exported = false
 
     # iyi: written by a `.iyimod`'s renderer rather than by an author (SPEC.md
     # IV.1g).

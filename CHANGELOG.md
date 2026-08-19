@@ -20,6 +20,16 @@ releases names no compiler.
 
 ### Added
 
+- **`pub` takes a constant.** `pub LIMIT = 42` is reachable through the
+  module's name; an unmarked constant is the module's own and is refused by the
+  sentence an unmarked `def` gets. Nothing was added to the artifact format,
+  because a module's top level already travels as source and the mark travels
+  with it.
+
+  The hole under it is the same one `pub macro` found: a constant's visibility
+  was never set, so every constant a module declared was reachable. That is
+  what a real shard leans on — Kemal hands out every object it has through one.
+
 - **`pub macro`, so a macro can cross a module boundary.** Every macro a module
   writes already travelled in its artifact, because a body that travels may
   call one, but none of them was reachable: `pub` did not take a macro. A

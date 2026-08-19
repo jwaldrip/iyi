@@ -2184,6 +2184,18 @@ module Crystal
       pub_location = @token.location
       next_token_skip_space
 
+      # iyi: `pub LIMIT = 42`. A constant is a CONST token rather than an
+      # identifier, and it is the one exported thing whose name is its
+      # declaration — there is no keyword in front of it.
+      if @token.type.const?
+        assign = parse_expression
+        unless assign.is_a?(Assign) && assign.target.is_a?(Path)
+          raise "`pub` takes a constant assignment here", @token.line_number, @token.column_number
+        end
+        assign.exported = true
+        return assign.at(pub_location)
+      end
+
       unless @token.type.ident?
         raise "expected a declaration after `pub`", @token.line_number, @token.column_number
       end

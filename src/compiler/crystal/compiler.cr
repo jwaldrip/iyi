@@ -535,7 +535,11 @@ module Crystal
               end
             end
           elsif exported_type = type.types?.try &.[]?(name)
-            types << iyi_type_declaration(program, filename, name, exported_type)
+            # iyi: a constant is in the same table as a type and is not one.
+            # `pub LIMIT = 42` reaches a consumer by being written back into
+            # the initialiser, which travels as the module's own source, so
+            # there is nothing to declare here.
+            types << iyi_type_declaration(program, filename, name, exported_type) unless exported_type.is_a?(Const)
           end
         end
 
