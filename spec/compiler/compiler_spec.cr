@@ -307,4 +307,32 @@ describe "Compiler" do
       old_crystal ? (ENV["CRYSTAL_PATH"] = old_crystal) : ENV.delete("CRYSTAL_PATH")
     end
   end
+
+  # `Object#to_s` answers with the type's name, so a type that never defined
+  # `to_s` printed its own name instead of its value and nothing said a method
+  # was missing. `samples/iyi/calc` scans with `String#[]` and compares the
+  # result, so the sample that added `String#[]` could not catch it: comparison
+  # was defined and printing was not.
+  #
+  # Asserted against the character rather than "not the type name", because
+  # `Char` is the only type this reaches and the value is the claim.
+  describe "a Char prints its value" do
+    it "prints, inspects and interpolates the character" do
+      with_tempdir("iyi-char-to-s") do
+        # Quoted, so the interpolation below reaches iyi instead of being
+        # expanded by the spec's own compiler.
+        File.write "char.iyi", <<-'IYI'
+          s = "hello"
+          puts s[1]
+          puts s[1].inspect
+          puts "x#{s[4]}y"
+          IYI
+        source = Iyi::Compiler::Source.new(
+          File.expand_path("char.iyi"), File.read("char.iyi"))
+        iyi_compiler.compile(source, File.expand_path("char"))
+
+        Process.capture(File.expand_path("char")).should eq("e\n'e'\nxoy\n")
+      end
+    end
+  end
 end

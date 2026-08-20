@@ -260,3 +260,26 @@ class String
     result
   end
 end
+
+# `Char`'s own, and it lives here rather than in `primitives.iyi` because the
+# one-byte string it builds needs `String.new`.
+#
+# Without it `puts s[0]` printed the text `Char`: `Object#to_s` answers with the
+# type's name, so a type that never defined `to_s` prints its own name instead
+# of its value and nothing says a method is missing. `samples/iyi/calc` scans
+# with `String#[]` and compares the result, which is why nothing caught it —
+# comparison was defined and printing was not.
+#
+# ASCII, on the same terms as the rest of this file: a `Char` here came out of a
+# byte and goes back as one.
+struct Char
+  def to_s : String
+    String.new(1) do |buffer|
+      buffer[0] = ord.to_u8
+    end
+  end
+
+  def inspect : String
+    "'" + to_s + "'"
+  end
+end
