@@ -3924,6 +3924,45 @@ Named honestly, so nobody mistakes this draft for complete.
     it never had it. What stays: the *macro* interpreter, which is a different
     thing that runs at compile time and is what makes `{% %}` work.
 
+12a. **The other answer, which is smaller.** A shard behind a generated
+    boundary is one way to reach the ecosystem. The other is to give the
+    program Crystal's standard library and compile the shard into it, and it
+    turned out to be two small changes rather than a project.
+
+    `require` was refused in a `.iyi` file, and the reason given was "there is
+    no standard library to require: the prelude is what a program gets". That
+    is true of iyi's prelude and of nothing else. `--crystal` builds a program
+    against Crystal's, and there `require` means what it means in Crystal. A
+    `require` also comes out of the module a header desugars to, the way
+    `import` does: it is a directive about which files a build reads, and
+    leaving it inside made json's `class String` mean `Site::String`.
+
+    **The rules do not change with the library.** The module header, `pub`,
+    `import`, `using`, traits, `impl`, R-2 on exports: all of them, on a
+    program that requires Kemal. What changes is what a program *has*.
+
+    **Swept across nine shards**, each built twice — as an iyi program and as a
+    Crystal one, so that a difference is this fork's and a shared failure is
+    the ecosystem's: `kemal`, `db`, `ameba`, `habitat`, `baked_file_system`,
+    `radix`, `sqlite3`, the standard library's own `json`/`yaml`/`uri`/`http`,
+    and a program that round-trips `JSON::Serializable`, parses YAML and writes
+    a file. All nine behave identically in both languages. A Kemal server
+    written in iyi serves HTTP.
+
+    **One adaptation, and it is R-2 asking its question.** `habitat`'s macro
+    resolves the type it was handed by name, and a class an iyi module left
+    unmarked is private, so the macro could not find it. `pub class` fixes it —
+    correctly, since a macro from another module reaching your type is exactly
+    what `pub` governs. What is wrong is the message: `undefined macro method
+    'Path#constant'`, which names neither the type nor the rule.
+
+    **What it costs.** R-1, for the required shard: it is read from source and
+    the edit loop pays for it the way Crystal's does. Your own modules still
+    write artifacts. And the two libraries are two modes on the reading side —
+    `--use-iyimod` needs iyi's prelude, because an artifact's object code
+    numbers types that under Crystal's library are the standard library's own,
+    and a consumer compiling its own copy of it has two of everything.
+
 12. **The Crystal ecosystem, and what a shard would cost.** Ten thousand
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
