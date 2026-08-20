@@ -13,6 +13,12 @@
 require "spec/cli"
 
 class Crystal::Command
+  # iyi: the two fixed patterns `crystal spec` matched arguments with. They
+  # were regex literals, which is pcre2 on the compiler's link line, so they
+  # compile once through Crystal::Rx instead (SPEC.md III.10, Appendix B #22).
+  private SPEC_FILE     = Rx::Pattern.compile("\\.cr(\\:\\d+)?\\Z")
+  private SPEC_LOCATION = Rx::Pattern.compile("\\A(.+?)\\:(\\d+)\\Z")
+
   private def spec
     compiler = new_compiler
     link_flags = [] of String
@@ -43,7 +49,7 @@ class Crystal::Command
     # Assume spec files end with ".cr" and optionally with a colon and a number
     # (for the target line number), or is a directory. Everything else is an option we forward.
     filenames = options.select do |option|
-      option =~ /\.cr(\:\d+)?\Z/ || Dir.exists?(option)
+      SPEC_FILE.matches?(option) || Dir.exists?(option)
     end
     options.reject! { |option| filenames.includes?(option) }
 
@@ -54,8 +60,8 @@ class Crystal::Command
     else
       target_filenames = [] of String
       filenames.each do |filename|
-        if filename =~ /\A(.+?)\:(\d+)\Z/
-          file, line = $1, $2
+        if match = SPEC_LOCATION.match(filename)
+          file, line = match[1].not_nil!, match[2].not_nil!
           unless File.file?(file)
             abort! "'#{file}' is not a file", :USAGE_ERROR
           end

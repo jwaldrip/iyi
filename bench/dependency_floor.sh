@@ -59,12 +59,17 @@ ALLOWED_LIBS_PROGRAM="libSystem libc.so ld-linux libgcc_s"
 # the distribution's build, recorded when LLVM was accepted, and this list does
 # not measure it. See libraries() for why it must not.
 #
-#   pcre2      macro-level regex is a language feature (III.10)
-ALLOWED_LIBS_COMPILER="libLLVM libc++ libpcre2 libgc libSystem libc.so ld-linux libgcc_s libstdc++ libm.so libdl libpthread librt"
+#
+# pcre2 was here, with macro-level regex as its reason. It is not any more:
+# macro regex runs on Crystal::Rx and the four stdlib files the compiler
+# compiled into itself (option_parser, semantic_version, process/shell,
+# spec/cli) parse by hand, so pcre2 is on the denylist below and the
+# compiler is held to it too (Appendix B #22).
+ALLOWED_LIBS_COMPILER="libLLVM libc++ libgc libSystem libc.so ld-linux libgcc_s libstdc++ libm.so libdl libpthread librt"
 
 # Every library on Crystal's list that must never appear on a link line of
 # iyi's own: a program's or the compiler's.
-FORBIDDEN="libevent libgmp mpir libiconv libssl libcrypto libxml2 libyaml libz. libffi"
+FORBIDDEN="libevent libgmp mpir libiconv libssl libcrypto libxml2 libyaml libz. libffi libpcre"
 
 symbols() {
   nm -u "$1" 2>/dev/null |

@@ -1,7 +1,7 @@
 module Crystal
   class LiteralExpander
     def initialize(@program : Program)
-      @regexes = [] of {String, Regex::CompileOptions}
+      @regexes = [] of {String, RegexOptions}
     end
 
     # Converts an array literal to creating an Array and storing the values:
@@ -299,7 +299,7 @@ module Crystal
       Expressions.new(exps).at(node)
     end
 
-    # From:
+    # From, in a `.cr` program:
     #
     #     /regex/flags
     #
@@ -314,7 +314,21 @@ module Crystal
     #
     # Only do this for regex literals that don't contain interpolation.
     # If there's an interpolation, expand to: Regex.new(interpolation, flags)
+    #
+    # iyi: a `.iyi` program is refused instead. Its prelude (src/iyi/prelude.iyi)
+    # defines no Regex, so the expansion below would hand the semantic pass a
+    # path into the empty `Regex` class the compiler pre-declares in Program,
+    # and die with an "undefined method" far from the cause. Refusing here is
+    # the honest expansion: the regex engine that exists is the compiler's own,
+    # Crystal::Rx, RE2-shaped and compile-time only (SPEC.md III.10, Appendix
+    # B #17), reached through the macro methods rather than a runtime type.
+    # The file's extension is the discriminator, the same rule the prelude
+    # choice and the require refusal already use.
     def expand(node : RegexLiteral)
+      if node.location.try(&.filename.to_s.ends_with?(".iyi"))
+        node.raise "regex literals are not available in iyi: this program has no runtime Regex, and the compiler's engine, Crystal::Rx, is RE2-shaped and serves macros only. Use the macro methods (match, scan, gsub, split) for compile-time matching"
+      end
+
       node_value = node.value
       case node_value
       when StringLiteral

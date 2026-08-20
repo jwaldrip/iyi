@@ -55,14 +55,14 @@ describe "ASTNode#inspect" do
   expect_inspect %(%r()imx), <<-CRYSTAL
   RegexLiteral[
     StringLiteral[""],
-    options: Regex::Options[IGNORE_CASE, MULTILINE, EXTENDED]
+    options: Crystal::RegexOptions[IGNORE_CASE, MULTILINE, EXTENDED]
   ]
   CRYSTAL
   expect_inspect %(/hello world/), %(RegexLiteral[StringLiteral["hello world"]])
   expect_inspect %(/hello world/imx), <<-CRYSTAL
   RegexLiteral[
     StringLiteral["hello world"],
-    options: Regex::Options[IGNORE_CASE, MULTILINE, EXTENDED]
+    options: Crystal::RegexOptions[IGNORE_CASE, MULTILINE, EXTENDED]
   ]
   CRYSTAL
   expect_inspect %(/\\s/), %(RegexLiteral[StringLiteral["\\\\s"]])
@@ -410,7 +410,7 @@ describe "ASTNode#inspect" do
   expect_inspect %({"foo bar": 1}), %(NamedTupleLiteral["foo bar": NumberLiteral["1", :i32]])
   expect_inspect %(def foo("bar baz" qux)\nend), %(Def["foo", [Arg["qux", external_name: "bar baz"]], Nop.new])
   expect_inspect %q{foo()}, %(Call["foo"])
-  expect_inspect %q{/a/x}, %(RegexLiteral[StringLiteral["a"], options: Regex::Options::EXTENDED])
+  expect_inspect %q{/a/x}, %(RegexLiteral[StringLiteral["a"], options: Crystal::RegexOptions::EXTENDED])
   expect_inspect %q{1_f32}, %(NumberLiteral["1", :f32])
   expect_inspect %q{1_f64}, %(NumberLiteral["1", :f64])
   expect_inspect %q{1.0}, %(NumberLiteral["1.0", :f64])
@@ -898,7 +898,7 @@ describe "ASTNode#inspect" do
   expect_inspect %q(/foo/ix), <<-CRYSTAL
     RegexLiteral[
       StringLiteral["foo"],
-      options: Regex::Options[IGNORE_CASE, EXTENDED]
+      options: Crystal::RegexOptions[IGNORE_CASE, EXTENDED]
     ]
     CRYSTAL
   expect_inspect %q(foo = 1; foo += 2), <<-CRYSTAL

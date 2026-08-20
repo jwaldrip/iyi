@@ -250,23 +250,108 @@ class OptionParser
     @handlers[short_flag] = @handlers[long_flag] = handler
   end
 
+  # iyi: the ordered `case` over seven regex literals, written out (Appendix B
+  # #22, III.10 item 3: pcre2 comes off the compiler, and this file is compiled
+  # into it). `Crystal::Rx` was not an option: it is compiler-private, and the
+  # stdlib does not get to depend on compiler internals.
+  #
+  # `case` took the first match, so the order is load-bearing and is kept:
+  #
+  #   1. /\A--(\S+)\s+\[\S+\]\z/         long, bracketed argument  -> Optional
+  #   2. /\A--(\S+)(\s+|\=)(\S+)?\z/     long, spaced or `=`       -> Required
+  #   3. /\A--\S+\z/                     long, bare                -> None
+  #   4. /\A-(.)\s*\[\S+\]\z/            short, bracketed argument -> Optional
+  #   5. /\A-(.)\s+\S+\z/, /\A-(.)\s+\z/, /\A-(.)\S+\z/  short     -> Required
+  #   else                                                         -> None
+  #
+  # Rule 1 is a strict subset of rule 2 and rule 2's `=` case is a subset of
+  # rule 3, which is what the order was buying; a rule 4 or 5 match on a `--`
+  # definition registers `flag[0..1]`, i.e. `"--"`, which is what the old
+  # `# /-(.)/ matches` note was warning about and is reproduced verbatim.
+  #
+  # There is no backtracking to model. Every `\S+`, `\s+` and `\s*` here is
+  # followed by something it cannot itself match, so each is pinned to its
+  # maximal run and one left-to-right scan decides every rule. The single place
+  # greediness is observable is rule 2's `=`, below.
+  #
+  # `\A`/`\z` anchor the whole string with no newline tolerance, unlike `\Z`,
+  # so nothing here trims a trailing "\n".
   private def parse_flag_definition(flag : String)
-    case flag
-    when /\A--(\S+)\s+\[\S+\]\z/
-      {"--#{$1}", FlagValue::Optional}
-    when /\A--(\S+)(\s+|\=)(\S+)?\z/
-      {"--#{$1}", FlagValue::Required}
-    when /\A--\S+\z/
-      # This can't be merged with `else` otherwise /-(.)/ matches
-      {flag, FlagValue::None}
-    when /\A-(.)\s*\[\S+\]\z/
-      {flag[0..1], FlagValue::Optional}
-    when /\A-(.)\s+\S+\z/, /\A-(.)\s+\z/, /\A-(.)\S+\z/
-      {flag[0..1], FlagValue::Required}
+    if flag.starts_with?("--")
+      # `(\S+)`, the flag name: it cannot cross whitespace, so it is exactly the
+      # run from index 2 to the first whitespace.
+      name_end = whitespace_index(flag, 2)
+
+      if name_end.nil?
+        # No whitespace, so rule 2 can only match through its `\=` branch. `(\S+)`
+        # is greedy and gives ground from the right, so the split lands on the
+        # LAST `=`, not the first: `--a=b=c` registers `--a=b` taking `c`. The
+        # `=` may not be the name's first character, hence `> 2`.
+        eq = flag.rindex('=')
+        return {"--#{flag[2...eq]}", FlagValue::Required} if eq && eq > 2
+        # Rule 3, which returns *flag* rather than `"--#{$1}"`.
+        return {flag, FlagValue::None} if flag.size > 2
+      elsif name_end > 2
+        arg_start = non_whitespace_index(flag, name_end)
+        # A second whitespace run leaves nothing that can reach `\z`: rules 1 and
+        # 2 both fail and `--a b c` falls through to the short rules, then None.
+        unless arg_start && whitespace_index(flag, arg_start)
+          name = flag[2...name_end]
+          return {"--#{name}", FlagValue::Optional} if arg_start && bracketed_argument?(flag, arg_start)
+          # `arg_start.nil?` is rule 2's empty `(\S+)?`: `--flag ` with nothing
+          # after the space still declares a required argument.
+          return {"--#{name}", FlagValue::Required}
+        end
+      end
+    end
+
+    # Rules 4 and 5 open with `-(.)`, and `.` matches every character except a
+    # newline (the engine ran with the LF newline convention and without DOTALL,
+    # so CR is a `.` and LF is not; measured, not assumed). The capture is
+    # unused: `flag[0..1]` is what gets registered.
+    if flag.size > 2 && flag.starts_with?('-') && flag[1] != '\n'
+      arg_start = non_whitespace_index(flag, 2)
+      if arg_start.nil?
+        # Rule 5's `/\A-(.)\s+\z/`: everything past the flag letter is whitespace.
+        {flag[0..1], FlagValue::Required}
+      elsif whitespace_index(flag, arg_start).nil?
+        # Rule 4's `\s*` allows zero, so `-f[X]` and `-f [X]` land here alike.
+        return {flag[0..1], FlagValue::Optional} if bracketed_argument?(flag, arg_start)
+        # Rule 5's `/\A-(.)\s+\S+\z/` when spaced, `/\A-(.)\S+\z/` when not.
+        {flag[0..1], FlagValue::Required}
+      else
+        {flag, FlagValue::None}
+      end
     else
-      # This happens for -f without argument
+      # `-f` without an argument, and every definition no rule claimed.
       {flag, FlagValue::None}
     end
+  end
+
+  # iyi: `\[\S+\]\z`, given a *start* that opens the run and no whitespace from
+  # there on. `\S+` is greedy, so the closing bracket is the string's last
+  # character and the name between the brackets may itself contain `]`.
+  private def bracketed_argument?(flag : String, start : Int32) : Bool
+    flag[start] == '[' && flag.ends_with?(']') && flag.size >= start + 3
+  end
+
+  # iyi: `\s` as the compiled patterns saw it. The engine ran with PCRE2's UCP
+  # flag, where `\s` is `\p{Z}` plus `\h` plus `\v`, while `Char#whitespace?` is
+  # `\p{Z}` plus the ASCII controls. Those agree on every character but one:
+  # U+0085 NEL, which `\v` covers and no `Z` category does. Named here rather
+  # than dropped, so a definition separated by a NEL classifies as it always did.
+  private def flag_whitespace?(char : Char) : Bool
+    char.whitespace? || char == '\u0085'
+  end
+
+  private def whitespace_index(flag : String, start : Int32) : Int32?
+    start.upto(flag.size - 1) { |i| return i if flag_whitespace?(flag[i]) }
+    nil
+  end
+
+  private def non_whitespace_index(flag : String, start : Int32) : Int32?
+    start.upto(flag.size - 1) { |i| return i unless flag_whitespace?(flag[i]) }
+    nil
   end
 
   # Adds a separator, with an optional header message, that will be used to

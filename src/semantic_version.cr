@@ -4,10 +4,6 @@
 struct SemanticVersion
   include Comparable(self)
 
-  VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)
-                      (?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?
-                      (?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/x
-
   # The major version of this semantic version
   getter major : Int32
 
@@ -31,7 +27,7 @@ struct SemanticVersion
   # SemanticVersion.valid?("1.15.0") # => true
   # SemanticVersion.valid?("1.2")    # => false
   def self.valid?(str : String) : Bool
-    VERSION_PATTERN.matches?(str)
+    !scan(str).nil?
   end
 
   # Parses a `SemanticVersion` from the given semantic version string.
@@ -59,9 +55,128 @@ struct SemanticVersion
   #
   # Returns `nil` if *str* is not a semantic version.
   def self.parse?(str : String) : self?
-    return unless m = str.match VERSION_PATTERN
+    return unless parts = scan(str)
 
-    new m[1].to_i, m[2].to_i, m[3].to_i, m[4]?, m[5]?
+    major, minor, patch, prerelease, build = parts
+    new str.byte_slice(major).to_i, str.byte_slice(minor).to_i, str.byte_slice(patch).to_i,
+      prerelease.try { |range| str.byte_slice(range) },
+      build.try { |range| str.byte_slice(range) }
+  end
+
+  # iyi: `VERSION_PATTERN`, the `/x` Semantic Versioning 2.0.0 regex this file
+  # used to carry, written out by hand. It was one of the ten regex literals
+  # keeping libpcre2 linked into the `iyi` binary, which compiles this file
+  # into itself for the `compare_versions` macro method (Appendix B #22,
+  # III.10: no C library under a program, and #19 makes that a checked rule
+  # rather than a habit). `Crystal::Rx` is the other engine in this tree and is
+  # rejected here on purpose: it is the compiler's, and the stdlib does not
+  # reach into compiler internals. SemVer 2.0.0 is a strict grammar and needs
+  # no engine.
+  #
+  # Returns the byte ranges of the five components, or nil when *str* is not a
+  # semantic version. `valid?` asks only whether this returned something, so
+  # the two entry points cannot drift. Ranges and not strings, for two reasons:
+  # `valid?` then allocates nothing, and only `parse?` calls `to_i`, which is
+  # what preserves the pre-existing asymmetry on an out-of-range field.
+  # `valid?("99999999999999999999999.1.1")` is true and `parse?` raises
+  # `ArgumentError` out of `to_i`, exactly as the regex version did.
+  private def self.scan(str : String)
+    bytes = str.to_slice
+    stop = bytes.size
+
+    # iyi: a Crystal regex `$` outside multiline mode also matches immediately
+    # before one final newline, so the old pattern accepted "1.0.0\n" and
+    # captured "1.0.0" without it. Measured against the previous build and
+    # kept, limits included: "1.0.0\n\n" and "1.0.0\r\n" were rejected then and
+    # are rejected now.
+    stop -= 1 if stop > 0 && bytes[stop - 1].unsafe_chr == '\n'
+
+    return unless major_end = scan_field(bytes, 0, stop)
+    return unless major_end < stop && bytes[major_end].unsafe_chr == '.'
+    return unless minor_end = scan_field(bytes, major_end + 1, stop)
+    return unless minor_end < stop && bytes[minor_end].unsafe_chr == '.'
+    return unless patch_end = scan_field(bytes, minor_end + 1, stop)
+
+    pos = patch_end
+    prerelease = nil
+    build = nil
+
+    if pos < stop && bytes[pos].unsafe_chr == '-'
+      pos += 1
+
+      # A prerelease identifier may hold a '-' but never a '+', and a version
+      # field holds neither, so the first '+' from here is the build separator
+      # and there is exactly one way to cut the string. That is what the regex
+      # was relying on too; without it this would need backtracking.
+      plus = pos
+      while plus < stop && bytes[plus].unsafe_chr != '+'
+        plus += 1
+      end
+
+      return unless scan_identifiers?(bytes, pos, plus, reject_leading_zero: true)
+      prerelease = pos...plus
+      pos = plus
+    end
+
+    if pos < stop && bytes[pos].unsafe_chr == '+'
+      pos += 1
+      return unless scan_identifiers?(bytes, pos, stop, reject_leading_zero: false)
+      build = pos...stop
+      pos = stop
+    end
+
+    # Whatever is left is trailing junk the anchored pattern refused: "1.0.0x",
+    # "1.0.0 ", "1.0.0-a+b+c".
+    return unless pos == stop
+
+    {0...major_end, major_end + 1...minor_end, minor_end + 1...patch_end, prerelease, build}
+  end
+
+  # A version field: `0`, or digits with no leading zero. Returns the offset
+  # just past it, so a leading zero shows up at the call site as a field that
+  # stopped early: "01.2.3" ends its major at the '0' and then finds '1' where
+  # it wants '.'.
+  private def self.scan_field(bytes : Bytes, start : Int32, stop : Int32) : Int32?
+    return unless start < stop && bytes[start].unsafe_chr.ascii_number?
+    return start + 1 if bytes[start].unsafe_chr == '0'
+
+    pos = start + 1
+    while pos < stop && bytes[pos].unsafe_chr.ascii_number?
+      pos += 1
+    end
+    pos
+  end
+
+  # Dot-separated identifiers: at least one, none empty, each drawn from
+  # `[0-9A-Za-z-]`. *reject_leading_zero* carries the single rule that
+  # separates a prerelease from build metadata. An all-digit prerelease
+  # identifier is a number and so cannot carry a leading zero, which is why
+  # "1.0.0-01" is invalid while "1.0.0+001" is fine. One non-digit anywhere
+  # makes it a string instead and the rule stops applying, so "1.0.0-0a" is
+  # valid, and so is "1.0.0--".
+  private def self.scan_identifiers?(bytes : Bytes, start : Int32, stop : Int32, *, reject_leading_zero : Bool) : Bool
+    pos = start
+
+    loop do
+      first = pos
+      numeric = true
+
+      while pos < stop
+        char = bytes[pos].unsafe_chr
+        break if char == '.'
+        return false unless char.ascii_alphanumeric? || char == '-'
+        numeric = false unless char.ascii_number?
+        pos += 1
+      end
+
+      return false if pos == first
+      return false if reject_leading_zero && numeric && pos - first > 1 && bytes[first].unsafe_chr == '0'
+
+      break if pos == stop
+      pos += 1
+    end
+
+    true
   end
 
   # Creates a new `SemanticVersion` instance with the given major, minor, and patch versions
