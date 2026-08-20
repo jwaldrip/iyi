@@ -2582,6 +2582,41 @@ describe "Semantic: iyi" do
     end
   end
 
+  describe "the naming rule beside Crystal's library" do
+    # III.1.7a: `!` cannot end a name, so the pair Crystal spells `sort` and
+    # `sort!` is spelled `sorted` and `sort_in_place`. Somebody arriving from
+    # Crystal writes the plain verb, and "undefined method" is true and teaches
+    # nothing — the suggestion machinery cannot reach it either, `sort` to
+    # `sorted` being two edits.
+    it "names the participle when the plain verb is missing" do
+      assert_error <<-CRYSTAL, "'sorted' is what this library calls it"
+        module app/thing
+
+        struct Numbers
+          def sorted : Int32
+            1
+          end
+        end
+
+        Numbers.new.sort
+        CRYSTAL
+    end
+
+    it "stays quiet for a name nobody spelled that way" do
+      assert_error <<-CRYSTAL, "undefined method 'frist'"
+        module app/thing
+
+        struct Numbers
+          def first : Int32
+            1
+          end
+        end
+
+        Numbers.new.frist
+        CRYSTAL
+    end
+  end
+
   describe "pub" do
     # R-2 is a rule of the language, so it is asked at the `pub def`. It used
     # to be asked only where the artifact is written, which meant

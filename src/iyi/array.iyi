@@ -138,18 +138,16 @@ class Array(T)
 
   # Insertion sort: the samples sort five elements, and a merge sort would be
   # three times the lines to be slower at that size.
-  # Sorts this array, and `sorted` is the one that leaves it alone — SPEC.md
-  # III.1.7(A)'s pair, and the naming rule this prelude is written under: the
-  # plain verb mutates, the participle returns a copy. It is Swift's
-  # convention, adopted because `!` had to leave identifiers so that postfix
-  # `!` could mean propagation.
+  # Sorts this array, and `sorted` is the one that leaves it alone.
   #
-  # A note for anybody moving between the two libraries: Crystal names the same
-  # pair `sort!` and `sort`, so `a.sort` copies there and sorts here. It is the
-  # one call in this prelude that means something different under `--crystal`,
-  # and it is here rather than in the release notes because this is where
-  # somebody is standing when it matters.
-  def sort(& : T, T -> Int32) : self
+  # The name is spelled out because of the library beside this one (SPEC.md
+  # III.1.7a). III.1.7(A) says the plain verb mutates and the participle
+  # copies, which is Swift's convention and was chosen because `!` had to leave
+  # identifiers so that postfix `!` could propagate an error. Crystal spells
+  # the same pair `sort!` and `sort`, so a plain `sort` here would mean the
+  # opposite of a plain `sort` under `--crystal` — the same call, two meanings,
+  # no error. A longer name costs a few characters and cannot be misread.
+  def sort_in_place(& : T, T -> Int32) : self
     index = 1
     while index < @size
       value = self[index]
@@ -168,7 +166,7 @@ class Array(T)
   # between the pair is which array it runs on.
   def sorted(&block : T, T -> Int32) : Array(T)
     copy = dup
-    copy.sort(&block)
+    copy.sort_in_place(&block)
     copy
   end
 

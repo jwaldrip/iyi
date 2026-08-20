@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Changed
+
+- **`Array#sort` is `sort_in_place`, and `sorted` is the copy.** A plain `sort`
+  meant the opposite thing in the two libraries — it sorted the array under
+  iyi's and returned a copy under Crystal's — with no error either way, which
+  is the worst shape a difference can take. The plain verb is not in this
+  library now, so the same call is an error under one and Crystal's meaning
+  under the other.
+
+  Measured before deciding: of everything iyi's library mutates — `<<`, `[]=`,
+  `concat`, `shift`, `sort` — only `sort` disagreed, because Crystal writes `!`
+  on the mutating member of a *pair* and plainly for the rest. One method
+  today, and the shape every future pair would have had. SPEC.md III.1.7a has
+  the three options that were on the table.
+
+  The error teaches the rule: a missing name whose participle exists says so,
+  which the suggestion machinery could not — `sort` to `sorted` is two edits.
+
 Master is `0.3.0-dev`. Under the artifact rule 0.2.0 introduced, that means
 every build of it interoperates with nothing but itself: a version between two
 releases names no compiler, so it cannot be handed one released artifact and

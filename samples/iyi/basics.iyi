@@ -35,11 +35,12 @@ puts numbers.includes?(9)                   # => true
 puts numbers.sorted.join(",")               # => 1,1,2,3,4,5,6,9
 puts numbers.join(",")                      # => 3,1,4,1,5,9,2,6, untouched
 
-# The pair, and the naming rule behind it (SPEC.md III.1.7(A)): the plain verb
-# changes the array, the participle hands back a copy. `!` cannot be part of a
-# name here, because postfix `!` propagates an error, so Swift's convention
-# does the work Crystal's `sort!` does.
-numbers.sort { |a, b| a < b ? -1 : (a == b ? 0 : 1) }
+# The pair. `sorted` hands back a copy and `sort_in_place` changes the array,
+# and the second one is spelled out on purpose: Crystal calls the copy `sort`
+# and the mutating one `sort!`, a name that cannot be written here, so a plain
+# `sort` would mean one thing in this library and the opposite in Crystal's
+# (SPEC.md III.1.7a).
+numbers.sort_in_place { |a, b| a < b ? -1 : (a == b ? 0 : 1) }
 puts numbers.join(",") # => 1,1,2,3,4,5,6,9
 
 # 4. Adding them up two ways.

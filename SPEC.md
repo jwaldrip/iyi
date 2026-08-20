@@ -1812,7 +1812,7 @@ Two deliberate gaps:
   is defensible; closing it would mean making `VirtualFile` carry the mode of the
   file it expands into.
 
-#### III.1.7a What the convention costs beside Crystal's library: **OPEN**
+#### III.1.7a What the convention costs beside Crystal's library: **SETTLED: B**
 
 III.1.7 settled the naming convention against a library iyi was going to write
 itself. `--crystal` (Part V item 12a) put iyi's programs beside a library it did
@@ -1851,8 +1851,30 @@ a clumsy name; buys no collision and no silence.
 **C. Keep the convention as it is.** Costs the silence, which is what this
 section is about.
 
-**Not decided here.** What is decided is that it is a decision: a rule chosen
-for one library is not automatically right beside two.
+**Decided: B.** `sorted` is the copy and `sort_in_place` is the one that
+changes the receiver. The plain verb is not in this library at all, so `a.sort`
+is an error under iyi's library and Crystal's meaning under `--crystal` —
+different answers, neither of them silent, which is the whole point.
+
+A rule chosen for one library is not automatically right beside two, and the
+amendment is narrow: the participle rule holds, except where Crystal spells the
+copy with the plain verb. There the mutating form says what it does.
+
+**The error teaches it**, because "undefined method 'sort'" is true and useless
+and the suggestion machinery cannot reach `sorted` — two edits is past its
+threshold. When a name is missing and its participle is there, the compiler
+says so:
+
+```
+Error: undefined method 'sort' for Array(Int32)
+
+'sorted' is what this library calls it: `!` cannot end a name here, so the copy
+takes the participle and the one that changes the receiver says so
+```
+
+Asked of the type rather than of a list, so it answers for whatever the library
+grows next — `reverse`, `map`, `uniq` — and stays quiet for a name nobody
+spelled that way.
 
 #### III.1.8 Worked comparison
 
