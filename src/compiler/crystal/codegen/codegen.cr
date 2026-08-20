@@ -546,7 +546,10 @@ module Crystal
         codegen_fun node.real_name, node.external, @program, is_exported_fun: true
       end
 
-      iyi_define_all_type_ids unless @program.iyi_artifact_objects.empty?
+      unless @program.iyi_artifact_objects.empty?
+        iyi_define_all_type_ids
+        iyi_define_all_match_funs
+      end
 
       env_dump = ENV["DUMP"]?
       case env_dump
