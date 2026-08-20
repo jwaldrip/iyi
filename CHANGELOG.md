@@ -20,6 +20,16 @@ between two releases names no compiler.
 
 ### Changed
 
+- **iyi describes itself as a language rather than as a fork.** "A language
+  built for Developer & Agentic Experience, Portability, Performance, and
+  Efficiency", and README says what stands behind each of the four and what
+  does not: the edit loop and the artifact are built, portability means eight
+  targets that compile and one that is tested, run-time performance is
+  Crystal's and unmeasured here, and the agentic claim is a mechanism rather
+  than a result. `iyi version` reads `iyi 0.2.0-dev (from Crystal 1.22.0-dev
+  …)` — the name first and the provenance in brackets, which is where a
+  licence obligation belongs and where a definition does not.
+
 - **An artifact is read by the release that wrote it, not by the build.** A
   `.iyimod` was locked to the exact compiler build, commit and all, so two
   builds of the same version refused each other's modules and handing one to

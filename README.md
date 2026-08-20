@@ -3,9 +3,26 @@
 [![iyi](https://github.com/sdogruyol/iyi/actions/workflows/iyi.yml/badge.svg)](https://github.com/sdogruyol/iyi/actions/workflows/iyi.yml)
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
 
-**A fork of [Crystal](https://crystal-lang.org) built to answer one question:
-what does a language look like when separate compilation is a rule instead of a
-feature?** (*iyi* is Turkish for "good".)
+**A language built for Developer & Agentic Experience, Portability, Performance,
+and Efficiency.** (*iyi* is Turkish for "good".)
+
+Those four are one design decision seen from four sides. A module is the unit of
+compilation and it is compiled against its dependencies' **declarations**, never
+their bodies — so a build reads less, a program carries less, a tool can read an
+interface without a repository, and a person waits less. Everything below is
+that rule and what it costs.
+
+| | measured today |
+|---|---|
+| **Developer experience** | edit one module in a 7,208-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
+| **Agentic experience** | a module's interface is a file, not a convention: `iyi mod dump` prints it, and a consumer type-checks against it with the source deleted |
+| **Portability** | an iyi program compiles for **eight targets**, from `aarch64-darwin` to `x86_64-windows-msvc`. Only Linux x86-64 is tested end to end |
+| **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s** |
+| **Efficiency** | that `hello` is a **17 KB** binary that starts in **1.2 ms**; the same program with Crystal's library is 972 KB and 3.4 ms |
+
+iyi is a fork of [Crystal](https://crystal-lang.org) and says so in its licence,
+its NOTICE and its version line. What it is not is a dialect: the rules below
+are the language, and they are what Crystal does not have.
 
 Here is the program the numbers below are about. One script writes it three
 times, in iyi, in Crystal and in Go, from the same set of numbers:
@@ -210,6 +227,51 @@ flowchart LR
 The dotted line is the whole design. A consumer type-checks against the
 declarations and links against the object code, and the source of the module it
 imports may not exist on the machine at all.
+
+## The four, and what stands behind each
+
+Said plainly, because a tagline that outruns its evidence is worth less than no
+tagline.
+
+**Developer experience — built, and it is the number this project exists for.**
+The edit loop is 0.13 s where Crystal's is 1.17 s on the same 7,208 lines, and
+that is R-1 paying: the twenty-nine modules you did not touch arrive as
+declarations. The rest of it is smaller and just as deliberate — errors name the
+rule they enforce and what to write instead, `iyi tool format` knows the syntax,
+and `iyi mod dump` prints an artifact as text.
+
+**Agentic experience — the mechanism is built, the claim is young.** What an
+agent needs from a language is a boundary it can read and a loop it can afford.
+Both are here for the same reason a person gets them: a module's interface is a
+*file* rather than a convention, so a tool can read what a module offers without
+the repository that produced it, and check a change against it without building
+the world. Artifacts are byte-identical between two builds of the same source
+(IV.3), so "did this change the interface" is a comparison rather than a
+judgement. And the loop is short enough to sit inside one.
+
+What is not here is anything an agent could not have got from the rules: no
+protocol, no server, no special mode. If that turns out to be the wrong bet, it
+will be because the rules were not enough, and that is a thing to measure rather
+than to promise.
+
+**Portability — compiles for eight, tested on one.** An iyi program produces
+code for `x86_64-linux-gnu`, `x86_64-linux-musl`, `aarch64-linux-gnu`,
+`arm-linux-gnueabihf`, `x86_64-darwin`, `aarch64-darwin`, `x86_64-w64-mingw32`
+and `x86_64-windows-msvc`, and CI type-checks the library for all eight every
+build. Only Linux x86-64 is built, run and measured. Treat the other seven as
+"the code generator has no objection", which is what they are.
+
+**Performance — Crystal's, and this fork has not measured its own.** Native
+code through LLVM, the same backend and the same GC. The compile-time numbers
+above are this project's; the run-time ones are not, and nothing here has
+benchmarked a program against C or Go. What R-4 says about generics crossing a
+boundary is specified and unmeasured.
+
+**Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 17 KB
+binary that starts in 1.2 ms; the same program compiled with Crystal's standard
+library is 972 KB and 3.4 ms. Nothing clever is happening: a program links what
+it uses, and iyi's own library is 1,184 lines rather than 8,161. The whole
+library is 56 KB on disk beside the binary.
 
 ## Getting it
 
@@ -538,10 +600,17 @@ runs it under its own name. The rules above apply to `.iyi` files.
 
 ## Questions you are about to ask
 
-**Is this meant to replace Crystal?** No. It is one question asked as a fork
-because it cannot be asked as a patch: separate compilation is not a feature
-you add to a language with open classes, it is a rule the language has to be
-designed around. Crystal is not going to drop open classes, and it should not.
+**Is this Crystal with a flag?** No, and the difference is not cosmetic. A
+`.iyi` file has rules Crystal does not have and refuses things Crystal accepts:
+a module header that makes the file a compilation unit, `pub` with types on
+everything exported, no open classes, `impl` where the trait or the type lives,
+errors as ordinary union members. It began as a fork because the question cannot
+be asked as a patch — separate compilation is not a feature you add to a
+language with open classes, it is a rule the language is designed around — and
+it stays a fork in its licence and its provenance, which is where that belongs.
+
+**Is this meant to replace Crystal?** No. Crystal is not going to drop open
+classes, and it should not.
 
 **Will it merge back?** The bug fixes this fork found in Crystal's own
 compiler should, and they are separate commits for that reason. The rules will

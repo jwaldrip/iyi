@@ -1,5 +1,12 @@
 # iyi Language Specification: Draft 0
 
+**iyi is a language built for Developer & Agentic Experience, Portability,
+Performance, and Efficiency.** This document is the design under that sentence:
+one rule — a module is compiled against its dependencies' declarations, never
+their bodies — and what every other part of a language has to become for it to
+hold. The compiler is a fork of Crystal's, which is a fact about provenance
+rather than about the language; the rules below are what Crystal does not have.
+
 **Status: draft for discussion. Parts of it are built. Each section says which,
 and a heading that does not say so is a heading to distrust.** What 0.1.0 needs
 of it is scoped below Part I.
