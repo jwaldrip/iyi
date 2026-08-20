@@ -4204,11 +4204,32 @@ Named honestly, so nobody mistakes this draft for complete.
     agree. `String` is a different type in each, and neither the linker nor
     anything after it would say so.
 
-    **What it buys.** A shard is still read from source; that is 12a's cost and
-    R-1 charges it honestly. What changes is everything the program's author
-    writes: a program can require Kemal *and* compile its own modules against
-    their declarations, which is the combination the two features were each
-    half of.
+    **What it buys, measured rather than claimed.** A program can require Kemal
+    *and* compile its own modules against their declarations, which is the
+    combination the two features were each half of. The speed it buys is
+    small, and saying so is the point of measuring: on a twelve-module app
+    (656 lines, each module importing the last) with Crystal's library,
+
+    | build | time |
+    |---|---|
+    | `require "json"` and nothing else | 3.12 s |
+    | twelve modules from source | 3.28 s |
+    | twelve modules from artifacts | 2.96 s |
+
+    The modules cost 0.16 s from source and nothing from artifacts. Everything
+    else is the library, read from source every build, and R-1 does not reach
+    it. With Kemal in front the same twelve modules move a 4.4 s build to
+    4.7 s — *slower*, because reading twelve artifacts and linking twelve
+    object files is not free either, and there is only 0.5 s of module in front
+    of 4 s of shard to pay for it.
+
+    So: under iyi's own prelude the library costs 0.03 s and the artifact is
+    the whole build; under Crystal's it costs 3 s and the artifact is a
+    rounding error. The capability is what item 12b delivers. **The fixed cost
+    of the other library is now the largest number in this document, and it is
+    the next thing worth attacking** — not by making artifacts better, which is
+    finished work, but by asking whether a library that every build reads from
+    source has to be.
 
 12. **The Crystal ecosystem, and what a shard would cost.** Ten thousand
     shards exist and none of them is written to iyi's rules, so "run them

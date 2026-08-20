@@ -28,6 +28,10 @@
   than assumed: `STDOUT` and `PROGRAM_NAME` are the same object on both sides
   of the boundary, and the specs assert it.
 
+  What it saves is small and is written down as such: on a twelve-module app
+  the modules cost 0.16 s from source and nothing from artifacts, against
+  3.1 s for Crystal's library, which every build still reads from source.
+
 - **A `.iyimod` records which library it was built against**, and importing
   across the two is refused by name in both directions. This replaces the old
   refusal, which was blunter and aimed at the wrong thing: `--emit-iyimod` and

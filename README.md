@@ -465,6 +465,13 @@ The artifact carries the requires the module made, and the program replays them
 of the library in the result: `STDOUT` is the same object on both sides of the
 boundary, and so is every lazily initialised constant.
 
+**What that saves is small, and the honest number is worth more than the
+feature.** On a twelve-module app with Crystal's library, the modules cost
+0.16 s from source and nothing from artifacts — against 3.1 s for the library
+itself, which every build reads from source. Under iyi's own prelude the same
+trade goes the other way: the library is 0.03 s and the artifact is the whole
+build. R-1 is only as fast as the part of your program it covers.
+
 **What the two libraries do not do is mix.** A `.iyimod` records which one it
 was built against, and importing across is refused by name. That refusal is not
 a limitation waiting to be lifted: both are compiled by the same compiler and

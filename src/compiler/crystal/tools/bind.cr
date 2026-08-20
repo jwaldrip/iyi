@@ -255,6 +255,13 @@ module Crystal
       flags: program.flags.to_a.sort!,
       imports: [] of IyiMod::ImportEdge,
       exports: IyiMod::Exports.new(signatures, types, [] of IyiMod::ImplRecord),
+      # False on purpose, and it is the one place where that field is not
+      # simply "which prelude compiled this". A bound shard *is* compiled under
+      # Crystal's library, and the boundary this tool generates is what stands
+      # between that library and the consumer: what crosses is handles and
+      # primitives, and the consumer is an iyi program. Marking it true would
+      # refuse the only kind of program it was built for.
+      crystal_library: false,
     )
 
     path = File.join(dir, "#{root.downcase}.iyimod")
