@@ -323,7 +323,7 @@ generics crossing a boundary is specified and unmeasured.
 **Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 17 KB
 binary that starts in 1.2 ms; the same program compiled with Crystal's standard
 library is 972 KB and 3.4 ms. Nothing clever is happening: a program links what
-it uses, and iyi's own library is 1,184 lines rather than 8,161. The whole
+it uses, and iyi's own library is 2,012 lines rather than 8,161. The whole
 library is 56 KB on disk beside the binary.
 
 ## Getting it
@@ -467,7 +467,7 @@ $ curl localhost:3000/json
 `pub`, traits with defaults, `impl … forall`, error unions and `!`, `.or`,
 `or_panic`, `defer` — all of them, on a program that requires a shard. R-2
 still refuses an export that does not write its types. What changes is what the
-program *has*: 8,161 lines of Crystal's standard library instead of 1,184
+program *has*: 8,161 lines of Crystal's standard library instead of 2,012
 lines of iyi's own prelude.
 
 **One name is unreachable, and it is a class of names.** `!` in iyi propagates
@@ -756,9 +756,11 @@ marked PROPOSED are the parts that will move under you.
 
 ## What is not here
 
-- **iyi's own library is 1,184 lines, and there is no IO beyond `puts` in it**:
-  integers, booleans, a string, one sequence, one dictionary, one range. No
-  files, no sockets, no formatting. `--crystal` is the other library and has
+- **iyi's own library is 2,012 lines, and its only IO is `puts`, `print` and
+  `read_input`**: integers, booleans, a string, one sequence, one dictionary,
+  one range. `read_input` returns everything on standard input as one string,
+  because there is no `IO` to keep the rest in; `samples/iyi/calc` asked for it.
+  No files, no sockets, no formatting. `--crystal` is the other library and has
   all of it; everything below this line is about iyi's own.
 - **The prelude's collections are smaller than Crystal's, and one habit
   differs.** A method is in there because a program in this repository needed
@@ -772,15 +774,20 @@ marked PROPOSED are the parts that will move under you.
   III.4 was written to replace rather than an answer to it.
 - **No package manager and no self-hosting.** `--crystal` gives a program
   Crystal's standard library; nothing gives it a package manager.
-- **No native test matrix across the supported targets.** CI cross-compiles and
-  audits emitted objects for seven triples on four platforms: Linux x86_64 and
-  aarch64, macOS x86_64 and aarch64, Windows msvc and gnu, and wasm32-wasi.
-  `x86_64-linux-musl` and `arm-linux-gnueabihf` only type-check and are not
-  audited. Nothing here claims that the test suite runs on each target.
+- **No native test matrix across the supported targets.** CI type-checks the
+  library for nine triples and audits the emitted objects of an iyi program for
+  seven of them on four platforms: Linux x86_64 and aarch64, macOS x86_64 and
+  aarch64, Windows msvc and gnu, and wasm32-wasi. Two of those are also *run*:
+  `hello.iyi` is cross-compiled for `x86_64-linux-musl` and
+  `aarch64-linux-gnu`, linked with the target's own `cc` and `libgc`, and run
+  natively in a container and under emulation, checked against what the same
+  program printed on the machine that compiled it. `arm-linux-gnueabihf` only
+  type-checks. Nothing here claims that the test suite runs on any target but
+  the one CI builds on.
 - **Artifacts are identified by released version, target and flag set.** Builds
   of the same released version read each other's `.iyimod` files only on the
   same target under the same flags; anything else is rejected and rebuilt,
-  never migrated. The current `0.2.0-dev` is not a released version, keeps the
+  never migrated. The current `0.3.0-dev` is not a released version, keeps the
   build commit in its identity, and interoperates only with itself.
 - **There is no `derive`.** SPEC.md R-5 designs it and nothing implements it.
   What is built is the mechanism under it: a module's macros travel with its
@@ -794,8 +801,8 @@ marked PROPOSED are the parts that will move under you.
 | | |
 |---|---|
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
-| [`samples/iyi`](samples/iyi) | nine programs, eight documenting a part of it and one being a first half hour |
-| [`src/iyi`](src/iyi) | iyi's own library, 1,184 lines. `--crystal` swaps it for Crystal's |
+| [`samples/iyi`](samples/iyi) | ten programs: eight documenting a part of it, one being a first half hour, and `calc`, a language |
+| [`src/iyi`](src/iyi) | iyi's own library, 2,012 lines. `--crystal` swaps it for Crystal's |
 | [`src/compiler/iyi/iyimod.cr`](src/compiler/iyi/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |

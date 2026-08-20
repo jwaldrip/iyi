@@ -229,6 +229,13 @@ jobs:
           fi
           python3 bench/identity_floor.py
 
+      # The docs quote sizes as facts a reader can check. Three times a number
+      # has gone stale unnoticed, the last one repeated in eleven places, so it
+      # is measured here rather than trusted. Python is already installed by the
+      # step above.
+      - name: The numbers the docs state
+        run: python3 bench/doc_numbers.py --list
+
   targets:
     needs: build
     runs-on: ubuntu-24.04
