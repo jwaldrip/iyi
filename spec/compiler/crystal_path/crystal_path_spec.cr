@@ -100,7 +100,7 @@ describe Iyi::CrystalPath do
   assert_doesnt_find "test_files/missing_file.cr"
   assert_doesnt_find __FILE__[1..-1], path: ":"
 
-  # Don't find in CRYSTAL_PATH if the path is relative (#4742)
+  # Don't find in IYI_PATH if the path is relative (#4742)
   assert_doesnt_find "./crystal_path_spec", relative_to: Path["test_files", "file_one.cr"].to_s, expected_relative_to: Path["test_files"].to_s
   assert_doesnt_find "./crystal_path_spec.cr", relative_to: Path["test_files", "file_one.cr"].to_s, expected_relative_to: Path["test_files"].to_s
   assert_doesnt_find "../crystal_path/test_files/file_one"
@@ -210,14 +210,14 @@ describe Iyi::CrystalPath do
   end
 
   it "includes 'lib' by default" do
-    with_env("CRYSTAL_PATH": nil) do
+    with_env("IYI_PATH": nil) do
       crystal_path = Iyi::CrystalPath.new
       crystal_path.entries[0].should eq("lib")
     end
   end
 
   it "overrides path with environment variable" do
-    with_env("CRYSTAL_PATH": "foo#{Process::PATH_DELIMITER}bar") do
+    with_env("IYI_PATH": "foo#{Process::PATH_DELIMITER}bar") do
       crystal_path = Iyi::CrystalPath.new
       crystal_path.entries.should eq(%w(foo bar))
     end

@@ -1009,9 +1009,9 @@ module Iyi
       end
 
       it "calls block exactly once for each element in #sort_by" do
-        assert_macro <<-CRYSTAL, %(5)
+        assert_macro <<-CODE, %(5)
           {{ (i = 0; ["abc", "a", "ab", "abcde", "abcd"].sort_by { i += 1 }; i) }}
-          CRYSTAL
+          CODE
       end
 
       it "executes uniq" do
@@ -1723,7 +1723,7 @@ module Iyi
     describe TypeNode do
       describe "#includers" do
         it "returns an array of types `self` is directly included in" do
-          assert_type(<<-CRYSTAL) { tuple_of([int32, int32, int32]) }
+          assert_type(<<-CODE) { tuple_of([int32, int32, int32]) }
             module Foo
             end
 
@@ -1778,7 +1778,7 @@ module Iyi
               {% if Enumt.includers.map(&.stringify).sort == %w(ChildT(String) ChildT(T) Str) %} 1 {% else %} 'a' {% end %},
               {% if Enumt(String).includers.map(&.stringify).sort == %w(ChildT(String) Str) %} 1 {% else %} 'a' {% end %},
             }
-            CRYSTAL
+            CODE
         end
       end
 
@@ -1911,13 +1911,13 @@ module Iyi
 
       describe "#warning" do
         it "emits a warning at a specific node" do
-          assert_warning <<-CRYSTAL, "Oh noes"
+          assert_warning <<-CODE, "Oh noes"
             macro test(node)
               {% node.warning "Oh noes" %}
             end
 
             test 10
-          CRYSTAL
+          CODE
         end
       end
 
@@ -1929,22 +1929,22 @@ module Iyi
         end
 
         it "errors when called from top-level scope" do
-          assert_error <<-CRYSTAL, "`TypeNode#instance_vars` cannot be called in the top-level scope: instance vars are not yet initialized"
+          assert_error <<-CODE, "`TypeNode#instance_vars` cannot be called in the top-level scope: instance vars are not yet initialized"
             class Foo
             end
             {{ Foo.instance_vars }}
-          CRYSTAL
+          CODE
         end
 
         it "does not error when called from def scope" do
-          assert_type <<-CRYSTAL { |program| program.string }
+          assert_type <<-CODE { |program| program.string }
             module Moo
             end
             def moo
               {{ Moo.instance_vars.stringify }}
             end
             moo
-          CRYSTAL
+          CODE
         end
       end
 
@@ -2150,7 +2150,7 @@ module Iyi
       end
 
       it "== and != devirtualize generic type arguments (#10730)" do
-        assert_type(<<-CRYSTAL) { tuple_of([int32, char]) }
+        assert_type(<<-CODE) { tuple_of([int32, char]) }
           class A
           end
 
@@ -2167,7 +2167,7 @@ module Iyi
           end
 
           Foo(A).foo
-          CRYSTAL
+          CODE
       end
 
       it "executes <" do
@@ -2536,14 +2536,14 @@ module Iyi
             {x: TypeNode.new(mod)}
           end
 
-          assert_type(<<-CRYSTAL) { int32 }
+          assert_type(<<-CODE) { int32 }
             class Foo(T)
             end
 
             alias Bar = Foo(Bar)?
 
             {{ Bar.nilable? ? 1 : 'a' }}
-            CRYSTAL
+            CODE
         end
       end
 
@@ -2687,22 +2687,22 @@ module Iyi
         end
 
         it "errors when called from top-level scope" do
-          assert_error <<-CRYSTAL, "`TypeNode#has_inner_pointers?` cannot be called in the top-level scope: instance vars are not yet initialized"
+          assert_error <<-CODE, "`TypeNode#has_inner_pointers?` cannot be called in the top-level scope: instance vars are not yet initialized"
             class Foo
             end
             {{ Foo.has_inner_pointers? }}
-          CRYSTAL
+          CODE
         end
 
         it "does not error when called from def scope" do
-          assert_type <<-CRYSTAL { |program| program.bool }
+          assert_type <<-CODE { |program| program.bool }
             module Moo
             end
             def moo
               {{ Moo.has_inner_pointers? }}
             end
             moo
-          CRYSTAL
+          CODE
         end
       end
     end
@@ -3988,13 +3988,13 @@ module Iyi
 
     describe "#warning" do
       it "emits a top level warning" do
-        assert_warning <<-CRYSTAL, "Oh noes"
+        assert_warning <<-CODE, "Oh noes"
           macro test
             {% warning "Oh noes" %}
           end
 
           test
-        CRYSTAL
+        CODE
       end
     end
 
@@ -4155,9 +4155,9 @@ module Iyi
       end
 
       it "reads file (doesn't exist)" do
-        assert_error <<-CRYSTAL,
+        assert_error <<-CODE,
           {{read_file("#{__DIR__}/../data/build_foo")}}
-          CRYSTAL
+          CODE
           "Error opening file with mode 'r'"
       end
     end
@@ -4170,9 +4170,9 @@ module Iyi
       end
 
       it "reads file (doesn't exist)" do
-        assert_error <<-CRYSTAL,
+        assert_error <<-CODE,
           {{read_file("spec/compiler/data/build_foo")}}
-          CRYSTAL
+          CODE
           "Error opening file with mode 'r'"
       end
     end

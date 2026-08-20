@@ -579,10 +579,10 @@ module Iyi
         mod.verify
       end
 
-      if type_info_path = ENV["CRYSTAL_DUMP_TYPE_INFO"]?.presence
+      if type_info_path = ENV["IYI_DUMP_TYPE_INFO"]?.presence
         dump_type_info(type_info_path)
       end
-      dump_type_id if ENV["CRYSTAL_DUMP_TYPE_ID"]? == "1"
+      dump_type_id if ENV["IYI_DUMP_TYPE_ID"]? == "1"
     end
 
     def visit(node : Annotation)
@@ -2270,7 +2270,7 @@ module Iyi
     # Emits a debug message that shows the current llvm basic block name,
     # the location within the codegen that was used to emit this log.
     #
-    # The message is only generated if `CRYSTAL_DEBUG_CODEGEN` is set
+    # The message is only generated if `IYI_DEBUG_CODEGEN` is set
     #
     # The block given to this method should yield `printf` arguments to show
     # additional information. The following forms are all valid and helps to
@@ -2285,7 +2285,7 @@ module Iyi
     # ```
     #
     def debug_codegen_log(file = __FILE__, line = __LINE__, &)
-      return unless ENV["CRYSTAL_DEBUG_CODEGEN"]?
+      return unless ENV["IYI_DEBUG_CODEGEN"]?
       printf_args = yield || ""
       printf_args = {printf_args, [] of LLVM::Value} if printf_args.is_a?(String)
       printf_args = {printf_args[0], [] of LLVM::Value} if printf_args.is_a?({String})

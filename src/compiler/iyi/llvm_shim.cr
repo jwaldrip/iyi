@@ -25,7 +25,7 @@ module LLVM
   # `LLVM.version` is a string in the report and in `Crystal::LLVM_VERSION`,
   # and a build that cannot generate code still has to say which LLVM the
   # compiler that *can* was built against.
-  VERSION = {{ env("CRYSTAL_CONFIG_LLVM_VERSION") || "unknown" }}
+  VERSION = {{ env("IYI_CONFIG_LLVM_VERSION") || "unknown" }}
 
   def self.version : String
     VERSION
@@ -35,7 +35,7 @@ module LLVM
   # without it there is nothing to ask, and the answer does not change between
   # runs of one binary on one machine.
   def self.default_target_triple : String
-    {{ env("CRYSTAL_CONFIG_TARGET") || "" }}
+    {{ env("IYI_CONFIG_TARGET") || "" }}
   end
 
   # Identity, and the one place this shim is weaker than the library.

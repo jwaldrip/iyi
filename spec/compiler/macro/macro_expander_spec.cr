@@ -235,18 +235,18 @@ describe "MacroExpander" do
       {% end %}
 
       it "errors with alias of unstable type" do
-        assert_error <<-CRYSTAL, "argument to `{{ op }}` inside macros must be a type with a stable {{ op == "sizeof" ? "size".id : "alignment".id }}"
+        assert_error <<-CODE, "argument to `{{ op }}` inside macros must be a type with a stable {{ op == "sizeof" ? "size".id : "alignment".id }}"
           struct Foo
           end
 
           alias Bar = Foo
 
           \{{ {{ op }}(Bar) }}
-          CRYSTAL
+          CODE
       end
 
       it "errors with typedef of unstable type" do
-        assert_error <<-CRYSTAL, "argument to `{{ op }}` inside macros must be a type with a stable {{ op == "sizeof" ? "size".id : "alignment".id }}"
+        assert_error <<-CODE, "argument to `{{ op }}` inside macros must be a type with a stable {{ op == "sizeof" ? "size".id : "alignment".id }}"
           lib Lib
             struct Foo
               x : Int32
@@ -256,7 +256,7 @@ describe "MacroExpander" do
           end
 
           \{{ {{ op }}(Lib::Bar) }}
-          CRYSTAL
+          CODE
       end
     end
   {% end %}

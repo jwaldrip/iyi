@@ -2,7 +2,7 @@ require "./codegen/target"
 
 module Iyi
   module Config
-    class_property path : String = {{env("CRYSTAL_CONFIG_PATH") || ""}}
+    class_property path : String = {{env("IYI_CONFIG_PATH") || ""}}
 
     def self.version
       {{ read_file("#{__DIR__}/../../VERSION").chomp }}
@@ -34,7 +34,7 @@ module Iyi
     end
 
     def self.build_commit
-      sha = {{ env("CRYSTAL_CONFIG_BUILD_COMMIT") || "" }}
+      sha = {{ env("IYI_CONFIG_BUILD_COMMIT") || "" }}
       sha = nil if sha.empty?
 
       sha
@@ -54,7 +54,7 @@ module Iyi
     end
 
     def self.exec_path
-      ENV.fetch("CRYSTAL_EXEC_PATH") do
+      ENV.fetch("IYI_EXEC_PATH") do
         executable_path = Process.executable_path || return
         File.dirname(executable_path)
       end
@@ -64,7 +64,7 @@ module Iyi
 
     def self.host_target : Iyi::Codegen::Target
       @@host_target ||= begin
-        target = Iyi::Codegen::Target.new({{env("CRYSTAL_CONFIG_TARGET")}} || LLVM.default_target_triple)
+        target = Iyi::Codegen::Target.new({{env("IYI_CONFIG_TARGET")}} || LLVM.default_target_triple)
 
         if target.linux?
           # The statically linked linux binary runs as well on linux-gnu as
@@ -126,7 +126,7 @@ module Iyi
     end
 
     def self.library_path
-      {{env("CRYSTAL_CONFIG_LIBRARY_PATH") || ""}}
+      {{env("IYI_CONFIG_LIBRARY_PATH") || ""}}
     end
   end
 end

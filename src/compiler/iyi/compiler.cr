@@ -43,8 +43,8 @@ module Iyi
   # A Compiler parses source code, type checks it and
   # optionally generates an executable.
   class Compiler
-    DEFAULT_LINKER = ENV["CC"]? || {{ env("CRYSTAL_CONFIG_CC") || "cc" }}
-    MSVC_LINKER    = ENV["CC"]? || {{ env("CRYSTAL_CONFIG_CC") || "cl.exe" }}
+    DEFAULT_LINKER = ENV["CC"]? || {{ env("IYI_CONFIG_CC") || "cc" }}
+    MSVC_LINKER    = ENV["CC"]? || {{ env("IYI_CONFIG_CC") || "cl.exe" }}
 
     # A source to the compiler: its filename and source code.
     record Source,
@@ -1427,7 +1427,7 @@ module Iyi
       end
 
       if not_found
-        stderr << "Warning: The following DLLs are required at run time, but Crystal is unable to locate them in CRYSTAL_LIBRARY_PATH, the compiler's directory, or PATH: "
+        stderr << "Warning: The following DLLs are required at run time, but Crystal is unable to locate them in IYI_LIBRARY_PATH, the compiler's directory, or PATH: "
         not_found.sort!.join(stderr, ", ")
       end
     end
@@ -1579,7 +1579,7 @@ module Iyi
     private def iyi_direct_link_command(object_names, output_filename, link_flags, lib_flags)
       return nil if @cross_compile
       return nil if @iyi_link_driver_only
-      return nil if ENV["CRYSTAL_LINK_DRIVER"]?
+      return nil if ENV["IYI_LINK_DRIVER"]?
       return nil unless DEFAULT_LINKER == "cc"
       # Where it has been measured, and nowhere else. The shape this parses is
       # a GNU driver's: `collect2`, an LTO plugin, `-fuse-ld=`. A macOS `cc`

@@ -10,11 +10,11 @@ describe "Code gen: proc" do
   end
 
   it "call proc literal with return type" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       f = -> : Int32 | Float64 { 1 }
       x = f.call
       x.is_a?(Int32) && x == 1
-      CRYSTAL
+      CODE
   end
 
   it "call proc pointer" do
@@ -22,18 +22,18 @@ describe "Code gen: proc" do
   end
 
   it "call proc pointer with args" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       def foo(x, y)
         x &+ y
       end
 
       f = ->foo(Int32, Int32)
       f.call(1, 2)
-      CRYSTAL
+      CODE
   end
 
   it "call proc pointer of instance method" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def initialize
           @x = 1
@@ -47,11 +47,11 @@ describe "Code gen: proc" do
       foo = Foo.new
       f = ->foo.coco
       f.call
-      CRYSTAL
+      CODE
   end
 
   it "call proc pointer of instance method that raises" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
       class Foo
         def coco
@@ -62,11 +62,11 @@ describe "Code gen: proc" do
       foo = Foo.new
       f = ->foo.coco
       f.call rescue 1
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc with another var" do
-    run(<<-CRYSTAL)
+    run(<<-CODE)
       def foo(x)
         bar(x, -> {})
       end
@@ -75,11 +75,11 @@ describe "Code gen: proc" do
       end
 
       foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc that returns a virtual type" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def coco; 1; end
       end
@@ -90,11 +90,11 @@ describe "Code gen: proc" do
 
       x = -> { Foo.new || Bar.new }
       x.call.coco
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc that accepts a union and is called with a single type" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       struct Float
         def &+(other)
           self + other
@@ -103,11 +103,11 @@ describe "Code gen: proc" do
 
       f = ->(x : Int32 | Float64) { x &+ 1 }
       f.call(1).to_i!
-      CRYSTAL
+      CODE
   end
 
   it "makes sure that proc pointer is transformed after type inference" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       class Bar
@@ -132,11 +132,11 @@ describe "Code gen: proc" do
       c = ->_on_(Foo*)
       a = Foo.new
       c.call(pointerof(a))
-      CRYSTAL
+      CODE
   end
 
   it "binds function pointer to associated call" do
-    run(<<-CRYSTAL).to_i.should eq(12)
+    run(<<-CODE).to_i.should eq(12)
       class Foo
         def initialize(@e : Int32)
         end
@@ -155,7 +155,7 @@ describe "Code gen: proc" do
       a.on_something
 
       c.call(pointerof(a))
-      CRYSTAL
+      CODE
   end
 
   it "call simple proc literal with return" do
@@ -163,18 +163,18 @@ describe "Code gen: proc" do
   end
 
   it "calls proc pointer with union (passed by value) arg" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       struct Number
         def abs; self; end
       end
 
       f = ->(x : Int32 | Float64) { x.abs }
       f.call(1 || 1.5).to_i!
-      CRYSTAL
+      CODE
   end
 
   it "allows passing proc type to C automatically" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       lib LibC
@@ -188,11 +188,11 @@ describe "Code gen: proc" do
         a.value <=> b.value
       })
       ary[0]
-      CRYSTAL
+      CODE
   end
 
   it "allows proc pointer where self is a class" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def self.bla
           1
@@ -201,11 +201,11 @@ describe "Code gen: proc" do
 
       f = ->Foo.bla
       f.call
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc literal hard type inference (1)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       class Foo
@@ -228,11 +228,11 @@ describe "Code gen: proc" do
       bar
 
       1
-      CRYSTAL
+      CODE
   end
 
   it "automatically casts proc that returns something to proc that returns void" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Global
         @@x = 0
 
@@ -251,11 +251,11 @@ describe "Code gen: proc" do
       foo ->{ Global.x = 1 }
 
       Global.x
-      CRYSTAL
+      CODE
   end
 
   it "allows proc type of enum type" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       lib LibFoo
         enum MyEnum
           X = 1
@@ -265,11 +265,11 @@ describe "Code gen: proc" do
       ->(x : LibFoo::MyEnum) {
         x
       }.call(LibFoo::MyEnum::X)
-      CRYSTAL
+      CODE
   end
 
   it "allows proc type of enum type with base type" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       lib LibFoo
         enum MyEnum : UInt16
           X = 1
@@ -279,33 +279,33 @@ describe "Code gen: proc" do
       ->(x : LibFoo::MyEnum) {
         x
       }.call(LibFoo::MyEnum::X)
-      CRYSTAL
+      CODE
   end
 
   it "codegens nilable proc type (1)" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       a = 1 == 2 ? nil : ->{ 3 }
       if a
         a.call
       else
         4
       end
-      CRYSTAL
+      CODE
   end
 
   it "codegens nilable proc type (2)" do
-    run(<<-CRYSTAL).to_i.should eq(4)
+    run(<<-CODE).to_i.should eq(4)
       a = 1 == 1 ? nil : ->{ 3 }
       if a
         a.call
       else
         4
       end
-      CRYSTAL
+      CODE
   end
 
   it "codegens nilable proc type dispatch (1)" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       def foo(x : -> U) forall U
         x.call
       end
@@ -316,11 +316,11 @@ describe "Code gen: proc" do
 
       a = 1 == 1 ? (->{ 3 }) : nil
       foo(a)
-      CRYSTAL
+      CODE
   end
 
   it "codegens nilable proc type dispatch (2)" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       def foo(x : -> U) forall U
         x.call
       end
@@ -331,22 +331,22 @@ describe "Code gen: proc" do
 
       a = 1 == 1 ? nil : ->{ 3 }
       foo(a)
-      CRYSTAL
+      CODE
   end
 
   it "builds proc type from fun" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       lib LibC
         fun foo : ->
       end
 
       x = LibC.foo
       x.call
-      CRYSTAL
+      CODE
   end
 
   it "builds nilable proc type from fun" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       lib LibC
         fun foo : (->)?
       end
@@ -355,11 +355,11 @@ describe "Code gen: proc" do
       if x
         x.call
       end
-      CRYSTAL
+      CODE
   end
 
   it "assigns nil and proc to nilable proc type" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def initialize
         end
@@ -381,11 +381,11 @@ describe "Code gen: proc" do
       else
         2
       end
-      CRYSTAL
+      CODE
   end
 
   it "allows invoking proc literal with smaller type" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       struct Nil
         def to_i!
           0
@@ -396,11 +396,11 @@ describe "Code gen: proc" do
         x
       }
       f.call(1).to_i!
-      CRYSTAL
+      CODE
   end
 
   it "does new on proc type" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       struct Proc
         def self.new(&block : self)
           block
@@ -412,11 +412,11 @@ describe "Code gen: proc" do
       a = 2
       f = Func.new { |x| x &+ a }
       f.call(1)
-      CRYSTAL
+      CODE
   end
 
   it "allows invoking a function with a subtype" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def x
           1
@@ -431,11 +431,11 @@ describe "Code gen: proc" do
 
       f = ->(foo : Foo) { foo.x }
       f.call Bar.new
-      CRYSTAL
+      CODE
   end
 
   it "allows invoking a function with a subtype when defined as block spec" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def x
           1
@@ -454,11 +454,11 @@ describe "Code gen: proc" do
 
       f = func { |foo| foo.x }
       f.call Bar.new
-      CRYSTAL
+      CODE
   end
 
   it "allows redefining fun" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       fun foo : Int32
         1
       end
@@ -468,11 +468,11 @@ describe "Code gen: proc" do
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "passes block to another function (bug: mangling of both methods was the same)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       def foo(&block : ->)
         foo(block)
       end
@@ -482,21 +482,21 @@ describe "Code gen: proc" do
       end
 
       foo { }
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc with union type that returns itself" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       a = 1 || 1.5
 
       foo = ->(x : Int32 | Float64) { x }
       foo.call(a)
       foo.call(a).to_i!
-      CRYSTAL
+      CODE
   end
 
   it "codegens issue with missing byval in proc literal inside struct" do
-    run(<<-CRYSTAL).to_string.should eq("bar")
+    run(<<-CODE).to_string.should eq("bar")
       require "prelude"
 
       struct Params
@@ -510,11 +510,11 @@ describe "Code gen: proc" do
       end
 
       Params.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc that references struct (bug)" do
-    run(<<-CRYSTAL).to_i.should_not eq(42)
+    run(<<-CODE).to_i.should_not eq(42)
       class Ref
       end
 
@@ -546,11 +546,11 @@ describe "Code gen: proc" do
         Foo.new
       end
       context.run
-      CRYSTAL
+      CODE
   end
 
   it "codegens captured block that returns tuple" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       def foo(&block)
         block
       end
@@ -559,19 +559,19 @@ describe "Code gen: proc" do
         {0, 0, 42, 0}
       end
       block.call
-      CRYSTAL
+      CODE
   end
 
   it "allows using proc arg name shadowing local variable" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       a = 1
       f = ->(a : String) { }
       a
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc that accepts array of type" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       require "prelude"
 
       class Foo
@@ -594,21 +594,21 @@ describe "Code gen: proc" do
       elems = [Bar.new, Foo.new]
       bar = block.call elems
       bar.foo
-      CRYSTAL
+      CODE
   end
 
   it "gets proc to lib fun (#504)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       lib LibFoo
         fun bar
       end
 
       ->LibFoo.bar
-      CRYSTAL
+      CODE
   end
 
   it "gets proc to lib fun with parameter types" do
-    test_c(<<-C, <<-CRYSTAL, &.to_i.should eq(8))
+    test_c(<<-C, <<-CODE, &.to_i.should eq(8))
       #include <stdint.h>
 
       int32_t foo(int32_t x, int32_t y) {
@@ -621,11 +621,11 @@ describe "Code gen: proc" do
 
       fn = ->LibFoo.foo(Int32, Int32)
       fn.call(3, 5)
-      CRYSTAL
+      CODE
   end
 
   it "gets proc to lib fun with compatible parameter types" do
-    test_c(<<-C, <<-CRYSTAL, &.to_i.should eq(0x1235))
+    test_c(<<-C, <<-CODE, &.to_i.should eq(0x1235))
       void *foo(void *x) {
         return (void *)((char *)x + 1);
       }
@@ -637,11 +637,11 @@ describe "Code gen: proc" do
       x = Pointer(UInt8).new(0x1234)
       fn = ->LibFoo.foo(UInt8*)
       fn.call(x).address
-      CRYSTAL
+      CODE
   end
 
   it "gets proc to lib fun with compatible `#to_unsafe` type" do
-    test_c(<<-C, <<-CRYSTAL, &.to_i.should eq(42))
+    test_c(<<-C, <<-CODE, &.to_i.should eq(42))
       #include <stdint.h>
 
       int32_t foo(int32_t x) {
@@ -660,11 +660,11 @@ describe "Code gen: proc" do
 
       fn = ->LibFoo.foo(Foo)
       fn.call(Foo.new)
-      CRYSTAL
+      CODE
   end
 
   it "gets proc to variadic lib fun with parameter types" do
-    test_c(<<-C, <<-CRYSTAL, &.to_i.should eq(1110))
+    test_c(<<-C, <<-CODE, &.to_i.should eq(1110))
       #include <stdarg.h>
       #include <stdint.h>
 
@@ -683,11 +683,11 @@ describe "Code gen: proc" do
 
       fn = ->LibFoo.foo(Int32, Int32, Int32, Int32)
       fn.call(3, 10, 100, 1000)
-      CRYSTAL
+      CODE
   end
 
   it "gets same pointer from proc pointers to lib fun with compatible types" do
-    test_c(<<-C, <<-CRYSTAL, &.to_b.should be_true)
+    test_c(<<-C, <<-CODE, &.to_b.should be_true)
       void foo(void *x) {
       }
       C
@@ -699,11 +699,11 @@ describe "Code gen: proc" do
       b = ->LibFoo.foo(Void*)
       c = ->LibFoo.foo(UInt8*)
       a.pointer == b.pointer && a.pointer == c.pointer
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc to implicit self in constant (#647)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       module Foo
@@ -714,21 +714,21 @@ describe "Code gen: proc" do
       end
 
       Foo::H.call
-      CRYSTAL
+      CODE
   end
 
   it "passes proc as &->expr to method that yields" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
       def foo
         yield
       end
 
       foo &->{ 123 }
-      CRYSTAL
+      CODE
   end
 
   it "mangles strings in such a way they don't conflict with funs (#1006)" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
       a = :foo
 
       fun foo : Int32
@@ -736,11 +736,11 @@ describe "Code gen: proc" do
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "gets proc pointer using virtual type (#1337)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def foo
           1
@@ -759,11 +759,11 @@ describe "Code gen: proc" do
 
       bar = ->foo(Foo)
       bar.call(Bar.new)
-      CRYSTAL
+      CODE
   end
 
   it "uses alias of proc with virtual type (#1347)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       require "prelude"
 
       class Class1
@@ -808,11 +808,11 @@ describe "Code gen: proc" do
       Foo.call
 
       Global.x
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash on #2196" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       x = 42
       z = if x.is_a?(Int32)
         x
@@ -821,11 +821,11 @@ describe "Code gen: proc" do
         ->{ y }
       end
       z.is_a?(Int32) ? z : 0
-      CRYSTAL
+      CODE
   end
 
   it "accesses T in macros as a TupleLiteral" do
-    run(<<-CRYSTAL).to_string.should eq("TupleLiteral")
+    run(<<-CODE).to_string.should eq("TupleLiteral")
       struct Proc
         def t
           {{ T.class_name }}
@@ -833,11 +833,11 @@ describe "Code gen: proc" do
       end
 
       ->(x : Int32) { 'a' }.t
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc in instance var initialize (#3016)" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       class Foo
         @f : -> Int32 = ->foo
 
@@ -847,11 +847,11 @@ describe "Code gen: proc" do
       end
 
       Foo.new.@f.call
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc of generic type" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       class Gen(T)
       end
 
@@ -860,19 +860,19 @@ describe "Code gen: proc" do
 
       f = ->(x : Gen(Int32)) {}
       f.call(Foo.new)
-      CRYSTAL
+      CODE
   end
 
   it "executes proc pointer on primitive" do
-    run(<<-CRYSTAL).to_i.should eq(21)
+    run(<<-CODE).to_i.should eq(21)
       a = 1
       f = ->a.&+(Int32)
       f.call(20)
-      CRYSTAL
+      CODE
   end
 
   it "can pass Proc(T) to Proc(Nil) in type restriction (#8964)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       def foo(x : Proc(Nil))
         x
       end
@@ -881,11 +881,11 @@ describe "Code gen: proc" do
       proc = foo(->{ a = 2 })
       proc.call
       a
-      CRYSTAL
+      CODE
   end
 
   it "can assign proc that returns anything to proc that returns nil (#3655)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         @block : -> Nil
 
@@ -903,11 +903,11 @@ describe "Code gen: proc" do
       Foo.new(block).call
 
       a
-      CRYSTAL
+      CODE
   end
 
   it "can assign proc that returns anything to proc that returns nil, using union type (#3655)" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       class Foo
         @block : -> Nil
 
@@ -926,11 +926,11 @@ describe "Code gen: proc" do
       Foo.new(block2 || block1).call
 
       a
-      CRYSTAL
+      CODE
   end
 
   it "calls function pointer" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       require "prelude"
 
       fun foo(f : Int32 -> Int32) : Int32
@@ -938,27 +938,27 @@ describe "Code gen: proc" do
       end
 
       foo(->(x : Int32) { x &+ 1 })
-      CRYSTAL
+      CODE
   end
 
   it "casts from function pointer to proc" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       fun a(a : Void* -> Void*)
         Pointer(Proc((Void* -> Void*), Void*)).new(0_u64).value.call(a)
       end
-      CRYSTAL
+      CODE
   end
 
   it "takes pointerof function pointer" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       fun a(a : Void* -> Void*)
         pointerof(a).value.call(Pointer(Void).new(0_u64))
       end
-      CRYSTAL
+      CODE
   end
 
   it "returns proc as function pointer inside top-level fun (#14691)" do
-    run(<<-CRYSTAL, Int32).should eq(8)
+    run(<<-CODE, Int32).should eq(8)
       def raise(msg)
         while true
         end
@@ -969,11 +969,11 @@ describe "Code gen: proc" do
       end
 
       add.call(3, 5)
-      CRYSTAL
+      CODE
   end
 
   it "returns ProcPointer inside top-level fun (#14691)" do
-    run(<<-CRYSTAL, Int32).should eq(8)
+    run(<<-CODE, Int32).should eq(8)
       def raise(msg)
         while true
         end
@@ -988,11 +988,11 @@ describe "Code gen: proc" do
       end
 
       bar.call(3)
-      CRYSTAL
+      CODE
   end
 
   it "raises if returning closure from top-level fun (#14691)" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       require "prelude"
 
       @[Raises]
@@ -1007,11 +1007,11 @@ describe "Code gen: proc" do
       else
         false
       end
-      CRYSTAL
+      CODE
   end
 
   it "closures var on ->var.call (#8584)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       def bar(x)
         x
       end
@@ -1041,11 +1041,11 @@ describe "Code gen: proc" do
       proc_b = get_proc_b
       proc_b.call
       proc_a.call
-      CRYSTAL
+      CODE
   end
 
   it "saves receiver value of proc pointer `->var.foo`" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def initialize(@foo : Int32)
         end
@@ -1059,11 +1059,11 @@ describe "Code gen: proc" do
       proc = ->var.foo
       var = Foo.new(2)
       proc.call
-      CRYSTAL
+      CODE
   end
 
   it "saves receiver value of proc pointer `->@ivar.foo`" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def initialize(@foo : Int32)
         end
@@ -1084,11 +1084,11 @@ describe "Code gen: proc" do
       end
 
       Test.new.test
-      CRYSTAL
+      CODE
   end
 
   it "saves receiver value of proc pointer `->@@cvar.foo`" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       class Foo
@@ -1111,11 +1111,11 @@ describe "Code gen: proc" do
       end
 
       Test.test
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash when taking a proc pointer to a virtual type (#9823)" do
-    run(<<-CRYSTAL, Proc(Int32, Int32, Int32))
+    run(<<-CODE, Proc(Int32, Int32, Int32))
       abstract struct Parent
         abstract def work(a : Int32, b : Int32)
 
@@ -1137,11 +1137,11 @@ describe "Code gen: proc" do
       end
 
       Child1.new.as(Parent).get
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash when taking a proc pointer that multidispatches on the top-level (#3822)" do
-    run(<<-CRYSTAL)
+    run(<<-CODE)
       class Foo
         def initialize(@proc : Proc(Bar, Nil))
         end
@@ -1164,11 +1164,11 @@ describe "Code gen: proc" do
       end
 
       Foo.new(->test(Bar))
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash when taking a proc pointer that multidispatches on a module (#3822)" do
-    run(<<-CRYSTAL)
+    run(<<-CODE)
       class Foo
         def initialize(@proc : Proc(Bar, Nil))
         end
@@ -1193,6 +1193,6 @@ describe "Code gen: proc" do
       end
 
       Foo.new(->Moo.test(Bar))
-      CRYSTAL
+      CODE
   end
 end

@@ -163,8 +163,8 @@ class Iyi::Command
           # FIXME: `Process.exec` doesn't work as expected on Windows, see https://github.com/crystal-lang/crystal/issues/14422
           options.unshift external_command
           exit_status, _ = Process.run(options, env: {
-            "PATH"              => path,
-            "CRYSTAL_EXEC_PATH" => crystal_exec_path,
+            "PATH"          => path,
+            "IYI_EXEC_PATH" => crystal_exec_path,
           }, input: :inherit, output: :inherit, error: :inherit) do |process|
             # FIXME: There's a race condition between creating the sub-process and
             # registering the `on_terminate` callback.
@@ -177,8 +177,8 @@ class Iyi::Command
           ::exit exit_status
         {% else %}
           Process.exec(external_command, options, env: {
-            "PATH"              => path,
-            "CRYSTAL_EXEC_PATH" => crystal_exec_path,
+            "PATH"          => path,
+            "IYI_EXEC_PATH" => crystal_exec_path,
           })
         {% end %}
       else
@@ -940,13 +940,13 @@ class Iyi::Command
   end
 
   private def self.crystal_opts
-    ENV["CRYSTAL_OPTS"]?.try { |opts| Process.parse_arguments(opts) }
+    ENV["IYI_OPTS"]?.try { |opts| Process.parse_arguments(opts) }
   rescue ex
-    raise Error.new("Failed to parse CRYSTAL_OPTS: #{ex.message}")
+    raise Error.new("Failed to parse IYI_OPTS: #{ex.message}")
   end
 
   # Constructs an `OptionParser` from the given block and runs it twice, first
-  # time with `CRYSTAL_OPTS`, second time with the given *options*.
+  # time with `IYI_OPTS`, second time with the given *options*.
   #
   # Only flags are accepted in the first run; positional arguments, invalid
   # options (where they might be treated as normal arguments), and `--` are all
@@ -962,12 +962,12 @@ class Iyi::Command
       option_parser.unknown_args { }
       option_parser.invalid_option { |opt| raise OptionParser::InvalidOption.new(opt) }
       option_parser.before_each do |opt|
-        raise Error.new "CRYSTAL_OPTS may not contain --" if opt == "--"
+        raise Error.new "IYI_OPTS may not contain --" if opt == "--"
       end
 
       option_parser.parse(crystal_opts)
       unless crystal_opts.empty?
-        raise Error.new "CRYSTAL_OPTS may not contain positional arguments"
+        raise Error.new "IYI_OPTS may not contain positional arguments"
       end
 
       option_parser.unknown_args(&old_unknown_args) if old_unknown_args

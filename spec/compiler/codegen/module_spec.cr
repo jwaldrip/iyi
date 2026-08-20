@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Code gen: module" do
   it "codegens pointer of module with method" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       module Moo
       end
 
@@ -17,11 +17,11 @@ describe "Code gen: module" do
       p = Pointer(Moo).malloc(1_u64)
       p.value = Foo.new
       p.value.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens pointer of module with method with two including types" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       module Moo
       end
 
@@ -45,11 +45,11 @@ describe "Code gen: module" do
       p.value = Foo.new
       p.value = Bar.new
       p.value.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens pointer of module with method with two including types with one struct" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       module Foo
       end
 
@@ -73,11 +73,11 @@ describe "Code gen: module" do
       p.value = Bar.new
       p.value = Coco.new
       p.value.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens pointer of module with method with two including types with one struct (2)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       module Foo
       end
 
@@ -102,11 +102,11 @@ describe "Code gen: module" do
       p.value = Coco.new
       x = p.value
       x.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens pointer of module and pass value to method" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       module Foo
       end
 
@@ -125,11 +125,11 @@ describe "Code gen: module" do
       p = Pointer(Foo).malloc(1_u64)
       p.value = Bar.new
       foo p.value
-      CRYSTAL
+      CODE
   end
 
   it "codegens pointer of module with block" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       module Moo
@@ -156,11 +156,11 @@ describe "Code gen: module" do
         x = io
       end
       x.not_nil!.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens module with virtual type" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       module Moo
       end
 
@@ -181,11 +181,11 @@ describe "Code gen: module" do
       p = Pointer(Moo).malloc(1_u64)
       p.value = Bar.new
       p.value.foo
-      CRYSTAL
+      CODE
   end
 
   it "declares proc with module type" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       module Moo
         def moo
           1
@@ -202,11 +202,11 @@ describe "Code gen: module" do
 
       foo = ->(x : Moo) { x.moo }
       foo.call(Bar.new)
-      CRYSTAL
+      CODE
   end
 
   it "declares proc with module type and invoke it with two different types that return themselves" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       module Moo
         def moo
           1
@@ -224,11 +224,11 @@ describe "Code gen: module" do
       foo = ->(x : Moo) { x }
       foo.call(Foo.new)
       foo.call(Bar.new)
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc of a module that was never included" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       require "prelude"
 
       module Moo
@@ -236,11 +236,11 @@ describe "Code gen: module" do
 
       ->(x : Moo) { x.foo }
       1
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc of module when generic type includes it" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       module Moo
       end
 
@@ -254,11 +254,11 @@ describe "Code gen: module" do
 
       z = ->(x : Moo) { x.foo }
       z.call(Foo(Int32).new)
-      CRYSTAL
+      CODE
   end
 
   it "invokes method on yielded module that has no instances (#1079)" do
-    run(<<-CRYSTAL).to_i.should eq(456)
+    run(<<-CODE).to_i.should eq(456)
       require "prelude"
 
       module Mod
@@ -273,11 +273,11 @@ describe "Code gen: module" do
       end
 
       foo { |x| x.coco }
-      CRYSTAL
+      CODE
   end
 
   it "expands modules to its including types (#1916)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Reference
         def method(other : Reference)
           1
@@ -303,11 +303,11 @@ describe "Code gen: module" do
       y = x.as(Moo)
 
       x.method(y)
-      CRYSTAL
+      CODE
   end
 
   it "expands modules to its including types (2) (#1916)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Reference
         def method(other : Reference)
           1
@@ -333,11 +333,11 @@ describe "Code gen: module" do
       file2 = file.as(Moo)
 
       file.method(file2)
-      CRYSTAL
+      CODE
   end
 
   it "expands modules to its including types (3) (#1916)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Object
         def method(other : Reference)
           1
@@ -363,11 +363,11 @@ describe "Code gen: module" do
       y = x.as(Moo)
 
       x.method(y)
-      CRYSTAL
+      CODE
   end
 
   it "codegens cast to module with class and struct to nilable module" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       module Moo
         def bar
           10
@@ -393,11 +393,11 @@ describe "Code gen: module" do
       else
         20
       end
-      CRYSTAL
+      CODE
   end
 
   it "codegens cast to module that includes bool" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       module Moo
       end
 
@@ -416,11 +416,11 @@ describe "Code gen: module" do
       else
         2
       end
-      CRYSTAL
+      CODE
   end
 
   it "declares and includes generic module, in macros T is a tuple literal" do
-    run(<<-CRYSTAL).to_string.should eq("TupleLiteral")
+    run(<<-CODE).to_string.should eq("TupleLiteral")
       module Moo(*T)
         def t
           {{T.class_name}}
@@ -432,11 +432,11 @@ describe "Code gen: module" do
       end
 
       Foo.new.t
-      CRYSTAL
+      CODE
   end
 
   it "can instantiate generic module" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       struct Int32
         def self.foo
           10
@@ -450,11 +450,11 @@ describe "Code gen: module" do
       end
 
       Foo(Int32).foo
-      CRYSTAL
+      CODE
   end
 
   it "can use generic module as instance variable type" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       module Moo(T)
         def foo
           1
@@ -489,11 +489,11 @@ describe "Code gen: module" do
       y = mooer.moo
 
       x &+ y
-      CRYSTAL
+      CODE
   end
 
   it "can use generic module as instance variable type (2)" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       module Moo(T)
         def foo
           1
@@ -528,11 +528,11 @@ describe "Code gen: module" do
       y = mooer.moo
 
       x &+ y
-      CRYSTAL
+      CODE
   end
 
   it "casts to union of module that is included in other module (#3323)" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       require "prelude"
 
       module Moo
@@ -561,11 +561,11 @@ describe "Code gen: module" do
 
       bar = Bar.new.as(Int32 | Moo)
       bar.as(Moo).moo
-      CRYSTAL
+      CODE
   end
 
   it "casts to union of generic module that is included in other module (#3323)" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       require "prelude"
 
       module Moo(T)
@@ -594,11 +594,11 @@ describe "Code gen: module" do
 
       bar = Bar.new.as(Int32 | Moo(Char))
       bar.as(Moo(Char)).moo
-      CRYSTAL
+      CODE
   end
 
   it "codegens dispatch of union with module (#3647)" do
-    run(<<-CRYSTAL).to_i.should eq(234)
+    run(<<-CODE).to_i.should eq(234)
       module Moo
       end
 
@@ -620,11 +620,11 @@ describe "Code gen: module" do
       m = Bar.new.as(Moo)
       a = m || 1
       foo(a)
-      CRYSTAL
+      CODE
   end
 
   it "rebuilds dispatch when new generic instantiation flows through Array(Module) element (#16947)" do
-    output = run(<<-CRYSTAL).to_string
+    output = run(<<-CODE).to_string
       require "prelude"
 
       module Foo
@@ -644,7 +644,7 @@ describe "Code gen: module" do
       puts [] of Foo
       puts [GenericFoo(String).new] of Foo
       nil
-      CRYSTAL
+      CODE
     output.should contain("GenericFoo(String)")
   end
 end

@@ -172,7 +172,7 @@ module Iyi
         end
 
         with_file "example/src/example.cr" do |example|
-          example.should eq(<<-CRYSTAL
+          example.should eq(<<-CODE
         # TODO: Write documentation for `Example`
         module Example
           VERSION = "0.1.0"
@@ -180,21 +180,21 @@ module Iyi
           # TODO: Put your code here
         end
 
-        CRYSTAL
+        CODE
           )
         end
 
         with_file "example/spec/spec_helper.cr" do |example|
-          example.should eq(<<-CRYSTAL
+          example.should eq(<<-CODE
         require "spec"
         require "../src/example"
 
-        CRYSTAL
+        CODE
           )
         end
 
         with_file "example/spec/example_spec.cr" do |example|
-          example.should eq(<<-CRYSTAL
+          example.should eq(<<-CODE
         require "./spec_helper"
 
         describe Example do
@@ -205,7 +205,7 @@ module Iyi
           end
         end
 
-        CRYSTAL
+        CODE
           )
         end
 

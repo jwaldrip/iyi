@@ -548,7 +548,7 @@ module Iyi
       define_crystal_string_constant "CACHE_DIR", CacheDir.instance.dir, <<-MD
         The cache directory configured for the Crystal compiler.
 
-        The value is defined by the environment variable `CRYSTAL_CACHE_DIR` and
+        The value is defined by the environment variable `IYI_CACHE_DIR` and
         defaults to the user's configured cache directory.
         MD
       define_crystal_string_constant "DEFAULT_PATH", Iyi::Config.path, <<-MD
@@ -562,13 +562,13 @@ module Iyi
       define_crystal_string_constant "PATH", Iyi::CrystalPath.default_path, <<-MD
         Colon-separated paths where the compiler searches for required source files.
 
-        The value is defined by the environment variable `CRYSTAL_PATH`
+        The value is defined by the environment variable `IYI_PATH`
         and defaults to `DEFAULT_PATH`.
         MD
       define_crystal_string_constant "LIBRARY_PATH", Iyi::CrystalLibraryPath.default_path, <<-MD
         Colon-separated paths where the compiler searches for (binary) libraries.
 
-        The value is defined by the environment variables `CRYSTAL_LIBRARY_PATH`.
+        The value is defined by the environment variables `IYI_LIBRARY_PATH`.
         MD
       define_crystal_string_constant "VERSION", Iyi::Config.version, <<-MD
         The version of the Crystal compiler.
@@ -806,7 +806,7 @@ module Iyi
       end
     end
 
-    # Finds *filename* in the configured CRYSTAL_PATH for this program,
+    # Finds *filename* in the configured IYI_PATH for this program,
     # relative to *relative_to*.
     def find_in_path(filename, relative_to = nil) : Array(String)?
       crystal_path.find filename, relative_to

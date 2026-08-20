@@ -17,45 +17,45 @@ describe "Normalize: regex literal" do
     end
 
     it "simple" do
-      assert_expand_regex_const %q(/foo/), <<-'CRYSTAL'
+      assert_expand_regex_const %q(/foo/), <<-'CODE'
       ::Regex.new("foo", ::Regex::Options.new(0))
-      CRYSTAL
+      CODE
     end
   end
 
   describe "StringInterpolation" do
     it "simple" do
-      assert_expand %q(/#{"foo".to_s}/), <<-'CRYSTAL'
+      assert_expand %q(/#{"foo".to_s}/), <<-'CODE'
         ::Regex.new("#{"foo".to_s}", ::Regex::Options.new(0))
-        CRYSTAL
+        CODE
     end
   end
 
   describe "options" do
     it "empty" do
-      assert_expand_regex_const %q(//), <<-'CRYSTAL'
+      assert_expand_regex_const %q(//), <<-'CODE'
       ::Regex.new("", ::Regex::Options.new(0))
-      CRYSTAL
+      CODE
     end
     it "i" do
-      assert_expand_regex_const %q(//i), <<-'CRYSTAL'
+      assert_expand_regex_const %q(//i), <<-'CODE'
       ::Regex.new("", ::Regex::Options.new(1))
-      CRYSTAL
+      CODE
     end
     it "x" do
-      assert_expand_regex_const %q(//x), <<-'CRYSTAL'
+      assert_expand_regex_const %q(//x), <<-'CODE'
       ::Regex.new("", ::Regex::Options.new(8))
-      CRYSTAL
+      CODE
     end
     it "im" do
-      assert_expand_regex_const %q(//im), <<-'CRYSTAL'
+      assert_expand_regex_const %q(//im), <<-'CODE'
       ::Regex.new("", ::Regex::Options.new(7))
-      CRYSTAL
+      CODE
     end
     it "imx" do
-      assert_expand_regex_const %q(//imx), <<-'CRYSTAL'
+      assert_expand_regex_const %q(//imx), <<-'CODE'
       ::Regex.new("", ::Regex::Options.new(15))
-      CRYSTAL
+      CODE
     end
   end
 

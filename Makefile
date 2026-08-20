@@ -62,11 +62,11 @@ override FLAGS += -D strict_multi_assign -D preview_overload_order $(if $(releas
 override COMPILER_FLAGS += -Dwithout_openssl -Dwithout_zlib -Dwithout_iconv$(if $(sequential_codegen), -Dwithout_mt,)
 SPEC_WARNINGS_OFF := --exclude-warnings spec/std --exclude-warnings spec/compiler --exclude-warnings spec/primitives --exclude-warnings src/float/printer --exclude-warnings src/random.cr
 override SPEC_FLAGS += $(if $(verbose),-v )$(if $(junit_output),--junit_output $(junit_output) )$(if $(order),--order=$(order) )
-CRYSTAL_CONFIG_LIBRARY_PATH := '$$ORIGIN/../lib/crystal'
-ifndef CRYSTAL_CONFIG_BUILD_COMMIT
-	CRYSTAL_CONFIG_BUILD_COMMIT := $(shell git rev-parse --short HEAD 2> /dev/null)
+IYI_CONFIG_LIBRARY_PATH := '$$ORIGIN/../lib/iyi'
+ifndef IYI_CONFIG_BUILD_COMMIT
+	IYI_CONFIG_BUILD_COMMIT := $(shell git rev-parse --short HEAD 2> /dev/null)
 endif
-CRYSTAL_CONFIG_PATH := '$$ORIGIN/../share/crystal/src'
+IYI_CONFIG_PATH := '$$ORIGIN/../share/crystal/src'
 ifndef BASE_CRYSTAL_VERSION
 	BASE_CRYSTAL_VERSION := $(shell $(CRYSTAL) env CRYSTAL_VERSION)
 endif
@@ -81,12 +81,12 @@ ifeq ($(shell $(check_lld)),1)
   EXPORT_CC ?= CC="$(CC) -fuse-ld=lld"
 endif
 override EXPORTS += \
-  CRYSTAL_CONFIG_BUILD_COMMIT="$(CRYSTAL_CONFIG_BUILD_COMMIT)" \
-  CRYSTAL_CONFIG_PATH=$(CRYSTAL_CONFIG_PATH) \
+  IYI_CONFIG_BUILD_COMMIT="$(IYI_CONFIG_BUILD_COMMIT)" \
+  IYI_CONFIG_PATH=$(IYI_CONFIG_PATH) \
   SOURCE_DATE_EPOCH="$(SOURCE_DATE_EPOCH)"
 override EXPORTS_BUILD += \
 	$(EXPORT_CC) \
-	CRYSTAL_CONFIG_LIBRARY_PATH=$(CRYSTAL_CONFIG_LIBRARY_PATH)
+	IYI_CONFIG_LIBRARY_PATH=$(IYI_CONFIG_LIBRARY_PATH)
 SHELL = sh
 
 manpages_gz := $(patsubst %.1,%.1.gz,$(MAN1PAGES))
@@ -119,7 +119,7 @@ CRYSTAL_BIN := crystal$(EXE)
 # The build daemon must be single-threaded: it forks a child per build, and only
 # the forking thread survives a fork, so a multi-threaded runtime would hand the
 # child a broken one. `crystal daemon start` execs this binary.
-CRYSTAL_DAEMON_BIN := crystal-daemon$(EXE)
+IYI_DAEMON_BIN := crystal-daemon$(EXE)
 
 # iyi: what a downloadable build of iyi is called.
 IYI_VERSION ?= $(shell cat src/IYI_VERSION)
@@ -208,7 +208,7 @@ iyi: $(O)/iyi$(EXE) ## iyi: build `iyi` itself, runnable as ./bin/iyi [default, 
 crystal-front: $(O)/crystal-front$(EXE) ## iyi: build the front end, which links no LLVM
 
 .PHONY: crystal-daemon
-crystal-daemon: $(O)/$(CRYSTAL_DAEMON_BIN) ## Build the single-threaded build daemon
+crystal-daemon: $(O)/$(IYI_DAEMON_BIN) ## Build the single-threaded build daemon
 
 .PHONY: build
 build: ## Build all files for a package install (currently the compiler and manpages)
@@ -344,7 +344,7 @@ $(O)/primitives_spec$(EXE): $(O)/$(CRYSTAL_BIN) $(DEPS) $(SOURCES) $(SPEC_SOURCE
 	@mkdir -p $(O)
 	$(EXPORT_CC) ./bin/crystal build $(FLAGS) $(SPEC_WARNINGS_OFF) -o $@ spec/primitives_spec.cr
 
-$(O)/cli_spec$(EXE): $(O)/$(CRYSTAL_BIN) $(O)/$(CRYSTAL_DAEMON_BIN) $(DEPS) $(SOURCES) $(SPEC_SOURCES)
+$(O)/cli_spec$(EXE): $(O)/$(CRYSTAL_BIN) $(O)/$(IYI_DAEMON_BIN) $(DEPS) $(SOURCES) $(SPEC_SOURCES)
 	@mkdir -p $(O)
 	$(EXPORT_CC) ./bin/crystal build $(FLAGS) $(SPEC_WARNINGS_OFF) -o $@ spec/cli_spec.cr
 
@@ -361,12 +361,12 @@ $(O)/$(CRYSTAL_BIN): $(DEPS) $(SOURCES)
 # what `crystal` links, because it *is* `crystal`; what differs is the surface.
 # Its prelude is its own, and it is 56 KB: `iyi` installed as `bin/iyi` finds
 # `share/iyi/src/iyi/prelude.iyi` beside it and needs nothing else — no
-# `CRYSTAL_PATH`, no standard library, because an iyi program requires only the
+# `IYI_PATH`, no standard library, because an iyi program requires only the
 # prelude and the prelude requires only itself.
 $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
-	$(EXPORTS) $(EXPORTS_BUILD) CRYSTAL_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../src' \
+	$(EXPORTS) $(EXPORTS_BUILD) IYI_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../src' \
 	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $@ src/compiler/iyi.cr
 	@echo "built $@ — run it as ./bin/iyi"
 
@@ -380,11 +380,11 @@ $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 $(O)/crystal-front$(EXE): $(DEPS) $(SOURCES) $(O)/$(CRYSTAL_BIN)
 	@mkdir -p $(O)
 	$(EXPORTS) $(EXPORTS_BUILD) \
-	  CRYSTAL_CONFIG_TARGET="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^Default target: //p')" \
-	  CRYSTAL_CONFIG_LLVM_VERSION="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^LLVM: //p')" \
+	  IYI_CONFIG_TARGET="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^Default target: //p')" \
+	  IYI_CONFIG_LLVM_VERSION="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^LLVM: //p')" \
 	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_llvm -o $@ src/compiler/crystal_front.cr
 
-$(O)/$(CRYSTAL_DAEMON_BIN): $(DEPS) $(SOURCES)
+$(O)/$(IYI_DAEMON_BIN): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
 	$(EXPORTS) $(EXPORTS_BUILD) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_mt -o $@ src/compiler/crystal.cr
@@ -414,8 +414,8 @@ clean_man:
 	rm -rf ./man
 
 .PHONY: clean_cache
-clean_cache: ## Clean up CRYSTAL_CACHE_DIR files
-	rm -rf $(shell ./bin/crystal env CRYSTAL_CACHE_DIR)
+clean_cache: ## Clean up IYI_CACHE_DIR files
+	rm -rf $(shell ./bin/crystal env IYI_CACHE_DIR)
 
 .PHONY: help
 help: ## Show this help

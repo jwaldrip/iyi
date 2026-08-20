@@ -2,52 +2,52 @@ require "../../spec_helper"
 
 describe "Code gen: named tuple" do
   it "codegens tuple index" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       t = {x: 42, y: 'a'}
       t[:x]
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple index another order" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       t = {y: 'a', x: 42}
       t[:x]
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple nilable index (1)" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       t = {x: 42, y: 'a'}
       t[:x]? || 84
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple nilable index (2)" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       t = {x: 'a', y: 42}
       t[:y]? || 84
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple nilable index (3)" do
-    run(<<-CRYSTAL).to_i.should eq(84)
+    run(<<-CODE).to_i.should eq(84)
       t = {x: 'a', y: 42}
       t[:z]? || 84
-      CRYSTAL
+      CODE
   end
 
   it "passes named tuple to def" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       def foo(t)
         t[:x]
       end
 
       foo({y: 'a', x: 42})
-      CRYSTAL
+      CODE
   end
 
   it "gets size at compile time" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       struct NamedTuple
         def my_size
           {{ T.size }}
@@ -55,11 +55,11 @@ describe "Code gen: named tuple" do
       end
 
       {x: 10, y: 20}.my_size
-      CRYSTAL
+      CODE
   end
 
   it "gets keys at compile time (1)" do
-    run(<<-CRYSTAL).to_string.should eq("x")
+    run(<<-CODE).to_string.should eq("x")
       struct NamedTuple
         def keys
           {{ T.keys.map(&.stringify)[0] }}
@@ -67,11 +67,11 @@ describe "Code gen: named tuple" do
       end
 
       {x: 10, y: 2}.keys
-      CRYSTAL
+      CODE
   end
 
   it "gets keys at compile time (2)" do
-    run(<<-CRYSTAL).to_string.should eq("y")
+    run(<<-CODE).to_string.should eq("y")
       struct NamedTuple
         def keys
           {{ T.keys.map(&.stringify)[1] }}
@@ -79,11 +79,11 @@ describe "Code gen: named tuple" do
       end
 
       {x: 10, y: 2}.keys
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash when overload doesn't match" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       struct NamedTuple
         def foo(other : self)
         end
@@ -95,11 +95,11 @@ describe "Code gen: named tuple" do
       tup1 = {a: 1}
       tup2 = {b: 1}
       tup1.foo(tup2)
-      CRYSTAL
+      CODE
   end
 
   it "assigns named tuple to compatible named tuple" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       ptr = Pointer({x: Int32, y: String}).malloc(1_u64)
 
       # Here the compiler should reorder the values to match
@@ -107,11 +107,11 @@ describe "Code gen: named tuple" do
       ptr.value = {y: "hello", x: 42}
 
       ptr.value[:x]
-      CRYSTAL
+      CODE
   end
 
   it "upcasts named tuple inside compatible named tuple" do
-    run(<<-CRYSTAL).to_string.should eq("Bar")
+    run(<<-CODE).to_string.should eq("Bar")
       def foo
         if 1 == 2
           {name: "Foo", age: 20}
@@ -123,11 +123,11 @@ describe "Code gen: named tuple" do
       end
 
       foo[:name]
-      CRYSTAL
+      CODE
   end
 
   it "assigns named tuple union to compatible named tuple" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       tup1 = {x: 1, y: "foo"}
       tup2 = {x: 3}
       tup3 = {y: "bar", x: 42}
@@ -139,11 +139,11 @@ describe "Code gen: named tuple" do
       ptr.value = tup3
 
       ptr.value[:x]
-      CRYSTAL
+      CODE
   end
 
   it "upcasts named tuple union to compatible named tuple" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       def foo
         if 1 == 2
           {x: 1, y: "foo"} || {x: 3}
@@ -153,11 +153,11 @@ describe "Code gen: named tuple" do
       end
 
       foo[:x]
-      CRYSTAL
+      CODE
   end
 
   it "assigns named tuple inside union to union with compatible named tuple" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       tup1 = {x: 21, y: "foo"}
       tup2 = {x: 3}
 
@@ -175,11 +175,11 @@ describe "Code gen: named tuple" do
       ptr.value = union2
 
       ptr.value[:x]
-      CRYSTAL
+      CODE
   end
 
   it "upcasts named tuple inside union to union with compatible named tuple" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       def foo
         if 1 == 2
           tup1 = {x: 21, y: "foo"}
@@ -198,11 +198,11 @@ describe "Code gen: named tuple" do
       end
 
       foo[:x]
-      CRYSTAL
+      CODE
   end
 
   it "allows named tuple covariance" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
        class Obj
          def initialize
            @tuple = {foo: Foo.new}
@@ -231,11 +231,11 @@ describe "Code gen: named tuple" do
        obj = Obj.new
        obj.tuple = {foo: Bar.new}
        obj.tuple[:foo].bar
-       CRYSTAL
+       CODE
   end
 
   it "merges two named tuple types with same keys but different types (1)" do
-    run(<<-CRYSTAL).to_i.should eq(20)
+    run(<<-CODE).to_i.should eq(20)
        def foo
          if 1 == 2
            {x: "foo", y: 10}
@@ -246,11 +246,11 @@ describe "Code gen: named tuple" do
 
        val = foo[:y]
        val || 20
-       CRYSTAL
+       CODE
   end
 
   it "merges two named tuple types with same keys but different types (2)" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
        def foo
          if 1 == 1
            {x: "foo", y: 10}
@@ -261,11 +261,11 @@ describe "Code gen: named tuple" do
 
        val = foo[:y]
        val || 20
-       CRYSTAL
+       CODE
   end
 
   it "codegens union of tuple of float with tuple of tuple of float" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       a = {x: 1.5}
       b = {x: {22.0, 20.0} }
       c = b || a
@@ -275,31 +275,31 @@ describe "Code gen: named tuple" do
       else
         v[0].to_i! &+ v[1].to_i!
       end
-      CRYSTAL
+      CODE
   end
 
   it "provides T as a named tuple literal" do
-    run(<<-CRYSTAL).to_string.should eq("NamedTupleLiteral")
+    run(<<-CODE).to_string.should eq("NamedTupleLiteral")
       struct NamedTuple
         def self.foo
           {{ T.class_name }}
         end
       end
       NamedTuple(x: Nil, y: Int32).foo
-      CRYSTAL
+      CODE
   end
 
   it "assigns two same-size named tuple types to a same var (#3132)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       t = {x: true}
       t
       t = {x: 2}
       t[:x]
-      CRYSTAL
+      CODE
   end
 
   it "downcasts union inside tuple to value (#3907)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       struct Foo
       end
 
@@ -308,11 +308,11 @@ describe "Code gen: named tuple" do
       x = {a: 0, b: foo}
       z = x[:a]
       x = {a: 0, b: z}
-      CRYSTAL
+      CODE
   end
 
   it "accesses T and creates instance from it" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       struct NamedTuple
         def named_args
           T
@@ -331,19 +331,19 @@ describe "Code gen: named tuple" do
       t = {a: Foo.new(1)}
       f = t.named_args[:a].new(2)
       f.x
-      CRYSTAL
+      CODE
   end
 
   it "does to_s for NamedTuple class" do
-    run(<<-CRYSTAL).to_string.should eq(%(NamedTuple(a: Int32, "b c": String, "+": Char)))
+    run(<<-CODE).to_string.should eq(%(NamedTuple(a: Int32, "b c": String, "+": Char)))
       require "prelude"
 
       NamedTuple(a: Int32, "b c": String, "+": Char).to_s
-      CRYSTAL
+      CODE
   end
 
   it "doesn't error if NamedTuple includes a non-generic module (#10380)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       module Foo
       end
 
@@ -353,6 +353,6 @@ describe "Code gen: named tuple" do
 
       x = uninitialized Foo
       x = {a: 1}
-      CRYSTAL
+      CODE
   end
 end

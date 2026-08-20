@@ -151,7 +151,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       # rather than left to infer it from a name in quotes.
       node.raise "can't find module '#{path}'. A module's path is its file's " \
                  "path, so this one is `#{path}.iyi`, resolved from the " \
-                 "directory of the file being built and then from `CRYSTAL_PATH`"
+                 "directory of the file being built and then from `IYI_PATH`"
     end
 
     @program.record_require(path, relative_to)

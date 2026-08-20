@@ -475,13 +475,13 @@ describe "implementations" do
   end
 
   it "find implementation on def with no location" do
-    _, result = processed_implementation_visitor <<-CRYSTAL, Location.new(".", 5, 5)
+    _, result = processed_implementation_visitor <<-CODE, Location.new(".", 5, 5)
       enum Foo
         FOO
       end
 
       Foo.new(42)
-      CRYSTAL
+      CODE
 
     result.implementations.should_not(be_nil).map do |e|
       Location.new(e.filename, e.line, e.column).to_s

@@ -2,97 +2,97 @@ require "../../spec_helper"
 
 describe "Semantic: automatic cast" do
   it "casts literal integer (Int32 -> no restriction)" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       def foo(x)
         x + 1
       end
 
       foo(12345)
-      CRYSTAL
+      CODE
   end
 
   it "casts literal integer (Int32 -> Int64)" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       def foo(x : Int64)
         x
       end
 
       foo(12345)
-      CRYSTAL
+      CODE
   end
 
   it "casts literal integer (Int64 -> Int32, ok)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       def foo(x : Int32)
         x
       end
 
       foo(2147483647_i64)
-      CRYSTAL
+      CODE
   end
 
   it "casts literal integer (Int64 -> Int32, too big)" do
-    assert_error <<-CRYSTAL, "expected argument #1 to 'foo' to be Int32, not Int64"
+    assert_error <<-CODE, "expected argument #1 to 'foo' to be Int32, not Int64"
       def foo(x : Int32)
         x
       end
 
       foo(2147483648_i64)
-      CRYSTAL
+      CODE
   end
 
   it "casts literal integer (Int32 -> Float32)" do
-    assert_type(<<-CRYSTAL) { float32 }
+    assert_type(<<-CODE) { float32 }
       def foo(x : Float32)
         x
       end
 
       foo(12345)
-      CRYSTAL
+      CODE
   end
 
   it "casts literal integer (Int32 -> Float64)" do
-    assert_type(<<-CRYSTAL) { float64 }
+    assert_type(<<-CODE) { float64 }
       def foo(x : Float64)
         x
       end
 
       foo(12345)
-      CRYSTAL
+      CODE
   end
 
   it "casts literal float (Float32 -> Float64)" do
-    assert_type(<<-CRYSTAL) { float64 }
+    assert_type(<<-CODE) { float64 }
       def foo(x : Float64)
         x
       end
 
       foo(1.23_f32)
-      CRYSTAL
+      CODE
   end
 
   it "casts literal float (Float64 -> Float32)" do
-    assert_type(<<-CRYSTAL) { float32 }
+    assert_type(<<-CODE) { float32 }
       def foo(x : Float32)
         x
       end
 
       foo(1.23)
-      CRYSTAL
+      CODE
   end
 
   it "casts literal integer in private top-level method (#7016)" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       private def foo(x : Int64)
         x
       end
 
       foo(12345)
-      CRYSTAL
+      CODE
   end
 
   it "matches correct overload" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       def foo(x : Int32)
         x
       end
@@ -102,11 +102,11 @@ describe "Semantic: automatic cast" do
       end
 
       foo(1_i64)
-      CRYSTAL
+      CODE
   end
 
   it "casts literal integer through alias with union" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       alias A = Int64 | String
 
       def foo(x : A)
@@ -114,11 +114,11 @@ describe "Semantic: automatic cast" do
       end
 
       foo(12345)
-      CRYSTAL
+      CODE
   end
 
   it "says ambiguous call for integer" do
-    assert_error <<-CRYSTAL, "ambiguous call, implicit cast of 1 matches all of Int8, UInt8, Int16"
+    assert_error <<-CODE, "ambiguous call, implicit cast of 1 matches all of Int8, UInt8, Int16"
       def foo(x : Int8)
         x
       end
@@ -132,21 +132,21 @@ describe "Semantic: automatic cast" do
       end
 
       foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "says ambiguous call for integer (2)" do
-    assert_error <<-CRYSTAL, "ambiguous call, implicit cast of 1 matches all of Int8, UInt8"
+    assert_error <<-CODE, "ambiguous call, implicit cast of 1 matches all of Int8, UInt8"
       def foo(x : Int8 | UInt8)
         x
       end
 
       foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "says ambiguous call for integer on alias (#6620)" do
-    assert_error <<-CRYSTAL, "ambiguous call, implicit cast of 1 matches all of Int8, UInt8"
+    assert_error <<-CODE, "ambiguous call, implicit cast of 1 matches all of Int8, UInt8"
       alias A = Int8 | UInt8
 
       def foo(x : A)
@@ -154,11 +154,11 @@ describe "Semantic: automatic cast" do
       end
 
       foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "casts symbol literal to enum" do
-    assert_type(<<-CRYSTAL) { types["Foo"] }
+    assert_type(<<-CODE) { types["Foo"] }
       enum Foo
         One
         Two
@@ -170,11 +170,11 @@ describe "Semantic: automatic cast" do
       end
 
       foo(:one)
-      CRYSTAL
+      CODE
   end
 
   it "casts literal integer through alias with union" do
-    assert_type(<<-CRYSTAL) { types["Foo"] }
+    assert_type(<<-CODE) { types["Foo"] }
       enum Foo
         One
         Two
@@ -187,11 +187,11 @@ describe "Semantic: automatic cast" do
       end
 
       foo(:two)
-      CRYSTAL
+      CODE
   end
 
   it "errors if symbol name doesn't match enum member" do
-    assert_error <<-CRYSTAL, "expected argument #1 to 'foo' to match a member of enum Foo"
+    assert_error <<-CODE, "expected argument #1 to 'foo' to match a member of enum Foo"
       enum Foo
         One
         Two
@@ -203,11 +203,11 @@ describe "Semantic: automatic cast" do
       end
 
       foo(:four)
-      CRYSTAL
+      CODE
   end
 
   it "says ambiguous call for symbol" do
-    assert_error <<-CRYSTAL, "ambiguous call, implicit cast of :one matches all of Foo, Foo2"
+    assert_error <<-CODE, "ambiguous call, implicit cast of :one matches all of Foo, Foo2"
       enum Foo
         One
         Two
@@ -229,11 +229,11 @@ describe "Semantic: automatic cast" do
       end
 
       foo(:one)
-      CRYSTAL
+      CODE
   end
 
   it "casts Int32 to Int64 in ivar assignment" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       class Foo
         @x : Int64
 
@@ -247,11 +247,11 @@ describe "Semantic: automatic cast" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "casts Symbol to Enum in ivar assignment" do
-    assert_type(<<-CRYSTAL) { types["E"] }
+    assert_type(<<-CODE) { types["E"] }
       enum E
         One
         Two
@@ -271,11 +271,11 @@ describe "Semantic: automatic cast" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "casts Int32 to Int64 in cvar assignment" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       class Foo
         @@x : Int64 = 0_i64
 
@@ -286,19 +286,19 @@ describe "Semantic: automatic cast" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "casts Int32 to Int64 in lvar assignment" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       x : Int64
       x = 123
       x
-      CRYSTAL
+      CODE
   end
 
   it "casts Int32 to Int64 in ivar type declaration" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       class Foo
         @x : Int64 = 10
 
@@ -308,11 +308,11 @@ describe "Semantic: automatic cast" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "casts Symbol to Enum in ivar type declaration" do
-    assert_type(<<-CRYSTAL) { types["Color"] }
+    assert_type(<<-CODE) { types["Color"] }
       enum Color
         Red
         Green
@@ -328,11 +328,11 @@ describe "Semantic: automatic cast" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "casts Int32 to Int64 in cvar type declaration" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       class Foo
         @@x : Int64 = 10
 
@@ -342,11 +342,11 @@ describe "Semantic: automatic cast" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "casts Symbol to Enum in cvar type declaration" do
-    assert_type(<<-CRYSTAL) { types["Color"] }
+    assert_type(<<-CODE) { types["Color"] }
       enum Color
         Red
         Green
@@ -362,21 +362,21 @@ describe "Semantic: automatic cast" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "casts Int32 -> Int64 in arg restriction" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       def foo(x : Int64 = 0)
         x
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "casts Int32 to Int64 in ivar type declaration in generic" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       class Foo(T)
         @x : T = 10
 
@@ -386,11 +386,11 @@ describe "Semantic: automatic cast" do
       end
 
       Foo(Int64).new.x
-      CRYSTAL
+      CODE
   end
 
   it "can match multiple times with the same argument type (#7578)" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       def foo(unused, foo : Int64)
         unused
       end
@@ -400,11 +400,11 @@ describe "Semantic: automatic cast" do
       end
 
       foo(foo: 1)
-      CRYSTAL
+      CODE
   end
 
   it "doesn't say 'ambiguous call' when there's an exact match for integer (#6601)" do
-    assert_error <<-CRYSTAL, "expected argument #1 to 'Zed#+' to be Char, not Int32", inject_primitives: true
+    assert_error <<-CODE, "expected argument #1 to 'Zed#+' to be Char, not Int32", inject_primitives: true
       class Zed
         def +(other : Char)
         end
@@ -412,11 +412,11 @@ describe "Semantic: automatic cast" do
 
       a = 1 || Zed.new
       a + 2
-      CRYSTAL
+      CODE
   end
 
   it "doesn't say 'ambiguous call' when there's an exact match for symbol (#6601)" do
-    assert_error <<-CRYSTAL, "expected argument #1 to 'Zed#+' to be Char, not Symbol"
+    assert_error <<-CODE, "expected argument #1 to 'Zed#+' to be Char, not Symbol"
       enum Color1
         Red
       end
@@ -440,11 +440,11 @@ describe "Semantic: automatic cast" do
 
       a = 1 || Zed.new
       a + :red
-      CRYSTAL
+      CODE
   end
 
   it "can use automatic cast with `with ... yield` (#7736)" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       def foo
         with 1 yield
       end
@@ -458,11 +458,11 @@ describe "Semantic: automatic cast" do
       foo do
         bar(1)
       end
-      CRYSTAL
+      CODE
   end
 
   it "doesn't do multidispatch if an overload matches exactly (#8217)" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       def foo(x : Int64)
         x
       end
@@ -472,31 +472,31 @@ describe "Semantic: automatic cast" do
       end
 
       foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "autocasts first argument and second matches without autocast" do
-    assert_type(<<-CRYSTAL) { float64 }
+    assert_type(<<-CODE) { float64 }
       def fill(x : Float64, y : Int)
         x
       end
 
       fill(0, 0)
-      CRYSTAL
+      CODE
   end
 
   it "can autocast to union in default value" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       def fill(x : Int64 | String = 1)
         x
       end
 
       fill()
-      CRYSTAL
+      CODE
   end
 
   it "can autocast to alias in default value" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       alias X = Int64 | String
 
       def fill(x : X = 1)
@@ -504,11 +504,11 @@ describe "Semantic: automatic cast" do
       end
 
       fill()
-      CRYSTAL
+      CODE
   end
 
   it "can autocast to union in default value (symbol and int)" do
-    assert_type(<<-CRYSTAL) { types["Color"] }
+    assert_type(<<-CODE) { types["Color"] }
       enum Color
         Red
       end
@@ -518,11 +518,11 @@ describe "Semantic: automatic cast" do
       end
 
       fill()
-      CRYSTAL
+      CODE
   end
 
   it "can autocast to union in default value (multiple enums)" do
-    assert_type(<<-CRYSTAL) { types["AnotherColor"] }
+    assert_type(<<-CODE) { types["AnotherColor"] }
       enum Color
         Red
       end
@@ -536,11 +536,11 @@ describe "Semantic: automatic cast" do
       end
 
       fill()
-      CRYSTAL
+      CODE
   end
 
   it "doesn't do multidispatch if an overload matches exactly (#8217)" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       abstract class Foo
       end
 
@@ -565,33 +565,33 @@ describe "Semantic: automatic cast" do
       end
 
       Baz.new.as(Foo).foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "casts integer variable to larger type (#9565)" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       def foo(x : Int64)
         x
       end
 
       x = 1_i32
       foo(x)
-      CRYSTAL
+      CODE
   end
 
   it "casts integer variable to larger type (Int64 to Int128) (#9565)" do
-    assert_type(<<-CRYSTAL) { int128 }
+    assert_type(<<-CODE) { int128 }
       def foo(x : Int128)
         x
       end
 
       x = 1_i64
       foo(x)
-      CRYSTAL
+      CODE
   end
 
   it "casts integer expression to larger type (#9565)" do
-    assert_type(<<-CRYSTAL) { int64 }
+    assert_type(<<-CODE) { int64 }
       def foo(x : Int64)
         x
       end
@@ -601,11 +601,11 @@ describe "Semantic: automatic cast" do
       end
 
       foo(bar)
-      CRYSTAL
+      CODE
   end
 
   it "says ambiguous call for integer var to larger type (#9565)" do
-    assert_error <<-CRYSTAL, "ambiguous call, implicit cast of UInt8 matches all of Int32, Int64"
+    assert_error <<-CODE, "ambiguous call, implicit cast of UInt8 matches all of Int32, Int64"
       def foo(x : Int32)
         x
       end
@@ -616,86 +616,86 @@ describe "Semantic: automatic cast" do
 
       x = 1_u8
       foo(x)
-      CRYSTAL
+      CODE
   end
 
   it "says ambiguous call for integer var to union type (#9565)" do
-    assert_error <<-CRYSTAL, "ambiguous call, implicit cast of UInt8 matches all of Int32, UInt32"
+    assert_error <<-CODE, "ambiguous call, implicit cast of UInt8 matches all of Int32, UInt32"
       def foo(x : Int32 | UInt32)
         x
       end
 
       x = 1_u8
       foo(x)
-      CRYSTAL
+      CODE
   end
 
   it "can't cast integer to another type when it doesn't fit (#9565)" do
-    assert_error <<-CRYSTAL, "expected argument #1 to 'foo' to be Int32, not Int64"
+    assert_error <<-CODE, "expected argument #1 to 'foo' to be Int32, not Int64"
       def foo(x : Int32)
         x
       end
 
       x = 1_i64
       foo(x)
-      CRYSTAL
+      CODE
   end
 
   it "doesn't cast integer variable to larger type (not #9565)" do
-    assert_error <<-CRYSTAL, "expected argument #1 to 'foo' to be Int64, not Int32", flags: "no_number_autocast"
+    assert_error <<-CODE, "expected argument #1 to 'foo' to be Int64, not Int32", flags: "no_number_autocast"
       def foo(x : Int64)
         x
       end
 
       x = 1_i32
       foo(x)
-      CRYSTAL
+      CODE
   end
 
   it "doesn't autocast number on union (#8655)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       def foo(x : UInt8 | Int32, y : Float64)
         x
       end
 
       foo(255, 60)
-      CRYSTAL
+      CODE
   end
 
   it "says ambiguous call on union (#8655)" do
-    assert_error <<-CRYSTAL, "ambiguous call, implicit cast of 255 matches all of UInt64, Int64"
+    assert_error <<-CODE, "ambiguous call, implicit cast of 255 matches all of UInt64, Int64"
       def foo(x : UInt64 | Int64, y : Float64)
         x
       end
 
       foo(255, 60)
-      CRYSTAL
+      CODE
   end
 
   it "autocasts integer variable to float type (#9565)" do
-    assert_type(<<-CRYSTAL) { float64 }
+    assert_type(<<-CODE) { float64 }
       def foo(x : Float64)
         x
       end
 
       x = 1_i32
       foo(x)
-      CRYSTAL
+      CODE
   end
 
   it "autocasts float32 variable to float64 type (#9565)" do
-    assert_type(<<-CRYSTAL) { float64 }
+    assert_type(<<-CODE) { float64 }
       def foo(x : Float64)
         x
       end
 
       x = 1.0_f32
       foo(x)
-      CRYSTAL
+      CODE
   end
 
   it "autocasts nested type from non-nested type (#10315)" do
-    assert_no_errors(<<-CRYSTAL)
+    assert_no_errors(<<-CODE)
       module Moo
         enum Color
           Red
@@ -711,11 +711,11 @@ describe "Semantic: automatic cast" do
       end
 
       Bar.new
-      CRYSTAL
+      CODE
   end
 
   it "errors when autocast default value doesn't match enum member" do
-    assert_error <<-CRYSTAL,
+    assert_error <<-CODE,
       enum Foo
         FOO
       end
@@ -724,7 +724,7 @@ describe "Semantic: automatic cast" do
       end
 
       foo
-      CRYSTAL
+      CODE
       "can't autocast :bar to Foo: no matching enum member"
   end
 end

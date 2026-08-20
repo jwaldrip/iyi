@@ -360,11 +360,11 @@ end
 
 def test_c(c_code, crystal_code, *, file = __FILE__, &)
   with_temp_c_object_file(c_code, file: file) do |o_filename|
-    yield run(<<-CRYSTAL)
+    yield run(<<-CODE)
       require "prelude"
 
       @[Link(ldflags: #{o_filename.inspect})]
       #{crystal_code}
-      CRYSTAL
+      CODE
   end
 end

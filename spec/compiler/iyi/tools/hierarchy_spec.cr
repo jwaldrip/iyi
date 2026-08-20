@@ -14,13 +14,13 @@ end
 
 describe Iyi::TextHierarchyPrinter do
   it "works" do
-    assert_text_hierarchy <<-CRYSTAL, "ar$", <<-EOS
+    assert_text_hierarchy <<-CODE, "ar$", <<-EOS
       class Foo
       end
 
       class Bar < Foo
       end
-      CRYSTAL
+      CODE
       - class Object (4 bytes)
         |
         +- class Reference (4 bytes)
@@ -32,11 +32,11 @@ describe Iyi::TextHierarchyPrinter do
   end
 
   it "shows correct size for Bool member" do
-    assert_text_hierarchy <<-CRYSTAL, "Foo", <<-EOS
+    assert_text_hierarchy <<-CODE, "Foo", <<-EOS
       struct Foo
         @x = true
       end
-      CRYSTAL
+      CODE
       - class Object (4 bytes)
         |
         +- struct Value (0 bytes)
@@ -49,7 +49,7 @@ describe Iyi::TextHierarchyPrinter do
   end
 
   it "shows correct size for members with bound types" do
-    assert_text_hierarchy <<-CRYSTAL, "Foo", <<-EOS
+    assert_text_hierarchy <<-CODE, "Foo", <<-EOS
       struct Bar1(T)
         @x = uninitialized T
       end
@@ -88,7 +88,7 @@ describe Iyi::TextHierarchyPrinter do
         @k = uninitialized Bar3(T)
         @l = uninitialized Bar4(T)
       end
-      CRYSTAL
+      CODE
       - class Object (4 bytes)
         |
         +- class Reference (4 bytes)
@@ -110,7 +110,7 @@ describe Iyi::TextHierarchyPrinter do
   end
 
   it "shows correct total size of generic class if known" do
-    assert_text_hierarchy <<-CRYSTAL, "Foo", <<-EOS
+    assert_text_hierarchy <<-CODE, "Foo", <<-EOS
       class Bar1(T)
         @x = uninitialized T
       end
@@ -125,7 +125,7 @@ describe Iyi::TextHierarchyPrinter do
         @c = uninitialized T*[6]
         @d = uninitialized Int64
       end
-      CRYSTAL
+      CODE
       - class Object (4 bytes)
         |
         +- class Reference (4 bytes)
@@ -139,7 +139,7 @@ describe Iyi::TextHierarchyPrinter do
   end
 
   it "shows correct size for Proc inside extern struct" do
-    assert_text_hierarchy <<-CRYSTAL, "Foo", <<-EOS
+    assert_text_hierarchy <<-CODE, "Foo", <<-EOS
       @[Extern]
       struct Foo
         @x = uninitialized ->
@@ -150,7 +150,7 @@ describe Iyi::TextHierarchyPrinter do
           x : Int32 -> Int32
         end
       end
-      CRYSTAL
+      CODE
       - class Object (4 bytes)
         |
         +- struct Value (0 bytes)
@@ -166,14 +166,14 @@ describe Iyi::TextHierarchyPrinter do
   end
 
   it "shows extern unions" do
-    assert_text_hierarchy <<-CRYSTAL, "Foo", <<-EOS
+    assert_text_hierarchy <<-CODE, "Foo", <<-EOS
       lib Lib
         union Foo
           x : Int32
           y : Float64
         end
       end
-      CRYSTAL
+      CODE
       - class Object (4 bytes)
         |
         +- struct Value (0 bytes)
@@ -189,13 +189,13 @@ end
 
 describe Iyi::JSONHierarchyPrinter do
   it "works" do
-    assert_json_hierarchy <<-CRYSTAL, "ar$", <<-JSON
+    assert_json_hierarchy <<-CODE, "ar$", <<-JSON
       class Foo
       end
 
       class Bar < Foo
       end
-      CRYSTAL
+      CODE
       {
         "name": "Object",
         "kind": "class",
@@ -227,14 +227,14 @@ describe Iyi::JSONHierarchyPrinter do
   end
 
   it "shows extern unions" do
-    assert_json_hierarchy <<-CRYSTAL, "Foo", <<-JSON
+    assert_json_hierarchy <<-CODE, "Foo", <<-JSON
       lib Lib
         union Foo
           x : Int32
           y : Float64
         end
       end
-      CRYSTAL
+      CODE
       {
         "name": "Object",
         "kind": "class",

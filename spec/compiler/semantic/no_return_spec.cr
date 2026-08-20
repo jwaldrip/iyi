@@ -22,7 +22,7 @@ describe "Semantic: NoReturn" do
   end
 
   it "assumes if condition's type filters when else is no return" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       lib LibC
         fun exit : NoReturn
       end
@@ -37,11 +37,11 @@ describe "Semantic: NoReturn" do
       LibC.exit unless foo
 
       foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "computes NoReturn in a lazy way inside if then (#314) (1)" do
-    assert_type(<<-CRYSTAL) { union_of(int32, string) }
+    assert_type(<<-CODE) { union_of(int32, string) }
       require "prelude"
 
       a = 1
@@ -59,11 +59,11 @@ describe "Semantic: NoReturn" do
       end
 
       b
-      CRYSTAL
+      CODE
   end
 
   it "computes NoReturn in a lazy way inside if then (#314) (2)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       require "prelude"
 
       a = 1
@@ -80,11 +80,11 @@ describe "Semantic: NoReturn" do
       end
 
       b
-      CRYSTAL
+      CODE
   end
 
   it "computes NoReturn in a lazy way inside if then (#314) (3)" do
-    assert_type(<<-CRYSTAL) { nilable(string) }
+    assert_type(<<-CODE) { nilable(string) }
       require "prelude"
 
       a = 1
@@ -106,11 +106,11 @@ describe "Semantic: NoReturn" do
       end
 
       c
-      CRYSTAL
+      CODE
   end
 
   it "computes NoReturn in a lazy way inside if then (#314) (4)" do
-    assert_type(<<-CRYSTAL) { nil_type }
+    assert_type(<<-CODE) { nil_type }
       require "prelude"
 
       a = 1
@@ -131,11 +131,11 @@ describe "Semantic: NoReturn" do
       end
 
       c
-      CRYSTAL
+      CODE
   end
 
   it "computes NoReturn in a lazy way inside if then (#314) (5)" do
-    assert_error <<-CRYSTAL, "undefined method 'size' for Nil"
+    assert_error <<-CODE, "undefined method 'size' for Nil"
       require "prelude"
 
       a = 1
@@ -155,11 +155,11 @@ describe "Semantic: NoReturn" do
         x = 1
         a += 1
       end
-      CRYSTAL
+      CODE
   end
 
   it "computes NoReturn in a lazy way inside if else (#314) (1)" do
-    assert_type(<<-CRYSTAL) { union_of(int32, string) }
+    assert_type(<<-CODE) { union_of(int32, string) }
       require "prelude"
 
       a = 1
@@ -178,11 +178,11 @@ describe "Semantic: NoReturn" do
       end
 
       b
-      CRYSTAL
+      CODE
   end
 
   it "computes NoReturn in a lazy way inside if else (#314) (2)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       require "prelude"
 
       a = 1
@@ -200,11 +200,11 @@ describe "Semantic: NoReturn" do
       end
 
       b
-      CRYSTAL
+      CODE
   end
 
   it "computes NoReturn in a lazy way inside if else (#314) (3)" do
-    assert_type(<<-CRYSTAL) { nilable(string) }
+    assert_type(<<-CODE) { nilable(string) }
       require "prelude"
 
       a = 1
@@ -227,11 +227,11 @@ describe "Semantic: NoReturn" do
       end
 
       c
-      CRYSTAL
+      CODE
   end
 
   it "computes NoReturn in a lazy way inside if else (#314) (4)" do
-    assert_type(<<-CRYSTAL) { nil_type }
+    assert_type(<<-CODE) { nil_type }
       require "prelude"
 
       a = 1
@@ -253,11 +253,11 @@ describe "Semantic: NoReturn" do
       end
 
       c
-      CRYSTAL
+      CODE
   end
 
   it "computes NoReturn in a lazy way inside if else (#314) (5)" do
-    assert_error <<-CRYSTAL, "undefined method 'size' for Nil"
+    assert_error <<-CODE, "undefined method 'size' for Nil"
       require "prelude"
 
       a = 1
@@ -277,11 +277,11 @@ describe "Semantic: NoReturn" do
         x = 1
         a += 1
       end
-      CRYSTAL
+      CODE
   end
 
   it "types exception handler as NoReturn if ensure is NoReturn" do
-    assert_type(<<-CRYSTAL) { no_return }
+    assert_type(<<-CODE) { no_return }
       lib LibC
         fun foo : NoReturn
       end
@@ -291,11 +291,11 @@ describe "Semantic: NoReturn" do
       ensure
         LibC.foo
       end
-      CRYSTAL
+      CODE
   end
 
   it "types as NoReturn even if Nil return type is forced (#3096)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       lib LibC
         fun exit(Int32) : NoReturn
       end
@@ -315,19 +315,19 @@ describe "Semantic: NoReturn" do
       end
 
       baz
-      CRYSTAL
+      CODE
   end
 
   it "types as NoReturn if typeof(exp)'s exp is NoReturn" do
-    assert_type(<<-CRYSTAL) { no_return.metaclass }
+    assert_type(<<-CODE) { no_return.metaclass }
       require "prelude"
 
       typeof(raise("").foo)
-      CRYSTAL
+      CODE
   end
 
   it "types as NoReturn if followed by one-to-many assignment (#15638)" do
-    assert_type(<<-CRYSTAL) { bool }
+    assert_type(<<-CODE) { bool }
       def foo(x)
         {'a', ""}
       end
@@ -344,6 +344,6 @@ describe "Semantic: NoReturn" do
       end
 
       bar
-      CRYSTAL
+      CODE
   end
 end

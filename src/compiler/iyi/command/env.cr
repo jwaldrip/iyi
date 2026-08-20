@@ -18,12 +18,12 @@ class Iyi::Command
     end
 
     vars = {
-      "CRYSTAL_CACHE_DIR"    => CacheDir.instance.dir,
-      "CRYSTAL_EXEC_PATH"    => Iyi::Config.exec_path || "",
-      "CRYSTAL_PATH"         => CrystalPath.default_path,
-      "CRYSTAL_VERSION"      => Config.version || "",
-      "CRYSTAL_LIBRARY_PATH" => CrystalLibraryPath.default_path,
-      "CRYSTAL_OPTS"         => ENV.fetch("CRYSTAL_OPTS", ""),
+      "IYI_CACHE_DIR"    => CacheDir.instance.dir,
+      "IYI_EXEC_PATH"    => Iyi::Config.exec_path || "",
+      "IYI_PATH"         => CrystalPath.default_path,
+      "CRYSTAL_VERSION"  => Config.version || "",
+      "IYI_LIBRARY_PATH" => CrystalLibraryPath.default_path,
+      "IYI_OPTS"         => ENV.fetch("IYI_OPTS", ""),
     }
 
     if var_names.empty?

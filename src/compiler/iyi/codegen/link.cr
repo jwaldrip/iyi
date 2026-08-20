@@ -103,7 +103,7 @@ module Iyi
 
   module CrystalLibraryPath
     def self.default_paths : Array(String)
-      paths = ENV.fetch("CRYSTAL_LIBRARY_PATH", Iyi::Config.library_path).split(Process::PATH_DELIMITER, remove_empty: true)
+      paths = ENV.fetch("IYI_LIBRARY_PATH", Iyi::Config.library_path).split(Process::PATH_DELIMITER, remove_empty: true)
 
       CrystalPath.expand_paths(paths)
 
@@ -127,7 +127,7 @@ module Iyi
     private def lib_flags_windows(cross_compiling)
       flags = [] of String
 
-      # Add CRYSTAL_LIBRARY_PATH locations, so the linker preferentially
+      # Add IYI_LIBRARY_PATH locations, so the linker preferentially
       # searches user-given library paths.
       if has_flag?("msvc")
         CrystalLibraryPath.paths.each do |path|
@@ -155,7 +155,7 @@ module Iyi
       # Instruct the linker to link statically if the user asks
       flags << "-static" if static_build
 
-      # Add CRYSTAL_LIBRARY_PATH locations, so the linker preferentially
+      # Add IYI_LIBRARY_PATH locations, so the linker preferentially
       # searches user-given library paths.
       CrystalLibraryPath.paths.each do |path|
         flags << quote_flag("-L#{path}", cross_compiling)
@@ -192,7 +192,7 @@ module Iyi
       end
     end
 
-    # Searches among CRYSTAL_LIBRARY_PATH, the compiler's directory, and PATH
+    # Searches among IYI_LIBRARY_PATH, the compiler's directory, and PATH
     # for every DLL specified in the used `@[Link]` annotations. Yields the
     # absolute path and `true` if found, the base name and `false` if not found.
     # The directories should match `Iyi::Repl::Context#dll_search_paths`

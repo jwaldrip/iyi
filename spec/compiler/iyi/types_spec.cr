@@ -8,22 +8,22 @@ end
 
 describe "types to_s of" do
   it "does for type contained in generic class" do
-    result = semantic(<<-CRYSTAL)
+    result = semantic(<<-CODE)
       class Bar(T)
         class Foo
         end
       end
-      CRYSTAL
+      CODE
     result.program.types["Bar"].types["Foo"].to_s.should eq("Bar::Foo")
   end
 
   it "does for type contained in generic module" do
-    result = semantic(<<-CRYSTAL)
+    result = semantic(<<-CODE)
       module Bar(T)
         class Foo
         end
       end
-      CRYSTAL
+      CODE
     result.program.types["Bar"].types["Foo"].to_s.should eq("Bar::Foo")
   end
 

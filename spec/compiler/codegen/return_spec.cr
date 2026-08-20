@@ -30,7 +30,7 @@ describe "Code gen: return" do
   end
 
   it "returns empty from function" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       struct Nil; def to_i!; 0; end; end
       def foo(x)
         return if x == 1
@@ -38,69 +38,69 @@ describe "Code gen: return" do
       end
 
       foo(2).to_i!
-      CRYSTAL
+      CODE
   end
 
   it "codegens bug with return if true" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       def bar
         return if true
         1
       end
 
       bar.is_a?(Nil)
-      CRYSTAL
+      CODE
   end
 
   it "codegens assign with if with two returns" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       def test
         a = 1 ? return 2 : return 3
       end
 
       test
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash when method returns nil and can be inlined" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       def foo : Nil
         1
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "returns in var assignment (#3364)" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
       def bar
         a = nil || return 123
       end
 
       bar
-      CRYSTAL
+      CODE
   end
 
   it "forms a tuple from multiple return values" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       def foo
         return 5, 3
       end
 
       v = foo
       v[0] &- v[1]
-      CRYSTAL
+      CODE
   end
 
   it "flattens splats inside multiple return values" do
-    run(<<-CRYSTAL).to_i.should eq(18)
+    run(<<-CODE).to_i.should eq(18)
       def foo
         return 1, *{3, 9}, 27
       end
 
       v = foo
       v[3] &- v[2]
-      CRYSTAL
+      CODE
   end
 end

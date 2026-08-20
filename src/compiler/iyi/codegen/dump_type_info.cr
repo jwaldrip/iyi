@@ -109,7 +109,7 @@ module Iyi
       ids = @program.llvm_id.@ids.to_a
       ids.sort_by! { |_, (min, max)| {min, -max} }
 
-      puts "CRYSTAL_DUMP_TYPE_ID"
+      puts "IYI_DUMP_TYPE_ID"
       parent_ids = [] of {Int32, Int32}
       ids.each do |type, (min, max)|
         while parent_id = parent_ids.last?

@@ -72,7 +72,7 @@ class Iyi::Command
         Switches:
             --socket PATH        socket to listen on / connect to
 
-        Set CRYSTAL_DAEMON_SOCKET and an ordinary `#{Command.program_name} build`
+        Set IYI_DAEMON_SOCKET and an ordinary `#{Command.program_name} build`
         is served by that daemon too, falling back to a normal build if it is
         not there.
         USAGE
@@ -93,9 +93,9 @@ class Iyi::Command
     # An explicit override is authoritative. Falling back to some other binary
     # because the named one is missing would run a build against a compiler the
     # user did not ask for, and say nothing about it.
-    if (override = ENV["CRYSTAL_DAEMON"]?) && !override.empty?
+    if (override = ENV["IYI_DAEMON"]?) && !override.empty?
       unless File.info?(override).try(&.file?)
-        STDERR.puts "CRYSTAL_DAEMON points at #{override}, which is not a file"
+        STDERR.puts "IYI_DAEMON points at #{override}, which is not a file"
         exit 1
       end
       Process.exec(override, ["daemon", "start"] + options)
@@ -120,19 +120,19 @@ class Iyi::Command
       Looked in:
       #{candidates.join('\n') { |candidate| "    #{candidate}" }}
 
-      Set CRYSTAL_DAEMON to point at it directly.
+      Set IYI_DAEMON to point at it directly.
       MSG
     exit 1
   end
 
   # Lets `crystal build` go through a daemon without the user retyping the
-  # command: set CRYSTAL_DAEMON_SOCKET and ordinary builds are served by it.
+  # command: set IYI_DAEMON_SOCKET and ordinary builds are served by it.
   #
   # Opt-in, and it falls back to building normally when nothing is listening —
   # with a line saying so, because a daemon that quietly died should not look
   # like a daemon that is working.
   private def daemon_socket_from_env : String?
-    socket = ENV["CRYSTAL_DAEMON_SOCKET"]?
+    socket = ENV["IYI_DAEMON_SOCKET"]?
     return nil if socket.nil? || socket.empty?
 
     unless File.exists?(socket)
@@ -380,7 +380,7 @@ class Iyi::Command
     # option parser exits the process on bad input. Doing that here on arguments
     # a client made up would take the daemon down on a typo.
     private def daemon_warm(args : Array(String)) : Nil
-      limit = (ENV["CRYSTAL_DAEMON_PRELUDES"]?.try(&.to_i?) || 3)
+      limit = (ENV["IYI_DAEMON_PRELUDES"]?.try(&.to_i?) || 3)
       return if Compiler.preanalysed.size >= limit
 
       compiler = Iyi::Command.new(args.dup).prelude_compiler_for_build

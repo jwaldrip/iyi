@@ -192,18 +192,18 @@ def compiler_env():
     the wrapper would have run, without paying for the shell on every one.
     """
     result = subprocess.run(
-        [str(WRAPPER), "env", "CRYSTAL_PATH", "CRYSTAL_LIBRARY_PATH"],
+        [str(WRAPPER), "env", "IYI_PATH", "IYI_LIBRARY_PATH"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
     if result.returncode != 0:
-        return {"CRYSTAL_PATH": f"lib:{ROOT / 'src'}"}
+        return {"IYI_PATH": f"lib:{ROOT / 'src'}"}
 
     lines = result.stdout.decode().split()
     env = {}
     if len(lines) > 0:
-        env["CRYSTAL_PATH"] = lines[0]
+        env["IYI_PATH"] = lines[0]
     if len(lines) > 1:
-        env["CRYSTAL_LIBRARY_PATH"] = lines[1]
+        env["IYI_LIBRARY_PATH"] = lines[1]
     return env
 
 
@@ -299,7 +299,7 @@ def time_crystal(source, out_dir, codegen, cold, runs = RUNS, linker = None):
             argv.append(f"--link-flags=-fuse-ld={linker}")
         argv.append(str(source))
         env = dict(CRYSTAL_ENV)
-        env["CRYSTAL_CACHE_DIR"] = str(cache)
+        env["IYI_CACHE_DIR"] = str(cache)
         return run(argv, env=env)
 
     if not cold:
@@ -331,7 +331,7 @@ def link_seconds(source, out_dir):
     argv = [str(CRYSTAL), "build", "--stats", "-o", str(out_dir / "out_stats"), str(source)]
     env = dict(os.environ)
     env.update(CRYSTAL_ENV)
-    env["CRYSTAL_CACHE_DIR"] = str(cache)
+    env["IYI_CACHE_DIR"] = str(cache)
     subprocess.run(argv, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     result = subprocess.run(argv, env=env, capture_output=True)
@@ -361,7 +361,7 @@ def same_program(iyi_source, go_source, out_dir):
     iyi_binary, go_binary = out_dir / "same_iyi", out_dir / "same_go"
 
     if not run([str(CRYSTAL), "build", "-o", str(iyi_binary), str(iyi_source)],
-               env={**CRYSTAL_ENV, "CRYSTAL_CACHE_DIR": str(cache)}):
+               env={**CRYSTAL_ENV, "IYI_CACHE_DIR": str(cache)}):
         return None
     if shutil.which("go") is None:
         return None

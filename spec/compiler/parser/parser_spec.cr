@@ -565,13 +565,13 @@ module Iyi
     it_parses "def foo(@[Foo] &@block); end", Def.new("foo", body: Assign.new("@block".instance_var, "block".var), block_arg: "block".arg(annotations: ["Foo".ann]), block_arity: 0)
     it_parses "def foo(@[Foo] *args); end", Def.new("foo", args: ["args".arg(annotations: ["Foo".ann])], splat_index: 0)
     it_parses "def foo(@[Foo] **args); end", Def.new("foo", double_splat: "args".arg(annotations: ["Foo".ann]))
-    it_parses <<-CRYSTAL, Def.new("foo", ["id".arg(restriction: "Int32".path, annotations: ["Foo".ann]), "name".arg(restriction: "String".path, annotations: ["Bar".ann])])
+    it_parses <<-CODE, Def.new("foo", ["id".arg(restriction: "Int32".path, annotations: ["Foo".ann]), "name".arg(restriction: "String".path, annotations: ["Bar".ann])])
       def foo(
         @[Foo]
         id : Int32,
         @[Bar] name : String
       ); end
-    CRYSTAL
+    CODE
 
     it_parses "def foo(\n&block\n); end", Def.new("foo", block_arg: Arg.new("block"), block_arity: 0)
     it_parses "def foo(&block :\n Int ->); end", Def.new("foo", block_arg: Arg.new("block", restriction: ProcNotation.new(["Int".path] of ASTNode)), block_arity: 1)
@@ -1442,13 +1442,13 @@ module Iyi
     it_parses "macro foo(a, @[Foo] &block);end", Macro.new("foo", ["a".arg], Expressions.new, block_arg: "block".arg(annotations: ["Foo".ann]))
     it_parses "macro foo(@[Foo] *args);end", Macro.new("foo", ["args".arg(annotations: ["Foo".ann])], Expressions.new, splat_index: 0)
     it_parses "macro foo(@[Foo] **args);end", Macro.new("foo", body: Expressions.new, double_splat: "args".arg(annotations: ["Foo".ann]))
-    it_parses <<-CRYSTAL, Macro.new("foo", ["id".arg(annotations: ["Foo".ann]), "name".arg(annotations: ["Bar".ann])], Expressions.new)
+    it_parses <<-CODE, Macro.new("foo", ["id".arg(annotations: ["Foo".ann]), "name".arg(annotations: ["Bar".ann])], Expressions.new)
       macro foo(
         @[Foo]
         id,
         @[Bar] name
       );end
-    CRYSTAL
+    CODE
 
     assert_syntax_error "macro foo; {% foo = 1 }; end"
     assert_syntax_error "macro def foo : String; 1; end"
@@ -2470,11 +2470,11 @@ module Iyi
       end
       )
 
-    assert_syntax_error <<-CRYSTAL, "invalid trailing comma in call", line: 2, column: 8
+    assert_syntax_error <<-CODE, "invalid trailing comma in call", line: 2, column: 8
       if 1
         foo 1,
       end
-      CRYSTAL
+      CODE
 
     assert_syntax_error "foo 1,", "invalid trailing comma in call", line: 1, column: 6
 
@@ -2575,29 +2575,29 @@ module Iyi
     it_parses "{[] of Foo, ::foo}", TupleLiteral.new([ArrayLiteral.new([] of ASTNode, "Foo".path), Call.new("foo", global: true)] of ASTNode)
     it_parses "{[] of Foo, self.foo}", TupleLiteral.new([ArrayLiteral.new([] of ASTNode, "Foo".path), Call.new("self".var, "foo")] of ASTNode)
 
-    it_parses <<-'CRYSTAL', Macro.new("foo", body: Expressions.new([MacroLiteral.new("  <<-FOO\n    \#{ "), MacroVar.new("var"), MacroLiteral.new(" }\n  FOO\n")] of ASTNode))
+    it_parses <<-'CODE', Macro.new("foo", body: Expressions.new([MacroLiteral.new("  <<-FOO\n    \#{ "), MacroVar.new("var"), MacroLiteral.new(" }\n  FOO\n")] of ASTNode))
       macro foo
         <<-FOO
           #{ %var }
         FOO
       end
-      CRYSTAL
+      CODE
 
-    it_parses <<-'CRYSTAL', Macro.new("foo", body: MacroLiteral.new("  <<-FOO, <<-BAR + \"\"\n  FOO\n  BAR\n"))
+    it_parses <<-'CODE', Macro.new("foo", body: MacroLiteral.new("  <<-FOO, <<-BAR + \"\"\n  FOO\n  BAR\n"))
       macro foo
         <<-FOO, <<-BAR + ""
         FOO
         BAR
       end
-      CRYSTAL
+      CODE
 
-    it_parses <<-'CRYSTAL', Macro.new("foo", body: MacroLiteral.new("  <<-FOO\n    %foo\n  FOO\n"))
+    it_parses <<-'CODE', Macro.new("foo", body: MacroLiteral.new("  <<-FOO\n    %foo\n  FOO\n"))
       macro foo
         <<-FOO
           %foo
         FOO
       end
-      CRYSTAL
+      CODE
 
     it_parses "macro foo; bar class: 1; end", Macro.new("foo", body: MacroLiteral.new(" bar class: 1; "))
 
@@ -3359,13 +3359,13 @@ module Iyi
     end
 
     it "gets correct location after macro with yield" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         macro foo
           yield
         end
 
         1 + 'a'
-        CRYSTAL
+        CODE
       node = parser.parse.as(Expressions).expressions[1]
       loc = node.location.should_not be_nil
       loc.line_number.should eq(5)
@@ -3511,7 +3511,7 @@ module Iyi
     end
 
     it "sets correct locations of macro if / else" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         {% if 1 == val %}
           "one!"
           "bar"
@@ -3519,7 +3519,7 @@ module Iyi
           "not one"
           "bar"
         {% end %}
-        CRYSTAL
+        CODE
 
       node = parser.parse.as MacroIf
 
@@ -3540,7 +3540,7 @@ module Iyi
     end
 
     it "sets correct locations of macro if / elsif" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         {% if 1 == val %}
           "one!"
           "bar"
@@ -3548,7 +3548,7 @@ module Iyi
           "not one"
           "bar"
         {% end %}
-        CRYSTAL
+        CODE
 
       node = parser.parse.as MacroIf
 
@@ -3569,7 +3569,7 @@ module Iyi
     end
 
     it "sets correct locations of macro if / else / elsif" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         {% if 1 == val %}
           "one!"
           "bar"
@@ -3580,7 +3580,7 @@ module Iyi
           "biz"
           "blah"
         {% end %}
-        CRYSTAL
+        CODE
 
       node = parser.parse.as MacroIf
 
@@ -3601,7 +3601,7 @@ module Iyi
     end
 
     it "sets the correct location for MacroExpressions in a MacroIf" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         {% if 1 == 2 %}
           {{2 * 2}}
         {% else %}
@@ -3610,7 +3610,7 @@ module Iyi
              2 + 2
            %}
         {% end %}
-        CRYSTAL
+        CODE
 
       node = parser.parse.should be_a MacroIf
       location = node.location.should_not be_nil
@@ -3644,7 +3644,7 @@ module Iyi
     end
 
     it "sets correct location of Begin within another node" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         macro finished
           {% begin %}
             {{2 * 2}}
@@ -3654,7 +3654,7 @@ module Iyi
              %}
           {% end %}
         end
-        CRYSTAL
+        CODE
 
       node = parser.parse.should be_a Macro
       node = node.body.should be_a Expressions
@@ -3667,7 +3667,7 @@ module Iyi
     end
 
     it "sets correct location of MacroIf within another node" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         macro finished
           {% if false %}
             {{2 * 2}}
@@ -3677,7 +3677,7 @@ module Iyi
              %}
           {% end %}
         end
-        CRYSTAL
+        CODE
 
       node = parser.parse.should be_a Macro
       node = node.body.should be_a Expressions
@@ -3690,7 +3690,7 @@ module Iyi
     end
 
     it "sets correct location of MacroIf (unless) within another node" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         macro finished
           {% unless false %}
             {{2 * 2}}
@@ -3700,7 +3700,7 @@ module Iyi
              %}
           {% end %}
         end
-        CRYSTAL
+        CODE
 
       node = parser.parse.should be_a Macro
       node = node.body.should be_a Expressions
@@ -3713,14 +3713,14 @@ module Iyi
     end
 
     it "sets correct location for output macro expression in for loop" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         {% for foo in bar %}
           {{ if true
                 foo
                 bar
               end }}
         {% end %}
-        CRYSTAL
+        CODE
 
       node = parser.parse.should be_a MacroFor
       node = node.body.should be_a Expressions
@@ -3741,7 +3741,7 @@ module Iyi
     end
 
     it "sets correct location for single node within another node" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         macro finished
           {% verbatim do %}
             {%
@@ -3749,7 +3749,7 @@ module Iyi
               a = 1 %}
           {% end %}
         end
-        CRYSTAL
+        CODE
 
       node = parser.parse.should be_a Macro
       node = node.body.should be_a Expressions
@@ -3785,7 +3785,7 @@ module Iyi
     end
 
     it "sets correct location for multiple nodes within another node" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         macro finished
           {% verbatim do %}
             {%
@@ -3795,7 +3795,7 @@ module Iyi
               b = 2 %}
           {% end %}
         end
-        CRYSTAL
+        CODE
 
       node = parser.parse.should be_a Macro
       node = node.body.should be_a Expressions
@@ -3853,13 +3853,13 @@ module Iyi
     end
 
     it "sets correct locations of MacroVar in MacroIf / else" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         {% if true %}
           %a = {{ 1 + 1 }}
         {% else %}
           %b = {{ 2 + 2 }}
         {% end %}
-        CRYSTAL
+        CODE
 
       node = parser.parse.should be_a MacroIf
 
@@ -3971,7 +3971,7 @@ module Iyi
     end
 
     it "correctly computes line number after `\\{%\n` (#9857)" do
-      code = <<-CRYSTAL
+      code = <<-CODE
       macro foo
         \\{%
           1
@@ -3979,7 +3979,7 @@ module Iyi
       end
 
       1
-      CRYSTAL
+      CODE
 
       exps = Parser.parse(code).as(Expressions)
       exps.expressions[1].location.should_not(be_nil).line_number.should eq(7)

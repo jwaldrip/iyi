@@ -645,7 +645,7 @@ module Iyi
                              accessors : Array({IyiMod::Signature, String}),
                              dir : String) : String
     # Relative, and written from where this file will sit: Crystal refuses an
-    # absolute path in a `require`, and the shard is not on `CRYSTAL_PATH`.
+    # absolute path in a `require`, and the shard is not on `IYI_PATH`.
     source = ::Path[File.expand_path(program.filename || "")]
     base = ::Path[File.expand_path(dir)]
     relative = source.relative_to?(base).try(&.to_s) || source.to_s

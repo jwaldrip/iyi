@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CRYSTAL = ROOT / ".build" / "crystal-release"
 HELLO = ROOT / "samples" / "iyi" / "hello.iyi"
-ENV = {"CRYSTAL_PATH": f"lib:{ROOT / 'src'}", "PATH": "/usr/bin:/bin"}
+ENV = {"IYI_PATH": f"lib:{ROOT / 'src'}", "PATH": "/usr/bin:/bin"}
 
 
 def loop(rounds=5):

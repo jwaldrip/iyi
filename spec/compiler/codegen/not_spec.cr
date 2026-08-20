@@ -18,46 +18,46 @@ describe "Code gen: not" do
   end
 
   it "codegens not nilable type (true)" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       class Foo
       end
 
       a = 1 == 2 ? Foo.new : nil
       !a
-      CRYSTAL
+      CODE
   end
 
   it "codegens not nilable type (false)" do
-    run(<<-CRYSTAL).to_b.should be_false
+    run(<<-CODE).to_b.should be_false
       class Foo
       end
 
       a = 1 == 1 ? Foo.new : nil
       !a
-      CRYSTAL
+      CODE
   end
 
   it "codegens not pointer (true)" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       !Pointer(Int32).new(0_u64)
-      CRYSTAL
+      CODE
   end
 
   it "codegens not pointer (false)" do
-    run(<<-CRYSTAL).to_b.should be_false
+    run(<<-CODE).to_b.should be_false
       !Pointer(Int32).new(1_u64)
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash" do
-    run(<<-CRYSTAL).to_b.should be_false
+    run(<<-CODE).to_b.should be_false
       a = 1
       !a.is_a?(String) && !a
-      CRYSTAL
+      CODE
   end
 
   it "codegens not with inlinable value (#6451)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       class Test
         def test
           false
@@ -66,6 +66,6 @@ describe "Code gen: not" do
 
       !Test.new.test
       nil
-      CRYSTAL
+      CODE
   end
 end

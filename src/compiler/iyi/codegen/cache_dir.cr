@@ -75,17 +75,17 @@ module Iyi
       # Try to use one of these as a cache directory, in order
       candidates = {% begin %}
         [
-          ENV["CRYSTAL_CACHE_DIR"]?,
+          ENV["IYI_CACHE_DIR"]?,
           {% if flag?(:windows) %}
-            ENV["LOCALAPPDATA"]?.try { |dir| "#{dir}/crystal/cache" },
-            ENV["USERPROFILE"]?.try { |home| "#{home}/.cache/crystal" },
-            ENV["USERPROFILE"]?.try { |home| "#{home}/.crystal" },
+            ENV["LOCALAPPDATA"]?.try { |dir| "#{dir}/iyi/cache" },
+            ENV["USERPROFILE"]?.try { |home| "#{home}/.cache/iyi" },
+            ENV["USERPROFILE"]?.try { |home| "#{home}/.iyi" },
           {% else %}
-            ENV["XDG_CACHE_HOME"]?.try { |home| "#{home}/crystal" },
-            ENV["HOME"]?.try { |home| "#{home}/.cache/crystal" },
-            ENV["HOME"]?.try { |home| "#{home}/.crystal" },
+            ENV["XDG_CACHE_HOME"]?.try { |home| "#{home}/iyi" },
+            ENV["HOME"]?.try { |home| "#{home}/.cache/iyi" },
+            ENV["HOME"]?.try { |home| "#{home}/.iyi" },
           {% end %}
-          ".crystal",
+          ".iyi",
         ]
       {% end %}
       candidates = candidates
@@ -112,7 +112,7 @@ module Iyi
         io.puts
         io.puts "but none of them are writable."
         io.puts
-        io.puts "Please specify a writable cache directory by setting the CRYSTAL_CACHE_DIR environment variable."
+        io.puts "Please specify a writable cache directory by setting the IYI_CACHE_DIR environment variable."
       end
 
       puts msg

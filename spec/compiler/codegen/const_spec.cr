@@ -10,7 +10,7 @@ describe "Codegen: const" do
   end
 
   it "support constant inside a def" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         A = 1
 
@@ -20,11 +20,11 @@ describe "Codegen: const" do
       end
 
       Foo.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "finds nearest constant first" do
-    run(<<-CRYSTAL).to_f32.should eq(2.5)
+    run(<<-CODE).to_f32.should eq(2.5)
       CONST = 1
 
       class Foo
@@ -36,11 +36,11 @@ describe "Codegen: const" do
       end
 
       Foo.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "allows constants with same name" do
-    run(<<-CRYSTAL).to_f32.should eq(2.5)
+    run(<<-CODE).to_f32.should eq(2.5)
       CONST = 1
 
       class Foo
@@ -53,18 +53,18 @@ describe "Codegen: const" do
 
       CONST
       Foo.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "constants with expression" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       CONST = 1 + 1
       CONST
-      CRYSTAL
+      CODE
   end
 
   it "finds global constant" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       CONST = 1
 
       class Foo
@@ -74,7 +74,7 @@ describe "Codegen: const" do
       end
 
       Foo.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "define a constant in lib" do
@@ -86,17 +86,17 @@ describe "Codegen: const" do
   end
 
   it "declare constants in right order" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       require "prelude"
 
       CONST1 = 1 + 1
       CONST2 = true ? CONST1 : 0
       CONST2
-      CRYSTAL
+      CODE
   end
 
   it "uses correct types lookup" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       module Moo
@@ -114,11 +114,11 @@ describe "Codegen: const" do
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens variable assignment in const" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       class Foo
@@ -140,11 +140,11 @@ describe "Codegen: const" do
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "declaring var" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       BAR = begin
@@ -161,11 +161,11 @@ describe "Codegen: const" do
       end
 
       Foo.new.compile
-      CRYSTAL
+      CODE
   end
 
   it "initialize const that might raise an exception" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       require "prelude"
       CONST = (raise "OH NO" if 1 == 2)
 
@@ -175,11 +175,11 @@ describe "Codegen: const" do
       end
 
       doit.nil?
-      CRYSTAL
+      CODE
   end
 
   it "allows implicit self in constant, called from another class (bug)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       module Foo
@@ -197,11 +197,11 @@ describe "Codegen: const" do
       end
 
       Bar.new.bar
-      CRYSTAL
+      CODE
   end
 
   it "codegens two consts with same variable name" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       require "prelude"
 
       CONST1 = begin
@@ -213,11 +213,11 @@ describe "Codegen: const" do
           end
 
       (CONST1 + CONST2).to_i
-      CRYSTAL
+      CODE
   end
 
   it "works with variable declared inside if" do
-    run(<<-CRYSTAL).to_i.should eq(4)
+    run(<<-CODE).to_i.should eq(4)
       require "prelude"
 
       FOO = begin
@@ -229,11 +229,11 @@ describe "Codegen: const" do
         x
       end
       FOO
-      CRYSTAL
+      CODE
   end
 
   it "codegens constant that refers to another constant that is a struct" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       struct Foo
@@ -249,11 +249,11 @@ describe "Codegen: const" do
       end
 
       Foo::Y.value
-      CRYSTAL
+      CODE
   end
 
   it "codegens constant that is declared later because of virtual dispatch" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Base
         def base
         end
@@ -276,11 +276,11 @@ describe "Codegen: const" do
       end
 
       MyBase.new.base
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash if constant is used, but class is never instantiated (#1106)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       require "prelude"
 
       class Foo
@@ -292,11 +292,11 @@ describe "Codegen: const" do
       end
 
       ->(x : Foo) { x.foo }
-      CRYSTAL
+      CODE
   end
 
   it "uses const before declaring it (hoisting)" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       require "prelude"
 
       x = CONST
@@ -310,11 +310,11 @@ describe "Codegen: const" do
       end
 
       x
-      CRYSTAL
+      CODE
   end
 
   it "uses const before declaring it in another module" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       require "prelude"
 
       def foo
@@ -334,42 +334,42 @@ describe "Codegen: const" do
       CONST = foo
 
       x
-      CRYSTAL
+      CODE
   end
 
   it "initializes simple const" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       FOO = 10
       FOO
-      CRYSTAL
+      CODE
   end
 
   it "initializes simple const via another const" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       BAR = 10
       FOO = BAR
       FOO
-      CRYSTAL
+      CODE
   end
 
   it "initializes ARGC_UNSAFE" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       ARGC_UNSAFE
-      CRYSTAL
+      CODE
   end
 
   it "gets pointerof constant" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       require "prelude"
 
       z = pointerof(FOO).value
       FOO = 10
       z
-      CRYSTAL
+      CODE
   end
 
   it "gets pointerof complex constant" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       require "prelude"
 
       z = pointerof(FOO).value
@@ -378,11 +378,11 @@ describe "Codegen: const" do
         a
       end
       z
-      CRYSTAL
+      CODE
   end
 
   it "gets pointerof constant inside class" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       require "prelude"
 
       class Foo
@@ -400,32 +400,32 @@ describe "Codegen: const" do
       end
 
       Foo.new.z
-      CRYSTAL
+      CODE
   end
 
   it "inlines simple const" do
-    mod = codegen(<<-CRYSTAL)
+    mod = codegen(<<-CODE)
       CONST = 1
       CONST
-      CRYSTAL
+      CODE
 
     mod.to_s.should_not contain("CONST")
   end
 
   it "inlines enum value" do
-    mod = codegen(<<-CRYSTAL)
+    mod = codegen(<<-CODE)
       enum Foo
         CONST
       end
 
       Foo::CONST
-      CRYSTAL
+      CODE
 
     mod.to_s.should_not contain("CONST")
   end
 
   it "inlines const with math" do
-    mod = codegen(<<-CRYSTAL)
+    mod = codegen(<<-CODE)
       struct Int32
         def //(other)
           self
@@ -434,43 +434,43 @@ describe "Codegen: const" do
 
       CONST = (((1 + 2) * 3 &+ 1 &* 3 &- 2) // 2) + 42000
       CONST
-      CRYSTAL
+      CODE
     mod.to_s.should_not contain("CONST")
     mod.to_s.should contain("42005")
   end
 
   it "inlines const referencing another const" do
-    mod = codegen(<<-CRYSTAL)
+    mod = codegen(<<-CODE)
       OTHER = 1
 
       CONST = OTHER
       CONST
-      CRYSTAL
+      CODE
 
     mod.to_s.should_not contain("CONST")
     mod.to_s.should_not contain("OTHER")
   end
 
   it "inlines bool const" do
-    mod = codegen(<<-CRYSTAL)
+    mod = codegen(<<-CODE)
       CONST = true
       CONST
-      CRYSTAL
+      CODE
 
     mod.to_s.should_not contain("CONST")
   end
 
   it "inlines char const" do
-    mod = codegen(<<-CRYSTAL)
+    mod = codegen(<<-CODE)
       CONST = 'a'
       CONST
-      CRYSTAL
+      CODE
 
     mod.to_s.should_not contain("CONST")
   end
 
   it "synchronizes initialization of constants" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       require "prelude"
 
       def foo
@@ -504,11 +504,11 @@ describe "Codegen: const" do
       end
 
       test(ch)
-      CRYSTAL
+      CODE
   end
 
   it "runs const side effects (#8862)" do
-    run(<<-CRYSTAL).to_i.should eq(6)
+    run(<<-CODE).to_i.should eq(6)
       require "prelude"
 
       class Foo
@@ -531,11 +531,11 @@ describe "Codegen: const" do
       end
 
       a &+ Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "supports closured vars inside initializers (#10474)" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       class Foo
         def bar
           3
@@ -554,11 +554,11 @@ describe "Codegen: const" do
       end
 
       CONST
-      CRYSTAL
+      CODE
   end
 
   it "supports storing function returning nil" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       def foo
         "foo"
         nil
@@ -566,6 +566,6 @@ describe "Codegen: const" do
 
       CONST = foo
       CONST.nil?
-      CRYSTAL
+      CODE
   end
 end

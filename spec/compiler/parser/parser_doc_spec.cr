@@ -19,11 +19,11 @@ describe "Parser doc" do
     {"lib def", "lib MyLib\nend"},
   ].each do |(desc, code)|
     it "includes doc for #{desc}" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         # This is Foo.
         # Use it well.
         #{code}
-        CRYSTAL
+        CODE
       parser.wants_doc = true
       node = parser.parse
       node.doc.should eq("This is Foo.\nUse it well.")
@@ -38,13 +38,13 @@ describe "Parser doc" do
     {"external var", "$errno : Int32"},
   ].each do |(desc, code)|
     it "includes doc for #{desc} inside lib def" do
-      parser = Parser.new(<<-CRYSTAL)
+      parser = Parser.new(<<-CODE)
         lib MyLib
           # This is Foo.
           # Use it well.
           #{code}
         end
-        CRYSTAL
+        CODE
       parser.wants_doc = true
       node = parser.parse
       node.as(Iyi::LibDef).body.doc.should eq("This is Foo.\nUse it well.")
@@ -52,7 +52,7 @@ describe "Parser doc" do
   end
 
   it "includes doc for cstruct fields" do
-    parser = Parser.new(<<-CRYSTAL)
+    parser = Parser.new(<<-CODE)
       lib MyLib
         struct IntOrFloat
           # This is Foo.
@@ -63,7 +63,7 @@ describe "Parser doc" do
           some_float, other_float : Float64
         end
       end
-      CRYSTAL
+      CODE
 
     parser.wants_doc = true
     node = parser.parse
@@ -78,7 +78,7 @@ describe "Parser doc" do
   end
 
   it "disables doc parsing inside defs" do
-    parser = Parser.new(<<-CRYSTAL)
+    parser = Parser.new(<<-CODE)
       # doc 1
       def foo
         # doc 2
@@ -88,7 +88,7 @@ describe "Parser doc" do
       # doc 3
       def baz
       end
-      CRYSTAL
+      CODE
     parser.wants_doc = true
     nodes = parser.parse.as(Expressions)
 

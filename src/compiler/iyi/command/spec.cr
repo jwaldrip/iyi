@@ -104,7 +104,7 @@ class Iyi::Command
 
     output_filename = Iyi.temp_executable "spec"
 
-    ENV["CRYSTAL_SPEC_COMPILER_BIN"] ||= if crystal_exec_path = ENV["CRYSTAL_EXEC_PATH"]?
+    ENV["CRYSTAL_SPEC_COMPILER_BIN"] ||= if crystal_exec_path = ENV["IYI_EXEC_PATH"]?
                                            File.join(crystal_exec_path, "crystal")
                                          else
                                            Process.executable_path

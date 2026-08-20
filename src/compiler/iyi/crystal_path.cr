@@ -19,7 +19,7 @@ module Iyi
     private DEFAULT_LIB_PATH = "lib"
 
     def self.default_paths : Array(String)
-      if path = ENV["CRYSTAL_PATH"]?
+      if path = ENV["IYI_PATH"]?
         path_array = path.split(Process::PATH_DELIMITER, remove_empty: true)
       elsif path = Iyi::Config.path.presence
         path_array = path.split(Process::PATH_DELIMITER, remove_empty: true)
@@ -46,7 +46,7 @@ module Iyi
     #    `/path/prefix/share/crystal/src`   for the standard library
     # the path `$ORIGIN/../share/crystal/src` resolves to
     # the standard library location.
-    # This generic path can be passed into the compiler via CRYSTAL_CONFIG_PATH
+    # This generic path can be passed into the compiler via IYI_CONFIG_PATH
     # to produce a portable binary that resolves the standard library path
     # relative to the compiler location, independent of the absolute path.
     def self.expand_paths(paths, origin)

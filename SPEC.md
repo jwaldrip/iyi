@@ -193,7 +193,7 @@ makes it a template: a placeholder marks where this build's objects go. The
 template is cached against the flags it was computed for, the compiler runs `ld`
 itself from then on, and a link that fails with it is retried through the driver
 with the template marked unusable, so a machine this does not suit pays one
-extra link once. `CRYSTAL_LINK_DRIVER=1` forces the old path. `clang` has done
+extra link once. `IYI_LINK_DRIVER=1` forces the old path. `clang` has done
 this all along. It has no `collect2` and execs the linker itself, which is why
 it measures 0.092 s where `cc` measures 0.129 s.
 
@@ -506,7 +506,7 @@ but it is 45% of the number until it is done.
 script and a new one in the same directory, three rounds: **0.076 s against
 0.044 s**. Four processes came out, none of which had to be there. The largest
 started the *installed* compiler to read one string: `crystal env
-CRYSTAL_LIBRARY_PATH`, 0.020 s, and that answer is now kept in `.build`, keyed
+IYI_LIBRARY_PATH`, 0.020 s, and that answer is now kept in `.build`, keyed
 by the compiler that gave it. The others were `tput` deciding whether to colour
 a message nobody may be reading, `uname` answering which binary to look for, and
 `dirname`/`realpath` doing what `${path%/*}` and `pwd -P` do without forking.
@@ -1433,7 +1433,7 @@ does not depend on what it was measured against.
   fixed ~1.4 s tax (IV.1a) is larger than the effect and the delta is pure
   noise. The first run of (a) reported the macro version as *faster*, twice.
   And Crystal caches the compiled `run` script, so without a fresh
-  `CRYSTAL_CACHE_DIR` every build after the first reports `macro_run` as free.
+  `IYI_CACHE_DIR` every build after the first reports `macro_run` as free.
   The 8 s cost was visible only as an outlier in the spread.
 
 ---
@@ -4057,7 +4057,7 @@ than about compilation:
   also warms only while nothing is in flight, since analysing costs about a
   second and this loop is what relays every build's output.
 
-  Bounded by `CRYSTAL_DAEMON_PRELUDES`, default 3, because each analysed prelude
+  Bounded by `IYI_DAEMON_PRELUDES`, default 3, because each analysed prelude
   is roughly 180 MB of live heap. Past the bound, extra flag sets stay cold
   rather than being evicted. A cold build is slow, and evicting the set someone
   is actively using would make every build slow in turn.
@@ -4073,7 +4073,7 @@ than about compilation:
   restart. Nanoseconds, not seconds: a rebuild landing in the same second as the
   daemon's start is exactly the case to catch.
 
-**Using it should not require remembering it.** With `CRYSTAL_DAEMON_SOCKET` set,
+**Using it should not require remembering it.** With `IYI_DAEMON_SOCKET` set,
 an ordinary `crystal build` is served by that daemon: 1.00 s against 1.85 s on
 the same warm cache, and falls back to a normal build, with a line saying so,
 when nothing answers. Opting in to a daemon must never be able to *stop* a build;
@@ -4107,7 +4107,7 @@ a local build daemon and neither is fine for anything exposed.
 thread survives a `fork`, so a multi-threaded runtime hands the child a broken
 one, and Crystal refuses `fork` in such a build at compile time: correctly. The
 client does not fork, so it stays in the normal compiler; `crystal daemon start`
-execs the server binary (or `CRYSTAL_DAEMON`, if set) and says how to build it
+execs the server binary (or `IYI_DAEMON`, if set) and says how to build it
 when it is missing.
 
 The cost of that split is that the daemon's builds code-generate sequentially.

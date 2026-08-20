@@ -49,7 +49,7 @@ end
 #
 describe "unreachable" do
   it "finds top level methods" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       ༓def foo
         1
       end
@@ -59,11 +59,11 @@ describe "unreachable" do
       end
 
       bar
-      CRYSTAL
+      CODE
   end
 
   it "finds instance methods" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       class Foo
         ༓def foo
           1
@@ -75,11 +75,11 @@ describe "unreachable" do
       end
 
       Foo.new.bar
-      CRYSTAL
+      CODE
   end
 
   it "finds class methods" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       class Foo
         ༓def self.foo
           1
@@ -91,11 +91,11 @@ describe "unreachable" do
       end
 
       Foo.bar
-      CRYSTAL
+      CODE
   end
 
   it "finds instance methods in nested types" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       module Mod
         class Foo
           ༓def foo
@@ -109,19 +109,19 @@ describe "unreachable" do
       end
 
       Mod::Foo.new.bar
-      CRYSTAL
+      CODE
   end
 
   it "handles circular hierarchy references (#14034)" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       class Foo
         alias Bar = Foo
       end
-      CRYSTAL
+      CODE
   end
 
   it "finds initializer" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       class Foo
         ༓def initialize
         end
@@ -133,11 +133,11 @@ describe "unreachable" do
       end
 
       Bar.new
-      CRYSTAL
+      CODE
   end
 
   it "finds method with free variable" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       ༓def foo(u : U) forall U
       end
 
@@ -145,11 +145,11 @@ describe "unreachable" do
       end
 
       bar(1)
-      CRYSTAL
+      CODE
   end
 
   it "finds yielding methods" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       ༓def foo
         yield
       end
@@ -159,11 +159,11 @@ describe "unreachable" do
       end
 
       bar {}
-      CRYSTAL
+      CODE
   end
 
   it "finds method called from block" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       ༓def foo
       end
 
@@ -177,11 +177,11 @@ describe "unreachable" do
       baz do
         bar
       end
-      CRYSTAL
+      CODE
   end
 
   it "finds method called from proc" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       ༓def foo
       end
 
@@ -195,11 +195,11 @@ describe "unreachable" do
       baz do
         bar
       end
-      CRYSTAL
+      CODE
   end
 
   it "finds methods with proc parameter" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       ༓def foo(&proc : ->)
         proc.call
       end
@@ -209,11 +209,11 @@ describe "unreachable" do
       end
 
       bar {}
-      CRYSTAL
+      CODE
   end
 
   it "finds shadowed method" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       ༓def foo
       end
 
@@ -227,11 +227,11 @@ describe "unreachable" do
       end
 
       bar
-      CRYSTAL
+      CODE
   end
 
   it "finds method with `previous_def`" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       ༓def foo
       end
 
@@ -247,11 +247,11 @@ describe "unreachable" do
       end
 
       bar
-      CRYSTAL
+      CODE
   end
 
   it "finds methods called from reachable code" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       ༓def qux_foo
       end
 
@@ -267,11 +267,11 @@ describe "unreachable" do
       end
 
       bar
-      CRYSTAL
+      CODE
   end
 
   it "finds method with `super`" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       class Foo
         ༓def foo
         end
@@ -291,11 +291,11 @@ describe "unreachable" do
       end
 
       Qux.new.bar
-      CRYSTAL
+      CODE
   end
 
   it "finds methods in generic type" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       class Foo(T)
         ༓def foo
           1
@@ -307,11 +307,11 @@ describe "unreachable" do
       end
 
       Foo(Int32).new.bar
-      CRYSTAL
+      CODE
   end
 
   it "finds method in abstract type" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       abstract class Foo
         ༓def foo
         end
@@ -324,12 +324,12 @@ describe "unreachable" do
       end
 
       Baz.new.bar
-      CRYSTAL
+      CODE
   end
 
   # TODO: Should abstract Foo#bar be reported as well?
   it "finds abstract method" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       abstract class Foo
         abstract def foo
 
@@ -345,11 +345,11 @@ describe "unreachable" do
       end
 
       Baz.new.bar
-      CRYSTAL
+      CODE
   end
 
   it "finds virtual method" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       abstract class Foo
         ༓def foo
         end
@@ -370,11 +370,11 @@ describe "unreachable" do
       end
 
       Baz.new.as(Baz | Qux).bar
-      CRYSTAL
+      CODE
   end
 
   it "ignores autogenerated enum predicates" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       enum Foo
         BAR
         BAZ
@@ -382,11 +382,11 @@ describe "unreachable" do
         ༓def foo
         end
       end
-      CRYSTAL
+      CODE
   end
 
   it "finds method called from instance variable initializer" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       ༓def foo
       end
 
@@ -405,11 +405,11 @@ describe "unreachable" do
       end
 
       Foo.new
-    CRYSTAL
+    CODE
   end
 
   it "finds method called from expanded macro" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       ༓def foo
       end
 
@@ -425,11 +425,11 @@ describe "unreachable" do
       end
 
       go { bar_macro }
-      CRYSTAL
+      CODE
   end
 
   it "finds method called from expanded macro expression" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       ༓def foo
       end
 
@@ -439,11 +439,11 @@ describe "unreachable" do
       {% begin %}
         bar
       {% end %}
-      CRYSTAL
+      CODE
   end
 
   it "tallies calls" do
-    assert_unreachable <<-CRYSTAL
+    assert_unreachable <<-CODE
       ༓def foo
         1
       end
@@ -458,6 +458,6 @@ describe "unreachable" do
 
       bar
       baz
-      CRYSTAL
+      CODE
   end
 end

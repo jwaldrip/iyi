@@ -103,109 +103,109 @@ describe "expand" do
   end
 
   it "expands macro control {% if %}" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     {%‸ if 1 == 1 %}
       true
     {% end %}
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, "true"
   end
 
   it "expands macro control {% if %} with cursor inside it" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     {% if 1 == 1 %}
       tr‸ue
     {% end %}
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, "true"
   end
 
   it "expands macro control {% if %} with cursor at end of it" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     {% if 1 == 1 %}
       true
     {% end ‸%}
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, "true"
   end
 
   it "expands macro control {% if %} with indent" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     begin
       {% if 1 == 1 %}
         t‸rue
       {% end %}
     end
-    CRYSTAL
+    CODE
 
-    original = <<-CRYSTAL
+    original = <<-CODE
     {% if 1 == 1 %}
       true
     {% end %}
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, original: original, expanded: "true"
   end
 
   it "expands macro control {% for %}" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     {% f‸or x in 1..3 %}
       {{ x }}
     {% end %}
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, "1\n\n2\n\n3\n"
   end
 
   it "expands macro control {% for %} with cursor inside it" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     {% for x in 1..3 %}
      ‸ {{ x }}
     {% end %}
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, "1\n\n2\n\n3\n"
   end
 
   it "expands macro control {% for %} with cursor at end of it" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     {% for x in 1..3 %}
       {{ x }}
     ‸{% end %}
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, "1\n\n2\n\n3\n"
   end
 
   it "expands macro control {% for %} with indent" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     begin
       {% f‸or x in 1..3 %}
         {{ x }}
       {% end %}
     end
-    CRYSTAL
+    CODE
 
-    original = <<-CRYSTAL
+    original = <<-CODE
     {% for x in 1..3 %}
       {{ x }}
     {% end %}
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, original: original, expanded: "1\n\n2\n\n3\n"
   end
 
   it "expands simple macro" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     macro foo
       1
     end
 
     ‸foo
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, original: "foo", expanded: "1" do |expansion|
       expansion.expanded_macros.size.should eq(1)
@@ -221,31 +221,31 @@ describe "expand" do
   end
 
   it "expands simple macro with cursor inside it" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     macro foo
       1
     end
 
     f‸oo
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, original: "foo", expanded: "1"
   end
 
   it "expands simple macro with cursor at end of it" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     macro foo
       1
     end
 
     fo‸o
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, original: "foo", expanded: "1"
   end
 
   it "expands complex macro" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     macro foo
       {% if true %}
         "if true"
@@ -256,13 +256,13 @@ describe "expand" do
     end
 
     ‸foo
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, original: "foo", expanded: %("if true"\n\n\n"1"\n\n"2"\n\n"3"\n)
   end
 
   it "expands macros with 2 level" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     macro foo
       :foo
     end
@@ -273,7 +273,7 @@ describe "expand" do
     end
 
     b‸ar
-    CRYSTAL
+    CODE
 
     assert_expand code, [["bar", "foo\n:bar\n", ":foo\n:bar\n"]] do |result|
       expansion = result.expansions.should_not(be_nil)[0]
@@ -298,7 +298,7 @@ describe "expand" do
   end
 
   it "expands macros with 3 level" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     macro foo
       :foo
     end
@@ -315,7 +315,7 @@ describe "expand" do
     end
 
     ba‸z
-    CRYSTAL
+    CODE
 
     assert_expand code, [["baz", "foo\nbar\n:baz\n", ":foo\nfoo\n:bar\n:baz\n", ":foo\n:foo\n:bar\n:baz\n"]] do |result|
       expansion = result.expansions.should_not(be_nil)[0]
@@ -353,7 +353,7 @@ describe "expand" do
   end
 
   it "expands macro of module" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     module Foo
       macro foo
         :Foo
@@ -362,7 +362,7 @@ describe "expand" do
     end
 
     Foo.f‸oo
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, original: "Foo.foo", expanded: ":Foo\n:foo\n" do |expansion|
       expansion.expanded_macros.size.should eq(1)
@@ -378,7 +378,7 @@ describe "expand" do
   end
 
   it "expands macro of module with cursor at module name" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     module Foo
       macro foo
         :Foo
@@ -387,13 +387,13 @@ describe "expand" do
     end
 
     F‸oo.foo
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, original: "Foo.foo", expanded: ":Foo\n:foo\n"
   end
 
   it "expands macro of module with cursor at dot" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     module Foo
       macro foo
         :Foo
@@ -402,13 +402,13 @@ describe "expand" do
     end
 
     Foo‸.foo
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, original: "Foo.foo", expanded: ":Foo\n:foo\n"
   end
 
   it "expands macro of module inside module" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     module Foo
       macro foo
         :Foo
@@ -417,35 +417,35 @@ describe "expand" do
 
       f‸oo
     end
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, original: "foo", expanded: ":Foo\n:foo\n"
   end
 
   %w(module class struct enum lib).each do |keyword|
     it "expands macro expression inside #{keyword}" do
-      code = <<-CRYSTAL
+      code = <<-CODE
       #{keyword} Foo
         ‸{{ "Foo = 1".id }}
       end
-      CRYSTAL
+      CODE
 
       assert_expand_simple code, original: %({{ "Foo = 1".id }}), expanded: "Foo = 1"
     end
 
     it "expands macro expression inside private #{keyword}" do
-      code = <<-CRYSTAL
+      code = <<-CODE
       private #{keyword} Foo
         ‸{{ "Foo = 1".id }}
       end
-      CRYSTAL
+      CODE
 
       assert_expand_simple code, original: %({{ "Foo = 1".id }}), expanded: "Foo = 1"
     end
 
     unless keyword == "lib"
       it "expands macro expression inside def of private #{keyword}" do
-        code = <<-CRYSTAL
+        code = <<-CODE
         private #{keyword} Foo
           Foo = 1
           def self.foo
@@ -454,7 +454,7 @@ describe "expand" do
         end
 
         Foo.foo
-        CRYSTAL
+        CODE
 
         assert_expand_simple code, original: "{{ :foo }}", expanded: ":foo"
       end
@@ -463,25 +463,25 @@ describe "expand" do
 
   %w(struct union).each do |keyword|
     it "expands macro expression inside C #{keyword}" do
-      code = <<-CRYSTAL
+      code = <<-CODE
       lib Foo
         #{keyword} Foo
           ‸{{ "x : Int32".id }}
         end
       end
-      CRYSTAL
+      CODE
 
       assert_expand_simple code, original: %({{ "x : Int32".id }}), expanded: "x : Int32"
     end
 
     it "expands macro expression inside C #{keyword} of private lib" do
-      code = <<-CRYSTAL
+      code = <<-CODE
       private lib Foo
         #{keyword} Foo
           ‸{{ "x : Int32".id }}
         end
       end
-      CRYSTAL
+      CODE
 
       assert_expand_simple code, original: %({{ "x : Int32".id }}), expanded: "x : Int32"
     end
@@ -489,14 +489,14 @@ describe "expand" do
 
   ["", "private "].each do |prefix|
     it "expands macro expression inside #{prefix}def" do
-      code = <<-CRYSTAL
+      code = <<-CODE
       #{prefix}def foo(x : T) forall T
         ‸{{ T }}
       end
 
       foo 1
       foo "bar"
-      CRYSTAL
+      CODE
 
       assert_expand code, [
         ["{{ T }}", "Int32"],
@@ -505,7 +505,7 @@ describe "expand" do
     end
 
     it "expands macro expression inside def of #{prefix}module" do
-      code = <<-CRYSTAL
+      code = <<-CODE
       #{prefix}module Foo(T)
         def self.foo
           {{ ‸T }}
@@ -515,7 +515,7 @@ describe "expand" do
       Foo(Int32).foo
       Foo(String).foo
       Foo(1).foo
-      CRYSTAL
+      CODE
 
       assert_expand code, [
         ["{{ T }}", "Int32"],
@@ -525,7 +525,7 @@ describe "expand" do
     end
 
     it "expands macro expression inside def of nested #{prefix}module" do
-      code = <<-CRYSTAL
+      code = <<-CODE
       #{prefix}module Foo
         #{prefix}module Bar(T)
           def self.foo
@@ -537,7 +537,7 @@ describe "expand" do
         Bar(String).foo
         Bar(1).foo
       end
-      CRYSTAL
+      CODE
 
       assert_expand code, [
         ["{{ T }}", "Int32"],
@@ -548,54 +548,54 @@ describe "expand" do
   end
 
   it "expands macro expression inside fun" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     fun foo
       {{ :foo‸ }}
     end
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, original: "{{ :foo }}", expanded: ":foo"
   end
 
   it "doesn't expand macro expression" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     {{ 1 + 2 }}
     ‸
-    CRYSTAL
+    CODE
 
     assert_expand_fail code
   end
 
   it "doesn't expand macro expression with cursor out of end" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     {{ 1 + 2 }}‸
-    CRYSTAL
+    CODE
 
     assert_expand_fail code
   end
 
   it "doesn't expand macro expression" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     ‸  {{ 1 + 2 }}
-    CRYSTAL
+    CODE
 
     assert_expand_fail code
   end
 
   it "doesn't expand normal call" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     def foo
       1
     end
 
     ‸foo
-    CRYSTAL
+    CODE
 
     assert_expand_fail code, "no expansion found: foo may not be a macro"
   end
 
   it "expands macro with doc" do
-    code = <<-CRYSTAL
+    code = <<-CODE
     macro foo(x)
       # string of {{ x }}
       def {{ x }}_str
@@ -608,9 +608,9 @@ describe "expand" do
     end
 
     ‸foo(hello)
-    CRYSTAL
+    CODE
 
-    expanded = <<-CRYSTAL
+    expanded = <<-CODE
     # string of hello
     def hello_str
       "hello"
@@ -620,7 +620,7 @@ describe "expand" do
     def hello_sym
       :hello
     end
-    CRYSTAL
+    CODE
 
     assert_expand_simple code, original: "foo(hello)", expanded: expanded + '\n'
   end

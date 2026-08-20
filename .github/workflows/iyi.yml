@@ -90,7 +90,7 @@ jobs:
       # `mod` refusing the prefixes every other command accepts.
       - name: The commands, and the daemon
         run: |
-          export CRYSTAL_PATH="lib:$(pwd)/src"
+          export IYI_PATH="lib:$(pwd)/src"
           make -o .build/crystal cli_spec
 
   compiler-specs:
@@ -303,12 +303,12 @@ jobs:
         run: make -o .build/crystal iyi iyi-tarball
 
       # What a person who downloads it does: unpack it somewhere else and run a
-      # program. Nothing here may need this checkout, a CRYSTAL_PATH, or a
+      # program. Nothing here may need this checkout, a IYI_PATH, or a
       # Crystal on the machine.
       - name: Unpack the tarball somewhere else and compile with it
         run: |
           mkdir -p /tmp/unpacked
           tar -xzf .build/iyi-*-linux-*.tar.gz -C /tmp/unpacked
           cd /tmp
-          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run /tmp/unpacked/share/iyi/samples/hello.iyi
-          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi version
+          env -u IYI_PATH /tmp/unpacked/bin/iyi run /tmp/unpacked/share/iyi/samples/hello.iyi
+          env -u IYI_PATH /tmp/unpacked/bin/iyi version
