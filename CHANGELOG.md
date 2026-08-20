@@ -81,6 +81,12 @@
   nothing. Every existing daemon spec passed through all three, because each
   passes an absolute path and starts the daemon where the runner is.
 
+- **A build that adopted a preanalysed prelude ignored `--use-iyimod`.** That
+  path never runs `new_program`, so a build's switches were whoever analysed
+  the prelude's — none. The flags, the target and the prelude are in the
+  analysis's cache key and so are safe; `--use-iyimod` is not, and was accepted
+  and silently ignored while every module was compiled from source.
+
 - **A constant an artifact reads carries a location.** The reads a consumer
   performs on an artifact's behalf were synthesised without one, and LLVM
   refuses a call with no location inside a function that has debug info. It

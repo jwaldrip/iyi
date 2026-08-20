@@ -3169,8 +3169,8 @@ command that costs a terminal and buys nothing is not a command.
 > and warms `iyi/prelude` after its first build: 0.03 s, which is the reason
 > the daemon is not for that mode.
 >
-> **Three bugs were in the way, all older than this work and all the same fact
-> forgotten: the daemon runs in its own directory and the client does not.**
+> **Four bugs were in the way, all older than this work.** Three are one fact
+> forgotten — the daemon runs in its own directory and the client does not.
 >
 > - A finished build's arguments are re-read in the daemon to decide which
 >   prelude to warm next, and they were read in the *daemon's* directory. The
@@ -3191,6 +3191,22 @@ command that costs a terminal and buys nothing is not a command.
 > That is the shape of the lesson rather than an aside: **a spec that never
 > leaves the directory it was written in cannot see a directory bug.** Three new
 > ones do.
+>
+> The fourth is not about directories and is the worst-behaved: **the path that
+> adopts a preanalysed prelude never runs `new_program`**, so everything that
+> method turns a switch into was decided by whoever analysed the prelude — a
+> `Compiler.new` in a daemon, holding none of the build's switches. Most of it
+> is safe because the flags, the target, the optimisation mode and the prelude
+> are all in `prelude_cache_key`: an analysis that differs in any of them is a
+> different analysis. `--use-iyimod` is not in that key. It was accepted,
+> ignored, and the build compiled every module from source without a word,
+> which is worse than the switch not existing — and it is only visible from
+> outside by deleting the module's source, which is what its spec does.
+>
+> That one is worth generalising. **A cache key is a claim that everything not
+> in it does not matter**, and this key was written when the only thing reading
+> it was prelude analysis. Every switch added since has had to be checked
+> against it by hand, silently, and nothing enforced the check.
 >
 > **And artifacts and the daemon overlap.** Twelve modules as artifacts *plus*
 > the daemon was 1.67 s against the daemon's 1.30 s — slower, because the daemon
