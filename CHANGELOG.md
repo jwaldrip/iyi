@@ -17,6 +17,16 @@
   `Float64`, and a name that means two things is what III.1.7a settled against
   — so integer division stays `//` in both.
 
+### Fixed
+
+- **A constant an artifact reads carries a location.** The reads a consumer
+  performs on an artifact's behalf were synthesised without one, and LLVM
+  refuses a call with no location inside a function that has debug info. It
+  never fired under iyi's own library and fired at once under Crystal's, which
+  is where it was found — while looking at whether artifacts and `--crystal`
+  can be used together. They still cannot, but the reason recorded in SPEC.md
+  Part V item 12a was wrong and is now the measured one.
+
 ### Changed
 
 - **A module path is read from the root, not from where it is written.** A

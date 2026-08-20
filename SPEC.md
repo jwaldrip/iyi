@@ -4114,11 +4114,35 @@ Named honestly, so nobody mistakes this draft for complete.
     `src/iyi/array.iyi`, and `samples/iyi/basics.iyi` prints both halves.
 
     **What it costs.** R-1, for the required shard: it is read from source and
-    the edit loop pays for it the way Crystal's does. Your own modules still
-    write artifacts. And the two libraries are two modes on the reading side —
-    `--use-iyimod` needs iyi's prelude, because an artifact's object code
-    numbers types that under Crystal's library are the standard library's own,
-    and a consumer compiling its own copy of it has two of everything.
+    the edit loop pays for it the way Crystal's does. And the two libraries are
+    two modes on the artifact side, which is the sharpest limit here: a program
+    cannot have Crystal's library *and* its own modules as artifacts.
+
+    **Why, exactly — the first answer here was wrong.** It said the two builds
+    would have "two of everything", which is not what happens. Taking the
+    refusal out and looking:
+
+    - The first failure was an LLVM module that would not verify: "inlinable
+      function call in a function with debug info must have a !dbg location".
+      The reads a consumer performs on an artifact's behalf (IV.1g) were
+      synthesised without a location, and a call with no location inside a
+      function that has debug info is invalid. Under iyi's own library the
+      constants involved never landed in such a function; under Crystal's,
+      `STDERR` and `String::CHAR_TO_DIGIT` did. **Fixed**: the reads carry the
+      artifact's own path.
+    - What is left is structural. A unit that travels can call helpers the
+      compiler defines in the *main* module — `~match<IO+>` is the one that
+      showed up — and an artifact carries the unit, not main. There are ten
+      such helpers: type matching, constant reads and initialisers, class
+      variable reads and initialisers, and a few more.
+
+    **And they do not all have the same answer.** `~match` is pure and could be
+    emitted into each unit that calls it, the way a closure's callee already
+    is. A class variable's initialiser cannot: two copies would initialise it
+    twice. So the pure ones can be copied and the stateful ones have to travel
+    as *names* the consumer emits, which is what `TypeIds` already does for
+    numbering. That is a format change and a codegen change, and it is the work
+    between here and a program that has both the ecosystem and R-1.
 
 12. **The Crystal ecosystem, and what a shard would cost.** Ten thousand
     shards exist and none of them is written to iyi's rules, so "run them

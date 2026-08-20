@@ -468,7 +468,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     begin
       parsed_nodes = parser.parse
       parsed_nodes = @program.normalize(parsed_nodes, inside_exp: false)
-      read_iyi_artifact_constants artifact, parsed_nodes
+      read_iyi_artifact_constants artifact, parsed_nodes, artifact_path
       parsed_nodes.accept IyiMod::DeclarationMarker.new
       iyi_at_top_level { parsed_nodes.accept self }
     rescue ex : CodeError
@@ -560,12 +560,24 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
   # analysed. That costs one load in the consuming program and puts the
   # constant back on the ordinary path — initialisation stays lazy and stays in
   # III.5's order, because reading a constant is what initialises it.
-  private def read_iyi_artifact_constants(artifact : IyiMod::Artifact, nodes : ASTNode) : Nil
+  # The reads carry a location, and it is not decoration. A constant's read
+  # becomes a call in whatever function the initialiser ends up in, LLVM
+  # requires a `!dbg` on a call inside a function that has debug info, and a
+  # synthesised node has no location to make one from. With iyi's own library
+  # the constants involved were few enough that nothing hit it; under Crystal's,
+  # `STDERR` and `String::CHAR_TO_DIGIT` and three more did, and what came out
+  # was a module that would not verify.
+  #
+  # The artifact's own path, because that is where these reads come from: an
+  # error or a backtrace pointing at it is pointing at the truth.
+  private def read_iyi_artifact_constants(artifact : IyiMod::Artifact, nodes : ASTNode,
+                                          artifact_path : String) : Nil
     return if artifact.object_code.empty? || artifact.constants.empty?
     return unless nodes.is_a?(Expressions)
 
+    location = Location.new(artifact_path, 1, 1)
     artifact.constants.each do |name|
-      nodes.expressions << Path.new(name.split("::"), global: true)
+      nodes.expressions << Path.new(name.split("::"), global: true).at(location)
     end
   end
 
