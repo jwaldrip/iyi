@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — unreleased
+## 0.2.0 — 2026-08-20
 
 **A program chooses its library.** 0.1.0 had one, 1,184 lines of it, and that
 was most of what stood between the language and anybody's real program. It
@@ -14,9 +14,10 @@ Two more entries take the rules further out — `pub` reaches a macro and a
 constant — and closing each found the same hole underneath: a surface nobody
 wrote and nobody could refuse.
 
-Master is `0.2.0-dev`, and under the artifact rule below that means every build
-of it interoperates with nothing but itself. That is the point: a version
-between two releases names no compiler.
+Artifacts written by this release are read by every other build of it, on the
+same target and under the same flags. A `-dev` version between two releases
+names no compiler and interoperates with nothing but itself, which is the rule
+below doing its job rather than an exception to it.
 
 ### Changed
 

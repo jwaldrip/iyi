@@ -324,7 +324,7 @@ library is 56 KB on disk beside the binary.
 ## Getting it
 
 ```console
-$ tar -xzf iyi-0.1.0-linux-x86_64.tar.gz -C ~/.local
+$ tar -xzf iyi-0.2.0-linux-x86_64.tar.gz -C ~/.local
 $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 
@@ -697,7 +697,7 @@ other platforms, and CI type-checks eight targets.
 **Who is this for right now?** Somebody who wants to check the claim, read the
 design, or argue with a number. `--crystal` moved the other line: a program
 that requires shards is buildable today, and what should keep you away is the
-language rather than the library — it is 0.2.0-dev, and the parts of SPEC.md
+language rather than the library — it is 0.2.0, and the parts of SPEC.md
 marked PROPOSED are the parts that will move under you.
 
 ## What is not here
