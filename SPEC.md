@@ -3953,8 +3953,15 @@ Named honestly, so nobody mistakes this draft for complete.
     resolves the type it was handed by name, and a class an iyi module left
     unmarked is private, so the macro could not find it. `pub class` fixes it —
     correctly, since a macro from another module reaching your type is exactly
-    what `pub` governs. What is wrong is the message: `undefined macro method
-    'Path#constant'`, which names neither the type nor the rule.
+    what `pub` governs.
+
+    The message was `undefined macro method 'Path#constant'`, which names
+    neither the type nor the rule. It is a fact about the compiler: an
+    unresolved path stays a `Path`, and every method a macro would call on the
+    type is undefined on that. **Fixed**: a macro method missing from a `Path`
+    now asks whether the path names a type that exists and is unexported, and
+    says so when it does. Only then — every other unresolved path keeps the
+    message it had.
 
     **What it costs.** R-1, for the required shard: it is read from source and
     the edit loop pays for it the way Crystal's does. Your own modules still

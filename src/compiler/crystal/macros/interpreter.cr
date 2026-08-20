@@ -512,6 +512,19 @@ module Crystal
       resolve?(node) || node.raise_undefined_constant(@path_lookup)
     end
 
+    # iyi: the type this path names, when it exists and its module kept it to
+    # itself. Nil for every other reason a path does not resolve, so that the
+    # ordinary "undefined constant" keeps saying that.
+    def iyi_unexported_type?(node : Path) : Type?
+      return nil if resolve?(node)
+
+      found = @path_lookup.lookup_path(node, include_private: true)
+      return nil unless found.is_a?(Type)
+      return nil unless found.private?
+
+      found
+    end
+
     def resolve?(node : Path)
       if (single_name = node.single_name?) && (match = @free_vars.try &.[single_name]?)
         matched_type = match

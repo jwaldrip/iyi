@@ -2738,6 +2738,23 @@ module Crystal
       when "types"
         interpret_check_args { ArrayLiteral.new([self] of ASTNode) }
       else
+        # iyi: a macro asking a type something, about a type its module did
+        # not export (R-2).
+        #
+        # The node stays a `Path` when it cannot be resolved, and every method
+        # a macro would call on the type is then undefined on it — the message
+        # names `Path`, which is a fact about the compiler rather than about
+        # the program. What the author has to know is that a name is being
+        # reached from outside the module that declares it, and that `pub` is
+        # what allows it. `habitat` is where this was found: its macro asks the
+        # type it was handed for a constant, and an unmarked class is private.
+        if unexported = interpreter.iyi_unexported_type?(self)
+          raise "#{unexported.namespace} does not export #{unexported}, and a " \
+                "macro of another module is asking it for `#{method}`. Only " \
+                "what a module marks `pub` is reachable from outside it — see " \
+                "SPEC.md R-2"
+        end
+
         super
       end
     end
