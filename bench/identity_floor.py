@@ -75,6 +75,10 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     # in `main`, not by its prose.
     (r"^bench/identity_floor\.py$", "the gate's own prose"),
     (r"^src/compiler/crystal_front\.cr$", "the front-end bench binary's entrypoint"),
+    # Crystal's stdlib highlighter, and Crystal programs that used the compiler
+    # as a library, still `require "compiler/crystal/syntax"`. This directory
+    # is the shim that makes that path resolve.
+    (r"^src/compiler/crystal/", "shims so Crystal's stdlib can still require the compiler"),
     # `init` and `spec` are in CRYSTAL_ONLY: `iyi init` answers "it belongs to
     # Crystal", so this file is only ever reached under the crystal name and its
     # banners are correct as written.
