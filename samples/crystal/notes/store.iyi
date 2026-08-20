@@ -1,0 +1,71 @@
+# A module compiled against Crystal's standard library, written to travel.
+#
+# Imported by `samples/crystal/notes.iyi`, which builds it into a `.iyimod` and
+# then builds again with this file deleted. That is the combination SPEC.md
+# Part V item 12b is about: the program has the ecosystem *and* its own modules
+# arrive as artifacts rather than as source.
+#
+# The `require`s matter as much as the code. They travel in the artifact and
+# the consumer replays them, which is what gives its program the `JSON` and
+# `URI` this object code refers to by name — `notes.iyi` requires neither.
+module notes/store
+
+require "json"
+require "uri"
+
+# Not `pub`: R-2 exports names, and nothing outside this module needs to say
+# `Store`. The list is the module's own state and stays here.
+NOTES = [] of Note
+
+pub class Note
+  pub def initialize(@id : Int32, @title : String)
+  end
+
+  pub def id : Int32
+    @id
+  end
+
+  pub def title : String
+    @title
+  end
+
+  # Crystal's `JSON::Builder`, from a module that arrives as machine code.
+  pub def to_json : String
+    {"id" => @id, "title" => @title}.to_json
+  end
+
+  # And `URI`, which is the require the consumer does not make.
+  pub def slug : String
+    URI.encode_path_segment(@title.downcase)
+  end
+end
+
+pub struct NoNote
+  pub def initialize(@id : Int32)
+  end
+end
+
+# An error union crossing an artifact boundary, with Crystal's library on both
+# sides of it (III.1.1).
+impl Error for NoNote
+  def message : String
+    "no note #{@id}"
+  end
+end
+
+pub def add(title : String) : Note
+  note = Note.new(NOTES.size + 1, title)
+  NOTES << note
+  note
+end
+
+pub def find(id : Int32) : Note | NoNote
+  NOTES.each do |note|
+    return note if note.id == id
+  end
+  NoNote.new(id)
+end
+
+pub def all_json : String
+  "[" + NOTES.map(&.to_json).join(",") + "]"
+end

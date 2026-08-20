@@ -1,0 +1,39 @@
+# The ecosystem and R-1 in one build — README, "The library a program has", and
+# SPEC.md Part V item 12b.
+#
+#   ./bin/iyi run --crystal samples/crystal/notes.iyi
+#
+# Or, which is the point of the file:
+#
+#   ./bin/iyi build --crystal --emit-iyimod mods -o notes samples/crystal/notes.iyi
+#   rm samples/crystal/notes/store.iyi
+#   ./bin/iyi build --crystal --use-iyimod mods -o notes samples/crystal/notes.iyi
+#
+# The second build never opens the module's source, and the program it produces
+# behaves identically. `--crystal` gives it Crystal's standard library; the
+# artifact gives it a module it does not compile. Each was useful alone and the
+# two used to be refused together.
+#
+# This file requires nothing. Everything `JSON` and `URI` do below happens
+# inside `notes/store`, whose object code arrived compiled — and whose
+# requires arrived with it, which is why the types it names exist here at all.
+module samples/notes
+
+import notes/store
+using notes/store
+
+add("Ilk not")
+add("Ikinci not")
+
+puts all_json
+
+found = find(2)
+if found.is_a?(Note)
+  puts found.to_json
+  puts found.slug
+end
+
+# The miss travels as `Note | NoNote` and is handled here, on the far side of
+# the artifact.
+missing = find(99)
+puts missing.is_a?(NoNote) ? missing.message : "found"
