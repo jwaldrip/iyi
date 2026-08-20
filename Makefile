@@ -165,8 +165,29 @@ compiler_spec: $(O)/compiler_spec$(EXE) ## Run compiler specs
 primitives_spec: $(O)/primitives_spec$(EXE) ## Run primitives specs
 	$(O)/primitives_spec$(EXE) $(SPEC_FLAGS)
 
+# iyi: the daemon refuses a client built from a different compiler, and it is
+# right to — it holds an analysed prelude and would serve builds from the old
+# one. What it cannot do is say so once: the spec sees nine failures, each
+# printing two version strings, and the reason is in none of them.
+#
+# The mismatch is easy to arrive at and hard to see, because the build commit
+# is baked in from git HEAD while make compares file times: commit, rebuild one
+# of the two, and they disagree about a commit while agreeing about every line
+# of code. Asked here instead, once, before the specs run.
+.PHONY: check_daemon_matches
+check_daemon_matches: $(O)/crystal$(EXE) $(O)/$(CRYSTAL_DAEMON_BIN)
+	@client="$$($(O)/crystal$(EXE) --version | head -1)"; \
+	 daemon="$$($(O)/$(CRYSTAL_DAEMON_BIN) --version | head -1)"; \
+	 if [ "$$client" != "$$daemon" ]; then \
+	   echo "the daemon and the compiler are different builds, so every daemon spec will fail:"; \
+	   echo "  compiler: $$client"; \
+	   echo "  daemon:   $$daemon"; \
+	   echo "rebuild the one that is behind: make -B crystal-daemon"; \
+	   exit 1; \
+	 fi
+
 .PHONY: cli_spec
-cli_spec: $(O)/cli_spec$(EXE) ## Run compiler CLI specs
+cli_spec: $(O)/cli_spec$(EXE) check_daemon_matches ## Run compiler CLI specs
 	$(O)/cli_spec$(EXE) $(SPEC_FLAGS)
 
 .PHONY: simple_smoke_test

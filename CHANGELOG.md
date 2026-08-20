@@ -20,6 +20,14 @@ between two releases names no compiler.
 
 ### Changed
 
+- **`make cli_spec` says once when the daemon and the compiler are different
+  builds.** The daemon refuses a client built from another compiler, correctly
+  — it holds an analysed prelude — but the spec saw that as nine failures, each
+  printing two version strings, with the reason in none of them. It is easy to
+  arrive at, too: the build commit comes from git HEAD while make compares file
+  times, so a commit can leave two binaries disagreeing about a commit while
+  agreeing about every line of code.
+
 - **`iyi mod diff` says whether a change reaches a module's consumers.** The
   three hashes an artifact carries already answered it and nothing asked them.
   It compares two `.iyimod` files, says which of interface, implementation and
