@@ -14,7 +14,7 @@ class Iyi::Command
       opts.banner = <<-USAGE
         Usage: #{Command.program_name} tool format [options] [- | file or directory ...]
 
-        Formats Crystal code in place.
+        Formats iyi and Crystal code in place.
 
         If a file or directory is omitted,
         Crystal source files beneath the working directory are formatted.

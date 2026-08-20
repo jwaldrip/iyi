@@ -58,23 +58,29 @@ class Iyi::Command
         crystal <command> --help
     USAGE
 
-  COMMANDS_USAGE = <<-USAGE
-    Usage: #{Command.program_name} tool [tool] [switches] [program file] [--] [arguments]
+  # iyi: a method rather than a constant, because a constant interpolates
+  # `program_name` when it is initialised, which is before `iyi.cr` has said
+  # which binary this is. As a constant it told everybody running `iyi tool`
+  # that they were running `crystal tool`.
+  def self.commands_usage : String
+    <<-USAGE
+      Usage: #{Command.program_name} tool [tool] [switches] [program file] [--] [arguments]
 
-    Tool:
-        bind                     say what a Crystal shard would cost as an iyi module
-        context                  show context for given location
-        dependencies             show file dependency tree
-        expand                   show macro expansion for given location
-        flags                    print all macro `flag?` values
-        format                   format project, directories and/or files
-        hierarchy                show type hierarchy
-        implementations          show implementations for given call in location
-        macro_code_coverage      generate a macro code coverage report
-        types                    show type of main variables
-        unreachable              show methods that are never called
-        --help, -h               show this help
-    USAGE
+      Tool:
+          bind                     say what a Crystal shard would cost as an iyi module
+          context                  show context for given location
+          dependencies             show file dependency tree
+          expand                   show macro expansion for given location
+          flags                    print all macro `flag?` values
+          format                   format project, directories and/or files
+          hierarchy                show type hierarchy
+          implementations          show implementations for given call in location
+          macro_code_coverage      generate a macro code coverage report
+          types                    show type of main variables
+          unreachable              show methods that are never called
+          --help, -h               show this help
+      USAGE
+  end
 
   def self.run(options = ARGV)
     new(options).run
@@ -232,7 +238,7 @@ class Iyi::Command
     tool = options.first?
     case
     when !tool
-      puts COMMANDS_USAGE
+      puts Command.commands_usage
       exit
     when "context".starts_with?(tool)
       options.shift
@@ -268,7 +274,7 @@ class Iyi::Command
       options.shift
       macro_code_coverage
     when "--help" == tool, "-h" == tool
-      puts COMMANDS_USAGE
+      puts Command.commands_usage
       exit
     else
       abort! "unknown tool: #{tool}", :USAGE_ERROR

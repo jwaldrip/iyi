@@ -29,6 +29,21 @@ require "../syntax/transformer"
 # Nothing wider is built until this much runs end to end.
 class Iyi::Command
   private def repl
+    # iyi: every other command answers `--help`, and this one answered with
+    # silence, which reads as a crash. It takes no options yet, and saying so
+    # is the honest banner rather than inventing switches to list.
+    if @options.includes?("--help") || @options.includes?("-h")
+      puts <<-USAGE
+        Usage: #{Command.program_name} repl
+
+        Reads a line of iyi, evaluates it, prints the result, and loops.
+        Session variables persist across lines. `.exit` or Ctrl-D leaves.
+
+        Takes no options.
+        USAGE
+      exit
+    end
+
     program = Program.new
 
     # A line is evaluated the way a macro body is: the program is both scope

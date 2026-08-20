@@ -41,7 +41,7 @@ class Iyi::Command
     <<-USAGE
     Usage: #{Command.program_name} env [var ...]
 
-    Prints Crystal environment information.
+    Prints iyi environment information.
 
     By default it prints information as a shell script.
     If one or more variable names is given as arguments,

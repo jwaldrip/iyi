@@ -4,7 +4,9 @@ class Iyi::Command
   private def clear_cache
     verbose = false
     OptionParser.parse(@options) do |opts|
-      opts.banner = <<-'BANNER'
+      # iyi: unquoted, because a quoted heredoc does not interpolate and this
+      # banner printed the literal text `#{Command.program_name}` at a user.
+      opts.banner = <<-BANNER
         Usage: #{Command.program_name} clear_cache
 
         Clears the compiler cache

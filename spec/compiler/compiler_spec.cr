@@ -254,4 +254,31 @@ describe "Compiler" do
       {% end %}
     end
   end
+
+  # iyi: the same compiler ships under two names, and each has to answer as
+  # the one a person typed. Both directions are asserted, because getting this
+  # right in one direction by hardcoding is how it was wrong before.
+  #
+  # `Command.program_name` is set by the entrypoint, so a banner built in a
+  # CONSTANT captures the default instead. That is exactly what `iyi tool`
+  # did: it told everybody they were running `crystal tool`.
+  describe "the name a person sees" do
+    it "names iyi in a banner iyi reaches" do
+      Iyi::Command.program_name = "iyi"
+      Iyi::Command.commands_usage.should start_with "Usage: iyi tool"
+    end
+
+    it "names crystal in the same banner under crystal" do
+      Iyi::Command.program_name = "crystal"
+      Iyi::Command.commands_usage.should start_with "Usage: crystal tool"
+    ensure
+      Iyi::Command.program_name = "iyi"
+    end
+
+    it "interpolates rather than printing the interpolation" do
+      # A quoted heredoc does not interpolate, and `clear_cache` shipped one,
+      # so its banner printed the literal `#{...}` at a user.
+      Iyi::Command.commands_usage.should_not contain "Command.program_name"
+    end
+  end
 end
