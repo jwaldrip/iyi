@@ -328,8 +328,9 @@ $ tar -xzf iyi-0.1.0-linux-x86_64.tar.gz -C ~/.local
 $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 
-The tarball is relocatable. `bin/iyi` finds its prelude beside itself, all 56 KB
-of it, so there is nothing to configure and no `CRYSTAL_PATH` to set.
+The tarball is relocatable and carries both libraries: iyi's own 56 KB, and
+Crystal's standard library for `--crystal`. `bin/iyi` finds them beside itself,
+so there is nothing to configure and no `CRYSTAL_PATH` to set.
 
 ### Your first module, and then the rule that matters
 

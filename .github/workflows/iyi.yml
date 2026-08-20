@@ -343,3 +343,11 @@ jobs:
           cd /tmp
           env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run /tmp/unpacked/share/iyi/samples/hello.iyi
           env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi version
+
+      # Both libraries, because a tarball that ships one of them answers
+      # `require "json"` with "can't find file" — the headline feature failing
+      # in the thing people download, which is how this was found.
+      - name: The other library, out of the tarball
+        run: |
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run --crystal \
+            /tmp/unpacked/share/iyi/samples/crystal/stdlib.iyi

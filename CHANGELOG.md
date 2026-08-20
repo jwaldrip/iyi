@@ -20,6 +20,13 @@ between two releases names no compiler.
 
 ### Changed
 
+- **The tarball carries Crystal's library, so `--crystal` works in what people
+  download.** It shipped iyi's own 56 KB and nothing else, so the release's
+  headline feature answered `require "json"` with "can't find file" outside a
+  checkout. It ships both now — 13.4 MB to 14.9 MB — and CI runs a `--crystal`
+  program out of the unpacked tarball, which is where this was found and where
+  it would have been found again.
+
 - **`make cli_spec` says once when the daemon and the compiler are different
   builds.** The daemon refuses a client built from another compiler, correctly
   — it holds an analysed prelude — but the spec saw that as nine failures, each
