@@ -74,6 +74,14 @@ will write production code with it, there will be no standard library worth the
 name, and it will not be self-hosted. Go's first public release was the same
 shape.
 
+> **What changed after it shipped, and it changed this paragraph.** A prelude
+> is a library and the rules are the language, so a program can keep one and
+> change the other: `--crystal` builds against Crystal's standard library, and
+> there `require` reaches the ecosystem while every rule stays where it was.
+> "No standard library worth the name" is still true of iyi's own 1,184 lines
+> and no longer true of what a program can have. Part V item 12a is the
+> measurement, nine shards wide.
+
 **The claim under test** is compile speed. The type system is the means, not the
 product: open classes go so that a module can be compiled against its
 dependencies' metadata instead of their bodies (R-1, R-3), and that is what

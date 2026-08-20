@@ -282,6 +282,63 @@ $ sudo make install_iyi                 # or install it, PREFIX=/usr/local
 That one compiles `.cr` files and is what the specs and the benches use,
 because underneath this is still Crystal's compiler.
 
+## The library a program has
+
+A prelude is a library, and the rules are the language. Those are two different
+things, so a program can keep one and change the other.
+
+**`iyi build --crystal` gives a program Crystal's standard library**, and there
+`require` means what it means in Crystal. This is a Kemal server, and it runs:
+
+```crystal
+module site
+
+require "kemal"
+
+get "/" do |env|
+  "Hello from an iyi program"
+end
+
+get "/json" do |env|
+  env.response.content_type = "application/json"
+  {message: "iyi"}.to_json
+end
+
+Kemal.run
+```
+
+```console
+$ iyi build --crystal -o site site.iyi
+$ ./site &
+$ curl localhost:3000/json
+{"message":"iyi"}
+```
+
+**Nothing about the language changes.** The module header, `import`, `using`,
+`pub`, traits with defaults, `impl … forall`, error unions and `!`, `.or`,
+`or_panic`, `defer` — all of them, on a program that requires a shard. R-2
+still refuses an export that does not write its types. What changes is what the
+program *has*: 8,161 lines of standard library instead of 1,184 of prelude.
+
+**What it costs is R-1, for that dependency.** A required shard is read from
+source, so your edit loop pays for it the way Crystal's does. Your own modules
+are unaffected — but the two do not mix on the artifact side, and the compiler
+says so rather than half-working: `--emit-iyimod` and `--use-iyimod` need iyi's
+own prelude, because an artifact written against Crystal's library names types
+a consumer compiles its own copy of.
+
+**Nine shards were swept through it**, each built twice — as an iyi program and
+as a Crystal one, so that a difference is this fork's and a shared failure is
+the ecosystem's. `kemal`, `db`, `ameba`, `habitat`, `baked_file_system`,
+`radix`, `sqlite3`, the standard library's own `json`/`yaml`/`uri`/`http`, and
+a program that round-trips `JSON::Serializable` and writes a file. All nine
+behave the same in both languages.
+
+One of them needed a word changed, and it was the rule working: `habitat`'s
+macro resolves the type it is handed by name, and a class an iyi module leaves
+unmarked is private, so it needs `pub class`. A macro from another module
+reaching your type is exactly what `pub` governs.
+
 ## More of the language
 
 **Traits, and impls for a generic type.** Nothing to reopen, nothing to monkey
@@ -473,9 +530,12 @@ designed around. Crystal is not going to drop open classes, and it should not.
 compiler should, and they are separate commits for that reason. The rules will
 not, and are not offered.
 
-**Can I use shards?** No. There is no package manager, and a `.iyi` module
-cannot `require` a Crystal library: R-2 needs written types at the boundary
-and R-3 needs the type to be closed, and a shard is written under neither.
+**Can I use shards?** Yes, with `--crystal`, which gives the program Crystal's
+standard library and makes `require` mean what it means there. Nine shards were
+swept through it, Kemal among them. There is still no package manager: point
+`CRYSTAL_PATH` at a `lib/` directory the way Crystal does. What you give up is
+R-1 for the required shard, which is compiled from source rather than read as
+declarations.
 
 **Is the syntax stable?** No. 0.1.0 exists to make the claim checkable, and
 the parts of SPEC.md marked PROPOSED are exactly the parts that will move.
@@ -484,23 +544,30 @@ the parts of SPEC.md marked PROPOSED are exactly the parts that will move.
 measurements were taken and where CI runs. The library still carries Crystal's
 other platforms, and CI type-checks eight targets.
 
-**Who is this for right now?** Somebody who wants to check the claim, read
-the design, or argue with a number. Not somebody with a program to ship.
+**Who is this for right now?** Somebody who wants to check the claim, read the
+design, or argue with a number. `--crystal` moved the other line: a program
+that requires shards is buildable today, and what should keep you away is the
+language rather than the library — it is 0.2.0-dev, and the parts of SPEC.md
+marked PROPOSED are the parts that will move under you.
 
 ## What is not here
 
-- **No IO beyond `puts`.** The prelude is 1,184 lines on purpose: integers,
-  booleans, a string, one sequence, one dictionary, one range. No files, no
-  sockets, no formatting.
+- **iyi's own library is 1,184 lines, and there is no IO beyond `puts` in it**:
+  integers, booleans, a string, one sequence, one dictionary, one range. No
+  files, no sockets, no formatting. `--crystal` is the other library and has
+  all of it; everything below this line is about iyi's own.
 - **The prelude's collections are smaller than Crystal's, and one habit
   differs.** A method is in there because a program in this repository needed
   it, so most of what you reach for is not;
   `samples/iyi/std/enumerable.iyi` is where the rest is being written, as trait
   defaults. And `a[-1]` does not index from the end: it raises, the way an
   index past the end does. Nothing indexes from the end in iyi yet.
-- **No concurrency.** SPEC.md III.4 specifies structured concurrency,
-  scope-owned cancellation and a `Share` marker. None of it is built.
-- **No package manager, no standard library, no self-hosting.**
+- **No concurrency of iyi's own.** SPEC.md III.4 specifies structured
+  concurrency, scope-owned cancellation and a `Share` marker, and none of it is
+  built. A program built `--crystal` has Crystal's fibers, which are the thing
+  III.4 was written to replace rather than an answer to it.
+- **No package manager and no self-hosting.** `--crystal` gives a program
+  Crystal's standard library; nothing gives it a package manager.
 - **Linux x86-64 only.** Other targets belong to Crystal and are untested here.
 - **Artifacts are locked to a release, a target and a flag set.** Every build
   of iyi 0.1.0 reads every other build's `.iyimod` files on the same target and
@@ -519,7 +586,7 @@ the design, or argue with a number. Not somebody with a program to ship.
 |---|---|
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
 | [`samples/iyi`](samples/iyi) | nine programs, eight documenting a part of it and one being a first half hour |
-| [`src/iyi`](src/iyi) | the prelude, 1,184 lines |
+| [`src/iyi`](src/iyi) | iyi's own library, 1,184 lines. `--crystal` swaps it for Crystal's |
 | [`src/compiler/crystal/iyimod.cr`](src/compiler/crystal/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |
