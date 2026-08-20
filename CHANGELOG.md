@@ -116,6 +116,19 @@ between two releases names no compiler.
   The consumer's rule now matches the producer's. Reported after 0.1.0 went
   out.
 
+- **`Array#sort` sorts the array, and `sorted` hands back a copy.** SPEC.md
+  III.1.7(A) settled that pair — the plain verb mutates, the participle copies,
+  Swift's convention adopted because `!` had to leave identifiers so postfix
+  `!` could propagate an error — and the prelude did not implement it: `sort`
+  returned a copy and nothing mutated. It does now, and `sorted` is one line
+  over it.
+
+  Worth knowing when moving between the two libraries: Crystal names the same
+  pair `sort!` and `sort`, so `a.sort` copies there and sorts here. It is the
+  one call in this prelude that means something different under `--crystal`,
+  and the note is in `src/iyi/array.iyi` where somebody is standing when it
+  matters.
+
 - **A `using` that cannot deliver is refused where it is written.** A module
   header makes a type, and inside it that name means the module — so
   `using app/count::{Tally}` in a module called `tally` asks for a name it

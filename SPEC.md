@@ -3997,6 +3997,15 @@ Named honestly, so nobody mistakes this draft for complete.
     library iyi was going to write itself. It now also has to sit beside one it
     did not, and that is a cost the choice did not price.
 
+    **And the prelude was not following its own rule.** `Array#sort` returned a
+    copy and nothing mutated, which is Crystal's meaning under iyi's name. It
+    sorts in place now and `sorted` is the copy, as III.1.7(A) says. The
+    consequence is worth being blunt about: `a.sort` sorts here and copies
+    under `--crystal`, silently, because Crystal calls the mutating one
+    `sort!` and that name cannot be written here. It is the one call in this
+    prelude that changes meaning with the library, it is noted in
+    `src/iyi/array.iyi`, and `samples/iyi/basics.iyi` prints both halves.
+
     **What it costs.** R-1, for the required shard: it is read from source and
     the edit loop pays for it the way Crystal's does. Your own modules still
     write artifacts. And the two libraries are two modes on the reading side —
