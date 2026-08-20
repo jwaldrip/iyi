@@ -127,7 +127,7 @@ between two releases names no compiler.
   collector, and III.10 records how pcre2 left.
 
 - **Macro-level regex now runs on iyi's owned engine, with RE2 semantics.**
-  `src/compiler/crystal/rx.cr` is differentially verified against pcre2
+  `src/compiler/iyi/rx.cr` is differentially verified against pcre2
   (Appendix B #22). The price for a macro author is no in-pattern
   backreferences and no lookaround. A macro that uses one fails with a named
   error rather than meaning something else, and no pattern in a program or at

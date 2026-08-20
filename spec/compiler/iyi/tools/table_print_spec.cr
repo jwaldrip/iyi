@@ -1,5 +1,5 @@
 require "spec"
-require "compiler/crystal/tools/table_print"
+require "compiler/iyi/tools/table_print"
 
 private def assert_table(expected, &)
   actual = String::Builder.build do |builder|

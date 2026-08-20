@@ -13,7 +13,7 @@
 #   3. Pike VM, runs the program while tracking capture slots.
 #
 # Match extents and captures agree with the pcre2 the compiler used to link, and
-# `spec/compiler/crystal/rx_spec.cr` holds that agreement by running both
+# `spec/compiler/iyi/rx_spec.cr` holds that agreement by running both
 # engines over the same corpus. Agreement is with pcre2 as the stdlib builds it,
 # PCRE2_UTF | PCRE2_UCP, so `\w` reads é as a word character and é|b is not a
 # word boundary, because that is what every pattern the compiler used to run saw.

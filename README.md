@@ -662,7 +662,7 @@ marked PROPOSED are the parts that will move under you.
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
 | [`samples/iyi`](samples/iyi) | nine programs, eight documenting a part of it and one being a first half hour |
 | [`src/iyi`](src/iyi) | iyi's own library, 1,184 lines. `--crystal` swaps it for Crystal's |
-| [`src/compiler/crystal/iyimod.cr`](src/compiler/crystal/iyimod.cr) | the artifact format |
+| [`src/compiler/iyi/iyimod.cr`](src/compiler/iyi/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |
 | [CHANGELOG.md](CHANGELOG.md) | what is in a release, and what a later one has to keep faith with |

@@ -1,5 +1,5 @@
 require "spec"
-require "../../src/compiler/crystal/syntax"
+require "../../src/compiler/iyi/syntax"
 
 include Iyi
 

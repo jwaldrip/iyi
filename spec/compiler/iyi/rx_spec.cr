@@ -19,7 +19,7 @@
 # different engine than the one the compiler had.
 
 require "spec"
-require "compiler/crystal/rx"
+require "compiler/iyi/rx"
 
 # Renders an owned match the way the failure message shows it: no match, or the
 # whole match span and then every group's span and text. Groups that did not
@@ -131,7 +131,7 @@ describe Iyi::Rx do
       # for the ABI dispatch, linker stderr for the hint, api set names for the
       # mingw loader. The empty subject is appended by the driver below.
       compiler_patterns = {
-        # src/compiler/crystal/compiler.cr, expand_lib_flags: a backticked
+        # src/compiler/iyi/compiler.cr, expand_lib_flags: a backticked
         # command inside lib flags. Lazy, so "a `b` c `d` e" stops at the first
         # closing backtick; a greedy pair would run to the last one.
         {"`(.*?)`", false, ["gcc `pkg-config --libs openssl` -lssl", "`echo hi`", "``", "a `b` c `d` e", "plain flags, no command"]},
@@ -147,12 +147,12 @@ describe Iyi::Rx do
         {"cannot find -l(\\S+)\\b", false, ["ld: cannot find -lssl: No such file or directory", "cannot find -lfoo!", "cannot find -lcafé!", "cannot find -l!!!", "cannot find -la and cannot find -lb", "undefined symbol: main"]},
         {"unable to find library -l(\\S+)\\b", false, ["ld: unable to find library -lz", "unable to find library -lstdc++.so", "linked fine"]},
         {"library not found for -l(\\S+)\\b", false, ["clang: error: library not found for -lcurl", "library not found for -lpthread"]},
-        # src/compiler/crystal/exception.cr, leading_white_space. ^ anchors at
+        # src/compiler/iyi/exception.cr, leading_white_space. ^ anchors at
         # the subject start only (no multiline flag anywhere in the compiler),
         # so an indented second line does not match, and an all blank line has
         # no \S after the run.
         {"^(\\s+)\\S", false, ["    puts 1", "\t\tfoo bar", "   ", "no leading space", "a\n  b"]},
-        # src/compiler/crystal/codegen/abi.cr, initialize and the from dispatch.
+        # src/compiler/iyi/codegen/abi.cr, initialize and the from dispatch.
         {"apple", false, ["aarch64-apple-darwin24.5.0", "x86_64-apple-macosx", "x86_64-unknown-linux-gnu", "applesauce"]},
         {"windows", false, ["x86_64-w64-windows-gnu", "i686-pc-windows-msvc", "wasm32-unknown-unknown"]},
         {"x86_64.+windows-(?:msvc|gnu)", false, ["x86_64-w64-windows-gnu", "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "amd64-w64-windows-gnu"]},
@@ -162,24 +162,24 @@ describe Iyi::Rx do
         {"arm", false, ["arm-unknown-linux-gnueabihf", "armv7-none-eabi", "aarch64-apple-darwin24.5.0"]},
         {"avr", false, ["avr-unknown-unknown", "atmega"]},
         {"wasm32", false, ["wasm32-unknown-wasi", "wasm64-unknown-unknown"]},
-        # src/compiler/crystal/codegen/target.cr, freebsd_version. Unanchored,
+        # src/compiler/iyi/codegen/target.cr, freebsd_version. Unanchored,
         # so gnufreebsd13.2 reads 13 too; freebsdx.y has no digit run and must
         # not match anywhere later either.
         {"freebsd(\\d+)\\.\\d+", false, ["x86_64-unknown-freebsd13.2", "gnufreebsd13.2", "aarch64-unknown-freebsd14.0", "freebsdx.y", "x86_64-unknown-linux-gnu"]},
-        # src/compiler/crystal/semantic/semantic_visitor.cr, strip_source_suffix.
+        # src/compiler/iyi/semantic/semantic_visitor.cr, strip_source_suffix.
         # A pcre2 $ also matches just before one final newline, which is why
         # "src/foo.cr\n" strips and foo.crs does not.
         {"\\.(iyi|cr)$", false, ["src/foo.cr", "lib/bar.iyi", "src/foo.cr\n", "src/foo.txt", "foo.crs"]},
-        # src/compiler/crystal/semantic/suggestions.cr, SuggestableDefName. \A,
+        # src/compiler/iyi/semantic/suggestions.cr, SuggestableDefName. \A,
         # not ^ and not unanchored: a lowercase name past a newline still fails
         # because only position 0 can match.
         {"\\A[a-z_]", false, ["size", "_foo", "Foo", "1abc", "\nfoo"]},
-        # src/compiler/crystal/loader/mingw.cr, api_set?. The only anchored
+        # src/compiler/iyi/loader/mingw.cr, api_set?. The only anchored
         # pattern in the compiler. kernel32.dll and a trailing .txt fail the
         # anchor or the $, uppercase API- fails the literal prefix, and a final
         # newline is fine before $.
         {"^(?:api-|ext-)[a-zA-Z0-9-]*l\\d+-\\d+-\\d+\\.dll$", false, ["api-ms-win-crt-runtime-l1-1-0.dll", "ext-ms-win-shell32-l1-2-0.dll", "api-l1-1-0.dll", "kernel32.dll", "api-ms-win-crt-stdio-l1-1-0.dll.txt", "API-MS-WIN-crt-l1-1-0.dll", "api-ms-win-crt-runtime-l1-1-0.dll\n"]},
-        # src/compiler/crystal/tools/init.cr, the only ignore_case pattern in
+        # src/compiler/iyi/tools/init.cr, the only ignore_case pattern in
         # the compiler. Case folding reaches into the negated class: foo-BAR
         # does not match because B is a letter under /i, while digits do.
         {"[-_]([^a-z])", true, ["foo-2bar", "html_5", "foo-BAR", "foo-bar", "x_y"]},

@@ -21,7 +21,7 @@
 # base name, so a name that appears twice in different namespaces is conflated.
 # Types whose fields are all of unknown provenance are reported separately
 # rather than guessed at.
-require "compiler/crystal/syntax"
+require "compiler/iyi/syntax"
 
 # Mutable in the stdlib — a shared one of these is the data race the rule exists
 # to stop.

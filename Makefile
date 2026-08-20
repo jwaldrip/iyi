@@ -373,7 +373,7 @@ $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 # iyi: the front end on its own. Linking libLLVM costs 26 ms of load-time
 # initialisers whether or not anything generates code, and `--no-codegen` never
 # calls it — so this links none and starts in 6 ms rather than 39 (SPEC.md
-# 0.1.0, src/compiler/crystal/llvm_shim.cr).
+# 0.1.0, src/compiler/iyi/llvm_shim.cr).
 #
 # The host triple and the LLVM version are baked in from the compiler that has
 # LLVM, because without it there is nothing to ask.

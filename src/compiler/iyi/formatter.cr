@@ -1,7 +1,7 @@
 # This file exists so you can do:
 #
 # ```
-# require "compiler/crystal/formatter"
+# require "compiler/iyi/formatter"
 # ```
 #
 # and use Crystal's formatter programmatically, without

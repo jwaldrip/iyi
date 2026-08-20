@@ -1,6 +1,6 @@
 require "spec"
 require "llvm"
-require "compiler/crystal/codegen/abi/avr"
+require "compiler/iyi/codegen/abi/avr"
 
 {% if LibLLVM::BUILT_TARGETS.includes?(:avr) %}
   LLVM.init_avr

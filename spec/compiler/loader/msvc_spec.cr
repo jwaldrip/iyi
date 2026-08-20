@@ -3,7 +3,7 @@
 require "./spec_helper"
 require "../spec_helper"
 require "../../support/env"
-require "compiler/crystal/loader"
+require "compiler/iyi/loader"
 
 describe Iyi::Loader do
   describe ".parse" do

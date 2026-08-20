@@ -1,7 +1,7 @@
 # This file exists so you can do:
 #
 # ```
-# require "compiler/crystal/syntax"
+# require "compiler/iyi/syntax"
 # ```
 #
 # and use the syntax bits of Crystal (lexer, parser, visitor)

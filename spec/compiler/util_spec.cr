@@ -1,6 +1,6 @@
 require "spec"
 require "../support/tempfile"
-require "compiler/crystal/util"
+require "compiler/iyi/util"
 
 describe Crystal do
   # iyi: a name that is a prefix of another name is not a directory that

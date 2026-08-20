@@ -1,7 +1,7 @@
 require "spec"
 require "llvm"
-require "compiler/crystal/codegen/abi/x86_64"
-require "compiler/crystal/codegen/abi/x86_win64"
+require "compiler/iyi/codegen/abi/x86_64"
+require "compiler/iyi/codegen/abi/x86_win64"
 
 {% if LibLLVM::BUILT_TARGETS.includes?(:x86) %}
   LLVM.init_x86

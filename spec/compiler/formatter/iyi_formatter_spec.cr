@@ -1,5 +1,5 @@
 require "spec"
-require "../../../src/compiler/crystal/formatter"
+require "../../../src/compiler/iyi/formatter"
 
 # iyi: the formatter on iyi's own syntax.
 #

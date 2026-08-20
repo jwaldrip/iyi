@@ -1,8 +1,8 @@
 {% skip_file if flag?(:bits32) %}
 
 require "spec"
-require "compiler/crystal/formatter"
-require "compiler/crystal/command/format"
+require "compiler/iyi/formatter"
+require "compiler/iyi/command/format"
 require "../../../support/tempfile"
 
 private class BuggyFormatCommand < Iyi::Command::FormatCommand

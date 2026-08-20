@@ -1,6 +1,6 @@
 require "spec"
 require "llvm"
-require "compiler/crystal/codegen/abi/aarch64"
+require "compiler/iyi/codegen/abi/aarch64"
 
 {% if LibLLVM::BUILT_TARGETS.includes?(:aarch64) %}
   LLVM.init_aarch64

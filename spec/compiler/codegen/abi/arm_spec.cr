@@ -1,6 +1,6 @@
 require "spec"
 require "llvm"
-require "compiler/crystal/codegen/abi/arm"
+require "compiler/iyi/codegen/abi/arm"
 
 {% if LibLLVM::BUILT_TARGETS.includes?(:arm) %}
   LLVM.init_arm

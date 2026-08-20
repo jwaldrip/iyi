@@ -22,32 +22,32 @@
 # The order is `requires.cr`'s — annotatable, then `Program`, then the rest —
 # because `Program` is reopened by half the files here and whoever opens it
 # first decides what it inherits from.
-require "./crystal/annotatable"
-require "./crystal/program"
-require "./crystal/config"
-require "./crystal/crystal_path"
-require "./crystal/error"
-require "./crystal/exception"
-require "./crystal/formatter"
-require "./crystal/iyimod"
-require "./crystal/optimization_mode"
-require "./crystal/syntax/transformer"
-require "./crystal/progress_tracker"
-require "./crystal/semantic"
-require "./crystal/macros/*"
-require "./crystal/syntax"
-require "./crystal/types"
-require "./crystal/util"
-require "./crystal/warnings"
+require "./iyi/annotatable"
+require "./iyi/program"
+require "./iyi/config"
+require "./iyi/crystal_path"
+require "./iyi/error"
+require "./iyi/exception"
+require "./iyi/formatter"
+require "./iyi/iyimod"
+require "./iyi/optimization_mode"
+require "./iyi/syntax/transformer"
+require "./iyi/progress_tracker"
+require "./iyi/semantic"
+require "./iyi/macros/*"
+require "./iyi/syntax"
+require "./iyi/types"
+require "./iyi/util"
+require "./iyi/warnings"
 
 # Last, as the glob would have it: `@[Link]` is read by the front end, and the
 # annotation lives under `codegen/` because only a linker acts on it. It names
 # no LLVM.
-require "./crystal/codegen/link"
-require "./crystal/codegen/experimental"
-require "./crystal/codegen/ast"
-require "./crystal/codegen/types"
-require "./crystal/codegen/cache_dir"
+require "./iyi/codegen/link"
+require "./iyi/codegen/experimental"
+require "./iyi/codegen/ast"
+require "./iyi/codegen/types"
+require "./iyi/codegen/cache_dir"
 
 module Iyi::Front
   # The prelude a `.iyi` file gets, which is the same rule `crystal build`
