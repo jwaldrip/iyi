@@ -1,10 +1,22 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — unreleased
 
-Master is `0.2.0-dev`, and under the rule below that means every build of it
-interoperates with nothing but itself. That is the point: a version between two
-releases names no compiler.
+**A program chooses its library.** 0.1.0 had one, 1,184 lines of it, and that
+was most of what stood between the language and anybody's real program. It
+turned out not to be a library problem: a prelude is a library and the rules
+are the language, so a program can keep one and change the other. `--crystal`
+does, and there `require` means what it means in Crystal. Nine shards were
+swept through it and a Kemal server written in iyi serves HTTP; how many of the
+rest work is not something this release measured.
+
+Two more entries take the rules further out — `pub` reaches a macro and a
+constant — and closing each found the same hole underneath: a surface nobody
+wrote and nobody could refuse.
+
+Master is `0.2.0-dev`, and under the artifact rule below that means every build
+of it interoperates with nothing but itself. That is the point: a version
+between two releases names no compiler.
 
 ### Changed
 
@@ -37,12 +49,26 @@ releases names no compiler.
   switch, because what it writes is a boundary for a shard rather than this
   build's own modules.
 
-  The two libraries are two modes and do not mix on the reading side:
-  `--use-iyimod` needs iyi's own prelude. An artifact's object code numbers the
-  types its module made, which under Crystal's library include the standard
-  library's own, and a consumer compiling its own copy of that library has two
-  of everything. That was an LLVM module which would not verify; it is a
-  sentence now.
+  The two libraries are two modes and do not mix on the artifact side:
+  `--use-iyimod` and `--emit-iyimod` need iyi's own prelude. An artifact's
+  object code numbers the types its module made, which under Crystal's library
+  include the standard library's own, and a consumer compiling its own copy of
+  that library has two of everything. That was an LLVM module which would not
+  verify; it is a sentence now.
+
+  **Nine shards were swept through it**, each built twice — as an iyi program
+  and as a Crystal one, so that a difference is this fork's and a shared
+  failure is the ecosystem's. `kemal`, `db`, `ameba`, `habitat`,
+  `baked_file_system`, `radix`, `sqlite3`, the standard library's own
+  `json`/`yaml`/`uri`/`http`, and a program that round-trips
+  `JSON::Serializable` and writes a file. All nine behave the same in both
+  languages. One needed a word changed and it was the rule working: `habitat`'s
+  macro resolves the type it is handed by name, and a class an iyi module
+  leaves unmarked is private, so it needs `pub class`.
+
+  `samples/crystal/stdlib.iyi` is the program CI builds to keep this true: a
+  trait with a default, an `impl` on a generic, an error union with `!` and
+  `.or`, a `defer`, and JSON, YAML and URI in the same file.
 
 - **`pub` takes a constant.** `pub LIMIT = 42` is reachable through the
   module's name; an unmarked constant is the module's own and is refused by the
@@ -89,6 +115,29 @@ releases names no compiler.
   program failed to link, saying `undefined reference to Box(T)::new<Int32>`.
   The consumer's rule now matches the producer's. Reported after 0.1.0 went
   out.
+
+- **`String#size` counts when nobody counted.** Crystal reads `@length == 0` on
+  a non-empty string as "not counted yet" and scans; this prelude returned the
+  field. A string built by Crystal's own `to_json` therefore printed correctly
+  through iyi's `puts` and answered `size` **0** — no error, a wrong number.
+  Free for every string this prelude makes, because it fills the field. Found
+  while measuring what crosses between the two languages.
+
+- **A macro that cannot see a type says why.** An unresolved path stays a
+  `Path`, so every method a macro would call on the type is undefined on that,
+  and the message named `Path` rather than the type or the rule:
+  `undefined macro method 'Path#constant'`. It now asks whether the path names
+  a type that exists and is unexported, and says so when it does. Found by
+  `habitat`.
+
+- **The front end reads a `.iyi` file again.** Refusing `require` in a `.iyi`
+  file spares the prelude's own, and the flag that says so was set in the
+  driver but not in `crystal-front`, so the front-end binary refused the line
+  it had just written itself. It is bench-only and ships in nothing.
+
+- **A version bump takes effect.** `src/VERSION` and `src/IYI_VERSION` are
+  compiled in with `read_file`, and the build did not depend on them, so
+  changing the number changed nothing until something else did.
 
 ## 0.1.0 — 2026-08-18
 
