@@ -2330,6 +2330,7 @@ as valid is the worst failure mode a build cache has.
 | Header | magic, format version, compiler version, target triple, build flags |
 | Hashes | interface / implementation / private (see IV.3) |
 | Imports | DAG edges, each with the interface hash it was compiled against |
+| Requires | under `--crystal`, the library files the module required (Part V item 12b) |
 | Exports | types, signatures, traits, impls, constants |
 | Macro bodies | serialised AST for exported macros and derives |
 | Mono bodies | the bodies a consumer has to compile: source text, not IR yet |
@@ -2356,6 +2357,12 @@ consumer has to compile itself, `Initialiser` the module's own top-level code,
 `TypeIds` the types its object code numbers, `Constants` the names that code
 reads, and `MacroBodies` the macros a travelling body expands** (IV.1g). Every
 section the `Section` enum names is written now.
+
+`Requires` is the newest and belongs to the same rule as `TypeIds`: a module
+built with `--crystal` refers to Crystal's types by name, and only a program
+that required the same library has those names to define. The header also
+records *which* library a module was built against, and importing across the two
+is refused — Part V item 12b is why both are there.
 
 `MacroBodies` was the last one, and what put it there was a body that travels:
 the consumer compiles a block-taking `run`, `run` writes `twice(n)`, and `twice`
@@ -4114,9 +4121,9 @@ Named honestly, so nobody mistakes this draft for complete.
     `src/iyi/array.iyi`, and `samples/iyi/basics.iyi` prints both halves.
 
     **What it costs.** R-1, for the required shard: it is read from source and
-    the edit loop pays for it the way Crystal's does. And the two libraries are
-    two modes on the artifact side, which is the sharpest limit here: a program
-    cannot have Crystal's library *and* its own modules as artifacts.
+    the edit loop pays for it the way Crystal's does. The other cost — that a
+    program could not have Crystal's library *and* its own modules as
+    artifacts — was the sharpest limit here and is gone; item 12b is how.
 
     **Why, exactly — the first answer here was wrong.** It said the two builds
     would have "two of everything", which is not what happens. Taking the
@@ -4136,13 +4143,72 @@ Named honestly, so nobody mistakes this draft for complete.
       such helpers: type matching, constant reads and initialisers, class
       variable reads and initialisers, and a few more.
 
-    **And they do not all have the same answer.** `~match` is pure and could be
-    emitted into each unit that calls it, the way a closure's callee already
-    is. A class variable's initialiser cannot: two copies would initialise it
-    twice. So the pure ones can be copied and the stateful ones have to travel
-    as *names* the consumer emits, which is what `TypeIds` already does for
-    numbering. That is a format change and a codegen change, and it is the work
-    between here and a program that has both the ecosystem and R-1.
+    **And the split proposed here was the wrong one.** It said the pure helpers
+    could be copied into each unit and the stateful ones had to travel as
+    names. Item 12b is what happened when that was tried: the axis is not
+    purity, it is whose numbering — and the answer is the same for all of them.
+
+12b. **The ecosystem and R-1, together.** Item 12a ends by saying what stood
+    between a program and having both. Three things did, and they turned out to
+    be one thing asked three times: *a name in the module's object code that
+    only the consuming program can define.*
+
+    That is not a new question. `TypeIds` and `Constants` are already in the
+    format because of it — a type id belongs to the program rather than to the
+    module, so the module carries the *name* and the consumer supplies the
+    number. Everything below is that rule, applied where it had not been.
+
+    - **The main module's helpers.** `~match<IO+>` was the symbol. A unit that
+      travels calls it and an artifact carries the unit, not main. Copying it
+      would have been wrong for a reason worth stating: a match against a
+      virtual type compiles to a comparison against a *range of type ids*, and
+      those are the producer's numbers. A copy would have compared the
+      consumer's ids against the producer's range and answered wrongly, with
+      nothing to see. So the consumer emits them, with its own numbering,
+      exactly as it emits every type-id global — all of them rather than the
+      ones an object file asks for, because a build cannot see inside an object
+      file, and each is two compares.
+
+      This is what 12a's pure/stateful split got wrong. Purity was never the
+      question; the question was whose numbering, and once it is asked that way
+      the stateful helpers need no separate answer either — a constant's
+      initialiser already runs once, in the consumer, because `Constants`
+      already carries the name rather than the code.
+
+    - **The module's requires.** A module that requires `uri` is compiled
+      against `URI`, and its object code refers to `URI::Error.class:type_id`.
+      A consumer that required only `json` has no such type to number, and the
+      link fails on a name from a library nobody in the program ever asked for.
+      So the requires travel — `Requires`, format v20 — and the consumer
+      replays them, which makes its program a superset of the producer's. The
+      numbering is still the consumer's, so this adds types and imports nobody
+      else's ids.
+
+    - **The `!dbg` location**, which 12a already fixed.
+
+    **One thing had to be measured rather than argued.** A shared library is
+    only shared if there is one copy of its state, and "it linked" would be
+    just as true of a program with two copies of a lazily initialised constant
+    — a program that is wrong and says nothing. It is one copy: `STDOUT` and
+    `PROGRAM_NAME` are the same object on both sides of the boundary. The same
+    compiler mangles the same names, the linker folds the definitions, and a
+    lazily initialised constant goes through the global the consumer defines.
+    Both identities are asserted in the specs, because that is the property,
+    not a detail of it.
+
+    **What is refused now is a different thing, and it is sharper.** An
+    artifact records which library it was built against, and importing across
+    is refused by name in both directions. This one is not a limitation to be
+    lifted later: both worlds are compiled by the same compiler and mangle the
+    same names, so a mixed program would link — on the names that happen to
+    agree. `String` is a different type in each, and neither the linker nor
+    anything after it would say so.
+
+    **What it buys.** A shard is still read from source; that is 12a's cost and
+    R-1 charges it honestly. What changes is everything the program's author
+    writes: a program can require Kemal *and* compile its own modules against
+    their declarations, which is the combination the two features were each
+    half of.
 
 12. **The Crystal ecosystem, and what a shard would cost.** Ten thousand
     shards exist and none of them is written to iyi's rules, so "run them

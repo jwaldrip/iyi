@@ -4,6 +4,38 @@
 
 ### Added
 
+- **The ecosystem and R-1, together: `--crystal` and `.iyimod` now work in one
+  build.** A module that requires `json` compiles once into an artifact, and a
+  program that requires Kemal links against it without opening its source. The
+  two features were each half of the thing anybody actually wants.
+
+  Three things had to be answered, and they were the same question three times
+  — *a name in the module's object code that only the consuming program can
+  define*, which is the rule `TypeIds` was already in the format for.
+
+  - The main module's helpers, `~match<IO+>` first. The consumer emits them
+    with its own numbering rather than the artifact carrying them, because a
+    match against a virtual type compares against a range of type ids and those
+    numbers belong to the program. A carried copy would have compared the
+    consumer's ids against the producer's range and answered wrongly with
+    nothing to see.
+  - The module's requires. A module that required `uri` and a consumer that did
+    not left `URI::Error.class:type_id` undefined at link time. They travel now
+    — the new `Requires` section, format v20 — and the consumer replays them.
+  - The `!dbg` location, fixed below.
+
+  There is one copy of the library in the result, which was measured rather
+  than assumed: `STDOUT` and `PROGRAM_NAME` are the same object on both sides
+  of the boundary, and the specs assert it.
+
+- **A `.iyimod` records which library it was built against**, and importing
+  across the two is refused by name in both directions. This replaces the old
+  refusal, which was blunter and aimed at the wrong thing: `--emit-iyimod` and
+  `--use-iyimod` no longer need iyi's own prelude. What they need is for the
+  module and the program to agree on which library they mean. Both worlds are
+  compiled by the same compiler and mangle the same names, so a mixed program
+  would link — on the names that happen to agree.
+
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
   written against iyi's own 1,184-line library and nothing else. Every other
@@ -24,8 +56,8 @@
   refuses a call with no location inside a function that has debug info. It
   never fired under iyi's own library and fired at once under Crystal's, which
   is where it was found — while looking at whether artifacts and `--crystal`
-  can be used together. They still cannot, but the reason recorded in SPEC.md
-  Part V item 12a was wrong and is now the measured one.
+  can be used together. They now can; this was the first of the three things in
+  the way.
 
 ### Changed
 

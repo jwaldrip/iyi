@@ -449,11 +449,28 @@ maybe.as(String)        # or this
 Shard code is `.cr` and unaffected; this is only about the lines you write.
 
 **What it costs is R-1, for that dependency.** A required shard is read from
-source, so your edit loop pays for it the way Crystal's does. Your own modules
-are unaffected — but the two do not mix on the artifact side, and the compiler
-says so rather than half-working: `--emit-iyimod` and `--use-iyimod` need iyi's
-own prelude, because an artifact written against Crystal's library names types
-a consumer compiles its own copy of.
+source, so your edit loop pays for it the way Crystal's does.
+
+**Your own modules still get artifacts.** `--crystal` and `--use-iyimod` work
+together: a module that requires `json` compiles once into a `.iyimod`, and a
+program that requires Kemal links against it without opening its source.
+
+```console
+$ iyi build --crystal --emit-iyimod mods -o site site.iyi
+$ iyi build --crystal --use-iyimod mods -o site site.iyi
+```
+
+The artifact carries the requires the module made, and the program replays them
+— so a module that used `URI` brings `URI` with it. There is exactly one copy
+of the library in the result: `STDOUT` is the same object on both sides of the
+boundary, and so is every lazily initialised constant.
+
+**What the two libraries do not do is mix.** A `.iyimod` records which one it
+was built against, and importing across is refused by name. That refusal is not
+a limitation waiting to be lifted: both are compiled by the same compiler and
+mangle the same names, so a mixed program would link — on the names that happen
+to agree. `String` is a different type in each, and nothing after the linker
+would say so.
 
 **Nine shards were swept through it**, each built twice — as an iyi program and
 as a Crystal one, so that a difference is iyi's and a shared failure is
