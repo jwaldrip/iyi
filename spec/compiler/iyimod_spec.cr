@@ -1917,6 +1917,108 @@ describe Crystal::IyiMod do
     end
   end
 
+  # An artifact records the module it was written for, and nothing compared that
+  # to the module being imported. A `.iyimod` copied onto another module's path
+  # was adopted: its declarations were spliced in under its own name, and the
+  # module actually asked for stayed undefined. The failure surfaced at the
+  # first `using` as "can't find module 'm1/a'", which sends the reader off to
+  # write `m1/a.iyi` when the file was there, valid, and already read.
+  it "refuses an artifact that declares a different module" do
+    with_tempdir("iyimod_module_name") do
+      Dir.mkdir_p "m1"
+      File.write "m1/a.iyi", <<-IYI
+        module m1/a
+
+        pub def v : Int32
+          1
+        end
+        IYI
+      File.write "m1/b.iyi", <<-IYI
+        module m1/b
+
+        pub def v : Int32
+          2
+        end
+        IYI
+      File.write "usea.iyi", <<-IYI
+        module usea
+
+        import m1/a
+        using m1/a
+
+        puts v
+        IYI
+      File.write "useb.iyi", <<-IYI
+        module useb
+
+        import m1/b
+        using m1/b
+
+        puts v
+        IYI
+      source = Crystal::Compiler::Source.new(File.expand_path("usea.iyi"), File.read("usea.iyi"))
+
+      # Both artifacts, each written for the module it names.
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-a")
+      `./from-a`.chomp.should eq "1"
+
+      other = Crystal::Compiler::Source.new(File.expand_path("useb.iyi"), File.read("useb.iyi"))
+      producer_b = create_spec_compiler
+      producer_b.prelude = "iyi/prelude"
+      producer_b.emit_iyimod = "mods"
+      producer_b.compile other, File.expand_path("from-b")
+      `./from-b`.chomp.should eq "2"
+
+      # The sources go away, so the artifacts are all there is. That is what
+      # puts the mismatch beyond reach of every other check: with `m1/a.iyi`
+      # present, the source hash catches the wrong file and blames the source
+      # for having changed, which is a misdiagnosis of its own.
+      Dir.mkdir_p "away"
+      File.rename "m1", File.join("away", "m1")
+
+      # `m1/b`'s artifact under `m1/a`'s name. Every checksum in it is intact and
+      # the only thing wrong with it is which module it is.
+      File.copy File.join("mods", "m1", "b.iyimod"), File.join("mods", "m1", "a.iyimod")
+
+      reader = create_spec_compiler
+      reader.prelude = "iyi/prelude"
+      reader.use_iyimod = "mods"
+      ex = expect_raises(Crystal::TypeException, /declares module "m1\/b", not "m1\/a"/) do
+        reader.compile source, File.expand_path("mismatched")
+      end
+
+      # The file, so the reader knows which one to go and look at.
+      ex.message.to_s.should contain File.join("mods", "m1", "a.iyimod")
+
+      # At the `import`, which is where the artifact is read, and not at the
+      # `using` on the next line where the old misdiagnosis landed.
+      ex.line_number.should eq 3
+      ex.message.to_s.should_not match(/can't find module/)
+
+      # A build that also writes artifacts repairs it once the source is back:
+      # the module is compiled from it and the wrong file written over.
+      File.rename File.join("away", "m1"), "m1"
+      rewriter = create_spec_compiler
+      rewriter.prelude = "iyi/prelude"
+      rewriter.use_iyimod = "mods"
+      rewriter.emit_iyimod = "mods"
+      rewriter.compile source, File.expand_path("repaired")
+      `./repaired`.chomp.should eq "1"
+      Crystal::IyiMod.read_summary(File.join("mods", "m1", "a.iyimod"))
+        .module_name.should eq "m1/a"
+
+      # And what it wrote is read again without a word.
+      again = create_spec_compiler
+      again.prelude = "iyi/prelude"
+      again.use_iyimod = "mods"
+      again.compile source, File.expand_path("cached")
+      `./cached`.chomp.should eq "1"
+    end
+  end
+
   # IV.3's whole point, in the shape that shows it: two programs over one graph,
   # so that a dependency can be rebuilt while a dependent is not touched. A body
   # edit under `app/outer` must leave its artifact valid; a surface edit must

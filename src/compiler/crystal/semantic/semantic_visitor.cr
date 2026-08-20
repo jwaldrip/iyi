@@ -381,6 +381,25 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
         return ex.message.to_s
       end
 
+    # iyi: the file is not this module's artifact at all (SPEC.md IV.6). A
+    # module's path is its file's path, so the name in the header and the path
+    # the file was found at are the same fact written twice, and this reader
+    # had never compared them. Copy `m1/b.iyimod` onto `m1/a.iyimod` and the
+    # import took it: `m1/b`'s declarations were spliced in under `m1/b`, and
+    # `m1/a`, asked for and found and read and checksummed, stayed undefined.
+    # The first `using m1/a` then reported "can't find module 'm1/a'", which
+    # sends the reader off to write `m1/a.iyi`: the one action that cannot
+    # help, because the file was there and the compiler had already read it.
+    #
+    # Asked above the hashes, because identity does not need them. An artifact
+    # from before the hashes cannot say whether it has gone stale, but it can
+    # still say which module it is, and a wrong file is wrong whatever it
+    # hashed to.
+    unless summary.module_name == module_path
+      return "#{candidate} declares module \"#{summary.module_name}\", " \
+             "not \"#{module_path}\""
+    end
+
     # An artifact from before the hashes existed cannot answer, and IV.5's
     # equality on the header is checked where the artifact is read rather than
     # here: this is about whether the file still describes its module, not
