@@ -20,6 +20,14 @@ between two releases names no compiler.
 
 ### Changed
 
+- **`iyi mod diff` says whether a change reaches a module's consumers.** The
+  three hashes an artifact carries already answered it and nothing asked them.
+  It compares two `.iyimod` files, says which of interface, implementation and
+  source moved — with what each of the three means, because the middle one is
+  the surprising one — and names the exports that came and went when the
+  interface is what moved. `--exit-code` exits 1 in that case, which is
+  `git diff`'s spelling and its reason: the answer is not a failure.
+
 - **An iyi program is run on three targets every build, not one.** It compiled
   for eight and was tested on one, which is a weak thing to call portability.
   CI now cross-compiles `hello.iyi` for musl and for aarch64, links each with

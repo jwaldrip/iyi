@@ -250,9 +250,27 @@ agent needs from a language is a boundary it can read and a loop it can afford.
 Both are here for the same reason a person gets them: a module's interface is a
 *file* rather than a convention, so a tool can read what a module offers without
 the repository that produced it, and check a change against it without building
-the world. Artifacts are byte-identical between two builds of the same source
-(IV.3), so "did this change the interface" is a comparison rather than a
-judgement. And the loop is short enough to sit inside one.
+the world.
+
+"Did this change reach anybody?" is therefore a question with an answer:
+
+```console
+$ iyi mod diff before/app/greeter.iyimod after/app/greeter.iyimod
+module          app/greeter
+interface       changed    what a consumer type-checks against
+implementation  unchanged  the bodies a consumer compiles: macros, generics, the initialiser
+source          changed    the file
+
+  gone   def polite(name : String) : String
+  gone   def title : String
+  new    def polite(name : String, formal : Bool) : String
+
+Consumers have to be rebuilt: what they compile against moved.
+```
+
+Rename a local and it says the interface is unchanged; add a parameter and it
+says what moved and who it reaches. `--exit-code` makes that a branch in a
+script. Nothing here is agent-specific: it is R-1's boundary, asked a question.
 
 What is not here is anything an agent could not have got from the rules: no
 protocol, no server, no special mode. If that turns out to be the wrong bet, it
