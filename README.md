@@ -697,7 +697,8 @@ other platforms, and CI type-checks eight targets.
 **Who is this for right now?** Somebody who wants to check the claim, read the
 design, or argue with a number. `--crystal` moved the other line: a program
 that requires shards is buildable today, and what should keep you away is the
-language rather than the library — it is 0.2.0, and the parts of SPEC.md
+language rather than the library — master is 0.3.0-dev, and the parts of
+SPEC.md
 marked PROPOSED are the parts that will move under you.
 
 ## What is not here

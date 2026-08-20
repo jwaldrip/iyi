@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+Master is `0.3.0-dev`. Under the artifact rule 0.2.0 introduced, that means
+every build of it interoperates with nothing but itself: a version between two
+releases names no compiler, so it cannot be handed one released artifact and
+told they match.
+
 ## 0.2.0 — 2026-08-20
 
 **A program chooses its library.** 0.1.0 had one, 1,184 lines of it, and that
