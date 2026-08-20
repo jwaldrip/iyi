@@ -186,9 +186,9 @@ primitives_spec: $(O)/primitives_spec$(EXE) ## Run primitives specs
 # of the two, and they disagree about a commit while agreeing about every line
 # of code. Asked here instead, once, before the specs run.
 .PHONY: check_daemon_matches
-check_daemon_matches: $(O)/crystal$(EXE) $(O)/$(CRYSTAL_DAEMON_BIN)
+check_daemon_matches: $(O)/crystal$(EXE) $(O)/$(IYI_DAEMON_BIN)
 	@client="$$($(O)/crystal$(EXE) --version | head -1)"; \
-	 daemon="$$($(O)/$(CRYSTAL_DAEMON_BIN) --version | head -1)"; \
+	 daemon="$$($(O)/$(IYI_DAEMON_BIN) --version | head -1)"; \
 	 if [ "$$client" != "$$daemon" ]; then \
 	   echo "the daemon and the compiler are different builds, so every daemon spec will fail:"; \
 	   echo "  compiler: $$client"; \
