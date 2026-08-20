@@ -179,22 +179,22 @@ primitives_spec: $(O)/primitives_spec$(EXE) ## Run primitives specs
 # of the two, and they disagree about a commit while agreeing about every line
 # of code. Asked here instead, once, before the specs run.
 .PHONY: check_daemon_matches
-check_daemon_matches: $(O)/crystal$(EXE) $(O)/$(CRYSTAL_DAEMON_BIN) $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
-	@for pair in "crystal$(EXE):$(CRYSTAL_DAEMON_BIN)" "iyi$(EXE):$(IYI_DAEMON_BIN)"; do \
-	   bin="$${pair%%:*}"; server="$${pair#*:}"; \
-	   client="$$($(O)/$$bin --version | head -1)"; \
-	   daemon="$$($(O)/$$server --version | head -1)"; \
-	   if [ "$$client" != "$$daemon" ]; then \
-	     echo "the daemon and the compiler are different builds, so every daemon spec will fail:"; \
-	     echo "  compiler: $$client"; \
-	     echo "  daemon:   $$daemon"; \
-	     echo "rebuild the one that is behind: make -B $${server%$(EXE)}"; \
-	     exit 1; \
-	   fi; \
-	 done
+check_daemon_matches: $(O)/crystal$(EXE) $(O)/$(CRYSTAL_DAEMON_BIN)
+	@client="$$($(O)/crystal$(EXE) --version | head -1)"; \
+	 daemon="$$($(O)/$(CRYSTAL_DAEMON_BIN) --version | head -1)"; \
+	 if [ "$$client" != "$$daemon" ]; then \
+	   echo "the daemon and the compiler are different builds, so every daemon spec will fail:"; \
+	   echo "  compiler: $$client"; \
+	   echo "  daemon:   $$daemon"; \
+	   echo "rebuild the one that is behind: make -B crystal-daemon"; \
+	   exit 1; \
+	 fi
 
 .PHONY: cli_spec
-cli_spec: $(O)/cli_spec$(EXE) check_daemon_matches ## Run compiler CLI specs
+# `$(O)/iyi` too: one spec here runs `iyi daemon start` to read the name it
+# looks its server up by. Not `iyi-daemon` — that spec is about the lookup
+# failing, so a server would be the wrong thing to have.
+cli_spec: $(O)/cli_spec$(EXE) check_daemon_matches $(O)/iyi$(EXE) ## Run compiler CLI specs
 	$(O)/cli_spec$(EXE) $(SPEC_FLAGS)
 
 .PHONY: simple_smoke_test

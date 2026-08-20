@@ -250,6 +250,26 @@ module Crystal
       program.crystal_path = path
       program.compiler = self
       program.progress_tracker = @progress_tracker
+
+      # This path never runs `new_program`, so everything that method decides
+      # about a build was decided by whoever analysed the prelude — a
+      # `Compiler.new` in a daemon, with none of this build's switches.
+      #
+      # Most of it is safe by construction: the flags, the target, the
+      # optimisation mode, `debug`, `static` and the prelude itself are all in
+      # `prelude_cache_key`, so an analysis that differs in any of them is a
+      # different analysis. These are the ones that are not, and leaving them
+      # was not a degradation but a **silent lie**: `--use-iyimod` was accepted
+      # and ignored, and the build compiled every module from source while
+      # saying nothing.
+      program.iyi_module_dir = @use_iyimod
+      program.iyi_wants_object_code = !@no_codegen
+      program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
+      program.warnings = @warnings
+      program.color = color?
+      program.stdout = stdout
+      program.show_error_trace = show_error_trace?
+
       yield program
 
       node = @progress_tracker.stage("Parse") do

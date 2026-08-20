@@ -176,6 +176,46 @@ describe "`crystal daemon`" do
     end
   end
 
+  # A fifth thing the daemon forgot, and the worst-behaved of them: the path
+  # that adopts a preanalysed prelude never runs `new_program`, so every switch
+  # that method turns into a setting on the program was whatever the *daemon*
+  # had — which is none of them. Most are safe because they are in the prelude's
+  # cache key. `--use-iyimod` is not: it was accepted, ignored, and the build
+  # compiled every module from source without a word.
+  #
+  # Caught here by deleting the module's source, which is the only way to tell
+  # the two apart from outside.
+  it "compiles an import from its artifact, as a normal build does" do
+    with_daemon do |socket|
+      with_tempfile("daemon-iyimod") do |dir|
+        Dir.mkdir_p(File.join(dir, "app"))
+        File.write(File.join(dir, "app", "twice.iyi"), <<-IYI)
+          module app/twice
+
+          pub def twice(n : Int32) : Int32
+            n + n
+          end
+          IYI
+        File.write(File.join(dir, "main.iyi"), <<-IYI)
+          module main
+
+          import app/twice
+
+          puts App::Twice.twice(21)
+          IYI
+
+        daemon_build(socket, "--emit-iyimod", "mods", "-o", "out", "main.iyi", chdir: dir)
+          .should be_success
+        File.delete(File.join(dir, "app", "twice.iyi"))
+
+        daemon_build(socket, "--use-iyimod", "mods", "-o", "out", "main.iyi", chdir: dir)
+          .should be_success
+        Process.capture_result(File.join(dir, "out"))
+          .should(be_success).output.should(eq("42\n"))
+      end
+    end
+  end
+
   it "reports a semantic error exactly as a normal build does" do
     with_daemon do |socket|
       fixture = fixture_path("semantic-error.cr")
