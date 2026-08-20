@@ -3941,6 +3941,21 @@ Named honestly, so nobody mistakes this draft for complete.
     it never had it. What stays: the *macro* interpreter, which is a different
     thing that runs at compile time and is what makes `{% %}` work.
 
+12c. **Portability, moved from compiled to run.** An iyi program produced code
+    for eight targets and was tested on one, which is the weakest kind of
+    portability claim: the code generator not objecting. Three of the eight now
+    run in CI every build — x86-64 glibc natively, x86-64 musl in an Alpine
+    container, aarch64 under emulation — and the check is that each prints what
+    the same program printed on the machine that compiled it.
+
+    What makes it cheap is the same thing that makes an artifact linkable: the
+    object is produced here and linked there with the target's own `cc` and
+    `libgc`, which is the command `--cross-compile` already prints. An iyi
+    program needs no more of a target than a C toolchain and a collector.
+
+    Darwin and Windows are the five still unrun, and they need a linker and a
+    runtime this workflow does not have.
+
 12b. **What the library costs at run time, and the flattering answer that was
     wrong.** The tagline says Performance, and until now every number under it
     was about compiling. `bench/runtime.py` runs the same program under both

@@ -237,6 +237,83 @@ jobs:
           done
           exit $status
 
+  # Portability, taken past "the code generator has no objection". The README
+  # says an iyi program compiles for eight targets and is tested on one; these
+  # two jobs move two of the other seven from compiled to *run*.
+  #
+  # Split in two because a job with a `container:` cannot run docker, and
+  # running the program means running it somewhere else: the object is produced
+  # here, under the compiler's own image, and linked and run there.
+  cross-objects:
+    needs: build
+    runs-on: ubuntu-24.04
+    container:
+      image: crystallang/crystal:1.21.0-build
+    name: "Objects for other targets"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: crystal
+          path: .build
+      - run: chmod +x .build/crystal
+      - name: Build `iyi`
+        run: make -o .build/crystal iyi
+
+      # What the program prints here is what it has to print there. Taken from
+      # a native run rather than written down, so the two cannot drift.
+      - name: Cross-compile hello for musl and aarch64
+        run: |
+          mkdir -p cross
+          ./bin/iyi run samples/iyi/hello.iyi > cross/expected.txt
+          ./bin/iyi build --cross-compile --target x86_64-linux-musl \
+            -o cross/hello-musl samples/iyi/hello.iyi
+          ./bin/iyi build --cross-compile --target aarch64-linux-gnu \
+            -o cross/hello-aarch64 samples/iyi/hello.iyi
+          ls -l cross
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cross-objects
+          path: cross/
+
+  cross-run:
+    needs: cross-objects
+    runs-on: ubuntu-24.04
+    name: "An iyi program, run on musl and on aarch64"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-objects
+          path: cross
+
+      # aarch64 runs under emulation; musl runs natively and only the libc
+      # differs. Both link the object with the target's own `cc` and `libgc`,
+      # which is the command `--cross-compile` printed.
+      - uses: docker/setup-qemu-action@v3
+
+      - name: musl, natively
+        run: |
+          docker run --rm -v "$PWD/cross:/w" -w /w alpine:3.20 sh -c '
+            apk add --no-cache build-base gc-dev > /dev/null &&
+            cc hello-musl.o -o hello-musl -lgc -lpthread &&
+            ./hello-musl > got.txt
+          '
+          diff cross/expected.txt cross/got.txt && echo "musl: same output"
+
+      - name: aarch64, under emulation
+        run: |
+          docker run --rm --platform linux/arm64 -v "$PWD/cross:/w" -w /w \
+            debian:bookworm sh -c '
+              apt-get update > /dev/null 2>&1 &&
+              apt-get install -y --no-install-recommends gcc libgc-dev > /dev/null 2>&1 &&
+              gcc hello-aarch64.o -o hello-aarch64 -lgc -lpthread &&
+              ./hello-aarch64 > got.txt
+            '
+          diff cross/expected.txt cross/got.txt && echo "aarch64: same output"
+
   binary:
     needs: build
     runs-on: ubuntu-24.04

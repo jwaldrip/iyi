@@ -20,6 +20,13 @@ between two releases names no compiler.
 
 ### Changed
 
+- **An iyi program is run on three targets every build, not one.** It compiled
+  for eight and was tested on one, which is a weak thing to call portability.
+  CI now cross-compiles `hello.iyi` for musl and for aarch64, links each with
+  the target's own `cc` and `libgc` — the command `--cross-compile` prints —
+  and runs them: in an Alpine container and under emulation. The check is that
+  each prints what the same program printed on the machine that compiled it.
+
 - **`bench/runtime.py` measures what the library costs at run time.** The two
   libraries are within noise where they do the same work; `Hash` is 6x ahead
   and does less; `String` is 1.64x behind. The first reading said string

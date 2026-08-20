@@ -16,7 +16,7 @@ that rule and what it costs.
 |---|---|
 | **Developer experience** | edit one module in a 7,208-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
 | **Agentic experience** | a module's interface is a file, not a convention: `iyi mod dump` prints it, and a consumer type-checks against it with the source deleted |
-| **Portability** | an iyi program compiles for **eight targets**, from `aarch64-darwin` to `x86_64-windows-msvc`. Only Linux x86-64 is tested end to end |
+| **Portability** | an iyi program compiles for **eight targets** and is **run** on three of them every build: x86-64 glibc, x86-64 musl, and aarch64 under emulation |
 | **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s**. At run time the two libraries are within noise where they do the same work |
 | **Efficiency** | that `hello` is a **17 KB** binary that starts in **1.2 ms**; the same program with Crystal's library is 972 KB and 3.4 ms |
 
@@ -259,12 +259,21 @@ protocol, no server, no special mode. If that turns out to be the wrong bet, it
 will be because the rules were not enough, and that is a thing to measure rather
 than to promise.
 
-**Portability — compiles for eight, tested on one.** An iyi program produces
+**Portability — compiles for eight, runs on three.** An iyi program produces
 code for `x86_64-linux-gnu`, `x86_64-linux-musl`, `aarch64-linux-gnu`,
 `arm-linux-gnueabihf`, `x86_64-darwin`, `aarch64-darwin`, `x86_64-w64-mingw32`
 and `x86_64-windows-msvc`, and CI type-checks the library for all eight every
-build. Only Linux x86-64 is built, run and measured. Treat the other seven as
-"the code generator has no objection", which is what they are.
+build.
+
+Three of them are *run*, also every build, and the check is that they print
+what the same program printed on the machine that compiled them: x86-64 glibc
+natively, **x86-64 musl** in an Alpine container, and **aarch64** under
+emulation. The object is cross-compiled here and linked there with the target's
+own `cc` and `libgc`, which is the command `--cross-compile` prints.
+
+The other five are still "the code generator has no objection". Darwin and
+Windows need a linker and a runtime this workflow does not have, and until they
+run somewhere, that is what they are worth.
 
 **Performance — Crystal's backend, and now one measurement of its own.**
 Native code through LLVM, the same GC. `python3 bench/runtime.py` runs the same
