@@ -27,15 +27,23 @@ between two releases names no compiler.
   has fewer roots to scan than a 972 KB one — so the bench reports both columns
   and the honest one is the second.
 
-- **iyi describes itself as a language rather than as a fork.** "A language
-  built for Developer & Agentic Experience, Portability, Performance, and
-  Efficiency", and README says what stands behind each of the four and what
+- **iyi describes itself as its own language, compatible with Crystal.** "A
+  language built for Developer & Agentic Experience, Portability, Performance,
+  and Efficiency", and README says what stands behind each of the four and what
   does not: the edit loop and the artifact are built, portability means eight
-  targets that compile and one that is tested, run-time performance is
-  Crystal's and unmeasured here, and the agentic claim is a mechanism rather
-  than a result. `iyi version` reads `iyi 0.2.0-dev (from Crystal 1.22.0-dev
-  …)` — the name first and the provenance in brackets, which is where a
-  licence obligation belongs and where a definition does not.
+  targets that compile and one that is tested, the run-time measurement is new
+  and says the two libraries are within noise where they do the same work, and
+  the agentic claim is a mechanism rather than a result.
+
+  Compatibility is stated as something checkable and in one direction: the same
+  compiler builds `.cr` files, an iyi program can `require` a shard with
+  `--crystal`, and a Crystal program cannot require an iyi module, because R-2's
+  written types and R-3's closed types are what an artifact is made of.
+
+  `iyi version` reads `iyi 0.2.0-dev (built on Crystal 1.22.0-dev …)`: the
+  language first and what it is built on after. The licence and NOTICE.md are
+  unchanged, because Apache 2.0's attribution is an obligation rather than a
+  description.
 
 - **An artifact is read by the release that wrote it, not by the build.** A
   `.iyimod` was locked to the exact compiler build, commit and all, so two

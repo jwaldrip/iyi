@@ -1,11 +1,10 @@
 # iyi: the compiler under its own name.
 #
 # Everything here delegates to `Crystal::Command`, which is the same compiler
-# doing the same work — the compiler is a fork of Crystal's and this file does
-# not pretend otherwise, in its version line least of all. What it changes is
-# the surface a person meets: the commands iyi has, a usage line that names
-# them, and a version that puts the language first and its provenance in
-# brackets after it.
+# doing the same work: iyi's compiler is built on Crystal's, and the version
+# line says so rather than hiding it. What this file changes is the surface a
+# person meets — the commands iyi has, a usage line that names them, and a
+# version that puts the language first and what it is built on after.
 #
 # The commands left out are left out on purpose. `init` and `spec` belong to a
 # language with a package layout and a spec runner, and iyi has neither. The
@@ -72,9 +71,9 @@ module Iyi
 
   def self.description : String
     String.build do |io|
-      # The name first, then what it is built from. Both, because the licence
-      # requires the second and the language is not the first's dialect.
-      io << "iyi " << VERSION << " (from " << Crystal::Config.description.lines.first << ")"
+      # The name first, then what it is built on. Both, because the licence
+      # requires the second and the language is not the second's dialect.
+      io << "iyi " << VERSION << " (built on " << Crystal::Config.description.lines.first << ")"
       io << "\n\nThe compiler was not built in release mode." unless Crystal::Config.release_mode?
     end
   end
@@ -97,7 +96,7 @@ module Iyi
       puts description
       exit
     when .in?(CRYSTAL_ONLY)
-      STDERR.puts "iyi has no `#{command}`: it belongs to Crystal, which this compiler is a fork of."
+      STDERR.puts "iyi has no `#{command}`: it belongs to Crystal, which this compiler is also built on."
       STDERR.puts "Run it with the `crystal` binary in this checkout if you need it."
       exit 1
     when .in?(DELEGATED)

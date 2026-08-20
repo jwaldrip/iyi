@@ -9,7 +9,8 @@ description: |
   A language built for Developer & Agentic Experience, Portability,
   Performance, and Efficiency. A module is the unit of compilation and is
   compiled against its dependencies' declarations, never their bodies.
-  A fork of the Crystal compiler, and Apache 2.0 with it.
+  Compatible with Crystal and its own language. The compiler is built on
+  Crystal's and is Apache 2.0 with it.
 
 crystal: ">= 1.0"
 

@@ -4,8 +4,10 @@
 Performance, and Efficiency.** This document is the design under that sentence:
 one rule — a module is compiled against its dependencies' declarations, never
 their bodies — and what every other part of a language has to become for it to
-hold. The compiler is a fork of Crystal's, which is a fact about provenance
-rather than about the language; the rules below are what Crystal does not have.
+hold. iyi is compatible with Crystal — the same compiler builds `.cr` files and
+an iyi program can require a shard — and it is its own language, because the
+rules below are ones Crystal does not have and cannot have. The compiler being
+built on Crystal's is a fact about provenance rather than about the language.
 
 **Status: draft for discussion. Parts of it are built. Each section says which,
 and a heading that does not say so is a heading to distrust.** What 0.1.0 needs
@@ -3879,7 +3881,7 @@ Named honestly, so nobody mistakes this draft for complete.
     Two smaller things came out of the same hour. A codegen thread that raised
     used to print its exception and leave the build to fail later at the link,
     so the failure is now kept and raised as what it is. And it is worth saying
-    what the bug was not: not the artifact's, not this fork's, and not the
+    what the bug was not: not the artifact's, not iyi's, and not the
     threads'. It is upstream, any Crystal user who builds two things at once can
     reach it, and that is where the fix belongs as well.
 
@@ -3976,7 +3978,7 @@ Named honestly, so nobody mistakes this draft for complete.
     program that requires Kemal. What changes is what a program *has*.
 
     **Swept across nine shards**, each built twice — as an iyi program and as a
-    Crystal one, so that a difference is this fork's and a shared failure is
+    Crystal one, so that a difference is iyi's and a shared failure is
     the ecosystem's: `kemal`, `db`, `ameba`, `habitat`, `baked_file_system`,
     `radix`, `sqlite3`, the standard library's own `json`/`yaml`/`uri`/`http`,
     and a program that round-trips `JSON::Serializable`, parses YAML and writes

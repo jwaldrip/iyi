@@ -20,9 +20,14 @@ that rule and what it costs.
 | **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s**. At run time the two libraries are within noise where they do the same work |
 | **Efficiency** | that `hello` is a **17 KB** binary that starts in **1.2 ms**; the same program with Crystal's library is 972 KB and 3.4 ms |
 
-iyi is a fork of [Crystal](https://crystal-lang.org) and says so in its licence,
-its NOTICE and its version line. What it is not is a dialect: the rules below
-are the language, and they are what Crystal does not have.
+**iyi is its own language, and it is compatible with
+[Crystal](https://crystal-lang.org).** Compatible in a way you can check: the
+same compiler builds `.cr` files, `iyi build --crystal` gives a program
+Crystal's standard library, and `require "kemal"` in an iyi file serves HTTP.
+Its own in a way you can also check: a `.iyi` file has rules Crystal does not
+have and refuses things Crystal accepts, and those rules are the whole of what
+follows. The compiler is built on Crystal's, which is recorded where it belongs
+— the [licence](LICENSE) and [NOTICE.md](NOTICE.md).
 
 Here is the program the numbers below are about. One script writes it three
 times, in iyi, in Crystal and in Go, from the same set of numbers:
@@ -423,7 +428,7 @@ own prelude, because an artifact written against Crystal's library names types
 a consumer compiles its own copy of.
 
 **Nine shards were swept through it**, each built twice — as an iyi program and
-as a Crystal one, so that a difference is this fork's and a shared failure is
+as a Crystal one, so that a difference is iyi's and a shared failure is
 the ecosystem's. `kemal`, `db`, `ameba`, `habitat`, `baked_file_system`,
 `radix`, `sqlite3`, the standard library's own `json`/`yaml`/`uri`/`http`, and
 a program that round-trips `JSON::Serializable` and writes a file. All nine
@@ -596,6 +601,13 @@ other three with an error that never mentioned the artifact.
 
 ## Coming from Crystal
 
+**Both directions of "compatible", stated first.** The same compiler builds
+`.cr` files unchanged, and `iyi build --crystal` lets an iyi program `require`
+any of them — Kemal, `db`, `ameba`, the standard library. The direction that
+does not work is a Crystal program requiring an iyi module: R-2's written types
+and R-3's closed types are what an artifact is made of, and a `.cr` file
+provides neither. So iyi consumes Crystal, and Crystal does not consume iyi.
+
 The syntax is Crystal's. What moved is where things may be written, and each
 move is one of the four rules:
 
@@ -620,17 +632,25 @@ runs it under its own name. The rules above apply to `.iyi` files.
 `.iyi` file has rules Crystal does not have and refuses things Crystal accepts:
 a module header that makes the file a compilation unit, `pub` with types on
 everything exported, no open classes, `impl` where the trait or the type lives,
-errors as ordinary union members. It began as a fork because the question cannot
-be asked as a patch — separate compilation is not a feature you add to a
-language with open classes, it is a rule the language is designed around — and
-it stays a fork in its licence and its provenance, which is where that belongs.
+errors as ordinary union members. Separate compilation is not a feature you add
+to a language with open classes; it is a rule a language is designed around, and
+these are those rules.
+
+**What does "Crystal-compatible" mean, exactly?** Three things, each of them
+checkable. The same compiler builds `.cr` files unchanged — nine shards were
+swept through it, Kemal among them. An iyi program can `require` any of them
+with `--crystal`, and gets Crystal's standard library with it. And the syntax
+under the rules is Crystal's: blocks, unions, nil-safety, macros, local
+inference. What is not compatible is the direction back — a Crystal program
+cannot `require` an iyi module, because R-2's written types and R-3's closed
+types are what the artifact is made of.
 
 **Is this meant to replace Crystal?** No. Crystal is not going to drop open
 classes, and it should not.
 
-**Will it merge back?** The bug fixes this fork found in Crystal's own
-compiler should, and they are separate commits for that reason. The rules will
-not, and are not offered.
+**Will it merge back?** The bug fixes found in Crystal's own compiler while
+building iyi should, and they are separate commits for that reason. The rules
+will not, and are not offered.
 
 **Can I use shards?** Yes, with `--crystal`, which gives the program Crystal's
 standard library and makes `require` mean what it means there. Nine shards were
@@ -697,8 +717,10 @@ marked PROPOSED are the parts that will move under you.
 
 ## Licence and provenance
 
-iyi is a fork of the Crystal compiler and carries Crystal's licence and
-copyright: Apache 2.0, Copyright 2012-2026 Manas Technology Solutions. See
+iyi's compiler is built on the Crystal compiler and carries Crystal's licence
+and copyright: Apache 2.0, Copyright 2012-2026 Manas Technology Solutions. See
 [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md). Everything here that is not
-Crystal's is a change to Crystal's source, and the compiler still reports itself
-as `Crystal 1.22.0-dev`, because that is what it is.
+Crystal's is a change to Crystal's source, and the binary underneath still
+reports itself as `Crystal 1.22.0-dev`, because that is what it is. This
+paragraph is a licence obligation and an accurate one; the language above it is
+iyi's own.
