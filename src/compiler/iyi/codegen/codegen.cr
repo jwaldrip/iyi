@@ -218,7 +218,7 @@ module Iyi
     include LLVMBuilderHelper
 
     getter llvm_mod : LLVM::Module
-    getter builder : CrystalLLVMBuilder
+    getter builder : IyiLLVMBuilder
     getter main : LLVM::Function
     getter modules : Hash(String, ModuleInfo)
     getter context : Context
@@ -251,7 +251,7 @@ module Iyi
 
     record Handler, node : ExceptionHandler, context : Context
     record StringKey, mod : LLVM::Module, string : String
-    record ModuleInfo, mod : LLVM::Module, typer : LLVMTyper, builder : CrystalLLVMBuilder
+    record ModuleInfo, mod : LLVM::Module, typer : LLVMTyper, builder : IyiLLVMBuilder
 
     @abi : ABI
     @main_ret_type : Type
@@ -265,7 +265,7 @@ module Iyi
     @main_llvm_context : LLVM::Context
     @main_llvm_typer : LLVMTyper
     @main_module_info : ModuleInfo
-    @main_builder : CrystalLLVMBuilder
+    @main_builder : IyiLLVMBuilder
     @call_location : Location?
 
     @malloc_fun : LLVMTypedFunction?
@@ -422,7 +422,7 @@ module Iyi
     end
 
     def wrap_builder(builder)
-      CrystalLLVMBuilder.new builder, llvm_typer, c_printf_fun
+      IyiLLVMBuilder.new builder, llvm_typer, c_printf_fun
     end
 
     def define_symbol_table(llvm_mod, llvm_typer)

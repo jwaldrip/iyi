@@ -20,9 +20,9 @@ class Iyi::Command
     vars = {
       "IYI_CACHE_DIR"    => CacheDir.instance.dir,
       "IYI_EXEC_PATH"    => Iyi::Config.exec_path || "",
-      "IYI_PATH"         => CrystalPath.default_path,
+      "IYI_PATH"         => IyiPath.default_path,
       "CRYSTAL_VERSION"  => Config.version || "",
-      "IYI_LIBRARY_PATH" => CrystalLibraryPath.default_path,
+      "IYI_LIBRARY_PATH" => IyiLibraryPath.default_path,
       "IYI_OPTS"         => ENV.fetch("IYI_OPTS", ""),
     }
 

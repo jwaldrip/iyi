@@ -12,7 +12,7 @@ module Iyi
 
       unreachable.includes.concat config.includes.map { |path| ::Path[path].expand.to_posix.to_s }
 
-      unreachable.excludes.concat CrystalPath.default_paths.map { |path| ::Path[path].expand.to_posix.to_s }
+      unreachable.excludes.concat IyiPath.default_paths.map { |path| ::Path[path].expand.to_posix.to_s }
       unreachable.excludes.concat config.excludes.map { |path| ::Path[path].expand.to_posix.to_s }
 
       tallies = unreachable.process(result)

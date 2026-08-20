@@ -2,23 +2,23 @@ require "../spec_helper"
 require "../../support/env"
 require "spec/helpers/iterate"
 
-private def assert_finds(search, results, relative_to = nil, path = File.expand_path(compiler_datapath("crystal_path")), file = __FILE__, line = __LINE__)
+private def assert_finds(search, results, relative_to = nil, path = File.expand_path(compiler_datapath("iyi_path")), file = __FILE__, line = __LINE__)
   it "finds #{search.inspect}", file, line do
     results = results.map { |result| ::Path[path, result].normalize.to_s }
-    Dir.cd(File.expand_path(compiler_datapath("crystal_path"))) do
-      crystal_path = Iyi::CrystalPath.new([path])
-      matches = crystal_path.find search, relative_to: relative_to
+    Dir.cd(File.expand_path(compiler_datapath("iyi_path"))) do
+      iyi_path = Iyi::IyiPath.new([path])
+      matches = iyi_path.find search, relative_to: relative_to
       matches.should eq(results), file: file, line: line
     end
   end
 end
 
-private def assert_doesnt_find(search, relative_to = nil, path = File.expand_path(compiler_datapath("crystal_path")), expected_relative_to = nil, file = __FILE__, line = __LINE__)
+private def assert_doesnt_find(search, relative_to = nil, path = File.expand_path(compiler_datapath("iyi_path")), expected_relative_to = nil, file = __FILE__, line = __LINE__)
   it "doesn't finds #{search.inspect}", file, line do
-    Dir.cd(File.expand_path(compiler_datapath("crystal_path"))) do
-      crystal_path = Iyi::CrystalPath.new([path])
-      error = expect_raises Iyi::CrystalPath::NotFoundError do
-        crystal_path.find search, relative_to: relative_to
+    Dir.cd(File.expand_path(compiler_datapath("iyi_path"))) do
+      iyi_path = Iyi::IyiPath.new([path])
+      error = expect_raises Iyi::IyiPath::NotFoundError do
+        iyi_path.find search, relative_to: relative_to
       end
       error.relative_to.should eq(expected_relative_to), file: file, line: line
       error.filename.should eq(search), file: file, line: line
@@ -26,7 +26,7 @@ private def assert_doesnt_find(search, relative_to = nil, path = File.expand_pat
   end
 end
 
-describe Iyi::CrystalPath do
+describe Iyi::IyiPath do
   assert_finds "test_files/file_one.cr", ["test_files/file_one.cr"]
   assert_finds "test_files/file_one", ["test_files/file_one.cr"]
   assert_finds "test_files/*", [
@@ -101,9 +101,9 @@ describe Iyi::CrystalPath do
   assert_doesnt_find __FILE__[1..-1], path: ":"
 
   # Don't find in IYI_PATH if the path is relative (#4742)
-  assert_doesnt_find "./crystal_path_spec", relative_to: Path["test_files", "file_one.cr"].to_s, expected_relative_to: Path["test_files"].to_s
-  assert_doesnt_find "./crystal_path_spec.cr", relative_to: Path["test_files", "file_one.cr"].to_s, expected_relative_to: Path["test_files"].to_s
-  assert_doesnt_find "../crystal_path/test_files/file_one"
+  assert_doesnt_find "./iyi_path_spec", relative_to: Path["test_files", "file_one.cr"].to_s, expected_relative_to: Path["test_files"].to_s
+  assert_doesnt_find "./iyi_path_spec.cr", relative_to: Path["test_files", "file_one.cr"].to_s, expected_relative_to: Path["test_files"].to_s
+  assert_doesnt_find "../iyi_path/test_files/file_one"
 
   # Don't find relative filenames in src or shards
   assert_doesnt_find "../../src/file_three", relative_to: Path["test_files", "test_folder", "test_folder.cr"].to_s, expected_relative_to: Path["test_files", "test_folder"].to_s
@@ -111,7 +111,7 @@ describe Iyi::CrystalPath do
   # iyi: the `.iyi` candidate comes first wherever the name does not already
   # end in `.cr`, so an iyi file shadows a Crystal one of the same name.
   describe "#each_file_expansion" do
-    path = Iyi::CrystalPath.new
+    path = Iyi::IyiPath.new
 
     it "foo.cr" do
       assert_iterates_yielding [
@@ -211,35 +211,35 @@ describe Iyi::CrystalPath do
 
   it "includes 'lib' by default" do
     with_env("IYI_PATH": nil) do
-      crystal_path = Iyi::CrystalPath.new
-      crystal_path.entries[0].should eq("lib")
+      iyi_path = Iyi::IyiPath.new
+      iyi_path.entries[0].should eq("lib")
     end
   end
 
   it "overrides path with environment variable" do
     with_env("IYI_PATH": "foo#{Process::PATH_DELIMITER}bar") do
-      crystal_path = Iyi::CrystalPath.new
-      crystal_path.entries.should eq(%w(foo bar))
+      iyi_path = Iyi::IyiPath.new
+      iyi_path.entries.should eq(%w(foo bar))
     end
   end
 
   it ".expand_paths" do
     paths = ["$ORIGIN/../foo"]
-    Iyi::CrystalPath.expand_paths(paths, "/usr/bin/")
+    Iyi::IyiPath.expand_paths(paths, "/usr/bin/")
     paths.should eq ["/usr/bin/../foo"]
     paths = ["./$ORIGIN/../foo"]
-    Iyi::CrystalPath.expand_paths(paths, "/usr/bin/")
+    Iyi::IyiPath.expand_paths(paths, "/usr/bin/")
     paths.should eq ["./$ORIGIN/../foo"]
     paths = ["$ORIGINfoo"]
-    Iyi::CrystalPath.expand_paths(paths, "/usr/bin/")
+    Iyi::IyiPath.expand_paths(paths, "/usr/bin/")
     paths.should eq ["$ORIGINfoo"]
     paths = ["lib", "$ORIGIN/../foo"]
-    Iyi::CrystalPath.expand_paths(paths, "/usr/bin/")
+    Iyi::IyiPath.expand_paths(paths, "/usr/bin/")
     paths.should eq ["lib", "/usr/bin/../foo"]
 
     paths = ["$ORIGIN/../foo"]
     expect_raises(Exception, "Missing executable path to expand $ORIGIN path") do
-      Iyi::CrystalPath.expand_paths(paths, nil)
+      Iyi::IyiPath.expand_paths(paths, nil)
     end
   end
 end

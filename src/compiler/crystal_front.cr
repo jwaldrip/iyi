@@ -25,7 +25,7 @@
 require "./iyi/annotatable"
 require "./iyi/program"
 require "./iyi/config"
-require "./iyi/crystal_path"
+require "./iyi/iyi_path"
 require "./iyi/error"
 require "./iyi/exception"
 require "./iyi/formatter"

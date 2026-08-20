@@ -1,5 +1,5 @@
 module Iyi
-  class CrystalLLVMBuilder
+  class IyiLLVMBuilder
     property end : Bool
 
     def initialize(@builder : LLVM::Builder, @llvm_typer : LLVMTyper, @printf : LLVMTypedFunction)

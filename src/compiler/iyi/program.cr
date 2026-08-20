@@ -522,8 +522,8 @@ module Iyi
     # into simpler forms.
     getter(literal_expander) { LiteralExpander.new self }
 
-    # Returns a `CrystalPath` for this program.
-    getter(crystal_path) { CrystalPath.new(codegen_target: codegen_target) }
+    # Returns a `IyiPath` for this program.
+    getter(iyi_path) { IyiPath.new(codegen_target: codegen_target) }
 
     # Returns a `Var` that has `Nil` as a type.
     # This variable is bound to other nodes in the semantic phase for things
@@ -559,13 +559,13 @@ module Iyi
       define_crystal_string_constant "DESCRIPTION", Iyi::Config.description, <<-MD
         Full version information of the Crystal compiler. Equivalent to `crystal --version`.
         MD
-      define_crystal_string_constant "PATH", Iyi::CrystalPath.default_path, <<-MD
+      define_crystal_string_constant "PATH", Iyi::IyiPath.default_path, <<-MD
         Colon-separated paths where the compiler searches for required source files.
 
         The value is defined by the environment variable `IYI_PATH`
         and defaults to `DEFAULT_PATH`.
         MD
-      define_crystal_string_constant "LIBRARY_PATH", Iyi::CrystalLibraryPath.default_path, <<-MD
+      define_crystal_string_constant "LIBRARY_PATH", Iyi::IyiLibraryPath.default_path, <<-MD
         Colon-separated paths where the compiler searches for (binary) libraries.
 
         The value is defined by the environment variables `IYI_LIBRARY_PATH`.
@@ -809,7 +809,7 @@ module Iyi
     # Finds *filename* in the configured IYI_PATH for this program,
     # relative to *relative_to*.
     def find_in_path(filename, relative_to = nil) : Array(String)?
-      crystal_path.find filename, relative_to
+      iyi_path.find filename, relative_to
     end
 
     {% for name in %w(object no_return value number reference void nil bool char int int8 int16 int32 int64 int128

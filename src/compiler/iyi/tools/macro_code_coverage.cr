@@ -16,7 +16,7 @@ module Iyi
 
       coverage_processor.includes.concat config.includes.map { |path| ::Path[path].expand.to_posix.to_s }
 
-      coverage_processor.excludes.concat CrystalPath.default_paths.map { |path| ::Path[path].expand.to_posix.to_s }
+      coverage_processor.excludes.concat IyiPath.default_paths.map { |path| ::Path[path].expand.to_posix.to_s }
       coverage_processor.excludes.concat config.excludes.map { |path| ::Path[path].expand.to_posix.to_s }
 
       coverage_processor.process

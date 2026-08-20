@@ -2,7 +2,7 @@ require "./config"
 require "./error"
 
 module Iyi
-  struct CrystalPath
+  struct IyiPath
     class NotFoundError < Iyi::Error
       getter filename
       getter relative_to
@@ -72,7 +72,7 @@ module Iyi
 
     property entries : Array(String)
 
-    def initialize(@entries : Array(String) = CrystalPath.default_paths, codegen_target = Config.host_target)
+    def initialize(@entries : Array(String) = IyiPath.default_paths, codegen_target = Config.host_target)
       add_target_path(codegen_target)
       @current_dir = Dir.current
     end
@@ -95,7 +95,7 @@ module Iyi
       if filename.starts_with? '.'
         result = find_in_path_relative_to_dir(filename, relative_to)
       else
-        result = find_in_crystal_path(filename)
+        result = find_in_iyi_path(filename)
       end
 
       unless result
@@ -212,7 +212,7 @@ module Iyi
       end
     end
 
-    private def find_in_crystal_path(filename)
+    private def find_in_iyi_path(filename)
       @entries.each do |path|
         required = find_in_path_relative_to_dir(filename, path)
         return required if required

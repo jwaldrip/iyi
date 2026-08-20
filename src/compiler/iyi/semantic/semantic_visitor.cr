@@ -68,7 +68,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
 
     filenames = begin
       @program.find_in_path(filename, relative_to)
-    rescue ex : CrystalPath::NotFoundError
+    rescue ex : IyiPath::NotFoundError
       message = "can't find file '#{ex.filename}'"
       notes = [] of String
 
@@ -214,7 +214,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       candidates << File.join(root, "#{path}.cr")
     end
 
-    @program.crystal_path.entries.each do |entry|
+    @program.iyi_path.entries.each do |entry|
       candidates << File.join(entry, "#{path}.iyi")
       candidates << File.join(entry, "#{path}.cr")
     end

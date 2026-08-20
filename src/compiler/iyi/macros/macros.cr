@@ -212,7 +212,7 @@ class Iyi::Program
     recorded_requires.map do |recorded_require|
       files = @program.find_in_path(recorded_require.filename, recorded_require.relative_to)
       required_files.concat(files) if files
-    rescue Iyi::CrystalPath::NotFoundError
+    rescue Iyi::IyiPath::NotFoundError
       # Maybe the file is gone
       next
     end

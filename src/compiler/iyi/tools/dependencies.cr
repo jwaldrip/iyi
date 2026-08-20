@@ -35,7 +35,7 @@ module Iyi
     property includes = [] of String
     property excludes = [] of String
 
-    getter default_paths : Array(::Path) = CrystalPath.default_paths.map { |path| ::Path[path].expand }
+    getter default_paths : Array(::Path) = IyiPath.default_paths.map { |path| ::Path[path].expand }
 
     def self.create(io : IO, format : Format = Format::Tree, verbose : Bool = false)
       case format

@@ -101,11 +101,11 @@ module Iyi
     end
   end
 
-  module CrystalLibraryPath
+  module IyiLibraryPath
     def self.default_paths : Array(String)
       paths = ENV.fetch("IYI_LIBRARY_PATH", Iyi::Config.library_path).split(Process::PATH_DELIMITER, remove_empty: true)
 
-      CrystalPath.expand_paths(paths)
+      IyiPath.expand_paths(paths)
 
       paths
     end
@@ -130,7 +130,7 @@ module Iyi
       # Add IYI_LIBRARY_PATH locations, so the linker preferentially
       # searches user-given library paths.
       if has_flag?("msvc")
-        CrystalLibraryPath.paths.each do |path|
+        IyiLibraryPath.paths.each do |path|
           flags << quote_flag("/LIBPATH:#{path}", cross_compiling)
         end
       end
@@ -157,7 +157,7 @@ module Iyi
 
       # Add IYI_LIBRARY_PATH locations, so the linker preferentially
       # searches user-given library paths.
-      CrystalLibraryPath.paths.each do |path|
+      IyiLibraryPath.paths.each do |path|
         flags << quote_flag("-L#{path}", cross_compiling)
       end
 
@@ -204,7 +204,7 @@ module Iyi
       link_annotations.each do |ann|
         next unless dll = ann.dll
 
-        dll_path = CrystalLibraryPath.paths.each do |path|
+        dll_path = IyiLibraryPath.paths.each do |path|
           full_path = File.join(path, dll)
           break full_path if File.file?(full_path)
         end
