@@ -383,3 +383,43 @@ jobs:
         run: |
           env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run --crystal \
             /tmp/unpacked/share/iyi/samples/crystal/stdlib.iyi
+
+      # And all of it, which is what "ships the library" has to mean. The
+      # standard library requires `compiler/crystal/syntax` through its own
+      # syntax highlighter, that was not shipped, and so `require "kemal"` —
+      # this README's headline example — could not be built from the tarball
+      # anybody downloaded. A sample cannot catch it: none of them requires a
+      # shard. So the shard is made here.
+      - name: A shard, out of the tarball
+        run: |
+          mkdir -p /tmp/shard/lib/page/src
+          printf 'require "crystal/syntax_highlighter/html"\n' \
+            > /tmp/shard/lib/page/src/page.cr
+          printf 'module Page\n  def self.highlight(code : String) : String\n' \
+            >> /tmp/shard/lib/page/src/page.cr
+          printf '    Crystal::SyntaxHighlighter::HTML.highlight!(code)\n  end\nend\n' \
+            >> /tmp/shard/lib/page/src/page.cr
+          printf 'module main\n\nrequire "page"\n\nputs Page.highlight("1 + 1")\n' \
+            > /tmp/shard/app.iyi
+          cd /tmp/shard
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run --crystal app.iyi
+
+      # The daemon, out of the same tarball: started somewhere else, serving a
+      # build in the shard project above. Everything about it that was broken
+      # was about those two being different directories (SPEC.md IV.1d).
+      - name: The daemon, out of the tarball
+        run: |
+          cd /tmp/unpacked
+          env -u CRYSTAL_PATH ./bin/iyi daemon start --socket /tmp/iyi.sock &
+          for _ in $(seq 1 120); do [ -S /tmp/iyi.sock ] && break; sleep 1; done
+          cd /tmp/shard
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi daemon build \
+            --socket /tmp/iyi.sock --crystal -o served app.iyi
+          ./served > served.txt
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi build --crystal -o normal app.iyi
+          ./normal > normal.txt
+          diff normal.txt served.txt
+          # Twice, because the daemon used to die after serving one build from
+          # a directory that was not its own.
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi daemon build \
+            --socket /tmp/iyi.sock --crystal -o served app.iyi

@@ -472,6 +472,40 @@ itself, which every build reads from source. Under iyi's own prelude the same
 trade goes the other way: the library is 0.03 s and the artifact is the whole
 build. R-1 is only as fast as the part of your program it covers.
 
+**The library's own cost is what `iyi daemon` removes.** Start one in another
+terminal and it holds Crystal's library analysed between builds:
+
+```console
+$ iyi daemon start &
+$ iyi daemon build --crystal -o site site.iyi
+```
+
+| | normal | through the daemon |
+|---|---|---|
+| `require "json"` and nothing else | 2.27 s | **1.24 s** |
+| twelve modules | 2.42 s | **1.30 s** |
+| twelve modules and Kemal | 3.33 s | 2.52 s |
+| the same, with Kemal in a `--prelude` file | 3.33 s | **1.94 s** |
+
+It holds the *prelude*, so a shard your program requires is still re-analysed
+every build. Name it in a prelude file of its own and it is held too — that is
+the fourth row, and it is how to use this on a real project:
+
+```crystal
+# _prelude.cr
+require "prelude"
+require "kemal"
+```
+
+```console
+$ iyi daemon build --prelude ./_prelude.cr -o site site.iyi
+```
+
+Set `CRYSTAL_DAEMON_SOCKET` and an ordinary `iyi build` goes through it too,
+falling back to a normal build when nothing is listening. The daemon is for
+`--crystal`: iyi's own prelude takes 0.03 s to analyse, so there is nothing
+there worth holding.
+
 **What the two libraries do not do is mix.** A `.iyimod` records which one it
 was built against, and importing across is refused by name. That refusal is not
 a limitation waiting to be lifted: both are compiled by the same compiler and

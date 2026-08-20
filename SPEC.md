@@ -3145,29 +3145,58 @@ analysing it is no longer a term. So the daemon stays in the compiler, where it
 is Crystal's to use on Crystal's prelude, and `iyi` does not offer it: a
 command that costs a terminal and buys nothing is not a command.
 
-> **And then `--crystal` gave it a prelude to hold again.** The paragraph above
-> is right about iyi's prelude and wrong about the mode item 12b just made
-> central. Measured on the same twelve-module app, with Crystal's library:
+> **And then `--crystal` gave it a prelude to hold again, so `iyi` offers it.**
+> The paragraph above is right about iyi's prelude and wrong about the mode
+> item 12b made central. `iyi daemon start` runs a single-threaded `iyi-daemon`
+> built and shipped beside `iyi`, and holds Crystal's library analysed between
+> builds. Best of three on a twelve-module app:
 >
-> | | build |
-> |---|---|
-> | `iyi build --crystal` | 3.28 s |
-> | the same through the daemon | **1.54 s** |
-> | the daemon, with the modules as artifacts too | 1.67 s |
+> | | normal | through the daemon |
+> |---|---|---|
+> | `require "json"` and nothing else | 2.27 s | **1.24 s** |
+> | twelve modules | 2.42 s | **1.30 s** |
+> | twelve modules and Kemal | 3.33 s | 2.52 s |
+> | the same, with Kemal named in a `--prelude` file | 3.33 s | **1.94 s** |
 >
-> **The largest single number iyi can move today**, and the machinery for it is
-> already in the compiler and already tested. What stands in the way is not
-> design: the daemon has to be single-threaded to fork, `iyi` is not, so
-> offering it means an `iyi-daemon` binary beside the `crystal-daemon` that
-> exists — a Makefile target, a line in the tarball, a CI job. The reasoning in
-> this section is what decides it, and the reasoning has changed sign: a
-> command that halves the build of every program that requires a shard is a
-> command.
+> What it removes is a flat ~1.05 s: the analysis of the library the daemon
+> holds. Kemal is required by the *program*, not by the prelude, so it is
+> re-analysed every build — until it is named in a prelude file of its own,
+> which is the fourth row and the way to use this on a real project.
 >
-> The third row is the honest one to read twice. Artifacts *and* the daemon is
-> slower than the daemon alone, because the daemon has already removed the term
-> the artifacts were removing, and reading twelve of them is not free. The two
-> features overlap, and under Crystal's library the daemon wins.
+> **It warms Crystal's prelude and not iyi's, and that is deliberate.**
+> `--crystal` sets the prelude `Compiler.new` already has, so those builds hit
+> the startup analysis on their first request. An ordinary `.iyi` build misses
+> and warms `iyi/prelude` after its first build: 0.03 s, which is the reason
+> the daemon is not for that mode.
+>
+> **Three bugs were in the way, all older than this work and all the same fact
+> forgotten: the daemon runs in its own directory and the client does not.**
+>
+> - A finished build's arguments are re-read in the daemon to decide which
+>   prelude to warm next, and they were read in the *daemon's* directory. The
+>   option parser exits the process on a file it cannot find, so the daemon
+>   died after serving a build correctly — whenever the client had typed a
+>   relative path, which is always.
+> - A preanalysed prelude carries the compiler's search path, and `lib` is
+>   resolved against the directory that path was built in. Every shard-using
+>   project, built from anywhere but the daemon's own directory, answered
+>   `require "kemal"` with "can't find file".
+> - Fixing the second silently did nothing, because `CrystalPath` is a
+>   **struct**: setting a field through a getter mutates the copy the getter
+>   returned. Nothing failed; the daemon simply went on resolving `lib` beside
+>   itself.
+>
+> Every spec in `crystal-daemon_spec.cr` passed through all three, because each
+> one passes an absolute fixture path and starts the daemon where the runner is.
+> That is the shape of the lesson rather than an aside: **a spec that never
+> leaves the directory it was written in cannot see a directory bug.** Three new
+> ones do.
+>
+> **And artifacts and the daemon overlap.** Twelve modules as artifacts *plus*
+> the daemon was 1.67 s against the daemon's 1.30 s — slower, because the daemon
+> has already removed the term the artifacts were removing and reading twelve of
+> them is not free. Under Crystal's library the daemon wins; under iyi's own the
+> artifacts do, and neither is a general answer.
 
 The measurement that follows is the one that built it, kept because it was true
 and because the shape — *a thing measured, shipped, and then made pointless by

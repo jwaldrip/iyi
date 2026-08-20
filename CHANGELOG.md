@@ -32,6 +32,16 @@
   the modules cost 0.16 s from source and nothing from artifacts, against
   3.1 s for Crystal's library, which every build still reads from source.
 
+- **`iyi daemon`, and it halves a `--crystal` build.** A single-threaded
+  `iyi-daemon` is built and shipped beside `iyi`; `iyi daemon start` holds
+  Crystal's library analysed between builds. Best of three on a twelve-module
+  app: 2.42 s to 1.30 s, and 3.33 s to 1.94 s with Kemal named in a `--prelude`
+  file. It holds the prelude, so a shard the program requires is re-analysed
+  each build unless it is named there too.
+
+  Not offered before because iyi's own prelude takes 0.03 s to analyse and
+  there was nothing to hold. `--crystal` gave it something.
+
 - **A `.iyimod` records which library it was built against**, and importing
   across the two is refused by name in both directions. This replaces the old
   refusal, which was blunter and aimed at the wrong thing: `--emit-iyimod` and
@@ -54,6 +64,22 @@
   — so integer division stays `//` in both.
 
 ### Fixed
+
+- **The tarball could not build a program that requires Kemal.** `install_iyi`
+  cut `compiler/` from the copy of Crystal's library it ships, and the standard
+  library requires it: `crystal/syntax_highlighter` requires
+  `compiler/crystal/syntax`, the exception page requires the highlighter, and
+  Kemal requires the exception page. README's headline example did not work in
+  the thing people download, and 0.2.0 shipped that way. CI now builds a shard
+  out of the unpacked tarball.
+
+- **The build daemon died after serving one build from another directory**, and
+  could not find `lib` in the client's project. Three bugs, all older than this
+  release and all the same fact forgotten — the daemon runs in its own
+  directory and the client does not. The third was that `CrystalPath` is a
+  struct, so fixing the second through a getter mutated a copy and changed
+  nothing. Every existing daemon spec passed through all three, because each
+  passes an absolute path and starts the daemon where the runner is.
 
 - **A constant an artifact reads carries a location.** The reads a consumer
   performs on an artifact's behalf were synthesised without one, and LLVM
