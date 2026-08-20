@@ -3939,6 +3939,25 @@ Named honestly, so nobody mistakes this draft for complete.
     it never had it. What stays: the *macro* interpreter, which is a different
     thing that runs at compile time and is what makes `{% %}` work.
 
+12b. **What the library costs at run time, and the flattering answer that was
+    wrong.** The tagline says Performance, and until now every number under it
+    was about compiling. `bench/runtime.py` runs the same program under both
+    libraries — same LLVM, same GC, same settings — and the first reading was
+    that iyi's string building is **twenty times faster**. It is not. With
+    `GC_DONT_GC=1` it is **1.64x slower**, and the whole of that twenty was the
+    collector: a 17 KB binary has far fewer roots to scan than a 972 KB one, so
+    a program that carries less collects faster. That is a real effect, it is
+    the efficiency claim, and it is not a claim about `String`.
+
+    What the honest column says: arithmetic and array work are within noise
+    (0.97x, 0.90x), `String` is behind (1.64x), and `Hash` is ahead by 6x while
+    doing less — iyi's does not preserve insertion order and Crystal's does.
+
+    Kept here because the mistake is the point. A benchmark that measures a
+    program and reports a library is the easiest way to publish a number that
+    is true and means nothing, and the only defence is to take the thing being
+    credited out and run it again.
+
 12a. **The other answer, which is smaller.** A shard behind a generated
     boundary is one way to reach the ecosystem. The other is to give the
     program Crystal's standard library and compile the shard into it, and it

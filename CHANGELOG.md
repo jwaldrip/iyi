@@ -20,6 +20,13 @@ between two releases names no compiler.
 
 ### Changed
 
+- **`bench/runtime.py` measures what the library costs at run time.** The two
+  libraries are within noise where they do the same work; `Hash` is 6x ahead
+  and does less; `String` is 1.64x behind. The first reading said string
+  building was twenty times faster, and it was the collector — a 17 KB binary
+  has fewer roots to scan than a 972 KB one — so the bench reports both columns
+  and the honest one is the second.
+
 - **iyi describes itself as a language rather than as a fork.** "A language
   built for Developer & Agentic Experience, Portability, Performance, and
   Efficiency", and README says what stands behind each of the four and what

@@ -17,7 +17,7 @@ that rule and what it costs.
 | **Developer experience** | edit one module in a 7,208-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
 | **Agentic experience** | a module's interface is a file, not a convention: `iyi mod dump` prints it, and a consumer type-checks against it with the source deleted |
 | **Portability** | an iyi program compiles for **eight targets**, from `aarch64-darwin` to `x86_64-windows-msvc`. Only Linux x86-64 is tested end to end |
-| **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s** |
+| **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s**. At run time the two libraries are within noise where they do the same work |
 | **Efficiency** | that `hello` is a **17 KB** binary that starts in **1.2 ms**; the same program with Crystal's library is 972 KB and 3.4 ms |
 
 iyi is a fork of [Crystal](https://crystal-lang.org) and says so in its licence,
@@ -261,11 +261,27 @@ and `x86_64-windows-msvc`, and CI type-checks the library for all eight every
 build. Only Linux x86-64 is built, run and measured. Treat the other seven as
 "the code generator has no objection", which is what they are.
 
-**Performance — Crystal's, and this fork has not measured its own.** Native
-code through LLVM, the same backend and the same GC. The compile-time numbers
-above are this project's; the run-time ones are not, and nothing here has
-benchmarked a program against C or Go. What R-4 says about generics crossing a
-boundary is specified and unmeasured.
+**Performance — Crystal's backend, and now one measurement of its own.**
+Native code through LLVM, the same GC. `python3 bench/runtime.py` runs the same
+program under both libraries, and the honest reading is not the flattering one:
+
+| workload | as it runs | with the collector off |
+|---|---|---|
+| arithmetic | 1.00x | 0.97x |
+| array append and read | 0.55x | 0.90x |
+| hash insert and read | 0.13x | 0.15x |
+| string building | **0.05x** | **1.64x** |
+
+Under 1.00 is iyi ahead. Run normally, string building looks twenty times
+faster; with the collector out of the way it is 1.64x **slower**, so all of
+that twenty was the collector having fewer roots to scan in a 17 KB binary than
+in a 972 KB one. That is a real effect and it is the efficiency claim, not a
+claim about `String`. Where the two libraries do the same work they are within
+noise; where iyi's is faster — `Hash`, by 6x — part of the reason is that it
+does less, and does not preserve insertion order.
+
+Nothing here has benchmarked a program against C or Go, and what R-4 says about
+generics crossing a boundary is specified and unmeasured.
 
 **Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 17 KB
 binary that starts in 1.2 ms; the same program compiled with Crystal's standard
