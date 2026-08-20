@@ -1,6 +1,6 @@
 # iyi
 
-[![iyi](https://github.com/sdogruyol/iyi/actions/workflows/iyi.yml/badge.svg)](https://github.com/sdogruyol/iyi/actions/workflows/iyi.yml)
+[![iyi](https://github.com/jwaldrip/iyi/actions/workflows/iyi.yml/badge.svg)](https://github.com/jwaldrip/iyi/actions/workflows/iyi.yml)
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
 
 **A fork of [Crystal](https://crystal-lang.org) built to answer one question:
@@ -10,7 +10,7 @@ feature?** (*iyi* is Turkish for "good".)
 Here is the program the numbers below are about. One script writes it three
 times, in iyi, in Crystal and in Go, from the same set of numbers:
 
-* **30 modules**, one file each, 10 types per module: 300 types, **7,208
+* **30 modules**, one file each, 10 types per module: 300 types, **7,207
   lines**.
 * **one `main`** that calls a function in all thirty modules, adds up what they
   answer, and prints the total.
@@ -60,7 +60,7 @@ three print the same total, and `bench/incremental.py` refuses to start the
 clock until they do. The Crystal column is no straw man: it is this compiler,
 under the rule iyi drops. A Crystal class is open until the last line of the
 last file, so no build may trust anything it read last time and every rebuild
-reads all 7,208 lines again. Take that one rule away and the line you just
+reads all 7,207 lines again. Take that one rule away and the line you just
 changed costs **9x less**. Go is in the table because Go is good at exactly
 this, and is the bar worth clearing.
 
@@ -71,7 +71,7 @@ and why; no number in this README is quoted from anywhere else, and the command
 that prints each one is named beside it.
 
 **Where it loses**, said here rather than left to be found: a full build of a
-6,900-line program from scratch is 0.24 s against `go build`'s 0.09 s. The
+6,912-line program from scratch is 0.24 s against `go build`'s 0.09 s. The
 current compiler reports `0.2.0-dev`. iyi's own prelude has no IO beyond
 `puts` and no concurrency; `--crystal` supplies Crystal's standard library,
 IO, `require` and the ecosystem. Neither mode supplies a package manager.
@@ -146,7 +146,7 @@ $ iyi build --use-iyimod mods samples/iyi/webapp.iyi    # builds, links, runs, s
 
 **The loop a person is actually in.** Nobody uses a language through full
 builds. This is the project from the top of the README, all of it: 30 modules,
-7,208 lines, written three times by one generator and refused unless the three
+7,207 lines, written three times by one generator and refused unless the three
 binaries print the same total. Best of 7, release compiler, one idle Linux box
 (AMD Ryzen AI 9 465 under WSL2, LLVM 19.1.7, Go 1.25.2), seconds:
 
@@ -177,8 +177,13 @@ same session:
 
 | program | iyi | `go build` |
 |---|---|---|
-| `hello` (5 lines) | **0.07 s** | 0.08 s |
-| generated pair, 6,900 lines | 0.24 s | **0.09 s** |
+| `hello` (147 lines) | **0.07 s** | 0.08 s |
+| generated pair, 6,912 lines | 0.24 s | **0.09 s** |
+
+<sup>Both counts are `wc -l`: 147 for `samples/iyi/hello.iyi`, of which 44 are
+code and the rest the commentary that makes it a sample, and 6,912 for what
+`python3 bench/build_speed/generate_pair.py 300 <dir>` writes. The Go side of
+each row is 11 lines and 6,016.</sup>
 
 iyi is quick where fixed costs are the whole bill and quick on the loop, and it
 is not quick at compiling a lot of code it has never seen: roughly 25 ms per
