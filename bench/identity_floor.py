@@ -85,7 +85,7 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     (r"^src/compiler/iyi/tools/init\.cr$", "a Crystal-only command's implementation"),
     # These measure the compatibility binary against iyi, so naming it is the
     # measurement. `bench/identity_floor.py` is excluded above for its prose.
-    (r"^bench/(build_speed|artifact_speed|incremental|macro_cost)", "benches that measure the compatibility binary"),
+    (r"^bench/(build_speed|artifact_speed|incremental|macro_cost|runtime)", "benches that measure iyi against Crystal's library"),
     (r"^bench/(incremental|build_speed)/", "the generators those benches drive"),
     (r"^spec/(debug|spec_helper\.cr)", "the spec harness driving both binaries"),
     (r"^bin/check-compiler-flag$", "builds the compatibility binary twice"),
@@ -178,7 +178,13 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r"crystal-release|src/compiler/crystal\.cr|clean_cache crystal", "the compatibility binary's build"),
     (r"names crystal in the same banner|program_name = \"crystal\"", "the spec that pins the compatibility name"),
     (r"from-crystal|reads CRYSTAL_PATH when IYI_PATH", "the spec that pins the Crystal env-var fallback"),
-    (r"CRYSTAL_#\{name\}|CRYSTAL_DAEMON|crystal docker image", "the fallback that keeps Crystal's env vars working"),
+    # Backticks required. A bare `CRYSTAL_DAEMON` matched the Makefile's
+    # `CRYSTAL_DAEMON_BIN`, which the cutover had renamed to `IYI_DAEMON_BIN`,
+    # and so hid a real break: upstream's new `check_daemon_matches` expanded
+    # an undefined variable, ran `--version` on a directory, and reported the
+    # daemon's version as empty. An allowlist entry wide enough to cover a
+    # defect is not an allowlist entry.
+    (r"CRYSTAL_#\{name\}|`CRYSTAL_DAEMON(_SOCKET)?`|crystal docker image", "the fallback that keeps Crystal's env vars working"),
     (r"Crystal on the machine|a Crystal\b", "a sentence about the other language"),
     # Comments citing Crystal's own source, DWARF producer strings, and the
     # version banner's "a fork of Crystal X" clause. All name the other
@@ -203,7 +209,14 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r"Crystal (docker|is unable|compiler built with)", "the bootstrap toolchain and its diagnostics"),
     (r"Codegen \(crystal\)", "a progress label for the Crystal codegen stage"),
     (r"predefined types|C functions to Crystal procs", "Crystal's own type setup"),
-
+    # 0.2.0 ships Crystal's standard library inside the tarball so `--crystal`
+    # works in what people download. It installs under `share/iyi/crystal`,
+    # which names the library it holds.
+    (r"share/iyi/crystal|/iyi/crystal|samples/crystal", "where Crystal's library ships inside the tarball"),
+    (r"\$\(O\)/crystal", "the compatibility binary the build compares against"),
+    (r'compiler/crystal/syntax', "the shim path Crystal's stdlib requires"),
+    (r"Compatible with Crystal", "what the shard manifest says iyi is compatible with"),
+    (r"where Crystal uses the plain verb", "a sentence about the other language"),
 ]
 
 PATH_RES = [(re.compile(p), why) for p, why in ALLOWED_PATHS]

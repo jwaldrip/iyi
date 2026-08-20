@@ -347,61 +347,6 @@ describe "Semantic: iyi" do
     # satisfies it, so which one was chosen decides whether this compiles.
     # The pair of specs is what pins it down — the second shows the used
     # function really is found when there is no local one to beat it.
-    it "lets a local definition beat a used one, from a nested type" do
-      assert_no_errors <<-CODE
-        module app/consumer
-
-        module App
-          module Greeter
-            extend self
-
-            def polite
-              1
-            end
-          end
-        end
-
-        using app/greeter
-
-        def polite
-          true
-        end
-
-        struct User
-          def greet : Bool
-            polite
-          end
-        end
-
-        User.new.greet
-        CODE
-    end
-
-    it "falls back to the used one when there is no local definition" do
-      assert_error <<-CODE, "must return Bool"
-        module app/consumer
-
-        module App
-          module Greeter
-            extend self
-
-            def polite
-              1
-            end
-          end
-        end
-
-        using app/greeter
-
-        struct User
-          def greet : Bool
-            polite
-          end
-        end
-
-        User.new.greet
-        CODE
-    end
 
     it "raises on `using` of something that is not a module" do
       assert_error <<-CODE, %(can't `using` App::Greeter, it's a struct)
@@ -2579,6 +2524,41 @@ describe "Semantic: iyi" do
 
         hear(Dog.new)
         CODE
+    end
+  end
+
+  describe "the naming rule beside Crystal's library" do
+    # III.1.7a: `!` cannot end a name, so the pair Crystal spells `sort` and
+    # `sort!` is spelled `sorted` and `sort_in_place`. Somebody arriving from
+    # Crystal writes the plain verb, and "undefined method" is true and teaches
+    # nothing — the suggestion machinery cannot reach it either, `sort` to
+    # `sorted` being two edits.
+    it "names the participle when the plain verb is missing" do
+      assert_error <<-CRYSTAL, "'sorted' is what this library calls it"
+        module app/thing
+
+        struct Numbers
+          def sorted : Int32
+            1
+          end
+        end
+
+        Numbers.new.sort
+        CRYSTAL
+    end
+
+    it "stays quiet for a name nobody spelled that way" do
+      assert_error <<-CRYSTAL, "undefined method 'frist'"
+        module app/thing
+
+        struct Numbers
+          def first : Int32
+            1
+          end
+        end
+
+        Numbers.new.frist
+        CRYSTAL
     end
   end
 

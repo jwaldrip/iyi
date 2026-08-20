@@ -43,7 +43,11 @@ trap 'rm -rf "$WORK"' EXIT
 # mean the prelude fell back to libc. What the prelude ITSELF asks for is read
 # one layer down, at the object, by the per-target audit in CI, where an iyi
 # program's .o for x86_64-linux-gnu is empty.
-ALLOWED_SYMBOLS_DARWIN="exit malloc memset realloc write"
+# `read` joined the list when `samples/iyi/calc` started reading standard
+# input: on darwin that is `LibC.read` for the same reason `write` is, and on
+# Linux it is syscall 0 (63 on aarch64), so the Linux list is unchanged and
+# `calc`'s x86_64-linux-gnu object still has zero undefined symbols.
+ALLOWED_SYMBOLS_DARWIN="exit malloc memset read realloc write"
 ALLOWED_SYMBOLS_LINUX="ITM_deregisterTMCloneTable ITM_registerTMCloneTable _cxa_finalize _gmon_start__ _libc_start_main"
 
 # What a program may link. The platform libc only.

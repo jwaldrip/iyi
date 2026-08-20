@@ -335,7 +335,7 @@ pub trait Enumerable
   end
 
   def sorted : Array(Elem) where Elem : Cmp
-    to_a.sort { |a, b| a.cmp(b) }
+    to_a.sorted { |a, b| a.cmp(b) }
   end
 
   # ---- needing something of the block's result type -------------------------

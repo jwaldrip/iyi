@@ -210,7 +210,11 @@ describe Iyi::IyiPath do
   end
 
   it "includes 'lib' by default" do
-    with_env("IYI_PATH": nil) do
+    # Both names, because the setting has two: the compiler falls back to
+    # `CRYSTAL_PATH` so the compatibility binary keeps working, and
+    # `bin/crystal` exports it. Clearing only `IYI_PATH` left the wrapper's
+    # `./lib:…/src` answering for "no path configured".
+    with_env("IYI_PATH": nil, "CRYSTAL_PATH": nil) do
       iyi_path = Iyi::IyiPath.new
       iyi_path.entries[0].should eq("lib")
     end

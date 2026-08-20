@@ -138,20 +138,36 @@ class Array(T)
 
   # Insertion sort: the samples sort five elements, and a merge sort would be
   # three times the lines to be slower at that size.
-  def sort(& : T, T -> Int32) : Array(T)
-    result = dup
+  # Sorts this array, and `sorted` is the one that leaves it alone.
+  #
+  # The name is spelled out because of the library beside this one (SPEC.md
+  # III.1.7a). III.1.7(A) says the plain verb mutates and the participle
+  # copies, which is Swift's convention and was chosen because `!` had to leave
+  # identifiers so that postfix `!` could propagate an error. Crystal spells
+  # the same pair `sort!` and `sort`, so a plain `sort` here would mean the
+  # opposite of a plain `sort` under `--crystal` — the same call, two meanings,
+  # no error. A longer name costs a few characters and cannot be misread.
+  def sort_in_place(& : T, T -> Int32) : self
     index = 1
-    while index < result.size
-      value = result[index]
+    while index < @size
+      value = self[index]
       slot = index - 1
-      while slot >= 0 && (yield result[slot], value) > 0
-        result[slot + 1] = result[slot]
+      while slot >= 0 && (yield self[slot], value) > 0
+        self[slot + 1] = self[slot]
         slot = slot - 1
       end
-      result[slot + 1] = value
+      self[slot + 1] = value
       index = index + 1
     end
-    result
+    self
+  end
+
+  # The copy, with the comparison written out. One body, because the difference
+  # between the pair is which array it runs on.
+  def sorted(&block : T, T -> Int32) : Array(T)
+    copy = dup
+    copy.sort_in_place(&block)
+    copy
   end
 
   # `first` on an empty array is a mistake rather than a nil: the array knows
@@ -189,7 +205,7 @@ class Array(T)
   # compare — SPEC.md III.1.7(A)'s pair, with the name that says a copy comes
   # back.
   def sorted : Array(T)
-    sort { |a, b| a < b ? -1 : (a == b ? 0 : 1) }
+    sorted { |a, b| a < b ? -1 : (a == b ? 0 : 1) }
   end
 
   def dup : Array(T)

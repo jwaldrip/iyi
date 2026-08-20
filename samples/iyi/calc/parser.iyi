@@ -1,0 +1,115 @@
+module calc/parser
+
+import calc/lexer
+import calc/ast
+
+using calc/lexer::{Token}
+using calc/ast::{Number, Name, Binary}
+
+pub struct SyntaxError
+  getter at : Int32
+  getter wanted : String
+
+  def initialize(@at : Int32, @wanted : String)
+  end
+end
+
+impl Error for SyntaxError
+  def message : String
+    "expected #{wanted} at #{at}"
+  end
+end
+
+# One statement: `name = expression`, or an expression on its own, which the
+# runner prints. Kept as a pair rather than a node type, because a statement is
+# not something this language evaluates twice.
+pub struct Statement
+  getter target : String
+  getter body : Number | Name | Binary
+
+  def initialize(@target : String, @body : Number | Name | Binary)
+  end
+end
+
+# A cursor over the tokens. A struct with an index rather than a shifting array,
+# because backing up one token is the parser's whole trick.
+pub class Reader
+  getter tokens : Array(Token)
+  getter at : Int32
+
+  def initialize(@tokens : Array(Token))
+    @at = 0
+  end
+
+  def peek : Token
+    tokens[at]
+  end
+
+  def advance : Token
+    token = tokens[at]
+    @at = at + 1
+    token
+  end
+end
+
+pub def parse(tokens : Array(Token)) : Array(Statement) | SyntaxError
+  reader = Reader.new(tokens)
+  statements = [] of Statement
+
+  while reader.peek.kind != "end"
+    statements << statement(reader)!
+  end
+
+  statements
+end
+
+def statement(reader : Reader) : Statement | SyntaxError
+  first = reader.peek
+
+  if first.kind == "name" && reader.tokens[reader.at + 1].text == "="
+    reader.advance
+    reader.advance
+    Statement.new(first.text, expression(reader)!)
+  else
+    Statement.new("", expression(reader)!)
+  end
+end
+
+def expression(reader : Reader) : Number | Name | Binary | SyntaxError
+  left = term(reader)!
+
+  while reader.peek.kind == "op" && (reader.peek.text == "+" || reader.peek.text == "-")
+    op = reader.advance.text[0]
+    left = Binary.new(op, left, term(reader)!)
+  end
+
+  left
+end
+
+def term(reader : Reader) : Number | Name | Binary | SyntaxError
+  left = factor(reader)!
+
+  while reader.peek.kind == "op" && (reader.peek.text == "*" || reader.peek.text == "/")
+    op = reader.advance.text[0]
+    left = Binary.new(op, left, factor(reader)!)
+  end
+
+  left
+end
+
+def factor(reader : Reader) : Number | Name | Binary | SyntaxError
+  token = reader.advance
+
+  if token.kind == "number"
+    Number.new(token.text.to_i)
+  elsif token.kind == "name"
+    Name.new(token.text)
+  elsif token.text == "("
+    inside = expression(reader)!
+    closing = reader.advance
+    return SyntaxError.new(closing.at, "')'") unless closing.text == ")"
+    inside
+  else
+    SyntaxError.new(token.at, "a number, a name or '('")
+  end
+end

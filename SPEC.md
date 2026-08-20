@@ -1,5 +1,14 @@
 # iyi Language Specification: Draft 0
 
+**iyi is a language built for Developer & Agentic Experience, Portability,
+Performance, and Efficiency.** This document is the design under that sentence:
+one rule — a module is compiled against its dependencies' declarations, never
+their bodies — and what every other part of a language has to become for it to
+hold. iyi is compatible with Crystal — the same compiler builds `.cr` files and
+an iyi program can require a shard — and it is its own language, because the
+rules below are ones Crystal does not have and cannot have. The compiler being
+built on Crystal's is a fact about provenance rather than about the language.
+
 **Status: draft for discussion. Parts of it are built. Each section says which,
 and a heading that does not say so is a heading to distrust.** The current
 compiler reports `0.2.0-dev`; Part I records what 0.1.0 proved.
@@ -1811,6 +1820,70 @@ Two deliberate gaps:
   name ending in `!`. The decision is about hand-written surface syntax, so this
   is defensible; closing it would mean making `VirtualFile` carry the mode of the
   file it expands into.
+
+#### III.1.7a What the convention costs beside Crystal's library: **SETTLED: B**
+
+III.1.7 settled the naming convention against a library iyi was going to write
+itself. `--crystal` (Part V item 12a) put iyi's programs beside a library it did
+not write, and the convention now has a cost it was not priced against.
+
+**Measured, and it is one method.** Of everything iyi's library mutates —
+`<<`, `[]=`, `concat`, `shift`, `sort` — only `sort` means something different
+in the two libraries. Crystal writes `!` on the mutating member of a *pair* and
+plainly for everything else, so `<<` and `shift` agree by accident of both
+languages naming them the same way. The pairs are where it bites, and today
+there is one:
+
+| | iyi's library | Crystal's library |
+|---|---|---|
+| `a.sort` | sorts `a` | returns a sorted copy |
+| `a.sorted` | returns a sorted copy | does not exist |
+
+So `a.sort` compiles under both and means the opposite thing, silently. That is
+the worst shape a difference can take, and it is worth deciding now rather than
+after `reverse`, `map`, `select`, `uniq` and `shuffle` arrive with the same
+shape.
+
+**Three ways out, and none of them is free:**
+
+**A. Agree with the library you sit beside.** `sort` copies, matching Crystal,
+and `sorted` goes as a duplicate. Revokes III.1.7(A)'s participle rule for this
+pair and leaves iyi with no in-place sort until something names one. Costs the
+convention; buys a program that means one thing.
+
+**B. Give the mutating one a name Crystal does not use.** `sorted` stays the
+copy and the in-place form is spelled out — `sort_in_place`. The convention is
+amended rather than revoked: the participle rule holds except where Crystal
+spells the copy with the plain verb, and there the mutating form says so. Costs
+a clumsy name; buys no collision and no silence.
+
+**C. Keep the convention as it is.** Costs the silence, which is what this
+section is about.
+
+**Decided: B.** `sorted` is the copy and `sort_in_place` is the one that
+changes the receiver. The plain verb is not in this library at all, so `a.sort`
+is an error under iyi's library and Crystal's meaning under `--crystal` —
+different answers, neither of them silent, which is the whole point.
+
+A rule chosen for one library is not automatically right beside two, and the
+amendment is narrow: the participle rule holds, except where Crystal spells the
+copy with the plain verb. There the mutating form says what it does.
+
+**The error teaches it**, because "undefined method 'sort'" is true and useless
+and the suggestion machinery cannot reach `sorted` — two edits is past its
+threshold. When a name is missing and its participle is there, the compiler
+says so:
+
+```
+Error: undefined method 'sort' for Array(Int32)
+
+'sorted' is what this library calls it: `!` cannot end a name here, so the copy
+takes the participle and the one that changes the receiver says so
+```
+
+Asked of the type rather than of a list, so it answers for whatever the library
+grows next — `reverse`, `map`, `uniq` — and stays quiet for a name nobody
+spelled that way.
 
 #### III.1.8 Worked comparison
 
@@ -4825,7 +4898,7 @@ Named honestly, so nobody mistakes this draft for complete.
     Two smaller things came out of the same hour. A codegen thread that raised
     used to print its exception and leave the build to fail later at the link,
     so the failure is now kept and raised as what it is. And it is worth saying
-    what the bug was not: not the artifact's, not this fork's, and not the
+    what the bug was not: not the artifact's, not iyi's, and not the
     threads'. It is upstream, any Crystal user who builds two things at once can
     reach it, and that is where the fix belongs as well.
 
@@ -4886,6 +4959,40 @@ Named honestly, so nobody mistakes this draft for complete.
     it never had it. What stays: the *macro* interpreter, which is a different
     thing that runs at compile time and is what makes `{% %}` work.
 
+12c. **Portability, moved from compiled to run.** An iyi program produced code
+    for eight targets and was tested on one, which is the weakest kind of
+    portability claim: the code generator not objecting. Three of the eight now
+    run in CI every build — x86-64 glibc natively, x86-64 musl in an Alpine
+    container, aarch64 under emulation — and the check is that each prints what
+    the same program printed on the machine that compiled it.
+
+    What makes it cheap is the same thing that makes an artifact linkable: the
+    object is produced here and linked there with the target's own `cc` and
+    `libgc`, which is the command `--cross-compile` already prints. An iyi
+    program needs no more of a target than a C toolchain and a collector.
+
+    Darwin and Windows are the five still unrun, and they need a linker and a
+    runtime this workflow does not have.
+
+12b. **What the library costs at run time, and the flattering answer that was
+    wrong.** The tagline says Performance, and until now every number under it
+    was about compiling. `bench/runtime.py` runs the same program under both
+    libraries — same LLVM, same GC, same settings — and the first reading was
+    that iyi's string building is **twenty times faster**. It is not. With
+    `GC_DONT_GC=1` it is **1.64x slower**, and the whole of that twenty was the
+    collector: a 17 KB binary has far fewer roots to scan than a 972 KB one, so
+    a program that carries less collects faster. That is a real effect, it is
+    the efficiency claim, and it is not a claim about `String`.
+
+    What the honest column says: arithmetic and array work are within noise
+    (0.97x, 0.90x), `String` is behind (1.64x), and `Hash` is ahead by 6x while
+    doing less — iyi's does not preserve insertion order and Crystal's does.
+
+    Kept here because the mistake is the point. A benchmark that measures a
+    program and reports a library is the easiest way to publish a number that
+    is true and means nothing, and the only defence is to take the thing being
+    credited out and run it again.
+
 12a. **The other answer, which is smaller.** A shard behind a generated
     boundary is one way to reach the ecosystem. The other is to give the
     program Crystal's standard library and compile the shard into it, and it
@@ -4904,7 +5011,7 @@ Named honestly, so nobody mistakes this draft for complete.
     program that requires Kemal. What changes is what a program *has*.
 
     **Swept across nine shards**, each built twice — as an iyi program and as a
-    Crystal one, so that a difference is this fork's and a shared failure is
+    Crystal one, so that a difference is iyi's and a shared failure is
     the ecosystem's: `kemal`, `db`, `ameba`, `habitat`, `baked_file_system`,
     `radix`, `sqlite3`, the standard library's own `json`/`yaml`/`uri`/`http`,
     and a program that round-trips `JSON::Serializable`, parses YAML and writes
@@ -4951,12 +5058,45 @@ Named honestly, so nobody mistakes this draft for complete.
     library iyi was going to write itself. It now also has to sit beside one it
     did not, and that is a cost the choice did not price.
 
+    **And the prelude was not following its own rule.** `Array#sort` returned a
+    copy and nothing mutated, which is Crystal's meaning under iyi's name. It
+    sorts in place now and `sorted` is the copy, as III.1.7(A) says. The
+    consequence is worth being blunt about: `a.sort` sorts here and copies
+    under `--crystal`, silently, because Crystal calls the mutating one
+    `sort!` and that name cannot be written here. It is the one call in this
+    prelude that changes meaning with the library, it is noted in
+    `src/iyi/array.iyi`, and `samples/iyi/basics.iyi` prints both halves.
+
     **What it costs.** R-1, for the required shard: it is read from source and
-    the edit loop pays for it the way Crystal's does. Your own modules still
-    write artifacts. And the two libraries are two modes on the reading side —
-    `--use-iyimod` needs iyi's prelude, because an artifact's object code
-    numbers types that under Crystal's library are the standard library's own,
-    and a consumer compiling its own copy of it has two of everything.
+    the edit loop pays for it the way Crystal's does. And the two libraries are
+    two modes on the artifact side, which is the sharpest limit here: a program
+    cannot have Crystal's library *and* its own modules as artifacts.
+
+    **Why, exactly — the first answer here was wrong.** It said the two builds
+    would have "two of everything", which is not what happens. Taking the
+    refusal out and looking:
+
+    - The first failure was an LLVM module that would not verify: "inlinable
+      function call in a function with debug info must have a !dbg location".
+      The reads a consumer performs on an artifact's behalf (IV.1g) were
+      synthesised without a location, and a call with no location inside a
+      function that has debug info is invalid. Under iyi's own library the
+      constants involved never landed in such a function; under Crystal's,
+      `STDERR` and `String::CHAR_TO_DIGIT` did. **Fixed**: the reads carry the
+      artifact's own path.
+    - What is left is structural. A unit that travels can call helpers the
+      compiler defines in the *main* module — `~match<IO+>` is the one that
+      showed up — and an artifact carries the unit, not main. There are ten
+      such helpers: type matching, constant reads and initialisers, class
+      variable reads and initialisers, and a few more.
+
+    **And they do not all have the same answer.** `~match` is pure and could be
+    emitted into each unit that calls it, the way a closure's callee already
+    is. A class variable's initialiser cannot: two copies would initialise it
+    twice. So the pure ones can be copied and the stateful ones have to travel
+    as *names* the consumer emits, which is what `TypeIds` already does for
+    numbering. That is a format change and a codegen change, and it is the work
+    between here and a program that has both the ecosystem and R-1.
 
 12. ~~**Using Crystal code.**~~ **Specified in III.6; the direct source mode
     is measured in 12a.** An `extern module` restates R-2 by hand for the
