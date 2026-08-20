@@ -49,9 +49,21 @@ class Crystal::CodeGenVisitor
     # nothing. The price is duplication — each module carries its own copy —
     # and one consequence worth knowing: a proc taken to such a function has a
     # different address on each side of the boundary.
+    # iyi: a copy landing in the def's own home unit is not a copy. It is the
+    # one definition that unit will hold, and the program's other units reach
+    # it by name: `raise`'s home is the main unit, the block-instantiated
+    # `Router#get` emitted there makes the main unit the host, and the Linux
+    # prelude's `bytes % 8` (unhosted, Linux-only: darwin's allocator has no
+    # such code) instantiates `Int64#%`, whose `raise` then had no global
+    # definition anywhere and ld.lld refused the link (`undefined symbol:
+    # *raise<String>:NoReturn`, on `webapp` only). A copy landing outside its
+    # home stays private: two modules each carrying a copy is the collision
+    # IV.1g's internal linkage exists to prevent, and a home that defines the
+    # symbol itself answers every other reference already.
     if host = iyi_closure_host(self_type)
+      internal = host.mod != type_module(self_type).mod
       func = typed_fun?(host.mod, mangled_name) ||
-             codegen_fun(mangled_name, target_def, self_type, fun_module_info: host, iyi_internal: true)
+             codegen_fun(mangled_name, target_def, self_type, fun_module_info: host, iyi_internal: internal)
       return check_mod_fun host.mod, mangled_name, func
     end
 

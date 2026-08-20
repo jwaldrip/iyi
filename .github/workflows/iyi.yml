@@ -172,6 +172,12 @@ jobs:
       - name: Build the samples again with their modules' source deleted
         run: bash bench/samples_roundtrip.sh
 
+      # A library arriving with a feature is a decision, and this is where it
+      # gets noticed. Seven undefined symbols in any iyi program (SPEC.md III.9),
+      # and a new one fails here rather than on somebody's machine.
+      - name: The dependency floor
+        run: bash bench/dependency_floor.sh
+
   targets:
     needs: build
     runs-on: ubuntu-24.04
@@ -198,7 +204,7 @@ jobs:
           status=0
           for target in x86_64-linux-gnu x86_64-linux-musl aarch64-linux-gnu \
                         arm-linux-gnueabihf x86_64-darwin aarch64-darwin \
-                        x86_64-w64-mingw32 x86_64-windows-msvc; do
+                        x86_64-w64-mingw32 x86_64-windows-msvc wasm32-wasi; do
             printf '== %-24s' "$target"
             if ./bin/crystal build --cross-compile --target "$target" \
                  -o "/tmp/cross-$target" /tmp/hi.cr > "/tmp/log-$target" 2>&1; then
@@ -206,6 +212,46 @@ jobs:
             else
               echo FAILED; cat "/tmp/log-$target"; status=1
             fi
+          done
+          exit $status
+
+      # iyi: the same cross-compile, for an iyi program rather than a Crystal
+      # one, and then read what the object actually asks the machine for. This
+      # is where "supports the platform out of the box" is either true or not:
+      # a target that type-checks can still emit a call nothing supplies, which
+      # is how `__multi3` went missing on wasm32 and arm.
+      #
+      # Each format is read by its own extension. `.o` for ELF and Mach-O,
+      # `.obj` for Windows, `.wasm` for wasm32. Reading the wrong one prints
+      # nothing and looks like a pass, which is exactly how two defects here
+      # survived their first audit.
+      - name: Build `iyi` for the per-target audit
+        run: make -o .build/crystal iyi
+
+      - name: What an iyi program asks each platform for
+        run: |
+          status=0
+          for target in x86_64-linux-gnu aarch64-linux-gnu x86_64-darwin \
+                        aarch64-darwin x86_64-windows-msvc x86_64-windows-gnu \
+                        wasm32-wasi; do
+            for sample in hello webapp; do
+              out="/tmp/iyi-$sample-$target"
+              if ! ./bin/iyi build --cross-compile --target "$target" \
+                    -o "$out" "samples/iyi/$sample.iyi" > "$out.log" 2>&1; then
+                echo "== $target $sample FAILED"; cat "$out.log"; status=1; continue
+              fi
+              obj=""
+              for candidate in "$out.o" "$out.obj" "$out.wasm"; do
+                [ -f "$candidate" ] && obj="$candidate" && break
+              done
+              if [ -z "$obj" ]; then
+                echo "== $target $sample emitted no object this script knows how to read"
+                status=1; continue
+              fi
+              printf '== %-22s %-7s %s\n' "$target" "$sample" \
+                "$(llvm-nm --undefined-only "$obj" 2>/dev/null |
+                     awk '{ print $NF }' | sed 's/^_*//' | sort -u | tr '\n' ' ')"
+            done
           done
           exit $status
 

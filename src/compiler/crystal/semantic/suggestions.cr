@@ -3,7 +3,10 @@ require "../types"
 
 module Crystal
   class Type
-    SuggestableDefName = /\A[a-z_]/
+    # iyi: which def names are worth a Levenshtein pass. Compiled once at load
+    # through Crystal::Rx, the compiler's own engine, so this file is not one of
+    # the reasons pcre2 stays on the link line (SPEC.md III.10).
+    SuggestableDefName = Rx::Pattern.compile("\\A[a-z_]")
 
     def lookup_similar_path(node : Path)
       (node.global? ? program : self).lookup_similar_path(node.names)
@@ -38,14 +41,14 @@ module Crystal
     end
 
     def lookup_similar_def(name, args_size, block)
-      return nil unless name =~ SuggestableDefName
+      return nil unless SuggestableDefName.matches?(name)
 
       if (defs = self.defs)
         best_def = nil
         best_match = nil
         Levenshtein.find(name) do |finder|
           defs.each do |def_name, hash|
-            if def_name =~ SuggestableDefName
+            if SuggestableDefName.matches?(def_name)
               hash.each do |def_with_metadata|
                 if def_with_metadata.max_size == args_size && def_with_metadata.yields == !!block && def_with_metadata.def.name != name
                   finder.test(def_name)

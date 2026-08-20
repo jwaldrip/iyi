@@ -8,6 +8,14 @@ module Crystal::System::Thread
     raise NotImplementedError.new("Crystal::System::Thread.new_handle")
   end
 
+  # iyi: `Thread#initialize` in the shared code calls this to spawn the system
+  # thread. wasm32-wasi has no threads, so creating one is unsupported at
+  # runtime; the method exists only so the shared `Thread` type-checks (same
+  # treatment as `.new_handle` above).
+  private def init_handle
+    raise NotImplementedError.new("Crystal::System::Thread#init_handle")
+  end
+
   def self.current_handle : Handle
     nil
   end
@@ -49,6 +57,14 @@ module Crystal::System::Thread
   private def stack_address : Void*
     # TODO: Implement
     Pointer(Void).null
+  end
+
+  # iyi: wasm32-wasi has no thread-naming syscall (there are no threads to
+  # name), so setting the name stops at the Crystal-side `@name` property.
+  # This stub exists only to satisfy `Thread#name=`; it returns *name* to match
+  # the pthread/win32 signatures.
+  private def system_name=(name : String) : String
+    name
   end
 
   def self.init_suspend_resume : Nil

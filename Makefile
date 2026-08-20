@@ -46,7 +46,18 @@ SOURCES      := $(shell find src -name '*.cr')
 SPEC_SOURCES := $(shell find spec -name '*.cr')
 MAN1PAGES    := $(patsubst doc/man/%.adoc,man/%.1,$(wildcard doc/man/*.adoc))
 override FLAGS += -D strict_multi_assign -D preview_overload_order $(if $(release),--release )$(if $(stats),--stats )$(if $(progress),--progress )$(if $(threads),--threads $(threads) )$(if $(debug),-d )$(if $(static),--static )$(if $(LDFLAGS),--link-flags="$(LDFLAGS)" )$(if $(target),--cross-compile --target $(target) )
-override COMPILER_FLAGS +=  -Dwithout_openssl -Dwithout_zlib$(if $(sequential_codegen), -Dwithout_mt,)
+# iyi: -Dwithout_iconv because iyi's String has no encoding conversion, so the
+# compiler asks libiconv for nothing.
+#
+# -Dgc_none was tried here too and is not viable, which is worth recording so
+# nobody spends the afternoon again. A compiler built without a collector emits
+# invalid IR ("Load operand must be a pointer", from `LLVM::Module#verify`) on
+# some runs and dies in `main_user_code` on others: the compiler is not a short
+# lived process that allocates a little, it is a long walk over ASTs with
+# parallel codegen and fibers, and `src/gc/none.cr` never frees. So the compiler
+# keeps bdw-gc and the programs it builds do not, which is the split SPEC.md
+# III.9 already draws. The owned collector it tracks is what ends this.
+override COMPILER_FLAGS += -Dwithout_openssl -Dwithout_zlib -Dwithout_iconv$(if $(sequential_codegen), -Dwithout_mt,)
 SPEC_WARNINGS_OFF := --exclude-warnings spec/std --exclude-warnings spec/compiler --exclude-warnings spec/primitives --exclude-warnings src/float/printer --exclude-warnings src/random.cr
 override SPEC_FLAGS += $(if $(verbose),-v )$(if $(junit_output),--junit_output $(junit_output) )$(if $(order),--order=$(order) )
 CRYSTAL_CONFIG_LIBRARY_PATH := '$$ORIGIN/../lib/crystal'
@@ -322,11 +333,10 @@ $(O)/std_spec$(EXE): $(DEPS) $(SOURCES) $(SPEC_SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
 	$(EXPORT_CC) ./bin/crystal build $(FLAGS) $(SPEC_WARNINGS_OFF) -o $@ spec/std_spec.cr
-
 $(O)/compiler_spec$(EXE): $(DEPS) $(SOURCES) $(SPEC_SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
-	$(EXPORT_CC) $(EXPORTS) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(SPEC_WARNINGS_OFF) -o $@ spec/compiler_spec.cr --release
+	$(EXPORT_CC) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(SPEC_WARNINGS_OFF) -o $@ spec/compiler_spec.cr --release
 
 $(O)/primitives_spec$(EXE): $(O)/$(CRYSTAL_BIN) $(DEPS) $(SOURCES) $(SPEC_SOURCES)
 	@mkdir -p $(O)
