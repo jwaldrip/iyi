@@ -212,8 +212,16 @@ NEEDLE = re.compile("crystal", re.IGNORECASE)
 
 
 def tracked_files() -> list[str]:
+    # `-c safe.directory=*` is required inside the crystal docker image:
+    # checkout writes files owned by a different user than the container,
+    # git 2.35+ refuses `ls-files` with exit 128, and a gate that crashes
+    # is a gate that is not checking.
     out = subprocess.run(
-        ["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True
+        ["git", "-c", "safe.directory=*", "ls-files"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     return out.splitlines()
 
