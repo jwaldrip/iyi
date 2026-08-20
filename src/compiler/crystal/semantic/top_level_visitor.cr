@@ -273,7 +273,13 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
   def visit(node : UsingDecl)
     check_outside_exp node, "use `using`"
 
-    path = Path.new(node.path.map(&.camelcase)).at(node)
+    # Global, because a module's path is its file's path (R-1) and a file path
+    # does not mean something different depending on where it is written. A
+    # lexical lookup made `using calc/lexer` inside a module called
+    # `samples/calc` resolve `Calc` to the module doing the `using`, and then
+    # say the module was not imported — a true-looking sentence about the wrong
+    # thing. Found by `samples/iyi/calc`, which is called that.
+    path = Path.new(node.path.map(&.camelcase), global: true).at(node)
 
     # iyi: `using` reaches a module this file has imported, and the error for
     # forgetting the import used to be "undefined constant App::Greeter" —

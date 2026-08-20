@@ -516,6 +516,33 @@ describe "Semantic: iyi import" do
     # Found by writing a command-line program called `tally` that imported a
     # `Tally`: what it said was that `Tally` was not `App::Count::Tally`, at
     # the first line that used one, with nothing pointing at the `using`.
+    # A module path is a file's path, so it cannot mean something different
+    # depending on where it is written. Found by `samples/iyi/calc`: a module
+    # called `samples/calc` importing `calc/lexer` resolved `Calc` to itself
+    # and then said the module was not imported, which is a true-looking
+    # sentence about the wrong thing.
+    it "reads a module path from the root, not from where it is written" do
+      with_iyi_modules({
+        "calc/lexer.iyi" => <<-IYI,
+          module calc/lexer
+
+          pub def scan : Int32
+            1
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module samples/calc
+
+          import calc/lexer
+          using calc/lexer
+
+          scan
+          IYI
+      }) do
+        semantic_iyi("main.iyi")
+      end
+    end
+
     it "refuses a `using` of a name the module's own name already takes" do
       with_iyi_modules({
         "app/dep.iyi" => <<-IYI,
@@ -532,6 +559,72 @@ describe "Semantic: iyi import" do
           IYI
       }) do
         expect_raises(Crystal::TypeException, /is this module's own name/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
+    # II.3's conflict rule, with the used module in a file rather than faked as
+    # a nested type. It used to be faked, and a lexical lookup found the fake;
+    # a module path is a file's path, so the lookup is global now and a fake
+    # nested `App::Greeter` is not what `using app/greeter` means.
+    it "lets a local definition beat a name `using` brought in" do
+      with_iyi_modules({
+        "app/greeter.iyi" => <<-IYI,
+          module app/greeter
+
+          pub def polite : Int32
+            1
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/consumer
+
+          import app/greeter
+          using app/greeter
+
+          def polite : Bool
+            true
+          end
+
+          struct User
+            def greet : Bool
+              polite
+            end
+          end
+
+          User.new.greet
+          IYI
+      }) do
+        semantic_iyi("main.iyi")
+      end
+    end
+
+    it "falls back to the used one when there is no local definition" do
+      with_iyi_modules({
+        "app/greeter.iyi" => <<-IYI,
+          module app/greeter
+
+          pub def polite : Int32
+            1
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/consumer
+
+          import app/greeter
+          using app/greeter
+
+          struct User
+            def greet : Bool
+              polite
+            end
+          end
+
+          User.new.greet
+          IYI
+      }) do
+        expect_raises(Crystal::TypeException, /must return Bool/) do
           semantic_iyi("main.iyi")
         end
       end

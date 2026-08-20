@@ -28,6 +28,7 @@ require "./hash"
 
 lib LibC
   fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
+  fun read(fd : Int32, buf : Void*, count : UInt64) : Int64
   fun exit(status : Int32) : NoReturn
 end
 
@@ -134,6 +135,37 @@ end
 def puts(text : String) : Nil
   print text
   print "\n"
+end
+
+# Everything on standard input, asked for by `samples/iyi/calc`: a program that
+# only runs the source built into it is a demonstration, and one that reads is
+# a tool.
+#
+# All of it rather than a line at a time, and that is the honest shape of what
+# this prelude can do — `gets` in Crystal's library returns one line and keeps
+# the rest in a buffered `IO`, and there is no `IO` here to keep it in. A name
+# that means less than Crystal's would be worse than a different name, so this
+# one is its own (SPEC.md III.1.7a is the same rule from the other side).
+def read_input : String
+  chunk = 8192_u64
+  buffer = Pointer(UInt8).malloc(chunk)
+  filled = 0_i64
+  capacity = chunk
+
+  while true
+    if filled.to_u64 == capacity
+      capacity = capacity * 2_u64
+      buffer = buffer.realloc(capacity)
+    end
+
+    count = LibC.read(0, (buffer + filled).as(Void*), capacity - filled.to_u64)
+    break if count <= 0_i64
+    filled = filled + count
+  end
+
+  String.new(filled.to_i) do |target|
+    target.copy_from(buffer, filled.to_i)
+  end
 end
 
 def puts(value) : Nil

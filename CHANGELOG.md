@@ -2,7 +2,29 @@
 
 ## Unreleased
 
+### Added
+
+- **`samples/iyi/calc`: a language, in the language.** Three modules — a
+  scanner, a parser and an evaluator — reading a program from standard input,
+  written against iyi's own 1,184-line library and nothing else. Every other
+  sample is a page long, and a language that has only been used for pages has
+  not been used.
+
+  It grew the prelude by exactly what it asked for, which is the rule the
+  prelude grows by: `String#[]`, `String#[](start, count)`, `String#to_i` and
+  `read_input`. Nothing else was missing. `/` was not added, and that is the
+  interesting one: iyi has no floats, Crystal's `/` on integers returns a
+  `Float64`, and a name that means two things is what III.1.7a settled against
+  — so integer division stays `//` in both.
+
 ### Changed
+
+- **A module path is read from the root, not from where it is written.** A
+  module called `samples/calc` importing `calc/lexer` resolved `Calc` to
+  itself, then said the module was not imported: a true-looking sentence about
+  the wrong thing. A module's path is its file's path (R-1), so it cannot mean
+  something different depending on where it appears. Found by writing the
+  sample above, which is called `calc`.
 
 - **`Array#sort` is `sort_in_place`, and `sorted` is the copy.** A plain `sort`
   meant the opposite thing in the two libraries — it sorted the array under

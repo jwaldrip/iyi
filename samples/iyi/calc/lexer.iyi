@@ -1,0 +1,71 @@
+module calc/lexer
+
+# What the scanner produces. A token is its kind, the text it covers and where
+# it started, because an error that cannot say where is half an error.
+pub struct Token
+  getter kind : String
+  getter text : String
+  getter at : Int32
+
+  def initialize(@kind : String, @text : String, @at : Int32)
+  end
+end
+
+pub struct BadCharacter
+  getter at : Int32
+  getter found : Char
+
+  def initialize(@at : Int32, @found : Char)
+  end
+end
+
+impl Error for BadCharacter
+  def message : String
+    "unexpected character at #{at}"
+  end
+end
+
+pub def scan(source : String) : Array(Token) | BadCharacter
+  tokens = [] of Token
+  index = 0
+
+  while index < source.size
+    c = source[index]
+
+    if c == ' ' || c == '\n' || c == '\t'
+      index = index + 1
+    elsif digit?(c)
+      start = index
+      while index < source.size && digit?(source[index])
+        index = index + 1
+      end
+      tokens << Token.new("number", source[start, index - start], start)
+    elsif letter?(c)
+      start = index
+      while index < source.size && (letter?(source[index]) || digit?(source[index]))
+        index = index + 1
+      end
+      tokens << Token.new("name", source[start, index - start], start)
+    elsif operator?(c)
+      tokens << Token.new("op", source[index, 1], index)
+      index = index + 1
+    else
+      return BadCharacter.new(index, c)
+    end
+  end
+
+  tokens << Token.new("end", "", index)
+  tokens
+end
+
+def digit?(c : Char) : Bool
+  c >= '0' && c <= '9'
+end
+
+def letter?(c : Char) : Bool
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+end
+
+def operator?(c : Char) : Bool
+  c == '+' || c == '-' || c == '*' || c == '/' || c == '(' || c == ')' || c == '='
+end

@@ -347,62 +347,6 @@ describe "Semantic: iyi" do
     # satisfies it, so which one was chosen decides whether this compiles.
     # The pair of specs is what pins it down — the second shows the used
     # function really is found when there is no local one to beat it.
-    it "lets a local definition beat a used one, from a nested type" do
-      assert_no_errors <<-CRYSTAL
-        module app/consumer
-
-        module App
-          module Greeter
-            extend self
-
-            def polite
-              1
-            end
-          end
-        end
-
-        using app/greeter
-
-        def polite
-          true
-        end
-
-        struct User
-          def greet : Bool
-            polite
-          end
-        end
-
-        User.new.greet
-        CRYSTAL
-    end
-
-    it "falls back to the used one when there is no local definition" do
-      assert_error <<-CRYSTAL, "must return Bool"
-        module app/consumer
-
-        module App
-          module Greeter
-            extend self
-
-            def polite
-              1
-            end
-          end
-        end
-
-        using app/greeter
-
-        struct User
-          def greet : Bool
-            polite
-          end
-        end
-
-        User.new.greet
-        CRYSTAL
-    end
-
     it "raises on `using` of something that is not a module" do
       assert_error <<-CRYSTAL, %(can't `using` App::Greeter, it's a struct)
         module App

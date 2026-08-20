@@ -165,8 +165,14 @@ jobs:
         run: |
           for sample in samples/iyi/*.iyi; do
             echo "== $sample"
-            ./bin/iyi run "$sample"
+            ./bin/iyi run "$sample" < /dev/null
           done
+
+      # `calc` is the one sample that reads, so it is the one that can be run
+      # twice: once on the program built into it, once on a program piped in.
+      - name: The interpreter, on something typed at it
+        run: |
+          printf 'a = 6\nb = 7\na * b\n' | ./bin/iyi run samples/iyi/calc.iyi | grep -qx 42
 
       # The other library, and the seam between it and the rules. A program
       # under `--crystal` keeps every rule and gets Crystal's standard
