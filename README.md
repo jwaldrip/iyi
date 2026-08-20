@@ -266,9 +266,36 @@ The second build never sees `polite`'s body. It reads
 against and the machine code it links, and that is R-1: a module compiles
 against what its imports *say*, not against what they *do*.
 
-Two things have to be on the machine. A C toolchain, because the link goes
-through one. And **libgc**, which every program iyi produces links against:
-`apt install libgc-dev`, or your system's equivalent.
+What a program iyi builds depends on. On Linux the object asks libc for
+nothing: the prelude issues its own syscalls for `write`, `exit` and the
+allocator, so `nm -u` on the emitted object prints nothing at all. A plain
+build still links libc, because the C toolchain's link template adds the
+startup objects, and the executable carries their five undefined references
+(`__libc_start_main`, `__gmon_start__`, `__cxa_finalize` and two weak
+`_ITM_` callbacks). That distinction is the whole of it, and CI is what
+taught it: a claim measured on an object is not a claim about the binary.
+`--static` is where "no libc" becomes literally true, below. On macOS the
+object asks `libSystem` for five symbols, because that is Apple's only
+supported interface. Crystal's compiler needs thirteen libraries installed
+to link what it builds. A program iyi builds reaches none of them: no libgc,
+no libevent, no openssl, no zlib, none of it. The price is that the default
+allocator never collects; memory is taken and not given back until the
+collector lands. `-Dgc_boehm` opts a program into bdw-gc and real collection
+today, and then libgc is that program's one dependency. The link still goes
+through a C toolchain, so a compiler on the machine is the one thing a build
+needs.
+
+**And the binary travels as one file.** On Linux, `iyi build --static` passes
+`-static` to the C toolchain, and the object it links has zero undefined
+symbols (`nm -u` prints nothing), so the binary comes out with no dynamic
+loader at all: copy it to a bare Linux and run it, the way a Go binary
+travels. On macOS that is not on offer, and it is said here rather than left
+to be found: Apple ships no static libc, and the linker refuses, `ld: library
+'crt0.o' not found`. The default build there links one library, `libSystem`,
+part of the OS, so the file still copies to another Mac and runs. Windows is
+the same shape, importing only `kernel32`, which ships with the machine, and
+`--static` links the static CRT there. A wasm32 build is one self-contained
+module already.
 
 Building it instead needs LLVM 19 and a Crystal compiler to bootstrap from:
 
@@ -281,6 +308,18 @@ $ sudo make install_iyi                 # or install it, PREFIX=/usr/local
 `make` also builds the same compiler under Crystal's name, as `./bin/crystal`.
 That one compiles `.cr` files and is what the specs and the benches use,
 because underneath this is still Crystal's compiler.
+
+**And the compiler itself links four libraries.** Crystal's required-libraries
+list is thirteen long. `otool -L` on the `iyi` binary prints libLLVM, libc++,
+libgc and libSystem, and nothing else. LLVM is the back end and libc++ arrives
+with it. libgc is there because `-Dgc_none` was tried on the compiler and does
+not survive it: invalid IR on some runs, a crash in `main_user_code` on others.
+pcre2 was the fifth entry. It was held there by regex literals in four stdlib
+files the compiler compiles into itself; macro-level regex now runs on iyi's
+own engine, those four files parse by hand, and the library is off the line.
+`bench/dependency_floor.sh` holds the compiler to that list on every run and
+forbids `libpcre` outright. SPEC.md III.10 has the story, the verification and
+what it cost.
 
 ## More of the language
 
