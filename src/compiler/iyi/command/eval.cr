@@ -6,7 +6,7 @@ class Iyi::Command
     opt_program_source = nil
     program_args = [] of String
 
-    parse_with_crystal_opts do |opts|
+    parse_with_iyi_opts do |opts|
       opts.banner = "Usage: #{Command.program_name} eval [options] [source]\n\nOptions:"
       setup_simple_compiler_options compiler, opts
 

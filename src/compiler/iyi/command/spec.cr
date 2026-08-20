@@ -22,7 +22,7 @@ class Iyi::Command
   private def spec
     compiler = new_compiler
     link_flags = [] of String
-    parse_with_crystal_opts do |opts|
+    parse_with_iyi_opts do |opts|
       opts.banner = "Usage: crystal spec [options] [files] [-- runtime_options]\n\nOptions:"
       setup_simple_compiler_options compiler, opts
 
@@ -104,8 +104,8 @@ class Iyi::Command
 
     output_filename = Iyi.temp_executable "spec"
 
-    ENV["CRYSTAL_SPEC_COMPILER_BIN"] ||= if crystal_exec_path = ENV["IYI_EXEC_PATH"]?
-                                           File.join(crystal_exec_path, "crystal")
+    ENV["CRYSTAL_SPEC_COMPILER_BIN"] ||= if iyi_exec_path = ENV["IYI_EXEC_PATH"]?
+                                           File.join(iyi_exec_path, "crystal")
                                          else
                                            Process.executable_path
                                          end

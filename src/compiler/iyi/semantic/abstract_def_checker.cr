@@ -393,7 +393,7 @@ class Iyi::AbstractDefChecker
   end
 
   private def this_warning_will_become_an_error
-    @program.colorize("The above warning will become an error in a future Crystal version.").yellow.bold
+    @program.colorize("The above warning will become an error in a future release.").yellow.bold
   end
 
   private def report_error(node, message)

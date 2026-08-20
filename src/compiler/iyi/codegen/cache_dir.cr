@@ -1,5 +1,5 @@
 module Iyi
-  # Manages cache files in the ".crystal" directory.
+  # Manages cache files in the ".iyi" directory.
   #
   # For each compiled program a directory is created in the cache
   # that stores .bc and .o files that could possibly be reused
@@ -104,7 +104,7 @@ module Iyi
       msg = String.build do |io|
         io.puts "Error: can't create cache directory."
         io.puts
-        io.puts "Crystal needs a cache directory. These directories were candidates for it:"
+        io.puts "#{Iyi::Command.program_name} needs a cache directory. These directories were candidates for it:"
         io.puts
         candidates.each do |candidate|
           io << " - " << candidate << '\n'

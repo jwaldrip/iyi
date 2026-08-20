@@ -206,6 +206,13 @@ jobs:
       - name: The dependency floor
         run: bash bench/dependency_floor.sh
 
+      # iyi is a permanent fork, so Crystal's name standing in for iyi's is a
+      # defect and not a detail. Both layers: a tree that should have been
+      # renamed, and a name left inside a file that was otherwise cut over.
+      # Every allowed occurrence carries its reason in the script.
+      - name: iyi owns its name
+        run: python3 bench/identity_floor.py
+
   targets:
     needs: build
     runs-on: ubuntu-24.04

@@ -28,7 +28,7 @@ module Iyi
   end
 
   def self.tempfile(basename)
-    CacheDir.instance.join("crystal-run-#{basename}.tmp")
+    CacheDir.instance.join("#{Iyi::Command.program_name}-run-#{basename}.tmp")
   end
 
   def self.temp_executable(basename)

@@ -136,7 +136,7 @@ class Iyi::Command
     return nil if socket.nil? || socket.empty?
 
     unless File.exists?(socket)
-      STDERR.puts "crystal: no daemon at #{socket}, building without it"
+      STDERR.puts "#{Command.program_name}: no daemon at #{socket}, building without it"
       return nil
     end
 
@@ -449,7 +449,7 @@ class Iyi::Command
       client = UNIXSocket.new(path)
     rescue ex : Socket::Error | File::Error
       if fallback
-        STDERR.puts "crystal: daemon at #{path} did not answer, building without it"
+        STDERR.puts "#{Command.program_name}: daemon at #{path} did not answer, building without it"
         return
       end
       abort! "no daemon listening on #{path} (start one with `#{Command.program_name} daemon start`)", :FAILURE

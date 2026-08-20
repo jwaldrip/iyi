@@ -159,18 +159,21 @@ class Iyi::Command
     else
       if command.ends_with?(".cr")
         abort! "file '#{command}' does not exist", :USAGE_ERROR
-      elsif external_command = Process.find_executable("crystal-#{command}")
+        # iyi: `git`-style subcommand extension, keyed on the name a person
+        # typed. Hardcoded to `crystal-`, `iyi foo` could never find `iyi-foo`,
+        # so the extension point existed for one of the two binaries only.
+      elsif external_command = Process.find_executable("#{Command.program_name}-#{command}")
         options.shift
 
-        crystal_exec_path = Iyi::Config.exec_path
-        path = [crystal_exec_path, ENV["PATH"]?].compact!.join(Process::PATH_DELIMITER)
+        iyi_exec_path = Iyi::Config.exec_path
+        path = [iyi_exec_path, ENV["PATH"]?].compact!.join(Process::PATH_DELIMITER)
 
         {% if flag?(:win32) %}
           # FIXME: `Process.exec` doesn't work as expected on Windows, see https://github.com/crystal-lang/crystal/issues/14422
           options.unshift external_command
           exit_status, _ = Process.run(options, env: {
             "PATH"          => path,
-            "IYI_EXEC_PATH" => crystal_exec_path,
+            "IYI_EXEC_PATH" => iyi_exec_path,
           }, input: :inherit, output: :inherit, error: :inherit) do |process|
             # FIXME: There's a race condition between creating the sub-process and
             # registering the `on_terminate` callback.
@@ -184,7 +187,7 @@ class Iyi::Command
         {% else %}
           Process.exec(external_command, options, env: {
             "PATH"          => path,
-            "IYI_EXEC_PATH" => crystal_exec_path,
+            "IYI_EXEC_PATH" => iyi_exec_path,
           })
         {% end %}
       else
@@ -464,7 +467,7 @@ class Iyi::Command
     tallies = false
     specified_prelude = false
 
-    option_parser = parse_with_crystal_opts do |opts|
+    option_parser = parse_with_iyi_opts do |opts|
       opts.banner = "Usage: #{Command.program_name} #{command} [options] [programfile] [--] [arguments]\n\nOptions:"
 
       unless no_codegen
@@ -945,7 +948,7 @@ class Iyi::Command
     Iyi.print_error(msg, @color)
   end
 
-  private def self.crystal_opts
+  private def self.iyi_opts
     ENV["IYI_OPTS"]?.try { |opts| Process.parse_arguments(opts) }
   rescue ex
     raise Error.new("Failed to parse IYI_OPTS: #{ex.message}")
@@ -957,10 +960,10 @@ class Iyi::Command
   # Only flags are accepted in the first run; positional arguments, invalid
   # options (where they might be treated as normal arguments), and `--` are all
   # disallowed. The option parser should not define any subcommands.
-  def self.parse_with_crystal_opts(options, & : OptionParser ->)
+  def self.parse_with_iyi_opts(options, & : OptionParser ->)
     option_parser = OptionParser.new { |opts| yield opts }
 
-    if crystal_opts = self.crystal_opts
+    if iyi_opts = self.iyi_opts
       old_unknown_args = option_parser.@unknown_args
       old_invalid_option = option_parser.@invalid_option
       old_before_each = option_parser.@before_each
@@ -971,8 +974,8 @@ class Iyi::Command
         raise Error.new "IYI_OPTS may not contain --" if opt == "--"
       end
 
-      option_parser.parse(crystal_opts)
-      unless crystal_opts.empty?
+      option_parser.parse(iyi_opts)
+      unless iyi_opts.empty?
         raise Error.new "IYI_OPTS may not contain positional arguments"
       end
 
@@ -989,8 +992,8 @@ class Iyi::Command
     option_parser
   end
 
-  private def parse_with_crystal_opts(& : OptionParser ->)
-    Command.parse_with_crystal_opts(@options) { |opts| yield opts }
+  private def parse_with_iyi_opts(& : OptionParser ->)
+    Command.parse_with_iyi_opts(@options) { |opts| yield opts }
   end
 
   private def new_compiler
