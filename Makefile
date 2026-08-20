@@ -283,12 +283,20 @@ install_iyi: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
 #
 # A program built with it gets Crystal's standard library, and an install that
 # ships only iyi's own 56 KB answers `require "json"` with "can't find file",
-# which is the headline feature failing in the thing people download. Copied
-# without `compiler/` — a compiler that carried its own source would be
-# carrying it twice — and without `iyi/`, which is already above.
+# which is the headline feature failing in the thing people download.
+#
+# `compiler/` was cut from this, on the grounds that a compiler carrying its own
+# source carries it twice. That was wrong, and the way it was wrong is the
+# lesson: **the standard library requires it.** `crystal/syntax_highlighter`
+# requires `compiler/crystal/syntax`, Crystal's exception page requires the
+# highlighter, and Kemal requires the exception page — so `require "kemal"`,
+# this README's headline example, could not be built from the tarball anybody
+# downloaded. Shipping a library means shipping what it requires, and deciding
+# otherwise from the outside is guessing. Crystal's own install copies all of
+# `src` for the same reason. `iyi/` stays out because it is already above.
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/iyi/crystal"
 	cp -R -p $(if $(deref_symlinks),-L,-P) src/*.cr src/*/ "$(DESTDIR)$(DATADIR)/iyi/crystal/"
-	rm -rf "$(DESTDIR)$(DATADIR)/iyi/crystal/compiler" "$(DESTDIR)$(DATADIR)/iyi/crystal/iyi"
+	rm -rf "$(DESTDIR)$(DATADIR)/iyi/crystal/iyi"
 
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/licenses/iyi/"
 	$(INSTALL) -m 644 LICENSE "$(DESTDIR)$(DATADIR)/licenses/iyi/LICENSE"
