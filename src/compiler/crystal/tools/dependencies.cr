@@ -2,7 +2,7 @@ require "set"
 require "colorize"
 require "../syntax/ast"
 
-class Crystal::Command
+class Iyi::Command
   private def dependencies
     config = create_compiler "tool dependencies", no_codegen: true, dependencies: true, allowed_formats: DependencyPrinter::Format.names.map!(&.downcase)
 
@@ -18,7 +18,7 @@ class Crystal::Command
   end
 end
 
-module Crystal
+module Iyi
   abstract class DependencyPrinter
     enum Format
       Tree

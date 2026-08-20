@@ -28,7 +28,7 @@ require "./codegen"
 # beginning of the program because they don't involve a complex initialization
 # and can be done in any order (they have no side effects).
 
-class Crystal::CodeGenVisitor
+class Iyi::CodeGenVisitor
   @const_mutex : LLVM::Value?
 
   # The special constants ARGC_UNSAFE and ARGV_UNSAFE (and others) need to be initialized

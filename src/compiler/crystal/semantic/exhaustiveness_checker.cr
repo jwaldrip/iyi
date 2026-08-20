@@ -1,4 +1,4 @@
-struct Crystal::ExhaustivenessChecker
+struct Iyi::ExhaustivenessChecker
   def initialize(@program : Program)
   end
 

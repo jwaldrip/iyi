@@ -6,7 +6,7 @@ private def assert_finds(search, results, relative_to = nil, path = File.expand_
   it "finds #{search.inspect}", file, line do
     results = results.map { |result| ::Path[path, result].normalize.to_s }
     Dir.cd(File.expand_path(compiler_datapath("crystal_path"))) do
-      crystal_path = Crystal::CrystalPath.new([path])
+      crystal_path = Iyi::CrystalPath.new([path])
       matches = crystal_path.find search, relative_to: relative_to
       matches.should eq(results), file: file, line: line
     end
@@ -16,8 +16,8 @@ end
 private def assert_doesnt_find(search, relative_to = nil, path = File.expand_path(compiler_datapath("crystal_path")), expected_relative_to = nil, file = __FILE__, line = __LINE__)
   it "doesn't finds #{search.inspect}", file, line do
     Dir.cd(File.expand_path(compiler_datapath("crystal_path"))) do
-      crystal_path = Crystal::CrystalPath.new([path])
-      error = expect_raises Crystal::CrystalPath::NotFoundError do
+      crystal_path = Iyi::CrystalPath.new([path])
+      error = expect_raises Iyi::CrystalPath::NotFoundError do
         crystal_path.find search, relative_to: relative_to
       end
       error.relative_to.should eq(expected_relative_to), file: file, line: line
@@ -26,7 +26,7 @@ private def assert_doesnt_find(search, relative_to = nil, path = File.expand_pat
   end
 end
 
-describe Crystal::CrystalPath do
+describe Iyi::CrystalPath do
   assert_finds "test_files/file_one.cr", ["test_files/file_one.cr"]
   assert_finds "test_files/file_one", ["test_files/file_one.cr"]
   assert_finds "test_files/*", [
@@ -111,7 +111,7 @@ describe Crystal::CrystalPath do
   # iyi: the `.iyi` candidate comes first wherever the name does not already
   # end in `.cr`, so an iyi file shadows a Crystal one of the same name.
   describe "#each_file_expansion" do
-    path = Crystal::CrystalPath.new
+    path = Iyi::CrystalPath.new
 
     it "foo.cr" do
       assert_iterates_yielding [
@@ -211,35 +211,35 @@ describe Crystal::CrystalPath do
 
   it "includes 'lib' by default" do
     with_env("CRYSTAL_PATH": nil) do
-      crystal_path = Crystal::CrystalPath.new
+      crystal_path = Iyi::CrystalPath.new
       crystal_path.entries[0].should eq("lib")
     end
   end
 
   it "overrides path with environment variable" do
     with_env("CRYSTAL_PATH": "foo#{Process::PATH_DELIMITER}bar") do
-      crystal_path = Crystal::CrystalPath.new
+      crystal_path = Iyi::CrystalPath.new
       crystal_path.entries.should eq(%w(foo bar))
     end
   end
 
   it ".expand_paths" do
     paths = ["$ORIGIN/../foo"]
-    Crystal::CrystalPath.expand_paths(paths, "/usr/bin/")
+    Iyi::CrystalPath.expand_paths(paths, "/usr/bin/")
     paths.should eq ["/usr/bin/../foo"]
     paths = ["./$ORIGIN/../foo"]
-    Crystal::CrystalPath.expand_paths(paths, "/usr/bin/")
+    Iyi::CrystalPath.expand_paths(paths, "/usr/bin/")
     paths.should eq ["./$ORIGIN/../foo"]
     paths = ["$ORIGINfoo"]
-    Crystal::CrystalPath.expand_paths(paths, "/usr/bin/")
+    Iyi::CrystalPath.expand_paths(paths, "/usr/bin/")
     paths.should eq ["$ORIGINfoo"]
     paths = ["lib", "$ORIGIN/../foo"]
-    Crystal::CrystalPath.expand_paths(paths, "/usr/bin/")
+    Iyi::CrystalPath.expand_paths(paths, "/usr/bin/")
     paths.should eq ["lib", "/usr/bin/../foo"]
 
     paths = ["$ORIGIN/../foo"]
     expect_raises(Exception, "Missing executable path to expand $ORIGIN path") do
-      Crystal::CrystalPath.expand_paths(paths, nil)
+      Iyi::CrystalPath.expand_paths(paths, nil)
     end
   end
 end

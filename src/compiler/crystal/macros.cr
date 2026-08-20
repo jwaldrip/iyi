@@ -163,7 +163,7 @@ end
 # You can invoke a **fixed subset** of methods on AST nodes at compile-time. These methods
 # are documented on the classes in this module. Additionally, methods of the
 # `Macros` module are top-level methods that you can invoke, like `puts` and `run`.
-module Crystal::Macros
+module Iyi::Macros
   # Compares two [semantic versions](http://semver.org/).
   #
   # Returns `-1`, `0` or `1` depending on whether *v1* is lower than *v2*,

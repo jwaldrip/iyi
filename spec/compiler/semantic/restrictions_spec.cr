@@ -1,6 +1,6 @@
 require "../../spec_helper"
 
-class Crystal::Program
+class Iyi::Program
   def t(type)
     types[type.rchop('+')].virtual_type
   end

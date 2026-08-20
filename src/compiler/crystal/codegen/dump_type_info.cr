@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   class CodeGenVisitor
     private def dump_type_info(path)
       ids = @program.llvm_id.@ids.to_a

@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   class Type
     # Looks up a *path* (for example: `Foo::Bar::Baz`) relative to `self`.
     #

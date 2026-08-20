@@ -1,6 +1,6 @@
 require "../exception"
 
-module Crystal
+module Iyi
   class SyntaxException < CodeError
     include ErrorFormat
 

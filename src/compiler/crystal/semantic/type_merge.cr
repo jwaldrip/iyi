@@ -1,6 +1,6 @@
 require "../program"
 
-module Crystal
+module Iyi
   class Program
     def type_merge(types : Array(Type?)) : Type?
       case types.size

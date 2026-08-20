@@ -1,7 +1,7 @@
 require "colorize"
 require "../syntax/ast"
 
-class Crystal::Command
+class Iyi::Command
   private def flags
     OptionParser.parse(@options) do |opts|
       opts.banner = "Usage: crystal tool flags [path...]\n\nOptions:"
@@ -74,17 +74,17 @@ class Crystal::Command
       true
     end
 
-    def visit(node : Crystal::MacroExpression | Crystal::MacroIf | Crystal::MacroFor)
+    def visit(node : Iyi::MacroExpression | Iyi::MacroIf | Iyi::MacroFor)
       @in_macro_expression = true
 
       true
     end
 
-    def end_visit(node : Crystal::MacroExpression | Crystal::MacroIf | Crystal::MacroFor)
+    def end_visit(node : Iyi::MacroExpression | Iyi::MacroIf | Iyi::MacroFor)
       @in_macro_expression = false
     end
 
-    def visit(node : Crystal::Call)
+    def visit(node : Iyi::Call)
       check_call(node)
       true
     end

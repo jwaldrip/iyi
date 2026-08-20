@@ -9,7 +9,7 @@
 # logic is involved since we need to check if a variable is
 # assigned in all of the initialize methods, or if the initializers
 # are defined in a superclass, if super is called, etc.
-struct Crystal::TypeDeclarationProcessor
+struct Iyi::TypeDeclarationProcessor
   record TypeDeclarationWithLocation,
     type : Type,
     location : Location,

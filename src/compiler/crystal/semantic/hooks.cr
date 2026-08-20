@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   class Program
     record FinishedHook, scope : ModuleType, macro : Macro, node : ASTNode
     getter finished_hooks = [] of FinishedHook

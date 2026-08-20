@@ -14,7 +14,7 @@ require "./semantic/*"
 # - cleanup: remove dead code and other simplifications
 # - check recursive structs (RecursiveStructChecker): check that structs are not recursive (impossible to codegen)
 
-class Crystal::Program
+class Iyi::Program
   # Runs semantic analysis on the given node, returning a node
   # that's typed. In the process types and methods are defined in
   # this program.

@@ -68,7 +68,7 @@ require "./codegen"
 # In this case we usually need to unbox a value from a union, or cast a more general
 # type into a specific type (such as when casting a Foo to a Bar, with Bar < Foo).
 
-class Crystal::CodeGenVisitor
+class Iyi::CodeGenVisitor
   def assign(target_pointer, target_type, value_type, value)
     return if @builder.end
 

@@ -15,9 +15,9 @@ private def exec_init(project_name, project_dir = nil, type = "lib", force = fal
   args << "--force" if force
   args << "--skip-existing" if skip_existing
 
-  config = Crystal::Init.parse_args(args)
+  config = Iyi::Init.parse_args(args)
   config.silent = true
-  Crystal::Init::InitProject.new(config).run
+  Iyi::Init::InitProject.new(config).run
 end
 
 private def with_file(name, &)
@@ -25,18 +25,18 @@ private def with_file(name, &)
 end
 
 private def run_init_project(skeleton_type, name, author, email, github_name, dir = name)
-  Crystal::Init::InitProject.new(
-    Crystal::Init::Config.new(skeleton_type, name, dir, author, email, github_name, true)
+  Iyi::Init::InitProject.new(
+    Iyi::Init::Config.new(skeleton_type, name, dir, author, email, github_name, true)
   ).run
 end
 
 private def git_available?
-  Process.run(Crystal::Git.executable).success?
+  Process.run(Iyi::Git.executable).success?
 rescue IO::Error
   false
 end
 
-module Crystal
+module Iyi
   describe Init::InitProject do
     it "correctly uses git config" do
       pending! "Git is not available" unless git_available?
@@ -162,7 +162,7 @@ module Crystal
           parsed["version"].should eq("0.1.0")
           parsed["authors"].should eq(["John Smith <john@smith.com>"])
           parsed["license"].should eq("MIT")
-          parsed["crystal"].should eq(">= #{Crystal::Config.version}")
+          parsed["crystal"].should eq(">= #{Iyi::Config.version}")
           parsed["targets"]?.should be_nil
         end
 
@@ -233,7 +233,7 @@ module Crystal
       with_tempdir("already-present") do
         existing_file = "existing-file"
         File.touch(existing_file)
-        expect_raises(Crystal::Init::Error, "#{existing_file.inspect} is a file") do
+        expect_raises(Iyi::Init::Error, "#{existing_file.inspect} is a file") do
           exec_init(existing_file)
         end
       end
@@ -258,7 +258,7 @@ module Crystal
       with_tempdir("generated-file") do
         File.write("README.md", "content before init")
 
-        ex = expect_raises(Crystal::Init::FilesConflictError) do
+        ex = expect_raises(Iyi::Init::FilesConflictError) do
           exec_init("my_lib", ".")
         end
         ex.conflicting_files.should contain("README.md")
@@ -294,7 +294,7 @@ module Crystal
 
   describe ".parse_args" do
     it "DIR" do
-      config = Crystal::Init.parse_args(["lib", "foo"])
+      config = Iyi::Init.parse_args(["lib", "foo"])
       config.name.should eq "foo"
       config.dir.should eq "foo"
       config.expanded_dir.should eq ::Path[Dir.current, "foo"]
@@ -302,7 +302,7 @@ module Crystal
 
     it "DIR with path" do
       path = ::Path["foo", "bar"].to_s
-      config = Crystal::Init.parse_args(["lib", path])
+      config = Iyi::Init.parse_args(["lib", path])
       config.name.should eq "bar"
       config.dir.should eq path
       config.expanded_dir.should eq ::Path[Dir.current, "foo", "bar"]
@@ -310,7 +310,7 @@ module Crystal
 
     it "DIR (relative to home)" do
       path = ::Path["~", "foo"].to_s
-      config = Crystal::Init.parse_args(["lib", path])
+      config = Iyi::Init.parse_args(["lib", path])
       config.name.should eq "foo"
       config.dir.should eq path
       config.expanded_dir.should eq ::Path.home.join("foo")
@@ -318,7 +318,7 @@ module Crystal
 
     it "DIR (absolute)" do
       path = ::Path[::Path[Dir.current].anchor.to_s, "foo"].to_s
-      config = Crystal::Init.parse_args(["lib", path])
+      config = Iyi::Init.parse_args(["lib", path])
       config.name.should eq "foo"
       config.dir.should eq path
       config.expanded_dir.should eq ::Path[path]
@@ -326,7 +326,7 @@ module Crystal
 
     it "DIR = ." do
       with_tempdir("dir-dot") do
-        config = Crystal::Init.parse_args(["lib", "."])
+        config = Iyi::Init.parse_args(["lib", "."])
         config.name.should eq File.basename(Dir.current)
         config.dir.should eq "."
         config.expanded_dir.should eq ::Path[Dir.current]
@@ -334,7 +334,7 @@ module Crystal
     end
 
     it "NAME DIR" do
-      config = Crystal::Init.parse_args(["lib", "foo", "foo-shard"])
+      config = Iyi::Init.parse_args(["lib", "foo", "foo-shard"])
       config.name.should eq "foo"
       config.dir.should eq "foo-shard"
       config.expanded_dir.should eq ::Path[Dir.current, "foo-shard"]
@@ -343,65 +343,65 @@ module Crystal
 
   describe ".validate_name" do
     it "empty" do
-      expect_raises Crystal::Init::Error, "NAME must not be empty" do
-        Crystal::Init.validate_name("")
+      expect_raises Iyi::Init::Error, "NAME must not be empty" do
+        Iyi::Init.validate_name("")
       end
     end
     it "length" do
-      Crystal::Init.validate_name("a" * 50)
-      expect_raises Crystal::Init::Error, "NAME must not be longer than 50 characters" do
-        Crystal::Init.validate_name("a" * 51)
+      Iyi::Init.validate_name("a" * 50)
+      expect_raises Iyi::Init::Error, "NAME must not be longer than 50 characters" do
+        Iyi::Init.validate_name("a" * 51)
       end
     end
     it "uppercase" do
-      expect_raises Crystal::Init::Error, "NAME should be all lower cased" do
-        Crystal::Init.validate_name("Foo")
+      expect_raises Iyi::Init::Error, "NAME should be all lower cased" do
+        Iyi::Init.validate_name("Foo")
       end
     end
     it "digits" do
-      Crystal::Init.validate_name("i18n")
-      expect_raises Crystal::Init::Error, "NAME must start with a letter" do
-        Crystal::Init.validate_name("4u")
+      Iyi::Init.validate_name("i18n")
+      expect_raises Iyi::Init::Error, "NAME must start with a letter" do
+        Iyi::Init.validate_name("4u")
       end
     end
     it "dashes" do
-      Crystal::Init.validate_name("foo-bar")
-      expect_raises Crystal::Init::Error, "NAME must start with a letter" do
-        Crystal::Init.validate_name("-foo")
+      Iyi::Init.validate_name("foo-bar")
+      expect_raises Iyi::Init::Error, "NAME must start with a letter" do
+        Iyi::Init.validate_name("-foo")
       end
-      expect_raises Crystal::Init::Error, "NAME must not have consecutive dashes" do
-        Crystal::Init.validate_name("foo--bar")
+      expect_raises Iyi::Init::Error, "NAME must not have consecutive dashes" do
+        Iyi::Init.validate_name("foo--bar")
       end
     end
     it "underscores" do
-      Crystal::Init.validate_name("foo_bar")
-      expect_raises Crystal::Init::Error, "NAME must start with a letter" do
-        Crystal::Init.validate_name("_foo")
+      Iyi::Init.validate_name("foo_bar")
+      expect_raises Iyi::Init::Error, "NAME must start with a letter" do
+        Iyi::Init.validate_name("_foo")
       end
-      expect_raises Crystal::Init::Error, "NAME must not have consecutive underscores" do
-        Crystal::Init.validate_name("foo__bar")
+      expect_raises Iyi::Init::Error, "NAME must not have consecutive underscores" do
+        Iyi::Init.validate_name("foo__bar")
       end
     end
     it "invalid character" do
-      expect_raises Crystal::Init::Error, "NAME must only contain alphanumerical characters, underscores or dashes" do
-        Crystal::Init.validate_name("foo bar")
+      expect_raises Iyi::Init::Error, "NAME must only contain alphanumerical characters, underscores or dashes" do
+        Iyi::Init.validate_name("foo bar")
       end
-      expect_raises Crystal::Init::Error, "NAME must only contain alphanumerical characters, underscores or dashes" do
-        Crystal::Init.validate_name("foo\abar")
+      expect_raises Iyi::Init::Error, "NAME must only contain alphanumerical characters, underscores or dashes" do
+        Iyi::Init.validate_name("foo\abar")
       end
-      Crystal::Init.validate_name("grüß-gott")
+      Iyi::Init.validate_name("grüß-gott")
     end
   end
 
   describe "View#module_name" do
     it "namespace is divided by hyphen" do
-      Crystal::Init::View.module_name("my-proj-name").should eq "My::Proj::Name"
+      Iyi::Init::View.module_name("my-proj-name").should eq "My::Proj::Name"
     end
     it "hyphen followed by non-ascii letter is replaced by its character" do
-      Crystal::Init::View.module_name("my-proj-1").should eq "My::Proj1"
+      Iyi::Init::View.module_name("my-proj-1").should eq "My::Proj1"
     end
     it "underscore is ignored" do
-      Crystal::Init::View.module_name("my-proj_name").should eq "My::ProjName"
+      Iyi::Init::View.module_name("my-proj_name").should eq "My::ProjName"
     end
   end
 end

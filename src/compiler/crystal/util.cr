@@ -1,6 +1,6 @@
 require "path"
 
-module Crystal
+module Iyi
   def self.relative_filename(filename)
     return filename unless filename.is_a?(String)
 

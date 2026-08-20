@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   # Context information about a method lookup match.
   #
   # For example, given:

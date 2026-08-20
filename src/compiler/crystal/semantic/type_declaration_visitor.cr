@@ -21,7 +21,7 @@ require "./type_guess_visitor"
 # We do this now because in a previous pass, TopLevelVisitor
 # declared all types so now we can search them and always find
 # them, not needing any kind of forward referencing.
-class Crystal::TypeDeclarationVisitor < Crystal::SemanticVisitor
+class Iyi::TypeDeclarationVisitor < Iyi::SemanticVisitor
   alias TypeDeclarationWithLocation = TypeDeclarationProcessor::TypeDeclarationWithLocation
 
   getter class_vars

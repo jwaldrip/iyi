@@ -1,6 +1,6 @@
 # Implementation of the `crystal eval` command
 
-class Crystal::Command
+class Iyi::Command
   private def eval
     compiler = new_compiler
     opt_program_source = nil
@@ -25,7 +25,7 @@ class Crystal::Command
 
     sources = [Compiler::Source.new("eval", program_source)]
 
-    output_filename = Crystal.temp_executable "eval"
+    output_filename = Iyi.temp_executable "eval"
 
     compiler.compile sources, output_filename
     execute output_filename, program_args, compiler

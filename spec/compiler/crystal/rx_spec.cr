@@ -25,7 +25,7 @@ require "compiler/crystal/rx"
 # whole match span and then every group's span and text. Groups that did not
 # participate render as absent; both views below produce identical strings for
 # identical outcomes, so plain string equality is the comparison.
-private def rx_owned_view(owned_match : Crystal::Rx::Match?) : String
+private def rx_owned_view(owned_match : Iyi::Rx::Match?) : String
   return "no match" unless owned_match
   String.build do |io|
     io << "match " << owned_match.begin(0) << ".." << owned_match.end(0) << ' ' << owned_match[0].inspect
@@ -65,7 +65,7 @@ end
 # the same source string (and the same ignore_case) keeps the comparison honest;
 # a mismatch fails the example naming the pattern, the subject and both results.
 private def rx_should_agree(source : String, subject : String, ignore_case : Bool = false, start : Int32 = 0) : Nil
-  owned = Crystal::Rx::Pattern.compile(source, ignore_case).match(subject, start)
+  owned = Iyi::Rx::Pattern.compile(source, ignore_case).match(subject, start)
   reference = rx_reference(source, ignore_case).match_at_byte_index(subject, start)
   owned_view = rx_owned_view(owned)
   reference_view = rx_reference_view(reference)
@@ -84,7 +84,7 @@ private def rx_should_agree(source : String, subject : String, ignore_case : Boo
 end
 
 private def rx_gsub_should_agree(source : String, subject : String, replacement : String, ignore_case : Bool = false) : Nil
-  owned = Crystal::Rx.gsub(subject, Crystal::Rx::Pattern.compile(source, ignore_case), replacement)
+  owned = Iyi::Rx.gsub(subject, Iyi::Rx::Pattern.compile(source, ignore_case), replacement)
   reference = subject.gsub(rx_reference(source, ignore_case), replacement)
   return if owned == reference
 
@@ -94,7 +94,7 @@ private def rx_gsub_should_agree(source : String, subject : String, replacement 
 end
 
 private def rx_sub_should_agree(source : String, subject : String, replacement : String) : Nil
-  owned = Crystal::Rx.sub(subject, Crystal::Rx::Pattern.compile(source), replacement)
+  owned = Iyi::Rx.sub(subject, Iyi::Rx::Pattern.compile(source), replacement)
   reference = subject.sub(rx_reference(source, false), replacement)
   return if owned == reference
 
@@ -104,7 +104,7 @@ private def rx_sub_should_agree(source : String, subject : String, replacement :
 end
 
 private def rx_scan_should_agree(source : String, subject : String) : Nil
-  owned = Crystal::Rx.scan(subject, Crystal::Rx::Pattern.compile(source)).map { |match| "#{match.begin(0)}..#{match.end(0)} #{match[0].inspect}" }
+  owned = Iyi::Rx.scan(subject, Iyi::Rx::Pattern.compile(source)).map { |match| "#{match.begin(0)}..#{match.end(0)} #{match[0].inspect}" }
   reference = subject.scan(rx_reference(source, false)).map { |match| "#{match.byte_begin(0)}..#{match.byte_end(0)} #{match[0].inspect}" }
   return if owned == reference
 
@@ -114,7 +114,7 @@ private def rx_scan_should_agree(source : String, subject : String) : Nil
 end
 
 private def rx_split_should_agree(source : String, subject : String) : Nil
-  owned = Crystal::Rx.split(subject, Crystal::Rx::Pattern.compile(source))
+  owned = Iyi::Rx.split(subject, Iyi::Rx::Pattern.compile(source))
   reference = subject.split(rx_reference(source, false))
   return if owned == reference
 
@@ -123,7 +123,7 @@ private def rx_split_should_agree(source : String, subject : String) : Nil
        "     pcre2: #{reference.inspect}")
 end
 
-describe Crystal::Rx do
+describe Iyi::Rx do
   describe "differential against pcre2" do
     it "agrees on every pattern the compiler itself runs" do
       # iyi: lifted verbatim from the sources named on each row, no
@@ -349,7 +349,7 @@ describe Crystal::Rx do
     end
 
     it "agrees when matching from a start offset" do
-      pattern = Crystal::Rx::Pattern.compile("b+")
+      pattern = Iyi::Rx::Pattern.compile("b+")
       match = pattern.match("abbc", 1).not_nil!
       match.begin(0).should eq(1)
       match.end(0).should eq(3)
@@ -410,8 +410,8 @@ describe Crystal::Rx do
 
       refused.each do |label, source|
         begin
-          Crystal::Rx::Pattern.compile(source)
-        rescue ex : Crystal::Rx::SyntaxError
+          Iyi::Rx::Pattern.compile(source)
+        rescue ex : Iyi::Rx::SyntaxError
           ex.position.should be >= 0
           ex.position.should be <= source.size
           next
@@ -423,7 +423,7 @@ describe Crystal::Rx do
 
   describe "helpers" do
     it "exposes the pattern source and the match subject" do
-      pattern = Crystal::Rx::Pattern.compile("a+b", true)
+      pattern = Iyi::Rx::Pattern.compile("a+b", true)
       pattern.source.should eq("a+b")
       match = pattern.match("xaaab").not_nil!
       match.subject.should eq("xaaab")
@@ -432,28 +432,28 @@ describe Crystal::Rx do
     end
 
     it "answers matches? and the module level match (subject first)" do
-      pattern = Crystal::Rx::Pattern.compile("b+")
+      pattern = Iyi::Rx::Pattern.compile("b+")
       pattern.matches?("abbc").should be_true
       pattern.matches?("aaa").should be_false
-      Crystal::Rx.matches?("abbc", pattern).should be_true
-      Crystal::Rx.matches?("aaa", pattern).should be_false
-      found = Crystal::Rx.match("abbc", pattern)
+      Iyi::Rx.matches?("abbc", pattern).should be_true
+      Iyi::Rx.matches?("aaa", pattern).should be_false
+      found = Iyi::Rx.match("abbc", pattern)
       found.should_not be_nil
       found.not_nil![0].should eq("bb")
-      Crystal::Rx.match("aaa", pattern).should be_nil
+      Iyi::Rx.match("aaa", pattern).should be_nil
     end
 
     it "gsubs with backreferences like pcre2" do
-      pattern = Crystal::Rx::Pattern.compile("(\\w+) (\\w+)")
-      Crystal::Rx.gsub("hello world", pattern, "\\2 \\1").should eq("world hello")
-      Crystal::Rx.gsub("foo bar", Crystal::Rx::Pattern.compile("\\w+"), "[\\0]").should eq("[foo] [bar]")
+      pattern = Iyi::Rx::Pattern.compile("(\\w+) (\\w+)")
+      Iyi::Rx.gsub("hello world", pattern, "\\2 \\1").should eq("world hello")
+      Iyi::Rx.gsub("foo bar", Iyi::Rx::Pattern.compile("\\w+"), "[\\0]").should eq("[foo] [bar]")
       # a reference to a group that did not participate is empty, per contract.
       # In "ab abxb" the second match is "ab" at bytes 3..5 with the group
       # absent: the greedy (x)? faces a b, matches empty, and the match closes
       # before the x ever arrives, so "xb" copies through. pcre2 says "<> <>xb"
       # for that subject; "ab axb" is where the group does participate.
-      Crystal::Rx.gsub("ab abxb", Crystal::Rx::Pattern.compile("a(x)?b"), "<\\1>").should eq("<> <>xb")
-      Crystal::Rx.gsub("ab axb", Crystal::Rx::Pattern.compile("a(x)?b"), "<\\1>").should eq("<> <x>")
+      Iyi::Rx.gsub("ab abxb", Iyi::Rx::Pattern.compile("a(x)?b"), "<\\1>").should eq("<> <>xb")
+      Iyi::Rx.gsub("ab axb", Iyi::Rx::Pattern.compile("a(x)?b"), "<\\1>").should eq("<> <x>")
 
       rx_gsub_should_agree("(\\w+) (\\w+)", "hello world", "\\2 \\1")
       rx_gsub_should_agree("\\w+", "foo bar", "[\\0]")
@@ -462,21 +462,21 @@ describe Crystal::Rx do
     end
 
     it "gsubs with a block like pcre2" do
-      digits = Crystal::Rx::Pattern.compile("[0-9]+")
-      Crystal::Rx.gsub("a1b22c", digits) { |match| "*#{match[0]}*" }.should eq("a*1*b*22*c")
+      digits = Iyi::Rx::Pattern.compile("[0-9]+")
+      Iyi::Rx.gsub("a1b22c", digits) { |match| "*#{match[0]}*" }.should eq("a*1*b*22*c")
 
       # compiler.cr safe_object_name, the map the zero-dep code reproduces:
       # anything outside [A-Za-z0-9_] becomes -<ord>. not_nil! because Rx#[]
       # returns String? even for group 0.
-      owned = Crystal::Rx.gsub("List(Int32)", Crystal::Rx::Pattern.compile("[^A-Za-z0-9_]")) { |match| "-#{match[0].not_nil![0].ord}" }
+      owned = Iyi::Rx.gsub("List(Int32)", Iyi::Rx::Pattern.compile("[^A-Za-z0-9_]")) { |match| "-#{match[0].not_nil![0].ord}" }
       owned.should eq("List-40Int32-41")
       # the stdlib block yields the matched String first, not the MatchData
       owned.should eq("List(Int32)".gsub(/[^A-Za-z0-9_]/) { |matched| "-#{matched[0].ord}" })
     end
 
     it "subs only the first match like pcre2" do
-      Crystal::Rx.sub("aaa", Crystal::Rx::Pattern.compile("a"), "b").should eq("baa")
-      Crystal::Rx.sub("a1a2", Crystal::Rx::Pattern.compile("1|2")) { |match| "<#{match[0]}>" }.should eq("a<1>a2")
+      Iyi::Rx.sub("aaa", Iyi::Rx::Pattern.compile("a"), "b").should eq("baa")
+      Iyi::Rx.sub("a1a2", Iyi::Rx::Pattern.compile("1|2")) { |match| "<#{match[0]}>" }.should eq("a<1>a2")
 
       rx_sub_should_agree("o", "foo", "0")
       # semantic_visitor.cr strip_source_suffix, the real call
@@ -497,13 +497,13 @@ describe Crystal::Rx do
       # byte offsets across a multi byte char
       rx_scan_should_agree("a", "aéa")
 
-      second = Crystal::Rx.scan("aéa", Crystal::Rx::Pattern.compile("a"))[1]
+      second = Iyi::Rx.scan("aéa", Iyi::Rx::Pattern.compile("a"))[1]
       second.begin(0).should eq(3)
       second.end(0).should eq(4)
     end
 
     it "splits like pcre2" do
-      Crystal::Rx.split("a,b,c", Crystal::Rx::Pattern.compile(",")).should eq(["a", "b", "c"])
+      Iyi::Rx.split("a,b,c", Iyi::Rx::Pattern.compile(",")).should eq(["a", "b", "c"])
 
       rx_split_should_agree(",", "a,b,c")
       rx_split_should_agree("\\d", "a1b2c3")

@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   class TypeFilteredNode < ASTNode
     def initialize(@filter : TypeFilter, @node : ASTNode)
       @dependencies.push @node

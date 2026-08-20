@@ -1,6 +1,6 @@
 require "../types"
 
-module Crystal
+module Iyi
   # Allows converting a type to a restriction from the context a given type.
   struct TypeToRestriction
     # Initializes this converter to convert types relative to the given type.
@@ -154,13 +154,13 @@ module Crystal
     end
 
     # These can't happen as instance var types
-    def convert(type : Crystal::GenericClassType |
-                       Crystal::GenericModuleType |
-                       Crystal::LibType |
-                       Crystal::AnnotationType |
-                       Crystal::Const |
-                       Crystal::NumberAutocastType |
-                       Crystal::SymbolAutocastType)
+    def convert(type : Iyi::GenericClassType |
+                       Iyi::GenericModuleType |
+                       Iyi::LibType |
+                       Iyi::AnnotationType |
+                       Iyi::Const |
+                       Iyi::NumberAutocastType |
+                       Iyi::SymbolAutocastType)
       nil
     end
 

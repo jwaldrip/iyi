@@ -3,7 +3,7 @@
 # This is just the command-line part. The formatter
 # logic is in `crystal/tools/formatter.cr`.
 
-class Crystal::Command
+class Iyi::Command
   private def format
     excludes = ["lib"] of String
     includes = [] of String
@@ -82,15 +82,15 @@ class Crystal::Command
     )
       @format_stdin = files.size == 1 && files[0] == "-"
 
-      includes.map! { |p| Crystal.normalize_path p }
-      excludes.map! { |p| Crystal.normalize_path p }
+      includes.map! { |p| Iyi.normalize_path p }
+      excludes.map! { |p| Iyi.normalize_path p }
       excludes = excludes - includes
       if files.empty?
         # iyi: both extensions, because this fork formats both languages and
         # a directory of `.iyi` files is the ordinary case here.
         files = Dir["./**/*.cr"] + Dir["./**/*.iyi"]
       else
-        files.map! { |p| Crystal.normalize_path p }
+        files.map! { |p| Iyi.normalize_path p }
       end
 
       @files = files
@@ -152,7 +152,7 @@ class Crystal::Command
     rescue ex : InvalidByteSequenceError
       print_error "file '#{filename}' is not a valid Crystal source file: #{ex.message}"
       @status_code = 1
-    rescue ex : Crystal::SyntaxException
+    rescue ex : Iyi::SyntaxException
       print_error "syntax error in '#{filename}:#{ex.line_number}:#{ex.column_number}': #{ex.message}"
       @status_code = 1
     rescue ex
@@ -166,13 +166,13 @@ class Crystal::Command
       @status_code = 1
     end
 
-    # This method is for mocking `Crystal.format` in test.
+    # This method is for mocking `Iyi.format` in test.
     private def format(filename, source)
-      Crystal.format(source, filename: filename, report_warnings: STDERR)
+      Iyi.format(source, filename: filename, report_warnings: STDERR)
     end
 
     private def print_error(msg)
-      Crystal.print_error msg, @color, stderr: @stderr, leading_error: false
+      Iyi.print_error msg, @color, stderr: @stderr, leading_error: false
     end
   end
 end

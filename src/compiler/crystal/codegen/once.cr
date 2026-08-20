@@ -1,6 +1,6 @@
 require "./codegen"
 
-class Crystal::CodeGenVisitor
+class Iyi::CodeGenVisitor
   ONCE_STATE = "~ONCE_STATE"
 
   def once_init

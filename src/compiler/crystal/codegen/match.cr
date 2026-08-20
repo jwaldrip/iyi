@@ -1,6 +1,6 @@
 require "./codegen"
 
-class Crystal::CodeGenVisitor
+class Iyi::CodeGenVisitor
   def match_type_id(type, restriction, type_id)
     match_type_id_impl(type.remove_indirection, restriction.remove_indirection, type_id)
   end

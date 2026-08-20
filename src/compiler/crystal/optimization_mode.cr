@@ -5,7 +5,7 @@
 # `compiler.cr` because that is who reads it, and `compiler.cr` speaks LLVM on
 # every other line, so a binary that wanted the enum got the library with it.
 # See `llvm_shim.cr`.
-class Crystal::Compiler
+class Iyi::Compiler
   # Optimization mode
   enum OptimizationMode
     # [default] no optimization, fastest compilation, slowest runtime

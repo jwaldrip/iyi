@@ -39,7 +39,7 @@ require "socket"
 # `{"cwd": ..., "args": [...], "version": ...}`. The version is checked, along
 # with the server's own executable, so that a rebuilt compiler cannot be served
 # from silently.
-class Crystal::Command
+class Iyi::Command
   DAEMON_FRAME_EXIT   = 0_u8
   DAEMON_FRAME_STDOUT = 1_u8
   DAEMON_FRAME_STDERR = 2_u8
@@ -311,10 +311,10 @@ class Crystal::Command
         return
       end
 
-      if (client_version = request["version"]?.try(&.as_s)) && client_version != Crystal::Config.description
+      if (client_version = request["version"]?.try(&.as_s)) && client_version != Iyi::Config.description
         daemon_refuse(client, <<-MSG)
           The build daemon and this client are different compilers.
-          Daemon: #{Crystal::Config.description}
+          Daemon: #{Iyi::Config.description}
           Client: #{client_version}
           MSG
         client.close rescue nil
@@ -346,7 +346,7 @@ class Crystal::Command
         LibC.dup2(err_w.fd, 2)
 
         Dir.cd(cwd)
-        Crystal::Command.run(args)
+        Iyi::Command.run(args)
         LibC._exit 0
       end
 
@@ -383,7 +383,7 @@ class Crystal::Command
       limit = (ENV["CRYSTAL_DAEMON_PRELUDES"]?.try(&.to_i?) || 3)
       return if Compiler.preanalysed.size >= limit
 
-      compiler = Crystal::Command.new(args.dup).prelude_compiler_for_build
+      compiler = Iyi::Command.new(args.dup).prelude_compiler_for_build
       return if Compiler.preanalysed.has_key?(compiler.prelude_cache_key)
 
       elapsed = Time.instant
@@ -457,7 +457,7 @@ class Crystal::Command
 
     # The child runs a full command line, so put back the subcommand this one
     # consumed: `crystal daemon build -o x y.cr` is `crystal build -o x y.cr`.
-    request = {cwd: Dir.current, args: ["build"] + options, version: Crystal::Config.description}.to_json
+    request = {cwd: Dir.current, args: ["build"] + options, version: Iyi::Config.description}.to_json
     client.write_bytes(request.bytesize.to_u32, IO::ByteFormat::LittleEndian)
     client.write(request.to_slice)
     client.flush

@@ -25,7 +25,7 @@ require "./semantic_visitor"
 #   end
 # end
 # ```
-class Crystal::InstanceVarsInitializerVisitor < Crystal::SemanticVisitor
+class Iyi::InstanceVarsInitializerVisitor < Iyi::SemanticVisitor
   record Initializer, scope : Type, target : InstanceVar, value : ASTNode, meta_vars : MetaVars
   getter initializers = [] of Initializer
 

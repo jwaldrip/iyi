@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   class RestrictionsAugmenter < Visitor
     @args_hash : Hash(String, Arg)?
     @current_type : Type

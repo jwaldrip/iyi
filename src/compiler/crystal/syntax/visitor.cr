@@ -1,6 +1,6 @@
 require "./ast"
 
-module Crystal
+module Iyi
   class Visitor
     def visit_any(node)
       true

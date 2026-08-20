@@ -1,6 +1,6 @@
 require "../../spec_helper"
 
-include Crystal
+include Iyi
 
 describe "Semantic: ssa" do
   it "types a redefined variable" do

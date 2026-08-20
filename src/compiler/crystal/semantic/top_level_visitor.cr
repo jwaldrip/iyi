@@ -29,7 +29,7 @@ require "./semantic_visitor"
 # Now that we know the whole hierarchy, when someone types Foo, we know whether Foo has
 # subclasses or not and we can tag it as "virtual" (having subclasses), but that concept
 # might disappear in the future and we'll make consider everything as "maybe virtual".
-class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
+class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
   # These are `new` methods (values) that was created from `initialize` methods (keys)
   getter new_expansions : Hash(Def, Def) = ({} of Def => Def).compare_by_identity
 
@@ -246,7 +246,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     rescue ex : MacroRaiseException
       # Make the inner most exception to be the inherited node so that it's the last frame in the trace.
       # This will make the location show on that node instead of the `raise` call.
-      ex.inner = Crystal::MacroRaiseException.for_node node, ex.message
+      ex.inner = Iyi::MacroRaiseException.for_node node, ex.message
 
       raise ex
     end
@@ -838,12 +838,12 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
   # Renaming can capture: if the body already refers to something called `T`
   # meaning anything else, the rewrite would silently make it the type
   # parameter. That is refused rather than risked.
-  private class TypeParamRenamer < Crystal::Transformer
+  private class TypeParamRenamer < Iyi::Transformer
     def initialize(@renames : Hash(String, String))
       @targets = @renames.values.to_set - @renames.keys.to_set
     end
 
-    def transform(node : Crystal::Path)
+    def transform(node : Iyi::Path)
       return node if node.global? || node.names.size != 1
 
       name = node.names.first
@@ -852,7 +852,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       end
 
       if (renamed = @renames[name]?)
-        Crystal::Path.new([renamed]).at(node)
+        Iyi::Path.new([renamed]).at(node)
       else
         node
       end
@@ -860,7 +860,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
 
     # `Def#return_type` is not walked by the base transformer, and `def get : T`
     # is exactly where an impl's type parameter appears.
-    def transform(node : Crystal::Def)
+    def transform(node : Iyi::Def)
       if return_type = node.return_type
         node.return_type = return_type.transform(self)
       end
@@ -1132,7 +1132,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     target = current_type.metaclass.as(ModuleType)
     begin
       target.add_macro node
-    rescue ex : Crystal::CodeError
+    rescue ex : Iyi::CodeError
       node.raise ex.message
     end
 
@@ -1560,7 +1560,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
         end
       end
 
-      if default_value.is_a?(Crystal::NumberLiteral)
+      if default_value.is_a?(Iyi::NumberLiteral)
         enum_base_kind = enum_type.base_type.kind
         if (enum_base_kind.i32?) && (enum_base_kind != default_value.kind)
           default_value.raise "enum value must be an Int32"
@@ -1933,7 +1933,7 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
     rescue ex : MacroRaiseException
       # Make the inner most exception to be the include/extend node so that it's the last frame in the trace.
       # This will make the location show on that node instead of the `raise` call.
-      ex.inner = Crystal::MacroRaiseException.for_node node, ex.message
+      ex.inner = Iyi::MacroRaiseException.for_node node, ex.message
 
       raise ex
     rescue ex : TypeException

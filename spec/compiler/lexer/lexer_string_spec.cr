@@ -237,7 +237,7 @@ describe "Lexer string" do
     token = lexer.next_token
     state = token.delimiter_state
 
-    expect_raises Crystal::SyntaxException, "Unterminated heredoc" do
+    expect_raises Iyi::SyntaxException, "Unterminated heredoc" do
       loop do
         token = lexer.next_string_token state
         break if token.type.delimiter_end?
@@ -248,7 +248,7 @@ describe "Lexer string" do
   it "raises when identifier doesn't start with a letter or number" do
     lexer = Lexer.new("<<-!!!\\ntest\n!!!\n")
 
-    expect_raises Crystal::SyntaxException, /heredoc identifier starts with invalid character/ do
+    expect_raises Iyi::SyntaxException, /heredoc identifier starts with invalid character/ do
       lexer.next_token
     end
   end
@@ -256,7 +256,7 @@ describe "Lexer string" do
   it "raises on unexpected EOF while lexing heredoc" do
     lexer = Lexer.new("<<-aaa")
 
-    expect_raises Crystal::SyntaxException, "Unexpected EOF on heredoc identifier" do
+    expect_raises Iyi::SyntaxException, "Unexpected EOF on heredoc identifier" do
       lexer.next_token
     end
   end

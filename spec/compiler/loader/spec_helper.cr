@@ -3,7 +3,7 @@ require "spec"
 SPEC_CRYSTAL_LOADER_LIB_PATH = File.join(SPEC_TEMPFILE_PATH, "loader")
 
 def build_c_dynlib(c_filename, *, lib_name = nil, target_dir = SPEC_CRYSTAL_LOADER_LIB_PATH)
-  o_filename = File.join(target_dir, Crystal::Loader.library_filename(lib_name || File.basename(c_filename, ".c")))
+  o_filename = File.join(target_dir, Iyi::Loader.library_filename(lib_name || File.basename(c_filename, ".c")))
 
   result = {% if flag?(:msvc) %}
              o_basename = o_filename.rchop(".lib")

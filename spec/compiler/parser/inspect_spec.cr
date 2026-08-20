@@ -55,14 +55,14 @@ describe "ASTNode#inspect" do
   expect_inspect %(%r()imx), <<-CRYSTAL
   RegexLiteral[
     StringLiteral[""],
-    options: Crystal::RegexOptions[IGNORE_CASE, MULTILINE, EXTENDED]
+    options: Iyi::RegexOptions[IGNORE_CASE, MULTILINE, EXTENDED]
   ]
   CRYSTAL
   expect_inspect %(/hello world/), %(RegexLiteral[StringLiteral["hello world"]])
   expect_inspect %(/hello world/imx), <<-CRYSTAL
   RegexLiteral[
     StringLiteral["hello world"],
-    options: Crystal::RegexOptions[IGNORE_CASE, MULTILINE, EXTENDED]
+    options: Iyi::RegexOptions[IGNORE_CASE, MULTILINE, EXTENDED]
   ]
   CRYSTAL
   expect_inspect %(/\\s/), %(RegexLiteral[StringLiteral["\\\\s"]])
@@ -301,10 +301,7 @@ describe "ASTNode#inspect" do
   expect_inspect %Q{class Foo\n  private def bar\n  end\nend}, <<-CRYSTAL
       ClassDef[
         Path["Foo"],
-        body: VisibilityModifier[
-          Crystal::Visibility::Private,
-          Def["bar", [], Nop.new]
-        ]
+        body: VisibilityModifier[Iyi::Visibility::Private, Def["bar", [], Nop.new]]
       ]
       CRYSTAL
   expect_inspect %q{abstract class Foo(T) < Bar; end}, <<-CRYSTAL
@@ -410,7 +407,7 @@ describe "ASTNode#inspect" do
   expect_inspect %({"foo bar": 1}), %(NamedTupleLiteral["foo bar": NumberLiteral["1", :i32]])
   expect_inspect %(def foo("bar baz" qux)\nend), %(Def["foo", [Arg["qux", external_name: "bar baz"]], Nop.new])
   expect_inspect %q{foo()}, %(Call["foo"])
-  expect_inspect %q{/a/x}, %(RegexLiteral[StringLiteral["a"], options: Crystal::RegexOptions::EXTENDED])
+  expect_inspect %q{/a/x}, %(RegexLiteral[StringLiteral["a"], options: Iyi::RegexOptions::EXTENDED])
   expect_inspect %q{1_f32}, %(NumberLiteral["1", :f32])
   expect_inspect %q{1_f64}, %(NumberLiteral["1", :f64])
   expect_inspect %q{1.0}, %(NumberLiteral["1.0", :f64])
@@ -898,7 +895,7 @@ describe "ASTNode#inspect" do
   expect_inspect %q(/foo/ix), <<-CRYSTAL
     RegexLiteral[
       StringLiteral["foo"],
-      options: Crystal::RegexOptions[IGNORE_CASE, EXTENDED]
+      options: Iyi::RegexOptions[IGNORE_CASE, EXTENDED]
     ]
     CRYSTAL
   expect_inspect %q(foo = 1; foo += 2), <<-CRYSTAL
@@ -922,7 +919,7 @@ describe "ASTNode#inspect" do
   expect_inspect %q(LibFoo.bar(out baz)), <<-CRYSTAL
     Call[Path["LibFoo"], "bar", [Out[Var["baz"]]]]
     CRYSTAL
-  expect_inspect %q(private def foo; end), %(VisibilityModifier[Crystal::Visibility::Private, Def["foo", [], Nop.new]])
+  expect_inspect %q(private def foo; end), %(VisibilityModifier[Iyi::Visibility::Private, Def["foo", [], Nop.new]])
   expect_inspect %q(require "foo"), %(Require["foo"])
   expect_inspect %q(->(i : Int32) { i * 2 }), <<-CRYSTAL
     ProcLiteral[

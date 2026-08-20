@@ -1,6 +1,6 @@
 require "../../../spec_helper"
 
-class Crystal::CacheDir
+class Iyi::CacheDir
   class_setter instance
 
   def initialize(@dir)
@@ -8,7 +8,7 @@ class Crystal::CacheDir
   end
 end
 
-describe Crystal::Command do
+describe Iyi::Command do
   describe "clear_cache" do
     around_each do |example|
       old_cache_dir = CacheDir.instance
@@ -28,7 +28,7 @@ describe Crystal::Command do
       File.touch(file_path)
       File.exists?(file_path).should be_true
 
-      Crystal::Command.run(["clear_cache"])
+      Iyi::Command.run(["clear_cache"])
 
       File.exists?(file_path).should be_false
       File.exists?(CacheDir.instance.dir).should be_false

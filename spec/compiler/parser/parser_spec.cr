@@ -13,13 +13,13 @@ end
 private def string_array(*args)
   ary = [] of ASTNode
   ary.concat(args)
-  ary.array_of(Crystal::Path.global("String"))
+  ary.array_of(Iyi::Path.global("String"))
 end
 
 private def symbol_array(*args)
   ary = [] of ASTNode
   ary.concat(args)
-  ary.array_of(Crystal::Path.global("Symbol"))
+  ary.array_of(Iyi::Path.global("Symbol"))
 end
 
 private def it_parses(string, expected_node, file = __FILE__, line = __LINE__, *, focus : Bool = false)
@@ -102,7 +102,7 @@ private def assert_location(node : ASTNode, start_line_number : Int32, end_line_
   location.line_number.should eq end_line_number
 end
 
-module Crystal
+module Iyi
   describe "Parser" do
     it_parses "nil", NilLiteral.new
 
@@ -503,21 +503,21 @@ module Crystal
     it_parses "def foo(var = 1); end", Def.new("foo", [Arg.new("var", 1.int32)])
     it_parses "def foo(var : Int); end", Def.new("foo", [Arg.new("var", restriction: "Int".path)])
     it_parses "def foo(var : self); end", Def.new("foo", [Arg.new("var", restriction: Self.new)])
-    it_parses "def foo(var : self?); end", Def.new("foo", [Arg.new("var", restriction: Crystal::Union.new([Self.new, Path.global("Nil")] of ASTNode))])
+    it_parses "def foo(var : self?); end", Def.new("foo", [Arg.new("var", restriction: Iyi::Union.new([Self.new, Path.global("Nil")] of ASTNode))])
     it_parses "def foo(var : self.class); end", Def.new("foo", [Arg.new("var", restriction: Metaclass.new(Self.new))])
     it_parses "def foo(var : self*); end", Def.new("foo", [Arg.new("var", restriction: Self.new.pointer_of)])
-    it_parses "def foo(var : Int | Double); end", Def.new("foo", [Arg.new("var", restriction: Crystal::Union.new(["Int".path, "Double".path] of ASTNode))])
-    it_parses "def foo(var : (Int | Double)); end", Def.new("foo", [Arg.new("var", restriction: Crystal::Union.parens(Crystal::Union.new(["Int".path, "Double".path] of ASTNode)))])
-    it_parses "def foo(var : Int?); end", Def.new("foo", [Arg.new("var", restriction: Crystal::Union.new(["Int".path, "Nil".path(true)] of ASTNode))])
+    it_parses "def foo(var : Int | Double); end", Def.new("foo", [Arg.new("var", restriction: Iyi::Union.new(["Int".path, "Double".path] of ASTNode))])
+    it_parses "def foo(var : (Int | Double)); end", Def.new("foo", [Arg.new("var", restriction: Iyi::Union.parens(Iyi::Union.new(["Int".path, "Double".path] of ASTNode)))])
+    it_parses "def foo(var : Int?); end", Def.new("foo", [Arg.new("var", restriction: Iyi::Union.new(["Int".path, "Nil".path(true)] of ASTNode))])
     it_parses "def foo(var : Int*); end", Def.new("foo", [Arg.new("var", restriction: "Int".path.pointer_of)])
     it_parses "def foo(var : Int**); end", Def.new("foo", [Arg.new("var", restriction: "Int".path.pointer_of.pointer_of)])
     it_parses "def foo(var : Int -> Double); end", Def.new("foo", [Arg.new("var", restriction: ProcNotation.new(["Int".path] of ASTNode, "Double".path))])
     it_parses "def foo(var : Int, Float -> Double); end", Def.new("foo", [Arg.new("var", restriction: ProcNotation.new(["Int".path, "Float".path] of ASTNode, "Double".path))])
-    it_parses "def foo(var : (Int, Float -> Double)); end", Def.new("foo", [Arg.new("var", restriction: Crystal::Union.parens(ProcNotation.new(["Int".path, "Float".path] of ASTNode, "Double".path)))])
+    it_parses "def foo(var : (Int, Float -> Double)); end", Def.new("foo", [Arg.new("var", restriction: Iyi::Union.parens(ProcNotation.new(["Int".path, "Float".path] of ASTNode, "Double".path)))])
     it_parses "def foo(var : (Int, Float) -> Double); end", Def.new("foo", [Arg.new("var", restriction: ProcNotation.new(["Int".path, "Float".path] of ASTNode, "Double".path))])
     it_parses "def foo(var : () -> Double); end", Def.new("foo", [Arg.new("var", restriction: ProcNotation.new([] of ASTNode, "Double".path))])
-    it_parses "x : (A -> B)", TypeDeclaration.new("x".var, declared_type: Crystal::Union.parens(ProcNotation.new(["A".path] of ASTNode, "B".path)))
-    it_parses "x : (A -> B).class", TypeDeclaration.new("x".var, declared_type: Metaclass.new(Crystal::Union.parens(ProcNotation.new(["A".path] of ASTNode, "B".path))))
+    it_parses "x : (A -> B)", TypeDeclaration.new("x".var, declared_type: Iyi::Union.parens(ProcNotation.new(["A".path] of ASTNode, "B".path)))
+    it_parses "x : (A -> B).class", TypeDeclaration.new("x".var, declared_type: Metaclass.new(Iyi::Union.parens(ProcNotation.new(["A".path] of ASTNode, "B".path))))
     it_parses "alias T = (A*) -> R", Alias.new("T".path, ProcNotation.new([Generic.new(Path.global("Pointer"), ["A".path] of ASTNode, suffix: :asterisk)] of ASTNode, "R".path))
     it_parses "alias T = (A -> ) ->", Alias.new("T".path, ProcNotation.new([ProcNotation.new(["A".path] of ASTNode)] of ASTNode))
     it_parses "def foo(var : Char[256]); end", Def.new("foo", [Arg.new("var", restriction: "Char".static_array_of(256))])
@@ -965,10 +965,10 @@ module Crystal
 
     it_parses "Foo()", Generic.new("Foo".path, [] of ASTNode)
     it_parses "Foo(T)", Generic.new("Foo".path, ["T".path] of ASTNode)
-    it_parses "Foo(T | U)", Generic.new("Foo".path, [Crystal::Union.new(["T".path, "U".path] of ASTNode)] of ASTNode)
-    it_parses "Foo(Bar(T | U))", Generic.new("Foo".path, [Generic.new("Bar".path, [Crystal::Union.new(["T".path, "U".path] of ASTNode)] of ASTNode)] of ASTNode)
+    it_parses "Foo(T | U)", Generic.new("Foo".path, [Iyi::Union.new(["T".path, "U".path] of ASTNode)] of ASTNode)
+    it_parses "Foo(Bar(T | U))", Generic.new("Foo".path, [Generic.new("Bar".path, [Iyi::Union.new(["T".path, "U".path] of ASTNode)] of ASTNode)] of ASTNode)
     it_parses "Foo(Bar())", Generic.new("Foo".path, [Generic.new("Bar".path, [] of ASTNode)] of ASTNode)
-    it_parses "Foo(T?)", Generic.new("Foo".path, [Crystal::Union.new(["T".path, Path.global("Nil")] of ASTNode)] of ASTNode)
+    it_parses "Foo(T?)", Generic.new("Foo".path, [Iyi::Union.new(["T".path, Path.global("Nil")] of ASTNode)] of ASTNode)
     it_parses "Foo(1)", Generic.new("Foo".path, [1.int32] of ASTNode)
     it_parses "Foo(T, 1)", Generic.new("Foo".path, ["T".path, 1.int32] of ASTNode)
     it_parses "Foo(T, U, 1)", Generic.new("Foo".path, ["T".path, "U".path, 1.int32] of ASTNode)
@@ -1284,8 +1284,8 @@ module Crystal
     it_parses "lib LibC\nfun getchar\nend", LibDef.new("LibC".path, [FunDef.new("getchar")] of ASTNode)
     it_parses "lib LibC\nfun getchar(...)\nend", LibDef.new("LibC".path, [FunDef.new("getchar", varargs: true)] of ASTNode)
     it_parses "lib LibC\nfun getchar : Int\nend", LibDef.new("LibC".path, [FunDef.new("getchar", return_type: "Int".path)] of ASTNode)
-    it_parses "lib LibC\nfun getchar : (->)?\nend", LibDef.new("LibC".path, [FunDef.new("getchar", return_type: Crystal::Union.new([Crystal::Union.parens(ProcNotation.new), "Nil".path(true)] of ASTNode))] of ASTNode)
-    it_parses "lib LibC\nfun getchar : ((->))?\nend", LibDef.new("LibC".path, [FunDef.new("getchar", return_type: Crystal::Union.new([Crystal::Union.parens(Crystal::Union.parens(ProcNotation.new)), "Nil".path(true)] of ASTNode))] of ASTNode)
+    it_parses "lib LibC\nfun getchar : (->)?\nend", LibDef.new("LibC".path, [FunDef.new("getchar", return_type: Iyi::Union.new([Iyi::Union.parens(ProcNotation.new), "Nil".path(true)] of ASTNode))] of ASTNode)
+    it_parses "lib LibC\nfun getchar : ((->))?\nend", LibDef.new("LibC".path, [FunDef.new("getchar", return_type: Iyi::Union.new([Iyi::Union.parens(Iyi::Union.parens(ProcNotation.new)), "Nil".path(true)] of ASTNode))] of ASTNode)
     it_parses "lib LibC\nfun getchar(Int, Float)\nend", LibDef.new("LibC".path, [FunDef.new("getchar", [Arg.new("", restriction: "Int".path), Arg.new("", restriction: "Float".path)])] of ASTNode)
     it_parses "lib LibC\nfun getchar(a : Int, b : Float)\nend", LibDef.new("LibC".path, [FunDef.new("getchar", [Arg.new("a", restriction: "Int".path), Arg.new("b", restriction: "Float".path)])] of ASTNode)
     it_parses "lib LibC\nfun getchar(a : Int)\nend", LibDef.new("LibC".path, [FunDef.new("getchar", [Arg.new("a", restriction: "Int".path)])] of ASTNode)
@@ -1551,7 +1551,7 @@ module Crystal
     assert_syntax_error "offsetof(X, 'c')", "expecting an instance variable or a integer offset, not 'c'"
 
     it_parses "foo.is_a?(Const)", IsA.new("foo".call, "Const".path)
-    it_parses "foo.is_a?(Foo | Bar)", IsA.new("foo".call, Crystal::Union.new(["Foo".path, "Bar".path] of ASTNode))
+    it_parses "foo.is_a?(Foo | Bar)", IsA.new("foo".call, Iyi::Union.new(["Foo".path, "Bar".path] of ASTNode))
     it_parses "foo.is_a? Const", IsA.new("foo".call, "Const".path)
     it_parses "foo.responds_to?(:foo)", RespondsTo.new("foo".call, "foo")
     it_parses "foo.responds_to? :foo", RespondsTo.new("foo".call, "foo")
@@ -1767,7 +1767,7 @@ module Crystal
     assert_syntax_error "case 1\nin .nil?; 2", "expression of exhaustive case (case ... in) must be a constant (like `IO::Memory`), a generic (like `Array(Int32)`), a bool literal (true or false), a nil literal (nil) or a question method (like `.red?`)"
     assert_syntax_error "case 1\nin _;", "'when _' is not supported"
 
-    atomic_methods = Crystal::Parser::AtomicWithMethodCheck.join(", ")
+    atomic_methods = Iyi::Parser::AtomicWithMethodCheck.join(", ")
     assert_syntax_error "case 1\nwhen .=(2)", "expecting any of these tokens: #{atomic_methods} (not '=')"
     assert_syntax_error "case 1\nwhen .+=(2)", "expecting any of these tokens: #{atomic_methods} (not '+=')"
     assert_syntax_error "case 1\nwhen .&&(2)", "expecting any of these tokens: #{atomic_methods} (not '&&')"
@@ -1799,9 +1799,9 @@ module Crystal
     it_parses "a = 1\nfoo -a", [Assign.new("a".var, 1.int32), Call.new("foo", Call.new("a".var, "-"))]
 
     it_parses "a : Foo", TypeDeclaration.new("a".var, "Foo".path)
-    it_parses "a : Foo | Int32", TypeDeclaration.new("a".var, Crystal::Union.new(["Foo".path, "Int32".path] of ASTNode))
+    it_parses "a : Foo | Int32", TypeDeclaration.new("a".var, Iyi::Union.new(["Foo".path, "Int32".path] of ASTNode))
     it_parses "@a : Foo", TypeDeclaration.new("@a".instance_var, "Foo".path)
-    it_parses "@a : Foo | Int32", TypeDeclaration.new("@a".instance_var, Crystal::Union.new(["Foo".path, "Int32".path] of ASTNode))
+    it_parses "@a : Foo | Int32", TypeDeclaration.new("@a".instance_var, Iyi::Union.new(["Foo".path, "Int32".path] of ASTNode))
     it_parses "@@a : Foo", TypeDeclaration.new("@@a".class_var, "Foo".path)
 
     it_parses "a : Foo = 1", TypeDeclaration.new("a".var, "Foo".path, 1.int32)
@@ -2260,11 +2260,11 @@ module Crystal
     assert_syntax_error "{{ {{ 1 }} }}", "can't nest macro expressions"
     assert_syntax_error "{{ {% begin %} }}", "can't nest macro expressions"
 
-    it_parses "Foo?", Crystal::Generic.new(Path.global("Union"), ["Foo".path, Path.global("Nil")] of ASTNode)
-    it_parses "Foo::Bar?", Crystal::Generic.new(Path.global("Union"), [Path.new(%w(Foo Bar)), Path.global("Nil")] of ASTNode)
-    it_parses "Foo(T)?", Crystal::Generic.new(Path.global("Union"), [Generic.new("Foo".path, ["T".path] of ASTNode), Path.global("Nil")] of ASTNode)
-    it_parses "Foo??", Crystal::Generic.new(Path.global("Union"), [
-      Crystal::Generic.new(Path.global("Union"), ["Foo".path, Path.global("Nil")] of ASTNode),
+    it_parses "Foo?", Iyi::Generic.new(Path.global("Union"), ["Foo".path, Path.global("Nil")] of ASTNode)
+    it_parses "Foo::Bar?", Iyi::Generic.new(Path.global("Union"), [Path.new(%w(Foo Bar)), Path.global("Nil")] of ASTNode)
+    it_parses "Foo(T)?", Iyi::Generic.new(Path.global("Union"), [Generic.new("Foo".path, ["T".path] of ASTNode), Path.global("Nil")] of ASTNode)
+    it_parses "Foo??", Iyi::Generic.new(Path.global("Union"), [
+      Iyi::Generic.new(Path.global("Union"), ["Foo".path, Path.global("Nil")] of ASTNode),
       Path.global("Nil"),
     ] of ASTNode)
 

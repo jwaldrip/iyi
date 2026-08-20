@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   class MacroInterpreter < Visitor
     getter last : ASTNode
     property free_vars : Hash(String, TypeVar)?
@@ -466,7 +466,7 @@ module Crystal
         rescue ex : MacroRaiseException
           # Re-raise to avoid the logic in the other rescue blocks and to retain the original location
           raise ex
-        rescue ex : Crystal::CodeError
+        rescue ex : Iyi::CodeError
           node.raise ex.message, inner: ex
         rescue ex
           node.raise ex.message
@@ -475,7 +475,7 @@ module Crystal
         self.interpreted_hook node
 
         # no receiver: special calls
-        # may raise `Crystal::TopLevelMacroRaiseException`
+        # may raise `Iyi::TopLevelMacroRaiseException`
         interpret_top_level_call node
       end
 
@@ -600,7 +600,7 @@ module Crystal
 
     def resolve?(node : Generic | Metaclass | ProcNotation)
       resolve(node)
-    rescue Crystal::CodeError
+    rescue Iyi::CodeError
       nil
     end
 

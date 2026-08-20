@@ -12,7 +12,7 @@
 # Other unions like ReferenceUnionType that have a more trivial
 # representation are not handled here.
 #
-module Crystal
+module Iyi
   class LLVMTyper
     private def create_llvm_type(type : MixedUnionType, wants_size)
       llvm_name = llvm_name(type, wants_size)

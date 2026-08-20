@@ -3,7 +3,7 @@
   require "crystal/system/win32/windows_sdk"
 {% end %}
 
-module Crystal
+module Iyi
   struct LinkAnnotation
     getter lib : String?
     getter pkg_config : String?
@@ -103,7 +103,7 @@ module Crystal
 
   module CrystalLibraryPath
     def self.default_paths : Array(String)
-      paths = ENV.fetch("CRYSTAL_LIBRARY_PATH", Crystal::Config.library_path).split(Process::PATH_DELIMITER, remove_empty: true)
+      paths = ENV.fetch("CRYSTAL_LIBRARY_PATH", Iyi::Config.library_path).split(Process::PATH_DELIMITER, remove_empty: true)
 
       CrystalPath.expand_paths(paths)
 
@@ -195,7 +195,7 @@ module Crystal
     # Searches among CRYSTAL_LIBRARY_PATH, the compiler's directory, and PATH
     # for every DLL specified in the used `@[Link]` annotations. Yields the
     # absolute path and `true` if found, the base name and `false` if not found.
-    # The directories should match `Crystal::Repl::Context#dll_search_paths`
+    # The directories should match `Iyi::Repl::Context#dll_search_paths`
     def each_dll_path(& : String, Bool ->)
       executable_path = nil
       compiler_origin = nil

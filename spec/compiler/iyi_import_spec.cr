@@ -19,7 +19,7 @@ private def with_iyi_modules(files : Hash(String, String), &)
 end
 
 private def semantic_iyi(entry : String, iyi_module_dir : String? = nil)
-  program = Crystal::Program.new
+  program = Iyi::Program.new
   program.color = false
   program.filename = File.expand_path(entry)
   program.iyi_module_dir = iyi_module_dir
@@ -33,14 +33,14 @@ private def semantic_iyi(entry : String, iyi_module_dir : String? = nil)
 end
 
 private def artifact_signature(name : String, parameters = [] of String, return_type = "")
-  Crystal::IyiMod::Signature.new(name, "", parameters, "", return_type,
+  Iyi::IyiMod::Signature.new(name, "", parameters, "", return_type,
     [] of String, false)
 end
 
-private def exports(functions = [] of Crystal::IyiMod::Signature,
-                    types = [] of Crystal::IyiMod::TypeDecl,
-                    impls = [] of Crystal::IyiMod::ImplRecord)
-  Crystal::IyiMod::Exports.new(functions, types, impls)
+private def exports(functions = [] of Iyi::IyiMod::Signature,
+                    types = [] of Iyi::IyiMod::TypeDecl,
+                    impls = [] of Iyi::IyiMod::ImplRecord)
+  Iyi::IyiMod::Exports.new(functions, types, impls)
 end
 
 # Written by hand rather than by a compile, so that what a consumer is being
@@ -48,18 +48,18 @@ end
 private def write_iyimod(dir : String, module_name : String,
                          exports = exports,
                          imports = [] of String,
-                         compiler_version = Crystal::IyiMod.compiler_version)
-  reference = Crystal::Program.new
-  artifact = Crystal::IyiMod::Artifact.new(
+                         compiler_version = Iyi::IyiMod.compiler_version)
+  reference = Iyi::Program.new
+  artifact = Iyi::IyiMod::Artifact.new(
     module_name: module_name,
     source_path: "#{module_name}.iyi",
     compiler_version: compiler_version,
     target_triple: reference.codegen_target.to_s,
     flags: reference.flags.to_a.sort!,
-    imports: imports.map { |name| Crystal::IyiMod::ImportEdge.new(name) },
+    imports: imports.map { |name| Iyi::IyiMod::ImportEdge.new(name) },
     exports: exports,
   )
-  Crystal::IyiMod.write artifact, File.join(dir, "#{module_name}.iyimod")
+  Iyi::IyiMod.write artifact, File.join(dir, "#{module_name}.iyimod")
 end
 
 describe "Semantic: iyi import" do
@@ -96,7 +96,7 @@ describe "Semantic: iyi import" do
         "main.iyi"    => "module app/main\n\nusing app/dep\n",
         "app/dep.iyi" => "module app/dep\n\npub def value : Int32\n  2\nend\n",
       }) do
-        expect_raises(Crystal::TypeException, /needs `import app\/dep` above it/) do
+        expect_raises(Iyi::TypeException, /needs `import app\/dep` above it/) do
           semantic_iyi("main.iyi")
         end
       end
@@ -107,7 +107,7 @@ describe "Semantic: iyi import" do
         "main.iyi"    => "module app/main\n\nimport app/dep\n\nvalue\n",
         "app/dep.iyi" => "module app/dep\n\npub def value : Int32\n  2\nend\n",
       }) do
-        expect_raises(Crystal::TypeException, /`value` is exported by `app\/dep`/) do
+        expect_raises(Iyi::TypeException, /`value` is exported by `app\/dep`/) do
           semantic_iyi("main.iyi")
         end
       end
@@ -118,7 +118,7 @@ describe "Semantic: iyi import" do
         "main.iyi"    => "module app/main\n\nimport app/dep\nusing app/dep\n\nsecret\n",
         "app/dep.iyi" => "module app/dep\n\ndef secret : Int32\n  2\nend\n",
       }) do
-        expect_raises(Crystal::TypeException, /does not mark it `pub`/) do
+        expect_raises(Iyi::TypeException, /does not mark it `pub`/) do
           semantic_iyi("main.iyi")
         end
       end
@@ -128,7 +128,7 @@ describe "Semantic: iyi import" do
       with_iyi_modules({
         "main.iyi" => "module app/main\n\nrequire \"json\"\n",
       }) do
-        expect_raises(Crystal::TypeException, /iyi has no `require`/) do
+        expect_raises(Iyi::TypeException, /iyi has no `require`/) do
           semantic_iyi("main.iyi")
         end
       end
@@ -138,7 +138,7 @@ describe "Semantic: iyi import" do
       with_iyi_modules({
         "main.iyi" => "module app/main\n\nimport app/ghost\n",
       }) do
-        expect_raises(Crystal::TypeException, /this one is `app\/ghost.iyi`/) do
+        expect_raises(Iyi::TypeException, /this one is `app\/ghost.iyi`/) do
           semantic_iyi("main.iyi")
         end
       end
@@ -260,7 +260,7 @@ describe "Semantic: iyi import" do
           artifact_signature("from_artifact", return_type: "Int32"),
         ])
 
-        expect_raises(Crystal::TypeException, /undefined method 'from_source'/) do
+        expect_raises(Iyi::TypeException, /undefined method 'from_source'/) do
           semantic_iyi("main.iyi", iyi_module_dir: root)
         end
       end
@@ -288,7 +288,7 @@ describe "Semantic: iyi import" do
 
         # `check` promises `Int32` and the artifact says `value` gives a
         # `String`. Nothing but the signature could have caught that.
-        expect_raises(Crystal::TypeException, /must return Int32/) do
+        expect_raises(Iyi::TypeException, /must return Int32/) do
           semantic_iyi("main.iyi", iyi_module_dir: root)
         end
       end
@@ -307,7 +307,7 @@ describe "Semantic: iyi import" do
       }) do |root|
         write_iyimod root, "app/dep", exports, compiler_version: "0.0.0+nope"
 
-        expect_raises(Crystal::TypeException, /written by iyi 0\.0\.0\+nope/) do
+        expect_raises(Iyi::TypeException, /written by iyi 0\.0\.0\+nope/) do
           semantic_iyi("main.iyi", iyi_module_dir: root)
         end
       end
@@ -323,13 +323,13 @@ describe "Semantic: iyi import" do
       # the day the version becomes a `-dev` one again: a named release is the
       # whole identity, and a version between two releases names no compiler,
       # so it keeps the build commit.
-      version = Crystal::Config.iyi_version
-      if version.ends_with?("-dev") && (commit = Crystal::Config.build_commit)
-        Crystal::IyiMod.compiler_version.should eq "#{version}+#{commit}"
+      version = Iyi::Config.iyi_version
+      if version.ends_with?("-dev") && (commit = Iyi::Config.build_commit)
+        Iyi::IyiMod.compiler_version.should eq "#{version}+#{commit}"
       else
         # A released version, or a build that was told no commit — this spec
         # binary is one, being compiled without the variable the Makefile sets.
-        Crystal::IyiMod.compiler_version.should eq version
+        Iyi::IyiMod.compiler_version.should eq version
       end
 
       with_iyi_modules({
@@ -340,7 +340,7 @@ describe "Semantic: iyi import" do
           IYI
       }) do |root|
         write_iyimod root, "app/dep", exports,
-          compiler_version: Crystal::IyiMod.compiler_version
+          compiler_version: Iyi::IyiMod.compiler_version
 
         semantic_iyi("main.iyi", iyi_module_dir: root)
       end
@@ -415,7 +415,7 @@ describe "Semantic: iyi import" do
           App::Dep.declare(made)
           IYI
       }) do
-        expect_raises(Crystal::TypeException, /does not export 'declare'/) do
+        expect_raises(Iyi::TypeException, /does not export 'declare'/) do
           semantic_iyi("main.iyi")
         end
       end
@@ -444,7 +444,7 @@ describe "Semantic: iyi import" do
         # The argument is a literal so that what fails is the name of the
         # macro. `declare(made)` would be read as a call taking a variable
         # nobody declared, and fail one word earlier for a different reason.
-        expect_raises(Crystal::TypeException, /undefined method 'declare'/) do
+        expect_raises(Iyi::TypeException, /undefined method 'declare'/) do
           semantic_iyi("main.iyi")
         end
       end
@@ -487,7 +487,7 @@ describe "Semantic: iyi import" do
           App::Dep::SECRET
           IYI
       }) do
-        expect_raises(Crystal::TypeException, /does not export App::Dep::SECRET/) do
+        expect_raises(Iyi::TypeException, /does not export App::Dep::SECRET/) do
           semantic_iyi("main.iyi")
         end
       end
@@ -506,7 +506,7 @@ describe "Semantic: iyi import" do
           require "json"
           IYI
       }) do
-        expect_raises(Crystal::TypeException, /iyi has no `require`/) do
+        expect_raises(Iyi::TypeException, /iyi has no `require`/) do
           semantic_iyi("main.iyi")
         end
       end
@@ -531,7 +531,7 @@ describe "Semantic: iyi import" do
           using app/dep::{Thing}
           IYI
       }) do
-        expect_raises(Crystal::TypeException, /is this module's own name/) do
+        expect_raises(Iyi::TypeException, /is this module's own name/) do
           semantic_iyi("main.iyi")
         end
       end

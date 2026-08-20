@@ -2,7 +2,7 @@ require "../syntax/ast"
 require "../syntax/transformer"
 require "../types"
 
-module Crystal
+module Iyi
   class Program
     getter(cleanup_transformer : CleanupTransformer) do
       CleanupTransformer.new(self)

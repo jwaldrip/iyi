@@ -1,5 +1,5 @@
 require "../../../spec_helper"
-include Crystal
+include Iyi
 
 private def assert_coverage(code, expected_coverage, *, expected_error : String? = nil, focus : Bool = false, spec_file = __FILE__, spec_line = __LINE__)
   it focus: focus, file: spec_file, line: spec_line do

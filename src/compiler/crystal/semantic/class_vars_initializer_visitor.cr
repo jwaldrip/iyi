@@ -1,6 +1,6 @@
 require "./semantic_visitor"
 
-module Crystal
+module Iyi
   class ClassVarInitializer
     getter owner : ClassVarContainer,
       name : String,

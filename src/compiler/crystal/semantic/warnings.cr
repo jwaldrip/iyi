@@ -1,6 +1,6 @@
 require "../warnings"
 
-module Crystal
+module Iyi
   class Program
     # Warning settings and all detected warnings.
     property warnings = WarningCollection.new

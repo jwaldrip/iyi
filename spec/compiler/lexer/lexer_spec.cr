@@ -1,6 +1,6 @@
 require "../../support/syntax"
 
-private def t(kind : Crystal::Token::Kind)
+private def t(kind : Iyi::Token::Kind)
   kind
 end
 
@@ -153,7 +153,7 @@ describe "Lexer" do
   it "skips a leading byte order mark" do
     lexer = Lexer.new("\uFEFFputs 1")
     token = lexer.next_token
-    token.type.should eq(Crystal::Token::Kind::IDENT)
+    token.type.should eq(Iyi::Token::Kind::IDENT)
     token.value.should eq("puts")
   end
 

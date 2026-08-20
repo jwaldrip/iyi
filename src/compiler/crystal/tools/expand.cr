@@ -1,7 +1,7 @@
 require "./typed_def_processor"
 require "./implementations"
 
-module Crystal
+module Iyi
   struct ExpandResult
     include JSON::Serializable
 

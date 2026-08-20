@@ -5,12 +5,12 @@ require "option_parser"
 # dynamic libraries at runtime.
 #
 # It provides a tool for interpreted mode, where the compiler does not generate
-# an object file that could be passed to the linker. Instead, `Crystal::Loader`
+# an object file that could be passed to the linker. Instead, `Iyi::Loader`
 # takes over the job of discovering libraries, loading them into memory and
 # finding symbols inside them.
 #
 # See system-specific implementations in ./loader for details.
-class Crystal::Loader
+class Iyi::Loader
   class LoadError < Exception
     property args : Array(String)?
     property search_paths : Array(String)?

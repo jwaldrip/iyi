@@ -12,10 +12,10 @@
 # instructions.
 require "spec/cli"
 
-class Crystal::Command
+class Iyi::Command
   # iyi: the two fixed patterns `crystal spec` matched arguments with. They
   # were regex literals, which is pcre2 on the compiler's link line, so they
-  # compile once through Crystal::Rx instead (SPEC.md III.10, Appendix B #22).
+  # compile once through Iyi::Rx instead (SPEC.md III.10, Appendix B #22).
   private SPEC_FILE     = Rx::Pattern.compile("\\.cr(\\:\\d+)?\\Z")
   private SPEC_LOCATION = Rx::Pattern.compile("\\A(.+?)\\:(\\d+)\\Z")
 
@@ -102,7 +102,7 @@ class Crystal::Command
     end
     sources = [Compiler::Source.new(source_filename, source)]
 
-    output_filename = Crystal.temp_executable "spec"
+    output_filename = Iyi.temp_executable "spec"
 
     ENV["CRYSTAL_SPEC_COMPILER_BIN"] ||= if crystal_exec_path = ENV["CRYSTAL_EXEC_PATH"]?
                                            File.join(crystal_exec_path, "crystal")

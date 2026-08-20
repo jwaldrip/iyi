@@ -47,7 +47,7 @@ describe "Parser doc" do
         CRYSTAL
       parser.wants_doc = true
       node = parser.parse
-      node.as(Crystal::LibDef).body.doc.should eq("This is Foo.\nUse it well.")
+      node.as(Iyi::LibDef).body.doc.should eq("This is Foo.\nUse it well.")
     end
   end
 
@@ -67,12 +67,12 @@ describe "Parser doc" do
 
     parser.wants_doc = true
     node = parser.parse
-    node.as(Crystal::LibDef)
-      .body.as(Crystal::CStructOrUnionDef)
-      .body.as(Crystal::Expressions)
+    node.as(Iyi::LibDef)
+      .body.as(Iyi::CStructOrUnionDef)
+      .body.as(Iyi::Expressions)
       .expressions.each do |exp|
-      exp.as(Crystal::TypeDeclaration)
-        .var.as(Crystal::Var)
+      exp.as(Iyi::TypeDeclaration)
+        .var.as(Iyi::Var)
         .doc.should eq("This is Foo.\nUse it well.")
     end
   end

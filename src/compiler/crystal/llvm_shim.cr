@@ -49,7 +49,7 @@ module LLVM
     triple
   end
 
-  # Used by `Crystal::External#call_convention` and by `@[CallConvention]`,
+  # Used by `Iyi::External#call_convention` and by `@[CallConvention]`,
   # which the front end reads and checks. The values are LLVM's, kept in step
   # with `src/llvm/enums.cr` — they are ABI, so they do not drift.
   enum CallConvention

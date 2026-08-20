@@ -1,6 +1,6 @@
 require "./codegen"
 
-class Crystal::CodeGenVisitor
+class Iyi::CodeGenVisitor
   def visit(node : Asm)
     constraints = IO::Memory.new
 

@@ -1,6 +1,6 @@
 require "../abi"
 
-class Crystal::ABI::AVR < Crystal::ABI
+class Iyi::ABI::AVR < Iyi::ABI
   AVRTINY = StaticArray[
     "attiny4",
     "attiny5",
@@ -38,7 +38,7 @@ class Crystal::ABI::AVR < Crystal::ABI
   #
   # - <https://gcc.gnu.org/wiki/avr-gcc>
   # - <https://bugs.llvm.org/show_bug.cgi?id=46140>
-  def abi_info(atys : Array(LLVM::Type), rty : LLVM::Type, ret_def : Bool, context : LLVM::Context) : Crystal::ABI::FunctionType
+  def abi_info(atys : Array(LLVM::Type), rty : LLVM::Type, ret_def : Bool, context : LLVM::Context) : Iyi::ABI::FunctionType
     ret_ty = compute_return_type(rty, ret_def, context)
     arg_tys = compute_arg_types(atys, context)
     FunctionType.new(arg_tys, ret_ty)

@@ -1,6 +1,6 @@
 require "../semantic"
 
-class Crystal::FixMissingTypes < Crystal::Visitor
+class Iyi::FixMissingTypes < Iyi::Visitor
   @program : Program
   @fixed : Set(Def)
 

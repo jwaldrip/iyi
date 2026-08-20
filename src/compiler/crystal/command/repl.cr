@@ -27,7 +27,7 @@ require "../syntax/transformer"
 # value or error out, loop, `.exit` or Ctrl-D. Session state is the macro
 # interpreter's own variable table, so `x = 1` then `x + 1` answers 2.
 # Nothing wider is built until this much runs end to end.
-class Crystal::Command
+class Iyi::Command
   private def repl
     program = Program.new
 
@@ -69,7 +69,7 @@ class Crystal::Command
         unless result.is_a?(Nop) || (result.is_a?(Expressions) && result.expressions.empty?)
           puts result
         end
-      rescue ex : Crystal::CodeError
+      rescue ex : Iyi::CodeError
         # A bad line prints and the prompt comes back. An interpreter that
         # dies on the first typo is worse than one that admits the line.
         ex.color = @color

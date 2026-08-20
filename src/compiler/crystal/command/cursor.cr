@@ -4,7 +4,7 @@
 # This is just the command-line part. The tools logic is in
 # `crystal/tools/context.cr` and `crystal/tools/implementations.cr`
 
-class Crystal::Command
+class Iyi::Command
   private def implementations
     cursor_command("tool implementations") do |location, config, result|
       ImplementationsVisitor.new(location).process(result)

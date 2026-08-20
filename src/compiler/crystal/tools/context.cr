@@ -5,7 +5,7 @@ require "./table_print"
 require "./typed_def_processor"
 require "json"
 
-module Crystal
+module Iyi
   class PrettyTypeNameJsonConverter
     def self.to_json(hash, json : JSON::Builder)
       json.object do
@@ -32,7 +32,7 @@ module Crystal
     property status : String
     property message : String
 
-    @[JSON::Field(converter: JSON::ArrayConverter(Crystal::PrettyTypeNameJsonConverter))]
+    @[JSON::Field(converter: JSON::ArrayConverter(Iyi::PrettyTypeNameJsonConverter))]
     property contexts : Array(Hash(String, Type))?
 
     def initialize(@status, @message)
@@ -71,7 +71,7 @@ module Crystal
   class ReachableVisitor < Visitor
     @visited_typed_defs : Set(Def)
 
-    def initialize(@context_visitor : Crystal::ContextVisitor)
+    def initialize(@context_visitor : Iyi::ContextVisitor)
       @visited_typed_defs = Set(Def).new.compare_by_identity
     end
 

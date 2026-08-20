@@ -1,6 +1,6 @@
 require "./syntax/ast"
 
-module Crystal
+module Iyi
   # Abstract base class of all types
   abstract class Type
     include Annotatable
@@ -3821,7 +3821,7 @@ module Crystal
   end
 end
 
-private def add_to_including_types(type : Crystal::GenericType, all_types)
+private def add_to_including_types(type : Iyi::GenericType, all_types)
   type.each_instantiated_type do |instance|
     # Unbound generic types are not concrete types
     next if instance.unbound?
@@ -3836,7 +3836,7 @@ private def add_to_including_types(type : Crystal::GenericType, all_types)
   end
 end
 
-private def add_to_including_types(type : Crystal::NonGenericModuleType | Crystal::GenericModuleInstanceType, all_types)
+private def add_to_including_types(type : Iyi::NonGenericModuleType | Iyi::GenericModuleInstanceType, all_types)
   type.add_to_including_types(all_types)
 end
 
@@ -3848,15 +3848,15 @@ end
 private def add_instance_var_initializer(including_types, name, value, meta_vars)
   including_types.try &.each do |type|
     case type
-    when Crystal::Program, Crystal::FileModule
+    when Iyi::Program, Iyi::FileModule
       # skip
-    when Crystal::NonGenericModuleType
+    when Iyi::NonGenericModuleType
       type.add_instance_var_initializer(name, value, meta_vars)
-    when Crystal::NonGenericClassType
+    when Iyi::NonGenericClassType
       type.add_instance_var_initializer(name, value, meta_vars)
-    when Crystal::GenericClassType
+    when Iyi::GenericClassType
       type.add_instance_var_initializer(name, value, meta_vars)
-    when Crystal::GenericModuleType
+    when Iyi::GenericModuleType
       type.add_instance_var_initializer(name, value, meta_vars)
     else
       # skip

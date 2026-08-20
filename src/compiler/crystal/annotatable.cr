@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   module Annotatable
     # Annotations on this instance
     property annotations : Hash(AnnotationType, Array(Annotation))?

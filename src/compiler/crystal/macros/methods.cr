@@ -2,7 +2,7 @@ require "../semantic/ast"
 require "./macros"
 require "semantic_version"
 
-module Crystal
+module Iyi
   class MacroInterpreter
     private def find_source_file(filename, &)
       # Support absolute paths
@@ -126,7 +126,7 @@ module Crystal
 
       if format
         begin
-          @program.stdout.puts Crystal::Formatter.format(@str.to_s)
+          @program.stdout.puts Iyi::Formatter.format(@str.to_s)
         rescue
           @program.stdout.puts @str
         end
@@ -183,7 +183,7 @@ module Crystal
           type = parser.parse_bare_proc_type
           parser.check :EOF
           @last = type
-        rescue ex : Crystal::SyntaxException
+        rescue ex : Iyi::SyntaxException
           arg.raise "Invalid type name: #{type_name.inspect}"
         end
       end
@@ -272,7 +272,7 @@ module Crystal
     end
 
     def interpret_raise(node)
-      macro_raise(node, node.args, self, Crystal::TopLevelMacroRaiseException)
+      macro_raise(node, node.args, self, Iyi::TopLevelMacroRaiseException)
     end
 
     def interpret_warning(node)
@@ -394,7 +394,7 @@ module Crystal
       end
     end
 
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "id"
         interpret_check_args { MacroId.new(to_macro_id) }
@@ -413,7 +413,7 @@ module Crystal
           MacroId.new (self.doc || "").gsub("\n", "\n# ")
         end
       when "raise"
-        macro_raise self, args, interpreter, Crystal::MacroRaiseException
+        macro_raise self, args, interpreter, Iyi::MacroRaiseException
       when "warning"
         macro_warning self, args, interpreter
       when "filename"
@@ -454,7 +454,7 @@ module Crystal
       when "nil?"
         interpret_check_args { BoolLiteral.new(is_a?(NilLiteral) || is_a?(Nop)) }
       else
-        raise "undefined macro method '#{class_desc}##{method}'", exception_type: Crystal::UndefinedMacroMethodError
+        raise "undefined macro method '#{class_desc}##{method}'", exception_type: Iyi::UndefinedMacroMethodError
       end
     end
 
@@ -488,7 +488,7 @@ module Crystal
   end
 
   class NumberLiteral
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when ">"
         bool_bin_op(method, args, named_args, block) { |me, other| me > other }
@@ -617,7 +617,7 @@ module Crystal
       @value.to_s
     end
 
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "ord"
         interpret_check_args { NumberLiteral.new(ord) }
@@ -632,7 +632,7 @@ module Crystal
   end
 
   class StringLiteral
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "==", "!="
         interpret_check_args do |arg|
@@ -699,7 +699,7 @@ module Crystal
         end
       when "*"
         interpret_check_args do |arg|
-          unless arg.is_a?(Crystal::NumberLiteral)
+          unless arg.is_a?(Iyi::NumberLiteral)
             arg.raise "argument to StringLiteral#* must be a number, not #{arg.class_desc}"
           end
 
@@ -965,12 +965,12 @@ module Crystal
             io << " and " if options.multiline? && options.extended?
             io << "/x" if options.extended?
           end
-          arg.raise "unsupported regex flag #{refused} on #{source.inspect} in macro: Crystal::Rx, the compiler's engine, honours /i only, and a flag it cannot honour is refused rather than ignored"
+          arg.raise "unsupported regex flag #{refused} on #{source.inspect} in macro: Iyi::Rx, the compiler's engine, honours /i only, and a flag it cannot honour is refused rather than ignored"
         end
         begin
           Rx::Pattern.compile(source, ignore_case: options.ignore_case?)
         rescue ex : Rx::SyntaxError
-          arg.raise "invalid pattern #{source.inspect} in macro: #{ex.message} (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)"
+          arg.raise "invalid pattern #{source.inspect} in macro: #{ex.message} (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)"
         end
       else
         raise "regex interpolations not yet allowed in macros"
@@ -979,7 +979,7 @@ module Crystal
   end
 
   class StringInterpolation
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "expressions"
         interpret_check_args { ArrayLiteral.map(expressions, &.itself) }
@@ -990,7 +990,7 @@ module Crystal
   end
 
   class ArrayLiteral
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "of"
         interpret_check_args { @of || Nop.new }
@@ -1009,7 +1009,7 @@ module Crystal
   end
 
   class HashLiteral
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "empty?"
         interpret_check_args { BoolLiteral.new(entries.empty?) }
@@ -1058,7 +1058,7 @@ module Crystal
       when "double_splat"
         interpret_check_args(min_count: 0) do |arg|
           if arg
-            unless arg.is_a?(Crystal::StringLiteral)
+            unless arg.is_a?(Iyi::StringLiteral)
               arg.raise "argument to double_splat must be a StringLiteral, not #{arg.class_desc}"
             end
 
@@ -1163,7 +1163,7 @@ module Crystal
   end
 
   class NamedTupleLiteral
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "empty?"
         interpret_check_args { BoolLiteral.new(entries.empty?) }
@@ -1212,7 +1212,7 @@ module Crystal
       when "double_splat"
         interpret_check_args(min_count: 0) do |arg|
           if arg
-            unless arg.is_a?(Crystal::StringLiteral)
+            unless arg.is_a?(Iyi::StringLiteral)
               arg.raise "argument to double_splat must be a StringLiteral, not #{arg.class_desc}"
             end
 
@@ -1343,14 +1343,14 @@ module Crystal
   end
 
   class TupleLiteral
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       value = interpret_array_or_tuple_method(self, TupleLiteral, method, args, named_args, block, interpreter)
       value || super
     end
   end
 
   class RangeLiteral
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "begin"
         interpret_check_args { self.from }
@@ -1453,7 +1453,7 @@ module Crystal
   end
 
   class RegexLiteral
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "source"
         interpret_check_args { @value }
@@ -1476,7 +1476,7 @@ module Crystal
       @name
     end
 
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { MacroId.new(@name) }
@@ -1513,7 +1513,7 @@ module Crystal
   end
 
   class Block
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "body"
         interpret_check_args { @body }
@@ -1532,7 +1532,7 @@ module Crystal
   end
 
   class ProcNotation
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "inputs"
         interpret_check_args do
@@ -1555,7 +1555,7 @@ module Crystal
   end
 
   class ProcLiteral
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "args", "body", "return_type"
         @def.interpret(method, args, named_args, block, interpreter, location)
@@ -1566,7 +1566,7 @@ module Crystal
   end
 
   class ProcPointer
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "obj"
         interpret_check_args { @obj || NilLiteral.new }
@@ -1583,7 +1583,7 @@ module Crystal
   end
 
   class Expressions
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "expressions"
         interpret_check_args do
@@ -1596,7 +1596,7 @@ module Crystal
   end
 
   class BinaryOp
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "left"
         interpret_check_args { @left }
@@ -1609,7 +1609,7 @@ module Crystal
   end
 
   class TypeDeclaration
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "var"
         interpret_check_args do
@@ -1628,7 +1628,7 @@ module Crystal
   end
 
   class UninitializedVar
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "var"
         interpret_check_args do
@@ -1645,7 +1645,7 @@ module Crystal
   end
 
   class Union
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "resolve"
         interpret_check_args { interpreter.resolve(self) }
@@ -1660,7 +1660,7 @@ module Crystal
   end
 
   class Arg
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { MacroId.new(external_name) }
@@ -1687,7 +1687,7 @@ module Crystal
   end
 
   class Def
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { MacroId.new(@name) }
@@ -1740,7 +1740,7 @@ module Crystal
   end
 
   class Primitive
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { SymbolLiteral.new(@name) }
@@ -1751,7 +1751,7 @@ module Crystal
   end
 
   class Macro
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { MacroId.new(@name) }
@@ -1778,7 +1778,7 @@ module Crystal
   end
 
   class MacroExpression
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "exp"
         interpret_check_args { @exp }
@@ -1791,7 +1791,7 @@ module Crystal
   end
 
   class MacroIf
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "cond"
         interpret_check_args { @cond }
@@ -1808,7 +1808,7 @@ module Crystal
   end
 
   class MacroFor
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "vars"
         interpret_check_args { ArrayLiteral.map(@vars, &.itself) }
@@ -1823,7 +1823,7 @@ module Crystal
   end
 
   class MacroLiteral
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "value"
         interpret_check_args { MacroId.new(@value) }
@@ -1834,7 +1834,7 @@ module Crystal
   end
 
   class MacroVar
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { MacroId.new(@name) }
@@ -1853,7 +1853,7 @@ module Crystal
   end
 
   class UnaryExpression
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "exp"
         interpret_check_args { @exp }
@@ -1864,7 +1864,7 @@ module Crystal
   end
 
   class Include
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { @name }
@@ -1875,7 +1875,7 @@ module Crystal
   end
 
   class Extend
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { @name }
@@ -1886,7 +1886,7 @@ module Crystal
   end
 
   class Alias
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { @name }
@@ -1899,7 +1899,7 @@ module Crystal
   end
 
   class OffsetOf
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "type"
         interpret_check_args { @offsetof_type }
@@ -1912,7 +1912,7 @@ module Crystal
   end
 
   class Metaclass
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "instance"
         interpret_check_args { @name }
@@ -1927,7 +1927,7 @@ module Crystal
   end
 
   class VisibilityModifier
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "exp"
         interpret_check_args { @exp }
@@ -1942,7 +1942,7 @@ module Crystal
   end
 
   class IsA
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "receiver"
         interpret_check_args { @obj }
@@ -1955,7 +1955,7 @@ module Crystal
   end
 
   class RespondsTo
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "receiver"
         interpret_check_args { @obj }
@@ -1968,7 +1968,7 @@ module Crystal
   end
 
   class Require
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "path"
         interpret_check_args { StringLiteral.new(@string) }
@@ -1979,7 +1979,7 @@ module Crystal
   end
 
   class Asm
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "text"
         interpret_check_args { StringLiteral.new(@text) }
@@ -2022,7 +2022,7 @@ module Crystal
   end
 
   class AsmOperand
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "constraint"
         interpret_check_args { StringLiteral.new(@constraint) }
@@ -2035,7 +2035,7 @@ module Crystal
   end
 
   class MacroId
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "==", "!="
         interpret_check_args do |arg|
@@ -2058,7 +2058,7 @@ module Crystal
         value
       end
     rescue UndefinedMacroMethodError
-      raise "undefined macro method '#{class_desc}##{method}'", exception_type: Crystal::UndefinedMacroMethodError
+      raise "undefined macro method '#{class_desc}##{method}'", exception_type: Iyi::UndefinedMacroMethodError
     end
 
     def interpret_compare(other : MacroId | StringLiteral)
@@ -2067,7 +2067,7 @@ module Crystal
   end
 
   class SymbolLiteral
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "==", "!="
         interpret_check_args do |arg|
@@ -2090,12 +2090,12 @@ module Crystal
         value
       end
     rescue UndefinedMacroMethodError
-      raise "undefined macro method '#{class_desc}##{method}'", exception_type: Crystal::UndefinedMacroMethodError
+      raise "undefined macro method '#{class_desc}##{method}'", exception_type: Iyi::UndefinedMacroMethodError
     end
   end
 
   class TypeNode
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "abstract?"
         interpret_check_args { BoolLiteral.new(type.abstract?) }
@@ -2344,9 +2344,9 @@ module Crystal
         unless type.program.top_level_semantic_complete?
           message = "`TypeNode#instance_vars` cannot be called in the top-level scope: instance vars are not yet initialized"
           if name_loc
-            raise Crystal::TypeException.new(message, name_loc)
+            raise Iyi::TypeException.new(message, name_loc)
           else
-            raise Crystal::TypeException.new(message)
+            raise Iyi::TypeException.new(message)
           end
         end
         ArrayLiteral.map(type.all_instance_vars) do |name, ivar|
@@ -2364,9 +2364,9 @@ module Crystal
       unless type.program.top_level_semantic_complete?
         message = "`TypeNode#has_inner_pointers?` cannot be called in the top-level scope: instance vars are not yet initialized"
         if name_loc
-          raise Crystal::TypeException.new(message, name_loc)
+          raise Iyi::TypeException.new(message, name_loc)
         else
-          raise Crystal::TypeException.new(message)
+          raise Iyi::TypeException.new(message)
         end
       end
 
@@ -2503,7 +2503,7 @@ module Crystal
   end
 
   class Call
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { MacroId.new(name) }
@@ -2540,7 +2540,7 @@ module Crystal
   end
 
   class NamedArgument
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { MacroId.new(name) }
@@ -2553,7 +2553,7 @@ module Crystal
   end
 
   class If
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "cond"
         interpret_check_args { @cond }
@@ -2568,7 +2568,7 @@ module Crystal
   end
 
   class Case
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "cond"
         interpret_check_args { cond || Nop.new }
@@ -2585,7 +2585,7 @@ module Crystal
   end
 
   class Select
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "whens"
         interpret_check_args { ArrayLiteral.map whens, &.itself }
@@ -2598,7 +2598,7 @@ module Crystal
   end
 
   class When
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "conds"
         interpret_check_args { ArrayLiteral.map(conds, &.itself) }
@@ -2613,7 +2613,7 @@ module Crystal
   end
 
   class ExceptionHandler
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "body"
         interpret_check_args { @body }
@@ -2630,7 +2630,7 @@ module Crystal
   end
 
   class Rescue
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "body"
         interpret_check_args { body }
@@ -2645,7 +2645,7 @@ module Crystal
   end
 
   class ControlExpression
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "exp"
         interpret_check_args { exp || Nop.new }
@@ -2656,7 +2656,7 @@ module Crystal
   end
 
   class Yield
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "expressions"
         interpret_check_args { ArrayLiteral.map(@exps, &.itself) }
@@ -2669,7 +2669,7 @@ module Crystal
   end
 
   class Assign
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "target"
         interpret_check_args { target }
@@ -2682,7 +2682,7 @@ module Crystal
   end
 
   class MultiAssign
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "targets"
         interpret_check_args { ArrayLiteral.map(targets, &.itself) }
@@ -2699,7 +2699,7 @@ module Crystal
       @name
     end
 
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { MacroId.new(@name) }
@@ -2710,7 +2710,7 @@ module Crystal
   end
 
   class ReadInstanceVar
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "obj"
         interpret_check_args { @obj }
@@ -2727,7 +2727,7 @@ module Crystal
       @name
     end
 
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { MacroId.new(@name) }
@@ -2742,7 +2742,7 @@ module Crystal
       @name
     end
 
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { MacroId.new(@name) }
@@ -2753,7 +2753,7 @@ module Crystal
   end
 
   class Path
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "names"
         interpret_check_args do
@@ -2802,7 +2802,7 @@ module Crystal
   end
 
   class While
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "cond"
         interpret_check_args { @cond }
@@ -2815,7 +2815,7 @@ module Crystal
   end
 
   class Cast
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "obj"
         interpret_check_args { obj }
@@ -2828,7 +2828,7 @@ module Crystal
   end
 
   class NilableCast
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "obj"
         interpret_check_args { obj }
@@ -2841,7 +2841,7 @@ module Crystal
   end
 
   class TypeOf
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "args"
         interpret_check_args { ArrayLiteral.map(@expressions, &.itself) }
@@ -2852,7 +2852,7 @@ module Crystal
   end
 
   class Generic
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { name }
@@ -2879,7 +2879,7 @@ module Crystal
   end
 
   class Annotation
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { @path }
@@ -2916,7 +2916,7 @@ module Crystal
   end
 
   class ClassDef
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "kind"
         interpret_check_args { MacroId.new(@struct ? "struct" : "class") }
@@ -2953,7 +2953,7 @@ module Crystal
   end
 
   class ModuleDef
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "kind"
         interpret_check_args { MacroId.new("module") }
@@ -2984,7 +2984,7 @@ module Crystal
   end
 
   class EnumDef
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "kind"
         interpret_check_args { MacroId.new("enum") }
@@ -3005,7 +3005,7 @@ module Crystal
   end
 
   class AnnotationDef
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "kind"
         interpret_check_args { MacroId.new("annotation") }
@@ -3024,7 +3024,7 @@ module Crystal
   end
 
   class LibDef
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "kind"
         interpret_check_args { MacroId.new("lib") }
@@ -3043,7 +3043,7 @@ module Crystal
   end
 
   class CStructOrUnionDef
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "kind"
         interpret_check_args { MacroId.new(@union ? "union" : "struct") }
@@ -3064,7 +3064,7 @@ module Crystal
   end
 
   class FunDef
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { MacroId.new(@name) }
@@ -3087,7 +3087,7 @@ module Crystal
   end
 
   class TypeDef
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { Path.new(@name).at(@name_location) }
@@ -3100,7 +3100,7 @@ module Crystal
   end
 
   class ExternalVar
-    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Crystal::Block?, interpreter : Crystal::MacroInterpreter, name_loc : Location?)
+    def interpret(method : String, args : Array(ASTNode), named_args : Hash(String, ASTNode)?, block : Iyi::Block?, interpreter : Iyi::MacroInterpreter, name_loc : Location?)
       case method
       when "name"
         interpret_check_args { MacroId.new(@name) }
@@ -3117,9 +3117,9 @@ end
 
 private def get_named_annotation_args(object)
   if named_args = object.named_args
-    Crystal::NamedTupleLiteral.new(named_args.map { |arg| Crystal::NamedTupleLiteral::Entry.new(arg.name, arg.value) })
+    Iyi::NamedTupleLiteral.new(named_args.map { |arg| Iyi::NamedTupleLiteral::Entry.new(arg.name, arg.value) })
   else
-    Crystal::NamedTupleLiteral.new
+    Iyi::NamedTupleLiteral.new
   end
 end
 
@@ -3133,7 +3133,7 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
         interpreter.not_interpreted_hook block.body, use_significant_node: true
       end
 
-      Crystal::BoolLiteral.new(object.elements.any? do |elem|
+      Iyi::BoolLiteral.new(object.elements.any? do |elem|
         interpreter.define_var(block_arg.name, elem) if block_arg
         interpreter.accept(block.body).truthy?
       end)
@@ -3146,7 +3146,7 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
         interpreter.not_interpreted_hook block.body, use_significant_node: true
       end
 
-      Crystal::BoolLiteral.new(object.elements.all? do |elem|
+      Iyi::BoolLiteral.new(object.elements.all? do |elem|
         interpreter.define_var(block_arg.name, elem) if block_arg
         interpreter.accept(block.body).truthy?
       end)
@@ -3154,21 +3154,21 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
   when "splat"
     interpret_check_args(node: object, min_count: 0) do |arg|
       if arg
-        unless arg.is_a?(Crystal::StringLiteral)
+        unless arg.is_a?(Iyi::StringLiteral)
           arg.raise "argument to splat must be a StringLiteral, not #{arg.class_desc}"
         end
 
         if object.elements.empty?
-          Crystal::MacroId.new("")
+          Iyi::MacroId.new("")
         else
-          Crystal::MacroId.new((object.elements.join ", ") + arg.value)
+          Iyi::MacroId.new((object.elements.join ", ") + arg.value)
         end
       else
-        Crystal::MacroId.new(object.elements.join ", ")
+        Iyi::MacroId.new(object.elements.join ", ")
       end
     end
   when "empty?"
-    interpret_check_args(node: object) { Crystal::BoolLiteral.new(object.elements.empty?) }
+    interpret_check_args(node: object) { Iyi::BoolLiteral.new(object.elements.empty?) }
   when "find"
     interpret_check_args(node: object, uses_block: true) do
       block_arg = block.args.first?
@@ -3181,22 +3181,22 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
         interpreter.define_var(block_arg.name, elem) if block_arg
         interpreter.accept(block.body).truthy?
       end
-      found ? found : Crystal::NilLiteral.new
+      found ? found : Iyi::NilLiteral.new
     end
   when "first"
-    interpret_check_args(node: object) { object.elements.first? || Crystal::NilLiteral.new }
+    interpret_check_args(node: object) { object.elements.first? || Iyi::NilLiteral.new }
   when "includes?"
     interpret_check_args(node: object) do |arg|
-      Crystal::BoolLiteral.new(object.elements.includes?(arg))
+      Iyi::BoolLiteral.new(object.elements.includes?(arg))
     end
   when "join"
     interpret_check_args(node: object) do |arg|
-      Crystal::StringLiteral.new(object.elements.map(&.to_macro_id).join arg.to_macro_id)
+      Iyi::StringLiteral.new(object.elements.map(&.to_macro_id).join arg.to_macro_id)
     end
   when "last"
-    interpret_check_args(node: object) { object.elements.last? || Crystal::NilLiteral.new }
+    interpret_check_args(node: object) { object.elements.last? || Iyi::NilLiteral.new }
   when "size"
-    interpret_check_args(node: object) { Crystal::NumberLiteral.new(object.elements.size) }
+    interpret_check_args(node: object) { Iyi::NumberLiteral.new(object.elements.size) }
   when "each"
     interpret_check_args(node: object, uses_block: true) do
       block_arg = block.args.first?
@@ -3210,7 +3210,7 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
         interpreter.accept block.body
       end
 
-      Crystal::NilLiteral.new
+      Iyi::NilLiteral.new
     end
   when "each_with_index"
     interpret_check_args(node: object, uses_block: true) do
@@ -3223,11 +3223,11 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
 
       object.elements.each_with_index do |elem, idx|
         interpreter.define_var(block_arg.name, elem) if block_arg
-        interpreter.define_var(index_arg.name, Crystal::NumberLiteral.new idx) if index_arg
+        interpreter.define_var(index_arg.name, Iyi::NumberLiteral.new idx) if index_arg
         interpreter.accept block.body
       end
 
-      Crystal::NilLiteral.new
+      Iyi::NilLiteral.new
     end
   when "map"
     interpret_check_args(node: object, uses_block: true) do
@@ -3253,7 +3253,7 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
 
       klass.map_with_index(object.elements) do |elem, idx|
         interpreter.define_var(block_arg.name, elem) if block_arg
-        interpreter.define_var(index_arg.name, Crystal::NumberLiteral.new idx) if index_arg
+        interpreter.define_var(index_arg.name, Iyi::NumberLiteral.new idx) if index_arg
         interpreter.accept block.body
       end
     end
@@ -3304,27 +3304,27 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
         from = interpreter.accept(from)
         to = interpreter.accept(to)
 
-        unless from.is_a?(Crystal::NumberLiteral)
+        unless from.is_a?(Iyi::NumberLiteral)
           from.raise "expected first argument to RangeLiteral#[] to be a number, not #{from.class_desc}"
         end
 
-        unless to.is_a?(Crystal::NumberLiteral)
+        unless to.is_a?(Iyi::NumberLiteral)
           to.raise "expected second argument to RangeLiteral#[] to be a number, not #{from.class_desc}"
         end
 
         from = from.to_number.to_i
         to = to.to_number.to_i
         values = object.elements[from, to]?
-        values ? klass.new(values) : Crystal::NilLiteral.new
+        values ? klass.new(values) : Iyi::NilLiteral.new
       else
         case arg = from
-        when Crystal::NumberLiteral
+        when Iyi::NumberLiteral
           index = arg.to_number.to_i
-          object.elements[index]? || Crystal::NilLiteral.new
-        when Crystal::RangeLiteral
+          object.elements[index]? || Iyi::NilLiteral.new
+        when Iyi::RangeLiteral
           range = arg.interpret_to_nilable_range(interpreter)
           values = object.elements[range]?
-          values ? klass.new(values) : Crystal::NilLiteral.new
+          values ? klass.new(values) : Iyi::NilLiteral.new
         else
           arg.raise "argument to [] must be a number or range, not #{arg.class_desc}:\n\n#{arg}"
         end
@@ -3332,7 +3332,7 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
     end
   when "[]="
     interpret_check_args(node: object) do |index_node, value|
-      unless index_node.is_a?(Crystal::NumberLiteral)
+      unless index_node.is_a?(Iyi::NumberLiteral)
         index_node.raise "expected index argument to ArrayLiteral#[]= to be a number, not #{index_node.class_desc}"
       end
 
@@ -3359,8 +3359,8 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
   when "+"
     interpret_check_args(node: object) do |arg|
       case arg
-      when Crystal::TupleLiteral then other_elements = arg.elements
-      when Crystal::ArrayLiteral then other_elements = arg.elements
+      when Iyi::TupleLiteral then other_elements = arg.elements
+      when Iyi::ArrayLiteral then other_elements = arg.elements
       else
         arg.raise "argument to `#{klass}#+` must be a tuple or array, not #{arg.class_desc}:\n\n#{arg}"
       end
@@ -3369,8 +3369,8 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
   when "-"
     interpret_check_args(node: object) do |arg|
       case arg
-      when Crystal::TupleLiteral then other_elements = arg.elements
-      when Crystal::ArrayLiteral then other_elements = arg.elements
+      when Iyi::TupleLiteral then other_elements = arg.elements
+      when Iyi::ArrayLiteral then other_elements = arg.elements
       else
         arg.raise "argument to `#{klass}#-` must be a tuple or array, not #{arg.class_desc}:\n\n#{arg}"
       end
@@ -3378,7 +3378,7 @@ private def interpret_array_or_tuple_method(object, klass, method, args, named_a
     end
   when "*"
     interpret_check_args(node: object) do |arg|
-      unless arg.is_a?(Crystal::NumberLiteral)
+      unless arg.is_a?(Iyi::NumberLiteral)
         arg.raise "argument to `#{klass}#*` must be a number, not #{arg.class_desc}"
       end
 
@@ -3488,14 +3488,14 @@ private def visibility_to_symbol(visibility)
     else
       "public"
     end
-  Crystal::SymbolLiteral.new(visibility_name)
+  Iyi::SymbolLiteral.new(visibility_name)
 end
 
 private def parse_generic_args_argument(node, method, named_args, *, default)
   case named_arg = named_args.try &.["generic_args"]?
   when Nil
     default
-  when Crystal::BoolLiteral
+  when Iyi::BoolLiteral
     named_arg.value
   else
     named_arg.raise "named argument 'generic_args' to #{node.class_desc}##{method} must be a BoolLiteral, not #{named_arg.class_desc}"
@@ -3506,11 +3506,11 @@ private def type_definition_generic_name(node, method, args, named_args, block)
   interpret_check_args(node: node, named_params: ["generic_args"]) do
     if parse_generic_args_argument(node, method, named_args, default: true) && (type_vars = node.type_vars)
       type_vars = type_vars.map_with_index do |type_var, i|
-        param = Crystal::MacroId.new(type_var)
-        param = Crystal::Splat.new(param) if i == node.splat_index
+        param = Iyi::MacroId.new(type_var)
+        param = Iyi::Splat.new(param) if i == node.splat_index
         param
       end
-      Crystal::Generic.new(node.name, type_vars)
+      Iyi::Generic.new(node.name, type_vars)
     else
       node.name
     end
@@ -3536,29 +3536,29 @@ private def macro_warning(node, args, interpreter)
 
   interpreter.warnings.add_warning_at(node.location, msg)
 
-  Crystal::NilLiteral.new
+  Iyi::NilLiteral.new
 end
 
 private def empty_no_return_array
-  Crystal::ArrayLiteral.new(of: Crystal::Path.global("NoReturn"))
+  Iyi::ArrayLiteral.new(of: Iyi::Path.global("NoReturn"))
 end
 
 # iyi: a capture hash off the compiler's own engine. Named groups left with
-# pcre2, because Crystal::Rx refuses them (SPEC.md III.10), so every key is a
+# pcre2, because Iyi::Rx refuses them (SPEC.md III.10), so every key is a
 # group number and group 0 leads; the key type stays Int32 | String so a macro
 # written against the old shape still typechecks.
-private def regex_captures_hash(match : Crystal::Rx::Match)
-  captures = Crystal::HashLiteral.new(
-    of: Crystal::HashLiteral::Entry.new(
-      Crystal::Union.new([Crystal::Path.global("Int32"), Crystal::Path.global("String")] of Crystal::ASTNode),
-      Crystal::Union.new([Crystal::Path.global("String"), Crystal::Path.global("Nil")] of Crystal::ASTNode),
+private def regex_captures_hash(match : Iyi::Rx::Match)
+  captures = Iyi::HashLiteral.new(
+    of: Iyi::HashLiteral::Entry.new(
+      Iyi::Union.new([Iyi::Path.global("Int32"), Iyi::Path.global("String")] of Iyi::ASTNode),
+      Iyi::Union.new([Iyi::Path.global("String"), Iyi::Path.global("Nil")] of Iyi::ASTNode),
     )
   )
 
   0.upto(match.group_count) do |group|
     substr = match[group]
-    value = substr ? Crystal::StringLiteral.new(substr) : Crystal::NilLiteral.new
-    captures.entries << Crystal::HashLiteral::Entry.new(Crystal::NumberLiteral.new(group), value)
+    value = substr ? Iyi::StringLiteral.new(substr) : Iyi::NilLiteral.new
+    captures.entries << Iyi::HashLiteral::Entry.new(Iyi::NumberLiteral.new(group), value)
   end
 
   captures
@@ -3580,37 +3580,37 @@ end
 
 private def fetch_annotation(node, method, args, named_args, block, &)
   interpret_check_args(node: node) do |arg|
-    unless arg.is_a?(Crystal::TypeNode)
+    unless arg.is_a?(Iyi::TypeNode)
       args[0].raise "argument to '#{node.class_desc}#annotation' must be a TypeNode, not #{arg.class_desc}"
     end
 
     type = arg.type
-    unless type.is_a?(Crystal::AnnotationType)
+    unless type.is_a?(Iyi::AnnotationType)
       args[0].raise "argument to '#{node.class_desc}#annotation' must be an annotation type, not #{type} (#{type.type_desc})"
     end
 
     value = yield type
-    value || Crystal::NilLiteral.new
+    value || Iyi::NilLiteral.new
   end
 end
 
 private def fetch_annotations(node, method, args, named_args, block, &)
   interpret_check_args(node: node, min_count: 0) do |arg|
     unless arg
-      return yield(nil) || Crystal::NilLiteral.new
+      return yield(nil) || Iyi::NilLiteral.new
     end
 
-    unless arg.is_a?(Crystal::TypeNode)
+    unless arg.is_a?(Iyi::TypeNode)
       args[0].raise "argument to '#{node.class_desc}#annotation' must be a TypeNode, not #{arg.class_desc}"
     end
 
     type = arg.type
-    unless type.is_a?(Crystal::AnnotationType)
+    unless type.is_a?(Iyi::AnnotationType)
       args[0].raise "argument to '#{node.class_desc}#annotation' must be an annotation type, not #{type} (#{type.type_desc})"
     end
 
     value = yield type
-    value || Crystal::NilLiteral.new
+    value || Iyi::NilLiteral.new
   end
 end
 
@@ -3628,7 +3628,7 @@ private def sort_by(object, klass, block, interpreter)
   end)
 end
 
-private record InterpretCompareWrapper, node : Crystal::ASTNode do
+private record InterpretCompareWrapper, node : Iyi::ASTNode do
   include Comparable(self)
 
   def <=>(other : self)

@@ -3,7 +3,7 @@ require "../../spec_helper"
 private def assert_expand_regex_const(from : String, to, *, flags = nil, file = __FILE__, line = __LINE__)
   from_nodes = Parser.parse(from)
   assert_expand(from_nodes, flags: flags, file: file, line: line) do |to_nodes, program|
-    const = program.types[to_nodes.to_s].should be_a(Crystal::Const), file: file, line: line
+    const = program.types[to_nodes.to_s].should be_a(Iyi::Const), file: file, line: line
     const.value.to_s.should eq(to.strip), file: file, line: line
   end
 end
@@ -65,7 +65,7 @@ describe "Normalize: regex literal" do
   # compiler pre-declares (SPEC.md III.10, Appendix B #17).
   describe "in an .iyi file" do
     it "is refused with the engine's semantics" do
-      expect_raises(Crystal::TypeException, "regex literals are not available in iyi") do
+      expect_raises(Iyi::TypeException, "regex literals are not available in iyi") do
         LiteralExpander.new(Program.new).expand(parse(%q(/foo/), filename: "foo.iyi"))
       end
     end

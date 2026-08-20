@@ -11,7 +11,7 @@ require "crystal/system/win32/library_archive"
 # * Unlike the Unix counterpart, symbols in the current module do not clash with
 #   the ones in DLLs or their corresponding import libraries.
 
-class Crystal::Loader
+class Iyi::Loader
   alias Handle = Void*
 
   class LoadError
@@ -201,7 +201,7 @@ class Crystal::Loader
 
   # Returns whether *dll* names an API set according to:
   # https://learn.microsoft.com/en-us/windows/win32/apiindex/windows-apisets#api-set-contract-names
-  # iyi: compiled once through Crystal::Rx, the compiler's own engine, so this
+  # iyi: compiled once through Iyi::Rx, the compiler's own engine, so this
   # file is not one of the reasons pcre2 stays on the link line (SPEC.md
   # III.10).
   private API_SET_DLL = Rx::Pattern.compile("^(?:api-|ext-)[a-zA-Z0-9-]*l\\d+-\\d+-\\d+\\.dll$")

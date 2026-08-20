@@ -1,7 +1,7 @@
 require "../types"
 require "llvm"
 
-module Crystal
+module Iyi
   class LLVMTyper
     getter landing_pad_type : LLVM::Type
 

@@ -2,7 +2,7 @@ require "set"
 require "colorize"
 require "../syntax/ast"
 
-module Crystal
+module Iyi
   def self.print_hierarchy(program, io, exp, format)
     case format
     when "text"
@@ -30,14 +30,14 @@ module Crystal
       @llvm_typer = @program.llvm_typer
     end
 
-    # iyi: `tool hierarchy -e` takes a pattern from a person, and Crystal::Rx
+    # iyi: `tool hierarchy -e` takes a pattern from a person, and Iyi::Rx
     # refuses what it does not implement rather than matching it with other
     # semantics (SPEC.md III.10). Refusal is one line naming the pattern and the
     # reason, never a backtrace from inside the engine.
     private def compile_exp(exp)
       Rx::Pattern.compile(exp)
     rescue ex : Rx::SyntaxError
-      raise CompilerError.new("invalid pattern #{exp.inspect} for -e: #{ex.message} (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)", :USAGE_ERROR)
+      raise CompilerError.new("invalid pattern #{exp.inspect} for -e: #{ex.message} (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)", :USAGE_ERROR)
     end
 
     def execute

@@ -1,8 +1,8 @@
 require "../syntax/ast"
 
-module Crystal
+module Iyi
   class ASTNode
-    def raise(message, inner = nil, exception_type = Crystal::TypeException)
+    def raise(message, inner = nil, exception_type = Iyi::TypeException)
       ::raise exception_type.for_node(self, message, inner)
     end
 

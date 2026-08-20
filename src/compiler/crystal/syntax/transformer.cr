@@ -1,6 +1,6 @@
 require "./ast"
 
-module Crystal
+module Iyi
   class ASTNode
     def transform(transformer)
       transformer.before_transform self

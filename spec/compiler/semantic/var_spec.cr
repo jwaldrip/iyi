@@ -1,6 +1,6 @@
 require "../../spec_helper"
 
-include Crystal
+include Iyi
 
 describe "Semantic: var" do
   it "types an assign" do

@@ -16,7 +16,7 @@ require "crystal/system/win32/library_archive"
 # TODO: The actual MinGW linker supports linking to DLLs directly, figure out
 # how this is done.
 
-class Crystal::Loader
+class Iyi::Loader
   alias Handle = Void*
 
   def initialize(@search_paths : Array(String))
@@ -150,7 +150,7 @@ class Crystal::Loader
   end
 
   # iyi: an API set contract name, which Windows itself resolves, so the loader
-  # must not hunt a file for it. Compiled once through Crystal::Rx, the
+  # must not hunt a file for it. Compiled once through Iyi::Rx, the
   # compiler's own engine, so this file is not one of the reasons pcre2 stays
   # on the link line (SPEC.md III.10).
   private API_SET_DLL = Rx::Pattern.compile("^(?:api-|ext-)[a-zA-Z0-9-]*l\\d+-\\d+-\\d+\\.dll$")
@@ -189,8 +189,8 @@ class Crystal::Loader
   def self.cc_each_library_path(& : String ->) : Nil
     search_dirs = begin
       cc =
-        {% if Crystal.has_constant?("Compiler") %}
-          Crystal::Compiler::DEFAULT_LINKER
+        {% if Iyi.has_constant?("Compiler") %}
+          Iyi::Compiler::DEFAULT_LINKER
         {% else %}
           # this allows the loader to be required alone without the compiler
           ENV["CC"]? || "cc"

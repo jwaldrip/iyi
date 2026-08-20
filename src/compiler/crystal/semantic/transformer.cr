@@ -1,6 +1,6 @@
 require "../syntax/transformer"
 
-module Crystal
+module Iyi
   class Transformer
     def transform(node : MetaVar | MetaMacroVar | Primitive | TypeFilteredNode | TupleIndexer | TypeNode | AssignWithRestriction | YieldBlockBinder | MacroId | Unreachable)
       node

@@ -1,6 +1,6 @@
 require "../syntax/ast"
 
-class Crystal::Def
+class Iyi::Def
   def expand_default_arguments(program, args_size, named_args = nil)
     # If the named arguments cover all arguments with a default value and
     # they come in the same order, we can safely return this def without

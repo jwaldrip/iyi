@@ -1,6 +1,6 @@
 require "../../support/syntax"
 
-private def t(kind : Crystal::Token::Kind)
+private def t(kind : Iyi::Token::Kind)
   kind
 end
 

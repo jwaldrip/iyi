@@ -1,6 +1,6 @@
 require "./codegen"
 
-module Crystal
+module Iyi
   class CodeGenVisitor
     # workaround for `LLVM::Builder` not being GC'ed (#13250)
     private class DIBuilder
@@ -17,7 +17,7 @@ module Crystal
 
     record FunMetadata, filename : String, metadata : LibLLVM::MetadataRef
 
-    alias DebugFilename = Crystal::VirtualFile | String?
+    alias DebugFilename = Iyi::VirtualFile | String?
 
     @current_debug_location : Location?
 

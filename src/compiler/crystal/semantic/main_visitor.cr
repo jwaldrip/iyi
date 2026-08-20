@@ -1,6 +1,6 @@
 require "./semantic_visitor"
 
-module Crystal
+module Iyi
   class Program
     def visit_main(node, visitor : MainVisitor = MainVisitor.new(self), process_finished_hooks = false, cleanup = true)
       node.accept visitor
@@ -820,7 +820,7 @@ module Crystal
       # Check if this is an instance variable initializer
       unless @scope
         # `InstanceVar` assignment appeared in block is not checked
-        # by `Crystal::InstanceVarsInitializerVisitor` because this block
+        # by `Iyi::InstanceVarsInitializerVisitor` because this block
         # may be passed to a macro. So, it checks here.
         if current_type.is_a?(Program) || current_type.is_a?(FileModule)
           node.raise "can't use instance variables at the top level"
@@ -1319,7 +1319,7 @@ module Crystal
 
       begin
         call.recalculate
-      rescue ex : Crystal::CodeError
+      rescue ex : Iyi::CodeError
         node.raise "error instantiating #{node}", ex
       end
 
@@ -2041,7 +2041,7 @@ module Crystal
 
       begin
         body.accept visitor
-      rescue ex : Crystal::CodeError
+      rescue ex : Iyi::CodeError
         node.raise ex.message, ex
       end
 
@@ -2962,7 +2962,7 @@ module Crystal
       end
     end
 
-    private def allowed_type_in_rescue?(type : Crystal::Type) : Bool
+    private def allowed_type_in_rescue?(type : Iyi::Type) : Bool
       type.implements?(@program.exception) || type.module?
     end
 

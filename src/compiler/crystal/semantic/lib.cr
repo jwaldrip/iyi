@@ -1,4 +1,4 @@
-class Crystal::Call
+class Iyi::Call
   def recalculate_lib_call(obj_type)
     replace_splats
 
@@ -268,7 +268,7 @@ class Crystal::Call
   end
 end
 
-class Crystal::Type
+class Iyi::Type
   # Returns `true` if this type can be used in a lib declaration:
   # in a fun, struct/union member, or typedef.
   def allowed_in_lib?

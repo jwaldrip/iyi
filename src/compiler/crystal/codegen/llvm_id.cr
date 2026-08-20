@@ -1,6 +1,6 @@
 require "../types"
 
-module Crystal
+module Iyi
   # This class assigns a pair of IDs `{min, max}` to every type in the program.
   #
   # For a regular class or struct (not metaclass), this pair

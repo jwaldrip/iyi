@@ -12,7 +12,7 @@ describe Crystal do
     it "makes a path under the working directory relative to it" do
       Dir.cd(Dir.tempdir) do
         here = Dir.current
-        Crystal.relative_filename(File.join(here, "a", "b")).should eq File.join("a", "b")
+        Iyi.relative_filename(File.join(here, "a", "b")).should eq File.join("a", "b")
       end
     end
 
@@ -22,7 +22,7 @@ describe Crystal do
         Dir.mkdir_p(inside)
         Dir.cd(inside) do
           sibling = File.join(base, "crystal-cache", "unit.o")
-          Crystal.relative_filename(sibling).should eq sibling
+          Iyi.relative_filename(sibling).should eq sibling
         end
       end
     end
@@ -31,16 +31,16 @@ describe Crystal do
   describe "normalize_path" do
     sep = {{ flag?(:win32) ? "\\" : "/" }}
 
-    it { Crystal.normalize_path("a").should eq ".#{sep}a" }
-    it { Crystal.normalize_path("./a/b").should eq ".#{sep}a#{sep}b" }
-    it { Crystal.normalize_path("../a/b").should eq ".#{sep}..#{sep}a#{sep}b" }
-    it { Crystal.normalize_path("/foo/bar").should eq "#{sep}foo#{sep}bar" }
+    it { Iyi.normalize_path("a").should eq ".#{sep}a" }
+    it { Iyi.normalize_path("./a/b").should eq ".#{sep}a#{sep}b" }
+    it { Iyi.normalize_path("../a/b").should eq ".#{sep}..#{sep}a#{sep}b" }
+    it { Iyi.normalize_path("/foo/bar").should eq "#{sep}foo#{sep}bar" }
 
     {% if flag?(:win32) %}
-      it { Crystal.normalize_path("C:\\foo\\bar").should eq "C:\\foo\\bar" }
-      it { Crystal.normalize_path("C:foo\\bar").should eq "C:foo\\bar" }
-      it { Crystal.normalize_path("\\foo\\bar").should eq "\\foo\\bar" }
-      it { Crystal.normalize_path("foo\\bar").should eq ".\\foo\\bar" }
+      it { Iyi.normalize_path("C:\\foo\\bar").should eq "C:\\foo\\bar" }
+      it { Iyi.normalize_path("C:foo\\bar").should eq "C:foo\\bar" }
+      it { Iyi.normalize_path("\\foo\\bar").should eq "\\foo\\bar" }
+      it { Iyi.normalize_path("foo\\bar").should eq ".\\foo\\bar" }
     {% end %}
   end
 end

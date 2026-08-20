@@ -5,19 +5,19 @@ require "compiler/crystal/formatter"
 require "compiler/crystal/command/format"
 require "../../../support/tempfile"
 
-private class BuggyFormatCommand < Crystal::Command::FormatCommand
+private class BuggyFormatCommand < Iyi::Command::FormatCommand
   def format(filename, source)
     raise "format command test"
   end
 end
 
-describe Crystal::Command::FormatCommand do
+describe Iyi::Command::FormatCommand do
   it "formats stdin" do
     stdin = IO::Memory.new "if true\n1\nend"
     stdout = IO::Memory.new
     stderr = IO::Memory.new
 
-    format_command = Crystal::Command::FormatCommand.new(["-"], stdin: stdin, stdout: stdout, stderr: stderr)
+    format_command = Iyi::Command::FormatCommand.new(["-"], stdin: stdin, stdout: stdout, stderr: stderr)
     format_command.run
     format_command.status_code.should eq(0)
     stdout.to_s.should eq("if true\n  1\nend\n")
@@ -29,7 +29,7 @@ describe Crystal::Command::FormatCommand do
     stdout = IO::Memory.new
     stderr = IO::Memory.new
 
-    format_command = Crystal::Command::FormatCommand.new(["-"], stdin: stdin, stdout: stdout, stderr: stderr)
+    format_command = Iyi::Command::FormatCommand.new(["-"], stdin: stdin, stdout: stdout, stderr: stderr)
     format_command.run
     format_command.status_code.should eq(0)
     stdout.to_s.should eq("if true\n  1\nend\n")
@@ -41,7 +41,7 @@ describe Crystal::Command::FormatCommand do
     stdout = IO::Memory.new
     stderr = IO::Memory.new
 
-    format_command = Crystal::Command::FormatCommand.new(["-"], stdin: stdin, stdout: stdout, stderr: stderr)
+    format_command = Iyi::Command::FormatCommand.new(["-"], stdin: stdin, stdout: stdout, stderr: stderr)
     format_command.run
     format_command.status_code.should eq(1)
     stdout.to_s.should be_empty
@@ -53,7 +53,7 @@ describe Crystal::Command::FormatCommand do
     stdout = IO::Memory.new
     stderr = IO::Memory.new
 
-    format_command = Crystal::Command::FormatCommand.new(["-"], stdin: stdin, stdout: stdout, stderr: stderr)
+    format_command = Iyi::Command::FormatCommand.new(["-"], stdin: stdin, stdout: stdout, stderr: stderr)
     format_command.run
     format_command.status_code.should eq(1)
     stdout.to_s.should be_empty
@@ -94,7 +94,7 @@ describe Crystal::Command::FormatCommand do
       File.write "format.cr", "if true\n1\nend"
       File.write "not_format.cr", "if true\n  1\nend\n"
 
-      format_command = Crystal::Command::FormatCommand.new([] of String, color: false, stdin: stdin, stdout: stdout, stderr: stderr)
+      format_command = Iyi::Command::FormatCommand.new([] of String, color: false, stdin: stdin, stdout: stdout, stderr: stderr)
       format_command.run
       format_command.status_code.should eq(0)
       stdout.to_s.should contain("Format #{Path[".", "format.cr"]}")
@@ -117,7 +117,7 @@ describe Crystal::Command::FormatCommand do
       File.write File.join("dir", "format.cr"), "if true\n1\nend"
       File.write File.join("dir", "not_format.cr"), "if true\n  1\nend\n"
 
-      format_command = Crystal::Command::FormatCommand.new(["dir"], color: false, stdin: stdin, stdout: stdout, stderr: stderr)
+      format_command = Iyi::Command::FormatCommand.new(["dir"], color: false, stdin: stdin, stdout: stdout, stderr: stderr)
       format_command.run
       format_command.status_code.should eq(0)
       stdout.to_s.should contain("Format #{Path[".", "dir", "format.cr"]}")
@@ -126,7 +126,7 @@ describe Crystal::Command::FormatCommand do
 
       {stdout, stderr}.each &.clear
 
-      format_command = Crystal::Command::FormatCommand.new([] of String, color: false, stdin: stdin, stdout: stdout, stderr: stderr)
+      format_command = Iyi::Command::FormatCommand.new([] of String, color: false, stdin: stdin, stdout: stdout, stderr: stderr)
       format_command.run
       format_command.status_code.should eq(0)
       stdout.to_s.should contain("Format #{Path[".", "format.cr"]}")
@@ -150,7 +150,7 @@ describe Crystal::Command::FormatCommand do
       File.write "syntax_error.cr", "if"
       File.write "invalid_byte_sequence_error.cr", "\xfe\xff"
 
-      format_command = Crystal::Command::FormatCommand.new([] of String, color: false, stdin: stdin, stdout: stdout, stderr: stderr)
+      format_command = Iyi::Command::FormatCommand.new([] of String, color: false, stdin: stdin, stdout: stdout, stderr: stderr)
       format_command.run
       format_command.status_code.should eq(1)
       stdout.to_s.should contain("Format #{Path[".", "format.cr"]}")
@@ -203,7 +203,7 @@ describe Crystal::Command::FormatCommand do
       File.write "syntax_error.cr", "if"
       File.write "invalid_byte_sequence_error.cr", "\xfe\xff"
 
-      format_command = Crystal::Command::FormatCommand.new([] of String, check: true, color: false, stdin: stdin, stdout: stdout, stderr: stderr)
+      format_command = Iyi::Command::FormatCommand.new([] of String, check: true, color: false, stdin: stdin, stdout: stdout, stderr: stderr)
       format_command.run
       format_command.status_code.should eq(1)
       stdout.to_s.should be_empty
@@ -223,7 +223,7 @@ describe Crystal::Command::FormatCommand do
       File.write "format1.cr", "if true\n  1\nend\n"
       File.write "format2.cr", "if true\n  2\nend\n"
 
-      format_command = Crystal::Command::FormatCommand.new([] of String, check: true, color: false, stdin: stdin, stdout: stdout, stderr: stderr)
+      format_command = Iyi::Command::FormatCommand.new([] of String, check: true, color: false, stdin: stdin, stdout: stdout, stderr: stderr)
       format_command.run
       format_command.status_code.should eq(0)
       stdout.to_s.should be_empty
@@ -240,7 +240,7 @@ describe Crystal::Command::FormatCommand do
       File.write "format.cr", "if true\n1\nend"
       File.write "not_format.cr", "if true\n  1\nend\n"
 
-      format_command = Crystal::Command::FormatCommand.new([] of String, check: true, excludes: ["format.cr"], color: false, stdin: stdin, stdout: stdout, stderr: stderr)
+      format_command = Iyi::Command::FormatCommand.new([] of String, check: true, excludes: ["format.cr"], color: false, stdin: stdin, stdout: stdout, stderr: stderr)
       format_command.run
       format_command.status_code.should eq(0)
       stdout.to_s.should be_empty
@@ -257,7 +257,7 @@ describe Crystal::Command::FormatCommand do
       File.write "format.cr", "if true\n1\nend"
       File.write "not_format.cr", "if true\n  1\nend\n"
 
-      format_command = Crystal::Command::FormatCommand.new([] of String, check: true, excludes: ["format.cr"], includes: ["format.cr"], color: false, stdin: stdin, stdout: stdout, stderr: stderr)
+      format_command = Iyi::Command::FormatCommand.new([] of String, check: true, excludes: ["format.cr"], includes: ["format.cr"], color: false, stdin: stdin, stdout: stdout, stderr: stderr)
       format_command.run
       format_command.status_code.should eq(1)
       stdout.to_s.should be_empty

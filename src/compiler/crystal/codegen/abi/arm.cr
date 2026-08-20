@@ -1,8 +1,8 @@
 require "../abi"
 
 # Based on https://github.com/rust-lang/rust/blob/dfe8bd10fe6763e0a1d5d55fa2574ecba27d3e2e/src/librustc_trans/cabi_arm.rs
-class Crystal::ABI::ARM < Crystal::ABI
-  def abi_info(atys : Array(LLVM::Type), rty : LLVM::Type, ret_def : Bool, context : LLVM::Context) : Crystal::ABI::FunctionType
+class Iyi::ABI::ARM < Iyi::ABI
+  def abi_info(atys : Array(LLVM::Type), rty : LLVM::Type, ret_def : Bool, context : LLVM::Context) : Iyi::ABI::FunctionType
     ret_ty = compute_return_type(rty, ret_def, context)
     arg_tys = compute_arg_types(atys, context)
     FunctionType.new(arg_tys, ret_ty)

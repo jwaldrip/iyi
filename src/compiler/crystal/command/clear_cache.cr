@@ -1,6 +1,6 @@
 # Implementation of the `crystal clear_cache` command
 
-class Crystal::Command
+class Iyi::Command
   private def clear_cache
     verbose = false
     OptionParser.parse(@options) do |opts|

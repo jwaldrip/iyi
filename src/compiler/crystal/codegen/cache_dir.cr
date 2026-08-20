@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   # Manages cache files in the ".crystal" directory.
   #
   # For each compiled program a directory is created in the cache

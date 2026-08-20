@@ -1,6 +1,6 @@
 require "./semantic_visitor"
 
-module Crystal
+module Iyi
   # Guess the type of class and instance variables
   # from assignments to them.
   class TypeGuessVisitor < SemanticVisitor
@@ -1380,7 +1380,7 @@ module Crystal
   end
 end
 
-private def self_dot_class?(node : Crystal::Call)
+private def self_dot_class?(node : Iyi::Call)
   obj = node.obj
-  obj.is_a?(Crystal::Var) && obj.name == "self" && node.name == "class" && node.args.empty?
+  obj.is_a?(Iyi::Var) && obj.name == "self" && node.name == "class" && node.args.empty?
 end

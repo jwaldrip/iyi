@@ -1,13 +1,13 @@
 require "../../../spec_helper"
-include Crystal
+include Iyi
 
 private def parse_flags(source)
-  Crystal::Command::FlagsVisitor.new.tap do |visitor|
+  Iyi::Command::FlagsVisitor.new.tap do |visitor|
     Parser.parse(source).accept(visitor)
   end
 end
 
-describe Crystal::Command::FlagsVisitor do
+describe Iyi::Command::FlagsVisitor do
   it "different flags" do
     visitor = parse_flags <<-CRYSTAL
       {%

@@ -3,7 +3,7 @@ require "../exception"
 require "string_pool"
 require "../warnings"
 
-module Crystal
+module Iyi
   class Lexer
     property? doc_enabled : Bool
     property? comments_enabled : Bool
@@ -2929,11 +2929,11 @@ module Crystal
     end
 
     def raise(message, line_number = @line_number, column_number = @column_number, filename = @filename)
-      ::raise Crystal::SyntaxException.new(message, line_number, column_number, filename)
+      ::raise Iyi::SyntaxException.new(message, line_number, column_number, filename)
     end
 
     def raise(message, token : Token, size = nil)
-      ::raise Crystal::SyntaxException.new(message, token.line_number, token.column_number, token.filename, size)
+      ::raise Iyi::SyntaxException.new(message, token.line_number, token.column_number, token.filename, size)
     end
 
     def raise(message, location : Location)

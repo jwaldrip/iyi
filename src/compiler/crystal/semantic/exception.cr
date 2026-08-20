@@ -1,7 +1,7 @@
 require "../exception"
 require "../types"
 
-module Crystal
+module Iyi
   class TypeException < CodeError
     include ErrorFormat
 

@@ -1,6 +1,6 @@
 require "../syntax/to_s"
 
-module Crystal
+module Iyi
   class ToSVisitor
     def visit(node : Arg)
       if parsed_annotations = node.parsed_annotations

@@ -4,7 +4,7 @@ require "../../../src/compiler/crystal/formatter"
 private def assert_format(input, output = input, strict = false, flags = nil, file = __FILE__, line = __LINE__, focus = false)
   it "formats #{input.inspect}", file, line, focus: focus do
     output = "#{output}\n" unless strict
-    result = Crystal.format(input, flags: flags)
+    result = Iyi.format(input, flags: flags)
     unless result == output
       message = <<-ERROR
         Expected
@@ -32,14 +32,14 @@ private def assert_format(input, output = input, strict = false, flags = nil, fi
     end
 
     # Check idempotency
-    result2 = Crystal.format(result, flags: flags)
+    result2 = Iyi.format(result, flags: flags)
     unless result == result2
       fail "Idempotency failed:\nBefore: #{result.inspect}\nAfter:  #{result2.inspect}", file: file, line: line
     end
   end
 end
 
-describe Crystal::Formatter do
+describe Iyi::Formatter do
   assert_format "", "", strict: true
 
   assert_format "nil"
@@ -2733,8 +2733,8 @@ describe Crystal::Formatter do
       {% end %}
     CRYSTAL
 
-    ex = expect_raises(Crystal::SyntaxException) do
-      Crystal.format(source)
+    ex = expect_raises(Iyi::SyntaxException) do
+      Iyi.format(source)
     end
     ex.line_number.should eq(5)
   end
@@ -3016,8 +3016,8 @@ describe Crystal::Formatter do
     CRYSTAL
 
   it do
-    expect_raises(Crystal::SyntaxException) do
-      Crystal.format <<-CRYSTAL
+    expect_raises(Iyi::SyntaxException) do
+      Iyi.format <<-CRYSTAL
         lib A
           struct B
             {% begin %}

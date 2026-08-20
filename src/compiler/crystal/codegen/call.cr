@@ -1,6 +1,6 @@
 require "./codegen"
 
-class Crystal::CodeGenVisitor
+class Iyi::CodeGenVisitor
   def visit(node : Call)
     if node.expanded
       raise "BUG: #{node} at #{node.location} should have been expanded"

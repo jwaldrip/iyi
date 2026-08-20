@@ -2,7 +2,7 @@ require "../syntax/ast"
 require "../compiler"
 require "json"
 
-module Crystal
+module Iyi
   class Command
     private def macro_code_coverage
       coverage_processor = MacroCoverageProcessor.new

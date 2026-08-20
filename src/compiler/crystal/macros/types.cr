@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   class Program
     @macro_types = {} of String => MacroType
 
@@ -23,7 +23,7 @@ module Crystal
       @macro_types["RegexLiteral"] = NonGenericMacroType.new self, "RegexLiteral", ast_node
       @macro_types["TupleLiteral"] = NonGenericMacroType.new self, "TupleLiteral", ast_node
 
-      # Crystal::MetaMacroVar
+      # Iyi::MetaMacroVar
       @macro_types["MetaVar"] = NonGenericMacroType.new self, "MetaVar", ast_node
 
       @macro_types["Annotation"] = NonGenericMacroType.new self, "Annotation", ast_node
@@ -125,7 +125,7 @@ module Crystal
     end
 
     # Returns the macro type for a given AST node. This association is done
-    # through `Crystal::ASTNode#class_desc`.
+    # through `Iyi::ASTNode#class_desc`.
     def node_macro_type(node : ASTNode) : MacroType
       @macro_types[node.class_desc]
     end

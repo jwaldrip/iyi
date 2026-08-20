@@ -67,7 +67,7 @@ class TypeInfo
   end
 end
 
-class Collector < Crystal::Visitor
+class Collector < Iyi::Visitor
   getter types = {} of String => TypeInfo
 
   def initialize(@file : String)
@@ -90,17 +90,17 @@ class Collector < Crystal::Visitor
     @scope.pop
   end
 
-  def visit(node : Crystal::ClassDef)
+  def visit(node : Iyi::ClassDef)
     enter(node.name.to_s, false) { node.body.accept self }
     false
   end
 
-  def visit(node : Crystal::ModuleDef)
+  def visit(node : Iyi::ModuleDef)
     enter(node.name.to_s, true) { node.body.accept self }
     false
   end
 
-  def visit(node : Crystal::Def)
+  def visit(node : Iyi::Def)
     outer_name, outer_class = @def_name, @in_class_method
     @def_name = node.name
     @in_class_method = !node.receiver.nil?
@@ -120,26 +120,26 @@ class Collector < Crystal::Visitor
     false
   end
 
-  def visit(node : Crystal::TypeDeclaration)
+  def visit(node : Iyi::TypeDeclaration)
     var = node.var
-    if (info = current) && var.is_a?(Crystal::InstanceVar)
+    if (info = current) && var.is_a?(Iyi::InstanceVar)
       info.field_types[var.name.lchop('@')] ||= [] of String
       info.field_types[var.name.lchop('@')].concat type_names(node.declared_type)
     end
     true
   end
 
-  def visit(node : Crystal::Assign)
+  def visit(node : Iyi::Assign)
     record_write node.target
     true
   end
 
-  def visit(node : Crystal::OpAssign)
+  def visit(node : Iyi::OpAssign)
     record_write node.target
     true
   end
 
-  def visit(node : Crystal::MultiAssign)
+  def visit(node : Iyi::MultiAssign)
     node.targets.each { |t| record_write t }
     true
   end
@@ -149,18 +149,18 @@ class Collector < Crystal::Visitor
     return unless info
 
     case target
-    when Crystal::InstanceVar
+    when Iyi::InstanceVar
       name = target.name.lchop('@')
       # Construction is not mutation: the value is not reachable from another
       # task until it exists.
       return if @def_name == "initialize" && !@in_class_method
       info.mutations[name] = @def_name || "top level"
-    when Crystal::ClassVar
+    when Iyi::ClassVar
       info.class_vars << target.name.lchop('@').lchop('@')
     end
   end
 
-  def visit(node : Crystal::Call)
+  def visit(node : Iyi::Call)
     if node.obj.nil? && (info = current)
       case node.name
       when "property", "property?", "property!", "setter",
@@ -190,37 +190,37 @@ class Collector < Crystal::Visitor
 
   private def accessor_field(arg)
     case arg
-    when Crystal::TypeDeclaration then arg.var.to_s.lchop('@')
-    when Crystal::Assign          then arg.target.to_s.lchop('@')
-    when Crystal::SymbolLiteral   then arg.value
-    when Crystal::Var, Crystal::Call, Crystal::StringLiteral
+    when Iyi::TypeDeclaration then arg.var.to_s.lchop('@')
+    when Iyi::Assign          then arg.target.to_s.lchop('@')
+    when Iyi::SymbolLiteral   then arg.value
+    when Iyi::Var, Iyi::Call, Iyi::StringLiteral
       arg.to_s.lchop('@')
     end
   end
 
   private def accessor_type(arg)
-    arg.is_a?(Crystal::TypeDeclaration) ? arg.declared_type : nil
+    arg.is_a?(Iyi::TypeDeclaration) ? arg.declared_type : nil
   end
 
   # Best effort: the base name of a path or generic, every member of a union.
   private def type_names(node) : Array(String)
     case node
-    when Crystal::Path
+    when Iyi::Path
       [node.names.last]
-    when Crystal::Generic
+    when Iyi::Generic
       names = type_names(node.name)
       node.type_vars.each { |v| names.concat type_names(v) }
       names
-    when Crystal::Union
+    when Iyi::Union
       node.types.flat_map { |t| type_names(t) }
-    when Crystal::Metaclass, Crystal::Self, Crystal::Underscore
+    when Iyi::Metaclass, Iyi::Self, Iyi::Underscore
       [] of String
     else
       [] of String
     end
   end
 
-  def visit(node : Crystal::ASTNode)
+  def visit(node : Iyi::ASTNode)
     true
   end
 end
@@ -273,7 +273,7 @@ roots.each do |root|
 
   files.each do |file|
     begin
-      nodes = Crystal::Parser.parse(File.read(file))
+      nodes = Iyi::Parser.parse(File.read(file))
     rescue
       next # a file this parser will not take is not evidence about Share
     end

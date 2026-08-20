@@ -1,6 +1,6 @@
 require "./codegen"
 
-class Crystal::CodeGenVisitor
+class Iyi::CodeGenVisitor
   @node_ensure_exception_handlers : Hash(ASTNode, Handler) = ({} of ASTNode => Handler).compare_by_identity
 
   def visit(node : ExceptionHandler)

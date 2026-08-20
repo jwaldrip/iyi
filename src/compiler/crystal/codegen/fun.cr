@@ -1,6 +1,6 @@
 require "./codegen"
 
-class Crystal::CodeGenVisitor
+class Iyi::CodeGenVisitor
   def typed_fun?(mod : LLVM::Module, name : String) : LLVMTypedFunction?
     if func = mod.functions[name]?
       LLVMTypedFunction.new(@fun_types[{mod, name}], func)

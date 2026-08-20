@@ -1,11 +1,11 @@
-module Crystal::Conversions
+module Iyi::Conversions
   def self.numeric_argument(node, var, visitor, unaliased_type, expected_type, actual_type)
     convert_call_name = "to_#{unaliased_type.kind}!"
     convert_call = Call.new(var, convert_call_name).at(node)
 
     begin
       convert_call.accept visitor
-    rescue ex : Crystal::CodeError
+    rescue ex : Iyi::CodeError
       if ex.message.try(&.includes?("undefined method '#{convert_call_name}'"))
         return nil
       end

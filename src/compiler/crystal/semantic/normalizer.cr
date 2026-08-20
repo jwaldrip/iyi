@@ -2,7 +2,7 @@ require "set"
 require "../program"
 require "../syntax/transformer"
 
-module Crystal
+module Iyi
   class Program
     def normalize(node, inside_exp = false, current_def = nil)
       normalizer = Normalizer.new(self)

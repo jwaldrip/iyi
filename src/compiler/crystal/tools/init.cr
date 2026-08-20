@@ -4,9 +4,9 @@ require "ecr/macros"
 require "option_parser"
 require "./git"
 
-module Crystal
+module Iyi
   module Init
-    class Error < Crystal::Error
+    class Error < Iyi::Error
       def self.new(message, opts : OptionParser)
         new("#{message}\n#{opts}\n")
       end
@@ -96,15 +96,15 @@ module Crystal
     end
 
     def self.fetch_author
-      Crystal::Git.git_config("user.name") || "your-name-here"
+      Iyi::Git.git_config("user.name") || "your-name-here"
     end
 
     def self.fetch_email
-      Crystal::Git.git_config("user.email") || "your-email-here"
+      Iyi::Git.git_config("user.email") || "your-email-here"
     end
 
     def self.fetch_github_name
-      Crystal::Git.git_config("github.user") || "your-github-user"
+      Iyi::Git.git_config("github.user") || "your-github-user"
     end
 
     def self.fetch_skeleton_type(opts, args)
@@ -210,7 +210,7 @@ module Crystal
 
       # iyi: was `gsub(/[-_]([^a-z])/i, "\\1")`, a regex literal, which is
       # pcre2 back on the compiler's link line. The pattern is fixed, so it
-      # compiles once through Crystal::Rx, whose replacement keeps `\1` group
+      # compiles once through Iyi::Rx, whose replacement keeps `\1` group
       # references (SPEC.md III.10).
       NAME_SEPARATOR = Rx::Pattern.compile("[-_]([^a-z])", ignore_case: true)
 
@@ -263,7 +263,7 @@ module Crystal
 
     class GitInitView < View
       def render
-        Crystal::Git.git_command(["init", config.dir], output: config.silent ? Process::Redirect::Close : STDOUT)
+        Iyi::Git.git_command(["init", config.dir], output: config.silent ? Process::Redirect::Close : STDOUT)
       end
 
       def path

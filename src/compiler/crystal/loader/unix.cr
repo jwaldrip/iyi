@@ -10,14 +10,14 @@
 #   are unsupported.
 # * All libraries are loaded into the same namespace. That means libraries
 #   loaded in the compiler program itself may provide symbols to libraries
-#   loaded with `Crystal::Loader`. Symbols may be available without explicitly
+#   loaded with `Iyi::Loader`. Symbols may be available without explicitly
 #   mentioning their libraries. It might be impossible to link against other
 #   version of the libraries that the compiler is linked against.
 # * A fully statically linked compiler may help dealing with the previous
 #   issue. But using `libdl` in a non-dynamically loaded executable might cause
 #   other issues.
 
-class Crystal::Loader
+class Iyi::Loader
   alias Handle = Void*
 
   class LoadError
@@ -217,7 +217,7 @@ class Crystal::Loader
 
   def self.cc_each_library_path(& : String ->) : Nil
     search_dirs = begin
-      `#{Crystal::Compiler::DEFAULT_LINKER} -print-search-dirs`
+      `#{Iyi::Compiler::DEFAULT_LINKER} -print-search-dirs`
     rescue IO::Error
       return
     end

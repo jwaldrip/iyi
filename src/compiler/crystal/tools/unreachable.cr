@@ -3,7 +3,7 @@ require "../compiler"
 require "json"
 require "csv"
 
-module Crystal
+module Iyi
   class Command
     private def unreachable
       config, result = compile_no_codegen "tool unreachable", path_filter: true, unreachable_command: true, allowed_formats: %w[text json csv codecov]

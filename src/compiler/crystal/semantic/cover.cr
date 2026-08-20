@@ -1,7 +1,7 @@
 require "bit_array"
 require "../types"
 
-module Crystal
+module Iyi
   struct Cover
     getter signature : CallSignature
     getter matches : Array(Match)

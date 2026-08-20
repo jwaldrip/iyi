@@ -34,7 +34,7 @@ private def pp_join(pp, ary)
   end
 end
 
-module Crystal
+module Iyi
   # Base class for nodes in the grammar.
   abstract class ASTNode
     # The location where this node starts, or `nil`
@@ -2280,7 +2280,7 @@ module Crystal
     # instantiation of it.
     property trait_args : Array(ASTNode)?
     # Named `target` rather than `type`: ASTNode already declares
-    # `@type : Crystal::Type?` for the inferred type of every node.
+    # `@type : Iyi::Type?` for the inferred type of every node.
     property target : ASTNode
     property body : ASTNode
     # The names introduced by `forall`. They are the impl's own, bound

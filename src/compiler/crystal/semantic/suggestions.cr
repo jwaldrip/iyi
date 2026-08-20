@@ -1,10 +1,10 @@
 require "levenshtein"
 require "../types"
 
-module Crystal
+module Iyi
   class Type
     # iyi: which def names are worth a Levenshtein pass. Compiled once at load
-    # through Crystal::Rx, the compiler's own engine, so this file is not one of
+    # through Iyi::Rx, the compiler's own engine, so this file is not one of
     # the reasons pcre2 stays on the link line (SPEC.md III.10).
     SuggestableDefName = Rx::Pattern.compile("\\A[a-z_]")
 

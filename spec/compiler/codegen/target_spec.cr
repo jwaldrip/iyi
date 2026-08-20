@@ -1,9 +1,9 @@
 require "spec"
 require "compiler/requires"
 
-private alias Target = Crystal::Codegen::Target
+private alias Target = Iyi::Codegen::Target
 
-describe Crystal::Codegen::Target do
+describe Iyi::Codegen::Target do
   it "parses incomplete triples" do
     target = Target.new("x86_64-linux-gnu")
     target.to_s.should eq("x86_64-unknown-linux-gnu")

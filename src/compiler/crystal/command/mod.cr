@@ -5,7 +5,7 @@
 # reason is worth keeping in view: an opaque cache format is one nobody can
 # debug, and a build cache that cannot be inspected is a build cache that gets
 # distrusted and disabled.
-class Crystal::Command
+class Iyi::Command
   private def mod
     case options.first?
     when "dump"

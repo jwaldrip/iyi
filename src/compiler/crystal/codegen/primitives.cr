@@ -1,6 +1,6 @@
 require "./codegen"
 
-class Crystal::CodeGenVisitor
+class Iyi::CodeGenVisitor
   # Can only happen in a Const or as an argument cast.
   def visit(node : Primitive)
     @last = case node.name

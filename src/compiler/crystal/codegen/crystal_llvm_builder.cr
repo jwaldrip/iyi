@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   class CrystalLLVMBuilder
     property end : Bool
 

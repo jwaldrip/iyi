@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   class Program
     def define_new_methods(new_expansions)
       # Here we complete the body of `self.new` methods

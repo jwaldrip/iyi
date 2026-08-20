@@ -1,5 +1,5 @@
 require "../../../spec_helper"
-include Crystal
+include Iyi
 
 def processed_unreachable_visitor(code)
   compiler = Compiler.new

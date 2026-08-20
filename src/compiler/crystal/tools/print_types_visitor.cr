@@ -1,7 +1,7 @@
 require "set"
 require "../syntax/ast"
 
-module Crystal
+module Iyi
   def self.print_types(node)
     node.accept PrintTypesVisitor.new
   end

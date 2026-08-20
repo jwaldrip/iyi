@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   record LLVMTypedFunction, type : LLVM::Type, func : LLVM::Function
 
   module LLVMBuilderHelper

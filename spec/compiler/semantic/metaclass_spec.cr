@@ -1,7 +1,7 @@
 require "../../spec_helper"
 
 private struct ProperSubtypeExpectation
-  def initialize(@expected_value : Crystal::Type?)
+  def initialize(@expected_value : Iyi::Type?)
   end
 
   def match(actual_value)
@@ -9,9 +9,9 @@ private struct ProperSubtypeExpectation
   end
 
   private def subtype?(t, u)
-    if t.is_a?(Crystal::NoReturnType?)
+    if t.is_a?(Iyi::NoReturnType?)
       true
-    elsif u.is_a?(Crystal::NoReturnType?)
+    elsif u.is_a?(Iyi::NoReturnType?)
       false
     else
       t.implements?(u)
@@ -40,7 +40,7 @@ private struct ProperSubtypeExpectation
     case type
     when Nil
       "NoReturn"
-    when Crystal::GenericInstanceType, Crystal::GenericClassInstanceMetaclassType, Crystal::GenericModuleInstanceMetaclassType
+    when Iyi::GenericInstanceType, Iyi::GenericClassInstanceMetaclassType, Iyi::GenericModuleInstanceMetaclassType
       type.to_s(generic_args: true)
     else
       type.to_s(generic_args: false)

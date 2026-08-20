@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   class Type
     # Returns `true` if this type is passed as a `self` argument
     # in the codegen phase. For example a method whose receiver is

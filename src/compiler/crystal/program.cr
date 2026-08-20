@@ -10,7 +10,7 @@ require "json"
 require "./types"
 require "crystal/digest/md5"
 
-module Crystal
+module Iyi
   # A program contains all types and top-level methods related to one
   # compilation of a program.
   #
@@ -533,7 +533,7 @@ module Crystal
 
     # Defines a predefined constant in the Crystal module, such as BUILD_DATE and VERSION.
     private def define_crystal_constants
-      if build_commit = Crystal::Config.build_commit
+      if build_commit = Iyi::Config.build_commit
         build_commit_const = define_crystal_string_constant "BUILD_COMMIT", build_commit
       else
         build_commit_const = define_crystal_nil_constant "BUILD_COMMIT"
@@ -542,7 +542,7 @@ module Crystal
         The build commit identifier of the Crystal compiler.
         MD
 
-      define_crystal_string_constant "BUILD_DATE", Crystal::Config.date, <<-MD
+      define_crystal_string_constant "BUILD_DATE", Iyi::Config.date, <<-MD
         The build date of the Crystal compiler.
         MD
       define_crystal_string_constant "CACHE_DIR", CacheDir.instance.dir, <<-MD
@@ -551,35 +551,35 @@ module Crystal
         The value is defined by the environment variable `CRYSTAL_CACHE_DIR` and
         defaults to the user's configured cache directory.
         MD
-      define_crystal_string_constant "DEFAULT_PATH", Crystal::Config.path, <<-MD
+      define_crystal_string_constant "DEFAULT_PATH", Iyi::Config.path, <<-MD
         The default Crystal path configured in the compiler. This value is baked
         into the compiler and usually points to the accompanying version of the
         standard library.
         MD
-      define_crystal_string_constant "DESCRIPTION", Crystal::Config.description, <<-MD
+      define_crystal_string_constant "DESCRIPTION", Iyi::Config.description, <<-MD
         Full version information of the Crystal compiler. Equivalent to `crystal --version`.
         MD
-      define_crystal_string_constant "PATH", Crystal::CrystalPath.default_path, <<-MD
+      define_crystal_string_constant "PATH", Iyi::CrystalPath.default_path, <<-MD
         Colon-separated paths where the compiler searches for required source files.
 
         The value is defined by the environment variable `CRYSTAL_PATH`
         and defaults to `DEFAULT_PATH`.
         MD
-      define_crystal_string_constant "LIBRARY_PATH", Crystal::CrystalLibraryPath.default_path, <<-MD
+      define_crystal_string_constant "LIBRARY_PATH", Iyi::CrystalLibraryPath.default_path, <<-MD
         Colon-separated paths where the compiler searches for (binary) libraries.
 
         The value is defined by the environment variables `CRYSTAL_LIBRARY_PATH`.
         MD
-      define_crystal_string_constant "VERSION", Crystal::Config.version, <<-MD
+      define_crystal_string_constant "VERSION", Iyi::Config.version, <<-MD
         The version of the Crystal compiler.
         MD
       define_crystal_string_constant "LLVM_VERSION", LLVM.version, <<-MD
         The version of LLVM used by the Crystal compiler.
         MD
-      define_crystal_string_constant "HOST_TRIPLE", Crystal::Config.host_target.to_s, <<-MD
+      define_crystal_string_constant "HOST_TRIPLE", Iyi::Config.host_target.to_s, <<-MD
         The LLVM target triple of the host system (the machine that the compiler runs on).
         MD
-      define_crystal_string_constant "TARGET_TRIPLE", Crystal::Config.host_target.to_s, <<-MD
+      define_crystal_string_constant "TARGET_TRIPLE", Iyi::Config.host_target.to_s, <<-MD
         The LLVM target triple of the target system (the machine that the compiler builds for).
         MD
     end
@@ -612,13 +612,13 @@ module Crystal
     {% if flag?(:without_llvm) %}
       {% for query in %w(size_of instance_size_of align_of instance_align_of) %}
         def {{ query.id }}(type)
-          raise Crystal::Error.new("`{{ query.id }}` is answered from a data layout, and this compiler links no LLVM to hold one")
+          raise Iyi::Error.new("`{{ query.id }}` is answered from a data layout, and this compiler links no LLVM to hold one")
         end
       {% end %}
 
       {% for query in %w(offset_of instance_offset_of) %}
         def {{ query.id }}(type, element_index)
-          raise Crystal::Error.new("`{{ query.id }}` is answered from a data layout, and this compiler links no LLVM to hold one")
+          raise Iyi::Error.new("`{{ query.id }}` is answered from a data layout, and this compiler links no LLVM to hold one")
         end
       {% end %}
     {% end %}

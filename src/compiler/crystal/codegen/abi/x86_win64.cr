@@ -1,7 +1,7 @@
 require "./x86"
 
 # Based on https://github.com/rust-lang/rust/blob/29ac04402d53d358a1f6200bea45a301ff05b2d1/src/librustc_trans/trans/cabi_x86_win64.rs
-class Crystal::ABI::X86_Win64 < Crystal::ABI::X86
+class Iyi::ABI::X86_Win64 < Iyi::ABI::X86
   private def compute_arg_types(atys, context)
     atys.map do |t|
       case t.kind

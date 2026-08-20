@@ -1800,7 +1800,7 @@ describe "Semantic: macro" do
   end
 
   it "doesn't crash on syntax error inside macro (regression, #8038)" do
-    expect_raises(Crystal::SyntaxException, "unterminated array literal") do
+    expect_raises(Iyi::SyntaxException, "unterminated array literal") do
       semantic(<<-CRYSTAL)
         {% begin %}[{% end %}
         CRYSTAL

@@ -25,7 +25,7 @@ require "../types"
 # but a type, and computing it might be a bit more expensive. For example when
 # restricting `Int32 | String` against `Int32`, the result is `Int32`.
 
-module Crystal
+module Iyi
   class ASTNode
     def restriction_of?(other : Underscore, owner, self_free_vars = nil, other_free_vars = nil)
       true
@@ -358,7 +358,7 @@ module Crystal
       stricter_pair_to_num(self_stricter, other_stricter)
     end
 
-    # this is part of `Crystal::Def#min_max_args_sizes` before #10711, provided
+    # this is part of `Iyi::Def#min_max_args_sizes` before #10711, provided
     # that `-Dpreview_overload_order` is not in effect
     # TODO: figure out if this can be derived from `self.min_size`
     def old_min_args_size
@@ -1824,7 +1824,7 @@ end
 
 private def get_generic_type(node, context)
   name = node.name
-  if name.is_a?(Crystal::Path)
+  if name.is_a?(Iyi::Path)
     context.defining_type.lookup_path name
   else
     name.type

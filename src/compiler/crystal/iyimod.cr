@@ -29,7 +29,7 @@ require "./config"
 #
 # Every section named in `Section` is written now. An unknown one is skipped and
 # a known one that is absent is simply absent, which is what the table is for.
-module Crystal::IyiMod
+module Iyi::IyiMod
   MAGIC = "IYIMOD\0\0".to_slice
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
@@ -62,7 +62,7 @@ module Crystal::IyiMod
     Constants = 10
   end
 
-  class Error < Crystal::Error
+  class Error < Iyi::Error
   end
 
   # IV.3's three hashes — what decides whether a build is actually incremental.
@@ -206,7 +206,7 @@ module Crystal::IyiMod
   # One exported function's signature — a `pub def` (R-2).
   #
   # Types are carried as the **source text of the annotation the author wrote**,
-  # not as a rendering of the inferred `Crystal::Type`. R-2 is what makes that
+  # not as a rendering of the inferred `Iyi::Type`. R-2 is what makes that
   # sound: everything a module exports carries full parameter and return types,
   # so the annotation *is* the signature and there is nothing to infer. It is
   # also the more robust choice — the reader parses it with the same parser that
@@ -1271,7 +1271,7 @@ module Crystal::IyiMod
 
   # A type's declaration line — `struct List(T)`, `trait Ord : Eq`.
   #
-  # The kind loses its `generic ` prefix, which is how a `Crystal::Type`
+  # The kind loses its `generic ` prefix, which is how a `Iyi::Type`
   # describes itself and not how anybody declares one: what makes `List`
   # generic is the `(T)` this line already carries.
   def self.render_type_header(declaration : TypeDecl) : String

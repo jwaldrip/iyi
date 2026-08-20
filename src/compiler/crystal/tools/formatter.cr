@@ -1,8 +1,8 @@
 require "../syntax"
 
-module Crystal
+module Iyi
   def self.format(source, filename = nil, report_warnings : IO? = nil, flags : Array(String)? = nil)
-    Crystal::Formatter.format(source, filename: filename, report_warnings: report_warnings, flags: flags)
+    Iyi::Formatter.format(source, filename: filename, report_warnings: report_warnings, flags: flags)
   end
 
   class Formatter < Visitor
@@ -1768,7 +1768,7 @@ module Crystal
       write_indent
       write "end"
       next_token
-    rescue ex : Crystal::SyntaxException
+    rescue ex : Iyi::SyntaxException
       format_macro_body node
     end
 
@@ -2179,8 +2179,8 @@ module Crystal
         # Format the value and append 2 more spaces of indentation
         begin
           formatter, value = subformat(value)
-        rescue ex : Crystal::SyntaxException
-          raise Crystal::SyntaxException.new(
+        rescue ex : Iyi::SyntaxException
+          raise Iyi::SyntaxException.new(
             ex.message,
             ex.line_number + macro_node_line,
             ex.column_number,
@@ -5309,7 +5309,7 @@ module Crystal
             end
           end
           lines[doc_comment.start_line..doc_comment.end_line] = formatted_lines
-        rescue Crystal::SyntaxException
+        rescue Iyi::SyntaxException
           # For now we don't care if doc comments have syntax errors,
           # they shouldn't prevent formatting the real code
         end

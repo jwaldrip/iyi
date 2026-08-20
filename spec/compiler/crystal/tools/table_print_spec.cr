@@ -3,7 +3,7 @@ require "compiler/crystal/tools/table_print"
 
 private def assert_table(expected, &)
   actual = String::Builder.build do |builder|
-    Crystal::TablePrint.new(builder).build do |tp|
+    Iyi::TablePrint.new(builder).build do |tp|
       with tp yield
     end
   end
@@ -11,7 +11,7 @@ private def assert_table(expected, &)
   actual.should eq(expected[1..-1])
 end
 
-describe Crystal::TablePrint do
+describe Iyi::TablePrint do
   it "single cell" do
     assert_table %(
 | A |) do

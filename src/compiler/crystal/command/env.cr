@@ -1,6 +1,6 @@
 # Implementation of the `crystal env` command
 
-class Crystal::Command
+class Iyi::Command
   private def env
     var_names = [] of String
 
@@ -19,7 +19,7 @@ class Crystal::Command
 
     vars = {
       "CRYSTAL_CACHE_DIR"    => CacheDir.instance.dir,
-      "CRYSTAL_EXEC_PATH"    => Crystal::Config.exec_path || "",
+      "CRYSTAL_EXEC_PATH"    => Iyi::Config.exec_path || "",
       "CRYSTAL_PATH"         => CrystalPath.default_path,
       "CRYSTAL_VERSION"      => Config.version || "",
       "CRYSTAL_LIBRARY_PATH" => CrystalLibraryPath.default_path,

@@ -1,7 +1,7 @@
 # Base visitor for semantic analysis. It traverses the whole
 # ASTNode tree, keeping a `current_type` in context, which corresponds
 # to the type being visited according to class/module/lib definitions.
-abstract class Crystal::SemanticVisitor < Crystal::Visitor
+abstract class Iyi::SemanticVisitor < Iyi::Visitor
   getter program : Program
 
   # At every point there's a current type.
@@ -447,7 +447,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
         IyiMod.read(artifact_path, want_object_code: @program.iyi_wants_object_code)
       rescue ex : IyiMod::Error
         node.raise ex.message.to_s
-      rescue ex : Crystal::Error
+      rescue ex : Iyi::Error
         raise ex
       rescue ex
         # iyi: a `.iyimod` is the one input here that nobody typed, and the
@@ -493,7 +493,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     parser.filename = artifact_path
     # The path is where these declarations came from and not a file anyone can
     # read them out of, so the text goes where an error will look for it.
-    Crystal.register_iyi_declarations artifact_path, source
+    Iyi.register_iyi_declarations artifact_path, source
     @iyi_importing << artifact_path
     begin
       parsed_nodes = parser.parse
@@ -1266,7 +1266,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     # In this case, we want the inner most exception to be the call of the macro itself so that it's the last frame in the trace.
     # This will make the actual `#raise` method call be the first frame.
     if node.is_a? Call
-      ex.inner = Crystal::MacroRaiseException.for_node node, ex.message
+      ex.inner = Iyi::MacroRaiseException.for_node node, ex.message
     end
 
     # Otherwise, if the current node is _NOT_ a `Call`, it denotes a top level raise within a method.
@@ -1278,8 +1278,8 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     # This will retain the location of the node specific raise as the last frame, while also adding in this node into the trace.
     #
     # If the original exception does not have a location, it'll essentially be dropped and this node will take its place as the last frame.
-    node.raise ex.message, ex, exception_type: Crystal::MacroRaiseException
-  rescue ex : Crystal::CodeError
+    node.raise ex.message, ex, exception_type: Iyi::MacroRaiseException
+  rescue ex : Iyi::CodeError
     node.raise "expanding macro", ex
   end
 

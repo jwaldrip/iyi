@@ -38,7 +38,7 @@
 #
 # Anything outside the supported subset raises `SyntaxError` when the pattern
 # compiles; refusing loudly beats matching with quietly different semantics.
-module Crystal::Rx
+module Iyi::Rx
   # iyi: `{n,m}` is expanded by repetition at compile time, so the caps are what
   # stand between a pattern and an enormous program. 1000 is RE2's and Go's
   # repeat cap, chosen for the same reason: bounded work, loud refusal.

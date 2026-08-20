@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   # Specialized container for ASTNodes to use for bindings tracking.
   #
   # The average number of elements in both dependencies and observers is below 2
@@ -155,16 +155,16 @@ module Crystal
       case self
       when MetaTypeVar
         if self.global?
-          from.raise "global variable '#{self.name}' must be #{freeze_type}, not #{invalid_type}", inner, Crystal::FrozenTypeException
+          from.raise "global variable '#{self.name}' must be #{freeze_type}, not #{invalid_type}", inner, Iyi::FrozenTypeException
         else
-          from.raise "#{self.kind.to_s.underscore} variable '#{self.name}' of #{self.owner} must be #{freeze_type}, not #{invalid_type}", inner, Crystal::FrozenTypeException
+          from.raise "#{self.kind.to_s.underscore} variable '#{self.name}' of #{self.owner} must be #{freeze_type}, not #{invalid_type}", inner, Iyi::FrozenTypeException
         end
       when Def
-        (self.return_type || self).raise "method #{self.short_reference} must return #{freeze_type} but it is returning #{invalid_type}", inner, Crystal::FrozenTypeException
+        (self.return_type || self).raise "method #{self.short_reference} must return #{freeze_type} but it is returning #{invalid_type}", inner, Iyi::FrozenTypeException
       when NamedType
-        from.raise "type #{self.full_name} must be #{freeze_type}, not #{invalid_type}", inner, Crystal::FrozenTypeException
+        from.raise "type #{self.full_name} must be #{freeze_type}, not #{invalid_type}", inner, Iyi::FrozenTypeException
       else
-        from.raise "type must be #{freeze_type}, not #{invalid_type}", inner, Crystal::FrozenTypeException
+        from.raise "type must be #{freeze_type}, not #{invalid_type}", inner, Iyi::FrozenTypeException
       end
     end
 
@@ -726,7 +726,7 @@ module Crystal
             else
               generic_instance_type.instantiate(type_vars_types)
             end
-        rescue ex : Crystal::CodeError
+        rescue ex : Iyi::CodeError
           raise ex.message, ex
         end
       end

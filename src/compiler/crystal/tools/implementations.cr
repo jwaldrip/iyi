@@ -3,7 +3,7 @@ require "../compiler"
 require "./typed_def_processor"
 require "json"
 
-module Crystal
+module Iyi
   class ImplementationResult
     include JSON::Serializable
     property status : String

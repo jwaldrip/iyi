@@ -11,10 +11,10 @@ private def abi
   target = LLVM::Target.from_triple(triple)
   machine = target.create_target_machine(triple)
   machine.enable_global_isel = false
-  Crystal::ABI::AArch64.new(machine)
+  Iyi::ABI::AArch64.new(machine)
 end
 
-private def test(msg, &block : Crystal::ABI, LLVM::Context ->)
+private def test(msg, &block : Iyi::ABI, LLVM::Context ->)
   it msg do
     abi = abi()
     ctx = LLVM::Context.new
@@ -22,7 +22,7 @@ private def test(msg, &block : Crystal::ABI, LLVM::Context ->)
   end
 end
 
-class Crystal::ABI
+class Iyi::ABI
   describe AArch64 do
     {% if LibLLVM::BUILT_TARGETS.includes?(:aarch64) %}
       describe "align" do

@@ -10,7 +10,7 @@ require "./optimization_mode"
   require "wait_group"
 {% end %}
 
-module Crystal
+module Iyi
   # This exception describes an error in the compiler.
   # It usually leads to an unsuccessful process exit.
   class CompilerError < Exception
@@ -215,7 +215,7 @@ module Crystal
     # Compiles the given *source*, with *output_filename* as the name
     # of the generated executable.
     #
-    # Raises `Crystal::CodeError` if there's an error in the
+    # Raises `Iyi::CodeError` if there's an error in the
     # source code.
     #
     # Raises `InvalidByteSequenceError` if the source code is not
@@ -231,7 +231,7 @@ module Crystal
       # of everything, and what came out was an LLVM module that would not
       # verify rather than an error anybody could act on.
       if use_iyimod && !prelude.ends_with?("iyi/prelude")
-        raise Crystal::Error.new(
+        raise Iyi::Error.new(
           "--use-iyimod needs iyi's own prelude. A program built against " \
           "Crystal's standard library compiles its libraries from source, " \
           "which is what `--crystal` is for, and an artifact is the other " \
@@ -428,7 +428,7 @@ module Crystal
       # program has a module to write, because "accepted and did nothing" is
       # the same silence in a smaller disguise.
       if !prelude.ends_with?("iyi/prelude")
-        raise Crystal::Error.new(
+        raise Iyi::Error.new(
           "--emit-iyimod needs iyi's own prelude. An artifact written against " \
           "Crystal's standard library is one nothing can read back: a " \
           "consumer compiles its own copy of that library and has two of " \
@@ -1202,7 +1202,7 @@ module Crystal
               codegen program, to_emit, sources, output_filename
               probe_trace "[probe] child: codegen done\n"
             end
-          rescue ex : Crystal::CodeError
+          rescue ex : Iyi::CodeError
             # Same decision the driver makes in `Command#run`, so the child's
             # diagnostics are byte-identical to a normal compile's.
             ex.color = color? && Colorize.default_enabled?(STDOUT, STDERR)
@@ -1250,7 +1250,7 @@ module Crystal
     # contain all types and methods. This can be useful to generate
     # API docs, analyze type relationships, etc.
     #
-    # Raises `Crystal::CodeError` if there's an error in the
+    # Raises `Iyi::CodeError` if there's an error in the
     # source code.
     #
     # Raises `InvalidByteSequenceError` if the source code is not
@@ -1327,7 +1327,7 @@ module Crystal
       parser.parse
     rescue ex : InvalidByteSequenceError
       stderr.print colorize("Error: ").red.bold
-      stderr.print colorize("file '#{Crystal.relative_filename(source.filename)}' is not a valid Crystal source file: ").bold
+      stderr.print colorize("file '#{Iyi.relative_filename(source.filename)}' is not a valid Crystal source file: ").bold
       stderr.puts ex.message
       exit 1
     end
@@ -1789,7 +1789,7 @@ module Crystal
     }
 
     # iyi: linker flags may run `` `command` ``. Compiled once here, not per
-    # call, and through Crystal::Rx, the compiler's own engine, so this file is
+    # call, and through Iyi::Rx, the compiler's own engine, so this file is
     # not one of the reasons pcre2 stays on the link line (SPEC.md III.10).
     private BACKTICK_SUBCOMMAND = Rx::Pattern.compile("`(.*?)`")
 
@@ -2462,7 +2462,7 @@ module Crystal
       end
 
       def object_name
-        Crystal.relative_filename("#{@output_dir}/#{object_filename}")
+        Iyi.relative_filename("#{@output_dir}/#{object_filename}")
       end
 
       def object_filename
@@ -2470,7 +2470,7 @@ module Crystal
       end
 
       def temporary_object_name
-        Crystal.relative_filename("#{@output_dir}/#{object_filename}.tmp")
+        Iyi.relative_filename("#{@output_dir}/#{object_filename}.tmp")
       end
 
       def bc_name

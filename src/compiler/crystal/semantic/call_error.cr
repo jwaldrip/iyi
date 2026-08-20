@@ -1,4 +1,4 @@
-class Crystal::ASTNode
+class Iyi::ASTNode
   def wrong_number_of_arguments(subject, given, expected)
     wrong_number_of "arguments", subject, given, expected
   end
@@ -20,7 +20,7 @@ class Crystal::ASTNode
   end
 end
 
-class Crystal::Path
+class Iyi::Path
   def raise_undefined_constant(type)
     private_const = type.lookup_path(self, include_private: true)
     if private_const
@@ -43,7 +43,7 @@ class Crystal::Path
   end
 end
 
-class Crystal::Call
+class Iyi::Call
   # :nodoc:
   MAX_RENDERED_OVERLOADS = 20
 

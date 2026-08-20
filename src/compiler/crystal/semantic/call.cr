@@ -3,7 +3,7 @@ require "../syntax/ast"
 require "../types"
 require "./type_lookup"
 
-class Crystal::Call
+class Iyi::Call
   property! scope : Type
   property with_scope : Type?
   property! parent_visitor : MainVisitor
@@ -1208,7 +1208,7 @@ class Crystal::Call
           if !match.def.free_var?(output) && output.is_a?(ASTNode) && !output.is_a?(Underscore)
             begin
               lookup_node_type(match.context, output).virtual_type
-            rescue ex : Crystal::CodeError
+            rescue ex : Iyi::CodeError
               cant_infer_block_return_type
             end
           else
@@ -1222,7 +1222,7 @@ class Crystal::Call
             if output.is_a?(ASTNode) && !output.is_a?(Underscore) && block_type.no_return?
               begin
                 block_type = lookup_node_type(match.context, output).virtual_type
-              rescue ex : Crystal::CodeError
+              rescue ex : Iyi::CodeError
                 if block_type
                   raise "couldn't match #{block_type} to #{output}", ex
                 else
@@ -1233,7 +1233,7 @@ class Crystal::Call
               output_name = case output
                             when Self
                               match.context.instantiated_type
-                            when Crystal::Path
+                            when Iyi::Path
                               match.context.defining_type.lookup_type_var(output, match.context.bound_free_vars)
                             else
                               output
@@ -1351,17 +1351,17 @@ class Crystal::Call
 
   def bubbling_exception(&)
     yield
-  rescue ex : Crystal::TopLevelMacroRaiseException
+  rescue ex : Iyi::TopLevelMacroRaiseException
     # Sets the last frame to the method call that includes the top level macro raise re-raised within `SemanticVisitor#eval_macro`.
     # The first frame will be the actual actual `#raise` method call.
-    ex.inner = Crystal::MacroRaiseException.for_node self, ex.message
+    ex.inner = Iyi::MacroRaiseException.for_node self, ex.message
 
     ::raise ex
-  rescue ex : Crystal::MacroRaiseException
+  rescue ex : Iyi::MacroRaiseException
     # Raise another exception on this node, keeping the original as the inner exception.
     # This will insert this node into the trace as the new first frame.
-    self.raise ex.message, ex, exception_type: Crystal::MacroRaiseException
-  rescue ex : Crystal::CodeError
+    self.raise ex.message, ex, exception_type: Iyi::MacroRaiseException
+  rescue ex : Iyi::CodeError
     if @obj && name == "initialize"
       # Avoid putting 'initialize' in the error trace
       # because it's most likely that this is happening

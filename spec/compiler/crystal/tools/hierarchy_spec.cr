@@ -2,17 +2,17 @@ require "../../../spec_helper"
 
 private def assert_text_hierarchy(source, filter, expected, *, file = __FILE__, line = __LINE__)
   program = semantic(source).program
-  output = String.build { |io| Crystal.print_hierarchy(program, io, filter, "text") }
+  output = String.build { |io| Iyi.print_hierarchy(program, io, filter, "text") }
   output.should eq(expected), file: file, line: line
 end
 
 private def assert_json_hierarchy(source, filter, expected, *, file = __FILE__, line = __LINE__)
   program = semantic(source).program
-  output = String.build { |io| Crystal.print_hierarchy(program, io, filter, "json") }
+  output = String.build { |io| Iyi.print_hierarchy(program, io, filter, "json") }
   JSON.parse(output).should eq(JSON.parse(expected)), file: file, line: line
 end
 
-describe Crystal::TextHierarchyPrinter do
+describe Iyi::TextHierarchyPrinter do
   it "works" do
     assert_text_hierarchy <<-CRYSTAL, "ar$", <<-EOS
       class Foo
@@ -187,7 +187,7 @@ describe Crystal::TextHierarchyPrinter do
   end
 end
 
-describe Crystal::JSONHierarchyPrinter do
+describe Iyi::JSONHierarchyPrinter do
   it "works" do
     assert_json_hierarchy <<-CRYSTAL, "ar$", <<-JSON
       class Foo

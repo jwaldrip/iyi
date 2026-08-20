@@ -1,5 +1,5 @@
 # A location of an `ASTnode`, including its filename, line number and column number.
-class Crystal::Location
+class Iyi::Location
   include Comparable(self)
 
   getter line_number

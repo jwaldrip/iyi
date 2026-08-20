@@ -12,7 +12,7 @@
 # ```
 #
 # Because the type of `Test.@test` would be: `Test | Nil`.
-class Crystal::RecursiveStructChecker
+class Iyi::RecursiveStructChecker
   @program : Program
 
   def initialize(@program)

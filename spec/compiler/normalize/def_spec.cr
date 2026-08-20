@@ -1,6 +1,6 @@
 require "../../spec_helper"
 
-module Crystal
+module Iyi
   describe "Normalize: def" do
     it "expands a def on request with default arguments" do
       a_def = parse("def foo(x, y = 1, z = 2); x + y + z; end").as(Def)

@@ -50,7 +50,7 @@ require "../types"
 # is an exact match and there's no need to consider the second overload in the
 # multidispatch. However, we do need to analyze it to check if there's an ambiguity.
 
-module Crystal
+module Iyi
   record NamedArgumentType, name : String, type : Type, loc : Location? = nil do
     def self.from_args(named_args : Array(NamedArgument)?, with_autocast = false)
       named_args.try &.map do |named_arg|

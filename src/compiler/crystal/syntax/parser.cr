@@ -2,7 +2,7 @@ require "set"
 require "./ast"
 require "./lexer"
 
-module Crystal
+module Iyi
   class Parser < Lexer
     enum ParseMode
       Normal
@@ -2817,7 +2817,7 @@ module Crystal
         # pcre2, and pcre2 is off the compiler (SPEC.md III.10, Appendix B
         # #22), so the compiler can no longer promise pcre2's semantics and
         # stops pretending to check them. A macro pattern is compiled by
-        # Crystal::Rx when the macro runs and refused there by name; a `.cr`
+        # Iyi::Rx when the macro runs and refused there by name; a `.cr`
         # program's pattern is compiled by the Regex that program links, when
         # its `$Regex` constant initialises at startup; a `.iyi` program's
         # literal is refused by the literal expander, which has no runtime

@@ -2,7 +2,7 @@
 # and some utilities.
 #
 # It is used for `crystal tool context/expand/implementation`.
-module Crystal::TypedDefProcessor
+module Iyi::TypedDefProcessor
   private def process_typed_def(typed_def : Def)
     typed_def.accept self
   end

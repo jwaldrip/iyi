@@ -1,6 +1,6 @@
 require "../types"
 
-module Crystal
+module Iyi
   class Type
     ONE_ARG = [Arg.new("a1")]
 
@@ -120,7 +120,7 @@ module Crystal
       str = String.build do |io|
         io << "wrong method_missing expansion\n\n"
         io << "The method_missing macro expanded to:\n\n"
-        io << Crystal.with_line_numbers(expanded_macro)
+        io << Iyi.with_line_numbers(expanded_macro)
         io << "\n\n"
         io << "However, " << msg
       end
@@ -176,7 +176,7 @@ module Crystal
 end
 
 private def starts_with_def?(source)
-  lexer = Crystal::Lexer.new(source)
+  lexer = Iyi::Lexer.new(source)
   while true
     token = lexer.next_token
     return true if token.keyword?(:def)

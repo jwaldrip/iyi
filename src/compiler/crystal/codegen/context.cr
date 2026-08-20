@@ -1,6 +1,6 @@
 require "./codegen"
 
-class Crystal::CodeGenVisitor
+class Iyi::CodeGenVisitor
   class Context
     property fun : LLVM::Function
     property fun_type : LLVM::Type

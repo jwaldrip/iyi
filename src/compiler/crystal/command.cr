@@ -12,7 +12,7 @@ require "json"
 require "./command/*"
 require "./tools/*"
 
-class Crystal::Command
+class Iyi::Command
   enum Exit
     # Successful exit
     OK = 0
@@ -146,7 +146,7 @@ class Crystal::Command
       puts USAGE
       exit
     when "version".starts_with?(command), "--version" == command, "-v" == command
-      puts Crystal::Config.description
+      puts Iyi::Config.description
       exit
     when File.file?(command)
       run_command(single_file: true)
@@ -156,7 +156,7 @@ class Crystal::Command
       elsif external_command = Process.find_executable("crystal-#{command}")
         options.shift
 
-        crystal_exec_path = Crystal::Config.exec_path
+        crystal_exec_path = Iyi::Config.exec_path
         path = [crystal_exec_path, ENV["PATH"]?].compact!.join(Process::PATH_DELIMITER)
 
         {% if flag?(:win32) %}
@@ -185,7 +185,7 @@ class Crystal::Command
         abort! "unknown command: #{command}", :USAGE_ERROR
       end
     end
-  rescue ex : Crystal::CodeError
+  rescue ex : Iyi::CodeError
     report_warnings
 
     ex.color = @color
@@ -196,7 +196,7 @@ class Crystal::Command
       STDERR.puts ex
     end
     exit 1
-  rescue ex : Crystal::Error
+  rescue ex : Iyi::Error
     report_warnings
 
     # This unwraps nested errors which could be caused by `require` which wraps
@@ -304,7 +304,7 @@ class Crystal::Command
   private def bind
     config, result = compile_no_codegen "tool bind", hierarchy: true
     @progress_tracker.stage("Tool (bind)") do
-      Crystal.print_bind result.program, config.hierarchy_exp, STDOUT,
+      Iyi.print_bind result.program, config.hierarchy_exp, STDOUT,
         artifact_dir: config.compiler.emit_bind
     end
   end
@@ -312,7 +312,7 @@ class Crystal::Command
   private def hierarchy
     config, result = compile_no_codegen "tool hierarchy", hierarchy: true, top_level: true
     @progress_tracker.stage("Tool (hierarchy)") do
-      Crystal.print_hierarchy result.program, STDOUT, config.hierarchy_exp, config.output_format
+      Iyi.print_hierarchy result.program, STDOUT, config.hierarchy_exp, config.output_format
     end
   end
 
@@ -325,7 +325,7 @@ class Crystal::Command
       return
     end
 
-    output_filename = Crystal.temp_executable(config.output_filename)
+    output_filename = Iyi.temp_executable(config.output_filename)
 
     config.compile output_filename
 
@@ -340,7 +340,7 @@ class Crystal::Command
   private def types
     _, result = compile_no_codegen "tool types"
     @progress_tracker.stage("Tool (types)") do
-      Crystal.print_types result.node
+      Iyi.print_types result.node
     end
   end
 
@@ -468,10 +468,10 @@ class Crystal::Command
           end
         end
         opts.on("-d", "--debug", "Add full symbolic debug info") do
-          compiler.debug = Crystal::Debug::All
+          compiler.debug = Iyi::Debug::All
         end
         opts.on("--no-debug", "Skip any symbolic debug info") do
-          compiler.debug = Crystal::Debug::None
+          compiler.debug = Iyi::Debug::None
         end
 
         opts.on("--frame-pointers auto|always|non-leaf", "Control the preservation of frame pointers") do |value|
@@ -766,7 +766,7 @@ class Crystal::Command
 
       # Check if we'll overwrite the main source file
       if !compiler.no_codegen? && !run && first_filename == File.expand_path(output_filename)
-        abort! "compilation will overwrite source file '#{Crystal.relative_filename(first_filename)}', either change its extension to '.cr' or specify an output file with '-o'", :USAGE_ERROR
+        abort! "compilation will overwrite source file '#{Iyi.relative_filename(first_filename)}', either change its extension to '.cr' or specify an output file with '-o'", :USAGE_ERROR
       end
     else
       output_filename = output_path.to_s
@@ -813,10 +813,10 @@ class Crystal::Command
 
   private def setup_simple_compiler_options(compiler, opts)
     opts.on("-d", "--debug", "Add full symbolic debug info") do
-      compiler.debug = Crystal::Debug::All
+      compiler.debug = Iyi::Debug::All
     end
     opts.on("--no-debug", "Skip any symbolic debug info") do
-      compiler.debug = Crystal::Debug::None
+      compiler.debug = Iyi::Debug::None
     end
     opts.on("-D FLAG", "--define FLAG", "Define a compile-time flag") do |flag|
       compiler.flags << flag
@@ -898,9 +898,9 @@ class Crystal::Command
     opts.on("--warnings all|none", "Which warnings to detect. (default: all)") do |w|
       compiler.warnings.level = case w
                                 when "all"
-                                  Crystal::WarningLevel::All
+                                  Iyi::WarningLevel::All
                                 when "none"
-                                  Crystal::WarningLevel::None
+                                  Iyi::WarningLevel::None
                                 else
                                   abort! "--warnings should be all, or none", :USAGE_ERROR
                                 end
@@ -936,7 +936,7 @@ class Crystal::Command
   private def print_error(msg)
     # This is for the case where the main command is wrong
     @color = false if ARGV.includes?("--no-color") || !Colorize.default_enabled?(STDOUT, STDERR)
-    Crystal.print_error(msg, @color)
+    Iyi.print_error(msg, @color)
   end
 
   private def self.crystal_opts

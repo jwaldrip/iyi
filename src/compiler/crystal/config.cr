@@ -1,6 +1,6 @@
 require "./codegen/target"
 
-module Crystal
+module Iyi
   module Config
     class_property path : String = {{env("CRYSTAL_CONFIG_PATH") || ""}}
 
@@ -60,11 +60,11 @@ module Crystal
       end
     end
 
-    @@host_target : Crystal::Codegen::Target?
+    @@host_target : Iyi::Codegen::Target?
 
-    def self.host_target : Crystal::Codegen::Target
+    def self.host_target : Iyi::Codegen::Target
       @@host_target ||= begin
-        target = Crystal::Codegen::Target.new({{env("CRYSTAL_CONFIG_TARGET")}} || LLVM.default_target_triple)
+        target = Iyi::Codegen::Target.new({{env("CRYSTAL_CONFIG_TARGET")}} || LLVM.default_target_triple)
 
         if target.linux?
           # The statically linked linux binary runs as well on linux-gnu as
@@ -74,7 +74,7 @@ module Crystal
           # in order to use the appropriate environment target.
           default_libc = target.gnu? ? "-gnu" : "-musl"
 
-          target = Crystal::Codegen::Target.new(target.to_s.sub(default_libc, "-#{linux_runtime_libc}"))
+          target = Iyi::Codegen::Target.new(target.to_s.sub(default_libc, "-#{linux_runtime_libc}"))
         end
 
         if target.macos?
@@ -91,14 +91,14 @@ module Crystal
           #
           # We have to match our SDK version with that of the linker. As long as
           # we are not passing any of those command-line options to Clang in
-          # `Crystal::Compiler#linker_command`, the only override we need to
+          # `Iyi::Compiler#linker_command`, the only override we need to
           # handle ourselves is the environment variable one.
           #
           # Note that other platforms (e.g. iOS, tvOS) use different environment
           # variables!
           if min_version = ENV["MACOSX_DEPLOYMENT_TARGET"]?
             triple = "#{target.architecture}-#{target.vendor}-macosx#{min_version}"
-            target = Crystal::Codegen::Target.new(triple)
+            target = Iyi::Codegen::Target.new(triple)
           end
         end
 

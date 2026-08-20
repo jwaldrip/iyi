@@ -1,4 +1,4 @@
-module Crystal::Git
+module Iyi::Git
   class_property executable = "git"
 
   # Tries to run git command with args.

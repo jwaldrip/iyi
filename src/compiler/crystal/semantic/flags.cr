@@ -1,4 +1,4 @@
-class Crystal::Program
+class Iyi::Program
   @flags : Set(String)?
   @host_flags : Set(String)?
 

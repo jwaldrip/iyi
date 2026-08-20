@@ -1,6 +1,6 @@
 require "../program"
 
-module Crystal
+module Iyi
   class Type
     # Given two types T and U, returns a common descendent V such that V <= T
     # and V <= U. This is the same as:

@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   # Fine-grained profiling, gated behind IYI_PROF=1.
   # Temporary instrumentation for the compile-speed investigation.
   module Prof

@@ -2,7 +2,7 @@ require "./util"
 require "./error"
 require "colorize"
 
-module Crystal
+module Iyi
   # Base class for all errors related to specific user code.
   abstract class CodeError < Error
     property? color = false
@@ -47,7 +47,7 @@ module Crystal
     end
 
     def relative_filename(filename)
-      Crystal.relative_filename(filename)
+      Iyi.relative_filename(filename)
     end
 
     def colorize(obj)
@@ -107,7 +107,7 @@ module Crystal
       in VirtualFile
         return format_macro_error(filename)
       in String
-        if Crystal.iyi_declaration_lines?(filename) || File.file?(filename)
+        if Iyi.iyi_declaration_lines?(filename) || File.file?(filename)
           return format_error_from_file(filename)
         end
       in Nil
@@ -171,7 +171,7 @@ module Crystal
     end
 
     def format_error_from_file(filename : String)
-      lines = Crystal.iyi_declaration_lines?(filename) || File.read_lines(filename)
+      lines = Iyi.iyi_declaration_lines?(filename) || File.read_lines(filename)
       formatted_error = format_error(
         filename: @filename,
         lines: lines,
@@ -213,7 +213,7 @@ module Crystal
       in Nil
         nil
       in String
-        if lines = Crystal.iyi_declaration_lines?(filename)
+        if lines = Iyi.iyi_declaration_lines?(filename)
           lines
         elsif File.file? filename
           File.read_lines(filename)
@@ -283,14 +283,14 @@ module Crystal
       line_number = @line_number
       if @error_trace || !line_number
         source, _ = minimize_indentation(source.lines)
-        io << Crystal.with_line_numbers(source, line_number, @color)
+        io << Iyi.with_line_numbers(source, line_number, @color)
       else
         to_index = line_number.clamp(0..source.lines.size)
         from_index = {0, to_index - MACRO_LINES_TO_SHOW}.max
         source_slice = source.lines[from_index...to_index]
         source_slice, spaces_removed = minimize_indentation(source_slice)
 
-        io << Crystal.with_line_numbers(source_slice, line_number, @color, from_index + 1)
+        io << Iyi.with_line_numbers(source_slice, line_number, @color, from_index + 1)
         offset = OFFSET_FROM_LINE_NUMBER_DECORATOR + line_number.to_s.size - spaces_removed
         append_error_indicator(io, offset, @column_number, @size)
       end

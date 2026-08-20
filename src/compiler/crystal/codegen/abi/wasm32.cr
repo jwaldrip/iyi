@@ -1,6 +1,6 @@
 require "../abi"
 
-class Crystal::ABI::Wasm32 < Crystal::ABI
+class Iyi::ABI::Wasm32 < Iyi::ABI
   def abi_info(atys : Array(LLVM::Type), rty : LLVM::Type, ret_def : Bool, context : LLVM::Context)
     ret_ty = compute_return_type(rty, ret_def, context)
     arg_tys = compute_arg_types(atys, context)

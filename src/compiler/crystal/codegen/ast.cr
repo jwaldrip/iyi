@@ -1,6 +1,6 @@
 require "../syntax/ast"
 
-module Crystal
+module Iyi
   class ASTNode
     def no_returns?
       !!type?.try &.no_return?
@@ -22,7 +22,7 @@ module Crystal
               original_owner.instance_type.llvm_name(str)
             end
             str << "::"
-          elsif !owner.is_a?(Crystal::Program)
+          elsif !owner.is_a?(Iyi::Program)
             self_type.llvm_name(str)
             if original_owner != self_type
               str << '@'
@@ -61,7 +61,7 @@ module Crystal
         end
       end
 
-      Crystal.safe_mangling(program, name)
+      Iyi.safe_mangling(program, name)
     end
 
     def varargs?

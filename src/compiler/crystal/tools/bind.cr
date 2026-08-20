@@ -17,7 +17,7 @@
 # against, and the standard library asks `size_of`, which is answered from a
 # data layout. A front end that links no LLVM has none, so a tool built that
 # way cannot read a single real shard.
-module Crystal
+module Iyi
   # What a method is, for a boundary.
   enum BindVerdict
     # Every parameter and the return type are written. R-2 already.
@@ -75,7 +75,7 @@ module Crystal
   BIND_PRELUDE = %w(String Int32 Int64 UInt8 UInt32 UInt64 Float64 Bool Nil Char Symbol Array Hash Range Pointer Void)
 
   # iyi: this scanner is reached by the compiler, so stdlib Regex would keep
-  # pcre2 on its link line. Compile the grammar once through Crystal::Rx instead
+  # pcre2 on its link line. Compile the grammar once through Iyi::Rx instead
   # of maintaining four hand-written tokenizers (SPEC.md III.10).
   private BIND_TYPE_NAME = Rx::Pattern.compile("[A-Za-z_][A-Za-z0-9_:]*")
 
@@ -857,7 +857,7 @@ module Crystal
     # dispatch rather than a name anybody can write down. A declaration says
     # `Foo`, which is what the call site means and what parses.
     {type.devirtualize.to_s, nil}
-  rescue ex : Crystal::CodeError
+  rescue ex : Iyi::CodeError
     {nil, ex.message.to_s.lines.first?.to_s}
   rescue ex
     {nil, ex.message.to_s.lines.first?.to_s}

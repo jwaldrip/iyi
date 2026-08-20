@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   class TablePrint
     COL_SEP     = '|'
     CELL_MARGIN = ' '

@@ -1,4 +1,4 @@
-module Crystal
+module Iyi
   # Which warnings to detect.
   enum WarningLevel
     None
@@ -6,7 +6,7 @@ module Crystal
   end
 
   # This collection handles warning detection, reporting, and related options.
-  # It is shared between a `Crystal::Compiler` and other components that need to
+  # It is shared between a `Iyi::Compiler` and other components that need to
   # produce warnings.
   class WarningCollection
     # Which kind of warnings we want to detect.
@@ -22,7 +22,7 @@ module Crystal
     end
 
     def exclude_lib_path=(exclude : Bool)
-      @lib_path = exclude ? File.expand_path(Crystal.normalize_path("lib")) : nil
+      @lib_path = exclude ? File.expand_path(Iyi.normalize_path("lib")) : nil
     end
 
     # Detected warnings.
@@ -32,7 +32,7 @@ module Crystal
     property? error_on_warnings = false
 
     def exclude_path(path : ::Path | String)
-      @excluded_paths << File.expand_path(Crystal.normalize_path(path))
+      @excluded_paths << File.expand_path(Iyi.normalize_path(path))
     end
 
     def add_warning(node : ASTNode, message : String)
@@ -84,7 +84,7 @@ module Crystal
   end
 
   class ASTNode
-    def warning(message, inner = nil, exception_type = Crystal::TypeException)
+    def warning(message, inner = nil, exception_type = Iyi::TypeException)
       # TODO extract message formatting from exceptions
       String.build do |io|
         exception = exception_type.for_node(self, message, inner)

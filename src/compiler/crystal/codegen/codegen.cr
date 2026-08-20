@@ -6,7 +6,7 @@ require "../program"
 require "./llvm_builder_helper"
 require "./abi/*"
 
-module Crystal
+module Iyi
   MAIN_NAME              = "__crystal_main"
   RAISE_NAME             = "__crystal_raise"
   RAISE_OVERFLOW_NAME    = "__crystal_raise_overflow"
@@ -556,14 +556,14 @@ module Crystal
       when "1"
         dump_all_llvm = true
       else
-        # iyi: DUMP holds a pattern a person typed, and Crystal::Rx refuses what
+        # iyi: DUMP holds a pattern a person typed, and Iyi::Rx refuses what
         # it does not implement rather than matching it with other semantics
         # (SPEC.md III.10). Refusal is one line naming the pattern and the
         # reason, never a backtrace from inside the engine.
         begin
           dump_llvm_regex = Rx::Pattern.compile(env_dump)
         rescue ex : Rx::SyntaxError
-          raise CompilerError.new("invalid pattern in DUMP=#{env_dump.inspect}: #{ex.message} (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)", :USAGE_ERROR)
+          raise CompilerError.new("invalid pattern in DUMP=#{env_dump.inspect}: #{ex.message} (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)", :USAGE_ERROR)
         end
       end
 
@@ -833,7 +833,7 @@ module Crystal
       if location && (type = node.type?)
         proc_name = true
         filename = location.filename.as(String)
-        fun_literal_name = Crystal.safe_mangling(@program, "~proc#{type}@#{Crystal.relative_filename(filename)}:#{location.line_number}")
+        fun_literal_name = Iyi.safe_mangling(@program, "~proc#{type}@#{Iyi.relative_filename(filename)}:#{location.line_number}")
       else
         proc_name = false
         fun_literal_name = "~fun_literal"
@@ -2290,7 +2290,7 @@ module Crystal
       printf_args = {printf_args, [] of LLVM::Value} if printf_args.is_a?(String)
       printf_args = {printf_args[0], [] of LLVM::Value} if printf_args.is_a?({String})
       msg, args = printf_args
-      printf("<function=#{insert_block.parent.try(&.name) || "???"} block=#{insert_block.name || "???"} source=#{Crystal.relative_filename(file)}:#{line}> #{msg}\n", args)
+      printf("<function=#{insert_block.parent.try(&.name) || "???"} block=#{insert_block.name || "???"} source=#{Iyi.relative_filename(file)}:#{line}> #{msg}\n", args)
     end
 
     # :ditto:

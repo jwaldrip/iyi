@@ -8,8 +8,8 @@
 {% end %}
 require "../error"
 
-class Crystal::Codegen::Target
-  class Error < Crystal::Error
+class Iyi::Codegen::Target
+  class Error < Iyi::Error
   end
 
   getter architecture : String

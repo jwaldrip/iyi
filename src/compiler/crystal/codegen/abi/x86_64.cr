@@ -2,11 +2,11 @@ require "../abi"
 
 # Based on https://github.com/rust-lang/rust/blob/29ac04402d53d358a1f6200bea45a301ff05b2d1/src/librustc_trans/trans/cabi_x86_64.rs
 # See also, section 3.2.3 of the System V Application Binary Interface AMD64 Architecture Processor Supplement
-class Crystal::ABI::X86_64 < Crystal::ABI
+class Iyi::ABI::X86_64 < Iyi::ABI
   MAX_INT_REGS = 6 # %rdi, %rsi, %rdx, %rcx, %r8, %r9
   MAX_SSE_REGS = 8 # %xmm0-%xmm7
 
-  def abi_info(atys : Array(LLVM::Type), rty : LLVM::Type, ret_def : Bool, context : LLVM::Context) : Crystal::ABI::FunctionType
+  def abi_info(atys : Array(LLVM::Type), rty : LLVM::Type, ret_def : Bool, context : LLVM::Context) : Iyi::ABI::FunctionType
     # registers available to pass arguments directly: int_regs can hold integers
     # and pointers, sse_regs can hold floats and doubles
     available_int_regs = MAX_INT_REGS

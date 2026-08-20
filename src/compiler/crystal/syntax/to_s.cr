@@ -1,7 +1,7 @@
 require "./ast"
 require "./visitor"
 
-module Crystal
+module Iyi
   class ASTNode
     def to_s(io : IO, macro_expansion_pragmas = nil, emit_doc = false, emit_location_pragmas : Bool = false) : Nil
       visitor = ToSVisitor.new(io, macro_expansion_pragmas: macro_expansion_pragmas, emit_doc: emit_doc, emit_location_pragmas: emit_location_pragmas)

@@ -1,6 +1,6 @@
 require "./location"
 
-module Crystal
+module Iyi
   # All possible identifiers that may be considered keywords.
   enum Keyword
     ABSTRACT

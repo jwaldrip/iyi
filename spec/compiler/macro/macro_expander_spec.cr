@@ -212,7 +212,7 @@ describe "MacroExpander" do
 
       it "gets {{ op }} alias" do
         assert_macro("\{{ {{ op }}(Foo) == {{ op }}(Int16) }}", "true") do |program|
-          program.types["Foo"] = AliasType.new(program, program, "Foo", Crystal::Path.global("Int16"))
+          program.types["Foo"] = AliasType.new(program, program, "Foo", Iyi::Path.global("Int16"))
           nil
         end
       end

@@ -5,7 +5,7 @@ require "./codegen"
 # visits that assignment. We also initialize it with that value if the class
 # variable is read. There's an "initialized" flag too.
 
-class Crystal::CodeGenVisitor
+class Iyi::CodeGenVisitor
   def declare_class_var(class_var : MetaTypeVar)
     global_name = class_var_global_name(class_var)
     global = @main_mod.globals[global_name]?
