@@ -1812,6 +1812,48 @@ Two deliberate gaps:
   is defensible; closing it would mean making `VirtualFile` carry the mode of the
   file it expands into.
 
+#### III.1.7a What the convention costs beside Crystal's library: **OPEN**
+
+III.1.7 settled the naming convention against a library iyi was going to write
+itself. `--crystal` (Part V item 12a) put iyi's programs beside a library it did
+not write, and the convention now has a cost it was not priced against.
+
+**Measured, and it is one method.** Of everything iyi's library mutates —
+`<<`, `[]=`, `concat`, `shift`, `sort` — only `sort` means something different
+in the two libraries. Crystal writes `!` on the mutating member of a *pair* and
+plainly for everything else, so `<<` and `shift` agree by accident of both
+languages naming them the same way. The pairs are where it bites, and today
+there is one:
+
+| | iyi's library | Crystal's library |
+|---|---|---|
+| `a.sort` | sorts `a` | returns a sorted copy |
+| `a.sorted` | returns a sorted copy | does not exist |
+
+So `a.sort` compiles under both and means the opposite thing, silently. That is
+the worst shape a difference can take, and it is worth deciding now rather than
+after `reverse`, `map`, `select`, `uniq` and `shuffle` arrive with the same
+shape.
+
+**Three ways out, and none of them is free:**
+
+**A. Agree with the library you sit beside.** `sort` copies, matching Crystal,
+and `sorted` goes as a duplicate. Revokes III.1.7(A)'s participle rule for this
+pair and leaves iyi with no in-place sort until something names one. Costs the
+convention; buys a program that means one thing.
+
+**B. Give the mutating one a name Crystal does not use.** `sorted` stays the
+copy and the in-place form is spelled out — `sort_in_place`. The convention is
+amended rather than revoked: the participle rule holds except where Crystal
+spells the copy with the plain verb, and there the mutating form says so. Costs
+a clumsy name; buys no collision and no silence.
+
+**C. Keep the convention as it is.** Costs the silence, which is what this
+section is about.
+
+**Not decided here.** What is decided is that it is a decision: a rule chosen
+for one library is not automatically right beside two.
+
 #### III.1.8 Worked comparison
 
 Crystal today:
