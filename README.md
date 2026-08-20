@@ -320,6 +320,23 @@ $ curl localhost:3000/json
 still refuses an export that does not write its types. What changes is what the
 program *has*: 8,161 lines of standard library instead of 1,184 of prelude.
 
+**One name is unreachable, and it is a class of names.** `!` in iyi propagates
+an error, so a method whose name ends in one cannot be called from a `.iyi`
+file — `a.sort!` asks the compiler to propagate `Array(Int32)`'s errors, and it
+says so. Crystal's standard library has **49 such names**, `not_nil!`, `sort!`,
+`map!`, `select!` and `uniq!` among them. What replaces them is what Crystal
+writes anyway when it wants a copy or a narrowing:
+
+```crystal
+a = a.sort              # rather than a.sort!
+if home = maybe         # rather than maybe.not_nil!
+  ...
+end
+maybe.as(String)        # or this
+```
+
+Shard code is `.cr` and unaffected; this is only about the lines you write.
+
 **What it costs is R-1, for that dependency.** A required shard is read from
 source, so your edit loop pays for it the way Crystal's does. Your own modules
 are unaffected — but the two do not mix on the artifact side, and the compiler

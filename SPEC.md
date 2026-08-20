@@ -3983,6 +3983,20 @@ Named honestly, so nobody mistakes this draft for complete.
     as a block. A variable on the line before it is what a Crystal programmer
     writes too.
 
+    **III.1.7(A) meets the standard library, and the bill is 49 names.** `!`
+    left identifiers so that postfix `!` could mean propagation, and Crystal's
+    library did not: `not_nil!`, `sort!`, `map!`, `select!`, `uniq!` and 44
+    more cannot be called from a `.iyi` file. What comes back is not a mystery
+    — `a.sort!` says "`!` has no error to propagate: no member of
+    `Array(Int32)` implements `Error`" — and the replacements are what Crystal
+    writes anyway: `a = a.sort`, `if home = maybe`, `maybe.as(String)`. Shard
+    code is `.cr` and unaffected, so this is a rule about the lines somebody
+    writes rather than the ones they depend on.
+
+    Worth stating plainly because the convention was chosen (III.1.7) against a
+    library iyi was going to write itself. It now also has to sit beside one it
+    did not, and that is a cost the choice did not price.
+
     **What it costs.** R-1, for the required shard: it is read from source and
     the edit loop pays for it the way Crystal's does. Your own modules still
     write artifacts. And the two libraries are two modes on the reading side —

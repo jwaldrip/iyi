@@ -58,8 +58,9 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
                  "`import #{filename}`, and it is a path to a file rather than " \
                  "a library name (SPEC.md R-1). There is no standard library " \
                  "to require: the prelude is what a program gets, and README.md " \
-                 "says what is in it. A program built `--prelude=prelude` has " \
-                 "one, and there `require` means what it means in Crystal"
+                 "says what is in it. `--crystal` gives a program Crystal's " \
+                 "library instead, and there `require` means what it means " \
+                 "in Crystal"
     end
 
     # Remember that the program depends on this require

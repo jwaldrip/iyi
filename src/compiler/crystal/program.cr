@@ -188,7 +188,7 @@ module Crystal
     #
     # `require` is refused in a `.iyi` file because there is no standard
     # library to require — and that reason stops being true the moment the
-    # prelude is Crystal's. A program built `--prelude=prelude` has one, so a
+    # prelude is Crystal's. A program built `--crystal` has one, so a
     # `.iyi` file in it may reach a shard the way a `.cr` file does. The rules
     # that make a module a module are unaffected: they are the language's, and
     # the prelude is a library.
