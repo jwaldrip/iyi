@@ -789,6 +789,10 @@ module Crystal
     end
 
     def visit(node : Assign)
+      # iyi: a module's top level travels as source, so `pub` on a constant has
+      # to be in the text (R-2, SPEC.md IV.2).
+      target = node.target
+      @str << "pub " if target.is_a?(Path) && target.exported?
       node.target.accept self
       @str << " = "
 
@@ -932,6 +936,9 @@ module Crystal
     end
 
     def visit(node : Macro)
+      # iyi: a macro travels in an artifact as this text, so what marks it
+      # exported has to be in the text (R-2b, SPEC.md IV.4).
+      @str << "pub " if node.exported?
       @str << "macro "
       @str << node.name.to_s
       if node.args.size > 0 || node.block_arg || node.double_splat

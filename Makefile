@@ -42,7 +42,9 @@ deref_symlinks     ?= ## Dereference symbolic links for `make install`
 sequential_codegen ?= $(if $(filter 0,$(supports_mt)),true,)## Enforce sequential codegen in compiler builds.
 
 O            := .build
-SOURCES      := $(shell find src -name '*.cr')
+# iyi: the two version files are compiled in with `read_file`, so a build that
+# does not depend on them says the old number after the number changes.
+SOURCES      := $(shell find src -name '*.cr') src/VERSION src/IYI_VERSION
 SPEC_SOURCES := $(shell find spec -name '*.cr')
 MAN1PAGES    := $(patsubst doc/man/%.adoc,man/%.1,$(wildcard doc/man/*.adoc))
 override FLAGS += -D strict_multi_assign -D preview_overload_order $(if $(release),--release )$(if $(stats),--stats )$(if $(progress),--progress )$(if $(threads),--threads $(threads) )$(if $(debug),-d )$(if $(static),--static )$(if $(LDFLAGS),--link-flags="$(LDFLAGS)" )$(if $(target),--cross-compile --target $(target) )
@@ -120,7 +122,7 @@ CRYSTAL_BIN := crystal$(EXE)
 CRYSTAL_DAEMON_BIN := crystal-daemon$(EXE)
 
 # iyi: what a downloadable build of iyi is called.
-IYI_VERSION ?= 0.1.0
+IYI_VERSION ?= $(shell cat src/IYI_VERSION)
 IYI_PACKAGE := iyi-$(IYI_VERSION)-$(shell uname -s | tr A-Z a-z)-$(shell uname -m)
 
 DESTDIR ?=
@@ -365,7 +367,6 @@ $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
 	$(EXPORTS) $(EXPORTS_BUILD) CRYSTAL_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../src' \
-	  IYI_VERSION="$(IYI_VERSION)" \
 	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $@ src/compiler/iyi.cr
 	@echo "built $@ — run it as ./bin/iyi"
 

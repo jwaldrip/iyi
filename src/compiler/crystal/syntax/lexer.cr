@@ -1093,6 +1093,11 @@ module Crystal
       @slash_is_regex = false
     end
 
+    # iyi: the parser sets this directly, being a `Lexer` itself. The formatter
+    # is not one and needs the same say, because a module path is the one place
+    # `/` separates rather than opening a regex (`parse_module_path`).
+    setter wants_regex
+
     def consume_comment(start_pos)
       skip_comment
       @token.type = :COMMENT

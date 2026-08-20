@@ -894,17 +894,57 @@ class Crystal::Call
   end
 
   def lookup_macro
-    in_macro_target do |target|
+    found = in_macro_target do |target|
       result = target.lookup_macro(name, args, named_args)
       case result
       when Macro
-        return result
+        break result
       when Type::DefInMacroLookup
         return nil
       else
         # Check next target
       end
     end
+    return found if found.is_a?(Macro)
+
+    lookup_using_macro
+  end
+
+  # iyi: a macro another module exported and this scope asked for (R-2b).
+  #
+  # The same walk `lookup_matches` makes for a `def`, and it is last for the
+  # same reason: a name the scope has of its own is the scope's. Every macro a
+  # module writes travels in its artifact, because a body that travels may call
+  # one; what `pub` adds is permission to name it, so the lookup asks the module
+  # what it exports rather than what it has.
+  private def lookup_using_macro : Macro?
+    found = nil
+    found_in = nil
+
+    scope_type = scope.instance_type
+    while scope_type
+      if used = scope_type.using_modules?
+        used.each do |using_module|
+          next unless using_module.exports?(name)
+
+          result = using_module.type.metaclass.lookup_macro(name, args, named_args)
+          next unless result.is_a?(Macro)
+
+          if found && found_in != using_module.type
+            raise "'#{name}' is ambiguous here: it is exported as a macro by both #{found_in} and #{using_module.type}. Qualify the call, or narrow one of the `using` directives."
+          end
+
+          found = result
+          found_in = using_module.type
+        end
+      end
+
+      break if found
+      break if scope_type == program
+      scope_type = scope_type.is_a?(NamedType) ? scope_type.namespace : nil
+    end
+
+    found
   end
 
   def in_macro_target(&)

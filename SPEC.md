@@ -1,8 +1,8 @@
 # iyi Language Specification: Draft 0
 
 **Status: draft for discussion. Parts of it are built. Each section says which,
-and a heading that does not say so is a heading to distrust.** What 0.1.0 needs
-of it is scoped below Part I.
+and a heading that does not say so is a heading to distrust.** The current
+compiler reports `0.2.0-dev`; Part I records what 0.1.0 proved.
 
 This draft deliberately does *not* re-describe the six rules. Each has been
 validated on its own: by the Kemal port, by the instantiation census, by the
@@ -53,11 +53,11 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| prelude | 1,184 lines, ceiling 3,551 |
+| iyi's own prelude | 1,184 lines, ceiling 3,551 |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
-| what runs in CI | iyi's specs, Crystal's 13,798 compiler examples, the standard library's, the CLI's, the samples, nine targets the library type-checks for, seven whose emitted objects are audited for undefined symbols, the tarball |
+| what runs in CI | iyi's specs, Crystal's 13,798 compiler examples, the standard library's, the CLI's, the samples, nine targets iyi's own prelude type-checks for, seven whose own-prelude emitted objects are audited for undefined symbols, the tarball |
 
 `python3 bench/incremental.py` and `python3 bench/build_speed.py` print the
 first four rows and refuse to time programs that do not agree on their output.
@@ -73,6 +73,14 @@ somebody who did not write it check the central claim and find it false. Nobody
 will write production code with it, there will be no standard library worth the
 name, and it will not be self-hosted. Go's first public release was the same
 shape.
+
+> **What changed after it shipped, and it changed this paragraph.** A prelude
+> is a library and the rules are the language, so a program can keep one and
+> change the other: `--crystal` builds against Crystal's standard library, and
+> there `require` reaches the ecosystem while every rule stays where it was.
+> "No standard library worth the name" is still true of iyi's own 1,184 lines
+> and no longer true of what a program can have. Part V item 12a is the
+> measurement, nine shards wide.
 
 **The claim under test** is compile speed. The type system is the means, not the
 product: open classes go so that a module can be compiled against its
@@ -732,7 +740,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 87,421 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 1,184 prelude + 722 in samples |
+| Library | 8,161 lines (3,551 of it core) | 1,184-line own prelude + 722 in samples |
 | Specs | 21,146 lines | ~3,400 for iyi |
 | Samples | 24 **programs** | 8 **explanations** |
 | History | 3,165 commits over 21 months | 75 |
@@ -2398,13 +2406,15 @@ target triple (glibc against musl on the same triple); and source-first is what
 lets a person read what they are about to run.
 
 **iyi answers the first two already, and the answer is enforced rather than
-promised.** An artifact records the compiler version *and build commit*, the
-target triple, and the flag set, and refuses to be read under any other. Proven
-by trying it: a debug artifact offered to a `--release` build is refused by name,
-with the reason, because macros branch on flags. So iyi's cache key is not a
-guess to be designed, it is the four-tuple the format already carries:
+promised.** An artifact records the compiler identity, target triple and flag
+set, and refuses to be read under any other. A released compiler's identity is
+its released version; a `-dev` identity also keeps the build commit because
+`0.2.0-dev` alone does not name one compiler. Proven by trying it: a debug
+artifact offered to a `--release` build is refused by name, with the reason,
+because macros branch on flags. The cache key is the four-tuple the format
+already carries:
 
-> **`{format version, compiler version+commit, target triple, flag set}`**
+> **`{format version, compiler identity, target triple, flag set}`**
 
 Which makes the design Nix's rather than Swift's: key on the whole input, sign
 it, publish as many as are worth publishing, and **fall back to source on a
@@ -2567,12 +2577,14 @@ blocked by them.
 
 "Zero external dependencies" is two questions that have been asked as one. They
 have different answers, and the one that was open is now decided (Appendix B
-#20).
+#20). This section and `bench/dependency_floor.sh` measure plain builds using
+iyi's own prelude. They do not measure `--crystal`, which links Crystal's
+standard library and may pull every library a required shard pulls.
 
-#### What an iyi program depends on, counted
+#### What a plain own-prelude program depends on, counted
 
-Every undefined symbol in a linked iyi program, plain `iyi build`, read off the
-executable on darwin arm64:
+Every undefined symbol in a linked own-prelude program, plain `iyi build`, read
+off the executable on darwin arm64:
 
 ```
 write  exit  memset  malloc  realloc      # libc
@@ -2587,12 +2599,12 @@ over `malloc` and `realloc` and never frees. Crystal's own `hello` additionally
 pulls `libiconv`, which iyi's `String` has no reason to want, and the compiler
 dropped that one too (`-Dwithout_iconv`).
 
-So **an iyi program's dependency is the platform libc and nothing else**, and
-what that is worth depends on which artifact is being read, so this section now
-says which. A program iyi builds is checked at two layers.
+So **an own-prelude program's dependency is the platform libc and nothing
+else**, and what that is worth depends on which artifact is being read, so this
+section says which. The gate checks this mode at two layers.
 
 **At the object layer**, which is the per-target cross-compile audit in CI, an
-iyi program's object for `x86_64-linux-gnu` leaves nothing undefined at all:
+own-prelude program's object for `x86_64-linux-gnu` leaves nothing undefined:
 the prelude issues the raw syscalls itself for `write`, `exit` and the
 allocator (`mmap`), and imports nothing. That is the strong form of the claim
 and it is measured rather than projected. On darwin the same audit defers to
@@ -2604,14 +2616,15 @@ adds. On Linux that is the C runtime's five undefined references,
 `__libc_start_main`, `__gmon_start__`, `__cxa_finalize` and the two weak
 `_ITM_` clone-table callbacks, left behind by `crt1.o`, `crti.o` and
 `crtbegin.o`. On darwin it is libSystem's five above.
-Either way a program's own dependency list is the platform libc and nothing
-else.
+Either way an own-prelude program's dependency list is the platform libc and
+nothing else.
 
-What dropping libgc bought is the price below rather than an open question: the
-default allocates and never collects, a default now kept on purpose and
-documented loudly (Appendix B #23).
+What dropping libgc bought is the price below rather than an open question:
+the own-prelude default allocates and never collects, a default kept on purpose
+and documented loudly (Appendix B #23).
 
-`-Dgc_none` used to have no effect on an iyi program. The prelude declared
+`-Dgc_none` used to have no effect on an own-prelude program. The prelude
+declared
 `@[Link("gc")]` directly rather than going through the selection in `src/gc.cr`,
 so the flag was accepted and ignored, and the fix was routing that selection.
 Then the default was inverted: the libc allocator is what a plain `iyi build`
@@ -2712,10 +2725,11 @@ Two facts about the seam, which iyi's own collector inherits as constraints:
    correct, and the commit adds the new symbols to the list with this section
    as the reason.
 
-One piece of luck worth naming: iyi has no concurrency (III.4 is unbuilt), so
-the own collector starts in the simplest configuration there is,
-single-threaded, with no fibers and no execution contexts, and grows toward
-III.4 rather than chasing it.
+One piece of luck worth naming: iyi's own prelude has no concurrency (III.4 is
+unbuilt), so the owned collector starts single-threaded, with no fibers or
+execution contexts, and grows toward III.4 rather than chasing it. A
+`--crystal` program has Crystal's fibers and is not the configuration this
+collector plan or floor measures.
 
 #### Where the collector decision splits: the language, not the compiler
 
@@ -2738,9 +2752,9 @@ is the entire thesis of this project, so it is the wrong trade. **Decided
 recorded as an exception carrying this reason, and the question is revisited
 when iyi's own collector reaches the stage that serves parallel codegen, not
 when any third party's does.** The asymmetry is real rather than convenient:
-the programs the compiler builds are single-threaded, because III.4 is
-unbuilt, and the compiler itself is not, which is how one collector can be
-right for a language and wrong for its compiler.
+own-prelude programs are single-threaded because III.4 is unbuilt, and the
+compiler itself is not. That is how one collector can be right for iyi's own
+runtime and wrong for its compiler.
 
 #### What the compiler depends on, which is a different list
 
@@ -2778,9 +2792,9 @@ verification and the two findings). Measured after a clean bootstrap: `otool
 stays, and not for want of trying: `-Dgc_none` was built and is not viable
 for the compiler itself (III.10 has the evidence), and iyi's own collector
 does not yet serve parallel codegen, for the threading reason above. So the
-compiler keeps a collector and the programs it builds do not, and the one it
-keeps is a recorded exception (Appendix B #24) rather than an unexamined
-habit. `libc++` arrives with LLVM. **LLVM is the
+compiler keeps a collector and own-prelude programs do not. Its collector is a
+recorded exception (Appendix B #24), not an unexamined habit. `libc++` arrives
+with LLVM. **LLVM is the
 list**, and Part V.9 already priced what owning the back end would cost while
 declining to own the linker, for reasons that apply here with more force.
 
@@ -2804,13 +2818,13 @@ answers, and worth separating so the question stops being asked as one:
   is not the flattering version: `gc` stayed a C compiler until Go 1.5, and the
   transition was a mechanical translation rather than a rewrite.
 
-The second is not scheduled and should not be. It needs a standard library with
-IO, which does not exist, and every line of it is a line not spent on the four
-rules. **What is worth saying is that the program floor above does not depend on
-it at all**: it is measured, not projected, on a compiler that is still a
-Crystal program, and a compiler that needs LLVM to build itself emits binaries
-whose only library is the platform libc, and whose object for Linux asks that
-libc for nothing.
+The second is not scheduled. It needs IO, which iyi's own prelude does not
+provide; `--crystal` provides Crystal's standard library and IO, but that is a
+different library mode. **The own-prelude program floor above does not depend
+on self-hosting**: it is measured, not projected, on a compiler that is still
+a Crystal program. A compiler that needs LLVM to build itself emits
+own-prelude binaries whose only host library is the platform libc, and whose
+object for Linux asks that libc for nothing.
 
 #### Order
 
@@ -2826,12 +2840,13 @@ libc for nothing.
 
 ### III.10 Every library Crystal needs, and iyi's answer for each: **PROPOSED**
 
-III.9's five symbols are true and they are also flattering, because they are
-the floor of a language with no IO, no concurrency, no regex, no TLS and no
-serialisation. **Every dependency below arrives attached to a feature**, and the
-decision about it has to be taken when the feature is written rather than after,
-for the reason II.5 gives about the collector: a library that is already reached
-from a hundred places is not a decision any more.
+III.9's five symbols are true and flattering because they are the floor of
+iyi's own prelude, which has no IO beyond `puts`, no concurrency, no regex, no
+TLS and no serialisation. `--crystal` is outside this floor and may link the
+standard library's dependencies and anything a required shard pulls. **Every
+dependency below arrives in the own mode attached to a feature**, and the
+decision about it has to be taken when that feature is written, before a
+library is reached from a hundred places and stops being a decision.
 
 This section exists so the decision is taken once, in a list, from Crystal's own
 published inventory rather than from whatever turns up.
@@ -3002,22 +3017,23 @@ because that is the version nobody can back out of.
 
 #### The rule, so this is not re-litigated per library
 
-**No C library may be reachable from the prelude.** A binding to one is a
+**No C library may be reachable from iyi's own prelude.** A binding to one is a
 package (III.6, III.7), never a prelude feature. That keeps the floor a property
 of the language rather than a habit of whoever wrote the last commit, and unlike
 most rules in this document it is checkable by a machine.
 
-**So it is checked.** `bench/dependency_floor.sh` builds every sample, reads the
-undefined symbols and the linked libraries out of each binary, does the same for
-the collector build (`-Dgc_boehm`), and fails when either list grows past what
-this section records. The allowed lists are per platform, because the platforms
+**So it is checked.** `bench/dependency_floor.sh` builds every sample using
+iyi's own prelude; it does not build `--crystal`. It reads undefined symbols
+and linked libraries from each binary, does the same for the collector build
+(`-Dgc_boehm`), and fails when either list grows past what this section records.
+The allowed lists are per platform, because the platforms
 are not the same claim: darwin's five libSystem symbols, or the five the Linux
 link template leaves, and the platform libc alone either way. `libgc` and the
 four `GC_*` entry points come back for the collector build. It reads the
 compiler binary too, against `ALLOWED_LIBS_COMPILER`, now `libLLVM libc++ libgc
 libSystem` plus the platform's own entries, and against a `FORBIDDEN` denylist
-that the samples and the compiler must both clear. `libpcre` is on that
-denylist, so the compiler is held to the same rule as the programs it builds. It
+that own-prelude samples and the compiler must both clear. `libpcre` is on that
+denylist, so the compiler is held to the same rule as own-prelude programs. It
 runs in CI beside the roundtrip check.
 
 **The five on Linux are allowed by exact name.** `__libc_start_main`,
@@ -3108,11 +3124,11 @@ from breaking. So the floor there is libSystem and that is Apple's rule rather
 than a gap in this design; Go links libSystem on darwin for the same reason.
 Windows is the same story with a different name.
 
-The honest form of the claim is therefore: **no dependency iyi chose**, and it
-is now a measurement rather than a promise, stated at the layer it was measured
-on. At the object layer, on Linux, no dependency at all. At the executable
-layer, on either platform, the platform libc and nothing else: five symbols on
-darwin that the prelude asked for, five on Linux that the link template did.
+The honest form of the own-prelude claim is therefore: **no dependency iyi
+chose**, measured rather than promised and stated at the layer measured. At the
+object layer, on Linux, there is no dependency at all. At the executable layer,
+on Linux and macOS, the platform libc is the only library: five symbols on
+macOS that the prelude asked for, five on Linux that the link template added.
 
 ### III.11 The interpreter, again: **DECIDED (Appendix B #25): yes, on the macro interpreter, no C interop**
 
@@ -4194,10 +4210,20 @@ is the linker.
   stored as the annotation the author wrote (IV.1), and `pub def handle(ctx :
   Context)` resolves `Context` through a `using` further up the file. The
   annotation travels, so what resolves it has to travel with it.
-- **Exported constants**, with values where a value can appear in a type.
-  **Not built, and not because it was forgotten.** `pub` takes a `def`, a
-  `class`, a `struct` and a `trait`, and refuses everything else, including a
-  constant and an `enum`. Nothing in this repository asks for either: there is
+- **Exported constants.** **Built.** `pub LIMIT = 42` is reachable through the
+  module's name and an unmarked constant is not, which is the same sentence an
+  unmarked `def` gets. Nothing was added to the format: a module's own top
+  level already travels as source text, so the mark travels by being written
+  back out, exactly as `pub macro` does.
+
+  Closing it found the hole under it, the third of its kind: a constant's
+  visibility was never set from `pub`, so **every** constant a module declared
+  was reachable through its name. A shard is where that shows: Kemal hands out
+  every object it has through one, and the boundary in Part V item 12 could
+  read 22 of its types and reach none of them.
+
+  `pub` still refuses an `enum`. There is none in the prelude or in any sample,
+  so nothing has asked. Nothing in this repository asks for either: there is
   no `enum` in the prelude or in any sample, and the three module-level
   constants that exist (`HTTP_METHODS`, `FILTER_METHODS`, `APP`) are read by
   their own module and named by nobody else. That is item 3's rule applied
@@ -4271,10 +4297,29 @@ IV.1g that no amount of reasoning about blocks would have produced.
 
    **Built, and the reason turned out to be nearer than `derive`.** A body that
    travels may call a macro of its own module, so the macros travel with it,
-   all of them, on the module and on each type, as source text. None is
-   reachable: `pub` does not take a macro, so what arrives is a plugin the
-   consumer runs and cannot name. `derive` will need the same section and one
-   more thing, which is a way to say which macros another module may run.
+   all of them, on the module and on each type, as source text.
+
+   **`pub macro` is the way to say which of them another module may run, and
+   it is built.** A marked macro is reachable exactly as a `pub def` is:
+   unqualified after `using`, or through the module's name. An unmarked one is
+   the module's own and is refused by the same sentence an unmarked `def` gets.
+   What it exports is a name and an arity rather than types, because a macro
+   takes syntax and returns syntax and there is no type to write down — the one
+   place R-2's "write the types" has nothing to ask for.
+
+   Closing this found the hole under it: a macro's visibility was never set, so
+   before `pub macro` existed **every** module's macros were already callable
+   through its name. They travel so that a travelling body can call one, and
+   that made them a surface nobody wrote and nobody could have refused.
+
+   **Macros are not hygienic, and `pub macro` exports that too.** A macro is
+   pasted text, so `pub macro shadow` writing `tmp = 99` assigns to the
+   consumer's `tmp` if it has one, which was measured rather than assumed. This
+   is Crystal's semantics kept whole, and it is a real hole in what R-2
+   promises: an export whose surface is a name and an arity can still reach
+   anything the caller can name. Hygiene is a rename of every name a macro
+   introduces, it would part this fork from the macro semantics its own prelude
+   is written in, and it is not built.
 2. **`@[Monomorphize]` bodies.** The consumer specialises them, so it needs the
    body. This is the (b) path from II.6 and it is where incrementality is at
    risk: see IV.3.
@@ -4606,10 +4651,39 @@ count should stay small.
 
 ### IV.5 Versioning
 
-Format version in the header. **Compiler version must match exactly** for
-Draft 0. A `.iyimod` built by a different compiler is rejected and rebuilt, not
-migrated. Cross-version metadata compatibility is a large, permanent surface and
-there is no reason to take it on before 1.0.
+Format version in the header, and it is not migrated: a `.iyimod` whose format
+number is not this compiler's is rejected and rebuilt. Cross-version metadata
+compatibility is a large, permanent surface and there is no reason to take it
+on before 1.0.
+
+**What two compilers have to agree on is the release, the target and the
+flags.** Every build of iyi 0.1.0 reads every other build's artifacts, on the
+same target and under the same flags. That is what makes a module something to
+hand to somebody: the artifact is the unit R-1 compiles against, and a unit
+only its own build could open would be a cache with extra steps.
+
+The three are one rule and not three. Macros branch on flags, so an artifact
+built under one set answers questions differently from one built under
+another; object code is a target's; and a release number is what names a
+compiler in public.
+
+**A development version keeps the build commit, and that is the same rule
+rather than an exception to it.** `0.2.0-dev` is not a release: it names every
+compiler between two of them, and two of those can disagree about anything at
+all. So `0.1.0` is an identity and `0.2.0-dev+9bcbb359f` is one, while
+`0.2.0-dev` on its own is not, and a build that carries it interoperates with
+nothing but itself.
+
+A build told no commit at all — compiled outside a checkout, or by something
+that does not pass one — has nothing to add, so its `-dev` version stands
+alone and is the weakest identity here: it will read another such build's
+artifacts. That is the honest end of a best-effort answer rather than a hole
+worth closing, because the case it covers is a compiler nobody released and
+nobody can name.
+
+The version is iyi's, read from `src/IYI_VERSION` at compile time rather than
+from the environment, because two binaries in this repository write artifacts
+and an equality test between them cannot depend on how each was invoked.
 
 ---
 
@@ -4812,40 +4886,233 @@ Named honestly, so nobody mistakes this draft for complete.
     it never had it. What stays: the *macro* interpreter, which is a different
     thing that runs at compile time and is what makes `{% %}` work.
 
-12. ~~**Using Crystal code.**~~ **Specified in III.6**: an `extern module` that
-    restates R-2 by hand for the surface being used, the shard compiled once
-    behind it into an ordinary artifact, and the boundary unchecked in the first
-    version the way Gleam's is. Three of the four rules are broken by ordinary
-    shard code, which is why it cannot be a `require`.
+12a. **The other answer, which is smaller.** A shard behind a generated
+    boundary is one way to reach the ecosystem. The other is to give the
+    program Crystal's standard library and compile the shard into it, and it
+    turned out to be two small changes rather than a project.
+
+    `require` was refused in a `.iyi` file, and the reason given was "there is
+    no standard library to require: the prelude is what a program gets". That
+    is true of iyi's prelude and of nothing else. `--crystal` builds a program
+    against Crystal's, and there `require` means what it means in Crystal. A
+    `require` also comes out of the module a header desugars to, the way
+    `import` does: it is a directive about which files a build reads, and
+    leaving it inside made json's `class String` mean `Site::String`.
+
+    **The rules do not change with the library.** The module header, `pub`,
+    `import`, `using`, traits, `impl`, R-2 on exports: all of them, on a
+    program that requires Kemal. What changes is what a program *has*.
+
+    **Swept across nine shards**, each built twice — as an iyi program and as a
+    Crystal one, so that a difference is this fork's and a shared failure is
+    the ecosystem's: `kemal`, `db`, `ameba`, `habitat`, `baked_file_system`,
+    `radix`, `sqlite3`, the standard library's own `json`/`yaml`/`uri`/`http`,
+    and a program that round-trips `JSON::Serializable`, parses YAML and writes
+    a file. All nine behave identically in both languages. A Kemal server
+    written in iyi serves HTTP.
+
+    **One adaptation, and it is R-2 asking its question.** `habitat`'s macro
+    resolves the type it was handed by name, and a class an iyi module left
+    unmarked is private, so the macro could not find it. `pub class` fixes it —
+    correctly, since a macro from another module reaching your type is exactly
+    what `pub` governs.
+
+    The message was `undefined macro method 'Path#constant'`, which names
+    neither the type nor the rule. It is a fact about the compiler: an
+    unresolved path stays a `Path`, and every method a macro would call on the
+    type is undefined on that. **Fixed**: a macro method missing from a `Path`
+    now asks whether the path names a type that exists and is unexported, and
+    says so when it does. Only then — every other unresolved path keeps the
+    message it had.
+
+    **And then a real one was written**, because nine compiles are not nine
+    programs: a small JSON API over Kemal, two iyi modules, storage in one and
+    routes in the other. Creating, listing, fetching, and a miss answered
+    `{"error":"no note 99"}` with a 404 — the miss travelling as `Note |
+    NotFound` with an `impl Error for NotFound` on it, which is iyi's error
+    union carrying a Kemal response. It found nothing of iyi's. The one thing
+    it did find belongs to Crystal and reproduces there:
+    `halt env, response: {error: found.message}.to_json` does not parse,
+    because a `{` after a named argument in a call without parentheses is read
+    as a block. A variable on the line before it is what a Crystal programmer
+    writes too.
+
+    **What it costs.** R-1, for the required shard: it is read from source and
+    the edit loop pays for it the way Crystal's does. Your own modules still
+    write artifacts. And the two libraries are two modes on the reading side —
+    `--use-iyimod` needs iyi's prelude, because an artifact's object code
+    numbers types that under Crystal's library are the standard library's own,
+    and a consumer compiling its own copy of it has two of everything.
+
+12. ~~**Using Crystal code.**~~ **Specified in III.6; the direct source mode
+    is measured in 12a.** An `extern module` restates R-2 by hand for the
+    surface being used, the shard is compiled once behind it into an ordinary
+    artifact, and the boundary is unchecked in the first version the way
+    Gleam's is. Ordinary shard code breaks three of the four rules, which is
+    why it cannot be a `require` in own-prelude artifact mode. `--crystal` is
+    the separate source mode above.
+
+    **The Crystal ecosystem, and what a shard would cost.** Ten thousand
+    shards exist and none of them is written to iyi's rules, so "run them
+    directly" is not a compatibility problem, it is the four rules: `require`
+    against R-1, inference against R-2, monkey patching against R-3, and
+    Crystal's 8,161-line standard library against iyi's own 1,184-line prelude.
+
+    What is measurable is narrower and better than that framing suggests, and
+    it was measured on **Kemal 1.12.0**, which compiles under this compiler
+    unchanged, dependencies and all.
+
+    **What the surface looks like.** `crystal tool bind -e Kemal` reads a
+    shard and sorts its public methods three ways: written down already,
+    writable by a machine, and needing a human. Kemal's 273 come out 74, 182
+    and 17. The machine's share is not a guess — the tool instantiates each
+    method whose parameters carry types and reads what it returns, which
+    answered **125 return types nobody had written**. The 57 it refused are
+    mostly honest: 40 take a block, and what a block-taking method returns
+    depends on the block.
+
+    **What blocks the rest.** 95 signatures can be written today; 104 wait on
+    a type an iyi program cannot name, and the tool sorts those by what each
+    one would unlock. `HTTP::Server::Context` is first and unlocks 16, then
+    `IO` (9), `HTTP::Handler` (6), `Radix::Tree` (5). **Eight declarations
+    unlock 49 of the 104.** That the head of that list is `Context` is the
+    same answer the hand port reached in `samples/iyi/kemal/`: the framework's
+    whole user-facing surface hangs on one type.
+
+    **What crosses, measured.** The compiler is the same compiler, so a
+    Crystal object links into an iyi program and the standard library works
+    inside it: a `fun` calling `{"a" => 1}.to_json` answered correctly from an
+    iyi `puts`. Objects cross too, because `String` is the *compiler's* type
+    in both worlds — the prelude reopens what `Program#initialize` laid out.
+    Two things do not cross by themselves, and both were found by trying:
+
+    - **A separately compiled object brings its own runtime state.** Its
+      `Crystal::Once`, `Thread` and `Fiber` are not the host's, its constants
+      are filled by its own `__crystal_main`, and nothing runs it: reading one
+      constant segfaults. The fix is mechanical and is the shim a generator
+      writes — `fun shard_init(argc, argv)` calling `Crystal.init_runtime` and
+      `Crystal.main_user_code`, with the object's own `main` localised so the
+      host keeps the entry point. With it, a constant and a class variable both
+      answer correctly.
+    - **Layout is shared and invariants were not.** Crystal reads `@length == 0`
+      on a non-empty string as "not counted yet" and scans; this prelude
+      returned the field. So a string built by Crystal's `to_json` printed
+      correctly through iyi's `puts` and answered `size` **0**. No error, a
+      wrong number. **Fixed**: `String#size` counts when the field is unset,
+      which is free for every string this prelude makes itself, because it
+      fills the field. The same call now answers 7.
+
+    **What crosses is more than a `fun`, and this is the finding the rest
+    rests on.** The two sides mangle names identically, being one compiler:
+    `Lib::Greeter.polite(String) : String` compiles to
+    `*Lib::Greeter@Lib::Greeter::polite<String>:String` from Crystal source
+    and from iyi source alike. So the boundary needs no C ABI at all. Measured
+    end to end: a `.iyimod` written by `--no-codegen` (declarations, no object
+    code), an object compiled from Crystal source with its symbol globalised,
+    and an iyi program built with `--use-iyimod` against the first and linked
+    against the second. It passes an iyi `String` in, gets one back, and
+    prints it. `lib`'s C-types-only rule is not in the way because nothing
+    goes through `lib`.
+
+    **Where this is going.** `lib` carries C types only — Crystal's own rule,
+    and it refuses `String` — so a real API cannot cross that way. It does not
+    have to: an artifact already carries declarations *and* object code, and a
+    shard compiled once with generated declarations is the same shape as a
+    `.iyimod`. That is the boundary worth building, and R-1 is what makes it
+    cheap: the shard is compiled once and the edit loop never reads it again.
+
+    **Built far enough to run Kemal's own code.** `crystal tool bind
+    --emit-iyimod` writes the artifact and the file that makes the machine code
+    exist, and an iyi program built against the first and linked against the
+    second called `Kemal::ExceptionPage.for_production_exception` and printed
+    the page Kemal returns in production. Four things had to be true and each
+    was found by trying:
+
+    - **Codegen is demand-driven**, so a library nobody calls compiles to
+      nothing. The generated keep file names every exported method and is never
+      called.
+    - **A getter whose body is one instance variable is inlined** and emits no
+      symbol. `--emit-iyimod` already suppressed that for iyi modules;
+      `--iyi-keep NAMESPACE` says the same about a bound shard.
+    - **Symbols are local until an `objcopy`** globalises them.
+    - **A reference type can cross without its fields.** A pointer is a
+      pointer, so a consumer that never allocates one needs nothing of what is
+      inside it — 16 of Kemal's 27 types travel that way, `new` withheld.
+      A struct cannot: its size is its fields.
+
+    **Kemal hands out everything through constants, and a constant is
+    storage.** `Config::INSTANCE`, one `INSTANCE` per handler: a declaration
+    can name a type but not a global somebody else's object file holds. So the
+    generator writes a function per constant into the shim it already
+    generates, and functions cross like any other:
+
+        module Kemal
+          extend self
+
+          def config_instance : Kemal::Config
+            Kemal::Config::INSTANCE
+          end
+        end
+
+    `extend self` rather than `def self.`, because that is what an iyi module
+    header desugars to and the two sides have to agree on one symbol:
+    `Kemal@Kemal::config_instance` against `Kemal::config_instance`, which is
+    the same distinction that makes a module function what it is.
+
+    **A block crosses when its type is written, and that is not a detail.** A
+    block-taking method is compiled per block *type*, and the type is in the
+    symbol — `twice<Int32, &Proc(Int32, Int32)>` — so every consumer writing a
+    block of the annotated type calls the one name the shard emitted. Measured:
+    `twice(21) { |n| n }` runs across the boundary.
+
+    A block written `-> _` has no such type. Each caller's block returns
+    something else, each is a different symbol, and none of them is in the
+    shard's object. **That is 32 of Kemal's 43 block-takers, and it is the
+    whole DSL**: `get`, `post`, `error`, the filters. The hand port in
+    `samples/iyi/kemal/` answers it with `forall B : IntoBody`, which is a
+    person deciding what a route may return — R-2 asking its question, not a
+    gap a generator can close.
+
+    **Measured, on Kemal 1.12.0**: 15 module functions, 22 types carrying 50
+    methods, and an iyi program that reads the framework's own configuration —
+    `Kemal`, `3000`, `development`, `true`. What is left is two decisions per
+    API rather than any missing machinery: what a `-> _` block returns, and
+    what `HTTP::Server::Context` and a dozen more become on this side. 104
+    signatures wait on the second.
+
 13. ~~**Dependencies and discovery.**~~ **Specified in III.7**: path identity,
     minimal version selection, a manifest and a sums file, source as the primary
     form and the artifact as a signed cache keyed on the four-tuple the format
-    already enforces. The discovery half is the part with an advantage: R-2 means
-    an index built from declarations is exact rather than parsed.
-14. ~~**Tooling.**~~ **Specified in III.8**: the formatter first because it is
-    nine visit methods against an interface that already exists, then an
-    in-process single-module analysis API, then a language server over it. R-1 is
-    what makes that server cheap, and it is the one dividend of the compilation
-    model nobody designed for.
-15. ~~**The dependency floor.**~~ **Measured in III.9, and everything on it now
-    decided**: five undefined symbols in an iyi program on darwin, all of them
-    libc; on Linux an object that leaves none at all, against an executable
-    carrying only the five its link template adds. libgc left the default to
-    buy that, so the default allocates and never collects, a default kept on
-    purpose with its price stated (Appendix B #23); the collector was the only
-    open item and is now decided, iyi writes its own (Appendix B #20), which
-    II.5 already required for R-4, so it was never dependency hygiene alone.
-    Self-hosting stays where B.2 put it.
-16. ~~**Every other C library.**~~ **Specified in III.10**: Crystal's published
-    inventory, one line each, with the principle that iyi owns everything above
-    libc and libc is optional. Two were already answered by work nobody had
-    counted: `compiler_rt` is ported to Crystal and the digests are Crystal, so
-    neither clang's runtime nor libcrypto is linked. The event loop is the
-    cheapest of the remaining four because Crystal already wrote the native
-    backends, and III.4 being unbuilt is why the choice is live. And the rule is
-    checked rather than asserted: `bench/dependency_floor.sh` fails in CI when a
-    program grows a symbol or a linked library, on the default build and on
-    `-Dgc_boehm`.
+    enforces. The discovery half is the part with an advantage: R-2 means an
+    index built from declarations is exact rather than parsed.
+14. ~~**Tooling.**~~ **Specified in III.8; the formatter is built.** It was the
+    first item because it is nine visit methods against an interface that
+    already exists. The remaining order is an in-process single-module analysis
+    API, then a language server over it. R-1 is what makes that server cheap,
+    and it is the one dividend of the compilation model nobody designed for.
+15. ~~**The dependency floor.**~~ **Measured in III.9, and everything on the
+    own-prelude floor is decided**: five undefined symbols in an own-prelude
+    program on macOS, all libc; on Linux an object that leaves none at all,
+    against an executable carrying only the five its link template adds. libgc
+    left the default to buy that, so the own-prelude default allocates and never
+    collects, a price kept on purpose and stated in Appendix B #23. The
+    collector was the only open item and is now decided: iyi writes its own
+    (Appendix B #20), which II.5 already required for R-4, so it was never
+    dependency hygiene alone. Self-hosting stays where B.2 put it.
+
+    `bench/dependency_floor.sh` checks plain own-prelude builds and
+    `-Dgc_boehm`; it does not check `--crystal`. That mode links Crystal's
+    standard library and may pull every library a required shard pulls.
+16. ~~**Every other C library.**~~ **Specified in III.10 for iyi's own
+    prelude**: Crystal's published inventory, one line each, with the principle
+    that iyi owns everything above libc and libc is optional. Two were already
+    answered by work nobody had counted: `compiler_rt` is ported to Crystal and
+    the digests are Crystal, so neither clang's runtime nor libcrypto is linked.
+    The event loop is the cheapest of the remaining four because Crystal already
+    wrote the native backends, and III.4 being unbuilt is why the choice is
+    live. The rule is checked rather than asserted:
+    `bench/dependency_floor.sh` fails in CI when an own-prelude program grows a
+    symbol or linked library, on the default build and on `-Dgc_boehm`.
 
 ---
 
@@ -4888,7 +5155,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | The path/name mapping needed more than snake_case | `camelcase` drops an underscore before a digit, so `v_1` and `v1` both give `V1`; requiring each group to start with a letter removes that and three sibling collisions (IV.6 #6) |
 | Ten reachable regex literals kept pcre2 on the compiler, not a `require` | `--emit llvm-ir` shows `$Regex:0` through `$Regex:9` expanded in the binary, from four stdlib files the compiler compiles into itself; converting all four leaves `otool -L .build/iyi` at libLLVM, libc++, libgc, libSystem and `nm -u .build/iyi` without any of the thirteen `pcre2_*` symbols it used to leave undefined. An unused constant does not bring it back, because Crystal never instantiates an unreachable one (III.10) |
 | PCRE2's `\s` under `UCP` and `Char#whitespace?` differ at exactly one character | the 20,633-case differential over `parse_flag_definition` first reported 1,114 mismatches and every one of them contained U+0085 NEL; handling NEL by name takes it to 0 (III.10) |
-| A claim measured on an object is not a claim about the executable | the per-target audit reads an iyi program's `.o` for `x86_64-linux-gnu` and finds nothing undefined, and this document turned that into "no undefined symbols at all". The linked program has five, `__libc_start_main`, `__gmon_start__`, `__cxa_finalize` and the two weak `_ITM_` callbacks, contributed by the link template's crt objects and reported by CI on Linux. Both measurements are right and they answer different questions, so the layer is now named wherever the number is (III.9, III.10) |
+| A claim measured on an object is not a claim about the executable | the per-target audit reads an own-prelude program's `.o` for `x86_64-linux-gnu` and finds nothing undefined, and this document turned that into "no undefined symbols at all". The linked own-prelude program has five, `__libc_start_main`, `__gmon_start__`, `__cxa_finalize` and the two weak `_ITM_` callbacks, contributed by the link template's crt objects and reported by CI on Linux. Both measurements are right and answer different questions, so the layer and library mode are now named wherever the number appears (III.9, III.10) |
 | Direct dependencies and the transitive closure are different checks, and only one has teeth | `ldd` on the Linux compiler listed libxml2, libz, libffi, libedit, icu, zstd, lzma, libbsd, libmd and libtinfo, all of them libLLVM's; `readelf -d` NEEDED lists what iyi names, which is what `otool -L` already reported on darwin. Proven both ways: an explicit `-lxml2` fails the gate by name, the same library inside libLLVM passes, and `otool -L libLLVM.dylib` confirms libxml2, libffi, libedit and libz are in there. `linux-vdso.so.1` was never a `DT_NEEDED` entry and stopped appearing rather than being allowed (III.10) |
 
 ## Appendix B: Decisions awaiting your call
@@ -4912,15 +5179,15 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 15 | **Does the daemon become the language server's process? (III.8)** | yes, or it goes in `CRYSTAL_ONLY`. It was measured against builds and withdrawn; an editor is the workload its pre-analysed state was actually for. What it must not stay is maintained and unreachable |
 | 16 | **Does III.4 use libevent or the native backends? (III.10)** | native, and it is not close. Crystal already wrote `epoll`, `kqueue`, `io_uring` and `iocp` backends and libevent is its default only on four platforms iyi does not target. Adopting it would put a C library under every concurrent iyi program to save work already done |
 | 17 | **Regex: PCRE semantics or RE2's? (III.10)** | RE2's. Linear time, no backreferences, no lookbehind. A language selling "the compiler will not surprise you" should not ship a library that takes exponential time on ordinary input, and Go already took this trade |
-| 18 | **TLS (III.10)** | none in 0.x; an OpenSSL binding as a package if something needs it sooner; own it eventually, TLS 1.3 only, and not before there is something to protect and somebody to audit it. What must not happen is OpenSSL reachable from the prelude |
-| 19 | **Is "no C library in the prelude" a rule or a habit? (III.10)** | a rule, and it is checked: `bench/dependency_floor.sh` fails in CI when a program grows a symbol or a linked library, on the default build and on `-Dgc_boehm`. Both platforms measure the same property now: direct dependencies, `otool -L` on darwin and `readelf -d` NEEDED on Linux, since `ldd`'s transitive closure put libLLVM's libraries on iyi's list and an allowlist holding libxml2 for that reason could never notice iyi reaching for libxml2 itself. Symbols are per platform: darwin's five libSystem calls, and on Linux the five the link template's crt objects leave, allowed by exact name rather than by a wildcard, so `malloc` or `mmap` still fails. It holds the compiler binary to a list too, `libLLVM libc++ libgc libSystem`, and to a denylist that carries `libpcre`, so the rule is not weaker for the toolchain than for what it builds. Proven to fail three times: adding a `lib LibM` call to a sample, injecting a reachable regex literal into `src/option_parser.cr`, and rebuilding the compiler with an explicit `-lxml2` |
+| 18 | **TLS (III.10)** | none in 0.x; an OpenSSL binding as a package if something needs it sooner; own it eventually, TLS 1.3 only, and not before there is something to protect and somebody to audit it. What must not happen is OpenSSL becoming reachable from iyi's own prelude |
+| 19 | **Is "no C library in the prelude" a rule or a habit? (III.10)** | a rule for iyi's own prelude, and it is checked: `bench/dependency_floor.sh` fails in CI when an own-prelude program grows a symbol or a linked library, on the default build and on `-Dgc_boehm`. `--crystal` is outside this gate and may link Crystal's standard library dependencies and anything a required shard pulls. Both host platforms measure the same property: direct dependencies, `otool -L` on macOS and `readelf -d` NEEDED on Linux, since `ldd`'s transitive closure put libLLVM's libraries on iyi's list and an allowlist holding libxml2 for that reason could never notice iyi reaching for libxml2 itself. Symbols are per platform: macOS's five libSystem calls, and on Linux the five the link template's crt objects leave, allowed by exact name rather than a wildcard, so `malloc` or `mmap` still fails. It holds the compiler binary to a list too, `libLLVM libc++ libgc libSystem`, and to a denylist that carries `libpcre`, so the rule is not weaker for the toolchain than for own-prelude programs. Proven to fail three times: adding a `lib LibM` call to a sample, injecting a reachable regex literal into `src/option_parser.cr`, and rebuilding the compiler with an explicit `-lxml2` |
 | 20 | ~~**Write a collector, or adopt `gcry`? (III.9)**~~ | **Decided: iyi writes its own collector; gcry is not adopted, overruling this row's earlier recommendation.** What changed is the goal, and the change is the owner's, not a finding: they want concurrency, parallelism and a performant language, and owning the collector is the only path to the control that takes; gcry was pointed at as hints about what has already been tried to pull Crystal off Boehm, never as a runtime to adopt. The price is stated rather than softened: everything gcry already built, the heap, the STW, the roots, the finalizers, two platforms, is rebuilt in this tree, and only its measurements are inherited (#21). R-4 still requires the precise heap-layout table either way (II.5) |
 | 21 | **Precise stack roots, now a design question inside the collector iyi writes (III.9)** | still open, and reframed by #20 rather than settled by it: it is a design decision in a collector iyi owns, no longer a finding inherited from gcry. R-4 needs heap-layout precision, which is a table. gcry's measurement is still the best available evidence on the expensive half: stack-map precision is correctness-stable and not an RSS win. Inherited as prior art rather than repeated, and answerable only when iyi's own collector exists to measure on |
-| 22 | ~~**Keep macro-level regex, and pcre2 on the compiler with it? (III.9, III.10)**~~ | **Decided and done: macro-level regex is kept, on iyi's own engine, and pcre2 is off the compiler, measured.** RE2 semantics everywhere. This row recommended keeping both until the owned engine from #17 landed; it landed as `src/compiler/crystal/rx.cr`, differentially verified against pcre2, and it took pcre2 out of compiler-owned source. It did not take the library off the binary. Ten reachable regex literals in four stdlib files the compiler compiles into itself did that, found by reading `--emit llvm-ir` (`$Regex:0` through `$Regex:9`) rather than by inference: `option_parser.cr`, `process/shell.cr`, `semantic_version.cr` and `spec/cli.cr` now parse by hand, each differentially verified, and `otool -L .build/iyi` is down to libLLVM, libc++, libgc and libSystem. `bench/dependency_floor.sh` forbids `libpcre` for the compiler as well as for programs, proven to fail by injecting a reachable literal. The price: macro authors lose in-pattern backreferences and lookaround, and a macro using one now fails with a named error rather than quietly meaning something else; and `Spec::CLI#pattern` changed from `Regex?` to `String?`, a breaking change to a stdlib public API even though the behaviour is identical. The gain: the compiler sheds a library on Crystal's required list, and no pattern can take exponential time |
-| 23 | ~~**Is a default that does not collect acceptable until the collector lands? (III.9)**~~ | **Decided: yes, kept, and documented loudly.** A plain `iyi build` allocates and never collects; `-Dgc_boehm` opts back into real collection. No 0.1.0 program is long-running, because there is no IO beyond `puts` and no concurrency, so nothing reaches the point where not collecting matters. The price stays in the row: a long-running program grows without bound, and this is a default that ships a known leak. "Until the collector lands" now means until iyi's own lands (#20) |
+| 22 | ~~**Keep macro-level regex, and pcre2 on the compiler with it? (III.9, III.10)**~~ | **Decided and done: macro-level regex is kept, on iyi's own engine, and pcre2 is off the compiler, measured.** RE2 semantics everywhere. This row recommended keeping both until the owned engine from #17 landed; it landed as `src/compiler/crystal/rx.cr`, differentially verified against pcre2, and it took pcre2 out of compiler-owned source. It did not take the library off the binary. Ten reachable regex literals in four stdlib files the compiler compiles into itself did that, found by reading `--emit llvm-ir` (`$Regex:0` through `$Regex:9`) rather than by inference: `option_parser.cr`, `process/shell.cr`, `semantic_version.cr` and `spec/cli.cr` now parse by hand, each differentially verified, and `otool -L .build/iyi` is down to libLLVM, libc++, libgc and libSystem. `bench/dependency_floor.sh` forbids `libpcre` for the compiler and own-prelude programs, proven to fail by injecting a reachable literal. The price: macro authors lose in-pattern backreferences and lookaround, and a macro using one now fails with a named error rather than quietly meaning something else; and `Spec::CLI#pattern` changed from `Regex?` to `String?`, a breaking change to a stdlib public API even though the behaviour is identical. The gain: the compiler sheds a library on Crystal's required list, and no pattern can take exponential time |
+| 23 | ~~**Is a default that does not collect acceptable until the collector lands? (III.9)**~~ | **Decided: yes, kept, and documented loudly.** A plain build using iyi's own prelude allocates and never collects; `-Dgc_boehm` opts that mode back into real collection. The own prelude has no IO beyond `puts` and no concurrency. `--crystal` uses Crystal's standard library and is a different mode, outside this allocator and dependency-floor claim. The price stays in the row: a long-running own-prelude program grows without bound, and this is a default that ships a known leak. "Until the collector lands" now means until iyi's own lands (#20) |
 | 24 | ~~**Keep bdw-gc on the compiler? (III.9, III.10)**~~ | **Decided: yes; the exception holds in the present tense, and this row is superseded by #20 in its premise and restated.** The compiler keeps bdw-gc: `-Dgc_none` is proven not viable for it (III.10), and a collector that cannot carry parallel codegen cannot host a compiler that runs parallel codegen over fibers. What changed is the revisit condition: it is no longer gcry's parallel path leaving experimental, since gcry is not being adopted; it is iyi's own collector reaching the stage that serves parallel codegen. Until then the dependency stays a recorded exception carrying this reason rather than an unexamined habit |
 | 25 | ~~**Build the interpreter on the macro interpreter, without C interop? (III.11)**~~ | **Decided: yes.** This reopens #11 on the owner's ask, with `iex` as the reference; the evidence that removed the old one still stands. The base is `src/compiler/crystal/macros/interpreter.cr`, 781 lines, a complete AST evaluator that already resolves types, extended for iyi's nine new AST nodes and two `Def` clauses, not the 11,377-line revert that cannot run iyi past the module header. No C interop, so no libffi, and that is enforced rather than assumed: `libffi` is on `bench/dependency_floor.sh`'s denylist, and the gate was proven to fire by adding to a sample the exact `@[Link("ffi")]` shape a naive revert would produce. It failed at three independent layers, reporting the gained symbol `ffi_prep_cif`, the gained library `libffi.8.dylib`, and the denylist hit, so an interpreter cannot quietly bring libffi with it. R-1 bounds what a session recompiles to the module graph; R-3 takes open-class patching away from the prompt |
-| 26 | ~~**wasm32's allocator: wasi-libc as the platform runtime, a qualified platform, or `memory.grow` in the compiler? (III.9, III.10)**~~ | **Decided: bind `memory.grow` so an iyi program on wasm32 needs nothing but its WASI imports.** A two-argument `fun` declaration of `llvm.wasm.memory.grow.i32` (memory index, then page delta) lowers to `memory.grow 0`. An earlier probe used the one-argument form, failed the module verifier, and was misread as "Crystal cannot bind this intrinsic". It was an arity error, not an impossibility, so this landed as a prelude binding rather than a compiler primitive. Measured after: `hello.wasm` and `webapp.wasm` leave `wasi_fd_write` and `wasi_proc_exit` undefined, and no longer leave `malloc` or `realloc`. Two alternatives were rejected: accepting wasi-libc as the platform's own runtime the way libSystem and kernel32 are accepted, and documenting wasm32 as a qualified target, both because either leaves an asterisk on a platform the owner named as a priority |
+| 26 | ~~**wasm32's allocator: wasi-libc as the platform runtime, a qualified platform, or `memory.grow` in the compiler? (III.9, III.10)**~~ | **Decided: bind `memory.grow` so an own-prelude iyi program on wasm32 needs nothing but its WASI imports.** A two-argument `fun` declaration of `llvm.wasm.memory.grow.i32` (memory index, then page delta) lowers to `memory.grow 0`. An earlier probe used the one-argument form, failed the module verifier, and was misread as "Crystal cannot bind this intrinsic". It was an arity error, not an impossibility, so this landed as an own-prelude binding rather than a compiler primitive. Measured after: `hello.wasm` and `webapp.wasm` leave `wasi_fd_write` and `wasi_proc_exit` undefined, and no longer leave `malloc` or `realloc`. Two alternatives were rejected: accepting wasi-libc as the platform's own runtime the way libSystem and kernel32 are accepted, and documenting wasm32 as a qualified target, both because either leaves an asterisk on a platform the owner named as a priority |
 
 ### B.2: The one decision the fork already made: **SETTLED: not a self-hosting project**
 

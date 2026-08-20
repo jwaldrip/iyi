@@ -23,6 +23,7 @@ end
 
 impl Enumerable for Nums
   type Elem = Int32
+
   def each(& : Int32 -> Nil) : Nil
     @a.each { |x| yield x }
   end
@@ -35,6 +36,7 @@ end
 
 impl Enumerable for Words
   type Elem = String
+
   def each(& : String -> Nil) : Nil
     @a.each { |x| yield x }
   end
@@ -107,6 +109,7 @@ puts "cycle           #{cycled.join(",")}"
 def describe(e : Enumerable) : String
   "#{e.size} items"
 end
+
 puts "as a type       #{describe(n)} / #{describe(w)}"
 
 # ---------------------------------------------------------------------------

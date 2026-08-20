@@ -62,6 +62,7 @@ class Crystal::Command
     Usage: #{Command.program_name} tool [tool] [switches] [program file] [--] [arguments]
 
     Tool:
+        bind                     say what a Crystal shard would cost as an iyi module
         context                  show context for given location
         dependencies             show file dependency tree
         expand                   show macro expansion for given location
@@ -245,6 +246,9 @@ class Crystal::Command
     when "expand".starts_with?(tool)
       options.shift
       expand
+    when "bind" == tool
+      options.shift
+      bind
     when "hierarchy".starts_with?(tool)
       options.shift
       hierarchy
@@ -289,6 +293,20 @@ class Crystal::Command
   protected def prelude_compiler_for_build : Compiler
     options.shift if options.first? == "build"
     create_compiler("build").compiler
+  end
+
+  # iyi: what it would take to put a Crystal shard behind an iyi boundary.
+  #
+  # `-e` names the shard's own namespace, borrowed from `hierarchy` because it
+  # is the same question — which types are this shard's — asked for a different
+  # reason. Not `top_level`, because a signature's return type is only known
+  # once the method has been instantiated, and that is the whole measurement.
+  private def bind
+    config, result = compile_no_codegen "tool bind", hierarchy: true
+    @progress_tracker.stage("Tool (bind)") do
+      Crystal.print_bind result.program, config.hierarchy_exp, STDOUT,
+        artifact_dir: config.compiler.emit_bind
+    end
   end
 
   private def hierarchy
@@ -585,6 +603,30 @@ class Crystal::Command
       # Emitting from an ordinary build rather than from a "compile this module
       # alone" command, because compiling a module alone is the thing the
       # artifact is *for* and cannot precede it.
+      # iyi: which standard library this program has.
+      #
+      # `--prelude` is the mechanism and this is the question: a program built
+      # with it gets Crystal's library, so `require` reaches the ecosystem and
+      # means what it means in Crystal. The rules that make a module a module
+      # are untouched — they are the language's, and a prelude is a library.
+      opts.on("--crystal", "iyi: build against Crystal's standard library, so `require` works") do
+        compiler.prelude = "prelude"
+        specified_prelude = true
+      end
+
+      opts.on("--iyi-keep NAMESPACE", "iyi: define rather than inline the methods under NAMESPACE") do |root|
+        compiler.iyi_keep = root
+      end
+
+      # iyi: where `tool bind` writes what it generates.
+      #
+      # Its own switch rather than `--emit-iyimod`, because it is not that: it
+      # writes one artifact it built itself, for a shard, under Crystal's
+      # library — which is exactly the combination `--emit-iyimod` refuses.
+      opts.on("--emit-bind DIR", "iyi: where `tool bind` writes the boundary it generates") do |dir|
+        compiler.emit_bind = dir
+      end
+
       opts.on("--emit-iyimod DIR", "iyi: write a .iyimod per imported module into DIR") do |dir|
         # iyi: answered here rather than by `Dir.mkdir_p` half an hour into a
         # build. A path that names a file, or a directory nobody may write to,

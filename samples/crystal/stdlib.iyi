@@ -1,0 +1,104 @@
+# The same language, with Crystal's library — README, "The library a program
+# has".
+#
+#   ./bin/iyi run --crystal samples/crystal/stdlib.iyi
+#
+# A prelude is a library and the rules are the language, so a program can keep
+# one and change the other. Everything iyi has is in this file — a module
+# header, `pub`, a trait with a default, an `impl` on a generic, an error union
+# with `!` and `.or`, `defer` — and so is `require`, which reaches the
+# standard library iyi's own prelude does not have.
+#
+# It is here to be run by CI. What it protects is the seam: the rules and the
+# library are meant to be independent, and a file that uses both at once is the
+# only thing that says so every build.
+module samples/stdlib
+
+require "json"
+require "uri"
+require "yaml"
+
+pub trait Show
+  abstract def show : String
+
+  # A trait default, stencilled onto every implementer (II.6).
+  def shout : String
+    show.upcase
+  end
+end
+
+pub struct Box(T)
+  getter value : T
+
+  def initialize(@value : T)
+  end
+end
+
+# An impl on a generic, with the binder R-3 requires (II.7).
+impl Show for Box(T) forall T
+  def show : String
+    "Box(#{value})"
+  end
+end
+
+impl Show for Int32
+  def show : String
+    to_s
+  end
+end
+
+# A bound on a name this signature introduces.
+pub def describe(item : T) : String forall T : Show
+  item.shout
+end
+
+# An error is an ordinary member of a union, and `Error` is the compiler's own
+# marker rather than the prelude's — which is why this works under either
+# library (III.1.1).
+pub struct NotFound
+  getter path : String
+
+  def initialize(@path : String)
+  end
+end
+
+impl Error for NotFound
+  def message : String
+    "no such thing: #{path}"
+  end
+end
+
+pub def load(path : String) : String | NotFound
+  return NotFound.new(path) if path == "missing"
+  "contents of #{path}"
+end
+
+# `!` returns the error to the caller and unwraps the value otherwise.
+pub def read_twice(path : String) : String | NotFound
+  first = load(path)!
+  second = load(path)!
+  "#{first} / #{second}"
+end
+
+def with_cleanup : Int32
+  defer puts "  cleaned up"
+  puts "  working"
+  7
+end
+
+# ---------------------------------------------------------------------------
+# The language
+# ---------------------------------------------------------------------------
+puts describe(7)
+puts describe(Box.new("x"))
+puts read_twice("a")
+puts read_twice("missing").or("recovered")
+puts with_cleanup
+
+# ---------------------------------------------------------------------------
+# The library, in the same file
+# ---------------------------------------------------------------------------
+puts({name: "iyi", ok: true}.to_json)
+puts Array(Int32).from_json("[3, 1, 2]").sort.join(",")
+puts YAML.parse("host: example.com").as_h["host"]
+puts URI.parse("https://example.com/a?b=1").query

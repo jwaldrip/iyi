@@ -121,6 +121,21 @@ module Crystal
     # (SPEC.md IV.1). Set by `--emit-iyimod`.
     property emit_iyimod : String? = nil
 
+    # iyi: a namespace whose methods this build must define rather than inline.
+    #
+    # `--emit-iyimod` already says this about iyi modules, and the reason is the
+    # same one: a method whose body is a literal is inlined and emits no symbol,
+    # which is right for a whole-program build and wrong for one producing code
+    # somebody else will call by name. A Crystal shard bound by `tool bind` is
+    # that second thing and has no iyi modules to key on, so it says which
+    # namespace it is producing.
+    property iyi_keep : String? = nil
+
+    # iyi: where `tool bind` writes the boundary it generates (SPEC.md Part V
+    # item 12). Not `emit_iyimod`: that one writes this build's own modules and
+    # refuses to run under Crystal's library, which is where a shard is read.
+    property emit_bind : String? = nil
+
     # iyi: directory to read a `.iyimod` per imported module from, or nil
     # (SPEC.md IV.1). Set by `--use-iyimod`. An import that finds one there is
     # compiled against it and never opens the module's source, which is R-1's
@@ -206,6 +221,24 @@ module Crystal
     # Raises `InvalidByteSequenceError` if the source code is not
     # valid UTF-8.
     def compile(source : Source | Array(Source), output_filename : String) : Result
+      # iyi: the two libraries are two modes, and they do not mix on the
+      # reading side.
+      #
+      # An artifact's object code numbers the types its module's own bodies
+      # made, and under Crystal's library those include the standard library's
+      # own — `String::CHAR_TO_DIGIT62` and the rest. A consumer that reads
+      # such an artifact while compiling its own copy of that library has two
+      # of everything, and what came out was an LLVM module that would not
+      # verify rather than an error anybody could act on.
+      if use_iyimod && !prelude.ends_with?("iyi/prelude")
+        raise Crystal::Error.new(
+          "--use-iyimod needs iyi's own prelude. A program built against " \
+          "Crystal's standard library compiles its libraries from source, " \
+          "which is what `--crystal` is for, and an artifact is the other " \
+          "way of getting a module (SPEC.md Part V item 12)."
+        )
+      end
+
       compile_configure_program(source, output_filename) { }
     end
 
@@ -243,6 +276,7 @@ module Crystal
       end
 
       prepared = prepare_iyimods program
+      keep_iyi_namespace program
 
       units = codegen program, node, sources, output_filename unless @no_codegen
 
@@ -340,6 +374,7 @@ module Crystal
       end
 
       prepared = prepare_iyimods program
+      keep_iyi_namespace program
 
       units = codegen program, node, source, output_filename unless @no_codegen
 
@@ -370,8 +405,36 @@ module Crystal
     # enforced — an exported signature missing a block annotation is refused
     # here. Refusing it after a full codegen and link would make the compiler
     # spend the whole build on a program it had already decided not to write.
+    # iyi: `--iyi-keep Kemal`, the same rule `prepare_iyimods` applies to a
+    # module it is writing, applied to a namespace named on the command line.
+    private def keep_iyi_namespace(program : Program) : Nil
+      return unless root = iyi_keep
+
+      type = program.types?.try &.[]?(root)
+      return unless type.is_a?(ModuleType)
+
+      program.iyi_exported_owners << type
+      collect_iyi_owners type, program.iyi_exported_owners
+    end
+
     private def prepare_iyimods(program : Program) : Array({String, IyiMod::Artifact})?
       return unless dir = emit_iyimod
+
+      # iyi: and the writing side of the same rule.
+      #
+      # An artifact written under Crystal's library is one `--use-iyimod`
+      # refuses to read, so writing it is worse than refusing to: a file
+      # nothing can consume, produced without a word. Said whether or not this
+      # program has a module to write, because "accepted and did nothing" is
+      # the same silence in a smaller disguise.
+      if !prelude.ends_with?("iyi/prelude")
+        raise Crystal::Error.new(
+          "--emit-iyimod needs iyi's own prelude. An artifact written against " \
+          "Crystal's standard library is one nothing can read back: a " \
+          "consumer compiles its own copy of that library and has two of " \
+          "everything (SPEC.md Part V item 12a)."
+        )
+      end
 
       flags = program.flags.to_a.sort!
 
@@ -511,7 +574,11 @@ module Crystal
               end
             end
           elsif exported_type = type.types?.try &.[]?(name)
-            types << iyi_type_declaration(program, filename, name, exported_type)
+            # iyi: a constant is in the same table as a type and is not one.
+            # `pub LIMIT = 42` reaches a consumer by being written back into
+            # the initialiser, which travels as the module's own source, so
+            # there is nothing to declare here.
+            types << iyi_type_declaration(program, filename, name, exported_type) unless exported_type.is_a?(Const)
           end
         end
 
@@ -1212,6 +1279,7 @@ module Crystal
 
     private def new_program(sources)
       @program = program = Program.new
+      program.iyi_prelude = prelude.ends_with?("iyi/prelude")
       program.compiler = self
       program.filename = sources.first.filename
       program.codegen_target = codegen_target

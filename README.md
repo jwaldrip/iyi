@@ -71,10 +71,10 @@ and why; no number in this README is quoted from anywhere else, and the command
 that prints each one is named beside it.
 
 **Where it loses**, said here rather than left to be found: a full build of a
-6,900-line program from scratch is 0.24 s against `go build`'s 0.09 s. And this
-is `0.1.0` in the sense of "the first thing that proves the claim", not
-something to write a program in: no IO beyond `puts`, no concurrency, no
-package manager, Linux x86-64 only.
+6,900-line program from scratch is 0.24 s against `go build`'s 0.09 s. The
+current compiler reports `0.2.0-dev`. iyi's own prelude has no IO beyond
+`puts` and no concurrency; `--crystal` supplies Crystal's standard library,
+IO, `require` and the ecosystem. Neither mode supplies a package manager.
 
 ## The program that makes the argument
 
@@ -213,6 +213,9 @@ imports may not exist on the machine at all.
 
 ## Getting it
 
+The released tarball is 0.1.0. A build from current source reports
+`0.2.0-dev`.
+
 ```console
 $ tar -xzf iyi-0.1.0-linux-x86_64.tar.gz -C ~/.local
 $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
@@ -266,26 +269,29 @@ The second build never sees `polite`'s body. It reads
 against and the machine code it links, and that is R-1: a module compiles
 against what its imports *say*, not against what they *do*.
 
-What a program iyi builds depends on. On Linux the object asks libc for
-nothing: the prelude issues its own syscalls for `write`, `exit` and the
-allocator, so `nm -u` on the emitted object prints nothing at all. A plain
-build still links libc, because the C toolchain's link template adds the
+What a plain build using iyi's own prelude depends on. On Linux the object
+asks libc for nothing: the prelude issues its own syscalls for `write`, `exit`
+and the allocator, so `nm -u` on the emitted object prints nothing at all. The
+linked build still uses libc because the C toolchain's link template adds the
 startup objects, and the executable carries their five undefined references
 (`__libc_start_main`, `__gmon_start__`, `__cxa_finalize` and two weak
-`_ITM_` callbacks). That distinction is the whole of it, and CI is what
-taught it: a claim measured on an object is not a claim about the binary.
-`--static` is where "no libc" becomes literally true, below. On macOS the
-object asks `libSystem` for five symbols, because that is Apple's only
-supported interface. Crystal's compiler needs thirteen libraries installed
-to link what it builds. A program iyi builds reaches none of them: no libgc,
-no libevent, no openssl, no zlib, none of it. The price is that the default
-allocator never collects; memory is taken and not given back until the
-collector lands. `-Dgc_boehm` opts a program into bdw-gc and real collection
-today, and then libgc is that program's one dependency. The link still goes
-through a C toolchain, so a compiler on the machine is the one thing a build
-needs.
+`_ITM_` callbacks). That distinction is the whole of it, and CI is what taught
+it: a claim measured on an object is not a claim about the binary. `--static`
+is where "no libc" becomes literally true, below. On macOS the object asks
+`libSystem` for five symbols because that is Apple's only supported interface.
+Crystal's published required-libraries list is thirteen long. An own-prelude
+program reaches none of them: no libgc, no libevent, no openssl, no zlib. The
+price is that its default allocator never collects; memory is taken and not
+given back until the collector lands. `-Dgc_boehm` opts that mode into bdw-gc
+and real collection, making libgc its one dependency.
 
-**And the binary travels as one file.** On Linux, `iyi build --static` passes
+`bench/dependency_floor.sh` measures own-prelude builds, not `--crystal`.
+`--crystal` links Crystal's standard library and may pull every library a
+required shard pulls. Both modes still link through a C toolchain, so a
+compiler on the machine is the one thing a build needs.
+
+**In own-prelude mode, the binary travels as one file.** On Linux,
+`iyi build --static` passes
 `-static` to the C toolchain, and the object it links has zero undefined
 symbols (`nm -u` prints nothing), so the binary comes out with no dynamic
 loader at all: copy it to a bare Linux and run it, the way a Go binary
@@ -309,17 +315,75 @@ $ sudo make install_iyi                 # or install it, PREFIX=/usr/local
 That one compiles `.cr` files and is what the specs and the benches use,
 because underneath this is still Crystal's compiler.
 
-**And the compiler itself links four libraries.** Crystal's required-libraries
-list is thirteen long. `otool -L` on the `iyi` binary prints libLLVM, libc++,
-libgc and libSystem, and nothing else. LLVM is the back end and libc++ arrives
-with it. libgc is there because `-Dgc_none` was tried on the compiler and does
-not survive it: invalid IR on some runs, a crash in `main_user_code` on others.
-pcre2 was the fifth entry. It was held there by regex literals in four stdlib
-files the compiler compiles into itself; macro-level regex now runs on iyi's
-own engine, those four files parse by hand, and the library is off the line.
-`bench/dependency_floor.sh` holds the compiler to that list on every run and
-forbids `libpcre` outright. SPEC.md III.10 has the story, the verification and
-what it cost.
+## The library a program has
+
+A prelude is a library, and the rules are the language. Those are two different
+things, so a program can keep one and change the other.
+
+**`iyi build --crystal` gives a program Crystal's standard library**, and there
+`require` means what it means in Crystal. This is a Kemal server, and it runs:
+
+```crystal
+module site
+
+require "kemal"
+
+get "/" do |env|
+  "Hello from an iyi program"
+end
+
+get "/json" do |env|
+  env.response.content_type = "application/json"
+  {message: "iyi"}.to_json
+end
+
+Kemal.run
+```
+
+```console
+$ iyi build --crystal -o site site.iyi
+$ ./site &
+$ curl localhost:3000/json
+{"message":"iyi"}
+```
+
+**Nothing about the language changes.** The module header, `import`, `using`,
+`pub`, traits with defaults, `impl … forall`, error unions and `!`, `.or`,
+`or_panic`, `defer` — all of them, on a program that requires a shard. R-2
+still refuses an export that does not write its types. What changes is what the
+program *has*: 8,161 lines of Crystal's standard library instead of 1,184
+lines of iyi's own prelude.
+
+**What it costs is R-1, for that dependency.** A required shard is read from
+source, so your edit loop pays for it the way Crystal's does. Your own modules
+are unaffected — but the two do not mix on the artifact side, and the compiler
+says so rather than half-working: `--emit-iyimod` and `--use-iyimod` need iyi's
+own prelude, because an artifact written against Crystal's library names types
+a consumer compiles its own copy of.
+
+**Nine shards were swept through it**, each built twice — as an iyi program and
+as a Crystal one, so that a difference is this fork's and a shared failure is
+the ecosystem's. `kemal`, `db`, `ameba`, `habitat`, `baked_file_system`,
+`radix`, `sqlite3`, the standard library's own `json`/`yaml`/`uri`/`http`, and
+a program that round-trips `JSON::Serializable` and writes a file. All nine
+behave the same in both languages.
+
+One of them needed a word changed, and it was the rule working: `habitat`'s
+macro resolves the type it is handed by name, and a class an iyi module leaves
+unmarked is private, so it needs `pub class`. A macro from another module
+reaching your type is exactly what `pub` governs.
+
+**The compiler itself links four libraries.** Crystal's published
+required-libraries list is thirteen long. `otool -L` on the `iyi` binary
+prints libLLVM, libc++, libgc and libSystem, and nothing else. LLVM is the back
+end and libc++ arrives with it. libgc is there because `-Dgc_none` was tried
+on the compiler and does not survive it: invalid IR on some runs, a crash in
+`main_user_code` on others. pcre2 was the fifth entry. Regex literals in four
+standard library files compiled into the compiler held it there. Macro-level
+regex now runs on iyi's own engine, those four files parse by hand, and the
+library is off the line. `bench/dependency_floor.sh` holds the compiler to
+that list and forbids `libpcre` outright. SPEC.md III.10 records the
+verification and the `Spec::CLI#pattern` type change that removal cost.
 
 ## More of the language
 
@@ -466,7 +530,7 @@ An artifact is readable:
 ```console
 $ iyi mod dump mods/kemal/router.iyimod | head -20
 module        kemal/router
-compiler      1.22.0-dev+cb85d653a
+compiler      0.2.0-dev+...
 ...
 exports
   pub struct Context
@@ -494,7 +558,7 @@ move is one of the four rules:
 | `include`/`extend` a module into a class | `trait` and `impl Trait for Type`, in the trait's module or the type's | R-3's orphan rule, which is what makes coherence checkable without reading the program |
 | `abstract def` in a module | `abstract def` in a `trait`, and the trait is a type | II.6 |
 | everything is public unless `private` | everything is the module's own unless `pub`, and `pub` writes its types | R-2 |
-| shards, `shard.yml` | nothing yet | no package manager in 0.1.0 |
+| shards, `shard.yml` | `--crystal` can `require` shards from `CRYSTAL_PATH` | no package manager; required source is compiled into the program |
 | macros | kept, and they travel in the artifact | |
 | `Nil`, union types, blocks, local inference | kept, unchanged | |
 
@@ -512,42 +576,62 @@ designed around. Crystal is not going to drop open classes, and it should not.
 compiler should, and they are separate commits for that reason. The rules will
 not, and are not offered.
 
-**Can I use shards?** No. There is no package manager, and a `.iyi` module
-cannot `require` a Crystal library: R-2 needs written types at the boundary
-and R-3 needs the type to be closed, and a shard is written under neither.
+**Can I use shards?** Yes, with `--crystal`, which gives the program Crystal's
+standard library and makes `require` mean what it means there. Nine shards were
+swept through it, Kemal among them. There is still no package manager: point
+`CRYSTAL_PATH` at a `lib/` directory the way Crystal does. What you give up is
+R-1 for the required shard, which is compiled from source rather than read as
+declarations.
 
-**Is the syntax stable?** No. 0.1.0 exists to make the claim checkable, and
+**Is the syntax stable?** No. The current compiler reports `0.2.0-dev`, and
 the parts of SPEC.md marked PROPOSED are exactly the parts that will move.
 
-**Why Linux x86-64 only?** Nothing in the design is: it is where the
-measurements were taken and where CI runs. The library still carries Crystal's
-other platforms, and CI type-checks eight targets.
+**Which targets are checked?** CI cross-compiles and audits the emitted object
+for seven triples: Linux x86_64 and aarch64, macOS x86_64 and aarch64, Windows
+msvc and gnu, and wasm32-wasi. `x86_64-linux-musl` and
+`arm-linux-gnueabihf` type-check but are not object-audited. This does not claim
+that the test suite runs on every target.
 
-**Who is this for right now?** Somebody who wants to check the claim, read
-the design, or argue with a number. Not somebody with a program to ship.
+**Who is this for right now?** Somebody who wants to check the claim, read the
+design, or argue with a number. `--crystal` moved the other line: a program
+that requires shards is buildable today, and what should keep you away is the
+language rather than the library — it is 0.2.0-dev, and the parts of SPEC.md
+marked PROPOSED are the parts that will move under you.
 
 ## What is not here
 
-- **No IO beyond `puts`.** The prelude is 1,184 lines on purpose: integers,
-  booleans, a string, one sequence, one dictionary, one range. No files, no
-  sockets, no formatting.
+- **iyi's own library is 1,184 lines, and there is no IO beyond `puts` in it**:
+  integers, booleans, a string, one sequence, one dictionary, one range. No
+  files, no sockets, no formatting. `--crystal` is the other library and has
+  all of it; everything below this line is about iyi's own.
 - **The prelude's collections are smaller than Crystal's, and one habit
   differs.** A method is in there because a program in this repository needed
   it, so most of what you reach for is not;
   `samples/iyi/std/enumerable.iyi` is where the rest is being written, as trait
   defaults. And `a[-1]` does not index from the end: it raises, the way an
   index past the end does. Nothing indexes from the end in iyi yet.
-- **No concurrency.** SPEC.md III.4 specifies structured concurrency,
-  scope-owned cancellation and a `Share` marker. None of it is built.
-- **No package manager, no standard library, no self-hosting.**
-- **Linux x86-64 only.** Other targets belong to Crystal and are untested here.
-- **The formatter does not know iyi's syntax.** It is Crystal's, and a module
-  header, `pub`, `trait` or `impl` stops it. `iyi tool format` says so and
-  leaves the file alone rather than reporting a bug in itself.
-- **Artifacts are version-locked.** A `.iyimod` written by another build of the
-  compiler is rejected and rebuilt, never migrated.
-- **`derive` macros do not cross modules yet.** A module's own macros do travel
-  with its artifact.
+- **No concurrency of iyi's own.** SPEC.md III.4 specifies structured
+  concurrency, scope-owned cancellation and a `Share` marker, and none of it is
+  built. A program built `--crystal` has Crystal's fibers, which are the thing
+  III.4 was written to replace rather than an answer to it.
+- **No package manager and no self-hosting.** `--crystal` gives a program
+  Crystal's standard library; nothing gives it a package manager.
+- **No native test matrix across the supported targets.** CI cross-compiles and
+  audits emitted objects for seven triples on four platforms: Linux x86_64 and
+  aarch64, macOS x86_64 and aarch64, Windows msvc and gnu, and wasm32-wasi.
+  `x86_64-linux-musl` and `arm-linux-gnueabihf` only type-check and are not
+  audited. Nothing here claims that the test suite runs on each target.
+- **Artifacts are identified by released version, target and flag set.** Builds
+  of the same released version read each other's `.iyimod` files only on the
+  same target under the same flags; anything else is rejected and rebuilt,
+  never migrated. The current `0.2.0-dev` is not a released version, keeps the
+  build commit in its identity, and interoperates only with itself.
+- **There is no `derive`.** SPEC.md R-5 designs it and nothing implements it.
+  What is built is the mechanism under it: a module's macros travel with its
+  artifact, and `pub macro` says which of them another module may run.
+- **Macros are not hygienic.** `pub macro` exports a name and an arity, and a
+  macro is pasted text, so one that writes `tmp = 99` assigns to your `tmp` if
+  you have one. That is Crystal's semantics kept whole.
 
 ## Where things are
 
@@ -555,7 +639,7 @@ the design, or argue with a number. Not somebody with a program to ship.
 |---|---|
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
 | [`samples/iyi`](samples/iyi) | nine programs, eight documenting a part of it and one being a first half hour |
-| [`src/iyi`](src/iyi) | the prelude, 1,184 lines |
+| [`src/iyi`](src/iyi) | iyi's own library, 1,184 lines. `--crystal` swaps it for Crystal's |
 | [`src/compiler/crystal/iyimod.cr`](src/compiler/crystal/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |
@@ -566,6 +650,7 @@ the design, or argue with a number. Not somebody with a program to ship.
 
 iyi is a fork of the Crystal compiler and carries Crystal's licence and
 copyright: Apache 2.0, Copyright 2012-2026 Manas Technology Solutions. See
-[LICENSE](LICENSE) and [NOTICE.md](NOTICE.md). Everything here that is not
-Crystal's is a change to Crystal's source, and the compiler still reports itself
-as `Crystal 1.22.0-dev`, because that is what it is.
+[LICENSE](LICENSE) and [NOTICE.md](NOTICE.md). Everything not inherited from
+Crystal is a change to Crystal's source. `iyi --version` reports
+`iyi 0.2.0-dev, a fork of Crystal 1.22.0-dev`: iyi's release identity first,
+with the upstream compiler version retained as provenance.

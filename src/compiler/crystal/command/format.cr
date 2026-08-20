@@ -86,7 +86,9 @@ class Crystal::Command
       excludes.map! { |p| Crystal.normalize_path p }
       excludes = excludes - includes
       if files.empty?
-        files = Dir["./**/*.cr"]
+        # iyi: both extensions, because this fork formats both languages and
+        # a directory of `.iyi` files is the ordinary case here.
+        files = Dir["./**/*.cr"] + Dir["./**/*.iyi"]
       else
         files.map! { |p| Crystal.normalize_path p }
       end
@@ -121,7 +123,7 @@ class Crystal::Command
         end
       elsif Dir.exists?(filename)
         filename = ::Path[filename.chomp('/')].to_posix
-        filenames = Dir["#{filename}/**/*.cr"]
+        filenames = Dir["#{filename}/**/*.cr"] + Dir["#{filename}/**/*.iyi"]
         format_many filenames
       else
         print_error "file or directory does not exist: #{filename}"
@@ -134,20 +136,6 @@ class Crystal::Command
     end
 
     private def format_source(filename, source)
-      # iyi: the formatter is Crystal's, and it does not know iyi's syntax. A
-      # module header, a `pub`, a `trait` or an `impl` sends it into the
-      # rescue below, which reports "there's a bug formatting" and asks for a
-      # bug report — for a construct nobody taught it. Said plainly instead,
-      # and only for the files it is actually about: a `.iyi` file of ordinary
-      # Crystal formats as it always did.
-      if filename.ends_with?(".iyi") && iyi_syntax?(source)
-        print_error "the formatter does not know iyi's syntax yet, so " \
-                    "'#{filename}' is left alone. A module header, `pub`, " \
-                    "`trait`, `impl` and `using` are what it stops at"
-        @status_code = 1
-        return
-      end
-
       result = format(filename, source)
       @stdout.print result if @format_stdin
       return if result == source
@@ -176,19 +164,6 @@ class Crystal::Command
         print_error "there's a bug formatting '#{filename}', to show more information, please run:\n\n  $ crystal tool format --show-backtrace #{@format_stdin ? "-" : "'#{filename}'"}\n"
       end
       @status_code = 1
-    end
-
-    # iyi: enough to tell an iyi file from a Crystal one written with the wrong
-    # extension. Line-anchored, so a `pub` inside a string or a comment about
-    # traits does not count.
-    private def iyi_syntax?(source : String) : Bool
-      source.each_line.any? do |line|
-        stripped = line.lstrip
-        stripped.starts_with?("pub ") || stripped.starts_with?("trait ") ||
-          stripped.starts_with?("impl ") || stripped.starts_with?("using ") ||
-          stripped.starts_with?("import ") ||
-          (stripped.starts_with?("module ") && stripped.includes?('/'))
-      end
     end
 
     # This method is for mocking `Crystal.format` in test.

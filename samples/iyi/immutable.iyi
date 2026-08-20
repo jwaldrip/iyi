@@ -16,8 +16,14 @@ module samples/immutable
 import std/list
 using std/list::{List}
 
+# Two ways of naming the same type, both across a module boundary. The second
+# lets the argument be inferred, and it is written that way on purpose: the
+# artifact carries no machine code for a generic, so `List(String)` is a type
+# this file makes, and inference puts `new` on `List(T)` instead of on the
+# instance. That difference once linked undefined and nothing here caught it,
+# because every line in this file wrote the argument out.
 nums = List(Int32).new([3, 1, 4, 1, 5])
-words = List(String).new(["pear", "fig", "plum", "kiwi"])
+words = List.new(["pear", "fig", "plum", "kiwi"])
 
 # ---------------------------------------------------------------------------
 # Its own surface: small on purpose

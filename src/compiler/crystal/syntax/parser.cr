@@ -146,8 +146,13 @@ module Crystal
       #
       # `using` deliberately stays INSIDE, because it affects name resolution
       # within this module and should not leak to whoever imports it.
+      # A `require` comes out with them, and for a plainer reason than
+      # `import`'s: a require is file level in Crystal, and leaving it inside
+      # the module this header desugars to loaded the required file *into* the
+      # module. `require "json"` under `module web` made json's `class String`
+      # mean `Web::String`, and the error was about a type nobody wrote.
       directives = [] of ASTNode
-      while (first = rest.first?) && first.is_a?(ImportDecl)
+      while (first = rest.first?) && (first.is_a?(ImportDecl) || first.is_a?(Require))
         directives << rest.shift
       end
 
@@ -2184,6 +2189,18 @@ module Crystal
       pub_location = @token.location
       next_token_skip_space
 
+      # iyi: `pub LIMIT = 42`. A constant is a CONST token rather than an
+      # identifier, and it is the one exported thing whose name is its
+      # declaration — there is no keyword in front of it.
+      if @token.type.const?
+        assign = parse_expression
+        unless assign.is_a?(Assign) && assign.target.is_a?(Path)
+          raise "`pub` takes a constant assignment here", @token.line_number, @token.column_number
+        end
+        assign.exported = true
+        return assign.at(pub_location)
+      end
+
       unless @token.type.ident?
         raise "expected a declaration after `pub`", @token.line_number, @token.column_number
       end
@@ -2204,6 +2221,10 @@ module Crystal
           cls = parse_class_def is_struct: true
           cls.exported = true if cls.is_a?(ClassDef)
           cls
+        when Keyword::MACRO
+          a_macro = parse_macro
+          a_macro.exported = true if a_macro.is_a?(Macro)
+          a_macro
         else
           raise "can't apply `pub` to #{@token}", @token.line_number, @token.column_number
         end

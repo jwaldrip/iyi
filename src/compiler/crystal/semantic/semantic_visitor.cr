@@ -52,12 +52,14 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
     # have — a syntax error in a file the author never opened, about a library
     # that is not part of this language. A relative require is left alone: it
     # is file inclusion inside one unit, which is how the prelude is written.
-    if !node.iyi_prelude? && relative_to.try(&.ends_with?(".iyi")) && !filename.starts_with?('.')
+    if !node.iyi_prelude? && @program.iyi_prelude? &&
+       relative_to.try(&.ends_with?(".iyi")) && !filename.starts_with?('.')
       node.raise "iyi has no `require`. A module is reached with " \
                  "`import #{filename}`, and it is a path to a file rather than " \
                  "a library name (SPEC.md R-1). There is no standard library " \
                  "to require: the prelude is what a program gets, and README.md " \
-                 "says what is in it"
+                 "says what is in it. A program built `--prelude=prelude` has " \
+                 "one, and there `require` means what it means in Crystal"
     end
 
     # Remember that the program depends on this require
@@ -621,7 +623,7 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
                                      artifact_path : String) : Nil
     expected = IyiMod.compiler_version
     unless artifact.compiler_version == expected
-      node.raise "#{artifact_path} was written by compiler #{artifact.compiler_version}, this is #{expected}. A .iyimod is rejected and rebuilt, never migrated (SPEC.md IV.5) — rebuild it with --emit-iyimod"
+      node.raise "#{artifact_path} was written by iyi #{artifact.compiler_version}, this is #{expected}. Artifacts are read by the release that wrote them: same version, same target, same flags. A .iyimod is rejected and rebuilt, never migrated (SPEC.md IV.5) — rebuild it with --emit-iyimod"
     end
 
     target = @program.codegen_target.to_s
@@ -749,8 +751,15 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       iyi_collect_initialiser node.body, statements
     when ClassDef, TraitDef, ImplDef, LibDef, EnumDef, Nop, ModuleHeader,
          ImportDecl, UsingDecl, Def, Macro, AnnotationDef, Alias,
-         TypeDeclaration, AssocTypeDecl, Annotation, Include, Extend
+         TypeDeclaration, AssocTypeDecl, Annotation, Include, Extend, Require
       # A declaration, or a body this does not reach into.
+      #
+      # `Require` is here for the same reason `ImportDecl` is: it is a
+      # directive about which files this build reads, not code the module runs.
+      # Carrying one made a module that requires a shard write its library's
+      # whole require tree into its own initialiser — 52 lines for a module
+      # with none — and a consumer then resolved those paths against the
+      # artifact it read them from.
     when VisibilityModifier
       # Whole, not unwrapped. The modifier here is Crystal's `private` — `pub`
       # is a flag on the declaration rather than a wrapper, and it does not take
@@ -1063,7 +1072,17 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       macro_scope = macro_scope.remove_alias
 
       the_macro = macro_scope.metaclass.lookup_macro(node.name, node.args, node.named_args)
-      node.raise "private macro '#{node.name}' called for #{obj}" if the_macro.is_a?(Macro) && the_macro.visibility.private?
+      if the_macro.is_a?(Macro) && the_macro.visibility.private?
+        # iyi: the same answer an unexported `def` gets, because it is the same
+        # rule. A module's macros travel so that a travelling body can call
+        # one, and `pub` is what makes one the consumer's to call (R-2).
+        owner = the_macro.owner
+        if owner.is_a?(ModuleType) && owner.instance_type.as?(ModuleType).try(&.iyi_unit?)
+          node.raise "#{owner.instance_type} does not export '#{node.name}'. Only what a module marks `pub` is reachable from outside it — see SPEC.md R-2"
+        end
+
+        node.raise "private macro '#{node.name}' called for #{obj}"
+      end
     when Nil
       return false if node.super? || node.previous_def?
       the_macro = node.lookup_macro

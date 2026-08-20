@@ -307,8 +307,207 @@ describe "Semantic: iyi import" do
       }) do |root|
         write_iyimod root, "app/dep", exports, compiler_version: "0.0.0+nope"
 
-        expect_raises(Crystal::TypeException, /written by compiler 0\.0\.0\+nope/) do
+        expect_raises(Crystal::TypeException, /written by iyi 0\.0\.0\+nope/) do
           semantic_iyi("main.iyi", iyi_module_dir: root)
+        end
+      end
+    end
+
+    # IV.5, the other half: what two compilers have to agree on is the release
+    # they are, not the commit they were built from. Written with the version
+    # on the page rather than with `IyiMod.compiler_version`, because a spec
+    # that asks the compiler what it is would pass however that is answered —
+    # including by going back to naming a build nobody else has.
+    it "reads an artifact from another build of the same release" do
+      # The rule from both sides of a release, so this spec says the same thing
+      # the day the version becomes a `-dev` one again: a named release is the
+      # whole identity, and a version between two releases names no compiler,
+      # so it keeps the build commit.
+      version = Crystal::Config.iyi_version
+      if version.ends_with?("-dev") && (commit = Crystal::Config.build_commit)
+        Crystal::IyiMod.compiler_version.should eq "#{version}+#{commit}"
+      else
+        # A released version, or a build that was told no commit — this spec
+        # binary is one, being compiled without the variable the Makefile sets.
+        Crystal::IyiMod.compiler_version.should eq version
+      end
+
+      with_iyi_modules({
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+          IYI
+      }) do |root|
+        write_iyimod root, "app/dep", exports,
+          compiler_version: Crystal::IyiMod.compiler_version
+
+        semantic_iyi("main.iyi", iyi_module_dir: root)
+      end
+    end
+
+    # `pub macro` (R-2b): every macro a module writes already travels, because
+    # a body that travels may call one. What `pub` adds is a name the consumer
+    # may say, and these are the four answers that make up the rule.
+    it "runs a macro another module exported" do
+      with_iyi_modules({
+        "app/dep.iyi" => <<-IYI,
+          module app/dep
+
+          pub macro declare(name)
+            def {{name.id}} : Int32
+              1
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+          using app/dep
+
+          declare(made)
+          IYI
+      }) do
+        semantic_iyi("main.iyi")
+      end
+    end
+
+    it "runs an exported macro through the module's name" do
+      with_iyi_modules({
+        "app/dep.iyi" => <<-IYI,
+          module app/dep
+
+          pub macro declare(name)
+            def {{name.id}} : Int32
+              1
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+
+          App::Dep.declare(made)
+          IYI
+      }) do
+        semantic_iyi("main.iyi")
+      end
+    end
+
+    it "refuses an unexported macro by name, as it refuses an unexported def" do
+      with_iyi_modules({
+        "app/dep.iyi" => <<-IYI,
+          module app/dep
+
+          macro declare(name)
+            def {{name.id}} : Int32
+              1
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+
+          App::Dep.declare(made)
+          IYI
+      }) do
+        expect_raises(Crystal::TypeException, /does not export 'declare'/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
+    it "leaves an unexported macro out of what `using` brings in" do
+      with_iyi_modules({
+        "app/dep.iyi" => <<-IYI,
+          module app/dep
+
+          macro declare(name)
+            def {{name.id}} : Int32
+              1
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+          using app/dep
+
+          declare("made")
+          IYI
+      }) do
+        # The argument is a literal so that what fails is the name of the
+        # macro. `declare(made)` would be read as a call taking a variable
+        # nobody declared, and fail one word earlier for a different reason.
+        expect_raises(Crystal::TypeException, /undefined method 'declare'/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
+    # `pub` on a constant (R-2). A module's own top level travels as source, so
+    # the mark travels by being written back out — there is nothing in the
+    # format for it, which is why these are the whole of the rule.
+    it "reads a constant another module exported" do
+      with_iyi_modules({
+        "app/dep.iyi" => <<-IYI,
+          module app/dep
+
+          pub LIMIT = 42
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+
+          App::Dep::LIMIT
+          IYI
+      }) do
+        semantic_iyi("main.iyi")
+      end
+    end
+
+    it "refuses an unmarked constant, as it refuses an unmarked def" do
+      with_iyi_modules({
+        "app/dep.iyi" => <<-IYI,
+          module app/dep
+
+          SECRET = 42
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import app/dep
+
+          App::Dep::SECRET
+          IYI
+      }) do
+        expect_raises(Crystal::TypeException, /does not export App::Dep::SECRET/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
+    # `require` is refused in a `.iyi` file because there is nothing to
+    # require: the prelude is what a program gets. That reason stops being true
+    # when the prelude is Crystal's, and a program built `--crystal` has one.
+    # The rules are unaffected either way: they are the language's, and a
+    # prelude is a library.
+    it "refuses `require` while iyi's own prelude is what a program has" do
+      with_iyi_modules({
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          require "json"
+          IYI
+      }) do
+        expect_raises(Crystal::TypeException, /iyi has no `require`/) do
+          semantic_iyi("main.iyi")
         end
       end
     end

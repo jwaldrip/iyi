@@ -18,6 +18,10 @@ module Crystal
       end
 
       formatter = new(source, flags: flags)
+      # iyi: the formatter re-lexes the source, and `!` is one token in a
+      # `.iyi` file and another in a `.cr` one. Without the name it would read
+      # a file by rules the parser above did not use.
+      formatter.filename = filename
       formatter.skip_space_or_newline
       nodes.accept formatter
       formatter.finish
@@ -404,7 +408,12 @@ module Crystal
 
     def needs_two_lines?(node)
       case node
-      when Def, ClassDef, ModuleDef, LibDef, CStructOrUnionDef, Macro
+      # iyi: the wrapper a `module app/greeter` header desugars to is not in
+      # the source, so it cannot ask for a blank line around itself. What is
+      # under it asks for its own.
+      when ModuleDef
+        !node.iyi_unit?
+      when Def, ClassDef, LibDef, CStructOrUnionDef, Macro
         true
       when VisibilityModifier
         needs_two_lines? node.exp
@@ -1386,6 +1395,7 @@ module Crystal
       @inside_def += 1
       @vars.push Set(String).new
 
+      write_keyword :pub, " " if node.exported?
       write_keyword :abstract, " " if node.abstract?
 
       write_keyword :def, " ", skip_space_or_newline: false
@@ -1435,9 +1445,43 @@ module Crystal
           check :CONST
           write free_var
           next_token
+          # iyi: `forall T : Greet`, a bound rather than a bare parameter
+          # (II.7). Crystal's `forall` takes names only, so nothing here
+          # expected the colon.
+          if bounds = node.free_var_bounds
+            skip_space
+            if @token.type.op_colon?
+              write " : "
+              next_token_skip_space_or_newline
+              accept bounds[free_var]
+            end
+          end
           skip_space_or_newline if last_index != i
           if @token.type.op_comma?
             write ", "
+            next_token_skip_space_or_newline
+          end
+        end
+      end
+
+      # iyi: `def includes?(value : Elem) : Bool where Elem : Cmp` (II.6). A
+      # bound on an associated type, which is a name the signature mentions
+      # rather than one it introduces, so it is written after `forall` and not
+      # inside it.
+      if where_bounds = node.where_bounds
+        skip_space
+        write " where "
+        next_token_skip_space
+        last_where = where_bounds.size - 1
+        where_bounds.each_with_index do |(name, bound), i|
+          write name
+          next_token_skip_space
+          write_token " ", :OP_COLON, " "
+          skip_space_or_newline
+          accept bound
+          skip_space
+          if @token.type.op_comma?
+            write ", " unless i == last_where
             next_token_skip_space_or_newline
           end
         end
@@ -3396,7 +3440,246 @@ module Crystal
       false
     end
 
+    # iyi: the name the lexer judges `!` by, and the only thing about a `.iyi`
+    # file the formatter's own lexer cannot work out from the source.
+    def filename=(filename)
+      @lexer.filename = filename
+    end
+
+    # iyi: `app/greeter`, the path a module header, an `import` and a `using`
+    # all write.
+    #
+    # The `/` has to be taken out of the lexer's hands the way the parser takes
+    # it: after an identifier a slash starts a regex, and a module path is the
+    # one place it separates. `libs/x` fails differently from `app/x` if only
+    # `@wants_regex` is cleared, so both flags go, exactly as `parse_module_path`
+    # does it.
+    def format_iyi_module_path(path : Array(String))
+      path.each_with_index do |segment, i|
+        write_token :OP_SLASH if i > 0
+        skip_space
+        write segment
+        @lexer.wants_regex = false
+        slash_is_not_regex!
+        next_token
+      end
+    end
+
+    # iyi: `module app/greeter`, the compilation-unit header (R-1). It has no
+    # body, so unlike Crystal's `module` there is no `end` to find.
+    def visit(node : ModuleHeader)
+      write_keyword :module, " "
+      format_iyi_module_path node.path
+
+      false
+    end
+
+    # iyi: `import app/greeter`
+    def visit(node : ImportDecl)
+      write_keyword :import, " "
+      format_iyi_module_path node.path
+
+      false
+    end
+
+    # iyi: `using app/greeter` and `using app/greeter::{polite, title}`
+    def visit(node : UsingDecl)
+      write_keyword :using, " "
+      format_iyi_module_path node.path
+
+      if names = node.names
+        write_token :OP_COLON_COLON
+        skip_space_or_newline
+        write_token :OP_LCURLY
+        skip_space_or_newline
+        names.each_with_index do |name, i|
+          write name
+          next_token_skip_space_or_newline
+          if @token.type.op_comma?
+            write ", " unless last?(i, names)
+            next_token_skip_space_or_newline
+          end
+        end
+        write_token :OP_RCURLY
+      end
+
+      false
+    end
+
+    # iyi: `trait Show`, `pub trait Ord : Eq`
+    def visit(node : TraitDef)
+      write_keyword :pub, " " if node.exported?
+      write_keyword :trait, " "
+
+      accept node.name
+      format_type_vars node.type_vars, nil
+
+      if supertraits = node.supertraits
+        skip_space_or_newline
+        write_token " ", :OP_COLON, " "
+        skip_space_or_newline
+        supertraits.each_with_index do |supertrait, i|
+          accept supertrait
+          # `skip_space` and not `skip_space_or_newline`: what follows the last
+          # supertrait is the trait's body, and a comment on the next line
+          # belongs to it rather than to this line.
+          skip_space
+          if @token.type.op_comma?
+            write ", " unless last?(i, supertraits)
+            next_token_skip_space_or_newline
+          end
+        end
+      end
+
+      format_nested_with_end node.body
+
+      false
+    end
+
+    # iyi: `impl Show for User`, `impl Show for Box(T) forall T : Show`
+    #
+    # `forall` is an identifier to the lexer rather than a keyword, which is
+    # why it is written rather than asked for by kind.
+    def visit(node : ImplDef)
+      write_keyword :impl, " "
+
+      accept node.trait
+      if trait_args = node.trait_args
+        skip_space
+        write_token :OP_LPAREN
+        skip_space_or_newline
+        trait_args.each_with_index do |arg, i|
+          accept arg
+          skip_space_or_newline
+          if @token.type.op_comma?
+            write ", " unless last?(i, trait_args)
+            next_token_skip_space_or_newline
+          end
+        end
+        write_token :OP_RPAREN
+      end
+
+      skip_space_or_newline
+      write " "
+      write_keyword :for, " "
+      skip_space_or_newline
+      accept node.target
+
+      if type_vars = node.type_vars
+        skip_space_or_newline
+        write " forall "
+        next_token_skip_space_or_newline
+        type_vars.each_with_index do |type_var, i|
+          write type_var
+          next_token_skip_space
+          if @token.type.op_colon?
+            write " : "
+            next_token_skip_space_or_newline
+            accept node.type_var_bounds.not_nil![type_var]
+            skip_space
+          end
+          if @token.type.op_comma?
+            write ", " unless last?(i, type_vars)
+            next_token_skip_space_or_newline
+          end
+        end
+      end
+
+      format_nested_with_end node.body
+
+      false
+    end
+
+    # iyi: `defer close(handle)` (III.1.4). An identifier to the lexer rather
+    # than a keyword, and one only a `.iyi` file gets, so it is written by name.
+    def visit(node : Defer)
+      write "defer "
+      next_token_skip_space
+      accept node.exp
+
+      false
+    end
+
+    # iyi: `value.or(0)` and `value.or_panic` (III.1.3). Both are compiler-known
+    # names rather than method calls, which is why no `Call` visitor sees them.
+    def visit(node : Recover)
+      accept node.exp
+      skip_space
+      write_token :OP_PERIOD
+      skip_space_or_newline
+
+      if default = node.default
+        write "or"
+        next_token_skip_space
+        write_token :OP_LPAREN
+        skip_space_or_newline
+        accept default
+        skip_space_or_newline
+        write_token :OP_RPAREN
+      else
+        write "or_panic"
+        next_token
+        # `.or_panic()` parses, and empty parentheses stay written if they were.
+        if @token.type.op_lparen?
+          write_token :OP_LPAREN
+          skip_space_or_newline
+          write_token :OP_RPAREN
+        end
+      end
+
+      false
+    end
+
+    # iyi: `read(path)!`, which returns the error or unwraps the value (II.5).
+    def visit(node : Propagate)
+      accept node.exp
+      skip_space
+      write_token :OP_BANG
+
+      false
+    end
+
+    # iyi: `type Elem` in a trait, `type Elem = String` in an impl (II.6).
+    def visit(node : AssocTypeDecl)
+      write_keyword :type, " "
+      write node.name
+      next_token_skip_space
+
+      if value = node.value
+        write_token " ", :OP_EQ, " "
+        skip_space_or_newline
+        accept value
+      end
+
+      false
+    end
+
     def visit(node : ModuleDef)
+      # iyi: a `module app/greeter` header parses as two nodes, the header and
+      # a `ModuleDef` wrapping everything under it. The header was written by
+      # the visitor above and the wrapper is not in the source at all, so there
+      # is no keyword to write here and no `end` to find.
+      if node.iyi_unit?
+        # The wrapper's body opens with an `extend self` the parser wrote, so
+        # that a module-level `pub def` belongs to the module rather than to
+        # instances of it. It carries the header's location and is not in the
+        # source, so the one way to know it is where it always is.
+        body = node.body
+        case body
+        when Expressions
+          rest = body.expressions
+          if (first = rest.first?) && first.is_a?(Extend) && first.name.is_a?(Self)
+            body = Expressions.from(rest[1..])
+          end
+        when Extend
+          # A file with nothing under its header: `Expressions.from` gave back
+          # the single node rather than a list of one.
+          body = Nop.new if body.name.is_a?(Self)
+        end
+        accept body
+        return false
+      end
+
       write_keyword :module, " "
 
       accept node.name
@@ -3431,6 +3714,7 @@ module Crystal
     end
 
     def visit(node : ClassDef)
+      write_keyword :pub, " " if node.exported?
       write_keyword :abstract, " " if node.abstract?
       write_keyword (node.struct? ? Keyword::STRUCT : Keyword::CLASS), " "
 

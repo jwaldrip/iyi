@@ -518,6 +518,61 @@ describe Crystal::IyiMod do
     end
   end
 
+  # A generic the consumer instantiates, which is the one type an artifact
+  # carries no object code for.
+  #
+  # `collect_iyi_unit_names` gives a module's object code a unit per non-generic
+  # type it declares and none for a generic one, because a generic has machine
+  # code only once somebody picks its arguments. The consumer is who picks them
+  # here, so `Box(Int32)`'s methods are the consumer's to compile — and the
+  # marking that says "this type's code is in the artifact" was reading the
+  # generic itself, which made the consumer declare a `new` nobody defined.
+  #
+  # Written twice on purpose. `Box(Int32).new` is owned by the instance, which
+  # was never marked and always worked; `Box.new(42)` infers the argument, and
+  # inference makes `new` a method on `Box(T)` — the artifact's own type. Only
+  # the second one linked undefined, so only the second one is the regression.
+  it "builds a generic from an artifact whether or not its argument is written" do
+    with_tempdir("iyimod_generic_instance") do
+      Dir.mkdir_p "app"
+      File.write "app/boxes.iyi", <<-IYI
+        module app/boxes
+
+        pub struct Box(T)
+          getter value : T
+
+          def initialize(@value : T)
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/boxes
+
+        written = App::Boxes::Box(Int32).new(21)
+        inferred = App::Boxes::Box.new(21)
+        puts written.value + inferred.value
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "42"
+
+      File.delete "app/boxes.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "42"
+    end
+  end
+
   # The closure (IV.1g): the module's body calls `String#+`, which lives in the
   # prelude's `String` unit — a unit the artifact does not carry and one whose
   # contents on the consumer's side are whatever *the consumer* instantiated.
@@ -1383,6 +1438,71 @@ describe Crystal::IyiMod do
       consumer.use_iyimod = "mods"
       consumer.compile source, File.expand_path("from-artifact")
       `./from-artifact`.chomp.should eq "7\nseven"
+    end
+  end
+
+  # The rest of what crosses the boundary once a consumer picks the arguments.
+  #
+  # The spec above and the one at the top of this file both write `Box(Int32)`,
+  # which is the form that was never in doubt: an instance is a type the
+  # consumer made and nothing marked it as the artifact's. These are the three
+  # shapes where the generic itself is the owner, so each one asks the same
+  # question the linker asked, on a different path. A method with its own
+  # `forall`, whose specialisation is picked twice over; an `impl` written on
+  # the generic, whose method is reached through the trait; and an instance of
+  # an instance, which numbers a type nothing declared.
+  it "specialises an imported generic however the consumer reaches it" do
+    with_tempdir("iyimod_generic_reach") do
+      Dir.mkdir_p "std"
+      File.write "std/box.iyi", <<-IYI
+        module std/box
+
+        pub trait Show
+          abstract def show : String
+        end
+
+        pub struct Box(T)
+          getter value : T
+
+          def initialize(@value : T)
+          end
+
+          def map(& : T -> U) : Box(U) forall U
+            Box(U).new(yield value)
+          end
+        end
+
+        impl Show for Box(T) forall T
+          def show : String
+            "shown"
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/box
+
+        puts Std::Box::Box.new(21).map { |v| v + v }.value
+        puts Std::Box::Box.new(1).show
+        puts Std::Box::Box.new(Std::Box::Box.new(5)).value.value
+        IYI
+
+      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "42\nshown\n5"
+
+      File.delete "std/box.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "42\nshown\n5"
     end
   end
 

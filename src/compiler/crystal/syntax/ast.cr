@@ -1108,6 +1108,12 @@ module Crystal
       target.visibility = visibility
     end
 
+    # iyi: `pub` on a constant, forwarded the way visibility is.
+    def exported=(exported : Bool)
+      target = @target
+      target.exported = exported if target.is_a?(Path)
+    end
+
     def accept_children(visitor)
       @target.accept visitor
       @value.accept visitor
@@ -1576,6 +1582,13 @@ module Crystal
     property splat_index : Int32?
     property doc : String?
     property visibility = Visibility::Public
+    # iyi: `pub macro` — a macro a consumer may run (R-2, SPEC.md IV.4).
+    #
+    # What it exports is a name and an arity rather than types: a macro takes
+    # syntax and returns syntax, and there is no type to write down. Every
+    # macro already travels in an artifact, because a body that travels may
+    # call one; this is what makes one of them reachable.
+    property? exported = false
 
     def initialize(@name, @args = [] of Arg, @body = Nop.new, @block_arg = nil, @splat_index = nil, @double_splat = nil)
     end
@@ -1594,6 +1607,7 @@ module Crystal
     def clone_without_location
       m = Macro.new(@name, @args.clone, @body.clone, @block_arg.clone, @splat_index, @double_splat.clone)
       m.name_location = name_location
+      m.exported = exported?
       m
     end
 
@@ -1967,6 +1981,13 @@ module Crystal
     property names : Array(String)
     property? global : Bool
     property visibility = Visibility::Public
+    # iyi: `pub LIMIT = 42` — a constant a consumer may name (R-2).
+    #
+    # On the path rather than on the `Assign`, because that is where a
+    # constant's visibility already lives and `Assign#visibility=` already
+    # forwards there. A module's own top level travels as source text, so this
+    # reaches a consumer by being written back out.
+    property? exported = false
 
     # iyi: written by a `.iyimod`'s renderer rather than by an author (SPEC.md
     # IV.1g).

@@ -28,7 +28,7 @@ class String
 
   # UTF-8 continuation bytes are `10xxxxxx`; every other byte starts a
   # character. That is the whole of the decoding this prelude does.
-  private def self.character_count(buffer : Pointer(UInt8), bytesize : Int32) : Int32
+  protected def self.character_count(buffer : Pointer(UInt8), bytesize : Int32) : Int32
     count = 0
     index = 0
     while index < bytesize
@@ -42,7 +42,18 @@ class String
     @bytesize
   end
 
+  # Crystal reads `@length == 0` on a non-empty string as "not counted yet" and
+  # scans; a string it builds without knowing the count leaves the field at
+  # zero. This prelude used to return the field, which was right for every
+  # string it makes itself and wrong for one that arrived from Crystal's own
+  # code — `to_json`'s result printed correctly here and answered `size` 0.
+  #
+  # No error, a wrong number, and the layout is shared on purpose (SPEC.md
+  # Part V item 12), so the invariant has to be shared too.
   def size : Int32
+    return @length if @length > 0 || @bytesize == 0
+
+    @length = String.character_count(to_unsafe, @bytesize)
     @length
   end
 

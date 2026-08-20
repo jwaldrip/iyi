@@ -182,16 +182,24 @@ module Crystal::IyiMod
 
   # The value the `compiler_version` field is compared against.
   #
-  # Compact and exact, because IV.5 makes it an equality test rather than a
-  # range: an artifact from another compiler is rejected and rebuilt, never
-  # migrated. The build commit is in it for the same reason the daemon refuses
-  # a client built from a different one — two compilers that agree on their
-  # release number can still disagree about everything else.
+  # An equality test rather than a range, because IV.5 rejects and rebuilds an
+  # artifact rather than migrating it. What the two sides have to agree on is
+  # the **released version**: two builds of iyi 0.1.0 read each other's
+  # artifacts, which is what makes a `.iyimod` something to hand to somebody
+  # rather than a file that only its own build can open. The target and the
+  # flags are checked beside this one and are no less part of the answer.
+  #
+  # A development version keeps the build commit, and that is not caution. A
+  # released number names one compiler; `0.2.0-dev` names every compiler
+  # between two releases, and two of those can disagree about anything at all.
+  # So the rule is stated by what the version *is*: named releases interoperate,
+  # the versions between them do not.
   def self.compiler_version : String
-    if commit = Config.build_commit
-      "#{Config.version}+#{commit}"
+    version = Config.iyi_version
+    if version.ends_with?("-dev") && (commit = Config.build_commit)
+      "#{version}+#{commit}"
     else
-      Config.version
+      version
     end
   end
 
