@@ -145,6 +145,14 @@ if [ -n "${CRYSTAL_PATH##*"$CRYSTAL_ROOT"/src*}" ]; then
   __warning_msg "CRYSTAL_PATH env variable does not contain $CRYSTAL_ROOT/src"
 fi
 
+# iyi: this wrapper drives two compilers. The parent bootstrap compiler is an
+# installed Crystal and reads `CRYSTAL_PATH`; the compiler being built reads
+# `IYI_PATH`, because that is its own name for its own setting. Exporting only
+# one of them means whichever compiler reads the other cannot find `prelude`,
+# and that is precisely what happened: every local run set `IYI_PATH` by hand,
+# so the gap only appeared in CI, where nothing does.
+export IYI_PATH="${IYI_PATH:-$CRYSTAL_PATH}"
+
 export CRYSTAL_HAS_WRAPPER=true
 : "${CRYSTAL=crystal}"
 
@@ -203,6 +211,9 @@ if ($PARENT_CRYSTAL_EXISTS); then
 
     export CRYSTAL_LIBRARY_PATH="${CRYSTAL_LIBRARY_PATH:-$CRYSTAL_INSTALLED_LIBRARY_PATH}"
     export CRYSTAL_CONFIG_LIBRARY_PATH="${CRYSTAL_CONFIG_LIBRARY_PATH:-$CRYSTAL_INSTALLED_LIBRARY_PATH}"
+    # iyi: the same two-compiler split as the search path above.
+    export IYI_LIBRARY_PATH="${IYI_LIBRARY_PATH:-$CRYSTAL_LIBRARY_PATH}"
+    export IYI_CONFIG_LIBRARY_PATH="${IYI_CONFIG_LIBRARY_PATH:-$CRYSTAL_CONFIG_LIBRARY_PATH}"
   fi
 fi
 
@@ -225,6 +236,9 @@ fi
 # compiler commands.
 CRYSTAL_EXEC_PATH="$SCRIPT_ROOT"
 export CRYSTAL_EXEC_PATH
+# iyi: read by `iyi spec` and by the git-style subcommand lookup.
+IYI_EXEC_PATH="${IYI_EXEC_PATH:-$SCRIPT_ROOT}"
+export IYI_EXEC_PATH
 
 if [ -x "$CRYSTAL_DIR/${CRYSTAL_BIN}" ]; then
   __warning_msg "Using compiled compiler at ${CRYSTAL_DIR#"$PWD/"}/${CRYSTAL_BIN}"
