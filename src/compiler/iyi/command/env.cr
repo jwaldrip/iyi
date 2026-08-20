@@ -17,13 +17,19 @@ class Iyi::Command
       end
     end
 
+    # iyi: the same compiler ships under two names. `iyi env` prints `IYI_*`;
+    # `crystal env` prints `CRYSTAL_*`, because Crystal's own specs and anyone
+    # invoking the compatibility binary ask for Crystal's names. `CRYSTAL_VERSION`
+    # is Crystal's version under both, which is what `--version` reports as the
+    # upstream number.
+    prefix = Command.program_name.upcase
     vars = {
-      "IYI_CACHE_DIR"    => CacheDir.instance.dir,
-      "IYI_EXEC_PATH"    => Iyi::Config.exec_path || "",
-      "IYI_PATH"         => IyiPath.default_path,
-      "CRYSTAL_VERSION"  => Config.version || "",
-      "IYI_LIBRARY_PATH" => IyiLibraryPath.default_path,
-      "IYI_OPTS"         => ENV.fetch("IYI_OPTS", ""),
+      "#{prefix}_CACHE_DIR"    => CacheDir.instance.dir,
+      "#{prefix}_EXEC_PATH"    => Iyi::Config.exec_path || "",
+      "#{prefix}_PATH"         => IyiPath.default_path,
+      "CRYSTAL_VERSION"        => Config.version || "",
+      "#{prefix}_LIBRARY_PATH" => IyiLibraryPath.default_path,
+      "#{prefix}_OPTS"         => Config.env("OPTS") || "",
     }
 
     if var_names.empty?
@@ -41,7 +47,7 @@ class Iyi::Command
     <<-USAGE
     Usage: #{Command.program_name} env [var ...]
 
-    Prints iyi environment information.
+    Prints #{Command.program_name} environment information.
 
     By default it prints information as a shell script.
     If one or more variable names is given as arguments,

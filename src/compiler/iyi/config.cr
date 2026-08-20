@@ -4,6 +4,16 @@ module Iyi
   module Config
     class_property path : String = {{env("IYI_CONFIG_PATH") || ""}}
 
+    # Crystal's own specs, and anyone invoking the compatibility binary, set
+    # `CRYSTAL_PATH`, `CRYSTAL_CACHE_DIR`, `CRYSTAL_LIBRARY_PATH`, `CRYSTAL_OPTS`,
+    # `CRYSTAL_EXEC_PATH`, `CRYSTAL_DAEMON`, `CRYSTAL_DAEMON_SOCKET`. The
+    # compiler's own names are `IYI_*`. Both have to work, because this is still
+    # Crystal's compiler when the binary is called `crystal`. `IYI_*` wins when
+    # both are set.
+    def self.env(name : String) : String?
+      ENV["IYI_#{name}"]? || ENV["CRYSTAL_#{name}"]?
+    end
+
     def self.version
       {{ read_file("#{__DIR__}/../../VERSION").chomp }}
     end
@@ -54,10 +64,11 @@ module Iyi
     end
 
     def self.exec_path
-      ENV.fetch("IYI_EXEC_PATH") do
-        executable_path = Process.executable_path || return
-        File.dirname(executable_path)
+      if exec = env("EXEC_PATH")
+        return exec
       end
+      executable_path = Process.executable_path || return
+      File.dirname(executable_path)
     end
 
     @@host_target : Iyi::Codegen::Target?

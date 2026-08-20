@@ -173,6 +173,8 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r'parsed\["crystal"\]|"crystal" *=>', "shards' own manifest key"),
     (r"crystal-release|src/compiler/crystal\.cr|clean_cache crystal", "the compatibility binary's build"),
     (r"names crystal in the same banner|program_name = \"crystal\"", "the spec that pins the compatibility name"),
+    (r"from-crystal|reads CRYSTAL_PATH when IYI_PATH", "the spec that pins the Crystal env-var fallback"),
+    (r"CRYSTAL_#\{name\}|CRYSTAL_DAEMON|crystal docker image", "the fallback that keeps Crystal's env vars working"),
     (r"Crystal on the machine|a Crystal\b", "a sentence about the other language"),
     # Comments citing Crystal's own source, DWARF producer strings, and the
     # version banner's "a fork of Crystal X" clause. All name the other

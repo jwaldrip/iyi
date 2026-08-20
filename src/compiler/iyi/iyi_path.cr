@@ -19,7 +19,7 @@ module Iyi
     private DEFAULT_LIB_PATH = "lib"
 
     def self.default_paths : Array(String)
-      if path = ENV["IYI_PATH"]?
+      if path = Config.env("PATH")
         path_array = path.split(Process::PATH_DELIMITER, remove_empty: true)
       elsif path = Iyi::Config.path.presence
         path_array = path.split(Process::PATH_DELIMITER, remove_empty: true)

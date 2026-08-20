@@ -93,7 +93,7 @@ class Iyi::Command
     # An explicit override is authoritative. Falling back to some other binary
     # because the named one is missing would run a build against a compiler the
     # user did not ask for, and say nothing about it.
-    if (override = ENV["IYI_DAEMON"]?) && !override.empty?
+    if (override = Config.env("DAEMON")) && !override.empty?
       unless File.info?(override).try(&.file?)
         STDERR.puts "IYI_DAEMON points at #{override}, which is not a file"
         exit 1
@@ -132,7 +132,7 @@ class Iyi::Command
   # with a line saying so, because a daemon that quietly died should not look
   # like a daemon that is working.
   private def daemon_socket_from_env : String?
-    socket = ENV["IYI_DAEMON_SOCKET"]?
+    socket = Config.env("DAEMON_SOCKET")
     return nil if socket.nil? || socket.empty?
 
     unless File.exists?(socket)
@@ -380,7 +380,7 @@ class Iyi::Command
     # option parser exits the process on bad input. Doing that here on arguments
     # a client made up would take the daemon down on a typo.
     private def daemon_warm(args : Array(String)) : Nil
-      limit = (ENV["IYI_DAEMON_PRELUDES"]?.try(&.to_i?) || 3)
+      limit = (Config.env("DAEMON_PRELUDES").try(&.to_i?) || 3)
       return if Compiler.preanalysed.size >= limit
 
       compiler = Iyi::Command.new(args.dup).prelude_compiler_for_build

@@ -281,4 +281,30 @@ describe "Compiler" do
       Iyi::Command.commands_usage.should_not contain "Command.program_name"
     end
   end
+
+  # iyi: Crystal's own specs spawn this compiler with `CRYSTAL_PATH` set.
+  # Reading only `IYI_PATH` made every one of those fail to find `prelude`.
+  describe "the names Crystal's specs still set" do
+    it "reads CRYSTAL_PATH when IYI_PATH is unset" do
+      old_iyi = ENV["IYI_PATH"]?
+      old_crystal = ENV["CRYSTAL_PATH"]?
+      ENV.delete("IYI_PATH")
+      ENV["CRYSTAL_PATH"] = "from-crystal"
+      Iyi::IyiPath.default_paths.should eq(["from-crystal"])
+    ensure
+      old_iyi ? (ENV["IYI_PATH"] = old_iyi) : ENV.delete("IYI_PATH")
+      old_crystal ? (ENV["CRYSTAL_PATH"] = old_crystal) : ENV.delete("CRYSTAL_PATH")
+    end
+
+    it "prefers IYI_PATH when both are set" do
+      old_iyi = ENV["IYI_PATH"]?
+      old_crystal = ENV["CRYSTAL_PATH"]?
+      ENV["IYI_PATH"] = "from-iyi"
+      ENV["CRYSTAL_PATH"] = "from-crystal"
+      Iyi::IyiPath.default_paths.should eq(["from-iyi"])
+    ensure
+      old_iyi ? (ENV["IYI_PATH"] = old_iyi) : ENV.delete("IYI_PATH")
+      old_crystal ? (ENV["CRYSTAL_PATH"] = old_crystal) : ENV.delete("CRYSTAL_PATH")
+    end
+  end
 end

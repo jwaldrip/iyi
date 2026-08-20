@@ -103,7 +103,7 @@ module Iyi
 
   module IyiLibraryPath
     def self.default_paths : Array(String)
-      paths = ENV.fetch("IYI_LIBRARY_PATH", Iyi::Config.library_path).split(Process::PATH_DELIMITER, remove_empty: true)
+      paths = (Config.env("LIBRARY_PATH") || Iyi::Config.library_path).split(Process::PATH_DELIMITER, remove_empty: true)
 
       IyiPath.expand_paths(paths)
 

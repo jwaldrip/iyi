@@ -211,7 +211,17 @@ jobs:
       # renamed, and a name left inside a file that was otherwise cut over.
       # Every allowed occurrence carries its reason in the script.
       - name: iyi owns its name
-        run: python3 bench/identity_floor.py
+        run: |
+          # The crystal docker image is a compiler toolchain, not a Python one.
+          # This gate is Python because the first draft was `grep -P` and the
+          # grep a script resolves has no `-P`, so every allowlist test errored
+          # and the gate failed open. Installing Python here is cheaper than
+          # rewriting the matching in a language whose regex we would then have
+          # to re-prove.
+          if ! command -v python3 >/dev/null; then
+            apt-get update -qq && apt-get install -y -qq python3
+          fi
+          python3 bench/identity_floor.py
 
   targets:
     needs: build

@@ -75,7 +75,7 @@ module Iyi
       # Try to use one of these as a cache directory, in order
       candidates = {% begin %}
         [
-          ENV["IYI_CACHE_DIR"]?,
+          Config.env("CACHE_DIR"),
           {% if flag?(:windows) %}
             ENV["LOCALAPPDATA"]?.try { |dir| "#{dir}/iyi/cache" },
             ENV["USERPROFILE"]?.try { |home| "#{home}/.cache/iyi" },

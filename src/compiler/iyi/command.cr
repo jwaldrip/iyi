@@ -949,9 +949,9 @@ class Iyi::Command
   end
 
   private def self.iyi_opts
-    ENV["IYI_OPTS"]?.try { |opts| Process.parse_arguments(opts) }
+    Config.env("OPTS").try { |opts| Process.parse_arguments(opts) }
   rescue ex
-    raise Error.new("Failed to parse IYI_OPTS: #{ex.message}")
+    raise Error.new("Failed to parse #{Command.program_name.upcase}_OPTS: #{ex.message}")
   end
 
   # Constructs an `OptionParser` from the given block and runs it twice, first
