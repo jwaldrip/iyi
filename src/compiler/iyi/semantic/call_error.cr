@@ -660,6 +660,22 @@ class Iyi::Call
     end
   end
 
+  # iyi: `sorted` for `sort`, `reversed` for `reverse` — the participle this
+  # library uses where Crystal uses the plain verb.
+  #
+  # Asked of the type rather than of a list, so it answers for whatever the
+  # library grows next and stays quiet for a name nobody spelled that way.
+  private def iyi_participle_for(def_name : String, owner) : String?
+    return nil if def_name.ends_with?('=') || def_name.ends_with?('?')
+
+    {"#{def_name}ed", "#{def_name}d"}.each do |candidate|
+      next if candidate == def_name
+      return candidate if owner.lookup_defs(candidate).any?(&.visibility.public?)
+    end
+
+    nil
+  end
+
   private def raise_undefined_method(owner, def_name, obj)
     check_macro_wrong_number_of_arguments(owner, def_name)
 
@@ -710,6 +726,18 @@ class Iyi::Call
         else
           msg << "Did you mean '#{similar_name}'?"
         end
+      end
+
+      # iyi: the participle is there and the plain verb is not (SPEC.md
+      # III.1.7a).
+      #
+      # `!` cannot end a name here, so the pair Crystal spells `sort` and
+      # `sort!` is spelled `sorted` and `sort_in_place`. Somebody arriving from
+      # Crystal writes the plain verb, and "undefined method 'sort'" is true
+      # and teaches nothing. The suggestion machinery above will not reach it —
+      # `sort` to `sorted` is two edits — so the rule says it instead.
+      if !similar_name && (participle = iyi_participle_for(def_name, owner))
+        msg << '\n' << "'#{participle}' is what this library calls it: `!` cannot end a name here, so the copy takes the participle and the one that changes the receiver says so (SPEC.md III.1.7a)"
       end
 
       # iyi: the name is usually not missing, it is out of reach.

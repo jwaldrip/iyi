@@ -1,0 +1,67 @@
+# A language, in the language — the biggest program this prelude can hold.
+#
+#   echo "x = 2 + 3 * 4
+#   x * 10" | ./bin/iyi run samples/iyi/calc.iyi
+#
+# The other samples each document a rule. This one documents nothing and is
+# here for a different reason: everything else in `samples/iyi` is a page long,
+# and a language that has only been used for pages has not been used. This is
+# three modules and a scanner, a parser and an evaluator — the shape of every
+# real program that reads something — written against iyi's own 1,184-line
+# library and nothing else.
+#
+# What it cost to write is recorded where it landed. `String#[]`, `String#[](start,
+# count)`, `String#to_i` and `read_input` are in the prelude because this file
+# asked for them, which is the rule the prelude grows by (SPEC.md "0.1.0",
+# item 3). Nothing else was missing.
+module samples/calc
+
+import calc/lexer
+import calc/parser
+import calc/ast
+
+using calc/lexer::{scan, BadCharacter}
+using calc/parser::{parse, Statement, SyntaxError}
+using calc/ast::{Number, Name, Binary, UnknownName, DividedByZero}
+
+# What runs when nothing is piped in, so that the sample is a program rather
+# than a prompt. CI runs it this way.
+DEMO = "x = 2 + 3 * 4
+y = (x - 4) / 2
+x + y * 10
+missing + 1
+1 / 0"
+
+pub def run(source : String) : Nil
+  tokens = scan(source)
+  if tokens.is_a?(BadCharacter)
+    puts "error: #{tokens.message}"
+    return
+  end
+
+  program = parse(tokens)
+  if program.is_a?(SyntaxError)
+    puts "error: #{program.message}"
+    return
+  end
+
+  scope = {} of String => Int32
+  program.each do |statement|
+    value = statement.body.evaluate(scope)
+
+    if value.is_a?(Int32)
+      if statement.target.empty?
+        puts value
+      else
+        scope[statement.target] = value
+      end
+    else
+      # `value` is an error member of the union, and every one of them answers
+      # `message` because they implement `Error` (SPEC.md III.1).
+      puts "error: #{value.message}"
+    end
+  end
+end
+
+typed = read_input
+run(typed.empty? ? DEMO : typed)

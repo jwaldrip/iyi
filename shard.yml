@@ -1,13 +1,16 @@
 name: iyi
-version: 0.2.0-dev
+version: 0.3.0-dev
 
 authors:
   - Serdar Dogruyol
   - Crystal Core Team <crystal@manas.tech>
 
 description: |
-  iyi, a fork of the Crystal compiler in which separate compilation is a rule.
-  The compiler still reports itself as Crystal, because that is what it is.
+  A language built for Developer & Agentic Experience, Portability,
+  Performance, and Efficiency. A module is the unit of compilation and is
+  compiled against its dependencies' declarations, never their bodies.
+  Compatible with Crystal and its own language. The compiler is built on
+  Crystal's and is Apache 2.0 with it.
 
 crystal: ">= 1.0"
 

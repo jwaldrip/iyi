@@ -61,12 +61,70 @@ class String
     @bytesize == 0
   end
 
+  # The character at *index*, and the substring that starts there — asked for by
+  # `samples/iyi/calc`, which scans its input a character at a time and cannot
+  # do it with `to_unsafe` without becoming a program about pointers.
+  #
+  # ASCII, like the rest of this file: a byte is a character here, which is true
+  # of every string this prelude is asked to handle and false in general. The
+  # place it stops being true is the place to make `Char` real, and `size`
+  # already counts UTF-8 properly, so the two would disagree — noted rather than
+  # hidden.
+  #
+  # Out of range raises rather than returning nil, which is what `a[-1]` does
+  # and for the same reason: the caller knows the length.
+  def [](index : Int32) : Char
+    raise "index out of range" if index < 0 || index >= @bytesize
+    to_unsafe[index].unsafe_chr
+  end
+
+  def [](start : Int32, count : Int32) : String
+    raise "index out of range" if start < 0 || start > @bytesize
+    raise "negative count" if count < 0
+
+    available = @bytesize - start
+    taken = count < available ? count : available
+
+    String.new(taken) do |buffer|
+      buffer.copy_from(to_unsafe + start, taken)
+    end
+  end
+
   def to_unsafe : Pointer(UInt8)
     pointerof(@c)
   end
 
   def to_s : String
     self
+  end
+
+  # The number this string spells, asked for by `samples/iyi/calc`, which reads
+  # a token's text and needs the integer behind it.
+  #
+  # Raises on anything that is not a number, which is what Crystal's `to_i`
+  # does — the same name has to mean the same thing in both libraries
+  # (SPEC.md III.1.7a), and a silent 0 for `"oops"` is the kind of answer that
+  # is wrong twice.
+  def to_i : Int32
+    raise "not a number" if empty?
+
+    index = 0
+    sign = 1
+    if self[0] == '-'
+      raise "not a number" if @bytesize == 1
+      sign = -1
+      index = 1
+    end
+
+    value = 0
+    while index < @bytesize
+      digit = to_unsafe[index].to_i - 48
+      raise "not a number" if digit < 0 || digit > 9
+      value = value * 10 + digit
+      index = index + 1
+    end
+
+    value * sign
   end
 
   def +(other : String) : String

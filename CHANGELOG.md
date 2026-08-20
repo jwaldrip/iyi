@@ -1,6 +1,89 @@
 # Changelog
 
-## 0.2.0 - unreleased
+## Unreleased
+
+### Added
+
+- **`samples/iyi/calc`: a language, in the language.** Three modules — a
+  scanner, a parser and an evaluator — reading a program from standard input,
+  written against iyi's own 1,184-line library and nothing else. Every other
+  sample is a page long, and a language that has only been used for pages has
+  not been used.
+
+  It grew the prelude by exactly what it asked for, which is the rule the
+  prelude grows by: `String#[]`, `String#[](start, count)`, `String#to_i` and
+  `read_input`. Nothing else was missing. `/` was not added, and that is the
+  interesting one: iyi has no floats, Crystal's `/` on integers returns a
+  `Float64`, and a name that means two things is what III.1.7a settled against
+  — so integer division stays `//` in both.
+
+### Fixed
+
+- **A constant an artifact reads carries a location.** The reads a consumer
+  performs on an artifact's behalf were synthesised without one, and LLVM
+  refuses a call with no location inside a function that has debug info. It
+  never fired under iyi's own library and fired at once under Crystal's, which
+  is where it was found — while looking at whether artifacts and `--crystal`
+  can be used together. They still cannot, but the reason recorded in SPEC.md
+  Part V item 12a was wrong and is now the measured one.
+
+### Changed
+
+- **A module path is read from the root, not from where it is written.** A
+  module called `samples/calc` importing `calc/lexer` resolved `Calc` to
+  itself, then said the module was not imported: a true-looking sentence about
+  the wrong thing. A module's path is its file's path (R-1), so it cannot mean
+  something different depending on where it appears. Found by writing the
+  sample above, which is called `calc`.
+
+- **`Array#sort` is `sort_in_place`, and `sorted` is the copy.** A plain `sort`
+  meant the opposite thing in the two libraries — it sorted the array under
+  iyi's and returned a copy under Crystal's — with no error either way, which
+  is the worst shape a difference can take. The plain verb is not in this
+  library now, so the same call is an error under one and Crystal's meaning
+  under the other.
+
+  Measured before deciding: of everything iyi's library mutates — `<<`, `[]=`,
+  `concat`, `shift`, `sort` — only `sort` disagreed, because Crystal writes `!`
+  on the mutating member of a *pair* and plainly for the rest. One method
+  today, and the shape every future pair would have had. SPEC.md III.1.7a has
+  the three options that were on the table.
+
+  The error teaches the rule: a missing name whose participle exists says so,
+  which the suggestion machinery could not — `sort` to `sorted` is two edits.
+
+- **iyi answers as iyi.** `iyi tool` printed `Usage: crystal tool`, and it was
+  the shape of the bug rather than the string that mattered: the banner was a
+  constant interpolating the program name, and a constant is built before the
+  entrypoint has said which of the two binaries this is. `clear_cache --help`
+  printed the literal text `#{Command.program_name}` at a user, because its
+  heredoc was quoted. `repl --help` printed nothing at all. `iyi foo` could
+  never find `iyi-foo`: the git-style subcommand lookup was hardcoded to
+  `crystal-`, so the extension point existed for one binary of the two.
+
+  Underneath, the compiler carries its own name: `Iyi` is the namespace,
+  `src/compiler/iyi` the source, `IYI_*` its nineteen settings, `~/.cache/iyi`
+  the cache, `IyiPath` the thing that reads `IYI_PATH`. `bench/identity_floor.py`
+  is the gate, and the number it reports went from 12,426 lines across 178
+  paths to zero; every remaining mention of Crystal is listed there with the
+  reason it genuinely means the other language.
+
+  Nothing about the compatibility binary changed, and that is asserted rather
+  than assumed: `crystal` still answers as `crystal`, still reads `CRYSTAL_PATH`
+  and its siblings, and `require "compiler/crystal/syntax"` still resolves.
+  Crystal's own standard library does that, and anything that used the compiler
+  as a library may too. Where both names are set for one setting, iyi's wins.
+
+  Two of the defects were only visible on Linux CI, and both were the same
+  mistake: a local run that set `IYI_PATH` by hand, and a gate whose
+  `git ls-files` exited 128 inside a container and so checked nothing.
+
+Master is `0.3.0-dev`. Under the artifact rule 0.2.0 introduced, that means
+every build of it interoperates with nothing but itself: a version between two
+releases names no compiler, so it cannot be handed one released artifact and
+told they match.
+
+## 0.2.0 — 2026-08-20
 
 **A program chooses its library.** 0.1.0 had iyi's own 1,184-line prelude, and
 that was most of what stood between the language and anybody's real program.
@@ -14,11 +97,67 @@ Two more entries take the rules further out — `pub` reaches a macro and a
 constant — and closing each found the same hole underneath: a surface nobody
 wrote and nobody could refuse.
 
-Master is `0.2.0-dev`, and under the artifact rule below that means every build
-of it interoperates with nothing but itself. That is the point: a version
-between two releases names no compiler.
+Artifacts written by this release are read by every other build of it, on the
+same target and under the same flags. A `-dev` version between two releases
+names no compiler and interoperates with nothing but itself, which is the rule
+below doing its job rather than an exception to it.
 
 ### Changed
+
+- **The tarball carries Crystal's library, so `--crystal` works in what people
+  download.** It shipped iyi's own 56 KB and nothing else, so the release's
+  headline feature answered `require "json"` with "can't find file" outside a
+  checkout. It ships both now — 13.4 MB to 14.9 MB — and CI runs a `--crystal`
+  program out of the unpacked tarball, which is where this was found and where
+  it would have been found again.
+
+- **`make cli_spec` says once when the daemon and the compiler are different
+  builds.** The daemon refuses a client built from another compiler, correctly
+  — it holds an analysed prelude — but the spec saw that as nine failures, each
+  printing two version strings, with the reason in none of them. It is easy to
+  arrive at, too: the build commit comes from git HEAD while make compares file
+  times, so a commit can leave two binaries disagreeing about a commit while
+  agreeing about every line of code.
+
+- **`iyi mod diff` says whether a change reaches a module's consumers.** The
+  three hashes an artifact carries already answered it and nothing asked them.
+  It compares two `.iyimod` files, says which of interface, implementation and
+  source moved — with what each of the three means, because the middle one is
+  the surprising one — and names the exports that came and went when the
+  interface is what moved. `--exit-code` exits 1 in that case, which is
+  `git diff`'s spelling and its reason: the answer is not a failure.
+
+- **An iyi program is run on three targets every build, not one.** It compiled
+  for eight and was tested on one, which is a weak thing to call portability.
+  CI now cross-compiles `hello.iyi` for musl and for aarch64, links each with
+  the target's own `cc` and `libgc` — the command `--cross-compile` prints —
+  and runs them: in an Alpine container and under emulation. The check is that
+  each prints what the same program printed on the machine that compiled it.
+
+- **`bench/runtime.py` measures what the library costs at run time.** The two
+  libraries are within noise where they do the same work; `Hash` is 6x ahead
+  and does less; `String` is 1.64x behind. The first reading said string
+  building was twenty times faster, and it was the collector — a 17 KB binary
+  has fewer roots to scan than a 972 KB one — so the bench reports both columns
+  and the honest one is the second.
+
+- **iyi describes itself as its own language, compatible with Crystal.** "A
+  language built for Developer & Agentic Experience, Portability, Performance,
+  and Efficiency", and README says what stands behind each of the four and what
+  does not: the edit loop and the artifact are built, portability means eight
+  targets that compile and one that is tested, the run-time measurement is new
+  and says the two libraries are within noise where they do the same work, and
+  the agentic claim is a mechanism rather than a result.
+
+  Compatibility is stated as something checkable and in one direction: the same
+  compiler builds `.cr` files, an iyi program can `require` a shard with
+  `--crystal`, and a Crystal program cannot require an iyi module, because R-2's
+  written types and R-3's closed types are what an artifact is made of.
+
+  `iyi version` reads `iyi 0.2.0-dev (built on Crystal 1.22.0-dev …)`: the
+  language first and what it is built on after. The licence and NOTICE.md are
+  unchanged, because Apache 2.0's attribution is an obligation rather than a
+  description.
 
 - **An artifact is read by the release that wrote it, not by the build.** A
   `.iyimod` was locked to the exact compiler build, commit and all, so two
@@ -318,6 +457,19 @@ between two releases names no compiler.
   program failed to link, saying `undefined reference to Box(T)::new<Int32>`.
   The consumer's rule now matches the producer's. Reported after 0.1.0 went
   out.
+
+- **`Array#sort` sorts the array, and `sorted` hands back a copy.** SPEC.md
+  III.1.7(A) settled that pair — the plain verb mutates, the participle copies,
+  Swift's convention adopted because `!` had to leave identifiers so postfix
+  `!` could propagate an error — and the prelude did not implement it: `sort`
+  returned a copy and nothing mutated. It does now, and `sorted` is one line
+  over it.
+
+  Worth knowing when moving between the two libraries: Crystal names the same
+  pair `sort!` and `sort`, so `a.sort` copies there and sorts here. It is the
+  one call in this prelude that means something different under `--crystal`,
+  and the note is in `src/iyi/array.iyi` where somebody is standing when it
+  matters.
 
 - **A `using` that cannot deliver is refused where it is written.** A module
   header makes a type, and inside it that name means the module — so

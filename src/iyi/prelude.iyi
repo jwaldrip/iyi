@@ -58,6 +58,26 @@ require "./hash"
     result
   end
 
+  # `read`, for `read_input` below. Syscall 0 on x86_64 and 63 on aarch64,
+  # the same numbers `src/syscall/*-linux.cr` carries. Binding libc's `read`
+  # here for one call would put the whole library back on the link line and
+  # undo the floor III.9 measures.
+  def __iyi_read(fd : Int32, buffer : Void*, count : UInt64) : Int64
+    result = uninitialized Int64
+    {% if flag?(:x86_64) %}
+      asm("syscall" : "={rax}"(result)
+                    : "{rax}"(0_i64), "{rdi}"(fd.to_i64), "{rsi}"(buffer), "{rdx}"(count)
+                    : "rcx", "r11", "memory"
+                    : "volatile")
+    {% else %}
+      asm("svc #0" : "={x0}"(result)
+                   : "{x8}"(63_i64), "{x0}"(fd.to_i64), "{x1}"(buffer), "{x2}"(count)
+                   : "memory"
+                   : "volatile")
+    {% end %}
+    result
+  end
+
   def __iyi_exit(status : Int32) : NoReturn
     {% if flag?(:x86_64) %}
       asm("syscall" :: "{rax}"(231_i64), "{rdi}"(status.to_i64) : "rcx", "r11", "memory" : "volatile")
@@ -77,11 +97,16 @@ require "./hash"
   # on darwin for the same reason (CGO_ENABLED=0 buys nothing there either).
   lib LibC
     fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
+    fun read(fd : Int32, buf : Void*, count : UInt64) : Int64
     fun exit(status : Int32) : NoReturn
   end
 
   def __iyi_write(fd : Int32, buffer : Void*, count : UInt64) : Int64
     LibC.write(fd, buffer, count)
+  end
+
+  def __iyi_read(fd : Int32, buffer : Void*, count : UInt64) : Int64
+    LibC.read(fd, buffer, count)
   end
 
   def __iyi_exit(status : Int32) : NoReturn
@@ -104,6 +129,8 @@ require "./hash"
     fun GetStdHandle(n_std_handle : Int32) : Void*
     fun WriteFile(handle : Void*, buffer : Void*, number_of_bytes_to_write : Int32,
                   number_of_bytes_written : Int32*, overlapped : Void*) : Int32
+    fun ReadFile(handle : Void*, buffer : Void*, number_of_bytes_to_read : Int32,
+                 number_of_bytes_read : Int32*, overlapped : Void*) : Int32
     fun ExitProcess(exit_code : Int32) : NoReturn
   end
 
@@ -120,6 +147,16 @@ require "./hash"
       return -1_i64
     end
     written.to_i64
+  end
+
+  def __iyi_read(fd : Int32, buffer : Void*, count : UInt64) : Int64
+    std_handle = -10
+    read = uninitialized Int32
+    if LibC.ReadFile(LibC.GetStdHandle(std_handle), buffer,
+         count.to_i32, pointerof(read), nil) == 0
+      return 0_i64
+    end
+    read.to_i64
   end
 
   def __iyi_exit(status : Int32) : NoReturn
@@ -146,6 +183,8 @@ require "./hash"
 
     fun fd_write = __wasi_fd_write(fd : Int32, iovs : Ciovec*,
                                    iovs_len : Int32, nwritten : Int32*) : Int32
+    fun fd_read = __wasi_fd_read(fd : Int32, iovs : Ciovec*,
+                                 iovs_len : Int32, nread : Int32*) : Int32
     fun proc_exit = __wasi_proc_exit(code : Int32) : NoReturn
   end
 
@@ -156,6 +195,15 @@ require "./hash"
       return -1_i64
     end
     written.to_i64
+  end
+
+  def __iyi_read(fd : Int32, buffer : Void*, count : UInt64) : Int64
+    iov = LibWasi::Ciovec.new(buf: buffer.as(UInt8*), buf_len: count.to_i32)
+    read = uninitialized Int32
+    if LibWasi.fd_read(fd, pointerof(iov), 1, pointerof(read)) != 0
+      return 0_i64
+    end
+    read.to_i64
   end
 
   def __iyi_exit(status : Int32) : NoReturn
@@ -770,6 +818,37 @@ end
 def puts(text : String) : Nil
   print text
   print "\n"
+end
+
+# Everything on standard input, asked for by `samples/iyi/calc`: a program that
+# only runs the source built into it is a demonstration, and one that reads is
+# a tool.
+#
+# All of it rather than a line at a time, and that is the honest shape of what
+# this prelude can do — `gets` in Crystal's library returns one line and keeps
+# the rest in a buffered `IO`, and there is no `IO` here to keep it in. A name
+# that means less than Crystal's would be worse than a different name, so this
+# one is its own (SPEC.md III.1.7a is the same rule from the other side).
+def read_input : String
+  chunk = 8192_u64
+  buffer = Pointer(UInt8).malloc(chunk)
+  filled = 0_i64
+  capacity = chunk
+
+  while true
+    if filled.to_u64 == capacity
+      capacity = capacity * 2_u64
+      buffer = buffer.realloc(capacity)
+    end
+
+    count = __iyi_read(0, (buffer + filled).as(Void*), capacity - filled.to_u64)
+    break if count <= 0_i64
+    filled = filled + count
+  end
+
+  String.new(filled.to_i) do |target|
+    target.copy_from(buffer, filled.to_i)
+  end
 end
 
 def puts(value) : Nil

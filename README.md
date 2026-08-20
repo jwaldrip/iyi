@@ -3,9 +3,31 @@
 [![iyi](https://github.com/jwaldrip/iyi/actions/workflows/iyi.yml/badge.svg)](https://github.com/jwaldrip/iyi/actions/workflows/iyi.yml)
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
 
-**A fork of [Crystal](https://crystal-lang.org) built to answer one question:
-what does a language look like when separate compilation is a rule instead of a
-feature?** (*iyi* is Turkish for "good".)
+**A language built for Developer & Agentic Experience, Portability, Performance,
+and Efficiency.** (*iyi* is Turkish for "good".)
+
+Those four are one design decision seen from four sides. A module is the unit of
+compilation and it is compiled against its dependencies' **declarations**, never
+their bodies — so a build reads less, a program carries less, a tool can read an
+interface without a repository, and a person waits less. Everything below is
+that rule and what it costs.
+
+| | measured today |
+|---|---|
+| **Developer experience** | edit one module in a 7,208-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
+| **Agentic experience** | a module's interface is a file, not a convention: `iyi mod dump` prints it, and a consumer type-checks against it with the source deleted |
+| **Portability** | an iyi program compiles for **eight targets** and is **run** on three of them every build: x86-64 glibc, x86-64 musl, and aarch64 under emulation |
+| **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s**. At run time the two libraries are within noise where they do the same work |
+| **Efficiency** | that `hello` is a **17 KB** binary that starts in **1.2 ms**; the same program with Crystal's library is 972 KB and 3.4 ms |
+
+**iyi is its own language, and it is compatible with
+[Crystal](https://crystal-lang.org).** Compatible in a way you can check: the
+same compiler builds `.cr` files, `iyi build --crystal` gives a program
+Crystal's standard library, and `require "kemal"` in an iyi file serves HTTP.
+Its own in a way you can also check: a `.iyi` file has rules Crystal does not
+have and refuses things Crystal accepts, and those rules are the whole of what
+follows. The compiler is built on Crystal's, which is recorded where it belongs
+— the [licence](LICENSE) and [NOTICE.md](NOTICE.md).
 
 Here is the program the numbers below are about. One script writes it three
 times, in iyi, in Crystal and in Go, from the same set of numbers:
@@ -216,18 +238,107 @@ The dotted line is the whole design. A consumer type-checks against the
 declarations and links against the object code, and the source of the module it
 imports may not exist on the machine at all.
 
+## The four, and what stands behind each
+
+Said plainly, because a tagline that outruns its evidence is worth less than no
+tagline.
+
+**Developer experience — built, and it is the number this project exists for.**
+The edit loop is 0.13 s where Crystal's is 1.17 s on the same 7,208 lines, and
+that is R-1 paying: the twenty-nine modules you did not touch arrive as
+declarations. The rest of it is smaller and just as deliberate — errors name the
+rule they enforce and what to write instead, `iyi tool format` knows the syntax,
+and `iyi mod dump` prints an artifact as text.
+
+**Agentic experience — the mechanism is built, the claim is young.** What an
+agent needs from a language is a boundary it can read and a loop it can afford.
+Both are here for the same reason a person gets them: a module's interface is a
+*file* rather than a convention, so a tool can read what a module offers without
+the repository that produced it, and check a change against it without building
+the world.
+
+"Did this change reach anybody?" is therefore a question with an answer:
+
+```console
+$ iyi mod diff before/app/greeter.iyimod after/app/greeter.iyimod
+module          app/greeter
+interface       changed    what a consumer type-checks against
+implementation  unchanged  the bodies a consumer compiles: macros, generics, the initialiser
+source          changed    the file
+
+  gone   def polite(name : String) : String
+  gone   def title : String
+  new    def polite(name : String, formal : Bool) : String
+
+Consumers have to be rebuilt: what they compile against moved.
+```
+
+Rename a local and it says the interface is unchanged; add a parameter and it
+says what moved and who it reaches. `--exit-code` makes that a branch in a
+script. Nothing here is agent-specific: it is R-1's boundary, asked a question.
+
+What is not here is anything an agent could not have got from the rules: no
+protocol, no server, no special mode. If that turns out to be the wrong bet, it
+will be because the rules were not enough, and that is a thing to measure rather
+than to promise.
+
+**Portability — compiles for eight, runs on three.** An iyi program produces
+code for `x86_64-linux-gnu`, `x86_64-linux-musl`, `aarch64-linux-gnu`,
+`arm-linux-gnueabihf`, `x86_64-darwin`, `aarch64-darwin`, `x86_64-w64-mingw32`
+and `x86_64-windows-msvc`, and CI type-checks the library for all eight every
+build.
+
+Three of them are *run*, also every build, and the check is that they print
+what the same program printed on the machine that compiled them: x86-64 glibc
+natively, **x86-64 musl** in an Alpine container, and **aarch64** under
+emulation. The object is cross-compiled here and linked there with the target's
+own `cc` and `libgc`, which is the command `--cross-compile` prints.
+
+The other five are still "the code generator has no objection". Darwin and
+Windows need a linker and a runtime this workflow does not have, and until they
+run somewhere, that is what they are worth.
+
+**Performance — Crystal's backend, and now one measurement of its own.**
+Native code through LLVM, the same GC. `python3 bench/runtime.py` runs the same
+program under both libraries, and the honest reading is not the flattering one:
+
+| workload | as it runs | with the collector off |
+|---|---|---|
+| arithmetic | 1.00x | 0.97x |
+| array append and read | 0.55x | 0.90x |
+| hash insert and read | 0.13x | 0.15x |
+| string building | **0.05x** | **1.64x** |
+
+Under 1.00 is iyi ahead. Run normally, string building looks twenty times
+faster; with the collector out of the way it is 1.64x **slower**, so all of
+that twenty was the collector having fewer roots to scan in a 17 KB binary than
+in a 972 KB one. That is a real effect and it is the efficiency claim, not a
+claim about `String`. Where the two libraries do the same work they are within
+noise; where iyi's is faster — `Hash`, by 6x — part of the reason is that it
+does less, and does not preserve insertion order.
+
+Nothing here has benchmarked a program against C or Go, and what R-4 says about
+generics crossing a boundary is specified and unmeasured.
+
+**Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 17 KB
+binary that starts in 1.2 ms; the same program compiled with Crystal's standard
+library is 972 KB and 3.4 ms. Nothing clever is happening: a program links what
+it uses, and iyi's own library is 1,184 lines rather than 8,161. The whole
+library is 56 KB on disk beside the binary.
+
 ## Getting it
 
 The released tarball is 0.1.0. A build from current source reports
 `0.2.0-dev`.
 
 ```console
-$ tar -xzf iyi-0.1.0-linux-x86_64.tar.gz -C ~/.local
+$ tar -xzf iyi-0.2.0-linux-x86_64.tar.gz -C ~/.local
 $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 
-The tarball is relocatable. `bin/iyi` finds its prelude beside itself, all 56 KB
-of it, so there is nothing to configure and no `IYI_PATH` to set.
+The tarball is relocatable and carries both libraries: iyi's own 56 KB, and
+Crystal's standard library for `--crystal`. `bin/iyi` finds them beside itself,
+so there is nothing to configure and no `IYI_PATH` to set.
 
 ### Your first module, and then the rule that matters
 
@@ -384,7 +495,7 @@ own prelude, because an artifact written against Crystal's library names types
 a consumer compiles its own copy of.
 
 **Nine shards were swept through it**, each built twice — as an iyi program and
-as a Crystal one, so that a difference is this fork's and a shared failure is
+as a Crystal one, so that a difference is iyi's and a shared failure is
 the ecosystem's. `kemal`, `db`, `ameba`, `habitat`, `baked_file_system`,
 `radix`, `sqlite3`, the standard library's own `json`/`yaml`/`uri`/`http`, and
 a program that round-trips `JSON::Serializable` and writes a file. All nine
@@ -569,6 +680,13 @@ other three with an error that never mentioned the artifact.
 
 ## Coming from Crystal
 
+**Both directions of "compatible", stated first.** The same compiler builds
+`.cr` files unchanged, and `iyi build --crystal` lets an iyi program `require`
+any of them — Kemal, `db`, `ameba`, the standard library. The direction that
+does not work is a Crystal program requiring an iyi module: R-2's written types
+and R-3's closed types are what an artifact is made of, and a `.cr` file
+provides neither. So iyi consumes Crystal, and Crystal does not consume iyi.
+
 The syntax is Crystal's. What moved is where things may be written, and each
 move is one of the four rules:
 
@@ -589,14 +707,29 @@ runs it under its own name. The rules above apply to `.iyi` files.
 
 ## Questions you are about to ask
 
-**Is this meant to replace Crystal?** No. It is one question asked as a fork
-because it cannot be asked as a patch: separate compilation is not a feature
-you add to a language with open classes, it is a rule the language has to be
-designed around. Crystal is not going to drop open classes, and it should not.
+**Is this Crystal with a flag?** No, and the difference is not cosmetic. A
+`.iyi` file has rules Crystal does not have and refuses things Crystal accepts:
+a module header that makes the file a compilation unit, `pub` with types on
+everything exported, no open classes, `impl` where the trait or the type lives,
+errors as ordinary union members. Separate compilation is not a feature you add
+to a language with open classes; it is a rule a language is designed around, and
+these are those rules.
 
-**Will it merge back?** The bug fixes this fork found in Crystal's own
-compiler should, and they are separate commits for that reason. The rules will
-not, and are not offered.
+**What does "Crystal-compatible" mean, exactly?** Three things, each of them
+checkable. The same compiler builds `.cr` files unchanged — nine shards were
+swept through it, Kemal among them. An iyi program can `require` any of them
+with `--crystal`, and gets Crystal's standard library with it. And the syntax
+under the rules is Crystal's: blocks, unions, nil-safety, macros, local
+inference. What is not compatible is the direction back — a Crystal program
+cannot `require` an iyi module, because R-2's written types and R-3's closed
+types are what the artifact is made of.
+
+**Is this meant to replace Crystal?** No. Crystal is not going to drop open
+classes, and it should not.
+
+**Will it merge back?** The bug fixes found in Crystal's own compiler while
+building iyi should, and they are separate commits for that reason. The rules
+will not, and are not offered.
 
 **Can I use shards?** Yes, with `--crystal`, which gives the program Crystal's
 standard library and makes `require` mean what it means there. Nine shards were
@@ -617,7 +750,8 @@ that the test suite runs on every target.
 **Who is this for right now?** Somebody who wants to check the claim, read the
 design, or argue with a number. `--crystal` moved the other line: a program
 that requires shards is buildable today, and what should keep you away is the
-language rather than the library — it is 0.2.0-dev, and the parts of SPEC.md
+language rather than the library — master is 0.3.0-dev, and the parts of
+SPEC.md
 marked PROPOSED are the parts that will move under you.
 
 ## What is not here
@@ -670,9 +804,11 @@ marked PROPOSED are the parts that will move under you.
 
 ## Licence and provenance
 
-iyi is a fork of the Crystal compiler and carries Crystal's licence and
-copyright: Apache 2.0, Copyright 2012-2026 Manas Technology Solutions. See
-[LICENSE](LICENSE) and [NOTICE.md](NOTICE.md). Everything not inherited from
-Crystal is a change to Crystal's source. `iyi --version` reports
-`iyi 0.2.0-dev, a fork of Crystal 1.22.0-dev`: iyi's release identity first,
-with the upstream compiler version retained as provenance.
+iyi's compiler is built on the Crystal compiler and carries Crystal's licence
+and copyright: Apache 2.0, Copyright 2012-2026 Manas Technology Solutions. See
+[LICENSE](LICENSE) and [NOTICE.md](NOTICE.md). Everything here that is not
+Crystal's is a change to Crystal's source. `iyi --version` reports
+`iyi 0.3.0-dev (built on Crystal 1.22.0-dev)`: the language first, then what it
+is built on. The compatibility binary in the same checkout still reports itself
+as `Crystal 1.22.0-dev`, because that is what it is. This paragraph is a licence
+obligation and an accurate one; the language above it is iyi's own.

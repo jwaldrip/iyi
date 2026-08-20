@@ -176,8 +176,29 @@ compiler_spec: $(O)/compiler_spec$(EXE) ## Run compiler specs
 primitives_spec: $(O)/primitives_spec$(EXE) ## Run primitives specs
 	$(O)/primitives_spec$(EXE) $(SPEC_FLAGS)
 
+# iyi: the daemon refuses a client built from a different compiler, and it is
+# right to — it holds an analysed prelude and would serve builds from the old
+# one. What it cannot do is say so once: the spec sees nine failures, each
+# printing two version strings, and the reason is in none of them.
+#
+# The mismatch is easy to arrive at and hard to see, because the build commit
+# is baked in from git HEAD while make compares file times: commit, rebuild one
+# of the two, and they disagree about a commit while agreeing about every line
+# of code. Asked here instead, once, before the specs run.
+.PHONY: check_daemon_matches
+check_daemon_matches: $(O)/crystal$(EXE) $(O)/$(CRYSTAL_DAEMON_BIN)
+	@client="$$($(O)/crystal$(EXE) --version | head -1)"; \
+	 daemon="$$($(O)/$(CRYSTAL_DAEMON_BIN) --version | head -1)"; \
+	 if [ "$$client" != "$$daemon" ]; then \
+	   echo "the daemon and the compiler are different builds, so every daemon spec will fail:"; \
+	   echo "  compiler: $$client"; \
+	   echo "  daemon:   $$daemon"; \
+	   echo "rebuild the one that is behind: make -B crystal-daemon"; \
+	   exit 1; \
+	 fi
+
 .PHONY: cli_spec
-cli_spec: $(O)/cli_spec$(EXE) ## Run compiler CLI specs
+cli_spec: $(O)/cli_spec$(EXE) check_daemon_matches ## Run compiler CLI specs
 	$(O)/cli_spec$(EXE) $(SPEC_FLAGS)
 
 .PHONY: simple_smoke_test
@@ -253,6 +274,17 @@ install_iyi: $(O)/iyi$(EXE)
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/iyi/src"
 	cp -R -p $(if $(deref_symlinks),-L,-P) src/iyi "$(DESTDIR)$(DATADIR)/iyi/src/iyi"
 
+# iyi: the other library, because `--crystal` is not a developer's switch.
+#
+# A program built with it gets Crystal's standard library, and an install that
+# ships only iyi's own 56 KB answers `require "json"` with "can't find file",
+# which is the headline feature failing in the thing people download. Copied
+# without `compiler/` — a compiler that carried its own source would be
+# carrying it twice — and without `iyi/`, which is already above.
+	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/iyi/crystal"
+	cp -R -p $(if $(deref_symlinks),-L,-P) src/*.cr src/*/ "$(DESTDIR)$(DATADIR)/iyi/crystal/"
+	rm -rf "$(DESTDIR)$(DATADIR)/iyi/crystal/compiler" "$(DESTDIR)$(DATADIR)/iyi/crystal/iyi"
+
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/licenses/iyi/"
 	$(INSTALL) -m 644 LICENSE "$(DESTDIR)$(DATADIR)/licenses/iyi/LICENSE"
 	$(INSTALL) -m 644 NOTICE.md "$(DESTDIR)$(DATADIR)/licenses/iyi/NOTICE.md"
@@ -273,6 +305,7 @@ iyi-tarball: $(O)/iyi$(EXE)
 	$(INSTALL) -m 644 README.md "$(O)/iyi-package/share/iyi/README.md"
 	$(INSTALL) -m 644 SPEC.md "$(O)/iyi-package/share/iyi/SPEC.md"
 	cp -R -p samples/iyi "$(O)/iyi-package/share/iyi/samples"
+	cp -R -p samples/crystal "$(O)/iyi-package/share/iyi/samples/crystal"
 	tar -czf "$(O)/$(IYI_PACKAGE).tar.gz" -C "$(O)/iyi-package" .
 	@echo "wrote $(O)/$(IYI_PACKAGE).tar.gz"
 
@@ -366,7 +399,7 @@ $(O)/$(CRYSTAL_BIN): $(DEPS) $(SOURCES)
 $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
-	$(EXPORTS) $(EXPORTS_BUILD) IYI_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../src' \
+	$(EXPORTS) $(EXPORTS_BUILD) IYI_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
 	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $@ src/compiler/iyi.cr
 	@echo "built $@ — run it as ./bin/iyi"
 

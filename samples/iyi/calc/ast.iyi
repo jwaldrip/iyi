@@ -1,0 +1,88 @@
+module calc/ast
+
+# What an evaluated program can go wrong with. Both are ordinary members of the
+# union an evaluation returns (SPEC.md III.1), so a caller either handles them
+# or propagates with `!`.
+pub struct UnknownName
+  getter name : String
+
+  def initialize(@name : String)
+  end
+end
+
+impl Error for UnknownName
+  def message : String
+    "unknown name '#{name}'"
+  end
+end
+
+pub struct DividedByZero
+  def initialize
+  end
+end
+
+impl Error for DividedByZero
+  def message : String
+    "divided by zero"
+  end
+end
+
+# The one thing every node can do. A trait rather than a base class, because
+# there is nothing to inherit and R-3 has no opinion to break here.
+pub trait Node
+  abstract def evaluate(scope : Hash(String, Int32)) : Int32 | UnknownName | DividedByZero
+end
+
+pub struct Number
+  getter value : Int32
+
+  def initialize(@value : Int32)
+  end
+end
+
+impl Node for Number
+  def evaluate(scope : Hash(String, Int32)) : Int32 | UnknownName | DividedByZero
+    value
+  end
+end
+
+pub struct Name
+  getter name : String
+
+  def initialize(@name : String)
+  end
+end
+
+impl Node for Name
+  def evaluate(scope : Hash(String, Int32)) : Int32 | UnknownName | DividedByZero
+    return UnknownName.new(name) unless scope.has_key?(name)
+    scope[name]
+  end
+end
+
+pub class Binary
+  getter op : Char
+  getter left : Number | Name | Binary
+  getter right : Number | Name | Binary
+
+  def initialize(@op : Char, @left : Number | Name | Binary, @right : Number | Name | Binary)
+  end
+end
+
+impl Node for Binary
+  def evaluate(scope : Hash(String, Int32)) : Int32 | UnknownName | DividedByZero
+    a = left.evaluate(scope)!
+    b = right.evaluate(scope)!
+
+    if op == '+'
+      a + b
+    elsif op == '-'
+      a - b
+    elsif op == '*'
+      a * b
+    else
+      return DividedByZero.new if b == 0
+      a // b
+    end
+  end
+end
