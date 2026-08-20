@@ -415,6 +415,21 @@ module Crystal
     private def prepare_iyimods(program : Program) : Array({String, IyiMod::Artifact})?
       return unless dir = emit_iyimod
 
+      # iyi: and the writing side of the same rule.
+      #
+      # An artifact written under Crystal's library is one `--use-iyimod`
+      # refuses to read, so writing it is worse than refusing to: a file
+      # nothing can consume, produced without a word. `tool bind` does not come
+      # through here — a Crystal shard has no iyi modules to write.
+      if !program.iyi_module_paths.empty? && !prelude.ends_with?("iyi/prelude")
+        raise Crystal::Error.new(
+          "--emit-iyimod needs iyi's own prelude. An artifact written against " \
+          "Crystal's standard library is one nothing can read back: a " \
+          "consumer compiles its own copy of that library and has two of " \
+          "everything (SPEC.md Part V item 12a)."
+        )
+      end
+
       flags = program.flags.to_a.sort!
 
       # Before codegen, because that is what it is for: a method whose body is
