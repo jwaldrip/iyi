@@ -316,6 +316,21 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       end
     end
 
+    # iyi: a name the module's own name already takes.
+    #
+    # A module header makes a type — `module app/tally` is `App::Tally` — and
+    # inside it that name means the module, whatever a `using` brought. So
+    # `using x::{Tally}` in a module called `tally` asks for a name it cannot
+    # have, and what the author sees otherwise is a mismatch between `Tally`
+    # and `App::Count::Tally` at the first line that uses it, with nothing
+    # pointing back here. Only for the selective form: it named what it wanted.
+    if (selected = node.names) && (unit = current_type.as?(NamedType))
+      own = unit.name
+      if selected.includes?(own)
+        node.raise "`#{own}` is this module's own name, so `using` cannot bring another one under it. Inside `#{unit}` the name `#{own}` means the module. Qualify the other one, or rename this module"
+      end
+    end
+
     # iyi: the directive as written, for the artifact (SPEC.md IV.2). Only the
     # module unit's own, because only its own reach the signatures the artifact
     # carries — one written inside a nested type resolves names there and

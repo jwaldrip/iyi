@@ -116,6 +116,13 @@ between two releases names no compiler.
   The consumer's rule now matches the producer's. Reported after 0.1.0 went
   out.
 
+- **A `using` that cannot deliver is refused where it is written.** A module
+  header makes a type, and inside it that name means the module — so
+  `using app/count::{Tally}` in a module called `tally` asks for a name it
+  cannot have. What it said before was that `Tally` was not
+  `App::Count::Tally`, at the first line that used one, with nothing pointing
+  at the directive. Found by writing a command-line program.
+
 - **`String#size` counts when nobody counted.** Crystal reads `@length == 0` on
   a non-empty string as "not counted yet" and scans; this prelude returned the
   field. A string built by Crystal's own `to_json` therefore printed correctly

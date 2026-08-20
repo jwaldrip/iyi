@@ -512,6 +512,31 @@ describe "Semantic: iyi import" do
       end
     end
 
+    # A module header makes a type, and inside it that name means the module.
+    # Found by writing a command-line program called `tally` that imported a
+    # `Tally`: what it said was that `Tally` was not `App::Count::Tally`, at
+    # the first line that used one, with nothing pointing at the `using`.
+    it "refuses a `using` of a name the module's own name already takes" do
+      with_iyi_modules({
+        "app/dep.iyi" => <<-IYI,
+          module app/dep
+
+          pub struct Thing
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/thing
+
+          import app/dep
+          using app/dep::{Thing}
+          IYI
+      }) do
+        expect_raises(Crystal::TypeException, /is this module's own name/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
     it "falls back to the source when there is no artifact" do
       with_iyi_modules({
         "app/dep.iyi" => <<-IYI,
