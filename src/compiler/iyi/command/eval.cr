@@ -1,0 +1,33 @@
+# Implementation of the `crystal eval` command
+
+class Iyi::Command
+  private def eval
+    compiler = new_compiler
+    opt_program_source = nil
+    program_args = [] of String
+
+    parse_with_iyi_opts do |opts|
+      opts.banner = "Usage: #{Command.program_name} eval [options] [source]\n\nOptions:"
+      setup_simple_compiler_options compiler, opts
+
+      opts.unknown_args do |before_dash, after_dash|
+        unless before_dash.empty?
+          opt_program_source = before_dash.join " "
+        end
+        program_args = after_dash
+      end
+    end
+
+    program_source = opt_program_source
+    if program_source.nil?
+      program_source = STDIN.gets_to_end
+    end
+
+    sources = [Compiler::Source.new("eval", program_source)]
+
+    output_filename = Iyi.temp_executable "eval"
+
+    compiler.compile sources, output_filename
+    execute output_filename, program_args, compiler
+  end
+end

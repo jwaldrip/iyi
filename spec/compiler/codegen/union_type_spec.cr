@@ -30,7 +30,7 @@ describe "Code gen: union type" do
   end
 
   it "codegens union type for instance var" do
-    run(<<-CRYSTAL).to_f64.should eq(3)
+    run(<<-CODE).to_f64.should eq(3)
       struct Float
         def &+(other)
           self + other
@@ -56,11 +56,11 @@ describe "Code gen: union type" do
       f = Foo.new(1)
       f.value = 1.5_f32
       (f.value &+ f.value).to_f
-      CRYSTAL
+      CODE
   end
 
   it "codegens if with same nested union" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       if true
         if true
           1
@@ -74,11 +74,11 @@ describe "Code gen: union type" do
           2.5_f32
         end
       end.to_i!
-      CRYSTAL
+      CODE
   end
 
   it "assigns union to union" do
-    run(<<-CRYSTAL).to_i.should eq(97)
+    run(<<-CODE).to_i.should eq(97)
       require "prelude"
 
       struct Nil; def to_i; 0; end; end
@@ -106,11 +106,11 @@ describe "Code gen: union type" do
       f.foo 1
       f.foo 'a'
       f.x.to_i
-      CRYSTAL
+      CODE
   end
 
   it "assigns union to larger union" do
-    run(<<-CRYSTAL).to_string.should eq("d")
+    run(<<-CODE).to_string.should eq("d")
       require "prelude"
       a = 1
       a = 1.1_f32
@@ -118,34 +118,34 @@ describe "Code gen: union type" do
       b = 'd'
       a = b
       a.to_s
-      CRYSTAL
+      CODE
   end
 
   it "assigns union to larger union when source is nilable 1" do
-    value = run(<<-CRYSTAL).to_string
+    value = run(<<-CODE).to_string
       require "prelude"
       a = 1
       b = nil
       b = Reference.new
       a = b
       a.to_s
-      CRYSTAL
+      CODE
     value.should contain("Reference")
   end
 
   it "assigns union to larger union when source is nilable 2" do
-    run(<<-CRYSTAL).to_string.should eq("")
+    run(<<-CODE).to_string.should eq("")
       require "prelude"
       a = 1
       b = Reference.new
       b = nil
       a = b
       a.to_s
-      CRYSTAL
+      CODE
   end
 
   it "dispatch call to object method on nilable" do
-    run(<<-CRYSTAL)
+    run(<<-CODE)
       require "prelude"
       class Foo
       end
@@ -153,11 +153,11 @@ describe "Code gen: union type" do
       a = nil
       a = Foo.new
       a.nil?
-      CRYSTAL
+      CODE
   end
 
   it "sorts restrictions when there are unions" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Middle
       end
 
@@ -188,11 +188,11 @@ describe "Code gen: union type" do
 
       t = Top.new || Another1.new
       type_id t
-      CRYSTAL
+      CODE
   end
 
   it "codegens union to_s" do
-    str = run(<<-CRYSTAL).to_string
+    str = run(<<-CODE).to_string
       require "prelude"
 
       def foo(x : T) forall T
@@ -201,26 +201,26 @@ describe "Code gen: union type" do
 
       a = 1 || 1.5
       foo(a)
-      CRYSTAL
+      CODE
     str.in?("(Int32 | Float64)", "(Float64 | Int32)").should be_true
   end
 
   it "provides T as a tuple literal" do
-    run(<<-CRYSTAL).to_string.should eq("TupleLiteral")
+    run(<<-CODE).to_string.should eq("TupleLiteral")
       struct Union
         def self.foo
           {{ T.class_name }}
         end
       end
       Union(Nil, Int32).foo
-      CRYSTAL
+      CODE
   end
 
   it "respects union payload alignment when upcasting Bool (#14898)" do
-    mod = codegen(<<-CRYSTAL)
+    mod = codegen(<<-CODE)
       x = uninitialized Bool | UInt8[64]
       x = true
-      CRYSTAL
+      CODE
 
     str = mod.to_s
     {% if LibLLVM::IS_LT_150 %}

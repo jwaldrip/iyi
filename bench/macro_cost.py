@@ -18,7 +18,7 @@ Two things about the method, both learned the hard way:
 
   * `--prelude=empty`. Against the real prelude the fixed ~1.4 s tax is larger
     than the effect, and the delta is indistinguishable from run-to-run noise.
-  * A fresh `CRYSTAL_CACHE_DIR` for (c). Crystal caches the compiled `run`
+  * A fresh `IYI_CACHE_DIR` for (c). Crystal caches the compiled `run`
     script, so every build after the first reuses the binary and reports ~0.
 """
 import os
@@ -43,7 +43,7 @@ def build(path, prelude_empty=True, cold=False):
 
     if cold:
         cache = tempfile.TemporaryDirectory()
-        env = dict(os.environ, CRYSTAL_CACHE_DIR=cache.name)
+        env = dict(os.environ, IYI_CACHE_DIR=cache.name)
     else:
         cache, env = None, None
 

@@ -2,74 +2,74 @@ require "../../spec_helper"
 
 describe "Semantic: did you mean" do
   it "says did you mean for one mistake in short word in instance method" do
-    assert_error <<-CRYSTAL, "Did you mean 'bar'?"
+    assert_error <<-CODE, "Did you mean 'bar'?"
       class Foo
         def bar
         end
       end
 
       Foo.new.baz
-      CRYSTAL
+      CODE
   end
 
   it "says did you mean for two mistakes in long word in instance method" do
-    assert_error <<-CRYSTAL, "Did you mean 'barbara'?"
+    assert_error <<-CODE, "Did you mean 'barbara'?"
       class Foo
         def barbara
         end
       end
 
       Foo.new.bazbaza
-      CRYSTAL
+      CODE
   end
 
   it "says did you mean for global method with parenthesis" do
-    assert_error <<-CRYSTAL, "Did you mean 'bar'?"
+    assert_error <<-CODE, "Did you mean 'bar'?"
       def bar
       end
 
       baz()
-      CRYSTAL
+      CODE
   end
 
   it "says did you mean for global method without parenthesis" do
-    assert_error <<-CRYSTAL, "Did you mean 'bar'?"
+    assert_error <<-CODE, "Did you mean 'bar'?"
       def bar
       end
 
       baz
-      CRYSTAL
+      CODE
   end
 
   it "says did you mean for variable" do
-    assert_error <<-CRYSTAL, "Did you mean 'bar'?"
+    assert_error <<-CODE, "Did you mean 'bar'?"
       bar = 1
       baz
-      CRYSTAL
+      CODE
   end
 
   it "says did you mean for class" do
-    assert_error <<-CRYSTAL, "Did you mean 'Foo'?"
+    assert_error <<-CODE, "Did you mean 'Foo'?"
       class Foo
       end
 
       Fog.new
-      CRYSTAL
+      CODE
   end
 
   it "says did you mean for nested class" do
-    assert_error <<-CRYSTAL, "Did you mean 'Foo::Bar'?"
+    assert_error <<-CODE, "Did you mean 'Foo::Bar'?"
       class Foo
         class Bar
         end
       end
 
       Foo::Baz.new
-      CRYSTAL
+      CODE
   end
 
   it "says did you mean for nested class via alias" do
-    assert_error <<-CRYSTAL, "Did you mean 'Boo::Bar'?"
+    assert_error <<-CODE, "Did you mean 'Boo::Bar'?"
       class Foo
         class Bar
         end
@@ -78,11 +78,11 @@ describe "Semantic: did you mean" do
       alias Boo = Foo
 
       Boo::Baz.new
-      CRYSTAL
+      CODE
   end
 
   it "says did you mean finds most similar in def" do
-    assert_error <<-CRYSTAL, "Did you mean 'barbara'?"
+    assert_error <<-CODE, "Did you mean 'barbara'?"
       def barbaza
       end
 
@@ -90,11 +90,11 @@ describe "Semantic: did you mean" do
       end
 
       barbarb
-      CRYSTAL
+      CODE
   end
 
   it "says did you mean finds most similar in type" do
-    assert_error <<-CRYSTAL, "Did you mean 'Barbara'?"
+    assert_error <<-CODE, "Did you mean 'Barbara'?"
       class Barbaza
       end
 
@@ -102,33 +102,33 @@ describe "Semantic: did you mean" do
       end
 
       Barbarb
-      CRYSTAL
+      CODE
   end
 
   it "doesn't suggest for operator" do
-    error = assert_error <<-CRYSTAL
+    error = assert_error <<-CODE
       class Foo
         def +
         end
       end
 
       Foo.new.a
-      CRYSTAL
+      CODE
 
     error.to_s.should_not contain("Did you mean")
   end
 
   it "says did you mean for named argument" do
-    assert_error <<-CRYSTAL, "Did you mean 'barbara'?"
+    assert_error <<-CODE, "Did you mean 'barbara'?"
       def foo(barbara = 1)
       end
 
       foo bazbaza: 1
-      CRYSTAL
+      CODE
   end
 
   it "says did you mean for instance var" do
-    assert_error <<-CRYSTAL, "Did you mean '@barbara'?"
+    assert_error <<-CODE, "Did you mean '@barbara'?"
       class Foo
         def initialize
           @barbara = 1
@@ -140,11 +140,11 @@ describe "Semantic: did you mean" do
       end
 
       Foo.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "says did you mean for instance var in subclass" do
-    assert_error <<-CRYSTAL, "Did you mean '@barbara'?"
+    assert_error <<-CODE, "Did you mean '@barbara'?"
       class Foo
         def initialize
           @barbara = 1
@@ -158,39 +158,39 @@ describe "Semantic: did you mean" do
       end
 
       Bar.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "doesn't suggest when declaring var with suffix if and using it (#946)" do
-    assert_error <<-CRYSTAL, "If you declared 'a' in a suffix if, declare it in a regular if for this to work"
+    assert_error <<-CODE, "If you declared 'a' in a suffix if, declare it in a regular if for this to work"
       a if a = 1
-      CRYSTAL
+      CODE
   end
 
   it "doesn't suggest when declaring var inside macro (#466)" do
-    assert_error <<-CRYSTAL, "If the variable was declared in a macro it's not visible outside it"
+    assert_error <<-CODE, "If the variable was declared in a macro it's not visible outside it"
       macro foo
         a = 1
       end
 
       foo
       a
-      CRYSTAL
+      CODE
   end
 
   it "suggest that there might be a typo for an initialize method" do
-    assert_error <<-CRYSTAL, "do you maybe have a typo in this 'intialize' method?"
+    assert_error <<-CODE, "do you maybe have a typo in this 'intialize' method?"
       class Foo
         def intialize(x)
         end
       end
 
       Foo.new(1)
-      CRYSTAL
+      CODE
   end
 
   it "suggest that there might be a typo for an initialize method in inherited class" do
-    assert_error <<-CRYSTAL, "do you maybe have a typo in this 'intialize' method?"
+    assert_error <<-CODE, "do you maybe have a typo in this 'intialize' method?"
       class Foo
         def initialize
         end
@@ -202,11 +202,11 @@ describe "Semantic: did you mean" do
       end
 
       Bar.new(1)
-      CRYSTAL
+      CODE
   end
 
   it "suggest that there might be a typo for an initialize method with overload" do
-    assert_error <<-CRYSTAL, "do you maybe have a typo in this 'intialize' method?"
+    assert_error <<-CODE, "do you maybe have a typo in this 'intialize' method?"
       class Foo
         def initialize(x : Int32)
         end
@@ -216,20 +216,20 @@ describe "Semantic: did you mean" do
       end
 
       Foo.new(1.0)
-      CRYSTAL
+      CODE
   end
 
   it "suggests for class variable" do
-    assert_error <<-CRYSTAL, "Did you mean '@@foobar'?"
+    assert_error <<-CODE, "Did you mean '@@foobar'?"
       class Foo
         @@foobar = 1
         @@fooobar
       end
-      CRYSTAL
+      CODE
   end
 
   it "suggests a better alternative to logical operators (#2715)" do
-    ex = assert_error <<-CRYSTAL, "undefined method 'and' for top-level"
+    ex = assert_error <<-CODE, "undefined method 'and' for top-level"
            def rand(x : Int32)
            end
 
@@ -242,19 +242,19 @@ describe "Semantic: did you mean" do
            if "a".bytes and 1
              1
            end
-           CRYSTAL
+           CODE
 
     ex.to_s.should contain "Did you mean '&&'?"
   end
 
   it "says did you mean in instance var declaration" do
-    assert_error <<-CRYSTAL, "Did you mean 'FooBar'?"
+    assert_error <<-CODE, "Did you mean 'FooBar'?"
       class FooBar
       end
 
       class Foo
         @x : FooBaz
       end
-      CRYSTAL
+      CODE
   end
 end

@@ -41,8 +41,8 @@ RUNS = 5
 
 def env_for(cache):
     env = dict(os.environ)
-    env["CRYSTAL_PATH"] = f"./lib:{ROOT / 'src'}"
-    env["CRYSTAL_CACHE_DIR"] = str(cache)
+    env["IYI_PATH"] = f"./lib:{ROOT / 'src'}"
+    env["IYI_CACHE_DIR"] = str(cache)
     return env
 
 

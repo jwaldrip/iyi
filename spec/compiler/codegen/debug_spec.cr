@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Code gen: debug" do
   it "codegens abstract struct (#3578)" do
-    codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    codegen(<<-CODE, debug: Iyi::Debug::All)
       abstract struct Base
       end
 
@@ -13,11 +13,11 @@ describe "Code gen: debug" do
       end
 
       x = Foo.new || Bar.new
-      CRYSTAL
+      CODE
   end
 
   it "codegens lib union (#7335)" do
-    codegen <<-CRYSTAL, debug: Crystal::Debug::All
+    codegen <<-CODE, debug: Iyi::Debug::All
       lib Foo
         union Bar
           a : Int32
@@ -27,11 +27,11 @@ describe "Code gen: debug" do
       end
 
       x = Foo::Bar.new
-      CRYSTAL
+      CODE
   end
 
   it "codegens extern union (#7335)" do
-    codegen <<-CRYSTAL, debug: Crystal::Debug::All
+    codegen <<-CODE, debug: Iyi::Debug::All
       @[Extern(union: true)]
       struct Foo
         @a = uninitialized Int32
@@ -40,11 +40,11 @@ describe "Code gen: debug" do
       end
 
       x = Foo.new
-      CRYSTAL
+      CODE
   end
 
   it "inlines instance var access through getter in debug mode" do
-    run(<<-CRYSTAL, debug: Crystal::Debug::All, filename: "foo.cr").to_i.should eq(2)
+    run(<<-CODE, debug: Iyi::Debug::All, filename: "foo.cr").to_i.should eq(2)
       struct Bar
         @x = 1
 
@@ -72,11 +72,11 @@ describe "Code gen: debug" do
       foo = Foo.new
       foo.set
       foo.bar.x
-      CRYSTAL
+      CODE
   end
 
   it "codegens correct debug info for untyped expression (#4007 and #4008)" do
-    codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    codegen(<<-CODE, debug: Iyi::Debug::All)
       require "prelude"
 
       int = 3
@@ -88,11 +88,11 @@ describe "Code gen: debug" do
       else
           puts int
       end
-      CRYSTAL
+      CODE
   end
 
   it "codegens correct debug info for new with custom allocate (#3945)" do
-    codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    codegen(<<-CODE, debug: Iyi::Debug::All)
       class Foo
         def initialize
         end
@@ -103,11 +103,11 @@ describe "Code gen: debug" do
       end
 
       Foo.new
-      CRYSTAL
+      CODE
   end
 
   it "correctly restores debug location after fun change (#4254)" do
-    codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    codegen(<<-CODE, debug: Iyi::Debug::All)
       require "prelude"
 
       class Foo
@@ -129,11 +129,11 @@ describe "Code gen: debug" do
       TWO = Foo.new
 
       ONE.three
-      CRYSTAL
+      CODE
   end
 
   it "has correct debug location after constant initialization in call with block (#4719)" do
-    codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    codegen(<<-CODE, debug: Iyi::Debug::All)
       require "prelude"
 
       fun __crystal_malloc_atomic(size : UInt32) : Void*
@@ -155,11 +155,11 @@ describe "Code gen: debug" do
       Bar.new { }
 
       A
-      CRYSTAL
+      CODE
   end
 
   it "has debug info in closure inside if (#5593)" do
-    codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    codegen(<<-CODE, debug: Iyi::Debug::All)
       def foo
         if true && true
           yield 1
@@ -175,11 +175,11 @@ describe "Code gen: debug" do
           i
         end
       end
-      CRYSTAL
+      CODE
   end
 
   it "doesn't emit incorrect debug info for closured self" do
-    codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    codegen(<<-CODE, debug: Iyi::Debug::All)
       def foo(&block : Int32 ->)
         block.call(1)
       end
@@ -193,17 +193,17 @@ describe "Code gen: debug" do
       end
 
       Foo.new.bar
-      CRYSTAL
+      CODE
   end
 
   it "doesn't emit debug info for unused variable declarations (#9882)" do
-    codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    codegen(<<-CODE, debug: Iyi::Debug::All)
       x : Int32
-      CRYSTAL
+      CODE
   end
 
   it "emits global debug info for constants" do
-    mod = codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    mod = codegen(<<-CODE, debug: Iyi::Debug::All)
       struct Bar
         def initialize(@x : Int32)
         end
@@ -213,7 +213,7 @@ describe "Code gen: debug" do
 
       v1 = A
       v1
-      CRYSTAL
+      CODE
 
     str = mod.to_s
     str.should contain("DIGlobalVariable(name: \"A\", linkageName: \"A\",")
@@ -221,7 +221,7 @@ describe "Code gen: debug" do
   end
 
   it "emits global debug info once for constants read before assignment" do
-    mod = codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    mod = codegen(<<-CODE, debug: Iyi::Debug::All)
       require "prelude"
 
       struct Bar
@@ -231,7 +231,7 @@ describe "Code gen: debug" do
 
       A
       A = Bar.new(41)
-      CRYSTAL
+      CODE
 
     str = mod.to_s
     str.scan(%r{DIGlobalVariable\(name: "A", linkageName: "A",}).size.should eq(1)
@@ -239,10 +239,10 @@ describe "Code gen: debug" do
   end
 
   it "keeps literal constants inlined in debug mode" do
-    mod = codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    mod = codegen(<<-CODE, debug: Iyi::Debug::All)
       A = 1
       A
-      CRYSTAL
+      CODE
 
     str = mod.to_s
     str.should_not match(/^@A =/)
@@ -250,7 +250,7 @@ describe "Code gen: debug" do
   end
 
   it "emits global debug info for class vars" do
-    mod = codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    mod = codegen(<<-CODE, debug: Iyi::Debug::All)
       class Foo
         @@x = "world"
 
@@ -260,7 +260,7 @@ describe "Code gen: debug" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
 
     str = mod.to_s
     str.should match(/@"Foo::x" = global (?:ptr|%String\*) null, !dbg !/)
@@ -268,7 +268,7 @@ describe "Code gen: debug" do
   end
 
   it "stores and restores debug location after jumping to main (#6920)" do
-    codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    codegen(<<-CODE, debug: Iyi::Debug::All)
       require "prelude"
 
       Module.method
@@ -284,11 +284,11 @@ describe "Code gen: debug" do
           @@x
         end
       end
-      CRYSTAL
+      CODE
   end
 
   it "stores and restores debug location after jumping to main (2)" do
-    codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    codegen(<<-CODE, debug: Iyi::Debug::All)
       module Foo
         @@x : Int32 = begin
           y = 1
@@ -300,11 +300,11 @@ describe "Code gen: debug" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "stores and restores debug location after jumping to main (3)" do
-    codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    codegen(<<-CODE, debug: Iyi::Debug::All)
       def raise(exception)
         x = uninitialized NoReturn
         x
@@ -315,11 +315,11 @@ describe "Code gen: debug" do
       end
 
       LibFoo.foo = ->{ }
-      CRYSTAL
+      CODE
   end
 
   it "doesn't fail on constant read calls (#11416)" do
-    codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    codegen(<<-CODE, debug: Iyi::Debug::All)
       require "prelude"
 
       class Foo
@@ -334,11 +334,11 @@ describe "Code gen: debug" do
       THE_FOO.foo
 
       THE_FOO = a_foo
-      CRYSTAL
+      CODE
   end
 
   it "doesn't fail on splat expansions inside array-like literals" do
-    run(<<-CRYSTAL, debug: Crystal::Debug::All).to_i.should eq(123)
+    run(<<-CODE, debug: Iyi::Debug::All).to_i.should eq(123)
       require "prelude"
 
       class Foo
@@ -364,51 +364,51 @@ describe "Code gen: debug" do
       x = Foo.new
       y = Bar{*x}
       y.bar
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc debug info" do
-    codegen(<<-CRYSTAL, debug: Crystal::Debug::All)
+    codegen(<<-CODE, debug: Iyi::Debug::All)
       x = ->(n : Int32) { n &+ 1 }
       y : Proc(Int32, Int32)? = ->(n : Int32) { n &+ 2 }
       captured = 40
       z = ->(n : Int32) { captured &+ n }
       {x, y, z}
-      CRYSTAL
+      CODE
   end
 
   {% unless LibLLVM::IS_LT_210 %}
     it "supports 128-bit enumerators" do
-      codegen(<<-CRYSTAL, debug: Crystal::Debug::All).to_s.should contain(%(!DIEnumerator(name: "X", value: 1002003004005006007008009)))
+      codegen(<<-CODE, debug: Iyi::Debug::All).to_s.should contain(%(!DIEnumerator(name: "X", value: 1002003004005006007008009)))
         enum Foo : Int128
           X = 1002003004005006007008009_i128
         end
 
         x = Foo::X
-        CRYSTAL
+        CODE
     end
   {% end %}
 
   it "doesn't fail if no top-level code follows discarded class var initializer (#15970)" do
-    codegen <<-CRYSTAL, debug: Crystal::Debug::All
+    codegen <<-CODE, debug: Iyi::Debug::All
       module Foo
         @@x = 1
       end
-      CRYSTAL
+      CODE
   end
 
   it "doesn't fail if class var initializer is followed by metaclass (#15970)" do
-    codegen <<-CRYSTAL, debug: Crystal::Debug::All
+    codegen <<-CODE, debug: Iyi::Debug::All
       module Foo
         @@x = 1
       end
 
       Int32
-      CRYSTAL
+      CODE
   end
 
   it "doesn't fail if Proc self is closured (#16382)" do
-    codegen <<-CRYSTAL, debug: Crystal::Debug::All
+    codegen <<-CODE, debug: Iyi::Debug::All
       struct Proc
         def partial
           -> do
@@ -418,6 +418,6 @@ describe "Code gen: debug" do
       end
 
       -> { }.partial.call
-      CRYSTAL
+      CODE
   end
 end

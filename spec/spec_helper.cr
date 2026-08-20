@@ -1,6 +1,6 @@
 {% raise("Please use `make test` or `bin/crystal` when running specs, or set the i_know_what_im_doing flag if you know what you're doing") unless env("CRYSTAL_HAS_WRAPPER") || flag?("i_know_what_im_doing") %}
 
-Crystal::Config.path = "#{__DIR__}/../src"
+Iyi::Config.path = "#{__DIR__}/../src"
 
 require "spec"
 
@@ -10,7 +10,7 @@ require "./support/tempfile"
 require "./support/win32"
 require "./support/wasm32"
 
-class Crystal::Program
+class Iyi::Program
   def reset_temp_vars
     @temp_vars.clear
   end
@@ -60,15 +60,15 @@ def semantic(code : String, wants_doc = false, inject_primitives = false, flags 
 end
 
 private def inject_primitives(node : ASTNode)
-  req = Crystal::Require.new("primitives")
+  req = Iyi::Require.new("primitives")
   case node
-  when Crystal::Expressions
+  when Iyi::Expressions
     node.expressions.unshift req
     node
-  when Crystal::Nop
+  when Iyi::Nop
     node
   else
-    Crystal::Expressions.new [req, node] of ASTNode
+    Iyi::Expressions.new [req, node] of ASTNode
   end
 end
 
@@ -201,7 +201,7 @@ end
 
 def assert_macro_error(macro_body, message = nil, *, flags = nil, file = __FILE__, line = __LINE__, &)
   program, a_macro, call = prepare_macro_call(macro_body, flags) { |program| yield program }
-  expect_raises(Crystal::TypeException, message, file: file, line: line) do
+  expect_raises(Iyi::TypeException, message, file: file, line: line) do
     program.expand_macro(a_macro, call, program, program)
   end
 end
@@ -223,12 +223,12 @@ def prepare_macro_call(macro_body, flags = nil, &)
   {program, a_macro, call}
 end
 
-def codegen(code, *, inject_primitives = true, single_module = false, debug = Crystal::Debug::None, filename = __FILE__)
+def codegen(code, *, inject_primitives = true, single_module = false, debug = Iyi::Debug::None, filename = __FILE__)
   result = semantic code, inject_primitives: inject_primitives, filename: filename
   result.program.codegen(result.node, single_module: single_module, debug: debug)[""].mod
 end
 
-def compile(*codes, prelude = "empty", debug = Crystal::Debug::None, target = nil)
+def compile(*codes, prelude = "empty", debug = Iyi::Debug::None, target = nil)
   sources = codes.map_with_index do |code, index|
     Compiler::Source.new("file#{index}.cr", code)
   end.to_a
@@ -240,7 +240,7 @@ def compile(*codes, prelude = "empty", debug = Crystal::Debug::None, target = ni
 
   if target
     compiler.cross_compile = true # skip linker
-    compiler.codegen_target = Crystal::Codegen::Target.new(target)
+    compiler.codegen_target = Iyi::Codegen::Target.new(target)
   end
 
   with_temp_executable("crystal-spec-output") do |output_filename|
@@ -281,7 +281,7 @@ def program_flags_options : Array(String)
   options
 end
 
-class Crystal::SpecRunOutput
+class Iyi::SpecRunOutput
   @output : String
 
   def initialize(@output)
@@ -307,7 +307,7 @@ def create_spec_compiler
   compiler
 end
 
-def run(code, filename : String? = nil, inject_primitives = true, debug = Crystal::Debug::None, flags = nil, *, file = __FILE__) : LLVM::GenericValue | SpecRunOutput
+def run(code, filename : String? = nil, inject_primitives = true, debug = Iyi::Debug::None, flags = nil, *, file = __FILE__) : LLVM::GenericValue | SpecRunOutput
   if inject_primitives
     code = %(require "primitives"\n#{code})
   end
@@ -344,7 +344,7 @@ def run(code, filename : String? = nil, inject_primitives = true, debug = Crysta
   end
 end
 
-def run(code, return_type : T.class, filename : String? = nil, inject_primitives = true, debug = Crystal::Debug::None, flags = nil, *, file = __FILE__) forall T
+def run(code, return_type : T.class, filename : String? = nil, inject_primitives = true, debug = Iyi::Debug::None, flags = nil, *, file = __FILE__) forall T
   if inject_primitives
     code = %(require "primitives"\n#{code})
   end
@@ -360,11 +360,11 @@ end
 
 def test_c(c_code, crystal_code, *, file = __FILE__, &)
   with_temp_c_object_file(c_code, file: file) do |o_filename|
-    yield run(<<-CRYSTAL)
+    yield run(<<-CODE)
       require "prelude"
 
       @[Link(ldflags: #{o_filename.inspect})]
       #{crystal_code}
-      CRYSTAL
+      CODE
   end
 end

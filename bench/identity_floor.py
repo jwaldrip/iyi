@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""Fails when Crystal's name stands in for iyi's own.
+
+iyi is a permanent fork. Crystal is the language it came from, not its
+identity, so the name is allowed only where it genuinely denotes Crystal: the
+standard library a `--crystal` program compiles against, the licence and
+provenance, the compatibility binary, and upstream's documentation kept beside
+ours. Everywhere else it is leakage, and leakage is what this refuses.
+
+    python3 bench/identity_floor.py            # check
+    python3 bench/identity_floor.py --list     # every unallowed occurrence
+
+Two layers, because either alone is fooled. PATHS catches a whole tree that
+should have been renamed. LINES catches a name inside a file that was otherwise
+cut over, which is the shape a skipped hunk leaves behind.
+
+A new match is not automatically wrong. It is a claim that this occurrence
+denotes Crystal rather than iyi, and the way to make that claim is to add it
+here, in the same commit, with the reason. What this refuses is the version
+where the name creeps back and nobody notices.
+
+This is written in Python rather than shell on purpose: the first draft used
+`grep -P`, the `grep` on the PATH inside a script has no `-P`, and every
+allowlist test errored and failed OPEN. A gate that cannot fail is worse than
+no gate, so the matching is done here where the semantics are exact.
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+
+# Trees and files that are Crystal's, not iyi's. Each carries its reason.
+ALLOWED_PATHS: list[tuple[str, str]] = [
+    # Crystal's standard library. A `--crystal` program compiles against it,
+    # and so does the compiler, which is a Crystal program (SPEC.md B.2).
+    (r"^src/(?!compiler/|iyi/)", "Crystal's standard library"),
+    (r"^spec/std/", "that library's own specs"),
+    (r"^spec/primitives/", "that library's primitives specs"),
+    # Crystal's compiler, tested as Crystal: these suites assert Crystal's
+    # semantics on `.cr` sources through the compatibility binary, and their
+    # fixtures are Crystal programs naming Crystal's runtime symbols.
+    (r"^spec/compiler/(codegen|semantic|parser|formatter|lexer|loader)/", "Crystal's own semantics, tested as Crystal"),
+    (r"^spec/compiler/data/", "Crystal source fixtures"),
+    (r"^spec/(syntax|std|wasm32_std)_spec\.cr$", "that library's spec entrypoints"),
+    (r"^spec/support/", "the harness those suites share"),
+    (r"^scripts/", "generators that emit Crystal's stdlib tables"),
+    # Drives the compatibility binary by the name a user types.
+    (r"^spec/compiler-cli/", "compatibility binary's CLI specs"),
+    # Provenance, licence, copyright.
+    (r"^README\.crystal\.md$", "upstream's README, kept"),
+    (r"^LICENSE", "Crystal's licence"),
+    (r"^NOTICE\.md$", "Crystal's copyright"),
+    # The compatibility binary, shipped so `.cr` sources still build.
+    (r"^bin/crystal", "the compatibility binary"),
+    (r"^samples/crystal/", "programs that exist to use Crystal's library"),
+    # Upstream's manual pages, artwork, and editor integration keyed on
+    # Crystal's own type names.
+    (r"^doc/man/crystal", "upstream's manual pages"),
+    (r"^doc/assets/", "upstream's artwork"),
+    (r"^etc/", "debugger and editor integration"),
+    # Bootstrap toolchain lookup.
+    (r"^Makefile\.win$", "bootstrap toolchain lookup"),
+    (r"^shell\.nix$", "bootstrap toolchain lookup"),
+    (r"^\.gitattributes$", "language detection for the .cr tree"),
+    (r"^CODE_OF_CONDUCT\.md$", "Crystal's code of conduct, kept"),
+    (r"^GC_DESIGN\.md$", "cites gcry, Crystal's collector, as prior art"),
+    (r"^src/compiler/crystal\.cr$", "the compatibility binary's entrypoint"),
+    # This gate names Crystal in order to say what it forbids, so it cannot be
+    # subject to itself. Its own correctness is proved by the pass/fail probe
+    # in `main`, not by its prose.
+    (r"^bench/identity_floor\.py$", "the gate's own prose"),
+    (r"^src/compiler/crystal_front\.cr$", "the front-end bench binary's entrypoint"),
+    # Crystal's stdlib highlighter, and Crystal programs that used the compiler
+    # as a library, still `require "compiler/crystal/syntax"`. This directory
+    # is the shim that makes that path resolve.
+    (r"^src/compiler/crystal/", "shims so Crystal's stdlib can still require the compiler"),
+    # `init` and `spec` are in CRYSTAL_ONLY: `iyi init` answers "it belongs to
+    # Crystal", so this file is only ever reached under the crystal name and its
+    # banners are correct as written.
+    (r"^src/compiler/iyi/tools/init\.cr$", "a Crystal-only command's implementation"),
+    # These measure the compatibility binary against iyi, so naming it is the
+    # measurement. `bench/identity_floor.py` is excluded above for its prose.
+    (r"^bench/(build_speed|artifact_speed|incremental|macro_cost)", "benches that measure the compatibility binary"),
+    (r"^bench/(incremental|build_speed)/", "the generators those benches drive"),
+    (r"^spec/(debug|spec_helper\.cr)", "the spec harness driving both binaries"),
+    (r"^bin/check-compiler-flag$", "builds the compatibility binary twice"),
+    (r"^bench/(machine_probe|dependency_floor)", "measures the compatibility binary and its libraries"),
+    (r"^spec/compiler/util_spec\.cr$", "specs Crystal's own util module"),
+    (r"^samples/iyi/", "programs whose comments compare iyi with Crystal"),
+]
+
+# Lines that name Crystal legitimately inside a file that is otherwise iyi's.
+ALLOWED_LINES: list[tuple[str, str]] = [
+    (r"--crystal", "the compatibility mode's own flag"),
+    (r"crystal_front", "the front-end bench binary"),
+    (r"CRYSTAL_ONLY", "the list of commands that belong to Crystal"),
+    (r"Crystal 1\.", "the upstream version this forked from"),
+    (r"fork of Crystal", "provenance"),
+    (r"README\.crystal", "provenance"),
+    (r"Manas Technology", "copyright holder"),
+    (r"crystal-lang\.org", "upstream's site"),
+    (r"github\.com/crystal-lang", "upstream's repository"),
+    (r"[Cc]opyright.*Crystal", "copyright"),
+    (
+        r"Crystal's (own|library|licence|license|compiler|semantics|stdlib|"
+        r"standard|prelude|codegen|cache|interpreter|fibers|ecosystem|list|"
+        r"requirements|answer|version|numbers|README)",
+        "a sentence about the other language",
+    ),
+    (
+        r"the Crystal (project|language|compiler|standard|library|ecosystem|"
+        r"binary|bootstrap|stdlib)",
+        "a sentence about the other language",
+    ),
+    (r"as Crystal\b", "a comparison with the other language"),
+    (r"than Crystal\b", "a comparison with the other language"),
+    (r"Crystal\b.*(shard|Kemal|ecosystem)", "the ecosystem it borrows"),
+    # The compiler is a Crystal program, built by a Crystal bootstrap, and
+    # ships a second binary called `crystal`. Naming that toolchain is not
+    # leakage: it is the build saying which compiler compiles this one.
+    (r"bin/crystal|\.build/crystal|make crystal|crystallang/crystal", "the bootstrap and compatibility binaries"),
+    (r"crystal (spec|build|run|tool|env|deps|version)\b", "a command run against those binaries"),
+    (r"CRYSTAL_(VERSION|PATH|HAS_WRAPPER|SPEC_|ONLY|BIN|ENV|FORMATTERS|WORKERS|BOOTSTRAP_)", "read by Crystal's runtime, bootstrap or wrapper"),
+    (r"__crystal_|crystal_type_id|crystal_instance_type_id|LibCrystalMain", "Crystal's runtime ABI symbols"),
+    (r"Crystal::(LLVM_VERSION|VERSION|DESCRIPTION|ABI)", "constants the bootstrap injects"),
+    (r"Crystal\.format|module Crystal\b", "Crystal's own API, called or reopened"),
+    (r"```crystal", "a fenced code block's language tag"),
+    (r"samples/crystal/", "programs that exist to use Crystal's library"),
+    (r"src/crystal/", "a path inside Crystal's standard library"),
+    (r"name: crystal\b", "the CI artifact holding that binary"),
+    (r"sdogruyol/gcry|gcry", "Crystal's collector, cited as prior art"),
+    (r"valid Crystal source", "the formatter's message on a `.cr` source"),
+    (r"Crystal (could not|does not|reads|ships|has|is the language|cannot|of course)", "a sentence about the other language"),
+    (r"(and|as|a|an|ordinary|shared|the) Crystal (one|program|shard|source|binary|proc|truth)", "a sentence about the other language"),
+    (r"Crystal's", "a sentence about the other language"),
+    # The Makefile's targets and the binaries they build. `make crystal` builds
+    # the compatibility binary, `crystal-front` the front-end bench binary, and
+    # `crystal-daemon` the build daemon that binary execs. Those are their names.
+    (r"crystal-front|crystal-daemon|IYI_DAEMON_BIN", "binaries named for the compatibility binary"),
+    (r"^\.PHONY: crystal|^crystal[:-]|^all: crystal|^build: crystal|make clean crystal|install crystal", "Makefile targets building those binaries"),
+    (r"share/crystal|doc/crystal|DATADIR\)/doc", "where Crystal's library and docs install"),
+    (r"CRYSTAL \?=|previous crystal compiler", "the bootstrap compiler the build reads"),
+    # Crystal's own API, called from a compiler that is a Crystal program.
+    (r"Crystal::(Digest|System|Macros|Repl)", "Crystal's stdlib API"),
+    (r'require "crystal/', "a require of Crystal's stdlib"),
+    (r"crystal_(malloc|realloc|raise|type_id|instance_type_id)", "Crystal's runtime ABI symbols"),
+    # The `Crystal` module the compiler DEFINES in the program it compiles:
+    # a program reads `Crystal::VERSION`, so the constant is the language's.
+    (r"define_crystal_|types\[\"Crystal\"\]|@crystal\b|crystal\.types", "the Crystal module a compiled program reads"),
+    # Crystal's library, licence, docs and shell completions install under
+    # Crystal's name because they are Crystal's files.
+    (r"DATADIR\)/(crystal|licenses/crystal|bash-completion|zsh|fish)", "where Crystal's files install"),
+    (r"completions/crystal|_crystal|crystal\.fish", "Crystal's shell completions"),
+    (r"clean_crystal|crystal-next", "the compatibility binary's build rules"),
+    # A backtick-quoted `crystal ...` is the compatibility binary, named as a
+    # command. Prose and comments say it constantly, because half the point of
+    # the fork is explaining which binary does what.
+    (r"`crystal[ `-]|`\.?/?bin/crystal", "the compatibility binary, quoted as a command"),
+    (r"/crystal-cache|/x/crystal|/tmp/x/crystal", "a path in the prefix-is-not-a-parent example"),
+    (r"Crystal name|a Crystal (program|project|file|one|source|style|proc)", "a sentence about the other language"),
+    (r"Crystal (type|types|code|docs|projects|which this compiler)", "a sentence about the other language"),
+    (r"in Crystal\b|to Crystal\b|belongs to Crystal|of Crystal\b", "a sentence about the other language"),
+    (r"crystal\.\*|Usage: crystal|print Crystal environment|crystal <command>", "the compatibility binary's own banner and log source"),
+    (r'program_name : String = "crystal"', "the documented default, set by the entrypoint"),
+    (r"with crystal\]|the crystal compiler package|~/\.cache/crystal", "the compatibility binary's build and cache"),
+    (r"'crystal deps' has been removed", "a message about a removed Crystal command"),
+    (r"Crystal (requires|spells|duck-types|monomorphises|exception|Core Team)", "a sentence about the other language"),
+    (r"the way Crystal|way Crystal does|rather than a Crystal|than Crystal", "a comparison with the other language"),
+    (r"crystal@manas\.tech", "the copyright holder's address"),
+    (r'"Crystal"\.scan|/Crystal/|"Crystal"\.', "the word as test data in a macro spec"),
+    (r"Crystal::Rx", "the compiler's own engine, named for its namespace"),
+    (r'parsed\["crystal"\]|"crystal" *=>', "shards' own manifest key"),
+    (r"crystal-release|src/compiler/crystal\.cr|clean_cache crystal", "the compatibility binary's build"),
+    (r"names crystal in the same banner|program_name = \"crystal\"", "the spec that pins the compatibility name"),
+    (r"from-crystal|reads CRYSTAL_PATH when IYI_PATH", "the spec that pins the Crystal env-var fallback"),
+    (r"CRYSTAL_#\{name\}|CRYSTAL_DAEMON|crystal docker image", "the fallback that keeps Crystal's env vars working"),
+    (r"Crystal on the machine|a Crystal\b", "a sentence about the other language"),
+    # Comments citing Crystal's own source, DWARF producer strings, and the
+    # version banner's "a fork of Crystal X" clause. All name the other
+    # language or upstream's files, none is a name a person is shown as ours.
+    (r"crystal/(tools|dwarf|system)/", "a path inside Crystal's own source"),
+    (r'"Crystal" *<<|"Crystal", is_optimised|io << "Crystal "', "the DWARF producer and version banner naming upstream"),
+    (r"(compiled|interpreted|valid|future|in) Crystal\b", "a sentence about the other language"),
+    (r"Crystal (only ever|refuses|injects|module|needs|repository|path)", "a sentence about the other language"),
+    (r"crystal (was compiled|code|repository)|in crystal\b|\.crystal\b", "a sentence about the other language"),
+    (r"Crystal source files", "the formatter's description of `.cr` input"),
+    (r"\$crystal|regex crystal", "a shell variable and a type-name list"),
+    (r"Crystal (resolves|infers|compiles|writes|builds|already|standard library)", "a sentence about the other language"),
+    (r"other Crystal|the crystal\b|as crystal\b|CONST \(Crystal\)", "a sentence about the other language"),
+    (r"crystal-lang/crystal#", "an upstream issue reference"),
+    (r"^\s*#\s+Crystal (and|is|are|does|has|was)\b", "a wrapped sentence about the other language"),
+    (r"^\s*#\s*(is|are) Crystal\b", "a wrapped sentence about the other language"),
+    # A comment whose sentence about the other language wraps, leaving
+    # `Crystal` as the last word on the line with its verb on the next.
+    (r"(#|\*) .*\bCrystal$", "a wrapped sentence about the other language"),
+    (r'"cr", "crystal"|crystal language tag', "the fenced-block language tag the formatter normalises"),
+    (r'File\.join\(iyi_exec_path, "crystal"\)', "the spec runner finding the Crystal-only binary"),
+    (r"Crystal (docker|is unable|compiler built with)", "the bootstrap toolchain and its diagnostics"),
+    (r"Codegen \(crystal\)", "a progress label for the Crystal codegen stage"),
+    (r"predefined types|C functions to Crystal procs", "Crystal's own type setup"),
+
+]
+
+PATH_RES = [(re.compile(p), why) for p, why in ALLOWED_PATHS]
+LINE_RES = [(re.compile(p), why) for p, why in ALLOWED_LINES]
+NEEDLE = re.compile("crystal", re.IGNORECASE)
+
+
+def tracked_files() -> list[str]:
+    # `-c safe.directory=*` is required inside the crystal docker image:
+    # checkout writes files owned by a different user than the container,
+    # git 2.35+ refuses `ls-files` with exit 128, and a gate that crashes
+    # is a gate that is not checking.
+    out = subprocess.run(
+        ["git", "-c", "safe.directory=*", "ls-files"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return out.splitlines()
+
+
+def path_allowed(rel: str) -> str | None:
+    for rx, why in PATH_RES:
+        if rx.search(rel):
+            return why
+    return None
+
+
+# In prose, `Crystal` capitalised is the other language's proper name, and the
+# fork explaining its relationship to it is the point of these documents. What
+# stays checked in them is lowercase `crystal`, because that is what a binary, a
+# path, a command, an environment variable and a URL are spelled with - and a
+# wrong one of those sends a person somewhere real. The security-advisory link
+# in CODE_OF_CONDUCT.md pointed at another owner's repository, and that is the
+# shape this keeps looking for while letting the prose alone.
+PROSE_DOC = re.compile(r"\.md$")
+LOWER_NEEDLE = re.compile(r"crystal")
+
+
+def line_allowed(line: str, rel: str = "") -> str | None:
+    for rx, why in LINE_RES:
+        if rx.search(line):
+            return why
+    if PROSE_DOC.search(rel) and not LOWER_NEEDLE.search(line):
+        return "the other language's name, in prose"
+    return None
+
+
+def main() -> int:
+    show_all = "--list" in sys.argv
+    path_hits: list[str] = []
+    line_hits: list[tuple[str, int, str]] = []
+
+    for rel in tracked_files():
+        if path_allowed(rel):
+            continue
+
+        if NEEDLE.search(rel):
+            path_hits.append(rel)
+
+        fp = REPO / rel
+        try:
+            text = fp.read_text()
+        except (UnicodeDecodeError, OSError, IsADirectoryError):
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            if NEEDLE.search(line) and not line_allowed(line, rel):
+                line_hits.append((rel, n, line.strip()[:120]))
+
+    if not path_hits and not line_hits:
+        print("iyi owns its name")
+        return 0
+
+    print("CRYSTAL'S NAME IS STANDING IN FOR IYI'S")
+    print()
+    limit = None if show_all else 30
+    for rel in path_hits[:limit]:
+        print(f"PATH  {rel}")
+    if limit and len(path_hits) > limit:
+        print(f"      ... and {len(path_hits) - limit} more paths")
+    print()
+    for rel, n, line in line_hits[:limit]:
+        print(f"LINE  {rel}:{n}  {line}")
+    if limit and len(line_hits) > limit:
+        print(f"      ... and {len(line_hits) - limit} more lines")
+
+    by_file: dict[str, int] = {}
+    for rel, _, _ in line_hits:
+        by_file[rel] = by_file.get(rel, 0) + 1
+    print()
+    print(f"paths: {len(path_hits)}    lines: {len(line_hits)}    files: {len(by_file)}")
+    if by_file and not show_all:
+        print()
+        print("worst files:")
+        for rel, n in sorted(by_file.items(), key=lambda kv: -kv[1])[:10]:
+            print(f"  {n:6}  {rel}")
+    print()
+    print("Each is a place iyi is called Crystal. If an occurrence genuinely")
+    print("denotes the other language, add it to ALLOWED_PATHS or ALLOWED_LINES")
+    print("in this script, in the same commit, and say why.")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

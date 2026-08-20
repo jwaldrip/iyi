@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Semantic: class var" do
   it "declares class variable" do
-    assert_error <<-CRYSTAL, "expected argument #1 to 'Foo.x=' to be Int32, not Bool"
+    assert_error <<-CODE, "expected argument #1 to 'Foo.x=' to be Int32, not Bool"
       class Foo
         @@x : Int32
         @@x = 1
@@ -13,11 +13,11 @@ describe "Semantic: class var" do
       end
 
       Foo.x = true
-      CRYSTAL
+      CODE
   end
 
   it "declares class variable (2)" do
-    assert_error <<-CRYSTAL, "class variable '@@x' of Foo is not nilable (it's Int32) so it must have an initializer"
+    assert_error <<-CODE, "class variable '@@x' of Foo is not nilable (it's Int32) so it must have an initializer"
       class Foo
         @@x : Int32
 
@@ -27,10 +27,10 @@ describe "Semantic: class var" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
   it "types class var" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         @@foo = 1
 
@@ -40,11 +40,11 @@ describe "Semantic: class var" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "types class var as nil if not assigned at the top level" do
-    assert_type(<<-CRYSTAL) { nilable int32 }
+    assert_type(<<-CODE) { nilable int32 }
       class Foo
         def self.foo
           @@foo = 1
@@ -53,11 +53,11 @@ describe "Semantic: class var" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "types class var inside instance method" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         @@foo = 1
 
@@ -67,21 +67,21 @@ describe "Semantic: class var" do
       end
 
       Foo.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "types class var inside proc literal inside class" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       class Foo
         @@foo = 1
         f = -> { @@foo }
       end
       f.call
-      CRYSTAL
+      CODE
   end
 
   it "allows self.class as type var in class body (#537)" do
-    assert_type(<<-CRYSTAL) { generic_class "Bar", types["Foo"].virtual_type.metaclass }
+    assert_type(<<-CODE) { generic_class "Bar", types["Foo"].virtual_type.metaclass }
       class Bar(T)
       end
 
@@ -94,20 +94,20 @@ describe "Semantic: class var" do
       end
 
       Foo.bar
-      CRYSTAL
+      CODE
   end
 
   it "errors if using self as type var but there's no self" do
-    assert_error <<-CRYSTAL, "there's no self in this scope"
+    assert_error <<-CODE, "there's no self in this scope"
       class Bar(T)
       end
 
       Bar(self).new
-      CRYSTAL
+      CODE
   end
 
   it "allows class var in primitive types (#612)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       struct Int64
         @@foo = 1
 
@@ -117,11 +117,11 @@ describe "Semantic: class var" do
       end
 
       Int64.foo
-      CRYSTAL
+      CODE
   end
 
   it "declares class var in generic class" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo(T)
         @@bar = 1
 
@@ -131,11 +131,11 @@ describe "Semantic: class var" do
       end
 
       Foo(Int32).new.bar
-      CRYSTAL
+      CODE
   end
 
   it "declares class var in generic module" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       module Foo(T)
         @@bar = 1
 
@@ -145,11 +145,11 @@ describe "Semantic: class var" do
       end
 
       Foo.bar
-      CRYSTAL
+      CODE
   end
 
   it "types class var as nil if assigned for the first time inside method (#2059)" do
-    assert_type(<<-CRYSTAL) { nilable int32 }
+    assert_type(<<-CODE) { nilable int32 }
       class Foo
         def self.foo
           @@foo = 1
@@ -158,11 +158,11 @@ describe "Semantic: class var" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "redefines class variable type" do
-    assert_type(<<-CRYSTAL) { union_of int32, float64 }
+    assert_type(<<-CODE) { union_of int32, float64 }
       class Foo
         @@x : Int32
         @@x : Int32 | Float64
@@ -174,11 +174,11 @@ describe "Semantic: class var" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "infers type from number literal" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         @@x = 1
 
@@ -188,11 +188,11 @@ describe "Semantic: class var" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "infers type from T.new" do
-    assert_type(<<-CRYSTAL) { types["Foo"].types["Bar"] }
+    assert_type(<<-CODE) { types["Foo"].types["Bar"] }
       class Foo
         class Bar
         end
@@ -205,11 +205,11 @@ describe "Semantic: class var" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "says undefined class variable" do
-    assert_error <<-CRYSTAL, "can't infer the type of class variable '@@foo' of Foo"
+    assert_error <<-CODE, "can't infer the type of class variable '@@foo' of Foo"
       class Foo
         def self.foo
           @@foo
@@ -217,39 +217,39 @@ describe "Semantic: class var" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "errors if using class variable at the top level" do
-    assert_error <<-CRYSTAL, "can't use class variables at the top level"
+    assert_error <<-CODE, "can't use class variables at the top level"
       @@foo = 1
       @@foo
-      CRYSTAL
+      CODE
   end
 
   it "errors when typing a class variable inside a method" do
-    assert_error <<-CRYSTAL, "declaring the type of a class variable must be done at the class level"
+    assert_error <<-CODE, "declaring the type of a class variable must be done at the class level"
       def foo
         @@x : Int32
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "errors if using local variable in initializer" do
-    assert_error <<-CRYSTAL, "undefined local variable or method 'a'"
+    assert_error <<-CODE, "undefined local variable or method 'a'"
       class Foo
         @@x : Int32
 
         a = 1
         @@x = a
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors on undefined constant (1)" do
-    assert_error <<-CRYSTAL, "undefined constant Bar"
+    assert_error <<-CODE, "undefined constant Bar"
       class Foo
         def self.foo
           @@x = Bar.new
@@ -257,21 +257,21 @@ describe "Semantic: class var" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "errors on undefined constant (2)" do
-    assert_error <<-CRYSTAL, "undefined constant Bar"
+    assert_error <<-CODE, "undefined constant Bar"
       class Foo
         @@x = Bar.new
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "infers in multiple assign for tuple type (1)" do
-    assert_type(<<-CRYSTAL) { nilable int32 }
+    assert_type(<<-CODE) { nilable int32 }
       class Foo
         def self.foo
           @@x, @@y = Bar.method
@@ -289,28 +289,28 @@ describe "Semantic: class var" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "errors when using Class (#2605)" do
-    assert_error <<-CRYSTAL, "can't use Class as the type of class variable '@@class' of Foo, use a more specific type"
+    assert_error <<-CODE, "can't use Class as the type of class variable '@@class' of Foo, use a more specific type"
       class Foo
         def foo(@@class : Class)
         end
       end
-      CRYSTAL
+      CODE
   end
 
   it "gives correct error when trying to use Int as a class variable type" do
-    assert_error <<-CRYSTAL, "can't use Int as the type of a class variable yet, use a more specific type"
+    assert_error <<-CODE, "can't use Int as the type of a class variable yet, use a more specific type"
       class Foo
         @@x : Int
       end
-      CRYSTAL
+      CODE
   end
 
   it "can find class var in subclass" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         @@var = 1
       end
@@ -322,11 +322,11 @@ describe "Semantic: class var" do
       end
 
       Bar.var
-      CRYSTAL
+      CODE
   end
 
   it "can find class var through included module" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       module Moo
         @@var = 1
       end
@@ -340,11 +340,11 @@ describe "Semantic: class var" do
       end
 
       Bar.var
-      CRYSTAL
+      CODE
   end
 
   it "errors if redefining class var type in subclass" do
-    assert_error <<-CRYSTAL, "class variable '@@x' of Bar is already defined as Int32 in Foo"
+    assert_error <<-CODE, "class variable '@@x' of Bar is already defined as Int32 in Foo"
       class Foo
         @@x : Int32
       end
@@ -352,11 +352,11 @@ describe "Semantic: class var" do
       class Bar < Foo
         @@x : Float64
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors if redefining class var type in subclass, with guess" do
-    assert_error <<-CRYSTAL, "class variable '@@x' of Bar is already defined as Int32 in Foo"
+    assert_error <<-CODE, "class variable '@@x' of Bar is already defined as Int32 in Foo"
       class Foo
         @@x = 1
       end
@@ -364,11 +364,11 @@ describe "Semantic: class var" do
       class Bar < Foo
         @@x = 'a'
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors if redefining class var type in included module" do
-    assert_error <<-CRYSTAL, "class variable '@@x' of Bar is already defined as Int32 in Moo"
+    assert_error <<-CODE, "class variable '@@x' of Bar is already defined as Int32 in Moo"
       module Moo
         @@x : Int32
       end
@@ -378,11 +378,11 @@ describe "Semantic: class var" do
 
         @@x : Float64
       end
-      CRYSTAL
+      CODE
   end
 
   it "declares uninitialized (#2935)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         @@x = uninitialized Int32
 
@@ -392,11 +392,11 @@ describe "Semantic: class var" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "doesn't error if accessing class variable before defined (#2941)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Bar
         @@x : Baz = Foo.x
 
@@ -420,11 +420,11 @@ describe "Semantic: class var" do
       end
 
       Bar.x.y
-      CRYSTAL
+      CODE
   end
 
   it "doesn't error on recursive dependency if var is nilable (#2943)" do
-    assert_type(<<-CRYSTAL) { nilable int32 }
+    assert_type(<<-CODE) { nilable int32 }
       class Foo
         @@foo : Int32?
         @@foo = Foo.bar
@@ -439,11 +439,11 @@ describe "Semantic: class var" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "types as nilable if doesn't have initializer" do
-    assert_type(<<-CRYSTAL) { nilable int32 }
+    assert_type(<<-CODE) { nilable int32 }
       class Foo
         def self.x
           @@x = 1
@@ -452,19 +452,19 @@ describe "Semantic: class var" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "errors if class variable not nilable without initializer" do
-    assert_error <<-CRYSTAL, "class variable '@@foo' of Foo is not nilable (it's Int32) so it must have an initializer"
+    assert_error <<-CODE, "class variable '@@foo' of Foo is not nilable (it's Int32) so it must have an initializer"
       class Foo
         @@foo : Int32
       end
-      CRYSTAL
+      CODE
   end
 
   it "can assign to class variable if this type can be up-casted to ancestors class variable type (#4869)" do
-    assert_type(<<-CRYSTAL) { nilable(int32) }
+    assert_type(<<-CODE) { nilable(int32) }
       class Foo
         @@x : Int32?
 
@@ -478,11 +478,11 @@ describe "Semantic: class var" do
       end
 
       Bar.x
-      CRYSTAL
+      CODE
   end
 
   it "can access constant from generic metaclass (#3719)" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       class Foo(T)
         @@x = 0
 
@@ -493,6 +493,6 @@ describe "Semantic: class var" do
       end
 
       Foo(Int32).inc
-      CRYSTAL
+      CODE
   end
 end

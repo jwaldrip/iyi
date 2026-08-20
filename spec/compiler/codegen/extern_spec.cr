@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Codegen: extern struct" do
   it "declares extern struct with no constructor" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       @[Extern]
       struct Foo
         @x = uninitialized Int32
@@ -13,11 +13,11 @@ describe "Codegen: extern struct" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "declares extern struct with no constructor, assigns var" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       @[Extern]
       struct Foo
         @x = uninitialized Int32
@@ -33,11 +33,11 @@ describe "Codegen: extern struct" do
       foo = Foo.new
       foo.x = 10
       foo.x
-      CRYSTAL
+      CODE
   end
 
   it "declares extern union with no constructor" do
-    run(<<-CRYSTAL).to_i.should eq(1069547520)
+    run(<<-CODE).to_i.should eq(1069547520)
       @[Extern(union: true)]
       struct Foo
         @x = uninitialized Int32
@@ -58,11 +58,11 @@ describe "Codegen: extern struct" do
       foo.x = 1
       foo.y = 1.5_f32
       foo.x
-      CRYSTAL
+      CODE
   end
 
   it "declares extern struct, sets and gets instance var" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       @[Extern]
       struct Foo
         @y = uninitialized Float64
@@ -75,11 +75,11 @@ describe "Codegen: extern struct" do
       end
 
       Foo.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "declares extern union, sets and gets instance var" do
-    run(<<-CRYSTAL).to_i.should eq(1069547520)
+    run(<<-CODE).to_i.should eq(1069547520)
       @[Extern(union: true)]
       struct Foo
         @x = uninitialized Int32
@@ -93,11 +93,11 @@ describe "Codegen: extern struct" do
       end
 
       Foo.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "sets callback on extern struct" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       require "prelude"
 
       @[Extern]
@@ -116,11 +116,11 @@ describe "Codegen: extern struct" do
       foo = Foo.new
       foo.set
       foo.get
-      CRYSTAL
+      CODE
   end
 
   it "sets callback on extern union" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       require "prelude"
 
       @[Extern(union: true)]
@@ -140,11 +140,11 @@ describe "Codegen: extern struct" do
       foo = Foo.new
       foo.set
       foo.get
-      CRYSTAL
+      CODE
   end
 
   it "codegens extern proc call twice (#4982)" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       @[Extern]
       struct Data
         def initialize(@foo : Int32)
@@ -161,11 +161,11 @@ describe "Codegen: extern struct" do
       y = f.call(Data.new(2))
 
       x &+ y
-      CRYSTAL
+      CODE
   end
 
   it "codegens proc that takes and returns large extern struct by value" do
-    run(<<-CRYSTAL).to_i.should eq(149)
+    run(<<-CODE).to_i.should eq(149)
       @[Extern]
       struct Foo
         @unused = uninitialized Int64
@@ -180,7 +180,7 @@ describe "Codegen: extern struct" do
 
       foo = f.call(Foo.new(100, 20, 3))
       foo.@x &+ foo.@y &+ foo.@z
-      CRYSTAL
+      CODE
   end
 
   # These specs *should* also work for 32 bits, but for now we'll
@@ -188,7 +188,7 @@ describe "Codegen: extern struct" do
   # it's just that the specs need to be a bit different)
   {% if flag?(:x86_64) || flag?(:aarch64) %}
     it "codegens proc that takes an extern struct with C ABI" do
-      test_c(<<-C, <<-CRYSTAL, &.to_i.should eq(3))
+      test_c(<<-C, <<-CODE, &.to_i.should eq(3))
         struct Struct {
           int x;
           int y;
@@ -237,11 +237,11 @@ describe "Codegen: extern struct" do
         })
 
         Global.x &+ Global.y
-        CRYSTAL
+        CODE
     end
 
     it "codegens proc that takes an extern struct with C ABI (2)" do
-      test_c(<<-C, <<-CRYSTAL, &.to_i.should eq(33))
+      test_c(<<-C, <<-CODE, &.to_i.should eq(33))
         struct Struct {
           int x;
           int y;
@@ -290,11 +290,11 @@ describe "Codegen: extern struct" do
         })
 
         Global.x &+ Global.y
-        CRYSTAL
+        CODE
     end
 
     it "codegens proc that takes an extern struct with C ABI, callback returns nil" do
-      test_c(<<-C, <<-CRYSTAL, &.to_i.should eq(3))
+      test_c(<<-C, <<-CODE, &.to_i.should eq(3))
         struct Struct {
           int x;
           int y;
@@ -344,11 +344,11 @@ describe "Codegen: extern struct" do
         })
 
         Global.x &+ Global.y
-        CRYSTAL
+        CODE
     end
 
     it "codegens proc that takes and returns an extern struct with C ABI" do
-      test_c(<<-C, <<-CRYSTAL, &.to_i.should eq(303))
+      test_c(<<-C, <<-CODE, &.to_i.should eq(303))
         struct Struct {
           int x;
           int y;
@@ -400,11 +400,11 @@ describe "Codegen: extern struct" do
         })
 
         Global.x &+ Global.y &+ s2.x &+ s2.y
-        CRYSTAL
+        CODE
     end
 
     it "codegens proc that takes and returns an extern struct with C ABI" do
-      test_c(<<-C, <<-CRYSTAL, &.to_i.should eq(30))
+      test_c(<<-C, <<-CODE, &.to_i.should eq(30))
         struct Struct {
           int x;
           int y;
@@ -433,11 +433,11 @@ describe "Codegen: extern struct" do
         })
 
         s2.x &+ s2.y
-        CRYSTAL
+        CODE
     end
 
     it "codegens proc that takes and returns an extern struct with sret" do
-      test_c(<<-C, <<-CRYSTAL, &.to_i.should eq(12))
+      test_c(<<-C, <<-CODE, &.to_i.should eq(12))
         struct Struct {
           long long x;
           long long y;
@@ -486,11 +486,11 @@ describe "Codegen: extern struct" do
         Global.x &+= s2.y
         Global.x &+= s2.z
         Global.x.to_i32
-        CRYSTAL
+        CODE
     end
 
     it "doesn't crash with proc with extern struct that's a closure" do
-      codegen(<<-CRYSTAL)
+      codegen(<<-CODE)
         lib LibMylib
           struct Struct
             x : Int64
@@ -506,11 +506,11 @@ describe "Codegen: extern struct" do
 
         s = LibMylib::Struct.new
         f.call(s)
-        CRYSTAL
+        CODE
     end
 
     it "invokes proc with extern struct" do
-      run(<<-CRYSTAL).to_i.should eq(30)
+      run(<<-CODE).to_i.should eq(30)
         lib LibMylib
           struct Struct
             x : Int32
@@ -540,11 +540,11 @@ describe "Codegen: extern struct" do
         f.call(s)
 
         Global.x
-        CRYSTAL
+        CODE
     end
 
     it "invokes proc with extern struct with sret" do
-      run(<<-CRYSTAL).to_i.should eq(15)
+      run(<<-CODE).to_i.should eq(15)
         lib LibMylib
           struct Struct
             x : Int32
@@ -567,7 +567,7 @@ describe "Codegen: extern struct" do
 
         s = f.call
         s.x &+ s.y &+ s.z &+ s.w &+ s.a
-        CRYSTAL
+        CODE
     end
   {% end %}
 end

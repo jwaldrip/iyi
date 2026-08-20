@@ -90,7 +90,7 @@ jobs:
       # `mod` refusing the prefixes every other command accepts.
       - name: The commands, and the daemon
         run: |
-          export CRYSTAL_PATH="lib:$(pwd)/src"
+          export IYI_PATH="lib:$(pwd)/src"
           make -o .build/crystal cli_spec
 
   compiler-specs:
@@ -206,6 +206,23 @@ jobs:
       - name: The dependency floor
         run: bash bench/dependency_floor.sh
 
+      # iyi is a permanent fork, so Crystal's name standing in for iyi's is a
+      # defect and not a detail. Both layers: a tree that should have been
+      # renamed, and a name left inside a file that was otherwise cut over.
+      # Every allowed occurrence carries its reason in the script.
+      - name: iyi owns its name
+        run: |
+          # The crystal docker image is a compiler toolchain, not a Python one.
+          # This gate is Python because the first draft was `grep -P` and the
+          # grep a script resolves has no `-P`, so every allowlist test errored
+          # and the gate failed open. Installing Python here is cheaper than
+          # rewriting the matching in a language whose regex we would then have
+          # to re-prove.
+          if ! command -v python3 >/dev/null; then
+            apt-get update -qq && apt-get install -y -qq python3
+          fi
+          python3 bench/identity_floor.py
+
   targets:
     needs: build
     runs-on: ubuntu-24.04
@@ -303,12 +320,12 @@ jobs:
         run: make -o .build/crystal iyi iyi-tarball
 
       # What a person who downloads it does: unpack it somewhere else and run a
-      # program. Nothing here may need this checkout, a CRYSTAL_PATH, or a
+      # program. Nothing here may need this checkout, a IYI_PATH, or a
       # Crystal on the machine.
       - name: Unpack the tarball somewhere else and compile with it
         run: |
           mkdir -p /tmp/unpacked
           tar -xzf .build/iyi-*-linux-*.tar.gz -C /tmp/unpacked
           cd /tmp
-          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run /tmp/unpacked/share/iyi/samples/hello.iyi
-          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi version
+          env -u IYI_PATH /tmp/unpacked/bin/iyi run /tmp/unpacked/share/iyi/samples/hello.iyi
+          env -u IYI_PATH /tmp/unpacked/bin/iyi version

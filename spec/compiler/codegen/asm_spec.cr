@@ -4,43 +4,43 @@ describe "Code gen: asm" do
   # TODO: arm asm tests
   {% if flag?(:i386) || flag?(:x86_64) %}
     it "passes correct string length to LLVM" do
-      run <<-CRYSTAL
+      run <<-CODE
         asm("// 😂😂
         nop
         nop")
-        CRYSTAL
+        CODE
     end
 
     it "codegens without inputs" do
-      run(<<-CRYSTAL).to_i.should eq(1234)
+      run(<<-CODE).to_i.should eq(1234)
         dst = uninitialized Int32
         asm("mov $$1234, $0" : "=r"(dst))
         dst
-        CRYSTAL
+        CODE
     end
 
     it "codegens with two outputs" do
-      run(<<-CRYSTAL).to_i.should eq(0x12345678)
+      run(<<-CODE).to_i.should eq(0x12345678)
         dst1 = uninitialized Int32
         dst2 = uninitialized Int32
         asm("
           mov $$0x1234, $0
           mov $$0x5678, $1" : "=r"(dst1), "=r"(dst2))
         (dst1.unsafe_shl(16)) | dst2
-        CRYSTAL
+        CODE
     end
 
     it "codegens with one input" do
-      run(<<-CRYSTAL).to_i.should eq(1234)
+      run(<<-CODE).to_i.should eq(1234)
         src = 1234
         dst = uninitialized Int32
         asm("mov $1, $0" : "=r"(dst) : "r"(src))
         dst
-        CRYSTAL
+        CODE
     end
 
     it "codegens with two inputs" do
-      run(<<-CRYSTAL).to_i.should eq(42)
+      run(<<-CODE).to_i.should eq(42)
         c = uninitialized Int32
         a = 20
         b = 22
@@ -50,15 +50,15 @@ describe "Code gen: asm" do
              : "0"(a), "r"(b)
           )
         c
-        CRYSTAL
+        CODE
     end
 
     it "codegens with intel dialect" do
-      run(<<-CRYSTAL).to_i.should eq(1234)
+      run(<<-CODE).to_i.should eq(1234)
         dst = uninitialized Int32
         asm("mov dword ptr [$0], 1234" :: "r"(pointerof(dst)) :: "intel")
         dst
-        CRYSTAL
+        CODE
     end
   {% end %}
 end

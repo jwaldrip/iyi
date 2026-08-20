@@ -10,7 +10,7 @@ describe "Semantic: uninitialized" do
   end
 
   it "declares an instance variable in initialize as uninitialized" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         def initialize
           @x = uninitialized Int32
@@ -22,11 +22,11 @@ describe "Semantic: uninitialized" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "errors if declaring generic type without type vars (with instance var)" do
-    assert_error <<-CRYSTAL, "can't declare variable of generic non-instantiated type Foo"
+    assert_error <<-CODE, "can't declare variable of generic non-instantiated type Foo"
       class Foo(T)
       end
 
@@ -37,11 +37,11 @@ describe "Semantic: uninitialized" do
       end
 
       Bar.new
-      CRYSTAL
+      CODE
   end
 
   it "errors if declaring generic type without type vars (with class var)" do
-    assert_error <<-CRYSTAL, "can't declare variable of generic non-instantiated type Foo"
+    assert_error <<-CODE, "can't declare variable of generic non-instantiated type Foo"
       class Foo(T)
       end
 
@@ -50,28 +50,28 @@ describe "Semantic: uninitialized" do
       end
 
       Bar.new
-      CRYSTAL
+      CODE
   end
 
   it "errors if declares var and then assigns other type" do
-    assert_error <<-CRYSTAL, "type must be Int32, not (Char | Int32)"
+    assert_error <<-CODE, "type must be Int32, not (Char | Int32)"
       x = uninitialized Int32
       x = 'a'
-      CRYSTAL
+      CODE
   end
 
   it "errors if declaring variable multiple times with different types (#917)" do
-    assert_error <<-CRYSTAL, "variable 'buf' already declared with type Int32", inject_primitives: true
+    assert_error <<-CODE, "variable 'buf' already declared with type Int32", inject_primitives: true
       if 1 == 0
         buf = uninitialized Int32
       else
         buf = uninitialized Float64
       end
-      CRYSTAL
+      CODE
   end
 
   it "can uninitialize variable outside initialize (#2828)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         @x = uninitialized Int32
 
@@ -81,11 +81,11 @@ describe "Semantic: uninitialized" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "can uninitialize variable outside initialize, generic (#2828)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo(T)
         @x = uninitialized T
 
@@ -95,11 +95,11 @@ describe "Semantic: uninitialized" do
       end
 
       Foo(Int32).new.x
-      CRYSTAL
+      CODE
   end
 
   it "can use uninitialized with class type (#2940)" do
-    assert_type(<<-CRYSTAL) { int32.metaclass }
+    assert_type(<<-CODE) { int32.metaclass }
       class Foo(U)
         def initialize
           @x = uninitialized U
@@ -111,19 +111,19 @@ describe "Semantic: uninitialized" do
       end
 
       Foo(Int32.class).new.x
-      CRYSTAL
+      CODE
   end
 
   %w(Object Value Reference Number Int Float Struct Class Enum).each do |type|
     it "disallows declaring var of type #{type}" do
-      assert_error <<-CRYSTAL, "use a more specific type"
+      assert_error <<-CODE, "use a more specific type"
         x = uninitialized #{type}
-        CRYSTAL
+        CODE
     end
   end
 
   it "works with uninitialized NoReturn (#3314)" do
-    assert_type(<<-CRYSTAL) { nil_type }
+    assert_type(<<-CODE) { nil_type }
       def foo
         x = uninitialized typeof(yield)
       end
@@ -133,17 +133,17 @@ describe "Semantic: uninitialized" do
       end
 
       bar
-      CRYSTAL
+      CODE
   end
 
   it "has type (#3641)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       x = uninitialized Int32
-      CRYSTAL
+      CODE
   end
 
   it "uses virtual type for uninitialized (#8216)" do
-    assert_type(<<-CRYSTAL) { types["Base"].virtual_type! }
+    assert_type(<<-CODE) { types["Base"].virtual_type! }
       class Base
       end
 
@@ -152,6 +152,6 @@ describe "Semantic: uninitialized" do
 
       u = uninitialized Base
       u
-      CRYSTAL
+      CODE
   end
 end

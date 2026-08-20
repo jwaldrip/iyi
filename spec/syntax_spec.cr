@@ -4,9 +4,9 @@ require "./compiler/lexer/**"
 require "./compiler/parser/**"
 require "./compiler/formatter/**"
 
-require "./compiler/crystal/tools/doc_spec.cr"
-require "./compiler/crystal/tools/doc/**"
-require "./compiler/crystal/tools/flags_spec.cr"
-require "./compiler/crystal/tools/format_spec.cr"
+require "./compiler/iyi/tools/doc_spec.cr"
+require "./compiler/iyi/tools/doc/**"
+require "./compiler/iyi/tools/flags_spec.cr"
+require "./compiler/iyi/tools/format_spec.cr"
 
 require "./std/crystal/syntax_highlighter/**"

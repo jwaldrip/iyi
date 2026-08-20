@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Semantic: private" do
   it "doesn't find private def in another file" do
-    expect_raises Crystal::TypeException, "undefined local variable or method 'foo'" do
+    expect_raises Iyi::TypeException, "undefined local variable or method 'foo'" do
       compiler = Compiler.new
       sources = [
         Compiler::Source.new("foo.cr", %(
@@ -21,7 +21,7 @@ describe "Semantic: private" do
   end
 
   it "doesn't find private def defined in macro in another file (#7681)" do
-    expect_raises Crystal::TypeException, "undefined local variable or method 'foo'" do
+    expect_raises Iyi::TypeException, "undefined local variable or method 'foo'" do
       compiler = Compiler.new
       sources = [
         Compiler::Source.new("foo.cr", %(
@@ -78,7 +78,7 @@ describe "Semantic: private" do
   end
 
   it "types private def correctly" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       private def foo
         1
       end
@@ -88,11 +88,11 @@ describe "Semantic: private" do
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "doesn't find private macro in another file" do
-    expect_raises Crystal::TypeException, "undefined local variable or method 'foo'" do
+    expect_raises Iyi::TypeException, "undefined local variable or method 'foo'" do
       compiler = Compiler.new
       sources = [
         Compiler::Source.new("foo.cr", %(
@@ -147,7 +147,7 @@ describe "Semantic: private" do
   end
 
   it "find module private macro inside the module" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         private macro foo
           def bar
@@ -159,11 +159,11 @@ describe "Semantic: private" do
       end
 
       Foo.new.bar
-      CRYSTAL
+      CODE
   end
 
   it "find module private macro inside a module, which is inherited by the module" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         private macro foo
           def bar
@@ -177,11 +177,11 @@ describe "Semantic: private" do
       end
 
       Bar.new.bar
-      CRYSTAL
+      CODE
   end
 
   it "doesn't find module private macro outside the module" do
-    assert_error <<-CRYSTAL, "private macro 'foo' called for Foo"
+    assert_error <<-CODE, "private macro 'foo' called for Foo"
       class Foo
         private macro foo
           1
@@ -189,11 +189,11 @@ describe "Semantic: private" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "finds private def when invoking from inside macro (#2082)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       private def foo
         42
       end
@@ -201,11 +201,11 @@ describe "Semantic: private" do
       {% begin %}
         foo
       {% end %}
-      CRYSTAL
+      CODE
   end
 
   it "doesn't find private class in another file" do
-    expect_raises Crystal::TypeException, "undefined constant Foo" do
+    expect_raises Iyi::TypeException, "undefined constant Foo" do
       compiler = Compiler.new
       sources = [
         Compiler::Source.new("foo.cr", %(
@@ -223,7 +223,7 @@ describe "Semantic: private" do
   end
 
   it "doesn't find private alias in another file" do
-    expect_raises Crystal::TypeException, "undefined constant Foo" do
+    expect_raises Iyi::TypeException, "undefined constant Foo" do
       compiler = Compiler.new
       sources = [
         Compiler::Source.new("foo.cr", %(
@@ -258,7 +258,7 @@ describe "Semantic: private" do
   end
 
   it "can use types in private type" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       private class Foo
         def initialize(@x : Int32)
         end
@@ -269,11 +269,11 @@ describe "Semantic: private" do
       end
 
       Foo.new(10).foo
-      CRYSTAL
+      CODE
   end
 
   it "can use class var initializer in private type" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       private class Foo
         @@x = 1
 
@@ -283,11 +283,11 @@ describe "Semantic: private" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "can use instance var initializer in private type" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       private class Foo
         @x = 1
 
@@ -297,11 +297,11 @@ describe "Semantic: private" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "finds private class in macro expansion" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       private class Foo
         @x = 1
 
@@ -315,7 +315,7 @@ describe "Semantic: private" do
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   {% for kind, decl in {
@@ -327,13 +327,13 @@ describe "Semantic: private" do
                          "constant" => %(Bar = 1),
                        } %}
     it "doesn't find private {{ kind.id }} from outside namespace" do
-      assert_error <<-CRYSTAL, "private constant Foo::Bar referenced"
+      assert_error <<-CODE, "private constant Foo::Bar referenced"
         module Foo
           private {{ decl.id }}
         end
 
         Foo::Bar
-        CRYSTAL
+        CODE
     end
   {% end %}
 
@@ -346,19 +346,19 @@ describe "Semantic: private" do
                          "constant" => %(Foo::Bar = 1),
                        } %}
     it "doesn't find private {{ kind.id }} from outside namespace, long name (#8831)" do
-      assert_error <<-CRYSTAL, "private constant Foo::Bar referenced"
+      assert_error <<-CODE, "private constant Foo::Bar referenced"
         private {{ decl.id }}
 
         Foo::Bar
-        CRYSTAL
+        CODE
     end
 
     it "doesn't define incorrect type in top-level namespace (#13511)" do
-      assert_error <<-CRYSTAL, "undefined constant Bar"
+      assert_error <<-CODE, "undefined constant Bar"
         private {{ decl.id }}
 
         Bar
-        CRYSTAL
+        CODE
     end
   {% end %}
 
@@ -371,14 +371,14 @@ describe "Semantic: private" do
                          "constant" => %(::Foo = 1),
                        } %}
     it "doesn't define private {{ kind.id }} with global type name" do
-      assert_error <<-CRYSTAL, "can't declare private type in the global namespace"
+      assert_error <<-CODE, "can't declare private type in the global namespace"
         private {{ decl.id }}
-        CRYSTAL
+        CODE
     end
   {% end %}
 
   it "finds private type from inside namespace" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         private class Bar
           def self.foo
@@ -390,11 +390,11 @@ describe "Semantic: private" do
       end
 
       x
-      CRYSTAL
+      CODE
   end
 
   it "finds private type from inside namespace in subclass" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         private class Bar
           def self.foo
@@ -408,22 +408,22 @@ describe "Semantic: private" do
       end
 
       x
-      CRYSTAL
+      CODE
   end
 
   it "gives private constant error in macro" do
-    assert_error <<-CRYSTAL, "private constant Foo::Bar referenced"
+    assert_error <<-CODE, "private constant Foo::Bar referenced"
       class Foo
         private class Bar
         end
       end
 
       {{ Foo::Bar }}
-      CRYSTAL
+      CODE
   end
 
   it "doesn't find private constant in another file (#7850)" do
-    expect_raises Crystal::TypeException, "undefined constant Foo" do
+    expect_raises Iyi::TypeException, "undefined constant Foo" do
       compiler = Compiler.new
       sources = [
         Compiler::Source.new("foo.cr", %(private Foo = 1)),
@@ -436,7 +436,7 @@ describe "Semantic: private" do
   end
 
   it "doesn't find private class defined through macro (#8715)" do
-    assert_error <<-CRYSTAL, "private constant Foo::Bar referenced"
+    assert_error <<-CODE, "private constant Foo::Bar referenced"
       macro bar
         class Bar
         end
@@ -447,11 +447,11 @@ describe "Semantic: private" do
       end
 
       Foo::Bar
-      CRYSTAL
+      CODE
   end
 
   it "doesn't find private module defined through macro (#8715)" do
-    assert_error <<-CRYSTAL, "private constant Foo::Bar referenced"
+    assert_error <<-CODE, "private constant Foo::Bar referenced"
       macro bar
         module Bar
         end
@@ -462,11 +462,11 @@ describe "Semantic: private" do
       end
 
       Foo::Bar
-      CRYSTAL
+      CODE
   end
 
   it "doesn't find private macro defined through macro (#8715)" do
-    assert_error <<-CRYSTAL, "private macro 'bar' called for Foo"
+    assert_error <<-CODE, "private macro 'bar' called for Foo"
       macro bar
         macro bar
         end
@@ -477,11 +477,11 @@ describe "Semantic: private" do
       end
 
       Foo.bar
-      CRYSTAL
+      CODE
   end
 
   it "doesn't find private thing defined through recursive macro (#8715)" do
-    assert_error <<-CRYSTAL, "private constant Foo::Bar referenced"
+    assert_error <<-CODE, "private constant Foo::Bar referenced"
       macro bar
         baz
       end
@@ -496,11 +496,11 @@ describe "Semantic: private" do
       end
 
       Foo::Bar
-      CRYSTAL
+      CODE
   end
 
   it "doesn't inherit visibility from class node in macro hook (#8794)" do
-    assert_no_errors <<-CRYSTAL
+    assert_no_errors <<-CODE
       module M1
         macro included
           include M2
@@ -542,6 +542,6 @@ describe "Semantic: private" do
       end
 
       Foo.new(1)
-      CRYSTAL
+      CODE
   end
 end

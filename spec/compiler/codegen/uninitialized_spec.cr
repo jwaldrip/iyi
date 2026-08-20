@@ -10,7 +10,7 @@ describe "Code gen: uninitialized" do
   end
 
   it "codegens declare instance var" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       class Foo
         def initialize
           @x = uninitialized Int32
@@ -22,11 +22,11 @@ describe "Code gen: uninitialized" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "codegens declare instance var with static array type" do
-    run(<<-CRYSTAL)
+    run(<<-CODE)
       class Foo
         def initialize
           @x = uninitialized Int32[4]
@@ -39,11 +39,11 @@ describe "Code gen: uninitialized" do
 
       Foo.new.x
       nil
-      CRYSTAL
+      CODE
   end
 
   it "doesn't break on inherited declared var (#390)" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       class Foo
         def initialize
           @x = 1
@@ -68,11 +68,11 @@ describe "Code gen: uninitialized" do
 
       bar = Bar.new
       bar.x &+ bar.y
-      CRYSTAL
+      CODE
   end
 
   it "works inside while/begin/rescue (bug inside #759)" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       require "prelude"
 
       a = 3
@@ -85,11 +85,11 @@ describe "Code gen: uninitialized" do
         end
       end
       a
-      CRYSTAL
+      CODE
   end
 
   it "works with uninitialized NoReturn (#3314)" do
-    codegen(<<-CRYSTAL, inject_primitives: false)
+    codegen(<<-CODE, inject_primitives: false)
       def foo
         x = uninitialized NoReturn
         if 1
@@ -103,13 +103,13 @@ describe "Code gen: uninitialized" do
       end
 
       bar
-      CRYSTAL
+      CODE
   end
 
   it "codegens value (#3641)" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       x = y = uninitialized Int32
       x == y
-      CRYSTAL
+      CODE
   end
 end

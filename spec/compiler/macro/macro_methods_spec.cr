@@ -42,7 +42,7 @@ private def newline
   {% end %}
 end
 
-module Crystal
+module Iyi
   describe Macro do
     describe "node methods" do
       describe "location" do
@@ -608,30 +608,30 @@ module Crystal
         assert_macro %({{ "hello world".match(/o.*o/) }}), %({0 => "o wo"} of ::Int32 | ::String => ::String | ::Nil)
       end
 
-      # iyi: macro regexes run on Crystal::Rx, RE2-shaped, and pcre2 is off the
+      # iyi: macro regexes run on Iyi::Rx, RE2-shaped, and pcre2 is off the
       # compiler (SPEC.md III.10, Appendix B #22). A construct the engine
       # refuses fails the compile naming the construct and the engine, with
       # the pattern's location, rather than quietly meaning something else.
       # These cases pin the refusal for the constructs a macro is most likely
       # to reach for.
       it "refuses a lookahead pattern, naming the construct and the engine" do
-        assert_macro_error %({{ "hello world".match(/o(?= )/) }}), "invalid pattern \"o(?= )\" in macro: lookahead is not supported (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)"
+        assert_macro_error %({{ "hello world".match(/o(?= )/) }}), "invalid pattern \"o(?= )\" in macro: lookahead is not supported (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)"
       end
 
       it "refuses a lookbehind pattern" do
-        assert_macro_error %q({{ "hello".gsub(/(?<=l)o/, "a") }}), "invalid pattern \"(?<=l)o\" in macro: lookbehind is not supported (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)"
+        assert_macro_error %q({{ "hello".gsub(/(?<=l)o/, "a") }}), "invalid pattern \"(?<=l)o\" in macro: lookbehind is not supported (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)"
       end
 
       it "refuses a backreference pattern" do
-        assert_macro_error %q({{ "aa".scan(/(a)\1/) }}), "invalid pattern \"(a)\\\\1\" in macro: backreferences are not supported (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)"
+        assert_macro_error %q({{ "aa".scan(/(a)\1/) }}), "invalid pattern \"(a)\\\\1\" in macro: backreferences are not supported (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)"
       end
 
       it "refuses named groups, which left with pcre2" do
-        assert_macro_error %({{ "hello world".match(/(?:(x)|e)(?<name>\\S+)/) }}), "invalid pattern \"(?:(x)|e)(?<name>\\\\S+)\" in macro: named groups are not supported (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)"
+        assert_macro_error %({{ "hello world".match(/(?:(x)|e)(?<name>\\S+)/) }}), "invalid pattern \"(?:(x)|e)(?<name>\\\\S+)\" in macro: named groups are not supported (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)"
       end
 
       it "refuses the /m flag, which the engine cannot honour" do
-        assert_macro_error %({{ "a\\nb".match(/^b$/m) }}), "unsupported regex flag /m on \"^b$\" in macro: Crystal::Rx, the compiler's engine, honours /i only"
+        assert_macro_error %({{ "a\\nb".match(/^b$/m) }}), "unsupported regex flag /m on \"^b$\" in macro: Iyi::Rx, the compiler's engine, honours /i only"
       end
 
       it "executes scan" do
@@ -640,7 +640,7 @@ module Crystal
       end
 
       it "refuses scan with named groups, which left with pcre2" do
-        assert_macro_error %({{"Crystal".scan(/(Cr)(?<name1>y)(st)(?<name2>al)/)}}), "named groups are not supported (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)"
+        assert_macro_error %({{"Crystal".scan(/(Cr)(?<name1>y)(st)(?<name2>al)/)}}), "named groups are not supported (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)"
       end
 
       it "executes camelcase" do
@@ -1009,9 +1009,9 @@ module Crystal
       end
 
       it "calls block exactly once for each element in #sort_by" do
-        assert_macro <<-CRYSTAL, %(5)
+        assert_macro <<-CODE, %(5)
           {{ (i = 0; ["abc", "a", "ab", "abcde", "abcd"].sort_by { i += 1 }; i) }}
-          CRYSTAL
+          CODE
       end
 
       it "executes uniq" do
@@ -1723,7 +1723,7 @@ module Crystal
     describe TypeNode do
       describe "#includers" do
         it "returns an array of types `self` is directly included in" do
-          assert_type(<<-CRYSTAL) { tuple_of([int32, int32, int32]) }
+          assert_type(<<-CODE) { tuple_of([int32, int32, int32]) }
             module Foo
             end
 
@@ -1778,7 +1778,7 @@ module Crystal
               {% if Enumt.includers.map(&.stringify).sort == %w(ChildT(String) ChildT(T) Str) %} 1 {% else %} 'a' {% end %},
               {% if Enumt(String).includers.map(&.stringify).sort == %w(ChildT(String) Str) %} 1 {% else %} 'a' {% end %},
             }
-            CRYSTAL
+            CODE
         end
       end
 
@@ -1911,13 +1911,13 @@ module Crystal
 
       describe "#warning" do
         it "emits a warning at a specific node" do
-          assert_warning <<-CRYSTAL, "Oh noes"
+          assert_warning <<-CODE, "Oh noes"
             macro test(node)
               {% node.warning "Oh noes" %}
             end
 
             test 10
-          CRYSTAL
+          CODE
         end
       end
 
@@ -1929,22 +1929,22 @@ module Crystal
         end
 
         it "errors when called from top-level scope" do
-          assert_error <<-CRYSTAL, "`TypeNode#instance_vars` cannot be called in the top-level scope: instance vars are not yet initialized"
+          assert_error <<-CODE, "`TypeNode#instance_vars` cannot be called in the top-level scope: instance vars are not yet initialized"
             class Foo
             end
             {{ Foo.instance_vars }}
-          CRYSTAL
+          CODE
         end
 
         it "does not error when called from def scope" do
-          assert_type <<-CRYSTAL { |program| program.string }
+          assert_type <<-CODE { |program| program.string }
             module Moo
             end
             def moo
               {{ Moo.instance_vars.stringify }}
             end
             moo
-          CRYSTAL
+          CODE
         end
       end
 
@@ -2150,7 +2150,7 @@ module Crystal
       end
 
       it "== and != devirtualize generic type arguments (#10730)" do
-        assert_type(<<-CRYSTAL) { tuple_of([int32, char]) }
+        assert_type(<<-CODE) { tuple_of([int32, char]) }
           class A
           end
 
@@ -2167,7 +2167,7 @@ module Crystal
           end
 
           Foo(A).foo
-          CRYSTAL
+          CODE
       end
 
       it "executes <" do
@@ -2536,14 +2536,14 @@ module Crystal
             {x: TypeNode.new(mod)}
           end
 
-          assert_type(<<-CRYSTAL) { int32 }
+          assert_type(<<-CODE) { int32 }
             class Foo(T)
             end
 
             alias Bar = Foo(Bar)?
 
             {{ Bar.nilable? ? 1 : 'a' }}
-            CRYSTAL
+            CODE
         end
       end
 
@@ -2687,22 +2687,22 @@ module Crystal
         end
 
         it "errors when called from top-level scope" do
-          assert_error <<-CRYSTAL, "`TypeNode#has_inner_pointers?` cannot be called in the top-level scope: instance vars are not yet initialized"
+          assert_error <<-CODE, "`TypeNode#has_inner_pointers?` cannot be called in the top-level scope: instance vars are not yet initialized"
             class Foo
             end
             {{ Foo.has_inner_pointers? }}
-          CRYSTAL
+          CODE
         end
 
         it "does not error when called from def scope" do
-          assert_type <<-CRYSTAL { |program| program.bool }
+          assert_type <<-CODE { |program| program.bool }
             module Moo
             end
             def moo
               {{ Moo.has_inner_pointers? }}
             end
             moo
-          CRYSTAL
+          CODE
         end
       end
     end
@@ -3474,16 +3474,16 @@ module Crystal
 
     describe "union methods" do
       it "executes types" do
-        assert_macro %({{x.types}}), "[Int32, String]", {x: Crystal::Union.new(["Int32".path, "String".path] of ASTNode)}
+        assert_macro %({{x.types}}), "[Int32, String]", {x: Iyi::Union.new(["Int32".path, "String".path] of ASTNode)}
       end
 
       it "executes resolve" do
-        assert_macro %({{x.resolve}}), "(Int32 | String)", {x: Crystal::Union.new(["Int32".path, "String".path] of ASTNode)}
+        assert_macro %({{x.resolve}}), "(Int32 | String)", {x: Iyi::Union.new(["Int32".path, "String".path] of ASTNode)}
       end
 
       it "executes resolve?" do
-        assert_macro %({{x.resolve?}}), "(Int32 | String)", {x: Crystal::Union.new(["Int32".path, "String".path] of ASTNode)}
-        assert_macro %({{x.resolve?}}), "nil", {x: Crystal::Union.new(["Int32".path, "Unknown".path] of ASTNode)}
+        assert_macro %({{x.resolve?}}), "(Int32 | String)", {x: Iyi::Union.new(["Int32".path, "String".path] of ASTNode)}
+        assert_macro %({{x.resolve?}}), "nil", {x: Iyi::Union.new(["Int32".path, "Unknown".path] of ASTNode)}
       end
     end
 
@@ -3988,13 +3988,13 @@ module Crystal
 
     describe "#warning" do
       it "emits a top level warning" do
-        assert_warning <<-CRYSTAL, "Oh noes"
+        assert_warning <<-CODE, "Oh noes"
           macro test
             {% warning "Oh noes" %}
           end
 
           test
-        CRYSTAL
+        CODE
       end
     end
 
@@ -4031,25 +4031,25 @@ module Crystal
       end
 
       it "raises on empty string" do
-        expect_raises(Crystal::TypeException, "argument to parse_type cannot be an empty value") do
+        expect_raises(Iyi::TypeException, "argument to parse_type cannot be an empty value") do
           assert_macro %({{parse_type ""}}), %(nil)
         end
       end
 
       it "raises on extra unparsed tokens before the type" do
-        expect_raises(Crystal::TypeException, %(Invalid type name: "100Foo")) do
+        expect_raises(Iyi::TypeException, %(Invalid type name: "100Foo")) do
           assert_macro %({{parse_type "100Foo" }}), %(nil)
         end
       end
 
       it "raises on extra unparsed tokens after the type" do
-        expect_raises(Crystal::TypeException, %(Invalid type name: "Foo(Int32)100")) do
+        expect_raises(Iyi::TypeException, %(Invalid type name: "Foo(Int32)100")) do
           assert_macro %({{parse_type "Foo(Int32)100" }}), %(nil)
         end
       end
 
       it "raises on non StringLiteral arguments" do
-        expect_raises(Crystal::TypeException, "argument to parse_type must be a StringLiteral, not SymbolLiteral") do
+        expect_raises(Iyi::TypeException, "argument to parse_type must be a StringLiteral, not SymbolLiteral") do
           assert_macro %({{parse_type :Foo }}), %(nil)
         end
       end
@@ -4155,9 +4155,9 @@ module Crystal
       end
 
       it "reads file (doesn't exist)" do
-        assert_error <<-CRYSTAL,
+        assert_error <<-CODE,
           {{read_file("#{__DIR__}/../data/build_foo")}}
-          CRYSTAL
+          CODE
           "Error opening file with mode 'r'"
       end
     end
@@ -4170,9 +4170,9 @@ module Crystal
       end
 
       it "reads file (doesn't exist)" do
-        assert_error <<-CRYSTAL,
+        assert_error <<-CODE,
           {{read_file("spec/compiler/data/build_foo")}}
-          CRYSTAL
+          CODE
           "Error opening file with mode 'r'"
       end
     end
@@ -4286,7 +4286,7 @@ module Crystal
     end
 
     it "Union#types" do
-      node = Crystal::Union.new(["Int32".path, "String".path] of ASTNode)
+      node = Iyi::Union.new(["Int32".path, "String".path] of ASTNode)
       assert_macro %({{ (x.types << "a"; x.types.size) }}), "2", {x: node}
     end
 

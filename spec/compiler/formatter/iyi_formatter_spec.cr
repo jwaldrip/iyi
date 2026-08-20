@@ -1,9 +1,9 @@
 require "spec"
-require "../../../src/compiler/crystal/formatter"
+require "../../../src/compiler/iyi/formatter"
 
 # iyi: the formatter on iyi's own syntax.
 #
-# The file name is what the difference hangs on. `Crystal.format` hands it to
+# The file name is what the difference hangs on. `Iyi.format` hands it to
 # the parser, which reads `!` as propagation in a `.iyi` file and as a method
 # suffix in a `.cr` one, so a spec that left the name off would be formatting
 # a different language from the one it is about.
@@ -13,7 +13,7 @@ require "../../../src/compiler/crystal/formatter"
 # something are the ones that show it is running at all.
 private def assert_iyi_format(input, output = input, file = __FILE__, line = __LINE__)
   it "formats #{input.inspect}", file, line do
-    result = Crystal.format("#{input}\n", filename: "spec.iyi")
+    result = Iyi.format("#{input}\n", filename: "spec.iyi")
     result.should eq("#{output}\n"), file: file, line: line
   end
 end

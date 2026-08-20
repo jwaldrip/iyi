@@ -1,6 +1,6 @@
 require "../../spec_helper"
 
-module Crystal
+module Iyi
   describe "Normalize: def" do
     it "expands a def on request with default arguments" do
       a_def = parse("def foo(x, y = 1, z = 2); x + y + z; end").as(Def)
@@ -255,29 +255,29 @@ module Crystal
     it "normalizes with filename" do
       a_def = parse("def foo(*args, **options); args + options; end", filename: "foo.cr").as(Def)
       other_def = a_def.expand_default_arguments(Program.new, 2, ["x", "y"])
-      other_def.to_s.should eq <<-CRYSTAL
+      other_def.to_s.should eq <<-CODE
         def foo:x:y(__temp_cd6ae5dd_1, __temp_cd6ae5dd_2, x __temp_cd6ae5dd_3, y __temp_cd6ae5dd_4)
           args = {__temp_cd6ae5dd_1, __temp_cd6ae5dd_2}
           options = {x: __temp_cd6ae5dd_3, y: __temp_cd6ae5dd_4}
           args + options
         end
-        CRYSTAL
+        CODE
 
       a_def = parse("def foo(*args, **options); args + options; end", filename: "bar.cr").as(Def)
       other_def = a_def.expand_default_arguments(Program.new, 2, ["x", "y"])
-      other_def.to_s.should eq <<-CRYSTAL
+      other_def.to_s.should eq <<-CODE
         def foo:x:y(__temp_fbcf3d84_1, __temp_fbcf3d84_2, x __temp_fbcf3d84_3, y __temp_fbcf3d84_4)
           args = {__temp_fbcf3d84_1, __temp_fbcf3d84_2}
           options = {x: __temp_fbcf3d84_3, y: __temp_fbcf3d84_4}
           args + options
         end
-        CRYSTAL
+        CODE
     end
 
     it "normalizes `.new` with filename" do
       a_def = parse("def new(y, **options); end", filename: "foo.cr").as(Def)
       other_def = a_def.expand_new_default_arguments(Program.new, 0, ["x", "y", "z"])
-      other_def.to_s.should eq <<-CRYSTAL
+      other_def.to_s.should eq <<-CODE
         def new:x:y:z(x __temp_cd6ae5dd_1, y __temp_cd6ae5dd_2, z __temp_cd6ae5dd_3)
           _ = allocate
           _.initialize(x: __temp_cd6ae5dd_1, y: __temp_cd6ae5dd_2, z: __temp_cd6ae5dd_3)
@@ -286,11 +286,11 @@ module Crystal
           end
           _
         end
-        CRYSTAL
+        CODE
 
       a_def = parse("def new(y, **options); end", filename: "bar.cr").as(Def)
       other_def = a_def.expand_new_default_arguments(Program.new, 0, ["x", "y", "z"])
-      other_def.to_s.should eq <<-CRYSTAL
+      other_def.to_s.should eq <<-CODE
         def new:x:y:z(x __temp_fbcf3d84_1, y __temp_fbcf3d84_2, z __temp_fbcf3d84_3)
           _ = allocate
           _.initialize(x: __temp_fbcf3d84_1, y: __temp_fbcf3d84_2, z: __temp_fbcf3d84_3)
@@ -299,7 +299,7 @@ module Crystal
           end
           _
         end
-        CRYSTAL
+        CODE
     end
   end
 end

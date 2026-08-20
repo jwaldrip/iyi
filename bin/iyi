@@ -3,7 +3,7 @@
 # iyi, run out of this checkout: `./bin/iyi run samples/iyi/hello.iyi`.
 #
 # `bin/crystal` next to this file is the wrapper Crystal ships, and it has work
-# to do: find a parent compiler to bootstrap from, set `CRYSTAL_PATH` to this
+# to do: find a parent compiler to bootstrap from, set `IYI_PATH` to this
 # checkout, ask the installed compiler where its libraries are, and say which
 # binary it ended up using. None of that applies here. `.build/iyi` is built
 # with its prelude's location baked in relative to itself, which is the same

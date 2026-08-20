@@ -1,7 +1,7 @@
 require "spec"
-require "../../src/compiler/crystal/syntax"
+require "../../src/compiler/iyi/syntax"
 
-include Crystal
+include Iyi
 
 struct Number
   def int32
@@ -45,7 +45,7 @@ class Array
   end
 
   def path
-    Crystal::Path.new self
+    Iyi::Path.new self
   end
 end
 
@@ -79,7 +79,7 @@ class String
   end
 
   def path(global = false)
-    Crystal::Path.new self, global
+    Iyi::Path.new self, global
   end
 
   def instance_var
@@ -115,7 +115,7 @@ class String
   end
 
   def static_array_of(size : ASTNode)
-    Generic.new(Crystal::Path.global("StaticArray"), [path, size] of ASTNode)
+    Generic.new(Iyi::Path.global("StaticArray"), [path, size] of ASTNode)
   end
 
   def macro_literal
@@ -123,9 +123,9 @@ class String
   end
 end
 
-class Crystal::ASTNode
+class Iyi::ASTNode
   def pointer_of
-    Generic.new(Crystal::Path.global("Pointer"), [self] of ASTNode)
+    Generic.new(Iyi::Path.global("Pointer"), [self] of ASTNode)
   end
 
   def splat

@@ -2,25 +2,25 @@ require "../../spec_helper"
 
 describe "Semantic: named args" do
   it "errors if named arg not found" do
-    assert_error <<-CRYSTAL, "no parameter named 'w'"
+    assert_error <<-CODE, "no parameter named 'w'"
       def foo(x, y = 1, z = 2)
       end
 
       foo 1, w: 3
-      CRYSTAL
+      CODE
   end
 
   it "errors if named arg already specified" do
-    assert_error <<-CRYSTAL, "argument for parameter 'x' already specified"
+    assert_error <<-CODE, "argument for parameter 'x' already specified"
       def foo(x, y = 1, z = 2)
       end
 
       foo 1, x: 1
-      CRYSTAL
+      CODE
   end
 
   it "errors if named arg already specified, but multiple overloads (#7281)" do
-    assert_error <<-CRYSTAL, "no overload matches"
+    assert_error <<-CODE, "no overload matches"
       def foo(x : String, y = 1, z = 2)
       end
 
@@ -28,147 +28,147 @@ describe "Semantic: named args" do
       end
 
       foo 1, x: 1
-      CRYSTAL
+      CODE
   end
 
   it "errors if named arg not found in new" do
-    assert_error <<-CRYSTAL, "no parameter named 'w'"
+    assert_error <<-CODE, "no parameter named 'w'"
       class Foo
         def initialize(x, y = 1, z = 2)
         end
       end
 
       Foo.new 1, w: 3
-      CRYSTAL
+      CODE
   end
 
   it "errors if named arg already specified" do
-    assert_error <<-CRYSTAL, "argument for parameter 'x' already specified"
+    assert_error <<-CODE, "argument for parameter 'x' already specified"
       class Foo
         def initialize(x, y = 1, z = 2)
         end
       end
 
       Foo.new 1, x: 1
-      CRYSTAL
+      CODE
   end
 
   it "errors if doesn't pass named arg restriction" do
-    assert_error <<-CRYSTAL, "expected argument 'x' to 'foo' to be Int32, not Float64"
+    assert_error <<-CODE, "expected argument 'x' to 'foo' to be Int32, not Float64"
       def foo(x : Int32 = 1)
       end
 
       foo x: 1.5
-      CRYSTAL
+      CODE
   end
 
   it "errors if named arg already specified but in same position" do
-    assert_error <<-CRYSTAL, "argument for parameter 'headers' already specified"
+    assert_error <<-CODE, "argument for parameter 'headers' already specified"
       def foo(headers = nil)
       end
 
       foo 1, headers: 2
-      CRYSTAL
+      CODE
   end
 
   it "sends one regular argument as named argument" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       def foo(x)
         x
       end
 
       foo x: 1
-      CRYSTAL
+      CODE
   end
 
   it "sends two regular arguments as named arguments" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       def foo(x, y)
         x + y
       end
 
       foo x: 1, y: 2
-      CRYSTAL
+      CODE
   end
 
   it "sends two regular arguments as named arguments in inverted position (1)" do
-    assert_type(<<-CRYSTAL) { string }
+    assert_type(<<-CODE) { string }
       def foo(x, y)
         x
       end
 
       foo y: 1, x: "foo"
-      CRYSTAL
+      CODE
   end
 
   it "sends two regular arguments as named arguments in inverted position (2)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       def foo(x, y)
         y
       end
 
       foo y: 1, x: "foo"
-      CRYSTAL
+      CODE
   end
 
   it "errors if named arg matches single splat argument" do
-    assert_error <<-CRYSTAL, "no parameter named 'x'"
+    assert_error <<-CODE, "no parameter named 'x'"
       def foo(*y)
       end
 
       foo x: 1, y: 2
-      CRYSTAL
+      CODE
   end
 
   it "errors if named arg matches splat argument" do
-    assert_error <<-CRYSTAL, "no overload matches"
+    assert_error <<-CODE, "no overload matches"
       def foo(x, *y)
       end
 
       foo x: 1, y: 2
-      CRYSTAL
+      CODE
   end
 
   it "allows named arg if there's a splat" do
-    assert_type(<<-CRYSTAL) { tuple_of([char, tuple_of([int32])]) }
+    assert_type(<<-CODE) { tuple_of([char, tuple_of([int32])]) }
       def foo(*y, x)
         { x, y }
       end
 
       foo 1, x: 'a'
-      CRYSTAL
+      CODE
   end
 
   it "errors if missing one argument" do
-    assert_error <<-CRYSTAL, "missing argument: z"
+    assert_error <<-CODE, "missing argument: z"
       def foo(x, y, z)
       end
 
       foo x: 1, y: 2
-      CRYSTAL
+      CODE
   end
 
   it "errors if missing two arguments" do
-    assert_error <<-CRYSTAL, "missing arguments: x, z"
+    assert_error <<-CODE, "missing arguments: x, z"
       def foo(x, y, z)
       end
 
       foo y: 2
-      CRYSTAL
+      CODE
   end
 
   it "doesn't include arguments with default values in missing arguments error" do
-    assert_error <<-CRYSTAL, "missing argument: z"
+    assert_error <<-CODE, "missing argument: z"
 
       def foo(x, z, y = 1)
       end
 
       foo(x: 1)
-      CRYSTAL
+      CODE
   end
 
   it "says no overload matches with named arg" do
-    assert_error <<-CRYSTAL, "missing argument: y"
+    assert_error <<-CODE, "missing argument: y"
       def foo(x, y)
       end
 
@@ -176,20 +176,20 @@ describe "Semantic: named args" do
       end
 
       foo(x: 2)
-      CRYSTAL
+      CODE
   end
 
   it "gives correct error message for missing args after *" do
-    assert_error <<-CRYSTAL, "missing arguments: x, y"
+    assert_error <<-CODE, "missing arguments: x, y"
       def foo(*, x, y)
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "overloads based on required named args" do
-    assert_type(<<-CRYSTAL) { tuple_of([int32, char]) }
+    assert_type(<<-CODE) { tuple_of([int32, char]) }
       def foo(x, *, y)
         1
       end
@@ -202,11 +202,11 @@ describe "Semantic: named args" do
       b = foo(1, z: 2)
 
       {a, b}
-      CRYSTAL
+      CODE
   end
 
   it "overloads based on required named args, with restrictions" do
-    assert_type(<<-CRYSTAL) { tuple_of([int32, char]) }
+    assert_type(<<-CODE) { tuple_of([int32, char]) }
       def foo(x, *, z : Int32)
         1
       end
@@ -219,22 +219,22 @@ describe "Semantic: named args" do
       b = foo(1, z: 1.5)
 
       {a, b}
-      CRYSTAL
+      CODE
   end
 
   it "uses bare splat in new" do
-    assert_type(<<-CRYSTAL) { types["Foo"] }
+    assert_type(<<-CODE) { types["Foo"] }
       class Foo
         def initialize(*, y = nil)
         end
       end
 
       Foo.new
-      CRYSTAL
+      CODE
   end
 
   it "passes #2696" do
-    assert_type(<<-CRYSTAL) { types["Bar"] }
+    assert_type(<<-CODE) { types["Bar"] }
       class Bar
         def bar
           yield
@@ -249,11 +249,11 @@ describe "Semantic: named args" do
       end
 
       Foo.foo(count: 3).bar { }
-      CRYSTAL
+      CODE
   end
 
   it "matches specific overload with named arguments (#2753)" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { bool }
+    assert_type(<<-CODE, inject_primitives: true) { bool }
       def foo(x : Nil, y)
         foo 1, y
         true
@@ -265,11 +265,11 @@ describe "Semantic: named args" do
       end
 
       foo nil, y: 2
-      CRYSTAL
+      CODE
   end
 
   it "matches specific overload with named arguments (2) (#2753)" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { bool }
+    assert_type(<<-CODE, inject_primitives: true) { bool }
       def foo(x : Nil, y, z)
         foo 1, y, z
         true
@@ -281,30 +281,30 @@ describe "Semantic: named args" do
       end
 
       foo nil, z: 1, y: 2
-      CRYSTAL
+      CODE
   end
 
   it "gives correct error message with external names (#3934)" do
-    assert_error <<-CRYSTAL, "no overload matches"
+    assert_error <<-CODE, "no overload matches"
       def foo(*, arg a : String)
         a
       end
 
       foo(arg: 10)
-      CRYSTAL
+      CODE
   end
 
   it "says correct error when forwarding named args (#7491)" do
-    assert_error <<-CRYSTAL, "no parameter named 'baz'"
+    assert_error <<-CODE, "no parameter named 'baz'"
       def bar(foo = false)
       end
 
       bar(**{foo: true, baz: true})
-      CRYSTAL
+      CODE
   end
 
   it "doesn't fail on named argument with NoReturn type (#7760)" do
-    assert_type(<<-CRYSTAL) { no_return }
+    assert_type(<<-CODE) { no_return }
       lib LibC
         fun exit : NoReturn
       end
@@ -317,6 +317,6 @@ describe "Semantic: named args" do
       LibC.exit if x.is_a?(Int32)
 
       foo(x: x)
-      CRYSTAL
+      CODE
   end
 end

@@ -227,7 +227,7 @@ $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 
 The tarball is relocatable. `bin/iyi` finds its prelude beside itself, all 56 KB
-of it, so there is nothing to configure and no `CRYSTAL_PATH` to set.
+of it, so there is nothing to configure and no `IYI_PATH` to set.
 
 ### Your first module, and then the rule that matters
 
@@ -580,7 +580,7 @@ move is one of the four rules:
 | `include`/`extend` a module into a class | `trait` and `impl Trait for Type`, in the trait's module or the type's | R-3's orphan rule, which is what makes coherence checkable without reading the program |
 | `abstract def` in a module | `abstract def` in a `trait`, and the trait is a type | II.6 |
 | everything is public unless `private` | everything is the module's own unless `pub`, and `pub` writes its types | R-2 |
-| shards, `shard.yml` | `--crystal` can `require` shards from `CRYSTAL_PATH` | no package manager; required source is compiled into the program |
+| shards, `shard.yml` | `--crystal` can `require` shards from `IYI_PATH` | no package manager; required source is compiled into the program |
 | macros | kept, and they travel in the artifact | |
 | `Nil`, union types, blocks, local inference | kept, unchanged | |
 
@@ -601,7 +601,7 @@ not, and are not offered.
 **Can I use shards?** Yes, with `--crystal`, which gives the program Crystal's
 standard library and makes `require` mean what it means there. Nine shards were
 swept through it, Kemal among them. There is still no package manager: point
-`CRYSTAL_PATH` at a `lib/` directory the way Crystal does. What you give up is
+`IYI_PATH` at a `lib/` directory the way Crystal does. What you give up is
 R-1 for the required shard, which is compiled from source rather than read as
 declarations.
 
@@ -662,7 +662,7 @@ marked PROPOSED are the parts that will move under you.
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
 | [`samples/iyi`](samples/iyi) | nine programs, eight documenting a part of it and one being a first half hour |
 | [`src/iyi`](src/iyi) | iyi's own library, 1,184 lines. `--crystal` swaps it for Crystal's |
-| [`src/compiler/crystal/iyimod.cr`](src/compiler/crystal/iyimod.cr) | the artifact format |
+| [`src/compiler/iyi/iyimod.cr`](src/compiler/iyi/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |
 | [CHANGELOG.md](CHANGELOG.md) | what is in a release, and what a later one has to keep faith with |

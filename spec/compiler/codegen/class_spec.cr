@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Code gen: class" do
   it "codegens call to same instance" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def foo
           1
@@ -14,11 +14,11 @@ describe "Code gen: class" do
       end
 
       Foo.new.bar
-      CRYSTAL
+      CODE
   end
 
   it "codegens instance var" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       class Foo
         def initialize(@coco : Int32)
         end
@@ -30,11 +30,11 @@ describe "Code gen: class" do
       f = Foo.new(2)
       g = Foo.new(40)
       f.coco &+ g.coco
-      CRYSTAL
+      CODE
   end
 
   it "codegens recursive type" do
-    run(<<-CRYSTAL)
+    run(<<-CODE)
       class Foo
         def next=(@next : Foo)
         end
@@ -42,11 +42,11 @@ describe "Code gen: class" do
 
       f = Foo.new
       f.next = f
-      CRYSTAL
+      CODE
   end
 
   it "codegens method call of instance var" do
-    run(<<-CRYSTAL).to_f64.should eq(1.0)
+    run(<<-CODE).to_f64.should eq(1.0)
       class List
         def initialize
           @last = 0
@@ -60,11 +60,11 @@ describe "Code gen: class" do
 
       l = List.new
       l.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens new which calls initialize" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def initialize(value : Int32)
           @value = value
@@ -77,11 +77,11 @@ describe "Code gen: class" do
 
       f = Foo.new 1
       f.value
-      CRYSTAL
+      CODE
   end
 
   it "codegens method from another method without obj and accesses instance vars" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def foo
           bar
@@ -94,11 +94,11 @@ describe "Code gen: class" do
 
       f = Foo.new
       f.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens virtual call that calls another method" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def foo
           foo2
@@ -113,11 +113,11 @@ describe "Code gen: class" do
       end
 
       Bar.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens virtual method of generic class" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Object
         def foo
           bar
@@ -135,11 +135,11 @@ describe "Code gen: class" do
       end
 
       Foo(Int32).new.foo.to_i!
-      CRYSTAL
+      CODE
   end
 
   it "changes instance variable in method (ssa bug)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def initialize
           @var = 0
@@ -158,7 +158,7 @@ describe "Code gen: class" do
 
       foo = Foo.new
       foo.foo
-      CRYSTAL
+      CODE
   end
 
   # it "gets object_id of class" do
@@ -167,7 +167,7 @@ describe "Code gen: class" do
   # end
 
   it "calls method on Class class" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Class
         def foo
           1
@@ -178,11 +178,11 @@ describe "Code gen: class" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "uses number type var" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo(T)
         def self.foo
           T
@@ -190,11 +190,11 @@ describe "Code gen: class" do
       end
 
       Foo(1).foo
-      CRYSTAL
+      CODE
   end
 
   it "calls class method without self" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def self.coco
           1
@@ -203,11 +203,11 @@ describe "Code gen: class" do
         a = coco
       end
       a
-      CRYSTAL
+      CODE
   end
 
   it "calls class method without self (2)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def self.coco
           lala
@@ -226,11 +226,11 @@ describe "Code gen: class" do
         a = coco
       end
       a
-      CRYSTAL
+      CODE
   end
 
   it "assigns type to reference union type" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def initialize(@x : Bar)
         end
@@ -243,19 +243,19 @@ describe "Code gen: class" do
       f = Foo.new(Bar.new)
       f.x = Baz.new
       1
-      CRYSTAL
+      CODE
   end
 
   it "does to_s for class" do
-    run(<<-CRYSTAL).to_string.should eq("Reference")
+    run(<<-CODE).to_string.should eq("Reference")
       require "prelude"
 
       Reference.to_s
-      CRYSTAL
+      CODE
   end
 
   it "allows fixing an instance variable's type" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       class Foo
         @x : Bool
 
@@ -268,11 +268,11 @@ describe "Code gen: class" do
       end
 
       Foo.new(true).x
-      CRYSTAL
+      CODE
   end
 
   it "codegens initialize with instance var" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         @x : Nil
 
@@ -283,11 +283,11 @@ describe "Code gen: class" do
 
       Foo.new
       1
-      CRYSTAL
+      CODE
   end
 
   it "reads other instance var" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def initialize(@x : Int32)
         end
@@ -295,11 +295,11 @@ describe "Code gen: class" do
 
       foo = Foo.new(1)
       foo.@x
-      CRYSTAL
+      CODE
   end
 
   it "reads a virtual type instance var" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def initialize(@x : Int32)
         end
@@ -310,11 +310,11 @@ describe "Code gen: class" do
 
       foo = Foo.new(1) || Bar.new(2)
       foo.@x
-      CRYSTAL
+      CODE
   end
 
   it "reads a union type instance var (reference union, first type)" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       class Foo
         def initialize(@x : Int32)
         end
@@ -342,11 +342,11 @@ describe "Code gen: class" do
       else
         20
       end
-      CRYSTAL
+      CODE
   end
 
   it "reads a union type instance var (reference union, second type)" do
-    run(<<-CRYSTAL).to_i.should eq('a'.ord)
+    run(<<-CODE).to_i.should eq('a'.ord)
       class Foo
         def initialize(@x : Int32)
         end
@@ -374,11 +374,11 @@ describe "Code gen: class" do
       else
         'b'
       end
-      CRYSTAL
+      CODE
   end
 
   it "reads a union type instance var (mixed union, first type)" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       struct Foo
         def initialize(@x : Int32)
         end
@@ -406,11 +406,11 @@ describe "Code gen: class" do
       else
         20
       end
-      CRYSTAL
+      CODE
   end
 
   it "reads a union type instance var (mixed union, second type)" do
-    run(<<-CRYSTAL).to_i.should eq('a'.ord)
+    run(<<-CODE).to_i.should eq('a'.ord)
       struct Foo
         def initialize(@x : Int32)
         end
@@ -438,11 +438,11 @@ describe "Code gen: class" do
       else
         'b'
       end
-      CRYSTAL
+      CODE
   end
 
   it "never considers read instance var as closure (#12181)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       class Foo
         @x = 1
       end
@@ -454,11 +454,11 @@ describe "Code gen: class" do
       end
 
       bug
-      CRYSTAL
+      CODE
   end
 
   it "runs with nilable instance var" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       struct Nil
         def to_i!
           0
@@ -479,11 +479,11 @@ describe "Code gen: class" do
 
       bar = Bar.new
       bar.x.to_i!
-      CRYSTAL
+      CODE
   end
 
   it "runs with nil instance var when inheriting" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       struct Nil
         def to_i!
           0
@@ -509,11 +509,11 @@ describe "Code gen: class" do
 
       bar = Bar.new
       bar.x.to_i!
-      CRYSTAL
+      CODE
   end
 
   it "codegens bug #168" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         @x : Foo?
 
@@ -533,11 +533,11 @@ describe "Code gen: class" do
       end
 
       Bar.new(Foo.new).foo
-      CRYSTAL
+      CODE
   end
 
   it "allows initializing var with constant" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         A = 1
         @x = A
@@ -548,17 +548,17 @@ describe "Code gen: class" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "codegens class method" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       Int32.class
-      CRYSTAL
+      CODE
   end
 
   it "codegens virtual class method" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       class Foo
       end
 
@@ -566,11 +566,11 @@ describe "Code gen: class" do
       end
 
       (Foo.new || Bar.new).class
-      CRYSTAL
+      CODE
   end
 
   it "allows using self in class scope" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def self.foo
           1
@@ -584,11 +584,11 @@ describe "Code gen: class" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "allows using self in class scope" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       class Foo
@@ -604,11 +604,11 @@ describe "Code gen: class" do
       end
 
       Foo.x.foo
-      CRYSTAL
+      CODE
   end
 
   it "makes .class always be a virtual type even if no subclasses" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       class Foo
       end
 
@@ -617,11 +617,11 @@ describe "Code gen: class" do
       class Bar < Foo
         p.value = self
       end
-      CRYSTAL
+      CODE
   end
 
   it "does to_s for virtual metaclass type (1)" do
-    run(<<-CRYSTAL).to_string.should eq("Foo")
+    run(<<-CODE).to_string.should eq("Foo")
       require "prelude"
 
       class Foo; end
@@ -630,11 +630,11 @@ describe "Code gen: class" do
 
       a = Foo || Bar || Baz
       a.to_s
-      CRYSTAL
+      CODE
   end
 
   it "does to_s for virtual metaclass type (2)" do
-    run(<<-CRYSTAL).to_string.should eq("Bar")
+    run(<<-CODE).to_string.should eq("Bar")
       require "prelude"
 
       class Foo; end
@@ -643,11 +643,11 @@ describe "Code gen: class" do
 
       a = Bar || Foo || Baz
       a.to_s
-      CRYSTAL
+      CODE
   end
 
   it "does to_s for virtual metaclass type (3)" do
-    run(<<-CRYSTAL).to_string.should eq("Baz")
+    run(<<-CODE).to_string.should eq("Baz")
       require "prelude"
 
       class Foo; end
@@ -656,11 +656,11 @@ describe "Code gen: class" do
 
       a = Baz || Bar || Foo
       a.to_s
-      CRYSTAL
+      CODE
   end
 
   it "does not combine module metaclass types with same name but different file scopes (#15503)" do
-    run(<<-CRYSTAL, Int32, filename: "foo.cr").should eq(11)
+    run(<<-CODE, Int32, filename: "foo.cr").should eq(11)
       module Foo
         def self.foo
           1
@@ -688,11 +688,11 @@ describe "Code gen: class" do
       end
 
       foo(Foo || Baz) &+ foo(Bar || Baz)
-      CRYSTAL
+      CODE
   end
 
   it "does not combine virtual types with same name but different file scopes" do
-    run(<<-CRYSTAL, Int32, filename: "foo.cr").should eq(101)
+    run(<<-CODE, Int32, filename: "foo.cr").should eq(101)
       class Foo
         def foo
           1
@@ -721,11 +721,11 @@ describe "Code gen: class" do
       end
 
       Fred.new.as(Fred).foo &+ Foo.new.as(Foo).foo
-      CRYSTAL
+      CODE
   end
 
   it "does not combine virtual metaclass types with same name but different file scopes" do
-    run(<<-CRYSTAL, Int32, filename: "foo.cr").should eq(101)
+    run(<<-CODE, Int32, filename: "foo.cr").should eq(101)
       class Foo
         def self.foo
           1
@@ -754,11 +754,11 @@ describe "Code gen: class" do
       end
 
       Fred.as(Fred.class).foo &+ Foo.as(Foo.class).foo
-      CRYSTAL
+      CODE
   end
 
   it "does not combine generic virtual metaclass types with same name but different file scopes" do
-    run(<<-CRYSTAL, Int32, filename: "foo.cr").should eq(11)
+    run(<<-CODE, Int32, filename: "foo.cr").should eq(11)
       module Foo
         def self.foo
           1
@@ -785,11 +785,11 @@ describe "Code gen: class" do
       end
 
       Gen(Foo).as(Base.class).x &+ Gen(Bar).as(Base.class).x
-      CRYSTAL
+      CODE
   end
 
   it "does not combine generic module metaclass types with same name but different file scopes" do
-    run(<<-CRYSTAL, Int32, filename: "foo.cr").should eq(11)
+    run(<<-CODE, Int32, filename: "foo.cr").should eq(11)
       module Foo
         def self.foo
           1
@@ -813,11 +813,11 @@ describe "Code gen: class" do
       end
 
       (Gen(Foo) || Gen(Bar)).x &+ (Gen(Bar) || Gen(Foo)).x
-      CRYSTAL
+      CODE
   end
 
   it "builds generic class bug" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       abstract class Base
         def initialize
           @value = 1
@@ -839,11 +839,11 @@ describe "Code gen: class" do
 
       ex = Foo(Int32).new || Bar.new
       ex.foo
-      CRYSTAL
+      CODE
   end
 
   it "resolves type declaration when accessing instance var (#348)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       require "prelude"
 
       lib LibC
@@ -857,11 +857,11 @@ describe "Code gen: class" do
       end
 
       Bar.new.inspect
-      CRYSTAL
+      CODE
   end
 
   it "gets class of virtual type" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def self.foo
           1
@@ -876,11 +876,11 @@ describe "Code gen: class" do
 
       f = Bar.new || Foo.new
       f.class.foo
-      CRYSTAL
+      CODE
   end
 
   it "notifies superclass recursively on inheritance (#576)" do
-    run(<<-CRYSTAL).to_string.should eq("Qux")
+    run(<<-CODE).to_string.should eq("Qux")
       class Class
         def name : String
           {{ @type.name.stringify }}
@@ -909,11 +909,11 @@ describe "Code gen: class" do
       class Qux < Baz; end
       ptr.value = Qux
       ptr.value.foo
-      CRYSTAL
+      CODE
   end
 
   it "works with array in variable initializer in non-generic type (#855)" do
-    run(<<-CRYSTAL).to_i.should eq(6)
+    run(<<-CODE).to_i.should eq(6)
       require "prelude"
 
       class Foo
@@ -925,11 +925,11 @@ describe "Code gen: class" do
       end
 
       Foo.new.sum
-      CRYSTAL
+      CODE
   end
 
   it "works with array in variable initializer in generic type (#855)" do
-    run(<<-CRYSTAL).to_i.should eq(6)
+    run(<<-CODE).to_i.should eq(6)
       require "prelude"
 
       class Foo(T)
@@ -941,33 +941,33 @@ describe "Code gen: class" do
       end
 
       Foo(Int32).new.sum
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash on instance variable assigned a proc, and never instantiated (#923)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       class Klass
         def self.f(arg)
         end
 
         @a : Proc(String, Nil) = ->f(String)
       end
-      CRYSTAL
+      CODE
   end
 
   it "does to_s on class" do
-    run(<<-CRYSTAL).to_string.should eq("Class")
+    run(<<-CODE).to_string.should eq("Class")
       require "prelude"
 
       class Foo
       end
 
       Foo.class.to_s
-      CRYSTAL
+      CODE
   end
 
   it "invokes class method inside instance method (#1119)" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
       class Class
         def bar
           123
@@ -982,11 +982,11 @@ describe "Code gen: class" do
 
       x = Foo.new.test
       x.bar
-      CRYSTAL
+      CODE
   end
 
   it "codegens method of class union including Int (#1476)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Class
         def foo
           1
@@ -995,11 +995,11 @@ describe "Code gen: class" do
 
       x = Int || Int32
       x.foo
-      CRYSTAL
+      CODE
   end
 
   it "can use a Main class (#1628)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       class Main
@@ -1009,11 +1009,11 @@ describe "Code gen: class" do
       end
 
       Main.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens singleton (#718)" do
-    run(<<-CRYSTAL).to_string.should eq("Hello")
+    run(<<-CODE).to_string.should eq("Hello")
       class Singleton
         @@instance = new
 
@@ -1031,11 +1031,11 @@ describe "Code gen: class" do
       end
 
       Singleton.get_instance.msg
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash if not using undefined instance variable in superclass" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       class Foo
         def initialize(@x)
         end
@@ -1052,11 +1052,11 @@ describe "Code gen: class" do
 
       foo = Bar.new(42)
       foo.x
-      CRYSTAL
+      CODE
   end
 
   it "codegens virtual metaclass union bug (#2597)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
 
       class Foo
         def self.foo
@@ -1095,11 +1095,11 @@ describe "Code gen: class" do
       end
 
       Bar.new.foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash on #1216" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       class Foo
         def initialize(@ivar : Int32)
           meth
@@ -1112,11 +1112,11 @@ describe "Code gen: class" do
       end
 
       Foo.new(6)
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash on #1216 with pointerof" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       class Foo
         def initialize(@ivar : Int32)
           meth
@@ -1129,11 +1129,11 @@ describe "Code gen: class" do
       end
 
       Foo.new(6)
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash on #1216 (reduced)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       class Foo
         def foo
           crash.foo
@@ -1147,11 +1147,11 @@ describe "Code gen: class" do
       end
 
       crash
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash on abstract class never instantiated (#2840)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       require "prelude"
 
       abstract class Foo
@@ -1162,11 +1162,11 @@ describe "Code gen: class" do
       else
         Pointer(Foo).malloc(1_u64).value.foo
       end
-      CRYSTAL
+      CODE
   end
 
   it "can assign virtual metaclass to virtual metaclass (#3007)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def self.foo
           1
@@ -1193,11 +1193,11 @@ describe "Code gen: class" do
       ptr = Pointer(Foo.class).malloc(1_u64)
       ptr.value = Bar || Baz
       ptr.value.foo
-      CRYSTAL
+      CODE
   end
 
   it "transfers initializer from module to generic class" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
       module Moo
         @x = 123
 
@@ -1211,11 +1211,11 @@ describe "Code gen: class" do
       end
 
       Foo(Int32).new.x
-      CRYSTAL
+      CODE
   end
 
   it "transfers initializer from generic module to non-generic class" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
       module Moo(T)
         @x = 123
 
@@ -1229,11 +1229,11 @@ describe "Code gen: class" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "transfers initializer from generic module to generic class" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
       module Moo(T)
         @x = 123
 
@@ -1247,11 +1247,11 @@ describe "Code gen: class" do
       end
 
       Foo(Int32).new.x
-      CRYSTAL
+      CODE
   end
 
   it "doesn't skip false initializers (#3272)" do
-    run(<<-CRYSTAL).to_i.should eq(20)
+    run(<<-CODE).to_i.should eq(20)
       class Parent
         @foo = true
 
@@ -1265,11 +1265,11 @@ describe "Code gen: class" do
       end
 
       Child.new.foo ? 10 : 20
-      CRYSTAL
+      CODE
   end
 
   it "doesn't skip zero initializers (#3272)" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       class Parent
         @foo = 123
 
@@ -1283,11 +1283,11 @@ describe "Code gen: class" do
       end
 
       Child.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens virtual generic class instance metaclass (#3819)" do
-    run(<<-CRYSTAL).to_string.should eq("Foo")
+    run(<<-CODE).to_string.should eq("Foo")
       module Core
       end
 
@@ -1308,11 +1308,11 @@ describe "Code gen: class" do
       end
 
       Foo.new.as(Core).class.name
-      CRYSTAL
+      CODE
   end
 
   it "codegens class with recursive tuple to class (#4520)" do
-    run(<<-CRYSTAL, inject_primitives: false).to_i.should eq(1)
+    run(<<-CODE, inject_primitives: false).to_i.should eq(1)
       class Foo
         @foo : {Foo, Foo}?
 
@@ -1330,11 +1330,11 @@ describe "Code gen: class" do
       foo = Foo.new(1)
       foo.foo = {Foo.new(2), Foo.new(3)}
       foo.x
-      CRYSTAL
+      CODE
   end
 
   it "runs instance variable initializer at the class level" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       class Foo
         @x : Int32 = bar
 
@@ -1348,11 +1348,11 @@ describe "Code gen: class" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "runs instance variable initializer using a class variable assignment (#9886)" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       class Foo
         @@id = 0
         @id : Int32 = (@@id &+= 1)
@@ -1363,11 +1363,11 @@ describe "Code gen: class" do
       end
 
       Foo.new.id &+ Foo.new.id
-      CRYSTAL
+      CODE
   end
 
   it "runs instance variable initializer at the class level, for generic type" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       class Foo(T)
         @x : T = bar
 
@@ -1381,11 +1381,11 @@ describe "Code gen: class" do
       end
 
       Foo(Int32).new.x
-      CRYSTAL
+      CODE
   end
 
   pending "codegens assignment of generic metaclasses (1) (#10394)" do
-    run(<<-CRYSTAL).to_string.should eq("Bar(T)")
+    run(<<-CODE).to_string.should eq("Bar(T)")
       class Class
         def name : String
           {{ @type.name.stringify }}
@@ -1398,11 +1398,11 @@ describe "Code gen: class" do
       x = Foo
       x = Bar
       x.name
-      CRYSTAL
+      CODE
   end
 
   pending "codegens assignment of generic metaclasses (2) (#10394)" do
-    run(<<-CRYSTAL).to_string.should eq("Bar(Int32)")
+    run(<<-CODE).to_string.should eq("Bar(Int32)")
       class Class
         def name : String
           {{ @type.name.stringify }}
@@ -1415,11 +1415,11 @@ describe "Code gen: class" do
       x = Foo
       x = Bar(Int32)
       x.name
-      CRYSTAL
+      CODE
   end
 
   it "codegens assignment of generic metaclasses (3) (#10394)" do
-    run(<<-CRYSTAL).to_string.should eq("Bar(Int32)")
+    run(<<-CODE).to_string.should eq("Bar(Int32)")
       class Class
         def name : String
           {{ @type.name.stringify }}
@@ -1432,11 +1432,11 @@ describe "Code gen: class" do
       x = Foo(Int32)
       x = Bar(Int32)
       x.name
-      CRYSTAL
+      CODE
   end
 
   it "codegens assignment of generic metaclasses (4) (#10394)" do
-    run(<<-CRYSTAL).to_string.should eq("Bar(Int32)")
+    run(<<-CODE).to_string.should eq("Bar(Int32)")
       class Class
         def name : String
           {{ @type.name.stringify }}
@@ -1449,11 +1449,11 @@ describe "Code gen: class" do
       x = Foo(String)
       x = Bar(Int32)
       x.name
-      CRYSTAL
+      CODE
   end
 
   it "codegens assignment of generic metaclasses, base is non-generic (1) (#10394)" do
-    run(<<-CRYSTAL).to_string.should eq("Bar(T)")
+    run(<<-CODE).to_string.should eq("Bar(T)")
       class Class
         def name : String
           {{ @type.name.stringify }}
@@ -1466,11 +1466,11 @@ describe "Code gen: class" do
       x = Foo
       x = Bar
       x.name
-      CRYSTAL
+      CODE
   end
 
   it "codegens assignment of generic metaclasses, base is non-generic (2) (#10394)" do
-    run(<<-CRYSTAL).to_string.should eq("Bar(Int32)")
+    run(<<-CODE).to_string.should eq("Bar(Int32)")
       class Class
         def name : String
           {{ @type.name.stringify }}
@@ -1483,6 +1483,6 @@ describe "Code gen: class" do
       x = Foo
       x = Bar(Int32)
       x.name
-      CRYSTAL
+      CODE
   end
 end

@@ -4,7 +4,7 @@ require "../../spec_helper"
 
 describe "Codegen: thread local" do
   it "works with class variables" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
     require "prelude"
 
     class Foo
@@ -22,11 +22,11 @@ describe "Codegen: thread local" do
     Thread.new { Foo.var = 456 }.join
 
     Foo.var
-    CRYSTAL
+    CODE
   end
 
   it "works with class variable in main thread" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
     require "prelude"
 
     class Foo
@@ -39,11 +39,11 @@ describe "Codegen: thread local" do
     end
 
     Foo.a
-    CRYSTAL
+    CODE
   end
 
   it "compiles with class variable referenced from initializer" do
-    run(<<-CRYSTAL)
+    run(<<-CODE)
     require "prelude"
 
     class Foo
@@ -61,6 +61,6 @@ describe "Codegen: thread local" do
     end
 
     0
-    CRYSTAL
+    CODE
   end
 end

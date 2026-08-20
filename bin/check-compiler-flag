@@ -17,7 +17,7 @@ COMPILER_FLAG=$1
 
 # test compiler_specs
 make clean_cache clean_crystal
-CRYSTAL_LIBRARY_PATH=$(./bin/crystal env CRYSTAL_LIBRARY_PATH) CRYSTAL_SPEC_COMPILER_FLAGS="$COMPILER_FLAG" make compiler_spec
+IYI_LIBRARY_PATH=$(./bin/crystal env IYI_LIBRARY_PATH) CRYSTAL_SPEC_COMPILER_FLAGS="$COMPILER_FLAG" make compiler_spec
 
 # first gen compiler
 make clean_cache clean_crystal crystal
@@ -32,11 +32,11 @@ make clean_cache primitives_spec FLAGS="-D$COMPILER_FLAG"
 
 # test compiler_specs
 make clean_cache
-CRYSTAL_LIBRARY_PATH=$(./bin/crystal env CRYSTAL_LIBRARY_PATH) CRYSTAL_SPEC_COMPILER_FLAGS="$COMPILER_FLAG" make compiler_spec FLAGS="-D$COMPILER_FLAG"
+IYI_LIBRARY_PATH=$(./bin/crystal env IYI_LIBRARY_PATH) CRYSTAL_SPEC_COMPILER_FLAGS="$COMPILER_FLAG" make compiler_spec FLAGS="-D$COMPILER_FLAG"
 make clean_cache
-CRYSTAL_LIBRARY_PATH=$(./bin/crystal env CRYSTAL_LIBRARY_PATH) make compiler_spec FLAGS="-D$COMPILER_FLAG"
+IYI_LIBRARY_PATH=$(./bin/crystal env IYI_LIBRARY_PATH) make compiler_spec FLAGS="-D$COMPILER_FLAG"
 make clean_cache
-CRYSTAL_LIBRARY_PATH=$(./bin/crystal env CRYSTAL_LIBRARY_PATH) make compiler_spec
+IYI_LIBRARY_PATH=$(./bin/crystal env IYI_LIBRARY_PATH) make compiler_spec
 
 # building 2nd gen compiler
 make clean_crystal clean_cache crystal # first
@@ -54,8 +54,8 @@ make clean_cache primitives_spec FLAGS="-D$COMPILER_FLAG"
 
 # run compiler specs
 make clean_cache
-CRYSTAL_LIBRARY_PATH=$(./bin/crystal env CRYSTAL_LIBRARY_PATH) CRYSTAL_SPEC_COMPILER_FLAGS="$COMPILER_FLAG" make compiler_spec FLAGS="-D$COMPILER_FLAG"
+IYI_LIBRARY_PATH=$(./bin/crystal env IYI_LIBRARY_PATH) CRYSTAL_SPEC_COMPILER_FLAGS="$COMPILER_FLAG" make compiler_spec FLAGS="-D$COMPILER_FLAG"
 make clean_cache
-CRYSTAL_LIBRARY_PATH=$(./bin/crystal env CRYSTAL_LIBRARY_PATH) make compiler_spec FLAGS="-D$COMPILER_FLAG"
+IYI_LIBRARY_PATH=$(./bin/crystal env IYI_LIBRARY_PATH) make compiler_spec FLAGS="-D$COMPILER_FLAG"
 make clean_cache
-CRYSTAL_LIBRARY_PATH=$(./bin/crystal env CRYSTAL_LIBRARY_PATH) make compiler_spec
+IYI_LIBRARY_PATH=$(./bin/crystal env IYI_LIBRARY_PATH) make compiler_spec

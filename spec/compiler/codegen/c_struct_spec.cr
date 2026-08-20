@@ -24,7 +24,7 @@ describe "Code gen: struct" do
   end
 
   it "codegens union inside struct" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       lib LibFoo
         union Bar
           x : Int32
@@ -39,11 +39,11 @@ describe "Code gen: struct" do
       a = Pointer(LibFoo::Baz).malloc(1_u64)
       a.value.lala.x = 10
       a.value.lala.x
-      CRYSTAL
+      CODE
   end
 
   it "codegens struct get inside struct" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       lib LibC
         struct Bar
           y : Int32
@@ -59,11 +59,11 @@ describe "Code gen: struct" do
       (foo.as(Int32*) + 1_i64).value = 2
 
       foo.value.bar.y
-      CRYSTAL
+      CODE
   end
 
   it "codegens struct set inside struct" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       lib LibC
         struct Bar
           y : Int32
@@ -81,11 +81,11 @@ describe "Code gen: struct" do
       foo.value.bar = bar
 
       foo.value.bar.y
-      CRYSTAL
+      CODE
   end
 
   it "codegens pointer malloc of struct" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       lib LibC
         struct Foo
           x : Int32
@@ -95,11 +95,11 @@ describe "Code gen: struct" do
       p = Pointer(LibC::Foo).malloc(1_u64)
       p.value.x = 1
       p.value.x
-      CRYSTAL
+      CODE
   end
 
   it "passes struct to method (1)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       lib LibC
         struct Foo
           x : Int32
@@ -117,11 +117,11 @@ describe "Code gen: struct" do
       f2 = foo(f1)
 
       f1.x
-      CRYSTAL
+      CODE
   end
 
   it "passes struct to method (2)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       lib LibC
         struct Foo
           x : Int32
@@ -138,11 +138,11 @@ describe "Code gen: struct" do
 
       f2 = foo(f1)
       f2.x
-      CRYSTAL
+      CODE
   end
 
   it "codegens struct access with -> and then ." do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       lib LibC
         struct ScalarEvent
           x : Int32
@@ -159,11 +159,11 @@ describe "Code gen: struct" do
 
       e = Pointer(LibC::Event).malloc(1_u64)
       e.value.data.scalar.x
-      CRYSTAL
+      CODE
   end
 
   it "yields struct via ->" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       lib LibC
         struct ScalarEvent
           x : Int32
@@ -186,11 +186,11 @@ describe "Code gen: struct" do
       foo do |data|
         data.scalar.x
       end
-      CRYSTAL
+      CODE
   end
 
   it "codegens assign struct to union" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       lib LibFoo
         struct Coco
           x : Int32
@@ -200,11 +200,11 @@ describe "Code gen: struct" do
       x = LibFoo::Coco.new
       c = x || 0
       c.is_a?(LibFoo::Coco)
-      CRYSTAL
+      CODE
   end
 
   it "codegens passing pointerof(struct) to fun" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       lib LibC
         struct Foo
           a : Int32
@@ -219,11 +219,11 @@ describe "Code gen: struct" do
       f.a = 1
 
       foo pointerof(f)
-      CRYSTAL
+      CODE
   end
 
   it "builds struct setter with fun type (1)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       require "prelude"
 
       lib LibC
@@ -234,11 +234,11 @@ describe "Code gen: struct" do
 
       foo = LibC::Foo.new
       foo.x = -> { }
-      CRYSTAL
+      CODE
   end
 
   it "builds struct setter with fun type (2)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       require "prelude"
 
       lib LibC
@@ -249,11 +249,11 @@ describe "Code gen: struct" do
 
       foo = Pointer(LibC::Foo).malloc(1)
       foo.value.x = -> { }
-      CRYSTAL
+      CODE
   end
 
   it "allows using named arguments for new" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       lib LibC
         struct Point
           x, y : Int32
@@ -262,11 +262,11 @@ describe "Code gen: struct" do
 
       point = LibC::Point.new x: 1, y: 2
       point.x &+ point.y
-      CRYSTAL
+      CODE
   end
 
   it "does to_s" do
-    run(<<-CRYSTAL).to_string.should eq("LibFoo::Point(@x=1, @y=2)")
+    run(<<-CODE).to_string.should eq("LibFoo::Point(@x=1, @y=2)")
       require "prelude"
 
       lib LibFoo
@@ -277,11 +277,11 @@ describe "Code gen: struct" do
 
       point = LibFoo::Point.new x: 1, y: 2
       point.to_s
-      CRYSTAL
+      CODE
   end
 
   it "can access instance var from the outside (#1092)" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
       lib LibFoo
         struct Foo
           x : Int32
@@ -290,11 +290,11 @@ describe "Code gen: struct" do
 
       f = LibFoo::Foo.new x: 123
       f.@x
-      CRYSTAL
+      CODE
   end
 
   it "automatically converts numeric type in struct field assignment" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
       lib LibFoo
         struct Foo
           x : Int32
@@ -304,11 +304,11 @@ describe "Code gen: struct" do
       foo = LibFoo::Foo.new
       foo.x = 123_u8
       foo.x
-      CRYSTAL
+      CODE
   end
 
   it "automatically converts numeric union type in struct field assignment" do
-    run(<<-CRYSTAL).to_i.should eq(57)
+    run(<<-CODE).to_i.should eq(57)
       lib LibFoo
         struct Foo
           x : Int8
@@ -320,11 +320,11 @@ describe "Code gen: struct" do
       foo = LibFoo::Foo.new
       foo.x = a
       foo.x
-      CRYSTAL
+      CODE
   end
 
   it "automatically converts nil to pointer" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       lib LibFoo
         struct Foo
           x : Int32*
@@ -335,11 +335,11 @@ describe "Code gen: struct" do
       foo.x = Pointer(Int32).new(1234_u64)
       foo.x = nil
       foo.x.address
-      CRYSTAL
+      CODE
   end
 
   it "automatically converts by invoking to_unsafe" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
       lib LibFoo
         struct Foo
           x : Int32
@@ -355,11 +355,11 @@ describe "Code gen: struct" do
       foo = LibFoo::Foo.new
       foo.x = Foo.new
       foo.x
-      CRYSTAL
+      CODE
   end
 
   it "sets instance var to proc" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       require "prelude"
 
       lib LibFoo
@@ -377,11 +377,11 @@ describe "Code gen: struct" do
       foo = LibFoo::Foo.new
       foo.set(->(x : Int32) { x + 1 })
       foo.x.call(1)
-      CRYSTAL
+      CODE
   end
 
   it "can access member of uninitialized struct behind type (#8774)" do
-    run(<<-CRYSTAL)
+    run(<<-CODE)
       lib LibFoo
         struct Foo
           x : Int32
@@ -392,6 +392,6 @@ describe "Code gen: struct" do
 
       foo = uninitialized LibFoo::FooT
       foo.x
-      CRYSTAL
+      CODE
   end
 end

@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Semantic: virtual metaclass" do
   it "types virtual metaclass" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { types["Foo"].virtual_type.metaclass }
+    assert_type(<<-CODE, inject_primitives: true) { types["Foo"].virtual_type.metaclass }
       class Foo
       end
 
@@ -11,11 +11,11 @@ describe "Semantic: virtual metaclass" do
 
       f = Foo.new || Bar.new
       f.class
-      CRYSTAL
+      CODE
   end
 
   it "types virtual metaclass method" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { union_of(int32, float64) }
+    assert_type(<<-CODE, inject_primitives: true) { union_of(int32, float64) }
       class Foo
         def self.foo
           1
@@ -30,11 +30,11 @@ describe "Semantic: virtual metaclass" do
 
       f = Foo.new || Bar.new
       f.class.foo
-      CRYSTAL
+      CODE
   end
 
   it "allows allocating virtual type when base class is abstract" do
-    assert_type(<<-CRYSTAL) { types["Foo"].virtual_type }
+    assert_type(<<-CODE) { types["Foo"].virtual_type }
       require "prelude"
 
       abstract class Foo
@@ -48,11 +48,11 @@ describe "Semantic: virtual metaclass" do
 
       bar = Bar.new || Baz.new
       baz = bar.class.allocate
-      CRYSTAL
+      CODE
   end
 
   it "yields virtual type in block arg if class is abstract" do
-    assert_type(<<-CRYSTAL) { array_of(types["Foo"].virtual_type) }
+    assert_type(<<-CODE) { array_of(types["Foo"].virtual_type) }
       require "prelude"
 
       abstract class Foo
@@ -79,11 +79,11 @@ describe "Semantic: virtual metaclass" do
 
       a = [Bar.new, Baz.new] of Foo
       b = a.map { |e| e.clone }
-      CRYSTAL
+      CODE
   end
 
   it "merges metaclass types" do
-    assert_type(<<-CRYSTAL) { types["Foo"].virtual_type.metaclass }
+    assert_type(<<-CODE) { types["Foo"].virtual_type.metaclass }
       class Foo
       end
 
@@ -91,11 +91,11 @@ describe "Semantic: virtual metaclass" do
       end
 
       Foo || Bar
-      CRYSTAL
+      CODE
   end
 
   it "merges metaclass types with 3 types" do
-    assert_type(<<-CRYSTAL) { types["Foo"].virtual_type.metaclass }
+    assert_type(<<-CODE) { types["Foo"].virtual_type.metaclass }
       class Foo
       end
 
@@ -106,11 +106,11 @@ describe "Semantic: virtual metaclass" do
       end
 
       Foo || Bar || Baz
-      CRYSTAL
+      CODE
   end
 
   it "types metaclass node" do
-    assert_type(<<-CRYSTAL) { types["Foo"].virtual_type.metaclass }
+    assert_type(<<-CODE) { types["Foo"].virtual_type.metaclass }
       class Foo
       end
 
@@ -119,11 +119,11 @@ describe "Semantic: virtual metaclass" do
 
       a = uninitialized Foo.class
       a
-      CRYSTAL
+      CODE
   end
 
   it "allows passing metaclass to virtual metaclass restriction" do
-    assert_type(<<-CRYSTAL) { types["Foo"].metaclass }
+    assert_type(<<-CODE) { types["Foo"].metaclass }
       class Foo
       end
 
@@ -132,11 +132,11 @@ describe "Semantic: virtual metaclass" do
       end
 
       foo(Foo)
-      CRYSTAL
+      CODE
   end
 
   it "allows passing metaclass to virtual metaclass restriction" do
-    assert_type(<<-CRYSTAL) { types["Bar"].metaclass }
+    assert_type(<<-CODE) { types["Bar"].metaclass }
       class Foo
       end
 
@@ -148,11 +148,11 @@ describe "Semantic: virtual metaclass" do
       end
 
       foo(Bar)
-      CRYSTAL
+      CODE
   end
 
   it "restricts virtual metaclass to Class (#11376)" do
-    assert_type(<<-CRYSTAL) { nilable types["Foo"].virtual_type.metaclass }
+    assert_type(<<-CODE) { nilable types["Foo"].virtual_type.metaclass }
       class Foo
       end
 
@@ -161,6 +161,6 @@ describe "Semantic: virtual metaclass" do
 
       x = Foo || Bar
       x if x.is_a?(Class)
-      CRYSTAL
+      CODE
   end
 end

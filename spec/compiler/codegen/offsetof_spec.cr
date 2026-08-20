@@ -41,7 +41,7 @@ describe "Code gen: offsetof" do
   end
 
   it "returns offset of extern union" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       @[Extern(union: true)]
       struct Foo
         @x = 1.0_f32
@@ -54,14 +54,14 @@ describe "Code gen: offsetof" do
 
       f = Foo.new
       (pointerof(f).as(Void*) + offsetof(Foo, @y).to_i64).as(UInt32*).value == f.y
-      CRYSTAL
+      CODE
   end
 
   it "returns offset of `StaticArray#@buffer`" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       x = uninitialized Int32[4]
       pointerof(x.@buffer).value = 12345
       (pointerof(x).as(Void*) + offsetof(Int32[4], @buffer).to_i64).as(Int32*).value == x.@buffer
-      CRYSTAL
+      CODE
   end
 end

@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Semantic: extern struct" do
   it "declares extern struct with no constructor" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       @[Extern]
       struct Foo
         @x = uninitialized Int32
@@ -13,11 +13,11 @@ describe "Semantic: extern struct" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "declares with constructor" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       @[Extern]
       struct Foo
         @x = uninitialized Int32
@@ -31,11 +31,11 @@ describe "Semantic: extern struct" do
       end
 
       Foo.new(1).foo
-      CRYSTAL
+      CODE
   end
 
   it "overrides getter" do
-    assert_type(<<-CRYSTAL) { char }
+    assert_type(<<-CODE) { char }
       @[Extern]
       struct Foo
         @x = uninitialized Int32
@@ -46,11 +46,11 @@ describe "Semantic: extern struct" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "can be passed to C fun" do
-    assert_type(<<-CRYSTAL) { float64 }
+    assert_type(<<-CODE) { float64 }
       @[Extern]
       struct Foo
         @x = uninitialized Int32
@@ -61,11 +61,11 @@ describe "Semantic: extern struct" do
       end
 
       LibFoo.foo(Foo.new)
-      CRYSTAL
+      CODE
   end
 
   it "can include module" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       module Moo
         @x = uninitialized Int32
 
@@ -80,11 +80,11 @@ describe "Semantic: extern struct" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "errors if using non-primitive for field type" do
-    assert_error <<-CRYSTAL, "only primitive types, pointers, structs, unions, enums and tuples are allowed in extern struct declarations"
+    assert_error <<-CODE, "only primitive types, pointers, structs, unions, enums and tuples are allowed in extern struct declarations"
       class Bar
       end
 
@@ -92,11 +92,11 @@ describe "Semantic: extern struct" do
       struct Foo
         @x = uninitialized Bar
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors if using non-primitive for field type via module" do
-    assert_error <<-CRYSTAL, "only primitive types, pointers, structs, unions, enums and tuples are allowed in extern struct declarations"
+    assert_error <<-CODE, "only primitive types, pointers, structs, unions, enums and tuples are allowed in extern struct declarations"
       class Bar
       end
 
@@ -108,11 +108,11 @@ describe "Semantic: extern struct" do
       struct Foo
         include Moo
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors if using non-primitive type in constructor" do
-    assert_error <<-CRYSTAL, "only primitive types, pointers, structs, unions, enums and tuples are allowed in extern struct declarations"
+    assert_error <<-CODE, "only primitive types, pointers, structs, unions, enums and tuples are allowed in extern struct declarations"
       class Bar
       end
 
@@ -122,11 +122,11 @@ describe "Semantic: extern struct" do
           @x = Bar.new
         end
       end
-      CRYSTAL
+      CODE
   end
 
   it "declares extern union with no constructor" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       @[Extern(union: true)]
       struct Foo
         @x = uninitialized Int32
@@ -137,11 +137,11 @@ describe "Semantic: extern struct" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "can use extern struct in lib" do
-    assert_type(<<-CRYSTAL) { types["Foo"] }
+    assert_type(<<-CODE) { types["Foo"] }
       @[Extern]
       struct Foo
       end
@@ -152,11 +152,11 @@ describe "Semantic: extern struct" do
 
       foo = Foo.new
       LibFoo.foo(foo)
-      CRYSTAL
+      CODE
   end
 
   it "can new with named args" do
-    assert_type(<<-CRYSTAL) { types["A"] }
+    assert_type(<<-CODE) { types["A"] }
       @[Extern]
       struct A
         def initialize(@x : Int32)
@@ -164,6 +164,6 @@ describe "Semantic: extern struct" do
       end
 
       A.new(x: 6)
-      CRYSTAL
+      CODE
   end
 end

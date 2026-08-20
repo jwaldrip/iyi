@@ -6,19 +6,19 @@ describe "Semantic: is_a?" do
   end
 
   it "restricts type inside if scope 1" do
-    nodes = parse <<-CRYSTAL
+    nodes = parse <<-CODE
       a = 1 || 'a'
       if a.is_a?(Int)
         a
       end
-      CRYSTAL
+      CODE
     result = semantic nodes
     mod, nodes = result.program, result.node.as(Expressions)
     nodes.last.as(If).then.type.should eq(mod.int32)
   end
 
   it "restricts type inside if scope 2" do
-    nodes = parse <<-CRYSTAL
+    nodes = parse <<-CODE
       module Bar
       end
 
@@ -30,7 +30,7 @@ describe "Semantic: is_a?" do
       if a.is_a?(Bar)
         a
       end
-      CRYSTAL
+      CODE
 
     result = semantic nodes
     mod, nodes = result.program, result.node.as(Expressions)
@@ -40,7 +40,7 @@ describe "Semantic: is_a?" do
   end
 
   it "restricts type inside if scope 3" do
-    nodes = parse <<-CRYSTAL
+    nodes = parse <<-CODE
       class Foo
         def initialize(@x : Int32)
         end
@@ -50,7 +50,7 @@ describe "Semantic: is_a?" do
       if a.is_a?(Foo)
         a
       end
-      CRYSTAL
+      CODE
 
     result = semantic nodes
     mod, nodes = result.program, result.node.as(Expressions)
@@ -58,18 +58,18 @@ describe "Semantic: is_a?" do
   end
 
   it "restricts other types inside if else" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       a = 1 || 'a'
       if a.is_a?(Int32)
         a.to_i32
       else
         a.ord
       end
-      CRYSTAL
+      CODE
   end
 
   it "applies filter inside block" do
-    assert_type(<<-CRYSTAL) { union_of(char, int32) }
+    assert_type(<<-CODE) { union_of(char, int32) }
       lib LibC
         fun exit : NoReturn
       end
@@ -93,11 +93,11 @@ describe "Semantic: is_a?" do
       end
 
       x
-      CRYSTAL
+      CODE
   end
 
   it "applies negative condition filter if then is no return" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       require "prelude"
 
       def foo
@@ -117,22 +117,22 @@ describe "Semantic: is_a?" do
       end
 
       bar
-      CRYSTAL
+      CODE
   end
 
   it "checks simple type with union" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       a = 1
       if a.is_a?(Int32 | Char)
         a + 1
       else
         2
       end
-      CRYSTAL
+      CODE
   end
 
   it "checks union with union" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { union_of(int32, char) }
+    assert_type(<<-CODE, inject_primitives: true) { union_of(int32, char) }
       struct Char
         def +(other : Int32)
           self
@@ -151,22 +151,22 @@ describe "Semantic: is_a?" do
       else
         a.foo
       end
-      CRYSTAL
+      CODE
   end
 
   it "restricts in assignment" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       a = 1 || 'a'
       if (b = a).is_a?(Int32)
         b
       else
         2
       end
-      CRYSTAL
+      CODE
   end
 
   it "restricts type in else but lazily" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       class Foo
         def initialize(@x : Int32)
         end
@@ -185,11 +185,11 @@ describe "Semantic: is_a?" do
       end
 
       z
-      CRYSTAL
+      CODE
   end
 
   it "types if is_a? preceded by return if (preserves nops)" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { nil_type }
+    assert_type(<<-CODE, inject_primitives: true) { nil_type }
       def coco
         return if 1 == 1
 
@@ -198,11 +198,11 @@ describe "Semantic: is_a?" do
       end
 
       coco
-      CRYSTAL
+      CODE
   end
 
   it "restricts type inside if else when used with module type" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { bool }
+    assert_type(<<-CODE, inject_primitives: true) { bool }
       module Moo
       end
 
@@ -222,11 +222,11 @@ describe "Semantic: is_a?" do
       else
         false
       end
-      CRYSTAL
+      CODE
   end
 
   it "doesn't fail on untyped is_a (#10317)" do
-    assert_no_errors(<<-CRYSTAL)
+    assert_no_errors(<<-CODE)
       require "prelude"
 
       def foo(&block)
@@ -238,11 +238,11 @@ describe "Semantic: is_a?" do
       foo do
         Sup.new.is_a?(Sup)
       end
-      CRYSTAL
+      CODE
   end
 
   it "does is_a? from virtual metaclass to generic metaclass (#12302)" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { nilable generic_class("B", string).metaclass }
+    assert_type(<<-CODE, inject_primitives: true) { nilable generic_class("B", string).metaclass }
       class A
       end
 
@@ -256,17 +256,17 @@ describe "Semantic: is_a?" do
       else
         nil
       end
-      CRYSTAL
+      CODE
   end
 
   it "matches `is_a?(GenericA) && is_a?(GenericB)` when GenericB <= GenericA (#10831)" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       class A; end
       class B(T) < A; end
       class C(T) < B(T); end
 
       x = C(Int32).new.as(A)
       x.is_a?(B) && x.is_a?(C)
-      CRYSTAL
+      CODE
   end
 end

@@ -20,7 +20,7 @@ rules exist to make untrue.
 
 What is measured, for each language:
 
-* **cold**       nothing cached anywhere. iyi gets a fresh `CRYSTAL_CACHE_DIR`,
+* **cold**       nothing cached anywhere. iyi gets a fresh `IYI_CACHE_DIR`,
                  Go a fresh `GOCACHE`.
 * **warm**       the same build again, nothing edited.
 * **one module** a constant inside one module's method body changes, and the
@@ -70,18 +70,18 @@ CONSTANTS = [3, 4, 5, 6, 7, 8]
 def compiler_env():
     """The environment `bin/crystal` would have set, asked for once."""
     result = subprocess.run(
-        [str(WRAPPER), "env", "CRYSTAL_PATH", "CRYSTAL_LIBRARY_PATH"],
+        [str(WRAPPER), "env", "IYI_PATH", "IYI_LIBRARY_PATH"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
     env = {}
     if result.returncode == 0:
         lines = result.stdout.decode().split()
         if len(lines) > 0:
-            env["CRYSTAL_PATH"] = lines[0]
+            env["IYI_PATH"] = lines[0]
         if len(lines) > 1:
-            env["CRYSTAL_LIBRARY_PATH"] = lines[1]
+            env["IYI_LIBRARY_PATH"] = lines[1]
     else:
-        env["CRYSTAL_PATH"] = f"lib:{ROOT / 'src'}"
+        env["IYI_PATH"] = f"lib:{ROOT / 'src'}"
     return env
 
 
@@ -126,7 +126,7 @@ class Iyi:
         self.mods = root / "mods"
 
     def env(self):
-        return dict(CRYSTAL_ENV, CRYSTAL_CACHE_DIR=str(self.cache))
+        return dict(CRYSTAL_ENV, IYI_CACHE_DIR=str(self.cache))
 
     def full(self):
         return [str(CRYSTAL), "build", "--emit-iyimod", str(self.mods),
@@ -173,7 +173,7 @@ class Crystal:
         self.part = root / "parts" / "mod0.cr"
 
     def env(self):
-        return dict(CRYSTAL_ENV, CRYSTAL_CACHE_DIR=str(self.cache))
+        return dict(CRYSTAL_ENV, IYI_CACHE_DIR=str(self.cache))
 
     def full(self):
         return [str(CRYSTAL), "build", "-o", "out", "main.cr"]

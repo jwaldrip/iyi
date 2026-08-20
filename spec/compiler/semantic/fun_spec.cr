@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Semantic: fun" do
   it "errors if defining class inside fun through macro (#6874)" do
-    assert_error <<-CRYSTAL, "can't define class inside fun"
+    assert_error <<-CODE, "can't define class inside fun"
       macro m
         class Foo
         end
@@ -11,6 +11,6 @@ describe "Semantic: fun" do
       fun foo
         m
       end
-      CRYSTAL
+      CODE
   end
 end

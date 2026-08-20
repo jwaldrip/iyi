@@ -74,53 +74,53 @@ describe "Parser warnings" do
   it "warns on single-letter macro lowercase fresh variables with indices" do
     chars = ('a'..'z').to_a - VALID_SIGILS
     chars.each do |letter|
-      assert_parser_warning <<-CRYSTAL, "Warning: single-letter macro fresh variables with indices are deprecated"
+      assert_parser_warning <<-CODE, "Warning: single-letter macro fresh variables with indices are deprecated"
         macro foo
           %#{letter}{1} = 2
         end
-        CRYSTAL
+        CODE
     end
   end
 
   it "warns on single-letter uppercase macro fresh variables with indices" do
     chars = ('A'..'Z').to_a.push('ǲ') - VALID_SIGILS
     chars.each do |letter|
-      assert_parser_warning <<-CRYSTAL, "Warning: macro fresh variables with constant names are deprecated", "Warning: single-letter macro fresh variables with indices are deprecated"
+      assert_parser_warning <<-CODE, "Warning: macro fresh variables with constant names are deprecated", "Warning: single-letter macro fresh variables with indices are deprecated"
         macro foo
           %#{letter}{1} = 2
         end
-        CRYSTAL
+        CODE
     end
   end
 
   it "doesn't warn on sigils that resemble single-letter macro fresh variables with indices" do
     VALID_SIGILS.each do |letter|
-      assert_no_parser_warning <<-CRYSTAL
+      assert_no_parser_warning <<-CODE
         macro foo
           %#{letter}{1}
         end
-        CRYSTAL
+        CODE
     end
   end
 
   it "warns on single-letter uppercase macro fresh variables without indices" do
     chars = ('A'..'Z').to_a.push('ǲ')
     chars.each do |letter|
-      assert_parser_warning <<-CRYSTAL, "Warning: macro fresh variables with constant names are deprecated"
+      assert_parser_warning <<-CODE, "Warning: macro fresh variables with constant names are deprecated"
         macro foo
           %#{letter} = 1
         end
-        CRYSTAL
+        CODE
     end
   end
 
   it "doesn't warn on single-letter lowercase macro fresh variables without indices" do
     ('a'..'z').each do |letter|
-      assert_no_parser_warning <<-CRYSTAL
+      assert_no_parser_warning <<-CODE
         macro foo
           %#{letter} = 1
         end
-        CRYSTAL
+        CODE
     end
   end
 end

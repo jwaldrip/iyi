@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Codegen: class var" do
   it "codegens class var" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         @@foo = 1
 
@@ -12,11 +12,11 @@ describe "Codegen: class var" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens class var as nil" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       struct Nil; def to_i; 0; end; end
 
       class Foo
@@ -28,11 +28,11 @@ describe "Codegen: class var" do
       end
 
       Foo.foo.to_i
-      CRYSTAL
+      CODE
   end
 
   it "codegens class var inside instance method" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         @@foo = 1
 
@@ -42,11 +42,11 @@ describe "Codegen: class var" do
       end
 
       Foo.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens class var as nil if assigned for the first time inside method" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       struct Nil; def to_i!; 0; end; end
 
       class Foo
@@ -57,11 +57,11 @@ describe "Codegen: class var" do
       end
 
       Foo.foo.to_i!
-      CRYSTAL
+      CODE
   end
 
   it "codegens class var inside module" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       module Foo
         @@foo = 1
 
@@ -71,11 +71,11 @@ describe "Codegen: class var" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "accesses class var from proc literal" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         @@a = 1
 
@@ -85,11 +85,11 @@ describe "Codegen: class var" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "reads class var before initializing it (hoisting)" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       x = Foo.var
 
       class Foo
@@ -101,11 +101,11 @@ describe "Codegen: class var" do
       end
 
       x
-      CRYSTAL
+      CODE
   end
 
   it "uses var in class var initializer" do
-    run(<<-CRYSTAL).to_i.should eq(6)
+    run(<<-CODE).to_i.should eq(6)
       class Foo
         @@var : Int32
         @@var = begin
@@ -123,11 +123,11 @@ describe "Codegen: class var" do
       end
 
       Foo.var
-      CRYSTAL
+      CODE
   end
 
   it "reads simple class var before another complex one" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       class Foo
         @@var2 : Int32
         @@var2 = @@var &+ 1
@@ -140,11 +140,11 @@ describe "Codegen: class var" do
       end
 
       Foo.var2
-      CRYSTAL
+      CODE
   end
 
   it "initializes class var of union with single type" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       class Foo
         @@var : Int32 | String
         @@var = 42
@@ -160,11 +160,11 @@ describe "Codegen: class var" do
       else
         0
       end
-      CRYSTAL
+      CODE
   end
 
   it "initializes class var with array literal" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       require "prelude"
 
       class Foo
@@ -176,11 +176,11 @@ describe "Codegen: class var" do
       end
 
       Foo.var.size
-      CRYSTAL
+      CODE
   end
 
   it "codegens second class var initializer" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         @@var = 1
         @@var = 2
@@ -191,11 +191,11 @@ describe "Codegen: class var" do
       end
 
       Foo.var
-      CRYSTAL
+      CODE
   end
 
   it "initializes dependent constant before class var" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       require "prelude"
 
       def foo
@@ -216,11 +216,11 @@ describe "Codegen: class var" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "declares and initializes" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       class Foo
         @@x : Int32 = 42
 
@@ -230,11 +230,11 @@ describe "Codegen: class var" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "doesn't use nilable type for initializer" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       class Foo
         @@foo : Int32?
         @@foo = 42
@@ -248,11 +248,11 @@ describe "Codegen: class var" do
       end
 
       Foo.bar || 10
-      CRYSTAL
+      CODE
   end
 
   it "codegens class var with begin and vars" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       class Foo
         @@foo : Int32
         @@foo = begin
@@ -267,11 +267,11 @@ describe "Codegen: class var" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens class var with type declaration begin and vars" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       class Foo
         @@foo : Int32 = begin
           a = 1
@@ -285,11 +285,11 @@ describe "Codegen: class var" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens class var with nilable reference type" do
-    run(<<-CRYSTAL).to_string.should eq("hello")
+    run(<<-CODE).to_string.should eq("hello")
       class Foo
         @@foo : String? = nil
 
@@ -299,11 +299,11 @@ describe "Codegen: class var" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "initializes class var the moment it reaches it" do
-    run(<<-CRYSTAL).to_string.should eq("BAR")
+    run(<<-CODE).to_string.should eq("BAR")
       require "prelude"
 
       ENV["FOO"] = "BAR"
@@ -319,11 +319,11 @@ describe "Codegen: class var" do
       w = Foo.x
       z = Foo.x
       z
-      CRYSTAL
+      CODE
   end
 
   it "gets pointerof class var" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       z = Foo.foo
 
       class Foo
@@ -335,11 +335,11 @@ describe "Codegen: class var" do
       end
 
       z
-      CRYSTAL
+      CODE
   end
 
   it "gets pointerof class var complex constant" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       z = Foo.foo
 
       class Foo
@@ -355,11 +355,11 @@ describe "Codegen: class var" do
       end
 
       z
-      CRYSTAL
+      CODE
   end
 
   it "doesn't inherit class var value in subclass" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         @@var = 1
 
@@ -377,11 +377,11 @@ describe "Codegen: class var" do
       Foo.var = 2
 
       Bar.var
-      CRYSTAL
+      CODE
   end
 
   it "doesn't inherit class var value in module" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       module Moo
         @@var = 1
 
@@ -400,11 +400,11 @@ describe "Codegen: class var" do
       Moo.var = 2
 
       Foo.new.var
-      CRYSTAL
+      CODE
   end
 
   it "reads class var from virtual type" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         @@var = 1
 
@@ -428,11 +428,11 @@ describe "Codegen: class var" do
       ptr = Pointer(Foo).malloc(1_u64)
       ptr.value = Bar.new
       ptr.value.var
-      CRYSTAL
+      CODE
   end
 
   it "reads class var from virtual type metaclass" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         @@var = 1
 
@@ -452,11 +452,11 @@ describe "Codegen: class var" do
       ptr = Pointer(Foo.class).malloc(1_u64)
       ptr.value = Bar
       ptr.value.var
-      CRYSTAL
+      CODE
   end
 
   it "writes class var from virtual type" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         @@var = 1
 
@@ -479,11 +479,11 @@ describe "Codegen: class var" do
       ptr.value.var = 2
 
       Bar.var
-      CRYSTAL
+      CODE
   end
 
   it "declares var as uninitialized and initializes it unsafely" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       class Foo
         @@x = uninitialized Int32
         @@x = Foo.bar
@@ -502,11 +502,11 @@ describe "Codegen: class var" do
       end
 
       Foo.x
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash with pointerof from another module" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       class Foo
@@ -525,11 +525,11 @@ describe "Codegen: class var" do
       end
 
       Bar.bar
-      CRYSTAL
+      CODE
   end
 
   it "codegens generic class with class var" do
-    run(<<-CRYSTAL).to_i.should eq(1 + 1 + 10 + 20)
+    run(<<-CODE).to_i.should eq(1 + 1 + 10 + 20)
       class Foo(T)
         @@bar = 1
 
@@ -551,21 +551,21 @@ describe "Codegen: class var" do
       f2.bar = 20
       d = f1.bar
       a &+ b &+ c &+ d
-      CRYSTAL
+      CODE
   end
 
   it "inline initialization of simple class var" do
-    mod = codegen(<<-CRYSTAL)
+    mod = codegen(<<-CODE)
       class Foo
         @@x = 1
       end
-      CRYSTAL
+      CODE
 
     mod.to_s.should_not contain("x:init")
   end
 
   it "doesn't error if class var shares name with const (#7865)" do
-    run(<<-CRYSTAL).to_string.should eq("asdfgh")
+    run(<<-CODE).to_string.should eq("asdfgh")
       require "prelude"
 
       class Pattern
@@ -574,11 +574,11 @@ describe "Codegen: class var" do
       end
 
       Pattern::A
-      CRYSTAL
+      CODE
   end
 
   it "catch infinite loop in class var initializer" do
-    run(<<-CRYSTAL).to_string.should eq("error: Recursion while initializing class variables and/or constants")
+    run(<<-CODE).to_string.should eq("error: Recursion while initializing class variables and/or constants")
       require "prelude"
 
       module Crystal
@@ -602,11 +602,11 @@ describe "Codegen: class var" do
       end
 
       nil
-      CRYSTAL
+      CODE
   end
 
   it "runs class var side effects (#8862)" do
-    run(<<-CRYSTAL).to_i.should eq(6)
+    run(<<-CODE).to_i.should eq(6)
       require "prelude"
 
       class Foo
@@ -635,6 +635,6 @@ describe "Codegen: class var" do
       end
 
       a &+ Foo.x
-      CRYSTAL
+      CODE
   end
 end

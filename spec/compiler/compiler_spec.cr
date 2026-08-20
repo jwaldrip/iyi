@@ -19,7 +19,7 @@ private IYI_ALLOCATING_PROGRAM = <<-IYI
 # `Program#link_annotations` reads the `@[Link]` of every `lib` a program
 # actually used, which is the question "does this binary need libgc" asked
 # without a platform's object format in the way.
-private def linked_libraries(result : Crystal::Compiler::Result) : Array(String)
+private def linked_libraries(result : Iyi::Compiler::Result) : Array(String)
   result.program.link_annotations.compact_map(&.lib)
 end
 
@@ -45,12 +45,12 @@ end
 
 describe "Compiler" do
   it "has a valid version" do
-    SemanticVersion.parse(Crystal::Config.version)
+    SemanticVersion.parse(Iyi::Config.version)
   end
 
   it "compiles a file" do
     with_temp_executable "compiler_spec_output" do |path|
-      Crystal::Command.run ["build"].concat(program_flags_options).concat([compiler_datapath("compiler_sample"), "-o", path])
+      Iyi::Command.run ["build"].concat(program_flags_options).concat([compiler_datapath("compiler_sample"), "-o", path])
 
       File.exists?(path).should be_true
 
@@ -68,9 +68,9 @@ describe "Compiler" do
   # (SPEC.md 0.1.0 item 2). This is the file that keeps the answer.
   it "remembers which linker it found rather than searching PATH per build" do
     with_temp_executable "compiler_spec_output" do |path|
-      Crystal::Command.run ["build"].concat(program_flags_options).concat([compiler_datapath("compiler_sample"), "-o", path])
+      Iyi::Command.run ["build"].concat(program_flags_options).concat([compiler_datapath("compiler_sample"), "-o", path])
 
-      probe = Crystal::CacheDir.instance.join("linker-probe")
+      probe = Iyi::CacheDir.instance.join("linker-probe")
       File.exists?(probe).should be_true
       # The `PATH` it was found under, so that changing `PATH` asks again.
       File.read(probe).lines.first.size.should eq 32
@@ -87,13 +87,13 @@ describe "Compiler" do
   # and the program above having run is what says the link it built works.
   it "builds the link itself rather than asking the driver every time" do
     with_temp_executable "compiler_spec_output" do |path|
-      Crystal::Command.run ["build"].concat(program_flags_options).concat([compiler_datapath("compiler_sample"), "-o", path])
+      Iyi::Command.run ["build"].concat(program_flags_options).concat([compiler_datapath("compiler_sample"), "-o", path])
       Process.capture(path).should eq("Hello!")
 
       # One file per set of link flags. Absent on a platform where this is not
       # attempted, which is a fallback rather than a failure — but where it is
       # attempted it must be usable.
-      templates = Dir.glob(File.join(Crystal::CacheDir.instance.dir, "link-template-*"))
+      templates = Dir.glob(File.join(Iyi::CacheDir.instance.dir, "link-template-*"))
       templates.each do |template|
         File.read(template).lines[1]?.should_not eq "unusable"
       end
@@ -124,7 +124,7 @@ describe "Compiler" do
         File.write(File.join(dir, "compiler.lock"), "")
       end
 
-      cache = Crystal::CacheDir.instance
+      cache = Iyi::CacheDir.instance
       cache.directory_in_use?(working).should be_false # a lock nobody holds
 
       # Both are the oldest in a cache of twelve, so the rule above would have
@@ -148,7 +148,7 @@ describe "Compiler" do
   it "runs subcommand in preference to a filename " do
     Dir.cd compiler_datapath do
       with_temp_executable "compiler_spec_output" do |path|
-        Crystal::Command.run ["build"].concat(program_flags_options).concat(["compiler_sample", "-o", path])
+        Iyi::Command.run ["build"].concat(program_flags_options).concat(["compiler_sample", "-o", path])
 
         File.exists?(path).should be_true
 
@@ -174,7 +174,7 @@ describe "Compiler" do
   it "needs no collector by default, and links one for -Dgc_boehm" do
     with_tempdir("iyi-gc-default-link") do
       File.write "allocating.iyi", IYI_ALLOCATING_PROGRAM
-      source = Crystal::Compiler::Source.new(
+      source = Iyi::Compiler::Source.new(
         File.expand_path("allocating.iyi"), File.read("allocating.iyi"))
 
       uncollected = iyi_compiler.compile(source, File.expand_path("uncollected"))
@@ -195,7 +195,7 @@ describe "Compiler" do
   it "keeps -Dgc_none as an alias of the default" do
     with_tempdir("iyi-gc-none-alias") do
       File.write "allocating.iyi", IYI_ALLOCATING_PROGRAM
-      source = Crystal::Compiler::Source.new(
+      source = Iyi::Compiler::Source.new(
         File.expand_path("allocating.iyi"), File.read("allocating.iyi"))
 
       aliased = iyi_compiler
@@ -236,7 +236,7 @@ describe "Compiler" do
 
     with_tempdir("iyi-gc-default-symbols") do
       File.write "allocating.iyi", IYI_ALLOCATING_PROGRAM
-      Crystal::Command.run ["build"].concat(program_flags_options)
+      Iyi::Command.run ["build"].concat(program_flags_options)
         .concat(["allocating.iyi", "-o", File.expand_path("uncollected")])
 
       symbols = undefined_symbols(File.expand_path("uncollected"))
@@ -252,6 +252,59 @@ describe "Compiler" do
         symbols.should_not contain "realloc"
         symbols.should_not contain "mmap"
       {% end %}
+    end
+  end
+
+  # iyi: the same compiler ships under two names, and each has to answer as
+  # the one a person typed. Both directions are asserted, because getting this
+  # right in one direction by hardcoding is how it was wrong before.
+  #
+  # `Command.program_name` is set by the entrypoint, so a banner built in a
+  # CONSTANT captures the default instead. That is exactly what `iyi tool`
+  # did: it told everybody they were running `crystal tool`.
+  describe "the name a person sees" do
+    it "names iyi in a banner iyi reaches" do
+      Iyi::Command.program_name = "iyi"
+      Iyi::Command.commands_usage.should start_with "Usage: iyi tool"
+    end
+
+    it "names crystal in the same banner under crystal" do
+      Iyi::Command.program_name = "crystal"
+      Iyi::Command.commands_usage.should start_with "Usage: crystal tool"
+    ensure
+      Iyi::Command.program_name = "iyi"
+    end
+
+    it "interpolates rather than printing the interpolation" do
+      # A quoted heredoc does not interpolate, and `clear_cache` shipped one,
+      # so its banner printed the literal `#{...}` at a user.
+      Iyi::Command.commands_usage.should_not contain "Command.program_name"
+    end
+  end
+
+  # iyi: Crystal's own specs spawn this compiler with `CRYSTAL_PATH` set.
+  # Reading only `IYI_PATH` made every one of those fail to find `prelude`.
+  describe "the names Crystal's specs still set" do
+    it "reads CRYSTAL_PATH when IYI_PATH is unset" do
+      old_iyi = ENV["IYI_PATH"]?
+      old_crystal = ENV["CRYSTAL_PATH"]?
+      ENV.delete("IYI_PATH")
+      ENV["CRYSTAL_PATH"] = "from-crystal"
+      Iyi::IyiPath.default_paths.should eq(["from-crystal"])
+    ensure
+      old_iyi ? (ENV["IYI_PATH"] = old_iyi) : ENV.delete("IYI_PATH")
+      old_crystal ? (ENV["CRYSTAL_PATH"] = old_crystal) : ENV.delete("CRYSTAL_PATH")
+    end
+
+    it "prefers IYI_PATH when both are set" do
+      old_iyi = ENV["IYI_PATH"]?
+      old_crystal = ENV["CRYSTAL_PATH"]?
+      ENV["IYI_PATH"] = "from-iyi"
+      ENV["CRYSTAL_PATH"] = "from-crystal"
+      Iyi::IyiPath.default_paths.should eq(["from-iyi"])
+    ensure
+      old_iyi ? (ENV["IYI_PATH"] = old_iyi) : ENV.delete("IYI_PATH")
+      old_crystal ? (ENV["CRYSTAL_PATH"] = old_crystal) : ENV.delete("CRYSTAL_PATH")
     end
   end
 end

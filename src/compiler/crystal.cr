@@ -12,4 +12,4 @@ Log.setup_from_env(default_level: :warn, default_sources: "crystal.*")
   Fiber::ExecutionContext.default.resize(Fiber::ExecutionContext.default_workers_count)
 {% end %}
 
-Crystal::Command.run
+Iyi::Command.run

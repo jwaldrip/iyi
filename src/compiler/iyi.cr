@@ -1,6 +1,6 @@
 # iyi: the compiler under its own name.
 #
-# Everything here delegates to `Crystal::Command`, which is the same compiler
+# Everything here delegates to `Iyi::Command`, which is the same compiler
 # doing the same work — iyi is a fork of Crystal and this file does not pretend
 # otherwise. What it changes is the surface a person meets: the commands iyi
 # has, a usage line that names them, and a version that says what it is built
@@ -55,7 +55,7 @@ module Iyi
   # the artifact's compatibility check reads (SPEC.md IV.5) and the same one
   # the Makefile names the tarball after. One number, so a released binary, the
   # artifacts it writes and the file it arrived in cannot disagree.
-  VERSION = Crystal::Config.iyi_version
+  VERSION = Iyi::Config.iyi_version
 
   # The ones that are this compiler doing this compiler's job.
   DELEGATED = %w(build run mod repl env clear_cache tool)
@@ -71,15 +71,15 @@ module Iyi
 
   def self.description : String
     String.build do |io|
-      io << "iyi " << VERSION << ", a fork of " << Crystal::Config.description.lines.first
-      io << "\n\nThe compiler was not built in release mode." unless Crystal::Config.release_mode?
+      io << "iyi " << VERSION << ", a fork of " << Iyi::Config.description.lines.first
+      io << "\n\nThe compiler was not built in release mode." unless Iyi::Config.release_mode?
     end
   end
 
   def self.run(options = ARGV) : Nil
     # The delegated commands print their own usage, and it used to name the
     # binary underneath instead of the one that was typed.
-    Crystal::Command.program_name = "iyi"
+    Iyi::Command.program_name = "iyi"
 
     command = options.first?
 
@@ -98,12 +98,12 @@ module Iyi
       STDERR.puts "Run it with the `crystal` binary in this checkout if you need it."
       exit 1
     when .in?(DELEGATED)
-      Crystal::Command.run(options)
+      Iyi::Command.run(options)
     else
       # A filename, which `crystal foo.iyi` reads as "run this". Kept, because
       # it is the shortest thing to type and the shell already made it a path.
       if File.file?(command)
-        Crystal::Command.run(options)
+        Iyi::Command.run(options)
       else
         STDERR.puts "iyi: unknown command or missing file: #{command}"
         STDERR.puts "Run `iyi help` for what there is."

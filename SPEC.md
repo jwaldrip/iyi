@@ -193,7 +193,7 @@ makes it a template: a placeholder marks where this build's objects go. The
 template is cached against the flags it was computed for, the compiler runs `ld`
 itself from then on, and a link that fails with it is retried through the driver
 with the template marked unusable, so a machine this does not suit pays one
-extra link once. `CRYSTAL_LINK_DRIVER=1` forces the old path. `clang` has done
+extra link once. `IYI_LINK_DRIVER=1` forces the old path. `clang` has done
 this all along. It has no `collect2` and execs the linker itself, which is why
 it measures 0.092 s where `cc` measures 0.129 s.
 
@@ -506,7 +506,7 @@ but it is 45% of the number until it is done.
 script and a new one in the same directory, three rounds: **0.076 s against
 0.044 s**. Four processes came out, none of which had to be there. The largest
 started the *installed* compiler to read one string: `crystal env
-CRYSTAL_LIBRARY_PATH`, 0.020 s, and that answer is now kept in `.build`, keyed
+IYI_LIBRARY_PATH`, 0.020 s, and that answer is now kept in `.build`, keyed
 by the compiler that gave it. The others were `tput` deciding whether to colour
 a message nobody may be reading, `uname` answering which binary to look for, and
 `dirname`/`realpath` doing what `${path%/*}` and `pwd -P` do without forking.
@@ -1433,7 +1433,7 @@ does not depend on what it was measured against.
   fixed ~1.4 s tax (IV.1a) is larger than the effect and the delta is pure
   noise. The first run of (a) reported the macro version as *faster*, twice.
   And Crystal caches the compiled `run` script, so without a fresh
-  `CRYSTAL_CACHE_DIR` every build after the first reports `macro_run` as free.
+  `IYI_CACHE_DIR` every build after the first reports `macro_run` as free.
   The 8 s cost was visible only as an outlier in the spread.
 
 ---
@@ -2782,7 +2782,7 @@ dependencies is what lets the gate see it (III.10 has the proof).
 `iconv` left: the Makefile builds with `-Dwithout_iconv`, because iyi's
 `String` has no encoding conversion and so the compiler had no reason to want
 it either. `pcre2` left too, decided (#22) and carried out: macro-level regex
-moved onto iyi's own engine, `src/compiler/crystal/rx.cr`, RE2 semantics,
+moved onto iyi's own engine, `src/compiler/iyi/rx.cr`, RE2 semantics,
 differentially verified against pcre2, and then the four stdlib files this
 compiler compiles into itself stopped using regex at all, which is what
 actually took the library off the link line (III.10 has the files, the
@@ -2878,7 +2878,7 @@ From Crystal's own *Required libraries* page, plus every `@[Link]` in this tree.
 | libdl | `dlopen` | no | do not offer dynamic loading |
 | libm | `sqrt`, `pow` | no | LLVM intrinsics where they exist, iyi where they do not |
 | libiconv | encoding conversion | no | never. UTF-8 only, which is Go's answer and already iyi's. The compiler dropped it too (`-Dwithout_iconv`) |
-| PCRE2 | `Regex` | no | **decided (#17, #22) and done: RE2 semantics everywhere, on iyi's own engine** `src/compiler/crystal/rx.cr`, macro-level regex included, differentially verified against pcre2, and `libpcre2` measured off the compiler binary rather than only out of compiler source. The price: macros lose in-pattern backreferences and lookaround, a macro using one fails with a named error, and `Spec::CLI#pattern` changed type from `Regex?` to `String?` |
+| PCRE2 | `Regex` | no | **decided (#17, #22) and done: RE2 semantics everywhere, on iyi's own engine** `src/compiler/iyi/rx.cr`, macro-level regex included, differentially verified against pcre2, and `libpcre2` measured off the compiler binary rather than only out of compiler source. The price: macros lose in-pattern backreferences and lookaround, a macro using one fails with a named error, and `Spec::CLI#pattern` changed type from `Regex?` to `String?` |
 | OpenSSL (libssl, libcrypto) | TLS, digests | no | digests **already owned** (`src/crystal/digest/`). TLS: not in 0.x, own it eventually, a binding never in the prelude |
 | zlib | `Compress` | no | own it. DEFLATE is a known quantity and arrives with HTTP |
 | libxml2 | `XML` | no | no XML in the prelude. A package, written in iyi |
@@ -2948,7 +2948,7 @@ an internal convenience: `macros/methods.cr` implements `=~`, `gsub`, `match`,
 expands a user's regex literal. Six internal regex uses had already been
 rewritten to string operations and pcre2 still linked, which is what proved
 the wall was there. It came down by moving macro-level regex onto iyi's own
-engine, `src/compiler/crystal/rx.cr`, differentially verified against pcre2,
+engine, `src/compiler/iyi/rx.cr`, differentially verified against pcre2,
 so pcre2 left compiler-owned source without cutting what a user's macro can
 do.
 
@@ -3159,7 +3159,7 @@ than an interpreted one.
 interpreter is 11,377 lines and interprets Crystal, which is why it stops at
 `BUG: missing interpret for Crystal::ModuleHeader` on line 12 of the simplest
 sample. The macro interpreter that stayed,
-`src/compiler/crystal/macros/interpreter.cr`, is 781 lines, is a complete AST
+`src/compiler/iyi/macros/interpreter.cr`, is 781 lines, is a complete AST
 evaluator, and already resolves types, which is the hard half of the distance
 between accepting a line and running it. Extending it for iyi's nine new AST
 nodes and two `Def` clauses is a second implementation of the semantics either
@@ -3220,7 +3220,7 @@ Binary, for read speed. A `iyi mod dump` producing text is required, not
 optional. An opaque cache format is one nobody can debug.
 
 **The container is built, `Exports` carries the declarations, and a build can
-be compiled against them.** `src/compiler/crystal/iyimod.cr` writes and reads
+be compiled against them.** `src/compiler/iyi/iyimod.cr` writes and reads
 magic, format version, a section table and the `Header`, `Imports` and
 `Exports` sections; `crystal build --emit-iyimod DIR` writes one per imported
 module, `crystal mod dump FILE` prints it, and `crystal build --use-iyimod DIR`
@@ -4057,7 +4057,7 @@ than about compilation:
   also warms only while nothing is in flight, since analysing costs about a
   second and this loop is what relays every build's output.
 
-  Bounded by `CRYSTAL_DAEMON_PRELUDES`, default 3, because each analysed prelude
+  Bounded by `IYI_DAEMON_PRELUDES`, default 3, because each analysed prelude
   is roughly 180 MB of live heap. Past the bound, extra flag sets stay cold
   rather than being evicted. A cold build is slow, and evicting the set someone
   is actively using would make every build slow in turn.
@@ -4073,7 +4073,7 @@ than about compilation:
   restart. Nanoseconds, not seconds: a rebuild landing in the same second as the
   daemon's start is exactly the case to catch.
 
-**Using it should not require remembering it.** With `CRYSTAL_DAEMON_SOCKET` set,
+**Using it should not require remembering it.** With `IYI_DAEMON_SOCKET` set,
 an ordinary `crystal build` is served by that daemon: 1.00 s against 1.85 s on
 the same warm cache, and falls back to a normal build, with a line saying so,
 when nothing answers. Opting in to a daemon must never be able to *stop* a build;
@@ -4107,7 +4107,7 @@ a local build daemon and neither is fine for anything exposed.
 thread survives a `fork`, so a multi-threaded runtime hands the child a broken
 one, and Crystal refuses `fork` in such a build at compile time: correctly. The
 client does not fork, so it stays in the normal compiler; `crystal daemon start`
-execs the server binary (or `CRYSTAL_DAEMON`, if set) and says how to build it
+execs the server binary (or `IYI_DAEMON`, if set) and says how to build it
 when it is missing.
 
 The cost of that split is that the daemon's builds code-generate sequentially.
@@ -4849,7 +4849,7 @@ Named honestly, so nobody mistakes this draft for complete.
     document found by making an error say what it was doing.
 
 11. **The interpreter. Removed.** Crystal ships one, and the fork inherited it:
-    11,377 lines under `src/compiler/crystal/interpreter`, 380 more of libffi
+    11,377 lines under `src/compiler/iyi/interpreter`, 380 more of libffi
     bindings, 7,981 lines of specs, a CI workflow that builds it and runs the
     standard library's specs under it four ways, and a libffi build dependency
     on every platform.
@@ -5197,10 +5197,10 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 19 | **Is "no C library in the prelude" a rule or a habit? (III.10)** | a rule for iyi's own prelude, and it is checked: `bench/dependency_floor.sh` fails in CI when an own-prelude program grows a symbol or a linked library, on the default build and on `-Dgc_boehm`. `--crystal` is outside this gate and may link Crystal's standard library dependencies and anything a required shard pulls. Both host platforms measure the same property: direct dependencies, `otool -L` on macOS and `readelf -d` NEEDED on Linux, since `ldd`'s transitive closure put libLLVM's libraries on iyi's list and an allowlist holding libxml2 for that reason could never notice iyi reaching for libxml2 itself. Symbols are per platform: macOS's five libSystem calls, and on Linux the five the link template's crt objects leave, allowed by exact name rather than a wildcard, so `malloc` or `mmap` still fails. It holds the compiler binary to a list too, `libLLVM libc++ libgc libSystem`, and to a denylist that carries `libpcre`, so the rule is not weaker for the toolchain than for own-prelude programs. Proven to fail three times: adding a `lib LibM` call to a sample, injecting a reachable regex literal into `src/option_parser.cr`, and rebuilding the compiler with an explicit `-lxml2` |
 | 20 | ~~**Write a collector, or adopt `gcry`? (III.9)**~~ | **Decided: iyi writes its own collector; gcry is not adopted, overruling this row's earlier recommendation.** What changed is the goal, and the change is the owner's, not a finding: they want concurrency, parallelism and a performant language, and owning the collector is the only path to the control that takes; gcry was pointed at as hints about what has already been tried to pull Crystal off Boehm, never as a runtime to adopt. The price is stated rather than softened: everything gcry already built, the heap, the STW, the roots, the finalizers, two platforms, is rebuilt in this tree, and only its measurements are inherited (#21). R-4 still requires the precise heap-layout table either way (II.5) |
 | 21 | **Precise stack roots, now a design question inside the collector iyi writes (III.9)** | still open, and reframed by #20 rather than settled by it: it is a design decision in a collector iyi owns, no longer a finding inherited from gcry. R-4 needs heap-layout precision, which is a table. gcry's measurement is still the best available evidence on the expensive half: stack-map precision is correctness-stable and not an RSS win. Inherited as prior art rather than repeated, and answerable only when iyi's own collector exists to measure on |
-| 22 | ~~**Keep macro-level regex, and pcre2 on the compiler with it? (III.9, III.10)**~~ | **Decided and done: macro-level regex is kept, on iyi's own engine, and pcre2 is off the compiler, measured.** RE2 semantics everywhere. This row recommended keeping both until the owned engine from #17 landed; it landed as `src/compiler/crystal/rx.cr`, differentially verified against pcre2, and it took pcre2 out of compiler-owned source. It did not take the library off the binary. Ten reachable regex literals in four stdlib files the compiler compiles into itself did that, found by reading `--emit llvm-ir` (`$Regex:0` through `$Regex:9`) rather than by inference: `option_parser.cr`, `process/shell.cr`, `semantic_version.cr` and `spec/cli.cr` now parse by hand, each differentially verified, and `otool -L .build/iyi` is down to libLLVM, libc++, libgc and libSystem. `bench/dependency_floor.sh` forbids `libpcre` for the compiler and own-prelude programs, proven to fail by injecting a reachable literal. The price: macro authors lose in-pattern backreferences and lookaround, and a macro using one now fails with a named error rather than quietly meaning something else; and `Spec::CLI#pattern` changed from `Regex?` to `String?`, a breaking change to a stdlib public API even though the behaviour is identical. The gain: the compiler sheds a library on Crystal's required list, and no pattern can take exponential time |
+| 22 | ~~**Keep macro-level regex, and pcre2 on the compiler with it? (III.9, III.10)**~~ | **Decided and done: macro-level regex is kept, on iyi's own engine, and pcre2 is off the compiler, measured.** RE2 semantics everywhere. This row recommended keeping both until the owned engine from #17 landed; it landed as `src/compiler/iyi/rx.cr`, differentially verified against pcre2, and it took pcre2 out of compiler-owned source. It did not take the library off the binary. Ten reachable regex literals in four stdlib files the compiler compiles into itself did that, found by reading `--emit llvm-ir` (`$Regex:0` through `$Regex:9`) rather than by inference: `option_parser.cr`, `process/shell.cr`, `semantic_version.cr` and `spec/cli.cr` now parse by hand, each differentially verified, and `otool -L .build/iyi` is down to libLLVM, libc++, libgc and libSystem. `bench/dependency_floor.sh` forbids `libpcre` for the compiler and own-prelude programs, proven to fail by injecting a reachable literal. The price: macro authors lose in-pattern backreferences and lookaround, and a macro using one now fails with a named error rather than quietly meaning something else; and `Spec::CLI#pattern` changed from `Regex?` to `String?`, a breaking change to a stdlib public API even though the behaviour is identical. The gain: the compiler sheds a library on Crystal's required list, and no pattern can take exponential time |
 | 23 | ~~**Is a default that does not collect acceptable until the collector lands? (III.9)**~~ | **Decided: yes, kept, and documented loudly.** A plain build using iyi's own prelude allocates and never collects; `-Dgc_boehm` opts that mode back into real collection. The own prelude has no IO beyond `puts` and no concurrency. `--crystal` uses Crystal's standard library and is a different mode, outside this allocator and dependency-floor claim. The price stays in the row: a long-running own-prelude program grows without bound, and this is a default that ships a known leak. "Until the collector lands" now means until iyi's own lands (#20) |
 | 24 | ~~**Keep bdw-gc on the compiler? (III.9, III.10)**~~ | **Decided: yes; the exception holds in the present tense, and this row is superseded by #20 in its premise and restated.** The compiler keeps bdw-gc: `-Dgc_none` is proven not viable for it (III.10), and a collector that cannot carry parallel codegen cannot host a compiler that runs parallel codegen over fibers. What changed is the revisit condition: it is no longer gcry's parallel path leaving experimental, since gcry is not being adopted; it is iyi's own collector reaching the stage that serves parallel codegen. Until then the dependency stays a recorded exception carrying this reason rather than an unexamined habit |
-| 25 | ~~**Build the interpreter on the macro interpreter, without C interop? (III.11)**~~ | **Decided: yes.** This reopens #11 on the owner's ask, with `iex` as the reference; the evidence that removed the old one still stands. The base is `src/compiler/crystal/macros/interpreter.cr`, 781 lines, a complete AST evaluator that already resolves types, extended for iyi's nine new AST nodes and two `Def` clauses, not the 11,377-line revert that cannot run iyi past the module header. No C interop, so no libffi, and that is enforced rather than assumed: `libffi` is on `bench/dependency_floor.sh`'s denylist, and the gate was proven to fire by adding to a sample the exact `@[Link("ffi")]` shape a naive revert would produce. It failed at three independent layers, reporting the gained symbol `ffi_prep_cif`, the gained library `libffi.8.dylib`, and the denylist hit, so an interpreter cannot quietly bring libffi with it. R-1 bounds what a session recompiles to the module graph; R-3 takes open-class patching away from the prompt |
+| 25 | ~~**Build the interpreter on the macro interpreter, without C interop? (III.11)**~~ | **Decided: yes.** This reopens #11 on the owner's ask, with `iex` as the reference; the evidence that removed the old one still stands. The base is `src/compiler/iyi/macros/interpreter.cr`, 781 lines, a complete AST evaluator that already resolves types, extended for iyi's nine new AST nodes and two `Def` clauses, not the 11,377-line revert that cannot run iyi past the module header. No C interop, so no libffi, and that is enforced rather than assumed: `libffi` is on `bench/dependency_floor.sh`'s denylist, and the gate was proven to fire by adding to a sample the exact `@[Link("ffi")]` shape a naive revert would produce. It failed at three independent layers, reporting the gained symbol `ffi_prep_cif`, the gained library `libffi.8.dylib`, and the denylist hit, so an interpreter cannot quietly bring libffi with it. R-1 bounds what a session recompiles to the module graph; R-3 takes open-class patching away from the prompt |
 | 26 | ~~**wasm32's allocator: wasi-libc as the platform runtime, a qualified platform, or `memory.grow` in the compiler? (III.9, III.10)**~~ | **Decided: bind `memory.grow` so an own-prelude iyi program on wasm32 needs nothing but its WASI imports.** A two-argument `fun` declaration of `llvm.wasm.memory.grow.i32` (memory index, then page delta) lowers to `memory.grow 0`. An earlier probe used the one-argument form, failed the module verifier, and was misread as "Crystal cannot bind this intrinsic". It was an arity error, not an impossibility, so this landed as an own-prelude binding rather than a compiler primitive. Measured after: `hello.wasm` and `webapp.wasm` leave `wasi_fd_write` and `wasi_proc_exit` undefined, and no longer leave `malloc` or `realloc`. Two alternatives were rejected: accepting wasi-libc as the platform's own runtime the way libSystem and kernel32 are accepted, and documenting wasm32 as a qualified target, both because either leaves an asterisk on a platform the owner named as a priority |
 
 ### B.2: The one decision the fork already made: **SETTLED: not a self-hosting project**

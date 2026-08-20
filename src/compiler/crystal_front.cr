@@ -8,7 +8,7 @@
 # not it generates code. That was two thirds of the figure 0.1.0's target is set
 # on. This binary links none, so what it costs is what the analysis costs.
 #
-# It is deliberately not a second `Crystal::Command`: the driver is thirty
+# It is deliberately not a second `Iyi::Command`: the driver is thirty
 # lines because everything else in a build — object files, a linker, a cache —
 # belongs to the half that is missing. See `crystal/llvm_shim.cr` and SPEC.md
 # 0.1.0.
@@ -22,34 +22,34 @@
 # The order is `requires.cr`'s — annotatable, then `Program`, then the rest —
 # because `Program` is reopened by half the files here and whoever opens it
 # first decides what it inherits from.
-require "./crystal/annotatable"
-require "./crystal/program"
-require "./crystal/config"
-require "./crystal/crystal_path"
-require "./crystal/error"
-require "./crystal/exception"
-require "./crystal/formatter"
-require "./crystal/iyimod"
-require "./crystal/optimization_mode"
-require "./crystal/syntax/transformer"
-require "./crystal/progress_tracker"
-require "./crystal/semantic"
-require "./crystal/macros/*"
-require "./crystal/syntax"
-require "./crystal/types"
-require "./crystal/util"
-require "./crystal/warnings"
+require "./iyi/annotatable"
+require "./iyi/program"
+require "./iyi/config"
+require "./iyi/iyi_path"
+require "./iyi/error"
+require "./iyi/exception"
+require "./iyi/formatter"
+require "./iyi/iyimod"
+require "./iyi/optimization_mode"
+require "./iyi/syntax/transformer"
+require "./iyi/progress_tracker"
+require "./iyi/semantic"
+require "./iyi/macros/*"
+require "./iyi/syntax"
+require "./iyi/types"
+require "./iyi/util"
+require "./iyi/warnings"
 
 # Last, as the glob would have it: `@[Link]` is read by the front end, and the
 # annotation lives under `codegen/` because only a linker acts on it. It names
 # no LLVM.
-require "./crystal/codegen/link"
-require "./crystal/codegen/experimental"
-require "./crystal/codegen/ast"
-require "./crystal/codegen/types"
-require "./crystal/codegen/cache_dir"
+require "./iyi/codegen/link"
+require "./iyi/codegen/experimental"
+require "./iyi/codegen/ast"
+require "./iyi/codegen/types"
+require "./iyi/codegen/cache_dir"
 
-module Crystal::Front
+module Iyi::Front
   # The prelude a `.iyi` file gets, which is the same rule `crystal build`
   # applies: iyi's own, unless the file is Crystal's.
   private def self.prelude_for(filename : String) : String
@@ -88,12 +88,12 @@ module Crystal::Front
     program.semantic node, cleanup: true
 
     0
-  rescue ex : Crystal::CodeError
+  rescue ex : Iyi::CodeError
     # The same rendering the driver gives: a location, the line, and a caret.
     ex.color = true
     STDERR.puts ex
     1
-  rescue ex : Crystal::Error
+  rescue ex : Iyi::Error
     # `require` wraps errors to trace the path it took to reach them, so the
     # message that matters is at the bottom of the chain.
     while cause = ex.cause
@@ -105,4 +105,4 @@ module Crystal::Front
   end
 end
 
-exit Crystal::Front.run(ARGV)
+exit Iyi::Front.run(ARGV)

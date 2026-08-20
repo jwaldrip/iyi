@@ -6,7 +6,7 @@
 
 require "http/client"
 require "ecr"
-require "../src/compiler/crystal/formatter"
+require "../src/compiler/iyi/formatter"
 
 UCD_ROOT = "http://www.unicode.org/Public/#{Unicode::VERSION}/ucd/"
 
