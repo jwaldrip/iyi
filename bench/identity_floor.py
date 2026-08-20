@@ -217,6 +217,9 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r'compiler/crystal/syntax', "the shim path Crystal's stdlib requires"),
     (r"Compatible with Crystal", "what the shard manifest says iyi is compatible with"),
     (r"where Crystal uses the plain verb", "a sentence about the other language"),
+    # `bench/doc_numbers.py` holds the patterns that match the docs' own
+    # sentences, so it quotes SPEC's "lines, Crystal, forked" verbatim.
+    (r"lines, Crystal, forked", "a pattern matching SPEC's own sentence"),
 ]
 
 PATH_RES = [(re.compile(p), why) for p, why in ALLOWED_PATHS]
@@ -229,14 +232,23 @@ def tracked_files() -> list[str]:
     # checkout writes files owned by a different user than the container,
     # git 2.35+ refuses `ls-files` with exit 128, and a gate that crashes
     # is a gate that is not checking.
-    out = subprocess.run(
-        ["git", "-c", "safe.directory=*", "ls-files"],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    return out.splitlines()
+    #
+    # `--others --exclude-standard` adds files that exist but are not staged
+    # yet, so a local run sees what CI will see. Without it a new file was
+    # invisible until `git add`, every local run passed, and the gate first
+    # spoke on the pull request. Twice, the second time on this file's own
+    # sibling. Ignored files stay ignored, which is what `--exclude-standard`
+    # is for.
+    def ls(*args: str) -> list[str]:
+        return subprocess.run(
+            ["git", "-c", "safe.directory=*", "ls-files", *args],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+
+    return sorted(set(ls()) | set(ls("--others", "--exclude-standard")))
 
 
 def path_allowed(rel: str) -> str | None:
