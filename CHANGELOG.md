@@ -30,7 +30,15 @@ releases names no compiler.
 
   A Kemal server written this way serves HTTP. What it gives up is R-1 for that
   dependency: the shard is read from source, so the edit loop pays for it the
-  way Crystal does. Your own modules are unaffected.
+  way Crystal does. Your own modules are unaffected, and `--emit-iyimod` still
+  writes them.
+
+  The two libraries are two modes and do not mix on the reading side:
+  `--use-iyimod` needs iyi's own prelude. An artifact's object code numbers the
+  types its module made, which under Crystal's library include the standard
+  library's own, and a consumer compiling its own copy of that library has two
+  of everything. That was an LLVM module which would not verify; it is a
+  sentence now.
 
 - **`pub` takes a constant.** `pub LIMIT = 42` is reachable through the
   module's name; an unmarked constant is the module's own and is refused by the

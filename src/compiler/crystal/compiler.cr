@@ -216,6 +216,24 @@ module Crystal
     # Raises `InvalidByteSequenceError` if the source code is not
     # valid UTF-8.
     def compile(source : Source | Array(Source), output_filename : String) : Result
+      # iyi: the two libraries are two modes, and they do not mix on the
+      # reading side.
+      #
+      # An artifact's object code numbers the types its module's own bodies
+      # made, and under Crystal's library those include the standard library's
+      # own — `String::CHAR_TO_DIGIT62` and the rest. A consumer that reads
+      # such an artifact while compiling its own copy of that library has two
+      # of everything, and what came out was an LLVM module that would not
+      # verify rather than an error anybody could act on.
+      if use_iyimod && !prelude.ends_with?("iyi/prelude")
+        raise Crystal::Error.new(
+          "--use-iyimod needs iyi's own prelude. A program built against " \
+          "Crystal's standard library compiles its libraries from source, " \
+          "which is what `--crystal` is for, and an artifact is the other " \
+          "way of getting a module (SPEC.md Part V item 12)."
+        )
+      end
+
       compile_configure_program(source, output_filename) { }
     end
 

@@ -740,8 +740,15 @@ abstract class Crystal::SemanticVisitor < Crystal::Visitor
       iyi_collect_initialiser node.body, statements
     when ClassDef, TraitDef, ImplDef, LibDef, EnumDef, Nop, ModuleHeader,
          ImportDecl, UsingDecl, Def, Macro, AnnotationDef, Alias,
-         TypeDeclaration, AssocTypeDecl, Annotation, Include, Extend
+         TypeDeclaration, AssocTypeDecl, Annotation, Include, Extend, Require
       # A declaration, or a body this does not reach into.
+      #
+      # `Require` is here for the same reason `ImportDecl` is: it is a
+      # directive about which files this build reads, not code the module runs.
+      # Carrying one made a module that requires a shard write its library's
+      # whole require tree into its own initialiser — 52 lines for a module
+      # with none — and a consumer then resolved those paths against the
+      # artifact it read them from.
     when VisibilityModifier
       # Whole, not unwrapped. The modifier here is Crystal's `private` — `pub`
       # is a flag on the declaration rather than a wrapper, and it does not take
