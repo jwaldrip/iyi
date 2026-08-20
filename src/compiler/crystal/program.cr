@@ -532,7 +532,13 @@ module Crystal
     getter(literal_expander) { LiteralExpander.new self }
 
     # Returns a `CrystalPath` for this program.
-    getter(crystal_path) { CrystalPath.new(codegen_target: codegen_target) }
+    # Settable, not only readable, and the reason is that this is a **struct**.
+    # A build that adopts a preanalysed prelude has to move the path's working
+    # directory to its own (see `compile_with_preanalysed_prelude`), and
+    # `program.crystal_path.current_dir = ...` through a getter mutates the copy
+    # the getter returned and throws it away — silently, with the daemon still
+    # resolving `lib` beside itself.
+    property(crystal_path) { CrystalPath.new(codegen_target: codegen_target) }
 
     # Returns a `Var` that has `Nil` as a type.
     # This variable is bound to other nodes in the semantic phase for things

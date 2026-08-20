@@ -236,6 +236,18 @@ module Crystal
       # build's, so that anything derived from it — `__temp_` prefixes, error
       # locations — matches what a normal compile would produce.
       program.filename = sources.first.filename
+
+      # And this build's directory. A daemon analyses the prelude in its own,
+      # and `lib` is resolved relative to whatever directory the path was built
+      # in — so a program that requires a shard looked for it beside the daemon
+      # and reported "can't find file 'kemal'". Every shard-using project, from
+      # any directory but the daemon's own.
+      # Assigned back rather than mutated in place: `CrystalPath` is a struct,
+      # so the getter hands out a copy and setting a field on it changes
+      # nothing.
+      path = program.crystal_path
+      path.current_dir = Dir.current
+      program.crystal_path = path
       program.compiler = self
       program.progress_tracker = @progress_tracker
       yield program

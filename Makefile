@@ -109,6 +109,10 @@ CRYSTAL_BIN := crystal$(EXE)
 # the forking thread survives a fork, so a multi-threaded runtime would hand the
 # child a broken one. `crystal daemon start` execs this binary.
 CRYSTAL_DAEMON_BIN := crystal-daemon$(EXE)
+# iyi: its own server, because a daemon is the compiler it was built from. `iyi`
+# and `crystal` are one compiler with two preludes and two command surfaces, and
+# `iyi daemon start` looks for a sibling named after the binary that was typed.
+IYI_DAEMON_BIN := iyi-daemon$(EXE)
 
 # iyi: what a downloadable build of iyi is called.
 IYI_VERSION ?= $(shell cat src/IYI_VERSION)
@@ -175,16 +179,19 @@ primitives_spec: $(O)/primitives_spec$(EXE) ## Run primitives specs
 # of the two, and they disagree about a commit while agreeing about every line
 # of code. Asked here instead, once, before the specs run.
 .PHONY: check_daemon_matches
-check_daemon_matches: $(O)/crystal$(EXE) $(O)/$(CRYSTAL_DAEMON_BIN)
-	@client="$$($(O)/crystal$(EXE) --version | head -1)"; \
-	 daemon="$$($(O)/$(CRYSTAL_DAEMON_BIN) --version | head -1)"; \
-	 if [ "$$client" != "$$daemon" ]; then \
-	   echo "the daemon and the compiler are different builds, so every daemon spec will fail:"; \
-	   echo "  compiler: $$client"; \
-	   echo "  daemon:   $$daemon"; \
-	   echo "rebuild the one that is behind: make -B crystal-daemon"; \
-	   exit 1; \
-	 fi
+check_daemon_matches: $(O)/crystal$(EXE) $(O)/$(CRYSTAL_DAEMON_BIN) $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
+	@for pair in "crystal$(EXE):$(CRYSTAL_DAEMON_BIN)" "iyi$(EXE):$(IYI_DAEMON_BIN)"; do \
+	   bin="$${pair%%:*}"; server="$${pair#*:}"; \
+	   client="$$($(O)/$$bin --version | head -1)"; \
+	   daemon="$$($(O)/$$server --version | head -1)"; \
+	   if [ "$$client" != "$$daemon" ]; then \
+	     echo "the daemon and the compiler are different builds, so every daemon spec will fail:"; \
+	     echo "  compiler: $$client"; \
+	     echo "  daemon:   $$daemon"; \
+	     echo "rebuild the one that is behind: make -B $${server%$(EXE)}"; \
+	     exit 1; \
+	   fi; \
+	 done
 
 .PHONY: cli_spec
 cli_spec: $(O)/cli_spec$(EXE) check_daemon_matches ## Run compiler CLI specs
@@ -219,6 +226,9 @@ crystal-front: $(O)/crystal-front$(EXE) ## iyi: build the front end, which links
 
 .PHONY: crystal-daemon
 crystal-daemon: $(O)/$(CRYSTAL_DAEMON_BIN) ## Build the single-threaded build daemon
+
+.PHONY: iyi-daemon
+iyi-daemon: $(O)/$(IYI_DAEMON_BIN) ## iyi: build iyi's own single-threaded build daemon
 
 .PHONY: build
 build: ## Build all files for a package install (currently the compiler and manpages)
@@ -256,9 +266,15 @@ uninstall: uninstall_compiler uninstall_man uninstall_completions
 # beside `bin/iyi` is 56 KB rather than a standard library.
 .PHONY: install_iyi
 install_iyi: ## iyi: install `iyi` and its prelude at DESTDIR
-install_iyi: $(O)/iyi$(EXE)
+install_iyi: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(BINDIR)/"
 	$(INSTALL) -m 0755 "$(O)/iyi$(EXE)" "$(DESTDIR)$(BINDIR)/iyi$(EXE)"
+
+# Beside `iyi`, because that is where `iyi daemon start` looks. Shipped rather
+# than left to be built: the daemon halves a `--crystal` build (SPEC.md IV.1d),
+# and a feature that needs `make` first is a feature nobody who downloaded a
+# tarball has.
+	$(INSTALL) -m 0755 "$(O)/$(IYI_DAEMON_BIN)" "$(DESTDIR)$(BINDIR)/$(IYI_DAEMON_BIN)"
 
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/iyi/src"
 	cp -R -p $(if $(deref_symlinks),-L,-P) src/iyi "$(DESTDIR)$(DATADIR)/iyi/src/iyi"
@@ -281,6 +297,7 @@ install_iyi: $(O)/iyi$(EXE)
 .PHONY: uninstall_iyi
 uninstall_iyi: ## iyi: remove what install_iyi installed
 	rm -f "$(DESTDIR)$(BINDIR)/iyi$(EXE)"
+	rm -f "$(DESTDIR)$(BINDIR)/$(IYI_DAEMON_BIN)"
 	rm -rf "$(DESTDIR)$(DATADIR)/iyi"
 	rm -rf "$(DESTDIR)$(DATADIR)/licenses/iyi"
 
@@ -288,7 +305,7 @@ uninstall_iyi: ## iyi: remove what install_iyi installed
 # the binary finds its prelude relative to itself.
 .PHONY: iyi-tarball
 iyi-tarball: ## iyi: build a relocatable tarball at $(O)
-iyi-tarball: $(O)/iyi$(EXE)
+iyi-tarball: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
 	rm -rf "$(O)/iyi-package"
 	$(MAKE) install_iyi DESTDIR="$(CURDIR)/$(O)/iyi-package" PREFIX=""
 	$(INSTALL) -m 644 README.md "$(O)/iyi-package/share/iyi/README.md"
@@ -392,6 +409,19 @@ $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 	$(EXPORTS) $(EXPORTS_BUILD) CRYSTAL_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
 	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $@ src/compiler/iyi.cr
 	@echo "built $@ — run it as ./bin/iyi"
+
+# iyi: the same compiler, single-threaded, which is what lets it fork.
+#
+# The daemon forks a child per build and only the forking thread survives a
+# fork, so the server half cannot be the multi-threaded binary. Same sources,
+# same prelude path, `-Dwithout_mt` — and a name `iyi daemon start` will find
+# beside itself, installed or in `.build`.
+$(O)/$(IYI_DAEMON_BIN): $(DEPS) $(SOURCES)
+	$(call check_llvm_config)
+	@mkdir -p $(O)
+	$(EXPORTS) $(EXPORTS_BUILD) CRYSTAL_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
+	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_mt -o $@ src/compiler/iyi.cr
+	@echo "built $@ — \`iyi daemon start\` finds it beside iyi"
 
 # iyi: the front end on its own. Linking libLLVM costs 26 ms of load-time
 # initialisers whether or not anything generates code, and `--no-codegen` never
