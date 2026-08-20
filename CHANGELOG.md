@@ -33,6 +33,10 @@ releases names no compiler.
   way Crystal does. Your own modules are unaffected, and `--emit-iyimod` still
   writes them.
 
+  `crystal tool bind` writes what it generates with `--emit-bind`, its own
+  switch, because what it writes is a boundary for a shard rather than this
+  build's own modules.
+
   The two libraries are two modes and do not mix on the reading side:
   `--use-iyimod` needs iyi's own prelude. An artifact's object code numbers the
   types its module made, which under Crystal's library include the standard

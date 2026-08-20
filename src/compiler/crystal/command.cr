@@ -300,7 +300,7 @@ class Crystal::Command
     config, result = compile_no_codegen "tool bind", hierarchy: true
     @progress_tracker.stage("Tool (bind)") do
       Crystal.print_bind result.program, config.hierarchy_exp, STDOUT,
-        artifact_dir: config.compiler.emit_iyimod
+        artifact_dir: config.compiler.emit_bind
     end
   end
 
@@ -611,6 +611,15 @@ class Crystal::Command
 
       opts.on("--iyi-keep NAMESPACE", "iyi: define rather than inline the methods under NAMESPACE") do |root|
         compiler.iyi_keep = root
+      end
+
+      # iyi: where `tool bind` writes what it generates.
+      #
+      # Its own switch rather than `--emit-iyimod`, because it is not that: it
+      # writes one artifact it built itself, for a shard, under Crystal's
+      # library — which is exactly the combination `--emit-iyimod` refuses.
+      opts.on("--emit-bind DIR", "iyi: where `tool bind` writes the boundary it generates") do |dir|
+        compiler.emit_bind = dir
       end
 
       opts.on("--emit-iyimod DIR", "iyi: write a .iyimod per imported module into DIR") do |dir|

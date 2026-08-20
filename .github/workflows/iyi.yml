@@ -168,6 +168,32 @@ jobs:
             ./bin/iyi run "$sample"
           done
 
+      # The other library, and the seam between it and the rules. A program
+      # under `--crystal` keeps every rule and gets Crystal's standard
+      # library, and nothing else in this workflow builds one — the two are
+      # meant to be independent, and this is what says so every build.
+      - name: A program with Crystal's own library
+        run: |
+          for sample in samples/crystal/*.iyi; do
+            echo "== $sample"
+            ./bin/iyi run --crystal "$sample"
+          done
+
+      # And the guard rails around it, which are refusals rather than
+      # behaviour: an artifact written against Crystal's library is one
+      # nothing can read back, so both directions say so instead of
+      # half-working (SPEC.md Part V item 12a).
+      - name: The two libraries stay apart
+        run: |
+          if ./bin/iyi build --crystal --emit-iyimod /tmp/mods -o /tmp/out \
+               samples/crystal/stdlib.iyi 2>/dev/null; then
+            echo "--emit-iyimod was accepted under --crystal"; exit 1
+          fi
+          if ./bin/iyi build --crystal --use-iyimod /tmp/mods -o /tmp/out \
+               samples/crystal/stdlib.iyi 2>/dev/null; then
+            echo "--use-iyimod was accepted under --crystal"; exit 1
+          fi
+
       # The claim R-1 makes, taken literally: build, delete the modules'
       # source, build again from the artifacts, compare what the two programs
       # print.

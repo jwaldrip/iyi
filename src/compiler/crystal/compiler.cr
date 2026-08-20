@@ -131,6 +131,11 @@ module Crystal
     # namespace it is producing.
     property iyi_keep : String? = nil
 
+    # iyi: where `tool bind` writes the boundary it generates (SPEC.md Part V
+    # item 12). Not `emit_iyimod`: that one writes this build's own modules and
+    # refuses to run under Crystal's library, which is where a shard is read.
+    property emit_bind : String? = nil
+
     # iyi: directory to read a `.iyimod` per imported module from, or nil
     # (SPEC.md IV.1). Set by `--use-iyimod`. An import that finds one there is
     # compiled against it and never opens the module's source, which is R-1's
@@ -419,9 +424,10 @@ module Crystal
       #
       # An artifact written under Crystal's library is one `--use-iyimod`
       # refuses to read, so writing it is worse than refusing to: a file
-      # nothing can consume, produced without a word. `tool bind` does not come
-      # through here — a Crystal shard has no iyi modules to write.
-      if !program.iyi_module_paths.empty? && !prelude.ends_with?("iyi/prelude")
+      # nothing can consume, produced without a word. Said whether or not this
+      # program has a module to write, because "accepted and did nothing" is
+      # the same silence in a smaller disguise.
+      if !prelude.ends_with?("iyi/prelude")
         raise Crystal::Error.new(
           "--emit-iyimod needs iyi's own prelude. An artifact written against " \
           "Crystal's standard library is one nothing can read back: a " \
