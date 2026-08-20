@@ -26,35 +26,671 @@ require "./array"
 require "./range"
 require "./hash"
 
-lib LibC
-  fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
-  fun exit(status : Int32) : NoReturn
-end
+{% if flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+  # iyi: On Linux, libc is not bound at all. The dependency floor (SPEC.md
+  # III.9) named seven undefined symbols in a default program and five of them
+  # were libc's; the kernel's syscall ABI is a stable contract, so `write` and
+  # `exit` are one `syscall` instruction each rather than a PLT hop. Same move
+  # Go makes with CGO_ENABLED=0. The numbers and register conventions are the
+  # ones `src/syscall/x86_64-linux.cr` and `src/syscall/aarch64-linux.cr`
+  # carry for the compiler's own runtime, written out here rather than
+  # required because the prelude is iyi's own world ("0.1.0", item 3) and
+  # requiring compiler source into a program would be a dependency of exactly
+  # the kind this removes.
+  #
+  # `exit_group` rather than `exit`: the kernel's `exit` retires one thread,
+  # `exit_group` retires the process. 0.1.0 has one thread, so the difference
+  # is unobservable, and exit_group is what a program that grows threads
+  # wants its panic path to mean.
+  def __iyi_write(fd : Int32, buffer : Void*, count : UInt64) : Int64
+    result = uninitialized Int64
+    {% if flag?(:x86_64) %}
+      asm("syscall" : "={rax}"(result)
+                    : "{rax}"(1_i64), "{rdi}"(fd.to_i64), "{rsi}"(buffer), "{rdx}"(count)
+                    : "rcx", "r11", "memory"
+                    : "volatile")
+    {% else %}
+      asm("svc #0" : "={x0}"(result)
+                   : "{x8}"(64_i64), "{x0}"(fd.to_i64), "{x1}"(buffer), "{x2}"(count)
+                   : "memory"
+                   : "volatile")
+    {% end %}
+    result
+  end
 
-# The collector, the way Crystal's own 0.1.0 had it. Twelve lines of binding
-# buys real collection, which is what lets the samples be read as programs
-# rather than as demonstrations that happen to exit before it matters.
-@[Link("gc")]
-lib LibGC
-  fun init = GC_init
-  fun malloc = GC_malloc(size : UInt64) : Void*
-  fun malloc_atomic = GC_malloc_atomic(size : UInt64) : Void*
-  fun realloc = GC_realloc(pointer : Void*, size : UInt64) : Void*
-end
+  def __iyi_exit(status : Int32) : NoReturn
+    {% if flag?(:x86_64) %}
+      asm("syscall" :: "{rax}"(231_i64), "{rdi}"(status.to_i64) : "rcx", "r11", "memory" : "volatile")
+    {% else %}
+      asm("svc #0" :: "{x8}"(94_i64), "{x0}"(status.to_i64) : "memory" : "volatile")
+    {% end %}
+    while true
+    end
+  end
+{% elsif flag?(:darwin) %}
+  # iyi: macOS is not a fallback that happened to work; it is a chosen branch,
+  # because it is the machine most developers sit in front of. Apple documents
+  # libSystem as the only supported interface and raw syscalls as explicitly
+  # not a stable ABI on Darwin, so binding `write` and `exit` here is Apple's
+  # rule rather than a compromise this design settled for: libSystem ships
+  # with the machine, it is not something a person installs, and Go links it
+  # on darwin for the same reason (CGO_ENABLED=0 buys nothing there either).
+  lib LibC
+    fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
+    fun exit(status : Int32) : NoReturn
+  end
 
-# Codegen emits calls to these by name for every allocation, so they are not
-# optional and their names are not ours to choose.
-fun __crystal_malloc64(size : UInt64) : Void*
-  LibGC.malloc(size)
-end
+  def __iyi_write(fd : Int32, buffer : Void*, count : UInt64) : Int64
+    LibC.write(fd, buffer, count)
+  end
 
-fun __crystal_malloc_atomic64(size : UInt64) : Void*
-  LibGC.malloc_atomic(size)
-end
+  def __iyi_exit(status : Int32) : NoReturn
+    LibC.exit(status)
+  end
+{% elsif flag?(:win32) %}
+  # iyi: On Windows the platform's own interface is the Win32 API in
+  # kernel32, which ships with the machine; Go links kernel32 for the same
+  # set of operations. There is no libc `write` to fall back to: the C
+  # runtime's POSIX shims are a person-installed choice of CRT, not the
+  # platform's contract, so stdout is `WriteFile` on the standard handle and
+  # exit is `ExitProcess`. The names and signatures are the ones
+  # `src/lib_c/x86_64-windows-msvc/c/` carries for the compiler's own
+  # runtime, declared locally rather than required for the same reason as the
+  # Linux syscalls above: the prelude is iyi's own world.
+  # iyi primitives carry arithmetic on Int32/Int64/UInt8/UInt64 only, so the
+  # DWORD-width parameters are declared Int32: same 32 bits at the ABI, and
+  # no UInt32 value ever exists in this file to convert.
+  lib LibC
+    fun GetStdHandle(n_std_handle : Int32) : Void*
+    fun WriteFile(handle : Void*, buffer : Void*, number_of_bytes_to_write : Int32,
+                  number_of_bytes_written : Int32*, overlapped : Void*) : Int32
+    fun ExitProcess(exit_code : Int32) : NoReturn
+  end
 
-fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
-  LibGC.realloc(pointer, size)
-end
+  # GetStdHandle's constants, by their Win32 names: STD_INPUT_HANDLE (-10),
+  # STD_OUTPUT_HANDLE (-11), STD_ERROR_HANDLE (-12). They are negative
+  # identifiers reinterpreted as DWORD; as Int32 they spell themselves.
+  def __iyi_write(fd : Int32, buffer : Void*, count : UInt64) : Int64
+    std_handle = -11
+    std_handle = -12 if fd == 2
+    std_handle = -10 if fd == 0
+    written = uninitialized Int32
+    if LibC.WriteFile(LibC.GetStdHandle(std_handle), buffer,
+         count.to_i32, pointerof(written), nil) == 0
+      return -1_i64
+    end
+    written.to_i64
+  end
+
+  def __iyi_exit(status : Int32) : NoReturn
+    LibC.ExitProcess(status)
+  end
+{% elsif flag?(:wasm32) %}
+  # iyi: On wasm32-wasi the platform's own interface is the WASI import set,
+  # which the runtime (wasmtime, wasmer, a browser shim) provides; that is
+  # the same standing libSystem and kernel32 have on the other platforms, and
+  # the reason the imports are bound by their `__wasi_` names rather than
+  # through wasi-libc's POSIX shims. `fd_write` takes an iovec, so one call
+  # covers the whole buffer; `proc_exit` is NoReturn the same way `exit`
+  # elsewhere is. The declarations mirror `src/crystal/system/wasi/lib_wasi.cr`,
+  # which binds `proc_exit` this way too.
+  # WASI's own types are fd/size/errno as u32; iyi's primitives carry
+  # arithmetic on Int32/Int64/UInt8/UInt64 only, so the u32-width parameters
+  # are declared Int32, which is the same 32 bits at the ABI, and no UInt32
+  # value ever exists in this file to convert.
+  lib LibWasi
+    struct Ciovec
+      buf : UInt8*
+      buf_len : Int32
+    end
+
+    fun fd_write = __wasi_fd_write(fd : Int32, iovs : Ciovec*,
+                                   iovs_len : Int32, nwritten : Int32*) : Int32
+    fun proc_exit = __wasi_proc_exit(code : Int32) : NoReturn
+  end
+
+  def __iyi_write(fd : Int32, buffer : Void*, count : UInt64) : Int64
+    iov = LibWasi::Ciovec.new(buf: buffer.as(UInt8*), buf_len: count.to_i32)
+    written = uninitialized Int32
+    if LibWasi.fd_write(fd, pointerof(iov), 1, pointerof(written)) != 0
+      return -1_i64
+    end
+    written.to_i64
+  end
+
+  def __iyi_exit(status : Int32) : NoReturn
+    LibWasi.proc_exit(status)
+  end
+{% else %}
+  {% raise "iyi: this target is not one iyi's prelude has platform bindings for. " \
+           "iyi supports Linux (x86_64, aarch64) via raw syscalls, macOS via " \
+           "libSystem, Windows via the Win32 API and wasm32-wasi via the WASI " \
+           "imports. Teach src/iyi/prelude.iyi a branch for this platform rather " \
+           "than linking something absent." %}
+{% end %}
+
+# The allocator, selected rather than declared, because the selection has to be
+# a real seam a different allocator is swapped in at. Boehm was the default and
+# `-Dgc_none`, a flag this compiler already answers to (`src/gc.cr` reads it to
+# require `gc/none` instead of `gc/boehm`), only opted out of it: a prelude
+# that bound `GC_malloc` conditionally accepted the flag, linked the collector
+# anyway and said nothing about it, and a flag that is accepted and ignored is
+# worse than one that is refused. The dependency floor then measured the
+# collector as the last library a default `iyi build` could not refuse (SPEC.md
+# III.9), so the default is inverted: a plain build allocates and never
+# collects, which is the exact contract `-Dgc_none` already had, and
+# `-Dgc_boehm` restores the twelve lines of binding below along with the
+# collection they buy. `-Dgc_none` still selects the default, so nothing that
+# passes it changes meaning. A real collector is not dropped by this, it is
+# III.9's open item: adopt one and pay it back in layouts (SPEC.md B.1, table
+# row 20).
+#
+# Written out in full rather than put behind a `GC` module the way the standard
+# library has it. There are four call sites and all of them are in this file,
+# so the module would buy nothing but a frame on every allocation of a build
+# that is not optimised.
+{% if flag?(:gc_boehm) %}
+  @[Link("gc")]
+  lib LibGC
+    fun init = GC_init
+    fun malloc = GC_malloc(size : UInt64) : Void*
+    fun malloc_atomic = GC_malloc_atomic(size : UInt64) : Void*
+    fun realloc = GC_realloc(pointer : Void*, size : UInt64) : Void*
+  end
+
+  # Codegen emits calls to these by name for every allocation, so they are not
+  # optional and their names are not ours to choose.
+  fun __crystal_malloc64(size : UInt64) : Void*
+    LibGC.malloc(size)
+  end
+
+  fun __crystal_malloc_atomic64(size : UInt64) : Void*
+    LibGC.malloc_atomic(size)
+  end
+
+  fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
+    LibGC.realloc(pointer, size)
+  end
+{% else %}
+  {% if flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+    # iyi: The default heap on Linux is a bump pointer over `mmap` regions:
+    # allocate, never free, which is the contract the libc path below already
+    # has (`free` is not bound there for the same reason, and a program that
+    # outlives its memory is what allocating without collecting asks for).
+    # `MAP_ANONYMOUS` guarantees zero-fill, so `__crystal_malloc64`'s
+    # documented clear comes from the mapping itself rather than a second pass
+    # over the bytes: nothing is handed out twice, so nothing can be dirtier
+    # than the kernel left it, and the atomic variant is therefore the same
+    # memory on this path too. Each pointer carries its size in the eight
+    # bytes under it, because `realloc` has no other way to know how much to
+    # copy, and the eight bytes also keep every user pointer 8-aligned.
+    #
+    # One MiB a chunk, and an allocation bigger than that gets a chunk of its
+    # own. The kernel rounds `length` up to a page, so the chunk size is not
+    # rounded here.
+    #
+    # The cursor and what is left of the chunk are the allocator's whole
+    # state, held as class variables on `IyiHeap` because the language has
+    # nothing else to hold them in: `$` globals are refused outright, and a
+    # `fun` body cannot reach `@@` state. Both are `UInt64` with literal
+    # initializers, which codegen folds into the LLVM global's static zero
+    # rather than a runtime init call, so what a plain global would have
+    # meant is kept: both start at zero, which means "mmap on the first
+    # allocation", not a value any startup code has to install. The
+    # allocation entry points below must stay `fun`s because codegen calls
+    # them by C name, so they forward one frame deep into class methods;
+    # that frame is the price of the only state-carrying construct the
+    # language offers.
+    class IyiHeap
+      @@cursor : UInt64 = 0_u64
+      @@left : UInt64 = 0_u64
+
+      def self.alloc(size : UInt64) : Void*
+        bytes = size.to_i64
+        remainder = bytes % 8
+        bytes = bytes + (8 - remainder) if remainder > 0
+        bytes = bytes + 8
+
+        if @@left < bytes.to_u64
+          chunk = 1048576_i64
+          chunk = bytes if bytes > chunk
+          @@cursor = __iyi_mmap(chunk.to_u64).address
+          @@left = chunk.to_u64
+        end
+
+        block = Pointer(Void).new(@@cursor)
+        @@cursor = @@cursor + bytes.to_u64
+        @@left = @@left - bytes.to_u64
+        block.as(Pointer(UInt64)).value = size
+        block + 8_i64
+      end
+
+      # Allocate-and-copy rather than growth in place, because nothing frees
+      # and the old size rides in the eight bytes under the pointer, which is
+      # the only place that knows it.
+      def self.realloc(pointer : Void*, size : UInt64) : Void*
+        return alloc(size) if pointer.address == 0
+        old_size = Pointer(UInt64).new(pointer.address - 8).value
+        new_pointer = alloc(size)
+        source = pointer.as(Pointer(UInt8))
+        destination = new_pointer.as(Pointer(UInt8))
+        limit = old_size < size ? old_size : size
+        index = 0_u64
+        while index < limit
+          (destination + index.to_i64).value = (source + index.to_i64).value
+          index = index + 1
+        end
+        new_pointer
+      end
+    end
+
+    fun __iyi_mmap(length : UInt64) : Pointer(Void)
+      result = uninitialized Int64
+      {% if flag?(:x86_64) %}
+        # PROT_READ|PROT_WRITE = 3, MAP_PRIVATE|MAP_ANONYMOUS = 0x22.
+        asm("syscall" : "={rax}"(result)
+                      : "{rax}"(9_i64), "{rdi}"(0_i64), "{rsi}"(length), "{rdx}"(3_i64),
+                        "{r10}"(34_i64), "{r8}"(-1_i64), "{r9}"(0_i64)
+                      : "rcx", "r11", "memory"
+                      : "volatile")
+      {% else %}
+        asm("svc #0" : "={x0}"(result)
+                     : "{x8}"(222_i64), "{x0}"(0_i64), "{x1}"(length), "{x2}"(3_i64),
+                       "{x3}"(34_i64), "{x4}"(-1_i64), "{x5}"(0_i64)
+                     : "memory"
+                     : "volatile")
+      {% end %}
+      # A failed raw syscall answers with -errno in the result register rather
+      # than a flag: -4095..-1 is errno's whole range.
+      if result < 0 && result >= -4095
+        __iyi_write(1, "iyi: out of memory\n".to_unsafe.as(Void*), 19_u64)
+        __iyi_exit(1)
+      end
+      Pointer(Void).new(result.to_u64)
+    end
+
+    # Codegen emits calls to these by name for every allocation, so they are not
+    # optional and their names are not ours to choose.
+    fun __crystal_malloc64(size : UInt64) : Void*
+      IyiHeap.alloc(size)
+    end
+
+    fun __crystal_malloc_atomic64(size : UInt64) : Void*
+      IyiHeap.alloc(size)
+    end
+
+    fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
+      IyiHeap.realloc(pointer, size)
+    end
+
+    # `memset` is libc's on the other paths, and here it is the one libc name
+    # left that codegen itself reaches for: `pre_initialize_aggregate` and
+    # `generic_array_malloc` lower to the LLVM `llvm.memset` intrinsic, which
+    # LLVM expands inline only while the size is a constant it can see; with
+    # a runtime size it emits a call to C `memset` anyway. A definition with
+    # the same name and signature is the only thing that can intercept that,
+    # so the name, the types and the return are libc's rather than ours. The
+    # bulk goes eight bytes at a time because every cleared allocation
+    # funnels through here; the byte loop carries only the tail, and the
+    # pattern word is the byte tiled eight wide.
+    fun memset(destination : Void*, value : Int32, count : UInt64) : Void*
+      byte = value.to_u8!
+      word = byte.to_u64 * 0x0101010101010101_u64
+      words = destination.as(Pointer(UInt64))
+      filled = 0_u64
+      while filled + 8_u64 <= count
+        words.value = word
+        words = words + 8_i64
+        filled = filled + 8_u64
+      end
+      bytes = words.as(Pointer(UInt8))
+      while filled < count
+        bytes.value = byte
+        bytes = bytes + 1_i64
+        filled = filled + 1_u64
+      end
+      destination
+    end
+  {% elsif flag?(:darwin) %}
+    # iyi: The allocator on macOS is libSystem's `malloc` and `realloc`, which
+    # is the explicit choice rather than a fallback: Apple documents libSystem
+    # as the platform's only supported interface, it ships with the machine,
+    # and its allocator is the best one available here by any measure. No
+    # collection at all, which is what `src/gc/none.cr` is: the entry points
+    # below carry `malloc`/`realloc` and none of the parts 0.1.0 has nothing
+    # to say to (threads, finalizers, statistics).
+    #
+    # The clear after `malloc` is the entry point's contract rather than a fix
+    # for something seen: `GC.malloc` is documented as allocating *and clearing*,
+    # libc's `malloc` does not clear, and `gc/none.cr` clears for exactly that
+    # reason (crystal-lang/crystal#14678). Nothing here would notice it missing
+    # today, because codegen clears what it routes through this name anyway
+    # (`pre_initialize_aggregate` and `generic_array_malloc` both memset), so the
+    # clear is a second pass over the same bytes. It stays because the name is
+    # reachable from any `.iyi` file and a swapped allocator that quietly weakens
+    # the contract is the failure this default is being watched for, in miniature.
+    #
+    # `malloc_atomic` is that call without the clear, which is what the atomic
+    # variant means on both sides: `GC_malloc_atomic` does not clear either, so
+    # this is the same memory the collector's build hands back. `free` is not
+    # bound because nothing frees, and a program that outlives its memory is
+    # what allocating without collecting asks for.
+    lib LibC
+      fun malloc(size : UInt64) : Void*
+      fun realloc(pointer : Void*, size : UInt64) : Void*
+      fun memset(destination : Void*, value : Int32, count : UInt64) : Void*
+    end
+
+    # Codegen emits calls to these by name for every allocation, so they are not
+    # optional and their names are not ours to choose.
+    fun __crystal_malloc64(size : UInt64) : Void*
+      pointer = LibC.malloc(size)
+      LibC.memset(pointer, 0, size)
+      pointer
+    end
+
+    fun __crystal_malloc_atomic64(size : UInt64) : Void*
+      LibC.malloc(size)
+    end
+
+    fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
+      LibC.realloc(pointer, size)
+    end
+  {% elsif flag?(:win32) %}
+    # iyi: The allocator on Windows is the Win32 process heap: `HeapAlloc` and
+    # `HeapReAlloc` on `GetProcessHeap`'s handle, all kernel32, which is the
+    # platform's own interface and ships with the machine. No CRT is involved,
+    # because a C runtime is a person-installed choice rather than the
+    # platform's contract. The names and signatures are the ones
+    # `src/lib_c/x86_64-windows-msvc/c/heapapi.cr` carries for the compiler's
+    # own runtime.
+    #
+    # `HEAP_ZERO_MEMORY` (0x8) gives `__crystal_malloc64` its documented clear
+    # in the allocator itself rather than a second pass over the bytes, and the
+    # atomic variant passes 0 because not clearing is exactly what atomic
+    # means (`GC_malloc_atomic` does not clear either). `HeapReAlloc` keeps
+    # the old contents and grows in place where it can, which is the same
+    # contract libc's `realloc` has on the other paths; a null pointer cannot
+    # be handed to it, so it routes to a plain `HeapAlloc`. `free` is not
+    # bound because nothing frees, and a program that outlives its memory is
+    # what allocating without collecting asks for.
+    lib LibC
+      fun GetProcessHeap : Void*
+      fun HeapAlloc(heap : Void*, flags : UInt32, bytes : UInt64) : Void*
+      fun HeapReAlloc(heap : Void*, flags : UInt32, memory : Void*, bytes : UInt64) : Void*
+    end
+
+    # Codegen emits calls to these by name for every allocation, so they are not
+    # optional and their names are not ours to choose.
+    fun __crystal_malloc64(size : UInt64) : Void*
+      LibC.HeapAlloc(LibC.GetProcessHeap, 0x8_u32, size)
+    end
+
+    fun __crystal_malloc_atomic64(size : UInt64) : Void*
+      LibC.HeapAlloc(LibC.GetProcessHeap, 0_u32, size)
+    end
+
+    fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
+      if pointer.address == 0
+        LibC.HeapAlloc(LibC.GetProcessHeap, 0x8_u32, size)
+      else
+        LibC.HeapReAlloc(LibC.GetProcessHeap, 0_u32, pointer, size)
+      end
+    end
+
+    # `memset` is defined locally rather than bound because the C runtime is
+    # not this platform's interface, and codegen itself reaches for the name:
+    # `pre_initialize_aggregate` and `generic_array_malloc` lower to the LLVM
+    # `llvm.memset` intrinsic, which LLVM expands inline only while the size is
+    # a constant it can see; with a runtime size it emits a call to C `memset`
+    # anyway, and on win64 that call carries a 64-bit size_t. A definition
+    # with the same name, types and return is the only thing that can intercept
+    # it. The bulk goes eight bytes at a time; the byte loop carries the tail.
+    fun memset(destination : Void*, value : Int32, count : UInt64) : Void*
+      byte = value.to_u8!
+      word = byte.to_u64 * 0x0101010101010101_u64
+      words = destination.as(Pointer(UInt64))
+      filled = 0_u64
+      while filled + 8_u64 <= count
+        words.value = word
+        words = words + 8_i64
+        filled = filled + 8_u64
+      end
+      bytes = words.as(Pointer(UInt8))
+      while filled < count
+        bytes.value = byte
+        bytes = bytes + 1_i64
+        filled = filled + 1_u64
+      end
+      destination
+    end
+  {% elsif flag?(:wasm32) %}
+    # iyi: The default heap on wasm32-wasi is a bump pointer over
+    # `memory.grow` pages, the same arena shape as the Linux branch, and it
+    # closes the dependency floor's last finding on this target (SPEC.md
+    # III.9): `malloc` and `realloc` were the two undefined names in a wasm32
+    # object that are not the platform's own imports, and they came from
+    # wasi-libc, which is a libc a toolchain brings rather than an interface
+    # the platform guarantees. The linear memory is the platform's allocator
+    # here, so the arena grows it the same way the Linux branch mmaps.
+    # Allocate, never free; `free` is bound nowhere on any path, and a
+    # program that outlives its memory is what allocating without collecting
+    # asks for.
+    #
+    # Reaching `memory.grow` needed one binding, written below rather than in
+    # `src/intrinsics.cr` for two measured reasons. `LibIntrinsics` there
+    # proves a plain `fun` whose external name is an `llvm.` name reaches a
+    # real LLVM intrinsic (`llvm.debugtrap`, `llvm.memcpy` and
+    # `llvm.x86.sse2.pause` all bind exactly that way), but this prelude
+    # requires nothing outside `src/iyi/` ("0.1.0", item 3), so a binding in
+    # compiler source would be unreachable from here. The signature is the
+    # other finding, measured against this tree's LLVM with hand-written IR:
+    # the intrinsic registers as `i32 (i32, i32)`, memory index then page
+    # delta, and the one-argument form the earlier probe tried is an arity
+    # error the verifier words as "Callsite was not defined with variable
+    # arguments!", which that probe recorded as a `fun` being unable to bind
+    # an LLVM intrinsic at all. It can, with both arguments. An
+    # `@[Primitive]` is the rejected alternative: a compiler rebuild and a
+    # declaration in `primitives.iyi`, a language-surface file, for what this
+    # C-shaped binding reaches. `memory.size` is not bound because
+    # `memory.grow` answers the only fact it carries: its result is the
+    # previous size in pages, which is exactly where the grown region
+    # starts. The index argument is 0 because a wasm32-wasi module has
+    # exactly one linear memory and 0 names it; the backend turns it into
+    # the instruction's memarg immediate, so it is not even a runtime
+    # operand.
+    lib LibWasmMem
+      fun memory_grow = "llvm.wasm.memory.grow.i32"(memory_index : Int32, delta_pages : Int32) : Int32
+    end
+
+    # Pages are 64 KiB. A request larger than one page rounds up to the whole
+    # pages it needs and gets a region of its own; `memory.grow` answers -1
+    # when the engine refuses the growth, and a failure is answered rather
+    # than wrapped, because read as a page count -1 would seat the cursor
+    # 64 KiB below any memory the engine ever handed out, which is heap
+    # corruption wearing a success, so it takes the same write-and-exit the
+    # Linux branch's failed `mmap` takes. Every size rides in the eight bytes
+    # under the pointer exactly as on Linux, because `realloc` has no other
+    # way to know how much to copy, and the eight bytes keep every user
+    # pointer 8-aligned; grow regions are page-aligned and the bump is always
+    # a multiple of 8, so the header store stays aligned too. Fresh pages are
+    # zeroed by the wasm spec itself, so `__crystal_malloc64`'s documented
+    # clear comes from the engine rather than a second pass over the bytes,
+    # the same standing Linux's `MAP_ANONYMOUS` zero-fill has there: nothing
+    # is handed out twice, so nothing can be dirtier than the engine left it,
+    # and the atomic variant is the same memory for the same reason. The
+    # cursor and what is left of the region are `UInt64` class variables on
+    # `IyiHeap` for the Linux branch's reasons, which hold here word for
+    # word: `$` globals are refused, a `fun` body cannot reach `@@` state,
+    # and literal initializers fold into the LLVM global's static zero, so
+    # zero means "grow on the first allocation" rather than a value startup
+    # code installs.
+    class IyiHeap
+      @@cursor : UInt64 = 0_u64
+      @@left : UInt64 = 0_u64
+
+      def self.alloc(size : UInt64) : Void*
+        bytes = size.to_i64
+        remainder = bytes % 8
+        bytes = bytes + (8 - remainder) if remainder > 0
+        bytes = bytes + 8
+
+        if @@left < bytes.to_u64
+          pages = bytes // 65536
+          pages = pages + 1 if bytes % 65536 > 0
+          previous = LibWasmMem.memory_grow(0, pages.to_i32)
+          if previous < 0
+            __iyi_write(1, "iyi: out of memory\n".to_unsafe.as(Void*), 19_u64)
+            __iyi_exit(1)
+          end
+          @@cursor = previous.to_u64.unsafe_shl(16)
+          @@left = pages.to_u64.unsafe_shl(16)
+        end
+
+        block = Pointer(Void).new(@@cursor)
+        @@cursor = @@cursor + bytes.to_u64
+        @@left = @@left - bytes.to_u64
+        block.as(Pointer(UInt64)).value = size
+        block + 8_i64
+      end
+
+      # Allocate-and-copy rather than growth in place, because nothing frees
+      # and the old size rides in the eight bytes under the pointer, which is
+      # the only place that knows it.
+      def self.realloc(pointer : Void*, size : UInt64) : Void*
+        return alloc(size) if pointer.address == 0
+        old_size = Pointer(UInt64).new(pointer.address - 8).value
+        new_pointer = alloc(size)
+        source = pointer.as(Pointer(UInt8))
+        destination = new_pointer.as(Pointer(UInt8))
+        limit = old_size < size ? old_size : size
+        index = 0_u64
+        while index < limit
+          (destination + index.to_i64).value = (source + index.to_i64).value
+          index = index + 1
+        end
+        new_pointer
+      end
+    end
+
+    # Codegen emits calls to these by name for every allocation, so they are not
+    # optional and their names are not ours to choose.
+    fun __crystal_malloc64(size : UInt64) : Void*
+      IyiHeap.alloc(size)
+    end
+
+    fun __crystal_malloc_atomic64(size : UInt64) : Void*
+      IyiHeap.alloc(size)
+    end
+
+    fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
+      IyiHeap.realloc(pointer, size)
+    end
+
+    # `memset` is defined locally because codegen itself reaches for the name
+    # (`pre_initialize_aggregate` and `generic_array_malloc` lower to the LLVM
+    # `llvm.memset` intrinsic, which becomes a C `memset` call once the size is
+    # not a constant), and wasm32's size_t is 32-bit, so the signature LLVM
+    # expects here is `void(i8*, i32, i32)` rather than the 64-bit count the
+    # Linux and win32 paths carry. A definition with the matching name, types
+    # and return is the only thing that can intercept it. The bulk goes four
+    # bytes at a time because the pointers are 4-aligned at best on wasm32;
+    # the byte loop carries the tail.
+    fun memset(destination : Void*, value : Int32, count : Int32) : Void*
+      byte = value.to_u8!
+      word = (byte.to_u64 * 0x01010101_u64).to_i32
+      words = destination.as(Pointer(Int32))
+      total = count.to_i64.to_u64
+      filled = 0_u64
+      while filled + 4_u64 <= total
+        words.value = word
+        words = words + 4_i64
+        filled = filled + 4_u64
+      end
+      bytes = words.as(Pointer(UInt8))
+      while filled < total
+        bytes.value = byte
+        bytes = bytes + 1_i64
+        filled = filled + 1_u64
+      end
+      destination
+    end
+  {% else %}
+    {% raise "iyi: this target has no allocator binding in iyi's prelude. " \
+             "Teach src/iyi/prelude.iyi a branch for this platform rather than " \
+             "linking something absent." %}
+  {% end %}
+{% end %}
+
+{% if flag?(:arm) || flag?(:wasm32) %}
+  # `__multi3` is compiler-rt's 128-bit multiply helper, and LLVM emits calls
+  # to it behind the program's back: on a 32-bit target a checked 64-bit
+  # multiply legalizes by widening to an `i128` multiply, and neither arm nor
+  # wasm32 has that instruction, so the multiply becomes a call to `__multi3`.
+  # This prelude has two such multiplies on the wasm32 path alone — `memset`'s
+  # word pattern and `Int64#to_s`'s power-of-ten count — and measured, that
+  # helper is the one compiler-rt name in the wasm32 object's undefined list.
+  # The mirror of `src/crystal/compiler_rt.cr` is exact on the flag: it
+  # requires `compiler_rt/multi3.cr` precisely when `flag?(:arm) ||
+  # flag?(:wasm32)`, so the same gate is here, and nothing else from that
+  # file is pulled in. `shift.cr` (`__ashlti3` and kin) and `pow.cr`
+  # (`__powisf2`, `__powidf2`) are wasm32 needs of Int128 shifts and `**`,
+  # and iyi's primitives cross Int32/Int64/UInt8/UInt64/Float64 only, so no
+  # codegen path emits those calls; fixint, float, mul and divmod128 serve
+  # the Int128 division and conversion surface, which the same five types
+  # lower natively.
+  #
+  # Written out rather than required, although `src/crystal/compiler_rt/` is
+  # Crystal and pulling it in costs no library: `multi3.cr` is written against
+  # Crystal's full primitives — `~`, `to_i128!`, arithmetic on Int128 — which
+  # this prelude's five-type surface does not carry, so the file does not
+  # compile under it. The algorithm is compiler-rt's (multi3.c over mulddi3.c,
+  # which Crystal's port carries); the expression of it is iyi's. The halves
+  # are read out of the operands as UInt64 words through a pointer — wasm32
+  # and the arm targets Crystal builds are little-endian, so word 0 is the low
+  # half — because the language has no i128 arithmetic to split with. Every
+  # operation below is the wrapping form, which is exactly the mod 2^64 the
+  # algorithm is written in, and the signed result falls out of the two's
+  # complement words with no case analysis, the same way compiler-rt's does.
+  fun __multi3(a : Int128, b : Int128) : Int128
+    x = a
+    y = b
+    x_words = pointerof(x).as(Pointer(UInt64))
+    y_words = pointerof(y).as(Pointer(UInt64))
+    a_low = x_words.value
+    a_high = (x_words + 1_i64).value
+    b_low = y_words.value
+    b_high = (y_words + 1_i64).value
+
+    # mask keeps the low 32 bits of a word.
+    mask = 0xFFFFFFFF_u64
+
+    # mulddi3: the unsigned 64x64 -> 128 product of the two low words, kept
+    # as a (low, high) pair rather than packed into an Int128.
+    low = (a_low & mask) &* (b_low & mask)
+    t = low.unsafe_shr(32)
+    low = low & mask
+    t = t &+ ((a_low.unsafe_shr(32)) &* (b_low & mask))
+    low = low &+ ((t & mask).unsafe_shl(32))
+    high = t.unsafe_shr(32)
+    t = low.unsafe_shr(32)
+    low = low & mask
+    t = t &+ ((b_low.unsafe_shr(32)) &* (a_low & mask))
+    low = low &+ ((t & mask).unsafe_shl(32))
+    high = high &+ t.unsafe_shr(32)
+    high = high &+ ((a_low.unsafe_shr(32)) &* (b_low.unsafe_shr(32)))
+
+    # multi3's own step: the high word adds the cross products, mod 2^64.
+    high = high &+ (a_high &* b_low)
+    high = high &+ (a_low &* b_high)
+
+    result = uninitialized Int128
+    result_words = pointerof(result).as(Pointer(UInt64))
+    result_words.value = low
+    (result_words + 1_i64).value = high
+    result
+  end
+{% end %}
 
 # Codegen emits a call to this on every overflowing operation, so a program
 # cannot link without it. It aborts rather than raising: 0.1.0's `raise` is a
@@ -64,7 +700,7 @@ end
 # reaching it would mean something is unwinding, and nothing here unwinds.
 fun __crystal_personality
   print "iyi: __crystal_personality called, which cannot happen\n"
-  LibC.exit(1)
+  __iyi_exit(1)
 end
 
 # Reached from the same landing pad, for the same reason, and just as
@@ -72,7 +708,7 @@ end
 # thrown, and nothing here throws.
 fun __crystal_get_exception(exception : Void*) : UInt64
   print "iyi: __crystal_get_exception called, which cannot happen\n"
-  LibC.exit(1)
+  __iyi_exit(1)
   0_u64
 end
 
@@ -82,12 +718,12 @@ end
 @[Raises]
 fun __crystal_raise(exception : Void*) : NoReturn
   print "iyi: __crystal_raise called, which cannot happen\n"
-  LibC.exit(1)
+  __iyi_exit(1)
 end
 
 fun __crystal_raise_overflow : NoReturn
   print "iyi: arithmetic overflow\n"
-  LibC.exit(1)
+  __iyi_exit(1)
 end
 
 struct Pointer(T)
@@ -120,11 +756,11 @@ def raise(message : String) : NoReturn
   print "iyi: panic: "
   print message
   print "\n"
-  LibC.exit(1)
+  __iyi_exit(1)
 end
 
 def print(text : String) : Nil
-  LibC.write(1, text.to_unsafe.as(Void*), text.bytesize.to_u64)
+  __iyi_write(1, text.to_unsafe.as(Void*), text.bytesize.to_u64)
 end
 
 def print(value) : Nil
@@ -146,7 +782,12 @@ lib LibCrystalMain
 end
 
 fun main(argc : Int32, argv : UInt8**) : Int32
-  LibGC.init
+  # There is nothing to start under the default allocator, and nothing missing
+  # either: `gc/none.cr`'s `GC.init` sets up thread suspend and resume, and
+  # 0.1.0 has one thread. Only Boehm has an `init` worth calling.
+  {% if flag?(:gc_boehm) %}
+    LibGC.init
+  {% end %}
   LibCrystalMain.__crystal_main(argc, argv)
   0
 end

@@ -208,9 +208,14 @@ module Crystal
         View.module_name(config.name)
       end
 
+      # iyi: was `gsub(/[-_]([^a-z])/i, "\\1")`, a regex literal, which is
+      # pcre2 back on the compiler's link line. The pattern is fixed, so it
+      # compiles once through Crystal::Rx, whose replacement keeps `\1` group
+      # references (SPEC.md III.10).
+      NAME_SEPARATOR = Rx::Pattern.compile("[-_]([^a-z])", ignore_case: true)
+
       def self.module_name(name)
-        name
-          .gsub(/[-_]([^a-z])/i, "\\1")
+        Rx.gsub(name, NAME_SEPARATOR, "\\1")
           .split('-')
           .compact_map do |name|
             name.camelcase if name[0]?.try(&.ascii_letter?)

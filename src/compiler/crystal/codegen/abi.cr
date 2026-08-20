@@ -7,26 +7,38 @@ abstract class Crystal::ABI
   def initialize(target_machine : LLVM::TargetMachine)
     @target_data = target_machine.data_layout
     triple = target_machine.triple
-    @osx = !!(triple =~ /apple/)
-    @windows = !!(triple =~ /windows/)
+    # iyi: substring tests, not regexes: an unanchored `/apple/` never meant
+    # more than `includes?`, and the compiler's own code must not be what
+    # keeps pcre2 linked (zero-dep).
+    @osx = triple.includes?("apple")
+    @windows = triple.includes?("windows")
   end
 
   def self.from(target_machine : LLVM::TargetMachine) : self
     triple = target_machine.triple
-    case triple
-    when /x86_64.+windows-(?:msvc|gnu)/
+    # iyi: substring tests carry the literal alternations the regexes held,
+    # in the same order, because the order is load-bearing: `arm64` contains
+    # `arm`, so the aarch64 arm must answer first or every 64-bit Arm triple
+    # would take the 32-bit ABI. if/elsif rather than `case ... when`,
+    # because the win64 arm needs two conditions on one branch and a `when`
+    # clause cannot hold a conjunction; this is the same shape the sweep
+    # left in `config.cr`. A triple is arch-vendor-os-environment, so
+    # `x86_64.+windows-(?:msvc|gnu)` and these two substring tests agree on
+    # every triple that names a real target, and the compiler's own code is
+    # not what keeps pcre2 linked (zero-dep).
+    if triple.includes?("x86_64") && (triple.includes?("windows-msvc") || triple.includes?("windows-gnu"))
       X86_Win64.new(target_machine)
-    when /x86_64|amd64/
+    elsif triple.includes?("x86_64") || triple.includes?("amd64")
       X86_64.new(target_machine)
-    when /i386|i486|i586|i686/
+    elsif triple.includes?("i386") || triple.includes?("i486") || triple.includes?("i586") || triple.includes?("i686")
       X86.new(target_machine)
-    when /aarch64|arm64/
+    elsif triple.includes?("aarch64") || triple.includes?("arm64")
       AArch64.new(target_machine)
-    when /arm/
+    elsif triple.includes?("arm")
       ARM.new(target_machine)
-    when /avr/
+    elsif triple.includes?("avr")
       AVR.new(target_machine, target_machine.cpu)
-    when /wasm32/
+    elsif triple.includes?("wasm32")
       Wasm32.new(target_machine)
     else
       raise "Unsupported ABI for target triple: #{triple}"

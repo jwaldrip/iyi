@@ -662,7 +662,7 @@ module Crystal
           case arg
           when RegexLiteral
             regex = regex_value(arg)
-            BoolLiteral.new(!!(@value =~ regex))
+            BoolLiteral.new(regex.matches?(@value))
           else
             BoolLiteral.new(false)
           end
@@ -754,14 +754,19 @@ module Crystal
 
             regex = regex_value first
 
-            new_value = value.gsub regex do |string, matches|
+            # iyi: the engine yields one Match carrying group 0 plus the
+            # captures, and the block's arguments were the stdlib's matched
+            # String and MatchData#to_a (group 0 first), so both shapes are
+            # rebuilt from its slots.
+            new_value = Rx.gsub(value, regex) do |match|
               string_match_arg = block.args[0]?
               matches_array_arg = block.args[1]?
-              matches_array_literal = ArrayLiteral.map matches.to_a do |item|
+              matches_to_a = (0..match.group_count).map { |group| match[group] }
+              matches_array_literal = ArrayLiteral.map matches_to_a do |item|
                 item.nil? ? NilLiteral.new : StringLiteral.new item
               end
 
-              interpreter.define_var(string_match_arg.name, StringLiteral.new string) if string_match_arg
+              interpreter.define_var(string_match_arg.name, StringLiteral.new match[0].not_nil!) if string_match_arg
               interpreter.define_var(matches_array_arg.name, matches_array_literal) if matches_array_arg
 
               interpreter.accept(block.body).to_macro_id
@@ -776,7 +781,7 @@ module Crystal
 
             regex = regex_value(first)
 
-            StringLiteral.new(value.gsub(regex, second.value))
+            StringLiteral.new(Rx.gsub(value, regex, second.value))
           end
         end
       when "identify"
@@ -801,8 +806,8 @@ module Crystal
 
           regex = regex_value(arg)
 
-          if match_data = @value.match(regex)
-            regex_captures_hash(match_data)
+          if match = regex.match(@value)
+            regex_captures_hash(match)
           else
             NilLiteral.new
           end
@@ -825,7 +830,7 @@ module Crystal
             )
           )
 
-          @value.scan(regex) do |match_data|
+          Rx.scan(@value, regex).each do |match_data|
             matches.elements << regex_captures_hash(match_data)
           end
 
@@ -837,23 +842,29 @@ module Crystal
         interpret_check_args { ArrayLiteral.map(@value.lines, Path.global("String")) { |value| StringLiteral.new(value) } }
       when "split"
         interpret_check_args(min_count: 0) do |arg|
-          if arg
-            case arg
-            when CharLiteral
-              splitter = arg.value
-            when StringLiteral
-              splitter = arg.value
-            when RegexLiteral
-              splitter = regex_value(arg)
+          split =
+            if arg.nil?
+              @value.split
+            elsif arg.is_a?(RegexLiteral)
+              # iyi: the engine's own split, whose empty-match and capture
+              # interleave rules were written to agree with the stdlib's
+              # (SPEC.md III.10).
+              Rx.split(@value, regex_value(arg))
             else
-              interpreter.warnings.add_warning_at(name_loc, "Deprecated StringLiteral#split(ASTNode). Use `#split(StringLiteral)` instead")
-              splitter = arg.to_s
+              splitter =
+                case arg
+                when CharLiteral
+                  arg.value
+                when StringLiteral
+                  arg.value
+                else
+                  interpreter.warnings.add_warning_at(name_loc, "Deprecated StringLiteral#split(ASTNode). Use `#split(StringLiteral)` instead")
+                  arg.to_s
+                end
+              @value.split(splitter)
             end
 
-            ArrayLiteral.map(@value.split(splitter), Path.global("String")) { |value| StringLiteral.new(value) }
-          else
-            ArrayLiteral.map(@value.split, Path.global("String")) { |value| StringLiteral.new(value) }
-          end
+          ArrayLiteral.map(split, Path.global("String")) { |value| StringLiteral.new(value) }
         end
       when "count"
         interpret_check_args do |arg|
@@ -935,10 +946,32 @@ module Crystal
       @value
     end
 
+    # iyi: a macro pattern compiles on the compiler's own engine, never the
+    # stdlib Regex, which is what kept pcre2 on the compiler's link line
+    # (SPEC.md III.10, Appendix B #22). Only /i crosses to it: the engine
+    # folds ASCII case and nothing else, while /m and /x change what anchors,
+    # `.` and whitespace mean, so a flag the engine cannot honour is refused
+    # by name rather than silently dropped. A construct outside the supported
+    # subset is refused the same way, carrying this literal's location, never
+    # a stack trace out of the engine.
     def regex_value(arg)
       regex_value = arg.value
       if regex_value.is_a?(StringLiteral)
-        Regex.new(regex_value.value, arg.options)
+        source = regex_value.value
+        options = arg.options
+        if options.multiline? || options.extended?
+          refused = String.build do |io|
+            io << "/m" if options.multiline?
+            io << " and " if options.multiline? && options.extended?
+            io << "/x" if options.extended?
+          end
+          arg.raise "unsupported regex flag #{refused} on #{source.inspect} in macro: Crystal::Rx, the compiler's engine, honours /i only, and a flag it cannot honour is refused rather than ignored"
+        end
+        begin
+          Rx::Pattern.compile(source, ignore_case: options.ignore_case?)
+        rescue ex : Rx::SyntaxError
+          arg.raise "invalid pattern #{source.inspect} in macro: #{ex.message} (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)"
+        end
       else
         raise "regex interpolations not yet allowed in macros"
       end
@@ -3510,7 +3543,11 @@ private def empty_no_return_array
   Crystal::ArrayLiteral.new(of: Crystal::Path.global("NoReturn"))
 end
 
-private def regex_captures_hash(match_data : Regex::MatchData)
+# iyi: a capture hash off the compiler's own engine. Named groups left with
+# pcre2, because Crystal::Rx refuses them (SPEC.md III.10), so every key is a
+# group number and group 0 leads; the key type stays Int32 | String so a macro
+# written against the old shape still typechecks.
+private def regex_captures_hash(match : Crystal::Rx::Match)
   captures = Crystal::HashLiteral.new(
     of: Crystal::HashLiteral::Entry.new(
       Crystal::Union.new([Crystal::Path.global("Int32"), Crystal::Path.global("String")] of Crystal::ASTNode),
@@ -3518,22 +3555,10 @@ private def regex_captures_hash(match_data : Regex::MatchData)
     )
   )
 
-  match_data.to_h.each do |capture, substr|
-    case capture
-    in Int32
-      key = Crystal::NumberLiteral.new(capture)
-    in String
-      key = Crystal::StringLiteral.new(capture)
-    end
-
-    case substr
-    in String
-      value = Crystal::StringLiteral.new(substr)
-    in Nil
-      value = Crystal::NilLiteral.new
-    end
-
-    captures.entries << Crystal::HashLiteral::Entry.new(key, value)
+  0.upto(match.group_count) do |group|
+    substr = match[group]
+    value = substr ? Crystal::StringLiteral.new(substr) : Crystal::NilLiteral.new
+    captures.entries << Crystal::HashLiteral::Entry.new(Crystal::NumberLiteral.new(group), value)
   end
 
   captures

@@ -262,14 +262,21 @@ module Crystal
       {source, min_leading_white_space}
     end
 
+    # iyi: the `/^(\s+)\S/` this was, counted straight off the line. The
+    # compiler's own code must not reach for a regex engine for this, since
+    # pcre2 is on the list of libraries iyi does not want. The regex ran under
+    # UCP, where `\s` is `Char#whitespace?`, and its trailing `\S` is why an
+    # all-blank line counts 0 exactly as a non-match did.
     private def leading_white_space(line)
-      match = line.match(/^(\s+)\S/)
-      return 0 unless match
+      count = 0
+      while line[count]?.try(&.whitespace?)
+        count += 1
+      end
 
-      spaces = match[1]?
-      return 0 unless spaces
+      # the regex wanted a non-blank char after the run
+      return 0 unless count > 0 && line[count]?
 
-      spaces.size
+      count
     end
 
     def append_expanded_macro(io, source)

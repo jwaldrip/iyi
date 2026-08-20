@@ -1321,10 +1321,10 @@ module Crystal
         case exp = node.value
         when StringLiteral
           @str << '\\' if exp.value[0]?.try &.ascii_whitespace?
-          Regex.append_source exp.value, @str
+          append_regex_source exp.value, @str
         when StringInterpolation
           @str << '\\' if exp.expressions.first?.as?(StringLiteral).try &.value[0]?.try &.ascii_whitespace?
-          visit_interpolation(exp) { |s| Regex.append_source s, @str }
+          visit_interpolation(exp) { |s| append_regex_source s, @str }
         else
           raise "Bug: shouldn't happen"
         end
@@ -1334,6 +1334,27 @@ module Crystal
       @str << 'm' if node.options.multiline?
       @str << 'x' if node.options.extended?
       false
+    end
+
+    # iyi: was `Regex.append_source`, the AST printer's last reference to the
+    # stdlib Regex. Escaping a pattern back into a literal is two rules, so
+    # they live here rather than keeping this file tied to `regex.cr` (SPEC.md
+    # III.10): a backslash stays with the character it escapes, and the
+    # delimiter is escaped.
+    private def append_regex_source(source : String, io)
+      reader = Char::Reader.new(source)
+      while reader.has_next?
+        case char = reader.current_char
+        when '\\'
+          io << '\\'
+          io << reader.next_char
+        when '/'
+          io << "\\/"
+        else
+          io << char
+        end
+        reader.next_char
+      end
     end
 
     def visit(node : TupleLiteral)

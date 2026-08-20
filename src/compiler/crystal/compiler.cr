@@ -1788,9 +1788,15 @@ module Crystal
       "\\": "\\\\",
     }
 
+    # iyi: linker flags may run `` `command` ``. Compiled once here, not per
+    # call, and through Crystal::Rx, the compiler's own engine, so this file is
+    # not one of the reasons pcre2 stays on the link line (SPEC.md III.10).
+    private BACKTICK_SUBCOMMAND = Rx::Pattern.compile("`(.*?)`")
+
     private def expand_lib_flags(lib_flags)
-      lib_flags.gsub(/`(.*?)`/) do
-        command = $1
+      Rx.gsub(lib_flags, BACKTICK_SUBCOMMAND) do |match|
+        # The group sits between the two backticks, so it always participated.
+        command = match[1].not_nil!
         begin
           error_io = IO::Memory.new
           output = Process.run(command, shell: true, output: :pipe, error: error_io) do |process|
@@ -1897,7 +1903,18 @@ module Crystal
     # has a separator in it and `List(Int32)` has parentheses — and the point is
     # only that two different names cannot produce one file.
     private def safe_object_name(name : String) : String
-      name.gsub(/[^A-Za-z0-9_]/) { |match| "-#{match[0].ord}" }
+      # iyi: the `gsub(/[^A-Za-z0-9_]/)` written out, char by char — same map
+      # (`A-Za-z0-9_` kept, anything else `-<ord>`, non-ASCII included), but
+      # no regex engine behind it (zero-dep).
+      String.build do |io|
+        name.each_char do |char|
+          if char == '_' || char.ascii_alphanumeric?
+            io << char
+          else
+            io << '-' << char.ord
+          end
+        end
+      end
     end
 
     private def sequential_codegen(units)
@@ -2207,10 +2224,13 @@ module Crystal
         Process.run(command, args, shell: true,
           input: Process::Redirect::Close, output: Process::Redirect::Inherit, error: Process::Redirect::Pipe) do |process|
           process.error.each_line(chomp: false) do |line|
-            hint_string = colorize("(this usually means you need to install the development package for lib\\1)").yellow.bold
-            line = line.gsub(/cannot find -l(\S+)\b/, "cannot find -l\\1 #{hint_string}")
-            line = line.gsub(/unable to find library -l(\S+)\b/, "unable to find library -l\\1 #{hint_string}")
-            line = line.gsub(/library not found for -l(\S+)\b/, "library not found for -l\\1 #{hint_string}")
+            # iyi: the three `gsub(/... -l(\S+)\b/, "... \\1 hint")` rewrites,
+            # by hand — the compiler's own code must not be what links pcre2
+            # (zero-dep). A matching line gets the same hint; any other line
+            # passes through unchanged, byte for byte.
+            line = linker_library_hint(line, "cannot find -l")
+            line = linker_library_hint(line, "unable to find library -l")
+            line = linker_library_hint(line, "library not found for -l")
             STDERR << line
           end
         end
@@ -2232,6 +2252,56 @@ module Crystal
         end
         raise CompilerError.new("execution of command failed with exit status #{status}: #{command}", status: exit_code)
       end
+    end
+
+    # Appends the "install the development package" hint to linker errors of
+    # the form `#{marker}NAME` (`cannot find -lfoo` and friends). The regex
+    # this replaces read `#{marker}(\S+)\b`: NAME is the longest non-blank run
+    # after the marker that ends on a word boundary — `-lfoo!` hints about
+    # `foo` — and a line without such a match is returned unchanged.
+    private def linker_library_hint(line : String, marker : String) : String
+      io = IO::Memory.new
+      copied = 0
+      search = 0
+      while found = line.index(marker, search)
+        tail = line[found + marker.size..]
+        run_end = 0
+        while (char = tail[run_end]?) && !char.whitespace?
+          run_end += 1
+        end
+
+        # \b trims the run from the right until its last char sits on a word
+        # boundary, exactly the greedy capture's own backtracking
+        name_end = run_end
+        while name_end > 0 && !word_boundary?(tail, name_end)
+          name_end -= 1
+        end
+
+        if name_end > 0
+          name = tail[0, name_end]
+          hint = colorize("(this usually means you need to install the development package for lib#{name})").yellow.bold
+          io << line[copied...found] << marker << name << ' ' << hint
+          copied = search = found + marker.size + name_end
+        else
+          search = found + 1
+        end
+      end
+      io << line[copied..]
+      io.to_s
+    end
+
+    # `\b` between `string[name_end - 1]` and `string[name_end]?` (end of
+    # string reads as non-word): a boundary iff exactly one side is a word
+    # character. The regex ran UCP, where word chars are Unicode letters,
+    # digits and `_` — `Char#alphanumeric?` plus `_`.
+    private def word_boundary?(string : String, name_end : Int) : Bool
+      before = word_char?(string[name_end - 1])
+      after = string[name_end]?
+      before != (after ? word_char?(after) : false)
+    end
+
+    private def word_char?(char : Char) : Bool
+      char.alphanumeric? || char == '_'
     end
 
     private def linker_not_found(exc_class, linker_name)

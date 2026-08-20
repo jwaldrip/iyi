@@ -117,6 +117,11 @@ class Crystal::Command
     when command == "eval"
       options.shift
       eval
+    when command == "repl"
+      # iyi: the interpreter slice on the macro evaluator (SPEC.md III.11).
+      # Exact rather than a prefix, so `r` cannot be captured ahead of `run`.
+      options.shift
+      repl
     when command == "run"
       options.shift
       run_command(single_file: false)

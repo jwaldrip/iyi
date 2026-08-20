@@ -74,6 +74,11 @@ module Crystal
   # and saying which is most of what a boundary costs.
   BIND_PRELUDE = %w(String Int32 Int64 UInt8 UInt32 UInt64 Float64 Bool Nil Char Symbol Array Hash Range Pointer Void)
 
+  # iyi: this scanner is reached by the compiler, so stdlib Regex would keep
+  # pcre2 on its link line. Compile the grammar once through Crystal::Rx instead
+  # of maintaining four hand-written tokenizers (SPEC.md III.10).
+  private BIND_TYPE_NAME = Rx::Pattern.compile("[A-Za-z_][A-Za-z0-9_:]*")
+
   def self.print_bind(program : Program, root : String?, io : IO,
                       artifact_dir : String? = nil) : Nil
     unless root
@@ -150,8 +155,8 @@ module Crystal
         # signature, because the part is what somebody has to declare and one
         # decision unblocks every signature that mentions it.
         foreign.each do |type|
-          type.scan(/[A-Za-z_][A-Za-z0-9_:]*/).each do |match|
-            part = match[0]
+          Rx.scan(type, BIND_TYPE_NAME).each do |match|
+            part = match[0].not_nil!
             next if part == "class"
             outside[part] += 1 unless nameable_name?(part, root)
           end
@@ -448,8 +453,8 @@ module Crystal
   private def self.prune_declaration(declaration : IyiMod::TypeDecl, prefix : String,
                                      known : Set(String), root : String) : IyiMod::TypeDecl?
     resolvable = ->(text : String) do
-      text.scan(/[A-Za-z_][A-Za-z0-9_:]*/).all? do |match|
-        part = match[0]
+      Rx.scan(text, BIND_TYPE_NAME).all? do |match|
+        part = match[0].not_nil!
         next true if part == "class"
         next true unless part == root || part.starts_with?("#{root}::")
         known.includes?(part)
@@ -692,8 +697,8 @@ module Crystal
   private def self.foreign_names(method : BindMethod, root : String) : Set(String)
     names = Set(String).new
     method.signature_types.each do |type|
-      type.scan(/[A-Za-z_][A-Za-z0-9_:]*/).each do |match|
-        part = match[0]
+      Rx.scan(type, BIND_TYPE_NAME).each do |match|
+        part = match[0].not_nil!
         next if part == "class"
         names << part unless nameable_name?(part, root)
       end
@@ -721,8 +726,8 @@ module Crystal
   # prelude has and is made almost entirely of types it does not, and reading
   # only the head counted it as writable — the measurement flattering itself.
   private def self.nameable?(name : String, root : String) : Bool
-    name.scan(/[A-Za-z_][A-Za-z0-9_:]*/).all? do |match|
-      part = match[0]
+    Rx.scan(name, BIND_TYPE_NAME).all? do |match|
+      part = match[0].not_nil!
       next true if part == "class" # `Exception.class` is read as its own name
       nameable_name?(part, root)
     end

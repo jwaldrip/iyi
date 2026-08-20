@@ -606,13 +606,41 @@ module Crystal
       it "executes match" do
         assert_macro %({{ "hello world".match(/x/) }}), %(nil)
         assert_macro %({{ "hello world".match(/o.*o/) }}), %({0 => "o wo"} of ::Int32 | ::String => ::String | ::Nil)
-        assert_macro %({{ "hello world".match(/(?:(x)|e)(?<name>\\S+)/) }}), %({0 => "ello", 1 => nil, "name" => "llo"} of ::Int32 | ::String => ::String | ::Nil)
+      end
+
+      # iyi: macro regexes run on Crystal::Rx, RE2-shaped, and pcre2 is off the
+      # compiler (SPEC.md III.10, Appendix B #22). A construct the engine
+      # refuses fails the compile naming the construct and the engine, with
+      # the pattern's location, rather than quietly meaning something else.
+      # These cases pin the refusal for the constructs a macro is most likely
+      # to reach for.
+      it "refuses a lookahead pattern, naming the construct and the engine" do
+        assert_macro_error %({{ "hello world".match(/o(?= )/) }}), "invalid pattern \"o(?= )\" in macro: lookahead is not supported (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)"
+      end
+
+      it "refuses a lookbehind pattern" do
+        assert_macro_error %q({{ "hello".gsub(/(?<=l)o/, "a") }}), "invalid pattern \"(?<=l)o\" in macro: lookbehind is not supported (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)"
+      end
+
+      it "refuses a backreference pattern" do
+        assert_macro_error %q({{ "aa".scan(/(a)\1/) }}), "invalid pattern \"(a)\\\\1\" in macro: backreferences are not supported (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)"
+      end
+
+      it "refuses named groups, which left with pcre2" do
+        assert_macro_error %({{ "hello world".match(/(?:(x)|e)(?<name>\\S+)/) }}), "invalid pattern \"(?:(x)|e)(?<name>\\\\S+)\" in macro: named groups are not supported (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)"
+      end
+
+      it "refuses the /m flag, which the engine cannot honour" do
+        assert_macro_error %({{ "a\\nb".match(/^b$/m) }}), "unsupported regex flag /m on \"^b$\" in macro: Crystal::Rx, the compiler's engine, honours /i only"
       end
 
       it "executes scan" do
-        assert_macro %({{"Crystal".scan(/(Cr)(?<name1>y)(st)(?<name2>al)/)}}), %([{0 => "Crystal", 1 => "Cr", "name1" => "y", 3 => "st", "name2" => "al"} of ::Int32 | ::String => ::String | ::Nil] of ::Hash(::Int32 | ::String, ::String | ::Nil))
         assert_macro %({{"Crystal".scan(/(Cr)?(stal)/)}}), %([{0 => "stal", 1 => nil, 2 => "stal"} of ::Int32 | ::String => ::String | ::Nil] of ::Hash(::Int32 | ::String, ::String | ::Nil))
         assert_macro %({{"Ruby".scan(/Crystal/)}}), %([] of ::Hash(::Int32 | ::String, ::String | ::Nil))
+      end
+
+      it "refuses scan with named groups, which left with pcre2" do
+        assert_macro_error %({{"Crystal".scan(/(Cr)(?<name1>y)(st)(?<name2>al)/)}}), "named groups are not supported (Crystal::Rx, the compiler's engine, has no lookaround or backreferences)"
       end
 
       it "executes camelcase" do
