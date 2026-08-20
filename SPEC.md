@@ -3971,6 +3971,18 @@ Named honestly, so nobody mistakes this draft for complete.
     says so when it does. Only then — every other unresolved path keeps the
     message it had.
 
+    **And then a real one was written**, because nine compiles are not nine
+    programs: a small JSON API over Kemal, two iyi modules, storage in one and
+    routes in the other. Creating, listing, fetching, and a miss answered
+    `{"error":"no note 99"}` with a 404 — the miss travelling as `Note |
+    NotFound` with an `impl Error for NotFound` on it, which is iyi's error
+    union carrying a Kemal response. It found nothing of iyi's. The one thing
+    it did find belongs to Crystal and reproduces there:
+    `halt env, response: {error: found.message}.to_json` does not parse,
+    because a `{` after a named argument in a call without parentheses is read
+    as a block. A variable on the line before it is what a Crystal programmer
+    writes too.
+
     **What it costs.** R-1, for the required shard: it is read from source and
     the edit loop pays for it the way Crystal's does. Your own modules still
     write artifacts. And the two libraries are two modes on the reading side —
