@@ -232,6 +232,15 @@ module Crystal
     # one.
     getter iyi_usings = {} of String => Array(String)
 
+    # iyi: under `--crystal`, the library files each `.iyi` file required, by
+    # absolute filename and in the order they were required (SPEC.md IV.1g,
+    # `Requires`).
+    #
+    # A module's object code refers to Crystal's types by name, and only the
+    # program that required the same library has those names to define. So they
+    # travel in the artifact and the consumer replays them.
+    getter iyi_module_requires = {} of String => Array(String)
+
     # iyi: the method bodies each file's module has to ship, by absolute
     # filename and then by `IyiMod.mono_body_key` (SPEC.md IV.2, `MonoBodies`).
     #
