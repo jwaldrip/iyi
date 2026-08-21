@@ -335,4 +335,42 @@ describe "Compiler" do
       end
     end
   end
+
+  # iyi: negative indexing and the small formatting set.
+  #
+  # `a[-1]` used to raise, the way an index past the end does, and the README
+  # listed that as a missing Crystal habit. It counts from the end now, on
+  # both Array and String, and `[]=` / `[]?` wrap the same way. Formatting is
+  # `to_s(base)`, `rjust` / `ljust` and `*`, not a format-string parser.
+  describe "negative indexing and formatting" do
+    it "indexes from the end, writes bases, and pads" do
+      with_tempdir("iyi-index-format") do
+        File.write "format.iyi", <<-'IYI'
+          a = [10, 20, 30]
+          puts a[-1]
+          puts a[-a.size]
+          a[-1] = 99
+          puts a[-1]
+          puts a[-1].inspect
+          puts a[-4]?.inspect
+
+          s = "hello"
+          puts s[-1]
+          puts s[-2, 2]
+
+          puts 255.to_s(16)
+          puts 5.to_s(2)
+          puts "ab".rjust(5)
+          puts "ab".ljust(5, '*')
+          puts "ab" * 3
+          IYI
+        source = Iyi::Compiler::Source.new(
+          File.expand_path("format.iyi"), File.read("format.iyi"))
+        iyi_compiler.compile(source, File.expand_path("format"))
+
+        Process.capture(File.expand_path("format")).should eq(
+          "30\n10\n99\n99\nnil\no\nlo\nff\n101\n   ab\nab***\nababab\n")
+      end
+    end
+  end
 end

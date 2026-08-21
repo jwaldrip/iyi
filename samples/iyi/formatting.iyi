@@ -1,0 +1,32 @@
+# Negative indexing and the small formatting set — README "What is not here".
+#
+#   ./bin/iyi run samples/iyi/formatting.iyi
+#
+# `a[-1]` counts from the end. `to_s(base)` writes a number in base 2 through
+# 36. `rjust` / `ljust` pad, `*` repeats. There is no format-string parser;
+# these are the methods a table and a hex dump actually need.
+
+module samples/formatting
+
+a = [10, 20, 30]
+puts "last #{a[-1]}"
+puts "first #{a[-a.size]}"
+
+a[-1] = 99
+puts "written #{a[-1]}"
+
+s = "hello"
+puts "char #{s[-1]}"
+puts "slice #{s[-2, 2]}"
+
+n = 255
+puts "hex #{n.to_s(16)}"
+puts "bin #{5.to_s(2)}"
+
+cell = "ab"
+puts "rjust '#{cell.rjust(5)}'"
+puts "ljust '#{cell.ljust(5, '*')}'"
+puts "rep #{cell * 3}"
+
+puts "nil #{a[-4]?.inspect}"
+puts "maybe #{a[-1]?.inspect}"
