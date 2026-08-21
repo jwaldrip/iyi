@@ -4,16 +4,18 @@
 The README says the word "Performance", and the compile-time half of that is
 measured to death (`build_speed.py`, `incremental.py`) while the run-time half
 was not measured at all. It is worth asking, because the two libraries are not
-the same code: iyi's `Array`, `String` and `Hash` are hand-written and 1,184
-lines, Crystal's are 8,161.
+the same code: iyi's own library is 2,368 lines, Crystal's is 8,161.
 
-**Two columns, and the second one is why this file is not a victory lap.** Run
-normally, iyi's string building looked twenty times faster than Crystal's. Run
-with `GC_DONT_GC=1`, it is 1.58x *slower*: every bit of that twenty was the
-collector, which scans a program's roots and has far fewer of them in a 17 KB
-binary than in a 972 KB one. So the columns separate two different claims —
-what the library's code costs, and what carrying a standard library costs — and
-only the first is about `Array` and `String` at all.
+**Two columns, and the second one is why this file is not a victory lap.** The
+first reading said string building was twenty times faster. With
+`GC_DONT_GC=1` it was slower: every bit of that twenty was the collector,
+which scans a program's roots and has far fewer of them in a small binary
+than in a large one. A later run no longer shows the twenty; as they run,
+string building is within noise, and the collector is masking a slower
+builder. The columns separate two different claims (what the library's code
+costs, and what carrying a standard library costs) and only the first is
+about `Array` and `String` at all. The numbers live in the README; this file
+is how to re-measure them.
 
 Each program is written once and compiled twice, under `--crystal` and under
 iyi's own prelude, and both must print the same thing or the row is refused.
@@ -127,7 +129,7 @@ def main() -> int:
     if not IYI.exists():
         raise SystemExit("build the compiler first: make iyi release=1")
 
-    print("run time — best of %d, seconds. The same program under two libraries." % RUNS)
+    print("run time, best of %d, seconds. The same program under two libraries." % RUNS)
     print()
     print("  %-24s %17s   %17s" % ("", "as it runs", "with the collector off"))
     print("  %-24s %8s %8s   %8s %8s   %s" %

@@ -47,7 +47,12 @@ trap 'rm -rf "$WORK"' EXIT
 # input: on darwin that is `LibC.read` for the same reason `write` is, and on
 # Linux it is syscall 0 (63 on aarch64), so the Linux list is unchanged and
 # `calc`'s x86_64-linux-gnu object still has zero undefined symbols.
-ALLOWED_SYMBOLS_DARWIN="exit malloc memset read realloc write"
+# `open`, `close` and `chmod` joined when `File` did. Darwin binds libSystem;
+# Linux issues `openat`/`close` as syscalls, so the Linux list is still
+# unchanged and `files.iyi`'s x86_64-linux-gnu object is empty.
+# `unlink` joined with File.delete. Darwin binds libSystem again; Linux issues
+# `unlinkat`, so its undefined list and the files object remain empty.
+ALLOWED_SYMBOLS_DARWIN="chmod close exit malloc memset open read realloc unlink write"
 ALLOWED_SYMBOLS_LINUX="ITM_deregisterTMCloneTable ITM_registerTMCloneTable _cxa_finalize _gmon_start__ _libc_start_main"
 
 # What a program may link. The platform libc only.

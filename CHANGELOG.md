@@ -6,7 +6,7 @@
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 2,012-line library and nothing else. Every other
+  written against iyi's own 2,368-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
@@ -16,6 +16,11 @@
   interesting one: iyi has no floats, Crystal's `/` on integers returns a
   `Float64`, and a name that means two things is what III.1.7a settled against
   — so integer division stays `//` in both.
+
+- **Files can be removed.** `File.delete` uses `unlinkat` on Linux,
+  `unlink` on Darwin and `DeleteFileA` on Windows. wasm32-wasi refuses it:
+  deleting a path needs a preopened directory capability the prelude does not
+  have. `samples/iyi/files.iyi` now deletes what it creates.
 
 ### Fixed
 
@@ -128,24 +133,25 @@ below doing its job rather than an exception to it.
   `git diff`'s spelling and its reason: the answer is not a failure.
 
 - **An iyi program is run on three targets every build, not one.** It compiled
-  for eight and was tested on one, which is a weak thing to call portability.
+  for nine and was tested on one, which is a weak thing to call portability.
   CI now cross-compiles `hello.iyi` for musl and for aarch64, links each with
-  the target's own `cc` and `libgc` — the command `--cross-compile` prints —
+  the target's own `cc` and `libgc` (the command `--cross-compile` prints)
   and runs them: in an Alpine container and under emulation. The check is that
   each prints what the same program printed on the machine that compiled it.
 
 - **`bench/runtime.py` measures what the library costs at run time.** The two
-  libraries are within noise where they do the same work; `Hash` is 6x ahead
-  and does less; `String` is 1.64x behind. The first reading said string
-  building was twenty times faster, and it was the collector — a 17 KB binary
-  has fewer roots to scan than a 972 KB one — so the bench reports both columns
-  and the honest one is the second.
+  libraries are within noise where they do the same work; `Hash` is 5x ahead
+  and does less; `String` is 3.62x behind with the collector off. The first
+  reading said string building was twenty times faster, and it was the
+  collector, so the bench reports both columns and the honest one is the
+  second. A later run no longer shows the twenty; as they run, string
+  building is within noise, and the collector is masking a slower builder.
 
 - **iyi describes itself as its own language, compatible with Crystal.** "A
   language built for Developer & Agentic Experience, Portability, Performance,
   and Efficiency", and README says what stands behind each of the four and what
-  does not: the edit loop and the artifact are built, portability means eight
-  targets that compile and one that is tested, the run-time measurement is new
+  does not: the edit loop and the artifact are built, portability means nine
+  targets that compile and three that are run, the run-time measurement is new
   and says the two libraries are within noise where they do the same work, and
   the agentic claim is a mechanism rather than a result.
 

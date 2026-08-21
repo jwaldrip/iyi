@@ -335,4 +335,85 @@ describe "Compiler" do
       end
     end
   end
+
+  # iyi: negative indexing and the small formatting set.
+  #
+  # `a[-1]` used to raise, the way an index past the end does, and the README
+  # listed that as a missing habit. It counts from the end now, on both Array
+  # and String, and `[]=` / `[]?` wrap the same way. Formatting is
+  # `to_s(base)`, `rjust` / `ljust` and `*`, not a format-string parser.
+  describe "negative indexing and formatting" do
+    it "indexes from the end, writes bases, and pads" do
+      with_tempdir("iyi-index-format") do
+        File.write "format.iyi", <<-'IYI'
+          a = [10, 20, 30]
+          puts a[-1]
+          puts a[-a.size]
+          a[-1] = 99
+          puts a[-1]
+          puts a[-1].inspect
+          puts a[-4]?.inspect
+
+          s = "hello"
+          puts s[-1]
+          puts s[-2, 2]
+
+          puts 255.to_s(16)
+          puts 5.to_s(2)
+          puts "ab".rjust(5)
+          puts "ab".ljust(5, '*')
+          puts "ab" * 3
+          IYI
+        source = Iyi::Compiler::Source.new(
+          File.expand_path("format.iyi"), File.read("format.iyi"))
+        iyi_compiler.compile(source, File.expand_path("format"))
+
+        Process.capture(File.expand_path("format")).should eq(
+          "30\n10\n99\n99\nnil\no\nlo\nff\n101\n   ab\nab***\nababab\n")
+      end
+    end
+  end
+
+  # iyi: File.read / File.write / File.exists? / File.delete.
+  #
+  # A language that cannot read a file cannot be used. The surface is those
+  # four, and a missing path panics with the path in the message.
+  describe "File" do
+    it "round-trips and deletes a file and answers exists?" do
+      with_tempdir("iyi-file-io") do
+        File.write "io.iyi", <<-'IYI'
+          File.write("t.txt", "hello")
+          puts File.read("t.txt")
+          puts File.exists?("t.txt")
+          puts File.exists?("missing.txt")
+          File.delete("t.txt")
+          puts File.exists?("t.txt")
+          IYI
+        source = Iyi::Compiler::Source.new(
+          File.expand_path("io.iyi"), File.read("io.iyi"))
+        iyi_compiler.compile(source, File.expand_path("io"))
+
+        Process.capture(File.expand_path("io")).should eq("hello\ntrue\nfalse\nfalse\n")
+      end
+    end
+
+    it "names the path when the file is missing" do
+      with_tempdir("iyi-file-missing") do
+        File.write "miss.iyi", <<-'IYI'
+          File.read("no-such-iyi-file.txt")
+          IYI
+        source = Iyi::Compiler::Source.new(
+          File.expand_path("miss.iyi"), File.read("miss.iyi"))
+        iyi_compiler.compile(source, File.expand_path("miss"))
+
+        exception = nil
+        begin
+          Process.capture(File.expand_path("miss"))
+        rescue ex
+          exception = ex
+        end
+        exception.should_not be_nil
+      end
+    end
+  end
 end

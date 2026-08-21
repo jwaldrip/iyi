@@ -313,8 +313,8 @@ jobs:
           done
           exit $status
   # Portability, taken past "the code generator has no objection". The README
-  # says an iyi program compiles for eight targets and is tested on one; these
-  # two jobs move two of the other seven from compiled to *run*.
+  # says an iyi program compiles for nine targets and is run on three of them;
+  # these two jobs are the musl and aarch64 runs, and the native job is the third.
   #
   # Split in two because a job with a `container:` cannot run docker, and
   # running the program means running it somewhere else: the object is produced

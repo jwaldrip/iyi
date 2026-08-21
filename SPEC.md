@@ -62,7 +62,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 2,012 lines, ceiling 3,551 |
+| iyi's own prelude | 2,368 lines, ceiling 3,551 |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -87,7 +87,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 2,012 lines
+> "No standard library worth the name" is still true of iyi's own 2,368 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -269,7 +269,7 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 2,012 lines,
+**3. A deliberately tiny prelude, written in iyi. Done: 2,368 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
 one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
@@ -749,7 +749,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 87,597 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 2,012-line own prelude + 722 in samples |
+| Library | 8,161 lines (3,551 of it core) | 2,368-line own prelude + 722 in samples |
 | Specs | 21,146 lines | 6,679 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -965,6 +965,20 @@ Expanding `derive JSON` here needs to know only whether `Customer` implements
 What this forbids, and should: `all_subclasses`, program-wide `macro finished`,
 and `macro_run`. The last of which costs a fixed **+7.4 s per distinct script**
 on a cold build, remeasured in II.10.
+
+**Implementation finding: reuse the exported macro registry, not an ordinary
+macro call graph.** A direct implementation passed the semantic cases: it
+resolved an exported macro, handed it the attached declaration and registered
+the generated methods once. Producer and artifact builds did not terminate.
+Cloning the declaration, replacing the directive with `Nop`, detaching the
+generated expansion and removing observer/dependency edges each removed one
+retained path and did not produce a finite source-deleted build. A generic
+type emitted with `no_codegen` did not either.
+
+Nothing from that implementation was kept. The next attempt needs a
+purpose-built, serializable declaration input for derive expansion. Resolution
+still belongs in the existing exported macro registry; execution cannot be
+faked as an ordinary `Call` whose semantic graph was designed to stay live.
 
 ### II.5 Dictionaries × the garbage collector: **SETTLED, and a dependency**
 
@@ -2180,6 +2194,56 @@ reached from something that would plausibly be spawned", for the compiler, which
 spawns nothing. For the samples it can: the three failures are `Nums`, `Words`
 and the Kemal router's route table, and the router is precisely the thing a
 server would share across tasks.
+
+#### III.4.8 What to build first, and what not to build: **SETTLED: nothing before a scheduler**
+
+III.4 is specified and unbuilt, and the question this section had left open is
+not whether to build it but which piece first. Asked properly, the answer is
+that the obvious cheap slices are all dishonest, and it is worth writing down
+why so nobody reaches for them again.
+
+Iyi's own library has no concurrency surface of any kind: no fiber, no thread,
+no scheduler, no channel, no mutex, no atomic. A program built `--crystal` has
+all of Crystal's (`src/fiber.cr`, `src/concurrent.cr`, `src/channel.cr`,
+`src/atomic.cr`, `src/crystal/scheduler.cr`), which is III.4.6's point: those
+are the thing III.4 was written to replace, not an implementation of it.
+
+Three slices were ranked:
+
+1. **`Share` alone.** The cheapest. It is a static marker and the machinery it
+   needs mostly exists: `collect_iyi_fields` in `src/compiler/iyi/compiler.cr`
+   already walks a type's field set into the artifact's `TypeDecl`, and
+   `bench/share_count.cr` already computes mutability, so the analysis has been
+   written once. What it lacks is a caller. Nothing can spawn and nothing can
+   send, so the marker would gate no operation, and a rule that refuses nothing
+   cannot be tested for refusing the right things.
+2. **`group` reusing `defer`'s lowering, running tasks sequentially.** III.4.1
+   says a group is `defer` again, and it is right: `Defer` parses in
+   `src/compiler/iyi/syntax/parser.cr` and lowers to an `ensure` in
+   `normalizer.cr`, and a join-at-scope-exit is that same shape. The syntax
+   would cost little. **Rejected.** A `group` whose tasks run one after another
+   is not concurrency, and shipping the spelling of a feature without the
+   feature is the worst outcome available here: it would typecheck, run, print
+   the right answer, and teach everyone the wrong thing about what iyi does.
+   III.1.7a settled that a name meaning two things is worse than a different
+   name; a name meaning nothing is worse still.
+3. **A scheduler, cancellable blocking primitives, then `group` and
+   `Channel(T : Share)`.** The only slice that is usable and testable. It is
+   also the expensive one, and III.4.2 already said so: cancellation is
+   worthless unless it reaches a blocked task, so `__iyi_read` and its siblings
+   in all four platform branches would have to stop being direct blocking
+   syscalls and become non-blocking registrations against a poller the
+   scheduler drives.
+
+**Verdict: III.4 is built in the order 3, and not begun before that order can
+be paid for.** `Share` is not built first despite being cheapest, because a
+marker with no caller is a mechanism nobody can check, and this document has
+refused that shape twice already.
+
+The dependency floor (III.9) is the other cost to name in advance: a program's
+Linux object has zero undefined symbols today because the prelude issues raw
+syscalls. A poller is more syscalls, which is fine, but a scheduler that reached
+for pthreads would put libc back on the link line and take III.9 with it.
 
 ### III.5 Module initialisation: **PROPOSED; rules 1, 2 and 4 BUILT**
 
@@ -4960,8 +5024,8 @@ Named honestly, so nobody mistakes this draft for complete.
     thing that runs at compile time and is what makes `{% %}` work.
 
 12c. **Portability, moved from compiled to run.** An iyi program produced code
-    for eight targets and was tested on one, which is the weakest kind of
-    portability claim: the code generator not objecting. Three of the eight now
+    for nine targets and was tested on one, which is the weakest kind of
+    portability claim: the code generator not objecting. Three of the nine now
     run in CI every build — x86-64 glibc natively, x86-64 musl in an Alpine
     container, aarch64 under emulation — and the check is that each prints what
     the same program printed on the machine that compiled it.
@@ -4984,9 +5048,12 @@ Named honestly, so nobody mistakes this draft for complete.
     a program that carries less collects faster. That is a real effect, it is
     the efficiency claim, and it is not a claim about `String`.
 
-    What the honest column says: arithmetic and array work are within noise
-    (0.97x, 0.90x), `String` is behind (1.64x), and `Hash` is ahead by 6x while
-    doing less — iyi's does not preserve insertion order and Crystal's does.
+    What the honest column says on a later run of the same bench: arithmetic
+    is within noise (0.96x), array work is ahead (0.78x), `String` is behind
+    (3.62x), and `Hash` is ahead by 5x while doing less. The twenty-times
+    as-it-runs reading did not reproduce; as they run, string building is
+    now within noise (0.97x). The confound the first reading found is still
+    the point: the collector is not the library.
 
     Kept here because the mistake is the point. A benchmark that measures a
     program and reports a library is the easiest way to publish a number that
@@ -5110,7 +5177,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 2,012-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 2,368-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler

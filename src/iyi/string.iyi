@@ -61,32 +61,95 @@ class String
     @bytesize == 0
   end
 
-  # The character at *index*, and the substring that starts there — asked for by
+  # The character at *index*, and the substring that starts there, asked for by
   # `samples/iyi/calc`, which scans its input a character at a time and cannot
   # do it with `to_unsafe` without becoming a program about pointers.
   #
   # ASCII, like the rest of this file: a byte is a character here, which is true
   # of every string this prelude is asked to handle and false in general. The
   # place it stops being true is the place to make `Char` real, and `size`
-  # already counts UTF-8 properly, so the two would disagree — noted rather than
+  # already counts UTF-8 properly, so the two would disagree, noted rather than
   # hidden.
   #
-  # Out of range raises rather than returning nil, which is what `a[-1]` does
-  # and for the same reason: the caller knows the length.
+  # A negative index counts from the end, so `s[-1]` is the last character.
+  # Out of range after that wrap still raises rather than returning nil: the
+  # caller knows the length. `[]?` is the question that allows absence.
   def [](index : Int32) : Char
+    index = @bytesize + index if index < 0
     raise "index out of range" if index < 0 || index >= @bytesize
     to_unsafe[index].unsafe_chr
   end
 
+  def []?(index : Int32) : Char?
+    index = @bytesize + index if index < 0
+    return nil if index < 0 || index >= @bytesize
+    to_unsafe[index].unsafe_chr
+  end
+
+  # A negative *start* counts from the end, the same wrap as the one-index
+  # form. *count* stays non-negative: a negative count is not a wrap, it is a
+  # mistake, and it raises for that reason rather than being silently clamped.
   def [](start : Int32, count : Int32) : String
-    raise "index out of range" if start < 0 || start > @bytesize
     raise "negative count" if count < 0
+    start = @bytesize + start if start < 0
+    raise "index out of range" if start < 0 || start > @bytesize
 
     available = @bytesize - start
     taken = count < available ? count : available
 
     String.new(taken) do |buffer|
       buffer.copy_from(to_unsafe + start, taken)
+    end
+  end
+
+  # Pad on the left (rjust) or the right (ljust) to *width* bytes. The pad is
+  # one ASCII byte, like the rest of this file. A width that already fits
+  # returns the string unchanged.
+  def rjust(width : Int32, pad : Char) : String
+    return self if width <= @bytesize
+    extra = width - @bytesize
+    pad_byte = pad.ord.to_u8
+    String.new(width) do |buffer|
+      i = 0
+      while i < extra
+        buffer[i] = pad_byte
+        i = i + 1
+      end
+      (buffer + extra).copy_from(to_unsafe, @bytesize)
+    end
+  end
+
+  def rjust(width : Int32) : String
+    rjust(width, ' ')
+  end
+
+  def ljust(width : Int32, pad : Char) : String
+    return self if width <= @bytesize
+    extra = width - @bytesize
+    pad_byte = pad.ord.to_u8
+    String.new(width) do |buffer|
+      buffer.copy_from(to_unsafe, @bytesize)
+      i = @bytesize
+      while i < width
+        buffer[i] = pad_byte
+        i = i + 1
+      end
+    end
+  end
+
+  def ljust(width : Int32) : String
+    ljust(width, ' ')
+  end
+
+  def *(count : Int32) : String
+    return "" if count <= 0 || @bytesize == 0
+    total = @bytesize * count
+    String.new(total) do |buffer|
+      i = 0
+      while i < count
+        (buffer + i * @bytesize).copy_from(to_unsafe, @bytesize)
+        i = i + 1
+      end
     end
   end
 

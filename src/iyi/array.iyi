@@ -57,12 +57,22 @@ class Array(T)
     self
   end
 
+  # A negative index counts from the end, so `a[-1]` is the last element.
+  # Still out of range after that wrap (or empty) raises, same message.
   def [](index : Int32) : T
+    index = @size + index if index < 0
     raise "index out of range" if index < 0 || index >= @size
     @buffer[index]
   end
 
+  def []?(index : Int32) : T?
+    index = @size + index if index < 0
+    return nil if index < 0 || index >= @size
+    @buffer[index]
+  end
+
   def []=(index : Int32, value : T) : T
+    index = @size + index if index < 0
     raise "index out of range" if index < 0 || index >= @size
     @buffer[index] = value
   end

@@ -14,11 +14,11 @@ that rule and what it costs.
 
 | | measured today |
 |---|---|
-| **Developer experience** | edit one module in a 7,208-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
+| **Developer experience** | edit one module in a 7,207-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
 | **Agentic experience** | a module's interface is a file, not a convention: `iyi mod dump` prints it, and a consumer type-checks against it with the source deleted |
-| **Portability** | an iyi program compiles for **eight targets** and is **run** on three of them every build: x86-64 glibc, x86-64 musl, and aarch64 under emulation |
+| **Portability** | an iyi program compiles for **nine targets** and is **run** on three of them every build: x86-64 glibc, x86-64 musl, and aarch64 under emulation |
 | **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s**. At run time the two libraries are within noise where they do the same work |
-| **Efficiency** | that `hello` is a **17 KB** binary that starts in **1.2 ms**; the same program with Crystal's library is 972 KB and 3.4 ms |
+| **Efficiency** | that `hello` is a **36 KB** binary that starts in **1.6 ms**; the same program with Crystal's library is 1,553 KB and 3.2 ms |
 
 **iyi is its own language, and it is compatible with
 [Crystal](https://crystal-lang.org).** Compatible in a way you can check: the
@@ -244,7 +244,7 @@ Said plainly, because a tagline that outruns its evidence is worth less than no
 tagline.
 
 **Developer experience — built, and it is the number this project exists for.**
-The edit loop is 0.13 s where Crystal's is 1.17 s on the same 7,208 lines, and
+The edit loop is 0.13 s where Crystal's is 1.17 s on the same 7,207 lines, and
 that is R-1 paying: the twenty-nine modules you did not touch arrive as
 declarations. The rest of it is smaller and just as deliberate — errors name the
 rule they enforce and what to write instead, `iyi tool format` knows the syntax,
@@ -304,39 +304,45 @@ program under both libraries, and the honest reading is not the flattering one:
 
 | workload | as it runs | with the collector off |
 |---|---|---|
-| arithmetic | 1.00x | 0.97x |
-| array append and read | 0.55x | 0.90x |
-| hash insert and read | 0.13x | 0.15x |
-| string building | **0.05x** | **1.64x** |
+| arithmetic | 1.00x | 0.96x |
+| array append and read | 0.67x | 0.78x |
+| hash insert and read | 0.17x | 0.19x |
+| string building | 0.97x | **3.62x** |
 
-Under 1.00 is iyi ahead. Run normally, string building looks twenty times
-faster; with the collector out of the way it is 1.64x **slower**, so all of
-that twenty was the collector having fewer roots to scan in a 17 KB binary than
-in a 972 KB one. That is a real effect and it is the efficiency claim, not a
-claim about `String`. Where the two libraries do the same work they are within
-noise; where iyi's is faster — `Hash`, by 6x — part of the reason is that it
-does less, and does not preserve insertion order.
+Under 1.00 is iyi ahead. These seconds are a machine, not a language: run
+`python3 bench/runtime.py` on an idle one. Where the two libraries do the
+same work they are within noise. `Hash` is ahead by 5x with the collector
+off, and does less (no insertion order). `String` is 3.62x slower with the
+collector off, and within noise as it runs: the collector is masking a
+slower builder, which is the same confound the first reading published
+upside down as a twenty-times win.
 
 Nothing here has benchmarked a program against C or Go, and what R-4 says about
 generics crossing a boundary is specified and unmeasured.
 
-**Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 17 KB
-binary that starts in 1.2 ms; the same program compiled with Crystal's standard
-library is 972 KB and 3.4 ms. Nothing clever is happening: a program links what
-it uses, and iyi's own library is 2,012 lines rather than 8,161. The whole
-library is 56 KB on disk beside the binary.
+**Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 36 KB
+binary that starts in 1.6 ms; the same program compiled with Crystal's standard
+library is 1,553 KB and 3.2 ms. Nothing clever is happening: a program links what
+it uses, and iyi's own library is 2,368 lines rather than 8,161. The whole
+library is 79 KB on disk beside the binary.
+
+<sup>Sizes and start times are a plain `iyi build`, no flags, on macOS arm64
+with LLVM 22. They move with the platform and the LLVM, which is why they are
+quoted with the machine attached; `python3 bench/machine_probe.py` prints the
+pair for yours. The line counts beside them are `wc -l` and do not move, and
+`python3 bench/doc_numbers.py` fails when one of those drifts from the tree.</sup>
 
 ## Getting it
 
-The released tarball is 0.1.0. A build from current source reports
-`0.2.0-dev`.
+The released tarball is 0.2.0. A build from current source reports
+`0.3.0-dev`.
 
 ```console
 $ tar -xzf iyi-0.2.0-linux-x86_64.tar.gz -C ~/.local
 $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 
-The tarball is relocatable and carries both libraries: iyi's own 56 KB, and
+The tarball is relocatable and carries both libraries: iyi's own 79 KB, and
 Crystal's standard library for `--crystal`. `bin/iyi` finds them beside itself,
 so there is nothing to configure and no `IYI_PATH` to set.
 
@@ -467,13 +473,13 @@ $ curl localhost:3000/json
 `pub`, traits with defaults, `impl … forall`, error unions and `!`, `.or`,
 `or_panic`, `defer` — all of them, on a program that requires a shard. R-2
 still refuses an export that does not write its types. What changes is what the
-program *has*: 8,161 lines of Crystal's standard library instead of 2,012
+program *has*: 8,161 lines of Crystal's standard library instead of 2,368
 lines of iyi's own prelude.
 
 **One name is unreachable, and it is a class of names.** `!` in iyi propagates
 an error, so a method whose name ends in one cannot be called from a `.iyi`
 file — `a.sort!` asks the compiler to propagate `Array(Int32)`'s errors, and it
-says so. Crystal's standard library has **49 such names**, `not_nil!`, `sort!`,
+says so. Crystal's standard library has **51 such names**, `not_nil!`, `sort!`,
 `map!`, `select!` and `uniq!` among them. What replaces them is what Crystal
 writes anyway when it wants a copy or a narrowing:
 
@@ -756,22 +762,31 @@ marked PROPOSED are the parts that will move under you.
 
 ## What is not here
 
-- **iyi's own library is 2,012 lines, and its only IO is `puts`, `print` and
-  `read_input`**: integers, booleans, a string, one sequence, one dictionary,
-  one range. `read_input` returns everything on standard input as one string,
-  because there is no `IO` to keep the rest in; `samples/iyi/calc` asked for it.
-  No files, no sockets, no formatting. `--crystal` is the other library and has
-  all of it; everything below this line is about iyi's own.
-- **The prelude's collections are smaller than Crystal's, and one habit
-  differs.** A method is in there because a program in this repository needed
-  it, so most of what you reach for is not;
-  `samples/iyi/std/enumerable.iyi` is where the rest is being written, as trait
-  defaults. And `a[-1]` does not index from the end: it raises, the way an
-  index past the end does. Nothing indexes from the end in iyi yet.
+- **iyi's own library is 2,368 lines, and its IO is `puts`, `print`,
+  `read_input` and `File`**: integers, booleans, a string, one sequence, one
+  dictionary, one range. `read_input` returns everything on standard input as
+  one string, because there is no `IO` to keep the rest in. `File.read`,
+  `File.write`, `File.exists?` and `File.delete` are the file surface.
+  `samples/iyi/files.iyi` writes, reads and deletes its file. No sockets, no
+  format strings.
+  `--crystal` is the other library and has all of it; everything below this
+  line is about iyi's own.
+- **The prelude's collections are smaller than Crystal's.** A method is in
+  there because a program in this repository needed it, so most of what you
+  reach for is not; `samples/iyi/std/enumerable.iyi` is where the rest is
+  being written, as trait defaults. `a[-1]` indexes from the end, the way
+  Crystal's does; out of range after that wrap still raises.
+  `samples/iyi/formatting.iyi` is the rest of the small set: `to_s(base)`,
+  `rjust` / `ljust`, and `*`.
 - **No concurrency of iyi's own.** SPEC.md III.4 specifies structured
   concurrency, scope-owned cancellation and a `Share` marker, and none of it is
   built. A program built `--crystal` has Crystal's fibers, which are the thing
-  III.4 was written to replace rather than an answer to it.
+  III.4 was written to replace rather than an answer to it. III.4.8 records the
+  build order and one refusal worth knowing about: a `group` that ran its tasks
+  one after another would be cheap, would typecheck, would print the right
+  answer, and would teach everybody the wrong thing about what iyi does, so it
+  is not being built. The first honest piece is a scheduler and cancellable
+  blocking primitives, which is also the expensive one.
 - **No package manager and no self-hosting.** `--crystal` gives a program
   Crystal's standard library; nothing gives it a package manager.
 - **No native test matrix across the supported targets.** CI type-checks the
@@ -791,7 +806,10 @@ marked PROPOSED are the parts that will move under you.
   build commit in its identity, and interoperates only with itself.
 - **There is no `derive`.** SPEC.md R-5 designs it and nothing implements it.
   What is built is the mechanism under it: a module's macros travel with its
-  artifact, and `pub macro` says which of them another module may run.
+  artifact, and `pub macro` says which of them another module may run. II.4
+  records the failed implementation too: resolution can reuse that registry,
+  but derive expansion cannot be an ordinary macro `Call` with a live semantic
+  graph.
 - **Macros are not hygienic.** `pub macro` exports a name and an arity, and a
   macro is pasted text, so one that writes `tmp = 99` assigns to your `tmp` if
   you have one. That is Crystal's semantics kept whole.
@@ -802,7 +820,7 @@ marked PROPOSED are the parts that will move under you.
 |---|---|
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
 | [`samples/iyi`](samples/iyi) | ten programs: eight documenting a part of it, one being a first half hour, and `calc`, a language |
-| [`src/iyi`](src/iyi) | iyi's own library, 2,012 lines. `--crystal` swaps it for Crystal's |
+| [`src/iyi`](src/iyi) | iyi's own library, 2,368 lines. `--crystal` swaps it for Crystal's |
 | [`src/compiler/iyi/iyimod.cr`](src/compiler/iyi/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |
