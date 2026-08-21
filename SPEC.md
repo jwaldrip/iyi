@@ -4297,11 +4297,24 @@ Named honestly, so nobody mistakes this draft for complete.
     > is a block that returns `_`, which is not a type and never crosses.
     >
     > `Time` and `SemanticVersion` bind the same way — 446 public methods at
-    > 86.1% and 22 at 95.5% — and take `YAML` to **193 crossing and 5 waiting**:
-    > two on `Set`, which is generic and so is IV.2's, two free variables, and
-    > one `self` this tool still reads as a name. A `JSON` boundary written
-    > against `IO`'s is 16 types, 140 methods and 301 symbols, and its keep file
-    > compiles.
+    > 86.1% and 22 at 95.5%. A `JSON` boundary written against `IO`'s is 16
+    > types, 140 methods and 301 symbols, and its keep file compiles.
+    >
+    > **What is left, with all three bound and the count finally saying only
+    > what it means.** A name that is not a type is not work, and counting `T`,
+    > `self` and `_` beside `IO` said there was more waiting than there was —
+    > the same inflation as the list, one layer further in. Split apart:
+    >
+    > | | crossing | waiting on a type | no variable can hold | not a type |
+    > |---|---|---|---|---|
+    > | `JSON` | **181** | **0** | 18 | 0 |
+    > | `YAML` | **193** | **2** | 4 | 3 |
+    > | `URI` | **56** | **0** | 2 | 1 |
+    >
+    > `JSON` and `URI` wait on nothing anybody could declare. `YAML` waits on
+    > `Set`, which is generic, and generics travel as bodies rather than as
+    > declarations — IV.2's problem and not this one's. The middle column is
+    > empty of work.
     >
     > So the paragraph above is wrong in its last sentence and the correction is
     > worth more than it was. Crossing the core was not unstarted work that

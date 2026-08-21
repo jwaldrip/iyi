@@ -136,7 +136,7 @@ module Crystal
     io.puts
     io.puts "  #{(mechanical * 100.0 / methods.size).round(1)}% of the surface needs no human."
 
-    emit_module methods, root, io
+    emit_module program, methods, root, io
     write_artifact program, methods, root, artifact_dir, io if artifact_dir
 
     return if human.zero?
@@ -157,12 +157,16 @@ module Crystal
   # the shard's own, or the prelude's. What is left out is left out by name,
   # because those are the types somebody has to decide about, and deciding is
   # the work this tool exists to size.
-  private def self.emit_module(methods : Array(BindMethod), root : String, io : IO) : Nil
+  private def self.emit_module(program : Program, methods : Array(BindMethod),
+                               root : String, io : IO) : Nil
     known = methods.select { |m| m.verdict.ready? || m.inferred }
     lines = [] of String
     outside = Hash(String, Int32).new(0)
+    unnameable = Hash(String, Int32).new(0)
 
     unheld = 0
+    waiting = 0
+    never = 0
     known.each do |method|
       types = method.signature_types
       foreign = types.reject { |t| nameable?(t, root) }
@@ -173,6 +177,10 @@ module Crystal
       if foreign.empty?
         lines << method.declaration
       else
+        # Whether anything on this signature is a type somebody could declare.
+        # If nothing is, no amount of work reaches it and it does not belong in
+        # the same count as the ones that are waiting for a decision.
+        declarable = false
         # Named by the part that is missing rather than by the whole
         # signature, because the part is what somebody has to declare and one
         # decision unblocks every signature that mentions it.
@@ -180,18 +188,32 @@ module Crystal
           type.scan(/[A-Za-z_][A-Za-z0-9_:]*/).each do |match|
             part = match[0]
             next if part == "class"
-            outside[part] += 1 unless nameable_name?(part, root)
+            next if nameable_name?(part, root)
+            # `T` is a free variable, `self` is the receiver and `_` is a block
+            # nobody annotated. None is a type anybody could declare, and
+            # counting them beside `IO` said there was more waiting than there
+            # was — the same inflation, one layer further in.
+            if declared_type? program, part
+              outside[part] += 1
+              declarable = true
+            else
+              unnameable[part] += 1
+            end
           end
         end
+        declarable ? (waiting += 1) : (never += 1)
       end
     end
 
     io.puts
     io.puts "a boundary this tool can already write:"
     io.puts "  signatures                #{lines.size}"
-    io.puts "  waiting on a type nobody has declared  #{known.size - lines.size - unheld}"
+    io.puts "  waiting on a type nobody has declared  #{waiting}"
     if unheld > 0
       io.puts "  taking a type no variable can hold     #{unheld}"
+    end
+    if never > 0
+      io.puts "  naming something that is not a type    #{never}"
     end
 
     unless outside.empty?
@@ -202,7 +224,17 @@ module Crystal
       end
     end
 
-    unlocked = blocked_by(known, root)
+    unless unnameable.empty?
+      io.puts
+      io.puts "and the names that are not types anybody can declare:"
+      unnameable.to_a.sort_by { |(_, c)| -c }.first(10).each do |(name, count)|
+        io.puts "  %-44s %d" % [name, count]
+      end
+      io.puts "  A free variable, `self`, or a block nobody annotated. These"
+      io.puts "  never cross, and no work makes them."
+    end
+
+    unlocked = blocked_by(program, known, root)
     unless unlocked.empty?
       io.puts
       io.puts "declaring one type at a time, and what each one unlocks:"
@@ -878,10 +910,16 @@ module Crystal
   # Greedy rather than optimal, and the difference does not matter — what this
   # answers is "where does the work start", and the head of the list is the
   # same either way.
-  private def self.blocked_by(known : Array(BindMethod), root : String) : Array(String)
+  private def self.blocked_by(program : Program, known : Array(BindMethod),
+                              root : String) : Array(String)
     counts = Hash(String, Int32).new(0)
     known.each do |method|
-      foreign_names(method, root).each { |name| counts[name] += 1 }
+      # Only what somebody could actually declare. A method waiting on a free
+      # variable stays waiting, and the count above still holds it there — but
+      # it does not belong on a list of work.
+      foreign_names(method, root).each do |name|
+        counts[name] += 1 if declared_type? program, name
+      end
     end
     counts.to_a.sort_by { |(name, count)| {-count, name} }.map { |(name, _)| name }
   end

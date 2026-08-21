@@ -102,11 +102,16 @@
   name the file does not record; what is dropped is counted and printed.
 
   It is what closes the question item 12e opened. With `IO` bound, `JSON`
-  crosses 168 → 181 signatures and waits on **nothing**, `URI` 48 → 56 with one
-  left that is a block returning `_`, and `YAML` 166 → 187. Adding `Time` and
-  `SemanticVersion` takes `YAML` to 193 crossing and 5 waiting — two of them
-  `Set`, which is generic, and three not types at all. The gains are the exact
-  numbers the tool's unlock report predicted.
+  crosses 168 → 181 signatures, `URI` 48 → 56 and `YAML` 166 → 187 — the exact
+  gains the tool's unlock report predicted. `Time` and `SemanticVersion` take
+  `YAML` to 193.
+
+  The counts also stopped calling a free variable a type. `T`, `self` and a
+  block returning `_` are not types anybody can declare, and counting them
+  beside `IO` said there was more waiting than there was; they have their own
+  line now. What is left: `JSON` and `URI` wait on **nothing** anybody could
+  declare, and `YAML` waits on `Set` alone — which is generic, so it travels as
+  bodies rather than declarations and belongs to a different piece of work.
 
 - **`crystal tool bind`'s keep file never descended into nested types.** A
   nested type travelled as a declaration while its methods were named by
