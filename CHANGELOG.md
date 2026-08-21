@@ -94,6 +94,15 @@
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
 
+- **The four steps `crystal tool bind` prints are taken by a spec now**
+  (`spec/compiler-cli/bind-pipeline_spec.cr`): bind a shard, compile its keep
+  file to an object, read the symbols, globalise them, and build an iyi program
+  that links against it — then run the program and read what it printed. Three
+  of the four steps were wrong when they were first run by hand, and each was
+  invisible until something later failed, the later thing being `ld`. It skips
+  itself where binutils is missing, or where `crystal` and `iyi` were built from
+  different commits, since an artifact is read only by the build that wrote it.
+
 - **`crystal tool bind` says when a root's name cannot survive the trip.** The
   image of iyi's module-path mapping is names like `Greeter` and `MyGreeter`;
   `ABC` goes down to `abc` and comes back `Abc`. Both sides mangle alike, so the
