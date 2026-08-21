@@ -185,7 +185,7 @@ jobs:
             ./bin/iyi run --crystal "$sample"
           done
 
-      # The ecosystem and R-1 in one build (SPEC.md Part V item 12b). Built
+      # The ecosystem and R-1 in one build (SPEC.md Part V item 12d). Built
       # twice with the module's source deleted in between, and the two runs
       # compared: the second one has Crystal's standard library *and* a module
       # it never opened.

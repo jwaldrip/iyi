@@ -2513,7 +2513,7 @@ describe Crystal::IyiMod do
   end
 end
 
-# iyi: the ecosystem and R-1, together (SPEC.md Part V item 12b).
+# iyi: the ecosystem and R-1, together (SPEC.md Part V item 12d).
 #
 # `--crystal` gives a program Crystal's library; a `.iyimod` gives a consumer a
 # module it does not compile. Each was useful alone and refused together, and

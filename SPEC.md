@@ -2330,7 +2330,7 @@ as valid is the worst failure mode a build cache has.
 | Header | magic, format version, compiler version, target triple, build flags |
 | Hashes | interface / implementation / private (see IV.3) |
 | Imports | DAG edges, each with the interface hash it was compiled against |
-| Requires | under `--crystal`, the library files the module required (Part V item 12b) |
+| Requires | under `--crystal`, the library files the module required (Part V item 12d) |
 | Exports | types, signatures, traits, impls, constants |
 | Macro bodies | serialised AST for exported macros and derives |
 | Mono bodies | the bodies a consumer has to compile: source text, not IR yet |
@@ -2362,7 +2362,7 @@ section the `Section` enum names is written now.
 built with `--crystal` refers to Crystal's types by name, and only a program
 that required the same library has those names to define. The header also
 records *which* library a module was built against, and importing across the two
-is refused — Part V item 12b is why both are there.
+is refused — Part V item 12d is why both are there.
 
 `MacroBodies` was the last one, and what put it there was a body that travels:
 the consumer compiles a block-taking `run`, `run` writes `twice(n)`, and `twice`
@@ -3147,7 +3147,7 @@ command that costs a terminal and buys nothing is not a command.
 
 > **And then `--crystal` gave it a prelude to hold again, so `iyi` offers it.**
 > The paragraph above is right about iyi's prelude and wrong about the mode
-> item 12b made central. `iyi daemon start` runs a single-threaded `iyi-daemon`
+> item 12d made central. `iyi daemon start` runs a single-threaded `iyi-daemon`
 > built and shipped beside `iyi`, and holds Crystal's library analysed between
 > builds.
 >
@@ -4130,6 +4130,147 @@ Named honestly, so nobody mistakes this draft for complete.
     it never had it. What stays: the *macro* interpreter, which is a different
     thing that runs at compile time and is what makes `{% %}` work.
 
+12e. **The library as an artifact. A measurement, not a plan.** IV.1d ends with
+    a daemon that removes about 0.3 s of a `--crystal` build by holding the
+    library analysed in a resident process. This document's own thesis says
+    something else should be able to remove it: a library is a module, R-1
+    compiles a module against declarations, and IV.1 already has a file for
+    them. So the question was asked with a stopwatch rather than an argument.
+
+    **The prize.** A generated module the shape of a library — 103,002 lines,
+    5,000 exported methods across 1,000 types, bodies in the proportion
+    Crystal's own library has them, which is *declarations at about 5% of the
+    source*. Consumed from source and then from its `.iyimod`, front end only:
+
+    | | from source | from its artifact |
+    |---|---|---|
+    | Semantic (top level) | 0.349 s | **0.077 s** |
+    | Semantic (type declarations) | 0.043 s | **0.006 s** |
+    | front end, all of it | 0.43 s | **0.11 s** |
+    | peak memory | 163 MB | **25 MB** |
+
+    Four times faster and six times smaller. Set that beside the daemon on the
+    same term: 0.47 s to 0.33 s, one and a half times, *and* 200 MB resident per
+    prelude held. The artifact wins on both axes, and it wins the second one in
+    the other direction — it spends less memory where the daemon spends more.
+
+    The ratio is not a property of the generator. It follows from declarations
+    being 5% of a library's text, which is measured: Crystal's library is
+    195,833 lines and about 10,500 of them are a `def` or a type header.
+
+    **What it would take, also measured.** `crystal tool bind` already writes a
+    `.iyimod` for a Crystal namespace compiled under Crystal's library (item
+    12). Pointed at three of them, it reports how much of the public surface
+    crosses with nobody's help:
+
+    | | public methods | crossing unaided |
+    |---|---|---|
+    | `JSON` | 247 | **90.3%** |
+    | `YAML` | 291 | **78.0%** |
+    | `URI` | 105 | **58.1%** |
+
+    What the remainder waits on is *named*: the tool prints which types are
+    missing and what declaring each unlocks — `IO` +11, `Int` +11, `Tuple` +4,
+    and so on. That is a work list rather than a research problem.
+
+    **And the blocker that is not a percentage.** `tool bind` takes a root
+    namespace, and the types every one of those signatures actually names —
+    `String`, `Array`, `Int32`, `IO` — are not in a namespace. They are the
+    top level. So the missing 10% of `JSON` and the missing 42% of `URI` are
+    largely the *same* missing thing, and there is no root to point the tool at
+    for it. Crossing a namespace is measured and mostly done; crossing the core
+    is unstarted, and it is what everything else is waiting on.
+
+    **What this decides.** Not that the daemon should go — it works, it is
+    tested, and it is what exists. It decides which of the two is the thing to
+    build next, and the numbers are not close: on the term they both address the
+    artifact is three times better and costs memory instead of spending it. The
+    daemon is the answer a compiler reaches for when it has no file format. This
+    one has a file format.
+
+12d. **The ecosystem and R-1, together.** Item 12a ends by saying what stood
+    between a program and having both. Three things did, and they turned out to
+    be one thing asked three times: *a name in the module's object code that
+    only the consuming program can define.*
+
+    That is not a new question. `TypeIds` and `Constants` are already in the
+    format because of it — a type id belongs to the program rather than to the
+    module, so the module carries the *name* and the consumer supplies the
+    number. Everything below is that rule, applied where it had not been.
+
+    - **The main module's helpers.** `~match<IO+>` was the symbol. A unit that
+      travels calls it and an artifact carries the unit, not main. Copying it
+      would have been wrong for a reason worth stating: a match against a
+      virtual type compiles to a comparison against a *range of type ids*, and
+      those are the producer's numbers. A copy would have compared the
+      consumer's ids against the producer's range and answered wrongly, with
+      nothing to see. So the consumer emits them, with its own numbering,
+      exactly as it emits every type-id global — all of them rather than the
+      ones an object file asks for, because a build cannot see inside an object
+      file, and each is two compares.
+
+      This is what 12a's pure/stateful split got wrong. Purity was never the
+      question; the question was whose numbering, and once it is asked that way
+      the stateful helpers need no separate answer either — a constant's
+      initialiser already runs once, in the consumer, because `Constants`
+      already carries the name rather than the code.
+
+    - **The module's requires.** A module that requires `uri` is compiled
+      against `URI`, and its object code refers to `URI::Error.class:type_id`.
+      A consumer that required only `json` has no such type to number, and the
+      link fails on a name from a library nobody in the program ever asked for.
+      So the requires travel — `Requires`, format v20 — and the consumer
+      replays them, which makes its program a superset of the producer's. The
+      numbering is still the consumer's, so this adds types and imports nobody
+      else's ids.
+
+    - **The `!dbg` location**, which 12a already fixed.
+
+    **One thing had to be measured rather than argued.** A shared library is
+    only shared if there is one copy of its state, and "it linked" would be
+    just as true of a program with two copies of a lazily initialised constant
+    — a program that is wrong and says nothing. It is one copy: `STDOUT` and
+    `PROGRAM_NAME` are the same object on both sides of the boundary. The same
+    compiler mangles the same names, the linker folds the definitions, and a
+    lazily initialised constant goes through the global the consumer defines.
+    Both identities are asserted in the specs, because that is the property,
+    not a detail of it.
+
+    **What is refused now is a different thing, and it is sharper.** An
+    artifact records which library it was built against, and importing across
+    is refused by name in both directions. This one is not a limitation to be
+    lifted later: both worlds are compiled by the same compiler and mangle the
+    same names, so a mixed program would link — on the names that happen to
+    agree. `String` is a different type in each, and neither the linker nor
+    anything after it would say so.
+
+    **What it buys, measured rather than claimed.** A program can require Kemal
+    *and* compile its own modules against their declarations, which is the
+    combination the two features were each half of. The speed it buys is
+    small, and saying so is the point of measuring: on a twelve-module app
+    (656 lines, each module importing the last) with Crystal's library,
+
+    | build | time |
+    |---|---|
+    | `require "json"` and nothing else | 3.12 s |
+    | twelve modules from source | 3.28 s |
+    | twelve modules from artifacts | 2.96 s |
+
+    The modules cost 0.16 s from source and nothing from artifacts. Everything
+    else is the library, read from source every build, and R-1 does not reach
+    it. With Kemal in front the same twelve modules move a 4.4 s build to
+    4.7 s — *slower*, because reading twelve artifacts and linking twelve
+    object files is not free either, and there is only 0.5 s of module in front
+    of 4 s of shard to pay for it.
+
+    So: under iyi's own prelude the library costs 0.03 s and the artifact is
+    the whole build; under Crystal's it costs 3 s and the artifact is a
+    rounding error. The capability is what item 12d delivers. **The fixed cost
+    of the other library is now the largest number in this document, and it is
+    the next thing worth attacking** — not by making artifacts better, which is
+    finished work, but by asking whether a library that every build reads from
+    source has to be.
+
 12c. **Portability, moved from compiled to run.** An iyi program produced code
     for eight targets and was tested on one, which is the weakest kind of
     portability claim: the code generator not objecting. Three of the eight now
@@ -4241,7 +4382,7 @@ Named honestly, so nobody mistakes this draft for complete.
     **What it costs.** R-1, for the required shard: it is read from source and
     the edit loop pays for it the way Crystal's does. The other cost — that a
     program could not have Crystal's library *and* its own modules as
-    artifacts — was the sharpest limit here and is gone; item 12b is how.
+    artifacts — was the sharpest limit here and is gone; item 12d is how.
 
     **Why, exactly — the first answer here was wrong.** It said the two builds
     would have "two of everything", which is not what happens. Taking the
@@ -4263,91 +4404,8 @@ Named honestly, so nobody mistakes this draft for complete.
 
     **And the split proposed here was the wrong one.** It said the pure helpers
     could be copied into each unit and the stateful ones had to travel as
-    names. Item 12b is what happened when that was tried: the axis is not
+    names. Item 12d is what happened when that was tried: the axis is not
     purity, it is whose numbering — and the answer is the same for all of them.
-
-12b. **The ecosystem and R-1, together.** Item 12a ends by saying what stood
-    between a program and having both. Three things did, and they turned out to
-    be one thing asked three times: *a name in the module's object code that
-    only the consuming program can define.*
-
-    That is not a new question. `TypeIds` and `Constants` are already in the
-    format because of it — a type id belongs to the program rather than to the
-    module, so the module carries the *name* and the consumer supplies the
-    number. Everything below is that rule, applied where it had not been.
-
-    - **The main module's helpers.** `~match<IO+>` was the symbol. A unit that
-      travels calls it and an artifact carries the unit, not main. Copying it
-      would have been wrong for a reason worth stating: a match against a
-      virtual type compiles to a comparison against a *range of type ids*, and
-      those are the producer's numbers. A copy would have compared the
-      consumer's ids against the producer's range and answered wrongly, with
-      nothing to see. So the consumer emits them, with its own numbering,
-      exactly as it emits every type-id global — all of them rather than the
-      ones an object file asks for, because a build cannot see inside an object
-      file, and each is two compares.
-
-      This is what 12a's pure/stateful split got wrong. Purity was never the
-      question; the question was whose numbering, and once it is asked that way
-      the stateful helpers need no separate answer either — a constant's
-      initialiser already runs once, in the consumer, because `Constants`
-      already carries the name rather than the code.
-
-    - **The module's requires.** A module that requires `uri` is compiled
-      against `URI`, and its object code refers to `URI::Error.class:type_id`.
-      A consumer that required only `json` has no such type to number, and the
-      link fails on a name from a library nobody in the program ever asked for.
-      So the requires travel — `Requires`, format v20 — and the consumer
-      replays them, which makes its program a superset of the producer's. The
-      numbering is still the consumer's, so this adds types and imports nobody
-      else's ids.
-
-    - **The `!dbg` location**, which 12a already fixed.
-
-    **One thing had to be measured rather than argued.** A shared library is
-    only shared if there is one copy of its state, and "it linked" would be
-    just as true of a program with two copies of a lazily initialised constant
-    — a program that is wrong and says nothing. It is one copy: `STDOUT` and
-    `PROGRAM_NAME` are the same object on both sides of the boundary. The same
-    compiler mangles the same names, the linker folds the definitions, and a
-    lazily initialised constant goes through the global the consumer defines.
-    Both identities are asserted in the specs, because that is the property,
-    not a detail of it.
-
-    **What is refused now is a different thing, and it is sharper.** An
-    artifact records which library it was built against, and importing across
-    is refused by name in both directions. This one is not a limitation to be
-    lifted later: both worlds are compiled by the same compiler and mangle the
-    same names, so a mixed program would link — on the names that happen to
-    agree. `String` is a different type in each, and neither the linker nor
-    anything after it would say so.
-
-    **What it buys, measured rather than claimed.** A program can require Kemal
-    *and* compile its own modules against their declarations, which is the
-    combination the two features were each half of. The speed it buys is
-    small, and saying so is the point of measuring: on a twelve-module app
-    (656 lines, each module importing the last) with Crystal's library,
-
-    | build | time |
-    |---|---|
-    | `require "json"` and nothing else | 3.12 s |
-    | twelve modules from source | 3.28 s |
-    | twelve modules from artifacts | 2.96 s |
-
-    The modules cost 0.16 s from source and nothing from artifacts. Everything
-    else is the library, read from source every build, and R-1 does not reach
-    it. With Kemal in front the same twelve modules move a 4.4 s build to
-    4.7 s — *slower*, because reading twelve artifacts and linking twelve
-    object files is not free either, and there is only 0.5 s of module in front
-    of 4 s of shard to pay for it.
-
-    So: under iyi's own prelude the library costs 0.03 s and the artifact is
-    the whole build; under Crystal's it costs 3 s and the artifact is a
-    rounding error. The capability is what item 12b delivers. **The fixed cost
-    of the other library is now the largest number in this document, and it is
-    the next thing worth attacking** — not by making artifacts better, which is
-    finished work, but by asking whether a library that every build reads from
-    source has to be.
 
 12. **The Crystal ecosystem, and what a shard would cost.** Ten thousand
     shards exist and none of them is written to iyi's rules, so "run them

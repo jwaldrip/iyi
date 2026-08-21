@@ -2,7 +2,7 @@
 #
 # Imported by `samples/crystal/notes.iyi`, which builds it into a `.iyimod` and
 # then builds again with this file deleted. That is the combination SPEC.md
-# Part V item 12b is about: the program has the ecosystem *and* its own modules
+# Part V item 12d is about: the program has the ecosystem *and* its own modules
 # arrive as artifacts rather than as source.
 #
 # The `require`s matter as much as the code. They travel in the artifact and

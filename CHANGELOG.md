@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Measured what the library would be worth as an artifact** (SPEC.md Part V
+  item 12e). A generated module the shape of a library — 103,002 lines, 5,000
+  exported methods, declarations at the 5% of the source that Crystal's own
+  library has them at — reads back from its `.iyimod` in 0.11 s against 0.43 s
+  from source, in 25 MB against 163 MB. The daemon, on the same term, is 0.47 s
+  to 0.33 s and costs 200 MB rather than saving it.
+
+  `crystal tool bind` already writes a `.iyimod` for a Crystal namespace:
+  `JSON` crosses 90.3% of its public surface unaided, `YAML` 78.0%, `URI`
+  58.1%. What the rest waits on is the core types — `String`, `Array`, `IO` —
+  which are not a namespace and so have no root to point the tool at.
+
 - **The ecosystem and R-1, together: `--crystal` and `.iyimod` now work in one
   build.** A module that requires `json` compiles once into an artifact, and a
   program that requires Kemal links against it without opening its source. The
