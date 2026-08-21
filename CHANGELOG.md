@@ -94,6 +94,12 @@
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
 
+- **`crystal tool bind` declared private types.** `IO::Encoder` is private, and
+  an artifact naming it names a constant the consumer is not allowed to write.
+  Method visibility was already checked; the type's was not. The generated keep
+  file is what found it, being the first thing outside the shard to say the name
+  out loud.
+
 - **`crystal tool bind` counted a signature as crossing when a variable could
   not hold its parameters.** A name being writable is not the same as a value
   being holdable: `Int` is the head of a family, and a method taking one is

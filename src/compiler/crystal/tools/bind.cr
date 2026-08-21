@@ -532,6 +532,11 @@ module Crystal
       # here — and asking one for its instance variables is how this found out.
       next unless type.is_a?(ModuleType)
       next if type.is_a?(GenericType)
+      # A private type is the shard's own business. `IO::Encoder` is one, and
+      # a boundary that declared it would name a constant the consumer is not
+      # allowed to write — which the generated keep file finds first, because
+      # it is the first thing outside the shard to say the name out loud.
+      next if type.private?
 
       # `pub` takes a def, a class, a struct and a trait — not a module, which
       # is what a nested namespace like `Kemal::Exceptions` is. What it holds
