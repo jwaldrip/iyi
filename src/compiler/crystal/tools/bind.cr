@@ -64,6 +64,17 @@ module Crystal
       types
     end
 
+    # Whether anything outside could call this.
+    #
+    # A block-taking method is compiled per block *type* and the type is in the
+    # symbol, so one whose block nobody annotated has no single symbol to
+    # declare. `infer_return` already refuses these — but only when it runs, and
+    # a method that writes its return type never reaches it. The keep file finds
+    # the rest: `Time.measure` is expected to be invoked with a block.
+    def callable? : Bool
+      !block || !written_block.empty?
+    end
+
     # The `pub def` an iyi module would carry. Written from what the source
     # said where it said it, and from what instantiation answered where it did
     # not, which is the only difference between the two halves of this file.
@@ -165,6 +176,7 @@ module Crystal
     unnameable = Hash(String, Int32).new(0)
 
     unheld = 0
+    unblocked = 0
     waiting = 0
     never = 0
     known.each do |method|
@@ -172,6 +184,10 @@ module Crystal
       foreign = types.reject { |t| nameable?(t, root) }
       unless method.storable
         unheld += 1
+        next
+      end
+      unless method.callable?
+        unblocked += 1
         next
       end
       if foreign.empty?
@@ -214,6 +230,9 @@ module Crystal
     end
     if never > 0
       io.puts "  naming something that is not a type    #{never}"
+    end
+    if unblocked > 0
+      io.puts "  taking a block nobody annotated        #{unblocked}"
     end
 
     unless outside.empty?
@@ -299,6 +318,7 @@ module Crystal
       next unless seen.add?(method.name)
       next unless method.verdict.ready? || method.inferred
       next unless method.storable
+      next unless method.callable?
       next unless method.signature_types.all? { |t| nameable?(t, root) }
 
       signatures << IyiMod::Signature.new(
@@ -642,6 +662,7 @@ module Crystal
         by_owner[owner]?.try &.each do |method|
           next unless method.verdict.ready? || method.inferred
           next unless method.storable
+          next unless method.callable?
           next unless method.signature_types.all? { |t| nameable?(t, root) }
 
           signatures << IyiMod::Signature.new(

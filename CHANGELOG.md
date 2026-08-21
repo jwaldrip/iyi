@@ -94,6 +94,14 @@
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
 
+- **`crystal tool bind` exported methods that take a block nobody annotated.**
+  A block-taking method is compiled per block *type*, so one whose block has no
+  written type has no single symbol to declare. `infer_return` refused these
+  already — but only when it ran, and a method that writes its own return type
+  never reaches it. No count showed it; `Time`'s generated keep file did, by
+  refusing to compile with *`Time.measure` is expected to be invoked with a
+  block*. They are refused and reported on their own line now.
+
 - **`crystal tool bind` can be pointed at the boundaries already written.**
   `--use-iyimod DIR` — the same switch a build uses — reads the `.iyimod` files
   there, and a signature naming one of their types is no longer waiting on
@@ -101,10 +109,10 @@
   class root's declarations are absolute and a module root's are relative to a
   name the file does not record; what is dropped is counted and printed.
 
-  It is what closes the question item 12e opened. With `IO` bound, `JSON`
-  crosses 168 → 181 signatures, `URI` 48 → 56 and `YAML` 166 → 187 — the exact
-  gains the tool's unlock report predicted. `Time` and `SemanticVersion` take
-  `YAML` to 193.
+  It is what closes the question item 12e opened. With `IO`, `Time` and
+  `SemanticVersion` bound, `JSON` crosses 168 → 181 signatures, `YAML`
+  166 → 192 and `URI` 48 → 55; `IO` alone accounts for +13, +21 and +8 of that,
+  the exact gains the tool's unlock report predicted.
 
   The counts also stopped calling a free variable a type. `T`, `self` and a
   block returning `_` are not types anybody can declare, and counting them

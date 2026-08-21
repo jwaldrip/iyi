@@ -4286,15 +4286,14 @@ Named honestly, so nobody mistakes this draft for complete.
     > because a class root's declarations are absolute and a module root's are
     > relative to a name the file does not record.
     >
-    > | with `IO` bound | crossing | waiting |
+    > | with `IO`, `Time` and `SemanticVersion` bound | crossing | waiting |
     > |---|---|---|
     > | `JSON` | 168 → **181** | 13 → **0** |
-    > | `YAML` | 166 → **187** | 32 → 11 |
-    > | `URI` | 48 → **56** | 9 → **1** |
+    > | `YAML` | 166 → **192** | 29 → **2** |
+    > | `URI` | 48 → **55** | 7 → **0** |
     >
-    > The three gains are +13, +21 and +8, which are the three numbers the
-    > unlock report predicted before any of it was built. `URI`'s remaining one
-    > is a block that returns `_`, which is not a type and never crosses.
+    > `IO` alone accounts for +13, +21 and +8 of that, which are the three
+    > numbers the unlock report predicted before any of it was built.
     >
     > `Time` and `SemanticVersion` bind the same way — 446 public methods at
     > 86.1% and 22 at 95.5%. A `JSON` boundary written against `IO`'s is 16
@@ -4305,16 +4304,24 @@ Named honestly, so nobody mistakes this draft for complete.
     > `self` and `_` beside `IO` said there was more waiting than there was —
     > the same inflation as the list, one layer further in. Split apart:
     >
-    > | | crossing | waiting on a type | no variable can hold | not a type |
-    > |---|---|---|---|---|
-    > | `JSON` | **181** | **0** | 18 | 0 |
-    > | `YAML` | **193** | **2** | 4 | 3 |
-    > | `URI` | **56** | **0** | 2 | 1 |
+    > | | crossing | waiting on a type | no variable can hold | not a type | block unannotated |
+    > |---|---|---|---|---|---|
+    > | `JSON` | **181** | **0** | 18 | 0 | 0 |
+    > | `YAML` | **192** | **2** | 4 | 3 | 1 |
+    > | `URI` | **55** | **0** | 2 | 1 | 1 |
     >
     > `JSON` and `URI` wait on nothing anybody could declare. `YAML` waits on
     > `Set`, which is generic, and generics travel as bodies rather than as
     > declarations — IV.2's problem and not this one's. The middle column is
     > empty of work.
+    >
+    > The last column is the end-to-end check earning its place a second time. A
+    > block-taking method is compiled per block *type*, so one whose block nobody
+    > annotated has no single symbol; `infer_return` already refused those, but
+    > only when it ran, and a method that writes its own return type never
+    > reaches it. Nothing in the counts showed it. `Time`'s keep file did, by
+    > refusing to compile: *`Time.measure` is expected to be invoked with a
+    > block*.
     >
     > So the paragraph above is wrong in its last sentence and the correction is
     > worth more than it was. Crossing the core was not unstarted work that
