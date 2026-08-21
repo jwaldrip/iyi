@@ -50,7 +50,9 @@ trap 'rm -rf "$WORK"' EXIT
 # `open`, `close` and `chmod` joined when `File` did. Darwin binds libSystem;
 # Linux issues `openat`/`close` as syscalls, so the Linux list is still
 # unchanged and `files.iyi`'s x86_64-linux-gnu object is empty.
-ALLOWED_SYMBOLS_DARWIN="chmod close exit malloc memset open read realloc write"
+# `unlink` joined with File.delete. Darwin binds libSystem again; Linux issues
+# `unlinkat`, so its undefined list and the files object remain empty.
+ALLOWED_SYMBOLS_DARWIN="chmod close exit malloc memset open read realloc unlink write"
 ALLOWED_SYMBOLS_LINUX="ITM_deregisterTMCloneTable ITM_registerTMCloneTable _cxa_finalize _gmon_start__ _libc_start_main"
 
 # What a program may link. The platform libc only.

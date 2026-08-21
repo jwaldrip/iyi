@@ -374,24 +374,26 @@ describe "Compiler" do
     end
   end
 
-  # iyi: File.read / File.write / File.exists?.
+  # iyi: File.read / File.write / File.exists? / File.delete.
   #
   # A language that cannot read a file cannot be used. The surface is those
-  # three, and a missing path panics with the path in the message.
+  # four, and a missing path panics with the path in the message.
   describe "File" do
-    it "round-trips a file and answers exists?" do
+    it "round-trips and deletes a file and answers exists?" do
       with_tempdir("iyi-file-io") do
         File.write "io.iyi", <<-'IYI'
           File.write("t.txt", "hello")
           puts File.read("t.txt")
           puts File.exists?("t.txt")
           puts File.exists?("missing.txt")
+          File.delete("t.txt")
+          puts File.exists?("t.txt")
           IYI
         source = Iyi::Compiler::Source.new(
           File.expand_path("io.iyi"), File.read("io.iyi"))
         iyi_compiler.compile(source, File.expand_path("io"))
 
-        Process.capture(File.expand_path("io")).should eq("hello\ntrue\nfalse\n")
+        Process.capture(File.expand_path("io")).should eq("hello\ntrue\nfalse\nfalse\n")
       end
     end
 
