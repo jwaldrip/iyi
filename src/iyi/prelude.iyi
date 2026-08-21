@@ -78,6 +78,52 @@ require "./hash"
     result
   end
 
+  # `openat`/`close` for `File`. Syscall 257/3 on x86_64, 56/57 on aarch64.
+  # `AT_FDCWD` (-100) so a relative path does not need a directory fd.
+  # The fourth syscall argument on x86_64 is `r10`, not `rcx`.
+  def __iyi_open_read(path : UInt8*) : Int64
+    __iyi_openat(path, 0, 0)
+  end
+
+  def __iyi_open_write(path : UInt8*) : Int64
+    # O_WRONLY|O_CREAT|O_TRUNC = 1|64|512, mode 0644.
+    __iyi_openat(path, 577, 420)
+  end
+
+  def __iyi_openat(path : UInt8*, flags : Int32, mode : Int32) : Int64
+    result = uninitialized Int64
+    {% if flag?(:x86_64) %}
+      asm("syscall" : "={rax}"(result)
+                    : "{rax}"(257_i64), "{rdi}"(-100_i64), "{rsi}"(path),
+                      "{rdx}"(flags.to_i64), "{r10}"(mode.to_i64)
+                    : "rcx", "r11", "memory"
+                    : "volatile")
+    {% else %}
+      asm("svc #0" : "={x0}"(result)
+                   : "{x8}"(56_i64), "{x0}"(-100_i64), "{x1}"(path),
+                     "{x2}"(flags.to_i64), "{x3}"(mode.to_i64)
+                   : "memory"
+                   : "volatile")
+    {% end %}
+    result
+  end
+
+  def __iyi_close(fd : Int64) : Nil
+    {% if flag?(:x86_64) %}
+      asm("syscall" :: "{rax}"(3_i64), "{rdi}"(fd) : "rcx", "r11", "memory" : "volatile")
+    {% else %}
+      asm("svc #0" :: "{x8}"(57_i64), "{x0}"(fd) : "memory" : "volatile")
+    {% end %}
+  end
+
+  def __iyi_file_read(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    __iyi_read(fd.to_i32, buffer, count)
+  end
+
+  def __iyi_file_write(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    __iyi_write(fd.to_i32, buffer, count)
+  end
+
   def __iyi_exit(status : Int32) : NoReturn
     {% if flag?(:x86_64) %}
       asm("syscall" :: "{rax}"(231_i64), "{rdi}"(status.to_i64) : "rcx", "r11", "memory" : "volatile")
@@ -98,6 +144,9 @@ require "./hash"
   lib LibC
     fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
     fun read(fd : Int32, buf : Void*, count : UInt64) : Int64
+    fun open(path : UInt8*, oflag : Int32, ...) : Int32
+    fun chmod(path : UInt8*, mode : Int32) : Int32
+    fun close(fd : Int32) : Int32
     fun exit(status : Int32) : NoReturn
   end
 
@@ -107,6 +156,31 @@ require "./hash"
 
   def __iyi_read(fd : Int32, buffer : Void*, count : UInt64) : Int64
     LibC.read(fd, buffer, count)
+  end
+
+  def __iyi_open_read(path : UInt8*) : Int64
+    LibC.open(path, 0).to_i64
+  end
+
+  def __iyi_open_write(path : UInt8*) : Int64
+    # O_WRONLY|O_CREAT|O_TRUNC = 1|0x0200|0x0400. `open` is variadic for the
+    # mode, and `chmod` sets 0644 afterwards because a missing mode on create
+    # has produced an unreadable file (execute-only) on this machine.
+    fd = LibC.open(path, 1537, 420).to_i64
+    LibC.chmod(path, 420) if fd >= 0
+    fd
+  end
+
+  def __iyi_close(fd : Int64) : Nil
+    LibC.close(fd.to_i32)
+  end
+
+  def __iyi_file_read(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    LibC.read(fd.to_i32, buffer, count)
+  end
+
+  def __iyi_file_write(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    LibC.write(fd.to_i32, buffer, count)
   end
 
   def __iyi_exit(status : Int32) : NoReturn
@@ -131,6 +205,9 @@ require "./hash"
                   number_of_bytes_written : Int32*, overlapped : Void*) : Int32
     fun ReadFile(handle : Void*, buffer : Void*, number_of_bytes_to_read : Int32,
                  number_of_bytes_read : Int32*, overlapped : Void*) : Int32
+    fun CreateFileA(name : UInt8*, access : Int32, share : Int32, security : Void*,
+                    disposition : Int32, flags : Int32, template : Void*) : Void*
+    fun CloseHandle(handle : Void*) : Int32
     fun ExitProcess(exit_code : Int32) : NoReturn
   end
 
@@ -157,6 +234,44 @@ require "./hash"
       return 0_i64
     end
     read.to_i64
+  end
+
+  # HANDLE is pointer-sized; File carries it as Int64. INVALID_HANDLE_VALUE
+  # is all bits set, which as an unsigned address plus one wraps to zero.
+  def __iyi_open_read(path : UInt8*) : Int64
+    # GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL.
+    handle = LibC.CreateFileA(path, -2147483648, 1, nil, 3, 128, Pointer(Void).new(0_u64))
+    return -1_i64 if handle.address &+ 1_u64 == 0_u64
+    handle.address.to_i64
+  end
+
+  def __iyi_open_write(path : UInt8*) : Int64
+    # GENERIC_WRITE, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL.
+    handle = LibC.CreateFileA(path, 1073741824, 0, nil, 2, 128, Pointer(Void).new(0_u64))
+    return -1_i64 if handle.address &+ 1_u64 == 0_u64
+    handle.address.to_i64
+  end
+
+  def __iyi_close(fd : Int64) : Nil
+    LibC.CloseHandle(Pointer(Void).new(fd.to_u64))
+  end
+
+  def __iyi_file_read(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    read = uninitialized Int32
+    if LibC.ReadFile(Pointer(Void).new(fd.to_u64), buffer,
+         count.to_i32, pointerof(read), nil) == 0
+      return 0_i64
+    end
+    read.to_i64
+  end
+
+  def __iyi_file_write(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    written = uninitialized Int32
+    if LibC.WriteFile(Pointer(Void).new(fd.to_u64), buffer,
+         count.to_i32, pointerof(written), nil) == 0
+      return -1_i64
+    end
+    written.to_i64
   end
 
   def __iyi_exit(status : Int32) : NoReturn
@@ -206,6 +321,28 @@ require "./hash"
     read.to_i64
   end
 
+  # WASI's `path_open` takes a preopened directory fd, a rights bitfield and
+  # a path. This prelude has none of those, and pretending a relative path
+  # opens would be a silent wrong answer. File methods raise through these.
+  def __iyi_open_read(path : UInt8*) : Int64
+    raise "File is not available on wasm32-wasi: path_open needs a preopened directory fd"
+  end
+
+  def __iyi_open_write(path : UInt8*) : Int64
+    raise "File is not available on wasm32-wasi: path_open needs a preopened directory fd"
+  end
+
+  def __iyi_close(fd : Int64) : Nil
+  end
+
+  def __iyi_file_read(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    0_i64
+  end
+
+  def __iyi_file_write(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    -1_i64
+  end
+
   def __iyi_exit(status : Int32) : NoReturn
     LibWasi.proc_exit(status)
   end
@@ -216,6 +353,8 @@ require "./hash"
            "imports. Teach src/iyi/prelude.iyi a branch for this platform rather " \
            "than linking something absent." %}
 {% end %}
+
+require "./file"
 
 # The allocator, selected rather than declared, because the selection has to be
 # a real seam a different allocator is swapped in at. Boehm was the default and

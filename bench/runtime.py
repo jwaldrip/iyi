@@ -4,7 +4,7 @@
 The README says the word "Performance", and the compile-time half of that is
 measured to death (`build_speed.py`, `incremental.py`) while the run-time half
 was not measured at all. It is worth asking, because the two libraries are not
-the same code: iyi's own library is 2,121 lines, Crystal's is 8,161.
+the same code: iyi's own library is 2,329 lines, Crystal's is 8,161.
 
 **Two columns, and the second one is why this file is not a victory lap.** The
 first reading said string building was twenty times faster. With
