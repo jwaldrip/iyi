@@ -5034,9 +5034,12 @@ Named honestly, so nobody mistakes this draft for complete.
     a program that carries less collects faster. That is a real effect, it is
     the efficiency claim, and it is not a claim about `String`.
 
-    What the honest column says: arithmetic and array work are within noise
-    (0.97x, 0.90x), `String` is behind (1.64x), and `Hash` is ahead by 6x while
-    doing less — iyi's does not preserve insertion order and Crystal's does.
+    What the honest column says on a later run of the same bench: arithmetic
+    is within noise (0.96x), array work is ahead (0.78x), `String` is behind
+    (3.62x), and `Hash` is ahead by 5x while doing less. The twenty-times
+    as-it-runs reading did not reproduce; as they run, string building is
+    now within noise (0.97x). The confound the first reading found is still
+    the point: the collector is not the library.
 
     Kept here because the mistake is the point. A benchmark that measures a
     program and reports a library is the easiest way to publish a number that

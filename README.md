@@ -304,18 +304,18 @@ program under both libraries, and the honest reading is not the flattering one:
 
 | workload | as it runs | with the collector off |
 |---|---|---|
-| arithmetic | 1.00x | 0.97x |
-| array append and read | 0.55x | 0.90x |
-| hash insert and read | 0.13x | 0.15x |
-| string building | **0.05x** | **1.64x** |
+| arithmetic | 1.00x | 0.96x |
+| array append and read | 0.67x | 0.78x |
+| hash insert and read | 0.17x | 0.19x |
+| string building | 0.97x | **3.62x** |
 
-Under 1.00 is iyi ahead. Run normally, string building looks twenty times
-faster; with the collector out of the way it is 1.64x **slower**, so all of
-that twenty was the collector having fewer roots to scan in a 36 KB binary than
-in a 1,553 KB one. That is a real effect and it is the efficiency claim, not a
-claim about `String`. Where the two libraries do the same work they are within
-noise; where iyi's is faster — `Hash`, by 6x — part of the reason is that it
-does less, and does not preserve insertion order.
+Under 1.00 is iyi ahead. These seconds are a machine, not a language: run
+`python3 bench/runtime.py` on an idle one. Where the two libraries do the
+same work they are within noise. `Hash` is ahead by 5x with the collector
+off, and does less (no insertion order). `String` is 3.62x slower with the
+collector off, and within noise as it runs: the collector is masking a
+slower builder, which is the same confound the first reading published
+upside down as a twenty-times win.
 
 Nothing here has benchmarked a program against C or Go, and what R-4 says about
 generics crossing a boundary is specified and unmeasured.
