@@ -4260,9 +4260,19 @@ Named honestly, so nobody mistakes this draft for complete.
     > is now how this is checked. `crystal tool bind -e IO` writes an artifact
     > and an object file end to end.
     >
-    > What it does *not* carry is `IO` itself. A class root's own methods are not
-    > module functions and have to travel as its type's declaration, and that is
-    > the piece still to build — 54 methods, and every constant it hands out.
+    > It carries `IO` itself now, which took saying the difference out loud: a
+    > module's own methods *are* module functions and a class's are its type's,
+    > so a class root travels as one declaration holding everything under it —
+    > `IO`, with `IO::Memory` and twelve more inside. 14 types, 148 methods, and
+    > 311 symbols in the object file. What still stays behind is its constants,
+    > which cross as functions whose symbol comes from `extend self`, and only a
+    > module has that.
+    >
+    > Finding this also fixed something the shard path had all along: the keep
+    > file never descended into nested types, so a nested declaration promised
+    > symbols nothing emitted. `JSON`'s artifact holds 16 types and the file
+    > reached 9 of them. It was a link error waiting rather than a compile one,
+    > which is why no sample had found it.
     >
     > **`IO` is the whole of what is left, and `IO` is nearly done.** It is the
     > only name still blocking all three namespaces — 14, 22 and 9 — and pointed

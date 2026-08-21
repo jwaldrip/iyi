@@ -322,16 +322,12 @@ module Crystal
     end
 
     unless module_root? program, root
-      own = methods.count { |method| owners.includes?(method.owner) }
       kind = program.types?.try(&.[]?(root)).try(&.instance_type.type_desc) || "type"
       io.puts
-      io.puts "#{root} is a #{kind}, not a module, so its own surface stays behind:"
-      io.puts "  #{own} methods, and every constant it hands out."
-      io.puts "  A module's own methods are reachable through it and a class's"
-      io.puts "  are not, and a constant crosses as a function whose symbol comes"
-      io.puts "  from `extend self`, which only a module takes. What travels here"
-      io.puts "  is the types under #{root}. Carrying #{root} itself means carrying"
-      io.puts "  it as a type declaration rather than as module functions."
+      io.puts "#{root} is a #{kind}, so it travels as a type declaration holding"
+      io.puts "everything under it, rather than as module functions. Its constants"
+      io.puts "stay behind: a constant crosses as a function, and that function"
+      io.puts "takes its symbol from `extend self`, which only a module has."
     end
 
     unless @@nested_namespaces.empty?
@@ -466,8 +462,18 @@ module Crystal
     root_type = program.types?.try &.[]?(root)
     return declarations unless root_type.is_a?(NamedType)
 
-    collect_declarations root_type, by_owner, root, declarations
-    prune_dangling declarations, root
+    if module_root? program, root
+      collect_declarations root_type, by_owner, root, declarations
+      prune_dangling declarations, "#{root}::", root
+    else
+      # A class root's own methods are its type's rather than module functions,
+      # so it travels as one declaration holding everything under it. The names
+      # inside are then already absolute — `IO`, `IO::Memory` — which is why the
+      # prefix the pruner resolves against is empty here and `IO::` there.
+      declaration = declaration_for root, root_type, by_owner, root
+      declarations << declaration if declaration
+      prune_dangling declarations, "", root
+    end
   end
 
   # Nothing may name a type that did not travel.
@@ -480,14 +486,14 @@ module Crystal
   # the artifact named a constant nobody had. Repeated to a fixed point,
   # because dropping one type can strand the field that named it.
   private def self.prune_dangling(declarations : Array(IyiMod::TypeDecl),
-                                  root : String) : Array(IyiMod::TypeDecl)
+                                  prefix : String, root : String) : Array(IyiMod::TypeDecl)
     loop do
       known = Set(String).new
-      declarations.each { |declaration| collect_known declaration, "#{root}::", known }
+      declarations.each { |declaration| collect_known declaration, prefix, known }
 
       pruned = [] of IyiMod::TypeDecl
       declarations.each do |declaration|
-        kept = prune_declaration declaration, "#{root}::", known, root
+        kept = prune_declaration declaration, prefix, known, root
         pruned << kept if kept
       end
 
@@ -558,25 +564,39 @@ module Crystal
   private def self.collect_declarations(owner_type : NamedType, by_owner, root : String,
                                         declarations : Array(IyiMod::TypeDecl)) : Nil
     owner_type.types?.try &.each do |name, type|
-      # A constant lives in the same table as a type — `Kemal::VERSION` is in
-      # here — and asking one for its instance variables is how this found out.
-      next unless type.is_a?(ModuleType)
-      next if type.is_a?(GenericType)
-      # A private type is the shard's own business. `IO::Encoder` is one, and
-      # a boundary that declared it would name a constant the consumer is not
-      # allowed to write — which the generated keep file finds first, because
-      # it is the first thing outside the shard to say the name out loud.
-      next if type.private?
+      declaration = declaration_for name, type, by_owner, root
+      declarations << declaration if declaration
+    end
+  end
 
-      # `pub` takes a def, a class, a struct and a trait — not a module, which
-      # is what a nested namespace like `Kemal::Exceptions` is. What it holds
-      # has to travel as its own nested declarations, and this walk does not go
-      # there yet.
-      unless type.is_a?(ClassType)
-        @@nested_namespaces << name
-        next
-      end
+  # One type, as a declaration — or nil, for the several reasons one cannot be.
+  #
+  # Split out from the walk above because the root itself needs the same answer.
+  # A shard's root is a module and its own methods travel as module functions;
+  # a core type's root is a class, whose methods are its type's and have to
+  # travel here.
+  private def self.declaration_for(name : String, type : Type, by_owner,
+                                   root : String) : IyiMod::TypeDecl?
+    # A constant lives in the same table as a type — `Kemal::VERSION` is in
+    # here — and asking one for its instance variables is how this found out.
+    return nil unless type.is_a?(ModuleType)
+    return nil if type.is_a?(GenericType)
+    # A private type is the shard's own business. `IO::Encoder` is one, and
+    # a boundary that declared it would name a constant the consumer is not
+    # allowed to write — which the generated keep file finds first, because
+    # it is the first thing outside the shard to say the name out loud.
+    return nil if type.private?
 
+    # `pub` takes a def, a class, a struct and a trait — not a module, which
+    # is what a nested namespace like `Kemal::Exceptions` is. What it holds
+    # has to travel as its own nested declarations, and this walk does not go
+    # there yet.
+    unless type.is_a?(ClassType)
+      @@nested_namespaces << name
+      return nil
+    end
+
+    begin
       signatures = [] of IyiMod::Signature
       {% begin %}{% end %}
       { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
@@ -624,7 +644,7 @@ module Crystal
       if handle
         unless type.is_a?(ClassType) && !type.struct?
           @@opaque_types << name
-          next
+          return nil
         end
 
         fields = [] of {String, String}
@@ -635,7 +655,7 @@ module Crystal
       nested = [] of IyiMod::TypeDecl
       collect_declarations type, by_owner, root, nested
 
-      declarations << IyiMod::TypeDecl.new(
+      IyiMod::TypeDecl.new(
         name: name,
         kind: type.type_desc,
         type_parameters: [] of String,
@@ -742,8 +762,9 @@ module Crystal
       accessors.each do |(signature, _)|
         io << "  " << root << "." << signature.name << "\n"
       end
+      prefix = module_root?(program, root) ? "#{root}::" : ""
       types.each do |declaration|
-        counter = keep_type io, "#{root}::", declaration, counter
+        counter = keep_type io, prefix, declaration, counter
       end
       io << "end\n"
     end
@@ -758,9 +779,10 @@ module Crystal
 
   # Every method on a declaration, and on the declarations under it.
   #
-  # The walk stopped at the top, so a nested type travelled as a declaration
-  # while its methods were emitted by nobody — the artifact promised a symbol
-  # the object file did not carry, which is a link error and not a compile one.
+  # The walk used to stop at the top, which was invisible while the only
+  # declarations were a shard's nested types and their methods went unemitted
+  # quietly. A class root puts everything one level down, so stopping at the top
+  # would have kept nothing at all.
   private def self.keep_type(io : IO, prefix : String,
                              declaration : IyiMod::TypeDecl, counter : Int32) : Int32
     qualified = "#{prefix}#{declaration.name}"
@@ -777,7 +799,8 @@ module Crystal
     counter
   end
 
-  # And both counted through the nesting, for the same reason.
+  # Both counted through the nesting, because a class root puts every type it
+  # carries one level down and a count that stopped at the top read as one.
   private def self.count_types(declarations : Array(IyiMod::TypeDecl)) : Int32
     declarations.sum { |declaration| 1 + count_types(declaration.types) }
   end

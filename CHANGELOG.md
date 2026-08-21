@@ -112,8 +112,10 @@
   is the types under it, which is enough to make `crystal tool bind -e IO`
   produce an artifact and an object file end to end.
 
-  Carrying the root itself means carrying it as a type declaration rather than
-  as module functions, and that is not done.
+  It carries the root itself now. A module's own methods are module functions
+  and a class's are its type's, so a class root travels as one declaration
+  holding everything under it — `IO` with `IO::Memory` and twelve more inside:
+  14 types, 148 methods, 311 symbols. Its constants still stay behind.
 
 - **`crystal tool bind` declared private types.** `IO::Encoder` is private, and
   an artifact naming it names a constant the consumer is not allowed to write.
