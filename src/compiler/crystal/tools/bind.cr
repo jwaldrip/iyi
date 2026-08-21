@@ -72,7 +72,14 @@ module Crystal
   # The types an iyi program already has, so a signature naming one of them
   # needs nothing from this boundary. Everything else is somebody's to declare,
   # and saying which is most of what a boundary costs.
-  BIND_PRELUDE = %w(String Int32 Int64 UInt8 UInt32 UInt64 Float64 Bool Nil Char Symbol Array Hash Range Pointer Void)
+  #
+  # Asked of the program rather than written down here. The written-down version
+  # claimed `Void`, `UInt32` and `Float64` — which iyi's prelude never declares —
+  # and left out `Slice`, `Int`, `Tuple` and `NamedTuple`, which the compiler
+  # creates for every program before any prelude is read. Those four were most
+  # of what the boundary appeared to be waiting on, so the list was not merely
+  # untidy: it invented the work it was being read to size.
+  @@builtin = Set(String).new
 
   def self.print_bind(program : Program, root : String?, io : IO,
                       artifact_dir : String? = nil) : Nil
@@ -80,6 +87,8 @@ module Crystal
       io.puts "tool bind needs the shard's own namespace: -e Kemal"
       return
     end
+
+    @@builtin = program.builtin_type_names
 
     methods = [] of BindMethod
     collect_bind program.types?, root, methods
@@ -737,7 +746,7 @@ module Crystal
 
   private def self.nameable_name?(name : String, root : String) : Bool
     return true if name == root || name.starts_with?("#{root}::")
-    BIND_PRELUDE.includes?(name.lchop("::"))
+    @@builtin.includes?(name.lchop("::"))
   end
 
   # Only the types the shard declares. A type it merely reopened belongs to

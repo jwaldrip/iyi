@@ -4218,6 +4218,44 @@ Named honestly, so nobody mistakes this draft for complete.
     for it. Crossing a namespace is measured and mostly done; crossing the core
     is unstarted, and it is what everything else is waiting on.
 
+    > **Most of that core was a list, and the list was wrong.** `nameable?` —
+    > the question the whole count rests on — asked a literal kept beside the
+    > tool: sixteen names said to be what an iyi program already has. It claimed
+    > `Void`, `UInt32` and `Float64`, which iyi's prelude never declares, and it
+    > left out `Slice`, `Int`, `Tuple` and `NamedTuple`, which `Program#initialize`
+    > creates for *every* program before the first line of any prelude is read.
+    > Those four were most of what the boundary appeared to be waiting on. The
+    > list did not merely understate the answer; it invented the work it was
+    > being read to size.
+    >
+    > It is asked of the program now — `builtin_type_names`, snapshotted where
+    > those types are made, so a built-in added later is in it without anybody
+    > remembering. What the same four namespaces answer:
+    >
+    > | | crossing | still waiting |
+    > |---|---|---|
+    > | `JSON` | 152 → **182** | 47 → **17** |
+    > | `YAML` | 158 → **168** | 44 → **34** |
+    > | `URI` | 48 → 48 | 11 → 11 |
+    > | `IO` | 157 → **286** | 140 → **11** |
+    >
+    > The percentages do not move, again, and for the same reason. No signature
+    > that crossed stopped crossing.
+    >
+    > **`IO` is the whole of what is left, and `IO` is nearly done.** It is the
+    > only name still blocking all three namespaces — 14, 22 and 9 — and pointed
+    > at directly it is 442 public methods, 80.3% of them needing no human, with
+    > 11 signatures waiting: six on a block that returns `_`, six on `Time::Span`,
+    > one on `File::Info`. What is genuinely left of "the core" after that is
+    > `Time` 7, `Time::Span` 6, `Set` 2, `File::Info` 1, `SemanticVersion` 1.
+    >
+    > So the paragraph above is wrong in its last sentence and the correction is
+    > worth more than it was. Crossing the core was not unstarted work that
+    > everything was waiting on. It was a hand-written list claiming that
+    > everything not in it was somebody's work to do — the same shape as the
+    > prelude cache key in IV.1d, and found the same way, by asking what the
+    > claim was resting on.
+
     **What this decides.** Not that the daemon should go — it works, it is
     tested, and it is what exists. It decides which of the two is the thing to
     build next, and the numbers are not close: on the term they both address the

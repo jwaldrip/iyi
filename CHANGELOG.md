@@ -80,6 +80,20 @@
 
 ### Fixed
 
+- **`crystal tool bind` asked a hand-written list what an iyi program can name,
+  and the list was wrong in both directions.** It claimed `Void`, `UInt32` and
+  `Float64` — which iyi's prelude never declares — and left out `Slice`, `Int`,
+  `Tuple` and `NamedTuple`, which `Program#initialize` creates for every program
+  before any prelude is read. Those four were most of what the boundary appeared
+  to be waiting on, so the list invented the work it was being read to size.
+
+  `Program#builtin_type_names` records those types where they are made, and the
+  tool asks it. `JSON` crosses 152 → 182 signatures, `YAML` 158 → 168, `IO`
+  157 → 286 with what it waits on falling 140 → 11. The percentages do not move
+  and nothing that crossed stopped crossing. What is left of "the core" is `IO`
+  — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
+  See SPEC.md Part V item 12e.
+
 - **`crystal tool bind` read restrictions as text, and it flattered the core.**
   A method inside `JSON::Token` writes `kind : Kind`, which is
   `JSON::Token::Kind` — the shard's own type, already travelling — and the tool
