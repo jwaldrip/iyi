@@ -806,7 +806,10 @@ marked PROPOSED are the parts that will move under you.
   build commit in its identity, and interoperates only with itself.
 - **There is no `derive`.** SPEC.md R-5 designs it and nothing implements it.
   What is built is the mechanism under it: a module's macros travel with its
-  artifact, and `pub macro` says which of them another module may run.
+  artifact, and `pub macro` says which of them another module may run. II.4
+  records the failed implementation too: resolution can reuse that registry,
+  but derive expansion cannot be an ordinary macro `Call` with a live semantic
+  graph.
 - **Macros are not hygienic.** `pub macro` exports a name and an arity, and a
   macro is pasted text, so one that writes `tmp = 99` assigns to your `tmp` if
   you have one. That is Crystal's semantics kept whole.

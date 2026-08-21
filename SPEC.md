@@ -966,6 +966,20 @@ What this forbids, and should: `all_subclasses`, program-wide `macro finished`,
 and `macro_run`. The last of which costs a fixed **+7.4 s per distinct script**
 on a cold build, remeasured in II.10.
 
+**Implementation finding: reuse the exported macro registry, not an ordinary
+macro call graph.** A direct implementation passed the semantic cases: it
+resolved an exported macro, handed it the attached declaration and registered
+the generated methods once. Producer and artifact builds did not terminate.
+Cloning the declaration, replacing the directive with `Nop`, detaching the
+generated expansion and removing observer/dependency edges each removed one
+retained path and did not produce a finite source-deleted build. A generic
+type emitted with `no_codegen` did not either.
+
+Nothing from that implementation was kept. The next attempt needs a
+purpose-built, serializable declaration input for derive expansion. Resolution
+still belongs in the existing exported macro registry; execution cannot be
+faked as an ordinary `Call` whose semantic graph was designed to stay live.
+
 ### II.5 Dictionaries × the garbage collector: **SETTLED, and a dependency**
 
 This one only became visible while writing the spec, and it removes a choice I
