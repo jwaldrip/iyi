@@ -94,6 +94,18 @@
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
 
+- **`crystal tool bind` generated a keep file that could not compile when
+  pointed at a core type.** A shard's root is a module — `Kemal`, `JSON` — and
+  the tool assumed one everywhere: it reopened the root as `module IO`, which is
+  a class, and called `IO.write`, which is an instance method. A class root's
+  own surface and its constants now stay behind and are reported by name and
+  count, rather than being declared with no symbol to link against. What travels
+  is the types under it, which is enough to make `crystal tool bind -e IO`
+  produce an artifact and an object file end to end.
+
+  Carrying the root itself means carrying it as a type declaration rather than
+  as module functions, and that is not done.
+
 - **`crystal tool bind` declared private types.** `IO::Encoder` is private, and
   an artifact naming it names a constant the consumer is not allowed to write.
   Method visibility was already checked; the type's was not. The generated keep

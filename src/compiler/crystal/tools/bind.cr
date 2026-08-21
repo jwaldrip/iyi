@@ -248,7 +248,14 @@ module Crystal
     signatures = [] of IyiMod::Signature
     seen = Set(String).new
 
+    # And only a module has them. `Kemal.run` is a module function because
+    # `Kemal` is a module and its own methods are reachable through it; `IO`'s
+    # are not — `IO.write` is an instance method and calling it on the class is
+    # an error. A class root's own surface has to travel as *its type's*
+    # methods, which is work this tool has not done, so it travels as nothing
+    # rather than as a declaration naming a symbol nobody emits.
     methods.each do |method|
+      next unless module_root? program, root
       next unless owners.includes?(method.owner)
       next unless seen.add?(method.name)
       next unless method.verdict.ready? || method.inferred
@@ -267,7 +274,17 @@ module Crystal
     end
 
     types = type_declarations program, methods, root
-    accessors = constant_accessors program, root, types
+
+    # A constant crosses as a function, and that function gets an iyi module
+    # function's symbol from `extend self` — which only a module takes. So a
+    # class root's constants stay behind rather than being declared with
+    # nothing to link against, a failure that is invisible until link time.
+    accessors =
+      if module_root? program, root
+        constant_accessors program, root, types
+      else
+        [] of {IyiMod::Signature, String}
+      end
 
     signatures.concat accessors.map(&.[0])
 
@@ -302,6 +319,19 @@ module Crystal
       io.puts "  a reference is a pointer, so a consumer that never allocates"
       io.puts "  one does not need to know what is inside it. `new` is not"
       io.puts "  exported for these, which is what keeps that true."
+    end
+
+    unless module_root? program, root
+      own = methods.count { |method| owners.includes?(method.owner) }
+      kind = program.types?.try(&.[]?(root)).try(&.instance_type.type_desc) || "type"
+      io.puts
+      io.puts "#{root} is a #{kind}, not a module, so its own surface stays behind:"
+      io.puts "  #{own} methods, and every constant it hands out."
+      io.puts "  A module's own methods are reachable through it and a class's"
+      io.puts "  are not, and a constant crosses as a function whose symbol comes"
+      io.puts "  from `extend self`, which only a module takes. What travels here"
+      io.puts "  is the types under #{root}. Carrying #{root} itself means carrying"
+      io.puts "  it as a type declaration rather than as module functions."
     end
 
     unless @@nested_namespaces.empty?
@@ -723,6 +753,13 @@ module Crystal
       end
       io << "end\n"
     end
+  end
+
+  # Whether the root is a module, which decides what of its own can travel.
+  private def self.module_root?(program : Program, root : String) : Bool
+    type = program.types?.try &.[]?(root)
+    return false unless type
+    type.instance_type.is_a?(NonGenericModuleType) || type.instance_type.is_a?(GenericModuleType)
   end
 
   # The foreign types one signature waits on.

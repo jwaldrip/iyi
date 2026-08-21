@@ -4251,6 +4251,19 @@ Named honestly, so nobody mistakes this draft for complete.
     > whether the keep file this tool generates compiles at all — which is how
     > it was found, by generating one and compiling it.
     >
+    > **And pointing it at a class found three things a namespace never did.**
+    > The tool assumed its root was a module, because a shard's root is one: it
+    > reopened `IO` as `module IO`, and called `IO.write` — an instance method —
+    > on the class. It declared `IO::Encoder`, which is private. And it counted
+    > the signatures above. None of the three is visible from the counts; all
+    > three are visible the moment the keep file it generates is compiled, which
+    > is now how this is checked. `crystal tool bind -e IO` writes an artifact
+    > and an object file end to end.
+    >
+    > What it does *not* carry is `IO` itself. A class root's own methods are not
+    > module functions and have to travel as its type's declaration, and that is
+    > the piece still to build — 54 methods, and every constant it hands out.
+    >
     > **`IO` is the whole of what is left, and `IO` is nearly done.** It is the
     > only name still blocking all three namespaces — 14, 22 and 9 — and pointed
     > at directly it is 442 public methods, 80.3% of them needing no human, with
