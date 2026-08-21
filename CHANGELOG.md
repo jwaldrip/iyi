@@ -94,6 +94,13 @@
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
 
+- **The pipeline `crystal tool bind` prints did not run.** A mangled name
+  carries the types it was compiled for and a union prints with spaces in it —
+  `*JSON::Any#as_a?:(Array(JSON::Any) | Nil)` — so the unquoted `$(...)` in the
+  `objcopy` line split 50 of `JSON`'s 301 symbols into fragments and objcopy
+  answered with its usage. It is an `xargs -0` now, and the four lines run as
+  printed.
+
 - **A boundary can now name another boundary's type, which is what `IO` was
   for.** `JSON`, `YAML` and `URI` all take an `IO`, so binding them is worth
   nothing unless the artifact can say so. The producer calls the type `IO`; a

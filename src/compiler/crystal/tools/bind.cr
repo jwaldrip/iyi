@@ -376,16 +376,23 @@ module Crystal
     # `[a-z][a-z0-9]*` and its mapping to a type name is deliberately reversible
     # (IV.6 #6). `MyLib` comes back as `Mylib`, and `JSON` is not in the image of
     # that mapping at all. So the producer's prefix comes off instead.
+    #
+    # Into copies, and that is the whole of the care this needs. The keep file
+    # below is *Crystal*, compiled against the shard where these names are the
+    # shard's own: renaming there produces `undefined constant Any` and no
+    # object file at all.
+    exported = signatures
+    carried_types = types
     if module_root? program, root
-      signatures = signatures.map { |signature| strip_root signature, root }
-      types = types.map { |declaration| strip_root_declaration declaration, root }
+      exported = exported.map { |signature| strip_root signature, root }
+      carried_types = carried_types.map { |declaration| strip_root_declaration declaration, root }
     end
 
     # And a reference to somebody else's boundary is written the way the
     # consumer will see it.
     unless @@bound_prefix.empty?
-      signatures = signatures.map { |signature| map_names signature }
-      types = types.map { |declaration| map_names_declaration declaration }
+      exported = exported.map { |signature| map_names signature }
+      carried_types = carried_types.map { |declaration| map_names_declaration declaration }
     end
 
     artifact = IyiMod::Artifact.new(
@@ -395,7 +402,7 @@ module Crystal
       target_triple: program.codegen_target.to_s,
       flags: program.flags.to_a.sort!,
       imports: @@bound_used.to_a.sort.map { |name| IyiMod::ImportEdge.new(name) },
-      exports: IyiMod::Exports.new(signatures, types, [] of IyiMod::ImplRecord),
+      exports: IyiMod::Exports.new(exported, carried_types, [] of IyiMod::ImplRecord),
       # False on purpose, and it is the one place where that field is not
       # simply "which prelude compiled this". A bound shard *is* compiled under
       # Crystal's library, and the boundary this tool generates is what stands
@@ -460,8 +467,15 @@ module Crystal
     io.puts
     io.puts "  crystal build --emit obj --iyi-keep #{root} -o shard #{keep_path}"
     io.puts "  nm shard.o | sed -n 's/^[0-9a-f]* t \\(\\*#{root}[@:].*\\)$/\\1/p' > shard.syms"
-    io.puts "  objcopy --localize-symbol=main $(sed 's/^/--globalize-symbol=/' shard.syms) shard.o shard-ready.o"
+    io.puts "  sed 's/^/--globalize-symbol=/' shard.syms | tr '\\n' '\\0' | xargs -0 objcopy --localize-symbol=main shard.o shard-ready.o"
     io.puts "  iyi build --use-iyimod #{dir} -o app app.iyi --link-flags shard-ready.o"
+    io.puts
+    io.puts "The third line reads like a flourish and is not. A mangled name"
+    io.puts "carries the types it was compiled for, and a union prints with"
+    io.puts "spaces in it — `*#{root}::Any#as_a?:(Array(#{root}::Any) | Nil)`. Passed"
+    io.puts "through an unquoted `$(...)` the shell splits that into four"
+    io.puts "arguments and objcopy answers with its usage. `xargs -0` is what"
+    io.puts "keeps one symbol one argument."
     io.puts
     io.puts "`--iyi-keep` is not decoration: a getter whose body is one instance"
     io.puts "variable is inlined at every call site and emits no symbol, which"
