@@ -94,6 +94,11 @@
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
 
+- **A field's type crossed as `IO+`.** That is how a virtual type prints — a
+  fact about this build's dispatch rather than a name anybody can write — and a
+  field declared `IO+` is one no consumer can read back. `infer_return` had
+  devirtualised its answers since it was written; the field walk never did.
+
 - **A bound namespace's artifact named types the consumer could not resolve, and
   nothing had ever tried to read one back.** The tool had no spec at all: every
   check it carried was a number it printed, and a number cannot say whether

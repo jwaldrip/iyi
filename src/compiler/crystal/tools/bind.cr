@@ -702,7 +702,11 @@ module Crystal
       fields = [] of {String, String}
       if type.is_a?(InstanceVarContainer)
         type.instance_vars.each do |field, variable|
-          fields << {field, variable.type?.try(&.to_s) || "?"}
+          # Devirtualised, for the reason `infer_return` gives: `IO+` is how a
+          # virtual type prints and it is a fact about this build's dispatch
+          # rather than a name anybody can write. A field declared `IO+` is a
+          # field nobody can read back.
+          fields << {field, variable.type?.try(&.devirtualize.to_s) || "?"}
         end
       end
 
