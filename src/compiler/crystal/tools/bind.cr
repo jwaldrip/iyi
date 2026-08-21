@@ -460,6 +460,22 @@ module Crystal
             "#{count_types types} types carrying #{carried} methods"
     io.puts "wrote #{keep_path}"
     io.puts
+    unless round_trips? root
+      seen_as = consumer_name root
+      io.puts
+      io.puts "#{root} cannot be linked against, and this is the place to say so."
+      io.puts "  An iyi module path is lower-case groups joined by `_`, and a"
+      io.puts "  consumer names the module by camelcasing it. That mapping's image"
+      io.puts "  is names like `Greeter` and `MyGreeter`; `#{root}` is not in it — it"
+      io.puts "  comes back as `#{seen_as}`. Both sides mangle alike, so the producer"
+      io.puts "  emits `*#{root}@#{root}::...` while the consumer asks for"
+      io.puts "  `*#{seen_as}@#{seen_as}::...`, and the linker is what finds out."
+      io.puts
+      io.puts "  The declarations below are still true and still worth counting."
+      io.puts "  What cannot happen is the last of the four steps."
+      io.puts
+    end
+
     io.puts "The artifact carries declarations and no object code, because the"
     io.puts "machine code is the shard's own. Three steps make it, and the"
     io.puts "middle one is why the file above exists: Crystal compiles what a"
@@ -1065,6 +1081,24 @@ module Crystal
   # how iyi spells a nested module (IV.6 #6).
   private def self.iyi_module_name(root : String) : String
     root.split("::").map(&.underscore).join("/")
+  end
+
+  # Whether that name comes back as the name it was made from.
+  #
+  # `camelcase` upper-cases the first letter of each underscore group, so its
+  # image is exactly the names written that way: `Greeter`, `MyGreeter`,
+  # `Lib::Greeter`. An acronym is not in it — `ABC` goes down to `abc` and comes
+  # back `Abc` — and the mangled symbol carries whichever name the side that
+  # compiled it had. The producer writes `*ABC@ABC::polite<String>:String`, the
+  # consumer asks for `*Abc@Abc::polite<String>:String`, and the only thing that
+  # ever says so is the linker.
+  private def self.round_trips?(root : String) : Bool
+    consumer_name(root) == root
+  end
+
+  # What the consumer will call it, having imported the module.
+  private def self.consumer_name(root : String) : String
+    iyi_module_name(root).split('/').map(&.camelcase).join("::")
   end
 
   # The foreign types one signature waits on.

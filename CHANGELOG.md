@@ -94,6 +94,15 @@
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
 
+- **`crystal tool bind` says when a root's name cannot survive the trip.** The
+  image of iyi's module-path mapping is names like `Greeter` and `MyGreeter`;
+  `ABC` goes down to `abc` and comes back `Abc`. Both sides mangle alike, so the
+  producer emits `*ABC@ABC::...` and the consumer asks for `*Abc@Abc::...` — and
+  `ld` was the only thing that ever said so, four steps after the mistake.
+  `JSON`, `YAML`, `URI` and `HTTP` are all on that side: their declarations are
+  real and their counts are true, but nothing links against them until the name
+  a consumer gives a module and the name the producer compiled under agree.
+
 - **A bound shard's iyi module name was the root downcased, and the symbol is
   what that broke.** Both sides mangle alike, so `Greeter.polite` is
   `*Greeter@Greeter::polite<String>:String` compiled from either language — but

@@ -4326,6 +4326,31 @@ Named honestly, so nobody mistakes this draft for complete.
     > name where the consumer's was needed. A `JSON` boundary written against
     > `IO`'s is consumed by `import json` on its own now.
     >
+    > **And then it linked, and the last step named its own limit.** A program
+    > built from a bound shard runs: `MyGreeter.polite` called from iyi through
+    > the four steps this tool prints, which had never been taken end to end
+    > before and did not work when they first were. Two of the fixes were the
+    > printed commands themselves — an unquoted `$(...)` that split every symbol
+    > containing a space, and a module name made by `downcase` where the inverse
+    > of `camelcase` was wanted.
+    >
+    > That second one is the whole constraint, once it is seen. Both sides mangle
+    > alike — the premise the boundary rests on — so `Greeter.polite` is
+    > `*Greeter@Greeter::polite<String>:String` from either language *only if the
+    > consumer's module is `Greeter`*. A consumer builds that name by camelcasing
+    > the path it imported, and the image of that mapping is names like `Greeter`
+    > and `MyGreeter`. `ABC` is not in it: it goes down to `abc` and comes back
+    > `Abc`, so the producer emits `*ABC@ABC::...`, the consumer asks for
+    > `*Abc@Abc::...`, and the linker is the only thing that ever says so.
+    >
+    > **`JSON`, `YAML`, `URI` and `HTTP` are all on the wrong side of that.** The
+    > measurement above stands — their declarations are real and the counts are
+    > true — but a program cannot link against them until the name a consumer
+    > gives a module and the name the producer compiled under are the same name.
+    > That is a question about iyi's module paths rather than about this tool,
+    > and it is where the library-as-artifact thesis now waits. `tool bind` says
+    > so at bind time rather than leaving it to `ld`.
+    >
     > `JSON` and `URI` wait on nothing anybody could declare. `YAML` waits on
     > `Set`, which is generic, and generics travel as bodies rather than as
     > declarations — IV.2's problem and not this one's. The middle column is

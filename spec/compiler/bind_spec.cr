@@ -27,8 +27,14 @@ private def bind_artifact(source_path : String, root : String, dir : String,
 
   report = IO::Memory.new
   Crystal.print_bind result.program, root, report, artifact_dir: dir, bound_dir: bound
+  LAST_REPORT.clear
+  LAST_REPORT << report.to_s
   File.join(dir, "#{iyi_module_name(root)}.iyimod")
 end
+
+# What the run above printed, for the one claim that is about the report rather
+# than about the artifact.
+LAST_REPORT = [] of String
 
 # The same rule the tool uses, written out here rather than reached for, so a
 # spec that agreed with the compiler by calling it could not agree wrongly.
@@ -145,6 +151,44 @@ describe "tool bind" do
 
       File.exists?(bind_artifact("shard.cr", "MySink", "mods")).should be_true
       consume "mods", "my_sink"
+    end
+  end
+
+  # The one thing a boundary cannot survive, said where somebody can act on it.
+  #
+  # An iyi module path is lower-case groups joined by `_` and a consumer names
+  # the module by camelcasing it, so that mapping's image is `Greeter` and
+  # `MyGreeter` and not `ABC`. Both sides mangle alike, which is the premise the
+  # whole boundary rests on — so a root outside the image produces an object
+  # file whose symbols no consumer will ever ask for. Nothing said so until the
+  # linker did, which is the worst place for it: the artifact reads fine, the
+  # keep file compiles fine, and the failure arrives four steps later.
+  it "says when a root's name cannot survive the trip" do
+    with_tempdir("bind_round_trip_name") do
+      Dir.mkdir_p "mods"
+      File.write "shard.cr", <<-CR
+        module ABC
+          extend self
+
+          def polite(name : String) : String
+            "hello, " + name
+          end
+        end
+        CR
+      bind_artifact "shard.cr", "ABC", "mods"
+      LAST_REPORT.first.should contain "cannot be linked against"
+
+      File.write "ok.cr", <<-CR
+        module Greeter
+          extend self
+
+          def polite(name : String) : String
+            "hello, " + name
+          end
+        end
+        CR
+      bind_artifact "ok.cr", "Greeter", "mods"
+      LAST_REPORT.first.should_not contain "cannot be linked against"
     end
   end
 
