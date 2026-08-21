@@ -111,8 +111,8 @@
 
   It is what closes the question item 12e opened. With `IO`, `Time` and
   `SemanticVersion` bound, `JSON` crosses 168 → 181 signatures, `YAML`
-  166 → 192 and `URI` 48 → 55; `IO` alone accounts for +13, +21 and +8 of that,
-  the exact gains the tool's unlock report predicted.
+  166 → 192 and `URI` 48 → 55 — the exact gains the unlock report predicts, and
+  it predicts them by a different route, which is the two checking each other.
 
   The counts also stopped calling a free variable a type. `T`, `self` and a
   block returning `_` are not types anybody can declare, and counting them

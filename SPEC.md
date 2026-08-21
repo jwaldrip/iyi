@@ -4292,8 +4292,12 @@ Named honestly, so nobody mistakes this draft for complete.
     > | `YAML` | 166 → **192** | 29 → **2** |
     > | `URI` | 48 → **55** | 7 → **0** |
     >
-    > `IO` alone accounts for +13, +21 and +8 of that, which are the three
-    > numbers the unlock report predicted before any of it was built.
+    > And the unlock report predicted it exactly. `JSON` reads `IO +13` and
+    > gained 13; `URI` reads `IO +7` and gained 7; `YAML` reads `IO +20`,
+    > `Time +5`, `SemanticVersion +1` and gained 26. The prediction is made by
+    > counting what one declaration would free and the result by actually
+    > freeing it, so the two agreeing is worth more than either — it is the
+    > report and the composition checking each other.
     >
     > `Time` and `SemanticVersion` bind the same way — 446 public methods at
     > 86.1% and 22 at 95.5%. A `JSON` boundary written against `IO`'s is 16

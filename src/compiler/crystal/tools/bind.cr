@@ -253,7 +253,11 @@ module Crystal
       io.puts "  never cross, and no work makes them."
     end
 
-    unlocked = blocked_by(program, known, root)
+    # Only the ones a declaration would actually free. A signature this tool
+    # refuses for its parameters or its block is not waiting on anybody, and
+    # counting it here would promise that declaring a type reaches it.
+    blockable = known.select { |method| method.storable && method.callable? }
+    unlocked = blocked_by(program, blockable, root)
     unless unlocked.empty?
       io.puts
       io.puts "declaring one type at a time, and what each one unlocks:"
@@ -261,7 +265,7 @@ module Crystal
       total = 0
       unlocked.first(8).each do |name|
         declared << name
-        opened = known.count do |method|
+        opened = blockable.count do |method|
           foreign_names(method, root).all? { |t| declared.includes?(t) } &&
             !foreign_names(method, root).empty?
         end
