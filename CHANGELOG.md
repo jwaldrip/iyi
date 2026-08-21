@@ -94,6 +94,15 @@
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
 
+- **A boundary can now name another boundary's type, which is what `IO` was
+  for.** `JSON`, `YAML` and `URI` all take an `IO`, so binding them is worth
+  nothing unless the artifact can say so. The producer calls the type `IO`; a
+  consumer that imported it calls it `Io::IO`, and an artifact that wrote the
+  first resolved to nothing. Names from the boundaries passed in `--use-iyimod`
+  are written the way the consumer will see them, and the modules they came from
+  travel as the artifact's `imports`, so `import json` alone is enough — the
+  consumer does not have to work out that it needs `import io` as well.
+
 - **A field's type crossed as `IO+`.** That is how a virtual type prints — a
   fact about this build's dispatch rather than a name anybody can write — and a
   field declared `IO+` is one no consumer can read back. `infer_return` had

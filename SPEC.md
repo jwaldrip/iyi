@@ -4314,6 +4314,18 @@ Named honestly, so nobody mistakes this draft for complete.
     > | `YAML` | **192** | **2** | 4 | 3 | 1 |
     > | `URI` | **55** | **0** | 2 | 1 | 1 |
     >
+    > **And an artifact nothing had ever read back.** Every check this tool
+    > carried was a number it printed, and a number cannot say whether anything
+    > can consume the artifact printed beside it — so nothing did, and the first
+    > spec written for it failed. Three things were wrong and all three are the
+    > same sentence: *what an artifact declares belongs to the artifact.* A
+    > module root kept the producer's prefix (`MyLib::Entry` with no `MyLib`,
+    > because an iyi module path camelcases back to `Mylib` and `JSON` is not in
+    > that mapping's image at all); a field crossed as `IO+`, which is dispatch
+    > and not a name; and a reference to another boundary used the producer's
+    > name where the consumer's was needed. A `JSON` boundary written against
+    > `IO`'s is consumed by `import json` on its own now.
+    >
     > `JSON` and `URI` wait on nothing anybody could declare. `YAML` waits on
     > `Set`, which is generic, and generics travel as bodies rather than as
     > declarations — IV.2's problem and not this one's. The middle column is

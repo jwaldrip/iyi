@@ -18,14 +18,15 @@ require "./spec_helper"
 
 # The program `tool bind` reads: a Crystal source, analysed under Crystal's own
 # library, which is what the tool needs and why it lives in the compiler.
-private def bind_artifact(source_path : String, root : String, dir : String) : String
+private def bind_artifact(source_path : String, root : String, dir : String,
+                          bound : String? = nil) : String
   compiler = create_spec_compiler
   compiler.no_codegen = true
   source = Crystal::Compiler::Source.new(File.expand_path(source_path), File.read(source_path))
   result = compiler.compile source, File.expand_path("bind-probe")
 
   report = IO::Memory.new
-  Crystal.print_bind result.program, root, report, artifact_dir: dir
+  Crystal.print_bind result.program, root, report, artifact_dir: dir, bound_dir: bound
   File.join(dir, "#{root.downcase}.iyimod")
 end
 
@@ -138,6 +139,57 @@ describe "tool bind" do
 
       File.exists?(bind_artifact("shard.cr", "MySink", "mods")).should be_true
       consume "mods", "mysink"
+    end
+  end
+
+  # Two boundaries, where the second names a type from the first.
+  #
+  # This is what `IO` is for: `JSON`, `YAML` and `URI` all take one, so a `JSON`
+  # boundary is only worth anything if it can say so. The producer calls the
+  # type `Carrier`; the consumer, having imported it, calls it `Carrier::Carrier`
+  # — so the name written into the second artifact has to be the consumer's, and
+  # the dependency has to travel with it or a consumer would have to work out
+  # the `import` for itself.
+  it "writes a boundary that names another boundary's type" do
+    with_tempdir("bind_composed") do
+      Dir.mkdir_p "mods"
+      File.write "carrier.cr", <<-CR
+        class Carrier
+          @size : Int32
+
+          def initialize(@size : Int32)
+          end
+
+          def size : Int32
+            @size
+          end
+        end
+        CR
+      File.write "shard.cr", <<-CR
+        require "./carrier"
+
+        module MyWire
+          extend self
+
+          class Packet
+            @carrier : Carrier
+
+            def initialize(@carrier : Carrier)
+            end
+
+            def carrier : Carrier
+              @carrier
+            end
+          end
+        end
+        CR
+
+      bind_artifact "carrier.cr", "Carrier", "mods"
+      bind_artifact "shard.cr", "MyWire", "mods", bound: "mods"
+
+      # `mywire` alone. The artifact records what it depends on, so the consumer
+      # does not repeat it.
+      consume "mods", "mywire"
     end
   end
 end

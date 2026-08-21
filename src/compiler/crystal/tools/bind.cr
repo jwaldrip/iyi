@@ -104,6 +104,18 @@ module Crystal
   # waiting on, and once it has an artifact it stops being a gap.
   @@bound = Set(String).new
 
+  # And what to call them from outside. A bound artifact's declarations sit
+  # under the module the consumer imports, so `IO` is `Io::IO` there — the
+  # producer's name is not the consumer's, and an artifact that referred to one
+  # by the other resolved to nothing.
+  @@bound_prefix = {} of String => String
+
+  # Which module each of those names came from, and which of them this artifact
+  # ended up naming. A boundary that refers to another one depends on it, and a
+  # consumer should not have to work that out and write the `import` itself.
+  @@bound_module = {} of String => String
+  @@bound_used = Set(String).new
+
   def self.print_bind(program : Program, root : String?, io : IO,
                       artifact_dir : String? = nil, bound_dir : String? = nil) : Nil
     unless root
@@ -112,6 +124,9 @@ module Crystal
     end
 
     @@builtin = program.builtin_type_names
+    @@bound_prefix = {} of String => String
+    @@bound_module = {} of String => String
+    @@bound_used = Set(String).new
     @@bound = bound_dir ? bound_names(program, bound_dir, io) : Set(String).new
 
     methods = [] of BindMethod
@@ -366,13 +381,20 @@ module Crystal
       types = types.map { |declaration| strip_root_declaration declaration, root }
     end
 
+    # And a reference to somebody else's boundary is written the way the
+    # consumer will see it.
+    unless @@bound_prefix.empty?
+      signatures = signatures.map { |signature| map_names signature }
+      types = types.map { |declaration| map_names_declaration declaration }
+    end
+
     artifact = IyiMod::Artifact.new(
       module_name: root.downcase,
       source_path: program.filename || "",
       compiler_version: IyiMod.compiler_version,
       target_triple: program.codegen_target.to_s,
       flags: program.flags.to_a.sort!,
-      imports: [] of IyiMod::ImportEdge,
+      imports: @@bound_used.to_a.sort.map { |name| IyiMod::ImportEdge.new(name) },
       exports: IyiMod::Exports.new(signatures, types, [] of IyiMod::ImplRecord),
       # False on purpose, and it is the one place where that field is not
       # simply "which prelude compiled this". A bound shard *is* compiled under
@@ -918,6 +940,17 @@ module Crystal
       artifact.exports.types.each { |declaration| collect_known declaration, "", found }
       kept = found.select { |name| declared_type? program, name }
       names.concat kept
+
+      # The consumer reaches an imported module by the camelcase of its path,
+      # which is the mapping IV.6 #6 keeps reversible. Only the top-level names
+      # are recorded: everything under one is reached through it, so prefixing
+      # `IO` carries `IO::Memory` with it.
+      prefix = artifact.module_name.split('/').map(&.camelcase).join("::")
+      artifact.exports.types.each do |declaration|
+        next unless kept.includes? declaration.name
+        @@bound_prefix[declaration.name] = "#{prefix}::#{declaration.name}"
+        @@bound_module[declaration.name] = artifact.module_name
+      end
       io.puts "  %-24s %d types, %d this program can name" % [File.basename(path), found.size, kept.size]
     end
     io.puts
@@ -966,6 +999,41 @@ module Crystal
       methods: declaration.methods.map { |signature| strip_root signature, root },
       visibility: declaration.visibility,
       types: declaration.types.map { |nested| strip_root_declaration nested, root },
+    )
+  end
+
+  # Rewrites every bound name in *text* to what the consumer calls it.
+  private def self.map_names(text : String) : String
+    @@bound_prefix.reduce(text) do |carried, (name, qualified)|
+      mapped = carried.gsub(/(?<![A-Za-z0-9_:])#{Regex.escape(name)}(?![A-Za-z0-9_])/, qualified)
+      @@bound_used << @@bound_module[name] if mapped != carried
+      mapped
+    end
+  end
+
+  private def self.map_names(signature : IyiMod::Signature) : IyiMod::Signature
+    IyiMod::Signature.new(
+      name: signature.name,
+      receiver: signature.receiver,
+      parameters: signature.parameters.map { |parameter| map_names parameter },
+      block_parameter: map_names(signature.block_parameter),
+      return_type: map_names(signature.return_type),
+      free_variables: signature.free_variables,
+      required: signature.required,
+    )
+  end
+
+  private def self.map_names_declaration(declaration : IyiMod::TypeDecl) : IyiMod::TypeDecl
+    IyiMod::TypeDecl.new(
+      name: declaration.name,
+      kind: declaration.kind,
+      type_parameters: declaration.type_parameters,
+      assoc_types: declaration.assoc_types,
+      supertraits: declaration.supertraits,
+      fields: declaration.fields.map { |(name, type)| {name, map_names(type)} },
+      methods: declaration.methods.map { |signature| map_names signature },
+      visibility: declaration.visibility,
+      types: declaration.types.map { |nested| map_names_declaration nested },
     )
   end
 
