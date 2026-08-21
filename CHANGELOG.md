@@ -80,6 +80,26 @@
 
 ### Fixed
 
+- **`crystal tool bind` read restrictions as text, and it flattered the core.**
+  A method inside `JSON::Token` writes `kind : Kind`, which is
+  `JSON::Token::Kind` — the shard's own type, already travelling — and the tool
+  counted it as a type nobody had declared. `self` went the same way: a method
+  returning `self` in `URI` returns `URI` and waits for nobody. Every such
+  spelling pushed the "what this boundary is waiting on" list in one direction,
+  *towards the core*, which is the claim that list was being used to support.
+
+  Restrictions are resolved against the owning type now. The boundary the tool
+  can already write grows by 33 signatures — `JSON` 142 → 152, `YAML` 142 → 158,
+  `URI` 41 → 48 — and the percentages of surface needing no human do not move,
+  because those measure a different thing and resolution does not touch it. Two
+  `YAML` signatures returning a bare `Array` stopped crossing, which is a
+  correction rather than a loss: a declaration that says `Array` without saying
+  of what is not one a consumer can use.
+
+  With the list true, `IO` is first for all three namespaces and by more than
+  before — +13, +21, +8 — against 21 for everything generic. See SPEC.md Part V
+  item 12e.
+
 - **The tarball could be built from an unoptimised compiler, and was.** `build:`
   sets `release := 1`; `iyi-tarball` did not, and even asking would not have
   been enough — make rebuilds on file times, so a `.build/iyi` left over from an

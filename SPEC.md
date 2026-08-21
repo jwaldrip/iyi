@@ -4170,8 +4170,45 @@ Named honestly, so nobody mistakes this draft for complete.
     | `URI` | 105 | **58.1%** |
 
     What the remainder waits on is *named*: the tool prints which types are
-    missing and what declaring each unlocks — `IO` +11, `Int` +11, `Tuple` +4,
-    and so on. That is a work list rather than a research problem.
+    missing and what declaring each unlocks — `IO` +13, `Int` +12, `Tuple` +4,
+    and so on. That is a work list rather than a research problem. Those are the
+    corrected figures. The note below is what they were, and why.
+
+    > **Asked again, and the work list was flattering the core.** The tool read
+    > each restriction as the text somebody typed, and a method inside
+    > `JSON::Token` writes `kind : Kind`. That is `JSON::Token::Kind` — the
+    > shard's own, already travelling — and it was counted as a type nobody had
+    > declared. `self` was counted the same way, and a method returning `self` in
+    > `URI` returns `URI` and waits for nobody. Every such spelling pushed the
+    > count in one direction: *towards the core*, which is the claim the count
+    > was here to support. Published first: `IO` +11, `Int` +11, `Tuple` +4.
+    >
+    > Restrictions are resolved against the owner now, and the same three
+    > namespaces answer differently — this is the boundary the tool can write
+    > today, not the percentage above:
+    >
+    > | | crossing before | crossing now | still waiting |
+    > |---|---|---|---|
+    > | `JSON` | 142 | **152** | 57 → 47 |
+    > | `YAML` | 142 | **158** | 60 → 44 |
+    > | `URI` | 41 | **48** | 18 → 11 |
+    >
+    > The percentages do not move, and that is the check that this changed what
+    > it claims to: they measure whether a *human* has to write a signature, and
+    > resolving a name somebody already wrote does not change that. 33 more
+    > signatures cross, and nothing stopped crossing except two `YAML` entries
+    > returning a bare `Array` — which is a correction too, because a
+    > declaration that says `Array` without saying of what is not one a consumer
+    > can use.
+    >
+    > **And the work list, once it is true, says one word.** `IO` is first in all
+    > three and by more than it was: +13 for `JSON`, +21 for `YAML`, +8 for
+    > `URI`. That is 42 signatures against 21 for everything generic
+    > (`Slice`, `Tuple`, `NamedTuple`, `Set`) and 20 for the whole numeric tower.
+    > About four fifths of what these three ask of the top level is *not*
+    > generic — `IO`, `Int`, `Time`, `Float32`, `Float` — which is to say the
+    > declaration machinery this tool already has is the machinery that would
+    > carry it. The generic remainder is IV.2's problem rather than this one's.
 
     **And the blocker that is not a percentage.** `tool bind` takes a root
     namespace, and the types every one of those signatures actually names —

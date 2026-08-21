@@ -800,13 +800,45 @@ module Crystal
       location: a_def.location.try(&.to_s) || "?",
       inferred: inferred,
       refused: refused,
-      params: a_def.args.map { |arg| {arg.name, arg.restriction.try(&.to_s) || "?"} },
-      returns: a_def.return_type.try(&.to_s),
+      params: a_def.args.map { |arg| {arg.name, resolve_restriction(owner, arg.restriction) || "?"} },
+      returns: resolve_restriction(owner, a_def.return_type),
       receiver: a_def.receiver.try(&.to_s) || "",
       # `&block : Context -> B` travels as written. A block whose type nobody
       # wrote cannot: R-2 asks the block for its types like everything else.
       written_block: a_def.block_arg.try { |argument| argument.restriction ? "&#{argument}" : "" } || "",
     )
+  end
+
+  # The type a restriction names, rather than the text somebody typed.
+  #
+  # A method inside `JSON::Token` writes `kind : Kind`, and reading that as
+  # written makes `Kind` a type nobody has declared — when it is
+  # `JSON::Token::Kind`, the shard's own, already travelling. Every such
+  # spelling inflated the count of what a boundary waits on, and inflated it in
+  # one direction: *towards the core*, which is the claim the count was being
+  # used to support. `self` is the same mistake with a shorter name — a method
+  # returning `self` in `URI` returns `URI` and waits for nobody.
+  #
+  # A consumer is the other reason. It writes against this boundary from
+  # outside, where `Kind` names nothing; a declaration that travels has to say
+  # what it means from there.
+  #
+  # Resolution can fail — a free variable, `_`, a restriction this scope cannot
+  # see — and then the written text stands, which is what this did for
+  # everything before.
+  private def self.resolve_restriction(owner : Type, node : ASTNode?) : String?
+    return nil unless node
+    written = node.to_s
+    return written if written == "_"
+    return owner.instance_type.devirtualize.to_s if node.is_a?(Self)
+
+    type = owner.lookup_type?(node)
+    return written unless type
+    # A free variable is a name this method binds, not one anybody declares.
+    return written if type.is_a?(TypeParameter)
+    type.devirtualize.to_s
+  rescue
+    node.to_s
   end
 
   # Instantiate a method nobody called, and read what it returns.
