@@ -94,6 +94,13 @@
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
 
+- **CI could not package the tarball, and the guard that stopped it was right.**
+  `iyi-tarball` carries `release := 1` and make applies that to what it builds
+  for that goal — so the workflow naming `iyi` first built an ordinary one, and
+  the tarball found it up to date by file times and refused. That refusal is
+  exactly what `check_iyi_is_release` was added for; what was missing was the
+  workflow catching up with it. It asks for `iyi-tarball` alone now.
+
 - **The four steps `crystal tool bind` prints are taken by a spec now**
   (`spec/compiler-cli/bind-pipeline_spec.cr`): bind a shard, compile its keep
   file to an object, read the symbols, globalise them, and build an iyi program

@@ -362,8 +362,13 @@ jobs:
           path: .build
       - run: chmod +x .build/crystal
 
+      # `iyi-tarball` alone, and the missing word is the whole of it. The target
+      # carries `release := 1` and make applies that to what it builds *for this
+      # goal* — so naming `iyi` first built an ordinary one, and the tarball then
+      # found it up to date by file times and refused to package it. Which is
+      # the guard working: an unoptimised release is what it was added to stop.
       - name: Build `iyi` and package it
-        run: make -o .build/crystal iyi iyi-tarball
+        run: make -o .build/crystal iyi-tarball
 
       # What a person who downloads it does: unpack it somewhere else and run a
       # program. Nothing here may need this checkout, a CRYSTAL_PATH, or a
