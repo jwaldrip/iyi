@@ -339,8 +339,8 @@ describe "Compiler" do
   # iyi: negative indexing and the small formatting set.
   #
   # `a[-1]` used to raise, the way an index past the end does, and the README
-  # listed that as a missing Crystal habit. It counts from the end now, on
-  # both Array and String, and `[]=` / `[]?` wrap the same way. Formatting is
+  # listed that as a missing habit. It counts from the end now, on both Array
+  # and String, and `[]=` / `[]?` wrap the same way. Formatting is
   # `to_s(base)`, `rjust` / `ljust` and `*`, not a format-string parser.
   describe "negative indexing and formatting" do
     it "indexes from the end, writes bases, and pads" do
