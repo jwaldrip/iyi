@@ -374,6 +374,31 @@ module Crystal
       source = [source] unless source.is_a?(Array)
       return prelude_fork_probe(source, output_filename) if ENV["IYI_FORK_PROBE"]?
 
+      # iyi: `IYI_WARM=1` — analyse the prelude and adopt it, in one process and
+      # **without forking**, printing the two halves.
+      #
+      # The daemon does three things at once: it analyses a prelude, it keeps
+      # it, and it forks a child to use it. When its numbers disappoint there is
+      # no way to tell which of the three is at fault, and the answer decides
+      # whether the daemon is worth having at all. This removes the fork and
+      # leaves the rest, so the two can be priced apart.
+      #
+      # What it priced: adoption returns essentially the whole prelude analysis,
+      # for a program requiring a shard as much as for one that does not, and
+      # the fork costs 0.2 to 0.3 s of it (SPEC.md IV.1d). A measurement tool
+      # rather than a mode — it analyses the prelude in the foreground, so it is
+      # always slower overall than an ordinary build.
+      if ENV["IYI_WARM"]? && !Compiler.preanalysed.has_key?(prelude_cache_key)
+        warm = Time.instant
+        pre = preanalyse_prelude
+        Compiler.preanalysed[pre.key] = pre
+        STDERR.puts "[warm] prelude #{warm.elapsed.total_seconds.round(3)}s"
+        rest = Time.instant
+        result = compile_with_preanalysed_prelude(pre, source, output_filename) { |program| yield program }
+        STDERR.puts "[warm] rest    #{rest.elapsed.total_seconds.round(3)}s"
+        return result
+      end
+
       if pre = Compiler.preanalysed[prelude_cache_key]?
         return compile_with_preanalysed_prelude(pre, source, output_filename) { |program| yield program }
       end

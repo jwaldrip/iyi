@@ -309,11 +309,36 @@ uninstall_iyi: ## iyi: remove what install_iyi installed
 	rm -rf "$(DESTDIR)$(DATADIR)/iyi"
 	rm -rf "$(DESTDIR)$(DATADIR)/licenses/iyi"
 
+# iyi: the binaries about to be packaged are optimised ones.
+#
+# `release := 1` above asks for that, and asking is not enough: make rebuilds
+# on file times, so a `.build/iyi` left over from an ordinary `make iyi` is
+# newer than every source and gets packaged as it is. Nothing about the tarball
+# would look wrong. The binary would simply be an unoptimised compiler, and
+# every build every user ran would go through it — a release nobody could see
+# was slow.
+#
+# So it is asked of the binary rather than of the build: `--version` says which
+# it is.
+.PHONY: check_iyi_is_release
+check_iyi_is_release: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
+	@for bin in iyi$(EXE) $(IYI_DAEMON_BIN); do \
+	   if $(O)/$$bin --version | grep -q "not built in release mode"; then \
+	     echo "$(O)/$$bin is not an optimised build, and a tarball ships what it packages."; \
+	     echo "It is up to date by file times, so make will not rebuild it. Force it:"; \
+	     echo "  make -B iyi iyi-daemon release=1"; \
+	     exit 1; \
+	   fi; \
+	 done
+
 # iyi: the same layout in a file somebody can download. Relocatable, because
 # the binary finds its prelude relative to itself.
 .PHONY: iyi-tarball
 iyi-tarball: ## iyi: build a relocatable tarball at $(O)
-iyi-tarball: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
+# bake-format off: Mbake bug with Duplicate target rule https://github.com/EbodShojaei/bake/issues/106
+iyi-tarball: release := 1
+iyi-tarball: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN) check_iyi_is_release
+# bake-format on
 	rm -rf "$(O)/iyi-package"
 	$(MAKE) install_iyi DESTDIR="$(CURDIR)/$(O)/iyi-package" PREFIX=""
 	$(INSTALL) -m 644 README.md "$(O)/iyi-package/share/iyi/README.md"

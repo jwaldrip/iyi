@@ -472,24 +472,29 @@ itself, which every build reads from source. Under iyi's own prelude the same
 trade goes the other way: the library is 0.03 s and the artifact is the whole
 build. R-1 is only as fast as the part of your program it covers.
 
-**The library's own cost is what `iyi daemon` removes.** Start one in another
-terminal and it holds Crystal's library analysed between builds:
+**Some of the library's cost is what `iyi daemon` removes.** Start one in
+another terminal and it holds Crystal's library analysed between builds:
 
 ```console
 $ iyi daemon start &
 $ iyi daemon build --crystal -o site site.iyi
 ```
 
-| | normal | through the daemon |
-|---|---|---|
-| `require "json"` and nothing else | 2.27 s | **1.24 s** |
-| twelve modules | 2.42 s | **1.30 s** |
-| twelve modules and Kemal | 3.33 s | 2.52 s |
-| the same, with Kemal in a `--prelude` file | 3.33 s | **1.94 s** |
+Front end only, so the term it removes is visible rather than diluted by
+codegen — a full build adds code generation and a link that it does not touch:
 
-It holds the *prelude*, so a shard your program requires is still re-analysed
-every build. Name it in a prelude file of its own and it is held too — that is
-the fourth row, and it is how to use this on a real project:
+| twelve-module app, `--no-codegen` | normal | through the daemon |
+|---|---|---|
+| twelve modules | 0.77–0.85 s | **0.44–0.49 s** |
+| twelve modules and Kemal | 1.15–1.36 s | 0.93–1.13 s |
+| the same, with Kemal in a `--prelude` file | 1.15–1.36 s | **0.57–0.66 s** |
+
+**About 0.3 s**, and roughly 200 MB of resident memory per prelude it holds.
+
+The third row is the one worth reading: it is the largest by some way, and it
+does not come from holding the prelude — it comes from holding *Kemal*. What
+the daemon is really good at is holding your program's dependencies, and it
+only does that if you name them in a prelude file of your own:
 
 ```crystal
 # _prelude.cr

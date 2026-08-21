@@ -3149,19 +3149,68 @@ command that costs a terminal and buys nothing is not a command.
 > The paragraph above is right about iyi's prelude and wrong about the mode
 > item 12b made central. `iyi daemon start` runs a single-threaded `iyi-daemon`
 > built and shipped beside `iyi`, and holds Crystal's library analysed between
-> builds. Best of three on a twelve-module app:
+> builds.
 >
-> | | normal | through the daemon |
+> **The first numbers written here were wrong, and how they were wrong is worth
+> more than they were.** They are below, after the right ones, because a
+> measurement that flatters its own feature is a failure this document has now
+> recorded more than once.
+>
+> Front end only, so that the term the daemon actually removes is not diluted by
+> codegen. Release compiler, a daemon holding one prelude, and the two arms
+> alternated rather than run in blocks — this machine's clock steps, and a block
+> of one arm can land inside a step:
+>
+> | twelve-module app, `--no-codegen` | normal | through the daemon |
 > |---|---|---|
-> | `require "json"` and nothing else | 2.27 s | **1.24 s** |
-> | twelve modules | 2.42 s | **1.30 s** |
-> | twelve modules and Kemal | 3.33 s | 2.52 s |
-> | the same, with Kemal named in a `--prelude` file | 3.33 s | **1.94 s** |
+> | twelve modules | 0.77–0.85 s | **0.44–0.49 s** |
+> | twelve modules and Kemal | 1.15–1.36 s | 0.93–1.13 s |
+> | the same, with Kemal named in a `--prelude` file | 1.15–1.36 s | **0.57–0.66 s** |
 >
-> What it removes is a flat ~1.05 s: the analysis of the library the daemon
-> holds. Kemal is required by the *program*, not by the prelude, so it is
-> re-analysed every build — until it is named in a prelude file of its own,
-> which is the fourth row and the way to use this on a real project.
+> **What it removes is about 0.3 s**, and a full build adds codegen and a link
+> that it does not touch, so the share is smaller again. Full-build timings on
+> this machine were too noisy to publish.
+>
+> **The last row is the finding.** It is the only large effect, it is more than
+> twice the other two, and it does not come from holding the prelude — it comes
+> from holding *Kemal*. The daemon's value is in the program's dependencies
+> rather than in the library underneath them, which is the same sentence as
+> "give the dependency an artifact", said by a resident process instead of by a
+> file.
+>
+> **What it costs is memory.** About 200 MB resident per prelude held, and the
+> default is three (`CRYSTAL_DAEMON_PRELUDES`), so a daemon that has seen a few
+> flag sets is holding half a gigabyte.
+>
+> **The mechanism itself is sound, measured separately.** `IYI_WARM` analyses the
+> prelude and adopts it in one process, without forking: adoption returns
+> essentially the whole prelude analysis — 0.48 s of a 1.25 s front end — with no
+> penalty for the Kemal case. The gap between that and what the daemon delivers
+> is the fork, 0.2 to 0.3 s. It is not the GC: a daemon started with
+> `GC_DONT_GC=1` measures the same.
+>
+> **The wrong numbers, and the three ways they were wrong.** What was published:
+> 2.27 s to 1.24 s, 2.42 s to 1.30 s, 3.33 s to 2.52 s.
+>
+> - **A debug compiler.** `make iyi-tarball` did not force `release := 1`, so
+>   the binaries measured were unoptimised. Prelude analysis is about 1.5 s
+>   there and about 0.5 s in a release build, so every saving above is roughly
+>   three times what somebody with the released tarball would see. The tarball
+>   now refuses to be built from an unoptimised binary — `check_iyi_is_release`.
+> - **Repeated identical builds.** Crystal caches generated objects per program,
+>   so building the same unedited file five times skips codegen from the second
+>   run on. That leaves the front end as most of what is measured, and the front
+>   end is exactly what the daemon accelerates. Every measurement here now edits
+>   a module first.
+> - **A stepping clock.** This machine's clock jumps, and `/usr/bin/time`
+>   reported *negative* elapsed times more than once. Six measurements of one arm
+>   in a row can sit inside a step and come out uniformly wrong, which is how one
+>   batch showed the daemon *slower* than a normal build for the Kemal case. It
+>   is not. Alternating the arms is what makes a step hit both.
+>
+> The first two flattered the daemon and the third smeared it in both
+> directions. None was a mistake about the compiler; all three were mistakes
+> about the measurement, made by the person who wanted the number to be good.
 >
 > **It warms Crystal's prelude and not iyi's, and that is deliberate.**
 > `--crystal` sets the prelude `Compiler.new` already has, so those builds hit

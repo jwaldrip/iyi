@@ -32,12 +32,15 @@
   the modules cost 0.16 s from source and nothing from artifacts, against
   3.1 s for Crystal's library, which every build still reads from source.
 
-- **`iyi daemon`, and it halves a `--crystal` build.** A single-threaded
-  `iyi-daemon` is built and shipped beside `iyi`; `iyi daemon start` holds
-  Crystal's library analysed between builds. Best of three on a twelve-module
-  app: 2.42 s to 1.30 s, and 3.33 s to 1.94 s with Kemal named in a `--prelude`
-  file. It holds the prelude, so a shard the program requires is re-analysed
-  each build unless it is named there too.
+- **`iyi daemon`.** A single-threaded `iyi-daemon` is built and shipped beside
+  `iyi`; `iyi daemon start` holds Crystal's library analysed between builds. It
+  takes about 0.3 s off the front end of a `--crystal` build — 0.81 s to 0.47 s
+  on a twelve-module app — and costs about 200 MB resident per prelude it holds.
+
+  Name your shard in a `--prelude` file of your own and it is held too, which is
+  the largest effect by some way: 1.28 s to 0.60 s on the same app with Kemal.
+  What the daemon is good at is holding the program's *dependencies*, not the
+  library underneath them.
 
   Not offered before because iyi's own prelude takes 0.03 s to analyse and
   there was nothing to hold. `--crystal` gave it something.
@@ -64,6 +67,20 @@
   — so integer division stays `//` in both.
 
 ### Fixed
+
+- **The tarball could be built from an unoptimised compiler, and was.** `build:`
+  sets `release := 1`; `iyi-tarball` did not, and even asking would not have
+  been enough — make rebuilds on file times, so a `.build/iyi` left over from an
+  ordinary `make iyi` is newer than every source and gets packaged as it is.
+  Nothing about the tarball would look wrong; every build every user ran would
+  simply go through an unoptimised compiler. The target now asks the binary
+  rather than the build: `--version` says which it is, and packaging refuses
+  otherwise.
+
+  This is also why the daemon numbers first published here were about three
+  times too generous — they were measured with one of those binaries. See
+  SPEC.md IV.1d for the corrected table and for the other two ways the
+  measurement was wrong.
 
 - **The tarball could not build a program that requires Kemal.** `install_iyi`
   cut `compiler/` from the copy of Crystal's library it ships, and the standard
