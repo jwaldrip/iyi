@@ -312,7 +312,7 @@ module Crystal
     File.write keep_path, keep_file(program, root, signatures, types, accessors, dir)
 
     io.puts
-    carried = types.sum { |declaration| declaration.methods.size }
+    carried = count_methods types
     unless @@handle_types.empty?
       io.puts
       io.puts "crossed as handles, without their fields: #{@@handle_types.size}"
@@ -354,7 +354,7 @@ module Crystal
     end
 
     io.puts "wrote #{path}: #{signatures.size} module functions, " \
-            "#{types.size} types carrying #{carried} methods"
+            "#{count_types types} types carrying #{carried} methods"
     io.puts "wrote #{keep_path}"
     io.puts
     io.puts "The artifact carries declarations and no object code, because the"
@@ -742,14 +742,8 @@ module Crystal
       accessors.each do |(signature, _)|
         io << "  " << root << "." << signature.name << "\n"
       end
-      types.each_with_index do |declaration, index|
-        qualified = "#{root}::#{declaration.name}"
-        receiver = "t#{index}"
-        io << "  " << receiver << " = uninitialized " << qualified << "\n"
-        declaration.methods.each do |signature|
-          target = signature.receiver.empty? ? receiver : qualified
-          counter = keep_call(io, target, signature, counter)
-        end
+      types.each do |declaration|
+        counter = keep_type io, "#{root}::", declaration, counter
       end
       io << "end\n"
     end
@@ -760,6 +754,36 @@ module Crystal
     type = program.types?.try &.[]?(root)
     return false unless type
     type.instance_type.is_a?(NonGenericModuleType) || type.instance_type.is_a?(GenericModuleType)
+  end
+
+  # Every method on a declaration, and on the declarations under it.
+  #
+  # The walk stopped at the top, so a nested type travelled as a declaration
+  # while its methods were emitted by nobody — the artifact promised a symbol
+  # the object file did not carry, which is a link error and not a compile one.
+  private def self.keep_type(io : IO, prefix : String,
+                             declaration : IyiMod::TypeDecl, counter : Int32) : Int32
+    qualified = "#{prefix}#{declaration.name}"
+    receiver = "t#{counter}"
+    counter += 1
+    io << "  " << receiver << " = uninitialized " << qualified << "\n"
+    declaration.methods.each do |signature|
+      target = signature.receiver.empty? ? receiver : qualified
+      counter = keep_call(io, target, signature, counter)
+    end
+    declaration.types.each do |nested|
+      counter = keep_type io, "#{qualified}::", nested, counter
+    end
+    counter
+  end
+
+  # And both counted through the nesting, for the same reason.
+  private def self.count_types(declarations : Array(IyiMod::TypeDecl)) : Int32
+    declarations.sum { |declaration| 1 + count_types(declaration.types) }
+  end
+
+  private def self.count_methods(declarations : Array(IyiMod::TypeDecl)) : Int32
+    declarations.sum { |declaration| declaration.methods.size + count_methods(declaration.types) }
   end
 
   # The foreign types one signature waits on.

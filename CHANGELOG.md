@@ -94,6 +94,15 @@
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
 
+- **`crystal tool bind`'s keep file never descended into nested types.** A
+  nested type travelled as a declaration while its methods were named by
+  nobody, so the artifact promised symbols the object file did not carry — a
+  link error rather than a compile one, and invisible until something linked.
+  `JSON`'s artifact holds 16 types and the keep file reached 9 of them, leaving
+  16 methods on the other 7 unemitted. The walk recurses now, and the counts
+  printed beside the artifact are counted through the nesting too, having read
+  as top-level-only for the same reason.
+
 - **`crystal tool bind` generated a keep file that could not compile when
   pointed at a core type.** A shard's root is a module — `Kemal`, `JSON` — and
   the tool assumed one everywhere: it reopened the root as `module IO`, which is
