@@ -1,8 +1,8 @@
 # Files — README "What is not here", the thing a language that cannot
 # read a file is missing.
 #
-# Three methods, because that is what a program needs: read the whole file,
-# write the whole file, ask whether it is there. Paths are NUL-terminated
+# Four methods, because that is what a program needs: read the whole file,
+# write the whole file, ask whether it is there, delete it. Paths are NUL-terminated
 # at the call because iyi's `String` is not, and the buffer dies with the
 # call. Errors panic with the path in the message; there is nothing to
 # rescue with, so the message is the whole diagnostic.
@@ -56,6 +56,10 @@ class File
     end
     __iyi_close(fd)
     true
+  end
+
+  def self.delete(path : String) : Nil
+    raise "cannot delete #{path}" if __iyi_unlink(c_path(path)) < 0
   end
 
   # The kernel wants a NUL it can walk. iyi's strings do not carry one.

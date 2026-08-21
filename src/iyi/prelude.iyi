@@ -116,6 +116,24 @@ require "./hash"
     {% end %}
   end
 
+  # `unlinkat`, with AT_FDCWD and no flags. Syscall 263 on x86_64 and 35 on
+  # aarch64.
+  def __iyi_unlink(path : UInt8*) : Int64
+    result = uninitialized Int64
+    {% if flag?(:x86_64) %}
+      asm("syscall" : "={rax}"(result)
+                    : "{rax}"(263_i64), "{rdi}"(-100_i64), "{rsi}"(path), "{rdx}"(0_i64)
+                    : "rcx", "r11", "memory"
+                    : "volatile")
+    {% else %}
+      asm("svc #0" : "={x0}"(result)
+                   : "{x8}"(35_i64), "{x0}"(-100_i64), "{x1}"(path), "{x2}"(0_i64)
+                   : "memory"
+                   : "volatile")
+    {% end %}
+    result
+  end
+
   def __iyi_file_read(fd : Int64, buffer : Void*, count : UInt64) : Int64
     __iyi_read(fd.to_i32, buffer, count)
   end
@@ -147,6 +165,7 @@ require "./hash"
     fun open(path : UInt8*, oflag : Int32, ...) : Int32
     fun chmod(path : UInt8*, mode : Int32) : Int32
     fun close(fd : Int32) : Int32
+    fun unlink(path : UInt8*) : Int32
     fun exit(status : Int32) : NoReturn
   end
 
@@ -173,6 +192,10 @@ require "./hash"
 
   def __iyi_close(fd : Int64) : Nil
     LibC.close(fd.to_i32)
+  end
+
+  def __iyi_unlink(path : UInt8*) : Int64
+    LibC.unlink(path).to_i64
   end
 
   def __iyi_file_read(fd : Int64, buffer : Void*, count : UInt64) : Int64
@@ -207,6 +230,7 @@ require "./hash"
                  number_of_bytes_read : Int32*, overlapped : Void*) : Int32
     fun CreateFileA(name : UInt8*, access : Int32, share : Int32, security : Void*,
                     disposition : Int32, flags : Int32, template : Void*) : Void*
+    fun DeleteFileA(name : UInt8*) : Int32
     fun CloseHandle(handle : Void*) : Int32
     fun ExitProcess(exit_code : Int32) : NoReturn
   end
@@ -254,6 +278,11 @@ require "./hash"
 
   def __iyi_close(fd : Int64) : Nil
     LibC.CloseHandle(Pointer(Void).new(fd.to_u64))
+  end
+
+  def __iyi_unlink(path : UInt8*) : Int64
+    return 0_i64 if LibC.DeleteFileA(path) != 0
+    -1_i64
   end
 
   def __iyi_file_read(fd : Int64, buffer : Void*, count : UInt64) : Int64
@@ -333,6 +362,12 @@ require "./hash"
   end
 
   def __iyi_close(fd : Int64) : Nil
+  end
+
+  # Like path_open, path_unlink_file needs a preopened directory fd and a path
+  # relative to it. This prelude has no directory capability to pass.
+  def __iyi_unlink(path : UInt8*) : Int64
+    raise "File.delete is not available on wasm32-wasi: path_unlink_file needs a preopened directory fd"
   end
 
   def __iyi_file_read(fd : Int64, buffer : Void*, count : UInt64) : Int64

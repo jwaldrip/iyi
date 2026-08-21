@@ -2,9 +2,8 @@
 #
 #   ./bin/iyi run samples/iyi/files.iyi
 #
-# Writes a file, reads it back, checks `exists?`. The path is next to the
-# process, named so it is obvious, and left behind: this prelude has no
-# `unlink` yet. Delete `iyi-files-sample.txt` when you are done.
+# Writes a file, reads it back, checks `exists?`, then deletes it and proves it
+# is gone. The path is next to the process and named so it is obvious.
 
 module samples/files
 
@@ -13,3 +12,5 @@ File.write(path, "hello from iyi\n")
 puts File.read(path)
 puts File.exists?(path)
 puts File.exists?("iyi-files-sample-missing.txt")
+File.delete(path)
+puts File.exists?(path)
