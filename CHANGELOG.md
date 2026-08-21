@@ -94,6 +94,21 @@
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
 
+- **A bound namespace's artifact named types the consumer could not resolve, and
+  nothing had ever tried to read one back.** The tool had no spec at all: every
+  check it carried was a number it printed, and a number cannot say whether
+  anything can consume the artifact printed beside it. `spec/compiler/bind_spec.cr`
+  is that check, and it failed the first time it ran.
+
+  An artifact's module name is the root downcased, and a consumer builds a type
+  back out of it by camelcasing — a mapping iyi keeps reversible on purpose
+  (SPEC.md IV.6 #6), so `MyLib` returns as `Mylib` and `JSON` is not in its image
+  at all. Meanwhile the declarations inside still said `MyLib::Entry`. A class
+  root never showed it, because its own name is a declaration in the file and
+  `MySink::Entry` resolves against that wherever the module lands. The producer's
+  prefix comes off a module root's declarations now, which is the same property
+  said directly: what an artifact declares belongs to the artifact.
+
 - **`crystal tool bind` exported methods that take a block nobody annotated.**
   A block-taking method is compiled per block *type*, so one whose block has no
   written type has no single symbol to declare. `infer_return` refused these

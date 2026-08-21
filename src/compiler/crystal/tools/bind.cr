@@ -351,6 +351,21 @@ module Crystal
 
     signatures.concat accessors.map(&.[0])
 
+    # An artifact's declarations belong to the artifact, not to the namespace
+    # that produced them.
+    #
+    # A class root already reads that way: its own name is a declaration in the
+    # file, so `MySink::Entry` resolves wherever the module lands. A module root
+    # dropped that name and kept the references — `MyLib::Entry` with no `MyLib`
+    # — and the consumer cannot supply it, because an iyi module path is
+    # `[a-z][a-z0-9]*` and its mapping to a type name is deliberately reversible
+    # (IV.6 #6). `MyLib` comes back as `Mylib`, and `JSON` is not in the image of
+    # that mapping at all. So the producer's prefix comes off instead.
+    if module_root? program, root
+      signatures = signatures.map { |signature| strip_root signature, root }
+      types = types.map { |declaration| strip_root_declaration declaration, root }
+    end
+
     artifact = IyiMod::Artifact.new(
       module_name: root.downcase,
       source_path: program.filename || "",
@@ -915,6 +930,39 @@ module Crystal
       table = found.as?(NamedType).try(&.types?)
     end
     true
+  end
+
+  # `MyLib::Entry` becomes `Entry`, and `MyLibOther::X` is left alone — the
+  # prefix has to end at a name boundary or this renames types it never owned.
+  private def self.strip_root(text : String, root : String) : String
+    text.gsub(/(?<![A-Za-z0-9_:])#{Regex.escape(root)}::/, "")
+  end
+
+  private def self.strip_root(signature : IyiMod::Signature, root : String) : IyiMod::Signature
+    IyiMod::Signature.new(
+      name: signature.name,
+      receiver: signature.receiver,
+      parameters: signature.parameters.map { |parameter| strip_root parameter, root },
+      block_parameter: strip_root(signature.block_parameter, root),
+      return_type: strip_root(signature.return_type, root),
+      free_variables: signature.free_variables,
+      required: signature.required,
+    )
+  end
+
+  private def self.strip_root_declaration(declaration : IyiMod::TypeDecl,
+                                          root : String) : IyiMod::TypeDecl
+    IyiMod::TypeDecl.new(
+      name: declaration.name,
+      kind: declaration.kind,
+      type_parameters: declaration.type_parameters,
+      assoc_types: declaration.assoc_types,
+      supertraits: declaration.supertraits,
+      fields: declaration.fields.map { |(name, type)| {name, strip_root(type, root)} },
+      methods: declaration.methods.map { |signature| strip_root signature, root },
+      visibility: declaration.visibility,
+      types: declaration.types.map { |nested| strip_root_declaration nested, root },
+    )
   end
 
   # The foreign types one signature waits on.
