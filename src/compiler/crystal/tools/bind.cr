@@ -44,7 +44,13 @@ module Crystal
     # What the return type turned out to be, once the method was instantiated
     # on purpose, or the reason it could not be.
     inferred : String?,
-    refused : String? do
+    refused : String?,
+    # Whether every parameter names a type a variable can have. `Int` is a name
+    # an iyi program can write and not a type anything can hold: it is the head
+    # of a family, and a method taking one is compiled once per member with a
+    # symbol apiece. The compiler answers this — `can_be_stored?` — and it is
+    # the same answer that decides whether the generated keep file compiles.
+    storable : Bool do
     # Every type this signature names, so the emitter can ask whether they can
     # all be named on the other side.
     def signature_types : Array(String)
@@ -149,9 +155,14 @@ module Crystal
     lines = [] of String
     outside = Hash(String, Int32).new(0)
 
+    unheld = 0
     known.each do |method|
       types = method.signature_types
       foreign = types.reject { |t| nameable?(t, root) }
+      unless method.storable
+        unheld += 1
+        next
+      end
       if foreign.empty?
         lines << method.declaration
       else
@@ -171,7 +182,10 @@ module Crystal
     io.puts
     io.puts "a boundary this tool can already write:"
     io.puts "  signatures                #{lines.size}"
-    io.puts "  waiting on a type nobody has declared  #{known.size - lines.size}"
+    io.puts "  waiting on a type nobody has declared  #{known.size - lines.size - unheld}"
+    if unheld > 0
+      io.puts "  taking a type no variable can hold     #{unheld}"
+    end
 
     unless outside.empty?
       io.puts
@@ -238,6 +252,7 @@ module Crystal
       next unless owners.includes?(method.owner)
       next unless seen.add?(method.name)
       next unless method.verdict.ready? || method.inferred
+      next unless method.storable
       next unless method.signature_types.all? { |t| nameable?(t, root) }
 
       signatures << IyiMod::Signature.new(
@@ -532,6 +547,7 @@ module Crystal
       { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
         by_owner[owner]?.try &.each do |method|
           next unless method.verdict.ready? || method.inferred
+          next unless method.storable
           next unless method.signature_types.all? { |t| nameable?(t, root) }
 
           signatures << IyiMod::Signature.new(
@@ -809,6 +825,7 @@ module Crystal
       location: a_def.location.try(&.to_s) || "?",
       inferred: inferred,
       refused: refused,
+      storable: a_def.args.all? { |arg| storable_restriction?(owner, arg.restriction) },
       params: a_def.args.map { |arg| {arg.name, resolve_restriction(owner, arg.restriction) || "?"} },
       returns: resolve_restriction(owner, a_def.return_type),
       receiver: a_def.receiver.try(&.to_s) || "",
@@ -848,6 +865,18 @@ module Crystal
     type.devirtualize.to_s
   rescue
     node.to_s
+  end
+
+  # Whether a variable could have the type this restriction names.
+  private def self.storable_restriction?(owner : Type, node : ASTNode?) : Bool
+    return false unless node
+    type = owner.lookup_type?(node)
+    return false unless type
+    instance = type.instance_type
+    return false if instance.is_a?(GenericClassType)
+    instance.can_be_stored?
+  rescue
+    false
   end
 
   # Instantiate a method nobody called, and read what it returns.

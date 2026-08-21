@@ -88,11 +88,20 @@
   to be waiting on, so the list invented the work it was being read to size.
 
   `Program#builtin_type_names` records those types where they are made, and the
-  tool asks it. `JSON` crosses 152 → 182 signatures, `YAML` 158 → 168, `IO`
-  157 → 286 with what it waits on falling 140 → 11. The percentages do not move
+  tool asks it. `JSON` crosses 152 → 168 signatures, `YAML` 158 → 166, `IO`
+  157 → 270 with what it waits on falling 140 → 5. The percentages do not move
   and nothing that crossed stopped crossing. What is left of "the core" is `IO`
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
+
+- **`crystal tool bind` counted a signature as crossing when a variable could
+  not hold its parameters.** A name being writable is not the same as a value
+  being holdable: `Int` is the head of a family, and a method taking one is
+  compiled once per member with a symbol apiece, so there is no single symbol
+  to declare. `can_be_stored?` is the compiler's own answer and the tool asks
+  it now, reporting those signatures on their own line rather than as types
+  nobody has declared. It is what the counts above are corrected by — they
+  read 182, 168 and 286 before it.
 
 - **`crystal tool bind` read restrictions as text, and it flattered the core.**
   A method inside `JSON::Token` writes `kind : Kind`, which is

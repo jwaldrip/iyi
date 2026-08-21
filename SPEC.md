@@ -4232,22 +4232,29 @@ Named honestly, so nobody mistakes this draft for complete.
     > those types are made, so a built-in added later is in it without anybody
     > remembering. What the same four namespaces answer:
     >
-    > | | crossing | still waiting |
-    > |---|---|---|
-    > | `JSON` | 152 → **182** | 47 → **17** |
-    > | `YAML` | 158 → **168** | 44 → **34** |
-    > | `URI` | 48 → 48 | 11 → 11 |
-    > | `IO` | 157 → **286** | 140 → **11** |
+    > | | crossing | waiting on a type | taking one no variable can hold |
+    > |---|---|---|---|
+    > | `JSON` | 152 → **168** | 47 → **13** | 18 |
+    > | `YAML` | 158 → **166** | 44 → **32** | 4 |
+    > | `URI` | 48 → 48 | 11 → **9** | 2 |
+    > | `IO` | 157 → **270** | 140 → **5** | 22 |
     >
     > The percentages do not move, again, and for the same reason. No signature
     > that crossed stopped crossing.
     >
+    > **The third column is this correction catching itself.** Written first
+    > without it, the table said 182, 168, 48 and 286 — because a name being
+    > writable is not the same as a variable being able to hold it. `Int` is the
+    > head of a family: a method taking one is compiled once per member, with a
+    > symbol apiece and no single symbol to declare. The compiler already
+    > answers this, `can_be_stored?`, and it is the same answer that decides
+    > whether the keep file this tool generates compiles at all — which is how
+    > it was found, by generating one and compiling it.
+    >
     > **`IO` is the whole of what is left, and `IO` is nearly done.** It is the
     > only name still blocking all three namespaces — 14, 22 and 9 — and pointed
     > at directly it is 442 public methods, 80.3% of them needing no human, with
-    > 11 signatures waiting: six on a block that returns `_`, six on `Time::Span`,
-    > one on `File::Info`. What is genuinely left of "the core" after that is
-    > `Time` 7, `Time::Span` 6, `Set` 2, `File::Info` 1, `SemanticVersion` 1.
+    > five signatures waiting: `Time::Span` and `File::Info`, and nothing else.
     >
     > So the paragraph above is wrong in its last sentence and the correction is
     > worth more than it was. Crossing the core was not unstarted work that
