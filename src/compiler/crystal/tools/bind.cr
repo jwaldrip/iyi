@@ -297,7 +297,7 @@ module Crystal
     io.puts "# types that declare them, and grouping them there is the next"
     io.puts "# thing this tool has to learn. What is settled here is the part"
     io.puts "# that was in doubt, which is whether the signatures can be known."
-    io.puts "module #{root.downcase}"
+    io.puts "module #{iyi_module_name(root)}"
     io.puts
     lines.sort.each { |line| io.puts line }
     io.puts "# --- end ---"
@@ -396,7 +396,7 @@ module Crystal
     end
 
     artifact = IyiMod::Artifact.new(
-      module_name: root.downcase,
+      module_name: iyi_module_name(root),
       source_path: program.filename || "",
       compiler_version: IyiMod.compiler_version,
       target_triple: program.codegen_target.to_s,
@@ -412,10 +412,10 @@ module Crystal
       crystal_library: false,
     )
 
-    path = File.join(dir, "#{root.downcase}.iyimod")
+    path = File.join(dir, "#{iyi_module_name(root).gsub('/', '-')}.iyimod")
     IyiMod.write artifact, path
 
-    keep_path = File.join(dir, "#{root.downcase}_keep.cr")
+    keep_path = File.join(dir, "#{iyi_module_name(root).gsub('/', '-')}_keep.cr")
     File.write keep_path, keep_file(program, root, signatures, types, accessors, dir)
 
     io.puts
@@ -1049,6 +1049,22 @@ module Crystal
       visibility: declaration.visibility,
       types: declaration.types.map { |nested| map_names_declaration nested },
     )
+  end
+
+  # What an iyi program calls this shard, which is not a matter of taste.
+  #
+  # The symbol is the whole reason. Both sides mangle alike, so `Greeter.polite`
+  # is `*Greeter@Greeter::polite<String>:String` compiled from either language —
+  # but only if the consumer's module *is* `Greeter`, and the consumer builds
+  # that name by camelcasing the module path it imported. `downcase` broke the
+  # round trip for every name with an inner capital: `MyGreeter` became
+  # `mygreeter` became `Mygreeter`, which mangles to a symbol the shard's object
+  # file does not contain, and nothing says so until the linker does.
+  #
+  # `underscore` is the inverse of `camelcase`, and `::` is `/` because that is
+  # how iyi spells a nested module (IV.6 #6).
+  private def self.iyi_module_name(root : String) : String
+    root.split("::").map(&.underscore).join("/")
   end
 
   # The foreign types one signature waits on.

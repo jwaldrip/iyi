@@ -27,7 +27,13 @@ private def bind_artifact(source_path : String, root : String, dir : String,
 
   report = IO::Memory.new
   Crystal.print_bind result.program, root, report, artifact_dir: dir, bound_dir: bound
-  File.join(dir, "#{root.downcase}.iyimod")
+  File.join(dir, "#{iyi_module_name(root)}.iyimod")
+end
+
+# The same rule the tool uses, written out here rather than reached for, so a
+# spec that agreed with the compiler by calling it could not agree wrongly.
+private def iyi_module_name(root : String) : String
+  root.split("::").map(&.underscore).join("-")
 end
 
 # An iyi program that imports the boundary and nothing else. Importing is
@@ -96,7 +102,7 @@ describe "tool bind" do
         CR
 
       File.exists?(bind_artifact("shard.cr", "MyLib", "mods")).should be_true
-      consume "mods", "mylib"
+      consume "mods", "my_lib"
     end
   end
 
@@ -138,7 +144,7 @@ describe "tool bind" do
         CR
 
       File.exists?(bind_artifact("shard.cr", "MySink", "mods")).should be_true
-      consume "mods", "mysink"
+      consume "mods", "my_sink"
     end
   end
 
@@ -189,7 +195,7 @@ describe "tool bind" do
 
       # `mywire` alone. The artifact records what it depends on, so the consumer
       # does not repeat it.
-      consume "mods", "mywire"
+      consume "mods", "my_wire"
     end
   end
 end

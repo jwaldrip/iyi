@@ -94,6 +94,18 @@
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
 
+- **A bound shard's iyi module name was the root downcased, and the symbol is
+  what that broke.** Both sides mangle alike, so `Greeter.polite` is
+  `*Greeter@Greeter::polite<String>:String` compiled from either language — but
+  only if the consumer's module *is* `Greeter`, and a consumer builds that name
+  by camelcasing the path it imported. `MyGreeter` became `mygreeter` became
+  `Mygreeter`, which mangles to a symbol the shard's object file does not
+  contain, and nothing said so until the linker did. The name is `underscore`d
+  now, which is what `camelcase` inverts, with `::` as `/`.
+
+  With it, a program built from a bound shard links and runs — the first time
+  the four steps this tool prints have been taken end to end.
+
 - **The pipeline `crystal tool bind` prints did not run.** A mangled name
   carries the types it was compiled for and a union prints with spaces in it —
   `*JSON::Any#as_a?:(Array(JSON::Any) | Nil)` — so the unquoted `$(...)` in the
