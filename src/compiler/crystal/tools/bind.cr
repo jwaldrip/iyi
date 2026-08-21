@@ -87,14 +87,21 @@ module Crystal
   # untidy: it invented the work it was being read to size.
   @@builtin = Set(String).new
 
+  # The boundaries already written. A signature naming one of their types waits
+  # on nobody: somebody has declared it, which is the whole question this asks.
+  # `IO` is why this exists — it is what `JSON`, `YAML` and `URI` were all
+  # waiting on, and once it has an artifact it stops being a gap.
+  @@bound = Set(String).new
+
   def self.print_bind(program : Program, root : String?, io : IO,
-                      artifact_dir : String? = nil) : Nil
+                      artifact_dir : String? = nil, bound_dir : String? = nil) : Nil
     unless root
       io.puts "tool bind needs the shard's own namespace: -e Kemal"
       return
     end
 
     @@builtin = program.builtin_type_names
+    @@bound = bound_dir ? bound_names(program, bound_dir, io) : Set(String).new
 
     methods = [] of BindMethod
     collect_bind program.types?, root, methods
@@ -809,6 +816,50 @@ module Crystal
     declarations.sum { |declaration| declaration.methods.size + count_methods(declaration.types) }
   end
 
+  # Every type the boundaries in *dir* declare, so this run can name them.
+  #
+  # A class root's declarations are absolute — `IO`, then `IO::Memory` under it
+  # — and a module root's are relative to a name the file does not record. So
+  # each is checked against the program rather than trusted: that keeps the
+  # first and drops the second, instead of admitting a bare `Any` as though
+  # somebody had declared it. What is dropped is counted and printed, because a
+  # boundary silently contributing nothing is the failure worth seeing.
+  private def self.bound_names(program : Program, dir : String, io : IO) : Set(String)
+    names = Set(String).new
+    paths = Dir.glob(File.join(dir, "*.iyimod")).sort
+    return names if paths.empty?
+
+    io.puts "boundaries already written:"
+    paths.each do |path|
+      begin
+        artifact = IyiMod.read path
+      rescue ex
+        io.puts "  #{File.basename(path)}: unreadable — #{ex.message}"
+        next
+      end
+
+      found = Set(String).new
+      artifact.exports.types.each { |declaration| collect_known declaration, "", found }
+      kept = found.select { |name| declared_type? program, name }
+      names.concat kept
+      io.puts "  %-24s %d types, %d this program can name" % [File.basename(path), found.size, kept.size]
+    end
+    io.puts
+    names
+  end
+
+  # Whether the program really has a type by this qualified name.
+  private def self.declared_type?(program : Program, qualified : String) : Bool
+    table = program.types?
+    qualified.split("::").each do |part|
+      return false unless table
+      found = table[part]?
+      return false unless found
+      table = found.as?(NamedType).try(&.types?)
+    end
+    true
+  end
+
   # The foreign types one signature waits on.
   private def self.foreign_names(method : BindMethod, root : String) : Set(String)
     names = Set(String).new
@@ -851,7 +902,8 @@ module Crystal
 
   private def self.nameable_name?(name : String, root : String) : Bool
     return true if name == root || name.starts_with?("#{root}::")
-    @@builtin.includes?(name.lchop("::"))
+    bare = name.lchop("::")
+    @@builtin.includes?(bare) || @@bound.includes?(bare)
   end
 
   # Only the types the shard declares. A type it merely reopened belongs to

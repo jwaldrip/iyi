@@ -4279,6 +4279,30 @@ Named honestly, so nobody mistakes this draft for complete.
     > at directly it is 442 public methods, 80.3% of them needing no human, with
     > five signatures waiting: `Time::Span` and `File::Info`, and nothing else.
     >
+    > **And then the boundaries compose, which is the measurement closing.**
+    > `tool bind` reads the artifacts already written — `--use-iyimod`, the same
+    > switch a build uses — and a signature naming one of their types waits on
+    > nobody. Each name is checked against the program rather than trusted,
+    > because a class root's declarations are absolute and a module root's are
+    > relative to a name the file does not record.
+    >
+    > | with `IO` bound | crossing | waiting |
+    > |---|---|---|
+    > | `JSON` | 168 → **181** | 13 → **0** |
+    > | `YAML` | 166 → **187** | 32 → 11 |
+    > | `URI` | 48 → **56** | 9 → **1** |
+    >
+    > The three gains are +13, +21 and +8, which are the three numbers the
+    > unlock report predicted before any of it was built. `URI`'s remaining one
+    > is a block that returns `_`, which is not a type and never crosses.
+    >
+    > `Time` and `SemanticVersion` bind the same way — 446 public methods at
+    > 86.1% and 22 at 95.5% — and take `YAML` to **193 crossing and 5 waiting**:
+    > two on `Set`, which is generic and so is IV.2's, two free variables, and
+    > one `self` this tool still reads as a name. A `JSON` boundary written
+    > against `IO`'s is 16 types, 140 methods and 301 symbols, and its keep file
+    > compiles.
+    >
     > So the paragraph above is wrong in its last sentence and the correction is
     > worth more than it was. Crossing the core was not unstarted work that
     > everything was waiting on. It was a hand-written list claiming that

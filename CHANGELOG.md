@@ -94,6 +94,20 @@
   — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
   See SPEC.md Part V item 12e.
 
+- **`crystal tool bind` can be pointed at the boundaries already written.**
+  `--use-iyimod DIR` — the same switch a build uses — reads the `.iyimod` files
+  there, and a signature naming one of their types is no longer waiting on
+  anybody. Each name is checked against the program rather than trusted, since a
+  class root's declarations are absolute and a module root's are relative to a
+  name the file does not record; what is dropped is counted and printed.
+
+  It is what closes the question item 12e opened. With `IO` bound, `JSON`
+  crosses 168 → 181 signatures and waits on **nothing**, `URI` 48 → 56 with one
+  left that is a block returning `_`, and `YAML` 166 → 187. Adding `Time` and
+  `SemanticVersion` takes `YAML` to 193 crossing and 5 waiting — two of them
+  `Set`, which is generic, and three not types at all. The gains are the exact
+  numbers the tool's unlock report predicted.
+
 - **`crystal tool bind`'s keep file never descended into nested types.** A
   nested type travelled as a declaration while its methods were named by
   nobody, so the artifact promised symbols the object file did not carry — a
