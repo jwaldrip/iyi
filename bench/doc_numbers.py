@@ -32,6 +32,47 @@ def wc(paths) -> int:
     return sum(len(p.read_text().splitlines()) for p in paths)
 
 
+def bang_names() -> int:
+    """Distinct method names ending in `!` in Crystal's standard library.
+
+    README says `!` propagates an error in iyi, so a Crystal method whose name
+    ends in one cannot be called from a `.iyi` file, and quotes how many such
+    names there are. `src/compiler/` is excluded because the compiler is not the
+    standard library, and `__crystal_pseudo_!` is excluded because it is a
+    compiler intrinsic rather than a name a person calls.
+    """
+    names: set[str] = set()
+    for p in (REPO / "src").rglob("*.cr"):
+        if "/compiler/" in str(p):
+            continue
+        try:
+            text = p.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for m in re.finditer(r"^\s*def\s+([a-z_][A-Za-z0-9_]*!)", text, re.M):
+            names.add(m.group(1))
+    names.discard("__crystal_pseudo_!")
+    return len(names)
+
+
+def generated_project_lines() -> int:
+    """What `bench/incremental/generate_project.py` writes, as iyi.
+
+    The edit-loop numbers are about a generated 30-module project and the docs
+    quote its size. The generator is the authority, so it is asked rather than
+    remembered: two places said 7,208 while it emitted 7,207.
+    """
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as work:
+        subprocess.run(
+            [sys.executable, "bench/incremental/generate_project.py", work],
+            cwd=REPO, capture_output=True, text=True, check=True,
+        )
+        return wc(sorted((pathlib.Path(work) / "iyi").rglob("*.iyi")))
+
+
 def measured() -> dict[str, int]:
     """The numbers, measured the way the docs say they are measured."""
     return {
@@ -39,6 +80,13 @@ def measured() -> dict[str, int]:
         "samples_std": wc(sorted((REPO / "samples/iyi/std").glob("*.iyi"))),
         "compiler": wc(sorted((REPO / "src/compiler").rglob("*.cr"))),
         "samples": len(sorted((REPO / "samples/iyi").glob("*.iyi"))),
+        # Bytes on disk, not lines: the docs quote the library's size as a
+        # download, which is what a person unpacking the tarball sees.
+        "prelude_kb": round(
+            sum(p.stat().st_size for p in sorted((REPO / "src/iyi").glob("*.iyi"))) / 1024
+        ),
+        "bang_names": bang_names(),
+        "generated": generated_project_lines(),
     }
 
 # Each entry: the measured key, the pattern that quotes it as current, the file,
@@ -59,6 +107,14 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     ("prelude", r"against iyi's own ([\d,]+)-line", "samples/iyi/calc.iyi", 1),
     ("samples_std", r"own prelude \+ ([\d,]+) in samples", "SPEC.md", 1),
     ("compiler", r"\| ([\d,]+) lines, Crystal, forked", "SPEC.md", 1),
+    ("prelude_kb", r"library is ([\d,]+) KB on disk", "README.md", 1),
+    ("prelude_kb", r"carries both libraries: iyi's own ([\d,]+) KB", "README.md", 1),
+    ("prelude_kb", r"beside `bin/iyi` is ([\d,]+) KB", "Makefile", 1),
+    ("prelude_kb", r"ships only iyi's own ([\d,]+) KB", "Makefile", 1),
+    ("prelude_kb", r"its own, and it is ([\d,]+) KB", "Makefile", 1),
+    ("bang_names", r"standard library has \*\*([\d,]+) such names\*\*", "README.md", 1),
+    ("generated", r"edit one module in a ([\d,]+)-line project", "README.md", 1),
+    ("generated", r"on the same ([\d,]+) lines", "README.md", 1),
 ]
 
 

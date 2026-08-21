@@ -14,11 +14,11 @@ that rule and what it costs.
 
 | | measured today |
 |---|---|
-| **Developer experience** | edit one module in a 7,208-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
+| **Developer experience** | edit one module in a 7,207-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
 | **Agentic experience** | a module's interface is a file, not a convention: `iyi mod dump` prints it, and a consumer type-checks against it with the source deleted |
 | **Portability** | an iyi program compiles for **eight targets** and is **run** on three of them every build: x86-64 glibc, x86-64 musl, and aarch64 under emulation |
 | **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s**. At run time the two libraries are within noise where they do the same work |
-| **Efficiency** | that `hello` is a **17 KB** binary that starts in **1.2 ms**; the same program with Crystal's library is 972 KB and 3.4 ms |
+| **Efficiency** | that `hello` is a **36 KB** binary that starts in **1.6 ms**; the same program with Crystal's library is 1,553 KB and 3.2 ms |
 
 **iyi is its own language, and it is compatible with
 [Crystal](https://crystal-lang.org).** Compatible in a way you can check: the
@@ -244,7 +244,7 @@ Said plainly, because a tagline that outruns its evidence is worth less than no
 tagline.
 
 **Developer experience — built, and it is the number this project exists for.**
-The edit loop is 0.13 s where Crystal's is 1.17 s on the same 7,208 lines, and
+The edit loop is 0.13 s where Crystal's is 1.17 s on the same 7,207 lines, and
 that is R-1 paying: the twenty-nine modules you did not touch arrive as
 declarations. The rest of it is smaller and just as deliberate — errors name the
 rule they enforce and what to write instead, `iyi tool format` knows the syntax,
@@ -311,8 +311,8 @@ program under both libraries, and the honest reading is not the flattering one:
 
 Under 1.00 is iyi ahead. Run normally, string building looks twenty times
 faster; with the collector out of the way it is 1.64x **slower**, so all of
-that twenty was the collector having fewer roots to scan in a 17 KB binary than
-in a 972 KB one. That is a real effect and it is the efficiency claim, not a
+that twenty was the collector having fewer roots to scan in a 36 KB binary than
+in a 1,553 KB one. That is a real effect and it is the efficiency claim, not a
 claim about `String`. Where the two libraries do the same work they are within
 noise; where iyi's is faster — `Hash`, by 6x — part of the reason is that it
 does less, and does not preserve insertion order.
@@ -320,23 +320,29 @@ does less, and does not preserve insertion order.
 Nothing here has benchmarked a program against C or Go, and what R-4 says about
 generics crossing a boundary is specified and unmeasured.
 
-**Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 17 KB
-binary that starts in 1.2 ms; the same program compiled with Crystal's standard
-library is 972 KB and 3.4 ms. Nothing clever is happening: a program links what
+**Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 36 KB
+binary that starts in 1.6 ms; the same program compiled with Crystal's standard
+library is 1,553 KB and 3.2 ms. Nothing clever is happening: a program links what
 it uses, and iyi's own library is 2,012 lines rather than 8,161. The whole
-library is 56 KB on disk beside the binary.
+library is 68 KB on disk beside the binary.
+
+<sup>Sizes and start times are a plain `iyi build`, no flags, on macOS arm64
+with LLVM 22. They move with the platform and the LLVM, which is why they are
+quoted with the machine attached; `python3 bench/machine_probe.py` prints the
+pair for yours. The line counts beside them are `wc -l` and do not move, and
+`python3 bench/doc_numbers.py` fails when one of those drifts from the tree.</sup>
 
 ## Getting it
 
-The released tarball is 0.1.0. A build from current source reports
-`0.2.0-dev`.
+The released tarball is 0.2.0. A build from current source reports
+`0.3.0-dev`.
 
 ```console
 $ tar -xzf iyi-0.2.0-linux-x86_64.tar.gz -C ~/.local
 $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 
-The tarball is relocatable and carries both libraries: iyi's own 56 KB, and
+The tarball is relocatable and carries both libraries: iyi's own 68 KB, and
 Crystal's standard library for `--crystal`. `bin/iyi` finds them beside itself,
 so there is nothing to configure and no `IYI_PATH` to set.
 
@@ -473,7 +479,7 @@ lines of iyi's own prelude.
 **One name is unreachable, and it is a class of names.** `!` in iyi propagates
 an error, so a method whose name ends in one cannot be called from a `.iyi`
 file — `a.sort!` asks the compiler to propagate `Array(Int32)`'s errors, and it
-says so. Crystal's standard library has **49 such names**, `not_nil!`, `sort!`,
+says so. Crystal's standard library has **51 such names**, `not_nil!`, `sort!`,
 `map!`, `select!` and `uniq!` among them. What replaces them is what Crystal
 writes anyway when it wants a copy or a narrowing:
 
