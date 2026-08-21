@@ -87,7 +87,28 @@ def measured() -> dict[str, int]:
         ),
         "bang_names": bang_names(),
         "generated": generated_project_lines(),
+        "targets": targets(),
     }
+
+
+def targets() -> int:
+    """Distinct targets CI type-checks the library for.
+
+    Read out of the workflow rather than counted by hand, which is how the docs
+    came to say eight while the workflow listed nine. `x86_64-w64-mingw32` and
+    `x86_64-windows-gnu` are the same platform spelled by two vendors, so the
+    audit list adds nothing the type-check list does not already name.
+    """
+    text = (REPO / ".github/workflows/iyi.yml").read_text()
+    m = re.search(
+        r"Type-check the standard library.*?for target in (.*?); do", text, re.S
+    )
+    if not m:
+        raise SystemExit(
+            "doc_numbers: the workflow's type-check target list moved; "
+            "this check cannot find it and so is not checking anything"
+        )
+    return len([t for t in m.group(1).replace("\\", "").split() if t])
 
 # Each entry: the measured key, the pattern that quotes it as current, the file,
 # and how many times that pattern is expected to appear there. The count is
@@ -115,7 +136,25 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     ("bang_names", r"standard library has \*\*([\d,]+) such names\*\*", "README.md", 1),
     ("generated", r"edit one module in a ([\d,]+)-line project", "README.md", 1),
     ("generated", r"on the same ([\d,]+) lines", "README.md", 1),
+    ("targets", r"compiles for \*\*(\w+) targets\*\*", "README.md", 1),
+    ("targets", r"for (\w+) targets and was tested on one", "SPEC.md", 1),
+    ("targets", r"Three of the (\w+) now", "SPEC.md", 1),
 ]
+
+# The prose spells small numbers as words and should keep doing so, so the
+# check reads words as well as digits rather than pushing digits into a
+# sentence to suit itself.
+WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+}
+
+
+def as_number(raw: str) -> int | None:
+    bare = raw.replace(",", "")
+    if bare.isdigit():
+        return int(bare)
+    return WORDS.get(bare.lower())
 
 
 def main() -> int:
@@ -137,8 +176,15 @@ def main() -> int:
             if not hits:
                 continue
         for m in hits:
-            stated = int(m.group(1).replace(",", ""))
             line = text[: m.start()].count("\n") + 1
+            stated = as_number(m.group(1))
+            if stated is None:
+                wrong.append(
+                    f"{rel}:{line}  captured {m.group(1)!r}, which is neither a "
+                    f"number nor a word this check knows. Add it to WORDS or "
+                    f"tighten the pattern"
+                )
+                continue
             ok = stated == truth[key]
             found.append(f"{'ok  ' if ok else 'WRONG'}  {rel}:{line}  {key}={stated}")
             if not ok:

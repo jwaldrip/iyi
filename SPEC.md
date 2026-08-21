@@ -5010,8 +5010,8 @@ Named honestly, so nobody mistakes this draft for complete.
     thing that runs at compile time and is what makes `{% %}` work.
 
 12c. **Portability, moved from compiled to run.** An iyi program produced code
-    for eight targets and was tested on one, which is the weakest kind of
-    portability claim: the code generator not objecting. Three of the eight now
+    for nine targets and was tested on one, which is the weakest kind of
+    portability claim: the code generator not objecting. Three of the nine now
     run in CI every build — x86-64 glibc natively, x86-64 musl in an Alpine
     container, aarch64 under emulation — and the check is that each prints what
     the same program printed on the machine that compiled it.

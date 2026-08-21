@@ -16,7 +16,7 @@ that rule and what it costs.
 |---|---|
 | **Developer experience** | edit one module in a 7,207-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
 | **Agentic experience** | a module's interface is a file, not a convention: `iyi mod dump` prints it, and a consumer type-checks against it with the source deleted |
-| **Portability** | an iyi program compiles for **eight targets** and is **run** on three of them every build: x86-64 glibc, x86-64 musl, and aarch64 under emulation |
+| **Portability** | an iyi program compiles for **nine targets** and is **run** on three of them every build: x86-64 glibc, x86-64 musl, and aarch64 under emulation |
 | **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s**. At run time the two libraries are within noise where they do the same work |
 | **Efficiency** | that `hello` is a **36 KB** binary that starts in **1.6 ms**; the same program with Crystal's library is 1,553 KB and 3.2 ms |
 
