@@ -2181,6 +2181,56 @@ spawns nothing. For the samples it can: the three failures are `Nums`, `Words`
 and the Kemal router's route table, and the router is precisely the thing a
 server would share across tasks.
 
+#### III.4.8 What to build first, and what not to build: **SETTLED: nothing before a scheduler**
+
+III.4 is specified and unbuilt, and the question this section had left open is
+not whether to build it but which piece first. Asked properly, the answer is
+that the obvious cheap slices are all dishonest, and it is worth writing down
+why so nobody reaches for them again.
+
+Iyi's own library has no concurrency surface of any kind: no fiber, no thread,
+no scheduler, no channel, no mutex, no atomic. A program built `--crystal` has
+all of Crystal's (`src/fiber.cr`, `src/concurrent.cr`, `src/channel.cr`,
+`src/atomic.cr`, `src/crystal/scheduler.cr`), which is III.4.6's point: those
+are the thing III.4 was written to replace, not an implementation of it.
+
+Three slices were ranked:
+
+1. **`Share` alone.** The cheapest. It is a static marker and the machinery it
+   needs mostly exists: `collect_iyi_fields` in `src/compiler/iyi/compiler.cr`
+   already walks a type's field set into the artifact's `TypeDecl`, and
+   `bench/share_count.cr` already computes mutability, so the analysis has been
+   written once. What it lacks is a caller. Nothing can spawn and nothing can
+   send, so the marker would gate no operation, and a rule that refuses nothing
+   cannot be tested for refusing the right things.
+2. **`group` reusing `defer`'s lowering, running tasks sequentially.** III.4.1
+   says a group is `defer` again, and it is right: `Defer` parses in
+   `src/compiler/iyi/syntax/parser.cr` and lowers to an `ensure` in
+   `normalizer.cr`, and a join-at-scope-exit is that same shape. The syntax
+   would cost little. **Rejected.** A `group` whose tasks run one after another
+   is not concurrency, and shipping the spelling of a feature without the
+   feature is the worst outcome available here: it would typecheck, run, print
+   the right answer, and teach everyone the wrong thing about what iyi does.
+   III.1.7a settled that a name meaning two things is worse than a different
+   name; a name meaning nothing is worse still.
+3. **A scheduler, cancellable blocking primitives, then `group` and
+   `Channel(T : Share)`.** The only slice that is usable and testable. It is
+   also the expensive one, and III.4.2 already said so: cancellation is
+   worthless unless it reaches a blocked task, so `__iyi_read` and its siblings
+   in all four platform branches would have to stop being direct blocking
+   syscalls and become non-blocking registrations against a poller the
+   scheduler drives.
+
+**Verdict: III.4 is built in the order 3, and not begun before that order can
+be paid for.** `Share` is not built first despite being cheapest, because a
+marker with no caller is a mechanism nobody can check, and this document has
+refused that shape twice already.
+
+The dependency floor (III.9) is the other cost to name in advance: a program's
+Linux object has zero undefined symbols today because the prelude issues raw
+syscalls. A poller is more syscalls, which is fine, but a scheduler that reached
+for pthreads would put libc back on the link line and take III.9 with it.
+
 ### III.5 Module initialisation: **PROPOSED; rules 1, 2 and 4 BUILT**
 
 II.9 left this open with a concrete case: Kemal registers routes as a side

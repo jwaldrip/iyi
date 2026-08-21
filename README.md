@@ -777,7 +777,12 @@ marked PROPOSED are the parts that will move under you.
 - **No concurrency of iyi's own.** SPEC.md III.4 specifies structured
   concurrency, scope-owned cancellation and a `Share` marker, and none of it is
   built. A program built `--crystal` has Crystal's fibers, which are the thing
-  III.4 was written to replace rather than an answer to it.
+  III.4 was written to replace rather than an answer to it. III.4.8 records the
+  build order and one refusal worth knowing about: a `group` that ran its tasks
+  one after another would be cheap, would typecheck, would print the right
+  answer, and would teach everybody the wrong thing about what iyi does, so it
+  is not being built. The first honest piece is a scheduler and cancellable
+  blocking primitives, which is also the expensive one.
 - **No package manager and no self-hosting.** `--crystal` gives a program
   Crystal's standard library; nothing gives it a package manager.
 - **No native test matrix across the supported targets.** CI type-checks the
