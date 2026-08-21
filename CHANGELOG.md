@@ -6,7 +6,7 @@
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 2,329-line library and nothing else. Every other
+  written against iyi's own 2,368-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
@@ -16,6 +16,11 @@
   interesting one: iyi has no floats, Crystal's `/` on integers returns a
   `Float64`, and a name that means two things is what III.1.7a settled against
   — so integer division stays `//` in both.
+
+- **Files can be removed.** `File.delete` uses `unlinkat` on Linux,
+  `unlink` on Darwin and `DeleteFileA` on Windows. wasm32-wasi refuses it:
+  deleting a path needs a preopened directory capability the prelude does not
+  have. `samples/iyi/files.iyi` now deletes what it creates.
 
 ### Fixed
 
