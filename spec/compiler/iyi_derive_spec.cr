@@ -327,6 +327,96 @@ describe "Semantic: iyi derive" do
     end
   end
 
+  it "runs each macro named on one derive line" do
+    with_tempdir("iyi_derive_many") do
+      Dir.mkdir_p "app"
+      File.write "app/derives.iyi", <<-IYI
+        module app/derives
+
+        pub macro named(declaration)
+          def named : String
+            {{declaration[:name]}}
+          end
+        end
+
+        pub macro counted(declaration)
+          def counted : Int32
+            {{declaration[:fields].size}}
+          end
+        end
+        IYI
+      File.write "app/pair.iyi", <<-IYI
+        module app/pair
+
+        import app/derives
+        using app/derives
+
+        pub struct Pair
+          @a : Int32
+          @b : Int32
+
+          def initialize(@a : Int32, @b : Int32)
+          end
+
+          derive named, counted
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/pair
+
+        pair = App::Pair::Pair.new(1, 2)
+        puts pair.named + ":" + pair.counted.to_s
+        IYI
+
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "Pair:2"
+
+      File.delete "app/derives.iyi"
+      File.delete "app/pair.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "Pair:2"
+    end
+  end
+
+  it "names the macro it could not find in a list" do
+    with_iyi_modules({
+      "app/derives.iyi" => <<-IYI,
+        module app/derives
+
+        pub macro named(declaration)
+          def named : String
+            {{declaration[:name]}}
+          end
+        end
+        IYI
+      "main.iyi" => <<-IYI,
+        module app/main
+
+        import app/derives
+        using app/derives
+
+        pub struct Boxed
+          derive named, absent
+        end
+        IYI
+    }) do
+      expect_raises(Iyi::TypeException, /`absent` is not an available derive macro/) do
+        semantic_iyi("main.iyi")
+      end
+    end
+  end
+
   it "teaches that a derive names an exported macro" do
     with_iyi_modules({
       "main.iyi" => <<-IYI,

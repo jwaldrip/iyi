@@ -1866,36 +1866,51 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
   private def expand_derive(node : Call)
     owner = @derive_owners.last
 
-    unless node.args.size == 1 && node.named_args.nil? && !node.block
-      node.raise "`derive` takes one exported macro name, for example `derive equality`"
+    if node.args.empty? || node.named_args || node.block
+      node.raise "`derive` takes one or more exported macro names, for example `derive equality`"
     end
 
-    name = derive_macro_name(node.args.first)
+    generated = [] of ASTNode
+    first_macro = nil
 
-    # The macro is handed a description of the declaration, never the
-    # declaration itself. R-5 promises it the attached declaration's shape; a
-    # live or cloned `ClassDef` would also carry this `derive` node, and the
-    # artifact walk that follows a macro's inputs would have a cycle to chase.
-    call = Call.new(nil, name, [describe_derive_target(owner, node)] of ASTNode).at(node)
-    call.scope = current_type.metaclass
+    # One expansion per name, left to right. Each reads the same declaration,
+    # and each generates declarations of this module like any other.
+    node.args.each do |argument|
+      name = derive_macro_name(argument)
 
-    # Marked while the macro runs, so the program-wide type questions can be
-    # refused for the length of the expansion (SPEC.md II.4).
-    expanded =
-      begin
-        @program.expanding_derive = true
-        expand_macro(call, raise_on_missing_const: false, first_pass: true)
-      ensure
-        @program.expanding_derive = false
+      # The macro is handed a description of the declaration, never the
+      # declaration itself. R-5 promises it the attached declaration's shape; a
+      # live or cloned `ClassDef` would also carry this `derive` node, and the
+      # artifact walk that follows a macro's inputs would have a cycle to chase.
+      call = Call.new(nil, name, [describe_derive_target(owner, node)] of ASTNode).at(node)
+      call.scope = current_type.metaclass
+
+      # Marked while the macro runs, so the program-wide type questions can be
+      # refused for the length of the expansion (SPEC.md II.4).
+      expanded =
+        begin
+          @program.expanding_derive = true
+          expand_macro(call, raise_on_missing_const: false, first_pass: true)
+        ensure
+          @program.expanding_derive = false
+        end
+
+      unless expanded
+        argument.raise "`#{name}` is not an available derive macro. Define it as " \
+                       "`pub macro #{name}(declaration)` and import or `using` its module"
       end
 
-    unless expanded
-      node.raise "`#{name}` is not an available derive macro. Define it as " \
-                 "`pub macro #{name}(declaration)` and import or `using` its module"
+      if call_expanded = call.expanded
+        generated << call_expanded
+      end
+      first_macro ||= call.expanded_macro
     end
 
-    node.expanded = call.expanded
-    node.expanded_macro = call.expanded_macro
+    # `expanded_macro` names one macro and this line may have run several. It
+    # feeds error traces and `tool expand`, not the artifact, so it carries the
+    # first and the expansions carry the rest.
+    node.expanded = generated.size == 1 ? generated.first : Expressions.new(generated)
+    node.expanded_macro = first_macro
   end
 
   # The bounded facts R-5 lets a derive read: the declaration's own name, and

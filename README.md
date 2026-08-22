@@ -804,17 +804,20 @@ marked PROPOSED are the parts that will move under you.
   same target under the same flags; anything else is rejected and rebuilt,
   never migrated. The current `0.3.0-dev` is not a released version, keeps the
   build commit in its identity, and interoperates only with itself.
-- **`derive A, B` on one line is not parsed.** One derive per line is. The rest
-  of `derive` is built: `derive <macro>` in a class or struct body runs once, in
-  the module that declares the type, and what it generates travels in that
-  module's artifact. `samples/iyi/derive.iyi` is built from its artifacts with
-  the macro's source deleted every build. The macro is handed the declaration's
-  name and its fields, each field with the type it was written as, so it can ask
-  whether a field's type implements a trait — including a type, trait and impl
-  that all arrive from another module's artifact. It reads the declarations
-  above it, `getter` included, and refuses rather than silently skip one written
-  below. The macro questions that answer with the whole program rather than with
-  a declaration are refused inside a derive.
+- **A derive reads upwards, and an artifact carries more than the rule says.**
+  `derive <macro>` in a class or struct body runs once, in the module that
+  declares the type, and what it generates travels in that module's artifact.
+  `samples/iyi/derive.iyi` is built from its artifacts with the macro's source
+  deleted every build. The macro is handed the declaration's name and its
+  fields, each field with the type it was written as, so it can ask whether a
+  field's type implements a trait, including a type, trait and impl that all
+  arrive from another module's artifact. Several names on one line run in turn.
+  Two limits: `getter` declares a field only once it has run, so a derive reads
+  the declarations *above* it and refuses rather than quietly skip one written
+  below; and while the program-wide macro questions are refused inside a derive,
+  a `.iyimod` carries method bodies, so SPEC.md R-5's "never the bodies" is a
+  narrower artifact than the one iyi emits. Measured, symmetric, and recorded in
+  SPEC.md II.4 rather than enforced.
 - **Macros are not hygienic.** `pub macro` exports a name and an arity, and a
   macro is pasted text, so one that writes `tmp = 99` assigns to your `tmp` if
   you have one. That is Crystal's semantics kept whole.
