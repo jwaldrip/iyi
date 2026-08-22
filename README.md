@@ -323,8 +323,8 @@ generics crossing a boundary is specified and unmeasured.
 **Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 36 KB
 binary that starts in 1.6 ms; the same program compiled with Crystal's standard
 library is 1,553 KB and 3.2 ms. Nothing clever is happening: a program links what
-it uses, and iyi's own library is 2,368 lines rather than 8,161. The whole
-library is 79 KB on disk beside the binary.
+it uses, and iyi's own library is 2,386 lines rather than 8,161. The whole
+library is 80 KB on disk beside the binary.
 
 <sup>Sizes and start times are a plain `iyi build`, no flags, on macOS arm64
 with LLVM 22. They move with the platform and the LLVM, which is why they are
@@ -342,7 +342,7 @@ $ tar -xzf iyi-0.2.0-linux-x86_64.tar.gz -C ~/.local
 $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 
-The tarball is relocatable and carries both libraries: iyi's own 79 KB, and
+The tarball is relocatable and carries both libraries: iyi's own 80 KB, and
 Crystal's standard library for `--crystal`. `bin/iyi` finds them beside itself,
 so there is nothing to configure and no `IYI_PATH` to set.
 
@@ -473,7 +473,7 @@ $ curl localhost:3000/json
 `pub`, traits with defaults, `impl … forall`, error unions and `!`, `.or`,
 `or_panic`, `defer` — all of them, on a program that requires a shard. R-2
 still refuses an export that does not write its types. What changes is what the
-program *has*: 8,161 lines of Crystal's standard library instead of 2,368
+program *has*: 8,161 lines of Crystal's standard library instead of 2,386
 lines of iyi's own prelude.
 
 **One name is unreachable, and it is a class of names.** `!` in iyi propagates
@@ -762,7 +762,7 @@ marked PROPOSED are the parts that will move under you.
 
 ## What is not here
 
-- **iyi's own library is 2,368 lines, and its IO is `puts`, `print`,
+- **iyi's own library is 2,386 lines, and its IO is `puts`, `print`,
   `read_input` and `File`**: integers, booleans, a string, one sequence, one
   dictionary, one range. `read_input` returns everything on standard input as
   one string, because there is no `IO` to keep the rest in. `File.read`,
@@ -800,16 +800,17 @@ marked PROPOSED are the parts that will move under you.
   that compiled it. `wasm32-wasi` and `arm-linux-gnueabihf` only type-check.
   Nothing here claims that the test suite runs on any target but the one CI
   builds on.
-- **A Windows program needs its libraries named for it, and the wrong CRT
-  crashes.** An LLVM-emitted object carries no `/DEFAULTLIB` directives, which
-  an MSVC-compiled one would, so nothing pulls in `kernel32` or a C runtime and
-  the `cl.exe obj /link` that `--cross-compile` prints for this target fails
-  with seven unresolved externals. Naming them is not enough either: the
-  *static* CRT (`libcmt`) links just as cleanly and the binary then exits
-  `0xC0000005` before `main` runs. The *dynamic* CRT
-  (`msvcrt ucrt vcruntime`) runs correctly, which is what CI now links and what
-  a person has to type. The command `--cross-compile` prints is still the
-  broken one.
+- **A Windows program links against a CRT, and the wrong one crashes.** iyi's
+  entry point is `main`, so something has to supply `mainCRTStartup` to call
+  it, and that is a C runtime — which the prelude otherwise goes out of its way
+  not to need. The choice is not free: the *static* CRT (`libcmt`) links
+  cleanly and the binary exits `0xC0000005` before `main` runs, while the
+  *dynamic* one (`msvcrt ucrt vcruntime`) runs correctly. The prelude names the
+  working set itself, because an LLVM-emitted object carries no `/DEFAULTLIB`
+  directives the way an MSVC-compiled one would, and CI links with the command
+  `--cross-compile` prints rather than one written into the workflow. Emitting
+  an entry point of iyi's own would remove the CRT entirely, and is the honest
+  form of "kernel32 and nothing else". It is not built.
 - **Artifacts are identified by released version, target and flag set.** Builds
   of the same released version read each other's `.iyimod` files only on the
   same target under the same flags; anything else is rejected and rebuilt,
@@ -839,7 +840,7 @@ marked PROPOSED are the parts that will move under you.
 |---|---|
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
 | [`samples/iyi`](samples/iyi) | thirteen programs: eleven documenting a part of it, one being a first half hour, and `calc`, a language |
-| [`src/iyi`](src/iyi) | iyi's own library, 2,368 lines. `--crystal` swaps it for Crystal's |
+| [`src/iyi`](src/iyi) | iyi's own library, 2,386 lines. `--crystal` swaps it for Crystal's |
 | [`src/compiler/iyi/iyimod.cr`](src/compiler/iyi/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |
