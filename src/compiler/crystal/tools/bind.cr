@@ -342,7 +342,14 @@ module Crystal
 
       signatures << IyiMod::Signature.new(
         name: method.name,
-        receiver: "",
+        # Whose method it is, which the symbol carries. A module written
+        # `extend self` defines `polite` on the module and mangles
+        # `*Widget@Widget::polite<String>:String`; one written `def self.polite`
+        # defines it on the metaclass and mangles `*Widget::polite<String>:String`
+        # — no `@`. Both were recorded as the first, so every `def self.` in a
+        # shard produced a declaration the consumer called by a name nothing
+        # emitted. Crystal's own library is written the second way throughout.
+        receiver: method.owner == "#{root}:Module" && method.receiver.empty? ? "self" : method.receiver,
         parameters: method.params.map { |(name, restriction)| "#{name} : #{restriction}" },
         block_parameter: method.written_block,
         return_type: (method.returns || method.inferred).not_nil!,

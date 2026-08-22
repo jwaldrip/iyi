@@ -110,6 +110,15 @@
   itself where binutils is missing, or where `crystal` and `iyi` were built from
   different commits, since an artifact is read only by the build that wrote it.
 
+- **A `def self.` module function crossed under the wrong symbol.** A module
+  written `extend self` puts its functions on the module and mangles
+  `*Widget@Widget::polite<String>:String`; one written `def self.polite` puts
+  them on the metaclass, which has no `@`. Both were recorded as the first, so
+  every `def self.` in a shard produced a declaration the consumer called by a
+  name nothing emitted — and Crystal's own library is written the second way
+  throughout. The receiver is recorded now, which the artifact's format already
+  had a field for and the type path already used.
+
 - **A bound shard's module path is `camelcase` run backwards, and using
   `String#underscore` for it broke every acronym.** `underscore` answers `json`
   for `JSON`, and `json` camelcases back to `Json` — so the producer emitted

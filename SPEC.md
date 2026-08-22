@@ -4356,6 +4356,24 @@ Named honestly, so nobody mistakes this draft for complete.
     > and named a language question that did not exist; what it was really
     > describing was a one-line inverse written with the wrong function.
     >
+    > **And a second name mismatch under it, found the same way.** A module
+    > written `extend self` puts its functions on the module and mangles
+    > `*Widget@Widget::polite<String>:String`; one written `def self.polite`
+    > puts them on the metaclass, and that has no `@`. The tool recorded both as
+    > the first, so every `def self.` in a shard declared a function the consumer
+    > called by a name nothing emitted. Crystal's library is written the second
+    > way throughout, which is why nothing smaller than `JSON` had shown it.
+    >
+    > **What `JSON` still waits on is not a name but an instantiation.** With
+    > both mismatches gone the two sides agree on `*JSON::parse<...>` — and
+    > disagree inside the angle brackets: the producer's keep file passes the
+    > declared parameter, a `(String | IO)` union, and gets
+    > `<(IO+ | String)>`, while a consumer passing a string literal gets
+    > `<String>`. A method's symbol carries the types at its *call site*, so a
+    > union parameter has one symbol per way of calling it and a keep file forces
+    > only the one it names. That is the same shape as a generic and as an
+    > unannotated block, and it is the next thing this has to answer.
+    >
     > What still falls outside is a name the grammar cannot spell — `Foo_Bar`
     > needs two underscores running and `camelcase` reads two as one, so it comes
     > back `FooBar`. `tool bind` says so at bind time rather than leaving it to

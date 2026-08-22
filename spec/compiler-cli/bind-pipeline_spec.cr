@@ -52,8 +52,17 @@ describe "`crystal tool bind`, all four steps" do
         module ABCGreeter
           extend self
 
+          # Both ways a module can carry a function, because they mangle
+          # differently and only one of them was ever right. `extend self` puts
+          # `polite` on the module — `*ABCGreeter@ABCGreeter::polite<String>` —
+          # and `def self.` puts `brisk` on the metaclass, which has no `@`.
+          # Crystal's own library is written the second way throughout.
           def polite(name : String) : String
             "hello, " + name
+          end
+
+          def self.brisk(name : String) : String
+            "hi " + name
           end
         end
         CR
@@ -62,9 +71,9 @@ describe "`crystal tool bind`, all four steps" do
         module main
 
         import a_b_c_greeter
-        using a_b_c_greeter
 
-        puts polite("iyi")
+        puts ABCGreeter.polite("iyi")
+        puts ABCGreeter.brisk("iyi")
         IYI
 
       Process.capture_result([CRYSTAL_BIN, "tool", "bind", "-e", "ABCGreeter",
@@ -100,7 +109,7 @@ describe "`crystal tool bind`, all four steps" do
       # The claim. Not that it compiled, not that it linked — that the program
       # ran and the answer came from the shard.
       Process.capture_result([File.join(dir, "app")], chdir: dir)
-        .output.chomp.should eq "hello, iyi"
+        .output.chomp.should eq "hello, iyi\nhi iyi"
     end
   end
 end
