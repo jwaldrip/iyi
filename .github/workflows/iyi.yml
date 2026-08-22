@@ -82,6 +82,7 @@ jobs:
             spec/compiler/iyimod_spec.cr \
             spec/compiler/iyi_import_spec.cr \
             spec/compiler/semantic/iyi_spec.cr \
+            spec/compiler/iyi_derive_spec.cr \
             spec/compiler/compiler_spec.cr
 
       # The command surface and the build daemon, which is iyi's own (SPEC.md
