@@ -138,7 +138,7 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     ("generated", r"on the same ([\d,]+) lines", "README.md", 1),
     ("targets", r"compiles for \*\*(\w+) targets\*\*", "README.md", 1),
     ("targets", r"for (\w+) targets and was tested on one", "SPEC.md", 1),
-    ("targets", r"Three of the (\w+) now", "SPEC.md", 1),
+    ("targets", r"Four of the (\w+) now", "SPEC.md", 1),
     # The count of sample programs was quoted as a word and drifted by three
     # before anything noticed, because the digit patterns above cannot see a
     # spelled-out number.

@@ -5086,32 +5086,39 @@ Named honestly, so nobody mistakes this draft for complete.
 
 12c. **Portability, moved from compiled to run.** An iyi program produced code
     for nine targets and was tested on one, which is the weakest kind of
-    portability claim: the code generator not objecting. Three of the nine now
+    portability claim: the code generator not objecting. Four of the nine now
     run in CI every build — x86-64 glibc natively, x86-64 musl in an Alpine
-    container, aarch64 under emulation — and the check is that each prints what
-    the same program printed on the machine that compiled it.
+    container, aarch64 under emulation, and x86-64 Windows on a Windows runner
+    — and the check is that each prints what the same program printed on the
+    machine that compiled it.
 
     What makes it cheap is the same thing that makes an artifact linkable: the
     object is produced here and linked there with the target's own `cc` and
     `libgc`, which is the command `--cross-compile` already prints. An iyi
     program needs no more of a target than a C toolchain and a collector.
 
-    Darwin and Windows are the five still unrun, and they need a linker and a
-    runtime this workflow does not have.
+    **Windows cost more than that, and what it cost is a lesson about the
+    audit.** A Windows runner has the linker and the runtime this workflow was
+    said to lack, so `x86_64-windows-msvc` was tried. It crashed, at
+    `0xC0000005`, before writing anything — and it crashed for every program,
+    including one whose entire source is `module w1`. That last measurement is
+    what solved it: a program that declares nothing and runs nothing cannot be
+    faulting in the allocator, the write path or `ExitProcess`, so the fault was
+    not in the object at all.
 
-    **Windows was tried, and it is worse than unrun.** A Windows runner has the
-    linker and the runtime, so the last of those excuses does not hold for
-    `x86_64-windows-msvc`. Two measurements came back. The `cl.exe obj /link`
-    that `--cross-compile` prints for this target fails with seven unresolved
-    externals: an LLVM-emitted object carries no `/DEFAULTLIB` directives, so
-    nothing pulls in `kernel32` or the CRT entry stub. Naming both by hand
-    links cleanly, and the binary exits `0xC0000005` having written nothing.
+    Two things were wrong, both outside the compiler's output. An LLVM-emitted
+    object carries no `/DEFAULTLIB` directives, which an MSVC-compiled one
+    would, so nothing pulls in `kernel32` or a C runtime and the `cl.exe obj
+    /link` this fork prints for the target fails with seven unresolved
+    externals. And with the libraries named, the choice of CRT decides it: the
+    static `libcmt` links cleanly and faults before `main`, while the dynamic
+    `msvcrt ucrt vcruntime` runs correctly. Same object, same linker, different
+    library set, and one of them is a crash.
 
-    The object is not at fault — its whole undefined set is the six `kernel32`
-    functions III.9 audits — so the fault is between `main` and the first
-    `WriteFile`, on the Win32 allocator and Win32 write paths, which no build
-    has ever executed. Auditing what an object *asks for* cannot see this, and
-    that is the honest limit of the audit: it reads a question, not an answer.
+    So the audit's limit is now measured rather than asserted: reading what an
+    object *asks for* tells you nothing about what happens when something
+    answers. Darwin is what remains unrun, and the excuse there is real —
+    macOS runners exist, so it is next rather than impossible.
 
 12b. **What the library costs at run time, and the flattering answer that was
     wrong.** The tagline says Performance, and until now every number under it
