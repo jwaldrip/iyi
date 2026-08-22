@@ -29,8 +29,23 @@
   artifacts with `std/derives` deleted every build, so a consumer never runs
   the macro. The macro is handed the declaration's name and fields, built for
   the purpose: passing the declaration itself put the `derive` node inside its
-  own macro argument, and no build that touched an artifact terminated. R-5's
-  other half, reading an imported module's export metadata, is still unbuilt.
+  own macro argument, and no build that touched an artifact terminated.
+
+- **A derive can ask what a field's type implements.** Each field carries the
+  type it was written as, so `field[:type] <= ToJSON` is answerable — including
+  where the type, the trait and the impl all belong to another module and arrive
+  from its artifact, which is the `Order` case SPEC.md II.4 designs. The type is
+  read from the annotation, because an instance variable's type is settled by a
+  later pass and there is nothing to ask yet when a derive runs; R-2 is what
+  makes that enough.
+
+  A derive reads the declarations above it, so `getter n : Int32` is a field.
+  One written below is refused, naming the call and which way to move it, rather
+  than generating a method over the fields it happened to see. And because
+  handing over a type hands over every question a macro may ask a type,
+  `all_subclasses`, `subclasses` and `includers` raise inside a derive: they
+  answer with the whole program rather than with a declaration, which is the
+  caching promise R-5 rests on. Outside a derive they are untouched.
 
 ### Fixed
 

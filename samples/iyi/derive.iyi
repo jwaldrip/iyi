@@ -9,9 +9,10 @@
 # sample from its artifacts with `std/derives` deleted, which is that claim
 # taken literally.
 #
-# The macro is handed the two facts R-5 lets it read: the declaration's name,
-# and the fields written in its body. It cannot enumerate a type it was not
-# given, which is what keeps a derive bounded and cacheable.
+# The macro is handed the facts R-5 lets it read: the declaration's name, and
+# the fields written in its body, each with the type it was written as. It
+# cannot enumerate a type it was not given, which is what keeps a derive
+# bounded and cacheable.
 
 module samples/derive
 
@@ -44,6 +45,27 @@ end
 puts Point.new(3, 4).described
 puts Span.new(1, 9, "range").described
 
+# The field type is a type, not a name, so a derive can ask what it implements.
+# `Name` and `Show` both belong to `std/derives`, and both arrive from that
+# module's artifact when its source is gone: `@label` is rendered through the
+# trait, and `@count` is skipped because `Int32` does not implement it.
+#
+# `getter label : Name` is a macro call, so the field it declares exists only
+# once it has run. A derive reads the declarations above it, which is why
+# `derive` goes last. Below `getter`, this would be an error rather than a
+# method generated over no fields.
+pub struct Tag
+  getter label : Name
+  @count : Int32
+
+  def initialize(@label : Name, @count : Int32)
+  end
+
+  derive shown
+end
+
+puts Tag.new(Name.new("hi"), 2).shown
+
 # ---------------------------------------------------------------------------
 # What this sample would report as an error
 # ---------------------------------------------------------------------------
@@ -58,3 +80,7 @@ puts Span.new(1, 9, "range").described
 # * A `derive` inside a reopened type from another module. That is refused
 #   before the derive is reached, by R-3: iyi has no open classes, so a module
 #   cannot add to a type it does not declare.
+#
+# * A `getter` (or any macro call that declares a field) written below the
+#   `derive` that should read it. The derive names the call and says which way
+#   to move, rather than generating a method over the fields it happened to see.

@@ -133,6 +133,13 @@ module Iyi
     # `std/list`.
     getter iyi_artifact_modules = {} of String => String
 
+    # iyi: true only while a `derive`'s macro is expanding (SPEC.md R-5, II.4).
+    # A derive reads the declaration it is attached to, and the types that
+    # declaration names. The macro questions that answer with the whole program
+    # instead are refused while this is set, because their answers are not facts
+    # a module's artifact can carry.
+    property? expanding_derive : Bool = false
+
     # iyi: where to look for a `.iyimod` before falling back to a module's
     # source, or nil (SPEC.md IV.1). Set by `--use-iyimod`.
     property iyi_module_dir : String? = nil
