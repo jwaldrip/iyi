@@ -523,25 +523,25 @@ describe Iyi::Rx do
       standalone = "(?<![A-Za-z0-9_])Entry(?![A-Za-z0-9_])"
       qualified = "(?<![A-Za-z0-9_:])Entry(?![A-Za-z0-9_])"
       subjects = [
-        "Entry",         # the whole subject
-        "Entry rest",    # at the start
-        "rest Entry",    # at the end
-        "(Entry)",       # punctuation either side
-        "_Entry",        # an underscore before makes it a longer name
-        "Entry_",        # and after
-        "1Entry",        # so does a digit
+        "Entry",      # the whole subject
+        "Entry rest", # at the start
+        "rest Entry", # at the end
+        "(Entry)",    # punctuation either side
+        "_Entry",     # an underscore before makes it a longer name
+        "Entry_",     # and after
+        "1Entry",     # so does a digit
         "Entry9",
         "_Entry_",
         "9Entry9",
-        "MyEntry",       # buried inside a longer identifier
+        "MyEntry", # buried inside a longer identifier
         "Entrys",
-        "Entry, Entry",  # twice in one subject
+        "Entry, Entry", # twice in one subject
         "Entry Entry",
-        "Foo::Entry",    # qualified
+        "Foo::Entry", # qualified
         "Entry::Foo",
         "Other::MyEntry",
         "Array(Entry)",
-        "entry",         # a name is case sensitive
+        "entry", # a name is case sensitive
         "",
       ]
 
