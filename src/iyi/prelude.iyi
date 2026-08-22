@@ -1062,3 +1062,21 @@ fun main(argc : Int32, argv : UInt8**) : Int32
   LibCrystalMain.__crystal_main(argc, argv)
   0
 end
+
+{% if flag?(:wasm32) %}
+  # iyi: wasi-libc's `crt1-command.o` is what exports `_start`, and what it
+  # calls is not `main`. Clang renames a C `main` to `__main_argc_argv` or
+  # `__main_void` depending on its parameters, and the entry stub calls that
+  # name; `main` itself is left as a weak undefined reference, so a module that
+  # only defines `main` links without complaint and traps on `unreachable` the
+  # moment the entry calls through it.
+  #
+  # Defining the name the entry actually calls is the whole fix. It is declared
+  # here rather than emitted by codegen because the prelude is where this
+  # platform's contract already lives, and because `main` above stays exactly as
+  # it is for every other target.
+  fun __main_argc_argv(argc : Int32, argv : UInt8**) : Int32
+    LibCrystalMain.__crystal_main(argc, argv)
+    0
+  end
+{% end %}

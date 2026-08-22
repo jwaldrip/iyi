@@ -62,7 +62,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 2,386 lines, ceiling 3,551 |
+| iyi's own prelude | 2,404 lines, ceiling 3,551 |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -87,7 +87,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 2,386 lines
+> "No standard library worth the name" is still true of iyi's own 2,404 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -269,7 +269,7 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 2,386 lines,
+**3. A deliberately tiny prelude, written in iyi. Done: 2,404 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
 one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
@@ -749,7 +749,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 87,795 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 2,386-line own prelude + 777 in samples |
+| Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 6,679 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -5086,11 +5086,11 @@ Named honestly, so nobody mistakes this draft for complete.
 
 12c. **Portability, moved from compiled to run.** An iyi program produced code
     for nine targets and was tested on one, which is the weakest kind of
-    portability claim: the code generator not objecting. Four of the nine now
+    portability claim: the code generator not objecting. Five of the nine now
     run in CI every build — x86-64 glibc natively, x86-64 musl in an Alpine
-    container, aarch64 under emulation, and x86-64 Windows on a Windows runner
-    — and the check is that each prints what the same program printed on the
-    machine that compiled it.
+    container, aarch64 under emulation, x86-64 Windows on a Windows runner, and
+    wasm32-wasi under wasmtime — and the check is that each prints what the
+    same program printed on the machine that compiled it.
 
     What makes it cheap is the same thing that makes an artifact linkable: the
     object is produced here and linked there with the target's own `cc` and
@@ -5117,8 +5117,21 @@ Named honestly, so nobody mistakes this draft for complete.
 
     So the audit's limit is now measured rather than asserted: reading what an
     object *asks for* tells you nothing about what happens when something
-    answers. Darwin is what remains unrun, and the excuse there is real —
-    macOS runners exist, so it is next rather than impossible.
+    answers.
+
+    **wasm32-wasi had the same shape of defect and a smaller fix.** The module
+    imports four `wasi_snapshot_preview1` functions and nothing else, and it
+    linked — and trapped on `unreachable` before printing. wasi-libc's entry
+    stub does not call `main`: clang renames a C `main` to `__main_argc_argv`,
+    the stub calls that, and a module defining only `main` leaves the stub's
+    weak reference unbound and traps the first time it is called through.
+    Sixteen lines of prelude define the name the stub calls, and the program
+    runs under wasmtime with the same output it has natively. What the fork
+    prints for this target is still `wasm-ld` with `-lc` and no `crt1.o`, which
+    is not a program; CI links with the wasi-sdk clang driver instead.
+
+    Darwin is what remains unrun, and the excuse there is real — macOS runners
+    exist, so it is next rather than impossible.
 
 12b. **What the library costs at run time, and the flattering answer that was
     wrong.** The tagline says Performance, and until now every number under it
@@ -5259,7 +5272,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 2,386-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 2,404-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler

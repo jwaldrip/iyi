@@ -16,7 +16,7 @@ that rule and what it costs.
 |---|---|
 | **Developer experience** | edit one module in a 7,207-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
 | **Agentic experience** | a module's interface is a file, not a convention: `iyi mod dump` prints it, and a consumer type-checks against it with the source deleted |
-| **Portability** | an iyi program compiles for **nine targets** and is **run** on four of them every build: x86-64 glibc, x86-64 musl, aarch64 under emulation, and x86-64 Windows |
+| **Portability** | an iyi program compiles for **nine targets** and is **run** on five of them every build: x86-64 glibc, x86-64 musl, aarch64 under emulation, x86-64 Windows, and wasm32-wasi under wasmtime |
 | **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s**. At run time the two libraries are within noise where they do the same work |
 | **Efficiency** | that `hello` is a **36 KB** binary that starts in **1.6 ms**; the same program with Crystal's library is 1,553 KB and 3.2 ms |
 
@@ -323,8 +323,8 @@ generics crossing a boundary is specified and unmeasured.
 **Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 36 KB
 binary that starts in 1.6 ms; the same program compiled with Crystal's standard
 library is 1,553 KB and 3.2 ms. Nothing clever is happening: a program links what
-it uses, and iyi's own library is 2,386 lines rather than 8,161. The whole
-library is 80 KB on disk beside the binary.
+it uses, and iyi's own library is 2,404 lines rather than 8,161. The whole
+library is 81 KB on disk beside the binary.
 
 <sup>Sizes and start times are a plain `iyi build`, no flags, on macOS arm64
 with LLVM 22. They move with the platform and the LLVM, which is why they are
@@ -342,7 +342,7 @@ $ tar -xzf iyi-0.2.0-linux-x86_64.tar.gz -C ~/.local
 $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 
-The tarball is relocatable and carries both libraries: iyi's own 80 KB, and
+The tarball is relocatable and carries both libraries: iyi's own 81 KB, and
 Crystal's standard library for `--crystal`. `bin/iyi` finds them beside itself,
 so there is nothing to configure and no `IYI_PATH` to set.
 
@@ -473,7 +473,7 @@ $ curl localhost:3000/json
 `pub`, traits with defaults, `impl … forall`, error unions and `!`, `.or`,
 `or_panic`, `defer` — all of them, on a program that requires a shard. R-2
 still refuses an export that does not write its types. What changes is what the
-program *has*: 8,161 lines of Crystal's standard library instead of 2,386
+program *has*: 8,161 lines of Crystal's standard library instead of 2,404
 lines of iyi's own prelude.
 
 **One name is unreachable, and it is a class of names.** `!` in iyi propagates
@@ -762,7 +762,7 @@ marked PROPOSED are the parts that will move under you.
 
 ## What is not here
 
-- **iyi's own library is 2,386 lines, and its IO is `puts`, `print`,
+- **iyi's own library is 2,404 lines, and its IO is `puts`, `print`,
   `read_input` and `File`**: integers, booleans, a string, one sequence, one
   dictionary, one range. `read_input` returns everything on standard input as
   one string, because there is no `IO` to keep the rest in. `File.read`,
@@ -792,14 +792,14 @@ marked PROPOSED are the parts that will move under you.
 - **No native test matrix across the supported targets.** CI type-checks the
   library for nine triples and audits the emitted objects of an iyi program for
   seven of them on four platforms: Linux x86_64 and aarch64, macOS x86_64 and
-  aarch64, Windows msvc and gnu, and wasm32-wasi. Three of those are also
+  aarch64, Windows msvc and gnu, and wasm32-wasi. Four of those are also
   *run*: `hello.iyi` is cross-compiled for `x86_64-linux-musl`,
-  `aarch64-linux-gnu` and `x86_64-windows-msvc`, linked with the target's own
-  linker, and run natively in a container, under emulation, and on a Windows
-  runner, each checked against what the same program printed on the machine
-  that compiled it. `wasm32-wasi` and `arm-linux-gnueabihf` only type-check.
-  Nothing here claims that the test suite runs on any target but the one CI
-  builds on.
+  `aarch64-linux-gnu`, `x86_64-windows-msvc` and `wasm32-wasi`, linked with the
+  target's own linker, and run natively in a container, under emulation, on a
+  Windows runner, and under wasmtime, each checked against what the same
+  program printed on the machine that compiled it. `arm-linux-gnueabihf` only
+  type-checks. Nothing here claims that the test suite runs on any target but
+  the one CI builds on.
 - **A Windows program links against a CRT, and the wrong one crashes.** iyi's
   entry point is `main`, so something has to supply `mainCRTStartup` to call
   it, and that is a C runtime — which the prelude otherwise goes out of its way
@@ -811,6 +811,14 @@ marked PROPOSED are the parts that will move under you.
   `--cross-compile` prints rather than one written into the workflow. Emitting
   an entry point of iyi's own would remove the CRT entirely, and is the honest
   form of "kernel32 and nothing else". It is not built.
+- **The wasm link needs more than `--cross-compile` prints.** A wasm32-wasi
+  module is a program only once wasi-libc's entry stub is linked in, and what
+  the fork prints for this target is `wasm-ld` with `-lc` and no `crt1.o`. CI
+  links with the wasi-sdk clang driver instead, which supplies both. What the
+  prelude does carry is the name that stub calls: clang renames a C `main` to
+  `__main_argc_argv`, the entry calls *that*, and a module defining only `main`
+  links without complaint and then traps on `unreachable` the first time the
+  entry calls through the weak reference it left behind.
 - **Artifacts are identified by released version, target and flag set.** Builds
   of the same released version read each other's `.iyimod` files only on the
   same target under the same flags; anything else is rejected and rebuilt,
@@ -840,7 +848,7 @@ marked PROPOSED are the parts that will move under you.
 |---|---|
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
 | [`samples/iyi`](samples/iyi) | thirteen programs: eleven documenting a part of it, one being a first half hour, and `calc`, a language |
-| [`src/iyi`](src/iyi) | iyi's own library, 2,386 lines. `--crystal` swaps it for Crystal's |
+| [`src/iyi`](src/iyi) | iyi's own library, 2,404 lines. `--crystal` swaps it for Crystal's |
 | [`src/compiler/iyi/iyimod.cr`](src/compiler/iyi/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |
