@@ -385,6 +385,19 @@ module Iyi::Rx
     end
   end
 
+  # pcre2's `\v`, vertical whitespace: the three ASCII line breaks plus VT and
+  # FF, then NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR. Seven characters, so
+  # they are listed rather than derived; `Char#whitespace?` would also take the
+  # horizontal ones.
+  protected def self.vertical_space_char?(c : Char) : Bool
+    case c
+    when '\v', '\n', '\f', '\r', '\u{0085}', '\u{2028}', '\u{2029}'
+      true
+    else
+      false
+    end
+  end
+
   # Bytes in the character at `pos`, or 1 at or past the end so a caller
   # stepping past an empty match at the very end walks off the loop instead of
   # reading out of bounds.
@@ -442,14 +455,24 @@ module Iyi::Rx
 
   # The built-in sets, read the way pcre2 under PCRE2_UCP reads them, because
   # that is how every pattern the compiler used to run behaved: `\w` is \p{L},
-  # \p{N} or underscore, `\s` is \p{Xps}, `\h` is horizontal whitespace, and `\d`
-  # is a decimal digit. `\D \W \S \H` are their complements, and the class level
-  # negation in `[^...]` composes with them.
+  # \p{N} or underscore, `\s` is \p{Xps}, `\h` is horizontal whitespace, `\v` is
+  # vertical whitespace, and `\d` is a decimal digit. `\D \W \S \H \V` are their
+  # complements, and the class level negation in `[^...]` composes with them.
+  #
+  # The last five are the general categories `\p{...}` accepts, carried as
+  # built-in sets because a property is a set membership test like any other and
+  # composes with negation and with class union the same way.
   private enum Builtin
     Digit      # \d
     Word       # \w
     Space      # \s
     Horizontal # \h
+    Vertical   # \v
+    Letter     # \p{L}
+    Upper      # \p{Lu}
+    Lower      # \p{Ll}
+    Number     # \p{N}
+    Mark       # \p{M}
   end
 
   private abstract class Node
@@ -896,7 +919,8 @@ module Iyi::Rx
         when 't'.ord then @pos += 1; '\t'
         when 'r'.ord then @pos += 1; '\r'
         when 'f'.ord then @pos += 1; '\f'
-        when 'v'.ord then @pos += 1; '\v'
+        when 'v'.ord then @pos += 1; ClassData::Member.builtin(Builtin::Vertical, false)
+        when 'V'.ord then @pos += 1; ClassData::Member.builtin(Builtin::Vertical, true)
         when '0'.ord
           @pos += 1
           octal_escape
@@ -916,8 +940,12 @@ module Iyi::Rx
         when 'S'.ord then @pos += 1; ClassData::Member.builtin(Builtin::Space, true)
         when 'h'.ord then @pos += 1; ClassData::Member.builtin(Builtin::Horizontal, false)
         when 'H'.ord then @pos += 1; ClassData::Member.builtin(Builtin::Horizontal, true)
-        when 'p'.ord, 'P'.ord
-          error "unicode property classes are not supported"
+        when 'p'.ord
+          @pos += 1
+          ClassData::Member.builtin(property_kind, false)
+        when 'P'.ord
+          @pos += 1
+          ClassData::Member.builtin(property_kind, true)
         else
           c, width = Rx.decode(@bytes, @pos, @size)
           error "unsupported escape \\#{c} in character class" if c.ascii_alphanumeric?
@@ -940,7 +968,8 @@ module Iyi::Rx
       when 't'.ord then @pos += 1; CharNode.new('\t', @ignore_case)
       when 'r'.ord then @pos += 1; CharNode.new('\r', @ignore_case)
       when 'f'.ord then @pos += 1; CharNode.new('\f', @ignore_case)
-      when 'v'.ord then @pos += 1; CharNode.new('\v', @ignore_case)
+      when 'v'.ord then @pos += 1; builtin_class Builtin::Vertical, false
+      when 'V'.ord then @pos += 1; builtin_class Builtin::Vertical, true
       when '0'.ord
         @pos += 1
         CharNode.new(octal_escape, @ignore_case)
@@ -964,8 +993,12 @@ module Iyi::Rx
         # A backreference is the one construct that makes matching superlinear.
         # SPEC.md III.10 trades it away; saying so is better than approximating.
         error "backreferences are not supported"
-      when 'p'.ord, 'P'.ord
-        error "unicode property classes are not supported"
+      when 'p'.ord
+        @pos += 1
+        builtin_class property_kind, false
+      when 'P'.ord
+        @pos += 1
+        builtin_class property_kind, true
       when 'G'.ord
         error "\\G is not supported"
       when 'K'.ord
@@ -994,7 +1027,9 @@ module Iyi::Rx
       value.unsafe_chr
     end
 
+    # `\xHH`, and `\x{...}` for anything a two digit escape cannot name.
     private def hex_escape : Char
+      return braced_hex_escape if peek_byte == '{'.ord
       value = 0
       count = 0
       while count < 2
@@ -1004,10 +1039,75 @@ module Iyi::Rx
         @pos += 1
         count += 1
       end
-      # `\x{...}` lands here with no digits. It is pcre2 syntax outside the
-      # supported set, so it is refused rather than half honoured.
-      error "malformed \\x escape, only \\xHH is supported" if count == 0
+      error "malformed \\x escape, expected \\xHH or \\x{...}" if count == 0
       value.unsafe_chr
+    end
+
+    # `\x{...}`, pcre2's arbitrary codepoint escape. Any number of digits is
+    # accepted, so leading zeroes cost nothing, and the ceiling is checked once
+    # per digit: a long run of digits would overflow Int32 long before a check
+    # made only after the loop could compare it.
+    #
+    # A surrogate is refused because pcre2 in UTF mode refuses one too, and
+    # accepting it would put a codepoint in the program that no UTF-8 subject can
+    # ever produce, so the two engines stay in agreement by refusing together.
+    private def braced_hex_escape : Char
+      open = @pos
+      @pos += 1 # '{'
+      value = 0
+      count = 0
+      while (digit = hex_value(peek_byte)) >= 0
+        value = value * 16 + digit
+        error "codepoint in \\x{...} is above U+10FFFF", open if value > 0x10FFFF
+        @pos += 1
+        count += 1
+      end
+      error "no digits in \\x{...}", open if count == 0
+      error "missing closing brace in \\x{...}", open unless peek_byte == '}'.ord
+      @pos += 1
+      error "codepoint in \\x{...} is a surrogate", open if 0xD800 <= value <= 0xDFFF
+      value.unsafe_chr
+    end
+
+    # `\p{Name}` and its short form `\pN`, and `\P` for either read the other
+    # way. pcre2 knows every general category and every script; only the five a
+    # public stdlib predicate answers EXACTLY are accepted here, because a
+    # property that quietly means something a little different from pcre2 is
+    # worse than one that is refused. \p{Nd} is the case in point: the stdlib
+    # exposes numbers only as Nd plus Nl plus No, so it is refused rather than
+    # approximated, and `\d` carries the same reading for the same reason.
+    private def property_kind : Builtin
+      start = @pos
+      if peek_byte == '{'.ord
+        @pos += 1
+        from = @pos
+        while (b = peek_byte) >= 0 && b != '}'.ord
+          @pos += 1
+        end
+        error "missing closing brace in \\p{...}", start if peek_byte < 0
+        name = String.new(@bytes[from, @pos - from])
+        @pos += 1 # '}'
+      else
+        b = peek_byte
+        # The short form takes exactly one ASCII letter, so `[\p]` reads as a
+        # malformed property rather than as a property named ']'.
+        error "malformed \\p escape, expected \\p{Name} or \\pN", start unless ascii_letter_byte?(b)
+        name = b.unsafe_chr.to_s
+        @pos += 1
+      end
+      case name
+      when "L"  then Builtin::Letter
+      when "Lu" then Builtin::Upper
+      when "Ll" then Builtin::Lower
+      when "N"  then Builtin::Number
+      when "M"  then Builtin::Mark
+      else
+        error "unsupported unicode property #{name.inspect}, only L, Lu, Ll, N and M are supported", start
+      end
+    end
+
+    private def ascii_letter_byte?(b : Int32) : Bool
+      0x41 <= b <= 0x5A || 0x61 <= b <= 0x7A
     end
 
     private def hex_value(b : Int32) : Int32
@@ -1162,29 +1262,73 @@ module Iyi::Rx
     getter? negated : Bool
     getter? fold : Bool
 
+    # Whether any member names a character above ASCII. Computed once here
+    # because it decides which of the two fold paths below a subject takes, and
+    # a class is immutable after compilation.
+    @non_ascii_members : Bool
+
     def initialize(@members : Array(Member), @negated : Bool, @fold : Bool)
+      @non_ascii_members = @members.any? { |m| m.builtin.nil? && m.hi.ord > 0x7F }
     end
 
     def matches?(c : Char) : Bool
       hit = @members.any? { |m| hit?(m, c) }
-      # iyi: fold by testing the subject character's other case, never by
-      # expanding the class, so `[a-z]` under (?i) still costs one range test.
-      # Non-ASCII folding is deliberately absent: Unicode case tables are a
-      # dependency-sized liability and this engine exists to shed dependencies.
-      if !hit && @fold && c.ascii_letter?
-        other = c.ascii_uppercase? ? c + 32 : c - 32
-        hit = @members.any? { |m| hit?(m, other) }
-      end
+      hit = fold_hit?(c) if !hit && @fold
       hit != @negated
+    end
+
+    # iyi: fold the SUBJECT, never the class. A folded range cannot be tested by
+    # folding its endpoints, because folding is not monotonic: [À-Þ] folds to a
+    # set that is not a range, so the only sound test is whether some character
+    # caseless-equal to the subject falls inside the range as written. That keeps
+    # `[a-z]` under (?i) at one range test per candidate rather than an expanded
+    # class, which is what holds the linear guarantee.
+    #
+    # The candidates are the subject's fold, its simple upcase and its simple
+    # downcase, and each is kept only when it folds to what the subject folds to.
+    # That filter is load-bearing: without it simple upcase would pair ı (U+0131)
+    # with I and simple downcase would pair İ (U+0130) with i, and pcre2 pairs
+    # neither, so `(?i)[a-z]` would match İ here and not there.
+    #
+    # A single character member gets one further test, fold against fold, which
+    # is the only way `[É]` reaches é and `[ſ]` reaches s: neither is any case
+    # mapping of the other.
+    #
+    # What this cannot reach is a character sitting INSIDE a range that no case
+    # mapping of the subject lands on, so `(?i)[Ā-ſ]` misses s where pcre2 finds
+    # it through ſ. Closing that needs the reverse of the fold, which is a table.
+    private def fold_hit?(c : Char) : Bool
+      # An ASCII subject against an all-ASCII class: the equivalence class is the
+      # letter and its one other case, so arithmetic answers it and nothing above
+      # ASCII can be reached anyway.
+      if !@non_ascii_members && c.ascii?
+        return false unless c.ascii_letter?
+        other = c.ascii_uppercase? ? c + 32 : c - 32
+        return @members.any? { |m| hit?(m, other) }
+      end
+
+      folded = Rx.fold_char(c)
+      {folded, c.upcase, c.downcase}.each do |candidate|
+        next if candidate == c
+        next unless Rx.fold_char(candidate) == folded
+        return true if @members.any? { |m| hit?(m, candidate) }
+      end
+      @members.any? { |m| m.builtin.nil? && m.lo == m.hi && Rx.fold_char(m.lo) == folded }
     end
 
     private def hit?(m : Member, c : Char) : Bool
       if kind = m.builtin
         inside = case kind
-                 when .digit? then c.number?
-                 when .word?  then Rx.word_char?(c)
-                 when .space? then Rx.space_char?(c)
-                 else              Rx.horizontal_space_char?(c)
+                 when .digit?      then c.number?
+                 when .word?       then Rx.word_char?(c)
+                 when .space?      then Rx.space_char?(c)
+                 when .horizontal? then Rx.horizontal_space_char?(c)
+                 when .vertical?   then Rx.vertical_space_char?(c)
+                 when .letter?     then c.letter?
+                 when .upper?      then c.uppercase?
+                 when .lower?      then c.lowercase?
+                 when .number?     then c.number?
+                 else                   c.mark?
                  end
         inside != m.negated?
       else
@@ -1466,18 +1610,34 @@ module Iyi::Rx
   # Character equality with the pattern's fold flag applied. Module level rather
   # than private to the machine, because the assertion pre-pass below runs the
   # same instructions and must read them the same way.
+  #
+  # Both sides are folded rather than one side's other case tried, because case
+  # is not a pair past ASCII: s, S and ſ are one equivalence class, and so are
+  # σ, ς and Σ. Folding maps every member of a class to the same representative,
+  # so one comparison answers the whole class.
   protected def self.char_eq?(got : Char, want : Char, fold : Bool) : Bool
     return true if got == want
-    # iyi: ASCII-only folding, at match time. Non-ASCII folding is deliberately
-    # absent; see ClassData#matches? for why.
     return false unless fold
-    if want.ascii_uppercase?
-      got == want + 32
-    elsif want.ascii_lowercase?
-      got == want - 32
-    else
-      false
-    end
+    fold_char(got) == fold_char(want)
+  end
+
+  # Simple case folding, which is what pcre2 compares under PCRE2_CASELESS.
+  # `Char#downcase(Fold)` is the stdlib's public spelling of it and needs no
+  # tables here. ASCII is answered arithmetically because it is the overwhelming
+  # majority of what the compiler's own patterns ever see, and A-Z to a-z is one
+  # bit.
+  #
+  # One documented gap, and it is the stdlib's: a character whose FULL folding is
+  # several characters is returned unchanged, so ẞ (U+1E9E) does not fold to ß
+  # the way pcre2's simple folding pairs them. `(?i)ß` therefore misses ẞ here.
+  # Reaching it with an extra downcase comparison would close that one pair and
+  # open others, because simple lowercase is not symmetric: it would also pair
+  # İ (U+0130) with i, which pcre2 refuses to do.
+  protected def self.fold_char(c : Char) : Char
+    code = c.ord
+    return (code | 0x20).unsafe_chr if 0x41 <= code <= 0x5A
+    return c if code < 0x80
+    c.downcase(Unicode::CaseOptions::Fold)
   end
 
   # The zero-width anchors, read at byte *pos*. Shared for the same reason, so a
