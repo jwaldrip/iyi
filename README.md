@@ -800,21 +800,24 @@ marked PROPOSED are the parts that will move under you.
   it. `x86_64-windows-msvc` and `arm-linux-gnueabihf` are not among them.
   Nothing here claims that the test suite runs on any target but the one CI
   builds on.
-- **A Windows binary starts and prints memory it was never given.** This is the
+- **A Windows binary is broken at run time, three different ways.** This is the
   worst thing on this list, so it gets said plainly. `x86_64-windows-msvc`
-  compiles, links and starts: the object asks Windows for six `kernel32`
-  functions and nothing else, and with `kernel32` and the *dynamic* CRT named
-  (the static one, `libcmt`, links just as cleanly and access-violates before
-  `main`) the program runs. What it prints cannot be trusted. Across four runs
-  of the same binary, two were byte-perfect, one put `ache\w` — a fragment of
-  a path from elsewhere in memory — where the program prints `HELLO, IYI!`, and
-  one dropped the digits from `BEEP 7`. The shapes that came out wrong were a
-  case conversion and a number rendered into a string, and a twenty-run probe
-  on those two has since caught 19 right and 1 wrong. The cause is not the
-  linker and is not known. What CI gates is the half that is deterministic —
-  it links and starts, exit 0, twenty times out of twenty — and it prints the
-  distribution of answers rather than asserting one, so the day they all agree
-  is a day the log says so. Windows is not counted as a run target until then.
+  compiles and links: the object asks Windows for six `kernel32` functions and
+  nothing else, and with `kernel32` and the *dynamic* CRT named (the static one,
+  `libcmt`, links just as cleanly and access-violates before `main`) the linker
+  is happy. Running it is where it ends. The same binary, run twenty times, has
+  printed the right answer, printed memory it was never given — `ache\w` where
+  `HELLO, IYI!` belongs, `BEEP ` with the digits gone — and exited
+  `0xC0000005`. All three, on the same executable, with nothing changed
+  between runs.
+
+  So there is nothing here to assert and no gate to write, and the two shapes
+  seen wrong (a case conversion, a number rendered into a string) are not the
+  whole story either, because an intermittent access violation is not a
+  formatting bug. CI keeps a twenty-run watch that always passes and prints the
+  tally, so the numbers are in every log. The cause is not the linker, not
+  `HeapAlloc` failing to clear (the POSIX path does not clear either and macOS
+  is fine), and not yet known.
 - **The wasm link needs more than `--cross-compile` prints.** A wasm32-wasi
   module is a program only once wasi-libc's entry stub is linked in, and what
   the fork prints for this target is `wasm-ld` with `-lc` and no `crt1.o`. CI

@@ -51,10 +51,10 @@
   runs in turn, left to right, reading the same declaration. A name nothing
   exports is reported at that name rather than at the line.
 
-- **A Windows binary starts, and prints memory it was never given.** Windows
-  was one of the seven targets whose emitted objects CI audits and one of the
-  six that had never been run. Running it found the object is fine and the
-  output is not.
+- **A Windows binary links, and then does something different every run.**
+  Windows was one of the seven targets whose emitted objects CI audits and one
+  of the six that had never been run. Running it found the object is fine and
+  everything after the linker is not.
 
   Getting it to start needed two things the object audit cannot see. An
   LLVM-emitted object carries no `/DEFAULTLIB` directives, which an
@@ -65,20 +65,24 @@
   programs whose smallest rung is `module w1` — it faulted too, which ruled out
   the allocator, the write path and `ExitProcess` in one step.
 
-  What it prints, though, cannot be trusted. Four runs of the same binary: two
-  byte-perfect, one with `ache\w` (a fragment of a path from elsewhere in
-  memory) where the program prints `HELLO, IYI!`, and one that dropped the
-  digits from `BEEP 7`. A case conversion and a number rendered into a string
-  are the two shapes seen wrong; a smaller program that allocates and writes was
-  right twenty times out of twenty. The obvious theory is wrong and is recorded
-  so nobody spends the afternoon on it: `HeapAlloc` not clearing cannot be it,
-  because the POSIX path allocates atomically with plain `malloc`, which does
-  not clear either, and macOS has never printed the wrong thing.
+  What it does at run time cannot be trusted, in three different ways. The same
+  binary, twenty runs, nothing changed between them: it has printed the right
+  answer, printed `ache\w` (a fragment of a path from elsewhere in memory) where
+  the program prints `HELLO, IYI!`, printed `BEEP ` with the digits gone, and
+  exited `0xC0000005`. The two wrong-output shapes are a case conversion and a
+  number rendered into a string, which looked like a lead until a run
+  access-violated: an intermittent AV on a four-line program is a wild write,
+  not a formatting bug.
 
-  So Windows is not a run target and the README does not say it is. What CI
-  keeps is a twenty-run probe on those two shapes, allowed to fail without
-  failing the build, because it is the thing that will say the day this is
-  fixed.
+  The obvious theory is recorded as wrong so nobody spends the afternoon on it:
+  `HeapAlloc` not clearing cannot be it on its own, because the POSIX path
+  allocates atomically with plain `malloc`, which does not clear either, and
+  macOS has never printed the wrong thing.
+
+  So Windows is not a run target and the README does not say it is. CI keeps a
+  twenty-run watch that always passes and prints the tally — right, wrong,
+  crashed — because there is no property of running an iyi program there that
+  currently holds twenty times out of twenty.
 
 - **The Windows link command names the libraries it needs.** An LLVM-emitted
   object carries no `/DEFAULTLIB` directives the way an MSVC-compiled one does,
