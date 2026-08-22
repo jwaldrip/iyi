@@ -4371,8 +4371,13 @@ Named honestly, so nobody mistakes this draft for complete.
     > `<(IO+ | String)>`, while a consumer passing a string literal gets
     > `<String>`. A method's symbol carries the types at its *call site*, so a
     > union parameter has one symbol per way of calling it and a keep file forces
-    > only the one it names. That is the same shape as a generic and as an
-    > unannotated block, and it is the next thing this has to answer.
+    > only the one it names.
+    >
+    > The file names all of them now — the product of the parameters' shapes,
+    > which measures smaller than it sounds: a union parameter is about one in
+    > twenty, 7 of `IO`'s 103 and 1 of `JSON`'s 53, so two in one signature is
+    > rare and the product stays small. `JSON.parse("...")` called from iyi links
+    > and the symbol is there.
     >
     > What still falls outside is a name the grammar cannot spell — `Foo_Bar`
     > needs two underscores running and `camelcase` reads two as one, so it comes

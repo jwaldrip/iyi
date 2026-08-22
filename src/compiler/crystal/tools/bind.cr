@@ -811,12 +811,78 @@ module Crystal
     end
   end
 
-  # One call, with a name for each argument. Returns the next counter, because
-  # every name in this file has to be its own.
+  # A method has as many symbols as it has ways of being called, and this emits
+  # one call for each of them.
+  #
+  # The mangled name carries the types at the *call site*, not the types in the
+  # declaration. `JSON.parse(input : String | IO)` is one declaration and at
+  # least three symbols: a consumer passing a string reaches
+  # `*JSON::parse<String>:JSON::Any`, one passing an `IO` reaches `<IO+>`, and
+  # one passing a variable of the declared union reaches `<(IO+ | String)>`.
+  # Naming only the last is what this file did, so every consumer that passed a
+  # plain string linked against nothing.
+  #
+  # The product of the parameters' shapes, which sounds worse than it measures:
+  # a union parameter is about one in twenty — 7 of `IO`'s 103, 1 of `JSON`'s 53
+  # — so two in one signature is rare and the product stays small. `KEEP_CALL_CAP`
+  # is there for when it is not, and it says so rather than quietly emitting the
+  # declared shape alone.
+  KEEP_CALL_CAP = 16
+
   private def self.keep_call(io : IO, target : String, signature : IyiMod::Signature,
                              counter : Int32) : Int32
-    args = signature.parameters.map do |parameter|
-      type = parameter.split(" : ").last
+    declared = signature.parameters.map { |parameter| parameter.split(" : ").last }
+    shapes = declared.map { |type| [type] + union_members(type) }
+
+    combinations = shapes.reduce([[] of String]) do |carried, options|
+      carried.flat_map { |prefix| options.map { |option| prefix + [option] } }
+    end
+
+    if combinations.size > KEEP_CALL_CAP
+      @@capped << "#{target}.#{signature.name}"
+      combinations = [declared]
+    end
+
+    combinations.each do |types|
+      counter = keep_one_call(io, target, signature, types, counter)
+    end
+    counter
+  end
+
+  # The signatures whose shapes outran the cap, reported beside the artifact.
+  @@capped = [] of String
+
+  # `(A | B)` as `["A", "B"]`, and anything else as `[]`. Split at the top level
+  # only: `(Array(A | B) | C)` is two members, not three.
+  private def self.union_members(type : String) : Array(String)
+    body = type.strip
+    return [] of String unless body.starts_with?('(') && body.ends_with?(')')
+    body = body[1...-1]
+
+    members = [] of String
+    depth = 0
+    current = String::Builder.new
+    body.each_char do |char|
+      case char
+      when '(' then depth += 1; current << char
+      when ')' then depth -= 1; current << char
+      when '|'
+        if depth.zero?
+          members << current.to_s.strip
+          current = String::Builder.new
+        else
+          current << char
+        end
+      else current << char
+      end
+    end
+    members << current.to_s.strip
+    members.size > 1 ? members.reject(&.empty?) : [] of String
+  end
+
+  private def self.keep_one_call(io : IO, target : String, signature : IyiMod::Signature,
+                                 types : Array(String), counter : Int32) : Int32
+    args = types.map do |type|
       name = "a#{counter}"
       counter += 1
       io << "  " << name << " = uninitialized " << type << "\n"

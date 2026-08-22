@@ -110,6 +110,16 @@
   itself where binutils is missing, or where `crystal` and `iyi` were built from
   different commits, since an artifact is read only by the build that wrote it.
 
+- **A method has as many symbols as it has ways of being called, and the keep
+  file named one.** The mangled name carries the types at the *call site*, not
+  the types in the declaration: `JSON.parse(input : String | IO)` is one
+  declaration and three symbols, and the file named only the one where the
+  argument is the declared union. Every consumer that passed a plain string
+  linked against nothing. It emits the product of the parameters' shapes now,
+  which measures smaller than it sounds — a union parameter is about one in
+  twenty, 7 of `IO`'s 103 and 1 of `JSON`'s 53 — with a cap that reports itself
+  rather than expanding without limit.
+
 - **A `def self.` module function crossed under the wrong symbol.** A module
   written `extend self` puts its functions on the module and mangles
   `*Widget@Widget::polite<String>:String`; one written `def self.polite` puts

@@ -64,6 +64,14 @@ describe "`crystal tool bind`, all four steps" do
           def self.brisk(name : String) : String
             "hi " + name
           end
+
+          # A union parameter, which is more than one symbol: a consumer
+          # passing a string reaches `<String>`, one passing an `Int32`
+          # reaches `<Int32>`, and only a variable of the declared union
+          # reaches `<(Int32 | String)>`. The keep file names all three.
+          def self.label(value : Int32 | String) : String
+            value.to_s
+          end
         end
         CR
 
@@ -74,6 +82,7 @@ describe "`crystal tool bind`, all four steps" do
 
         puts ABCGreeter.polite("iyi")
         puts ABCGreeter.brisk("iyi")
+        puts ABCGreeter.label(7)
         IYI
 
       Process.capture_result([CRYSTAL_BIN, "tool", "bind", "-e", "ABCGreeter",
@@ -109,7 +118,7 @@ describe "`crystal tool bind`, all four steps" do
       # The claim. Not that it compiled, not that it linked — that the program
       # ran and the answer came from the shard.
       Process.capture_result([File.join(dir, "app")], chdir: dir)
-        .output.chomp.should eq "hello, iyi\nhi iyi"
+        .output.chomp.should eq "hello, iyi\nhi iyi\n7"
     end
   end
 end
