@@ -4581,6 +4581,43 @@ Named honestly, so nobody mistakes this draft for complete.
     > and that is 12e's question, measured at the top of this item — not
     > something the last few turns were testing.
     >
+    > > **So it was asked of a shard, which is what a boundary is for.**
+    > > `bench/bind_speed.py`, and the first thing it found was that `Kemal`
+    > > cannot be bound at all: its object code numbers
+    > > `Array(Radix::Node(Array(Kemal::FilterHandler::FilterBlock)))` — a
+    > > generic instance from *another shard* — and a generic travels as bodies
+    > > rather than as declarations. Binding `Radix` first does not help: it is
+    > > generic throughout and its artifact carries no types. That is IV.2's
+    > > problem arriving where a real library keeps it.
+    > >
+    > > What `tool bind` does say about `Kemal` is worth keeping: 254 public
+    > > methods, **93.3% needing no human**, 26 types carrying 63 methods, and
+    > > 31 units of object code.
+    > >
+    > > So the speed question went to a generated shard of stated size, and the
+    > > answer depends on one thing:
+    > >
+    > > | shard | from source | from its boundary | |
+    > > |---|---|---|---|
+    > > | 2,167 lines | 1.11 s | 1.13 s | costs 2% |
+    > > | 10,087 lines | 1.31 s | 1.20 s | saves 9% |
+    > > | 29,767 lines | 1.94 s | 1.72 s | **saves 11%** |
+    > >
+    > > A boundary pays once compiling the shard is a real share of the build,
+    > > which here is somewhere near ten thousand lines, and the share grows with
+    > > size. Below that it costs a little: reading a megabyte of artifact and
+    > > linking twenty objects is not free, and there was nothing to save.
+    > >
+    > > **The first version of this measured nothing, and why is the useful
+    > > part.** Its consumer called one method. Codegen is demand-driven, so a
+    > > consumer that reaches one method has the compiler emit one — and a
+    > > 30,000-line shard cost the same as a 2,000-line one, because 28,000 lines
+    > > of it were never compiled by either arm. What a boundary saves is
+    > > compiling *the code somebody uses*, so a benchmark that uses none of it
+    > > measures its own consumer. The consumer calls all of it now, and the
+    > > source arm scales with the shard where before it was flat — which is how
+    > > the mistake was visible at all.
+    >
     > One thing binding the library did leave behind, and it is only reachable
     > from there: a *class*-rooted namespace collides with its own wrapper. The
     > artifact's declarations are wrapped in `module <path>`, and for `i_o` that

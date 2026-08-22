@@ -25,6 +25,24 @@
   how an alias lost its right-hand side and, once enums arrived, how one lost
   its members.
 
+- **A harness for what a consumer pays for a shard** (`bench/bind_speed.py`),
+  from its source and from its boundary, at three sizes. A boundary pays once
+  compiling the shard is a real share of the build — near ten thousand lines
+  here — and costs a little below that: 2,167 lines costs 2%, 10,087 saves 9%,
+  29,767 saves 11%.
+
+  It could not be asked of `Kemal`, which cannot be bound: its object code
+  numbers `Array(Radix::Node(...))`, a generic instance from another shard, and
+  a generic travels as bodies rather than declarations. What `tool bind` says
+  about `Kemal` stands on its own — 254 public methods, 93.3% needing no human,
+  31 units of object code.
+
+- **A private constant is not handed out.** The keep file read
+  `Kemal::FilterHandler::WILDCARD_PATHS` through a generated accessor, which is
+  what the shard's own compiler refuses. It still travels in the artifact's
+  initialiser, because *defining* one is not *reading* it and the object code
+  refers to it either way.
+
 - **A build that fills a boundary does not link.** The keep file is not a
   program anybody runs — it exists so codegen emits the methods a consumer will
   call — and what the boundary needs is the objects, not the executable they

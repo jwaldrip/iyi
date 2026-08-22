@@ -574,6 +574,11 @@ module Crystal
     owner.types?.try &.each do |name, type|
       case type
       when Const
+        # A private constant cannot be handed out: an accessor reads it, and
+        # reading one from outside is what its own compiler refuses. It still
+        # travels in the initialiser, because *defining* it is not *reading* it
+        # and the object code refers to it either way.
+        next if type.private?
         answer = type.value.type?
         next unless answer
 
