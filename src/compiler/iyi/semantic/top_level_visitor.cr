@@ -1876,10 +1876,20 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     # declaration itself. R-5 promises it the attached declaration's shape; a
     # live or cloned `ClassDef` would also carry this `derive` node, and the
     # artifact walk that follows a macro's inputs would have a cycle to chase.
-    call = Call.new(nil, name, [describe_derive_target(owner)] of ASTNode).at(node)
+    call = Call.new(nil, name, [describe_derive_target(owner, node)] of ASTNode).at(node)
     call.scope = current_type.metaclass
 
-    unless expand_macro(call, raise_on_missing_const: false, first_pass: true)
+    # Marked while the macro runs, so the program-wide type questions can be
+    # refused for the length of the expansion (SPEC.md II.4).
+    expanded =
+      begin
+        @program.expanding_derive = true
+        expand_macro(call, raise_on_missing_const: false, first_pass: true)
+      ensure
+        @program.expanding_derive = false
+      end
+
+    unless expanded
       node.raise "`#{name}` is not an available derive macro. Define it as " \
                  "`pub macro #{name}(declaration)` and import or `using` its module"
     end
@@ -1889,27 +1899,85 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
   end
 
   # The bounded facts R-5 lets a derive read: the declaration's own name, and
-  # the fields written in its body. Nothing else, and nothing that reaches back
-  # into the tree, so a derive sees the same declaration whether its module is
-  # compiled from source or read from an artifact.
+  # the fields written in its body, each with the type it was written as.
+  # Nothing else, and nothing that reaches back into the tree, so a derive sees
+  # the same declaration whether its module is compiled from source or read
+  # from an artifact.
   #
   # Handing over the `ClassDef` itself, live or cloned, is what this replaces.
   # That declaration contains the `derive` node, so the walk that follows a
   # macro's inputs had a cycle to chase and never finished (SPEC.md II.4).
-  private def describe_derive_target(owner : ClassDef) : ASTNode
+  private def describe_derive_target(owner : ClassDef, derive : Call) : ASTNode
     fields = [] of ASTNode
     body = owner.body
     declarations = body.is_a?(Expressions) ? body.expressions : [body]
+
+    seen_derive = false
     declarations.each do |declaration|
-      next unless declaration.is_a?(TypeDeclaration)
-      var = declaration.var
-      fields << StringLiteral.new(var.name) if var.is_a?(InstanceVar)
+      if declaration.same?(derive)
+        seen_derive = true
+        next
+      end
+
+      # A macro call in the body may declare fields, and `getter n : Int32` is
+      # the everyday one. Above the derive it has already expanded, so its
+      # declarations are there to read. Below, it has not, and reading the body
+      # would silently answer without them: a derive that generates a method
+      # over no fields at all. That is refused rather than guessed at.
+      if seen_derive && declaration.is_a?(Call) &&
+         declaration.expanded.nil? && declaration.name != "derive"
+        derive.raise "`#{derive_macro_name(derive.args.first)}` cannot read `#{declaration.name}` " \
+                     "because it is written below the derive, and a macro's declarations only " \
+                     "exist once it has run. Move `derive` below `#{declaration.name}`"
+      end
+
+      collect_derive_fields declaration, fields
     end
 
     NamedTupleLiteral.new([
       NamedTupleLiteral::Entry.new("name", StringLiteral.new(owner.name.names.last)),
       NamedTupleLiteral::Entry.new("fields", ArrayLiteral.new(fields)),
     ])
+  end
+
+  # Fields written directly, and fields a macro above the derive wrote for it.
+  # Only the body's own level and macro expansions: a `Def` is left alone, so a
+  # declaration inside a method body is not a field.
+  private def collect_derive_fields(node : ASTNode, fields : Array(ASTNode)) : Nil
+    case node
+    when Expressions
+      node.expressions.each { |expression| collect_derive_fields expression, fields }
+    when Call
+      expanded = node.expanded
+      collect_derive_fields expanded, fields if expanded
+    when TypeDeclaration
+      var = node.var
+      return unless var.is_a?(InstanceVar)
+
+      fields << NamedTupleLiteral.new([
+        NamedTupleLiteral::Entry.new("name", StringLiteral.new(var.name)),
+        NamedTupleLiteral::Entry.new("type", derive_field_type(node.declared_type)),
+      ])
+    end
+  end
+
+  # The type a field was written as, resolved to the type it names. This is the
+  # fact that lets a derive ask whether a field's type implements a trait, which
+  # is the question a `JSON` derive has to answer about an imported `Customer`
+  # (SPEC.md II.4).
+  #
+  # Read from the annotation rather than from the instance variable: an instance
+  # variable's type is settled by `TypeDeclarationVisitor`, a later pass, and
+  # there is nothing to ask yet when a derive runs. R-2 is what makes the
+  # annotation enough — what a module exports carries written types.
+  #
+  # A name this module cannot see answers `nil` rather than raising, so a derive
+  # can be written for a field whose type it does not need to know about.
+  private def derive_field_type(node : ASTNode) : ASTNode
+    type = current_type.lookup_type?(node, allow_typeof: false)
+    type ? TypeNode.new(type) : NilLiteral.new
+  rescue Iyi::TypeException
+    NilLiteral.new
   end
 
   private def derive_macro_name(name : ASTNode) : String

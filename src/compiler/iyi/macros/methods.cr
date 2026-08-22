@@ -2127,11 +2127,11 @@ module Iyi
       when "superclass"
         interpret_check_args { TypeNode.superclass(type) }
       when "subclasses"
-        interpret_check_args { TypeNode.subclasses(type) }
+        interpret_check_args { TypeNode.refuse_in_derive(interpreter, method); TypeNode.subclasses(type) }
       when "all_subclasses"
-        interpret_check_args { TypeNode.all_subclasses(type) }
+        interpret_check_args { TypeNode.refuse_in_derive(interpreter, method); TypeNode.all_subclasses(type) }
       when "includers"
-        interpret_check_args { TypeNode.includers(type) }
+        interpret_check_args { TypeNode.refuse_in_derive(interpreter, method); TypeNode.includers(type) }
       when "constants"
         interpret_check_args { TypeNode.constants(type) }
       when "constant"
@@ -2400,6 +2400,21 @@ module Iyi
       superclass ? TypeNode.new(superclass) : NilLiteral.new
     rescue
       NilLiteral.new
+    end
+
+    # iyi: a derive is handed the type a field was written as, so that it can
+    # ask what that type implements (SPEC.md II.4). These three answer with the
+    # whole program instead of with a declaration: what subclasses or includes a
+    # type is not a fact the type's own module can carry, so a derive that read
+    # one would generate different code depending on what else was compiled, and
+    # could not be cached against the declaration. R-5 forbids them.
+    def self.refuse_in_derive(interpreter : MacroInterpreter, method : String) : Nil
+      return unless interpreter.program.expanding_derive?
+
+      raise Iyi::TypeException.new(
+        "`#{method}` is not available to a derive: it answers with the whole " \
+        "program, and a derive may only read the declaration it is attached to " \
+        "and what that declaration's types implement — see SPEC.md II.4")
     end
 
     def self.subclasses(type)

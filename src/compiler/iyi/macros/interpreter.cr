@@ -1,6 +1,10 @@
 module Iyi
   class MacroInterpreter < Visitor
     getter last : ASTNode
+
+    # iyi: reached by `TypeNode.refuse_in_derive`, which has to know whether the
+    # expansion it is inside is a derive (SPEC.md II.4).
+    getter program : Program
     property free_vars : Hash(String, TypeVar)?
     property macro_expansion_pragmas : Hash(Int32, Array(Lexer::LocPragma))? = nil
 

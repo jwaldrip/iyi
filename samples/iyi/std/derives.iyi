@@ -1,11 +1,31 @@
 # Derives, as a library module (SPEC.md R-5, II.4).
 #
 # A derive is an exported macro that takes one argument: the declaration it is
-# attached to. It reads that declaration's name and fields and returns the
-# methods to add. It never sees a type it was not given, and it never runs in
-# the consumer.
+# attached to. It reads that declaration's name and its fields, each field with
+# the type it was written as. It never sees a type it was not given, and it
+# never runs in the consumer.
 
 module std/derives
+
+pub trait Show
+  abstract def show : String
+end
+
+# A type this module exports, implementing a trait this module exports. A derive
+# in another module gets to ask about both, and both arrive from this module's
+# `.iyimod` when its source is gone.
+pub struct Name
+  @text : String
+
+  def initialize(@text : String)
+  end
+end
+
+impl Show for Name
+  def show : String
+    "<" + @text + ">"
+  end
+end
 
 # Renders a value as its type name and its fields. One macro, any declaration:
 # the fields come from whichever type the derive is written in.
@@ -13,8 +33,23 @@ pub macro described(declaration)
   def described : String
     result = {{declaration[:name]}} + "("
     {% for field in declaration[:fields] %}
-      result = result + {{field}} + "=" + {{field.id}}.to_s + " "
+      result = result + {{field[:name]}} + "=" + {{field[:name].id}}.to_s + " "
     {% end %}
     result + ")"
+  end
+end
+
+# The question II.4 is about: whether a field's type implements a trait. Only
+# the fields that answer yes are rendered, and each one is rendered by calling
+# the trait's method. A field whose type this macro cannot see answers `nil`.
+pub macro shown(declaration)
+  def shown : String
+    result = ""
+    {% for field in declaration[:fields] %}
+      {% if field[:type] && field[:type] <= Show %}
+        result = result + {{field[:name]}} + "=" + {{field[:name].id}}.show + " "
+      {% end %}
+    {% end %}
+    result
   end
 end

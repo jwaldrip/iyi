@@ -748,8 +748,8 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 87,686 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 2,368-line own prelude + 742 in samples |
+| Compiler | 24,984 lines, **written in Crystal** | 87,780 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 2,368-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 6,679 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -918,7 +918,7 @@ can pass a DSL through. Convenient for `import kemal` giving you the DSL without
 a second line, and a way to reintroduce exactly the implicitness R-3 removed.
 Recommend **no** for Draft 0.
 
-### II.4 Derive macros × separate compilation: **SETTLED; the first slice BUILT**
+### II.4 Derive macros × separate compilation: **SETTLED and BUILT**
 
 This is the interaction that decides whether R-5 delivers the caching it
 promises.
@@ -981,14 +981,40 @@ expansion, and severing observer and dependency edges each removed one retained
 path and none of them fixed it, because the argument itself was the cycle: the
 declaration contains the `derive` node, and the walk that follows a macro's
 inputs had no end. What is passed now is a `NamedTupleLiteral` built for the
-purpose, carrying the declaration's name and the names of the fields written in
-its body. It is finite, it holds no reference back into the tree, and it is the
-same shape whether the module is being compiled or read.
+purpose, carrying the declaration's name and, for each field written in its
+body, that field's name and the type it was written as. It is finite, it holds
+no reference back into the tree, and it is the same shape whether the module is
+being compiled or read.
 
-**Still open in R-5.** A derive reads its own declaration's name and fields. It
-does not yet read the export metadata of imported modules, so the `Order` case
-above, which needs to know whether `Customer` implements `ToJSON`, is designed
-and unbuilt. `derive A, B` on one line is not parsed; one derive per line is.
+**The `Order` case is built.** A field's type arrives as a type, not a name, so
+`field[:type] <= ToJSON` is the question above, asked and answered. The type,
+the trait and the impl may all belong to another module and arrive from its
+artifact: `spec/compiler/iyi_derive_spec.cr` deletes both producer sources and
+builds the consumer from `.iyimod`s alone, and the field whose type does not
+implement the trait is absent from what the derive generated, from source and
+from artifact alike.
+
+The type is read from the annotation, not from the instance variable, because an
+instance variable's type is settled by `TypeDeclarationVisitor`, a later pass:
+there is nothing to ask when a derive runs. R-2 is what makes that enough. What
+a module exports carries written types, so the annotation is there to read.
+
+**A derive reads the declarations above it.** `getter n : Int32` is a macro
+call, and the field it declares exists only once it has run. Above the derive it
+has run, so the field is read. Below, it has not, and a derive that answered
+from the body anyway would generate a method over the fields it happened to
+see — silently, and differently depending on where the `derive` line sits.
+That is refused, naming the call and which way to move it.
+
+**The program-wide questions are refused for the length of the expansion.**
+Handing over a type hands over everything a macro may ask a type, and
+`all_subclasses`, `subclasses` and `includers` answer with the whole program
+rather than with a declaration. A derive that read one would generate different
+code depending on what else was compiled, which is the caching promise this
+section rests on, so inside a derive they raise. Outside one they are untouched.
+
+**Still open in R-5.** `derive A, B` on one line is not parsed; one derive per
+line is.
 
 ### II.5 Dictionaries × the garbage collector: **SETTLED, and a dependency**
 
