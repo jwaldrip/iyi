@@ -295,6 +295,7 @@ module Iyi
       units = codegen program, node, sources, output_filename unless @no_codegen
 
       write_iyimods program, prepared, units
+      fill_bind_artifact program, units
 
       @progress_tracker.clear
       print_macro_run_stats(program)
@@ -467,6 +468,7 @@ module Iyi
       units = codegen program, node, source, output_filename unless @no_codegen
 
       write_iyimods program, prepared, units
+      fill_bind_artifact program, units
 
       @progress_tracker.clear
       print_macro_run_stats(program)
@@ -589,6 +591,48 @@ module Iyi
       end
 
       prepared
+    end
+
+    # iyi: the object code of a namespace `tool bind` wrote a boundary for.
+    #
+    # `tool bind` runs without codegen — it reads and counts, and the artifact it
+    # writes is declarations. The object code is this build's to add: the keep
+    # file it generated is what forces every exported method to be emitted, and
+    # compiling that file is where the units exist.
+    #
+    # Per unit rather than as one object, which is the whole point. A keep file
+    # compiled with `--emit obj` merges into a single object carrying the whole
+    # of Crystal's library with it, and a program can have that library once —
+    # link it into a consumer that has none and the shard's state never starts,
+    # link it into one that has it and every runtime global is defined twice. An
+    # ordinary build leaves one object per type, and the ones this namespace owns
+    # carry no runtime at all.
+    private def fill_bind_artifact(program : Program, units : Array(CompilationUnit)?) : Nil
+      return unless dir = emit_bind
+      return unless root = iyi_keep
+      return unless units
+
+      type = program.types?.try &.[]?(root)
+      return unless type.is_a?(ModuleType)
+
+      names = [type.to_s] of String
+      collect_iyi_unit_names type, names
+      names.sort!.uniq!
+
+      path = File.join(dir, "#{Iyi.iyi_module_name(root).gsub('/', '-')}.iyimod")
+      return unless File.file?(path)
+
+      artifact = IyiMod.read path
+      units_by_name = units.to_h { |unit| {unit.original_name, unit} }
+      artifact.object_code = collect_iyi_object_code(names, units_by_name)
+      artifact.type_ids = collect_iyi_type_ids(program, names)
+      artifact.constants = collect_iyi_constants(program, names)
+      IyiMod.write artifact, path
+
+      carried = artifact.object_code.sum { |unit| unit.code.size }
+      stdout.puts "filled #{path}: #{artifact.object_code.size} units, " \
+                  "#{carried} bytes, #{artifact.type_ids.size} type ids, " \
+                  "#{artifact.constants.size} constants"
     end
 
     # iyi: attaches each module's object code and writes the artifacts.
@@ -1920,6 +1964,21 @@ module Iyi
       end
 
       output_filename = File.expand_path(output_filename)
+
+      # iyi: a build that exists to fill a boundary does not link.
+      #
+      # The keep file is not a program anybody runs — it is there so codegen
+      # emits the methods a consumer will call, and what the boundary needs is
+      # the objects rather than the executable they would have gone into.
+      # Linking them is waste when it works and worse when it does not: forcing
+      # the whole of `IO`'s surface produces a program that will not link, on
+      # `Crystal::EventLoop::Polling` internals a demand-driven build never
+      # reaches — and the units are written after the link, so a boundary that
+      # had everything it needed got nothing.
+      if emit_bind && iyi_keep
+        @progress_tracker.clear
+        return units
+      end
 
       @progress_tracker.stage("Codegen (linking)") do
         Dir.cd(output_dir) do

@@ -4,6 +4,53 @@
 
 ### Added
 
+- **`pub enum`, and an enum crosses a boundary.** iyi took an `enum` already —
+  the language has one and the compiler makes the type — but `pub` did not, so a
+  module could declare one and never hand it out. It does now, and
+  `crystal tool bind` writes the enum's members with the integer they are
+  numbered on, read from what the compiler assigned rather than renumbered: the
+  object file a consumer links is what gave them their numbers. An earlier note
+  said iyi had no `enum` at all, which came from grepping the prelude and was
+  wrong about the language.
+
+- **A private type travels as private.** `JSON::PullParser` holds an
+  `Array(ObjectStackKind)` and its object code numbers
+  `Pointer(ObjectStackKind)`, so a consumer has to *number* a type it must never
+  be able to *write*. Declaring it without `pub` is exactly that, and R-2b keeps
+  the name unreachable. Dropping such types was the first answer and only the
+  linker said otherwise.
+
+- **A rebuild of a type declaration carries all of it.** Pruning and renaming
+  both reconstructed a `TypeDecl` and left `value` and `macros` behind, which is
+  how an alias lost its right-hand side and, once enums arrived, how one lost
+  its members.
+
+- **A harness for what a consumer pays for a shard** (`bench/bind_speed.py`),
+  from its source and from its boundary, at three sizes. A boundary pays once
+  compiling the shard is a real share of the build — near ten thousand lines
+  here — and costs a little below that: 2,167 lines costs 2%, 10,087 saves 9%,
+  29,767 saves 11%.
+
+  It could not be asked of `Kemal`, which cannot be bound: its object code
+  numbers `Array(Radix::Node(...))`, a generic instance from another shard, and
+  a generic travels as bodies rather than declarations. What `tool bind` says
+  about `Kemal` stands on its own — 254 public methods, 93.3% needing no human,
+  31 units of object code.
+
+- **A private constant is not handed out.** The keep file read
+  `Kemal::FilterHandler::WILDCARD_PATHS` through a generated accessor, which is
+  what the shard's own compiler refuses. It still travels in the artifact's
+  initialiser, because *defining* one is not *reading* it and the object code
+  refers to it either way.
+
+- **A build that fills a boundary does not link.** The keep file is not a
+  program anybody runs — it exists so codegen emits the methods a consumer will
+  call — and what the boundary needs is the objects, not the executable they
+  would have gone into. Forcing the whole of `IO`'s surface produces a program
+  that will not link, on `Crystal::EventLoop::Polling` internals a demand-driven
+  build never reaches, and the units are written after the link. `IO`'s artifact
+  fills now — 18 units, 14.8 MB — where it had been empty.
+
 - **Measured what the library would be worth as an artifact** (SPEC.md Part V
   item 12e). A generated module the shape of a library — 103,002 lines, 5,000
   exported methods, declarations at the 5% of the source that Crystal's own
@@ -169,7 +216,60 @@
   naming the driver is the only way to print a command that produces a program.
   CI runs that printed command with wasi-sdk's clang as the `cc` it names.
 
+- **A Crystal namespace can be bound, built and called from an iyi program, in
+  two commands.** `--emit-bind` on the keep file's own build puts the per-type
+  units into the artifact, with the type ids and constants they refer to, using
+  the collectors an iyi module's artifact has always used — and the consumer
+  links what the artifact carries:
+
+  ```
+  crystal tool bind -e ABCGreeter --emit-bind mods shard.cr
+  crystal build --iyi-keep ABCGreeter --emit-bind mods -o keepbin abc_greeter_keep.cr
+  iyi build --crystal --use-iyimod mods -o app app.iyi
+  ```
+
+  No `nm` and no `objcopy`, where four printed steps had been and had never
+  worked at the end. The object `--emit obj` makes is a whole program and
+  carries Crystal's library with it; an ordinary build leaves one object per
+  type and the ones a namespace owns carry no runtime at all.
+
+  `--crystal` on the consumer is not decoration: the unit numbers
+  `Pointer(LibUnwind::Exception)` whatever the shard does, because a `String#+`
+  can raise. The artifact is marked `crystal_library: true` for the same reason,
+  which it always was — it was written `false` on an argument about what a
+  boundary stands between, and that argument does not survive looking at what
+  the unit refers to.
+
+  A constant crosses as the assignment that makes it, so the consumer builds it
+  in its own program at the time III.5 says — which is what the unit needs,
+  referring to `Store::TABLE` and defining nothing. `Store.word(1)` answers
+  `one`, where the same call used to segfault on the first read. Its own
+  constants only: a unit refers to Crystal's as well, and those belong to the
+  library the consumer already has.
+
+  What a boundary cannot carry is an enum, and `crystal tool bind` says so by
+  name instead of calling it a namespace skipped whole. iyi has no `enum`, so
+  nothing on the far side declares one: a signature naming an enum cannot cross
+  and neither can a type holding one. It is what `JSON` waits on — it binds to
+  19 units and 7.5 MB and then stops on `JSON::PullParser`'s `ObjectStackKind` —
+  and it is a language feature rather than another thing about object files.
+
+  One nested inside a type under the root crosses as well, written
+  `Inner::X = ...` — which defines rather than reopens wherever the namespace
+  exists, and the declarations rendered above it are what make it exist.
+
 ### Fixed
+
+- **`crystal tool bind` says why a bound shard cannot be linked into a program
+  that has Crystal's runtime either.** A consumer built with `--crystal` is the
+  program that *has* the runtime the shard's initialisation was missing, so it
+  ought to be the answer; instead the link fails on `Crystal::Hasher::seed`,
+  `Thread::threads`, `Fiber::fibers` and every other runtime global, defined
+  once by each side. The object this pipeline makes is a whole program — a keep
+  file is compiled like one — so it carries the library with it, and a program
+  can have that library once. Without it the shard's state never starts; with
+  it, nothing links. The names were not the problem and neither were the
+  constants: the packaging was.
 
 - **A harness for what the daemon takes off a whole build**
   (`bench/daemon_full_build.py`), which SPEC.md IV.1d had said was too noisy to

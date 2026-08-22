@@ -51,6 +51,10 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     (r"^scripts/", "generators that emit Crystal's stdlib tables"),
     # Drives the compatibility binary by the name a user types.
     (r"^spec/compiler-cli/", "compatibility binary's CLI specs"),
+    # `tool bind` runs under `crystal`, on Crystal source, against Crystal's
+    # library: it is how a shard is bound for an iyi consumer to import. The
+    # bench drives that binary and names it throughout.
+    (r"^bench/bind_speed\.py$", "a bench that drives the compatibility binary"),
     # Provenance, licence, copyright.
     (r"^README\.crystal\.md$", "upstream's README, kept"),
     (r"^LICENSE", "Crystal's licence"),
@@ -121,7 +125,8 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # `crystal` are one compiler with two command surfaces, and each looks up a
     # server named after the binary that was typed.
     (r"CRYSTAL_DAEMON_(BIN|SOCKET)", "the other command surface's own daemon"),
-    (r"Crystal (caches|runs)", "a sentence about the other language"),
+    (r"Crystal (caches|runs|takes)", "a sentence about the other language"),
+    (r"Crystal::EventLoop", "a class inside Crystal's standard library"),
     (
         r"Crystal's (own|library|licence|license|compiler|semantics|stdlib|"
         r"standard|prelude|codegen|cache|interpreter|fibers|ecosystem|list|"

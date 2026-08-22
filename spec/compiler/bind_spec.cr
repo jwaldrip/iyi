@@ -52,8 +52,12 @@ private def consume(artifact_dir : String, module_name : String)
     import #{module_name}
     IYI
 
+  # Crystal's library, not iyi's prelude. A bound shard's artifact says it was
+  # compiled under Crystal's — which it was — and a program cannot hold one
+  # module of each, because the two define types of the same names with
+  # different layouts. The unit numbers `Pointer(LibUnwind::Exception)` whatever
+  # the shard does, so the consumer that can read it is the one that has it.
   consumer = create_spec_compiler
-  consumer.prelude = "iyi/prelude"
   consumer.use_iyimod = artifact_dir
   consumer.no_codegen = true
   source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))

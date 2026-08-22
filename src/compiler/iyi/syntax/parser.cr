@@ -2225,6 +2225,14 @@ module Iyi
           a_macro = parse_macro
           a_macro.exported = true if a_macro.is_a?(Macro)
           a_macro
+        when Keyword::ENUM
+          # A type like any other here. It was left out of this list while
+          # nothing declared one, and what wanted it was a boundary: a bound
+          # Crystal namespace hands out enum values, and an artifact can only
+          # declare what `pub` admits.
+          enum_def = parse_enum_def
+          enum_def.exported = true if enum_def.is_a?(EnumDef)
+          enum_def
         else
           raise "can't apply `pub` to #{@token}", @token.line_number, @token.column_number
         end
