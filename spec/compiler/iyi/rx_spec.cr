@@ -901,24 +901,39 @@ describe Iyi::Rx do
     it "is right where pcre2 contradicts itself on a mixed length lookbehind" do
       # iyi: the one place the oracle cannot be followed. `(?<=A|B)` is the union
       # of `(?<=A)` and `(?<=B)`, because an alternation matches exactly when one
-      # of its branches does. pcre2 matches a lookbehind by stepping back a fixed
-      # number of characters, and where the branches differ in length and one is
-      # zero width it reports the group as holding at positions where neither
-      # branch holds. That is not a semantics to defer to, it is pcre2
-      # disagreeing with itself, so what is asserted here is pcre2's own answers
-      # for the branches, never its answer for the pair.
+      # of its branches does. pcre2 breaks that law, and the trigger is narrower
+      # than a first reading of it suggests: the alternation has to be wrapped in
+      # a group. Measured on subject "a" at byte 0, where neither branch holds:
+      #
+      #   (?<=a)         search from 0 -> byte 1     anchored at 0 -> no match
+      #   (?<=$)         search from 0 -> byte 1     anchored at 0 -> no match
+      #   (?<=(?:a|$))   search from 0 -> byte 0     anchored at 0 -> no match
+      #   (?<=a|$)       search from 0 -> byte 1     anchored at 0 -> no match
+      #
+      # So the bare alternation is right and the grouped one is wrong, and pcre2's
+      # own anchored evaluation contradicts its unanchored search on the same
+      # pattern at the same offset. Fixed-width stepping was the first
+      # explanation offered here and the last row refutes it, so no mechanism is
+      # claimed: what is recorded is the disagreement. What is asserted below is
+      # pcre2's answers for the branches, never its answer for the pair.
       left = Iyi::Rx::Pattern.compile("(?<=a)")
       right = Iyi::Rx::Pattern.compile("(?<=$)")
       pair = Iyi::Rx::Pattern.compile("(?<=(?:a|$))")
       reference_left = Regex.new("(?<=a)")
       reference_right = Regex.new("(?<=$)")
       reference_pair = Regex.new("(?<=(?:a|$))")
+      reference_bare = Regex.new("(?<=a|$)")
 
       # At byte 0 of "a", pcre2 says neither branch holds, and then says the pair
       # does. Both cannot be true.
       rx_reference_holds_at?(reference_left, "a", 0).should be_false
       rx_reference_holds_at?(reference_right, "a", 0).should be_false
       rx_reference_holds_at?(reference_pair, "a", 0).should be_true
+      # The same pattern without the group is right, which is why the group is
+      # named as the trigger above rather than the differing branch lengths.
+      rx_reference_holds_at?(reference_bare, "a", 0).should be_false
+      # And pcre2 anchored at 0 denies what pcre2 searching from 0 reported.
+      reference_pair.match("a", 0, Regex::MatchOptions::ANCHORED).should be_nil
       # the engine matches pcre2 branch by branch, and stays consistent on the pair
       rx_holds_at?(left, "a", 0).should be_false
       rx_holds_at?(right, "a", 0).should be_false

@@ -2,39 +2,62 @@
 #
 # The compiler used to reach matching through Crystal's `Regex`, which links
 # libpcre2-8. pcre2 sits on Crystal's required-libraries list and iyi means to
-# need nothing on it, so matching is owned here. The semantics recorded in
-# SPEC.md III.10 and Appendix B decision 17 are RE2's: linear time always, no
-# construct whose cost can grow with the subject. That is Go's trade taken
-# deliberately, backreferences and lookaround for a guarantee.
+# need nothing on it, so matching is owned here. The guarantee recorded in
+# SPEC.md III.10 and Appendix B decision 17 is RE2's: linear time always, no
+# construct whose cost can grow with the subject.
 #
-# Three parts, one file:
+# That guarantee is about cost, not about power, and the two were confused here
+# once. RE2 refuses lookaround, so this engine did too, and the reason given was
+# that lookaround needs a backtracker. It does not. A lookaround over a regular
+# inner pattern is itself a regular property of a position, so it is answered by
+# a pre-pass that costs one state set per character and nothing per position.
+# Both senses of both directions are supported, nested to any depth, and
+# lookbehind is not length-limited the way pcre2's is.
+#
+# What the trade actually costs is the constructs that are not regular:
+# backreferences, recursion, subroutine calls and conditionals. Those are
+# refused because no simulation answers them and no care makes them linear.
+# Atomic groups and possessive quantifiers are refused for a different reason:
+# they are controls for a backtracker, and there is none here to control. A
+# capturing group inside an assertion is refused because the pre-pass never
+# performs the sub-match that would set it, and reporting empty captures where
+# pcre2 reports real ones is the kind of quiet difference this file exists to
+# avoid.
+#
+# Four parts, one file:
 #   1. Parser, pattern source to AST.
 #   2. Compiler, AST to a Thompson NFA program.
-#   3. Pike VM, runs the program while tracking capture slots.
+#   3. Assertion pre-pass, one bitmap per assertion per subject.
+#   4. Pike VM, runs the program while tracking capture slots.
 #
 # Match extents and captures agree with the pcre2 the compiler used to link, and
-# `spec/compiler/iyi/rx_spec.cr` holds that agreement by running both
-# engines over the same corpus. Agreement is with pcre2 as the stdlib builds it,
-# PCRE2_UTF | PCRE2_UCP, so `\w` reads é as a word character and é|b is not a
-# word boundary, because that is what every pattern the compiler used to run saw.
+# `spec/compiler/iyi/rx_spec.cr` holds that agreement by running both engines
+# over the same corpus, including exhaustive codepoint sweeps for the character
+# classes. Agreement is with pcre2 as the stdlib builds it, PCRE2_UTF |
+# PCRE2_UCP, so `\w` reads é as a word character and é|b is not a word boundary,
+# because that is what every pattern the compiler used to run saw.
 #
-# Three places state a reading rather than inherit one:
+# Three places state a reading rather than inherit one, and all three are now
+# narrow:
 #
-#   Case folding is ASCII. `(?i)` folds A-Z against a-z and nothing else, so
-#   `(?i)é` does not match É where pcre2 under UCP would. That is the contract's
-#   call, and the alternative, Unicode folding, means either case tables here or
-#   leaning on a stdlib internal.
+#   `\d` is any Unicode number, where pcre2 means \p{Nd} exactly, so ½ and Ⅴ
+#   count here and do not there. No public stdlib predicate answers Nd on its
+#   own: `Char#number?` is Nd plus Nl plus No, and everything finer is `:nodoc:`.
+#   Shipping a case table to close one class is worse than saying this, so
+#   `\p{Nd}` is refused rather than approximated.
 #
-#   `\d` is any Unicode number, where pcre2 means \p{Nd} exactly. The stdlib
-#   exposes numbers only as \p{Nd} plus \p{Nl} plus \p{No}, so ½ and Ⅴ count here
-#   and do not in pcre2. Restricting to ASCII instead would have missed the
-#   Arabic-Indic and mathematical digits pcre2 does match, which is the worse
-#   miss for a class whose whole point is digits.
+#   `(?i)` folds through `Char#downcase(Unicode::CaseOptions::Fold)`, which is
+#   simple case folding, the same relation pcre2 uses. It is exact for every
+#   codepoint but one pair: ẞ full-folds to "ss", so the stdlib leaves it alone
+#   and pcre2 pairs it with ß through simple case mapping. Chasing that one pair
+#   with an extra downcase comparison opens others, because simple lowercase is
+#   not symmetric.
 #
-#   `\v` is the vertical tab character, the escape the contract lists it as,
-#   where pcre2 and Perl read `\v` as the vertical whitespace class. Both agree
-#   on a VT subject, which is why no spec case separates them. `\V`, the class's
-#   complement, is not in the contract's set and is refused.
+#   Lookbehind follows the union law where pcre2 does not. `(?<=A|B)` holds
+#   exactly where `(?<=A)` or `(?<=B)` holds; pcre2's unanchored search reports
+#   a grouped mixed-length alternation as holding at positions its own anchored
+#   evaluation denies. The spec pins pcre2's per-branch answers and never its
+#   answer for the pair.
 #
 # Anything outside the supported subset raises `SyntaxError` when the pattern
 # compiles; refusing loudly beats matching with quietly different semantics.
