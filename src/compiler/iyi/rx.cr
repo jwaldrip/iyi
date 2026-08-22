@@ -1284,11 +1284,15 @@ module Iyi::Rx
     # `[a-z]` under (?i) at one range test per candidate rather than an expanded
     # class, which is what holds the linear guarantee.
     #
-    # The candidates are the subject's fold, its simple upcase and its simple
-    # downcase, and each is kept only when it folds to what the subject folds to.
-    # That filter is load-bearing: without it simple upcase would pair ı (U+0131)
-    # with I and simple downcase would pair İ (U+0130) with i, and pcre2 pairs
-    # neither, so `(?i)[a-z]` would match İ here and not there.
+    # The candidates are the subject's fold, its simple upcase, its simple
+    # downcase, and the upcase of its fold, and each is kept only when it folds
+    # to what the subject folds to. That filter is load-bearing: without it
+    # simple upcase would pair ı (U+0131) with I and simple downcase would pair
+    # İ (U+0130) with i, and pcre2 pairs neither, so `(?i)[a-z]` would match İ
+    # here and not there. The fold's upcase is the one that looks redundant and
+    # is not: the KELVIN SIGN (U+212A) is already uppercase, so its own upcase is
+    # itself and only its fold's upcase reaches the ASCII K that `(?i)[A-Z]`
+    # holds. The OHM SIGN (U+2126) reaches Ω the same way.
     #
     # A single character member gets one further test, fold against fold, which
     # is the only way `[É]` reaches é and `[ſ]` reaches s: neither is any case
@@ -1308,7 +1312,7 @@ module Iyi::Rx
       end
 
       folded = Rx.fold_char(c)
-      {folded, c.upcase, c.downcase}.each do |candidate|
+      {folded, c.upcase, c.downcase, folded.upcase}.each do |candidate|
         next if candidate == c
         next unless Rx.fold_char(candidate) == folded
         return true if @members.any? { |m| hit?(m, candidate) }
