@@ -80,6 +80,35 @@
 
 ### Fixed
 
+- **A harness for what the daemon takes off a whole build**
+  (`bench/daemon_full_build.py`), which SPEC.md IV.1d had said was too noisy to
+  publish. Twelve modules under `--crystal` with codegen and a link, eight
+  alternating pairs, a module edited before every build, and it refuses to run
+  on an unoptimised binary — the three corrections IV.1d had to make, built in
+  so they cannot be forgotten again. **0.63 s to 0.46 s, or 26%**, with two runs
+  agreeing to a hundredth.
+
+  What was called noise was largely the measurement: `/usr/bin/time`, whose
+  negative elapsed times IV.1d records, is not installed on this machine. The
+  app here is lighter than the one the published table was made from — its
+  front end is 0.35 s against 0.81 s — so this is a new row rather than that
+  row measured further.
+
+- **The prelude cache key is checked by the compiler now, not by whoever
+  remembers.** A cache key is a claim that everything not in it does not matter,
+  and this one was written when the only thing reading it was prelude analysis;
+  every switch added since had to be checked against it by hand, silently.
+  `--use-iyimod` is what happened when somebody did not — accepted, ignored, and
+  the build compiled every module from source without a word. Each of
+  `Compiler`'s switches is now written down as one of three things: in the key,
+  re-applied when a build adopts a preanalysed prelude, or reaching neither.
+  Adding a property fails the build until it is given one of them.
+
+  Two of the classifications are judgements rather than facts, and saying so is
+  the point: `mcpu`, `mattr` and `mcmodel` reach codegen and not analysis, and
+  `progress_tracker` and `stderr` are where output goes — `new_program` sets the
+  first and the adopt path sets neither.
+
 - **`crystal tool bind` asked a hand-written list what an iyi program can name,
   and the list was wrong in both directions.** It claimed `Void`, `UInt32` and
   `Float64` — which iyi's prelude never declares — and left out `Slice`, `Int`,

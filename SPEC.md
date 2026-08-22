@@ -3171,6 +3171,31 @@ command that costs a terminal and buys nothing is not a command.
 > that it does not touch, so the share is smaller again. Full-build timings on
 > this machine were too noisy to publish.
 >
+> > **They are publishable now, and the harness is committed** —
+> > `bench/daemon_full_build.py`, which builds twelve modules under `--crystal`
+> > with codegen and a link, eight alternating pairs, a module edited before
+> > every build, and refuses to run unless both binaries are optimised. All
+> > three of those are the corrections above, built in so they cannot be
+> > forgotten again.
+> >
+> > | twelve modules, full build | min | median |
+> > |---|---|---|
+> > | normal | 0.63 s | 0.66 s |
+> > | through the daemon | **0.46 s** | **0.49 s** |
+> >
+> > **0.17 s, or 26%**, and two runs agree to a hundredth. What was called noise
+> > was mostly the measurement: `/usr/bin/time`, whose negative elapsed times
+> > this section records, is not installed on this machine at all, and the wall
+> > clock now runs a three-second window against the monotonic one with no
+> > backward step.
+> >
+> > **This is not the row above measured further.** The app here is twelve
+> > trivial modules and its front end alone is 0.35 s, against 0.81 s for the
+> > app the table was made from — a lighter program, so a smaller saving. What
+> > it establishes is that a whole build *can* be measured here, and what the
+> > shape of the answer is: the daemon takes about half of the front end, and
+> > the front end is about half of the build.
+>
 > **The last row is the finding.** It is the only large effect, it is more than
 > twice the other two, and it does not come from holding the prelude — it comes
 > from holding *Kemal*. The daemon's value is in the program's dependencies
@@ -3256,6 +3281,20 @@ command that costs a terminal and buys nothing is not a command.
 > in it does not matter**, and this key was written when the only thing reading
 > it was prelude analysis. Every switch added since has had to be checked
 > against it by hand, silently, and nothing enforced the check.
+>
+> **It is enforced now.** Each of `Compiler`'s thirty-seven switches is written
+> down as one of three things — in the key, re-applied when a build adopts a
+> preanalysed prelude, or reaching neither — and `prelude_cache_key` refuses to
+> compile while any is missing. Adding a property fails the build with the
+> question rather than leaving it to be answered later by a build that quietly
+> did the wrong thing.
+>
+> Writing the three lists out is itself worth something: two entries turned out
+> to be judgements rather than facts. `mcpu`, `mattr` and `mcmodel` reach the
+> target machine and the target machine reaches codegen, so a prelude analysed
+> for one `-mcpu` is the same analysis as for another. And `progress_tracker`
+> and `stderr` are where output goes — `new_program` sets the first, the adopt
+> path sets neither, and that asymmetry was true before and invisible.
 >
 > **And artifacts and the daemon overlap.** Twelve modules as artifacts *plus*
 > the daemon was 1.67 s against the daemon's 1.30 s — slower, because the daemon
