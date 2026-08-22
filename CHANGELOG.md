@@ -102,9 +102,11 @@
   now defines the name the stub calls, and `hello.iyi` runs under wasmtime with
   the same bytes it prints natively.
 
-  What `--cross-compile` prints for this target is `wasm-ld` with `-lc` and no
-  `crt1.o`, which links a module that is not a program. CI uses the wasi-sdk
-  clang driver, which supplies both, and the README says so.
+  And the command printed for this target is now `cc --target=wasm32-wasi`
+  rather than `wasm-ld ... -lc`, which linked a module with no entry that no
+  host could start. Only the driver knows where its sysroot keeps `crt1.o`, so
+  naming the driver is the only way to print a command that produces a program.
+  CI runs that printed command with wasi-sdk's clang as the `cc` it names.
 
 ### Fixed
 

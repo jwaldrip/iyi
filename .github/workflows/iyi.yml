@@ -491,10 +491,9 @@ jobs:
   # weak reference it left behind; the prelude defines the name the entry
   # actually calls.
   #
-  # Linked with the wasi-sdk clang driver, which supplies `crt1.o` and the
-  # sysroot. What `--cross-compile` prints for this target is `wasm-ld` with
-  # `-lc` and no `crt1.o`, which is not enough on its own — recorded in the
-  # README.
+  # Linked with the command `--cross-compile` prints, run as-is, with wasi-sdk's
+  # clang as the `cc` it names — so the command a person is told to type is the
+  # command that is tested.
   wasi-run:
     needs: cross-objects
     runs-on: ubuntu-24.04
@@ -516,10 +515,16 @@ jobs:
       - name: What the module imports
         run: /opt/wasi-sdk/bin/llvm-nm --undefined-only cross/hello-wasi.wasm
 
-      - name: Link against wasi-libc, and run it under wasmtime
+      - name: Link with the command `--cross-compile` printed, and run it
         run: |
-          /opt/wasi-sdk/bin/wasm32-wasi-clang cross/hello-wasi.wasm -o hello.wasm
-          "$HOME/.wasmtime/bin/wasmtime" hello.wasm > got.txt
+          # The driver the command names has to be one that can target wasi, and
+          # `cc` lives beside `wasm-ld` in the same sysroot for clang to find it.
+          ln -sf /opt/wasi-sdk/bin/clang /opt/wasi-sdk/bin/cc
+          export PATH="/opt/wasi-sdk/bin:$PATH"
+          command="$(cat cross/hello-wasi.link)"
+          echo "linking with: $command"
+          ( cd cross && eval "$command" )
+          "$HOME/.wasmtime/bin/wasmtime" cross/hello-wasi > got.txt
           cat got.txt
           cmp cross/expected.txt got.txt && echo "wasm32-wasi: same output"
 
