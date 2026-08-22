@@ -44,11 +44,12 @@ describe "`crystal tool bind`, all four steps" do
       mods = File.join(dir, "mods")
       Dir.mkdir_p mods
 
-      # `MyGreeter` on purpose. `Greeter` would pass through a `downcase` and a
-      # `camelcase` unchanged and prove nothing; the inner capital is what the
-      # symbol depends on.
+      # `ABCGreeter` on purpose, for both halves of what the name has to
+      # survive: an acronym, which `underscore` flattened to `abcgreeter`, and an
+      # inner capital, which a plain `downcase` flattened too. `Greeter` would
+      # pass through either unchanged and prove nothing.
       File.write File.join(dir, "shard.cr"), <<-CR
-        module MyGreeter
+        module ABCGreeter
           extend self
 
           def polite(name : String) : String
@@ -60,22 +61,22 @@ describe "`crystal tool bind`, all four steps" do
       File.write File.join(dir, "app.iyi"), <<-IYI
         module main
 
-        import my_greeter
-        using my_greeter
+        import a_b_c_greeter
+        using a_b_c_greeter
 
         puts polite("iyi")
         IYI
 
-      Process.capture_result([CRYSTAL_BIN, "tool", "bind", "-e", "MyGreeter",
+      Process.capture_result([CRYSTAL_BIN, "tool", "bind", "-e", "ABCGreeter",
                               "--emit-bind", "mods", "shard.cr"],
         chdir: dir, env: crystal_env).should be_success
 
       # The module's name is the root with `camelcase` undone, so this is the
       # file the tool wrote and not a guess about it.
-      File.exists?(File.join(mods, "my_greeter.iyimod")).should be_true
+      File.exists?(File.join(mods, "a_b_c_greeter.iyimod")).should be_true
 
       Process.capture_result([CRYSTAL_BIN, "build", "--emit", "obj", "--iyi-keep",
-                              "MyGreeter", "-o", "shard", "my_greeter_keep.cr"],
+                              "ABCGreeter", "-o", "shard", "a_b_c_greeter_keep.cr"],
         chdir: mods, env: crystal_env).should be_success
 
       # Read rather than piped through a shell. A mangled name carries the types
@@ -84,7 +85,7 @@ describe "`crystal tool bind`, all four steps" do
       listing = Process.capture_result([nm, "shard.o"], chdir: mods)
       listing.should be_success
       symbols = listing.output.lines.compact_map do |line|
-        line.match(/^[0-9a-f]+ t (\*MyGreeter[@:].*)$/).try &.[1]
+        line.match(/^[0-9a-f]+ t (\*ABCGreeter[@:].*)$/).try &.[1]
       end
       symbols.should_not be_empty
 

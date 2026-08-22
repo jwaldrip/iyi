@@ -4338,18 +4338,28 @@ Named honestly, so nobody mistakes this draft for complete.
     > alike — the premise the boundary rests on — so `Greeter.polite` is
     > `*Greeter@Greeter::polite<String>:String` from either language *only if the
     > consumer's module is `Greeter`*. A consumer builds that name by camelcasing
-    > the path it imported, and the image of that mapping is names like `Greeter`
-    > and `MyGreeter`. `ABC` is not in it: it goes down to `abc` and comes back
-    > `Abc`, so the producer emits `*ABC@ABC::...`, the consumer asks for
-    > `*Abc@Abc::...`, and the linker is the only thing that ever says so.
+    > the path it imported, so the path has to be `camelcase` run backwards.
     >
-    > **`JSON`, `YAML`, `URI` and `HTTP` are all on the wrong side of that.** The
-    > measurement above stands — their declarations are real and the counts are
-    > true — but a program cannot link against them until the name a consumer
-    > gives a module and the name the producer compiled under are the same name.
-    > That is a question about iyi's module paths rather than about this tool,
-    > and it is where the library-as-artifact thesis now waits. `tool bind` says
-    > so at bind time rather than leaving it to `ld`.
+    > **And what was written here first said an acronym could never be, which was
+    > wrong.** The claim was that the mapping's image is names like `Greeter` and
+    > `MyGreeter`, that `JSON`, `YAML`, `URI` and `HTTP` are outside it, and that
+    > the library-as-artifact thesis waited on a question about iyi's module
+    > paths. None of that is true, and the mistake was reaching for
+    > `String#underscore` and then reasoning about *its* image instead of
+    > `camelcase`'s. `underscore` answers `json` for `JSON`, and `json`
+    > camelcases back to `Json` — but `camelcase` starts a group at every
+    > upper-case letter, so the inverse of `JSON` is `j_s_o_n`, which is a legal
+    > iyi path and comes back whole. So is `u_r_i`, and `h_t_t_p_server` for
+    > `HTTPServer`, which `underscore` had flattened to `http_server` and lost.
+    >
+    > A shard named `ABC` links and runs. The wrong sentence stood for one commit
+    > and named a language question that did not exist; what it was really
+    > describing was a one-line inverse written with the wrong function.
+    >
+    > What still falls outside is a name the grammar cannot spell — `Foo_Bar`
+    > needs two underscores running and `camelcase` reads two as one, so it comes
+    > back `FooBar`. `tool bind` says so at bind time rather than leaving it to
+    > `ld`, which is what the check was worth keeping for.
     >
     > `JSON` and `URI` wait on nothing anybody could declare. `YAML` waits on
     > `Set`, which is generic, and generics travel as bodies rather than as

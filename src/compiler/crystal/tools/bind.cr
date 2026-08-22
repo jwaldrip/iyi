@@ -1077,21 +1077,31 @@ module Crystal
   # `mygreeter` became `Mygreeter`, which mangles to a symbol the shard's object
   # file does not contain, and nothing says so until the linker does.
   #
-  # `underscore` is the inverse of `camelcase`, and `::` is `/` because that is
-  # how iyi spells a nested module (IV.6 #6).
+  # `::` is `/` because that is how iyi spells a nested module (IV.6 #6), and
+  # each segment is `camelcase` run backwards.
+  #
+  # `String#underscore` is *not* that inverse and using it was the bug this
+  # replaced: it answers `json` for `JSON`, which camelcases back to `Json`.
+  # `camelcase` upper-cases the first letter of every underscore group, so its
+  # inverse starts a group at every upper-case letter — `j_s_o_n`, which is a
+  # legal iyi path and comes back `JSON`. `HTTPServer` is `h_t_t_p_server` and
+  # comes back whole; `underscore` gave `http_server` and lost it.
   private def self.iyi_module_name(root : String) : String
-    root.split("::").map(&.underscore).join("/")
+    root.split("::").map do |segment|
+      segment.gsub(/([A-Z])/) { "_" + $1.downcase }.lchop('_')
+    end.join("/")
   end
 
   # Whether that name comes back as the name it was made from.
   #
-  # `camelcase` upper-cases the first letter of each underscore group, so its
-  # image is exactly the names written that way: `Greeter`, `MyGreeter`,
-  # `Lib::Greeter`. An acronym is not in it — `ABC` goes down to `abc` and comes
-  # back `Abc` — and the mangled symbol carries whichever name the side that
-  # compiled it had. The producer writes `*ABC@ABC::polite<String>:String`, the
-  # consumer asks for `*Abc@Abc::polite<String>:String`, and the only thing that
-  # ever says so is the linker.
+  # Almost everything does, now that the inverse above is the real one:
+  # `JSON`, `URI`, `HTTPServer`, `Base64`. What does not is a name the grammar
+  # cannot spell — one already carrying an underscore, say, which would need two
+  # in the path and `camelcase` reads two as one. The check stays because the
+  # failure it catches is the worst-behaved kind: the mangled symbol carries
+  # whichever name the side that compiled it had, so a producer writing
+  # `*Foo_Bar@Foo_Bar::...` and a consumer asking for `*FooBar@FooBar::...` agree
+  # on everything a compiler checks and disagree only where `ld` looks.
   private def self.round_trips?(root : String) : Bool
     consumer_name(root) == root
   end

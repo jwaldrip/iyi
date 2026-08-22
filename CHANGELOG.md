@@ -110,14 +110,28 @@
   itself where binutils is missing, or where `crystal` and `iyi` were built from
   different commits, since an artifact is read only by the build that wrote it.
 
-- **`crystal tool bind` says when a root's name cannot survive the trip.** The
-  image of iyi's module-path mapping is names like `Greeter` and `MyGreeter`;
-  `ABC` goes down to `abc` and comes back `Abc`. Both sides mangle alike, so the
-  producer emits `*ABC@ABC::...` and the consumer asks for `*Abc@Abc::...` — and
-  `ld` was the only thing that ever said so, four steps after the mistake.
-  `JSON`, `YAML`, `URI` and `HTTP` are all on that side: their declarations are
-  real and their counts are true, but nothing links against them until the name
-  a consumer gives a module and the name the producer compiled under agree.
+- **A bound shard's module path is `camelcase` run backwards, and using
+  `String#underscore` for it broke every acronym.** `underscore` answers `json`
+  for `JSON`, and `json` camelcases back to `Json` — so the producer emitted
+  `*JSON@JSON::...` while the consumer asked for `*Json@Json::...`, and `ld` was
+  the only thing that ever said so. `camelcase` starts a group at every
+  upper-case letter, so the inverse of `JSON` is `j_s_o_n`, which is a legal iyi
+  path and comes back whole; `HTTPServer` is `h_t_t_p_server`, which
+  `underscore` had flattened to `http_server` and lost. A shard named `ABC`
+  links and runs.
+
+  This corrects what the previous release notes said. They claimed `JSON`,
+  `YAML`, `URI` and `HTTP` were outside the mapping's image and that the
+  library-as-artifact thesis waited on a question about iyi's module paths.
+  There was no such question: the mistake was reasoning about `underscore`'s
+  image rather than `camelcase`'s.
+
+- **`crystal tool bind` says when a root's name cannot survive the trip.** What
+  actually falls outside is a name the grammar cannot spell — `Foo_Bar` needs
+  two underscores running and `camelcase` reads two as one, so it comes back
+  `FooBar`. Both sides mangle alike, so such a root produces an object file
+  whose symbols no consumer will ever ask for, and `ld` is four steps too late
+  to hear it.
 
 - **A bound shard's iyi module name was the root downcased, and the symbol is
   what that broke.** Both sides mangle alike, so `Greeter.polite` is
