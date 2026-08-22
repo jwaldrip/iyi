@@ -51,6 +51,24 @@
   runs in turn, left to right, reading the same declaration. A name nothing
   exports is reported at that name rather than at the line.
 
+### Measured
+
+- **A Windows binary links and does not run.** Windows was one of the seven
+  targets whose emitted objects CI audits and one of the six that had never
+  been run. Run on a Windows runner, two things appeared that auditing the
+  object cannot show. The `cl.exe obj /link` iyi's own `--cross-compile` prints
+  for this target fails with seven unresolved externals, because an
+  LLVM-emitted object carries no `/DEFAULTLIB` directives and so pulls in
+  neither `kernel32` nor the CRT's entry stub. Naming both by hand links
+  cleanly, and the binary then exits `0xC0000005` having written nothing.
+
+  The object is not the problem: its entire undefined set is `WriteFile`,
+  `GetStdHandle`, `GetProcessHeap`, `HeapAlloc`, `HeapReAlloc` and
+  `ExitProcess`. The fault is between `main` and the first `WriteFile`, on code
+  paths — the Win32 allocator and the Win32 write — that no build has ever
+  executed. Recorded rather than guessed at: the next linker flag was not going
+  to be the answer, and finding it needs a debugger on Windows.
+
 ### Fixed
 
 - **A constant an artifact reads carries a location.** The reads a consumer

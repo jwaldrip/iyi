@@ -799,6 +799,20 @@ marked PROPOSED are the parts that will move under you.
   program printed on the machine that compiled it. `arm-linux-gnueabihf` only
   type-checks. Nothing here claims that the test suite runs on any target but
   the one CI builds on.
+- **A Windows binary links and then crashes, measured.** The audit above reads
+  what the object *asks* for, and for `x86_64-windows-msvc` that is six
+  `kernel32` functions and nothing else. Taking it one step further, on a
+  Windows runner, found two things the audit cannot see. The `cl.exe obj /link`
+  that iyi's own `--cross-compile` prints for this target fails with seven
+  unresolved externals: an LLVM-emitted object carries no `/DEFAULTLIB`
+  directives, so nothing pulls in `kernel32` or the CRT's entry stub, and both
+  have to be named by hand. Named by hand, the link succeeds — and the binary
+  then exits `0xC0000005`, an access violation, having written nothing. So
+  Windows is a target that compiles, emits an object that asks only for the
+  platform, links against the platform, and does not run. Nothing here is
+  wrong about the object; what is wrong is somewhere between `main` and the
+  first `WriteFile`, and finding it needs a debugger on Windows rather than
+  another linker flag.
 - **Artifacts are identified by released version, target and flag set.** Builds
   of the same released version read each other's `.iyimod` files only on the
   same target under the same flags; anything else is rejected and rebuilt,
