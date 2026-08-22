@@ -748,7 +748,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 88,754 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 88,992 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 6,679 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -5517,6 +5517,212 @@ Named honestly, so nobody mistakes this draft for complete.
     > event loop, the exception machinery — and an iyi program, whose whole
     > prelude is 1,053 lines, is not one. So this was never about naming the
     > constants in the artifact, which is what it looked like from the outside.
+    >
+    > **And the other direction closes it.** A consumer built with `--crystal`
+    > *is* a program with Crystal's runtime, which is what the shard's
+    > initialisation was missing — so that ought to be the answer. It is not:
+    > the link then fails on `Crystal::Hasher::seed`, `Thread::threads`,
+    > `Fiber::fibers` and every other runtime global, defined once by the
+    > consumer and once by the shard.
+    >
+    > So the two failures are one fact seen from either side. **The object this
+    > pipeline makes is a whole program**, because a keep file is compiled like
+    > one, and it carries the library with it. A program can have that library
+    > once: without it the shard's state never starts, with it nothing links.
+    > Neither the names nor the constants were ever the problem — the packaging
+    > was.
+    >
+    > That is a sharper statement than "a boundary carries code that needs no
+    > initialisation", and it names what would change it: the shard has to be
+    > compiled the way `.iyimod` already compiles an iyi module — object code per
+    > unit, against a library left external — rather than as a program somebody
+    > then picks symbols out of with `nm`. `ObjectCode` is in the format for that
+    > reason and `tool bind` does not write it.
+    >
+    > **And that was tried, one type of it, which is the cheapest question that
+    > separates a wall from a work list.** An ordinary build of the keep file —
+    > not `--emit obj`, which merges everything into one object — leaves 363
+    > per-type units in the cache, one of them `Store`'s. Linked into an iyi
+    > consumer on its own it gives a *clean* failure rather than a collision or a
+    > crash, and the whole of what it asks for is twenty symbols:
+    >
+    > | | |
+    > |---|---|
+    > | type ids | 15 |
+    > | constants | 4 |
+    > | a main-module helper | 1 |
+    >
+    > Every one is a category the format already carries a section for —
+    > `TypeIds`, `Constants`, and the helpers item 12d has the consumer emit with
+    > its own numbering — and `tool bind` writes all three empty. The unit itself
+    > carries no runtime, exports its method already global (so the `objcopy`
+    > step is not needed at all in this shape), and leaves `Store::TABLE`
+    > undefined for the consumer to define, which is exactly the arrangement that
+    > makes an initialiser run in the right program.
+    >
+    > **The remaining catch is named rather than guessed at.** Four of those
+    > constants are Crystal's own — `Int::DIGITS_BASE62` and its neighbours,
+    > reached because `Array#[]` can raise and raising formats an integer. A
+    > consumer can only define them if it has Crystal's `Int`, which is the
+    > library-as-artifact question again. But it arrives here as twenty symbols
+    > in three known categories rather than as a duplicate runtime, and that is a
+    > different kind of problem to have.
+    >
+    > **And then the work list was worked, and it runs.** `--emit-bind` on the
+    > keep file's build puts the per-type units into the artifact, with the type
+    > ids and constants they refer to, using the collectors an iyi module's
+    > artifact has always used. A consumer links what the artifact carries. So:
+    >
+    > ```
+    > crystal tool bind -e ABCGreeter --emit-bind mods shard.cr
+    > crystal build --iyi-keep ABCGreeter --emit-bind mods -o keepbin abc_greeter_keep.cr
+    > iyi build --crystal --use-iyimod mods -o app app.iyi
+    > ```
+    >
+    > That program prints what the shard returns. **Two commands, no `nm` and no
+    > `objcopy`**, where the four printed steps had been and had never worked.
+    > `spec/compiler-cli/bind-pipeline_spec.cr` runs it, and needs no binutils to.
+    >
+    > `--crystal` on the last line is the other half of what was learnt: the unit
+    > numbers `Pointer(LibUnwind::Exception)` whatever the shard does, because a
+    > `String#+` can raise. So the artifact is marked `crystal_library: true`,
+    > which it always was — it was written `false` on the argument that a
+    > boundary stands *between* Crystal's library and the consumer, and that
+    > argument does not survive looking at what the unit refers to.
+    >
+    > **And the constants cross too, which was the last of it.** A constant
+    > travels by *name* so its initialiser runs once, in the program that will
+    > read it — and a name was only half, the half a bound shard was missing. Its
+    > unit refers to `Store::TABLE` and defines nothing. So the assignment
+    > travels as well, in the artifact's initialiser, which the reader renders
+    > last and inside the module: `TABLE = [...]` under `module store` is
+    > `Store::TABLE`, in the namespace the shard wrote it in and built by the
+    > consumer's own program.
+    >
+    > `Store.word(1)` answers `one`. Two turns earlier the same call segfaulted
+    > on the first read, and the turn after that it was refused by name. Its own
+    > constants only: a unit refers to Crystal's as well — `Int::DIGITS_BASE62`,
+    > reached because `Array#[]` can raise and raising formats an integer — and
+    > those belong to the library the consumer already has.
+    >
+    > **And then it was given, because the premise was wrong.** iyi takes an
+    > `enum` — the language has one, the compiler makes the type — and what it
+    > did not take was `pub enum`, so a module could declare one and never hand
+    > it out. The claim below that iyi has no enum came from grepping the prelude
+    > and finding none, which is a fact about the prelude and not about the
+    > language. `pub` takes one now, an artifact carries its members and the
+    > integer they are numbered on, and an iyi program calls
+    > `Store.bigger(Store::Kind::Large)` and is answered `true`.
+    >
+    > The numbers are read from what the compiler assigned rather than
+    > renumbered: the object file the consumer links is what gave them their
+    > numbers, and a boundary that renumbered would agree with it by luck.
+    >
+    > **A private type travels as private, which is a third thing from
+    > travelling and from being dropped.** `JSON::PullParser` holds an
+    > `Array(ObjectStackKind)`, so its object code numbers
+    > `Pointer(ObjectStackKind)` — a consumer has to *number* a type it must
+    > never *write*. Declared without `pub`, both are true at once. Dropping them
+    > was the first answer, and the only thing that said otherwise was `ld`.
+    >
+    > **`JSON` binds whole now**: 21 units, 11.4 MB, 116 type ids, 28 constants,
+    > with `JSON.parse` among its functions once `IO` is bound first. What it
+    > does not yet do is *run*, and the reason has moved again — `--iyi-keep IO`
+    > forces the whole of `IO`'s surface, and the keep binary that results does
+    > not link, on `Crystal::EventLoop::Polling` internals a demand-driven build
+    > would never have reached. The units are written after a successful link, so
+    > `IO`'s artifact stays empty of object code. `--cross-compile` skips the
+    > link and emits no per-type units either.
+    >
+    > That is the next thing, and it is about *when* the units are taken rather
+    > than about names or types: a boundary needs the objects, not the program
+    > they would have linked into.
+    >
+    > **So it does not link.** A build carrying both `--iyi-keep` and
+    > `--emit-bind` exists to fill a boundary, and the keep file is not a program
+    > anybody runs. `IO`'s artifact fills — 18 units, 14.8 MB, 92 type ids — and
+    > every boundary build stops paying for a link nobody wanted.
+    >
+    > **And then the thing that had been measured turned out to be the wrong
+    > thing.** `IO` and `JSON` are Crystal's library, and a consumer built with
+    > `--crystal` *has* Crystal's library: `require "json"` and
+    > `JSON.parse("[1,2,3]").as_a.size` answers 3 with no artifact anywhere near
+    > it. Binding them measures how well a boundary can hand a program something
+    > it already has.
+    >
+    > What a boundary is for is a **shard** — a library the consumer does not
+    > have — which is what `tool bind -e Kemal` was written for and what the
+    > fixtures in `bind-pipeline_spec.cr` are shaped like. Those cross whole:
+    > functions both ways round, a union parameter, constants at the root and
+    > inside a type, an enum, and a nested type with its own methods.
+    >
+    > For the library itself the artifact's value is *speed* rather than reach,
+    > and that is 12e's question, measured at the top of this item — not
+    > something the last few turns were testing.
+    >
+    > > **So it was asked of a shard, which is what a boundary is for.**
+    > > `bench/bind_speed.py`, and the first thing it found was that `Kemal`
+    > > cannot be bound at all: its object code numbers
+    > > `Array(Radix::Node(Array(Kemal::FilterHandler::FilterBlock)))` — a
+    > > generic instance from *another shard* — and a generic travels as bodies
+    > > rather than as declarations. Binding `Radix` first does not help: it is
+    > > generic throughout and its artifact carries no types. That is IV.2's
+    > > problem arriving where a real library keeps it.
+    > >
+    > > What `tool bind` does say about `Kemal` is worth keeping: 254 public
+    > > methods, **93.3% needing no human**, 26 types carrying 63 methods, and
+    > > 31 units of object code.
+    > >
+    > > So the speed question went to a generated shard of stated size, and the
+    > > answer depends on one thing:
+    > >
+    > > | shard | from source | from its boundary | |
+    > > |---|---|---|---|
+    > > | 2,167 lines | 1.11 s | 1.13 s | costs 2% |
+    > > | 10,087 lines | 1.31 s | 1.20 s | saves 9% |
+    > > | 29,767 lines | 1.94 s | 1.72 s | **saves 11%** |
+    > >
+    > > A boundary pays once compiling the shard is a real share of the build,
+    > > which here is somewhere near ten thousand lines, and the share grows with
+    > > size. Below that it costs a little: reading a megabyte of artifact and
+    > > linking twenty objects is not free, and there was nothing to save.
+    > >
+    > > **The first version of this measured nothing, and why is the useful
+    > > part.** Its consumer called one method. Codegen is demand-driven, so a
+    > > consumer that reaches one method has the compiler emit one — and a
+    > > 30,000-line shard cost the same as a 2,000-line one, because 28,000 lines
+    > > of it were never compiled by either arm. What a boundary saves is
+    > > compiling *the code somebody uses*, so a benchmark that uses none of it
+    > > measures its own consumer. The consumer calls all of it now, and the
+    > > source arm scales with the shard where before it was flat — which is how
+    > > the mistake was visible at all.
+    >
+    > One thing binding the library did leave behind, and it is only reachable
+    > from there: a *class*-rooted namespace collides with its own wrapper. The
+    > artifact's declarations are wrapped in `module <path>`, and for `i_o` that
+    > path camelcases to `IO` — which is a class, so reopening it as a module is
+    > refused. A module root has no such problem, and a shard's root is one.
+    >
+    > **What `JSON` waited on, before that**, was written here as "iyi has no
+    > `enum`" and that was wrong. With the units, the type ids and the constants
+    > travelling, `JSON` bound to 19 units and stopped on `JSON::PullParser`'s
+    > `ObjectStackKind` — and the reading of it was that the language had no such
+    > type, so nothing on the far side could declare one. That came from grepping
+    > the prelude and finding no enum in it, which is a fact about the prelude.
+    > The language takes one, and a two-line program says so.
+    >
+    > What was actually missing was smaller and further in: `pub` did not take an
+    > enum, so a module could declare one and never hand it out. Being wrong
+    > about which of those it was cost a turn, and the shape of the mistake is
+    > the one this document keeps recording — a claim about a language read off
+    > the contents of a directory.
+    >
+    > One nested inside a type under the root crosses as well, written
+    > `Inner::X = ...`. That was left out for a turn on the reasoning that a
+    > qualified assignment reopens rather than defines — a guess, and wrong:
+    > Crystal takes one wherever the namespace exists, and the declarations
+    > rendered above this text are what make it exist. Two lines of experiment
+    > would have said so, which is the whole argument for running them.
     >
     > A boundary carries code that needs no initialisation. That is the bound on
     > it today, and it is a larger claim than the earlier paragraphs implied.

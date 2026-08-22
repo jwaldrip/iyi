@@ -3141,6 +3141,10 @@ module Iyi
     property base_type : ASTNode?
     property doc : String?
     property visibility = Visibility::Public
+    # iyi: `pub enum`. A module that hands out a value of an enum has to be able
+    # to hand out the enum, and R-2b keeps an unexported name unreachable rather
+    # than merely unmentioned.
+    property? exported = false
 
     def initialize(@name, @members = [] of ASTNode, @base_type = nil)
     end
