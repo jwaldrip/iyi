@@ -91,6 +91,18 @@ describe "`crystal tool bind`, end to end" do
             LIMIT
           end
 
+          # An enum, which is a kind of type and not a namespace. Its members
+          # travel with it and are numbered as the shard numbered them: a
+          # consumer that guessed would agree with the object file by luck.
+          enum Size
+            Small
+            Large
+          end
+
+          def self.bigger(size : Size) : Bool
+            size == Size::Large
+          end
+
           # And a type under the root, with a constant of its own. Its unit is
           # the root's second, and the assignment travels as `Inner::LABELS`,
           # which defines rather than reopens.
@@ -115,6 +127,8 @@ describe "`crystal tool bind`, end to end" do
         puts ABCGreeter.word(1)
         puts ABCGreeter.limit
         puts ABCGreeter::Inner.label(1)
+        puts ABCGreeter.bigger(ABCGreeter::Size::Large)
+        puts ABCGreeter.bigger(ABCGreeter::Size::Small)
         IYI
 
       # 1. The declarations, and the keep file that makes the code exist.
@@ -143,7 +157,7 @@ describe "`crystal tool bind`, end to end" do
       # The claim. Not that it compiled, not that it linked — that the program
       # ran and the answers came from the shard.
       Process.capture_result([File.join(dir, "app")], chdir: dir)
-        .output.chomp.should eq "hello, iyi\nhi iyi\n7\none\n10\nb"
+        .output.chomp.should eq "hello, iyi\nhi iyi\n7\none\n10\nb\ntrue\nfalse"
     end
   end
 end

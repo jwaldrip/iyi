@@ -34,7 +34,7 @@ module Crystal::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 20_u32
+  FORMAT_VERSION = 21_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -312,7 +312,11 @@ module Crystal::IyiMod
     visibility : String = "pub",
     types : Array(TypeDecl) = [] of TypeDecl,
     value : String = "",
-    macros : Array(String) = [] of String
+    macros : Array(String) = [] of String,
+    # iyi: an enum's members, `{"Small", "0"}`. Its own field rather than a
+    # reading of `fields`, because a member is not a field: it has a value where
+    # a field has a type, and the two render differently and mean differently.
+    members : Array({String, String}) = [] of {String, String}
 
   # How a body is found again on the far side.
   #
@@ -1326,6 +1330,11 @@ module Crystal::IyiMod
     # unassigned, which is why they arrive declared rather than inferred.
     declaration.fields.each { |(name, type)| io << inner << name << " : " << type << '\n' }
 
+    # An enum's members, which are what an enum is. `Small = 0` rather than
+    # `Small : Int32`: the number is the member, and a consumer that read it as
+    # a field would have a type where a value belongs.
+    declaration.members.each { |(name, value)| io << inner << name << " = " << value << '\n' }
+
     declaration.types.each { |nested| render_type_declaration io, nested, bodies, inner }
 
     declaration.methods.each do |signature|
@@ -1362,6 +1371,11 @@ module Crystal::IyiMod
       # reason a field's type is: this file is read where the module was not,
       # and a name that resolved there may not resolve here.
       io << " = " << declaration.value if declaration.kind == "alias"
+
+      # An enum's base type, written the way it is declared. The same field as
+      # an alias's right-hand side, and for the same reason: it is the type this
+      # declaration is defined in terms of.
+      io << " : " << declaration.value if declaration.kind == "enum" && !declaration.value.empty?
     end
   end
 
@@ -1613,6 +1627,7 @@ module Crystal::IyiMod
       write_strings io, declaration.assoc_types
       write_strings io, declaration.supertraits
       write_pairs io, declaration.fields
+      write_pairs io, declaration.members
       write_strings io, declaration.macros
       write_signatures io, declaration.methods
       write_type_declarations io, declaration.types
@@ -1629,10 +1644,11 @@ module Crystal::IyiMod
       assoc_types = read_strings(io)
       supertraits = read_strings(io)
       fields = read_pairs(io)
+      members = read_pairs(io)
       macros = read_strings(io)
       methods = read_signatures(io)
       TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
-        visibility, read_type_declarations(io), value, macros)
+        visibility, read_type_declarations(io), value, macros, members)
     end
   end
 

@@ -1458,6 +1458,9 @@ class Crystal::TopLevelVisitor < Crystal::SemanticVisitor
       enum_type.add_annotation(annotation_type, ann)
     end
 
+    record_export scope, name, node.exported?
+    enum_type.private = true if unexported_in_unit?(scope, node.exported?)
+
     node.resolved_type = enum_type
     attach_doc enum_type, node, annotations
 

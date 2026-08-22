@@ -1558,6 +1558,7 @@ module Crystal
     end
 
     def visit(node : EnumDef)
+      @str << "pub " if node.exported?
       @str << "enum "
       @str << node.name.to_s
       if base_type = node.base_type

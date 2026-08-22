@@ -4526,18 +4526,52 @@ Named honestly, so nobody mistakes this draft for complete.
     > reached because `Array#[]` can raise and raising formats an integer — and
     > those belong to the library the consumer already has.
     >
-    > **What `JSON` waits on is not this tool's to give.** With the units, the
-    > type ids and the constants all travelling, `JSON` binds to 19 units and
-    > 7.5 MB and then stops on one thing: `JSON::PullParser` holds an
-    > `ObjectStackKind`, and **iyi has no `enum`**. Nothing on the far side
-    > declares one, so a signature naming an enum cannot cross and neither can a
-    > type holding one. The tool called them "namespaces skipped whole", which
-    > was misleading — an enum is not a namespace, it is a kind of type the
-    > language does not have — and it names them now.
+    > **And then it was given, because the premise was wrong.** iyi takes an
+    > `enum` — the language has one, the compiler makes the type — and what it
+    > did not take was `pub enum`, so a module could declare one and never hand
+    > it out. The claim below that iyi has no enum came from grepping the prelude
+    > and finding none, which is a fact about the prelude and not about the
+    > language. `pub` takes one now, an artifact carries its members and the
+    > integer they are numbered on, and an iyi program calls
+    > `Store.bigger(Store::Kind::Large)` and is answered `true`.
     >
-    > That is the honest shape of the remaining distance: the packaging is
-    > solved, and what is left is a language feature rather than another thing
-    > about object files.
+    > The numbers are read from what the compiler assigned rather than
+    > renumbered: the object file the consumer links is what gave them their
+    > numbers, and a boundary that renumbered would agree with it by luck.
+    >
+    > **A private type travels as private, which is a third thing from
+    > travelling and from being dropped.** `JSON::PullParser` holds an
+    > `Array(ObjectStackKind)`, so its object code numbers
+    > `Pointer(ObjectStackKind)` — a consumer has to *number* a type it must
+    > never *write*. Declared without `pub`, both are true at once. Dropping them
+    > was the first answer, and the only thing that said otherwise was `ld`.
+    >
+    > **`JSON` binds whole now**: 21 units, 11.4 MB, 116 type ids, 28 constants,
+    > with `JSON.parse` among its functions once `IO` is bound first. What it
+    > does not yet do is *run*, and the reason has moved again — `--iyi-keep IO`
+    > forces the whole of `IO`'s surface, and the keep binary that results does
+    > not link, on `Crystal::EventLoop::Polling` internals a demand-driven build
+    > would never have reached. The units are written after a successful link, so
+    > `IO`'s artifact stays empty of object code. `--cross-compile` skips the
+    > link and emits no per-type units either.
+    >
+    > That is the next thing, and it is about *when* the units are taken rather
+    > than about names or types: a boundary needs the objects, not the program
+    > they would have linked into.
+    >
+    > **What `JSON` waited on, before that**, was written here as "iyi has no
+    > `enum`" and that was wrong. With the units, the type ids and the constants
+    > travelling, `JSON` bound to 19 units and stopped on `JSON::PullParser`'s
+    > `ObjectStackKind` — and the reading of it was that the language had no such
+    > type, so nothing on the far side could declare one. That came from grepping
+    > the prelude and finding no enum in it, which is a fact about the prelude.
+    > The language takes one, and a two-line program says so.
+    >
+    > What was actually missing was smaller and further in: `pub` did not take an
+    > enum, so a module could declare one and never hand it out. Being wrong
+    > about which of those it was cost a turn, and the shape of the mistake is
+    > the one this document keeps recording — a claim about a language read off
+    > the contents of a directory.
     >
     > One nested inside a type under the root crosses as well, written
     > `Inner::X = ...`. That was left out for a turn on the reasoning that a

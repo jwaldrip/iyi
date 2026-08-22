@@ -601,6 +601,12 @@ module Crystal
         }
       when NamedType
         next if type.is_a?(GenericType)
+        # An enum's members are `Const`s and are not constants to hand out:
+        # they travel with the enum, and an accessor for one names the enum
+        # from outside — which for a private enum is what the shard's own
+        # compiler refuses (`private constant ... referenced`).
+        next if type.is_a?(EnumType)
+        next if type.private?
         collect_constants type, root, "#{prefix}#{name}_", known, accessors
       end
     end
@@ -728,6 +734,12 @@ module Crystal
       methods: methods,
       visibility: declaration.visibility,
       types: nested,
+      # Everything a rebuild has to carry forward. Dropped here once, which is
+      # how an alias lost its right-hand side and an enum its members: a pruner
+      # that reconstructs a declaration has to reconstruct all of it.
+      value: declaration.value,
+      macros: declaration.macros,
+      members: declaration.members,
     )
   end
 
@@ -758,27 +770,35 @@ module Crystal
     # here — and asking one for its instance variables is how this found out.
     return nil unless type.is_a?(ModuleType)
     return nil if type.is_a?(GenericType)
-    # A private type is the shard's own business. `IO::Encoder` is one, and
-    # a boundary that declared it would name a constant the consumer is not
-    # allowed to write — which the generated keep file finds first, because
-    # it is the first thing outside the shard to say the name out loud.
-    return nil if type.private?
+    # A private type travels *as private*, which is a different thing from
+    # travelling and a different thing from being dropped.
+    #
+    # Dropped was the first answer and it is wrong for a reason only the linker
+    # says: `JSON::PullParser` holds an `Array(ObjectStackKind)` and its object
+    # code numbers `Pointer(ObjectStackKind)`, so the consumer has to be able to
+    # *number* a type it must never be able to *write*. Declaring it without
+    # `pub` gives exactly that — R-2b keeps the name unreachable, and the type id
+    # the object file needs exists. What must not happen is the keep file naming
+    # it, which is where dropping it came from: `private constant IO::Encoder
+    # referenced`. `keep_type` skips these instead.
+    private_type = type.private?
 
     # `pub` takes a def, a class, a struct and a trait — not a module, which
     # is what a nested namespace like `Kemal::Exceptions` is. What it holds
     # has to travel as its own nested declarations, and this walk does not go
     # there yet.
+    # An enum travels as itself: its members and the integer it is written on.
+    #
+    # It was skipped once and reported as a "namespace skipped whole", on the
+    # reasoning that iyi has no `enum` — which came from finding none in the
+    # prelude and was wrong about the language, which takes one. `JSON` is what
+    # this was costing: `JSON::PullParser` holds an `ObjectStackKind`.
+    if type.is_a?(EnumType)
+      return enum_declaration name, type, private_type
+    end
+
     unless type.is_a?(ClassType)
-      # An enum is not a namespace and calling it one was misleading. It is a
-      # type iyi does not have: there is no `enum` in the language, so there is
-      # nothing for an artifact to declare one as. That is the gap `JSON` waits
-      # on — `JSON::PullParser` holds an `ObjectStackKind` — and it is a
-      # language's to close rather than this tool's.
-      if type.is_a?(EnumType)
-        @@skipped_enums << name
-      else
-        @@nested_namespaces << name
-      end
+      @@nested_namespaces << name
       return nil
     end
 
@@ -854,7 +874,7 @@ module Crystal
         supertraits: [] of String,
         fields: fields,
         methods: signatures.sort_by(&.name),
-        visibility: "pub",
+        visibility: private_type ? "private" : "pub",
         types: nested,
       )
     end
@@ -1042,6 +1062,11 @@ module Crystal
   # would have kept nothing at all.
   private def self.keep_type(io : IO, prefix : String,
                              declaration : IyiMod::TypeDecl, counter : Int32) : Int32
+    # A private one is in the artifact so the consumer can number it, and naming
+    # it here is what the shard's own compiler refuses: `private constant
+    # IO::Encoder referenced`.
+    return counter if declaration.visibility == "private"
+
     qualified = "#{prefix}#{declaration.name}"
     receiver = "t#{counter}"
     counter += 1
@@ -1151,6 +1176,9 @@ module Crystal
       methods: declaration.methods.map { |signature| strip_root signature, root },
       visibility: declaration.visibility,
       types: declaration.types.map { |nested| strip_root_declaration nested, root },
+      value: strip_root(declaration.value, root),
+      macros: declaration.macros,
+      members: declaration.members,
     )
   end
 
@@ -1186,6 +1214,9 @@ module Crystal
       methods: declaration.methods.map { |signature| map_names signature },
       visibility: declaration.visibility,
       types: declaration.types.map { |nested| map_names_declaration nested },
+      value: map_names(declaration.value),
+      macros: declaration.macros,
+      members: declaration.members,
     )
   end
 
@@ -1235,6 +1266,38 @@ module Crystal
     iyi_module_name(root).split('/').map(&.camelcase).join("::")
   end
 
+  # An enum, as its members and the integer they are numbered on.
+  #
+  # A member is a `Const` under the enum whose value is the number the compiler
+  # gave it, so this reads what is there rather than renumbering: a consumer
+  # that guessed the numbering would agree with the shard's object file only by
+  # luck, and the object file is what it links against.
+  private def self.enum_declaration(name : String, type : EnumType,
+                                    private_type : Bool) : IyiMod::TypeDecl
+    members = [] of {String, String}
+    type.types?.try &.each do |member, constant|
+      next unless constant.is_a?(Const)
+      members << {member, constant.value.to_s}
+    end
+
+    IyiMod::TypeDecl.new(
+      name: name,
+      kind: "enum",
+      type_parameters: [] of String,
+      assoc_types: [] of String,
+      supertraits: [] of String,
+      fields: [] of {String, String},
+      methods: [] of IyiMod::Signature,
+      visibility: private_type ? "private" : "pub",
+      types: [] of IyiMod::TypeDecl,
+      # Written even when it is the default, because a member's number is only
+      # the same number if the width is.
+      value: type.base_type.to_s,
+      macros: [] of String,
+      members: members,
+    )
+  end
+
   # `TABLE = ["zero", "one", "two"]`, for every constant of *root*'s own that a
   # consumer could rebuild — including the ones inside its types.
   #
@@ -1270,6 +1333,9 @@ module Crystal
       when NamedType
         next if type.is_a?(GenericType)
         next if type.private?
+        # An enum's members are its own and travel with it. Written out here
+        # they would be assignments into a type that already has them.
+        next if type.is_a?(EnumType)
         collect_constant_source type, "#{prefix}#{name}::", root, lines
       end
     end
