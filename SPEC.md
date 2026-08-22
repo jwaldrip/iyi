@@ -4489,6 +4489,35 @@ Named honestly, so nobody mistakes this draft for complete.
     > in three known categories rather than as a duplicate runtime, and that is a
     > different kind of problem to have.
     >
+    > **And then the work list was worked, and it runs.** `--emit-bind` on the
+    > keep file's build puts the per-type units into the artifact, with the type
+    > ids and constants they refer to, using the collectors an iyi module's
+    > artifact has always used. A consumer links what the artifact carries. So:
+    >
+    > ```
+    > crystal tool bind -e ABCGreeter --emit-bind mods shard.cr
+    > crystal build --iyi-keep ABCGreeter --emit-bind mods -o keepbin abc_greeter_keep.cr
+    > iyi build --crystal --use-iyimod mods -o app app.iyi
+    > ```
+    >
+    > That program prints what the shard returns. **Two commands, no `nm` and no
+    > `objcopy`**, where the four printed steps had been and had never worked.
+    > `spec/compiler-cli/bind-pipeline_spec.cr` runs it, and needs no binutils to.
+    >
+    > `--crystal` on the last line is the other half of what was learnt: the unit
+    > numbers `Pointer(LibUnwind::Exception)` whatever the shard does, because a
+    > `String#+` can raise. So the artifact is marked `crystal_library: true`,
+    > which it always was — it was written `false` on the argument that a
+    > boundary stands *between* Crystal's library and the consumer, and that
+    > argument does not survive looking at what the unit refers to.
+    >
+    > **What is left is one thing and it is nameable.** A constant travels by
+    > name so the consumer can run its initialiser in the program that reads it,
+    > and a bound shard's declarations carry no constants — so the consumer has
+    > the name and nothing to define it with: `undefined constant ::Store::TABLE`.
+    > A refusal at compile time, where the same shard used to segfault on the
+    > first read.
+    >
     > A boundary carries code that needs no initialisation. That is the bound on
     > it today, and it is a larger claim than the earlier paragraphs implied.
     >

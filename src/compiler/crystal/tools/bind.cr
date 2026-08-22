@@ -410,13 +410,15 @@ module Crystal
       flags: program.flags.to_a.sort!,
       imports: @@bound_used.to_a.sort.map { |name| IyiMod::ImportEdge.new(name) },
       exports: IyiMod::Exports.new(exported, carried_types, [] of IyiMod::ImplRecord),
-      # False on purpose, and it is the one place where that field is not
-      # simply "which prelude compiled this". A bound shard *is* compiled under
-      # Crystal's library, and the boundary this tool generates is what stands
-      # between that library and the consumer: what crosses is handles and
-      # primitives, and the consumer is an iyi program. Marking it true would
-      # refuse the only kind of program it was built for.
-      crystal_library: false,
+      # True, and it was false here on an argument that measurement has since
+      # answered. The argument was that a boundary stands *between* Crystal's
+      # library and the consumer, so what crosses is handles and primitives and
+      # the consumer is an ordinary iyi program. What crosses is not: the unit
+      # this artifact carries is compiled under Crystal's library and numbers
+      # `Pointer(LibUnwind::Exception)` whatever the shard does, because a
+      # `String#+` can raise. An iyi program cannot name that type, and telling
+      # it the artifact is one of its own only moved the refusal later.
+      crystal_library: true,
     )
 
     path = File.join(dir, "#{iyi_module_name(root).gsub('/', '-')}.iyimod")
@@ -483,45 +485,33 @@ module Crystal
       io.puts
     end
 
-    io.puts "The artifact carries declarations and no object code, because the"
-    io.puts "machine code is the shard's own. Three steps make it, and the"
-    io.puts "middle one is why the file above exists: Crystal compiles what a"
-    io.puts "program uses, and a library nobody calls compiles to nothing."
+    io.puts "The artifact carries declarations and no object code yet, because"
+    io.puts "the code does not exist: Crystal compiles what a program uses, and a"
+    io.puts "library nobody calls compiles to nothing. The keep file above is what"
+    io.puts "calls it. Two commands finish the boundary:"
     io.puts
-    io.puts "  crystal build --emit obj --iyi-keep #{root} -o shard #{keep_path}"
-    io.puts "  nm shard.o | sed -n 's/^[0-9a-f]* t \\(\\*#{root}[@:].*\\)$/\\1/p' > shard.syms"
-    io.puts "  sed 's/^/--globalize-symbol=/' shard.syms | tr '\\n' '\\0' | xargs -0 objcopy --localize-symbol=main shard.o shard-ready.o"
-    io.puts "  iyi build --use-iyimod #{dir} -o app app.iyi --link-flags shard-ready.o"
+    io.puts "  crystal build --iyi-keep #{root} --emit-bind #{dir} -o keepbin #{keep_path}"
+    io.puts "  iyi build --crystal --use-iyimod #{dir} -o app app.iyi"
     io.puts
-    io.puts "The third line reads like a flourish and is not. A mangled name"
-    io.puts "carries the types it was compiled for, and a union prints with"
-    io.puts "spaces in it — `*#{root}::Any#as_a?:(Array(#{root}::Any) | Nil)`. Passed"
-    io.puts "through an unquoted `$(...)` the shell splits that into four"
-    io.puts "arguments and objcopy answers with its usage. `xargs -0` is what"
-    io.puts "keeps one symbol one argument."
+    io.puts "An *ordinary* build on the first line, not `--emit obj`. Codegen"
+    io.puts "splits a program into one object per type, and the ones #{root} owns"
+    io.puts "carry no runtime; `--emit obj` merges them into a single object that"
+    io.puts "carries the whole of Crystal's library with it. A program can have"
+    io.puts "that library once — link the merged object into a consumer that has"
+    io.puts "none and the shard's constants never initialise, link it into one"
+    io.puts "that has it and every runtime global is defined twice. `--emit-bind`"
+    io.puts "puts the per-type units in the artifact instead, and the consumer"
+    io.puts "links what the artifact carries. No `nm` and no `objcopy`."
     io.puts
-    io.puts "What does not cross is the shard's own initialisation. Crystal runs a"
-    io.puts "constant's initialiser from `__crystal_main` and compiles the reads"
-    io.puts "unguarded; the consumer has its own `__crystal_main` and never calls"
-    io.puts "the shard's, so the constant stays null and the first read segfaults."
-    io.puts "A constant the compiler folds is fine — `LIMIT = 10` reads 10 — and"
-    io.puts "one built at run time is not."
+    io.puts "`--crystal` on the second line is not decoration either. This unit"
+    io.puts "numbers `Pointer(LibUnwind::Exception)` whatever #{root} does, because"
+    io.puts "a `String#+` can raise, and an iyi program cannot name that type."
     io.puts
-    io.puts "Calling the shard's `__crystal_main` does not fix it: it segfaults"
-    io.puts "inside the initialisation, before reaching any constant. Crystal's top"
-    io.puts "level expects Crystal's runtime — a thread, an event loop, the"
-    io.puts "exception machinery — and an iyi program is not one."
-    io.puts
-    io.puts "Nor does building the consumer with `--crystal`, which is the program"
-    io.puts "that *does* have that runtime. Then the two collide instead:"
-    io.puts "`Crystal::Hasher::seed`, `Thread::threads`, `Fiber::fibers` and the"
-    io.puts "rest are defined twice and the link fails. The object this pipeline"
-    io.puts "makes is a whole program, so it carries the library with it — and a"
-    io.puts "program can have that library once. Without the runtime the shard's"
-    io.puts "state never starts; with it, nothing links. Both are the same fact."
-    io.puts
-    io.puts "So a boundary carries code that needs no initialisation, and that is"
-    io.puts "the bound on it today."
+    io.puts "What still does not cross is a constant. It travels by name, so the"
+    io.puts "consumer can run its initialiser in the program that will read it —"
+    io.puts "but a bound shard's declarations carry no constants, so the consumer"
+    io.puts "has the name and nothing to define it with. That is a refusal at"
+    io.puts "compile time now rather than a null read at run time."
     io.puts
     io.puts "`--iyi-keep` is not decoration: a getter whose body is one instance"
     io.puts "variable is inlined at every call site and emits no symbol, which"
@@ -1182,7 +1172,9 @@ module Crystal
   # inverse starts a group at every upper-case letter — `j_s_o_n`, which is a
   # legal iyi path and comes back `JSON`. `HTTPServer` is `h_t_t_p_server` and
   # comes back whole; `underscore` gave `http_server` and lost it.
-  private def self.iyi_module_name(root : String) : String
+  # Public, because the build that fills this artifact's object code has to
+  # find the file `tool bind` wrote and only this rule says where it is.
+  def self.iyi_module_name(root : String) : String
     root.split("::").map do |segment|
       segment.gsub(/([A-Z])/) { "_" + $1.downcase }.lchop('_')
     end.join("/")

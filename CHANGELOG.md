@@ -78,6 +78,37 @@
   `Float64`, and a name that means two things is what III.1.7a settled against
   — so integer division stays `//` in both.
 
+### Added
+
+- **A Crystal namespace can be bound, built and called from an iyi program, in
+  two commands.** `--emit-bind` on the keep file's own build puts the per-type
+  units into the artifact, with the type ids and constants they refer to, using
+  the collectors an iyi module's artifact has always used — and the consumer
+  links what the artifact carries:
+
+  ```
+  crystal tool bind -e ABCGreeter --emit-bind mods shard.cr
+  crystal build --iyi-keep ABCGreeter --emit-bind mods -o keepbin abc_greeter_keep.cr
+  iyi build --crystal --use-iyimod mods -o app app.iyi
+  ```
+
+  No `nm` and no `objcopy`, where four printed steps had been and had never
+  worked at the end. The object `--emit obj` makes is a whole program and
+  carries Crystal's library with it; an ordinary build leaves one object per
+  type and the ones a namespace owns carry no runtime at all.
+
+  `--crystal` on the consumer is not decoration: the unit numbers
+  `Pointer(LibUnwind::Exception)` whatever the shard does, because a `String#+`
+  can raise. The artifact is marked `crystal_library: true` for the same reason,
+  which it always was — it was written `false` on an argument about what a
+  boundary stands between, and that argument does not survive looking at what
+  the unit refers to.
+
+  What a boundary still cannot carry is a constant: it travels by name so the
+  consumer can run its initialiser, and a bound shard's declarations carry no
+  constants, so the consumer has the name and nothing to define it with. That
+  is now a refusal at compile time where the same shard used to segfault.
+
 ### Fixed
 
 - **`crystal tool bind` says why a bound shard cannot be linked into a program

@@ -1,56 +1,49 @@
 require "./spec_helper"
 
-# iyi: the four steps `crystal tool bind` prints, taken.
+# iyi: a Crystal namespace bound, built, and called from an iyi program.
 #
-# It prints them because they are what turns a bound shard into something a
-# program links against, and nothing had ever run them: the tool's other checks
-# are numbers it reports, and a number cannot say whether the last step works.
-# When they were first run by hand, three of the four were wrong — an `objcopy`
-# line that word-split every symbol containing a space, a module name made by
-# downcasing where the inverse of `camelcase` was wanted, and declarations that
-# carried the producer's namespace into a file the producer does not read.
+# Two commands and no binutils, which is the whole of what changed. What this
+# used to take was four steps — compile the keep file to one object, read its
+# symbols with `nm`, make them global with `objcopy`, then hand the object to
+# the consumer — and it did not work at the end of it. The object `--emit obj`
+# makes is a whole program: it carries Crystal's library with it, and a program
+# can have that library once. Linked into a consumer with none, the shard's
+# constants never initialise and the first read segfaults. Linked into one that
+# has it, every runtime global is defined twice and nothing links.
 #
-# Each of those is invisible until something later fails, and the later thing is
-# `ld`. This is the spec that fails first instead.
+# An ordinary build leaves one object per type instead, and the ones a namespace
+# owns carry no runtime at all. `--emit-bind` on that build puts them in the
+# artifact, and the consumer links what the artifact carries — which is what it
+# already does for an iyi module's object code.
+#
+# `--crystal` on the consumer is not decoration. The unit numbers
+# `Pointer(LibUnwind::Exception)` whatever the shard does, because a `String#+`
+# can raise, and an iyi program cannot name that type.
 private ROOT = File.expand_path(File.join(__DIR__, "..", ".."))
 
 private def crystal_env
   {"CRYSTAL_PATH" => "lib:#{File.join(ROOT, "src")}"}
 end
 
-describe "`crystal tool bind`, all four steps" do
-  # What the four steps cannot carry, kept here because it is a property of the
-  # pipeline rather than of any one shard.
+describe "`crystal tool bind`, end to end" do
+  # What a boundary cannot carry yet, kept beside the thing that can.
   #
-  # A constant the compiler cannot fold is built when the program starts, from
-  # `__crystal_main`, and the read compiled into a method does not check whether
-  # that has happened — Crystal initialises eagerly and reads unguarded. A
-  # consumer has its own `__crystal_main` and never calls the shard's, so the
-  # constant stays null and the first read segfaults.
-  #
-  # Calling the shard's `__crystal_main` was tried, by renaming it out of the way
-  # with `objcopy --redefine-sym` and calling it from the consumer. It segfaults
-  # inside the initialisation itself, before reaching any constant: Crystal's top
-  # level expects Crystal's runtime — a thread, an event loop, the exception
-  # machinery — and an iyi program is not one. So this is not a matter of naming
-  # the constants in the artifact, which is what it looked like at first.
-  #
-  # A boundary carries code that needs no initialisation. That is the honest
-  # bound on it today.
-  pending "carries a shard's run-time state"
+  # A constant travels by name — the artifact's `Constants` — and the consumer
+  # replays that name so its initialiser runs in the program that will read it.
+  # A bound shard's declarations carry no constants, so the consumer has the
+  # name and nothing to define it with: `undefined constant ::Store::TABLE`.
+  # That is a clean refusal rather than the segfault it used to be, and what it
+  # waits on is the artifact carrying the constant's declaration.
+  pending "carries a shard's constants"
 
   it "builds and runs a program that calls a bound shard" do
     pending!("requires #{CRYSTAL_BIN} (`make crystal`)") unless File::Info.executable?(CRYSTAL_BIN)
     pending!("requires #{IYI_BIN} (`make iyi`)") unless File::Info.executable?(IYI_BIN)
-    nm = Process.find_executable("nm")
-    objcopy = Process.find_executable("objcopy")
-    pending!("requires binutils: nm and objcopy") unless nm && objcopy
 
     # Both binaries, from one commit. An artifact is read only by the build that
-    # wrote it (SPEC.md IV.5), and `make` bakes the commit in at link time — so
-    # a tree where one of the two is a rebuild behind fails here for a reason
-    # that has nothing to do with what this is checking. Saying so is cheaper
-    # than reading the error.
+    # wrote it (SPEC.md IV.5), and `make` bakes the commit in at link time — so a
+    # tree where one of the two is a rebuild behind fails here for a reason that
+    # has nothing to do with what this is checking.
     build_of = ->(binary : String) do
       Process.capture_result([binary, "--version"]).output.match(/\[([0-9a-f]+)\]/).try &.[1]
     end
@@ -64,19 +57,17 @@ describe "`crystal tool bind`, all four steps" do
       mods = File.join(dir, "mods")
       Dir.mkdir_p mods
 
-      # `ABCGreeter` on purpose, for both halves of what the name has to
-      # survive: an acronym, which `underscore` flattened to `abcgreeter`, and an
-      # inner capital, which a plain `downcase` flattened too. `Greeter` would
-      # pass through either unchanged and prove nothing.
+      # `ABCGreeter` for both halves of what the name has to survive: an acronym,
+      # which `underscore` flattened to `abcgreeter`, and an inner capital, which
+      # a plain `downcase` flattened too.
       File.write File.join(dir, "shard.cr"), <<-CR
         module ABCGreeter
           extend self
 
           # Both ways a module can carry a function, because they mangle
-          # differently and only one of them was ever right. `extend self` puts
-          # `polite` on the module — `*ABCGreeter@ABCGreeter::polite<String>` —
-          # and `def self.` puts `brisk` on the metaclass, which has no `@`.
-          # Crystal's own library is written the second way throughout.
+          # differently. `extend self` puts `polite` on the module and `def
+          # self.` puts `brisk` on the metaclass, which has no `@`. Crystal's
+          # own library is written the second way throughout.
           def polite(name : String) : String
             "hello, " + name
           end
@@ -85,10 +76,9 @@ describe "`crystal tool bind`, all four steps" do
             "hi " + name
           end
 
-          # A union parameter, which is more than one symbol: a consumer
-          # passing a string reaches `<String>`, one passing an `Int32`
-          # reaches `<Int32>`, and only a variable of the declared union
-          # reaches `<(Int32 | String)>`. The keep file names all three.
+          # A union parameter is more than one symbol: a consumer passing a
+          # string reaches `<String>` and one passing an `Int32` reaches
+          # `<Int32>`. The keep file names all of them.
           def self.label(value : Int32 | String) : String
             value.to_s
           end
@@ -105,6 +95,7 @@ describe "`crystal tool bind`, all four steps" do
         puts ABCGreeter.label(7)
         IYI
 
+      # 1. The declarations, and the keep file that makes the code exist.
       Process.capture_result([CRYSTAL_BIN, "tool", "bind", "-e", "ABCGreeter",
                               "--emit-bind", "mods", "shard.cr"],
         chdir: dir, env: crystal_env).should be_success
@@ -113,30 +104,22 @@ describe "`crystal tool bind`, all four steps" do
       # file the tool wrote and not a guess about it.
       File.exists?(File.join(mods, "a_b_c_greeter.iyimod")).should be_true
 
-      Process.capture_result([CRYSTAL_BIN, "build", "--emit", "obj", "--iyi-keep",
-                              "ABCGreeter", "-o", "shard", "a_b_c_greeter_keep.cr"],
+      # 2. An ordinary build of that keep file, which is where the per-type units
+      # exist. Not `--emit obj`: that merges them into one object and takes the
+      # library with it.
+      Process.capture_result([CRYSTAL_BIN, "build", "--iyi-keep", "ABCGreeter",
+                              "--emit-bind", ".", "-o", "keepbin",
+                              "a_b_c_greeter_keep.cr"],
         chdir: mods, env: crystal_env).should be_success
 
-      # Read rather than piped through a shell. A mangled name carries the types
-      # it was compiled for and a union prints with spaces in it, so word
-      # splitting loses exactly the symbols with the most interesting signatures.
-      listing = Process.capture_result([nm, "shard.o"], chdir: mods)
-      listing.should be_success
-      symbols = listing.output.lines.compact_map do |line|
-        line.match(/^[0-9a-f]+ t (\*ABCGreeter[@:].*)$/).try &.[1]
-      end
-      symbols.should_not be_empty
-
-      arguments = [objcopy, "--localize-symbol=main", "shard.o", "shard-ready.o"]
-      symbols.each { |symbol| arguments << "--globalize-symbol=#{symbol}" }
-      Process.capture_result(arguments, chdir: mods).should be_success
-
-      Process.capture_result([IYI_BIN, "build", "--use-iyimod", "mods", "-o", "app",
-                              "app.iyi", "--link-flags", File.join(mods, "shard-ready.o")],
+      # 3. The consumer, which links what the artifact carries. No `--link-flags`
+      # and no binutils anywhere in this.
+      Process.capture_result([IYI_BIN, "build", "--crystal", "--use-iyimod", "mods",
+                              "-o", "app", "app.iyi"],
         chdir: dir, env: crystal_env).should be_success
 
       # The claim. Not that it compiled, not that it linked — that the program
-      # ran and the answer came from the shard.
+      # ran and the answers came from the shard.
       Process.capture_result([File.join(dir, "app")], chdir: dir)
         .output.chomp.should eq "hello, iyi\nhi iyi\n7"
     end
