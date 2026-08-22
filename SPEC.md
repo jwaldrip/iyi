@@ -3076,7 +3076,7 @@ From Crystal's own *Required libraries* page, plus every `@[Link]` in this tree.
 | libdl | `dlopen` | no | do not offer dynamic loading |
 | libm | `sqrt`, `pow` | no | LLVM intrinsics where they exist, iyi where they do not |
 | libiconv | encoding conversion | no | never. UTF-8 only, which is Go's answer and already iyi's. The compiler dropped it too (`-Dwithout_iconv`) |
-| PCRE2 | `Regex` | no | **decided (#17, #22) and done: RE2 semantics everywhere, on iyi's own engine** `src/compiler/iyi/rx.cr`, macro-level regex included, differentially verified against pcre2, and `libpcre2` measured off the compiler binary rather than only out of compiler source. The price: macros lose in-pattern backreferences and lookaround, a macro using one fails with a named error, and `Spec::CLI#pattern` changed type from `Regex?` to `String?` |
+| PCRE2 | `Regex` | no | **decided (#17, #22) and done: RE2 semantics everywhere, on iyi's own engine** `src/compiler/iyi/rx.cr`, macro-level regex included, differentially verified against pcre2, and `libpcre2` measured off the compiler binary rather than only out of compiler source. The price: macros lose the constructs that are not regular, backreferences, recursion, subroutine calls and conditionals, plus atomic groups and possessive quantifiers, which are controls for a backtracker there is none of here; a macro using one fails with a named error. Lookaround was on this list and should never have been, corrected in III.10 and in #17. `Spec::CLI#pattern` changed type from `Regex?` to `String?` |
 | OpenSSL (libssl, libcrypto) | TLS, digests | no | digests **already owned** (`src/crystal/digest/`). TLS: not in 0.x, own it eventually, a binding never in the prelude |
 | zlib | `Compress` | no | own it. DEFLATE is a known quantity and arrives with HTTP |
 | libxml2 | `XML` | no | no XML in the prelude. A package, written in iyi |
@@ -3168,7 +3168,7 @@ point:
 | `src/semantic_version.cr` | `VERSION_PATTERN` | `macros/methods.cr`, for the `compare_versions` macro method | `valid?` and `parse?` now share one scanner so they cannot drift, and the pre-existing asymmetry is kept on purpose: `valid?("99999999999999999999999.1.1")` is true while `parse?` raises `ArgumentError` out of `to_i` |
 | `src/spec/cli.cr` | `--location`, and `-e/--example` doing `Regex.new(Regex.escape(pattern))` | `command/spec.cr` requires `spec/cli` so `--help` can print the runner's options | two uses rather than one; `-e` was substring matching written the long way and is now `String#includes?`, and `--location` scans by hand |
 
-All four parse by hand with no engine, and none of them calls `Crystal::Rx`.
+All four parse by hand with no engine, and none of them calls `Iyi::Rx`.
 The stdlib does not get to reach into compiler internals, so the conversion
 had to be arithmetic over bytes rather than a different engine.
 
@@ -3198,10 +3198,84 @@ And the engine takes RE2's semantics rather than Perl's, which is a choice
 about the language, not a port: PCRE backtracks and can be made to take
 exponential time on ordinary-looking input, which is the standard
 denial-of-service in every language that ships it. Go refused that trade and
-iyi takes it too. **The price, stated rather than footnoted: macro authors
-lose in-pattern backreferences and lookaround, and a macro using one fails
-with a named error rather than quietly meaning something else.** In exchange,
-no pattern can take exponential time, in a program or at compile time.
+iyi takes it too. In exchange, no pattern can take exponential time, in a
+program or at compile time.
+
+**What that trade costs was recorded wrongly here, and the correction matters
+more than the capability it restores.** This section used to state the price
+like this: "macro authors lose in-pattern backreferences and lookaround, and a
+macro using one fails with a named error rather than quietly meaning something
+else." Half of that sentence was false, and the premise under it was that
+lookaround needs a backtracker. It does not. A lookaround over a regular inner
+pattern is itself a regular property of a position, so it is answered by a
+pre-pass costing one state set per character and nothing per position, and the
+engine now runs exactly that: all four forms, `(?=)`, `(?!)`, `(?<=)` and
+`(?<!)`, nested to any depth. RE2 omits lookaround because of its one-pass DFA
+design, not because linear time forbids it, and reading RE2's omission as the
+guarantee's price is what cost this tree a feature it could have had all along.
+Decision #17 stands exactly as made; what was wrong was the scope of what it
+costs, not the decision.
+
+**What the guarantee actually costs is the constructs that are not regular:**
+backreferences, recursion, subroutine calls and conditionals. No simulation
+answers them, and matching backreferences is NP-hard, so no amount of care
+makes them linear. Those stay refused, and a macro using one still fails with a
+named error rather than quietly meaning something else.
+
+**Two further refusals are kept separate, because the reason is a different
+one.** Atomic groups and possessive quantifiers are controls for a
+backtracker, and there is none here to control, so they are refused as
+inapplicable rather than as expensive. And one refusal is new, arriving with
+lookaround rather than surviving it: a capturing group inside an assertion. The
+pre-pass answers whether an assertion holds at a position and never which text
+its inner pattern consumed, so the group cannot be set, and reporting an empty
+capture where pcre2 reports a real one is exactly the quiet difference this
+engine exists to avoid.
+
+**Lookbehind here is not length-limited, and pcre2's is**, so this is the one
+place the owned engine is more capable than the library it replaced rather than
+less: patterns pcre2 refuses for a variable-length lookbehind compile and run
+here.
+
+Alongside lookaround the engine took the rest of what a pattern in this tree
+reaches for. Named groups in all three spellings, `(?<name>)`, `(?'name')` and
+`(?P<name>)`, numbered alongside unnamed ones the way pcre2 numbers them, with
+name lookup on the match. `\p{...}` and `\P{...}` for L, Lu, Ll, N and M,
+braced or single-letter, inside a character class or out, with every other
+category refused by name rather than approximated. `\v` as pcre2's vertical
+whitespace class and `\V` as its complement. `\x{...}` at any digit count,
+refusing at the offending position for no digits, a missing brace, a value
+above U+10FFFF, or a surrogate, which pcre2 in UTF mode refuses too. And `(?i)`
+folding past ASCII through `Char#downcase(Unicode::CaseOptions::Fold)`, simple
+case folding, the same relation pcre2 uses. `spec/compiler/iyi/rx_spec.cr`
+holds all of it against pcre2 over one corpus, 31 examples including exhaustive
+codepoint sweeps for the character classes, and none of it cost a library:
+`bench/dependency_floor.sh` still exits 0.
+
+**Three readings are this engine's own rather than inherited from pcre2, and
+all three are narrow.** They are divergences on purpose, each with a stated
+reason, because a silent one is the failure this engine was written to prevent:
+
+- `\d` is any Unicode number, Nd plus Nl plus No, where pcre2 under `UCP` means
+  `\p{Nd}` exactly, so `½` and `Ⅴ` match here and do not there. No public
+  stdlib predicate answers Nd on its own: `Char#number?` is the three-way
+  union and everything finer is `:nodoc:`. Shipping a case table to close one
+  class is worse than saying this, so `\p{Nd}` is refused rather than
+  approximated into agreement.
+- `ß` and `ẞ` do not match caselessly here and do in pcre2. `ẞ` full-folds to
+  `"ss"`, so the stdlib's fold leaves it alone, while pcre2 pairs the two
+  through simple case mapping. Chasing that one pair with an extra downcase
+  comparison opens others, because simple lowercase is not symmetric. Exact for
+  every other codepoint, verified by exhaustive sweep.
+- Lookbehind follows the union law here and does not in pcre2. `(?<=A|B)` must
+  hold exactly where `(?<=A)` or `(?<=B)` holds. Measured on subject `"a"` at
+  byte 0, where neither branch holds: `(?<=(?:a|$))` searched from 0 reports a
+  match at byte 0, the same pattern anchored at 0 reports nothing, and the
+  ungrouped `(?<=a|$)` correctly reports nothing. So the trigger is the
+  wrapping group, not the differing branch lengths, and pcre2 contradicts its
+  own anchored evaluation. No mechanism is claimed beyond that: an earlier
+  explanation blamed fixed-width stepping and the ungrouped row refutes it. The
+  spec pins pcre2's per-branch answers and never its answer for the pair.
 
 **4. TLS, which is the one to be honest about.** This is the largest library iyi
 would ever write and the only one where being wrong is a vulnerability rather
@@ -6259,6 +6333,8 @@ For traceability, since several rules here rest on numbers rather than taste.
 | PCRE2's `\s` under `UCP` and `Char#whitespace?` differ at exactly one character | the 20,633-case differential over `parse_flag_definition` first reported 1,114 mismatches and every one of them contained U+0085 NEL; handling NEL by name takes it to 0 (III.10) |
 | A claim measured on an object is not a claim about the executable | the per-target audit reads an own-prelude program's `.o` for `x86_64-linux-gnu` and finds nothing undefined, and this document turned that into "no undefined symbols at all". The linked own-prelude program has five, `__libc_start_main`, `__gmon_start__`, `__cxa_finalize` and the two weak `_ITM_` callbacks, contributed by the link template's crt objects and reported by CI on Linux. Both measurements are right and answer different questions, so the layer and library mode are now named wherever the number appears (III.9, III.10) |
 | Direct dependencies and the transitive closure are different checks, and only one has teeth | `ldd` on the Linux compiler listed libxml2, libz, libffi, libedit, icu, zstd, lzma, libbsd, libmd and libtinfo, all of them libLLVM's; `readelf -d` NEEDED lists what iyi names, which is what `otool -L` already reported on darwin. Proven both ways: an explicit `-lxml2` fails the gate by name, the same library inside libLLVM passes, and `otool -L libLLVM.dylib` confirms libxml2, libffi, libedit and libz are in there. `linux-vdso.so.1` was never a `DT_NEEDED` entry and stopped appearing rather than being allowed (III.10) |
+| A linear-time guarantee does not forbid lookaround, and this document said it did | the refusal was recorded as the price of RE2 semantics, on the premise that lookaround needs a backtracker. A lookaround over a regular inner pattern is a regular property of a position, answered by a pre-pass costing one state set per character and nothing per position, so all four forms landed with the guarantee intact and lookbehind unbounded where pcre2's is not. RE2's omission is its one-pass DFA design, not the guarantee. What the guarantee does cost is the constructs that are not regular, backreferences, recursion, subroutine calls and conditionals, and the correction is in III.10 and Appendix B #17 rather than the earlier reading being deleted (III.10) |
+| pcre2 breaks the union law for a grouped lookbehind alternation, and the group is the trigger | on subject `"a"` at byte 0, where neither branch holds: `(?<=(?:a|$))` searched from 0 reports a match at byte 0, the same pattern anchored at 0 reports nothing, and the ungrouped `(?<=a|$)` correctly reports nothing. So pcre2 contradicts its own anchored evaluation, and an earlier explanation blaming fixed-width stepping is refuted by the ungrouped row. iyi's engine holds `(?<=A|B)` exactly where `(?<=A)` or `(?<=B)` holds, and the spec pins pcre2's per-branch answers rather than its answer for the pair (III.10) |
 
 ## Appendix B: Decisions awaiting your call
 
@@ -6280,12 +6356,12 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 14 | **A `Docs` section in the artifact? (III.7, III.8)** | yes. It is what makes `iyi doc` and the index possible without the deleted generator, and it is the one addition that serves two claims at once |
 | 15 | **Does the daemon become the language server's process? (III.8)** | yes, or it goes in `CRYSTAL_ONLY`. It was measured against builds and withdrawn; an editor is the workload its pre-analysed state was actually for. What it must not stay is maintained and unreachable |
 | 16 | **Does III.4 use libevent or the native backends? (III.10)** | native, and it is not close. Crystal already wrote `epoll`, `kqueue`, `io_uring` and `iocp` backends and libevent is its default only on four platforms iyi does not target. Adopting it would put a C library under every concurrent iyi program to save work already done |
-| 17 | **Regex: PCRE semantics or RE2's? (III.10)** | RE2's. Linear time, no backreferences, no lookbehind. A language selling "the compiler will not surprise you" should not ship a library that takes exponential time on ordinary input, and Go already took this trade |
+| 17 | **Regex: PCRE semantics or RE2's? (III.10)** | RE2's, and that answer stands. Linear time, no construct whose cost can grow with the subject. A language selling "the compiler will not surprise you" should not ship a library that takes exponential time on ordinary input, and Go already took this trade. **What this row said the answer costs was wrong, and it is restated rather than quietly widened.** It read "no backreferences, no lookbehind", and was taken to mean the guarantee forbids lookaround, on the premise that lookaround needs a backtracker. It does not: a lookaround over a regular inner pattern is itself a regular property of a position, answered by a pre-pass costing one state set per character and nothing per position. All four forms are supported, nested to any depth, and lookbehind here is not length-limited the way pcre2's is, so the engine accepts patterns pcre2 rejects. RE2 omits lookaround because of its one-pass DFA design, not because linear time forbids it, and this row inherited the omission as if it were the price. What the guarantee actually costs is the constructs that are not regular: backreferences, recursion, subroutine calls and conditionals, refused because no simulation answers them and matching backreferences is NP-hard. Atomic groups and possessive quantifiers are refused for a separate reason worth keeping separate: they are controls for a backtracker, and there is none here to control. A capturing group inside an assertion is refused too, because the pre-pass never performs the sub-match that would set it (III.10) |
 | 18 | **TLS (III.10)** | none in 0.x; an OpenSSL binding as a package if something needs it sooner; own it eventually, TLS 1.3 only, and not before there is something to protect and somebody to audit it. What must not happen is OpenSSL becoming reachable from iyi's own prelude |
 | 19 | **Is "no C library in the prelude" a rule or a habit? (III.10)** | a rule for iyi's own prelude, and it is checked: `bench/dependency_floor.sh` fails in CI when an own-prelude program grows a symbol or a linked library, on the default build and on `-Dgc_boehm`. `--crystal` is outside this gate and may link Crystal's standard library dependencies and anything a required shard pulls. Both host platforms measure the same property: direct dependencies, `otool -L` on macOS and `readelf -d` NEEDED on Linux, since `ldd`'s transitive closure put libLLVM's libraries on iyi's list and an allowlist holding libxml2 for that reason could never notice iyi reaching for libxml2 itself. Symbols are per platform: macOS's five libSystem calls, and on Linux the five the link template's crt objects leave, allowed by exact name rather than a wildcard, so `malloc` or `mmap` still fails. It holds the compiler binary to a list too, `libLLVM libc++ libgc libSystem`, and to a denylist that carries `libpcre`, so the rule is not weaker for the toolchain than for own-prelude programs. Proven to fail three times: adding a `lib LibM` call to a sample, injecting a reachable regex literal into `src/option_parser.cr`, and rebuilding the compiler with an explicit `-lxml2` |
 | 20 | ~~**Write a collector, or adopt `gcry`? (III.9)**~~ | **Decided: iyi writes its own collector; gcry is not adopted, overruling this row's earlier recommendation.** What changed is the goal, and the change is the owner's, not a finding: they want concurrency, parallelism and a performant language, and owning the collector is the only path to the control that takes; gcry was pointed at as hints about what has already been tried to pull Crystal off Boehm, never as a runtime to adopt. The price is stated rather than softened: everything gcry already built, the heap, the STW, the roots, the finalizers, two platforms, is rebuilt in this tree, and only its measurements are inherited (#21). R-4 still requires the precise heap-layout table either way (II.5) |
 | 21 | **Precise stack roots, now a design question inside the collector iyi writes (III.9)** | still open, and reframed by #20 rather than settled by it: it is a design decision in a collector iyi owns, no longer a finding inherited from gcry. R-4 needs heap-layout precision, which is a table. gcry's measurement is still the best available evidence on the expensive half: stack-map precision is correctness-stable and not an RSS win. Inherited as prior art rather than repeated, and answerable only when iyi's own collector exists to measure on |
-| 22 | ~~**Keep macro-level regex, and pcre2 on the compiler with it? (III.9, III.10)**~~ | **Decided and done: macro-level regex is kept, on iyi's own engine, and pcre2 is off the compiler, measured.** RE2 semantics everywhere. This row recommended keeping both until the owned engine from #17 landed; it landed as `src/compiler/iyi/rx.cr`, differentially verified against pcre2, and it took pcre2 out of compiler-owned source. It did not take the library off the binary. Ten reachable regex literals in four stdlib files the compiler compiles into itself did that, found by reading `--emit llvm-ir` (`$Regex:0` through `$Regex:9`) rather than by inference: `option_parser.cr`, `process/shell.cr`, `semantic_version.cr` and `spec/cli.cr` now parse by hand, each differentially verified, and `otool -L .build/iyi` is down to libLLVM, libc++, libgc and libSystem. `bench/dependency_floor.sh` forbids `libpcre` for the compiler and own-prelude programs, proven to fail by injecting a reachable literal. The price: macro authors lose in-pattern backreferences and lookaround, and a macro using one now fails with a named error rather than quietly meaning something else; and `Spec::CLI#pattern` changed from `Regex?` to `String?`, a breaking change to a stdlib public API even though the behaviour is identical. The gain: the compiler sheds a library on Crystal's required list, and no pattern can take exponential time |
+| 22 | ~~**Keep macro-level regex, and pcre2 on the compiler with it? (III.9, III.10)**~~ | **Decided and done: macro-level regex is kept, on iyi's own engine, and pcre2 is off the compiler, measured.** RE2 semantics everywhere. This row recommended keeping both until the owned engine from #17 landed; it landed as `src/compiler/iyi/rx.cr`, differentially verified against pcre2, and it took pcre2 out of compiler-owned source. It did not take the library off the binary. Ten reachable regex literals in four stdlib files the compiler compiles into itself did that, found by reading `--emit llvm-ir` (`$Regex:0` through `$Regex:9`) rather than by inference: `option_parser.cr`, `process/shell.cr`, `semantic_version.cr` and `spec/cli.cr` now parse by hand, each differentially verified, and `otool -L .build/iyi` is down to libLLVM, libc++, libgc and libSystem. `bench/dependency_floor.sh` forbids `libpcre` for the compiler and own-prelude programs, proven to fail by injecting a reachable literal. The price: macro authors lose the constructs that are not regular, backreferences, recursion, subroutine calls and conditionals, plus atomic groups and possessive quantifiers, and a macro using one fails with a named error rather than quietly meaning something else; and `Spec::CLI#pattern` changed from `Regex?` to `String?`, a breaking change to a stdlib public API even though the behaviour is identical. **This row also listed lookaround as part of that price, inheriting the false premise corrected in #17; lookaround is supported, in all four forms, and lookbehind here is unbounded where pcre2's is not.** The gain: the compiler sheds a library on Crystal's required list, and no pattern can take exponential time |
 | 23 | ~~**Is a default that does not collect acceptable until the collector lands? (III.9)**~~ | **Decided: yes, kept, and documented loudly.** A plain build using iyi's own prelude allocates and never collects; `-Dgc_boehm` opts that mode back into real collection. The own prelude has no IO beyond `puts` and no concurrency. `--crystal` uses Crystal's standard library and is a different mode, outside this allocator and dependency-floor claim. The price stays in the row: a long-running own-prelude program grows without bound, and this is a default that ships a known leak. "Until the collector lands" now means until iyi's own lands (#20) |
 | 24 | ~~**Keep bdw-gc on the compiler? (III.9, III.10)**~~ | **Decided: yes; the exception holds in the present tense, and this row is superseded by #20 in its premise and restated.** The compiler keeps bdw-gc: `-Dgc_none` is proven not viable for it (III.10), and a collector that cannot carry parallel codegen cannot host a compiler that runs parallel codegen over fibers. What changed is the revisit condition: it is no longer gcry's parallel path leaving experimental, since gcry is not being adopted; it is iyi's own collector reaching the stage that serves parallel codegen. Until then the dependency stays a recorded exception carrying this reason rather than an unexamined habit |
 | 25 | ~~**Build the interpreter on the macro interpreter, without C interop? (III.11)**~~ | **Decided: yes.** This reopens #11 on the owner's ask, with `iex` as the reference; the evidence that removed the old one still stands. The base is `src/compiler/iyi/macros/interpreter.cr`, 781 lines, a complete AST evaluator that already resolves types, extended for iyi's nine new AST nodes and two `Def` clauses, not the 11,377-line revert that cannot run iyi past the module header. No C interop, so no libffi, and that is enforced rather than assumed: `libffi` is on `bench/dependency_floor.sh`'s denylist, and the gate was proven to fire by adding to a sample the exact `@[Link("ffi")]` shape a naive revert would produce. It failed at three independent layers, reporting the gained symbol `ffi_prep_cif`, the gained library `libffi.8.dylib`, and the denylist hit, so an interpreter cannot quietly bring libffi with it. R-1 bounds what a session recompiles to the module graph; R-3 takes open-class patching away from the prompt |
