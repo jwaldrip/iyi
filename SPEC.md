@@ -3257,6 +3257,20 @@ command that costs a terminal and buys nothing is not a command.
 > it was prelude analysis. Every switch added since has had to be checked
 > against it by hand, silently, and nothing enforced the check.
 >
+> **It is enforced now.** Each of `Compiler`'s thirty-seven switches is written
+> down as one of three things — in the key, re-applied when a build adopts a
+> preanalysed prelude, or reaching neither — and `prelude_cache_key` refuses to
+> compile while any is missing. Adding a property fails the build with the
+> question rather than leaving it to be answered later by a build that quietly
+> did the wrong thing.
+>
+> Writing the three lists out is itself worth something: two entries turned out
+> to be judgements rather than facts. `mcpu`, `mattr` and `mcmodel` reach the
+> target machine and the target machine reaches codegen, so a prelude analysed
+> for one `-mcpu` is the same analysis as for another. And `progress_tracker`
+> and `stderr` are where output goes — `new_program` sets the first, the adopt
+> path sets neither, and that asymmetry was true before and invisible.
+>
 > **And artifacts and the daemon overlap.** Twelve modules as artifacts *plus*
 > the daemon was 1.67 s against the daemon's 1.30 s — slower, because the daemon
 > has already removed the term the artifacts were removing and reading twelve of

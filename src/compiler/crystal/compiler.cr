@@ -344,10 +344,59 @@ module Crystal
     # cannot serve a build under another — macros branch on flags.
     class_property preanalysed = {} of String => Preanalysed
 
+    # iyi: what each of this class's switches is to a preanalysed prelude.
+    #
+    # A cache key is a claim that everything not in it does not matter, and this
+    # one was written when the only thing reading it was prelude analysis. Every
+    # switch added since had to be checked against it by hand, silently, with
+    # nothing enforcing the check — and `--use-iyimod` is what happened when
+    # somebody did not: accepted, ignored, and the build compiled every module
+    # from source without a word (SPEC.md IV.1d).
+    #
+    # So the claim is written down and `prelude_cache_key` refuses to compile
+    # while any switch is missing from it. Three answers, and a new property has
+    # to be given one of them:
+    #
+    # - it changes what the prelude analyses *to*, so it belongs in the key;
+    # - it is the build's own and has to be re-applied to an adopted prelude,
+    #   because that path never runs `new_program`;
+    # - it reaches neither, which is most of them.
+    IN_PRELUDE_KEY = %w(prelude codegen_target optimization_mode debug static wants_doc flags)
+
+    # Re-applied by the adopt path above. `new_program` is what would otherwise
+    # have set them, and adoption skips it.
+    APPLIED_ON_ADOPT = %w(use_iyimod no_codegen emit_iyimod warnings color stdout show_error_trace)
+
+    # Neither, and two of these are judgements rather than facts. `mcpu`,
+    # `mattr` and `mcmodel` reach the target machine and the target machine
+    # reaches codegen, not analysis — a prelude analysed for one `-mcpu` is the
+    # same analysis as for another. `progress_tracker` and `stderr` are where
+    # output goes; `new_program` sets the first and the adopt path sets neither,
+    # which is visible now rather than merely true.
+    OUTSIDE_PRELUDE_ANALYSIS = %w(
+      cleanup cross_compile dependency_printer dump_ll emit_base_filename
+      emit_bind emit_targets frame_pointers iyi_direct_link iyi_keep
+      iyi_link_driver_only link_flags mattr mcmodel mcpu n_threads no_cleanup
+      program progress_tracker single_module stderr target_machine verbose
+    )
+
     # Everything that changes what the prelude analyses *to*. Macros branch on
     # flags, so a build whose key differs cannot adopt a prelude analysed under
     # another one and has to analyse its own.
     def prelude_cache_key : String
+      {% begin %}
+        {% classified = IN_PRELUDE_KEY + APPLIED_ON_ADOPT + OUTSIDE_PRELUDE_ANALYSIS %}
+        {% for ivar in @type.instance_vars %}
+          {% unless classified.includes?(ivar.name.stringify) %}
+            {% raise "Compiler##{ivar.name} is new, and nothing says what it is to a " +
+                     "preanalysed prelude. A daemon serves builds from a key that claims " +
+                     "everything not in it does not matter, so say which this is: add it to " +
+                     "IN_PRELUDE_KEY, APPLIED_ON_ADOPT or OUTSIDE_PRELUDE_ANALYSIS in " +
+                     "compiler.cr (SPEC.md IV.1d)." %}
+          {% end %}
+        {% end %}
+      {% end %}
+
       String.build do |io|
         io << prelude << '|' << codegen_target << '|' << @optimization_mode << '|'
         io << debug << '|' << static? << '|' << wants_doc? << '|'
