@@ -4460,6 +4460,35 @@ Named honestly, so nobody mistakes this draft for complete.
     > then picks symbols out of with `nm`. `ObjectCode` is in the format for that
     > reason and `tool bind` does not write it.
     >
+    > **And that was tried, one type of it, which is the cheapest question that
+    > separates a wall from a work list.** An ordinary build of the keep file —
+    > not `--emit obj`, which merges everything into one object — leaves 363
+    > per-type units in the cache, one of them `Store`'s. Linked into an iyi
+    > consumer on its own it gives a *clean* failure rather than a collision or a
+    > crash, and the whole of what it asks for is twenty symbols:
+    >
+    > | | |
+    > |---|---|
+    > | type ids | 15 |
+    > | constants | 4 |
+    > | a main-module helper | 1 |
+    >
+    > Every one is a category the format already carries a section for —
+    > `TypeIds`, `Constants`, and the helpers item 12d has the consumer emit with
+    > its own numbering — and `tool bind` writes all three empty. The unit itself
+    > carries no runtime, exports its method already global (so the `objcopy`
+    > step is not needed at all in this shape), and leaves `Store::TABLE`
+    > undefined for the consumer to define, which is exactly the arrangement that
+    > makes an initialiser run in the right program.
+    >
+    > **The remaining catch is named rather than guessed at.** Four of those
+    > constants are Crystal's own — `Int::DIGITS_BASE62` and its neighbours,
+    > reached because `Array#[]` can raise and raising formats an integer. A
+    > consumer can only define them if it has Crystal's `Int`, which is the
+    > library-as-artifact question again. But it arrives here as twenty symbols
+    > in three known categories rather than as a duplicate runtime, and that is a
+    > different kind of problem to have.
+    >
     > A boundary carries code that needs no initialisation. That is the bound on
     > it today, and it is a larger claim than the earlier paragraphs implied.
     >
