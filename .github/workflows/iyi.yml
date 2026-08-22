@@ -360,6 +360,18 @@ jobs:
               --target wasm32-wasi -o hello-wasi \
               ../samples/iyi/hello.iyi > hello-wasi.link )
           cat cross/hello-wasi.link
+
+          # The Windows probe: the two shapes whose output has been seen wrong,
+          # a case conversion and a number rendered into a string, and nothing
+          # else. Small enough that a wrong answer names the path.
+          printf 'module probe\n\nputs "hello, iyi!".upcase\nputs "BEEP " + 7.to_s\n' \
+            > cross/strings.iyi
+          ./bin/iyi run cross/strings.iyi > cross/strings-expected.txt
+          cat cross/strings-expected.txt
+          ( cd cross && ../bin/iyi build --cross-compile \
+              --target x86_64-windows-msvc -o strings-windows \
+              strings.iyi > strings-windows.link )
+          cat cross/strings-windows.link
           ls -l cross
 
       - uses: actions/upload-artifact@v4
@@ -402,22 +414,21 @@ jobs:
             '
           diff cross/expected.txt cross/got.txt && echo "aarch64: same output"
 
-  # Windows, run rather than type-checked, and linked with the command
-  # `--cross-compile` prints rather than one written here — so if that command
-  # stops working, this job says so.
+  # Windows is not a run target and nothing here is a gate. Three things happen
+  # when you run the same Windows binary twenty times: it prints the right
+  # answer, it prints memory it was never given (`ache\w` where `HELLO, IYI!`
+  # belongs, or `BEEP ` with the digits gone), or it exits `0xC0000005`. All
+  # three have been seen, and which one you get is luck — so there is no
+  # property to assert, only a tally to keep.
   #
-  # Getting there needed two things the object audit cannot see. The object's
-  # undefined set is six `kernel32` functions, printed below before linking,
-  # and an LLVM-emitted object carries no `/DEFAULTLIB` directives, so the
-  # prelude names its libraries itself. The CRT among them is the *dynamic*
-  # one: the static `libcmt` links just as cleanly and then access-violates
-  # before `main` runs. That was found by bisecting to a program whose whole
-  # source is `module w1`, which faulted too, ruling out everything a program
-  # does in one step.
-  windows-run:
+  # This job always succeeds. It exists so the numbers are in every build's log,
+  # and so the day they read twenty right and nothing else, that is visible
+  # without anyone going looking. The claim itself lives in the README and in
+  # SPEC III.9 12c, where it says Windows compiles and links and stops there.
+  windows-probe:
     needs: cross-objects
     runs-on: windows-2022
-    name: "An iyi program, run on Windows"
+    name: "What a Windows binary does, twenty times (watch)"
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -430,24 +441,47 @@ jobs:
         shell: cmd
         run: dumpbin /nologo /symbols cross\hello-windows.obj | findstr /C:"UNDEF"
 
-      - name: Link with the command `--cross-compile` printed, and run it
+      - name: One string, twenty runs, tallied
         shell: pwsh
         working-directory: cross
         run: |
-          $command = (Get-Content hello-windows.link -Raw).Trim()
+          $command = (Get-Content strings-windows.link -Raw).Trim()
           Write-Host "linking with: $command"
           $parts = $command -split '\s+'
           & $parts[0] $parts[1..($parts.Length - 1)]
-          if ($LASTEXITCODE -ne 0) { throw "link failed with $LASTEXITCODE" }
-          .\hello-windows.exe > got.txt
-          if ($LASTEXITCODE -ne 0) { throw "the program exited $LASTEXITCODE" }
-          Get-Content got.txt
-          $expected = [IO.File]::ReadAllBytes("expected.txt")
-          $got = [IO.File]::ReadAllBytes("got.txt")
-          if ([Convert]::ToBase64String($expected) -ne [Convert]::ToBase64String($got)) {
-            throw "windows: OUTPUT DIFFERS"
+          if ($LASTEXITCODE -ne 0) { Write-Host "link failed with $LASTEXITCODE"; exit 0 }
+
+          # Normalised before comparing, both sides: `Out-String` hands back CRLF
+          # and the reference was written on Linux. The first version of this
+          # probe skipped that and called twenty correct answers wrong.
+          function normalise($text) { ($text -replace "`r`n", "`n").TrimEnd("`n") }
+
+          $wanted = normalise (Get-Content strings-expected.txt -Raw)
+          $right = 0
+          $crashed = 0
+          $wrong = 0
+
+          foreach ($run in 1..20) {
+            $got = normalise (.\strings-windows.exe | Out-String)
+            if ($LASTEXITCODE -ne 0) {
+              $crashed = $crashed + 1
+              Write-Host ("run {0,2}: exited {1}" -f $run, $LASTEXITCODE)
+            } elseif ($got -eq $wanted) {
+              $right = $right + 1
+            } else {
+              $wrong = $wrong + 1
+              Write-Host ("run {0,2}: {1}" -f $run, ($got -replace "`n", " | "))
+            }
           }
-          Write-Host "windows: same output"
+
+          Write-Host ""
+          Write-Host ("right {0} of 20, wrong output {1}, crashed {2}" -f $right, $wrong, $crashed)
+          if ($right -eq 20) {
+            Write-Host "Twenty out of twenty. Not proof on its own, but several clean builds"
+            Write-Host "in a row would be, and the README and SPEC III.9 12c would then both"
+            Write-Host "be wrong on purpose."
+          }
+          exit 0
 
   # wasm32-wasi, run rather than type-checked. The module imports four
   # `wasi_snapshot_preview1` functions and nothing else, and what makes it a

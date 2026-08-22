@@ -16,7 +16,7 @@ that rule and what it costs.
 |---|---|
 | **Developer experience** | edit one module in a 7,207-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
 | **Agentic experience** | a module's interface is a file, not a convention: `iyi mod dump` prints it, and a consumer type-checks against it with the source deleted |
-| **Portability** | an iyi program compiles for **nine targets** and is **run** on five of them every build: x86-64 glibc, x86-64 musl, aarch64 under emulation, x86-64 Windows, and wasm32-wasi under wasmtime |
+| **Portability** | an iyi program compiles for **nine targets** and is **run** on four of them every build: x86-64 glibc, x86-64 musl, aarch64 under emulation, and wasm32-wasi under wasmtime |
 | **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s**. At run time the two libraries are within noise where they do the same work |
 | **Efficiency** | that `hello` is a **36 KB** binary that starts in **1.6 ms**; the same program with Crystal's library is 1,553 KB and 3.2 ms |
 
@@ -794,23 +794,30 @@ marked PROPOSED are the parts that will move under you.
   seven of them on four platforms: Linux x86_64 and aarch64, macOS x86_64 and
   aarch64, Windows msvc and gnu, and wasm32-wasi. Four of those are also
   *run*: `hello.iyi` is cross-compiled for `x86_64-linux-musl`,
-  `aarch64-linux-gnu`, `x86_64-windows-msvc` and `wasm32-wasi`, linked with the
-  target's own linker, and run natively in a container, under emulation, on a
-  Windows runner, and under wasmtime, each checked against what the same
-  program printed on the machine that compiled it. `arm-linux-gnueabihf` only
-  type-checks. Nothing here claims that the test suite runs on any target but
-  the one CI builds on.
-- **A Windows program links against a CRT, and the wrong one crashes.** iyi's
-  entry point is `main`, so something has to supply `mainCRTStartup` to call
-  it, and that is a C runtime — which the prelude otherwise goes out of its way
-  not to need. The choice is not free: the *static* CRT (`libcmt`) links
-  cleanly and the binary exits `0xC0000005` before `main` runs, while the
-  *dynamic* one (`msvcrt ucrt vcruntime`) runs correctly. The prelude names the
-  working set itself, because an LLVM-emitted object carries no `/DEFAULTLIB`
-  directives the way an MSVC-compiled one would, and CI links with the command
-  `--cross-compile` prints rather than one written into the workflow. Emitting
-  an entry point of iyi's own would remove the CRT entirely, and is the honest
-  form of "kernel32 and nothing else". It is not built.
+  `aarch64-linux-gnu` and `wasm32-wasi`, linked with the target's own linker,
+  and run natively in a container, under emulation, and under wasmtime, each
+  checked against what the same program printed on the machine that compiled
+  it. `x86_64-windows-msvc` and `arm-linux-gnueabihf` are not among them.
+  Nothing here claims that the test suite runs on any target but the one CI
+  builds on.
+- **A Windows binary is broken at run time, three different ways.** This is the
+  worst thing on this list, so it gets said plainly. `x86_64-windows-msvc`
+  compiles and links: the object asks Windows for six `kernel32` functions and
+  nothing else, and with `kernel32` and the *dynamic* CRT named (the static one,
+  `libcmt`, links just as cleanly and access-violates before `main`) the linker
+  is happy. Running it is where it ends. The same binary, run twenty times, has
+  printed the right answer, printed memory it was never given — `ache\w` where
+  `HELLO, IYI!` belongs, `BEEP ` with the digits gone — and exited
+  `0xC0000005`. All three, on the same executable, with nothing changed
+  between runs.
+
+  So there is nothing here to assert and no gate to write, and the two shapes
+  seen wrong (a case conversion, a number rendered into a string) are not the
+  whole story either, because an intermittent access violation is not a
+  formatting bug. CI keeps a twenty-run watch that always passes and prints the
+  tally, so the numbers are in every log. The cause is not the linker, not
+  `HeapAlloc` failing to clear (the POSIX path does not clear either and macOS
+  is fine), and not yet known.
 - **The wasm link needs more than `--cross-compile` prints.** A wasm32-wasi
   module is a program only once wasi-libc's entry stub is linked in, and what
   the fork prints for this target is `wasm-ld` with `-lc` and no `crt1.o`. CI

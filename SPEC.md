@@ -5086,11 +5086,11 @@ Named honestly, so nobody mistakes this draft for complete.
 
 12c. **Portability, moved from compiled to run.** An iyi program produced code
     for nine targets and was tested on one, which is the weakest kind of
-    portability claim: the code generator not objecting. Five of the nine now
+    portability claim: the code generator not objecting. Four of the nine now
     run in CI every build — x86-64 glibc natively, x86-64 musl in an Alpine
-    container, aarch64 under emulation, x86-64 Windows on a Windows runner, and
-    wasm32-wasi under wasmtime — and the check is that each prints what the
-    same program printed on the machine that compiled it.
+    container, aarch64 under emulation, and wasm32-wasi under wasmtime — and
+    the check is that each prints what the same program printed on the machine
+    that compiled it.
 
     What makes it cheap is the same thing that makes an artifact linkable: the
     object is produced here and linked there with the target's own `cc` and
@@ -5118,6 +5118,35 @@ Named honestly, so nobody mistakes this draft for complete.
     So the audit's limit is now measured rather than asserted: reading what an
     object *asks for* tells you nothing about what happens when something
     answers.
+
+    **And then Windows answered wrong, three different ways.** With the
+    libraries named the linker is happy, and running the result is where it
+    ends. The same binary, twenty runs, nothing changed between them: it has
+    printed the right answer, printed `ache\w` — a fragment of a path from
+    elsewhere in memory — where `HELLO, IYI!` belongs, printed `BEEP ` with the
+    digits gone, and exited `0xC0000005`.
+
+    The two wrong-output shapes are a case conversion and a number rendered
+    into a string, which looked like a lead until a run access-violated: an
+    intermittent AV on a program whose entire source is four lines is not a
+    formatting bug, it is a wild write or a read through a pointer that came
+    out of memory nobody set.
+
+    The obvious theory is wrong and is recorded so it is not tried again: that
+    `HeapAlloc` without `HEAP_ZERO_MEMORY` hands back dirty memory where
+    Linux's bump allocator over fresh `mmap` pages hands back zeroed memory. It
+    cannot be that on its own, because the POSIX path allocates atomically with
+    plain `malloc`, which does not clear either, and macOS has never printed
+    anything but the right answer. What macOS may be doing is getting zeroed
+    pages by luck in a fresh process, which would make this a latent assumption
+    everywhere and a visible defect only where the CRT has already dirtied the
+    heap — but that is a hypothesis, not a measurement, and the next step is to
+    find the read rather than to guess at the allocator again.
+
+    So Windows is not a run target. What CI keeps is a twenty-run watch that
+    always passes and prints the tally — right, wrong, crashed — so the numbers
+    are in every build's log. There is nothing to gate: no property of running
+    an iyi program on Windows currently holds twenty times out of twenty.
 
     **wasm32-wasi had the same shape of defect and a smaller fix.** The module
     imports four `wasi_snapshot_preview1` functions and nothing else, and it

@@ -51,28 +51,38 @@
   runs in turn, left to right, reading the same declaration. A name nothing
   exports is reported at that name rather than at the line.
 
-- **An iyi program is run on Windows every build.** Windows was one of the
-  seven targets whose emitted objects CI audits and one of the six that had
-  never been run. `hello.iyi` is now cross-compiled on Linux for
-  `x86_64-windows-msvc`, then linked and run on a Windows runner and compared
-  byte for byte against what the same program printed on the machine that
-  compiled it.
+- **A Windows binary links, and then does something different every run.**
+  Windows was one of the seven targets whose emitted objects CI audits and one
+  of the six that had never been run. Running it found the object is fine and
+  everything after the linker is not.
 
-  Getting there needed two things the object audit cannot see. An LLVM-emitted
-  object carries no `/DEFAULTLIB` directives, which an MSVC-compiled one would,
-  so nothing pulls in `kernel32` or a C runtime: the `cl.exe obj /link` that
-  `--cross-compile` prints for this target fails with seven unresolved
-  externals, and that command is still wrong. And naming the libraries is not
-  enough, because the *static* CRT (`libcmt`) links just as cleanly and then
-  exits `0xC0000005` before `main` runs. The dynamic CRT
-  (`msvcrt ucrt vcruntime`) runs correctly.
+  Getting it to start needed two things the object audit cannot see. An
+  LLVM-emitted object carries no `/DEFAULTLIB` directives, which an
+  MSVC-compiled one would, so nothing pulls in `kernel32` or a C runtime. And
+  naming the libraries is not enough: the *static* CRT (`libcmt`) links just as
+  cleanly and then exits `0xC0000005` before `main` runs, while the dynamic CRT
+  (`msvcrt ucrt vcruntime`) starts correctly. That was found with a ladder of
+  programs whose smallest rung is `module w1` — it faulted too, which ruled out
+  the allocator, the write path and `ExitProcess` in one step.
 
-  How that was found is the part worth keeping: a ladder of programs, smallest
-  first, linked and run on a Windows runner with the exit code printed rather
-  than checked. The smallest rung's whole source is `module w1` and it faulted
-  too, which ruled out the allocator, the write path and `ExitProcess` in one
-  step and pointed at the link instead. All six rungs now match their native
-  exit codes and output, including the one that proves `HeapAlloc` ran.
+  What it does at run time cannot be trusted, in three different ways. The same
+  binary, twenty runs, nothing changed between them: it has printed the right
+  answer, printed `ache\w` (a fragment of a path from elsewhere in memory) where
+  the program prints `HELLO, IYI!`, printed `BEEP ` with the digits gone, and
+  exited `0xC0000005`. The two wrong-output shapes are a case conversion and a
+  number rendered into a string, which looked like a lead until a run
+  access-violated: an intermittent AV on a four-line program is a wild write,
+  not a formatting bug.
+
+  The obvious theory is recorded as wrong so nobody spends the afternoon on it:
+  `HeapAlloc` not clearing cannot be it on its own, because the POSIX path
+  allocates atomically with plain `malloc`, which does not clear either, and
+  macOS has never printed the wrong thing.
+
+  So Windows is not a run target and the README does not say it is. CI keeps a
+  twenty-run watch that always passes and prints the tally — right, wrong,
+  crashed — because there is no property of running an iyi program there that
+  currently holds twenty times out of twenty.
 
 - **The Windows link command names the libraries it needs.** An LLVM-emitted
   object carries no `/DEFAULTLIB` directives the way an MSVC-compiled one does,
