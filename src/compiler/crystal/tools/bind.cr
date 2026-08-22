@@ -512,6 +512,14 @@ module Crystal
     io.puts "level expects Crystal's runtime — a thread, an event loop, the"
     io.puts "exception machinery — and an iyi program is not one."
     io.puts
+    io.puts "Nor does building the consumer with `--crystal`, which is the program"
+    io.puts "that *does* have that runtime. Then the two collide instead:"
+    io.puts "`Crystal::Hasher::seed`, `Thread::threads`, `Fiber::fibers` and the"
+    io.puts "rest are defined twice and the link fails. The object this pipeline"
+    io.puts "makes is a whole program, so it carries the library with it — and a"
+    io.puts "program can have that library once. Without the runtime the shard's"
+    io.puts "state never starts; with it, nothing links. Both are the same fact."
+    io.puts
     io.puts "So a boundary carries code that needs no initialisation, and that is"
     io.puts "the bound on it today."
     io.puts

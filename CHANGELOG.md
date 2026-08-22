@@ -80,6 +80,17 @@
 
 ### Fixed
 
+- **`crystal tool bind` says why a bound shard cannot be linked into a program
+  that has Crystal's runtime either.** A consumer built with `--crystal` is the
+  program that *has* the runtime the shard's initialisation was missing, so it
+  ought to be the answer; instead the link fails on `Crystal::Hasher::seed`,
+  `Thread::threads`, `Fiber::fibers` and every other runtime global, defined
+  once by each side. The object this pipeline makes is a whole program — a keep
+  file is compiled like one — so it carries the library with it, and a program
+  can have that library once. Without it the shard's state never starts; with
+  it, nothing links. The names were not the problem and neither were the
+  constants: the packaging was.
+
 - **A harness for what the daemon takes off a whole build**
   (`bench/daemon_full_build.py`), which SPEC.md IV.1d had said was too noisy to
   publish. Twelve modules under `--crystal` with codegen and a link, eight

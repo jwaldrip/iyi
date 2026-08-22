@@ -4439,6 +4439,27 @@ Named honestly, so nobody mistakes this draft for complete.
     > prelude is 1,053 lines, is not one. So this was never about naming the
     > constants in the artifact, which is what it looked like from the outside.
     >
+    > **And the other direction closes it.** A consumer built with `--crystal`
+    > *is* a program with Crystal's runtime, which is what the shard's
+    > initialisation was missing — so that ought to be the answer. It is not:
+    > the link then fails on `Crystal::Hasher::seed`, `Thread::threads`,
+    > `Fiber::fibers` and every other runtime global, defined once by the
+    > consumer and once by the shard.
+    >
+    > So the two failures are one fact seen from either side. **The object this
+    > pipeline makes is a whole program**, because a keep file is compiled like
+    > one, and it carries the library with it. A program can have that library
+    > once: without it the shard's state never starts, with it nothing links.
+    > Neither the names nor the constants were ever the problem — the packaging
+    > was.
+    >
+    > That is a sharper statement than "a boundary carries code that needs no
+    > initialisation", and it names what would change it: the shard has to be
+    > compiled the way `.iyimod` already compiles an iyi module — object code per
+    > unit, against a library left external — rather than as a program somebody
+    > then picks symbols out of with `nm`. `ObjectCode` is in the format for that
+    > reason and `tool bind` does not write it.
+    >
     > A boundary carries code that needs no initialisation. That is the bound on
     > it today, and it is a larger claim than the earlier paragraphs implied.
     >
