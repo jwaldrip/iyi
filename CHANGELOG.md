@@ -80,6 +80,20 @@
 
 ### Fixed
 
+- **A harness for what the daemon takes off a whole build**
+  (`bench/daemon_full_build.py`), which SPEC.md IV.1d had said was too noisy to
+  publish. Twelve modules under `--crystal` with codegen and a link, eight
+  alternating pairs, a module edited before every build, and it refuses to run
+  on an unoptimised binary — the three corrections IV.1d had to make, built in
+  so they cannot be forgotten again. **0.63 s to 0.46 s, or 26%**, with two runs
+  agreeing to a hundredth.
+
+  What was called noise was largely the measurement: `/usr/bin/time`, whose
+  negative elapsed times IV.1d records, is not installed on this machine. The
+  app here is lighter than the one the published table was made from — its
+  front end is 0.35 s against 0.81 s — so this is a new row rather than that
+  row measured further.
+
 - **The prelude cache key is checked by the compiler now, not by whoever
   remembers.** A cache key is a claim that everything not in it does not matter,
   and this one was written when the only thing reading it was prelude analysis;
