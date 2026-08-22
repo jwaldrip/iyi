@@ -83,6 +83,47 @@ private def rx_should_agree(source : String, subject : String, ignore_case : Boo
   fail message
 end
 
+# iyi: what the engine itself must answer, for a pattern pcre2 refuses to
+# compile at all. A variable length lookbehind is the case: the engine supports
+# it and the oracle does not, so there is nothing to compare against and the
+# expectation has to be stated. Where the oracle does compile the pattern the
+# differential still runs, so this never becomes a way around it.
+private def rx_should_span(source : String, subject : String, from : Int32, to : Int32) : Nil
+  match = Iyi::Rx::Pattern.compile(source).match(subject)
+  if match.nil? || match.begin(0) != from || match.end(0) != to
+    fail("iyi's Rx on /#{source}/ against #{subject.inspect}\n" +
+         "     got:      #{rx_owned_view(match)}\n" +
+         "     expected: match #{from}..#{to}")
+  end
+  rx_should_agree(source, subject) if rx_reference_compiles?(source)
+end
+
+private def rx_should_not_match(source : String, subject : String) : Nil
+  match = Iyi::Rx::Pattern.compile(source).match(subject)
+  fail("iyi's Rx matched /#{source}/ against #{subject.inspect}: #{rx_owned_view(match)}") if match
+  rx_should_agree(source, subject) if rx_reference_compiles?(source)
+end
+
+private def rx_reference_compiles?(source : String) : Bool
+  Regex.new(source)
+  true
+rescue ArgumentError
+  false
+end
+
+# Whether an assertion-only pattern holds exactly at byte *at*. Such a pattern
+# matches empty, so an unanchored search from *at* answers the question only
+# when the match it finds begins there rather than further along.
+private def rx_holds_at?(pattern : Iyi::Rx::Pattern, subject : String, at : Int32) : Bool
+  match = pattern.match(subject, at)
+  !match.nil? && match.begin(0) == at
+end
+
+private def rx_reference_holds_at?(pattern : Regex, subject : String, at : Int32) : Bool
+  match = pattern.match_at_byte_index(subject, at)
+  !match.nil? && match.byte_begin(0) == at
+end
+
 private def rx_gsub_should_agree(source : String, subject : String, replacement : String, ignore_case : Bool = false) : Nil
   owned = Iyi::Rx.gsub(subject, Iyi::Rx::Pattern.compile(source, ignore_case), replacement)
   reference = subject.gsub(rx_reference(source, ignore_case), replacement)
@@ -375,24 +416,356 @@ describe Iyi::Rx do
         rx_should_agree(source, subject, start: start)
       end
     end
+
+    it "agrees on lookaround, all four forms" do
+      # iyi: one row per shape, with two subjects and the empty one appended by
+      # the driver. The empty subject is the case that catches a pre-pass
+      # indexing off the end of its own bitmap, which is why every row gets it.
+      lookaround = {
+        # positive lookahead: the text after the match is checked and not
+        # consumed, so the match ends before it
+        {"a(?=b)", "xaby", "xacy"},
+        {"a(?=bc)", "abcd", "abdc"},
+        {"\\w+(?=,)", "one,two", "one two"},
+        {"(?=\\d)\\w+", "1abc", "abc"},
+        # an inner pattern that looks further than the match reaches
+        {"(?=.*z)\\w+", "abz", "abc"},
+        # negative lookahead
+        {"a(?!b)", "ac", "ab"},
+        {"a(?!bc)", "abd", "abc"},
+        {"foo(?![0-9])", "foo!", "foo9"},
+        {"(?!\\d)\\w", "a1", "1"},
+        # positive lookbehind
+        {"(?<=a)b", "abc", "xbc"},
+        {"(?<=ab)c", "abc", "axc"},
+        {"(?<=,)\\w+", "one,two", "one two"},
+        {"(?<=\\d)[a-z]", "1a", "aa"},
+        # negative lookbehind
+        {"(?<!a)b", "xb", "ab"},
+        {"(?<!ab)c", "axc", "abc"},
+        {"(?<![0-9])[a-z]", "!a", "1a"},
+        {"\\w+(?<!s)", "cat", "s"},
+        # one either side of the same atom, and two at the same position
+        {"(?<=\\s)\\w+(?=\\s)", "a bb c", "abb"},
+        {"(?=\\w)(?=[a-z])\\w+", "abc", "ABC"},
+        # under a quantifier, where the loop's empty round has to carry the
+        # assertion too or the quantified form answers differently from the bare
+        # one, and inside a capturing group, which is allowed: it is a capturing
+        # group INSIDE an assertion that is refused, not one around it
+        {"(?:(?<=a)b)+", "abb", "xb"},
+        {"((?<=a)b)", "ab", "xb"},
+        {"(?=a)*a", "a", "b"},
+        {"(?=a)+a", "xa", "xb"},
+        {"(?=a){2}a", "a", "b"},
+        {"(?=a)*?a", "a", "b"},
+        {"((?=a))a", "a", "b"},
+        # the fold flag reaches an assertion's own program, and stops at the
+        # group that set it
+        {"(?i)(?=A)a", "A", "b"},
+        {"(?=(?i:A))a", "xa", "A"},
+        # nested: an inner assertion is a property of a position too, so it is
+        # one bitmap read from inside another bitmap's automaton
+        {"(?=a(?=b))\\w\\w", "xab", "xac"},
+        {"(?=a(?!b))\\w", "ac", "ab"},
+        {"(?<=(?<=a)b)c", "abc", "xbc"},
+        # three deep, both ways round
+        {"(?=a(?=b(?=c)))\\w\\w\\w", "abc", "abd"},
+        {"(?<=(?<=(?<=a)b)c)d", "abcd", "xbcd"},
+      }
+
+      lookaround.each do |source, hit, miss|
+        rx_should_agree(source, hit)
+        rx_should_agree(source, miss)
+        rx_should_agree(source, "")
+      end
+    end
+
+    it "agrees on lookaround at the subject's edges" do
+      # iyi: an assertion is a question about a position, and the two ends are
+      # the positions a bitmap is easiest to get wrong at. Rows whose whole
+      # pattern is an assertion match empty, so the only thing the two engines
+      # can disagree about is where.
+      edges = {
+        {"(?<=^a)b", "ab", "xab"},
+        {"(?<=\\Aa)b", "ab", "aab"},
+        {"(?<=^)a", "ab", "\na"},
+        {"a(?=$)", "a", "ab"},
+        {"a(?=$)", "ba\n", "a\nb"},
+        {"a(?=\\z)", "ba", "a\n"},
+        {"^(?=.*b)\\w+", "axb", "axc"},
+        {"\\w+(?<=^\\w)", "ab", " ab"},
+        {"(?=b)", "ab", "aa"},
+        {"(?<=b)", "ba", "aa"},
+        {"(?!b)", "b", "a"},
+        {"(?<!b)", "ba", "b"},
+        # an inner pattern that matches empty, so the assertion always holds
+        {"(?=)a", "a", "b"},
+        {"(?<=)a", "a", "b"},
+        {"(?=a*)b", "b", "c"},
+      }
+
+      edges.each do |source, first, second|
+        rx_should_agree(source, first)
+        rx_should_agree(source, second)
+        rx_should_agree(source, "")
+      end
+    end
+
+    it "agrees on the boundary lookaround the bind tool needs" do
+      # iyi: src/compiler/iyi/tools/bind.cr renames a bound identifier only where
+      # it stands alone, which is a negative lookbehind and a negative lookahead
+      # around an escaped name. That pair is the reason this work exists, so the
+      # subjects are the shapes bind really meets. The second pattern is bind's
+      # own boundary rule exactly: `:` blocks a match before the name, because
+      # otherwise `Other::MyLib::Entry` reads as a `MyLib::` of its own, and does
+      # not block one after it, because `Entry::Foo` really does start with the
+      # name.
+      standalone = "(?<![A-Za-z0-9_])Entry(?![A-Za-z0-9_])"
+      qualified = "(?<![A-Za-z0-9_:])Entry(?![A-Za-z0-9_])"
+      subjects = [
+        "Entry",         # the whole subject
+        "Entry rest",    # at the start
+        "rest Entry",    # at the end
+        "(Entry)",       # punctuation either side
+        "_Entry",        # an underscore before makes it a longer name
+        "Entry_",        # and after
+        "1Entry",        # so does a digit
+        "Entry9",
+        "_Entry_",
+        "9Entry9",
+        "MyEntry",       # buried inside a longer identifier
+        "Entrys",
+        "Entry, Entry",  # twice in one subject
+        "Entry Entry",
+        "Foo::Entry",    # qualified
+        "Entry::Foo",
+        "Other::MyEntry",
+        "Array(Entry)",
+        "entry",         # a name is case sensitive
+        "",
+      ]
+
+      {standalone, qualified}.each do |source|
+        subjects.each do |subject|
+          rx_should_agree(source, subject)
+          # gsub is the call bind actually makes
+          rx_gsub_should_agree(source, subject, "Renamed")
+          rx_scan_should_agree(source, subject)
+        end
+      end
+    end
+
+    it "matches a variable length lookbehind, which pcre2 will not compile" do
+      # iyi: pcre2 matches a lookbehind by stepping back a known number of
+      # characters and trying from there, so it has to know that number, and
+      # refuses the pattern when it cannot: "length of lookbehind assertion is
+      # not limited". There is no number to know here. `(?<=L)` is answered by
+      # simulating `Σ*L` forward over the subject once and reading the bit at the
+      # position, so an unbounded L costs exactly what a fixed one costs. Being
+      # more capable than the oracle is deliberate, and rx_should_span still
+      # holds us to the oracle wherever it does compile the pattern.
+      rx_should_span("(?<=ab+)c", "abbbc", 4, 5)
+      rx_should_span("(?<=ab+)c", "abc", 2, 3)
+      rx_should_not_match("(?<=ab+)c", "ac")
+      rx_should_not_match("(?<=ab+)c", "bc")
+      rx_should_not_match("(?<=ab+)c", "")
+      rx_should_span("(?<=a.*)z", "a123z", 4, 5)
+      rx_should_not_match("(?<=a.*)z", "z")
+      rx_should_span("(?<=\\w+,)\\d+", "key,42", 4, 6)
+      rx_should_span("(?<!ab+)c", "axc", 2, 3)
+      rx_should_not_match("(?<!ab+)c", "abbc")
+
+      # The bounded forms pcre2 does compile, where the oracle can still speak.
+      {
+        {"(?<=a{1,3})c", "aac"},
+        {"(?<=a{1,3})c", "c"},
+        {"(?<=a?b)c", "bc"},
+        {"(?<=a?b)c", "abc"},
+        {"(?<=(?:ab|c))d", "abd"},
+        {"(?<=(?:ab|c))d", "cd"},
+        {"(?<=(?:ab|c))d", "xd"},
+      }.each { |source, subject| rx_should_agree(source, subject) }
+    end
+
+    it "agrees on named groups, which are numbered groups that also have a name" do
+      named = {
+        {"(?<word>\\w+)", "hi there", "!!"},
+        {"(?<a>x)(?<b>y)", "xy", "yx"},
+        {"(?'q'\\d+)", "a42", "abc"},
+        {"(?P<p>[a-z]+)", "ABc", "AB"},
+        # named and unnamed groups share one numbering, in source order
+        {"(?<lead>\\w)(\\w)(?<tail>\\w)", "abc", "ab"},
+        {"(\\w)(?<mid>\\w)(\\w)", "abc", "ab"},
+        {"(?<opt>x)?y", "xy", "y"},
+        {"(?<alt>a)|(?<other>b)", "b", "c"},
+        {"(?<outer>(?<inner>a)b)", "ab", "ba"},
+      }
+
+      named.each do |source, hit, miss|
+        rx_should_agree(source, hit)
+        rx_should_agree(source, miss)
+        rx_should_agree(source, "")
+      end
+
+      match = Iyi::Rx::Pattern.compile("(?<year>\\d{4})-(?<month>\\d{2})").match("on 2026-08 ok").not_nil!
+      match["year"].should eq("2026")
+      match["month"].should eq("08")
+      # a name reaches exactly what its number reaches
+      match["year"].should eq(match[1])
+      match["month"].should eq(match[2])
+      match.begin("year").should eq(3)
+      match.end("year").should eq(7)
+      match.begin("month").should eq(8)
+      match.end("month").should eq(10)
+      # and the oracle numbers them the same way round
+      reference = Regex.new("(?<year>\\d{4})-(?<month>\\d{2})").match("on 2026-08 ok").not_nil!
+      match["year"].should eq(reference["year"])
+      match[1].should eq(reference[1])
+      match[2].should eq(reference[2])
+
+      expect_raises(KeyError, /no capture group named "day"/) { match["day"] }
+      expect_raises(KeyError, /no capture group named "day"/) { match.begin("day") }
+
+      # a named group that did not participate is absent, not empty, which is
+      # the same distinction the numeric index draws
+      optional = Iyi::Rx::Pattern.compile("a(?<mid>x)?b").match("ab").not_nil!
+      optional["mid"].should be_nil
+      optional[1].should be_nil
+    end
+
+    it "keeps an assertion linear in the subject" do
+      # iyi: the reason lookaround is built out of bitmaps rather than out of a
+      # sub-match. Answering `(?<!\w)needle(?!\w)` by running a sub-VM at each
+      # start position over this subject is on the order of 10^9 character steps;
+      # one pass per assertion is on the order of 10^5. The gsub below is the
+      # same point for a sweep: the bitmaps are computed for the whole sweep
+      # rather than for each of its 20_000 start offsets, so a scan stays linear
+      # in the subject too.
+      elapsed = Time.measure do
+        haystack = ("ab " * 20_000) + "needle"
+        found = Iyi::Rx::Pattern.compile("(?<![A-Za-z0-9_])needle(?![A-Za-z0-9_])").match(haystack).not_nil!
+        found.begin(0).should eq(60_000)
+        found.end(0).should eq(60_006)
+
+        every = Iyi::Rx.gsub("ab " * 20_000, Iyi::Rx::Pattern.compile("(?<![A-Za-z0-9_])ab(?![A-Za-z0-9_])"), "xy")
+        every.should eq("xy " * 20_000)
+      end
+      # Loose enough not to flake on a loaded machine, and still orders of
+      # magnitude below what a per-position sub-VM would need.
+      elapsed.should be < 5.seconds
+    end
+
+    it "agrees on lookaround when matching from a start offset" do
+      # iyi: the bitmaps cover the whole subject and are computed once per match
+      # call, so a start offset moves only where the machine begins. A lookbehind
+      # still sees the text before the offset, which is text the machine itself
+      # never visits, and that is the property a pre-pass starting at the offset
+      # would quietly get wrong.
+      {
+        {"(?<=a)b", "abab", 0},
+        {"(?<=a)b", "abab", 1},
+        {"(?<=a)b", "abab", 2},
+        {"(?<=a)b", "abab", 3},
+        {"(?<=a)b", "abab", 4},
+        {"(?<!a)b", "abcb", 0},
+        {"(?<!a)b", "abcb", 2},
+        {"a(?=b)", "abab", 1},
+        {"a(?=b)", "abab", 2},
+        {"a(?!b)", "abac", 1},
+        {"(?<![A-Za-z0-9_])Entry(?![A-Za-z0-9_])", "Entry Entry", 0},
+        {"(?<![A-Za-z0-9_])Entry(?![A-Za-z0-9_])", "Entry Entry", 1},
+        {"(?<![A-Za-z0-9_])Entry(?![A-Za-z0-9_])", "Entry Entry", 6},
+        # ^ inside a lookbehind still means byte 0, never the start offset
+        {"(?<=^a)b", "abab", 0},
+        {"(?<=^a)b", "abab", 2},
+        {"(?=$)", "ab", 1},
+      }.each { |source, subject, start| rx_should_agree(source, subject, start: start) }
+
+      pattern = Iyi::Rx::Pattern.compile("(?<=a)b")
+      pattern.match("ab", 1).not_nil!.begin(0).should eq(1)
+      pattern.match("abab", 2).not_nil!.begin(0).should eq(3)
+      pattern.match("abab", 4).should be_nil
+      # past the end is still nil rather than a raise, bitmaps or not
+      pattern.match("abab", 9).should be_nil
+    end
+
+    it "is right where pcre2 contradicts itself on a mixed length lookbehind" do
+      # iyi: the one place the oracle cannot be followed. `(?<=A|B)` is the union
+      # of `(?<=A)` and `(?<=B)`, because an alternation matches exactly when one
+      # of its branches does. pcre2 matches a lookbehind by stepping back a fixed
+      # number of characters, and where the branches differ in length and one is
+      # zero width it reports the group as holding at positions where neither
+      # branch holds. That is not a semantics to defer to, it is pcre2
+      # disagreeing with itself, so what is asserted here is pcre2's own answers
+      # for the branches, never its answer for the pair.
+      left = Iyi::Rx::Pattern.compile("(?<=a)")
+      right = Iyi::Rx::Pattern.compile("(?<=$)")
+      pair = Iyi::Rx::Pattern.compile("(?<=(?:a|$))")
+      reference_left = Regex.new("(?<=a)")
+      reference_right = Regex.new("(?<=$)")
+      reference_pair = Regex.new("(?<=(?:a|$))")
+
+      # At byte 0 of "a", pcre2 says neither branch holds, and then says the pair
+      # does. Both cannot be true.
+      rx_reference_holds_at?(reference_left, "a", 0).should be_false
+      rx_reference_holds_at?(reference_right, "a", 0).should be_false
+      rx_reference_holds_at?(reference_pair, "a", 0).should be_true
+      # the engine matches pcre2 branch by branch, and stays consistent on the pair
+      rx_holds_at?(left, "a", 0).should be_false
+      rx_holds_at?(right, "a", 0).should be_false
+      rx_holds_at?(pair, "a", 0).should be_false
+
+      # The law itself, over a corpus. Each branch is still held to pcre2, so the
+      # engine only leaves the oracle where the oracle stops being coherent, and
+      # a lookahead is held to it whole because pcre2 has no such trouble there.
+      {"a", "b", ".", "\\w", "$", "\\b", "^", "c{1,2}"}.each do |first|
+        {"a", ".", "$", "\\b", "x"}.each do |second|
+          only_first = Iyi::Rx::Pattern.compile("(?<=(?:#{first}))")
+          only_second = Iyi::Rx::Pattern.compile("(?<=(?:#{second}))")
+          behind = Iyi::Rx::Pattern.compile("(?<=(?:#{first}|#{second}))")
+          ahead = Iyi::Rx::Pattern.compile("(?=(?:#{first}|#{second}))")
+          reference_ahead = Regex.new("(?=(?:#{first}|#{second}))")
+          {"", "a", "ab", "baa", "a b"}.each do |subject|
+            rx_should_agree("(?<=(?:#{first}))", subject)
+            rx_should_agree("(?<=(?:#{second}))", subject)
+            (0..subject.bytesize).each do |at|
+              union = rx_holds_at?(only_first, subject, at) || rx_holds_at?(only_second, subject, at)
+              rx_holds_at?(behind, subject, at).should eq(union)
+              rx_holds_at?(ahead, subject, at).should eq(rx_reference_holds_at?(reference_ahead, subject, at))
+            end
+          end
+        end
+      end
+    end
   end
 
   describe "refused syntax" do
     it "raises SyntaxError for every construct outside the supported set" do
-      # iyi: SPEC.md III.10 takes Go's trade: linear time means no backreferences
-      # or lookaround, ever. Refusing loudly beats silently matching wrong, so
-      # each of these must raise at compile and carry a position. None of them
-      # is compiled against pcre2; the oracle has nothing to say about
-      # constructs the engine must not accept.
+      # iyi: SPEC.md III.10 takes Go's trade, and the line it draws is regular
+      # languages. A backreference, a recursion, a subroutine call and a
+      # conditional are not regular, so no simulation answers them and no amount
+      # of care makes them linear. An atomic group and a possessive quantifier
+      # are the other kind of refusal: controls for a backtracker, and there is
+      # no backtracker here to control. Lookaround has left this list, because a
+      # lookaround over a regular inner pattern is itself regular and is now
+      # answered by a pre-pass; what remains of it here is the capturing group
+      # inside one, which would need the sub-match that pre-pass never performs.
+      # Refusing loudly beats silently matching wrong, so each of these must
+      # raise at compile and carry a position. None is compiled against pcre2;
+      # the oracle has nothing to say about constructs the engine must not
+      # accept, and it accepts several of these itself.
       refused = {
         {"backreference \\1", "(a)\\1"},
         {"named backreference \\k", "(?<n>a)\\k<n>"},
-        {"lookahead (?=)", "a(?=b)"},
-        {"negative lookahead (?!)", "a(?!b)"},
-        {"lookbehind (?<=)", "(?<=a)b"},
-        {"negative lookbehind (?<!)", "(?<!a)b"},
-        {"named group (?<name>)", "(?<name>a)"},
-        {"named group (?P<name>)", "(?P<name>a)"},
+        {"capturing group inside a lookahead", "(?=(a))"},
+        {"capturing group inside a negative lookahead", "a(?!(b))"},
+        {"capturing group inside a lookbehind", "(?<=(a))b"},
+        {"capturing group nested two assertions deep", "(?=x(?<=(a)))"},
+        {"named group inside a lookahead", "(?=(?<n>a))"},
+        {"duplicate group name", "(?<n>a)(?<n>b)"},
+        {"duplicate group name across syntaxes", "(?<n>a)(?P<n>b)"},
+        {"group name starting with a digit", "(?<1n>a)"},
+        {"empty group name", "(?<>a)"},
         {"atomic group (?>)", "(?>ab)"},
         {"possessive *+", "a*+"},
         {"possessive ++", "a++"},
@@ -418,6 +791,23 @@ describe Iyi::Rx do
         end
         fail("iyi's Rx accepted #{label} (#{source.inspect}); the contract refuses it (SPEC.md III.10)")
       end
+    end
+
+    it "counts an assertion's program against the same instruction cap" do
+      # iyi: the cap is one budget for the whole pattern, the main program and
+      # every assertion's program together. Two budgets would let a pattern buy
+      # twice the ceiling by moving the expansion inside an assertion.
+      expect_raises(Iyi::Rx::SyntaxError, /exceeds 200000 instructions/) do
+        Iyi::Rx::Pattern.compile("(?=(?:a{1000}){1000})")
+      end
+      # the same expansion outside an assertion is refused identically
+      expect_raises(Iyi::Rx::SyntaxError, /exceeds 200000 instructions/) do
+        Iyi::Rx::Pattern.compile("(?:a{1000}){1000}")
+      end
+      # and one that fits still compiles and runs
+      fits = Iyi::Rx::Pattern.compile("(?=(?:a{50}){50})a")
+      fits.matches?("a" * 20).should be_false
+      fits.matches?("a" * 2_500).should be_true
     end
   end
 
@@ -525,6 +915,27 @@ describe Iyi::Rx do
       rx_gsub_should_agree("", "ab", "-")
       rx_scan_should_agree("a*", "bab")
       rx_scan_should_agree("", "abc")
+    end
+
+    it "does not copy the tail twice for an empty match at the end of the subject" do
+      # iyi: a real defect, found by the lookaround work and older than it.
+      # `gsub_impl` finished on an empty match at the very end without moving its
+      # cursor to it, then appended everything from the cursor to the end a
+      # second time: `Iyi::Rx.gsub("abc", /$/, "<>")` answered "abc<>abc" where
+      # pcre2 answers "abc<>". Nothing about the match was wrong, and `scan`
+      # agreed with pcre2 throughout, which is why nothing caught it: only the
+      # rebuilt string was wrong. Lookaround makes it easy to reach because an
+      # assertion is the ordinary way to write a pattern that matches empty at
+      # the end and nowhere before it.
+      Iyi::Rx.gsub("abc", Iyi::Rx::Pattern.compile("$"), "<>").should eq("abc<>")
+
+      {"$", "\\z", "\\Z", "b*$", "(?=$)", "(?=\\z)", "(?!a)", "(?<=c)", "c(?=$)"}.each do |source|
+        {"", "a", "abc", "aa", "abc\n", "a b c"}.each do |subject|
+          rx_gsub_should_agree(source, subject, "<\\0>")
+          rx_scan_should_agree(source, subject)
+          rx_sub_should_agree(source, subject, "<\\0>")
+        end
+      end
     end
   end
 end
