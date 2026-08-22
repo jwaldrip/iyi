@@ -414,22 +414,22 @@ jobs:
             '
           diff cross/expected.txt cross/got.txt && echo "aarch64: same output"
 
-  # Windows is not a run target. It links, it starts, and it prints memory it
-  # was never given: one run put `ache\w` where the program prints
-  # `HELLO, IYI!`, another dropped the digits from `BEEP 7`, and two runs before
-  # those were byte-perfect. So this job does not compare a whole program's
-  # output against a reference, because that measures luck. It runs one program
-  # that builds one string and prints it, twenty times, and fails if any run
-  # disagrees with the others or with the literal.
+  # Windows is not a run target, and this job is careful about which half it
+  # gates. What is true and deterministic is that an iyi program compiles,
+  # links and *starts* there: across twenty runs the process has always come
+  # back with exit 0. That is what this job asserts, so a regression to the
+  # `0xC0000005` it used to give is caught.
   #
-  # Kept because it is the smallest thing that can tell me the day this is
-  # fixed, and because a target that compiles, links and starts is worth
-  # watching even while its output cannot be trusted.
+  # What it does not assert is the output, because the output is wrong at
+  # random: one run put `ache\w` where the program prints `HELLO, IYI!`, another
+  # dropped the digits from `BEEP 7`, and the twenty-run probe below has since
+  # caught 19 right and 1 wrong on a two-line program. The distribution is
+  # printed on every build instead, so the day one answer appears twenty times
+  # is a day this log says so.
   windows-probe:
     needs: cross-objects
     runs-on: windows-2022
-    name: "What a Windows binary prints, twenty times"
-    continue-on-error: true
+    name: "A Windows binary starts, and what it prints"
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -456,14 +456,23 @@ jobs:
           $seen = @{}
           foreach ($run in 1..20) {
             $got = (.\strings-windows.exe | Out-String)
+            # The gate: it has to start and exit cleanly, every time.
+            if ($LASTEXITCODE -ne 0) { throw "run $run exited $LASTEXITCODE" }
             $seen[$got] = 1 + ($seen[$got] ?? 0)
           }
+
           foreach ($pair in $seen.GetEnumerator()) {
-            Write-Host ("{0,3} of 20: {1}" -f $pair.Value, ($pair.Key -replace "`r?`n", " | "))
+            $verdict = if ($pair.Key -eq $wanted) { "right" } else { "WRONG" }
+            Write-Host ("{0,3} of 20 {1}: {2}" -f $pair.Value, $verdict, ($pair.Key -replace "`r?`n", " | "))
           }
-          if ($seen.Count -ne 1) { throw "windows: $($seen.Count) different answers in 20 runs" }
-          if (-not $seen.ContainsKey($wanted)) { throw "windows: every run agreed, and all of them were wrong" }
-          Write-Host "windows: twenty runs, one answer, and it is the right one"
+
+          if ($seen.Count -eq 1 -and $seen.ContainsKey($wanted)) {
+            Write-Host "windows: twenty runs, one answer, and it is the right one."
+            Write-Host "That has not happened before, so the output defect may be fixed:"
+            Write-Host "check the README's `"prints memory it was never given`" and SPEC III.9 12c."
+          } else {
+            Write-Host "windows: still printing memory it was never given, as documented."
+          }
 
   # wasm32-wasi, run rather than type-checked. The module imports four
   # `wasi_snapshot_preview1` functions and nothing else, and what makes it a

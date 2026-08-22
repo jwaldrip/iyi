@@ -809,11 +809,12 @@ marked PROPOSED are the parts that will move under you.
   of the same binary, two were byte-perfect, one put `ache\w` — a fragment of
   a path from elsewhere in memory — where the program prints `HELLO, IYI!`, and
   one dropped the digits from `BEEP 7`. The shapes that came out wrong were a
-  case conversion and a number rendered into a string; a smaller program that
-  allocates and prints was correct twenty times out of twenty. The cause is not
-  the linker and is not known. CI runs a twenty-times probe on that pair of
-  shapes so the day it is fixed is visible, and Windows is not counted as a run
-  target until then.
+  case conversion and a number rendered into a string, and a twenty-run probe
+  on those two has since caught 19 right and 1 wrong. The cause is not the
+  linker and is not known. What CI gates is the half that is deterministic —
+  it links and starts, exit 0, twenty times out of twenty — and it prints the
+  distribution of answers rather than asserting one, so the day they all agree
+  is a day the log says so. Windows is not counted as a run target until then.
 - **The wasm link needs more than `--cross-compile` prints.** A wasm32-wasi
   module is a program only once wasi-libc's entry stub is linked in, and what
   the fork prints for this target is `wasm-ld` with `-lc` and no `crt1.o`. CI
