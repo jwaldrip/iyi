@@ -255,6 +255,22 @@ describe Iyi::Rx do
         {"\\0", "a\u{0}b", "ab"},
         {"\\x41", "xAy", "xBy"},
         {"\\x2B", "+", "-"},
+        {"\\V", "a\nb", "\n"},
+        {"\\x{41}", "xAy", "xBy"},
+        {"\\x{2B}", "+", "-"},
+        {"\\x{1F600}", "a\u{1F600}b", "ab"},
+        {"\\p{L}", "1a", "12"},
+        {"\\pL", "1a", "12"},
+        {"\\P{L}", "a1", "ab"},
+        {"\\PL", "a1", "ab"},
+        {"\\p{Lu}", "aA", "ab"},
+        {"\\p{Ll}", "Aa", "AB"},
+        {"\\p{N}", "a1", "ab"},
+        {"\\p{M}", "a\u{0301}", "ab"},
+        {"[\\p{L}]+", "12ab", "12"},
+        {"[\\P{L}]+", "ab12", "ab"},
+        {"[\\v]", "\r", "x"},
+        {"[\\V]", "x", "\r"},
         {".", "abc", "\n"},
         {"a.c", "abc", "a\nc"},
         {"[abc]", "xbx", "ddd"},
@@ -387,6 +403,199 @@ describe Iyi::Rx do
       utf8.each do |source, subjects|
         subjects.each { |subject| rx_should_agree(source, subject) }
       end
+    end
+
+    it "agrees on caseless matching past ascii" do
+      # iyi: `(?i)` folds through `Char#downcase(Unicode::CaseOptions::Fold)`,
+      # the stdlib's simple case folding, which is what pcre2 compares under
+      # PCRE2_CASELESS. Folding rather than trying one side's other case is what
+      # makes the classes larger than a pair work: all three sigmas fold to one
+      # character, and so do s, S and the long s, and so do k, K and the Kelvin
+      # sign. Each row's pattern is matched caselessly against every subject,
+      # including one the pair must NOT reach.
+      caseless = {
+        {"é", ["É", "é", "e"]},
+        {"É", ["é", "É", "E"]},
+        {"École", ["ÉCOLE", "école", "École", "ecole"]},
+        {"σ", ["ς", "Σ", "σ", "s"]},
+        {"ς", ["σ", "Σ", "ς"]},
+        {"Σ", ["σ", "ς", "Σ"]},
+        {"ſ", ["s", "S", "ſ"]},
+        {"s", ["ſ", "s", "S"]},
+        # KELVIN SIGN, whose fold is a plain k
+        {"\u{212A}", ["k", "K", "\u{212A}"]},
+        {"k", ["\u{212A}", "k", "K"]},
+        # İ (U+0130) folds to itself, so neither engine pairs it with i
+        {"İ", ["i", "I", "İ", "ı"]},
+        {"i", ["İ", "ı", "I", "i"]},
+        # no case to invent
+        {"日", ["日", "本"]},
+        {"à", ["À", "à"]},
+        {"þ", ["Þ", "þ"]},
+      }
+
+      caseless.each do |source, subjects|
+        subjects.each { |subject| rx_should_agree(source, subject, ignore_case: true) }
+        rx_should_agree(source, "", ignore_case: true)
+      end
+
+      # iyi: a class folds the SUBJECT, never the class, because a folded range
+      # is not a range: [À-Þ] has to reach à, and [à-þ] has to reach À, and no
+      # folding of the endpoints produces a set either question can be asked of.
+      # The ranges below are the two directions, and [a-z] against the Kelvin
+      # sign is the case that needs the fold rather than a case mapping.
+      classes = {
+        {"[éû]", ["É", "Û", "é", "a"]},
+        {"[É]", ["é", "É", "e"]},
+        {"[à-þ]", ["À", "Þ", "à", "þ", "a"]},
+        {"[À-Þ]", ["à", "þ", "À", "Þ", "a"]},
+        {"[^é]", ["É", "é", "a"]},
+        {"[a-zÀ-Þ]", ["É", "à", "A", "1"]},
+        {"[a-z]", ["É", "A", "a", "\u{212A}", "ſ"]},
+        {"[A-Z]", ["é", "a", "Z", "\u{212A}", "ſ"]},
+        {"[ſ]", ["s", "S", "ſ"]},
+        # the OHM SIGN reaches Ω the way the KELVIN SIGN reaches K above: it is
+        # already uppercase, so only the upcase of its fold lands in the range
+        {"[Α-Ω]", ["α", "ω", "Α", "Ω", "\u{2126}"]},
+        {"[α-ω]", ["Α", "Ω", "α", "ω", "\u{2126}"]},
+        # a property inside a caseless class: é is not Lu, but its upcase is
+        {"[\\p{Lu}]", ["é", "É", "日", "5"]},
+        {"[éû]+", ["ÉÛéû", "aa"]},
+      }
+
+      classes.each do |source, subjects|
+        subjects.each { |subject| rx_should_agree(source, subject, ignore_case: true) }
+        rx_should_agree(source, "", ignore_case: true)
+      end
+    end
+
+    it "agrees on the unicode properties it accepts" do
+      # iyi: five general categories, exactly the ones a public stdlib predicate
+      # answers exactly: L is `Char#letter?`, Lu is `uppercase?`, Ll is
+      # `lowercase?`, N is `number?`, M is `mark?`. Both spellings, both senses,
+      # inside a class and outside one. Every subject here is a character whose
+      # category has been settled since Unicode 3, so the comparison cannot turn
+      # into a disagreement between the stdlib's tables and the linked pcre2's.
+      properties = {
+        {"\\p{L}", ["a", "é", "日", "5", "!", "\u{0301}"]},
+        {"\\pL", ["a", "é", "5"]},
+        {"\\P{L}", ["a", "5", "!", "é"]},
+        {"\\PL", ["a", "5"]},
+        {"\\p{Lu}", ["A", "a", "É", "é", "日"]},
+        {"\\p{Ll}", ["a", "A", "é", "É", "日"]},
+        {"\\P{Lu}", ["A", "a", "É"]},
+        {"\\P{Ll}", ["a", "A", "é"]},
+        {"\\p{N}", ["5", "٣", "½", "Ⅴ", "a"]},
+        {"\\pN", ["5", "½", "a"]},
+        {"\\P{N}", ["5", "a"]},
+        {"\\p{M}", ["\u{0301}", "a", "é"]},
+        {"\\P{M}", ["\u{0301}", "a"]},
+        {"\\pM", ["\u{0301}", "a"]},
+        # inside a class, alone and unioned, and under the class level negation
+        {"[\\p{L}]+", ["café", "12", "aé1"]},
+        {"[\\P{L}]+", ["12!", "ab", "a1"]},
+        {"[^\\p{L}]", ["a", "1"]},
+        {"[^\\P{L}]", ["a", "1"]},
+        {"[\\p{Lu}\\p{N}]+", ["AB12", "ab", "A1b"]},
+        {"[\\p{L}\\p{M}]+", ["e\u{0301}x", "!!"]},
+        {"[\\pL0-9]+", ["a1!", "!!"]},
+        # quantified, and after a literal, so the class is not the whole pattern
+        {"a\\p{M}", ["a\u{0301}", "ab"]},
+        {"\\p{L}\\p{N}", ["a1", "1a"]},
+        {"\\p{Lu}+", ["xABy", "xy"]},
+      }
+
+      properties.each do |source, subjects|
+        subjects.each { |subject| rx_should_agree(source, subject) }
+        rx_should_agree(source, "")
+      end
+    end
+
+    it "agrees on the vertical whitespace class" do
+      # iyi: pcre2 and Perl read `\v` as a class, not as the vertical tab
+      # character it used to be here: VT, LF, FF, CR, NEL, LINE SEPARATOR and
+      # PARAGRAPH SEPARATOR. Every member gets a row, and tab and space are the
+      # two neighbours that have to stay outside it.
+      members = ["\u{000B}", "\n", "\u{000C}", "\r", "\u{0085}", "\u{2028}", "\u{2029}"]
+      outside = ["\t", " ", "a", "\u{00A0}"]
+
+      (members + outside).each do |subject|
+        {"\\v", "\\V", "[\\v]", "[\\V]", "[^\\v]", "[^\\V]", "[\\v\\t]", "[\\V\\n]"}.each do |source|
+          rx_should_agree(source, subject)
+        end
+      end
+
+      {"\\v", "\\V", "[\\v]", "[\\V]"}.each { |source| rx_should_agree(source, "") }
+      rx_should_agree("\\v+", "a\r\n\u{2028}b")
+      rx_should_agree("\\V+", "ab\ncd")
+      rx_should_agree("\\v\\V", "\nx")
+    end
+
+    it "agrees on \\x{...} at every width" do
+      # iyi: pcre2 takes any number of hex digits between the braces, so leading
+      # zeroes are free and one form names every codepoint. `\xHH` keeps its old
+      # two digit reading, which is why both spellings of A appear here.
+      hex = {
+        {"\\x{a}", ["\n", "a"]},
+        {"\\x{41}", ["A", "B"]},
+        {"\\x{e9}", ["é", "e"]},
+        {"\\x{E9}", ["é", "e"]},
+        {"\\x{0041}", ["A", "a"]},
+        {"\\x{00041}", ["A"]},
+        {"\\x{000041}", ["A"]},
+        {"\\x{10FFFF}", ["\u{10FFFF}", "a"]},
+        {"\\x{1F600}", ["\u{1F600}", "a"]},
+        # as range endpoints, which is where a codepoint escape earns its keep
+        {"[\\x{41}-\\x{5A}]+", ["ABZ", "abz"]},
+        {"[\\x{e9}\\x{fb}]+", ["éû", "ab"]},
+        {"[\\x{2028}-\\x{2029}]", ["\u{2028}", "a"]},
+        {"\\x{41}\\x41", ["AA", "A"]},
+        {"\\x{41}+", ["xAAy", "xy"]},
+      }
+
+      hex.each do |source, subjects|
+        subjects.each { |subject| rx_should_agree(source, subject) }
+        rx_should_agree(source, "")
+      end
+    end
+
+    it "states the two readings pcre2 cannot be met on" do
+      # iyi: two answers stated rather than inherited, both forced by what the
+      # stdlib exposes publicly rather than by a preference.
+      #
+      # `\d` is Nd plus Nl plus No, where pcre2 under UCP means \p{Nd} exactly.
+      # Every public predicate the stdlib has for numbers answers the wider set:
+      # `Char#number?` and `Unicode.number?` are both Nd|Nl|No,
+      # `Char#ascii_number?` is ASCII only, and the rest of
+      # src/unicode/unicode.cr is :nodoc:. Narrowing `\d` to ASCII instead would
+      # miss the Arabic-Indic digits pcre2 does match, which is the worse miss
+      # for a class whose whole point is digits. So the wider reading stands and
+      # \p{Nd} is refused rather than approximated.
+      #   pcre2: /\d/ matches neither ½ (U+00BD, No) nor Ⅴ (U+2164, Nl).
+      digits = Iyi::Rx::Pattern.compile("\\d")
+      digits.matches?("½").should be_true
+      digits.matches?("Ⅴ").should be_true
+      # and wherever pcre2 agrees, the differential still holds us to it
+      rx_should_agree("\\d+", "٣٤")
+      rx_should_agree("\\d+", "x42y")
+      rx_should_agree("\\d", "a")
+      rx_should_agree("\\D+", "٣a")
+
+      # ẞ (U+1E9E) full-folds to "ss", and `Unicode::CaseOptions::Fold`
+      # documents that a character whose full folding is several characters is
+      # returned unchanged. So ẞ does not fold to ß here, while pcre2's simple
+      # folding pairs the two. Reaching it with an extra simple downcase
+      # comparison would close this one pair and open others, because simple
+      # lowercase is not symmetric: it would also pair İ (U+0130) with i, and
+      # the caseless example above asserts that pcre2 refuses exactly that.
+      #   pcre2: /ß/i matches ẞ, and /ẞ/i matches ß.
+      Iyi::Rx::Pattern.compile("ß", true).matches?("\u{1E9E}").should be_false
+      Iyi::Rx::Pattern.compile("\u{1E9E}", true).matches?("ß").should be_false
+      # each still matches itself, so the gap is the cross pairing and nothing
+      # wider than it
+      rx_should_agree("ß", "ß", ignore_case: true)
+      rx_should_agree("\u{1E9E}", "\u{1E9E}", ignore_case: true)
+      rx_should_agree("ß", "ss", ignore_case: true)
     end
 
     it "agrees when matching from a start offset" do
@@ -750,6 +959,9 @@ describe Iyi::Rx do
       # lookaround over a regular inner pattern is itself regular and is now
       # answered by a pre-pass; what remains of it here is the capturing group
       # inside one, which would need the sub-match that pre-pass never performs.
+      # `\p{...}` has left it for the five categories a public stdlib predicate
+      # answers exactly, and the rows below are what is left of it: a category
+      # the stdlib cannot answer without approximating, and a script name.
       # Refusing loudly beats silently matching wrong, so each of these must
       # raise at compile and carry a position. None is compiled against pcre2;
       # the oracle has nothing to say about constructs the engine must not
@@ -776,9 +988,27 @@ describe Iyi::Rx do
         {"subroutine (?1)", "(a)(?1)"},
         {"anchor \\G", "\\G"},
         {"keep \\K", "a\\Kb"},
-        {"property \\p{...}", "\\p{L}"},
-        {"negated property \\P{...}", "\\P{L}"},
-        {"property \\pL", "\\pL"},
+        {"property \\p{Nd}, which the stdlib cannot answer exactly", "\\p{Nd}"},
+        {"negated property \\P{Nd}", "\\P{Nd}"},
+        {"property \\p{Nl}", "\\p{Nl}"},
+        {"property \\p{Lt}", "\\p{Lt}"},
+        {"property \\p{Z}", "\\p{Z}"},
+        {"short property \\pZ", "\\pZ"},
+        {"script name \\p{Greek}", "\\p{Greek}"},
+        {"script name in a class", "[\\p{Latin}]"},
+        {"pcre2's own \\p{^L} negation spelling", "\\p{^L}"},
+        {"empty property name", "\\p{}"},
+        {"unterminated property name", "\\p{L"},
+        {"bare \\p", "\\p"},
+        {"short property with no letter", "[\\p]"},
+        {"empty \\x{}", "\\x{}"},
+        {"unterminated \\x{", "\\x{41"},
+        {"\\x{} above U+10FFFF", "\\x{110000}"},
+        {"\\x{} with a digit run that would overflow", "\\x{FFFFFFFFFFFF}"},
+        {"\\x{} naming a surrogate", "\\x{D800}"},
+        {"\\x{} naming the last surrogate", "\\x{DFFF}"},
+        {"\\x{} in a class with no digits", "[\\x{}]"},
+        {"\\x with no digits at all", "\\x"},
       }
 
       refused.each do |label, source|
@@ -791,6 +1021,48 @@ describe Iyi::Rx do
         end
         fail("iyi's Rx accepted #{label} (#{source.inspect}); the contract refuses it (SPEC.md III.10)")
       end
+    end
+
+    it "names what is wrong in a \\x{...} or \\p{...} refusal, and where" do
+      # iyi: the table above proves each of these raises with a position. What
+      # it cannot prove is that the four \x{...} refusals are four DIFFERENT
+      # refusals, which matters because they are the four ways pcre2 refuses one
+      # too: no digits, no closing brace, past the last codepoint, and a
+      # surrogate, which pcre2 in UTF mode will not compile either. Both engines
+      # refusing the same shapes is what keeps them from disagreeing about a
+      # codepoint no UTF-8 subject can carry.
+      cases = {
+        {"\\x{}", /no digits in/},
+        {"[\\x{}]", /no digits in/},
+        {"\\x{41", /missing closing brace/},
+        {"\\x{4G}", /missing closing brace/},
+        {"\\x{110000}", /above U\+10FFFF/},
+        {"\\x{FFFFFFFFFFFF}", /above U\+10FFFF/},
+        {"\\x{D800}", /surrogate/},
+        {"\\x{DFFF}", /surrogate/},
+        {"\\x", /malformed \\x escape/},
+        {"\\p{Nd}", /unsupported unicode property/},
+        {"\\p{Greek}", /unsupported unicode property/},
+        {"\\p{}", /unsupported unicode property/},
+        {"\\p{L", /missing closing brace/},
+        {"\\p", /malformed \\p escape/},
+        {"[\\p]", /malformed \\p escape/},
+      }
+
+      cases.each do |source, message|
+        error = expect_raises(Iyi::Rx::SyntaxError, message) do
+          Iyi::Rx::Pattern.compile(source)
+        end
+        error.position.should be >= 0
+        error.position.should be <= source.bytesize
+      end
+
+      # the position points at the escape that failed, not at the end of the
+      # pattern, so a long pattern still says where to look
+      error = expect_raises(Iyi::Rx::SyntaxError, /above U\+10FFFF/) do
+        Iyi::Rx::Pattern.compile("abc\\x{110000}def")
+      end
+      error.position.should eq(5)
     end
 
     it "counts an assertion's program against the same instruction cap" do
