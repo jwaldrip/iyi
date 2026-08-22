@@ -47,6 +47,10 @@
   answer with the whole program rather than with a declaration, which is the
   caching promise R-5 rests on. Outside a derive they are untouched.
 
+- **`derive named, counted` runs both.** Each macro named on one derive line
+  runs in turn, left to right, reading the same declaration. A name nothing
+  exports is reported at that name rather than at the line.
+
 ### Fixed
 
 - **A constant an artifact reads carries a location.** The reads a consumer

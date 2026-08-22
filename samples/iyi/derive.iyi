@@ -54,6 +54,9 @@ puts Span.new(1, 9, "range").described
 # once it has run. A derive reads the declarations above it, which is why
 # `derive` goes last. Below `getter`, this would be an error rather than a
 # method generated over no fields.
+#
+# One line, two derives: each macro reads the same declaration and adds its own
+# methods.
 pub struct Tag
   getter label : Name
   @count : Int32
@@ -61,9 +64,10 @@ pub struct Tag
   def initialize(@label : Name, @count : Int32)
   end
 
-  derive shown
+  derive described, shown
 end
 
+puts Tag.new(Name.new("hi"), 2).described
 puts Tag.new(Name.new("hi"), 2).shown
 
 # ---------------------------------------------------------------------------

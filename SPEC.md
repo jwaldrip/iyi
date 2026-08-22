@@ -748,7 +748,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 87,780 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 87,795 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,368-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 6,679 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -953,10 +953,15 @@ It matters for the realistic case:
 
 ```
 pub struct Order
-  derive JSON
   getter customer : Customer     # imported from another module
+  derive JSON
 end
 ```
+
+That order is not decoration. `getter` is a macro call, so the field it declares
+exists only once it has run, and a derive reads the declarations above it. This
+example was first written the other way round, which is what building it
+corrected: see the ordering paragraph below.
 
 Expanding `derive JSON` here needs to know only whether `Customer` implements
 `ToJSON`. A fact in `Customer`'s export metadata. It never needs
@@ -1006,6 +1011,14 @@ from the body anyway would generate a method over the fields it happened to
 see — silently, and differently depending on where the `derive` line sits.
 That is refused, naming the call and which way to move it.
 
+Making the order not matter would mean expanding the calls below the derive
+early, and that is a larger promise than it looks: it says macro expansion order
+inside a type body is not observable. It is observable — a macro can read what
+has been declared so far — and Crystal does not promise otherwise. So the rule
+is the narrow one: a derive reads upwards, and says so when something it cannot
+read is below it. The example at the top of this section was written the other
+way round before this was built, and is now written the way the language works.
+
 **The program-wide questions are refused for the length of the expansion.**
 Handing over a type hands over everything a macro may ask a type, and
 `all_subclasses`, `subclasses` and `includers` answer with the whole program
@@ -1013,8 +1026,20 @@ rather than with a declaration. A derive that read one would generate different
 code depending on what else was compiled, which is the caching promise this
 section rests on, so inside a derive they raise. Outside one they are untouched.
 
-**Still open in R-5.** `derive A, B` on one line is not parsed; one derive per
-line is.
+**Several names on one line.** `derive named, counted` runs each macro in turn,
+left to right, each reading the same declaration. A name that is not an
+available derive macro is reported at that name rather than at the line.
+
+**Where R-5's parenthetical is stricter than the artifact format.** R-5 says a
+macro may read imported modules' export metadata, *never the bodies*. A field's
+type is a type, so a derive can reach `field[:type].methods` and read a method's
+body — and measurement says it gets the same answer with the producer's source
+deleted as with it present, because a `.iyimod`'s declaration section carries
+those bodies. So the sentence describes an artifact narrower than the one iyi
+emits. Nothing is unsound here: the answer is a function of the artifact, which
+is what R-1 requires. What R-5 was protecting is the program-wide questions, and
+those are refused. Recorded rather than fixed, because the fix belongs in what
+a `.iyimod` carries, not in what a macro may ask.
 
 ### II.5 Dictionaries × the garbage collector: **SETTLED, and a dependency**
 
