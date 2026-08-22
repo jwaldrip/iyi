@@ -1156,17 +1156,23 @@ module Iyi
     true
   end
 
-  # iyi: the two patterns below were `gsub` with negative lookbehind, and
-  # lookbehind is the one thing this tree's own engine will not do: `Iyi::Rx` is
-  # RE2-shaped on purpose, linear time, no lookaround (SPEC.md III.10, Appendix
-  # B #17). Reaching for the stdlib `Regex` instead put `libpcre2-8` back on the
-  # compiler's link line, which `bench/dependency_floor.sh` forbids by name and
-  # which decision #22 had just measured off it.
+  # iyi: the two patterns below were `gsub` with negative lookbehind, and this
+  # comment used to say that lookbehind was the one thing this tree's own engine
+  # would never do. That is no longer true: `Iyi::Rx` answers both senses of both
+  # directions, at any length, so the capability is not the reason any more.
   #
-  # So they are written the way `process/shell.cr`, `option_parser.cr` and
-  # `semantic_version.cr` were written for the same reason: by hand, over bytes.
-  # Both are boundary tests, which is the part a pattern was doing and the part
-  # plain code says more plainly.
+  # They stay written by hand because of cost, not capability. A name boundary is
+  # two byte comparisons at a known offset. The same question asked of the engine
+  # compiles a program, sweeps a bitmap across the whole text once per assertion,
+  # then runs the VM, and every one of those steps is paid on every declaration
+  # the tool renames. Reaching for the stdlib `Regex` instead is the other way to
+  # lose: it puts `libpcre2-8` back on the compiler's link line, which
+  # `bench/dependency_floor.sh` forbids by name.
+  #
+  # So they read the way `process/shell.cr`, `option_parser.cr` and
+  # `semantic_version.cr` read, for the same reason: by hand, over bytes. Both are
+  # boundary tests, which is the part a pattern was doing and the part plain code
+  # says more plainly.
   #
   # A name boundary here is ASCII: the characters that can continue an
   # identifier are `[A-Za-z0-9_]`, and `:` joins a namespace. Bytes rather than

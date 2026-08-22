@@ -970,7 +970,7 @@ module Iyi
         begin
           Rx::Pattern.compile(source, ignore_case: options.ignore_case?)
         rescue ex : Rx::SyntaxError
-          arg.raise "invalid pattern #{source.inspect} in macro: #{ex.message} (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)"
+          arg.raise "invalid pattern #{source.inspect} in macro: #{ex.message} (Iyi::Rx, the compiler's engine, keeps linear time: no backreferences, recursion or backtracking controls)"
         end
       else
         raise "regex interpolations not yet allowed in macros"
@@ -3558,10 +3558,13 @@ private def empty_no_return_array
   Iyi::ArrayLiteral.new(of: Iyi::Path.global("NoReturn"))
 end
 
-# iyi: a capture hash off the compiler's own engine. Named groups left with
-# pcre2, because Iyi::Rx refuses them (SPEC.md III.10), so every key is a
-# group number and group 0 leads; the key type stays Int32 | String so a macro
-# written against the old shape still typechecks.
+# iyi: a capture hash off the compiler's own engine. Group numbers lead, group 0
+# first, and the names the pattern declared follow in group order. Names were
+# absent from this hash while the engine refused them; they are here now, because
+# a macro author who writes `(?<name>...)` and reads back a hash without it gets
+# a silently smaller match, which is the quiet difference the engine exists to
+# avoid. The key type was always Int32 | String, which is what the old shape left
+# room for.
 private def regex_captures_hash(match : Iyi::Rx::Match)
   captures = Iyi::HashLiteral.new(
     of: Iyi::HashLiteral::Entry.new(
@@ -3574,6 +3577,12 @@ private def regex_captures_hash(match : Iyi::Rx::Match)
     substr = match[group]
     value = substr ? Iyi::StringLiteral.new(substr) : Iyi::NilLiteral.new
     captures.entries << Iyi::HashLiteral::Entry.new(Iyi::NumberLiteral.new(group), value)
+  end
+
+  match.names.to_a.sort_by { |(_, group)| group }.each do |(name, group)|
+    substr = match[group]
+    value = substr ? Iyi::StringLiteral.new(substr) : Iyi::NilLiteral.new
+    captures.entries << Iyi::HashLiteral::Entry.new(Iyi::StringLiteral.new(name), value)
   end
 
   captures

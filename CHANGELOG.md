@@ -258,7 +258,63 @@
   `Inner::X = ...` — which defines rather than reopens wherever the namespace
   exists, and the declarations rendered above it are what make it exist.
 
+- **Lookaround, and the reason it was refused was wrong.** `Iyi::Rx` supports
+  all four forms, `(?=)`, `(?!)`, `(?<=)` and `(?<!)`, nested to any depth. The
+  engine's header and SPEC.md both said lookaround was the price of RE2's
+  linear-time guarantee, on the premise that it needs a backtracker. It does
+  not: a lookaround over a regular inner pattern is a regular property of a
+  position, answered by a pre-pass costing one state set per character and
+  nothing per position. RE2 omits it because of its one-pass DFA design, not
+  because linear time forbids it. The guarantee is unchanged, and what it
+  actually costs is the constructs that are not regular, backreferences,
+  recursion, subroutine calls and conditionals. Lookbehind here is not
+  length-limited the way pcre2's is, so it accepts patterns pcre2 rejects.
+  SPEC.md III.10 and Appendix B #17 carry the correction with the earlier
+  reading still in them.
+
+  **A capturing group inside an assertion is refused, and that refusal is
+  new.** The pre-pass answers whether an assertion holds at a position and
+  never which text its inner pattern consumed, so the group cannot be set.
+  Reporting an empty capture where pcre2 reports a real one is the quiet
+  difference this engine exists to avoid, so it refuses at compile time with
+  the position instead.
+
+- **The escapes and the folding a pattern in this tree actually reaches for.**
+  Named groups in all three spellings, `(?<name>)`, `(?'name')` and
+  `(?P<name>)`, numbered alongside unnamed ones the way pcre2 numbers them,
+  with name lookup on the match. `\p{...}` and `\P{...}` for L, Lu, Ll, N and
+  M, braced or single-letter, inside a character class or out, with every other
+  category refused by name rather than approximated. `\v` as pcre2's vertical
+  whitespace class and `\V` as its complement. `\x{...}` at any digit count,
+  refusing at the offending position for no digits, a missing brace, a value
+  above U+10FFFF, or a surrogate, which pcre2 in UTF mode refuses too. And
+  `(?i)` folds past ASCII now, through
+  `Char#downcase(Unicode::CaseOptions::Fold)`, simple case folding, the same
+  relation pcre2 uses.
+
+  `spec/compiler/iyi/rx_spec.cr` holds all of it against pcre2 over one corpus,
+  31 examples including exhaustive codepoint sweeps for the character classes.
+  None of it cost a library: `bench/dependency_floor.sh` still exits 0.
+
+  Three readings stay this engine's own, each narrow and each stated rather
+  than left to be discovered. `\d` is any Unicode number where pcre2 under
+  `UCP` means `\p{Nd}` exactly, because no public stdlib predicate answers Nd
+  alone, which is also why `\p{Nd}` is refused rather than approximated. `ß`
+  and `ẞ` do not match caselessly here, because `ẞ` full-folds to `"ss"` and
+  chasing that one pair opens others, simple lowercase not being symmetric.
+  And lookbehind follows the union law here where pcre2 does not: on `"a"` at
+  byte 0, `(?<=(?:a|$))` searched from 0 reports byte 0, the same pattern
+  anchored at 0 reports nothing, and the ungrouped `(?<=a|$)` is right, so the
+  trigger is the wrapping group rather than the branch lengths.
+
 ### Fixed
+
+- **`gsub` copied the tail twice on an empty match at the end of the subject.**
+  `Iyi::Rx.gsub("abc", /$/, "<>")` answered `"abc<>abc"`. An empty match at the
+  very end left the cursor behind it, so the text between the cursor and the
+  end was appended a second time with the tail. `/$/` over `"abc"` is the
+  smallest case and reaches it with no lookaround in sight, so this was already
+  wrong before any of the above.
 
 - **`crystal tool bind` says why a bound shard cannot be linked into a program
   that has Crystal's runtime either.** A consumer built with `--crystal` is the
