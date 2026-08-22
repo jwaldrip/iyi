@@ -6,7 +6,7 @@
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 2,386-line library and nothing else. Every other
+  written against iyi's own 2,404-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
@@ -82,6 +82,19 @@
   and CI links with the printed command rather than one written into the
   workflow, so the command a person is told to type is the command that is
   tested.
+
+- **An iyi program is run on wasm32-wasi every build.** The module imports four
+  `wasi_snapshot_preview1` functions and nothing else, and it linked and then
+  trapped on `unreachable` before printing anything. wasi-libc's entry stub does
+  not call `main`: clang renames a C `main` to `__main_argc_argv`, the stub
+  calls that name, and a module defining only `main` leaves the stub's weak
+  reference unbound and traps the first time it is called through. The prelude
+  now defines the name the stub calls, and `hello.iyi` runs under wasmtime with
+  the same bytes it prints natively.
+
+  What `--cross-compile` prints for this target is `wasm-ld` with `-lc` and no
+  `crt1.o`, which links a module that is not a program. CI uses the wasi-sdk
+  clang driver, which supplies both, and the README says so.
 
 ### Fixed
 

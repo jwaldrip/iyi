@@ -341,7 +341,7 @@ jobs:
 
       # What the program prints here is what it has to print there. Taken from
       # a native run rather than written down, so the two cannot drift.
-      - name: Cross-compile hello for musl, aarch64 and Windows
+      - name: Cross-compile hello for musl, aarch64, Windows and wasm
         run: |
           mkdir -p cross
           ./bin/iyi run samples/iyi/hello.iyi > cross/expected.txt
@@ -356,6 +356,10 @@ jobs:
               --target x86_64-windows-msvc -o hello-windows \
               ../samples/iyi/hello.iyi > hello-windows.link )
           cat cross/hello-windows.link
+          ( cd cross && ../bin/iyi build --cross-compile \
+              --target wasm32-wasi -o hello-wasi \
+              ../samples/iyi/hello.iyi > hello-wasi.link )
+          cat cross/hello-wasi.link
           ls -l cross
 
       - uses: actions/upload-artifact@v4
@@ -444,6 +448,46 @@ jobs:
             throw "windows: OUTPUT DIFFERS"
           }
           Write-Host "windows: same output"
+
+  # wasm32-wasi, run rather than type-checked. The module imports four
+  # `wasi_snapshot_preview1` functions and nothing else, and what makes it a
+  # program a host can start is wasi-libc's entry stub — which calls
+  # `__main_argc_argv`, not `main`. A module defining only `main` links without
+  # complaint and traps on `unreachable` the moment the entry calls through the
+  # weak reference it left behind; the prelude defines the name the entry
+  # actually calls.
+  #
+  # Linked with the wasi-sdk clang driver, which supplies `crt1.o` and the
+  # sysroot. What `--cross-compile` prints for this target is `wasm-ld` with
+  # `-lc` and no `crt1.o`, which is not enough on its own — recorded in the
+  # README.
+  wasi-run:
+    needs: cross-objects
+    runs-on: ubuntu-24.04
+    name: "An iyi program, run on wasm32-wasi"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-objects
+          path: cross
+
+      - name: Install wasi-sdk and wasmtime
+        run: |
+          curl -sSL -o /tmp/wasi-sdk.tar.gz \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz
+          sudo mkdir -p /opt/wasi-sdk
+          sudo tar -xzf /tmp/wasi-sdk.tar.gz -C /opt/wasi-sdk --strip-components=1
+          curl -sSL https://wasmtime.dev/install.sh | bash
+
+      - name: What the module imports
+        run: /opt/wasi-sdk/bin/llvm-nm --undefined-only cross/hello-wasi.wasm
+
+      - name: Link against wasi-libc, and run it under wasmtime
+        run: |
+          /opt/wasi-sdk/bin/wasm32-wasi-clang cross/hello-wasi.wasm -o hello.wasm
+          "$HOME/.wasmtime/bin/wasmtime" hello.wasm > got.txt
+          cat got.txt
+          cmp cross/expected.txt got.txt && echo "wasm32-wasi: same output"
 
   binary:
     needs: build
