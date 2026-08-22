@@ -19,6 +19,26 @@ private def crystal_env
 end
 
 describe "`crystal tool bind`, all four steps" do
+  # What the four steps cannot carry, kept here because it is a property of the
+  # pipeline rather than of any one shard.
+  #
+  # A constant the compiler cannot fold is built when the program starts, from
+  # `__crystal_main`, and the read compiled into a method does not check whether
+  # that has happened — Crystal initialises eagerly and reads unguarded. A
+  # consumer has its own `__crystal_main` and never calls the shard's, so the
+  # constant stays null and the first read segfaults.
+  #
+  # Calling the shard's `__crystal_main` was tried, by renaming it out of the way
+  # with `objcopy --redefine-sym` and calling it from the consumer. It segfaults
+  # inside the initialisation itself, before reaching any constant: Crystal's top
+  # level expects Crystal's runtime — a thread, an event loop, the exception
+  # machinery — and an iyi program is not one. So this is not a matter of naming
+  # the constants in the artifact, which is what it looked like at first.
+  #
+  # A boundary carries code that needs no initialisation. That is the honest
+  # bound on it today.
+  pending "carries a shard's run-time state"
+
   it "builds and runs a program that calls a bound shard" do
     pending!("requires #{CRYSTAL_BIN} (`make crystal`)") unless File::Info.executable?(CRYSTAL_BIN)
     pending!("requires #{IYI_BIN} (`make iyi`)") unless File::Info.executable?(IYI_BIN)

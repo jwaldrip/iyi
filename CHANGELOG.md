@@ -111,14 +111,22 @@
   different commits, since an artifact is read only by the build that wrote it.
 
 - **`crystal tool bind` says that a bound shard's run-time state does not
-  cross.** Crystal runs a constant's initialiser from `__crystal_main`; a
-  consumer has its own, and the shard's sits in the linked object with nothing
-  calling it. A folded constant is fine — `LIMIT = 10` reads 10 — and one built
-  at run time is not: `TABLE = ["a", "b", "c"]` reads zeroed memory. Nothing
-  raises at any step, which is the worst shape a wrong answer can have, so the
-  tool now says it where somebody reads the four steps. Saying it is not fixing
-  it: a boundary is sound today for code that does not depend on the shard's own
-  run-time state.
+  cross.** Crystal runs a constant's initialiser from `__crystal_main` and
+  compiles the reads unguarded; a consumer has its own `__crystal_main` and
+  never calls the shard's, so the constant stays null and the first read
+  segfaults. A folded constant is fine — `LIMIT = 10` reads 10 — and one built
+  at run time is not.
+
+  Calling the shard's `__crystal_main` does not fix it, which was tried:
+  renamed out of the way with `objcopy --redefine-sym` and called from the
+  consumer, it segfaults *inside* the initialisation, before reaching any
+  constant. Crystal's top level expects Crystal's runtime — a thread, an event
+  loop, the exception machinery — and an iyi program is not one. So a boundary
+  carries code that needs no initialisation, and that is the bound on it today.
+
+  An earlier draft of this entry said the failure was silent — "no error at any
+  step, the program answers wrongly". That was a measurement mistake: the exit
+  status being read was a `printf`'s rather than the program's. It segfaults.
 
 - **A method has as many symbols as it has ways of being called, and the keep
   file named one.** The mangled name carries the types at the *call site*, not

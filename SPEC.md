@@ -4381,19 +4381,27 @@ Named honestly, so nobody mistakes this draft for complete.
     >
     > **And past the names, a hole that no name check would have found.** With
     > every symbol matching, `Store.plain(41)` answers 42 and
-    > `Store.from_constant(1)` answers nothing at all — exit 0, empty output,
-    > no error anywhere. Crystal runs a constant's initialiser from
-    > `__crystal_main`, the consumer has its own, and the shard's is in the
-    > linked object with nothing calling it. `LIMIT = 10` survives because the
-    > compiler folds it; `TABLE = ["a", "b", "c"]` has to be built at run time
-    > and reads zeroed memory instead.
+    > `Store.from_constant(1)` segfaults. Crystal initialises a constant from
+    > `__crystal_main` and compiles the reads unguarded; the consumer has its own
+    > `__crystal_main` and never calls the shard's, so the constant stays null.
+    > `LIMIT = 10` survives because the compiler folds it; `TABLE = ["a", "b",
+    > "c"]` has to be built at run time.
     >
-    > That is the failure this document is most careful about, arrived at from a
-    > new direction: the artifact is right, the object links, and the program
-    > answers wrongly. A boundary is sound today for code that does not depend on
-    > the shard's own run-time state, which `tool bind` now says out loud. What
-    > it would take is for the consumer to run the shard's initialisers, and that
-    > is a question about who owns a program's startup rather than about names.
+    > **Written here first as a silent wrong answer, which it is not.** The exit
+    > status being read was a `printf`'s rather than the program's — a mistake in
+    > the measurement and not in the compiler, and the second one of that shape
+    > this section has had to record. It crashes, loudly, on the first read.
+    >
+    > **And running the shard's initialisation does not fix it.** Renaming
+    > `__crystal_main` out of the way with `objcopy --redefine-sym` and calling
+    > it from the consumer segfaults *inside* the initialisation, before reaching
+    > any constant: Crystal's top level expects Crystal's runtime — a thread, an
+    > event loop, the exception machinery — and an iyi program, whose whole
+    > prelude is 1,053 lines, is not one. So this was never about naming the
+    > constants in the artifact, which is what it looked like from the outside.
+    >
+    > A boundary carries code that needs no initialisation. That is the bound on
+    > it today, and it is a larger claim than the earlier paragraphs implied.
     >
     > What still falls outside is a name the grammar cannot spell — `Foo_Bar`
     > needs two underscores running and `camelcase` reads two as one, so it comes
