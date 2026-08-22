@@ -106,6 +106,22 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r"crystal-lang\.org", "upstream's site"),
     (r"github\.com/crystal-lang", "upstream's repository"),
     (r"[Cc]opyright.*Crystal", "copyright"),
+    # Three arrivals from upstream's tarball work. `crystal/syntax_highlighter`
+    # is a real path inside Crystal's standard library, and the reason the
+    # tarball has to ship `compiler/`: the highlighter requires
+    # `compiler/crystal/syntax`, Crystal's exception page requires the
+    # highlighter, and Kemal requires the page. Naming it is the finding.
+    (r"crystal/syntax_highlighter", "a path inside Crystal's standard library"),
+    (r"Crystal::SyntaxHighlighter", "a class inside Crystal's standard library"),
+    # The artifact header records which library a module was built against, and
+    # an import across the two is refused by name in both directions. The field
+    # is called what it means (SPEC.md IV.5).
+    (r"crystal_library", "the header field naming the other library"),
+    # Crystal's daemon is its own binary with its own socket: `iyi` and
+    # `crystal` are one compiler with two command surfaces, and each looks up a
+    # server named after the binary that was typed.
+    (r"CRYSTAL_DAEMON_(BIN|SOCKET)", "the other command surface's own daemon"),
+    (r"Crystal (caches|runs)", "a sentence about the other language"),
     (
         r"Crystal's (own|library|licence|license|compiler|semantics|stdlib|"
         r"standard|prelude|codegen|cache|interpreter|fibers|ecosystem|list|"

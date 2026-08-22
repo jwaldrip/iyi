@@ -2614,3 +2614,193 @@ describe Iyi::IyiMod do
     text.should contain "impl Std::Enumerable::Enumerable for Std::List::List(T) forall T\n  type Elem = T\nend\n"
   end
 end
+
+# iyi: the ecosystem and R-1, together (SPEC.md Part V item 12d).
+#
+# `--crystal` gives a program Crystal's library; a `.iyimod` gives a consumer a
+# module it does not compile. Each was useful alone and refused together, and
+# what the refusal protected against turned out to be three concrete things
+# rather than one general one: the main module's helpers do not travel, the
+# consumer's numbering is its own, and a module's requires are not the
+# consumer's. All three have answers, so the combination is now supported and
+# these are what keeps it working.
+describe "a module compiled against Crystal's library" do
+  it "travels through a .iyimod and links, replaying its requires" do
+    with_tempdir("iyimod_crystal_library") do
+      Dir.mkdir_p "app"
+      # `uri` and not only `json`, because the requires are the point: the
+      # consumer requires neither, and `URI::Error.class:type_id` was the
+      # symbol that went undefined when they did not travel.
+      File.write "app/store.iyi", <<-IYI
+        module app/store
+
+        require "json"
+        require "uri"
+
+        pub def encode(name : String) : String
+          {"name" => name}.to_json
+        end
+
+        pub def slug(name : String) : String
+          URI.encode_path_segment(name)
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/store
+        using app/store
+
+        puts encode("iyi")
+        puts slug("a b")
+        IYI
+
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq %({"name":"iyi"}\na%20b)
+
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "store.iyimod"))
+      artifact.crystal_library.should be_true
+      artifact.requires.should eq ["json", "uri"]
+
+      File.delete "app/store.iyi"
+
+      consumer = create_spec_compiler
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq %({"name":"iyi"}\na%20b)
+    end
+  end
+
+  # The thing a shared library has to be shared: one copy of its state. Both
+  # sides were compiled by the same compiler and mangle the same names, so the
+  # linker folds them — but "the link succeeded" would also be true of a
+  # program with two copies of a lazily initialised constant, and that program
+  # is wrong in a way nothing reports.
+  it "shares the library's state with the program that consumes it" do
+    with_tempdir("iyimod_crystal_state") do
+      Dir.mkdir_p "app"
+      File.write "app/ids.iyi", <<-IYI
+        module app/ids
+
+        require "json"
+
+        pub def stdout_id : UInt64
+          STDOUT.object_id
+        end
+
+        pub def program_name_id : UInt64
+          PROGRAM_NAME.object_id
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/ids
+        using app/ids
+
+        puts stdout_id == STDOUT.object_id
+        puts program_name_id == PROGRAM_NAME.object_id
+        IYI
+
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+
+      File.delete "app/ids.iyi"
+
+      consumer = create_spec_compiler
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "true\ntrue"
+    end
+  end
+
+  it "refuses to be imported by a program built against iyi's prelude" do
+    with_tempdir("iyimod_crystal_into_iyi") do
+      Dir.mkdir_p "app"
+      File.write "app/store.iyi", <<-IYI
+        module app/store
+
+        require "json"
+
+        pub def encode(name : String) : String
+          {"name" => name}.to_json
+        end
+        IYI
+      File.write "producer.iyi", <<-IYI
+        module main
+
+        import app/store
+        using app/store
+
+        puts encode("iyi")
+        IYI
+
+      producer = create_spec_compiler
+      producer.emit_iyimod = "mods"
+      producer.compile Iyi::Compiler::Source.new(
+        File.expand_path("producer.iyi"), File.read("producer.iyi")),
+        File.expand_path("producer")
+
+      File.write "consumer.iyi", <<-IYI
+        module main
+
+        import app/store
+        using app/store
+
+        puts 1
+        IYI
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+
+      expect_raises Iyi::CodeError, /built against Crystal's standard library/ do
+        consumer.compile Iyi::Compiler::Source.new(
+          File.expand_path("consumer.iyi"), File.read("consumer.iyi")),
+          File.expand_path("consumer")
+      end
+    end
+  end
+
+  it "refuses to import a module built against iyi's prelude" do
+    with_tempdir("iyimod_iyi_into_crystal") do
+      Dir.mkdir_p "app"
+      File.write "app/greet.iyi", <<-IYI
+        module app/greet
+
+        pub def hello(name : String) : String
+          "merhaba " + name
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/greet
+        using app/greet
+
+        puts hello("iyi")
+        IYI
+
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("producer")
+
+      consumer = create_spec_compiler
+      consumer.use_iyimod = "mods"
+
+      expect_raises Iyi::CodeError, /built against iyi's prelude/ do
+        consumer.compile source, File.expand_path("consumer")
+      end
+    end
+  end
+end

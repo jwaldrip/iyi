@@ -35,6 +35,7 @@ module Iyi
         run                      build and run a program (default)
         mod                      inspect a .iyimod module artifact
         repl                     a session: one line in, its value out
+        daemon                   hold the prelude analysed between builds
         env                      print environment information
         clear_cache              clear the compiler cache
         tool                     formatter and editor tools, Crystal's
@@ -50,8 +51,9 @@ module Iyi
 
     A `.iyi` entry file gets iyi's prelude; `--crystal` gives it Crystal's
     instead, and there `require "kemal"` means what it means in Crystal. The
-    rules do not change with the library. See SPEC.md for the design and
-    README.md for what is and is not here.
+    rules do not change with the library. `iyi daemon` is for that second mode:
+    it holds Crystal's library analysed between builds and halves them. See
+    SPEC.md for the design and README.md for what is and is not here.
     USAGE
 
   # What the binary calls itself, read from `src/IYI_VERSION` — the same file
@@ -61,7 +63,7 @@ module Iyi
   VERSION = Iyi::Config.iyi_version
 
   # The ones that are this compiler doing this compiler's job.
-  DELEGATED = %w(build run mod repl env clear_cache tool)
+  DELEGATED = %w(build run mod repl env clear_cache tool daemon)
 
   # The ones that belong to Crystal and are still in the binary underneath.
   # Named rather than swallowed, because "unknown command" would be a lie.

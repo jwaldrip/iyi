@@ -101,11 +101,18 @@ class Iyi::Command
       Process.exec(override, ["daemon", "start"] + options)
     end
 
+    # iyi: named after the binary that was typed, because there are two of
+    # them. `iyi` and `crystal` are the same compiler with different preludes
+    # and different command surfaces, and a server is the compiler it was built
+    # from — an `iyi daemon start` served by `crystal-daemon` would hold the
+    # wrong prelude and answer `iyi help` questions in the wrong language.
+    server_name = "#{Command.program_name}-daemon"
+
     candidates = [] of String
     if executable = Process.executable_path
-      candidates << File.join(File.dirname(executable), "crystal-daemon")
+      candidates << File.join(File.dirname(executable), server_name)
     end
-    candidates << File.join(".build", "crystal-daemon")
+    candidates << File.join(".build", server_name)
 
     if server = candidates.find { |candidate| File.info?(candidate).try(&.file?) }
       Process.exec(server, ["daemon", "start"] + options)
@@ -115,7 +122,7 @@ class Iyi::Command
       The build daemon needs a single-threaded compiler, and none was found.
 
       Build one with:
-          make crystal-daemon
+          make #{server_name}
 
       Looked in:
       #{candidates.join('\n') { |candidate| "    #{candidate}" }}
@@ -171,6 +178,13 @@ class Iyi::Command
 
       # The whole point: pay for the prelude once, here, rather than in every
       # build. Children adopt this and start from it.
+      # iyi: Crystal's prelude, under `iyi` too, and that is the right default
+      # rather than an oversight. `--crystal` sets `prelude = "prelude"`, which
+      # is what `Compiler.new` already has, so an `iyi build --crystal` hits
+      # this analysis on its first request — and that is the mode the daemon is
+      # for (SPEC.md IV.1d). An ordinary `.iyi` build wants `iyi/prelude`,
+      # misses, and warms it after the first build: 0.03 s, which is the whole
+      # reason the daemon is not for that mode.
       elapsed = Time.instant
       preanalysed = Compiler.new.preanalyse_prelude
       Compiler.preanalysed[preanalysed.key] = preanalysed
@@ -210,9 +224,14 @@ class Iyi::Command
       getter err_r : IO::FileDescriptor
       getter pid : LibC::PidT
       getter args : Array(String)
+
+      # The directory the client ran in. The child builds there, and the warm
+      # that follows has to read the same arguments in the same place — see
+      # `daemon_warm`.
+      getter cwd : String
       property open : Int32
 
-      def initialize(@client, @out_r, @err_r, @pid, @args)
+      def initialize(@client, @out_r, @err_r, @pid, @args, @cwd)
         @open = 2
       end
 
@@ -223,7 +242,7 @@ class Iyi::Command
 
     private def daemon_loop(server, identity : String, &refresh) : Nil
       builds = [] of DaemonBuild
-      warm = [] of Array(String)
+      warm = [] of {String, Array(String)}
       buffer = Bytes.new(16384)
 
       loop do
@@ -278,14 +297,15 @@ class Iyi::Command
         end
 
         finished.each do |build|
-          warm << build.args if daemon_finish(build)
+          warm << {build.cwd, build.args} if daemon_finish(build)
           builds.delete(build)
         end
 
         # Only while nothing is in flight: analysing a prelude takes about a
         # second, and this loop is the only thing relaying output.
         if builds.empty? && !warm.empty?
-          daemon_warm(warm.shift)
+          cwd, args = warm.shift
+          daemon_warm(cwd, args)
         end
       end
     end
@@ -353,7 +373,7 @@ class Iyi::Command
       out_w.close
       err_w.close
 
-      builds << DaemonBuild.new(client, out_r, err_r, pid.not_nil!, args)
+      builds << DaemonBuild.new(client, out_r, err_r, pid.not_nil!, args, cwd)
     end
 
     private def daemon_finish(build : DaemonBuild) : Bool
@@ -379,10 +399,39 @@ class Iyi::Command
     # turning arguments into a compiler means running the option parser, and the
     # option parser exits the process on bad input. Doing that here on arguments
     # a client made up would take the daemon down on a typo.
-    private def daemon_warm(args : Array(String)) : Nil
+    #
+    # **In the client's directory, and that is not a detail.** The reasoning
+    # above was incomplete: a succeeded build's arguments are still bad input
+    # somewhere else, and `-o out app.iyi` names two relative paths. Parsed
+    # here, in the daemon's own directory, `gather_sources` could not find the
+    # file and `abort!` exited — so the daemon died *after serving a build
+    # correctly*, on the ordinary case of a client that typed a relative path.
+    # Nothing in the specs caught it because they pass absolute fixture paths.
+    #
+    # Safe to `cd` the daemon itself: this runs only while no build is in
+    # flight, and the process is single-threaded, which is what lets it fork at
+    # all.
+    private def daemon_warm(cwd : String, args : Array(String)) : Nil
       limit = (Config.env("DAEMON_PRELUDES").try(&.to_i?) || 3)
       return if Compiler.preanalysed.size >= limit
 
+      here = Dir.current
+      begin
+        Dir.cd(cwd)
+      rescue
+        # The client's directory is gone. Nothing to warm from, and nothing
+        # worth taking the daemon down for.
+        return
+      end
+
+      begin
+        daemon_warm_in_place(args, limit)
+      ensure
+        Dir.cd(here) rescue nil
+      end
+    end
+
+    private def daemon_warm_in_place(args : Array(String), limit : Int32) : Nil
       compiler = Iyi::Command.new(args.dup).prelude_compiler_for_build
       return if Compiler.preanalysed.has_key?(compiler.prelude_cache_key)
 

@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 19_u32
+  FORMAT_VERSION = 20_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -60,6 +60,10 @@ module Iyi::IyiMod
     # as `TypeIds` and a different question, so a section of its own — see
     # IV.1g.
     Constants = 10
+
+    # iyi: under `--crystal`, the library files this module required, in the
+    # order it required them. Same reason as `TypeIds` again — see IV.1g.
+    Requires = 11
   end
 
   class Error < Iyi::Error
@@ -164,6 +168,10 @@ module Iyi::IyiMod
     # *dependent* records about this module and would make this one move for a
     # change it does not see.
     write_strings interface, artifact.import_names
+    # Beside the imports and for the reason they are there: a require is what
+    # brings the types an exported signature names into existence, so changing
+    # one changes what those signatures mean.
+    write_strings interface, artifact.requires
 
     implementation = IO::Memory.new
     implementation.write encode_mono_bodies(artifact)
@@ -559,6 +567,37 @@ module Iyi::IyiMod
     # Settable alongside `object_code`, and for the same reason.
     property constants : Array(String)
 
+    # Whether this module was compiled against Crystal's standard library
+    # rather than iyi's prelude — `--crystal`.
+    #
+    # Recorded rather than inferred from `requires`, because a module can be
+    # built with `--crystal` and require nothing, and it is still compiled
+    # against a different `String`. Two libraries define types of the same
+    # names with different layouts and different method symbols, so a program
+    # cannot hold one module of each: the link would succeed on the names that
+    # happen to agree and be wrong about the rest. Checked on import, beside
+    # the version, the target and the flags (IV.5).
+    property crystal_library : Bool
+
+    # Under `--crystal`, the library files this module required, in the order
+    # it required them.
+    #
+    # A module compiled against Crystal's library is compiled against the types
+    # that library defines, and its object code refers to them by name — a type
+    # id, a constant, a method symbol. The consumer defines those names, and it
+    # can only define the ones its own program has. A module that required
+    # `uri` and a consumer that did not left `URI::Error.class:type_id`
+    # undefined at link time: a name from a library the consumer had never
+    # heard of, in an object file it did not compile.
+    #
+    # So the requires travel with the module and the consumer replays them,
+    # which makes the consumer's program a superset of the producer's. The
+    # *numbering* is still the consumer's — that is what `TypeIds` is for — so
+    # this adds types rather than importing anybody else's ids.
+    #
+    # Empty for a module built under iyi's own prelude, which has no `require`.
+    property requires : Array(String)
+
     # IV.3's three hashes. See `Hashes`.
     #
     # Settable because they are computed *from* the rest of the artifact: the
@@ -571,7 +610,8 @@ module Iyi::IyiMod
                    @object_code = [] of ObjectUnit, @has_initialiser = false,
                    @mono_bodies = {} of String => String, @initialiser = "",
                    @type_ids = [] of String, @hashes = Hashes.empty,
-                   @constants = [] of String, @macro_bodies = [] of String)
+                   @constants = [] of String, @macro_bodies = [] of String,
+                   @requires = [] of String, @crystal_library = false)
     end
   end
 
@@ -590,6 +630,13 @@ module Iyi::IyiMod
     sections << {Section::Hashes, encode_hashes(artifact)} unless artifact.hashes.empty?
 
     sections << {Section::Imports, encode_imports(artifact)}
+
+    # With the imports, because it is the same question asked of the other
+    # world: what has to be loaded before these declarations mean anything.
+    unless artifact.requires.empty?
+      sections << {Section::Requires, encode_requires(artifact)}
+    end
+
     sections << {Section::Exports, encode_exports(artifact)}
 
     # Between the declarations and the machine code, which is where it belongs:
@@ -760,6 +807,7 @@ module Iyi::IyiMod
       initialiser = ""
       type_ids = [] of String
       constants = [] of String
+      requires = [] of String
       hashes = Hashes.empty
 
       table.each do |(kind, length, sum)|
@@ -786,6 +834,7 @@ module Iyi::IyiMod
         when Section::Initialiser then initialiser = String.new(payload)
         when Section::TypeIds     then type_ids = decode_type_ids(payload)
         when Section::Constants   then constants = decode_constants(payload)
+        when Section::Requires    then requires = decode_requires(payload)
         when Section::Hashes      then hashes = decode_hashes(payload)
         else
           # Written by a later compiler, or a section this one does not need.
@@ -800,7 +849,7 @@ module Iyi::IyiMod
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
         object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
-        hashes, constants, macro_bodies)
+        hashes, constants, macro_bodies, requires, header[:crystal_library])
     end
   rescue ex : Error
     raise ex
@@ -851,6 +900,13 @@ module Iyi::IyiMod
           io.puts "  #{edge.module_name} — interface #{edge.interface}, implementation #{edge.implementation}"
         end
       end
+    end
+
+    io.puts "library       #{artifact.crystal_library ? "Crystal's standard library (--crystal)" : "iyi's prelude"}"
+
+    unless artifact.requires.empty?
+      io.puts "requires"
+      artifact.requires.each { |name| io.puts "  #{name}" }
     end
 
     unless artifact.usings.empty?
@@ -958,6 +1014,16 @@ module Iyi::IyiMod
     unless artifact.imports.empty?
       io << '\n'
       artifact.import_names.each { |name| io << "import " << name << '\n' }
+    end
+
+    # And the other world's, restated for the same reason and one more: a
+    # signature here can name `URI::Params`, and the module's object code calls
+    # into that library by name. The consumer has to have compiled it too, or
+    # the link fails on a name from a library nobody in this program required
+    # (IV.1g, `Requires`).
+    unless artifact.requires.empty?
+      io << '\n'
+      artifact.requires.each { |name| io << "require " << name.inspect << '\n' }
     end
 
     # Inside the module, where the parser keeps a `using` — it resolves names
@@ -1369,6 +1435,7 @@ module Iyi::IyiMod
     io.write_bytes artifact.flags.size.to_u32, FORMAT
     artifact.flags.each { |flag| write_string io, flag }
     io.write_byte(artifact.has_initialiser ? 1_u8 : 0_u8)
+    io.write_byte(artifact.crystal_library ? 1_u8 : 0_u8)
     io.to_slice
   end
 
@@ -1380,9 +1447,16 @@ module Iyi::IyiMod
     target_triple = read_string(io)
     flags = Array(String).new(io.read_bytes(UInt32, FORMAT)) { read_string(io) }
     has_initialiser = io.read_byte == 1_u8
+    crystal_library = io.read_byte == 1_u8
     {module_name: module_name, source_path: source_path,
      compiler_version: compiler_version, target_triple: target_triple, flags: flags,
-     has_initialiser: has_initialiser}
+     has_initialiser: has_initialiser, crystal_library: crystal_library}
+  end
+
+  private def self.encode_requires(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    write_strings io, artifact.requires
+    io.to_slice
   end
 
   private def self.encode_imports(artifact : Artifact) : Bytes
@@ -1396,6 +1470,10 @@ module Iyi::IyiMod
     end
     write_strings io, artifact.usings
     io.to_slice
+  end
+
+  private def self.decode_requires(payload : Bytes) : Array(String)
+    read_strings IO::Memory.new(payload)
   end
 
   private def self.decode_imports(payload : Bytes)

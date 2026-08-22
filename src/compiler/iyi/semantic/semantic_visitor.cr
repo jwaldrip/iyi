@@ -66,6 +66,16 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     # Remember that the program depends on this require
     @program.record_require(filename, relative_to)
 
+    # iyi: and remember it against the file that wrote it, so that a module
+    # compiled under `--crystal` can carry its requires to whoever consumes its
+    # artifact (SPEC.md IV.1g, `Requires`). A relative require is file
+    # inclusion inside this unit and travels with its source, so it is not one
+    # of these; a library name is.
+    if relative_to && relative_to.ends_with?(".iyi") && !filename.starts_with?('.')
+      list = (@program.iyi_module_requires[relative_to] ||= [] of String)
+      list << filename unless list.includes?(filename)
+    end
+
     filenames = begin
       @program.find_in_path(filename, relative_to)
     rescue ex : IyiPath::NotFoundError
@@ -478,6 +488,24 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
         never having happened. Build it from source, or pass --no-codegen to
         typecheck against the artifact.
         MESSAGE
+    end
+
+    # iyi: both worlds are compiled by the same compiler, so an artifact from
+    # one links happily into the other — on the names that happen to agree.
+    # `String` is a different type in each, and neither the linker nor anything
+    # after it would say so. Said before the declarations are parsed, because a
+    # module built under `--crystal` replays its requires there, and `require`
+    # in a language that has none is the wrong error to report against a file
+    # the author cannot open.
+    if artifact.crystal_library != !@program.iyi_prelude?
+      built = artifact.crystal_library ? "Crystal's standard library" : "iyi's prelude"
+      here = @program.iyi_prelude? ? "iyi's prelude" : "Crystal's standard library"
+      fix = artifact.crystal_library ? "build this program with `--crystal` too" \
+                                        : "rebuild the module with `--crystal`"
+      node.raise "\"#{artifact.module_name}\" was built against #{built} and " \
+                 "this program is built against #{here}. The two define types " \
+                 "of the same names with different layouts, so a program " \
+                 "cannot hold one module of each — #{fix}"
     end
 
     unless artifact.object_code.empty?

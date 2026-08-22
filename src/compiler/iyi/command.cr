@@ -314,7 +314,8 @@ class Iyi::Command
     config, result = compile_no_codegen "tool bind", hierarchy: true
     @progress_tracker.stage("Tool (bind)") do
       Iyi.print_bind result.program, config.hierarchy_exp, STDOUT,
-        artifact_dir: config.compiler.emit_bind
+        artifact_dir: config.compiler.emit_bind,
+        bound_dir: config.compiler.use_iyimod
     end
   end
 

@@ -44,6 +44,48 @@ class Iyi::CodeGenVisitor
     call func, [type_id] of LLVM::Value
   end
 
+  # iyi: defines `~match<T>` for every type an artifact's object code might ask
+  # about, for the reason `iyi_define_all_type_ids` exists (SPEC.md IV.1g).
+  #
+  # A unit that travels can call one of these — `~match<IO+>` is the one a
+  # module using Crystal's library produced — and the function lives in the
+  # *main* module, which the artifact does not carry. It cannot be carried
+  # either: a match against a virtual type compares against a range of type
+  # ids, and the numbering belongs to the program rather than to the module, so
+  # a copy compiled by the producer would compare the consumer's ids against
+  # the producer's numbers and answer wrongly with no symptom.
+  #
+  # So the consumer defines them, with its own numbering, exactly as it defines
+  # the type ids. All of them rather than the ones an object file asks for,
+  # because this build cannot see inside an object file, and each is a compare
+  # or two.
+  #
+  # Collected before any of them is defined, because asking a type for its
+  # virtual form is what creates that form: defining as we walk would be
+  # mutating the numbering while reading it.
+  def iyi_define_all_match_funs : Nil
+    virtuals = [] of VirtualType
+
+    @program.llvm_id.each_type do |type|
+      next unless type.is_a?(ClassType) || type.is_a?(GenericClassInstanceType)
+
+      virtual = type.virtual_type
+      virtuals << virtual if virtual.is_a?(VirtualType)
+    end
+
+    virtuals.each do |virtual|
+      iyi_define_match_fun(virtual)
+      iyi_define_match_fun(virtual.metaclass.as(VirtualMetaclassType))
+    end
+  end
+
+  private def iyi_define_match_fun(type : VirtualType | VirtualMetaclassType) : Nil
+    name = "~match<#{type.llvm_name}>"
+    return if typed_fun?(@main_mod, name)
+
+    create_match_fun(name, type)
+  end
+
   private def create_match_fun(name, type)
     in_main do
       define_main_function(name, ([llvm_context.int32]), llvm_context.int1) do |func|

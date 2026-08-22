@@ -221,24 +221,6 @@ module Iyi
     # Raises `InvalidByteSequenceError` if the source code is not
     # valid UTF-8.
     def compile(source : Source | Array(Source), output_filename : String) : Result
-      # iyi: the two libraries are two modes, and they do not mix on the
-      # reading side.
-      #
-      # An artifact's object code numbers the types its module's own bodies
-      # made, and under Crystal's library those include the standard library's
-      # own — `String::CHAR_TO_DIGIT62` and the rest. A consumer that reads
-      # such an artifact while compiling its own copy of that library has two
-      # of everything, and what came out was an LLVM module that would not
-      # verify rather than an error anybody could act on.
-      if use_iyimod && !prelude.ends_with?("iyi/prelude")
-        raise Iyi::Error.new(
-          "--use-iyimod needs iyi's own prelude. A program built against " \
-          "Crystal's standard library compiles its libraries from source, " \
-          "which is what `--crystal` is for, and an artifact is the other " \
-          "way of getting a module (SPEC.md Part V item 12)."
-        )
-      end
-
       compile_configure_program(source, output_filename) { }
     end
 
@@ -254,8 +236,40 @@ module Iyi
       # build's, so that anything derived from it — `__temp_` prefixes, error
       # locations — matches what a normal compile would produce.
       program.filename = sources.first.filename
+
+      # And this build's directory. A daemon analyses the prelude in its own,
+      # and `lib` is resolved relative to whatever directory the path was built
+      # in — so a program that requires a shard looked for it beside the daemon
+      # and reported "can't find file 'kemal'". Every shard-using project, from
+      # any directory but the daemon's own.
+      # Assigned back rather than mutated in place: `IyiPath` is a struct,
+      # so the getter hands out a copy and setting a field on it changes
+      # nothing.
+      path = program.iyi_path
+      path.current_dir = Dir.current
+      program.iyi_path = path
       program.compiler = self
       program.progress_tracker = @progress_tracker
+
+      # This path never runs `new_program`, so everything that method decides
+      # about a build was decided by whoever analysed the prelude — a
+      # `Compiler.new` in a daemon, with none of this build's switches.
+      #
+      # Most of it is safe by construction: the flags, the target, the
+      # optimisation mode, `debug`, `static` and the prelude itself are all in
+      # `prelude_cache_key`, so an analysis that differs in any of them is a
+      # different analysis. These are the ones that are not, and leaving them
+      # was not a degradation but a **silent lie**: `--use-iyimod` was accepted
+      # and ignored, and the build compiled every module from source while
+      # saying nothing.
+      program.iyi_module_dir = @use_iyimod
+      program.iyi_wants_object_code = !@no_codegen
+      program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
+      program.warnings = @warnings
+      program.color = color?
+      program.stdout = stdout
+      program.show_error_trace = show_error_trace?
+
       yield program
 
       node = @progress_tracker.stage("Parse") do
@@ -330,10 +344,59 @@ module Iyi
     # cannot serve a build under another — macros branch on flags.
     class_property preanalysed = {} of String => Preanalysed
 
+    # iyi: what each of this class's switches is to a preanalysed prelude.
+    #
+    # A cache key is a claim that everything not in it does not matter, and this
+    # one was written when the only thing reading it was prelude analysis. Every
+    # switch added since had to be checked against it by hand, silently, with
+    # nothing enforcing the check — and `--use-iyimod` is what happened when
+    # somebody did not: accepted, ignored, and the build compiled every module
+    # from source without a word (SPEC.md IV.1d).
+    #
+    # So the claim is written down and `prelude_cache_key` refuses to compile
+    # while any switch is missing from it. Three answers, and a new property has
+    # to be given one of them:
+    #
+    # - it changes what the prelude analyses *to*, so it belongs in the key;
+    # - it is the build's own and has to be re-applied to an adopted prelude,
+    #   because that path never runs `new_program`;
+    # - it reaches neither, which is most of them.
+    IN_PRELUDE_KEY = %w(prelude codegen_target optimization_mode debug static wants_doc flags)
+
+    # Re-applied by the adopt path above. `new_program` is what would otherwise
+    # have set them, and adoption skips it.
+    APPLIED_ON_ADOPT = %w(use_iyimod no_codegen emit_iyimod warnings color stdout show_error_trace)
+
+    # Neither, and two of these are judgements rather than facts. `mcpu`,
+    # `mattr` and `mcmodel` reach the target machine and the target machine
+    # reaches codegen, not analysis — a prelude analysed for one `-mcpu` is the
+    # same analysis as for another. `progress_tracker` and `stderr` are where
+    # output goes; `new_program` sets the first and the adopt path sets neither,
+    # which is visible now rather than merely true.
+    OUTSIDE_PRELUDE_ANALYSIS = %w(
+      cleanup cross_compile dependency_printer dump_ll emit_base_filename
+      emit_bind emit_targets frame_pointers iyi_direct_link iyi_keep
+      iyi_link_driver_only link_flags mattr mcmodel mcpu n_threads no_cleanup
+      program progress_tracker single_module stderr target_machine verbose
+    )
+
     # Everything that changes what the prelude analyses *to*. Macros branch on
     # flags, so a build whose key differs cannot adopt a prelude analysed under
     # another one and has to analyse its own.
     def prelude_cache_key : String
+      {% begin %}
+        {% classified = IN_PRELUDE_KEY + APPLIED_ON_ADOPT + OUTSIDE_PRELUDE_ANALYSIS %}
+        {% for ivar in @type.instance_vars %}
+          {% unless classified.includes?(ivar.name.stringify) %}
+            {% raise "Compiler##{ivar.name} is new, and nothing says what it is to a " +
+                     "preanalysed prelude. A daemon serves builds from a key that claims " +
+                     "everything not in it does not matter, so say which this is: add it to " +
+                     "IN_PRELUDE_KEY, APPLIED_ON_ADOPT or OUTSIDE_PRELUDE_ANALYSIS in " +
+                     "compiler.cr (SPEC.md IV.1d)." %}
+          {% end %}
+        {% end %}
+      {% end %}
+
       String.build do |io|
         io << prelude << '|' << codegen_target << '|' << @optimization_mode << '|'
         io << debug << '|' << static? << '|' << wants_doc? << '|'
@@ -359,6 +422,31 @@ module Iyi
     def compile_configure_program(source : Source | Array(Source), output_filename : String, & : Program -> Nil) : Result
       source = [source] unless source.is_a?(Array)
       return prelude_fork_probe(source, output_filename) if ENV["IYI_FORK_PROBE"]?
+
+      # iyi: `IYI_WARM=1` — analyse the prelude and adopt it, in one process and
+      # **without forking**, printing the two halves.
+      #
+      # The daemon does three things at once: it analyses a prelude, it keeps
+      # it, and it forks a child to use it. When its numbers disappoint there is
+      # no way to tell which of the three is at fault, and the answer decides
+      # whether the daemon is worth having at all. This removes the fork and
+      # leaves the rest, so the two can be priced apart.
+      #
+      # What it priced: adoption returns essentially the whole prelude analysis,
+      # for a program requiring a shard as much as for one that does not, and
+      # the fork costs 0.2 to 0.3 s of it (SPEC.md IV.1d). A measurement tool
+      # rather than a mode — it analyses the prelude in the foreground, so it is
+      # always slower overall than an ordinary build.
+      if ENV["IYI_WARM"]? && !Compiler.preanalysed.has_key?(prelude_cache_key)
+        warm = Time.instant
+        pre = preanalyse_prelude
+        Compiler.preanalysed[pre.key] = pre
+        STDERR.puts "[warm] prelude #{warm.elapsed.total_seconds.round(3)}s"
+        rest = Time.instant
+        result = compile_with_preanalysed_prelude(pre, source, output_filename) { |program| yield program }
+        STDERR.puts "[warm] rest    #{rest.elapsed.total_seconds.round(3)}s"
+        return result
+      end
 
       if pre = Compiler.preanalysed[prelude_cache_key]?
         return compile_with_preanalysed_prelude(pre, source, output_filename) { |program| yield program }
@@ -420,22 +508,6 @@ module Iyi
     private def prepare_iyimods(program : Program) : Array({String, IyiMod::Artifact})?
       return unless dir = emit_iyimod
 
-      # iyi: and the writing side of the same rule.
-      #
-      # An artifact written under Crystal's library is one `--use-iyimod`
-      # refuses to read, so writing it is worse than refusing to: a file
-      # nothing can consume, produced without a word. Said whether or not this
-      # program has a module to write, because "accepted and did nothing" is
-      # the same silence in a smaller disguise.
-      if !prelude.ends_with?("iyi/prelude")
-        raise Iyi::Error.new(
-          "--emit-iyimod needs iyi's own prelude. An artifact written against " \
-          "Crystal's standard library is one nothing can read back: a " \
-          "consumer compiles its own copy of that library and has two of " \
-          "everything (SPEC.md Part V item 12a)."
-        )
-      end
-
       flags = program.flags.to_a.sort!
 
       # Before codegen, because that is what it is for: a method whose body is
@@ -486,6 +558,8 @@ module Iyi
           mono_bodies: program.iyi_mono_bodies[filename]? || {} of String => String,
           macro_bodies: collect_iyi_macros(program, module_name),
           initialiser: program.iyi_module_initialiser_source[filename]? || "",
+          requires: program.iyi_module_requires[filename]? || [] of String,
+          crystal_library: !program.iyi_prelude?,
         )
 
         # Here rather than in `write_iyimods`, so that they are taken from the

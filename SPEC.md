@@ -748,7 +748,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 87,802 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 88,754 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 6,679 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3408,6 +3408,7 @@ as valid is the worst failure mode a build cache has.
 | Header | magic, format version, compiler version, target triple, build flags |
 | Hashes | interface / implementation / private (see IV.3) |
 | Imports | DAG edges, each with the interface hash it was compiled against |
+| Requires | under `--crystal`, the library files the module required (Part V item 12d) |
 | Exports | types, signatures, traits, impls, constants |
 | Macro bodies | serialised AST for exported macros and derives |
 | Mono bodies | the bodies a consumer has to compile: source text, not IR yet |
@@ -3434,6 +3435,12 @@ consumer has to compile itself, `Initialiser` the module's own top-level code,
 `TypeIds` the types its object code numbers, `Constants` the names that code
 reads, and `MacroBodies` the macros a travelling body expands** (IV.1g). Every
 section the `Section` enum names is written now.
+
+`Requires` is the newest and belongs to the same rule as `TypeIds`: a module
+built with `--crystal` refers to Crystal's types by name, and only a program
+that required the same library has those names to define. The header also
+records *which* library a module was built against, and importing across the two
+is refused — Part V item 12d is why both are there.
 
 `MacroBodies` was the last one, and what put it there was a body that travels:
 the consumer compiles a block-taking `run`, `run` writes `twice(n)`, and `twice`
@@ -4215,6 +4222,163 @@ it removes is prelude analysis, and iyi's prelude is small enough that
 analysing it is no longer a term. So the daemon stays in the compiler, where it
 is Crystal's to use on Crystal's prelude, and `iyi` does not offer it: a
 command that costs a terminal and buys nothing is not a command.
+
+> **And then `--crystal` gave it a prelude to hold again, so `iyi` offers it.**
+> The paragraph above is right about iyi's prelude and wrong about the mode
+> item 12d made central. `iyi daemon start` runs a single-threaded `iyi-daemon`
+> built and shipped beside `iyi`, and holds Crystal's library analysed between
+> builds.
+>
+> **The first numbers written here were wrong, and how they were wrong is worth
+> more than they were.** They are below, after the right ones, because a
+> measurement that flatters its own feature is a failure this document has now
+> recorded more than once.
+>
+> Front end only, so that the term the daemon actually removes is not diluted by
+> codegen. Release compiler, a daemon holding one prelude, and the two arms
+> alternated rather than run in blocks — this machine's clock steps, and a block
+> of one arm can land inside a step:
+>
+> | twelve-module app, `--no-codegen` | normal | through the daemon |
+> |---|---|---|
+> | twelve modules | 0.77–0.85 s | **0.44–0.49 s** |
+> | twelve modules and Kemal | 1.15–1.36 s | 0.93–1.13 s |
+> | the same, with Kemal named in a `--prelude` file | 1.15–1.36 s | **0.57–0.66 s** |
+>
+> **What it removes is about 0.3 s**, and a full build adds codegen and a link
+> that it does not touch, so the share is smaller again. Full-build timings on
+> this machine were too noisy to publish.
+>
+> > **They are publishable now, and the harness is committed** —
+> > `bench/daemon_full_build.py`, which builds twelve modules under `--crystal`
+> > with codegen and a link, eight alternating pairs, a module edited before
+> > every build, and refuses to run unless both binaries are optimised. All
+> > three of those are the corrections above, built in so they cannot be
+> > forgotten again.
+> >
+> > | twelve modules, full build | min | median |
+> > |---|---|---|
+> > | normal | 0.63 s | 0.66 s |
+> > | through the daemon | **0.46 s** | **0.49 s** |
+> >
+> > **0.17 s, or 26%**, and two runs agree to a hundredth. What was called noise
+> > was mostly the measurement: `/usr/bin/time`, whose negative elapsed times
+> > this section records, is not installed on this machine at all, and the wall
+> > clock now runs a three-second window against the monotonic one with no
+> > backward step.
+> >
+> > **This is not the row above measured further.** The app here is twelve
+> > trivial modules and its front end alone is 0.35 s, against 0.81 s for the
+> > app the table was made from — a lighter program, so a smaller saving. What
+> > it establishes is that a whole build *can* be measured here, and what the
+> > shape of the answer is: the daemon takes about half of the front end, and
+> > the front end is about half of the build.
+>
+> **The last row is the finding.** It is the only large effect, it is more than
+> twice the other two, and it does not come from holding the prelude — it comes
+> from holding *Kemal*. The daemon's value is in the program's dependencies
+> rather than in the library underneath them, which is the same sentence as
+> "give the dependency an artifact", said by a resident process instead of by a
+> file.
+>
+> **What it costs is memory.** About 200 MB resident per prelude held, and the
+> default is three (`CRYSTAL_DAEMON_PRELUDES`), so a daemon that has seen a few
+> flag sets is holding half a gigabyte.
+>
+> **The mechanism itself is sound, measured separately.** `IYI_WARM` analyses the
+> prelude and adopts it in one process, without forking: adoption returns
+> essentially the whole prelude analysis — 0.48 s of a 1.25 s front end — with no
+> penalty for the Kemal case. The gap between that and what the daemon delivers
+> is the fork, 0.2 to 0.3 s. It is not the GC: a daemon started with
+> `GC_DONT_GC=1` measures the same.
+>
+> **The wrong numbers, and the three ways they were wrong.** What was published:
+> 2.27 s to 1.24 s, 2.42 s to 1.30 s, 3.33 s to 2.52 s.
+>
+> - **A debug compiler.** `make iyi-tarball` did not force `release := 1`, so
+>   the binaries measured were unoptimised. Prelude analysis is about 1.5 s
+>   there and about 0.5 s in a release build, so every saving above is roughly
+>   three times what somebody with the released tarball would see. The tarball
+>   now refuses to be built from an unoptimised binary — `check_iyi_is_release`.
+> - **Repeated identical builds.** Crystal caches generated objects per program,
+>   so building the same unedited file five times skips codegen from the second
+>   run on. That leaves the front end as most of what is measured, and the front
+>   end is exactly what the daemon accelerates. Every measurement here now edits
+>   a module first.
+> - **A stepping clock.** This machine's clock jumps, and `/usr/bin/time`
+>   reported *negative* elapsed times more than once. Six measurements of one arm
+>   in a row can sit inside a step and come out uniformly wrong, which is how one
+>   batch showed the daemon *slower* than a normal build for the Kemal case. It
+>   is not. Alternating the arms is what makes a step hit both.
+>
+> The first two flattered the daemon and the third smeared it in both
+> directions. None was a mistake about the compiler; all three were mistakes
+> about the measurement, made by the person who wanted the number to be good.
+>
+> **It warms Crystal's prelude and not iyi's, and that is deliberate.**
+> `--crystal` sets the prelude `Compiler.new` already has, so those builds hit
+> the startup analysis on their first request. An ordinary `.iyi` build misses
+> and warms `iyi/prelude` after its first build: 0.03 s, which is the reason
+> the daemon is not for that mode.
+>
+> **Four bugs were in the way, all older than this work.** Three are one fact
+> forgotten — the daemon runs in its own directory and the client does not.
+>
+> - A finished build's arguments are re-read in the daemon to decide which
+>   prelude to warm next, and they were read in the *daemon's* directory. The
+>   option parser exits the process on a file it cannot find, so the daemon
+>   died after serving a build correctly — whenever the client had typed a
+>   relative path, which is always.
+> - A preanalysed prelude carries the compiler's search path, and `lib` is
+>   resolved against the directory that path was built in. Every shard-using
+>   project, built from anywhere but the daemon's own directory, answered
+>   `require "kemal"` with "can't find file".
+> - Fixing the second silently did nothing, because `CrystalPath` is a
+>   **struct**: setting a field through a getter mutates the copy the getter
+>   returned. Nothing failed; the daemon simply went on resolving `lib` beside
+>   itself.
+>
+> Every spec in `crystal-daemon_spec.cr` passed through all three, because each
+> one passes an absolute fixture path and starts the daemon where the runner is.
+> That is the shape of the lesson rather than an aside: **a spec that never
+> leaves the directory it was written in cannot see a directory bug.** Three new
+> ones do.
+>
+> The fourth is not about directories and is the worst-behaved: **the path that
+> adopts a preanalysed prelude never runs `new_program`**, so everything that
+> method turns a switch into was decided by whoever analysed the prelude — a
+> `Compiler.new` in a daemon, holding none of the build's switches. Most of it
+> is safe because the flags, the target, the optimisation mode and the prelude
+> are all in `prelude_cache_key`: an analysis that differs in any of them is a
+> different analysis. `--use-iyimod` is not in that key. It was accepted,
+> ignored, and the build compiled every module from source without a word,
+> which is worse than the switch not existing — and it is only visible from
+> outside by deleting the module's source, which is what its spec does.
+>
+> That one is worth generalising. **A cache key is a claim that everything not
+> in it does not matter**, and this key was written when the only thing reading
+> it was prelude analysis. Every switch added since has had to be checked
+> against it by hand, silently, and nothing enforced the check.
+>
+> **It is enforced now.** Each of `Compiler`'s thirty-seven switches is written
+> down as one of three things — in the key, re-applied when a build adopts a
+> preanalysed prelude, or reaching neither — and `prelude_cache_key` refuses to
+> compile while any is missing. Adding a property fails the build with the
+> question rather than leaving it to be answered later by a build that quietly
+> did the wrong thing.
+>
+> Writing the three lists out is itself worth something: two entries turned out
+> to be judgements rather than facts. `mcpu`, `mattr` and `mcmodel` reach the
+> target machine and the target machine reaches codegen, so a prelude analysed
+> for one `-mcpu` is the same analysis as for another. And `progress_tracker`
+> and `stderr` are where output goes — `new_program` sets the first, the adopt
+> path sets neither, and that asymmetry was true before and invisible.
+>
+> **And artifacts and the daemon overlap.** Twelve modules as artifacts *plus*
+> the daemon was 1.67 s against the daemon's 1.30 s — slower, because the daemon
+> has already removed the term the artifacts were removing and reading twelve of
+> them is not free. Under Crystal's library the daemon wins; under iyi's own the
+> artifacts do, and neither is a general answer.
 
 The measurement that follows is the one that built it, kept because it was true
 and because the shape — *a thing measured, shipped, and then made pointless by
@@ -5084,6 +5248,394 @@ Named honestly, so nobody mistakes this draft for complete.
     it never had it. What stays: the *macro* interpreter, which is a different
     thing that runs at compile time and is what makes `{% %}` work.
 
+12e. **The library as an artifact. A measurement, not a plan.** IV.1d ends with
+    a daemon that removes about 0.3 s of a `--crystal` build by holding the
+    library analysed in a resident process. This document's own thesis says
+    something else should be able to remove it: a library is a module, R-1
+    compiles a module against declarations, and IV.1 already has a file for
+    them. So the question was asked with a stopwatch rather than an argument.
+
+    **The prize.** A generated module the shape of a library — 103,002 lines,
+    5,000 exported methods across 1,000 types, bodies in the proportion
+    Crystal's own library has them, which is *declarations at about 5% of the
+    source*. Consumed from source and then from its `.iyimod`, front end only:
+
+    | | from source | from its artifact |
+    |---|---|---|
+    | Semantic (top level) | 0.349 s | **0.077 s** |
+    | Semantic (type declarations) | 0.043 s | **0.006 s** |
+    | front end, all of it | 0.43 s | **0.11 s** |
+    | peak memory | 163 MB | **25 MB** |
+
+    Four times faster and six times smaller. Set that beside the daemon on the
+    same term: 0.47 s to 0.33 s, one and a half times, *and* 200 MB resident per
+    prelude held. The artifact wins on both axes, and it wins the second one in
+    the other direction — it spends less memory where the daemon spends more.
+
+    The ratio is not a property of the generator. It follows from declarations
+    being 5% of a library's text, which is measured: Crystal's library is
+    195,833 lines and about 10,500 of them are a `def` or a type header.
+
+    **What it would take, also measured.** `crystal tool bind` already writes a
+    `.iyimod` for a Crystal namespace compiled under Crystal's library (item
+    12). Pointed at three of them, it reports how much of the public surface
+    crosses with nobody's help:
+
+    | | public methods | crossing unaided |
+    |---|---|---|
+    | `JSON` | 247 | **90.3%** |
+    | `YAML` | 291 | **78.0%** |
+    | `URI` | 105 | **58.1%** |
+
+    What the remainder waits on is *named*: the tool prints which types are
+    missing and what declaring each unlocks — `IO` +13, `Int` +12, `Tuple` +4,
+    and so on. That is a work list rather than a research problem. Those are the
+    corrected figures. The note below is what they were, and why.
+
+    > **Asked again, and the work list was flattering the core.** The tool read
+    > each restriction as the text somebody typed, and a method inside
+    > `JSON::Token` writes `kind : Kind`. That is `JSON::Token::Kind` — the
+    > shard's own, already travelling — and it was counted as a type nobody had
+    > declared. `self` was counted the same way, and a method returning `self` in
+    > `URI` returns `URI` and waits for nobody. Every such spelling pushed the
+    > count in one direction: *towards the core*, which is the claim the count
+    > was here to support. Published first: `IO` +11, `Int` +11, `Tuple` +4.
+    >
+    > Restrictions are resolved against the owner now, and the same three
+    > namespaces answer differently — this is the boundary the tool can write
+    > today, not the percentage above:
+    >
+    > | | crossing before | crossing now | still waiting |
+    > |---|---|---|---|
+    > | `JSON` | 142 | **152** | 57 → 47 |
+    > | `YAML` | 142 | **158** | 60 → 44 |
+    > | `URI` | 41 | **48** | 18 → 11 |
+    >
+    > The percentages do not move, and that is the check that this changed what
+    > it claims to: they measure whether a *human* has to write a signature, and
+    > resolving a name somebody already wrote does not change that. 33 more
+    > signatures cross, and nothing stopped crossing except two `YAML` entries
+    > returning a bare `Array` — which is a correction too, because a
+    > declaration that says `Array` without saying of what is not one a consumer
+    > can use.
+    >
+    > **And the work list, once it is true, says one word.** `IO` is first in all
+    > three and by more than it was: +13 for `JSON`, +21 for `YAML`, +8 for
+    > `URI`. That is 42 signatures against 21 for everything generic
+    > (`Slice`, `Tuple`, `NamedTuple`, `Set`) and 20 for the whole numeric tower.
+    > About four fifths of what these three ask of the top level is *not*
+    > generic — `IO`, `Int`, `Time`, `Float32`, `Float` — which is to say the
+    > declaration machinery this tool already has is the machinery that would
+    > carry it. The generic remainder is IV.2's problem rather than this one's.
+
+    **And the blocker that is not a percentage.** `tool bind` takes a root
+    namespace, and the types every one of those signatures actually names —
+    `String`, `Array`, `Int32`, `IO` — are not in a namespace. They are the
+    top level. So the missing 10% of `JSON` and the missing 42% of `URI` are
+    largely the *same* missing thing, and there is no root to point the tool at
+    for it. Crossing a namespace is measured and mostly done; crossing the core
+    is unstarted, and it is what everything else is waiting on.
+
+    > **Most of that core was a list, and the list was wrong.** `nameable?` —
+    > the question the whole count rests on — asked a literal kept beside the
+    > tool: sixteen names said to be what an iyi program already has. It claimed
+    > `Void`, `UInt32` and `Float64`, which iyi's prelude never declares, and it
+    > left out `Slice`, `Int`, `Tuple` and `NamedTuple`, which `Program#initialize`
+    > creates for *every* program before the first line of any prelude is read.
+    > Those four were most of what the boundary appeared to be waiting on. The
+    > list did not merely understate the answer; it invented the work it was
+    > being read to size.
+    >
+    > It is asked of the program now — `builtin_type_names`, snapshotted where
+    > those types are made, so a built-in added later is in it without anybody
+    > remembering. What the same four namespaces answer:
+    >
+    > | | crossing | waiting on a type | taking one no variable can hold |
+    > |---|---|---|---|
+    > | `JSON` | 152 → **168** | 47 → **13** | 18 |
+    > | `YAML` | 158 → **166** | 44 → **32** | 4 |
+    > | `URI` | 48 → 48 | 11 → **9** | 2 |
+    > | `IO` | 157 → **270** | 140 → **5** | 22 |
+    >
+    > The percentages do not move, again, and for the same reason. No signature
+    > that crossed stopped crossing.
+    >
+    > **The third column is this correction catching itself.** Written first
+    > without it, the table said 182, 168, 48 and 286 — because a name being
+    > writable is not the same as a variable being able to hold it. `Int` is the
+    > head of a family: a method taking one is compiled once per member, with a
+    > symbol apiece and no single symbol to declare. The compiler already
+    > answers this, `can_be_stored?`, and it is the same answer that decides
+    > whether the keep file this tool generates compiles at all — which is how
+    > it was found, by generating one and compiling it.
+    >
+    > **And pointing it at a class found three things a namespace never did.**
+    > The tool assumed its root was a module, because a shard's root is one: it
+    > reopened `IO` as `module IO`, and called `IO.write` — an instance method —
+    > on the class. It declared `IO::Encoder`, which is private. And it counted
+    > the signatures above. None of the three is visible from the counts; all
+    > three are visible the moment the keep file it generates is compiled, which
+    > is now how this is checked. `crystal tool bind -e IO` writes an artifact
+    > and an object file end to end.
+    >
+    > It carries `IO` itself now, which took saying the difference out loud: a
+    > module's own methods *are* module functions and a class's are its type's,
+    > so a class root travels as one declaration holding everything under it —
+    > `IO`, with `IO::Memory` and twelve more inside. 14 types, 148 methods, and
+    > 311 symbols in the object file. What still stays behind is its constants,
+    > which cross as functions whose symbol comes from `extend self`, and only a
+    > module has that.
+    >
+    > Finding this also fixed something the shard path had all along: the keep
+    > file never descended into nested types, so a nested declaration promised
+    > symbols nothing emitted. `JSON`'s artifact holds 16 types and the file
+    > reached 9 of them. It was a link error waiting rather than a compile one,
+    > which is why no sample had found it.
+    >
+    > **`IO` is the whole of what is left, and `IO` is nearly done.** It is the
+    > only name still blocking all three namespaces — 14, 22 and 9 — and pointed
+    > at directly it is 442 public methods, 80.3% of them needing no human, with
+    > five signatures waiting: `Time::Span` and `File::Info`, and nothing else.
+    >
+    > **And then the boundaries compose, which is the measurement closing.**
+    > `tool bind` reads the artifacts already written — `--use-iyimod`, the same
+    > switch a build uses — and a signature naming one of their types waits on
+    > nobody. Each name is checked against the program rather than trusted,
+    > because a class root's declarations are absolute and a module root's are
+    > relative to a name the file does not record.
+    >
+    > | with `IO`, `Time` and `SemanticVersion` bound | crossing | waiting |
+    > |---|---|---|
+    > | `JSON` | 168 → **181** | 13 → **0** |
+    > | `YAML` | 166 → **192** | 29 → **2** |
+    > | `URI` | 48 → **55** | 7 → **0** |
+    >
+    > And the unlock report predicted it exactly. `JSON` reads `IO +13` and
+    > gained 13; `URI` reads `IO +7` and gained 7; `YAML` reads `IO +20`,
+    > `Time +5`, `SemanticVersion +1` and gained 26. The prediction is made by
+    > counting what one declaration would free and the result by actually
+    > freeing it, so the two agreeing is worth more than either — it is the
+    > report and the composition checking each other.
+    >
+    > `Time` and `SemanticVersion` bind the same way — 446 public methods at
+    > 86.1% and 22 at 95.5%. A `JSON` boundary written against `IO`'s is 16
+    > types, 140 methods and 301 symbols, and its keep file compiles.
+    >
+    > **What is left, with all three bound and the count finally saying only
+    > what it means.** A name that is not a type is not work, and counting `T`,
+    > `self` and `_` beside `IO` said there was more waiting than there was —
+    > the same inflation as the list, one layer further in. Split apart:
+    >
+    > | | crossing | waiting on a type | no variable can hold | not a type | block unannotated |
+    > |---|---|---|---|---|---|
+    > | `JSON` | **181** | **0** | 18 | 0 | 0 |
+    > | `YAML` | **192** | **2** | 4 | 3 | 1 |
+    > | `URI` | **55** | **0** | 2 | 1 | 1 |
+    >
+    > **And an artifact nothing had ever read back.** Every check this tool
+    > carried was a number it printed, and a number cannot say whether anything
+    > can consume the artifact printed beside it — so nothing did, and the first
+    > spec written for it failed. Three things were wrong and all three are the
+    > same sentence: *what an artifact declares belongs to the artifact.* A
+    > module root kept the producer's prefix (`MyLib::Entry` with no `MyLib`,
+    > because an iyi module path camelcases back to `Mylib` and `JSON` is not in
+    > that mapping's image at all); a field crossed as `IO+`, which is dispatch
+    > and not a name; and a reference to another boundary used the producer's
+    > name where the consumer's was needed. A `JSON` boundary written against
+    > `IO`'s is consumed by `import json` on its own now.
+    >
+    > **And then it linked, and the last step named its own limit.** A program
+    > built from a bound shard runs: `MyGreeter.polite` called from iyi through
+    > the four steps this tool prints, which had never been taken end to end
+    > before and did not work when they first were. Two of the fixes were the
+    > printed commands themselves — an unquoted `$(...)` that split every symbol
+    > containing a space, and a module name made by `downcase` where the inverse
+    > of `camelcase` was wanted.
+    >
+    > That second one is the whole constraint, once it is seen. Both sides mangle
+    > alike — the premise the boundary rests on — so `Greeter.polite` is
+    > `*Greeter@Greeter::polite<String>:String` from either language *only if the
+    > consumer's module is `Greeter`*. A consumer builds that name by camelcasing
+    > the path it imported, so the path has to be `camelcase` run backwards.
+    >
+    > **And what was written here first said an acronym could never be, which was
+    > wrong.** The claim was that the mapping's image is names like `Greeter` and
+    > `MyGreeter`, that `JSON`, `YAML`, `URI` and `HTTP` are outside it, and that
+    > the library-as-artifact thesis waited on a question about iyi's module
+    > paths. None of that is true, and the mistake was reaching for
+    > `String#underscore` and then reasoning about *its* image instead of
+    > `camelcase`'s. `underscore` answers `json` for `JSON`, and `json`
+    > camelcases back to `Json` — but `camelcase` starts a group at every
+    > upper-case letter, so the inverse of `JSON` is `j_s_o_n`, which is a legal
+    > iyi path and comes back whole. So is `u_r_i`, and `h_t_t_p_server` for
+    > `HTTPServer`, which `underscore` had flattened to `http_server` and lost.
+    >
+    > A shard named `ABC` links and runs. The wrong sentence stood for one commit
+    > and named a language question that did not exist; what it was really
+    > describing was a one-line inverse written with the wrong function.
+    >
+    > **And a second name mismatch under it, found the same way.** A module
+    > written `extend self` puts its functions on the module and mangles
+    > `*Widget@Widget::polite<String>:String`; one written `def self.polite`
+    > puts them on the metaclass, and that has no `@`. The tool recorded both as
+    > the first, so every `def self.` in a shard declared a function the consumer
+    > called by a name nothing emitted. Crystal's library is written the second
+    > way throughout, which is why nothing smaller than `JSON` had shown it.
+    >
+    > **What `JSON` still waits on is not a name but an instantiation.** With
+    > both mismatches gone the two sides agree on `*JSON::parse<...>` — and
+    > disagree inside the angle brackets: the producer's keep file passes the
+    > declared parameter, a `(String | IO)` union, and gets
+    > `<(IO+ | String)>`, while a consumer passing a string literal gets
+    > `<String>`. A method's symbol carries the types at its *call site*, so a
+    > union parameter has one symbol per way of calling it and a keep file forces
+    > only the one it names.
+    >
+    > The file names all of them now — the product of the parameters' shapes,
+    > which measures smaller than it sounds: a union parameter is about one in
+    > twenty, 7 of `IO`'s 103 and 1 of `JSON`'s 53, so two in one signature is
+    > rare and the product stays small. `JSON.parse("...")` called from iyi links
+    > and the symbol is there.
+    >
+    > **And past the names, a hole that no name check would have found.** With
+    > every symbol matching, `Store.plain(41)` answers 42 and
+    > `Store.from_constant(1)` segfaults. Crystal initialises a constant from
+    > `__crystal_main` and compiles the reads unguarded; the consumer has its own
+    > `__crystal_main` and never calls the shard's, so the constant stays null.
+    > `LIMIT = 10` survives because the compiler folds it; `TABLE = ["a", "b",
+    > "c"]` has to be built at run time.
+    >
+    > **Written here first as a silent wrong answer, which it is not.** The exit
+    > status being read was a `printf`'s rather than the program's — a mistake in
+    > the measurement and not in the compiler, and the second one of that shape
+    > this section has had to record. It crashes, loudly, on the first read.
+    >
+    > **And running the shard's initialisation does not fix it.** Renaming
+    > `__crystal_main` out of the way with `objcopy --redefine-sym` and calling
+    > it from the consumer segfaults *inside* the initialisation, before reaching
+    > any constant: Crystal's top level expects Crystal's runtime — a thread, an
+    > event loop, the exception machinery — and an iyi program, whose whole
+    > prelude is 1,053 lines, is not one. So this was never about naming the
+    > constants in the artifact, which is what it looked like from the outside.
+    >
+    > A boundary carries code that needs no initialisation. That is the bound on
+    > it today, and it is a larger claim than the earlier paragraphs implied.
+    >
+    > What still falls outside is a name the grammar cannot spell — `Foo_Bar`
+    > needs two underscores running and `camelcase` reads two as one, so it comes
+    > back `FooBar`. `tool bind` says so at bind time rather than leaving it to
+    > `ld`, which is what the check was worth keeping for.
+    >
+    > `JSON` and `URI` wait on nothing anybody could declare. `YAML` waits on
+    > `Set`, which is generic, and generics travel as bodies rather than as
+    > declarations — IV.2's problem and not this one's. The middle column is
+    > empty of work.
+    >
+    > The last column is the end-to-end check earning its place a second time. A
+    > block-taking method is compiled per block *type*, so one whose block nobody
+    > annotated has no single symbol; `infer_return` already refused those, but
+    > only when it ran, and a method that writes its own return type never
+    > reaches it. Nothing in the counts showed it. `Time`'s keep file did, by
+    > refusing to compile: *`Time.measure` is expected to be invoked with a
+    > block*.
+    >
+    > So the paragraph above is wrong in its last sentence and the correction is
+    > worth more than it was. Crossing the core was not unstarted work that
+    > everything was waiting on. It was a hand-written list claiming that
+    > everything not in it was somebody's work to do — the same shape as the
+    > prelude cache key in IV.1d, and found the same way, by asking what the
+    > claim was resting on.
+
+    **What this decides.** Not that the daemon should go — it works, it is
+    tested, and it is what exists. It decides which of the two is the thing to
+    build next, and the numbers are not close: on the term they both address the
+    artifact is three times better and costs memory instead of spending it. The
+    daemon is the answer a compiler reaches for when it has no file format. This
+    one has a file format.
+
+12d. **The ecosystem and R-1, together.** Item 12a ends by saying what stood
+    between a program and having both. Three things did, and they turned out to
+    be one thing asked three times: *a name in the module's object code that
+    only the consuming program can define.*
+
+    That is not a new question. `TypeIds` and `Constants` are already in the
+    format because of it — a type id belongs to the program rather than to the
+    module, so the module carries the *name* and the consumer supplies the
+    number. Everything below is that rule, applied where it had not been.
+
+    - **The main module's helpers.** `~match<IO+>` was the symbol. A unit that
+      travels calls it and an artifact carries the unit, not main. Copying it
+      would have been wrong for a reason worth stating: a match against a
+      virtual type compiles to a comparison against a *range of type ids*, and
+      those are the producer's numbers. A copy would have compared the
+      consumer's ids against the producer's range and answered wrongly, with
+      nothing to see. So the consumer emits them, with its own numbering,
+      exactly as it emits every type-id global — all of them rather than the
+      ones an object file asks for, because a build cannot see inside an object
+      file, and each is two compares.
+
+      This is what 12a's pure/stateful split got wrong. Purity was never the
+      question; the question was whose numbering, and once it is asked that way
+      the stateful helpers need no separate answer either — a constant's
+      initialiser already runs once, in the consumer, because `Constants`
+      already carries the name rather than the code.
+
+    - **The module's requires.** A module that requires `uri` is compiled
+      against `URI`, and its object code refers to `URI::Error.class:type_id`.
+      A consumer that required only `json` has no such type to number, and the
+      link fails on a name from a library nobody in the program ever asked for.
+      So the requires travel — `Requires`, format v20 — and the consumer
+      replays them, which makes its program a superset of the producer's. The
+      numbering is still the consumer's, so this adds types and imports nobody
+      else's ids.
+
+    - **The `!dbg` location**, which 12a already fixed.
+
+    **One thing had to be measured rather than argued.** A shared library is
+    only shared if there is one copy of its state, and "it linked" would be
+    just as true of a program with two copies of a lazily initialised constant
+    — a program that is wrong and says nothing. It is one copy: `STDOUT` and
+    `PROGRAM_NAME` are the same object on both sides of the boundary. The same
+    compiler mangles the same names, the linker folds the definitions, and a
+    lazily initialised constant goes through the global the consumer defines.
+    Both identities are asserted in the specs, because that is the property,
+    not a detail of it.
+
+    **What is refused now is a different thing, and it is sharper.** An
+    artifact records which library it was built against, and importing across
+    is refused by name in both directions. This one is not a limitation to be
+    lifted later: both worlds are compiled by the same compiler and mangle the
+    same names, so a mixed program would link — on the names that happen to
+    agree. `String` is a different type in each, and neither the linker nor
+    anything after it would say so.
+
+    **What it buys, measured rather than claimed.** A program can require Kemal
+    *and* compile its own modules against their declarations, which is the
+    combination the two features were each half of. The speed it buys is
+    small, and saying so is the point of measuring: on a twelve-module app
+    (656 lines, each module importing the last) with Crystal's library,
+
+    | build | time |
+    |---|---|
+    | `require "json"` and nothing else | 3.12 s |
+    | twelve modules from source | 3.28 s |
+    | twelve modules from artifacts | 2.96 s |
+
+    The modules cost 0.16 s from source and nothing from artifacts. Everything
+    else is the library, read from source every build, and R-1 does not reach
+    it. With Kemal in front the same twelve modules move a 4.4 s build to
+    4.7 s — *slower*, because reading twelve artifacts and linking twelve
+    object files is not free either, and there is only 0.5 s of module in front
+    of 4 s of shard to pay for it.
+
+    So: under iyi's own prelude the library costs 0.03 s and the artifact is
+    the whole build; under Crystal's it costs 3 s and the artifact is a
+    rounding error. The capability is what item 12d delivers. **The fixed cost
+    of the other library is now the largest number in this document, and it is
+    the next thing worth attacking** — not by making artifacts better, which is
+    finished work, but by asking whether a library that every build reads from
+    source has to be.
+
 12c. **Portability, moved from compiled to run.** An iyi program produced code
     for nine targets and was tested on one, which is the weakest kind of
     portability claim: the code generator not objecting. Four of the nine now
@@ -5261,9 +5813,9 @@ Named honestly, so nobody mistakes this draft for complete.
     `src/iyi/array.iyi`, and `samples/iyi/basics.iyi` prints both halves.
 
     **What it costs.** R-1, for the required shard: it is read from source and
-    the edit loop pays for it the way Crystal's does. And the two libraries are
-    two modes on the artifact side, which is the sharpest limit here: a program
-    cannot have Crystal's library *and* its own modules as artifacts.
+    the edit loop pays for it the way Crystal's does. The other cost — that a
+    program could not have Crystal's library *and* its own modules as
+    artifacts — was the sharpest limit here and is gone; item 12d is how.
 
     **Why, exactly — the first answer here was wrong.** It said the two builds
     would have "two of everything", which is not what happens. Taking the
@@ -5283,13 +5835,10 @@ Named honestly, so nobody mistakes this draft for complete.
       such helpers: type matching, constant reads and initialisers, class
       variable reads and initialisers, and a few more.
 
-    **And they do not all have the same answer.** `~match` is pure and could be
-    emitted into each unit that calls it, the way a closure's callee already
-    is. A class variable's initialiser cannot: two copies would initialise it
-    twice. So the pure ones can be copied and the stateful ones have to travel
-    as *names* the consumer emits, which is what `TypeIds` already does for
-    numbering. That is a format change and a codegen change, and it is the work
-    between here and a program that has both the ecosystem and R-1.
+    **And the split proposed here was the wrong one.** It said the pure helpers
+    could be copied into each unit and the stateful ones had to travel as
+    names. Item 12d is what happened when that was tried: the axis is not
+    purity, it is whose numbering — and the answer is the same for all of them.
 
 12. ~~**Using Crystal code.**~~ **Specified in III.6; the direct source mode
     is measured in 12a.** An `extern module` restates R-2 by hand for the

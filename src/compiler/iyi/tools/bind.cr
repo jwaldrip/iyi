@@ -44,7 +44,13 @@ module Iyi
     # What the return type turned out to be, once the method was instantiated
     # on purpose, or the reason it could not be.
     inferred : String?,
-    refused : String? do
+    refused : String?,
+    # Whether every parameter names a type a variable can have. `Int` is a name
+    # an iyi program can write and not a type anything can hold: it is the head
+    # of a family, and a method taking one is compiled once per member with a
+    # symbol apiece. The compiler answers this — `can_be_stored?` — and it is
+    # the same answer that decides whether the generated keep file compiles.
+    storable : Bool do
     # Every type this signature names, so the emitter can ask whether they can
     # all be named on the other side.
     def signature_types : Array(String)
@@ -56,6 +62,17 @@ module Iyi
       # block look like it mentioned something nobody declared.
       types << written_block.split(" : ", 2).last unless written_block.empty?
       types
+    end
+
+    # Whether anything outside could call this.
+    #
+    # A block-taking method is compiled per block *type* and the type is in the
+    # symbol, so one whose block nobody annotated has no single symbol to
+    # declare. `infer_return` already refuses these — but only when it runs, and
+    # a method that writes its return type never reaches it. The keep file finds
+    # the rest: `Time.measure` is expected to be invoked with a block.
+    def callable? : Bool
+      !block || !written_block.empty?
     end
 
     # The `pub def` an iyi module would carry. Written from what the source
@@ -72,7 +89,32 @@ module Iyi
   # The types an iyi program already has, so a signature naming one of them
   # needs nothing from this boundary. Everything else is somebody's to declare,
   # and saying which is most of what a boundary costs.
-  BIND_PRELUDE = %w(String Int32 Int64 UInt8 UInt32 UInt64 Float64 Bool Nil Char Symbol Array Hash Range Pointer Void)
+  #
+  # Asked of the program rather than written down here. The written-down version
+  # claimed `Void`, `UInt32` and `Float64` — which iyi's prelude never declares —
+  # and left out `Slice`, `Int`, `Tuple` and `NamedTuple`, which the compiler
+  # creates for every program before any prelude is read. Those four were most
+  # of what the boundary appeared to be waiting on, so the list was not merely
+  # untidy: it invented the work it was being read to size.
+  @@builtin = Set(String).new
+
+  # The boundaries already written. A signature naming one of their types waits
+  # on nobody: somebody has declared it, which is the whole question this asks.
+  # `IO` is why this exists — it is what `JSON`, `YAML` and `URI` were all
+  # waiting on, and once it has an artifact it stops being a gap.
+  @@bound = Set(String).new
+
+  # And what to call them from outside. A bound artifact's declarations sit
+  # under the module the consumer imports, so `IO` is `Io::IO` there — the
+  # producer's name is not the consumer's, and an artifact that referred to one
+  # by the other resolved to nothing.
+  @@bound_prefix = {} of String => String
+
+  # Which module each of those names came from, and which of them this artifact
+  # ended up naming. A boundary that refers to another one depends on it, and a
+  # consumer should not have to work that out and write the `import` itself.
+  @@bound_module = {} of String => String
+  @@bound_used = Set(String).new
 
   # iyi: this scanner is reached by the compiler, so stdlib Regex would keep
   # pcre2 on its link line. Compile the grammar once through Iyi::Rx instead
@@ -80,11 +122,17 @@ module Iyi
   private BIND_TYPE_NAME = Rx::Pattern.compile("[A-Za-z_][A-Za-z0-9_:]*")
 
   def self.print_bind(program : Program, root : String?, io : IO,
-                      artifact_dir : String? = nil) : Nil
+                      artifact_dir : String? = nil, bound_dir : String? = nil) : Nil
     unless root
       io.puts "tool bind needs the shard's own namespace: -e Kemal"
       return
     end
+
+    @@builtin = program.builtin_type_names
+    @@bound_prefix = {} of String => String
+    @@bound_module = {} of String => String
+    @@bound_used = Set(String).new
+    @@bound = bound_dir ? bound_names(program, bound_dir, io) : Set(String).new
 
     methods = [] of BindMethod
     collect_bind program.types?, root, methods
@@ -119,7 +167,7 @@ module Iyi
     io.puts
     io.puts "  #{(mechanical * 100.0 / methods.size).round(1)}% of the surface needs no human."
 
-    emit_module methods, root, io
+    emit_module program, methods, root, io
     write_artifact program, methods, root, artifact_dir, io if artifact_dir
 
     return if human.zero?
@@ -140,17 +188,35 @@ module Iyi
   # the shard's own, or the prelude's. What is left out is left out by name,
   # because those are the types somebody has to decide about, and deciding is
   # the work this tool exists to size.
-  private def self.emit_module(methods : Array(BindMethod), root : String, io : IO) : Nil
+  private def self.emit_module(program : Program, methods : Array(BindMethod),
+                               root : String, io : IO) : Nil
     known = methods.select { |m| m.verdict.ready? || m.inferred }
     lines = [] of String
     outside = Hash(String, Int32).new(0)
+    unnameable = Hash(String, Int32).new(0)
 
+    unheld = 0
+    unblocked = 0
+    waiting = 0
+    never = 0
     known.each do |method|
       types = method.signature_types
       foreign = types.reject { |t| nameable?(t, root) }
+      unless method.storable
+        unheld += 1
+        next
+      end
+      unless method.callable?
+        unblocked += 1
+        next
+      end
       if foreign.empty?
         lines << method.declaration
       else
+        # Whether anything on this signature is a type somebody could declare.
+        # If nothing is, no amount of work reaches it and it does not belong in
+        # the same count as the ones that are waiting for a decision.
+        declarable = false
         # Named by the part that is missing rather than by the whole
         # signature, because the part is what somebody has to declare and one
         # decision unblocks every signature that mentions it.
@@ -158,16 +224,36 @@ module Iyi
           Rx.scan(type, BIND_TYPE_NAME).each do |match|
             part = match[0].not_nil!
             next if part == "class"
-            outside[part] += 1 unless nameable_name?(part, root)
+            next if nameable_name?(part, root)
+            # `T` is a free variable, `self` is the receiver and `_` is a block
+            # nobody annotated. None is a type anybody could declare, and
+            # counting them beside `IO` said there was more waiting than there
+            # was — the same inflation, one layer further in.
+            if declared_type? program, part
+              outside[part] += 1
+              declarable = true
+            else
+              unnameable[part] += 1
+            end
           end
         end
+        declarable ? (waiting += 1) : (never += 1)
       end
     end
 
     io.puts
     io.puts "a boundary this tool can already write:"
     io.puts "  signatures                #{lines.size}"
-    io.puts "  waiting on a type nobody has declared  #{known.size - lines.size}"
+    io.puts "  waiting on a type nobody has declared  #{waiting}"
+    if unheld > 0
+      io.puts "  taking a type no variable can hold     #{unheld}"
+    end
+    if never > 0
+      io.puts "  naming something that is not a type    #{never}"
+    end
+    if unblocked > 0
+      io.puts "  taking a block nobody annotated        #{unblocked}"
+    end
 
     unless outside.empty?
       io.puts
@@ -177,7 +263,21 @@ module Iyi
       end
     end
 
-    unlocked = blocked_by(known, root)
+    unless unnameable.empty?
+      io.puts
+      io.puts "and the names that are not types anybody can declare:"
+      unnameable.to_a.sort_by { |(_, c)| -c }.first(10).each do |(name, count)|
+        io.puts "  %-44s %d" % [name, count]
+      end
+      io.puts "  A free variable, `self`, or a block nobody annotated. These"
+      io.puts "  never cross, and no work makes them."
+    end
+
+    # Only the ones a declaration would actually free. A signature this tool
+    # refuses for its parameters or its block is not waiting on anybody, and
+    # counting it here would promise that declaring a type reaches it.
+    blockable = known.select { |method| method.storable && method.callable? }
+    unlocked = blocked_by(program, blockable, root)
     unless unlocked.empty?
       io.puts
       io.puts "declaring one type at a time, and what each one unlocks:"
@@ -185,7 +285,7 @@ module Iyi
       total = 0
       unlocked.first(8).each do |name|
         declared << name
-        opened = known.count do |method|
+        opened = blockable.count do |method|
           foreign_names(method, root).all? { |t| declared.includes?(t) } &&
             !foreign_names(method, root).empty?
         end
@@ -202,7 +302,7 @@ module Iyi
     io.puts "# types that declare them, and grouping them there is the next"
     io.puts "# thing this tool has to learn. What is settled here is the part"
     io.puts "# that was in doubt, which is whether the signatures can be known."
-    io.puts "module #{root.downcase}"
+    io.puts "module #{iyi_module_name(root)}"
     io.puts
     lines.sort.each { |line| io.puts line }
     io.puts "# --- end ---"
@@ -230,15 +330,31 @@ module Iyi
     signatures = [] of IyiMod::Signature
     seen = Set(String).new
 
+    # And only a module has them. `Kemal.run` is a module function because
+    # `Kemal` is a module and its own methods are reachable through it; `IO`'s
+    # are not — `IO.write` is an instance method and calling it on the class is
+    # an error. A class root's own surface has to travel as *its type's*
+    # methods, which is work this tool has not done, so it travels as nothing
+    # rather than as a declaration naming a symbol nobody emits.
     methods.each do |method|
+      next unless module_root? program, root
       next unless owners.includes?(method.owner)
       next unless seen.add?(method.name)
       next unless method.verdict.ready? || method.inferred
+      next unless method.storable
+      next unless method.callable?
       next unless method.signature_types.all? { |t| nameable?(t, root) }
 
       signatures << IyiMod::Signature.new(
         name: method.name,
-        receiver: "",
+        # Whose method it is, which the symbol carries. A module written
+        # `extend self` defines `polite` on the module and mangles
+        # `*Widget@Widget::polite<String>:String`; one written `def self.polite`
+        # defines it on the metaclass and mangles `*Widget::polite<String>:String`
+        # — no `@`. Both were recorded as the first, so every `def self.` in a
+        # shard produced a declaration the consumer called by a name nothing
+        # emitted. Crystal's own library is written the second way throughout.
+        receiver: method.owner == "#{root}:Module" && method.receiver.empty? ? "self" : method.receiver,
         parameters: method.params.map { |(name, restriction)| "#{name} : #{restriction}" },
         block_parameter: method.written_block,
         return_type: (method.returns || method.inferred).not_nil!,
@@ -248,34 +364,89 @@ module Iyi
     end
 
     types = type_declarations program, methods, root
-    accessors = constant_accessors program, root, types
+
+    # A constant crosses as a function, and that function gets an iyi module
+    # function's symbol from `extend self` — which only a module takes. So a
+    # class root's constants stay behind rather than being declared with
+    # nothing to link against, a failure that is invisible until link time.
+    accessors =
+      if module_root? program, root
+        constant_accessors program, root, types
+      else
+        [] of {IyiMod::Signature, String}
+      end
 
     signatures.concat accessors.map(&.[0])
 
+    # An artifact's declarations belong to the artifact, not to the namespace
+    # that produced them.
+    #
+    # A class root already reads that way: its own name is a declaration in the
+    # file, so `MySink::Entry` resolves wherever the module lands. A module root
+    # dropped that name and kept the references — `MyLib::Entry` with no `MyLib`
+    # — and the consumer cannot supply it, because an iyi module path is
+    # `[a-z][a-z0-9]*` and its mapping to a type name is deliberately reversible
+    # (IV.6 #6). `MyLib` comes back as `Mylib`, and `JSON` is not in the image of
+    # that mapping at all. So the producer's prefix comes off instead.
+    #
+    # Into copies, and that is the whole of the care this needs. The keep file
+    # below is *Crystal*, compiled against the shard where these names are the
+    # shard's own: renaming there produces `undefined constant Any` and no
+    # object file at all.
+    exported = signatures
+    carried_types = types
+    if module_root? program, root
+      exported = exported.map { |signature| strip_root signature, root }
+      carried_types = carried_types.map { |declaration| strip_root_declaration declaration, root }
+    end
+
+    # And a reference to somebody else's boundary is written the way the
+    # consumer will see it.
+    unless @@bound_prefix.empty?
+      exported = exported.map { |signature| map_names signature }
+      carried_types = carried_types.map { |declaration| map_names_declaration declaration }
+    end
+
     artifact = IyiMod::Artifact.new(
-      module_name: root.downcase,
+      module_name: iyi_module_name(root),
       source_path: program.filename || "",
       compiler_version: IyiMod.compiler_version,
       target_triple: program.codegen_target.to_s,
       flags: program.flags.to_a.sort!,
-      imports: [] of IyiMod::ImportEdge,
-      exports: IyiMod::Exports.new(signatures, types, [] of IyiMod::ImplRecord),
+      imports: @@bound_used.to_a.sort.map { |name| IyiMod::ImportEdge.new(name) },
+      exports: IyiMod::Exports.new(exported, carried_types, [] of IyiMod::ImplRecord),
+      # False on purpose, and it is the one place where that field is not
+      # simply "which prelude compiled this". A bound shard *is* compiled under
+      # Crystal's library, and the boundary this tool generates is what stands
+      # between that library and the consumer: what crosses is handles and
+      # primitives, and the consumer is an iyi program. Marking it true would
+      # refuse the only kind of program it was built for.
+      crystal_library: false,
     )
 
-    path = File.join(dir, "#{root.downcase}.iyimod")
+    path = File.join(dir, "#{iyi_module_name(root).gsub('/', '-')}.iyimod")
     IyiMod.write artifact, path
 
-    keep_path = File.join(dir, "#{root.downcase}_keep.cr")
+    keep_path = File.join(dir, "#{iyi_module_name(root).gsub('/', '-')}_keep.cr")
     File.write keep_path, keep_file(program, root, signatures, types, accessors, dir)
 
     io.puts
-    carried = types.sum { |declaration| declaration.methods.size }
+    carried = count_methods types
     unless @@handle_types.empty?
       io.puts
       io.puts "crossed as handles, without their fields: #{@@handle_types.size}"
       io.puts "  a reference is a pointer, so a consumer that never allocates"
       io.puts "  one does not need to know what is inside it. `new` is not"
       io.puts "  exported for these, which is what keeps that true."
+    end
+
+    unless module_root? program, root
+      kind = program.types?.try(&.[]?(root)).try(&.instance_type.type_desc) || "type"
+      io.puts
+      io.puts "#{root} is a #{kind}, so it travels as a type declaration holding"
+      io.puts "everything under it, rather than as module functions. Its constants"
+      io.puts "stay behind: a constant crosses as a function, and that function"
+      io.puts "takes its symbol from `extend self`, which only a module has."
     end
 
     unless @@nested_namespaces.empty?
@@ -298,9 +469,25 @@ module Iyi
     end
 
     io.puts "wrote #{path}: #{signatures.size} module functions, " \
-            "#{types.size} types carrying #{carried} methods"
+            "#{count_types types} types carrying #{carried} methods"
     io.puts "wrote #{keep_path}"
     io.puts
+    unless round_trips? root
+      seen_as = consumer_name root
+      io.puts
+      io.puts "#{root} cannot be linked against, and this is the place to say so."
+      io.puts "  An iyi module path is lower-case groups joined by `_`, and a"
+      io.puts "  consumer names the module by camelcasing it. That mapping's image"
+      io.puts "  is names like `Greeter` and `MyGreeter`; `#{root}` is not in it — it"
+      io.puts "  comes back as `#{seen_as}`. Both sides mangle alike, so the producer"
+      io.puts "  emits `*#{root}@#{root}::...` while the consumer asks for"
+      io.puts "  `*#{seen_as}@#{seen_as}::...`, and the linker is what finds out."
+      io.puts
+      io.puts "  The declarations below are still true and still worth counting."
+      io.puts "  What cannot happen is the last of the four steps."
+      io.puts
+    end
+
     io.puts "The artifact carries declarations and no object code, because the"
     io.puts "machine code is the shard's own. Three steps make it, and the"
     io.puts "middle one is why the file above exists: Crystal compiles what a"
@@ -308,8 +495,30 @@ module Iyi
     io.puts
     io.puts "  crystal build --emit obj --iyi-keep #{root} -o shard #{keep_path}"
     io.puts "  nm shard.o | sed -n 's/^[0-9a-f]* t \\(\\*#{root}[@:].*\\)$/\\1/p' > shard.syms"
-    io.puts "  objcopy --localize-symbol=main $(sed 's/^/--globalize-symbol=/' shard.syms) shard.o shard-ready.o"
+    io.puts "  sed 's/^/--globalize-symbol=/' shard.syms | tr '\\n' '\\0' | xargs -0 objcopy --localize-symbol=main shard.o shard-ready.o"
     io.puts "  iyi build --use-iyimod #{dir} -o app app.iyi --link-flags shard-ready.o"
+    io.puts
+    io.puts "The third line reads like a flourish and is not. A mangled name"
+    io.puts "carries the types it was compiled for, and a union prints with"
+    io.puts "spaces in it — `*#{root}::Any#as_a?:(Array(#{root}::Any) | Nil)`. Passed"
+    io.puts "through an unquoted `$(...)` the shell splits that into four"
+    io.puts "arguments and objcopy answers with its usage. `xargs -0` is what"
+    io.puts "keeps one symbol one argument."
+    io.puts
+    io.puts "What does not cross is the shard's own initialisation. Crystal runs a"
+    io.puts "constant's initialiser from `__crystal_main` and compiles the reads"
+    io.puts "unguarded; the consumer has its own `__crystal_main` and never calls"
+    io.puts "the shard's, so the constant stays null and the first read segfaults."
+    io.puts "A constant the compiler folds is fine — `LIMIT = 10` reads 10 — and"
+    io.puts "one built at run time is not."
+    io.puts
+    io.puts "Calling the shard's `__crystal_main` does not fix it: it segfaults"
+    io.puts "inside the initialisation, before reaching any constant. Crystal's top"
+    io.puts "level expects Crystal's runtime — a thread, an event loop, the"
+    io.puts "exception machinery — and an iyi program is not one."
+    io.puts
+    io.puts "So a boundary carries code that needs no initialisation, and that is"
+    io.puts "the bound on it today."
     io.puts
     io.puts "`--iyi-keep` is not decoration: a getter whose body is one instance"
     io.puts "variable is inlined at every call site and emits no symbol, which"
@@ -410,8 +619,18 @@ module Iyi
     root_type = program.types?.try &.[]?(root)
     return declarations unless root_type.is_a?(NamedType)
 
-    collect_declarations root_type, by_owner, root, declarations
-    prune_dangling declarations, root
+    if module_root? program, root
+      collect_declarations root_type, by_owner, root, declarations
+      prune_dangling declarations, "#{root}::", root
+    else
+      # A class root's own methods are its type's rather than module functions,
+      # so it travels as one declaration holding everything under it. The names
+      # inside are then already absolute — `IO`, `IO::Memory` — which is why the
+      # prefix the pruner resolves against is empty here and `IO::` there.
+      declaration = declaration_for root, root_type, by_owner, root
+      declarations << declaration if declaration
+      prune_dangling declarations, "", root
+    end
   end
 
   # Nothing may name a type that did not travel.
@@ -424,14 +643,14 @@ module Iyi
   # the artifact named a constant nobody had. Repeated to a fixed point,
   # because dropping one type can strand the field that named it.
   private def self.prune_dangling(declarations : Array(IyiMod::TypeDecl),
-                                  root : String) : Array(IyiMod::TypeDecl)
+                                  prefix : String, root : String) : Array(IyiMod::TypeDecl)
     loop do
       known = Set(String).new
-      declarations.each { |declaration| collect_known declaration, "#{root}::", known }
+      declarations.each { |declaration| collect_known declaration, prefix, known }
 
       pruned = [] of IyiMod::TypeDecl
       declarations.each do |declaration|
-        kept = prune_declaration declaration, "#{root}::", known, root
+        kept = prune_declaration declaration, prefix, known, root
         pruned << kept if kept
       end
 
@@ -502,25 +721,46 @@ module Iyi
   private def self.collect_declarations(owner_type : NamedType, by_owner, root : String,
                                         declarations : Array(IyiMod::TypeDecl)) : Nil
     owner_type.types?.try &.each do |name, type|
-      # A constant lives in the same table as a type — `Kemal::VERSION` is in
-      # here — and asking one for its instance variables is how this found out.
-      next unless type.is_a?(ModuleType)
-      next if type.is_a?(GenericType)
+      declaration = declaration_for name, type, by_owner, root
+      declarations << declaration if declaration
+    end
+  end
 
-      # `pub` takes a def, a class, a struct and a trait — not a module, which
-      # is what a nested namespace like `Kemal::Exceptions` is. What it holds
-      # has to travel as its own nested declarations, and this walk does not go
-      # there yet.
-      unless type.is_a?(ClassType)
-        @@nested_namespaces << name
-        next
-      end
+  # One type, as a declaration — or nil, for the several reasons one cannot be.
+  #
+  # Split out from the walk above because the root itself needs the same answer.
+  # A shard's root is a module and its own methods travel as module functions;
+  # a core type's root is a class, whose methods are its type's and have to
+  # travel here.
+  private def self.declaration_for(name : String, type : Type, by_owner,
+                                   root : String) : IyiMod::TypeDecl?
+    # A constant lives in the same table as a type — `Kemal::VERSION` is in
+    # here — and asking one for its instance variables is how this found out.
+    return nil unless type.is_a?(ModuleType)
+    return nil if type.is_a?(GenericType)
+    # A private type is the shard's own business. `IO::Encoder` is one, and
+    # a boundary that declared it would name a constant the consumer is not
+    # allowed to write — which the generated keep file finds first, because
+    # it is the first thing outside the shard to say the name out loud.
+    return nil if type.private?
 
+    # `pub` takes a def, a class, a struct and a trait — not a module, which
+    # is what a nested namespace like `Kemal::Exceptions` is. What it holds
+    # has to travel as its own nested declarations, and this walk does not go
+    # there yet.
+    unless type.is_a?(ClassType)
+      @@nested_namespaces << name
+      return nil
+    end
+
+    begin
       signatures = [] of IyiMod::Signature
       {% begin %}{% end %}
       { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
         by_owner[owner]?.try &.each do |method|
           next unless method.verdict.ready? || method.inferred
+          next unless method.storable
+          next unless method.callable?
           next unless method.signature_types.all? { |t| nameable?(t, root) }
 
           signatures << IyiMod::Signature.new(
@@ -541,7 +781,11 @@ module Iyi
       fields = [] of {String, String}
       if type.is_a?(InstanceVarContainer)
         type.instance_vars.each do |field, variable|
-          fields << {field, variable.type?.try(&.to_s) || "?"}
+          # Devirtualised, for the reason `infer_return` gives: `IO+` is how a
+          # virtual type prints and it is a fact about this build's dispatch
+          # rather than a name anybody can write. A field declared `IO+` is a
+          # field nobody can read back.
+          fields << {field, variable.type?.try(&.devirtualize.to_s) || "?"}
         end
       end
 
@@ -562,7 +806,7 @@ module Iyi
       if handle
         unless type.is_a?(ClassType) && !type.struct?
           @@opaque_types << name
-          next
+          return nil
         end
 
         fields = [] of {String, String}
@@ -573,7 +817,7 @@ module Iyi
       nested = [] of IyiMod::TypeDecl
       collect_declarations type, by_owner, root, nested
 
-      declarations << IyiMod::TypeDecl.new(
+      IyiMod::TypeDecl.new(
         name: name,
         kind: type.type_desc,
         type_parameters: [] of String,
@@ -587,12 +831,78 @@ module Iyi
     end
   end
 
-  # One call, with a name for each argument. Returns the next counter, because
-  # every name in this file has to be its own.
+  # A method has as many symbols as it has ways of being called, and this emits
+  # one call for each of them.
+  #
+  # The mangled name carries the types at the *call site*, not the types in the
+  # declaration. `JSON.parse(input : String | IO)` is one declaration and at
+  # least three symbols: a consumer passing a string reaches
+  # `*JSON::parse<String>:JSON::Any`, one passing an `IO` reaches `<IO+>`, and
+  # one passing a variable of the declared union reaches `<(IO+ | String)>`.
+  # Naming only the last is what this file did, so every consumer that passed a
+  # plain string linked against nothing.
+  #
+  # The product of the parameters' shapes, which sounds worse than it measures:
+  # a union parameter is about one in twenty — 7 of `IO`'s 103, 1 of `JSON`'s 53
+  # — so two in one signature is rare and the product stays small. `KEEP_CALL_CAP`
+  # is there for when it is not, and it says so rather than quietly emitting the
+  # declared shape alone.
+  KEEP_CALL_CAP = 16
+
   private def self.keep_call(io : IO, target : String, signature : IyiMod::Signature,
                              counter : Int32) : Int32
-    args = signature.parameters.map do |parameter|
-      type = parameter.split(" : ").last
+    declared = signature.parameters.map { |parameter| parameter.split(" : ").last }
+    shapes = declared.map { |type| [type] + union_members(type) }
+
+    combinations = shapes.reduce([[] of String]) do |carried, options|
+      carried.flat_map { |prefix| options.map { |option| prefix + [option] } }
+    end
+
+    if combinations.size > KEEP_CALL_CAP
+      @@capped << "#{target}.#{signature.name}"
+      combinations = [declared]
+    end
+
+    combinations.each do |types|
+      counter = keep_one_call(io, target, signature, types, counter)
+    end
+    counter
+  end
+
+  # The signatures whose shapes outran the cap, reported beside the artifact.
+  @@capped = [] of String
+
+  # `(A | B)` as `["A", "B"]`, and anything else as `[]`. Split at the top level
+  # only: `(Array(A | B) | C)` is two members, not three.
+  private def self.union_members(type : String) : Array(String)
+    body = type.strip
+    return [] of String unless body.starts_with?('(') && body.ends_with?(')')
+    body = body[1...-1]
+
+    members = [] of String
+    depth = 0
+    current = String::Builder.new
+    body.each_char do |char|
+      case char
+      when '(' then depth += 1; current << char
+      when ')' then depth -= 1; current << char
+      when '|'
+        if depth.zero?
+          members << current.to_s.strip
+          current = String::Builder.new
+        else
+          current << char
+        end
+      else current << char
+      end
+    end
+    members << current.to_s.strip
+    members.size > 1 ? members.reject(&.empty?) : [] of String
+  end
+
+  private def self.keep_one_call(io : IO, target : String, signature : IyiMod::Signature,
+                                 types : Array(String), counter : Int32) : Int32
+    args = types.map do |type|
       name = "a#{counter}"
       counter += 1
       io << "  " << name << " = uninitialized " << type << "\n"
@@ -680,17 +990,288 @@ module Iyi
       accessors.each do |(signature, _)|
         io << "  " << root << "." << signature.name << "\n"
       end
-      types.each_with_index do |declaration, index|
-        qualified = "#{root}::#{declaration.name}"
-        receiver = "t#{index}"
-        io << "  " << receiver << " = uninitialized " << qualified << "\n"
-        declaration.methods.each do |signature|
-          target = signature.receiver.empty? ? receiver : qualified
-          counter = keep_call(io, target, signature, counter)
-        end
+      prefix = module_root?(program, root) ? "#{root}::" : ""
+      types.each do |declaration|
+        counter = keep_type io, prefix, declaration, counter
       end
       io << "end\n"
     end
+  end
+
+  # Whether the root is a module, which decides what of its own can travel.
+  private def self.module_root?(program : Program, root : String) : Bool
+    type = program.types?.try &.[]?(root)
+    return false unless type
+    type.instance_type.is_a?(NonGenericModuleType) || type.instance_type.is_a?(GenericModuleType)
+  end
+
+  # Every method on a declaration, and on the declarations under it.
+  #
+  # The walk used to stop at the top, which was invisible while the only
+  # declarations were a shard's nested types and their methods went unemitted
+  # quietly. A class root puts everything one level down, so stopping at the top
+  # would have kept nothing at all.
+  private def self.keep_type(io : IO, prefix : String,
+                             declaration : IyiMod::TypeDecl, counter : Int32) : Int32
+    qualified = "#{prefix}#{declaration.name}"
+    receiver = "t#{counter}"
+    counter += 1
+    io << "  " << receiver << " = uninitialized " << qualified << "\n"
+    declaration.methods.each do |signature|
+      target = signature.receiver.empty? ? receiver : qualified
+      counter = keep_call(io, target, signature, counter)
+    end
+    declaration.types.each do |nested|
+      counter = keep_type io, "#{qualified}::", nested, counter
+    end
+    counter
+  end
+
+  # Both counted through the nesting, because a class root puts every type it
+  # carries one level down and a count that stopped at the top read as one.
+  private def self.count_types(declarations : Array(IyiMod::TypeDecl)) : Int32
+    declarations.sum { |declaration| 1 + count_types(declaration.types) }
+  end
+
+  private def self.count_methods(declarations : Array(IyiMod::TypeDecl)) : Int32
+    declarations.sum { |declaration| declaration.methods.size + count_methods(declaration.types) }
+  end
+
+  # Every type the boundaries in *dir* declare, so this run can name them.
+  #
+  # A class root's declarations are absolute — `IO`, then `IO::Memory` under it
+  # — and a module root's are relative to a name the file does not record. So
+  # each is checked against the program rather than trusted: that keeps the
+  # first and drops the second, instead of admitting a bare `Any` as though
+  # somebody had declared it. What is dropped is counted and printed, because a
+  # boundary silently contributing nothing is the failure worth seeing.
+  private def self.bound_names(program : Program, dir : String, io : IO) : Set(String)
+    names = Set(String).new
+    paths = Dir.glob(File.join(dir, "*.iyimod")).sort
+    return names if paths.empty?
+
+    io.puts "boundaries already written:"
+    paths.each do |path|
+      begin
+        artifact = IyiMod.read path
+      rescue ex
+        io.puts "  #{File.basename(path)}: unreadable — #{ex.message}"
+        next
+      end
+
+      found = Set(String).new
+      artifact.exports.types.each { |declaration| collect_known declaration, "", found }
+      kept = found.select { |name| declared_type? program, name }
+      names.concat kept
+
+      # The consumer reaches an imported module by the camelcase of its path,
+      # which is the mapping IV.6 #6 keeps reversible. Only the top-level names
+      # are recorded: everything under one is reached through it, so prefixing
+      # `IO` carries `IO::Memory` with it.
+      prefix = artifact.module_name.split('/').map(&.camelcase).join("::")
+      artifact.exports.types.each do |declaration|
+        next unless kept.includes? declaration.name
+        @@bound_prefix[declaration.name] = "#{prefix}::#{declaration.name}"
+        @@bound_module[declaration.name] = artifact.module_name
+      end
+      io.puts "  %-24s %d types, %d this program can name" % [File.basename(path), found.size, kept.size]
+    end
+    io.puts
+    names
+  end
+
+  # Whether the program really has a type by this qualified name.
+  private def self.declared_type?(program : Program, qualified : String) : Bool
+    table = program.types?
+    qualified.split("::").each do |part|
+      return false unless table
+      found = table[part]?
+      return false unless found
+      table = found.as?(NamedType).try(&.types?)
+    end
+    true
+  end
+
+  # iyi: the two patterns below were `gsub` with negative lookbehind, and
+  # lookbehind is the one thing this tree's own engine will not do: `Iyi::Rx` is
+  # RE2-shaped on purpose, linear time, no lookaround (SPEC.md III.10, Appendix
+  # B #17). Reaching for the stdlib `Regex` instead put `libpcre2-8` back on the
+  # compiler's link line, which `bench/dependency_floor.sh` forbids by name and
+  # which decision #22 had just measured off it.
+  #
+  # So they are written the way `process/shell.cr`, `option_parser.cr` and
+  # `semantic_version.cr` were written for the same reason: by hand, over bytes.
+  # Both are boundary tests, which is the part a pattern was doing and the part
+  # plain code says more plainly.
+  #
+  # A name boundary here is ASCII: the characters that can continue an
+  # identifier are `[A-Za-z0-9_]`, and `:` joins a namespace. Bytes rather than
+  # chars because every byte of a multi-byte character is >= 0x80 and so is
+  # never one of them.
+  private def self.identifier_byte?(byte : UInt8) : Bool
+    byte === 0x5F_u8 ||                       # _
+      (byte >= 0x30_u8 && byte <= 0x39_u8) || # 0-9
+      (byte >= 0x41_u8 && byte <= 0x5A_u8) || # A-Z
+      (byte >= 0x61_u8 && byte <= 0x7A_u8)    # a-z
+  end
+
+  # True when the byte before *index* could continue a name, so a match there is
+  # inside a longer one. `:` counts, which is what keeps `Other::MyLib::Entry`
+  # from being read as a `MyLib::` of its own.
+  private def self.after_name_byte?(text : String, index : Int32) : Bool
+    return false if index == 0
+    before = text.to_unsafe[index - 1]
+    before === 0x3A_u8 || identifier_byte?(before) # :
+  end
+
+  # Every place *needle* appears in *text* on a name boundary, replaced by what
+  # *replacement_for* answers. `nil` from the block leaves the occurrence alone.
+  private def self.replace_on_boundary(text : String, needle : String,
+                                       trailing_name_ends : Bool, & : -> String) : String
+    return text if needle.empty? || !text.includes?(needle)
+
+    result = String::Builder.new(text.bytesize)
+    index = 0
+    while index < text.bytesize
+      if text.byte_index(needle, index) == index && !after_name_byte?(text, index)
+        after = index + needle.bytesize
+        ends_name = !trailing_name_ends ||
+                    after >= text.bytesize ||
+                    !identifier_byte?(text.to_unsafe[after])
+        if ends_name
+          result << yield
+          index = after
+          next
+        end
+      end
+      result.write_byte text.to_unsafe[index]
+      index += 1
+    end
+    result.to_s
+  end
+
+  # `MyLib::Entry` becomes `Entry`, and `MyLibOther::X` is left alone — the
+  # prefix has to end at a name boundary or this renames types it never owned.
+  private def self.strip_root(text : String, root : String) : String
+    replace_on_boundary(text, "#{root}::", trailing_name_ends: false) { "" }
+  end
+
+  private def self.strip_root(signature : IyiMod::Signature, root : String) : IyiMod::Signature
+    IyiMod::Signature.new(
+      name: signature.name,
+      receiver: signature.receiver,
+      parameters: signature.parameters.map { |parameter| strip_root parameter, root },
+      block_parameter: strip_root(signature.block_parameter, root),
+      return_type: strip_root(signature.return_type, root),
+      free_variables: signature.free_variables,
+      required: signature.required,
+    )
+  end
+
+  private def self.strip_root_declaration(declaration : IyiMod::TypeDecl,
+                                          root : String) : IyiMod::TypeDecl
+    IyiMod::TypeDecl.new(
+      name: declaration.name,
+      kind: declaration.kind,
+      type_parameters: declaration.type_parameters,
+      assoc_types: declaration.assoc_types,
+      supertraits: declaration.supertraits,
+      fields: declaration.fields.map { |(name, type)| {name, strip_root(type, root)} },
+      methods: declaration.methods.map { |signature| strip_root signature, root },
+      visibility: declaration.visibility,
+      types: declaration.types.map { |nested| strip_root_declaration nested, root },
+    )
+  end
+
+  # Rewrites every bound name in *text* to what the consumer calls it. The name
+  # has to stand alone on both sides: `JSON` is bound, `JSONThing` is not.
+  private def self.map_names(text : String) : String
+    @@bound_prefix.reduce(text) do |carried, (name, qualified)|
+      mapped = replace_on_boundary(carried, name, trailing_name_ends: true) { qualified }
+      @@bound_used << @@bound_module[name] if mapped != carried
+      mapped
+    end
+  end
+
+  private def self.map_names(signature : IyiMod::Signature) : IyiMod::Signature
+    IyiMod::Signature.new(
+      name: signature.name,
+      receiver: signature.receiver,
+      parameters: signature.parameters.map { |parameter| map_names parameter },
+      block_parameter: map_names(signature.block_parameter),
+      return_type: map_names(signature.return_type),
+      free_variables: signature.free_variables,
+      required: signature.required,
+    )
+  end
+
+  private def self.map_names_declaration(declaration : IyiMod::TypeDecl) : IyiMod::TypeDecl
+    IyiMod::TypeDecl.new(
+      name: declaration.name,
+      kind: declaration.kind,
+      type_parameters: declaration.type_parameters,
+      assoc_types: declaration.assoc_types,
+      supertraits: declaration.supertraits,
+      fields: declaration.fields.map { |(name, type)| {name, map_names(type)} },
+      methods: declaration.methods.map { |signature| map_names signature },
+      visibility: declaration.visibility,
+      types: declaration.types.map { |nested| map_names_declaration nested },
+    )
+  end
+
+  # What an iyi program calls this shard, which is not a matter of taste.
+  #
+  # The symbol is the whole reason. Both sides mangle alike, so `Greeter.polite`
+  # is `*Greeter@Greeter::polite<String>:String` compiled from either language —
+  # but only if the consumer's module *is* `Greeter`, and the consumer builds
+  # that name by camelcasing the module path it imported. `downcase` broke the
+  # round trip for every name with an inner capital: `MyGreeter` became
+  # `mygreeter` became `Mygreeter`, which mangles to a symbol the shard's object
+  # file does not contain, and nothing says so until the linker does.
+  #
+  # `::` is `/` because that is how iyi spells a nested module (IV.6 #6), and
+  # each segment is `camelcase` run backwards.
+  #
+  # `String#underscore` is *not* that inverse and using it was the bug this
+  # replaced: it answers `json` for `JSON`, which camelcases back to `Json`.
+  # `camelcase` upper-cases the first letter of every underscore group, so its
+  # inverse starts a group at every upper-case letter — `j_s_o_n`, which is a
+  # legal iyi path and comes back `JSON`. `HTTPServer` is `h_t_t_p_server` and
+  # comes back whole; `underscore` gave `http_server` and lost it.
+  private def self.iyi_module_name(root : String) : String
+    root.split("::").map do |segment|
+      # By hand, for the same reason as the boundary tests above: a pattern here
+      # costs the whole compiler a C library (Appendix B #22).
+      broken = String::Builder.new(segment.bytesize * 2)
+      segment.each_char do |character|
+        if character.ascii_uppercase?
+          broken << '_'
+          broken << character.downcase
+        else
+          broken << character
+        end
+      end
+      broken.to_s.lchop('_')
+    end.join("/")
+  end
+
+  # Whether that name comes back as the name it was made from.
+  #
+  # Almost everything does, now that the inverse above is the real one:
+  # `JSON`, `URI`, `HTTPServer`, `Base64`. What does not is a name the grammar
+  # cannot spell — one already carrying an underscore, say, which would need two
+  # in the path and `camelcase` reads two as one. The check stays because the
+  # failure it catches is the worst-behaved kind: the mangled symbol carries
+  # whichever name the side that compiled it had, so a producer writing
+  # `*Foo_Bar@Foo_Bar::...` and a consumer asking for `*FooBar@FooBar::...` agree
+  # on everything a compiler checks and disagree only where `ld` looks.
+  private def self.round_trips?(root : String) : Bool
+    consumer_name(root) == root
+  end
+
+  # What the consumer will call it, having imported the module.
+  private def self.consumer_name(root : String) : String
+    iyi_module_name(root).split('/').map(&.camelcase).join("::")
   end
 
   # The foreign types one signature waits on.
@@ -711,10 +1292,16 @@ module Iyi
   # Greedy rather than optimal, and the difference does not matter — what this
   # answers is "where does the work start", and the head of the list is the
   # same either way.
-  private def self.blocked_by(known : Array(BindMethod), root : String) : Array(String)
+  private def self.blocked_by(program : Program, known : Array(BindMethod),
+                              root : String) : Array(String)
     counts = Hash(String, Int32).new(0)
     known.each do |method|
-      foreign_names(method, root).each { |name| counts[name] += 1 }
+      # Only what somebody could actually declare. A method waiting on a free
+      # variable stays waiting, and the count above still holds it there — but
+      # it does not belong on a list of work.
+      foreign_names(method, root).each do |name|
+        counts[name] += 1 if declared_type? program, name
+      end
     end
     counts.to_a.sort_by { |(name, count)| {-count, name} }.map { |(name, _)| name }
   end
@@ -735,7 +1322,8 @@ module Iyi
 
   private def self.nameable_name?(name : String, root : String) : Bool
     return true if name == root || name.starts_with?("#{root}::")
-    BIND_PRELUDE.includes?(name.lchop("::"))
+    bare = name.lchop("::")
+    @@builtin.includes?(bare) || @@bound.includes?(bare)
   end
 
   # Only the types the shard declares. A type it merely reopened belongs to
@@ -798,13 +1386,58 @@ module Iyi
       location: a_def.location.try(&.to_s) || "?",
       inferred: inferred,
       refused: refused,
-      params: a_def.args.map { |arg| {arg.name, arg.restriction.try(&.to_s) || "?"} },
-      returns: a_def.return_type.try(&.to_s),
+      storable: a_def.args.all? { |arg| storable_restriction?(owner, arg.restriction) },
+      params: a_def.args.map { |arg| {arg.name, resolve_restriction(owner, arg.restriction) || "?"} },
+      returns: resolve_restriction(owner, a_def.return_type),
       receiver: a_def.receiver.try(&.to_s) || "",
       # `&block : Context -> B` travels as written. A block whose type nobody
       # wrote cannot: R-2 asks the block for its types like everything else.
       written_block: a_def.block_arg.try { |argument| argument.restriction ? "&#{argument}" : "" } || "",
     )
+  end
+
+  # The type a restriction names, rather than the text somebody typed.
+  #
+  # A method inside `JSON::Token` writes `kind : Kind`, and reading that as
+  # written makes `Kind` a type nobody has declared — when it is
+  # `JSON::Token::Kind`, the shard's own, already travelling. Every such
+  # spelling inflated the count of what a boundary waits on, and inflated it in
+  # one direction: *towards the core*, which is the claim the count was being
+  # used to support. `self` is the same mistake with a shorter name — a method
+  # returning `self` in `URI` returns `URI` and waits for nobody.
+  #
+  # A consumer is the other reason. It writes against this boundary from
+  # outside, where `Kind` names nothing; a declaration that travels has to say
+  # what it means from there.
+  #
+  # Resolution can fail — a free variable, `_`, a restriction this scope cannot
+  # see — and then the written text stands, which is what this did for
+  # everything before.
+  private def self.resolve_restriction(owner : Type, node : ASTNode?) : String?
+    return nil unless node
+    written = node.to_s
+    return written if written == "_"
+    return owner.instance_type.devirtualize.to_s if node.is_a?(Self)
+
+    type = owner.lookup_type?(node)
+    return written unless type
+    # A free variable is a name this method binds, not one anybody declares.
+    return written if type.is_a?(TypeParameter)
+    type.devirtualize.to_s
+  rescue
+    node.to_s
+  end
+
+  # Whether a variable could have the type this restriction names.
+  private def self.storable_restriction?(owner : Type, node : ASTNode?) : Bool
+    return false unless node
+    type = owner.lookup_type?(node)
+    return false unless type
+    instance = type.instance_type
+    return false if instance.is_a?(GenericClassType)
+    instance.can_be_stored?
+  rescue
+    false
   end
 
   # Instantiate a method nobody called, and read what it returns.
