@@ -609,25 +609,26 @@ module Iyi
       end
 
       # iyi: macro regexes run on Iyi::Rx, RE2-shaped, and pcre2 is off the
-      # compiler (SPEC.md III.10, Appendix B #22). A construct the engine
-      # refuses fails the compile naming the construct and the engine, with
-      # the pattern's location, rather than quietly meaning something else.
-      # These cases pin the refusal for the constructs a macro is most likely
-      # to reach for.
-      it "refuses a lookahead pattern, naming the construct and the engine" do
-        assert_macro_error %({{ "hello world".match(/o(?= )/) }}), "invalid pattern \"o(?= )\" in macro: lookahead is not supported (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)"
+      # compiler (SPEC.md III.10, Appendix B #22). Lookaround and named groups
+      # used to fail the compile here, on the reading that RE2's linear time cost
+      # them. It does not: both are regular, and the engine answers them now, so
+      # these cases run rather than refuse. What still fails the compile is the
+      # part that is genuinely not regular, and the refusal names the construct
+      # and the engine with the pattern's location.
+      it "executes a lookahead pattern" do
+        assert_macro %({{ "hello world".match(/o(?= )/) }}), %({0 => "o"} of ::Int32 | ::String => ::String | ::Nil)
       end
 
-      it "refuses a lookbehind pattern" do
-        assert_macro_error %q({{ "hello".gsub(/(?<=l)o/, "a") }}), "invalid pattern \"(?<=l)o\" in macro: lookbehind is not supported (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)"
+      it "executes a lookbehind pattern" do
+        assert_macro %q({{ "hello".gsub(/(?<=l)o/, "a") }}), %("hella")
       end
 
       it "refuses a backreference pattern" do
-        assert_macro_error %q({{ "aa".scan(/(a)\1/) }}), "invalid pattern \"(a)\\\\1\" in macro: backreferences are not supported (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)"
+        assert_macro_error %q({{ "aa".scan(/(a)\1/) }}), "invalid pattern \"(a)\\\\1\" in macro: backreferences are not supported (Iyi::Rx, the compiler's engine, keeps linear time: no backreferences, recursion or backtracking controls)"
       end
 
-      it "refuses named groups, which left with pcre2" do
-        assert_macro_error %({{ "hello world".match(/(?:(x)|e)(?<name>\\S+)/) }}), "invalid pattern \"(?:(x)|e)(?<name>\\\\S+)\" in macro: named groups are not supported (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)"
+      it "executes named groups, which came back without pcre2" do
+        assert_macro %({{ "hello world".match(/(?:(x)|e)(?<name>\\S+)/) }}), %({0 => "ello", 1 => nil, 2 => "llo", "name" => "llo"} of ::Int32 | ::String => ::String | ::Nil)
       end
 
       it "refuses the /m flag, which the engine cannot honour" do
@@ -639,8 +640,8 @@ module Iyi
         assert_macro %({{"Ruby".scan(/Crystal/)}}), %([] of ::Hash(::Int32 | ::String, ::String | ::Nil))
       end
 
-      it "refuses scan with named groups, which left with pcre2" do
-        assert_macro_error %({{"Crystal".scan(/(Cr)(?<name1>y)(st)(?<name2>al)/)}}), "named groups are not supported (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)"
+      it "executes scan with named groups" do
+        assert_macro %({{"Crystal".scan(/(Cr)(?<name1>y)(st)(?<name2>al)/)}}), %([{0 => "Crystal", 1 => "Cr", 2 => "y", 3 => "st", 4 => "al", "name1" => "y", "name2" => "al"} of ::Int32 | ::String => ::String | ::Nil] of ::Hash(::Int32 | ::String, ::String | ::Nil))
       end
 
       it "executes camelcase" do

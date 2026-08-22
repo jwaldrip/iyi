@@ -119,6 +119,14 @@ module Iyi::Rx
       Rx.byte_slice(@subject, from, to)
     end
 
+    # Every name the pattern declared, mapped to the group it names. A caller
+    # that has to render a whole match, rather than ask for one group, needs the
+    # set: the macro layer builds a capture hash and a name absent from it is a
+    # capture the macro author wrote and cannot read.
+    def names : Hash(String, Int32)
+      @names
+    end
+
     # A named group is also a numbered one, so a name reaches exactly what its
     # number reaches.
     def [](name : String) : String?

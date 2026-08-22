@@ -37,7 +37,7 @@ module Iyi
     private def compile_exp(exp)
       Rx::Pattern.compile(exp)
     rescue ex : Rx::SyntaxError
-      raise CompilerError.new("invalid pattern #{exp.inspect} for -e: #{ex.message} (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)", :USAGE_ERROR)
+      raise CompilerError.new("invalid pattern #{exp.inspect} for -e: #{ex.message} (Iyi::Rx, the compiler's engine, keeps linear time: no backreferences, recursion or backtracking controls)", :USAGE_ERROR)
     end
 
     def execute

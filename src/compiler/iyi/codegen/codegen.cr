@@ -566,7 +566,7 @@ module Iyi
         begin
           dump_llvm_regex = Rx::Pattern.compile(env_dump)
         rescue ex : Rx::SyntaxError
-          raise CompilerError.new("invalid pattern in DUMP=#{env_dump.inspect}: #{ex.message} (Iyi::Rx, the compiler's engine, has no lookaround or backreferences)", :USAGE_ERROR)
+          raise CompilerError.new("invalid pattern in DUMP=#{env_dump.inspect}: #{ex.message} (Iyi::Rx, the compiler's engine, keeps linear time: no backreferences, recursion or backtracking controls)", :USAGE_ERROR)
         end
       end
 
