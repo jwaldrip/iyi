@@ -1322,17 +1322,20 @@ module Iyi::Rx
 
     private def hit?(m : Member, c : Char) : Bool
       if kind = m.builtin
+        # Exhaustive on purpose: `case ... in` makes a Builtin added without a
+        # reading here a compile error rather than a set that quietly answers
+        # like whichever branch the else happened to be.
         inside = case kind
-                 when .digit?      then c.number?
-                 when .word?       then Rx.word_char?(c)
-                 when .space?      then Rx.space_char?(c)
-                 when .horizontal? then Rx.horizontal_space_char?(c)
-                 when .vertical?   then Rx.vertical_space_char?(c)
-                 when .letter?     then c.letter?
-                 when .upper?      then c.uppercase?
-                 when .lower?      then c.lowercase?
-                 when .number?     then c.number?
-                 else                   c.mark?
+                 in .digit?      then c.number?
+                 in .word?       then Rx.word_char?(c)
+                 in .space?      then Rx.space_char?(c)
+                 in .horizontal? then Rx.horizontal_space_char?(c)
+                 in .vertical?   then Rx.vertical_space_char?(c)
+                 in .letter?     then c.letter?
+                 in .upper?      then c.uppercase?
+                 in .lower?      then c.lowercase?
+                 in .number?     then c.number?
+                 in .mark?       then c.mark?
                  end
         inside != m.negated?
       else
