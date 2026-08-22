@@ -4526,9 +4526,12 @@ Named honestly, so nobody mistakes this draft for complete.
     > reached because `Array#[]` can raise and raising formats an integer — and
     > those belong to the library the consumer already has.
     >
-    > What does not cross is a constant nested inside a type under the root. The
-    > assignments are written flat inside the module, where `Inner::X = ...`
-    > reopens rather than defines, and that is a different thing to get right.
+    > One nested inside a type under the root crosses as well, written
+    > `Inner::X = ...`. That was left out for a turn on the reasoning that a
+    > qualified assignment reopens rather than defines — a guess, and wrong:
+    > Crystal takes one wherever the namespace exists, and the declarations
+    > rendered above this text are what make it exist. Two lines of experiment
+    > would have said so, which is the whole argument for running them.
     >
     > A boundary carries code that needs no initialisation. That is the bound on
     > it today, and it is a larger claim than the earlier paragraphs implied.

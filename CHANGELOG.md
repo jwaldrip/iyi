@@ -111,9 +111,9 @@
   constants only: a unit refers to Crystal's as well, and those belong to the
   library the consumer already has.
 
-  A constant nested inside a type under the root does not cross yet. The
-  assignments are written flat inside the module, where `Inner::X = ...` reopens
-  rather than defines.
+  One nested inside a type under the root crosses as well, written
+  `Inner::X = ...` — which defines rather than reopens wherever the namespace
+  exists, and the declarations rendered above it are what make it exist.
 
 ### Fixed
 

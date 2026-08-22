@@ -525,10 +525,9 @@ module Crystal
     io.puts "unit needs: it refers to `#{root}::SOMETHING` and defines nothing."
     io.puts "A constant the compiler folds never needed this; one built at run"
     io.puts "time did, and used to read as null and segfault."
-    io.puts
-    io.puts "A constant nested inside a type under #{root} does not cross yet. The"
-    io.puts "assignments are written flat inside the module, where `Inner::X = ...`"
-    io.puts "reopens rather than defines."
+    io.puts "One inside a type under #{root} crosses too, written `Inner::X = ...`,"
+    io.puts "which defines rather than reopens wherever the namespace exists — and"
+    io.puts "the declarations above this text are what make it exist."
     io.puts
     io.puts "`--iyi-keep` is not decoration: a getter whose body is one instance"
     io.puts "variable is inlined at every call site and emits no symbol, which"
@@ -1217,32 +1216,43 @@ module Crystal
   end
 
   # `TABLE = ["zero", "one", "two"]`, for every constant of *root*'s own that a
-  # consumer could rebuild.
+  # consumer could rebuild — including the ones inside its types.
   #
   # Its own only. A unit refers to Crystal's constants too — `Int::DIGITS_BASE62`
   # is reached because `Array#[]` can raise and raising formats an integer — and
   # those belong to the library the consumer already has under `--crystal`.
   # Writing them here would define somebody else's constant twice.
   #
-  # Top level of the root only, and a nested one is left rather than guessed at:
-  # this text is rendered flat inside the module, so `Inner::X = ...` there is a
-  # reopening rather than a definition, which is a different thing to get right.
+  # A nested one is written `Inner::X = ...`, which defines rather than reopens.
+  # That was left out once on the assumption it did not, which was a guess and
+  # wrong: Crystal takes a qualified assignment wherever the namespace exists,
+  # and the declarations above this text are what make it exist.
   private def self.constant_source(program : Program, root : String) : String
     root_type = program.types?.try &.[]?(root)
     return "" unless root_type.is_a?(NamedType)
 
     lines = [] of String
-    root_type.types?.try &.each do |name, type|
-      next unless type.is_a?(Const)
-      value = type.value
-      # A value the consumer cannot name is one it cannot rebuild, and a
-      # constant it cannot rebuild is better left undefined than defined wrong.
-      answer = type.value.type?.try(&.devirtualize.to_s)
-      next if answer && !nameable?(answer, root)
-      lines << "#{name} = #{value}"
-    end
+    collect_constant_source root_type, "", root, lines
     lines.sort!
     lines.empty? ? "" : lines.join('\n')
+  end
+
+  private def self.collect_constant_source(owner : NamedType, prefix : String,
+                                           root : String, lines : Array(String)) : Nil
+    owner.types?.try &.each do |name, type|
+      case type
+      when Const
+        # A value the consumer cannot name is one it cannot rebuild, and a
+        # constant it cannot rebuild is better left undefined than defined wrong.
+        answer = type.value.type?.try(&.devirtualize.to_s)
+        next if answer && !nameable?(answer, root)
+        lines << "#{prefix}#{name} = #{type.value}"
+      when NamedType
+        next if type.is_a?(GenericType)
+        next if type.private?
+        collect_constant_source type, "#{prefix}#{name}::", root, lines
+      end
+    end
   end
 
   # The foreign types one signature waits on.

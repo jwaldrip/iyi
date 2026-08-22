@@ -90,6 +90,17 @@ describe "`crystal tool bind`, end to end" do
           def self.limit : Int32
             LIMIT
           end
+
+          # And a type under the root, with a constant of its own. Its unit is
+          # the root's second, and the assignment travels as `Inner::LABELS`,
+          # which defines rather than reopens.
+          class Inner
+            LABELS = ["a", "b"]
+
+            def self.label(index : Int32) : String
+              LABELS[index]
+            end
+          end
         end
         CR
 
@@ -103,6 +114,7 @@ describe "`crystal tool bind`, end to end" do
         puts ABCGreeter.label(7)
         puts ABCGreeter.word(1)
         puts ABCGreeter.limit
+        puts ABCGreeter::Inner.label(1)
         IYI
 
       # 1. The declarations, and the keep file that makes the code exist.
@@ -131,7 +143,7 @@ describe "`crystal tool bind`, end to end" do
       # The claim. Not that it compiled, not that it linked — that the program
       # ran and the answers came from the shard.
       Process.capture_result([File.join(dir, "app")], chdir: dir)
-        .output.chomp.should eq "hello, iyi\nhi iyi\n7\none\n10"
+        .output.chomp.should eq "hello, iyi\nhi iyi\n7\none\n10\nb"
     end
   end
 end
