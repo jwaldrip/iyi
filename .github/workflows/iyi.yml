@@ -452,10 +452,16 @@ jobs:
           & $parts[0] $parts[1..($parts.Length - 1)]
           if ($LASTEXITCODE -ne 0) { throw "link failed with $LASTEXITCODE" }
 
-          $wanted = (Get-Content strings-expected.txt -Raw)
+          # Normalised before comparing, both sides. `Out-String` hands back
+          # CRLF and the reference was written on Linux, so a raw comparison
+          # calls every run wrong — which is what the first version of this
+          # probe did, and it was the probe that was wrong, not the program.
+          function normalise($text) { ($text -replace "`r`n", "`n").TrimEnd("`n") }
+
+          $wanted = normalise (Get-Content strings-expected.txt -Raw)
           $seen = @{}
           foreach ($run in 1..20) {
-            $got = (.\strings-windows.exe | Out-String)
+            $got = normalise (.\strings-windows.exe | Out-String)
             # The gate: it has to start and exit cleanly, every time.
             if ($LASTEXITCODE -ne 0) { throw "run $run exited $LASTEXITCODE" }
             $seen[$got] = 1 + ($seen[$got] ?? 0)
@@ -463,15 +469,15 @@ jobs:
 
           foreach ($pair in $seen.GetEnumerator()) {
             $verdict = if ($pair.Key -eq $wanted) { "right" } else { "WRONG" }
-            Write-Host ("{0,3} of 20 {1}: {2}" -f $pair.Value, $verdict, ($pair.Key -replace "`r?`n", " | "))
+            Write-Host ("{0,3} of 20 {1}: {2}" -f $pair.Value, $verdict, ($pair.Key -replace "`n", " | "))
           }
 
           if ($seen.Count -eq 1 -and $seen.ContainsKey($wanted)) {
             Write-Host "windows: twenty runs, one answer, and it is the right one."
-            Write-Host "That has not happened before, so the output defect may be fixed:"
-            Write-Host "check the README's `"prints memory it was never given`" and SPEC III.9 12c."
+            Write-Host "It has been wrong 1 in 20 before, so this is not proof of a fix;"
+            Write-Host "several clean builds in a row would be."
           } else {
-            Write-Host "windows: still printing memory it was never given, as documented."
+            Write-Host "windows: printing memory it was never given, as documented."
           }
 
   # wasm32-wasi, run rather than type-checked. The module imports four
