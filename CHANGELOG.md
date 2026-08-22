@@ -110,6 +110,16 @@
   itself where binutils is missing, or where `crystal` and `iyi` were built from
   different commits, since an artifact is read only by the build that wrote it.
 
+- **`crystal tool bind` says that a bound shard's run-time state does not
+  cross.** Crystal runs a constant's initialiser from `__crystal_main`; a
+  consumer has its own, and the shard's sits in the linked object with nothing
+  calling it. A folded constant is fine — `LIMIT = 10` reads 10 — and one built
+  at run time is not: `TABLE = ["a", "b", "c"]` reads zeroed memory. Nothing
+  raises at any step, which is the worst shape a wrong answer can have, so the
+  tool now says it where somebody reads the four steps. Saying it is not fixing
+  it: a boundary is sound today for code that does not depend on the shard's own
+  run-time state.
+
 - **A method has as many symbols as it has ways of being called, and the keep
   file named one.** The mangled name carries the types at the *call site*, not
   the types in the declaration: `JSON.parse(input : String | IO)` is one

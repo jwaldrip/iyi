@@ -500,6 +500,16 @@ module Crystal
     io.puts "arguments and objcopy answers with its usage. `xargs -0` is what"
     io.puts "keeps one symbol one argument."
     io.puts
+    io.puts "What does not cross is the shard's own initialisation, and it fails"
+    io.puts "quietly. Crystal runs a constant's initialiser from `__crystal_main`,"
+    io.puts "and the consumer has its own — the shard's is in this object file and"
+    io.puts "nothing calls it. A constant the compiler folds is fine (`LIMIT = 10`"
+    io.puts "reads 10); one that has to be built at run time is not (`TABLE ="
+    io.puts "[\"a\"]` reads zeroed memory). No error is raised at any step: the"
+    io.puts "artifact is right, the object links, and the program answers wrongly."
+    io.puts "So a boundary is sound today for code that does not depend on the"
+    io.puts "shard's own run-time state."
+    io.puts
     io.puts "`--iyi-keep` is not decoration: a getter whose body is one instance"
     io.puts "variable is inlined at every call site and emits no symbol, which"
     io.puts "is right for a whole program and wrong for code somebody else will"

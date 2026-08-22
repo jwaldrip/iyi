@@ -4379,6 +4379,22 @@ Named honestly, so nobody mistakes this draft for complete.
     > rare and the product stays small. `JSON.parse("...")` called from iyi links
     > and the symbol is there.
     >
+    > **And past the names, a hole that no name check would have found.** With
+    > every symbol matching, `Store.plain(41)` answers 42 and
+    > `Store.from_constant(1)` answers nothing at all — exit 0, empty output,
+    > no error anywhere. Crystal runs a constant's initialiser from
+    > `__crystal_main`, the consumer has its own, and the shard's is in the
+    > linked object with nothing calling it. `LIMIT = 10` survives because the
+    > compiler folds it; `TABLE = ["a", "b", "c"]` has to be built at run time
+    > and reads zeroed memory instead.
+    >
+    > That is the failure this document is most careful about, arrived at from a
+    > new direction: the artifact is right, the object links, and the program
+    > answers wrongly. A boundary is sound today for code that does not depend on
+    > the shard's own run-time state, which `tool bind` now says out loud. What
+    > it would take is for the consumer to run the shard's initialisers, and that
+    > is a question about who owns a program's startup rather than about names.
+    >
     > What still falls outside is a name the grammar cannot spell — `Foo_Bar`
     > needs two underscores running and `camelcase` reads two as one, so it comes
     > back `FooBar`. `tool bind` says so at bind time rather than leaving it to
