@@ -748,7 +748,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 87,795 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 87,802 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 6,679 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -5155,9 +5155,11 @@ Named honestly, so nobody mistakes this draft for complete.
     the stub calls that, and a module defining only `main` leaves the stub's
     weak reference unbound and traps the first time it is called through.
     Sixteen lines of prelude define the name the stub calls, and the program
-    runs under wasmtime with the same output it has natively. What the fork
-    prints for this target is still `wasm-ld` with `-lc` and no `crt1.o`, which
-    is not a program; CI links with the wasi-sdk clang driver instead.
+    runs under wasmtime with the same output it has natively. And what this fork
+    prints for the target is now `cc --target=wasm32-wasi` rather than
+    `wasm-ld`, because only the driver can find the entry object its sysroot
+    holds: printing a command that links a module no host can start is the same
+    defect the Windows command had.
 
     Darwin is what remains unrun, and the excuse there is real — macOS runners
     exist, so it is next rather than impossible.

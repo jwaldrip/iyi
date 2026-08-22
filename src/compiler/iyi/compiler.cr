@@ -1499,8 +1499,15 @@ module Iyi
 
         {linker, cmd, nil}
       elsif program.has_flag? "wasm32"
+        # iyi: the compiler driver rather than `wasm-ld`, because a wasi program
+        # is more than the module. wasi-libc's `crt1.o` is what exports `_start`
+        # and calls `__main_argc_argv`; `wasm-ld -lc` on its own links a module
+        # with no entry, which every host refuses to start. Only the driver knows
+        # where its sysroot keeps that object, so naming the driver is the only
+        # way to print a command that produces a program.
         link_flags = @link_flags || ""
-        {"wasm-ld", %(wasm-ld "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} -lc #{program.lib_flags(@cross_compile)}), object_names}
+        link_flags += " --target=wasm32-wasi"
+        {DEFAULT_LINKER, %(#{DEFAULT_LINKER} "${@}" -o #{Process.quote_posix(output_filename)} #{link_flags} #{program.lib_flags(@cross_compile)}), object_names}
       elsif program.has_flag? "avr"
         link_flags = @link_flags || ""
         link_flags += " --target=avr-unknown-unknown -mmcu=#{@mcpu} -Wl,--gc-sections"

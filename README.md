@@ -818,11 +818,12 @@ marked PROPOSED are the parts that will move under you.
   tally, so the numbers are in every log. The cause is not the linker, not
   `HeapAlloc` failing to clear (the POSIX path does not clear either and macOS
   is fine), and not yet known.
-- **The wasm link needs more than `--cross-compile` prints.** A wasm32-wasi
-  module is a program only once wasi-libc's entry stub is linked in, and what
-  the fork prints for this target is `wasm-ld` with `-lc` and no `crt1.o`. CI
-  links with the wasi-sdk clang driver instead, which supplies both. What the
-  prelude does carry is the name that stub calls: clang renames a C `main` to
+- **A wasm program needs a wasi toolchain, not just a linker.** A wasm32-wasi
+  module is a program only once wasi-libc's entry stub is linked in, and only
+  the compiler driver knows where its sysroot keeps that object — so this fork
+  prints `cc --target=wasm32-wasi` for the target rather than `wasm-ld`, and CI
+  runs that command with wasi-sdk's clang as the `cc` it names. What the prelude
+  carries is the name the stub calls: clang renames a C `main` to
   `__main_argc_argv`, the entry calls *that*, and a module defining only `main`
   links without complaint and then traps on `unreachable` the first time the
   entry calls through the weak reference it left behind.
