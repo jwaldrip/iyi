@@ -5099,6 +5099,20 @@ Named honestly, so nobody mistakes this draft for complete.
     Darwin and Windows are the five still unrun, and they need a linker and a
     runtime this workflow does not have.
 
+    **Windows was tried, and it is worse than unrun.** A Windows runner has the
+    linker and the runtime, so the last of those excuses does not hold for
+    `x86_64-windows-msvc`. Two measurements came back. The `cl.exe obj /link`
+    that `--cross-compile` prints for this target fails with seven unresolved
+    externals: an LLVM-emitted object carries no `/DEFAULTLIB` directives, so
+    nothing pulls in `kernel32` or the CRT entry stub. Naming both by hand
+    links cleanly, and the binary exits `0xC0000005` having written nothing.
+
+    The object is not at fault — its whole undefined set is the six `kernel32`
+    functions III.9 audits — so the fault is between `main` and the first
+    `WriteFile`, on the Win32 allocator and Win32 write paths, which no build
+    has ever executed. Auditing what an object *asks for* cannot see this, and
+    that is the honest limit of the audit: it reads a question, not an answer.
+
 12b. **What the library costs at run time, and the flattering answer that was
     wrong.** The tagline says Performance, and until now every number under it
     was about compiling. `bench/runtime.py` runs the same program under both
