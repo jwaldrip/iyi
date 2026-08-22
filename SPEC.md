@@ -748,8 +748,8 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 87,597 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 2,368-line own prelude + 722 in samples |
+| Compiler | 24,984 lines, **written in Crystal** | 87,677 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 2,368-line own prelude + 742 in samples |
 | Specs | 21,146 lines | 6,679 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -918,7 +918,7 @@ can pass a DSL through. Convenient for `import kemal` giving you the DSL without
 a second line, and a way to reintroduce exactly the implicitness R-3 removed.
 Recommend **no** for Draft 0.
 
-### II.4 Derive macros × separate compilation: **SETTLED**
+### II.4 Derive macros × separate compilation: **SETTLED; the first slice BUILT**
 
 This is the interaction that decides whether R-5 delivers the caching it
 promises.
@@ -966,19 +966,29 @@ What this forbids, and should: `all_subclasses`, program-wide `macro finished`,
 and `macro_run`. The last of which costs a fixed **+7.4 s per distinct script**
 on a cold build, remeasured in II.10.
 
-**Implementation finding: reuse the exported macro registry, not an ordinary
-macro call graph.** A direct implementation passed the semantic cases: it
-resolved an exported macro, handed it the attached declaration and registered
-the generated methods once. Producer and artifact builds did not terminate.
-Cloning the declaration, replacing the directive with `Nop`, detaching the
-generated expansion and removing observer/dependency edges each removed one
-retained path and did not produce a finite source-deleted build. A generic
-type emitted with `no_codegen` did not either.
+**BUILT, and what it cost to get right.** `derive <macro>` in a class or struct
+body resolves through the ordinary exported macro table, expands once while the
+declaring type is being processed, and the methods it generates are that
+module's own. `samples/iyi/derive.iyi` is built from its artifacts with
+`std/derives` deleted by `bench/samples_roundtrip.sh`, which is this section's
+claim taken literally.
 
-Nothing from that implementation was kept. The next attempt needs a
-purpose-built, serializable declaration input for derive expansion. Resolution
-still belongs in the existing exported macro registry; execution cannot be
-faked as an ordinary `Call` whose semantic graph was designed to stay live.
+**A derive is handed a description of its declaration, never the declaration.**
+The first implementation passed the macro the attached `ClassDef`, first live
+and then cloned. Every build that emitted or read an artifact failed to
+terminate. Replacing the directive with a `Nop`, detaching the generated
+expansion, and severing observer and dependency edges each removed one retained
+path and none of them fixed it, because the argument itself was the cycle: the
+declaration contains the `derive` node, and the walk that follows a macro's
+inputs had no end. What is passed now is a `NamedTupleLiteral` built for the
+purpose, carrying the declaration's name and the names of the fields written in
+its body. It is finite, it holds no reference back into the tree, and it is the
+same shape whether the module is being compiled or read.
+
+**Still open in R-5.** A derive reads its own declaration's name and fields. It
+does not yet read the export metadata of imported modules, so the `Order` case
+above, which needs to know whether `Customer` implements `ToJSON`, is designed
+and unbuilt. `derive A, B` on one line is not parsed; one derive per line is.
 
 ### II.5 Dictionaries × the garbage collector: **SETTLED, and a dependency**
 

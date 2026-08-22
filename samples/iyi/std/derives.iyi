@@ -1,0 +1,20 @@
+# Derives, as a library module (SPEC.md R-5, II.4).
+#
+# A derive is an exported macro that takes one argument: the declaration it is
+# attached to. It reads that declaration's name and fields and returns the
+# methods to add. It never sees a type it was not given, and it never runs in
+# the consumer.
+
+module std/derives
+
+# Renders a value as its type name and its fields. One macro, any declaration:
+# the fields come from whichever type the derive is written in.
+pub macro described(declaration)
+  def described : String
+    result = {{declaration[:name]}} + "("
+    {% for field in declaration[:fields] %}
+      result = result + {{field}} + "=" + {{field.id}}.to_s + " "
+    {% end %}
+    result + ")"
+  end
+end

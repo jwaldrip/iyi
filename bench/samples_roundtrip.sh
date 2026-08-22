@@ -22,9 +22,11 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 WORK="$(mktemp -d)"
 
-# The five that import a module. `hello`, `generics` and `errors` are single
-# files and exercise nothing here.
-SAMPLES="modules immutable collections init_order webapp"
+# The six that import a module. `hello`, `generics` and `errors` are single
+# files and exercise nothing here. `derive` is here for the reason R-5 exists:
+# the macro that generated its methods is in `std/derives`, and that source is
+# deleted below, so the artifact has to carry what the derive produced.
+SAMPLES="modules immutable collections init_order webapp derive"
 
 cp -r "$REPO/samples/iyi/." "$WORK/"
 cd "$WORK" || exit 1

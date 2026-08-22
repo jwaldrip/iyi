@@ -139,6 +139,10 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     ("targets", r"compiles for \*\*(\w+) targets\*\*", "README.md", 1),
     ("targets", r"for (\w+) targets and was tested on one", "SPEC.md", 1),
     ("targets", r"Three of the (\w+) now", "SPEC.md", 1),
+    # The count of sample programs was quoted as a word and drifted by three
+    # before anything noticed, because the digit patterns above cannot see a
+    # spelled-out number.
+    ("samples", r"\| (\w+) programs:", "README.md", 1),
 ]
 
 # The prose spells small numbers as words and should keep doing so, so the
@@ -147,6 +151,8 @@ CLAIMS: list[tuple[str, str, str, int]] = [
 WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
     "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
 }
 
 

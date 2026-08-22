@@ -1,0 +1,60 @@
+# `derive`, and where it runs (SPEC.md R-5, II.4).
+#
+#   ./bin/iyi run samples/iyi/derive.iyi
+#
+# A derive runs once, in the module that declares the type. What it generates is
+# an ordinary declaration of that module, so it travels in the module's
+# `.iyimod` and a consumer calls the derived method without running the macro
+# and without this module's source. `bench/samples_roundtrip.sh` builds this
+# sample from its artifacts with `std/derives` deleted, which is that claim
+# taken literally.
+#
+# The macro is handed the two facts R-5 lets it read: the declaration's name,
+# and the fields written in its body. It cannot enumerate a type it was not
+# given, which is what keeps a derive bounded and cacheable.
+
+module samples/derive
+
+import std/derives
+using std/derives
+
+pub struct Point
+  @x : Int32
+  @y : Int32
+
+  def initialize(@x : Int32, @y : Int32)
+  end
+
+  derive described
+end
+
+# One derive, two declarations. The macro reads each one's own fields, so
+# neither type had to be written down inside the macro.
+pub struct Span
+  @from : Int32
+  @to : Int32
+  @label : String
+
+  def initialize(@from : Int32, @to : Int32, @label : String)
+  end
+
+  derive described
+end
+
+puts Point.new(3, 4).described
+puts Span.new(1, 9, "range").described
+
+# ---------------------------------------------------------------------------
+# What this sample would report as an error
+# ---------------------------------------------------------------------------
+#
+# * `derive missing` where nothing exports a `missing` macro. The error names
+#   the macro and the declaration it would have to be written as, rather than
+#   failing as an undefined method on the type's metaclass.
+#
+# * `derive` outside a class or struct body. There is no declaration to read,
+#   so there is nothing for the macro to be handed.
+#
+# * A `derive` inside a reopened type from another module. That is refused
+#   before the derive is reached, by R-3: iyi has no open classes, so a module
+#   cannot add to a type it does not declare.
