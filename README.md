@@ -804,12 +804,15 @@ marked PROPOSED are the parts that will move under you.
   same target under the same flags; anything else is rejected and rebuilt,
   never migrated. The current `0.3.0-dev` is not a released version, keeps the
   build commit in its identity, and interoperates only with itself.
-- **There is no `derive`.** SPEC.md R-5 designs it and nothing implements it.
-  What is built is the mechanism under it: a module's macros travel with its
-  artifact, and `pub macro` says which of them another module may run. II.4
-  records the failed implementation too: resolution can reuse that registry,
-  but derive expansion cannot be an ordinary macro `Call` with a live semantic
-  graph.
+- **`derive` reads its own declaration and nothing else.** `derive <macro>` in
+  a class or struct body runs once, in the module that declares the type, and
+  what it generates travels in that module's artifact.
+  `samples/iyi/derive.iyi` is built from its artifacts with the macro's source
+  deleted every build. The macro is handed the declaration's name and its
+  fields. What SPEC.md R-5 also designs and nothing implements is the other
+  half: reading the export metadata of imported modules, so a derive cannot yet
+  ask whether a field's imported type implements a trait. `derive A, B` on one
+  line is not parsed; one derive per line is.
 - **Macros are not hygienic.** `pub macro` exports a name and an arity, and a
   macro is pasted text, so one that writes `tmp = 99` assigns to your `tmp` if
   you have one. That is Crystal's semantics kept whole.
@@ -819,7 +822,7 @@ marked PROPOSED are the parts that will move under you.
 | | |
 |---|---|
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
-| [`samples/iyi`](samples/iyi) | ten programs: eight documenting a part of it, one being a first half hour, and `calc`, a language |
+| [`samples/iyi`](samples/iyi) | thirteen programs: eleven documenting a part of it, one being a first half hour, and `calc`, a language |
 | [`src/iyi`](src/iyi) | iyi's own library, 2,368 lines. `--crystal` swaps it for Crystal's |
 | [`src/compiler/iyi/iyimod.cr`](src/compiler/iyi/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |

@@ -1064,6 +1064,11 @@ module Iyi
     end
 
     def visit(node : Path)
+      # iyi: `pub LIMIT = 42`. The mark lives on the path because that is where
+      # a constant's visibility already lives (R-2), so this is the one `pub`
+      # the formatter meets on something that is not a keyword declaration.
+      write_keyword :pub, " " if node.exported?
+
       # Sometimes the :: is not present because the parser generates ::Nil, for example
       if node.global? && @token.type.op_colon_colon?
         write "::"
@@ -1718,6 +1723,10 @@ module Iyi
 
       macro_node_line = @line
 
+      # iyi: `pub macro`, the same prefix `pub def` and `pub struct` carry
+      # (R-2). Without this the formatter refused every file with an exported
+      # macro in it, which is what a derive's own module is made of.
+      write_keyword :pub, " " if node.exported?
       write_keyword :macro, " "
 
       write node.name

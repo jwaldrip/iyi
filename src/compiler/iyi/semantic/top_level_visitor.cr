@@ -39,6 +39,10 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
 
   @method_added_running = false
 
+  # iyi: the class or struct declaration each `derive` sits inside (R-5).
+  # `current_type` is the semantic type; a derive macro is handed syntax.
+  @derive_owners = [] of ClassDef
+
   @last_doc : String?
 
   # special types recognized for `@[Primitive]`
@@ -242,7 +246,12 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
 
     pushing_type(type) do
       run_hooks(hook_type(superclass), type, :inherited, node) if created_new_type
-      node.body.accept self
+      @derive_owners.push node
+      begin
+        node.body.accept self
+      ensure
+        @derive_owners.pop
+      end
     rescue ex : MacroRaiseException
       # Make the inner most exception to be the inherited node so that it's the last frame in the trace.
       # This will make the location show on that node instead of the `raise` call.
@@ -1842,8 +1851,79 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
   end
 
   def visit(node : Call)
+    # iyi: `derive equality` inside a type body (SPEC.md R-5, II.4). The macro
+    # runs once here, in the module that declares the type, and what it
+    # generates belongs to this module like any other declaration.
+    if node.name == "derive" && node.obj.nil? && !@derive_owners.empty?
+      expand_derive node
+      return false
+    end
+
     node.scope = node.global? ? @program : current_type.metaclass
     !expand_macro(node, raise_on_missing_const: false, first_pass: true)
+  end
+
+  private def expand_derive(node : Call)
+    owner = @derive_owners.last
+
+    unless node.args.size == 1 && node.named_args.nil? && !node.block
+      node.raise "`derive` takes one exported macro name, for example `derive equality`"
+    end
+
+    name = derive_macro_name(node.args.first)
+
+    # The macro is handed a description of the declaration, never the
+    # declaration itself. R-5 promises it the attached declaration's shape; a
+    # live or cloned `ClassDef` would also carry this `derive` node, and the
+    # artifact walk that follows a macro's inputs would have a cycle to chase.
+    call = Call.new(nil, name, [describe_derive_target(owner)] of ASTNode).at(node)
+    call.scope = current_type.metaclass
+
+    unless expand_macro(call, raise_on_missing_const: false, first_pass: true)
+      node.raise "`#{name}` is not an available derive macro. Define it as " \
+                 "`pub macro #{name}(declaration)` and import or `using` its module"
+    end
+
+    node.expanded = call.expanded
+    node.expanded_macro = call.expanded_macro
+  end
+
+  # The bounded facts R-5 lets a derive read: the declaration's own name, and
+  # the fields written in its body. Nothing else, and nothing that reaches back
+  # into the tree, so a derive sees the same declaration whether its module is
+  # compiled from source or read from an artifact.
+  #
+  # Handing over the `ClassDef` itself, live or cloned, is what this replaces.
+  # That declaration contains the `derive` node, so the walk that follows a
+  # macro's inputs had a cycle to chase and never finished (SPEC.md II.4).
+  private def describe_derive_target(owner : ClassDef) : ASTNode
+    fields = [] of ASTNode
+    body = owner.body
+    declarations = body.is_a?(Expressions) ? body.expressions : [body]
+    declarations.each do |declaration|
+      next unless declaration.is_a?(TypeDeclaration)
+      var = declaration.var
+      fields << StringLiteral.new(var.name) if var.is_a?(InstanceVar)
+    end
+
+    NamedTupleLiteral.new([
+      NamedTupleLiteral::Entry.new("name", StringLiteral.new(owner.name.names.last)),
+      NamedTupleLiteral::Entry.new("fields", ArrayLiteral.new(fields)),
+    ])
+  end
+
+  private def derive_macro_name(name : ASTNode) : String
+    case name
+    when Path
+      names = name.names
+      return names.first if names.size == 1
+      name.raise "expected an exported macro name after `derive`, not a path"
+    when Call
+      return name.name if name.obj.nil? && name.args.empty? && !name.block
+      name.raise "expected an exported macro name after `derive`, not a call"
+    else
+      name.raise "expected an exported macro name after `derive`, not an expression"
+    end
   end
 
   def visit(node : ProcPointer)

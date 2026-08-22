@@ -37,6 +37,11 @@ describe "Formatter on iyi" do
   assert_iyi_format "module m\n\npub def polite(name : String) : String\n  name\nend"
   assert_iyi_format "module m\n\npub struct Box(T)\n  getter value : T\nend"
   assert_iyi_format "module m\n\npub class Holder\n  @x = 1\nend"
+  # `pub macro` and `pub CONST` were the two the formatter did not know, and
+  # nothing formatted in CI had either in it, so it refused a whole file the
+  # first time one was written. Every prefix R-2 allows is listed here now.
+  assert_iyi_format "module m\n\npub macro described(declaration)\n  def described : String\n    \"x\"\n  end\nend"
+  assert_iyi_format "module m\n\npub LIMIT = 42"
 
   # Traits, their supertraits, and the associated types they declare.
   assert_iyi_format "module m\n\npub trait Show\n  abstract def show : String\nend"

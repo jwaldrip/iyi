@@ -22,6 +22,16 @@
   deleting a path needs a preopened directory capability the prelude does not
   have. `samples/iyi/files.iyi` now deletes what it creates.
 
+- **`derive` runs once, where the type is declared.** `derive <macro>` in a
+  class or struct body resolves through the exported macro table, expands while
+  the declaring type is processed, and the methods it generates belong to that
+  module and travel in its artifact. `samples/iyi/derive.iyi` is built from its
+  artifacts with `std/derives` deleted every build, so a consumer never runs
+  the macro. The macro is handed the declaration's name and fields, built for
+  the purpose: passing the declaration itself put the `derive` node inside its
+  own macro argument, and no build that touched an artifact terminated. R-5's
+  other half, reading an imported module's export metadata, is still unbuilt.
+
 ### Fixed
 
 - **A constant an artifact reads carries a location.** The reads a consumer
