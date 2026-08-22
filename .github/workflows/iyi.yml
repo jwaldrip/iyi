@@ -349,8 +349,13 @@ jobs:
             -o cross/hello-musl samples/iyi/hello.iyi
           ./bin/iyi build --cross-compile --target aarch64-linux-gnu \
             -o cross/hello-aarch64 samples/iyi/hello.iyi
-          ./bin/iyi build --cross-compile --target x86_64-windows-msvc \
-            -o cross/hello-windows samples/iyi/hello.iyi
+          # The Windows link is not written down here: it is whatever
+          # `--cross-compile` prints, saved and run as-is on the runner, so the
+          # command a person is told to type is the command that is tested.
+          ( cd cross && ../bin/iyi build --cross-compile \
+              --target x86_64-windows-msvc -o hello-windows \
+              ../samples/iyi/hello.iyi > hello-windows.link )
+          cat cross/hello-windows.link
           ls -l cross
 
       - uses: actions/upload-artifact@v4
@@ -393,14 +398,18 @@ jobs:
             '
           diff cross/expected.txt cross/got.txt && echo "aarch64: same output"
 
-  # Windows, run rather than type-checked. Two things had to be true, and one
-  # of them was not obvious. The object's entire undefined set is six
-  # `kernel32` functions, printed here before linking. And an LLVM-emitted
-  # object carries no `/DEFAULTLIB` directives, so the libraries are named by
-  # hand — the *dynamic* CRT, because the static one (`libcmt`) links just as
-  # cleanly and then access-violates before `main` runs. That was measured by
-  # bisecting down to a program whose whole source is `module w1`: it faulted
-  # too, which is what ruled out everything the program does.
+  # Windows, run rather than type-checked, and linked with the command
+  # `--cross-compile` prints rather than one written here — so if that command
+  # stops working, this job says so.
+  #
+  # Getting there needed two things the object audit cannot see. The object's
+  # undefined set is six `kernel32` functions, printed below before linking,
+  # and an LLVM-emitted object carries no `/DEFAULTLIB` directives, so the
+  # prelude names its libraries itself. The CRT among them is the *dynamic*
+  # one: the static `libcmt` links just as cleanly and then access-violates
+  # before `main` runs. That was found by bisecting to a program whose whole
+  # source is `module w1`, which faulted too, ruling out everything a program
+  # does in one step.
   windows-run:
     needs: cross-objects
     runs-on: windows-2022
@@ -417,13 +426,24 @@ jobs:
         shell: cmd
         run: dumpbin /nologo /symbols cross\hello-windows.obj | findstr /C:"UNDEF"
 
-      - name: Link against kernel32 and the dynamic CRT, and run it
-        shell: cmd
+      - name: Link with the command `--cross-compile` printed, and run it
+        shell: pwsh
+        working-directory: cross
         run: |
-          link /nologo /subsystem:console /out:hello.exe cross\hello-windows.obj kernel32.lib msvcrt.lib ucrt.lib vcruntime.lib
-          hello.exe > got.txt
-          type got.txt
-          fc /b cross\expected.txt got.txt > nul && (echo windows: same output) || (echo windows: OUTPUT DIFFERS & exit /b 1)
+          $command = (Get-Content hello-windows.link -Raw).Trim()
+          Write-Host "linking with: $command"
+          $parts = $command -split '\s+'
+          & $parts[0] $parts[1..($parts.Length - 1)]
+          if ($LASTEXITCODE -ne 0) { throw "link failed with $LASTEXITCODE" }
+          .\hello-windows.exe > got.txt
+          if ($LASTEXITCODE -ne 0) { throw "the program exited $LASTEXITCODE" }
+          Get-Content got.txt
+          $expected = [IO.File]::ReadAllBytes("expected.txt")
+          $got = [IO.File]::ReadAllBytes("got.txt")
+          if ([Convert]::ToBase64String($expected) -ne [Convert]::ToBase64String($got)) {
+            throw "windows: OUTPUT DIFFERS"
+          }
+          Write-Host "windows: same output"
 
   binary:
     needs: build

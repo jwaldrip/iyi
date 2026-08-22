@@ -222,6 +222,21 @@ require "./hash"
   # iyi primitives carry arithmetic on Int32/Int64/UInt8/UInt64 only, so the
   # DWORD-width parameters are declared Int32: same 32 bits at the ABI, and
   # no UInt32 value ever exists in this file to convert.
+  #
+  # The link is named here because an object LLVM emits carries no
+  # `/DEFAULTLIB` directives, which an MSVC-compiled one would: without this,
+  # `--cross-compile` prints a command that cannot link what it just produced,
+  # and every one of these six functions comes back as an unresolved external.
+  #
+  # `msvcrt`, `ucrt` and `vcruntime` are the *dynamic* CRT, and they are here
+  # for one symbol: this program's entry point is `main`, so something has to
+  # supply `mainCRTStartup` to call it. The static CRT (`libcmt`) links just as
+  # cleanly and the binary then exits `0xC0000005` before `main` runs, which is
+  # why the choice is written down rather than left to whoever links. Emitting
+  # an entry point of iyi's own would remove all three, and would be the honest
+  # form of "kernel32 and nothing else".
+  @[Link("kernel32")]
+  @[Link(ldflags: "msvcrt.lib ucrt.lib vcruntime.lib")]
   lib LibC
     fun GetStdHandle(n_std_handle : Int32) : Void*
     fun WriteFile(handle : Void*, buffer : Void*, number_of_bytes_to_write : Int32,
@@ -636,6 +651,9 @@ require "./file"
     # be handed to it, so it routes to a plain `HeapAlloc`. `free` is not
     # bound because nothing frees, and a program that outlives its memory is
     # what allocating without collecting asks for.
+    # Same reason as the block above: an LLVM-emitted object names no library
+    # for itself, so the three heap functions have to name theirs.
+    @[Link("kernel32")]
     lib LibC
       fun GetProcessHeap : Void*
       fun HeapAlloc(heap : Void*, flags : UInt32, bytes : UInt64) : Void*

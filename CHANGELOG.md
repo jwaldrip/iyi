@@ -6,7 +6,7 @@
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 2,368-line library and nothing else. Every other
+  written against iyi's own 2,386-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
@@ -73,6 +73,15 @@
   too, which ruled out the allocator, the write path and `ExitProcess` in one
   step and pointed at the link instead. All six rungs now match their native
   exit codes and output, including the one that proves `HeapAlloc` ran.
+
+- **The Windows link command names the libraries it needs.** An LLVM-emitted
+  object carries no `/DEFAULTLIB` directives the way an MSVC-compiled one does,
+  so `--cross-compile` printed a `cl.exe` command that could not link the object
+  it had just produced: seven unresolved externals, six of them `kernel32`. The
+  prelude's Win32 blocks now carry `@[Link("kernel32")]` and the dynamic CRT,
+  and CI links with the printed command rather than one written into the
+  workflow, so the command a person is told to type is the command that is
+  tested.
 
 ### Fixed
 
