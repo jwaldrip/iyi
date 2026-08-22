@@ -4526,6 +4526,19 @@ Named honestly, so nobody mistakes this draft for complete.
     > reached because `Array#[]` can raise and raising formats an integer — and
     > those belong to the library the consumer already has.
     >
+    > **What `JSON` waits on is not this tool's to give.** With the units, the
+    > type ids and the constants all travelling, `JSON` binds to 19 units and
+    > 7.5 MB and then stops on one thing: `JSON::PullParser` holds an
+    > `ObjectStackKind`, and **iyi has no `enum`**. Nothing on the far side
+    > declares one, so a signature naming an enum cannot cross and neither can a
+    > type holding one. The tool called them "namespaces skipped whole", which
+    > was misleading — an enum is not a namespace, it is a kind of type the
+    > language does not have — and it names them now.
+    >
+    > That is the honest shape of the remaining distance: the packaging is
+    > solved, and what is left is a language feature rather than another thing
+    > about object files.
+    >
     > One nested inside a type under the root crosses as well, written
     > `Inner::X = ...`. That was left out for a turn on the reasoning that a
     > qualified assignment reopens rather than defines — a guess, and wrong:

@@ -111,6 +111,13 @@
   constants only: a unit refers to Crystal's as well, and those belong to the
   library the consumer already has.
 
+  What a boundary cannot carry is an enum, and `crystal tool bind` says so by
+  name instead of calling it a namespace skipped whole. iyi has no `enum`, so
+  nothing on the far side declares one: a signature naming an enum cannot cross
+  and neither can a type holding one. It is what `JSON` waits on — it binds to
+  19 units and 7.5 MB and then stops on `JSON::PullParser`'s `ObjectStackKind` —
+  and it is a language feature rather than another thing about object files.
+
   One nested inside a type under the root crosses as well, written
   `Inner::X = ...` — which defines rather than reopens wherever the namespace
   exists, and the declarations rendered above it are what make it exist.

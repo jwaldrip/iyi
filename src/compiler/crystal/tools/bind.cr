@@ -459,9 +459,17 @@ module Crystal
       io.puts "takes its symbol from `extend self`, which only a module has."
     end
 
+    unless @@skipped_enums.empty?
+      io.puts
+      io.puts "enums, which iyi does not have: #{@@skipped_enums.uniq!.sort!.join(", ")}"
+      io.puts "  Nothing declares one on the far side, so a signature naming one"
+      io.puts "  cannot cross and neither can a type holding one. This is what"
+      io.puts "  `JSON` waits on, through `JSON::PullParser`."
+    end
+
     unless @@nested_namespaces.empty?
       io.puts
-      io.puts "namespaces skipped whole: #{@@nested_namespaces.sort.join(", ")}"
+      io.puts "namespaces skipped whole: #{@@nested_namespaces.uniq!.sort!.join(", ")}"
       io.puts "  what they hold has to travel as nested declarations."
     end
 
@@ -620,6 +628,9 @@ module Crystal
   # The namespaces skipped whole, with whatever they hold.
   @@nested_namespaces = [] of String
 
+  # And the enums, which are skipped for a different reason worth its own line.
+  @@skipped_enums = [] of String
+
   private def self.type_declarations(program : Program, methods : Array(BindMethod),
                                      root : String) : Array(IyiMod::TypeDecl)
     by_owner = methods.group_by(&.owner)
@@ -758,7 +769,16 @@ module Crystal
     # has to travel as its own nested declarations, and this walk does not go
     # there yet.
     unless type.is_a?(ClassType)
-      @@nested_namespaces << name
+      # An enum is not a namespace and calling it one was misleading. It is a
+      # type iyi does not have: there is no `enum` in the language, so there is
+      # nothing for an artifact to declare one as. That is the gap `JSON` waits
+      # on — `JSON::PullParser` holds an `ObjectStackKind` — and it is a
+      # language's to close rather than this tool's.
+      if type.is_a?(EnumType)
+        @@skipped_enums << name
+      else
+        @@nested_namespaces << name
+      end
       return nil
     end
 
