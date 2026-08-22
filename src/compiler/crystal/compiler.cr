@@ -1952,6 +1952,21 @@ module Crystal
 
       output_filename = File.expand_path(output_filename)
 
+      # iyi: a build that exists to fill a boundary does not link.
+      #
+      # The keep file is not a program anybody runs — it is there so codegen
+      # emits the methods a consumer will call, and what the boundary needs is
+      # the objects rather than the executable they would have gone into.
+      # Linking them is waste when it works and worse when it does not: forcing
+      # the whole of `IO`'s surface produces a program that will not link, on
+      # `Crystal::EventLoop::Polling` internals a demand-driven build never
+      # reaches — and the units are written after the link, so a boundary that
+      # had everything it needed got nothing.
+      if emit_bind && iyi_keep
+        @progress_tracker.clear
+        return units
+      end
+
       @progress_tracker.stage("Codegen (linking)") do
         Dir.cd(output_dir) do
           begin

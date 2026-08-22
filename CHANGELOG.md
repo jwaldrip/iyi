@@ -4,6 +4,35 @@
 
 ### Added
 
+- **`pub enum`, and an enum crosses a boundary.** iyi took an `enum` already —
+  the language has one and the compiler makes the type — but `pub` did not, so a
+  module could declare one and never hand it out. It does now, and
+  `crystal tool bind` writes the enum's members with the integer they are
+  numbered on, read from what the compiler assigned rather than renumbered: the
+  object file a consumer links is what gave them their numbers. An earlier note
+  said iyi had no `enum` at all, which came from grepping the prelude and was
+  wrong about the language.
+
+- **A private type travels as private.** `JSON::PullParser` holds an
+  `Array(ObjectStackKind)` and its object code numbers
+  `Pointer(ObjectStackKind)`, so a consumer has to *number* a type it must never
+  be able to *write*. Declaring it without `pub` is exactly that, and R-2b keeps
+  the name unreachable. Dropping such types was the first answer and only the
+  linker said otherwise.
+
+- **A rebuild of a type declaration carries all of it.** Pruning and renaming
+  both reconstructed a `TypeDecl` and left `value` and `macros` behind, which is
+  how an alias lost its right-hand side and, once enums arrived, how one lost
+  its members.
+
+- **A build that fills a boundary does not link.** The keep file is not a
+  program anybody runs — it exists so codegen emits the methods a consumer will
+  call — and what the boundary needs is the objects, not the executable they
+  would have gone into. Forcing the whole of `IO`'s surface produces a program
+  that will not link, on `Crystal::EventLoop::Polling` internals a demand-driven
+  build never reaches, and the units are written after the link. `IO`'s artifact
+  fills now — 18 units, 14.8 MB — where it had been empty.
+
 - **Measured what the library would be worth as an artifact** (SPEC.md Part V
   item 12e). A generated module the shape of a library — 103,002 lines, 5,000
   exported methods, declarations at the 5% of the source that Crystal's own

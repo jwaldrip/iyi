@@ -4559,6 +4559,34 @@ Named honestly, so nobody mistakes this draft for complete.
     > than about names or types: a boundary needs the objects, not the program
     > they would have linked into.
     >
+    > **So it does not link.** A build carrying both `--iyi-keep` and
+    > `--emit-bind` exists to fill a boundary, and the keep file is not a program
+    > anybody runs. `IO`'s artifact fills — 18 units, 14.8 MB, 92 type ids — and
+    > every boundary build stops paying for a link nobody wanted.
+    >
+    > **And then the thing that had been measured turned out to be the wrong
+    > thing.** `IO` and `JSON` are Crystal's library, and a consumer built with
+    > `--crystal` *has* Crystal's library: `require "json"` and
+    > `JSON.parse("[1,2,3]").as_a.size` answers 3 with no artifact anywhere near
+    > it. Binding them measures how well a boundary can hand a program something
+    > it already has.
+    >
+    > What a boundary is for is a **shard** — a library the consumer does not
+    > have — which is what `tool bind -e Kemal` was written for and what the
+    > fixtures in `bind-pipeline_spec.cr` are shaped like. Those cross whole:
+    > functions both ways round, a union parameter, constants at the root and
+    > inside a type, an enum, and a nested type with its own methods.
+    >
+    > For the library itself the artifact's value is *speed* rather than reach,
+    > and that is 12e's question, measured at the top of this item — not
+    > something the last few turns were testing.
+    >
+    > One thing binding the library did leave behind, and it is only reachable
+    > from there: a *class*-rooted namespace collides with its own wrapper. The
+    > artifact's declarations are wrapped in `module <path>`, and for `i_o` that
+    > path camelcases to `IO` — which is a class, so reopening it as a module is
+    > refused. A module root has no such problem, and a shard's root is one.
+    >
     > **What `JSON` waited on, before that**, was written here as "iyi has no
     > `enum`" and that was wrong. With the units, the type ids and the constants
     > travelling, `JSON` bound to 19 units and stopped on `JSON::PullParser`'s
