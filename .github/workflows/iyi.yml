@@ -314,8 +314,9 @@ jobs:
           done
           exit $status
   # Portability, taken past "the code generator has no objection". The README
-  # says an iyi program compiles for nine targets and is run on three of them;
-  # these two jobs are the musl and aarch64 runs, and the native job is the third.
+  # says an iyi program compiles for nine targets and is run on four of them;
+  # these jobs are the musl, aarch64 and Windows runs, and the native job is
+  # the fourth.
   #
   # Split in two because a job with a `container:` cannot run docker, and
   # running the program means running it somewhere else: the object is produced
@@ -340,7 +341,7 @@ jobs:
 
       # What the program prints here is what it has to print there. Taken from
       # a native run rather than written down, so the two cannot drift.
-      - name: Cross-compile hello for musl and aarch64
+      - name: Cross-compile hello for musl, aarch64 and Windows
         run: |
           mkdir -p cross
           ./bin/iyi run samples/iyi/hello.iyi > cross/expected.txt
@@ -348,6 +349,8 @@ jobs:
             -o cross/hello-musl samples/iyi/hello.iyi
           ./bin/iyi build --cross-compile --target aarch64-linux-gnu \
             -o cross/hello-aarch64 samples/iyi/hello.iyi
+          ./bin/iyi build --cross-compile --target x86_64-windows-msvc \
+            -o cross/hello-windows samples/iyi/hello.iyi
           ls -l cross
 
       - uses: actions/upload-artifact@v4
@@ -389,6 +392,38 @@ jobs:
               ./hello-aarch64 > got.txt
             '
           diff cross/expected.txt cross/got.txt && echo "aarch64: same output"
+
+  # Windows, run rather than type-checked. Two things had to be true, and one
+  # of them was not obvious. The object's entire undefined set is six
+  # `kernel32` functions, printed here before linking. And an LLVM-emitted
+  # object carries no `/DEFAULTLIB` directives, so the libraries are named by
+  # hand — the *dynamic* CRT, because the static one (`libcmt`) links just as
+  # cleanly and then access-violates before `main` runs. That was measured by
+  # bisecting down to a program whose whole source is `module w1`: it faulted
+  # too, which is what ruled out everything the program does.
+  windows-run:
+    needs: cross-objects
+    runs-on: windows-2022
+    name: "An iyi program, run on Windows"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-objects
+          path: cross
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: What the object asks Windows for
+        shell: cmd
+        run: dumpbin /nologo /symbols cross\hello-windows.obj | findstr /C:"UNDEF"
+
+      - name: Link against kernel32 and the dynamic CRT, and run it
+        shell: cmd
+        run: |
+          link /nologo /subsystem:console /out:hello.exe cross\hello-windows.obj kernel32.lib msvcrt.lib ucrt.lib vcruntime.lib
+          hello.exe > got.txt
+          type got.txt
+          fc /b cross\expected.txt got.txt > nul && (echo windows: same output) || (echo windows: OUTPUT DIFFERS & exit /b 1)
 
   binary:
     needs: build

@@ -16,7 +16,7 @@ that rule and what it costs.
 |---|---|
 | **Developer experience** | edit one module in a 7,207-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
 | **Agentic experience** | a module's interface is a file, not a convention: `iyi mod dump` prints it, and a consumer type-checks against it with the source deleted |
-| **Portability** | an iyi program compiles for **nine targets** and is **run** on three of them every build: x86-64 glibc, x86-64 musl, and aarch64 under emulation |
+| **Portability** | an iyi program compiles for **nine targets** and is **run** on four of them every build: x86-64 glibc, x86-64 musl, aarch64 under emulation, and x86-64 Windows |
 | **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s**. At run time the two libraries are within noise where they do the same work |
 | **Efficiency** | that `hello` is a **36 KB** binary that starts in **1.6 ms**; the same program with Crystal's library is 1,553 KB and 3.2 ms |
 
@@ -792,27 +792,24 @@ marked PROPOSED are the parts that will move under you.
 - **No native test matrix across the supported targets.** CI type-checks the
   library for nine triples and audits the emitted objects of an iyi program for
   seven of them on four platforms: Linux x86_64 and aarch64, macOS x86_64 and
-  aarch64, Windows msvc and gnu, and wasm32-wasi. Two of those are also *run*:
-  `hello.iyi` is cross-compiled for `x86_64-linux-musl` and
-  `aarch64-linux-gnu`, linked with the target's own `cc` and `libgc`, and run
-  natively in a container and under emulation, checked against what the same
-  program printed on the machine that compiled it. `arm-linux-gnueabihf` only
-  type-checks. Nothing here claims that the test suite runs on any target but
-  the one CI builds on.
-- **A Windows binary links and then crashes, measured.** The audit above reads
-  what the object *asks* for, and for `x86_64-windows-msvc` that is six
-  `kernel32` functions and nothing else. Taking it one step further, on a
-  Windows runner, found two things the audit cannot see. The `cl.exe obj /link`
-  that iyi's own `--cross-compile` prints for this target fails with seven
-  unresolved externals: an LLVM-emitted object carries no `/DEFAULTLIB`
-  directives, so nothing pulls in `kernel32` or the CRT's entry stub, and both
-  have to be named by hand. Named by hand, the link succeeds — and the binary
-  then exits `0xC0000005`, an access violation, having written nothing. So
-  Windows is a target that compiles, emits an object that asks only for the
-  platform, links against the platform, and does not run. Nothing here is
-  wrong about the object; what is wrong is somewhere between `main` and the
-  first `WriteFile`, and finding it needs a debugger on Windows rather than
-  another linker flag.
+  aarch64, Windows msvc and gnu, and wasm32-wasi. Three of those are also
+  *run*: `hello.iyi` is cross-compiled for `x86_64-linux-musl`,
+  `aarch64-linux-gnu` and `x86_64-windows-msvc`, linked with the target's own
+  linker, and run natively in a container, under emulation, and on a Windows
+  runner, each checked against what the same program printed on the machine
+  that compiled it. `wasm32-wasi` and `arm-linux-gnueabihf` only type-check.
+  Nothing here claims that the test suite runs on any target but the one CI
+  builds on.
+- **A Windows program needs its libraries named for it, and the wrong CRT
+  crashes.** An LLVM-emitted object carries no `/DEFAULTLIB` directives, which
+  an MSVC-compiled one would, so nothing pulls in `kernel32` or a C runtime and
+  the `cl.exe obj /link` that `--cross-compile` prints for this target fails
+  with seven unresolved externals. Naming them is not enough either: the
+  *static* CRT (`libcmt`) links just as cleanly and the binary then exits
+  `0xC0000005` before `main` runs. The *dynamic* CRT
+  (`msvcrt ucrt vcruntime`) runs correctly, which is what CI now links and what
+  a person has to type. The command `--cross-compile` prints is still the
+  broken one.
 - **Artifacts are identified by released version, target and flag set.** Builds
   of the same released version read each other's `.iyimod` files only on the
   same target under the same flags; anything else is rejected and rebuilt,

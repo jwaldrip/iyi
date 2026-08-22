@@ -51,23 +51,28 @@
   runs in turn, left to right, reading the same declaration. A name nothing
   exports is reported at that name rather than at the line.
 
-### Measured
+- **An iyi program is run on Windows every build.** Windows was one of the
+  seven targets whose emitted objects CI audits and one of the six that had
+  never been run. `hello.iyi` is now cross-compiled on Linux for
+  `x86_64-windows-msvc`, then linked and run on a Windows runner and compared
+  byte for byte against what the same program printed on the machine that
+  compiled it.
 
-- **A Windows binary links and does not run.** Windows was one of the seven
-  targets whose emitted objects CI audits and one of the six that had never
-  been run. Run on a Windows runner, two things appeared that auditing the
-  object cannot show. The `cl.exe obj /link` iyi's own `--cross-compile` prints
-  for this target fails with seven unresolved externals, because an
-  LLVM-emitted object carries no `/DEFAULTLIB` directives and so pulls in
-  neither `kernel32` nor the CRT's entry stub. Naming both by hand links
-  cleanly, and the binary then exits `0xC0000005` having written nothing.
+  Getting there needed two things the object audit cannot see. An LLVM-emitted
+  object carries no `/DEFAULTLIB` directives, which an MSVC-compiled one would,
+  so nothing pulls in `kernel32` or a C runtime: the `cl.exe obj /link` that
+  `--cross-compile` prints for this target fails with seven unresolved
+  externals, and that command is still wrong. And naming the libraries is not
+  enough, because the *static* CRT (`libcmt`) links just as cleanly and then
+  exits `0xC0000005` before `main` runs. The dynamic CRT
+  (`msvcrt ucrt vcruntime`) runs correctly.
 
-  The object is not the problem: its entire undefined set is `WriteFile`,
-  `GetStdHandle`, `GetProcessHeap`, `HeapAlloc`, `HeapReAlloc` and
-  `ExitProcess`. The fault is between `main` and the first `WriteFile`, on code
-  paths — the Win32 allocator and the Win32 write — that no build has ever
-  executed. Recorded rather than guessed at: the next linker flag was not going
-  to be the answer, and finding it needs a debugger on Windows.
+  How that was found is the part worth keeping: a ladder of programs, smallest
+  first, linked and run on a Windows runner with the exit code printed rather
+  than checked. The smallest rung's whole source is `module w1` and it faulted
+  too, which ruled out the allocator, the write path and `ExitProcess` in one
+  step and pointed at the link instead. All six rungs now match their native
+  exit codes and output, including the one that proves `HeapAlloc` ran.
 
 ### Fixed
 
