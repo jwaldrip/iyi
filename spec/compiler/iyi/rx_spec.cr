@@ -458,8 +458,6 @@ describe Iyi::Rx do
         # already uppercase, so only the upcase of its fold lands in the range
         {"[Α-Ω]", ["α", "ω", "Α", "Ω", "\u{2126}"]},
         {"[α-ω]", ["Α", "Ω", "α", "ω", "\u{2126}"]},
-        # a property inside a caseless class: é is not Lu, but its upcase is
-        {"[\\p{Lu}]", ["é", "É", "日", "5"]},
         {"[éû]+", ["ÉÛéû", "aa"]},
       }
 
@@ -467,6 +465,27 @@ describe Iyi::Rx do
         subjects.each { |subject| rx_should_agree(source, subject, ignore_case: true) }
         rx_should_agree(source, "", ignore_case: true)
       end
+    end
+
+    it "folds a property class, where pcre2 builds disagree with each other" do
+      # iyi: `[\p{Lu}]` under /i is the one caseless question the oracle cannot
+      # settle, because pcre2 answers it differently depending on the build. The
+      # pcre2 that Homebrew ships matches é, the pcre2 in the Linux container this
+      # suite also runs in does not, and both are pcre2 with UTF and UCP. So there
+      # is nothing to defer to and the reading has to be ours.
+      #
+      # Ours: /i compares in the subject's case-folding orbit, whatever the class
+      # is made of. `[A-Z]` under /i reaches a, so `[\p{Lu}]` under /i reaches é,
+      # whose upcase is É and is Lu. Treating a property class as the one kind of
+      # class /i does not reach into would be the inconsistency.
+      folded = Iyi::Rx::Pattern.compile("[\\p{Lu}]", true)
+      folded.matches?("é").should be_true
+      folded.matches?("É").should be_true
+      folded.matches?("日").should be_false
+      folded.matches?("5").should be_false
+      # Without /i the property means exactly itself, and every pcre2 agrees.
+      rx_should_agree("[\\p{Lu}]", "é")
+      rx_should_agree("[\\p{Lu}]", "É")
     end
 
     it "agrees on the unicode properties it accepts" do
@@ -784,16 +803,20 @@ describe Iyi::Rx do
       rx_should_span("(?<!ab+)c", "axc", 2, 3)
       rx_should_not_match("(?<!ab+)c", "abbc")
 
-      # The bounded forms pcre2 does compile, where the oracle can still speak.
+      # The forms a pcre2 build may or may not compile. "Bounded" is not the line:
+      # 10.43 accepts a variable length lookbehind up to a limit and older builds
+      # refuse anything they cannot step back a fixed number of characters for, so
+      # `(?<=a?b)` compiles for one and not the other. Ask the oracle only where
+      # it can answer, and hold ourselves to the extents either way.
       {
-        {"(?<=a{1,3})c", "aac"},
-        {"(?<=a{1,3})c", "c"},
-        {"(?<=a?b)c", "bc"},
-        {"(?<=a?b)c", "abc"},
-        {"(?<=(?:ab|c))d", "abd"},
-        {"(?<=(?:ab|c))d", "cd"},
-        {"(?<=(?:ab|c))d", "xd"},
-      }.each { |source, subject| rx_should_agree(source, subject) }
+        {"(?<=a{1,3})c", "aac", 2, 3},
+        {"(?<=a?b)c", "bc", 1, 2},
+        {"(?<=a?b)c", "abc", 2, 3},
+        {"(?<=(?:ab|c))d", "abd", 2, 3},
+        {"(?<=(?:ab|c))d", "cd", 1, 2},
+      }.each { |source, subject, from, to| rx_should_span(source, subject, from, to) }
+      rx_should_not_match("(?<=a{1,3})c", "c")
+      rx_should_not_match("(?<=(?:ab|c))d", "xd")
     end
 
     it "agrees on named groups, which are numbered groups that also have a name" do
@@ -901,43 +924,51 @@ describe Iyi::Rx do
     it "is right where pcre2 contradicts itself on a mixed length lookbehind" do
       # iyi: the one place the oracle cannot be followed. `(?<=A|B)` is the union
       # of `(?<=A)` and `(?<=B)`, because an alternation matches exactly when one
-      # of its branches does. pcre2 breaks that law, and the trigger is narrower
-      # than a first reading of it suggests: the alternation has to be wrapped in
-      # a group. Measured on subject "a" at byte 0, where neither branch holds:
+      # of its branches does. Where a pcre2 build accepts a mixed length
+      # lookbehind at all, it breaks that law, and the trigger is narrower than a
+      # first reading suggests: the alternation has to be wrapped in a group.
+      # Measured on subject "a" at byte 0, where neither branch holds, against the
+      # pcre2 Homebrew ships:
       #
       #   (?<=a)         search from 0 -> byte 1     anchored at 0 -> no match
       #   (?<=$)         search from 0 -> byte 1     anchored at 0 -> no match
       #   (?<=(?:a|$))   search from 0 -> byte 0     anchored at 0 -> no match
       #   (?<=a|$)       search from 0 -> byte 1     anchored at 0 -> no match
       #
-      # So the bare alternation is right and the grouped one is wrong, and pcre2's
-      # own anchored evaluation contradicts its unanchored search on the same
-      # pattern at the same offset. Fixed-width stepping was the first
-      # explanation offered here and the last row refutes it, so no mechanism is
-      # claimed: what is recorded is the disagreement. What is asserted below is
-      # pcre2's answers for the branches, never its answer for the pair.
+      # So the bare alternation is right, the grouped one is wrong, and pcre2's own
+      # anchored evaluation contradicts its unanchored search on the same pattern
+      # at the same offset. Fixed-width stepping was the first explanation offered
+      # here and the last row refutes it, so no mechanism is claimed: what is
+      # recorded is the disagreement.
+      #
+      # Older builds, including the one in the Linux container this suite also runs
+      # in, refuse a mixed length lookbehind outright ("lookbehind assertion is not
+      # fixed length"), so they cannot be asked. The engine's own answers are
+      # asserted either way and the oracle only where it compiles the pattern,
+      # which is what keeps this example honest on both.
       left = Iyi::Rx::Pattern.compile("(?<=a)")
       right = Iyi::Rx::Pattern.compile("(?<=$)")
       pair = Iyi::Rx::Pattern.compile("(?<=(?:a|$))")
-      reference_left = Regex.new("(?<=a)")
-      reference_right = Regex.new("(?<=$)")
-      reference_pair = Regex.new("(?<=(?:a|$))")
-      reference_bare = Regex.new("(?<=a|$)")
 
-      # At byte 0 of "a", pcre2 says neither branch holds, and then says the pair
-      # does. Both cannot be true.
-      rx_reference_holds_at?(reference_left, "a", 0).should be_false
-      rx_reference_holds_at?(reference_right, "a", 0).should be_false
-      rx_reference_holds_at?(reference_pair, "a", 0).should be_true
-      # The same pattern without the group is right, which is why the group is
-      # named as the trigger above rather than the differing branch lengths.
-      rx_reference_holds_at?(reference_bare, "a", 0).should be_false
-      # And pcre2 anchored at 0 denies what pcre2 searching from 0 reported.
-      reference_pair.match("a", 0, Regex::MatchOptions::ANCHORED).should be_nil
-      # the engine matches pcre2 branch by branch, and stays consistent on the pair
+      # Ours, unconditionally: neither branch holds at byte 0, so the pair does not.
       rx_holds_at?(left, "a", 0).should be_false
       rx_holds_at?(right, "a", 0).should be_false
       rx_holds_at?(pair, "a", 0).should be_false
+
+      # pcre2 on the branches, which every build compiles.
+      rx_reference_holds_at?(Regex.new("(?<=a)"), "a", 0).should be_false
+      rx_reference_holds_at?(Regex.new("(?<=$)"), "a", 0).should be_false
+
+      # pcre2 on the pair, only where this build accepts it.
+      if rx_reference_compiles?("(?<=(?:a|$))")
+        reference_pair = Regex.new("(?<=(?:a|$))")
+        rx_reference_holds_at?(reference_pair, "a", 0).should be_true
+        # And pcre2 anchored at 0 denies what pcre2 searching from 0 reported.
+        reference_pair.match("a", 0, Regex::MatchOptions::ANCHORED).should be_nil
+        # The same pattern without the group is right, which is why the group is
+        # named as the trigger above rather than the differing branch lengths.
+        rx_reference_holds_at?(Regex.new("(?<=a|$)"), "a", 0).should be_false
+      end
 
       # The law itself, over a corpus. Each branch is still held to pcre2, so the
       # engine only leaves the oracle where the oracle stops being coherent, and
@@ -950,8 +981,10 @@ describe Iyi::Rx do
           ahead = Iyi::Rx::Pattern.compile("(?=(?:#{first}|#{second}))")
           reference_ahead = Regex.new("(?=(?:#{first}|#{second}))")
           {"", "a", "ab", "baa", "a b"}.each do |subject|
-            rx_should_agree("(?<=(?:#{first}))", subject)
-            rx_should_agree("(?<=(?:#{second}))", subject)
+            # `c{1,2}` is a variable length branch, so whether the oracle can be
+            # asked about it depends on the build. A lookahead always can be.
+            rx_should_agree("(?<=(?:#{first}))", subject) if rx_reference_compiles?("(?<=(?:#{first}))")
+            rx_should_agree("(?<=(?:#{second}))", subject) if rx_reference_compiles?("(?<=(?:#{second}))")
             (0..subject.bytesize).each do |at|
               union = rx_holds_at?(only_first, subject, at) || rx_holds_at?(only_second, subject, at)
               rx_holds_at?(behind, subject, at).should eq(union)
