@@ -239,6 +239,15 @@ module Iyi
     # one.
     getter iyi_usings = {} of String => Array(String)
 
+    # iyi: under `--crystal`, the library files each `.iyi` file required, by
+    # absolute filename and in the order they were required (SPEC.md IV.1g,
+    # `Requires`).
+    #
+    # A module's object code refers to Crystal's types by name, and only the
+    # program that required the same library has those names to define. So they
+    # travel in the artifact and the consumer replays them.
+    getter iyi_module_requires = {} of String => Array(String)
+
     # iyi: the method bodies each file's module has to ship, by absolute
     # filename and then by `IyiMod.mono_body_key` (SPEC.md IV.2, `MonoBodies`).
     #
@@ -469,6 +478,18 @@ module Iyi
       types["Union"] = @union = GenericUnionType.new self, self, "Union", value, ["T"]
       types["Crystal"] = @crystal = NonGenericModuleType.new self, self, "Crystal"
 
+      # iyi: everything above, recorded rather than written down again.
+      #
+      # `tool bind` asks whether a program could name a type without requiring
+      # anything, and for these the answer is yes by construction: they are here
+      # before the first line of any prelude is read, iyi's included. It used to
+      # ask a literal list kept beside the tool, and that list was wrong in both
+      # directions — it claimed `Void`, `UInt32` and `Float64`, which iyi's
+      # prelude never declares, and omitted `Slice`, `Int` and `Tuple`, which
+      # are created right here. A list is a claim that everything not in it is
+      # somebody else's work, and nothing was enforcing the claim.
+      @builtin_type_names = types.keys.to_set
+
       types["ARGC_UNSAFE"] = @argc = argc_unsafe = Const.new self, self, "ARGC_UNSAFE", Primitive.new("argc", int32)
       types["ARGV_UNSAFE"] = @argv = argv_unsafe = Const.new self, self, "ARGV_UNSAFE", Primitive.new("argv", pointer_of(pointer_of(uint8)))
 
@@ -519,6 +540,11 @@ module Iyi
       define_macro_types
     end
 
+    # iyi: the types the compiler creates for every program, whatever its
+    # prelude. Snapshotted in `initialize`, so a built-in added later is in here
+    # without anybody remembering to add it.
+    getter builtin_type_names = Set(String).new
+
     # Returns a new `Parser` for the given *source*, sharing the string pool and
     # warnings with this program.
     def new_parser(source : String, var_scopes = [Set(String).new])
@@ -530,7 +556,13 @@ module Iyi
     getter(literal_expander) { LiteralExpander.new self }
 
     # Returns a `IyiPath` for this program.
-    getter(iyi_path) { IyiPath.new(codegen_target: codegen_target) }
+    # Settable, not only readable, and the reason is that this is a **struct**.
+    # A build that adopts a preanalysed prelude has to move the path's working
+    # directory to its own (see `compile_with_preanalysed_prelude`), and
+    # `program.iyi_path.current_dir = ...` through a getter mutates the copy
+    # the getter returned and throws it away — silently, with the daemon still
+    # resolving `lib` beside itself.
+    property(iyi_path) { IyiPath.new(codegen_target: codegen_target) }
 
     # Returns a `Var` that has `Nil` as a type.
     # This variable is bound to other nodes in the semantic phase for things

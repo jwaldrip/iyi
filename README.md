@@ -282,21 +282,22 @@ protocol, no server, no special mode. If that turns out to be the wrong bet, it
 will be because the rules were not enough, and that is a thing to measure rather
 than to promise.
 
-**Portability — compiles for eight, runs on three.** An iyi program produces
+**Portability — compiles for nine, runs on four.** An iyi program produces
 code for `x86_64-linux-gnu`, `x86_64-linux-musl`, `aarch64-linux-gnu`,
-`arm-linux-gnueabihf`, `x86_64-darwin`, `aarch64-darwin`, `x86_64-w64-mingw32`
-and `x86_64-windows-msvc`, and CI type-checks the library for all eight every
-build.
+`arm-linux-gnueabihf`, `x86_64-darwin`, `aarch64-darwin`, `x86_64-w64-mingw32`,
+`x86_64-windows-msvc` and `wasm32-wasi`, and CI type-checks the library for all
+nine every build.
 
-Three of them are *run*, also every build, and the check is that they print
-what the same program printed on the machine that compiled them: x86-64 glibc
-natively, **x86-64 musl** in an Alpine container, and **aarch64** under
-emulation. The object is cross-compiled here and linked there with the target's
-own `cc` and `libgc`, which is the command `--cross-compile` prints.
+Four of them are *run*, also every build, and the check is that they print what
+the same program printed on the machine that compiled them: x86-64 glibc
+natively, **x86-64 musl** in an Alpine container, **aarch64** under emulation,
+and **wasm32-wasi** under wasmtime. The object is cross-compiled here and
+linked there with the target's own toolchain, which is the command
+`--cross-compile` prints.
 
-The other five are still "the code generator has no objection". Darwin and
-Windows need a linker and a runtime this workflow does not have, and until they
-run somewhere, that is what they are worth.
+Darwin is still "the code generator has no objection", and needs a runner this
+workflow does not have. Windows is worse than that and gets its own entry
+below: it compiles, it links, and what it prints at run time cannot be trusted.
 
 **Performance — Crystal's backend, and now one measurement of its own.**
 Native code through LLVM, the same GC. `python3 bench/runtime.py` runs the same
@@ -494,11 +495,74 @@ maybe.as(String)        # or this
 Shard code is `.cr` and unaffected; this is only about the lines you write.
 
 **What it costs is R-1, for that dependency.** A required shard is read from
-source, so your edit loop pays for it the way Crystal's does. Your own modules
-are unaffected — but the two do not mix on the artifact side, and the compiler
-says so rather than half-working: `--emit-iyimod` and `--use-iyimod` need iyi's
-own prelude, because an artifact written against Crystal's library names types
-a consumer compiles its own copy of.
+source, so your edit loop pays for it the way Crystal's does.
+
+**Your own modules still get artifacts.** `--crystal` and `--use-iyimod` work
+together: a module that requires `json` compiles once into a `.iyimod`, and a
+program that requires Kemal links against it without opening its source.
+
+```console
+$ iyi build --crystal --emit-iyimod mods -o site site.iyi
+$ iyi build --crystal --use-iyimod mods -o site site.iyi
+```
+
+The artifact carries the requires the module made, and the program replays them
+— so a module that used `URI` brings `URI` with it. There is exactly one copy
+of the library in the result: `STDOUT` is the same object on both sides of the
+boundary, and so is every lazily initialised constant.
+
+**What that saves is small, and the honest number is worth more than the
+feature.** On a twelve-module app with Crystal's library, the modules cost
+0.16 s from source and nothing from artifacts — against 3.1 s for the library
+itself, which every build reads from source. Under iyi's own prelude the same
+trade goes the other way: the library is 0.03 s and the artifact is the whole
+build. R-1 is only as fast as the part of your program it covers.
+
+**Some of the library's cost is what `iyi daemon` removes.** Start one in
+another terminal and it holds Crystal's library analysed between builds:
+
+```console
+$ iyi daemon start &
+$ iyi daemon build --crystal -o site site.iyi
+```
+
+Front end only, so the term it removes is visible rather than diluted by
+codegen — a full build adds code generation and a link that it does not touch:
+
+| twelve-module app, `--no-codegen` | normal | through the daemon |
+|---|---|---|
+| twelve modules | 0.77–0.85 s | **0.44–0.49 s** |
+| twelve modules and Kemal | 1.15–1.36 s | 0.93–1.13 s |
+| the same, with Kemal in a `--prelude` file | 1.15–1.36 s | **0.57–0.66 s** |
+
+**About 0.3 s**, and roughly 200 MB of resident memory per prelude it holds.
+
+The third row is the one worth reading: it is the largest by some way, and it
+does not come from holding the prelude — it comes from holding *Kemal*. What
+the daemon is really good at is holding your program's dependencies, and it
+only does that if you name them in a prelude file of your own:
+
+```crystal
+# _prelude.cr
+require "prelude"
+require "kemal"
+```
+
+```console
+$ iyi daemon build --prelude ./_prelude.cr -o site site.iyi
+```
+
+Set `CRYSTAL_DAEMON_SOCKET` and an ordinary `iyi build` goes through it too,
+falling back to a normal build when nothing is listening. The daemon is for
+`--crystal`: iyi's own prelude takes 0.03 s to analyse, so there is nothing
+there worth holding.
+
+**What the two libraries do not do is mix.** A `.iyimod` records which one it
+was built against, and importing across is refused by name. That refusal is not
+a limitation waiting to be lifted: both are compiled by the same compiler and
+mangle the same names, so a mixed program would link — on the names that happen
+to agree. `String` is a different type in each, and nothing after the linker
+would say so.
 
 **Nine shards were swept through it**, each built twice — as an iyi program and
 as a Crystal one, so that a difference is iyi's and a shared failure is

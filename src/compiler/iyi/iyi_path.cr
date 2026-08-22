@@ -72,6 +72,16 @@ module Iyi
 
     property entries : Array(String)
 
+    # The directory a relative entry — `lib`, above all — is resolved against.
+    #
+    # Captured at construction, and settable because of the daemon: a
+    # preanalysed prelude is built in the daemon's directory and adopted by a
+    # build running somewhere else, and it carried this with it. `require
+    # "kemal"` then looked for `lib/kemal` beside the daemon and reported "can't
+    # find file", which is every shard-using project built from anywhere but the
+    # daemon's own directory.
+    property current_dir : String
+
     def initialize(@entries : Array(String) = IyiPath.default_paths, codegen_target = Config.host_target)
       add_target_path(codegen_target)
       @current_dir = Dir.current

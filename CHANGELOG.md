@@ -4,6 +4,67 @@
 
 ### Added
 
+- **Measured what the library would be worth as an artifact** (SPEC.md Part V
+  item 12e). A generated module the shape of a library — 103,002 lines, 5,000
+  exported methods, declarations at the 5% of the source that Crystal's own
+  library has them at — reads back from its `.iyimod` in 0.11 s against 0.43 s
+  from source, in 25 MB against 163 MB. The daemon, on the same term, is 0.47 s
+  to 0.33 s and costs 200 MB rather than saving it.
+
+  `crystal tool bind` already writes a `.iyimod` for a Crystal namespace:
+  `JSON` crosses 90.3% of its public surface unaided, `YAML` 78.0%, `URI`
+  58.1%. What the rest waits on is the core types — `String`, `Array`, `IO` —
+  which are not a namespace and so have no root to point the tool at.
+
+- **The ecosystem and R-1, together: `--crystal` and `.iyimod` now work in one
+  build.** A module that requires `json` compiles once into an artifact, and a
+  program that requires Kemal links against it without opening its source. The
+  two features were each half of the thing anybody actually wants.
+
+  Three things had to be answered, and they were the same question three times
+  — *a name in the module's object code that only the consuming program can
+  define*, which is the rule `TypeIds` was already in the format for.
+
+  - The main module's helpers, `~match<IO+>` first. The consumer emits them
+    with its own numbering rather than the artifact carrying them, because a
+    match against a virtual type compares against a range of type ids and those
+    numbers belong to the program. A carried copy would have compared the
+    consumer's ids against the producer's range and answered wrongly with
+    nothing to see.
+  - The module's requires. A module that required `uri` and a consumer that did
+    not left `URI::Error.class:type_id` undefined at link time. They travel now
+    — the new `Requires` section, format v20 — and the consumer replays them.
+  - The `!dbg` location, fixed below.
+
+  There is one copy of the library in the result, which was measured rather
+  than assumed: `STDOUT` and `PROGRAM_NAME` are the same object on both sides
+  of the boundary, and the specs assert it.
+
+  What it saves is small and is written down as such: on a twelve-module app
+  the modules cost 0.16 s from source and nothing from artifacts, against
+  3.1 s for Crystal's library, which every build still reads from source.
+
+- **`iyi daemon`.** A single-threaded `iyi-daemon` is built and shipped beside
+  `iyi`; `iyi daemon start` holds Crystal's library analysed between builds. It
+  takes about 0.3 s off the front end of a `--crystal` build — 0.81 s to 0.47 s
+  on a twelve-module app — and costs about 200 MB resident per prelude it holds.
+
+  Name your shard in a `--prelude` file of your own and it is held too, which is
+  the largest effect by some way: 1.28 s to 0.60 s on the same app with Kemal.
+  What the daemon is good at is holding the program's *dependencies*, not the
+  library underneath them.
+
+  Not offered before because iyi's own prelude takes 0.03 s to analyse and
+  there was nothing to hold. `--crystal` gave it something.
+
+- **A `.iyimod` records which library it was built against**, and importing
+  across the two is refused by name in both directions. This replaces the old
+  refusal, which was blunter and aimed at the wrong thing: `--emit-iyimod` and
+  `--use-iyimod` no longer need iyi's own prelude. What they need is for the
+  module and the program to agree on which library they mean. Both worlds are
+  compiled by the same compiler and mangle the same names, so a mixed program
+  would link — on the names that happen to agree.
+
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
   written against iyi's own 2,404-line library and nothing else. Every other
@@ -110,13 +171,301 @@
 
 ### Fixed
 
+- **A harness for what the daemon takes off a whole build**
+  (`bench/daemon_full_build.py`), which SPEC.md IV.1d had said was too noisy to
+  publish. Twelve modules under `--crystal` with codegen and a link, eight
+  alternating pairs, a module edited before every build, and it refuses to run
+  on an unoptimised binary — the three corrections IV.1d had to make, built in
+  so they cannot be forgotten again. **0.63 s to 0.46 s, or 26%**, with two runs
+  agreeing to a hundredth.
+
+  What was called noise was largely the measurement: `/usr/bin/time`, whose
+  negative elapsed times IV.1d records, is not installed on this machine. The
+  app here is lighter than the one the published table was made from — its
+  front end is 0.35 s against 0.81 s — so this is a new row rather than that
+  row measured further.
+
+- **The prelude cache key is checked by the compiler now, not by whoever
+  remembers.** A cache key is a claim that everything not in it does not matter,
+  and this one was written when the only thing reading it was prelude analysis;
+  every switch added since had to be checked against it by hand, silently.
+  `--use-iyimod` is what happened when somebody did not — accepted, ignored, and
+  the build compiled every module from source without a word. Each of
+  `Compiler`'s switches is now written down as one of three things: in the key,
+  re-applied when a build adopts a preanalysed prelude, or reaching neither.
+  Adding a property fails the build until it is given one of them.
+
+  Two of the classifications are judgements rather than facts, and saying so is
+  the point: `mcpu`, `mattr` and `mcmodel` reach codegen and not analysis, and
+  `progress_tracker` and `stderr` are where output goes — `new_program` sets the
+  first and the adopt path sets neither.
+
+- **`crystal tool bind` asked a hand-written list what an iyi program can name,
+  and the list was wrong in both directions.** It claimed `Void`, `UInt32` and
+  `Float64` — which iyi's prelude never declares — and left out `Slice`, `Int`,
+  `Tuple` and `NamedTuple`, which `Program#initialize` creates for every program
+  before any prelude is read. Those four were most of what the boundary appeared
+  to be waiting on, so the list invented the work it was being read to size.
+
+  `Program#builtin_type_names` records those types where they are made, and the
+  tool asks it. `JSON` crosses 152 → 168 signatures, `YAML` 158 → 166, `IO`
+  157 → 270 with what it waits on falling 140 → 5. The percentages do not move
+  and nothing that crossed stopped crossing. What is left of "the core" is `IO`
+  — nearly done itself — and then `Time`, `Time::Span`, `Set`, `File::Info`.
+  See SPEC.md Part V item 12e.
+
+- **CI could not package the tarball, and the guard that stopped it was right.**
+  `iyi-tarball` carries `release := 1` and make applies that to what it builds
+  for that goal — so the workflow naming `iyi` first built an ordinary one, and
+  the tarball found it up to date by file times and refused. That refusal is
+  exactly what `check_iyi_is_release` was added for; what was missing was the
+  workflow catching up with it. It asks for `iyi-tarball` alone now.
+
+- **The four steps `crystal tool bind` prints are taken by a spec now**
+  (`spec/compiler-cli/bind-pipeline_spec.cr`): bind a shard, compile its keep
+  file to an object, read the symbols, globalise them, and build an iyi program
+  that links against it — then run the program and read what it printed. Three
+  of the four steps were wrong when they were first run by hand, and each was
+  invisible until something later failed, the later thing being `ld`. It skips
+  itself where binutils is missing, or where `crystal` and `iyi` were built from
+  different commits, since an artifact is read only by the build that wrote it.
+
+- **`crystal tool bind` says that a bound shard's run-time state does not
+  cross.** Crystal runs a constant's initialiser from `__crystal_main` and
+  compiles the reads unguarded; a consumer has its own `__crystal_main` and
+  never calls the shard's, so the constant stays null and the first read
+  segfaults. A folded constant is fine — `LIMIT = 10` reads 10 — and one built
+  at run time is not.
+
+  Calling the shard's `__crystal_main` does not fix it, which was tried:
+  renamed out of the way with `objcopy --redefine-sym` and called from the
+  consumer, it segfaults *inside* the initialisation, before reaching any
+  constant. Crystal's top level expects Crystal's runtime — a thread, an event
+  loop, the exception machinery — and an iyi program is not one. So a boundary
+  carries code that needs no initialisation, and that is the bound on it today.
+
+  An earlier draft of this entry said the failure was silent — "no error at any
+  step, the program answers wrongly". That was a measurement mistake: the exit
+  status being read was a `printf`'s rather than the program's. It segfaults.
+
+- **A method has as many symbols as it has ways of being called, and the keep
+  file named one.** The mangled name carries the types at the *call site*, not
+  the types in the declaration: `JSON.parse(input : String | IO)` is one
+  declaration and three symbols, and the file named only the one where the
+  argument is the declared union. Every consumer that passed a plain string
+  linked against nothing. It emits the product of the parameters' shapes now,
+  which measures smaller than it sounds — a union parameter is about one in
+  twenty, 7 of `IO`'s 103 and 1 of `JSON`'s 53 — with a cap that reports itself
+  rather than expanding without limit.
+
+- **A `def self.` module function crossed under the wrong symbol.** A module
+  written `extend self` puts its functions on the module and mangles
+  `*Widget@Widget::polite<String>:String`; one written `def self.polite` puts
+  them on the metaclass, which has no `@`. Both were recorded as the first, so
+  every `def self.` in a shard produced a declaration the consumer called by a
+  name nothing emitted — and Crystal's own library is written the second way
+  throughout. The receiver is recorded now, which the artifact's format already
+  had a field for and the type path already used.
+
+- **A bound shard's module path is `camelcase` run backwards, and using
+  `String#underscore` for it broke every acronym.** `underscore` answers `json`
+  for `JSON`, and `json` camelcases back to `Json` — so the producer emitted
+  `*JSON@JSON::...` while the consumer asked for `*Json@Json::...`, and `ld` was
+  the only thing that ever said so. `camelcase` starts a group at every
+  upper-case letter, so the inverse of `JSON` is `j_s_o_n`, which is a legal iyi
+  path and comes back whole; `HTTPServer` is `h_t_t_p_server`, which
+  `underscore` had flattened to `http_server` and lost. A shard named `ABC`
+  links and runs.
+
+  This corrects what the previous release notes said. They claimed `JSON`,
+  `YAML`, `URI` and `HTTP` were outside the mapping's image and that the
+  library-as-artifact thesis waited on a question about iyi's module paths.
+  There was no such question: the mistake was reasoning about `underscore`'s
+  image rather than `camelcase`'s.
+
+- **`crystal tool bind` says when a root's name cannot survive the trip.** What
+  actually falls outside is a name the grammar cannot spell — `Foo_Bar` needs
+  two underscores running and `camelcase` reads two as one, so it comes back
+  `FooBar`. Both sides mangle alike, so such a root produces an object file
+  whose symbols no consumer will ever ask for, and `ld` is four steps too late
+  to hear it.
+
+- **A bound shard's iyi module name was the root downcased, and the symbol is
+  what that broke.** Both sides mangle alike, so `Greeter.polite` is
+  `*Greeter@Greeter::polite<String>:String` compiled from either language — but
+  only if the consumer's module *is* `Greeter`, and a consumer builds that name
+  by camelcasing the path it imported. `MyGreeter` became `mygreeter` became
+  `Mygreeter`, which mangles to a symbol the shard's object file does not
+  contain, and nothing said so until the linker did. The name is `underscore`d
+  now, which is what `camelcase` inverts, with `::` as `/`.
+
+  With it, a program built from a bound shard links and runs — the first time
+  the four steps this tool prints have been taken end to end.
+
+- **The pipeline `crystal tool bind` prints did not run.** A mangled name
+  carries the types it was compiled for and a union prints with spaces in it —
+  `*JSON::Any#as_a?:(Array(JSON::Any) | Nil)` — so the unquoted `$(...)` in the
+  `objcopy` line split 50 of `JSON`'s 301 symbols into fragments and objcopy
+  answered with its usage. It is an `xargs -0` now, and the four lines run as
+  printed.
+
+- **A boundary can now name another boundary's type, which is what `IO` was
+  for.** `JSON`, `YAML` and `URI` all take an `IO`, so binding them is worth
+  nothing unless the artifact can say so. The producer calls the type `IO`; a
+  consumer that imported it calls it `Io::IO`, and an artifact that wrote the
+  first resolved to nothing. Names from the boundaries passed in `--use-iyimod`
+  are written the way the consumer will see them, and the modules they came from
+  travel as the artifact's `imports`, so `import json` alone is enough — the
+  consumer does not have to work out that it needs `import io` as well.
+
+- **A field's type crossed as `IO+`.** That is how a virtual type prints — a
+  fact about this build's dispatch rather than a name anybody can write — and a
+  field declared `IO+` is one no consumer can read back. `infer_return` had
+  devirtualised its answers since it was written; the field walk never did.
+
+- **A bound namespace's artifact named types the consumer could not resolve, and
+  nothing had ever tried to read one back.** The tool had no spec at all: every
+  check it carried was a number it printed, and a number cannot say whether
+  anything can consume the artifact printed beside it. `spec/compiler/bind_spec.cr`
+  is that check, and it failed the first time it ran.
+
+  An artifact's module name is the root downcased, and a consumer builds a type
+  back out of it by camelcasing — a mapping iyi keeps reversible on purpose
+  (SPEC.md IV.6 #6), so `MyLib` returns as `Mylib` and `JSON` is not in its image
+  at all. Meanwhile the declarations inside still said `MyLib::Entry`. A class
+  root never showed it, because its own name is a declaration in the file and
+  `MySink::Entry` resolves against that wherever the module lands. The producer's
+  prefix comes off a module root's declarations now, which is the same property
+  said directly: what an artifact declares belongs to the artifact.
+
+- **`crystal tool bind` exported methods that take a block nobody annotated.**
+  A block-taking method is compiled per block *type*, so one whose block has no
+  written type has no single symbol to declare. `infer_return` refused these
+  already — but only when it ran, and a method that writes its own return type
+  never reaches it. No count showed it; `Time`'s generated keep file did, by
+  refusing to compile with *`Time.measure` is expected to be invoked with a
+  block*. They are refused and reported on their own line now.
+
+- **`crystal tool bind` can be pointed at the boundaries already written.**
+  `--use-iyimod DIR` — the same switch a build uses — reads the `.iyimod` files
+  there, and a signature naming one of their types is no longer waiting on
+  anybody. Each name is checked against the program rather than trusted, since a
+  class root's declarations are absolute and a module root's are relative to a
+  name the file does not record; what is dropped is counted and printed.
+
+  It is what closes the question item 12e opened. With `IO`, `Time` and
+  `SemanticVersion` bound, `JSON` crosses 168 → 181 signatures, `YAML`
+  166 → 192 and `URI` 48 → 55 — the exact gains the unlock report predicts, and
+  it predicts them by a different route, which is the two checking each other.
+
+  The counts also stopped calling a free variable a type. `T`, `self` and a
+  block returning `_` are not types anybody can declare, and counting them
+  beside `IO` said there was more waiting than there was; they have their own
+  line now. What is left: `JSON` and `URI` wait on **nothing** anybody could
+  declare, and `YAML` waits on `Set` alone — which is generic, so it travels as
+  bodies rather than declarations and belongs to a different piece of work.
+
+- **`crystal tool bind`'s keep file never descended into nested types.** A
+  nested type travelled as a declaration while its methods were named by
+  nobody, so the artifact promised symbols the object file did not carry — a
+  link error rather than a compile one, and invisible until something linked.
+  `JSON`'s artifact holds 16 types and the keep file reached 9 of them, leaving
+  16 methods on the other 7 unemitted. The walk recurses now, and the counts
+  printed beside the artifact are counted through the nesting too, having read
+  as top-level-only for the same reason.
+
+- **`crystal tool bind` generated a keep file that could not compile when
+  pointed at a core type.** A shard's root is a module — `Kemal`, `JSON` — and
+  the tool assumed one everywhere: it reopened the root as `module IO`, which is
+  a class, and called `IO.write`, which is an instance method. A class root's
+  own surface and its constants now stay behind and are reported by name and
+  count, rather than being declared with no symbol to link against. What travels
+  is the types under it, which is enough to make `crystal tool bind -e IO`
+  produce an artifact and an object file end to end.
+
+  It carries the root itself now. A module's own methods are module functions
+  and a class's are its type's, so a class root travels as one declaration
+  holding everything under it — `IO` with `IO::Memory` and twelve more inside:
+  14 types, 148 methods, 311 symbols. Its constants still stay behind.
+
+- **`crystal tool bind` declared private types.** `IO::Encoder` is private, and
+  an artifact naming it names a constant the consumer is not allowed to write.
+  Method visibility was already checked; the type's was not. The generated keep
+  file is what found it, being the first thing outside the shard to say the name
+  out loud.
+
+- **`crystal tool bind` counted a signature as crossing when a variable could
+  not hold its parameters.** A name being writable is not the same as a value
+  being holdable: `Int` is the head of a family, and a method taking one is
+  compiled once per member with a symbol apiece, so there is no single symbol
+  to declare. `can_be_stored?` is the compiler's own answer and the tool asks
+  it now, reporting those signatures on their own line rather than as types
+  nobody has declared. It is what the counts above are corrected by — they
+  read 182, 168 and 286 before it.
+
+- **`crystal tool bind` read restrictions as text, and it flattered the core.**
+  A method inside `JSON::Token` writes `kind : Kind`, which is
+  `JSON::Token::Kind` — the shard's own type, already travelling — and the tool
+  counted it as a type nobody had declared. `self` went the same way: a method
+  returning `self` in `URI` returns `URI` and waits for nobody. Every such
+  spelling pushed the "what this boundary is waiting on" list in one direction,
+  *towards the core*, which is the claim that list was being used to support.
+
+  Restrictions are resolved against the owning type now. The boundary the tool
+  can already write grows by 33 signatures — `JSON` 142 → 152, `YAML` 142 → 158,
+  `URI` 41 → 48 — and the percentages of surface needing no human do not move,
+  because those measure a different thing and resolution does not touch it. Two
+  `YAML` signatures returning a bare `Array` stopped crossing, which is a
+  correction rather than a loss: a declaration that says `Array` without saying
+  of what is not one a consumer can use.
+
+  With the list true, `IO` is first for all three namespaces and by more than
+  before — +13, +21, +8 — against 21 for everything generic. See SPEC.md Part V
+  item 12e.
+
+- **The tarball could be built from an unoptimised compiler, and was.** `build:`
+  sets `release := 1`; `iyi-tarball` did not, and even asking would not have
+  been enough — make rebuilds on file times, so a `.build/iyi` left over from an
+  ordinary `make iyi` is newer than every source and gets packaged as it is.
+  Nothing about the tarball would look wrong; every build every user ran would
+  simply go through an unoptimised compiler. The target now asks the binary
+  rather than the build: `--version` says which it is, and packaging refuses
+  otherwise.
+
+  This is also why the daemon numbers first published here were about three
+  times too generous — they were measured with one of those binaries. See
+  SPEC.md IV.1d for the corrected table and for the other two ways the
+  measurement was wrong.
+
+- **The tarball could not build a program that requires Kemal.** `install_iyi`
+  cut `compiler/` from the copy of Crystal's library it ships, and the standard
+  library requires it: `crystal/syntax_highlighter` requires
+  `compiler/crystal/syntax`, the exception page requires the highlighter, and
+  Kemal requires the exception page. README's headline example did not work in
+  the thing people download, and 0.2.0 shipped that way. CI now builds a shard
+  out of the unpacked tarball.
+
+- **The build daemon died after serving one build from another directory**, and
+  could not find `lib` in the client's project. Three bugs, all older than this
+  release and all the same fact forgotten — the daemon runs in its own
+  directory and the client does not. The third was that `CrystalPath` is a
+  struct, so fixing the second through a getter mutated a copy and changed
+  nothing. Every existing daemon spec passed through all three, because each
+  passes an absolute path and starts the daemon where the runner is.
+
+- **A build that adopted a preanalysed prelude ignored `--use-iyimod`.** That
+  path never runs `new_program`, so a build's switches were whoever analysed
+  the prelude's — none. The flags, the target and the prelude are in the
+  analysis's cache key and so are safe; `--use-iyimod` is not, and was accepted
+  and silently ignored while every module was compiled from source.
+
 - **A constant an artifact reads carries a location.** The reads a consumer
   performs on an artifact's behalf were synthesised without one, and LLVM
   refuses a call with no location inside a function that has debug info. It
   never fired under iyi's own library and fired at once under Crystal's, which
   is where it was found — while looking at whether artifacts and `--crystal`
-  can be used together. They still cannot, but the reason recorded in SPEC.md
-  Part V item 12a was wrong and is now the measured one.
+  can be used together. They now can; this was the first of the three things in
+  the way.
 
 ### Changed
 

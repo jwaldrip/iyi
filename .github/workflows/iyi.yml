@@ -186,20 +186,46 @@ jobs:
             ./bin/iyi run --crystal "$sample"
           done
 
-      # And the guard rails around it, which are refusals rather than
-      # behaviour: an artifact written against Crystal's library is one
-      # nothing can read back, so both directions say so instead of
-      # half-working (SPEC.md Part V item 12a).
+      # The ecosystem and R-1 in one build (SPEC.md Part V item 12d). Built
+      # twice with the module's source deleted in between, and the two runs
+      # compared: the second one has Crystal's standard library *and* a module
+      # it never opened.
+      - name: A module with Crystal's library, through an artifact
+        run: |
+          work="$(mktemp -d)"
+          cp -r samples/crystal/. "$work/"
+          ./bin/iyi build --crystal --emit-iyimod "$work/mods" -o "$work/a" "$work/notes.iyi"
+          "$work/a" > "$work/from-source.txt"
+          rm -r "$work/notes"
+          ./bin/iyi build --crystal --use-iyimod "$work/mods" -o "$work/b" "$work/notes.iyi"
+          "$work/b" > "$work/from-artifact.txt"
+          diff "$work/from-source.txt" "$work/from-artifact.txt"
+
+      # And the guard rail that replaced the old one. The two libraries link
+      # happily — same compiler, same mangling — and are wrong about every type
+      # whose layout differs, so an artifact says which one it was built
+      # against and importing across is refused in both directions.
       - name: The two libraries stay apart
         run: |
-          if ./bin/iyi build --crystal --emit-iyimod /tmp/mods -o /tmp/out \
-               samples/crystal/stdlib.iyi 2>/dev/null; then
-            echo "--emit-iyimod was accepted under --crystal"; exit 1
+          work="$(mktemp -d)"
+          mkdir -p "$work/app"
+          printf 'module app/pure\n\npub def hello : String\n  "hi"\nend\n' > "$work/app/pure.iyi"
+          printf 'module main\n\nimport app/pure\nusing app/pure\n\nputs hello\n' > "$work/main.iyi"
+          ./bin/iyi build --emit-iyimod "$work/mods" -o "$work/out" "$work/main.iyi"
+          if ./bin/iyi build --crystal --use-iyimod "$work/mods" -o "$work/out" \
+               "$work/main.iyi" 2>"$work/err"; then
+            echo "an iyi-prelude module was accepted under --crystal"; exit 1
           fi
-          if ./bin/iyi build --crystal --use-iyimod /tmp/mods -o /tmp/out \
-               samples/crystal/stdlib.iyi 2>/dev/null; then
-            echo "--use-iyimod was accepted under --crystal"; exit 1
+          grep -q "built against iyi's prelude" "$work/err"
+
+          rm -r "$work/mods"
+          printf 'module app/pure\n\nrequire "json"\n\npub def hello : String\n  {"a" => 1}.to_json\nend\n' > "$work/app/pure.iyi"
+          ./bin/iyi build --crystal --emit-iyimod "$work/mods" -o "$work/out" "$work/main.iyi"
+          if ./bin/iyi build --use-iyimod "$work/mods" -o "$work/out" \
+               "$work/main.iyi" 2>"$work/err"; then
+            echo "a --crystal module was accepted under iyi's prelude"; exit 1
           fi
+          grep -q "built against Crystal's standard library" "$work/err"
 
       # The claim R-1 makes, taken literally: build, delete the modules'
       # source, build again from the artifacts, compare what the two programs
@@ -544,8 +570,13 @@ jobs:
           path: .build
       - run: chmod +x .build/crystal
 
+      # `iyi-tarball` alone, and the missing word is the whole of it. The target
+      # carries `release := 1` and make applies that to what it builds *for this
+      # goal* — so naming `iyi` first built an ordinary one, and the tarball then
+      # found it up to date by file times and refused to package it. Which is
+      # the guard working: an unoptimised release is what it was added to stop.
       - name: Build `iyi` and package it
-        run: make -o .build/crystal iyi iyi-tarball
+        run: make -o .build/crystal iyi-tarball
 
       # What a person who downloads it does: unpack it somewhere else and run a
       # program. Nothing here may need this checkout, a IYI_PATH, or a
@@ -569,3 +600,43 @@ jobs:
         run: |
           env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run --crystal \
             /tmp/unpacked/share/iyi/samples/crystal/stdlib.iyi
+
+      # And all of it, which is what "ships the library" has to mean. The
+      # standard library requires `compiler/crystal/syntax` through its own
+      # syntax highlighter, that was not shipped, and so `require "kemal"` —
+      # this README's headline example — could not be built from the tarball
+      # anybody downloaded. A sample cannot catch it: none of them requires a
+      # shard. So the shard is made here.
+      - name: A shard, out of the tarball
+        run: |
+          mkdir -p /tmp/shard/lib/page/src
+          printf 'require "crystal/syntax_highlighter/html"\n' \
+            > /tmp/shard/lib/page/src/page.cr
+          printf 'module Page\n  def self.highlight(code : String) : String\n' \
+            >> /tmp/shard/lib/page/src/page.cr
+          printf '    Crystal::SyntaxHighlighter::HTML.highlight!(code)\n  end\nend\n' \
+            >> /tmp/shard/lib/page/src/page.cr
+          printf 'module main\n\nrequire "page"\n\nputs Page.highlight("1 + 1")\n' \
+            > /tmp/shard/app.iyi
+          cd /tmp/shard
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run --crystal app.iyi
+
+      # The daemon, out of the same tarball: started somewhere else, serving a
+      # build in the shard project above. Everything about it that was broken
+      # was about those two being different directories (SPEC.md IV.1d).
+      - name: The daemon, out of the tarball
+        run: |
+          cd /tmp/unpacked
+          env -u CRYSTAL_PATH ./bin/iyi daemon start --socket /tmp/iyi.sock &
+          for _ in $(seq 1 120); do [ -S /tmp/iyi.sock ] && break; sleep 1; done
+          cd /tmp/shard
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi daemon build \
+            --socket /tmp/iyi.sock --crystal -o served app.iyi
+          ./served > served.txt
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi build --crystal -o normal app.iyi
+          ./normal > normal.txt
+          diff normal.txt served.txt
+          # Twice, because the daemon used to die after serving one build from
+          # a directory that was not its own.
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi daemon build \
+            --socket /tmp/iyi.sock --crystal -o served app.iyi

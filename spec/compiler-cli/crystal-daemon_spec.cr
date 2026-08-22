@@ -53,8 +53,8 @@ private def with_daemon(&)
   end
 end
 
-private def daemon_build(socket : String, *args : String)
-  Process.capture_result(crystal, "daemon", "build", "--socket", socket, *args)
+private def daemon_build(socket : String, *args : String, chdir : String? = nil)
+  Process.capture_result(crystal, "daemon", "build", "--socket", socket, *args, chdir: chdir)
 end
 
 describe "`crystal daemon`" do
@@ -114,6 +114,104 @@ describe "`crystal daemon`" do
 
           Process.capture_result(second).should(be_success).output.should(eq("hello world\n"))
         end
+      end
+    end
+  end
+
+  # The three specs below are one fact the daemon kept forgetting: **it runs in
+  # its own directory and the client does not.** Every spec that was here
+  # passed while two of these were broken, because every one of them passes an
+  # absolute fixture path and starts the daemon where the runner happens to be.
+  #
+  # This first one is the statement of intent rather than the regression — it
+  # passed even then, because the *build* always cd'd correctly. What did not
+  # is below it.
+  it "builds from a relative path, in the client's directory" do
+    with_daemon do |socket|
+      with_tempfile("daemon-relative") do |dir|
+        Dir.mkdir_p(dir)
+        File.write(File.join(dir, "hello.cr"), %(puts "hello from #{File.basename(dir)}"\n))
+
+        daemon_build(socket, "-o", "out", "hello.cr", chdir: dir).should be_success
+        Process.capture_result(File.join(dir, "out"))
+          .should(be_success).output.should(contain("hello from"))
+      end
+    end
+  end
+
+  it "survives a build it served from another directory" do
+    # It did not. A finished build's arguments are re-read in the daemon to
+    # work out which prelude to warm next, and they were read *here* — where
+    # `hello.cr` is not a file. The option parser exits the process on a
+    # missing file, so the daemon died after serving a build correctly, and
+    # only ever for a client that typed a relative path.
+    with_daemon do |socket|
+      with_tempfile("daemon-survives") do |dir|
+        Dir.mkdir_p(dir)
+        File.write(File.join(dir, "hello.cr"), %(puts "one"\n))
+
+        daemon_build(socket, "-o", "out", "hello.cr", chdir: dir).should be_success
+        daemon_build(socket, "-o", "out", "hello.cr", chdir: dir).should be_success
+        daemon_build(socket, fixture_path("hello-world.cr"), "--no-codegen").should be_success
+      end
+    end
+  end
+
+  it "finds a shard in the client's lib, not in its own" do
+    # `lib` is resolved against the directory the compiler's path was built in,
+    # and a preanalysed prelude is built in the daemon's. Every shard-using
+    # project, from any directory but the daemon's own, answered `require
+    # "thing"` with "can't find file".
+    with_daemon do |socket|
+      with_tempfile("daemon-shard") do |dir|
+        Dir.mkdir_p(File.join(dir, "lib", "thing", "src"))
+        File.write(File.join(dir, "lib", "thing", "src", "thing.cr"),
+          "module Thing\n  def self.greet\n    \"from a shard\"\n  end\nend\n")
+        File.write(File.join(dir, "app.cr"), %(require "thing"\nputs Thing.greet\n))
+
+        daemon_build(socket, "-o", "app", "app.cr", chdir: dir).should be_success
+        Process.capture_result(File.join(dir, "app"))
+          .should(be_success).output.should(eq("from a shard\n"))
+      end
+    end
+  end
+
+  # A fifth thing the daemon forgot, and the worst-behaved of them: the path
+  # that adopts a preanalysed prelude never runs `new_program`, so every switch
+  # that method turns into a setting on the program was whatever the *daemon*
+  # had — which is none of them. Most are safe because they are in the prelude's
+  # cache key. `--use-iyimod` is not: it was accepted, ignored, and the build
+  # compiled every module from source without a word.
+  #
+  # Caught here by deleting the module's source, which is the only way to tell
+  # the two apart from outside.
+  it "compiles an import from its artifact, as a normal build does" do
+    with_daemon do |socket|
+      with_tempfile("daemon-iyimod") do |dir|
+        Dir.mkdir_p(File.join(dir, "app"))
+        File.write(File.join(dir, "app", "twice.iyi"), <<-IYI)
+          module app/twice
+
+          pub def twice(n : Int32) : Int32
+            n + n
+          end
+          IYI
+        File.write(File.join(dir, "main.iyi"), <<-IYI)
+          module main
+
+          import app/twice
+
+          puts App::Twice.twice(21)
+          IYI
+
+        daemon_build(socket, "--emit-iyimod", "mods", "-o", "out", "main.iyi", chdir: dir)
+          .should be_success
+        File.delete(File.join(dir, "app", "twice.iyi"))
+
+        daemon_build(socket, "--use-iyimod", "mods", "-o", "out", "main.iyi", chdir: dir)
+          .should be_success
+        Process.capture_result(File.join(dir, "out"))
+          .should(be_success).output.should(eq("42\n"))
       end
     end
   end

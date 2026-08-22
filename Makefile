@@ -119,7 +119,11 @@ CRYSTAL_BIN := crystal$(EXE)
 # The build daemon must be single-threaded: it forks a child per build, and only
 # the forking thread survives a fork, so a multi-threaded runtime would hand the
 # child a broken one. `crystal daemon start` execs this binary.
-IYI_DAEMON_BIN := crystal-daemon$(EXE)
+CRYSTAL_DAEMON_BIN := crystal-daemon$(EXE)
+# iyi: its own server, because a daemon is the compiler it was built from. `iyi`
+# and `crystal` are one compiler with two preludes and two command surfaces, and
+# `iyi daemon start` looks for a sibling named after the binary that was typed.
+IYI_DAEMON_BIN := iyi-daemon$(EXE)
 
 # iyi: what a downloadable build of iyi is called.
 IYI_VERSION ?= $(shell cat src/IYI_VERSION)
@@ -186,9 +190,9 @@ primitives_spec: $(O)/primitives_spec$(EXE) ## Run primitives specs
 # of the two, and they disagree about a commit while agreeing about every line
 # of code. Asked here instead, once, before the specs run.
 .PHONY: check_daemon_matches
-check_daemon_matches: $(O)/crystal$(EXE) $(O)/$(IYI_DAEMON_BIN)
+check_daemon_matches: $(O)/crystal$(EXE) $(O)/$(CRYSTAL_DAEMON_BIN)
 	@client="$$($(O)/crystal$(EXE) --version | head -1)"; \
-	 daemon="$$($(O)/$(IYI_DAEMON_BIN) --version | head -1)"; \
+	 daemon="$$($(O)/$(CRYSTAL_DAEMON_BIN) --version | head -1)"; \
 	 if [ "$$client" != "$$daemon" ]; then \
 	   echo "the daemon and the compiler are different builds, so every daemon spec will fail:"; \
 	   echo "  compiler: $$client"; \
@@ -198,7 +202,10 @@ check_daemon_matches: $(O)/crystal$(EXE) $(O)/$(IYI_DAEMON_BIN)
 	 fi
 
 .PHONY: cli_spec
-cli_spec: $(O)/cli_spec$(EXE) check_daemon_matches ## Run compiler CLI specs
+# `$(O)/iyi` too: one spec here runs `iyi daemon start` to read the name it
+# looks its server up by. Not `iyi-daemon` — that spec is about the lookup
+# failing, so a server would be the wrong thing to have.
+cli_spec: $(O)/cli_spec$(EXE) check_daemon_matches $(O)/iyi$(EXE) ## Run compiler CLI specs
 	$(O)/cli_spec$(EXE) $(SPEC_FLAGS)
 
 .PHONY: simple_smoke_test
@@ -229,7 +236,10 @@ iyi: $(O)/iyi$(EXE) ## iyi: build `iyi` itself, runnable as ./bin/iyi [default, 
 crystal-front: $(O)/crystal-front$(EXE) ## iyi: build the front end, which links no LLVM
 
 .PHONY: crystal-daemon
-crystal-daemon: $(O)/$(IYI_DAEMON_BIN) ## Build the single-threaded build daemon
+crystal-daemon: $(O)/$(CRYSTAL_DAEMON_BIN) ## Build the single-threaded build daemon
+
+.PHONY: iyi-daemon
+iyi-daemon: $(O)/$(IYI_DAEMON_BIN) ## iyi: build iyi's own single-threaded build daemon
 
 .PHONY: build
 build: ## Build all files for a package install (currently the compiler and manpages)
@@ -267,9 +277,15 @@ uninstall: uninstall_compiler uninstall_man uninstall_completions
 # beside `bin/iyi` is 81 KB rather than a standard library.
 .PHONY: install_iyi
 install_iyi: ## iyi: install `iyi` and its prelude at DESTDIR
-install_iyi: $(O)/iyi$(EXE)
+install_iyi: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(BINDIR)/"
 	$(INSTALL) -m 0755 "$(O)/iyi$(EXE)" "$(DESTDIR)$(BINDIR)/iyi$(EXE)"
+
+# Beside `iyi`, because that is where `iyi daemon start` looks. Shipped rather
+# than left to be built: the daemon halves a `--crystal` build (SPEC.md IV.1d),
+# and a feature that needs `make` first is a feature nobody who downloaded a
+# tarball has.
+	$(INSTALL) -m 0755 "$(O)/$(IYI_DAEMON_BIN)" "$(DESTDIR)$(BINDIR)/$(IYI_DAEMON_BIN)"
 
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/iyi/src"
 	cp -R -p $(if $(deref_symlinks),-L,-P) src/iyi "$(DESTDIR)$(DATADIR)/iyi/src/iyi"
@@ -278,12 +294,20 @@ install_iyi: $(O)/iyi$(EXE)
 #
 # A program built with it gets Crystal's standard library, and an install that
 # ships only iyi's own 81 KB answers `require "json"` with "can't find file",
-# which is the headline feature failing in the thing people download. Copied
-# without `compiler/` — a compiler that carried its own source would be
-# carrying it twice — and without `iyi/`, which is already above.
+# which is the headline feature failing in the thing people download.
+#
+# `compiler/` was cut from this, on the grounds that a compiler carrying its own
+# source carries it twice. That was wrong, and the way it was wrong is the
+# lesson: **the standard library requires it.** `crystal/syntax_highlighter`
+# requires `compiler/crystal/syntax`, Crystal's exception page requires the
+# highlighter, and Kemal requires the exception page — so `require "kemal"`,
+# this README's headline example, could not be built from the tarball anybody
+# downloaded. Shipping a library means shipping what it requires, and deciding
+# otherwise from the outside is guessing. Crystal's own install copies all of
+# `src` for the same reason. `iyi/` stays out because it is already above.
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/iyi/crystal"
 	cp -R -p $(if $(deref_symlinks),-L,-P) src/*.cr src/*/ "$(DESTDIR)$(DATADIR)/iyi/crystal/"
-	rm -rf "$(DESTDIR)$(DATADIR)/iyi/crystal/compiler" "$(DESTDIR)$(DATADIR)/iyi/crystal/iyi"
+	rm -rf "$(DESTDIR)$(DATADIR)/iyi/crystal/iyi"
 
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/licenses/iyi/"
 	$(INSTALL) -m 644 LICENSE "$(DESTDIR)$(DATADIR)/licenses/iyi/LICENSE"
@@ -292,14 +316,40 @@ install_iyi: $(O)/iyi$(EXE)
 .PHONY: uninstall_iyi
 uninstall_iyi: ## iyi: remove what install_iyi installed
 	rm -f "$(DESTDIR)$(BINDIR)/iyi$(EXE)"
+	rm -f "$(DESTDIR)$(BINDIR)/$(IYI_DAEMON_BIN)"
 	rm -rf "$(DESTDIR)$(DATADIR)/iyi"
 	rm -rf "$(DESTDIR)$(DATADIR)/licenses/iyi"
+
+# iyi: the binaries about to be packaged are optimised ones.
+#
+# `release := 1` above asks for that, and asking is not enough: make rebuilds
+# on file times, so a `.build/iyi` left over from an ordinary `make iyi` is
+# newer than every source and gets packaged as it is. Nothing about the tarball
+# would look wrong. The binary would simply be an unoptimised compiler, and
+# every build every user ran would go through it — a release nobody could see
+# was slow.
+#
+# So it is asked of the binary rather than of the build: `--version` says which
+# it is.
+.PHONY: check_iyi_is_release
+check_iyi_is_release: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
+	@for bin in iyi$(EXE) $(IYI_DAEMON_BIN); do \
+	   if $(O)/$$bin --version | grep -q "not built in release mode"; then \
+	     echo "$(O)/$$bin is not an optimised build, and a tarball ships what it packages."; \
+	     echo "It is up to date by file times, so make will not rebuild it. Force it:"; \
+	     echo "  make -B iyi iyi-daemon release=1"; \
+	     exit 1; \
+	   fi; \
+	 done
 
 # iyi: the same layout in a file somebody can download. Relocatable, because
 # the binary finds its prelude relative to itself.
 .PHONY: iyi-tarball
 iyi-tarball: ## iyi: build a relocatable tarball at $(O)
-iyi-tarball: $(O)/iyi$(EXE)
+# bake-format off: Mbake bug with Duplicate target rule https://github.com/EbodShojaei/bake/issues/106
+iyi-tarball: release := 1
+iyi-tarball: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN) check_iyi_is_release
+# bake-format on
 	rm -rf "$(O)/iyi-package"
 	$(MAKE) install_iyi DESTDIR="$(CURDIR)/$(O)/iyi-package" PREFIX=""
 	$(INSTALL) -m 644 README.md "$(O)/iyi-package/share/iyi/README.md"
@@ -403,6 +453,19 @@ $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $@ src/compiler/iyi.cr
 	@echo "built $@ — run it as ./bin/iyi"
 
+# iyi: the same compiler, single-threaded, which is what lets it fork.
+#
+# The daemon forks a child per build and only the forking thread survives a
+# fork, so the server half cannot be the multi-threaded binary. Same sources,
+# same prelude path, `-Dwithout_mt` — and a name `iyi daemon start` will find
+# beside itself, installed or in `.build`.
+$(O)/$(IYI_DAEMON_BIN): $(DEPS) $(SOURCES)
+	$(call check_llvm_config)
+	@mkdir -p $(O)
+	$(EXPORTS) $(EXPORTS_BUILD) IYI_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
+	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_mt -o $@ src/compiler/iyi.cr
+	@echo "built $@ — \`iyi daemon start\` finds it beside iyi"
+
 # iyi: the front end on its own. Linking libLLVM costs 26 ms of load-time
 # initialisers whether or not anything generates code, and `--no-codegen` never
 # calls it — so this links none and starts in 6 ms rather than 39 (SPEC.md
@@ -417,7 +480,7 @@ $(O)/crystal-front$(EXE): $(DEPS) $(SOURCES) $(O)/$(CRYSTAL_BIN)
 	  IYI_CONFIG_LLVM_VERSION="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^LLVM: //p')" \
 	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_llvm -o $@ src/compiler/crystal_front.cr
 
-$(O)/$(IYI_DAEMON_BIN): $(DEPS) $(SOURCES)
+$(O)/$(CRYSTAL_DAEMON_BIN): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
 	$(EXPORTS) $(EXPORTS_BUILD) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_mt -o $@ src/compiler/crystal.cr
