@@ -104,10 +104,16 @@
   boundary stands between, and that argument does not survive looking at what
   the unit refers to.
 
-  What a boundary still cannot carry is a constant: it travels by name so the
-  consumer can run its initialiser, and a bound shard's declarations carry no
-  constants, so the consumer has the name and nothing to define it with. That
-  is now a refusal at compile time where the same shard used to segfault.
+  A constant crosses as the assignment that makes it, so the consumer builds it
+  in its own program at the time III.5 says — which is what the unit needs,
+  referring to `Store::TABLE` and defining nothing. `Store.word(1)` answers
+  `one`, where the same call used to segfault on the first read. Its own
+  constants only: a unit refers to Crystal's as well, and those belong to the
+  library the consumer already has.
+
+  A constant nested inside a type under the root does not cross yet. The
+  assignments are written flat inside the module, where `Inner::X = ...` reopens
+  rather than defines.
 
 ### Fixed
 

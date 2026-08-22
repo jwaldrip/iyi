@@ -26,16 +26,6 @@ private def crystal_env
 end
 
 describe "`crystal tool bind`, end to end" do
-  # What a boundary cannot carry yet, kept beside the thing that can.
-  #
-  # A constant travels by name — the artifact's `Constants` — and the consumer
-  # replays that name so its initialiser runs in the program that will read it.
-  # A bound shard's declarations carry no constants, so the consumer has the
-  # name and nothing to define it with: `undefined constant ::Store::TABLE`.
-  # That is a clean refusal rather than the segfault it used to be, and what it
-  # waits on is the artifact carrying the constant's declaration.
-  pending "carries a shard's constants"
-
   it "builds and runs a program that calls a bound shard" do
     pending!("requires #{CRYSTAL_BIN} (`make crystal`)") unless File::Info.executable?(CRYSTAL_BIN)
     pending!("requires #{IYI_BIN} (`make iyi`)") unless File::Info.executable?(IYI_BIN)
@@ -82,6 +72,24 @@ describe "`crystal tool bind`, end to end" do
           def self.label(value : Int32 | String) : String
             value.to_s
           end
+
+          # Both kinds of constant, because only one of them was ever the
+          # problem. `LIMIT` is folded by the compiler and has always crossed;
+          # `TABLE` has to be built when the program starts, and its initialiser
+          # runs in whichever program *reads* it. The unit refers to it and
+          # defines nothing, so the assignment travels in the artifact for the
+          # consumer to make. Read the wrong way round, this is what used to
+          # segfault on the first read.
+          TABLE = ["zero", "one", "two"]
+          LIMIT = 10
+
+          def self.word(index : Int32) : String
+            TABLE[index]
+          end
+
+          def self.limit : Int32
+            LIMIT
+          end
         end
         CR
 
@@ -93,6 +101,8 @@ describe "`crystal tool bind`, end to end" do
         puts ABCGreeter.polite("iyi")
         puts ABCGreeter.brisk("iyi")
         puts ABCGreeter.label(7)
+        puts ABCGreeter.word(1)
+        puts ABCGreeter.limit
         IYI
 
       # 1. The declarations, and the keep file that makes the code exist.
@@ -121,7 +131,7 @@ describe "`crystal tool bind`, end to end" do
       # The claim. Not that it compiled, not that it linked — that the program
       # ran and the answers came from the shard.
       Process.capture_result([File.join(dir, "app")], chdir: dir)
-        .output.chomp.should eq "hello, iyi\nhi iyi\n7"
+        .output.chomp.should eq "hello, iyi\nhi iyi\n7\none\n10"
     end
   end
 end

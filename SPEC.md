@@ -4511,12 +4511,24 @@ Named honestly, so nobody mistakes this draft for complete.
     > boundary stands *between* Crystal's library and the consumer, and that
     > argument does not survive looking at what the unit refers to.
     >
-    > **What is left is one thing and it is nameable.** A constant travels by
-    > name so the consumer can run its initialiser in the program that reads it,
-    > and a bound shard's declarations carry no constants — so the consumer has
-    > the name and nothing to define it with: `undefined constant ::Store::TABLE`.
-    > A refusal at compile time, where the same shard used to segfault on the
-    > first read.
+    > **And the constants cross too, which was the last of it.** A constant
+    > travels by *name* so its initialiser runs once, in the program that will
+    > read it — and a name was only half, the half a bound shard was missing. Its
+    > unit refers to `Store::TABLE` and defines nothing. So the assignment
+    > travels as well, in the artifact's initialiser, which the reader renders
+    > last and inside the module: `TABLE = [...]` under `module store` is
+    > `Store::TABLE`, in the namespace the shard wrote it in and built by the
+    > consumer's own program.
+    >
+    > `Store.word(1)` answers `one`. Two turns earlier the same call segfaulted
+    > on the first read, and the turn after that it was refused by name. Its own
+    > constants only: a unit refers to Crystal's as well — `Int::DIGITS_BASE62`,
+    > reached because `Array#[]` can raise and raising formats an integer — and
+    > those belong to the library the consumer already has.
+    >
+    > What does not cross is a constant nested inside a type under the root. The
+    > assignments are written flat inside the module, where `Inner::X = ...`
+    > reopens rather than defines, and that is a different thing to get right.
     >
     > A boundary carries code that needs no initialisation. That is the bound on
     > it today, and it is a larger claim than the earlier paragraphs implied.

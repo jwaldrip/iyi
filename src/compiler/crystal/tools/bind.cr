@@ -404,6 +404,19 @@ module Crystal
 
     artifact = IyiMod::Artifact.new(
       module_name: iyi_module_name(root),
+      # The shard's own constants, as the assignments that make them.
+      #
+      # A constant travels by *name* so that its initialiser runs once, in the
+      # program that will read it — but a name is only half of it, and the half
+      # a bound shard was missing. Its unit refers to `Store::TABLE` and defines
+      # nothing; the consumer had the name from `Constants` and no way to make
+      # one, so it said `undefined constant ::Store::TABLE` and stopped.
+      #
+      # The text goes in the initialiser, which the reader renders last and
+      # inside the module — so `TABLE = [...]` under `module store` is
+      # `Store::TABLE`, in the namespace the shard wrote it in, built by the
+      # consumer's own program at the time III.5 says.
+      initialiser: constant_source(program, root),
       source_path: program.filename || "",
       compiler_version: IyiMod.compiler_version,
       target_triple: program.codegen_target.to_s,
@@ -507,11 +520,15 @@ module Crystal
     io.puts "numbers `Pointer(LibUnwind::Exception)` whatever #{root} does, because"
     io.puts "a `String#+` can raise, and an iyi program cannot name that type."
     io.puts
-    io.puts "What still does not cross is a constant. It travels by name, so the"
-    io.puts "consumer can run its initialiser in the program that will read it —"
-    io.puts "but a bound shard's declarations carry no constants, so the consumer"
-    io.puts "has the name and nothing to define it with. That is a refusal at"
-    io.puts "compile time now rather than a null read at run time."
+    io.puts "A constant crosses as the assignment that makes it, so the consumer"
+    io.puts "builds it in its own program at the time III.5 says. That is what a"
+    io.puts "unit needs: it refers to `#{root}::SOMETHING` and defines nothing."
+    io.puts "A constant the compiler folds never needed this; one built at run"
+    io.puts "time did, and used to read as null and segfault."
+    io.puts
+    io.puts "A constant nested inside a type under #{root} does not cross yet. The"
+    io.puts "assignments are written flat inside the module, where `Inner::X = ...`"
+    io.puts "reopens rather than defines."
     io.puts
     io.puts "`--iyi-keep` is not decoration: a getter whose body is one instance"
     io.puts "variable is inlined at every call site and emits no symbol, which"
@@ -1197,6 +1214,35 @@ module Crystal
   # What the consumer will call it, having imported the module.
   private def self.consumer_name(root : String) : String
     iyi_module_name(root).split('/').map(&.camelcase).join("::")
+  end
+
+  # `TABLE = ["zero", "one", "two"]`, for every constant of *root*'s own that a
+  # consumer could rebuild.
+  #
+  # Its own only. A unit refers to Crystal's constants too — `Int::DIGITS_BASE62`
+  # is reached because `Array#[]` can raise and raising formats an integer — and
+  # those belong to the library the consumer already has under `--crystal`.
+  # Writing them here would define somebody else's constant twice.
+  #
+  # Top level of the root only, and a nested one is left rather than guessed at:
+  # this text is rendered flat inside the module, so `Inner::X = ...` there is a
+  # reopening rather than a definition, which is a different thing to get right.
+  private def self.constant_source(program : Program, root : String) : String
+    root_type = program.types?.try &.[]?(root)
+    return "" unless root_type.is_a?(NamedType)
+
+    lines = [] of String
+    root_type.types?.try &.each do |name, type|
+      next unless type.is_a?(Const)
+      value = type.value
+      # A value the consumer cannot name is one it cannot rebuild, and a
+      # constant it cannot rebuild is better left undefined than defined wrong.
+      answer = type.value.type?.try(&.devirtualize.to_s)
+      next if answer && !nameable?(answer, root)
+      lines << "#{name} = #{value}"
+    end
+    lines.sort!
+    lines.empty? ? "" : lines.join('\n')
   end
 
   # The foreign types one signature waits on.
