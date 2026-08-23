@@ -403,6 +403,28 @@
 
 ### Fixed
 
+- **`bench/bind_speed.py` said a shard reaching into another one cannot be
+  bound, and that stopped being true two commits before anybody reread it.**
+  The header gave `Kemal` numbering `Array(Radix::Node(...))` as the case and
+  a generic travelling as bodies rather than declarations as the reason. Both
+  halves have since been answered — a generic carries its declaration *and* its
+  bodies, and the build that fills a boundary reads the boundaries beside it and
+  adds the import edge — and the paragraph went on asserting the old state.
+
+  Corrected by measuring rather than by reasoning, and without the network: a
+  two-shard tree of exactly that shape — a generic `Node(T)` in one, a second
+  whose object code numbers `Array(Node(String))` and whose declarations name
+  no `Node` — binds, links, runs, and prints what the source arm prints. The
+  order matters and the header now says so: the reached-into shard is bound
+  first and named with `--use-iyimod`, because only a build that sees that
+  boundary can add the edge. Without it the consumer stops at import with
+  `"kemal" numbers Array(Radix::Node(String)), and this build cannot name it`.
+
+  SPEC.md III.6 already recorded the correction and needed nothing; it also
+  names what real `Kemal` still waits on, which is three types belonging to
+  other shards. The stale sentence carried a stale number besides — it called
+  the smallest sweep 1,627 lines where the bench prints 2,167.
+
 - **`crystal tool bind` holds a written return type against what a caller is
   actually handed, and the two are not always the same.** III.6 rule 1 says the
   binding asserts and is not checked. Half of it already was: a method whose
