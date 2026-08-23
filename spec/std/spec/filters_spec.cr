@@ -10,13 +10,13 @@ describe Spec::RootContext do
     describe "by pattern" do
       it "on an example" do
         root = build_spec("f.cr")
-        root.run_filters(pattern: /example_f_2_2/)
+        root.run_filters(pattern: "example_f_2_2")
         all_spec_descriptions(root).should eq %w[root context_f_2 example_f_2_2]
       end
 
       it "on a context" do
         root = build_spec("f.cr")
-        root.run_filters(pattern: /context_f_2/)
+        root.run_filters(pattern: "context_f_2")
         all_spec_descriptions(root).should eq %w[root context_f_2 example_f_2_1 example_f_2_2]
       end
     end

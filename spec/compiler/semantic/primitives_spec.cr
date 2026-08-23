@@ -62,17 +62,17 @@ describe "Semantic: primitives" do
   end
 
   it "errors when comparing void (#225)" do
-    assert_error <<-CRYSTAL, "undefined method '==' for Nil"
+    assert_error <<-CODE, "undefined method '==' for Nil"
       lib LibFoo
         fun foo
       end
 
       LibFoo.foo == 1
-      CRYSTAL
+      CODE
   end
 
   it "correctly types first hash from type vars (bug)" do
-    assert_type(<<-CRYSTAL) { generic_class "Hash", int32, char }
+    assert_type(<<-CODE) { generic_class "Hash", int32, char }
       class Hash(K, V)
       end
 
@@ -83,87 +83,87 @@ describe "Semantic: primitives" do
       x = foo 1, 'a'
       y = foo 'a', 1
       x
-      CRYSTAL
+      CODE
   end
 
   it "computes correct hash value type if it's a function literal (#320)" do
-    assert_type(<<-CRYSTAL) { generic_class "Hash", string, proc_of(bool) }
+    assert_type(<<-CODE) { generic_class "Hash", string, proc_of(bool) }
       require "prelude"
 
       {"foo" => ->{ true }}
-      CRYSTAL
+      CODE
   end
 
   it "extends from Number and doesn't find + method" do
-    assert_error <<-CRYSTAL, "undefined method"
+    assert_error <<-CODE, "undefined method"
       struct Foo < Number
       end
 
       Foo.new + 1
-      CRYSTAL
+      CODE
   end
 
   it "extends from Number and doesn't find >= method" do
-    assert_error <<-CRYSTAL, "undefined method"
+    assert_error <<-CODE, "undefined method"
       struct Foo < Number
       end
 
       Foo.new >= 1
-      CRYSTAL
+      CODE
   end
 
   it "extends from Number and doesn't find to_i method" do
-    assert_error <<-CRYSTAL, "undefined method"
+    assert_error <<-CODE, "undefined method"
       struct Foo < Number
       end
 
       Foo.new.to_i
-      CRYSTAL
+      CODE
   end
 
   pending "types pointer of int" do
-    assert_type(<<-CRYSTAL) { types["Int"] }
+    assert_type(<<-CODE) { types["Int"] }
       p = Pointer(Int).malloc(1_u64)
       p.value = 1
       p.value
-      CRYSTAL
+      CODE
   end
 
   it "can invoke cast on primitive typedef (#614)" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       lib Test
         type K = Int32
         fun foo : K
       end
 
       Test.foo.to_i
-      CRYSTAL
+      CODE
   end
 
   it "can invoke binary on primitive typedef (#614)" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { types["Test"].types["K"] }
+    assert_type(<<-CODE, inject_primitives: true) { types["Test"].types["K"] }
       lib Test
         type K = Int32
         fun foo : K
       end
 
       Test.foo + 1
-      CRYSTAL
+      CODE
   end
 
   it "can invoke binary on primitive typedef (2) (#614)" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { types["Test"].types["K"] }
+    assert_type(<<-CODE, inject_primitives: true) { types["Test"].types["K"] }
       lib Test
         type K = Int32
         fun foo : K
       end
 
       Test.foo.unsafe_shl 1
-      CRYSTAL
+      CODE
   end
 
   it "errors if using instance variable inside primitive type" do
-    assert_error <<-CRYSTAL, "can't use instance variables inside primitive types (at Int32)"
+    assert_error <<-CODE, "can't use instance variables inside primitive types (at Int32)"
       struct Int32
         def meth
           puts @value
@@ -171,11 +171,11 @@ describe "Semantic: primitives" do
       end
 
       1.meth
-      CRYSTAL
+      CODE
   end
 
   it "types @[Primitive] method" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       struct Int32
         @[Primitive(:binary)]
         def +(other : Int32) : Int32
@@ -183,42 +183,42 @@ describe "Semantic: primitives" do
       end
 
       1 + 2
-      CRYSTAL
+      CODE
   end
 
   it "errors if @[Primitive] has no args" do
-    assert_error <<-CRYSTAL, "expected Primitive annotation to have one argument"
+    assert_error <<-CODE, "expected Primitive annotation to have one argument"
       struct Int32
         @[Primitive]
         def +(other : Int32) : Int32
         end
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors if @[Primitive] has non-symbol arg" do
-    assert_error <<-CRYSTAL, "expected Primitive argument to be a symbol literal"
+    assert_error <<-CODE, "expected Primitive argument to be a symbol literal"
       struct Int32
         @[Primitive("foo")]
         def +(other : Int32) : Int32
         end
       end
-      CRYSTAL
+      CODE
   end
 
   it "allows @[Primitive] on method that has body" do
-    assert_no_errors <<-CRYSTAL
+    assert_no_errors <<-CODE
       struct Int32
         @[Primitive(:binary)]
         def +(other : Int32) : Int32
           1
         end
       end
-      CRYSTAL
+      CODE
   end
 
   it "types va_arg primitive" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       struct VaList
         @[Primitive(:va_arg)]
         def next(type)
@@ -227,11 +227,11 @@ describe "Semantic: primitives" do
 
       list = VaList.new
       list.next(Int32)
-      CRYSTAL
+      CODE
   end
 
   it "looks up return type in correct scope (#13652)" do
-    assert_type(<<-CRYSTAL) { types["A"] }
+    assert_type(<<-CODE) { types["A"] }
       class A
       end
 
@@ -245,11 +245,11 @@ describe "Semantic: primitives" do
       end
 
       Bar::A.new.foo
-      CRYSTAL
+      CODE
   end
 
   describe "Slice.literal" do
-    def_slice_literal = <<-CRYSTAL
+    def_slice_literal = <<-CODE
       struct Slice(T)
         def initialize(pointer : T*, size : Int32, *, read_only : Bool)
         end
@@ -258,144 +258,144 @@ describe "Semantic: primitives" do
         def self.literal(*args)
         end
       end
-      CRYSTAL
+      CODE
 
     context "without element type" do
       it "types primitive int literal" do
-        assert_type(<<-CRYSTAL) { generic_class "Slice", int32 }
+        assert_type(<<-CODE) { generic_class "Slice", int32 }
           #{def_slice_literal}
           Slice.literal(0, 1, 4, 9)
-          CRYSTAL
+          CODE
 
-        assert_type(<<-CRYSTAL) { generic_class "Slice", uint8 }
+        assert_type(<<-CODE) { generic_class "Slice", uint8 }
           #{def_slice_literal}
           Slice.literal(1_u8, 2_u8)
-          CRYSTAL
+          CODE
       end
 
       it "types primitive float literal" do
-        assert_type(<<-CRYSTAL) { generic_class "Slice", float64 }
+        assert_type(<<-CODE) { generic_class "Slice", float64 }
           #{def_slice_literal}
           Slice.literal(1.2, 3.4)
-          CRYSTAL
+          CODE
 
-        assert_type(<<-CRYSTAL) { generic_class "Slice", float32 }
+        assert_type(<<-CODE) { generic_class "Slice", float32 }
           #{def_slice_literal}
           Slice.literal(5.6_f32)
-          CRYSTAL
+          CODE
       end
 
       it "errors if empty" do
-        assert_error <<-CRYSTAL, "Cannot create empty slice literal without element type"
+        assert_error <<-CODE, "Cannot create empty slice literal without element type"
           #{def_slice_literal}
           Slice.literal
-          CRYSTAL
+          CODE
       end
 
       it "errors if multiple element types are found" do
-        assert_error <<-CRYSTAL, "Too many element types for slice literal without generic argument: Int32, UInt8"
+        assert_error <<-CODE, "Too many element types for slice literal without generic argument: Int32, UInt8"
           #{def_slice_literal}
           Slice.literal(1, 2_u8)
-          CRYSTAL
+          CODE
 
-        assert_error <<-CRYSTAL, "Too many element types for slice literal without generic argument: Float32, Float64"
+        assert_error <<-CODE, "Too many element types for slice literal without generic argument: Float32, Float64"
           #{def_slice_literal}
           Slice.literal(3.0f32, 4.0)
-          CRYSTAL
+          CODE
       end
 
       it "errors if element is not number literal" do
-        assert_error <<-CRYSTAL, "Expected NumberLiteral, got StringLiteral"
+        assert_error <<-CODE, "Expected NumberLiteral, got StringLiteral"
           #{def_slice_literal}
           Slice.literal("")
-          CRYSTAL
+          CODE
 
-        assert_error <<-CRYSTAL, "Expected NumberLiteral, got Var"
+        assert_error <<-CODE, "Expected NumberLiteral, got Var"
           #{def_slice_literal}
           x = 1
           Slice.literal(x)
-          CRYSTAL
+          CODE
       end
     end
 
     context "with element type" do
       it "types primitive int literal" do
-        assert_type(<<-CRYSTAL) { generic_class "Slice", uint8 }
+        assert_type(<<-CODE) { generic_class "Slice", uint8 }
           #{def_slice_literal}
           Slice(UInt8).literal(0, 1, 4, 9)
-          CRYSTAL
+          CODE
       end
 
       it "types primitive float literal" do
-        assert_type(<<-CRYSTAL) { generic_class "Slice", float64 }
+        assert_type(<<-CODE) { generic_class "Slice", float64 }
           #{def_slice_literal}
           Slice(Float64).literal(0, 1, 4, 9)
-          CRYSTAL
+          CODE
       end
 
       it "types empty literal" do
-        assert_type(<<-CRYSTAL) { generic_class "Slice", int32 }
+        assert_type(<<-CODE) { generic_class "Slice", int32 }
           #{def_slice_literal}
           Slice(Int32).literal
-          CRYSTAL
+          CODE
       end
 
       it "errors if element type is not primitive int or float" do
-        assert_error <<-CRYSTAL, "Only slice literals of primitive integer or float types can be created"
+        assert_error <<-CODE, "Only slice literals of primitive integer or float types can be created"
           #{def_slice_literal}
           Slice(String).literal
-          CRYSTAL
+          CODE
 
-        assert_error <<-CRYSTAL, "Only slice literals of primitive integer or float types can be created"
+        assert_error <<-CODE, "Only slice literals of primitive integer or float types can be created"
           #{def_slice_literal}
           Slice(Bool).literal
-          CRYSTAL
+          CODE
 
-        assert_error <<-CRYSTAL, "Only slice literals of primitive integer or float types can be created"
+        assert_error <<-CODE, "Only slice literals of primitive integer or float types can be created"
           #{def_slice_literal}
           Slice(Int32 | Int64).literal
-          CRYSTAL
+          CODE
       end
 
       it "errors if element is not number literal" do
-        assert_error <<-CRYSTAL, "Expected NumberLiteral, got StringLiteral"
+        assert_error <<-CODE, "Expected NumberLiteral, got StringLiteral"
           #{def_slice_literal}
           Slice(Int32).literal("")
-          CRYSTAL
+          CODE
 
-        assert_error <<-CRYSTAL, "Expected NumberLiteral, got Var"
+        assert_error <<-CODE, "Expected NumberLiteral, got Var"
           #{def_slice_literal}
           x = 1
           Slice(Int32).literal(x)
-          CRYSTAL
+          CODE
       end
 
       it "errors if element is out of range" do
-        assert_error <<-CRYSTAL, "Argument out of range for a Slice(UInt8)"
+        assert_error <<-CODE, "Argument out of range for a Slice(UInt8)"
           #{def_slice_literal}
           Slice(UInt8).literal(-1)
-          CRYSTAL
+          CODE
 
-        assert_error <<-CRYSTAL, "Argument out of range for a Slice(UInt8)"
+        assert_error <<-CODE, "Argument out of range for a Slice(UInt8)"
           #{def_slice_literal}
           Slice(UInt8).literal(256)
-          CRYSTAL
+          CODE
       end
     end
   end
 
   describe "Reference.pre_initialize" do
-    def_reference_pre_initialize = <<-CRYSTAL
+    def_reference_pre_initialize = <<-CODE
       class Reference
         @[Primitive(:pre_initialize)]
         def self.pre_initialize(address : Pointer)
           {% @type %}
         end
       end
-      CRYSTAL
+      CODE
 
     it "types with reference type" do
-      assert_type(<<-CRYSTAL) { types["Foo"] }
+      assert_type(<<-CODE) { types["Foo"] }
         #{def_reference_pre_initialize}
 
         class Foo
@@ -403,11 +403,11 @@ describe "Semantic: primitives" do
 
         x = 1
         Foo.pre_initialize(pointerof(x))
-        CRYSTAL
+        CODE
     end
 
     it "types with virtual reference type" do
-      assert_type(<<-CRYSTAL) { types["Foo"].virtual_type! }
+      assert_type(<<-CODE) { types["Foo"].virtual_type! }
         #{def_reference_pre_initialize}
 
         class Foo
@@ -418,11 +418,11 @@ describe "Semantic: primitives" do
 
         x = 1
         Bar.as(Foo.class).pre_initialize(pointerof(x))
-        CRYSTAL
+        CODE
     end
 
     it "errors on uninstantiated generic type" do
-      assert_error <<-CRYSTAL, "Can't pre-initialize instance of generic class Foo(T) without specifying its type vars"
+      assert_error <<-CODE, "Can't pre-initialize instance of generic class Foo(T) without specifying its type vars"
         #{def_reference_pre_initialize}
 
         class Foo(T)
@@ -430,11 +430,11 @@ describe "Semantic: primitives" do
 
         x = 1
         Foo.pre_initialize(pointerof(x))
-        CRYSTAL
+        CODE
     end
 
     it "errors on abstract type" do
-      assert_error <<-CRYSTAL, "Can't pre-initialize abstract class Foo"
+      assert_error <<-CODE, "Can't pre-initialize abstract class Foo"
         #{def_reference_pre_initialize}
 
         abstract class Foo
@@ -442,22 +442,22 @@ describe "Semantic: primitives" do
 
         x = 1
         Foo.pre_initialize(pointerof(x))
-        CRYSTAL
+        CODE
     end
   end
 
   describe "Struct.pre_initialize" do
-    def_struct_pre_initialize = <<-CRYSTAL
+    def_struct_pre_initialize = <<-CODE
       struct Struct
         @[Primitive(:pre_initialize)]
         def self.pre_initialize(address : Pointer) : Nil
           {% @type %}
         end
       end
-      CRYSTAL
+      CODE
 
     it "errors on abstract type" do
-      assert_error <<-CRYSTAL, "Can't pre-initialize abstract struct Foo"
+      assert_error <<-CODE, "Can't pre-initialize abstract struct Foo"
         #{def_struct_pre_initialize}
 
         abstract struct Foo
@@ -465,11 +465,11 @@ describe "Semantic: primitives" do
 
         x = 1
         Foo.pre_initialize(pointerof(x))
-        CRYSTAL
+        CODE
     end
 
     it "errors on virtual abstract type" do
-      assert_error <<-CRYSTAL, "Can't pre-initialize abstract struct Foo"
+      assert_error <<-CODE, "Can't pre-initialize abstract struct Foo"
         #{def_struct_pre_initialize}
 
         abstract struct Foo
@@ -480,11 +480,11 @@ describe "Semantic: primitives" do
 
         x = 1
         Bar.as(Foo.class).pre_initialize(pointerof(x))
-        CRYSTAL
+        CODE
     end
 
     it "errors on abstract pointee type" do
-      assert_error <<-CRYSTAL, "Can't pre-initialize struct using pointer to abstract struct"
+      assert_error <<-CODE, "Can't pre-initialize struct using pointer to abstract struct"
         #{def_struct_pre_initialize}
 
         abstract struct Foo
@@ -495,7 +495,7 @@ describe "Semantic: primitives" do
 
         x = uninitialized Foo
         Bar.pre_initialize(pointerof(x))
-        CRYSTAL
+        CODE
     end
   end
 end

@@ -17,21 +17,21 @@ describe "Code gen: primitives" do
   it "codegens int128" do
     # LLVM's JIT doesn't seem to support 128
     # bit integers well regarding GenericValue
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       1_i128.to_i
-      CRYSTAL
+      CODE
   end
 
   it "codegens uint128" do
     # LLVM's JIT doesn't seem to support 128
     # bit integers well regarding GenericValue
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       1_u128.to_i
-      CRYSTAL
+      CODE
   end
 
   it "codegens char" do
@@ -120,7 +120,7 @@ describe "Code gen: primitives" do
   end
 
   it "defined method that calls primitive (bug)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       struct Int64
         def foo
           to_u64!
@@ -129,18 +129,18 @@ describe "Code gen: primitives" do
 
       a = 1_i64
       a.foo.to_i!
-      CRYSTAL
+      CODE
   end
 
   it "codegens __LINE__" do
-    run(<<-CRYSTAL, inject_primitives: false).to_i.should eq(2)
+    run(<<-CODE, inject_primitives: false).to_i.should eq(2)
 
       __LINE__
-      CRYSTAL
+      CODE
   end
 
   it "codegens crystal_type_id with union type" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       class Foo
       end
 
@@ -149,7 +149,7 @@ describe "Code gen: primitives" do
 
       f = Foo.allocate || Bar.allocate
       f.crystal_type_id == Foo.allocate.crystal_type_id
-      CRYSTAL
+      CODE
   end
 
   it "doesn't treat `(1 == 1) == true` as `1 == 1 == true` (#328)" do
@@ -161,24 +161,24 @@ describe "Code gen: primitives" do
   end
 
   pending "codegens pointer of int" do
-    run(<<-CRYSTAL).to_i.should eq(5)
+    run(<<-CODE).to_i.should eq(5)
       ptr = Pointer(Int).malloc(1_u64)
       ptr.value = 1
       ptr.value = 2_u8
       ptr.value = 3_u16
       ptr.value = 4_u32
       (ptr.value + 1).to_i32
-      CRYSTAL
+      CODE
   end
 
   pending "sums two numbers out of an [] of Number" do
-    run(<<-CRYSTAL).to_f32.should eq(2.5)
+    run(<<-CODE).to_f32.should eq(2.5)
       p = Pointer(Number).malloc(2_u64)
       p.value = 1
       (p + 1_i64).value = 1.5
 
       (p.value + (p + 1_i64).value).to_f32
-      CRYSTAL
+      CODE
   end
 
   it "codegens crystal_type_id for class" do
@@ -186,40 +186,40 @@ describe "Code gen: primitives" do
   end
 
   it "can invoke cast on primitive typedef (#614)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       lib Test
         type K = Int32
         fun foo : K
       end
 
       Test.foo.to_i!
-      CRYSTAL
+      CODE
   end
 
   it "can invoke binary on primitive typedef (#614)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       lib Test
         type K = Int32
         fun foo : K
       end
 
       Test.foo &+ 1
-      CRYSTAL
+      CODE
   end
 
   it "can invoke binary on primitive typedef (2) (#16097)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       lib Test
         type K = Int32
         fun foo : K
       end
 
       Test.foo == Test.foo
-      CRYSTAL
+      CODE
   end
 
   it "can invoke pointer primitives on typedef" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       lib Test
         type K = Void*
         fun foo : K
@@ -228,11 +228,11 @@ describe "Code gen: primitives" do
       Test.foo + 1
       Test.foo - Test.foo
       Test.foo.realloc(1)
-      CRYSTAL
+      CODE
   end
 
   it "can invoke struct setter on primitive typedef" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       lib Test
         struct Foo
           x : Int32
@@ -243,22 +243,22 @@ describe "Code gen: primitives" do
       end
 
       Test.foo.x = 1
-      CRYSTAL
+      CODE
   end
 
   pending "can invoke proc call on primitive typedef" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       lib Test
         type K = ->
         fun foo : K
       end
 
       Test.foo.call
-      CRYSTAL
+      CODE
   end
 
   it "allows redefining a primitive method" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       struct Int32
         def *(other : Int32)
           42
@@ -266,11 +266,11 @@ describe "Code gen: primitives" do
       end
 
       1 * 2
-      CRYSTAL
+      CODE
   end
 
   it "doesn't optimize away call whose obj is not passed as self (#2226)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Global
         @@x = 0
 
@@ -290,34 +290,34 @@ describe "Code gen: primitives" do
       foo.class.crystal_type_id
 
       Global.x
-      CRYSTAL
+      CODE
   end
 
   it "uses built-in llvm function that returns a tuple" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       lib Intrinsics
         fun sadd_i32_with_overflow = "llvm.sadd.with.overflow.i32"(a : Int32, b : Int32) : {Int32, Bool}
       end
 
       x, o = Intrinsics.sadd_i32_with_overflow(1, 2)
       x
-      CRYSTAL
+      CODE
   end
 
   it "gets crystal class instance type id" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       class Foo
       end
 
       Foo.new.crystal_type_id == Foo.crystal_instance_type_id
-      CRYSTAL
+      CODE
   end
 
   describe "va_arg" do
     # On Windows and AArch64 llvm's va_arg instruction works incorrectly.
     {% unless flag?(:win32) || flag?(:aarch64) %}
       it "uses llvm's va_arg instruction" do
-        mod = codegen(<<-CRYSTAL)
+        mod = codegen(<<-CODE)
           struct VaList
             @[Primitive(:va_arg)]
             def next(type)
@@ -326,14 +326,14 @@ describe "Code gen: primitives" do
 
           list = VaList.new
           list.next(Int32)
-          CRYSTAL
+          CODE
         type = {% if LibLLVM::IS_LT_150 %} "%VaList*" {% else %} "ptr" {% end %}
         str = mod.to_s
         str.should contain("va_arg #{type} %list")
       end
 
       it "works with C code" do
-        test_c(<<-C, <<-CRYSTAL, &.to_i.should eq(6))
+        test_c(<<-C, <<-CODE, &.to_i.should eq(6))
           extern int foo_f(int,...);
           int foo() {
             return foo_f(3,1,2,3);
@@ -354,14 +354,14 @@ describe "Code gen: primitives" do
           end
 
           LibFoo.foo
-          CRYSTAL
+          CODE
       end
     {% end %}
   end
 
   describe "atomicrmw" do
     it "codegens atomicrmw with enums" do
-      run(<<-CRYSTAL).to_i.should eq(3)
+      run(<<-CODE).to_i.should eq(3)
         enum RMWBinOp
           Add = 1
         end
@@ -377,11 +377,11 @@ describe "Code gen: primitives" do
         x = 1
         atomicrmw(:add, pointerof(x), 2, :sequentially_consistent, false)
         x
-        CRYSTAL
+        CODE
     end
 
     it "codegens atomicrmw with enums" do
-      run(<<-CRYSTAL).to_i.should eq(3)
+      run(<<-CODE).to_i.should eq(3)
         enum RMWBinOp
           Add = 1
         end
@@ -397,12 +397,12 @@ describe "Code gen: primitives" do
         x = 1
         atomicrmw(RMWBinOp::Add, pointerof(x), 2, Ordering::SequentiallyConsistent, false)
         x
-        CRYSTAL
+        CODE
     end
 
     # TODO: remove once support for 1.4 is dropped
     it "codegens atomicrmw with symbols" do
-      run(<<-CRYSTAL).to_i.should eq(3)
+      run(<<-CODE).to_i.should eq(3)
         @[Primitive(:atomicrmw)]
         def atomicrmw(op : Symbol, ptr : Int32*, val : Int32, ordering : Symbol, singlethread : Bool) : Int32
         end
@@ -410,12 +410,12 @@ describe "Code gen: primitives" do
         x = 1
         atomicrmw(:add, pointerof(x), 2, :sequentially_consistent, false)
         x
-        CRYSTAL
+        CODE
     end
   end
 
   it "allows @[Primitive] on method that has body" do
-    run(<<-CRYSTAL).to_string.should eq("hello")
+    run(<<-CODE).to_string.should eq("hello")
       module Moo
         @[Primitive(:symbol_to_s)]
         def self.symbol_to_s(symbol : Symbol) : String
@@ -424,17 +424,17 @@ describe "Code gen: primitives" do
       end
 
       Moo.symbol_to_s(:hello)
-      CRYSTAL
+      CODE
   end
 
   it "allows @[Primitive] on fun declarations" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       lib LibFoo
         @[Primitive(:enum_value)]
         fun enum_value(x : Int32) : Int32
       end
 
       LibFoo.enum_value(1)
-      CRYSTAL
+      CODE
   end
 end

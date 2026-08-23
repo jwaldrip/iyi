@@ -2,17 +2,17 @@ require "../../spec_helper"
 
 describe "Semantic: previous_def" do
   it "errors if there's no previous def" do
-    assert_error <<-CRYSTAL, "there is no previous definition of 'foo'"
+    assert_error <<-CODE, "there is no previous definition of 'foo'"
       def foo
         previous_def
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "types previous def" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       def foo
         1
       end
@@ -22,11 +22,11 @@ describe "Semantic: previous_def" do
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "types previous def in generic class" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo(T)
         def foo
           1
@@ -38,11 +38,11 @@ describe "Semantic: previous_def" do
       end
 
       Foo(Int32).new.foo
-      CRYSTAL
+      CODE
   end
 
   it "types previous def with explicit arguments" do
-    assert_type(<<-CRYSTAL) { float64 }
+    assert_type(<<-CODE) { float64 }
       def foo(x)
         x
       end
@@ -52,11 +52,11 @@ describe "Semantic: previous_def" do
       end
 
       foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "types previous def with forwarded arguments, def has parameters" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       def foo(x)
         x
       end
@@ -66,11 +66,11 @@ describe "Semantic: previous_def" do
       end
 
       foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "types previous def with forwarded arguments, def has bare splat parameter (#8895)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       def foo(*, x)
         x
       end
@@ -80,11 +80,11 @@ describe "Semantic: previous_def" do
       end
 
       foo(x: 1)
-      CRYSTAL
+      CODE
   end
 
   it "types previous def with named arguments, def has bare splat parameter (#8895)" do
-    assert_type(<<-CRYSTAL) { union_of int32, char }
+    assert_type(<<-CODE) { union_of int32, char }
       def foo(*, x)
         x
       end
@@ -94,11 +94,11 @@ describe "Semantic: previous_def" do
       end
 
       foo(x: 1)
-      CRYSTAL
+      CODE
   end
 
   it "types previous def with named arguments, def has bare splat parameter (2) (#8895)" do
-    assert_type(<<-CRYSTAL) { union_of int32, char }
+    assert_type(<<-CODE) { union_of int32, char }
       def foo(x)
         x
       end
@@ -108,11 +108,11 @@ describe "Semantic: previous_def" do
       end
 
       foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "types previous def with forwarded arguments, different internal names (#8895)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       def foo(*, x a)
         a
       end
@@ -122,11 +122,11 @@ describe "Semantic: previous_def" do
       end
 
       foo(x: 1)
-      CRYSTAL
+      CODE
   end
 
   it "types previous def with named arguments, def has double splat parameter (#8895)" do
-    assert_type(<<-CRYSTAL) { named_tuple_of({"x": int32, "y": char}) }
+    assert_type(<<-CODE) { named_tuple_of({"x": int32, "y": char}) }
       def foo(**opts)
         opts
       end
@@ -136,11 +136,11 @@ describe "Semantic: previous_def" do
       end
 
       foo(x: 1, y: 'a')
-      CRYSTAL
+      CODE
   end
 
   it "types previous def with restrictions" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       def foo(x : Int32)
         x
       end
@@ -150,11 +150,11 @@ describe "Semantic: previous_def" do
       end
 
       foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "types previous def when inside fun" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       def foo
         1
       end
@@ -165,11 +165,11 @@ describe "Semantic: previous_def" do
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "types previous def when inside fun and forwards args" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       def foo(z)
         z
       end
@@ -180,11 +180,11 @@ describe "Semantic: previous_def" do
       end
 
       foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "says wrong number of arguments for previous_def (#1223)" do
-    assert_error <<-CRYSTAL, "wrong number of arguments"
+    assert_error <<-CODE, "wrong number of arguments"
       class Foo
         def x
         end
@@ -195,6 +195,6 @@ describe "Semantic: previous_def" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 end

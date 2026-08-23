@@ -1,9 +1,9 @@
 require "spec"
-require "../../../src/compiler/crystal/formatter"
+require "../../../src/compiler/iyi/formatter"
 
 # iyi: the formatter on iyi's own syntax.
 #
-# The file name is what the difference hangs on. `Crystal.format` hands it to
+# The file name is what the difference hangs on. `Iyi.format` hands it to
 # the parser, which reads `!` as propagation in a `.iyi` file and as a method
 # suffix in a `.cr` one, so a spec that left the name off would be formatting
 # a different language from the one it is about.
@@ -13,7 +13,7 @@ require "../../../src/compiler/crystal/formatter"
 # something are the ones that show it is running at all.
 private def assert_iyi_format(input, output = input, file = __FILE__, line = __LINE__)
   it "formats #{input.inspect}", file, line do
-    result = Crystal.format("#{input}\n", filename: "spec.iyi")
+    result = Iyi.format("#{input}\n", filename: "spec.iyi")
     result.should eq("#{output}\n"), file: file, line: line
   end
 end
@@ -37,6 +37,11 @@ describe "Formatter on iyi" do
   assert_iyi_format "module m\n\npub def polite(name : String) : String\n  name\nend"
   assert_iyi_format "module m\n\npub struct Box(T)\n  getter value : T\nend"
   assert_iyi_format "module m\n\npub class Holder\n  @x = 1\nend"
+  # `pub macro` and `pub CONST` were the two the formatter did not know, and
+  # nothing formatted in CI had either in it, so it refused a whole file the
+  # first time one was written. Every prefix R-2 allows is listed here now.
+  assert_iyi_format "module m\n\npub macro described(declaration)\n  def described : String\n    \"x\"\n  end\nend"
+  assert_iyi_format "module m\n\npub LIMIT = 42"
 
   # Traits, their supertraits, and the associated types they declare.
   assert_iyi_format "module m\n\npub trait Show\n  abstract def show : String\nend"

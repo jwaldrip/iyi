@@ -2,7 +2,7 @@
 
 require "spec"
 require "llvm"
-require "compiler/crystal/codegen/abi/x86"
+require "compiler/iyi/codegen/abi/x86"
 
 {% if LibLLVM::BUILT_TARGETS.includes?(:x86) %}
   LLVM.init_x86
@@ -17,10 +17,10 @@ private def abi
   target = LLVM::Target.from_triple(triple)
   machine = target.create_target_machine(triple)
   machine.enable_global_isel = false
-  Crystal::ABI::X86.new(machine)
+  Iyi::ABI::X86.new(machine)
 end
 
-private def test(msg, &block : Crystal::ABI, LLVM::Context ->)
+private def test(msg, &block : Iyi::ABI, LLVM::Context ->)
   it msg do
     abi = abi()
     ctx = LLVM::Context.new
@@ -28,7 +28,7 @@ private def test(msg, &block : Crystal::ABI, LLVM::Context ->)
   end
 end
 
-class Crystal::ABI
+class Iyi::ABI
   describe X86 do
     {% if LibLLVM::BUILT_TARGETS.includes?(:x86) %}
       describe "align" do

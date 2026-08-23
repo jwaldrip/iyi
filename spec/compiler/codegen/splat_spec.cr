@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Code gen: splat" do
   it "splats" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       struct Tuple
         def size; {{T.size}}; end
       end
@@ -12,11 +12,11 @@ describe "Code gen: splat" do
       end
 
       foo 1, 1, 1
-      CRYSTAL
+      CODE
   end
 
   it "splats with another arg" do
-    run(<<-CRYSTAL).to_i.should eq(12)
+    run(<<-CODE).to_i.should eq(12)
       struct Tuple
         def size; {{T.size}}; end
       end
@@ -26,22 +26,22 @@ describe "Code gen: splat" do
       end
 
       foo 10, 1, 1
-      CRYSTAL
+      CODE
   end
 
   it "splats on call" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       def foo(x, y)
         x &+ y
       end
 
       tuple = {1, 2}
       foo *tuple
-      CRYSTAL
+      CODE
   end
 
   it "splats without args" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       struct Tuple
         def size; {{T.size}}; end
       end
@@ -51,11 +51,11 @@ describe "Code gen: splat" do
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "splats with default value" do
-    run(<<-CRYSTAL).to_i.should eq(100)
+    run(<<-CODE).to_i.should eq(100)
       struct Tuple
         def size; {{T.size}}; end
       end
@@ -65,11 +65,11 @@ describe "Code gen: splat" do
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "splats with default value (2)" do
-    run(<<-CRYSTAL).to_i.should eq(110)
+    run(<<-CODE).to_i.should eq(110)
       struct Tuple
         def size; {{T.size}}; end
       end
@@ -79,11 +79,11 @@ describe "Code gen: splat" do
       end
 
       foo 10
-      CRYSTAL
+      CODE
   end
 
   it "splats with default value (3)" do
-    run(<<-CRYSTAL).to_i.should eq(32)
+    run(<<-CODE).to_i.should eq(32)
       struct Tuple
         def size; {{T.size}}; end
       end
@@ -93,11 +93,11 @@ describe "Code gen: splat" do
       end
 
       foo 10, 20, 30, 40
-      CRYSTAL
+      CODE
   end
 
   it "splats in initialize" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       class Foo
         @x : Int32
         @y : Int32
@@ -117,11 +117,11 @@ describe "Code gen: splat" do
 
       foo = Foo.new 1, 2
       foo.x &+ foo.y
-      CRYSTAL
+      CODE
   end
 
   it "does #2407" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       lib LibC
         fun exit(Int32) : NoReturn
       end
@@ -140,11 +140,11 @@ describe "Code gen: splat" do
       some do |value|
         foo value
       end
-      CRYSTAL
+      CODE
   end
 
   it "evaluates splat argument just once (#2677)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Global
         @@x = 0
 
@@ -168,6 +168,6 @@ describe "Code gen: splat" do
       v = test(*data)
 
       Global.x
-      CRYSTAL
+      CODE
   end
 end

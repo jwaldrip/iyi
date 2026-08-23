@@ -8,18 +8,18 @@ require "./spec_helper"
 # carried on" is the failure IV.1 is written to avoid, so the rejections below
 # matter at least as much as the round trip.
 private def sample_artifact(imports = [] of String,
-                            exports = [] of Crystal::IyiMod::Signature,
-                            types = [] of Crystal::IyiMod::TypeDecl,
-                            impls = [] of Crystal::IyiMod::ImplRecord,
-                            object_code = [] of Crystal::IyiMod::ObjectUnit)
-  Crystal::IyiMod::Artifact.new(
+                            exports = [] of Iyi::IyiMod::Signature,
+                            types = [] of Iyi::IyiMod::TypeDecl,
+                            impls = [] of Iyi::IyiMod::ImplRecord,
+                            object_code = [] of Iyi::IyiMod::ObjectUnit)
+  Iyi::IyiMod::Artifact.new(
     module_name: "app/greeter",
     source_path: "/src/app/greeter.iyi",
     compiler_version: "1.22.0-dev+abc1234",
     target_triple: "x86_64-pc-linux-gnu",
     flags: ["bits64", "linux"],
-    imports: imports.map { |name| Crystal::IyiMod::ImportEdge.new(name) },
-    exports: Crystal::IyiMod::Exports.new(exports, types, impls),
+    imports: imports.map { |name| Iyi::IyiMod::ImportEdge.new(name) },
+    exports: Iyi::IyiMod::Exports.new(exports, types, impls),
     object_code: object_code,
   )
 end
@@ -29,7 +29,7 @@ end
 # would corrupt every one of them — which is why this is the payload the round
 # trip below is checked with.
 private def sample_object_unit(name : String = "App::Greeter")
-  Crystal::IyiMod::ObjectUnit.new(name, Bytes[0x7F, 0x45, 0x4C, 0x46, 0x00, 0xFF, 0x80, 0x00])
+  Iyi::IyiMod::ObjectUnit.new(name, Bytes[0x7F, 0x45, 0x4C, 0x46, 0x00, 0xFF, 0x80, 0x00])
 end
 
 private def signature(name : String,
@@ -39,7 +39,7 @@ private def signature(name : String,
                       free_variables = [] of String,
                       receiver = "",
                       required = false)
-  Crystal::IyiMod::Signature.new(name, receiver, parameters, block_parameter,
+  Iyi::IyiMod::Signature.new(name, receiver, parameters, block_parameter,
     return_type, free_variables, required)
 end
 
@@ -49,8 +49,8 @@ private def type_declaration(name : String,
                              assoc_types = [] of String,
                              supertraits = [] of String,
                              fields = [] of {String, String},
-                             methods = [] of Crystal::IyiMod::Signature)
-  Crystal::IyiMod::TypeDecl.new(name, kind, type_parameters, assoc_types,
+                             methods = [] of Iyi::IyiMod::Signature)
+  Iyi::IyiMod::TypeDecl.new(name, kind, type_parameters, assoc_types,
     supertraits, fields, methods)
 end
 
@@ -60,8 +60,8 @@ private def impl_record(trait_name : String,
                         free_variables = [] of String,
                         free_variable_bounds = [] of {String, String},
                         assoc_types = [] of {String, String},
-                        methods = [] of Crystal::IyiMod::Signature)
-  Crystal::IyiMod::ImplRecord.new(trait_name, type_name, trait_arguments,
+                        methods = [] of Iyi::IyiMod::Signature)
+  Iyi::IyiMod::ImplRecord.new(trait_name, type_name, trait_arguments,
     free_variables, free_variable_bounds, assoc_types, methods)
 end
 
@@ -74,23 +74,23 @@ private def with_temporary_file(&)
   end
 end
 
-describe Crystal::IyiMod do
+describe Iyi::IyiMod do
   # iyi: a `.iyimod` is the one input the compiler reads that nobody typed.
   # Truncated ones used to leave `IO::EOFError` and a stack trace, which names
   # no file and reads as a compiler bug rather than as a damaged file.
   describe "a damaged file" do
     it "is refused rather than crashed on, at every length" do
       with_temporary_file do |path|
-        Crystal::IyiMod.write sample_artifact, path
+        Iyi::IyiMod.write sample_artifact, path
         whole = File.read(path).to_slice
 
         [1, 8, 64, whole.size // 2, whole.size - 1].each do |cut|
           File.write(path, whole[0, cut])
-          expect_raises(Crystal::IyiMod::Error, /#{Regex.escape(path)}/) do
-            Crystal::IyiMod.read(path)
+          expect_raises(Iyi::IyiMod::Error, /#{Regex.escape(path)}/) do
+            Iyi::IyiMod.read(path)
           end
-          expect_raises(Crystal::IyiMod::Error, /#{Regex.escape(path)}/) do
-            Crystal::IyiMod.read_summary(path)
+          expect_raises(Iyi::IyiMod::Error, /#{Regex.escape(path)}/) do
+            Iyi::IyiMod.read_summary(path)
           end
         end
       end
@@ -98,15 +98,15 @@ describe Crystal::IyiMod do
 
     it "says where it ran out when it ends inside the file" do
       with_temporary_file do |path|
-        Crystal::IyiMod.write sample_artifact, path
+        Iyi::IyiMod.write sample_artifact, path
         whole = File.read(path).to_slice
         File.write(path, whole[0, whole.size - 4])
 
         # Two wordings, both true: the reader knows it ran out inside a
         # section when the table said how long the section was, and knows only
         # that it ran out when the table itself is short.
-        expect_raises(Crystal::IyiMod::Error, /truncated|ends inside/) do
-          Crystal::IyiMod.read(path)
+        expect_raises(Iyi::IyiMod::Error, /truncated|ends inside/) do
+          Iyi::IyiMod.read(path)
         end
       end
     end
@@ -116,13 +116,13 @@ describe Crystal::IyiMod do
       # backup. One flipped byte used to build seven times out of ten and reach
       # the linker the other three, which failed without mentioning the file.
       with_temporary_file do |path|
-        Crystal::IyiMod.write sample_artifact, path
+        Iyi::IyiMod.write sample_artifact, path
         bytes = File.read(path).to_slice.dup
         bytes[bytes.size - 3] ^= 0xFF_u8
         File.write(path, bytes)
 
-        expect_raises(Crystal::IyiMod::Error, /damaged|checksum/) do
-          Crystal::IyiMod.read(path)
+        expect_raises(Iyi::IyiMod::Error, /damaged|checksum/) do
+          Iyi::IyiMod.read(path)
         end
       end
     end
@@ -130,8 +130,8 @@ describe Crystal::IyiMod do
     it "refuses something that was never a .iyimod" do
       with_temporary_file do |path|
         File.write(path, "this is not an artifact\n")
-        expect_raises(Crystal::IyiMod::Error, /not a .iyimod|too short/) do
-          Crystal::IyiMod.read(path)
+        expect_raises(Iyi::IyiMod::Error, /not a .iyimod|too short/) do
+          Iyi::IyiMod.read(path)
         end
       end
     end
@@ -139,8 +139,8 @@ describe Crystal::IyiMod do
 
   it "round-trips an artifact" do
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact, path
-      read = Crystal::IyiMod.read(path)
+      Iyi::IyiMod.write sample_artifact, path
+      read = Iyi::IyiMod.read(path)
 
       read.module_name.should eq "app/greeter"
       read.source_path.should eq "/src/app/greeter.iyi"
@@ -153,8 +153,8 @@ describe Crystal::IyiMod do
 
   it "round-trips import edges in order" do
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact(["std/list", "std/enumerable"]), path
-      Crystal::IyiMod.read(path).import_names.should eq ["std/list", "std/enumerable"]
+      Iyi::IyiMod.write sample_artifact(["std/list", "std/enumerable"]), path
+      Iyi::IyiMod.read(path).import_names.should eq ["std/list", "std/enumerable"]
     end
   end
 
@@ -163,7 +163,7 @@ describe Crystal::IyiMod do
   # failure a cache has, because it is wrong and nothing about it looks broken.
   it "leaves no temporary file behind" do
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact, path
+      Iyi::IyiMod.write sample_artifact, path
       Dir[File.join(File.dirname(path), "#{File.basename(path)}.*.tmp")].should be_empty
     end
   end
@@ -171,8 +171,8 @@ describe Crystal::IyiMod do
   it "refuses a file that is not a .iyimod" do
     with_temporary_file do |path|
       File.write path, "this is not an artifact"
-      expect_raises(Crystal::IyiMod::Error, /is not a \.iyimod/) do
-        Crystal::IyiMod.read(path)
+      expect_raises(Iyi::IyiMod::Error, /is not a \.iyimod/) do
+        Iyi::IyiMod.read(path)
       end
     end
   end
@@ -180,8 +180,8 @@ describe Crystal::IyiMod do
   it "refuses a file too short to hold the magic" do
     with_temporary_file do |path|
       File.write path, "IYI"
-      expect_raises(Crystal::IyiMod::Error, /too short/) do
-        Crystal::IyiMod.read(path)
+      expect_raises(Iyi::IyiMod::Error, /too short/) do
+        Iyi::IyiMod.read(path)
       end
     end
   end
@@ -189,14 +189,14 @@ describe Crystal::IyiMod do
   # IV.5: rejected and rebuilt, never migrated.
   it "refuses another format version" do
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact, path
+      Iyi::IyiMod.write sample_artifact, path
       bytes = File.read(path).to_slice.dup
       # The version is the u32 right after the 8-byte magic.
-      Crystal::IyiMod::FORMAT.encode(99_u32, bytes[8, 4])
+      Iyi::IyiMod::FORMAT.encode(99_u32, bytes[8, 4])
       File.write path, bytes
 
-      expect_raises(Crystal::IyiMod::Error, /format v99/) do
-        Crystal::IyiMod.read(path)
+      expect_raises(Iyi::IyiMod::Error, /format v99/) do
+        Iyi::IyiMod.read(path)
       end
     end
   end
@@ -208,7 +208,7 @@ describe Crystal::IyiMod do
   it "skips a section it does not know" do
     with_temporary_file do |path|
       io = IO::Memory.new
-      format = Crystal::IyiMod::FORMAT
+      format = Iyi::IyiMod::FORMAT
       header = IO::Memory.new
       {"app/greeter", "/src/app/greeter.iyi", "1.0", "triple"}.each do |value|
         header.write_bytes value.bytesize.to_u32, format
@@ -220,42 +220,42 @@ describe Crystal::IyiMod do
 
       unknown = "xyz".to_slice
 
-      io.write Crystal::IyiMod::MAGIC
-      io.write_bytes Crystal::IyiMod::FORMAT_VERSION, format
+      io.write Iyi::IyiMod::MAGIC
+      io.write_bytes Iyi::IyiMod::FORMAT_VERSION, format
       io.write_bytes 2_u32, format
-      io.write_bytes Crystal::IyiMod::Section::Header.value, format
+      io.write_bytes Iyi::IyiMod::Section::Header.value, format
       io.write_bytes 0_u16, format
       io.write_bytes payload.size.to_u32, format
-      io.write_bytes Crystal::IyiMod.checksum(payload), format
+      io.write_bytes Iyi::IyiMod.checksum(payload), format
       io.write_bytes 4242_u16, format # a kind no compiler has ever defined
       io.write_bytes 0_u16, format
       io.write_bytes unknown.size.to_u32, format
-      io.write_bytes Crystal::IyiMod.checksum(unknown), format
+      io.write_bytes Iyi::IyiMod.checksum(unknown), format
       io.write payload
       io.write unknown
 
       File.write path, io.to_slice
-      Crystal::IyiMod.read(path).module_name.should eq "app/greeter"
+      Iyi::IyiMod.read(path).module_name.should eq "app/greeter"
     end
   end
 
   it "refuses an artifact with no header" do
     with_temporary_file do |path|
       io = IO::Memory.new
-      io.write Crystal::IyiMod::MAGIC
-      io.write_bytes Crystal::IyiMod::FORMAT_VERSION, Crystal::IyiMod::FORMAT
-      io.write_bytes 0_u32, Crystal::IyiMod::FORMAT
+      io.write Iyi::IyiMod::MAGIC
+      io.write_bytes Iyi::IyiMod::FORMAT_VERSION, Iyi::IyiMod::FORMAT
+      io.write_bytes 0_u32, Iyi::IyiMod::FORMAT
       File.write path, io.to_slice
 
-      expect_raises(Crystal::IyiMod::Error, /no header/) do
-        Crystal::IyiMod.read(path)
+      expect_raises(Iyi::IyiMod::Error, /no header/) do
+        Iyi::IyiMod.read(path)
       end
     end
   end
 
   it "dumps as text" do
     io = IO::Memory.new
-    Crystal::IyiMod.dump sample_artifact(["std/list"]), io
+    Iyi::IyiMod.dump sample_artifact(["std/list"]), io
     text = io.to_s
 
     text.should contain "module        app/greeter"
@@ -273,8 +273,8 @@ describe Crystal::IyiMod do
     ]
 
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact(exports: signatures), path
-      read = Crystal::IyiMod.read(path).exports.functions
+      Iyi::IyiMod.write sample_artifact(exports: signatures), path
+      read = Iyi::IyiMod.read(path).exports.functions
 
       read.size.should eq 3
       read[0].name.should eq "polite"
@@ -303,8 +303,8 @@ describe Crystal::IyiMod do
     ]
 
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact(exports: signatures), path
-      read = Crystal::IyiMod.read(path).exports.functions
+      Iyi::IyiMod.write sample_artifact(exports: signatures), path
+      read = Iyi::IyiMod.read(path).exports.functions
 
       read[0].block_parameter.should eq "& : (Elem -> U)"
       read[0].free_variables.should eq ["U"]
@@ -317,7 +317,7 @@ describe Crystal::IyiMod do
 
   it "dumps a def's header the way it was written" do
     io = IO::Memory.new
-    Crystal::IyiMod.dump sample_artifact(exports: [
+    Iyi::IyiMod.dump sample_artifact(exports: [
       signature("map", ["a : Int32"], "Array(U)",
         block_parameter: "& : (Elem -> U)", free_variables: ["U"]),
       signature("each", return_type: "Nil",
@@ -334,7 +334,7 @@ describe Crystal::IyiMod do
 
   it "dumps a signature the way it was written" do
     io = IO::Memory.new
-    Crystal::IyiMod.dump sample_artifact(exports: [
+    Iyi::IyiMod.dump sample_artifact(exports: [
       signature("polite", ["name : String"], "String"),
       signature("title", return_type: "String"),
     ]), io
@@ -352,7 +352,7 @@ describe Crystal::IyiMod do
   # section the enum names is written now, so it says what is in the file.
   it "says what the format carries" do
     io = IO::Memory.new
-    Crystal::IyiMod.dump sample_artifact, io
+    Iyi::IyiMod.dump sample_artifact, io
     text = io.to_s
     text.should contain "carries declarations"
     text.should contain "the macros"
@@ -362,8 +362,8 @@ describe Crystal::IyiMod do
   it "round-trips object code byte for byte" do
     unit = sample_object_unit
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact(object_code: [unit]), path
-      read = Crystal::IyiMod.read(path, want_object_code: true).object_code
+      Iyi::IyiMod.write sample_artifact(object_code: [unit]), path
+      read = Iyi::IyiMod.read(path, want_object_code: true).object_code
 
       read.size.should eq 1
       read.first.name.should eq "App::Greeter"
@@ -374,8 +374,8 @@ describe Crystal::IyiMod do
   it "round-trips one unit per type, in order" do
     units = [sample_object_unit("App::Greeter"), sample_object_unit("App::Greeter::Formal")]
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact(object_code: units), path
-      read = Crystal::IyiMod.read(path, want_object_code: true).object_code
+      Iyi::IyiMod.write sample_artifact(object_code: units), path
+      read = Iyi::IyiMod.read(path, want_object_code: true).object_code
       read.map(&.name).should eq ["App::Greeter", "App::Greeter::Formal"]
     end
   end
@@ -386,10 +386,10 @@ describe Crystal::IyiMod do
   # artifact exists to make fast, so it is seeked past unless asked for.
   it "does not read object code unless asked" do
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact(object_code: [sample_object_unit]), path
+      Iyi::IyiMod.write sample_artifact(object_code: [sample_object_unit]), path
 
-      Crystal::IyiMod.read(path).object_code.should be_empty
-      Crystal::IyiMod.read(path, want_object_code: true).object_code.size.should eq 1
+      Iyi::IyiMod.read(path).object_code.should be_empty
+      Iyi::IyiMod.read(path, want_object_code: true).object_code.size.should eq 1
     end
   end
 
@@ -399,11 +399,11 @@ describe Crystal::IyiMod do
   # first. A skip of the wrong length would lose both.
   it "reads the rest of the file with the object code skipped" do
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact(imports: ["std/list"],
+      Iyi::IyiMod.write sample_artifact(imports: ["std/list"],
         exports: [signature("polite", ["name : String"], "String")],
         object_code: [sample_object_unit]), path
 
-      read = Crystal::IyiMod.read(path)
+      read = Iyi::IyiMod.read(path)
       read.module_name.should eq "app/greeter"
       read.import_names.should eq ["std/list"]
       read.exports.functions.map(&.name).should eq ["polite"]
@@ -415,20 +415,20 @@ describe Crystal::IyiMod do
   # it was before this section existed.
   it "omits the object code section when there is none" do
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact, path
+      Iyi::IyiMod.write sample_artifact, path
       # Section count is the u32 after the 8-byte magic and the version.
-      count = Crystal::IyiMod::FORMAT.decode(UInt32, File.read(path).to_slice[12, 4])
+      count = Iyi::IyiMod::FORMAT.decode(UInt32, File.read(path).to_slice[12, 4])
       count.should eq 3
     end
   end
 
   it "dumps the units it carries, and says when it carries none" do
     io = IO::Memory.new
-    Crystal::IyiMod.dump sample_artifact(object_code: [sample_object_unit]), io
+    Iyi::IyiMod.dump sample_artifact(object_code: [sample_object_unit]), io
     io.to_s.should contain "App::Greeter — 8 bytes"
 
     io = IO::Memory.new
-    Crystal::IyiMod.dump sample_artifact, io
+    Iyi::IyiMod.dump sample_artifact, io
     io.to_s.should contain "object code   (none)"
   end
 
@@ -463,11 +463,11 @@ describe Crystal::IyiMod do
       compiler.emit_iyimod = "mods"
 
       with_temp_executable("iyimod-object-code") do |executable|
-        source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+        source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
         compiler.compile source, executable
       end
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "app", "greeter.iyimod"),
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "greeter.iyimod"),
         want_object_code: true)
       unit = artifact.object_code.find { |candidate| candidate.name == "App::Greeter" }
       unit.should_not be_nil
@@ -500,7 +500,7 @@ describe Crystal::IyiMod do
         puts App::Twice.twice(21)
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -555,7 +555,7 @@ describe Crystal::IyiMod do
         puts written.value + inferred.value
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -597,7 +597,7 @@ describe Crystal::IyiMod do
         puts App::Greeter.polite("world")
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -654,7 +654,7 @@ describe Crystal::IyiMod do
         puts App::Box.labels
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -664,7 +664,7 @@ describe Crystal::IyiMod do
 
       # The instantiation the consumer cannot reach any other way, named in the
       # artifact so that it can make it.
-      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "box.iyimod"))
       artifact.type_ids.should contain "Array(App::Box::Item)"
 
       File.delete "app/box.iyi"
@@ -714,7 +714,7 @@ describe Crystal::IyiMod do
         puts App::Box.total
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -722,7 +722,7 @@ describe Crystal::IyiMod do
       producer.compile source, File.expand_path("from-source")
       `./from-source`.chomp.should eq "5"
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "box.iyimod"))
       secret = artifact.exports.types.find! { |declaration| declaration.name == "Secret" }
       secret.visibility.should eq "private"
       secret.fields.should eq [{"@n", "Int32"}]
@@ -750,13 +750,13 @@ describe Crystal::IyiMod do
 
         puts App::Box::Secret.new(1).n
         IYI
-      reaching = Crystal::Compiler::Source.new(File.expand_path("reach.iyi"), File.read("reach.iyi"))
+      reaching = Iyi::Compiler::Source.new(File.expand_path("reach.iyi"), File.read("reach.iyi"))
 
       refuser = create_spec_compiler
       refuser.prelude = "iyi/prelude"
       refuser.use_iyimod = "mods"
       refuser.no_codegen = true
-      expect_raises(Crystal::TypeException, /does not export App::Box::Secret/) do
+      expect_raises(Iyi::TypeException, /does not export App::Box::Secret/) do
         refuser.compile reaching, "unused"
       end
     end
@@ -794,12 +794,12 @@ describe Crystal::IyiMod do
 
         puts App::A::Point.new(2).doubled
         IYI
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       compiler = create_spec_compiler
       compiler.prelude = "iyi/prelude"
       compiler.no_codegen = true
-      expect_raises(Crystal::TypeException, /`App::A::Point` already exists.*cannot add to it/m) do
+      expect_raises(Iyi::TypeException, /`App::A::Point` already exists.*cannot add to it/m) do
         compiler.compile source, "unused"
       end
 
@@ -821,7 +821,7 @@ describe Crystal::IyiMod do
 
         puts Helpers::Thing.new.n + App::A::Point.new(2).x
         IYI
-      allowed = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      allowed = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
       ok = create_spec_compiler
       ok.prelude = "iyi/prelude"
       ok.compile allowed, File.expand_path("allowed")
@@ -844,7 +844,7 @@ describe Crystal::IyiMod do
 
         puts App::A.greet("x")
         IYI
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       write = ->(body : String) do
         File.write "app/a.iyi", "module app/a\n\n#{body}\n"
@@ -855,11 +855,11 @@ describe Crystal::IyiMod do
         compiler
       end
 
-      expect_raises(Crystal::TypeException, /`greet` is exported and does not say what `name` is/) do
+      expect_raises(Iyi::TypeException, /`greet` is exported and does not say what `name` is/) do
         write.call("pub def greet(name)\n  \"hi \#{name}\"\nend").compile source, "unused"
       end
 
-      expect_raises(Crystal::TypeException, /`greet` is exported and does not say what it returns/) do
+      expect_raises(Iyi::TypeException, /`greet` is exported and does not say what it returns/) do
         write.call("pub def greet(name : String)\n  \"hi \#{name}\"\nend").compile source, "unused"
       end
 
@@ -932,7 +932,7 @@ describe Crystal::IyiMod do
         puts box.run(5)
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -940,7 +940,7 @@ describe Crystal::IyiMod do
       producer.compile source, File.expand_path("from-source")
       `./from-source`.chomp.should eq "doubling\n11"
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "box.iyimod"))
 
       # Whatever the def is written on: a module's own `pub def` and a method
       # of an exported class are the same case.
@@ -1007,7 +1007,7 @@ describe Crystal::IyiMod do
         puts App::Box.run(5) { |n| n * 3 }
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -1015,7 +1015,7 @@ describe Crystal::IyiMod do
       producer.compile source, File.expand_path("from-source")
       `./from-source`.chomp.should eq "15"
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "box.iyimod"))
 
       # Kept out of `functions`, which is the module's surface and stays what a
       # consumer may call.
@@ -1044,13 +1044,13 @@ describe Crystal::IyiMod do
 
         puts App::Box.helper(5) { |n| n * 3 }
         IYI
-      reaching = Crystal::Compiler::Source.new(File.expand_path("reach.iyi"), File.read("reach.iyi"))
+      reaching = Iyi::Compiler::Source.new(File.expand_path("reach.iyi"), File.read("reach.iyi"))
 
       refuser = create_spec_compiler
       refuser.prelude = "iyi/prelude"
       refuser.use_iyimod = "mods"
       refuser.no_codegen = true
-      expect_raises(Crystal::TypeException, /does not export 'helper'/) do
+      expect_raises(Iyi::TypeException, /does not export 'helper'/) do
         refuser.compile reaching, "unused"
       end
     end
@@ -1098,7 +1098,7 @@ describe Crystal::IyiMod do
         puts App::Box.run_module(5) { |n| n + 1 }
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -1106,7 +1106,7 @@ describe Crystal::IyiMod do
       producer.compile source, File.expand_path("from-source")
       `./from-source`.chomp.should eq "11\n11"
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod"))
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "box.iyimod"))
       artifact.macro_bodies.size.should eq 1
       artifact.macro_bodies.first.should start_with "macro twice"
 
@@ -1157,7 +1157,7 @@ describe Crystal::IyiMod do
         puts App::Box::Box(Int32).new(21).doubled
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -1174,14 +1174,14 @@ describe Crystal::IyiMod do
 
         puts App::Box::Box(Bool).new(true).doubled
         IYI
-      bad = Crystal::Compiler::Source.new(File.expand_path("bad.iyi"), File.read("bad.iyi"))
+      bad = Iyi::Compiler::Source.new(File.expand_path("bad.iyi"), File.read("bad.iyi"))
 
       consumer = create_spec_compiler
       consumer.prelude = "iyi/prelude"
       consumer.use_iyimod = "mods"
       consumer.no_codegen = true
 
-      error = expect_raises(Crystal::TypeException, /undefined method '\+' for Bool/) do
+      error = expect_raises(Iyi::TypeException, /undefined method '\+' for Bool/) do
         consumer.compile bad, File.expand_path("unused")
       end
 
@@ -1229,7 +1229,7 @@ describe Crystal::IyiMod do
         puts App::Counter.total
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -1237,7 +1237,7 @@ describe Crystal::IyiMod do
       producer.compile source, File.expand_path("from-source")
       `./from-source`.chomp.should eq "42"
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "app", "counter.iyimod"))
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "counter.iyimod"))
       artifact.constants.should eq ["App::Counter::START"]
 
       File.delete "app/counter.iyi"
@@ -1295,7 +1295,7 @@ describe Crystal::IyiMod do
         puts router.count
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -1303,7 +1303,7 @@ describe Crystal::IyiMod do
       producer.compile source, File.expand_path("from-source")
       `./from-source`.chomp.should eq "2"
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "app", "router.iyimod"))
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "router.iyimod"))
       router = artifact.exports.types.find! { |declaration| declaration.name == "Router" }
       route = router.types.find! { |declaration| declaration.name == "Route" }
       route.visibility.should eq "private"
@@ -1311,7 +1311,7 @@ describe Crystal::IyiMod do
       # Rendered where it was written, because iyi cannot reopen `Router` to
       # add it afterwards.
       io = IO::Memory.new
-      Crystal::IyiMod.declarations artifact, io
+      Iyi::IyiMod.declarations artifact, io
       io.to_s.should contain "  private struct Route"
 
       File.delete "app/router.iyi"
@@ -1360,7 +1360,7 @@ describe Crystal::IyiMod do
         puts Std::Counter::Counter.new(5).n
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -1368,7 +1368,7 @@ describe Crystal::IyiMod do
       producer.compile source, File.expand_path("from-source")
       `./from-source`.chomp.should eq "0\n5"
 
-      declaration = Crystal::IyiMod.read(File.join("mods", "std", "counter.iyimod"))
+      declaration = Iyi::IyiMod.read(File.join("mods", "std", "counter.iyimod"))
         .exports.types.find! { |candidate| candidate.name == "Counter" }
 
       declaration.methods.find { |m| m.name == "zero" }.try(&.receiver).should eq "self"
@@ -1420,7 +1420,7 @@ describe Crystal::IyiMod do
         puts Std::Box::Box(String).new("seven").item
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -1428,7 +1428,7 @@ describe Crystal::IyiMod do
       producer.compile source, File.expand_path("from-source")
       `./from-source`.chomp.should eq "7\nseven"
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "std", "box.iyimod"))
+      artifact = Iyi::IyiMod.read(File.join("mods", "std", "box.iyimod"))
       artifact.mono_bodies.keys.should contain "Box#item()"
 
       File.delete "std/box.iyi"
@@ -1488,7 +1488,7 @@ describe Crystal::IyiMod do
         puts Std::Box::Box.new(Std::Box::Box.new(5)).value.value
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -1543,7 +1543,7 @@ describe Crystal::IyiMod do
         puts Three.new.doubled
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -1551,7 +1551,7 @@ describe Crystal::IyiMod do
       producer.compile source, File.expand_path("from-source")
       `./from-source`.chomp.should eq "6"
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "std", "countable.iyimod"))
+      artifact = Iyi::IyiMod.read(File.join("mods", "std", "countable.iyimod"))
       artifact.mono_bodies.keys.should contain "Countable#doubled()"
 
       File.delete "std/countable.iyi"
@@ -1589,14 +1589,14 @@ describe Crystal::IyiMod do
         puts App::Greeter::Greeter.new.hello
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
       producer.emit_iyimod = "mods"
       producer.compile source, File.expand_path("from-source")
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "app", "greeter.iyimod"),
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "greeter.iyimod"),
         want_object_code: true)
       artifact.mono_bodies.should be_empty
       artifact.object_code.map(&.name).should contain "App::Greeter::Greeter"
@@ -1615,9 +1615,9 @@ describe Crystal::IyiMod do
     with_temporary_file do |path|
       artifact = sample_artifact
       artifact.mono_bodies["Box#item()"] = "@item\n"
-      Crystal::IyiMod.write artifact, path
+      Iyi::IyiMod.write artifact, path
 
-      Crystal::IyiMod.read(path).mono_bodies.should eq({"Box#item()" => "@item\n"})
+      Iyi::IyiMod.read(path).mono_bodies.should eq({"Box#item()" => "@item\n"})
     end
   end
 
@@ -1630,7 +1630,7 @@ describe Crystal::IyiMod do
     artifact.mono_bodies["Box#item()"] = "@item"
 
     io = IO::Memory.new
-    Crystal::IyiMod.declarations artifact, io
+    Iyi::IyiMod.declarations artifact, io
 
     io.to_s.should contain "  def item : T\n    @item\n  end\n"
   end
@@ -1679,7 +1679,7 @@ describe Crystal::IyiMod do
         puts Boot::Registry.greeting
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
       expected = "1. config\n2. registry, above its own import\n3. registry, below it\n4. main\niyi"
 
       producer = create_spec_compiler
@@ -1688,7 +1688,7 @@ describe Crystal::IyiMod do
       producer.compile source, File.expand_path("from-source")
       `./from-source`.chomp.should eq expected
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "boot", "registry.iyimod"))
+      artifact = Iyi::IyiMod.read(File.join("mods", "boot", "registry.iyimod"))
       artifact.has_initialiser.should be_false
       artifact.initialiser.lines.size.should eq 2
 
@@ -1729,7 +1729,7 @@ describe Crystal::IyiMod do
         puts Boot::Counter::Counter.new.count
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -1737,13 +1737,13 @@ describe Crystal::IyiMod do
       producer.no_codegen = true
       producer.compile source, File.expand_path("unused")
 
-      Crystal::IyiMod.read(File.join("mods", "boot", "counter.iyimod"))
+      Iyi::IyiMod.read(File.join("mods", "boot", "counter.iyimod"))
         .has_initialiser.should be_true
 
       consumer = create_spec_compiler
       consumer.prelude = "iyi/prelude"
       consumer.use_iyimod = "mods"
-      expect_raises(Crystal::TypeException, /has code inside a type body/) do
+      expect_raises(Iyi::TypeException, /has code inside a type body/) do
         consumer.compile source, File.expand_path("from-artifact")
       end
 
@@ -1758,35 +1758,35 @@ describe Crystal::IyiMod do
 
   it "round-trips a module's initialiser" do
     with_temporary_file do |path|
-      artifact = Crystal::IyiMod::Artifact.new(
+      artifact = Iyi::IyiMod::Artifact.new(
         module_name: "boot/config",
         source_path: "/src/boot/config.iyi",
         compiler_version: "1.22.0-dev+abc1234",
         target_triple: "x86_64-pc-linux-gnu",
         flags: ["bits64"],
-        imports: [] of Crystal::IyiMod::ImportEdge,
+        imports: [] of Iyi::IyiMod::ImportEdge,
         initialiser: %(puts("one")\nputs("two")),
       )
-      Crystal::IyiMod.write artifact, path
+      Iyi::IyiMod.write artifact, path
 
-      Crystal::IyiMod.read(path).initialiser.should eq %(puts("one")\nputs("two"))
+      Iyi::IyiMod.read(path).initialiser.should eq %(puts("one")\nputs("two"))
     end
   end
 
   it "round-trips the hashes" do
     with_temporary_file do |path|
-      artifact = Crystal::IyiMod::Artifact.new(
+      artifact = Iyi::IyiMod::Artifact.new(
         module_name: "app/box",
         source_path: "/src/app/box.iyi",
         compiler_version: "1.22.0-dev+abc1234",
         target_triple: "x86_64-pc-linux-gnu",
         flags: ["bits64"],
-        imports: [] of Crystal::IyiMod::ImportEdge,
-        hashes: Crystal::IyiMod::Hashes.new("iface", "impl", "src"),
+        imports: [] of Iyi::IyiMod::ImportEdge,
+        hashes: Iyi::IyiMod::Hashes.new("iface", "impl", "src"),
       )
-      Crystal::IyiMod.write artifact, path
+      Iyi::IyiMod.write artifact, path
 
-      read = Crystal::IyiMod.read(path).hashes
+      read = Iyi::IyiMod.read(path).hashes
       read.interface.should eq "iface"
       read.implementation.should eq "impl"
       read.source.should eq "src"
@@ -1807,7 +1807,7 @@ describe Crystal::IyiMod do
 
         puts App::Box.twice(21)
         IYI
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       write_box = ->(body : String, extra : String) do
         File.write "app/box.iyi", <<-IYI
@@ -1826,7 +1826,7 @@ describe Crystal::IyiMod do
         compiler.emit_iyimod = "mods"
         compiler.no_codegen = true
         compiler.compile source, "unused"
-        Crystal::IyiMod.read(File.join("mods", "app", "box.iyimod")).hashes
+        Iyi::IyiMod.read(File.join("mods", "app", "box.iyimod")).hashes
       end
 
       write_box.call("n + n", "")
@@ -1875,7 +1875,7 @@ describe Crystal::IyiMod do
           n + n
         end
         IYI
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -1895,7 +1895,7 @@ describe Crystal::IyiMod do
       reader = create_spec_compiler
       reader.prelude = "iyi/prelude"
       reader.use_iyimod = "mods"
-      expect_raises(Crystal::TypeException, /has changed since it was written/) do
+      expect_raises(Iyi::TypeException, /has changed since it was written/) do
         reader.compile source, File.expand_path("stale")
       end
 
@@ -1914,6 +1914,108 @@ describe Crystal::IyiMod do
       again.use_iyimod = "mods"
       again.compile source, File.expand_path("cached")
       `./cached`.chomp.should eq "63"
+    end
+  end
+
+  # An artifact records the module it was written for, and nothing compared that
+  # to the module being imported. A `.iyimod` copied onto another module's path
+  # was adopted: its declarations were spliced in under its own name, and the
+  # module actually asked for stayed undefined. The failure surfaced at the
+  # first `using` as "can't find module 'm1/a'", which sends the reader off to
+  # write `m1/a.iyi` when the file was there, valid, and already read.
+  it "refuses an artifact that declares a different module" do
+    with_tempdir("iyimod_module_name") do
+      Dir.mkdir_p "m1"
+      File.write "m1/a.iyi", <<-IYI
+        module m1/a
+
+        pub def v : Int32
+          1
+        end
+        IYI
+      File.write "m1/b.iyi", <<-IYI
+        module m1/b
+
+        pub def v : Int32
+          2
+        end
+        IYI
+      File.write "usea.iyi", <<-IYI
+        module usea
+
+        import m1/a
+        using m1/a
+
+        puts v
+        IYI
+      File.write "useb.iyi", <<-IYI
+        module useb
+
+        import m1/b
+        using m1/b
+
+        puts v
+        IYI
+      source = Iyi::Compiler::Source.new(File.expand_path("usea.iyi"), File.read("usea.iyi"))
+
+      # Both artifacts, each written for the module it names.
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-a")
+      `./from-a`.chomp.should eq "1"
+
+      other = Iyi::Compiler::Source.new(File.expand_path("useb.iyi"), File.read("useb.iyi"))
+      producer_b = create_spec_compiler
+      producer_b.prelude = "iyi/prelude"
+      producer_b.emit_iyimod = "mods"
+      producer_b.compile other, File.expand_path("from-b")
+      `./from-b`.chomp.should eq "2"
+
+      # The sources go away, so the artifacts are all there is. That is what
+      # puts the mismatch beyond reach of every other check: with `m1/a.iyi`
+      # present, the source hash catches the wrong file and blames the source
+      # for having changed, which is a misdiagnosis of its own.
+      Dir.mkdir_p "away"
+      File.rename "m1", File.join("away", "m1")
+
+      # `m1/b`'s artifact under `m1/a`'s name. Every checksum in it is intact and
+      # the only thing wrong with it is which module it is.
+      File.copy File.join("mods", "m1", "b.iyimod"), File.join("mods", "m1", "a.iyimod")
+
+      reader = create_spec_compiler
+      reader.prelude = "iyi/prelude"
+      reader.use_iyimod = "mods"
+      ex = expect_raises(Iyi::TypeException, /declares module "m1\/b", not "m1\/a"/) do
+        reader.compile source, File.expand_path("mismatched")
+      end
+
+      # The file, so the reader knows which one to go and look at.
+      ex.message.to_s.should contain File.join("mods", "m1", "a.iyimod")
+
+      # At the `import`, which is where the artifact is read, and not at the
+      # `using` on the next line where the old misdiagnosis landed.
+      ex.line_number.should eq 3
+      ex.message.to_s.should_not match(/can't find module/)
+
+      # A build that also writes artifacts repairs it once the source is back:
+      # the module is compiled from it and the wrong file written over.
+      File.rename File.join("away", "m1"), "m1"
+      rewriter = create_spec_compiler
+      rewriter.prelude = "iyi/prelude"
+      rewriter.use_iyimod = "mods"
+      rewriter.emit_iyimod = "mods"
+      rewriter.compile source, File.expand_path("repaired")
+      `./repaired`.chomp.should eq "1"
+      Iyi::IyiMod.read_summary(File.join("mods", "m1", "a.iyimod"))
+        .module_name.should eq "m1/a"
+
+      # And what it wrote is read again without a word.
+      again = create_spec_compiler
+      again.prelude = "iyi/prelude"
+      again.use_iyimod = "mods"
+      again.compile source, File.expand_path("cached")
+      `./cached`.chomp.should eq "1"
     end
   end
 
@@ -1958,10 +2060,10 @@ describe Crystal::IyiMod do
           IYI
       end
 
-      main = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
-      leaf = Crystal::Compiler::Source.new(File.expand_path("leaf.iyi"), File.read("leaf.iyi"))
+      main = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      leaf = Iyi::Compiler::Source.new(File.expand_path("leaf.iyi"), File.read("leaf.iyi"))
 
-      build = ->(program : Crystal::Compiler::Source, output : String, emit : Bool) do
+      build = ->(program : Iyi::Compiler::Source, output : String, emit : Bool) do
         compiler = create_spec_compiler
         compiler.prelude = "iyi/prelude"
         compiler.use_iyimod = "mods"
@@ -1993,7 +2095,7 @@ describe Crystal::IyiMod do
         IYI
       build.call(leaf, "leaf-again", true)
 
-      expect_raises(Crystal::TypeException, /the surface of "app\/inner"/) do
+      expect_raises(Iyi::TypeException, /the surface of "app\/inner"/) do
         build.call(main, "invalidated", false)
       end
     end
@@ -2001,34 +2103,34 @@ describe Crystal::IyiMod do
 
   it "round-trips the types a module numbers" do
     with_temporary_file do |path|
-      artifact = Crystal::IyiMod::Artifact.new(
+      artifact = Iyi::IyiMod::Artifact.new(
         module_name: "app/box",
         source_path: "/src/app/box.iyi",
         compiler_version: "1.22.0-dev+abc1234",
         target_triple: "x86_64-pc-linux-gnu",
         flags: ["bits64"],
-        imports: [] of Crystal::IyiMod::ImportEdge,
+        imports: [] of Iyi::IyiMod::ImportEdge,
         type_ids: ["Array(App::Box::Item)", "Pointer(App::Box::Item)"],
       )
-      Crystal::IyiMod.write artifact, path
+      Iyi::IyiMod.write artifact, path
 
-      Crystal::IyiMod.read(path).type_ids.should eq ["Array(App::Box::Item)", "Pointer(App::Box::Item)"]
+      Iyi::IyiMod.read(path).type_ids.should eq ["Array(App::Box::Item)", "Pointer(App::Box::Item)"]
     end
   end
 
   it "renders the initialiser inside the module it belongs to" do
-    artifact = Crystal::IyiMod::Artifact.new(
+    artifact = Iyi::IyiMod::Artifact.new(
       module_name: "boot/config",
       source_path: "/src/boot/config.iyi",
       compiler_version: "1.22.0-dev+abc1234",
       target_triple: "x86_64-pc-linux-gnu",
       flags: [] of String,
-      imports: [] of Crystal::IyiMod::ImportEdge,
+      imports: [] of Iyi::IyiMod::ImportEdge,
       initialiser: %(puts("hello")),
     )
 
     io = IO::Memory.new
-    Crystal::IyiMod.declarations artifact, io
+    Iyi::IyiMod.declarations artifact, io
     text = io.to_s
 
     text.should start_with "module boot/config\n"
@@ -2067,7 +2169,7 @@ describe Crystal::IyiMod do
         puts Std::Box::Box(Int32).new(7).item
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -2075,7 +2177,7 @@ describe Crystal::IyiMod do
       producer.no_codegen = true
       producer.compile source, File.expand_path("unused")
 
-      declaration = Crystal::IyiMod.read(File.join("mods", "std", "box.iyimod"))
+      declaration = Iyi::IyiMod.read(File.join("mods", "std", "box.iyimod"))
         .exports.types.find! { |candidate| candidate.name == "Box" }
 
       # In the order they were declared, because that order is the layout: a
@@ -2093,7 +2195,7 @@ describe Crystal::IyiMod do
       methods: [signature("size", return_type: "Int32")])
 
     io = IO::Memory.new
-    Crystal::IyiMod.declarations sample_artifact(types: [declaration]), io
+    Iyi::IyiMod.declarations sample_artifact(types: [declaration]), io
 
     io.to_s.should contain "pub struct List(T)\n  @items : Array(T)\n"
   end
@@ -2141,14 +2243,14 @@ describe Crystal::IyiMod do
         puts Std::Hold::Box.new(7).item
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
       producer.emit_iyimod = "mods"
       producer.compile source, File.expand_path("from-source")
 
-      Crystal::IyiMod.read(File.join("mods", "std", "hold.iyimod")).has_initialiser.should be_false
+      Iyi::IyiMod.read(File.join("mods", "std", "hold.iyimod")).has_initialiser.should be_false
     end
   end
 
@@ -2203,7 +2305,7 @@ describe Crystal::IyiMod do
         puts store.total
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -2211,7 +2313,7 @@ describe Crystal::IyiMod do
       producer.compile source, File.expand_path("from-source")
       `./from-source`.chomp.should eq "11"
 
-      Crystal::IyiMod.read(File.join("mods", "app", "store.iyimod")).has_initialiser.should be_false
+      Iyi::IyiMod.read(File.join("mods", "app", "store.iyimod")).has_initialiser.should be_false
 
       File.delete "app/store.iyi"
 
@@ -2250,19 +2352,19 @@ describe Crystal::IyiMod do
         puts App::Thing::Thing.new.n
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
       producer.emit_iyimod = "mods"
       producer.compile source, File.expand_path("from-source")
 
-      Crystal::IyiMod.read(File.join("mods", "app", "thing.iyimod")).has_initialiser.should be_true
+      Iyi::IyiMod.read(File.join("mods", "app", "thing.iyimod")).has_initialiser.should be_true
 
       consumer = create_spec_compiler
       consumer.prelude = "iyi/prelude"
       consumer.use_iyimod = "mods"
-      expect_raises(Crystal::TypeException, /has code inside a type body/) do
+      expect_raises(Iyi::TypeException, /has code inside a type body/) do
         consumer.compile source, File.expand_path("from-artifact")
       end
     end
@@ -2295,10 +2397,10 @@ describe Crystal::IyiMod do
       compiler.emit_iyimod = "mods"
       compiler.no_codegen = true
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
       compiler.compile source, "unused"
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "app", "greeter.iyimod"),
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "greeter.iyimod"),
         want_object_code: true)
       artifact.object_code.should be_empty
       artifact.exports.functions.map(&.name).should eq ["polite"]
@@ -2338,7 +2440,7 @@ describe Crystal::IyiMod do
         puts App::Outer.outer
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -2359,7 +2461,7 @@ describe Crystal::IyiMod do
       consumer.no_codegen = true
       consumer.compile source, "unused"
 
-      artifact = Crystal::IyiMod.read(File.join("out", "app", "outer.iyimod"))
+      artifact = Iyi::IyiMod.read(File.join("out", "app", "outer.iyimod"))
       artifact.import_names.should eq ["app/inner"]
     end
   end
@@ -2370,8 +2472,8 @@ describe Crystal::IyiMod do
       methods: [signature("at", ["index : Int32"], "T")])
 
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact(types: [declaration]), path
-      read = Crystal::IyiMod.read(path).exports.types
+      Iyi::IyiMod.write sample_artifact(types: [declaration]), path
+      read = Iyi::IyiMod.read(path).exports.types
 
       read.size.should eq 1
       read[0].name.should eq "List"
@@ -2391,8 +2493,8 @@ describe Crystal::IyiMod do
     ]
 
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact(impls: impls), path
-      read = Crystal::IyiMod.read(path).exports.impls
+      Iyi::IyiMod.write sample_artifact(impls: impls), path
+      read = Iyi::IyiMod.read(path).exports.impls
 
       read.map(&.trait_name).should eq ["Std::Traits::Cmp", "Std::Enumerable::Enumerable"]
       read.map(&.type_name).should eq ["Int32", "Std::List::List(T)"]
@@ -2405,7 +2507,7 @@ describe Crystal::IyiMod do
   # return type is recorded as absent rather than filled in with a guess.
   it "renders a signature with no return annotation without one" do
     io = IO::Memory.new
-    Crystal::IyiMod.dump sample_artifact(exports: [
+    Iyi::IyiMod.dump sample_artifact(exports: [
       signature("initialize", ["items : Array(T)"]),
     ]), io
 
@@ -2414,7 +2516,7 @@ describe Crystal::IyiMod do
 
   it "dumps a type declaration and an impl" do
     io = IO::Memory.new
-    Crystal::IyiMod.dump sample_artifact(
+    Iyi::IyiMod.dump sample_artifact(
       types: [type_declaration("Greet", "trait",
         methods: [signature("greet", return_type: "String")])],
       impls: [impl_record("Greet", "User")],
@@ -2441,8 +2543,8 @@ describe Crystal::IyiMod do
         block_parameter: "& : (Elem -> Nil)", required: true)])
 
     with_temporary_file do |path|
-      Crystal::IyiMod.write sample_artifact(types: [declaration]), path
-      read = Crystal::IyiMod.read(path).exports.types[0]
+      Iyi::IyiMod.write sample_artifact(types: [declaration]), path
+      read = Iyi::IyiMod.read(path).exports.types[0]
 
       read.type_parameters.should eq ["K"]
       read.assoc_types.should eq ["Elem"]
@@ -2452,7 +2554,7 @@ describe Crystal::IyiMod do
 
   it "dumps a trait and an impl as they were declared" do
     io = IO::Memory.new
-    Crystal::IyiMod.dump sample_artifact(
+    Iyi::IyiMod.dump sample_artifact(
       types: [type_declaration("Enumerable", "generic trait",
         assoc_types: ["Elem"],
         supertraits: ["Cmp"],
@@ -2476,7 +2578,7 @@ describe Crystal::IyiMod do
   # its declarations back.
   it "renders the declarations a consumer compiles against" do
     io = IO::Memory.new
-    Crystal::IyiMod.declarations sample_artifact(
+    Iyi::IyiMod.declarations sample_artifact(
       exports: [signature("polite", ["name : String"], "String")],
       types: [type_declaration("Greet", "trait",
         methods: [signature("greet", return_type: "String", required: true)])],
@@ -2499,7 +2601,7 @@ describe Crystal::IyiMod do
 
   it "renders a generic type and the impl that answers its associated type" do
     io = IO::Memory.new
-    Crystal::IyiMod.declarations sample_artifact(
+    Iyi::IyiMod.declarations sample_artifact(
       types: [type_declaration("List", "generic struct", type_parameters: ["T"],
         methods: [signature("each", return_type: "Nil", block_parameter: "& : (T -> Nil)")])],
       impls: [impl_record("Std::Enumerable::Enumerable", "Std::List::List(T)",
@@ -2553,14 +2655,14 @@ describe "a module compiled against Crystal's library" do
         puts slug("a b")
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.emit_iyimod = "mods"
       producer.compile source, File.expand_path("from-source")
       `./from-source`.chomp.should eq %({"name":"iyi"}\na%20b)
 
-      artifact = Crystal::IyiMod.read(File.join("mods", "app", "store.iyimod"))
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "store.iyimod"))
       artifact.crystal_library.should be_true
       artifact.requires.should eq ["json", "uri"]
 
@@ -2604,7 +2706,7 @@ describe "a module compiled against Crystal's library" do
         puts program_name_id == PROGRAM_NAME.object_id
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.emit_iyimod = "mods"
@@ -2642,7 +2744,7 @@ describe "a module compiled against Crystal's library" do
 
       producer = create_spec_compiler
       producer.emit_iyimod = "mods"
-      producer.compile Crystal::Compiler::Source.new(
+      producer.compile Iyi::Compiler::Source.new(
         File.expand_path("producer.iyi"), File.read("producer.iyi")),
         File.expand_path("producer")
 
@@ -2659,8 +2761,8 @@ describe "a module compiled against Crystal's library" do
       consumer.prelude = "iyi/prelude"
       consumer.use_iyimod = "mods"
 
-      expect_raises Crystal::CodeError, /built against Crystal's standard library/ do
-        consumer.compile Crystal::Compiler::Source.new(
+      expect_raises Iyi::CodeError, /built against Crystal's standard library/ do
+        consumer.compile Iyi::Compiler::Source.new(
           File.expand_path("consumer.iyi"), File.read("consumer.iyi")),
           File.expand_path("consumer")
       end
@@ -2686,7 +2788,7 @@ describe "a module compiled against Crystal's library" do
         puts hello("iyi")
         IYI
 
-      source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
 
       producer = create_spec_compiler
       producer.prelude = "iyi/prelude"
@@ -2696,7 +2798,7 @@ describe "a module compiled against Crystal's library" do
       consumer = create_spec_compiler
       consumer.use_iyimod = "mods"
 
-      expect_raises Crystal::CodeError, /built against iyi's prelude/ do
+      expect_raises Iyi::CodeError, /built against iyi's prelude/ do
         consumer.compile source, File.expand_path("consumer")
       end
     end

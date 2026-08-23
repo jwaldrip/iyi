@@ -2,27 +2,27 @@ require "../../spec_helper"
 
 describe "Code gen: named args" do
   it "calls with named arg" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       def foo(y = 2)
         y
       end
 
       foo y: 10
-      CRYSTAL
+      CODE
   end
 
   it "calls with named arg and other args" do
-    run(<<-CRYSTAL).to_i.should eq(13)
+    run(<<-CODE).to_i.should eq(13)
       def foo(x, y = 2, z = 3)
         x &+ y &+ z
       end
 
       foo 1, z: 10
-      CRYSTAL
+      CODE
   end
 
   it "calls with named arg as object method" do
-    run(<<-CRYSTAL).to_i.should eq(13)
+    run(<<-CODE).to_i.should eq(13)
       class Foo
         def foo(x, y = 2, z = 3)
           x &+ y &+ z
@@ -30,11 +30,11 @@ describe "Code gen: named args" do
       end
 
       Foo.new.foo 1, z: 10
-      CRYSTAL
+      CODE
   end
 
   it "calls twice with different types" do
-    run(<<-CRYSTAL).to_i.should eq(5)
+    run(<<-CODE).to_i.should eq(5)
       struct Int32
         def &+(other : Float)
           self + other
@@ -49,11 +49,11 @@ describe "Code gen: named args" do
       value &+= add(1, y: 2)
       value &+= add(1, y: 1.3)
       value.to_i!
-      CRYSTAL
+      CODE
   end
 
   it "calls new with named arg" do
-    run(<<-CRYSTAL).to_i.should eq(13)
+    run(<<-CODE).to_i.should eq(13)
       class Foo
         @value : Int32
 
@@ -67,11 +67,11 @@ describe "Code gen: named args" do
       end
 
       Foo.new(1, z: 10).value
-      CRYSTAL
+      CODE
   end
 
   it "uses named args in dispatch" do
-    run(<<-CRYSTAL).to_i.should eq(22)
+    run(<<-CODE).to_i.should eq(22)
       class Foo
         def foo(x, z = 2)
           x &+ z &+ 1
@@ -86,51 +86,51 @@ describe "Code gen: named args" do
 
       a = Foo.new || Bar.new
       a.foo 1, z: 20
-      CRYSTAL
+      CODE
   end
 
   it "sends one regular argument as named argument" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       def foo(x)
         x
       end
 
       foo x: 42
-      CRYSTAL
+      CODE
   end
 
   it "sends two regular arguments as named arguments" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       def foo(x, y)
         x &+ y
       end
 
       foo x: 10, y: 32
-      CRYSTAL
+      CODE
   end
 
   it "sends two regular arguments as named arguments in inverted position (1)" do
-    run(<<-CRYSTAL).to_string.should eq("foo")
+    run(<<-CODE).to_string.should eq("foo")
       def foo(x, y)
         x
       end
 
       foo y: 42, x: "foo"
-      CRYSTAL
+      CODE
   end
 
   it "sends two regular arguments as named arguments in inverted position (2)" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       def foo(x, y)
         y
       end
 
       foo y: 42, x: "foo"
-      CRYSTAL
+      CODE
   end
 
   it "overloads based on required named args" do
-    run(<<-CRYSTAL).to_i.should eq(10 + 20 + 30*40)
+    run(<<-CODE).to_i.should eq(10 + 20 + 30*40)
       def foo(x, *, y)
         x &+ y
       end
@@ -142,11 +142,11 @@ describe "Code gen: named args" do
       a = foo(10, y: 20)
       b = foo(30, z: 40)
       a &+ b
-      CRYSTAL
+      CODE
   end
 
   it "overloads based on required named args, with restrictions" do
-    run(<<-CRYSTAL).to_i.should eq(10 + 20 + 30*40)
+    run(<<-CODE).to_i.should eq(10 + 20 + 30*40)
       def foo(x, *, z : Int32)
         x &+ z
       end
@@ -158,11 +158,11 @@ describe "Code gen: named args" do
       a = foo(10, z: 20)
       b = foo(30, z: 40.0)
       a &+ b
-      CRYSTAL
+      CODE
   end
 
   it "uses bare splat in new (2)" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       class Foo
         def initialize(*, y = 22)
           @y = y
@@ -176,6 +176,6 @@ describe "Code gen: named args" do
       v1 = Foo.new.y
       v2 = Foo.new(y: 20).y
       v1 &+ v2
-      CRYSTAL
+      CODE
   end
 end

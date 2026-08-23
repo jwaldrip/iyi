@@ -19,18 +19,18 @@ describe "Semantic: return" do
   end
 
   it "types return if true" do
-    assert_type(<<-CRYSTAL) { nilable int32 }
+    assert_type(<<-CODE) { nilable int32 }
       def bar
         return if true
         1
       end
 
       bar
-      CRYSTAL
+      CODE
   end
 
   it "can use type var as return type (#1226)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       module Moo(T)
       end
 
@@ -44,11 +44,11 @@ describe "Semantic: return" do
       end
 
       Foo.new(1).foo
-      CRYSTAL
+      CODE
   end
 
   it "can use type var as return type with an included generic module" do
-    assert_type(<<-CRYSTAL) { float64 }
+    assert_type(<<-CODE) { float64 }
       module Moo(T)
         def moo : T
           1.5
@@ -63,11 +63,11 @@ describe "Semantic: return" do
       end
 
       Foo.new(1).moo
-      CRYSTAL
+      CODE
   end
 
   it "can use type var as return type with an inherited generic class" do
-    assert_type(<<-CRYSTAL) { float64 }
+    assert_type(<<-CODE) { float64 }
       class Moo(T)
         def moo : T
           1.5
@@ -80,11 +80,11 @@ describe "Semantic: return" do
       end
 
       Foo.new(1).moo
-      CRYSTAL
+      CODE
   end
 
   it "doesn't confuse return type from base class" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         class Baz
           def foo
@@ -103,11 +103,11 @@ describe "Semantic: return" do
       end
 
       Bar.new.x.foo
-      CRYSTAL
+      CODE
   end
 
   it "allows returning NoReturn instead of the wanted type" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       lib LibC
         fun exit : NoReturn
       end
@@ -130,11 +130,11 @@ describe "Semantic: return" do
 
       foo = Foo.new
       foo.bar
-      CRYSTAL
+      CODE
   end
 
   it "types bug (#1823)" do
-    assert_type(<<-CRYSTAL) { nilable int32 }
+    assert_type(<<-CODE) { nilable int32 }
       def test
         b = nil
 
@@ -147,11 +147,11 @@ describe "Semantic: return" do
       end
 
       test
-      CRYSTAL
+      CODE
   end
 
   it "allows nilable return type to match subclasses (#1735)" do
-    assert_type(<<-CRYSTAL) { nilable types["Bar"] }
+    assert_type(<<-CODE) { nilable types["Bar"] }
       class Foo
       end
 
@@ -167,11 +167,11 @@ describe "Semantic: return" do
       end
 
       test
-      CRYSTAL
+      CODE
   end
 
   it "can use free var in return type (#2492)" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { float64 }
+    assert_type(<<-CODE, inject_primitives: true) { float64 }
       def self.demo(a : A, &block : A -> B) : B forall A, B
         block.call(a)
       end
@@ -180,11 +180,11 @@ describe "Semantic: return" do
         x.to_f
       end
       z
-      CRYSTAL
+      CODE
   end
 
   it "can use non-type free var in return type (#6543)" do
-    assert_type(<<-CRYSTAL) { generic_class "Foo", 1.int32 }
+    assert_type(<<-CODE) { generic_class "Foo", 1.int32 }
       class Foo(A)
       end
 
@@ -193,11 +193,11 @@ describe "Semantic: return" do
       end
 
       foo(Foo(1).new)
-      CRYSTAL
+      CODE
   end
 
   it "can use non-type free var in return type (2) (#6543)" do
-    assert_type(<<-CRYSTAL) { generic_class "Matrix", 3.int32, 4.int32 }
+    assert_type(<<-CODE) { generic_class "Matrix", 3.int32, 4.int32 }
       class Matrix(N, M)
         def *(other : Matrix(M, P)) : Matrix(N, P) forall P
           Matrix(N, P).new
@@ -205,11 +205,11 @@ describe "Semantic: return" do
       end
 
       Matrix(3, 2).new * Matrix(2, 4).new
-      CRYSTAL
+      CODE
   end
 
   it "errors if non-type free var cannot be inferred" do
-    assert_error <<-CRYSTAL, "undefined constant P"
+    assert_error <<-CODE, "undefined constant P"
       class Foo(A)
       end
 
@@ -218,7 +218,7 @@ describe "Semantic: return" do
       end
 
       foo(Foo(1).new)
-      CRYSTAL
+      CODE
   end
 
   it "forms a tuple from multiple return values" do

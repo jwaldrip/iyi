@@ -12,23 +12,23 @@ end
 
 private def it_augments_for_ivar(ivar_type : String, expected_type : String, file = __FILE__, line = __LINE__)
   it "augments #{ivar_type}", file, line do
-    before = <<-CRYSTAL
+    before = <<-CODE
       class Foo
         @x : #{ivar_type}
         def initialize(value)
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
-    after = <<-CRYSTAL
+    after = <<-CODE
       class Foo
         @x : #{ivar_type}
         def initialize(value : #{expected_type})
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
     expect_augment before, after, file: file, line: line
   end
@@ -57,7 +57,7 @@ describe "Semantic: restrictions augmenter" do
   it_augments_for_ivar "Enumerable(Int32).class", "::Enumerable(::Int32).class"
 
   it "augments relative public type" do
-    before = <<-CRYSTAL
+    before = <<-CODE
       class Foo
         class Bar
           class Baz
@@ -70,9 +70,9 @@ describe "Semantic: restrictions augmenter" do
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
-    after = <<-CRYSTAL
+    after = <<-CODE
       class Foo
         class Bar
           class Baz
@@ -85,13 +85,13 @@ describe "Semantic: restrictions augmenter" do
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
     expect_augment before, after
   end
 
   it "augments relative private type" do
-    before = <<-CRYSTAL
+    before = <<-CODE
       class Foo
         private class Bar
           class Baz
@@ -104,9 +104,9 @@ describe "Semantic: restrictions augmenter" do
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
-    after = <<-CRYSTAL
+    after = <<-CODE
       class Foo
         private class Bar
           class Baz
@@ -119,13 +119,13 @@ describe "Semantic: restrictions augmenter" do
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
     expect_augment before, after
   end
 
   it "augments relative private type in same namespace" do
-    before = <<-CRYSTAL
+    before = <<-CODE
       class Foo
         private class Bar
         end
@@ -136,9 +136,9 @@ describe "Semantic: restrictions augmenter" do
           end
         end
       end
-      CRYSTAL
+      CODE
 
-    after = <<-CRYSTAL
+    after = <<-CODE
       class Foo
         private class Bar
         end
@@ -149,57 +149,57 @@ describe "Semantic: restrictions augmenter" do
           end
         end
       end
-      CRYSTAL
+      CODE
 
     expect_augment before, after
   end
 
   it "augments generic uninstantiated type" do
-    before = <<-CRYSTAL
+    before = <<-CODE
       class Foo(T)
         @x : Array(T)
         def initialize(value)
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
-    after = <<-CRYSTAL
+    after = <<-CODE
       class Foo(T)
         @x : Array(T)
         def initialize(value : ::Array(T))
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
     expect_augment before, after
   end
 
   it "augments for class var" do
-    before = <<-CRYSTAL
+    before = <<-CODE
       class Foo
         @@x = 1
         def self.set(value)
           @@x = value
         end
       end
-      CRYSTAL
+      CODE
 
-    after = <<-CRYSTAL
+    after = <<-CODE
       class Foo
         @@x = 1
         def self.set(value : ::Int32)
           @@x = value
         end
       end
-      CRYSTAL
+      CODE
 
     expect_augment before, after
   end
 
   it "doesn't augment if assigned inside if" do
-    expect_no_augment <<-CRYSTAL
+    expect_no_augment <<-CODE
       class Foo
         @x : Int32
         def initialize(value)
@@ -208,11 +208,11 @@ describe "Semantic: restrictions augmenter" do
           end
         end
       end
-      CRYSTAL
+      CODE
   end
 
   it "doesn't augment if assigned inside while" do
-    expect_no_augment <<-CRYSTAL
+    expect_no_augment <<-CODE
       class Foo
         @x : Int32
         def initialize(value)
@@ -221,11 +221,11 @@ describe "Semantic: restrictions augmenter" do
           end
         end
       end
-      CRYSTAL
+      CODE
   end
 
   it "doesn't augment if assigned inside block" do
-    expect_no_augment <<-CRYSTAL
+    expect_no_augment <<-CODE
       def foo(&)
         yield
       end
@@ -237,44 +237,44 @@ describe "Semantic: restrictions augmenter" do
           end
         end
       end
-      CRYSTAL
+      CODE
   end
 
   it "doesn't augment if the no_restrictions_augmenter flag is present" do
-    expect_no_augment <<-CRYSTAL, flags: "no_restrictions_augmenter"
+    expect_no_augment <<-CODE, flags: "no_restrictions_augmenter"
       class Foo
         @x : Int32
         def initialize(value)
           @x = value
         end
       end
-      CRYSTAL
+      CODE
   end
 
   it "augments recursive alias type (#12134)" do
-    before = <<-CRYSTAL
+    before = <<-CODE
       alias BasicObject = Array(BasicObject) | Hash(String, BasicObject)
       class Foo
         def initialize(value = Hash(String, BasicObject).new)
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
-    after = <<-CRYSTAL
+    after = <<-CODE
       alias BasicObject = Array(BasicObject) | Hash(String, BasicObject)
       class Foo
         def initialize(value : ::Hash(::String, ::BasicObject) = Hash(String, BasicObject).new)
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
     expect_augment before, after
   end
 
   it "augments typedef" do
-    before = <<-CRYSTAL
+    before = <<-CODE
       lib LibFoo
         type X = Int32
       end
@@ -284,9 +284,9 @@ describe "Semantic: restrictions augmenter" do
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
-    after = <<-CRYSTAL
+    after = <<-CODE
       lib LibFoo
         type X = Int32
       end
@@ -296,13 +296,13 @@ describe "Semantic: restrictions augmenter" do
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
     expect_augment before, after
   end
 
   it "augments virtual type" do
-    before = <<-CRYSTAL
+    before = <<-CODE
       class A
       end
       class B < A
@@ -313,9 +313,9 @@ describe "Semantic: restrictions augmenter" do
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
-    after = <<-CRYSTAL
+    after = <<-CODE
       class A
       end
       class B < A
@@ -326,13 +326,13 @@ describe "Semantic: restrictions augmenter" do
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
     expect_augment before, after
   end
 
   it "augments virtual metaclass type" do
-    before = <<-CRYSTAL
+    before = <<-CODE
       class A
       end
       class B < A
@@ -343,9 +343,9 @@ describe "Semantic: restrictions augmenter" do
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
-    after = <<-CRYSTAL
+    after = <<-CODE
       class A
       end
       class B < A
@@ -356,35 +356,35 @@ describe "Semantic: restrictions augmenter" do
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
     expect_augment before, after
   end
 
   it "augments type splat" do
-    before = <<-CRYSTAL
+    before = <<-CODE
       class Foo(T)
         @x : Array(*T)
         def initialize(value)
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
-    after = <<-CRYSTAL
+    after = <<-CODE
       class Foo(T)
         @x : Array(*T)
         def initialize(value : ::Array(*T))
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
     expect_augment before, after
   end
 
   it "doesn't crash on macro that yields and defines class (#12142)" do
-    before = <<-CRYSTAL
+    before = <<-CODE
       macro foo
         {{yield}}
       end
@@ -398,9 +398,9 @@ describe "Semantic: restrictions augmenter" do
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
-    after = <<-CRYSTAL
+    after = <<-CODE
       macro foo
         {{ yield }}
       end
@@ -414,29 +414,29 @@ describe "Semantic: restrictions augmenter" do
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
     expect_augment before, after
   end
 
   it "augments for Union(*T) (#12435)" do
-    before = <<-CRYSTAL
+    before = <<-CODE
       class Foo(*T)
         @x : Union(*T)
         def initialize(value)
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
-    after = <<-CRYSTAL
+    after = <<-CODE
       class Foo(*T)
         @x : Union(*T)
         def initialize(value : ::Union(*T))
           @x = value
         end
       end
-      CRYSTAL
+      CODE
 
     expect_augment before, after
   end

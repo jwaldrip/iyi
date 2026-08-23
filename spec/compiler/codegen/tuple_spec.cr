@@ -38,43 +38,43 @@ describe "Code gen: tuple" do
   end
 
   it "codegens tuple [0..0]" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       #{range_new}
 
       val = {1, true}[0..0]
       val.is_a?(Tuple(Int32)) && val[0] == 1
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple [0..1]" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       #{range_new}
 
       val = {1, true}[0..1]
       val.is_a?(Tuple(Int32, Bool)) && val[0] == 1 && val[1] == true
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple [0..2]" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       #{range_new}
 
       val = {1, true}[0..2]
       val.is_a?(Tuple(Int32, Bool)) && val[0] == 1&& val[1] == true
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple [1..1]" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       #{range_new}
 
       val = {1, true}[1..1]
       val.is_a?(Tuple(Bool)) && val[0] == true
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple [1..0]" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       #{range_new}
 
       def empty(*args)
@@ -82,11 +82,11 @@ describe "Code gen: tuple" do
       end
 
       {1, true}[1..0].is_a?(typeof(empty))
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple [2..2]" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       #{range_new}
 
       def empty(*args)
@@ -94,47 +94,47 @@ describe "Code gen: tuple" do
       end
 
       {1, true}[2..2].is_a?(typeof(empty))
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple [0..0]?" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       #{range_new}
 
       val = {1, true}[0..0]?
       val.is_a?(Tuple(Int32)) && val[0] == 1
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple [0..1]?" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       #{range_new}
 
       val = {1, true}[0..1]?
       val.is_a?(Tuple(Int32, Bool)) && val[0] == 1 && val[1] == true
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple [0..2]?" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       #{range_new}
 
       val = {1, true}[0..2]?
       val.is_a?(Tuple(Int32, Bool)) && val[0] == 1&& val[1] == true
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple [1..1]?" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       #{range_new}
 
       val = {1, true}[1..1]?
       val.is_a?(Tuple(Bool)) && val[0] == true
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple [1..0]?" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       #{range_new}
 
       def empty(*args)
@@ -142,11 +142,11 @@ describe "Code gen: tuple" do
       end
 
       {1, true}[1..0]?.is_a?(typeof(empty))
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple [2..2]?" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       #{range_new}
 
       def empty(*args)
@@ -154,7 +154,7 @@ describe "Code gen: tuple" do
       end
 
       {1, true}[2..2]?.is_a?(typeof(empty))
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple [3..2]?" do
@@ -174,7 +174,7 @@ describe "Code gen: tuple" do
   end
 
   it "codegens tuple metaclass [1..0]" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       #{range_new}
 
       def empty(*args)
@@ -182,7 +182,7 @@ describe "Code gen: tuple" do
       end
 
       Tuple(Int32, Char)[1..0].is_a?(typeof(empty))
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple metaclass [3..2]?" do
@@ -190,24 +190,24 @@ describe "Code gen: tuple" do
   end
 
   it "codegens splats inside tuples" do
-    run(<<-CRYSTAL).to_i.should eq(2 + 4 + 32 + 128)
+    run(<<-CODE).to_i.should eq(2 + 4 + 32 + 128)
       x = {1, *{2, 4}, 8, *{16, 32, 64}, 128}
       x[1] &+ x[2] &+ x[5] &+ x[7]
-      CRYSTAL
+      CODE
   end
 
   it "passed tuple to def" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       def foo(t)
         t[1]
       end
 
       foo({1, 2, 3})
-      CRYSTAL
+      CODE
   end
 
   it "accesses T and creates instance from it" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       struct Tuple
         def type_args
           T
@@ -226,11 +226,11 @@ describe "Code gen: tuple" do
       t = {Foo.new(1)}
       f = t.type_args[0].new(2)
       f.x
-      CRYSTAL
+      CODE
   end
 
   it "allows malloc pointer of tuple" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       struct Pointer
         def self.malloc(size : Int)
           malloc(size.to_u64!)
@@ -245,20 +245,20 @@ describe "Code gen: tuple" do
 
       p = foo({1, 2})
       p.value[0] &+ p.value[1]
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple union (bug because union size was computed incorrectly)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
       x = 1 == 1 ? {1, 1, 1} : {1}
       i = 2
       x[i]
-      CRYSTAL
+      CODE
   end
 
   it "codegens tuple class" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def initialize(@x : Int32)
         end
@@ -279,11 +279,11 @@ describe "Code gen: tuple" do
       foo_class = tuple_class[0]
       foo2 = foo_class.new(2)
       foo2.x
-      CRYSTAL
+      CODE
   end
 
   it "gets size at compile time" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       struct Tuple
         def my_size
           {{ T.size }}
@@ -291,11 +291,11 @@ describe "Code gen: tuple" do
       end
 
       {1, 1}.my_size
-      CRYSTAL
+      CODE
   end
 
   it "allows tuple covariance" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
        class Obj
          def initialize
            @tuple = {Foo.new}
@@ -324,11 +324,11 @@ describe "Code gen: tuple" do
        obj = Obj.new
        obj.tuple = {Bar.new}
        obj.tuple[0].bar
-       CRYSTAL
+       CODE
   end
 
   it "merges two tuple types of same size (1)" do
-    run(<<-CRYSTAL).to_i.should eq(20)
+    run(<<-CODE).to_i.should eq(20)
        def foo
          if 1 == 2
            {"foo", 10}
@@ -339,11 +339,11 @@ describe "Code gen: tuple" do
 
        val = foo[1]
        val || 20
-       CRYSTAL
+       CODE
   end
 
   it "merges two tuple types of same size (2)" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
        def foo
          if 1 == 1
            {"foo", 10}
@@ -354,11 +354,11 @@ describe "Code gen: tuple" do
 
        val = foo[1]
        val || 20
-       CRYSTAL
+       CODE
   end
 
   it "assigns tuple to compatible tuple" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       ptr = Pointer({Int32 | String, Bool | Char}).malloc(1_u64)
 
       # Here the compiler should cast each value
@@ -366,11 +366,11 @@ describe "Code gen: tuple" do
 
       val = ptr.value[0]
       val.as?(Int32) || 10
-      CRYSTAL
+      CODE
   end
 
   it "upcasts tuple inside compatible tuple" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       def foo
         if 1 == 2
           {"hello", false}
@@ -381,11 +381,11 @@ describe "Code gen: tuple" do
 
       val = foo[0]
       val.as?(Int32) || 10
-      CRYSTAL
+      CODE
   end
 
   it "assigns tuple union to compatible tuple" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       tup1 = {"hello", false}
       tup2 = {3}
       tup3 = {42, 'x'}
@@ -394,11 +394,11 @@ describe "Code gen: tuple" do
       ptr.value = tup3
       val = ptr.value[0]
       val.as?(Int32) || 10
-      CRYSTAL
+      CODE
   end
 
   it "upcasts tuple union to compatible tuple" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       def foo
         if 1 == 2
           {"hello", false} || {3}
@@ -409,11 +409,11 @@ describe "Code gen: tuple" do
 
       val = foo[0]
       val.as?(Int32) || 10
-      CRYSTAL
+      CODE
   end
 
   it "assigns tuple inside union to union with compatible tuple" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       tup1 = {"hello", false}
       tup2 = {3}
 
@@ -428,11 +428,11 @@ describe "Code gen: tuple" do
       ptr.value = union2
       val = ptr.value[0]
       val.as?(Int32) || 10
-      CRYSTAL
+      CODE
   end
 
   it "upcasts tuple inside union to union with compatible tuple" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       def foo
         if 1 == 2
           tup1 = {"hello", false}
@@ -449,11 +449,11 @@ describe "Code gen: tuple" do
 
       val = foo[0]
       val.as?(Int32) || 10
-      CRYSTAL
+      CODE
   end
 
   it "codegens union of tuple of float with tuple of tuple of float" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       a = {1.5}
       b = { {22.0, 20.0} }
       c = b || a
@@ -463,22 +463,22 @@ describe "Code gen: tuple" do
       else
         v[0].to_i! &+ v[1].to_i!
       end
-      CRYSTAL
+      CODE
   end
 
   it "provides T as a tuple literal" do
-    run(<<-CRYSTAL).to_string.should eq("TupleLiteral")
+    run(<<-CODE).to_string.should eq("TupleLiteral")
       struct Tuple
         def self.foo
           {{ T.class_name }}
         end
       end
       Tuple(Nil, Int32).foo
-      CRYSTAL
+      CODE
   end
 
   it "passes empty tuple and empty named tuple to a method (#2852)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       def foo(*binds)
         baz(binds)
       end
@@ -493,38 +493,38 @@ describe "Code gen: tuple" do
 
       foo
       bar
-      CRYSTAL
+      CODE
   end
 
   it "assigns two same-size tuple types to a same var (#3132)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       t = {true}
       t
       t = {2}
       t[0]
-      CRYSTAL
+      CODE
   end
 
   it "downcasts union to mixed tuple type" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       t = {1} || 2 || {true}
       t = {1}
       t[0]
-      CRYSTAL
+      CODE
   end
 
   it "downcasts union to mixed union with mixed tuple types" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       t = {1} || 2 || {true}
       t = {1} || 2
       t.as(Tuple)[0]
-      CRYSTAL
+      CODE
   end
 
   it "downcasts union inside tuple to value (#3907)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       struct Foo
       end
 
@@ -533,7 +533,7 @@ describe "Code gen: tuple" do
       x = {0, foo}
       z = x[0]
       x = {0, z}
-      CRYSTAL
+      CODE
   end
 end
 

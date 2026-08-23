@@ -14,7 +14,7 @@ describe "Codegen: super" do
   end
 
   it "codegens super that calls subclass method" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def foo
           bar
@@ -37,11 +37,11 @@ describe "Codegen: super" do
 
       b = Bar.new
       b.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens super that calls subclass method 2" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def foo
           self.bar
@@ -64,11 +64,11 @@ describe "Codegen: super" do
 
       b = Bar.new
       b.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens super that calls subclass method 3" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def foo
           self.bar
@@ -91,11 +91,11 @@ describe "Codegen: super" do
 
       b = Foo.new || Bar.new
       b.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens super that calls subclass method 4" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def foo
           self.bar
@@ -118,11 +118,11 @@ describe "Codegen: super" do
 
       b = Bar.new || Foo.new
       b.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens super that calls subclass method 5" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       module Mod
         def add_def
           another
@@ -154,11 +154,11 @@ describe "Codegen: super" do
 
       c = PrimitiveType.new || IntegerType.new
       c.add_def
-      CRYSTAL
+      CODE
   end
 
   it "codegens super that calls subclass method 6" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       module Mod
         def add_def
           another
@@ -190,11 +190,11 @@ describe "Codegen: super" do
 
       c = IntegerType.new || PrimitiveType.new
       c.add_def
-      CRYSTAL
+      CODE
   end
 
   it "codegens super inside closure" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def initialize(@x : Int32)
         end
@@ -212,11 +212,11 @@ describe "Codegen: super" do
 
       f = Bar.new(1).foo
       f.call
-      CRYSTAL
+      CODE
   end
 
   it "codegens super inside closure forwarding args" do
-    run(<<-CRYSTAL).to_i.should eq(6)
+    run(<<-CODE).to_i.should eq(6)
       class Foo
         def initialize(@x : Int32)
         end
@@ -234,11 +234,11 @@ describe "Codegen: super" do
 
       f = Bar.new(1).foo(2)
       f.call(3)
-      CRYSTAL
+      CODE
   end
 
   it "build super on generic class (bug)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       class Base
         def foo(x)
           1.5
@@ -252,11 +252,11 @@ describe "Codegen: super" do
       end
 
       Foo(Int32).new.foo
-      CRYSTAL
+      CODE
   end
 
   it "calls super in module method (#556)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Parent
         def a
           1
@@ -274,11 +274,11 @@ describe "Codegen: super" do
       end
 
       Child.new.a
-      CRYSTAL
+      CODE
   end
 
   it "calls super in generic module method" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Parent
         def a
           1
@@ -296,11 +296,11 @@ describe "Codegen: super" do
       end
 
       Child.new.a
-      CRYSTAL
+      CODE
   end
 
   it "does super in virtual type including module" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
       module Bar
         def bar
           123
@@ -323,11 +323,11 @@ describe "Codegen: super" do
       end
 
       (Base.new || Child.new).bar
-      CRYSTAL
+      CODE
   end
 
   it "doesn't invoke super twice in inherited generic types (#942)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Global
         @@x = 0
 
@@ -355,12 +355,12 @@ describe "Codegen: super" do
       Baz(Int8).new
 
       Global.x
-      CRYSTAL
+      CODE
   end
 
   it "calls super in metaclass (#1522)" do
     # We include the prelude so this is codegened for real, because that's where the issue lies
-    run(<<-CRYSTAL).to_i.should eq(5)
+    run(<<-CODE).to_i.should eq(5)
       require "prelude"
 
       class Global
@@ -389,11 +389,11 @@ describe "Codegen: super" do
 
       Base.foo
       One.foo
-      CRYSTAL
+      CODE
   end
 
   it "calls super with dispatch (#2318)" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       class Foo
         def foo(x : Int32)
           x
@@ -412,11 +412,11 @@ describe "Codegen: super" do
 
       z = Bar.new.foo(3 || 2.5)
       z.to_i!
-      CRYSTAL
+      CODE
   end
 
   it "calls super from virtual metaclass type (#2841)" do
-    run(<<-CRYSTAL)
+    run(<<-CODE)
       abstract class Foo
         def self.bar(x : Bool)
           x
@@ -436,11 +436,11 @@ describe "Codegen: super" do
       end
 
       (Foo || Bar).bar(true)
-      CRYSTAL
+      CODE
   end
 
   it "calls super on an object (#10004)" do
-    run(<<-CRYSTAL).to_i.should eq(42)
+    run(<<-CODE).to_i.should eq(42)
       class Foo
         @foo = 42
 
@@ -451,6 +451,6 @@ describe "Codegen: super" do
       end
 
       Foo.new.super
-      CRYSTAL
+      CODE
   end
 end

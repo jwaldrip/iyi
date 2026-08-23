@@ -1,10 +1,10 @@
 require "spec"
-require "../../../src/compiler/crystal/formatter"
+require "../../../src/compiler/iyi/formatter"
 
 private def assert_format(input, output = input, strict = false, flags = nil, file = __FILE__, line = __LINE__, focus = false)
   it "formats #{input.inspect}", file, line, focus: focus do
     output = "#{output}\n" unless strict
-    result = Crystal.format(input, flags: flags)
+    result = Iyi.format(input, flags: flags)
     unless result == output
       message = <<-ERROR
         Expected
@@ -32,14 +32,14 @@ private def assert_format(input, output = input, strict = false, flags = nil, fi
     end
 
     # Check idempotency
-    result2 = Crystal.format(result, flags: flags)
+    result2 = Iyi.format(result, flags: flags)
     unless result == result2
       fail "Idempotency failed:\nBefore: #{result.inspect}\nAfter:  #{result2.inspect}", file: file, line: line
     end
   end
 end
 
-describe Crystal::Formatter do
+describe Iyi::Formatter do
   assert_format "", "", strict: true
 
   assert_format "nil"
@@ -287,37 +287,37 @@ describe Crystal::Formatter do
   assert_format "def foo(@[AnnOne]   @[AnnTwo] v); end", "def foo(@[AnnOne] @[AnnTwo] v); end"
   assert_format "def foo(@[AnnOne]   @[AnnTwo]   &  ); end", "def foo(@[AnnOne] @[AnnTwo] &); end"
   assert_format "def foo(@[AnnOne]   @[AnnTwo]   &block : Int32 ->  ); end", "def foo(@[AnnOne] @[AnnTwo] &block : Int32 ->); end"
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
   def foo(
     @[MyAnn] bar,
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
   def foo(
     foo,
     @[MyAnn] &block
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
   def foo(
     foo,
     @[MyAnn]
     &block
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
   def foo(
     foo,
 
     @[MyAnn]
     &block
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
   def foo(
     foo,
 
@@ -325,43 +325,43 @@ describe Crystal::Formatter do
     @[MyAnn]
     & : Nil -> Nil
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+  assert_format <<-CODE, <<-CODE
   def foo(
      @[MyAnn]   bar
   ); end
-  CRYSTAL
+  CODE
   def foo(
     @[MyAnn] bar,
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
   def foo(
     @[MyAnn]
     bar,
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
   def foo(
     @[MyAnn]
     @[MyAnn]
     bar,
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
   def foo(
     @[MyAnn]
     @[MyAnn]
     bar,
     @[MyAnn] baz,
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
   def foo(
     @[MyAnn]
     @[MyAnn]
@@ -369,33 +369,33 @@ describe Crystal::Formatter do
 
     @[MyAnn] baz,
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+  assert_format <<-CODE, <<-CODE
   def foo(
      @[MyAnn]
    bar
   ); end
-  CRYSTAL
+  CODE
   def foo(
     @[MyAnn]
     bar,
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+  assert_format <<-CODE, <<-CODE
   def foo(
      @[MyAnn]
    bar
   ); end
-  CRYSTAL
+  CODE
   def foo(
     @[MyAnn]
     bar,
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
   def foo(
     @[MyAnn]
     @[MyAnn]
@@ -405,9 +405,9 @@ describe Crystal::Formatter do
     @[MyAnn]
     biz,
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
   def foo(
     @[MyAnn]
     @[MyAnn]
@@ -419,9 +419,9 @@ describe Crystal::Formatter do
     @[MyAnn]
     biz,
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+  assert_format <<-CODE, <<-CODE
   def foo(
     @[MyAnn]
     @[MyAnn]
@@ -435,7 +435,7 @@ describe Crystal::Formatter do
 
     biz
   ); end
-  CRYSTAL
+  CODE
   def foo(
     @[MyAnn]
     @[MyAnn]
@@ -447,22 +447,22 @@ describe Crystal::Formatter do
     @[MyAnn]
     biz,
   ); end
-  CRYSTAL
+  CODE
 
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+  assert_format <<-CODE, <<-CODE
     module M
       @[MyAnn(
         1
 
       )]
     end
-    CRYSTAL
+    CODE
     module M
       @[MyAnn(
         1
       )]
     end
-    CRYSTAL
+    CODE
 
   assert_format "loop do\n  1\nrescue\n  2\nend"
   assert_format "loop do\n  1\n  loop do\n    2\n  rescue\n    3\n  end\n  4\nend"
@@ -580,470 +580,470 @@ describe Crystal::Formatter do
   assert_format "with foo yield bar"
 
   context "adds `&` to yielding methods that don't have a block parameter (#8764)" do
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo
         yield
       end
-      CRYSTAL
+      CODE
       def foo(&)
         yield
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo()
         yield
       end
-      CRYSTAL
+      CODE
       def foo(&)
         yield
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
       )
         yield
       end
-      CRYSTAL
+      CODE
       def foo(&)
         yield
       end
-      CRYSTAL
+      CODE
 
     # #13091
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo # bar
         yield
       end
-      CRYSTAL
+      CODE
       def foo(&) # bar
         yield
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(x)
         yield
       end
-      CRYSTAL
+      CODE
       def foo(x, &)
         yield
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(x ,)
         yield
       end
-      CRYSTAL
+      CODE
       def foo(x, &)
         yield
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(x,
       y)
         yield
       end
-      CRYSTAL
+      CODE
       def foo(x,
               y, &)
         yield
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(x,
       y,)
         yield
       end
-      CRYSTAL
+      CODE
       def foo(x,
               y, &)
         yield
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(x
       )
         yield
       end
-      CRYSTAL
+      CODE
       def foo(x,
               &)
         yield
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(x,
       )
         yield
       end
-      CRYSTAL
+      CODE
       def foo(x,
               &)
         yield
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
       x)
         yield
       end
-      CRYSTAL
+      CODE
       def foo(
         x, &
       )
         yield
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
       x, y)
         yield
       end
-      CRYSTAL
+      CODE
       def foo(
         x, y, &
       )
         yield
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
       x,
       y)
         yield
       end
-      CRYSTAL
+      CODE
       def foo(
         x,
         y, &
       )
         yield
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
       x,
       )
         yield
       end
-      CRYSTAL
+      CODE
       def foo(
         x,
         &
       )
         yield
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(a, **b)
         yield
       end
-      CRYSTAL
+      CODE
       def foo(a, **b, &)
         yield
       end
-      CRYSTAL
+      CODE
 
     assert_format "macro f\n yield\n {{ yield }}\nend"
   end
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     def foo(
       a,
       b,
     )
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     def foo(
       a, b,
     )
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     macro foo(
       a,
       *b,
     )
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     macro foo(
       a,
       **b,
     )
     end
-    CRYSTAL
+    CODE
 
   context "adds trailing comma to def multi-line normal, splat, and double splat parameters" do
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       macro foo(
         a,
         b
       )
       end
-      CRYSTAL
+      CODE
       macro foo(
         a,
         b,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       macro foo(
         a,
         *b
       )
       end
-      CRYSTAL
+      CODE
       macro foo(
         a,
         *b,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       fun foo(
         a : Int32,
         b : Int32
       )
       end
-      CRYSTAL
+      CODE
       fun foo(
         a : Int32,
         b : Int32,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL
+    assert_format <<-CODE
       fun foo(
         a : Int32,
         ...
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
         a,
         b
       )
       end
-      CRYSTAL
+      CODE
       def foo(
         a,
         b,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
         a : Int32,
         b : Int32
       )
       end
-      CRYSTAL
+      CODE
       def foo(
         a : Int32,
         b : Int32,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
         a : Int32,
         b : Int32 = 1
       )
       end
-      CRYSTAL
+      CODE
       def foo(
         a : Int32,
         b : Int32 = 1,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
         a,
         b c
       )
       end
-      CRYSTAL
+      CODE
       def foo(
         a,
         b c,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
         a,
         @[Ann] b
       )
       end
-      CRYSTAL
+      CODE
       def foo(
         a,
         @[Ann] b,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
         a,
         @[Ann]
         b
       )
       end
-      CRYSTAL
+      CODE
       def foo(
         a,
         @[Ann]
         b,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
         a, b
       )
       end
-      CRYSTAL
+      CODE
       def foo(
         a, b,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
         a, b,
         c, d
       )
       end
-      CRYSTAL
+      CODE
       def foo(
         a, b,
         c, d,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
         a, # Foo
         b # Bar
       )
       end
-      CRYSTAL
+      CODE
       def foo(
         a, # Foo
         b, # Bar
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
         a,
         *b
       )
       end
-      CRYSTAL
+      CODE
       def foo(
         a,
         *b,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL, <<-CRYSTAL
+    assert_format <<-CODE, <<-CODE
       def foo(
         a,
         **b
       )
       end
-      CRYSTAL
+      CODE
       def foo(
         a,
         **b,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL
+    assert_format <<-CODE
       def foo(
         a,
         &block
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL
+    assert_format <<-CODE
       def foo(
         a,
       )
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL
+    assert_format <<-CODE
       def foo(a)
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL
+    assert_format <<-CODE
       def foo(a, b)
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL
+    assert_format <<-CODE
       def foo(a, *args)
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL
+    assert_format <<-CODE
       def foo(a, *args, &block)
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL
+    assert_format <<-CODE
       def foo(a, **kwargs)
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL
+    assert_format <<-CODE
       def foo(a, **kwargs, &block)
       end
-      CRYSTAL
+      CODE
 
-    assert_format <<-CRYSTAL
+    assert_format <<-CODE
       def foo(a, &block)
       end
-      CRYSTAL
+      CODE
   end
 
   assert_format "1   +   2", "1 + 2"
@@ -1316,12 +1316,12 @@ describe Crystal::Formatter do
 
   assert_format "case  1 \n in Int32 \n 3 \n end", "case 1\nin Int32\n  3\nend"
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     case 0
     when 0 then 1; 2
     # Comments
     end
-    CRYSTAL
+    CODE
 
   assert_format "select   \n when  foo \n 2 \n end", "select\nwhen foo\n  2\nend"
   assert_format "select   \n when  foo \n 2 \n when bar \n 3 \n end", "select\nwhen foo\n  2\nwhen bar\n  3\nend"
@@ -1470,12 +1470,12 @@ describe Crystal::Formatter do
   assert_format "alias Foo::Bar=Baz", "alias Foo::Bar = Baz"
   assert_format "alias Foo::Bar= Baz", "alias Foo::Bar = Baz"
   assert_format "alias Foo::Bar =Baz", "alias Foo::Bar = Baz"
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+  assert_format <<-CODE, <<-CODE
     alias Foo=
     Bar
-    CRYSTAL
+    CODE
     alias Foo = Bar
-    CRYSTAL
+    CODE
   assert_format "lib Foo\nend"
   assert_format "lib Foo\ntype  Foo  =   Bar\nend", "lib Foo\n  type Foo = Bar\nend"
   assert_format "lib Foo\nfun foo\nend", "lib Foo\n  fun foo\nend"
@@ -1492,81 +1492,81 @@ describe Crystal::Formatter do
   assert_format "lib Foo\n  fun foo(Int32) : Int32\nend"
   assert_format "fun foo(x : Int32) : Int32\n  1\nend"
   assert_format "fun foo(\n  x : Int32,\n  ...\n) : Int32\n  1\nend"
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     lib Foo
       fun foo = bar(Int32) : Int32
     end
-    CRYSTAL
-  assert_format <<-CRYSTAL
+    CODE
+  assert_format <<-CODE
     lib Foo
       fun foo =
         bar : Void
     end
-    CRYSTAL
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+    CODE
+  assert_format <<-CODE, <<-CODE
     lib Foo
       fun foo =
 
 
         bar : Void
     end
-    CRYSTAL
+    CODE
     lib Foo
       fun foo =
         bar : Void
     end
-    CRYSTAL
-  assert_format <<-CRYSTAL
+    CODE
+  assert_format <<-CODE
     lib Foo
       fun foo =
         bar(Int32) : Int32
     end
-    CRYSTAL
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+    CODE
+  assert_format <<-CODE, <<-CODE
     lib Foo
       fun foo =
 
 
         bar(Int32) : Int32
     end
-    CRYSTAL
+    CODE
     lib Foo
       fun foo =
         bar(Int32) : Int32
     end
-    CRYSTAL
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+    CODE
+  assert_format <<-CODE, <<-CODE
     lib Foo
       fun foo =
         bar(Int32,
         Int32) : Int32
     end
-    CRYSTAL
+    CODE
     lib Foo
       fun foo =
         bar(Int32,
             Int32) : Int32
     end
-    CRYSTAL
+    CODE
   assert_format "lib Foo\n  fun foo = bar(Int32) : Int32\nend"
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     lib Foo
       fun foo = "bar"(Int32) : Int32
     end
-    CRYSTAL
-  assert_format <<-CRYSTAL
+    CODE
+  assert_format <<-CODE
     lib Foo
       fun foo =
         "bar"(Int32) : Int32
     end
-    CRYSTAL
-  assert_format <<-CRYSTAL
+    CODE
+  assert_format <<-CODE
     lib Foo
       fun foo =
         "bar"(Int32) : Int32
       # comment
     end
-    CRYSTAL
+    CODE
   assert_format "lib Foo\n  $foo  :  Int32 \nend", "lib Foo\n  $foo : Int32\nend"
   assert_format "lib Foo\n  $foo = hello  :  Int32 \nend", "lib Foo\n  $foo = hello : Int32\nend"
   assert_format "lib Foo\nalias  Foo  =  Bar -> \n$a : Int32\nend", "lib Foo\n  alias Foo = Bar ->\n  $a : Int32\nend"
@@ -1693,21 +1693,21 @@ describe Crystal::Formatter do
   assert_format %(asm("a" : "b"(c) : "d"(e)\n        : "f",\n          "g"))
   assert_format %(asm("a" ::: "a"\n        : "volatile",\n          "intel"))
 
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+  assert_format <<-CODE, <<-CODE
     asm(
     # foo
     "nop"
     # bar
     )
-    CRYSTAL
+    CODE
     asm(
       # foo
       "nop"
       # bar
     )
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+  assert_format <<-CODE, <<-CODE
     asm(
       # the assembly template string, following the
       # syntax for LLVM's integrated assembler
@@ -1718,7 +1718,7 @@ describe Crystal::Formatter do
       # sideeffect / alignstack / inteldialect / unwind attributes
     "volatile", "alignstack", "intel", "unwind"
     )
-    CRYSTAL
+    CODE
     asm(
       # the assembly template string, following the
       # syntax for LLVM's integrated assembler
@@ -1729,7 +1729,7 @@ describe Crystal::Formatter do
       # sideeffect / alignstack / inteldialect / unwind attributes
       "volatile", "alignstack", "intel", "unwind"
     )
-    CRYSTAL
+    CODE
 
   assert_format "1 # foo\n1234 # bar", "1    # foo\n1234 # bar"
   assert_format "1234 # foo\n1 # bar", "1234 # foo\n1    # bar"
@@ -1793,7 +1793,7 @@ describe Crystal::Formatter do
   assert_format "def foo\nend\n\ndef bar\nend\n\n# foo"
   assert_format "1 && (\n  2 || 3\n)"
   assert_format "class Foo\n  def foo\n    # nothing\n  end\nend"
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+  assert_format <<-CODE, <<-CODE
     class Foo
       def bar
       end;
@@ -1801,7 +1801,7 @@ describe Crystal::Formatter do
       def baz
       end
     end
-    CRYSTAL
+    CODE
     class Foo
       def bar
       end
@@ -1809,15 +1809,15 @@ describe Crystal::Formatter do
       def baz
       end
     end
-    CRYSTAL
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+    CODE
+  assert_format <<-CODE, <<-CODE
     class Foo
       def bar
       end # foo
       def baz
       end
     end
-    CRYSTAL
+    CODE
     class Foo
       def bar
       end # foo
@@ -1825,8 +1825,8 @@ describe Crystal::Formatter do
       def baz
       end
     end
-    CRYSTAL
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+    CODE
+  assert_format <<-CODE, <<-CODE
     (
       begin
         1
@@ -1834,7 +1834,7 @@ describe Crystal::Formatter do
 
       2
     )
-    CRYSTAL
+    CODE
     (
       begin
         1
@@ -1842,7 +1842,7 @@ describe Crystal::Formatter do
 
       2
     )
-    CRYSTAL
+    CODE
 
   assert_format "while 1 # foo\n  # bar\n  2\nend", "while 1 # foo\n  # bar\n  2\nend"
   assert_format "foo(\n # foo\n1,\n\n # bar\n2,  \n)", "foo(\n  # foo\n  1,\n\n  # bar\n  2,\n)"
@@ -2386,13 +2386,13 @@ describe Crystal::Formatter do
 
   assert_format "{%\n  if 1\n    2\n  end\n%}"
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     # ```text
     #  1  +  2
     # ```
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     # ```text
     # 1 + 2
     # ```
@@ -2400,19 +2400,19 @@ describe Crystal::Formatter do
     # ```
     # 3 + 4
     # ```
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     X(typeof(begin
       e.is_a?(Y) ? 1 : 2
     end))
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     X(typeof(begin
       e.is_a?(Y)
     end))
-    CRYSTAL
+    CODE
 
   # Keep trailing spaces in macros.
   assert_format(
@@ -2524,7 +2524,7 @@ describe Crystal::Formatter do
     assert_format "x.foo =(a..b)", "x.foo = (a..b)"
   end
 
-  assert_format <<-CRYSTAL,
+  assert_format <<-CODE,
     def foo
       {% if flag?(:foo) %}
         foo  +  bar
@@ -2532,8 +2532,8 @@ describe Crystal::Formatter do
         baz  +  qux
       {% end %}
     end
-    CRYSTAL
-    <<-CRYSTAL
+    CODE
+    <<-CODE
     def foo
       {% if flag?(:foo) %}
         foo + bar
@@ -2541,39 +2541,39 @@ describe Crystal::Formatter do
         baz + qux
       {% end %}
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL,
+  assert_format <<-CODE,
     def foo
       {% for x in y %}
         foo  +  bar
       {% end %}
     end
-    CRYSTAL
-    <<-CRYSTAL
+    CODE
+    <<-CODE
     def foo
       {% for x in y %}
         foo + bar
       {% end %}
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL,
+  assert_format <<-CODE,
     x = {% if flag?(:foo) %}
           foo  +  bar
         {% else %}
           baz  +  qux
         {% end %}
-    CRYSTAL
-    <<-CRYSTAL
+    CODE
+    <<-CODE
     x = {% if flag?(:foo) %}
           foo + bar
         {% else %}
           baz + qux
         {% end %}
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     {% if flag?(:freebsd) %}
       1 + 2
     {% end %}
@@ -2582,9 +2582,9 @@ describe Crystal::Formatter do
     when 1234 then 1
     else           x
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     {% if z %}
       1
     {% end %}
@@ -2596,17 +2596,17 @@ describe Crystal::Formatter do
 
       1
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     lib LibFoo
       {% begin %}
         fun foo : Int32
       {% end %}
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     lib LibFoo
       struct Bar
         {% begin %}
@@ -2614,9 +2614,9 @@ describe Crystal::Formatter do
         {% end %}
       end
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     enum Foo
       {% begin %}
         A
@@ -2624,9 +2624,9 @@ describe Crystal::Formatter do
         C
       {% end %}
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     a = 1
     b, c = 2, 3
     {% begin %}
@@ -2634,50 +2634,50 @@ describe Crystal::Formatter do
       b |= 2
       c |= 3
     {% end %}
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     lib LibFoo
       {% begin %}
         fun x = y(Int32)
       {% end %}
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     {% begin %}
       "
         foo"
     {% end %}
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL,
+  assert_format <<-CODE,
     {% if z %}
       class   Foo
       end
     {% end %}
-    CRYSTAL
-    <<-CRYSTAL
+    CODE
+    <<-CODE
     {% if z %}
       class Foo
       end
     {% end %}
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     {% if true %}
       # x
     {% end %}
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     {% if true %}
       # x
       # y
     {% end %}
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     {% if true %}
       # x
       #
@@ -2686,17 +2686,17 @@ describe Crystal::Formatter do
     # ```
     # x
     # ```
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     def foo(x)
       {% if true %}
         x = x + 2
       {% end %}
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     def foo(x)
       {% if true %}
         # comment
@@ -2704,9 +2704,9 @@ describe Crystal::Formatter do
         B   = 2
       {% end %}
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     def foo(x)
       {% if true %}
         \\{% if true %}
@@ -2721,77 +2721,77 @@ describe Crystal::Formatter do
         \\{% x %}
       {% end %}
     end
-    CRYSTAL
+    CODE
 
   it "gives proper line number in syntax error inside macro" do
-    source = <<-CRYSTAL
+    source = <<-CODE
       a = 1
       b = 2
 
       {% begin %}
         c |= 3
       {% end %}
-    CRYSTAL
+    CODE
 
-    ex = expect_raises(Crystal::SyntaxException) do
-      Crystal.format(source)
+    ex = expect_raises(Iyi::SyntaxException) do
+      Iyi.format(source)
     end
     ex.line_number.should eq(5)
   end
 
   # #8197
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     foo
       .foo1(bar
         .bar1
         .bar2)
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     foo.foo1(
       bar
         .bar1
         .bar2)
-    CRYSTAL
+    CODE
 
   assert_format "[] of (Array(T))"
   assert_format "[] of (((Array(T))))"
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     macro foo # bar
       baz
     end
-    CRYSTAL
+    CODE
 
   assert_format "a.!"
   assert_format "a &.!"
   assert_format "a &.a.!"
   assert_format "a &.!.!"
 
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+  assert_format <<-CODE, <<-CODE
     ->{
       # first comment
       puts "hi"
       # second comment
     }
-    CRYSTAL
+    CODE
     -> {
       # first comment
       puts "hi"
       # second comment
     }
-    CRYSTAL
+    CODE
 
   # #9014
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     {%
       unless true
         1
       end
     %}
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     {%
       unless true
         1
@@ -2799,9 +2799,9 @@ describe Crystal::Formatter do
         2
       end
     %}
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     {%
       if true
         1
@@ -2809,48 +2809,48 @@ describe Crystal::Formatter do
         2
       end
     %}
-    CRYSTAL
+    CODE
 
   # #4626
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     1 # foo
     / 1 /
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     1 # foo
     / \#{1} /
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL,
+  assert_format <<-CODE,
     def foo
       # Comment
 
 
     end
-    CRYSTAL
-    <<-CRYSTAL
+    CODE
+    <<-CODE
     def foo
       # Comment
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL,
-    def foo
-      1
-      # Comment
-
-
-    end
-    CRYSTAL
-    <<-CRYSTAL
+  assert_format <<-CODE,
     def foo
       1
       # Comment
-    end
-    CRYSTAL
 
-  assert_format <<-CRYSTAL
+
+    end
+    CODE
+    <<-CODE
+    def foo
+      1
+      # Comment
+    end
+    CODE
+
+  assert_format <<-CODE
     def foo
       1
     end
@@ -2860,142 +2860,142 @@ describe Crystal::Formatter do
     def bar
       2
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     require "foo"
 
     @x : Int32
 
     class Bar
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     x = <<-FOO
       hello
       FOO
 
     def bar
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+  assert_format <<-CODE, <<-CODE
     begin
       1
       # Comment
 
 
     end
-    CRYSTAL
+    CODE
     begin
       1
       # Comment
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+  assert_format <<-CODE, <<-CODE
     begin
       # Comment
 
 
     end
-    CRYSTAL
+    CODE
     begin
       # Comment
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     foo 1, # comment
       do
       end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     foo 1, # comment
       # bar
       do
       end
-    CRYSTAL
+    CODE
 
   # #10190
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     foo(
       1,
     ) do
       2
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     foo(
       1,
     ) {
       2
     }
-    CRYSTAL
+    CODE
 
   # #11079
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     foo = [1, [2,
                3],
            4]
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     foo = {1, {2,
                3},
            4}
-    CRYSTAL
+    CODE
 
   # #10817
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     def func # comment
       (1 + 2) / 3
     end
-    CRYSTAL
+    CODE
 
   # #10943
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     foo do # a
       # b
       bar
     end
-    CRYSTAL
+    CODE
 
   # #10499
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     case nil
     else nil; nil # comment
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     case nil
     else nil; nil
     # comment
     end
-    CRYSTAL
+    CODE
 
   # #12493
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     select
     # when foo
     when bar
       break
     end
-    CRYSTAL
+    CODE
 
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     select # some comment
     when bar
       break
     end
-    CRYSTAL
+    CODE
 
   # #12378
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     macro foo
       macro bar
         \\{% begin %}
@@ -3003,21 +3003,21 @@ describe Crystal::Formatter do
         \\{% end %}
       end
     end
-    CRYSTAL
+    CODE
 
   # #12964
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     begin
       begin
         a
         # b
       end
     end
-    CRYSTAL
+    CODE
 
   it do
-    expect_raises(Crystal::SyntaxException) do
-      Crystal.format <<-CRYSTAL
+    expect_raises(Iyi::SyntaxException) do
+      Iyi.format <<-CODE
         lib A
           struct B
             {% begin %}
@@ -3026,25 +3026,25 @@ describe Crystal::Formatter do
             {% end %}
           end
         end
-        CRYSTAL
+        CODE
     end
   end
 
   # #14256
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     foo bar # comment
 
     # doc
     def baz; end
-    CRYSTAL
+    CODE
 
   # 15180
-  assert_format <<-CRYSTAL
+  assert_format <<-CODE
     x = uninitialized Foo
     {% begin %}
       x = foo(x)
     {% end %}
-    CRYSTAL
+    CODE
 
   # CVE-2021-42574
   describe "Unicode bi-directional control characters" do
@@ -3077,7 +3077,7 @@ describe Crystal::Formatter do
   end
 
   # #16755
-  assert_format <<-CRYSTAL, <<-CRYSTAL
+  assert_format <<-CODE, <<-CODE
     macro foo
       Foo(
       )
@@ -3087,7 +3087,7 @@ describe Crystal::Formatter do
       a:           1,
       description: 2,
     }
-    CRYSTAL
+    CODE
     macro foo
       Foo()
     end
@@ -3096,5 +3096,5 @@ describe Crystal::Formatter do
       a:           1,
       description: 2,
     }
-    CRYSTAL
+    CODE
 end

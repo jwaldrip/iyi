@@ -36,6 +36,10 @@ struct Int32
     to_i64.to_s
   end
 
+  def to_s(base : Int32) : String
+    to_i64.to_s(base)
+  end
+
   def hash : Int32
     self
   end
@@ -82,6 +86,38 @@ struct Int64
       while index >= 0
         buffer[index] = 48_u8 + (remaining % 10_i64).to_u8
         remaining = remaining // 10_i64
+        index = index - 1
+        break if negative && index == 0
+      end
+      buffer[0] = 45_u8 if negative
+    end
+  end
+
+  # Same write-backwards shape as decimal `to_s`, for base 2 through 36.
+  # Digits above 9 are lowercase. Int32 delegates here so there is one body.
+  def to_s(base : Int32) : String
+    raise "base out of range" if base < 2 || base > 36
+    return "0" if self == 0
+
+    radix = base.to_i64
+    negative = self < 0
+    magnitude = negative ? -self : self
+
+    digits = 0
+    temp = magnitude
+    while temp > 0
+      temp = temp // radix
+      digits = digits + 1
+    end
+
+    bytesize = negative ? digits + 1 : digits
+    String.new(bytesize) do |buffer|
+      remaining = magnitude
+      index = bytesize - 1
+      while index >= 0
+        digit = remaining % radix
+        buffer[index] = digit < 10_i64 ? 48_u8 + digit.to_u8 : 87_u8 + digit.to_u8
+        remaining = remaining // radix
         index = index - 1
         break if negative && index == 0
       end

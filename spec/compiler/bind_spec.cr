@@ -22,11 +22,11 @@ private def bind_artifact(source_path : String, root : String, dir : String,
                           bound : String? = nil) : String
   compiler = create_spec_compiler
   compiler.no_codegen = true
-  source = Crystal::Compiler::Source.new(File.expand_path(source_path), File.read(source_path))
+  source = Iyi::Compiler::Source.new(File.expand_path(source_path), File.read(source_path))
   result = compiler.compile source, File.expand_path("bind-probe")
 
   report = IO::Memory.new
-  Crystal.print_bind result.program, root, report, artifact_dir: dir, bound_dir: bound
+  Iyi.print_bind result.program, root, report, artifact_dir: dir, bound_dir: bound
   LAST_REPORT.clear
   LAST_REPORT << report.to_s
   File.join(dir, "#{iyi_module_name(root)}.iyimod")
@@ -60,7 +60,7 @@ private def consume(artifact_dir : String, module_name : String)
   consumer = create_spec_compiler
   consumer.use_iyimod = artifact_dir
   consumer.no_codegen = true
-  source = Crystal::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+  source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
   consumer.compile source, File.expand_path("consumer")
 end
 

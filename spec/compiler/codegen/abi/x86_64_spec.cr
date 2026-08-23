@@ -1,7 +1,7 @@
 require "spec"
 require "llvm"
-require "compiler/crystal/codegen/abi/x86_64"
-require "compiler/crystal/codegen/abi/x86_win64"
+require "compiler/iyi/codegen/abi/x86_64"
+require "compiler/iyi/codegen/abi/x86_win64"
 
 {% if LibLLVM::BUILT_TARGETS.includes?(:x86) %}
   LLVM.init_x86
@@ -12,10 +12,10 @@ private def abi(win64 = false)
   target = LLVM::Target.from_triple(triple)
   machine = target.create_target_machine(triple)
   machine.enable_global_isel = false
-  win64 ? Crystal::ABI::X86_Win64.new(machine) : Crystal::ABI::X86_64.new(machine)
+  win64 ? Iyi::ABI::X86_Win64.new(machine) : Iyi::ABI::X86_64.new(machine)
 end
 
-private def test(msg, *, win64 = false, file = __FILE__, line = __LINE__, &block : Crystal::ABI, LLVM::Context ->)
+private def test(msg, *, win64 = false, file = __FILE__, line = __LINE__, &block : Iyi::ABI, LLVM::Context ->)
   it msg, file: file, line: line do
     abi = abi(win64)
     ctx = LLVM::Context.new
@@ -23,7 +23,7 @@ private def test(msg, *, win64 = false, file = __FILE__, line = __LINE__, &block
   end
 end
 
-class Crystal::ABI
+class Iyi::ABI
   describe X86_64 do
     {% if LibLLVM::BUILT_TARGETS.includes?(:x86) %}
       describe "align" do

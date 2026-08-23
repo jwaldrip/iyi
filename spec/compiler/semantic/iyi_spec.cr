@@ -9,7 +9,7 @@ require "../../spec_helper"
 describe "Semantic: iyi" do
   describe "using" do
     it "resolves a function of a used module from module top level" do
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Greeter
             extend self
@@ -29,13 +29,13 @@ describe "Semantic: iyi" do
         end
 
         Consumer.go
-        CRYSTAL
+        CODE
     end
 
     it "resolves a function of a used module from a nested type" do
       # The case `include` cannot cover: the directive is on `Consumer`, and
       # `Consumer::User` is not on `Consumer`'s ancestor chain.
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Greeter
             extend self
@@ -57,11 +57,11 @@ describe "Semantic: iyi" do
         end
 
         Consumer::User.new.greet
-        CRYSTAL
+        CODE
     end
 
     it "resolves a type of a used module" do
-      assert_type(<<-CRYSTAL) { types["Consumer"].types["User"] }
+      assert_type(<<-CODE) { types["Consumer"].types["User"] }
         module App
           module Greeter
             module Greet
@@ -78,13 +78,13 @@ describe "Semantic: iyi" do
         end
 
         Consumer::User.new
-        CRYSTAL
+        CODE
     end
 
     it "does not re-export what it brought in" do
       # `using` is written by the consumer, so importing the consumer must not
       # be a way to reach what the consumer used.
-      assert_error <<-CRYSTAL, "undefined method 'polite'"
+      assert_error <<-CODE, "undefined method 'polite'"
         module App
           module Greeter
             extend self
@@ -100,11 +100,11 @@ describe "Semantic: iyi" do
         end
 
         Consumer.polite
-        CRYSTAL
+        CODE
     end
 
     it "does not reach a name the selective form left out" do
-      assert_error <<-CRYSTAL, "undefined local variable or method 'polite'"
+      assert_error <<-CODE, "undefined local variable or method 'polite'"
         module App
           module Greeter
             extend self
@@ -124,11 +124,11 @@ describe "Semantic: iyi" do
 
           polite
         end
-        CRYSTAL
+        CODE
     end
 
     it "reaches a name the selective form listed" do
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Greeter
             extend self
@@ -152,11 +152,11 @@ describe "Semantic: iyi" do
         end
 
         Consumer.go
-        CRYSTAL
+        CODE
     end
 
     it "takes type names in the selective form too" do
-      assert_type(<<-CRYSTAL) { types["Consumer"].types["User"] }
+      assert_type(<<-CODE) { types["Consumer"].types["User"] }
         module App
           module Greeter
             module Greet
@@ -176,11 +176,11 @@ describe "Semantic: iyi" do
         end
 
         Consumer::User.new
-        CRYSTAL
+        CODE
     end
 
     it "does not reach a type the selective form left out" do
-      assert_error <<-CRYSTAL, "undefined constant Loud"
+      assert_error <<-CODE, "undefined constant Loud"
         module App
           module Greeter
             module Greet
@@ -198,13 +198,13 @@ describe "Semantic: iyi" do
             include Loud
           end
         end
-        CRYSTAL
+        CODE
     end
   end
 
   describe "using conflicts (SPEC.md II.3)" do
     it "reports an ambiguous function at the point of use" do
-      assert_error <<-CRYSTAL, "'title' is ambiguous here"
+      assert_error <<-CODE, "'title' is ambiguous here"
         module App
           module Greeter
             extend self
@@ -233,11 +233,11 @@ describe "Semantic: iyi" do
         end
 
         Consumer.go
-        CRYSTAL
+        CODE
     end
 
     it "reports an ambiguous type at the point of use" do
-      assert_error <<-CRYSTAL, "'Greet' is ambiguous here"
+      assert_error <<-CODE, "'Greet' is ambiguous here"
         module App
           module Greeter
             module Greet
@@ -258,13 +258,13 @@ describe "Semantic: iyi" do
             include Greet
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "does not report two used modules that merely could clash" do
       # Two modules exporting one name is not by itself a mistake. Nothing is
       # wrong until a name is written that could mean either.
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Greeter
             extend self
@@ -297,11 +297,11 @@ describe "Semantic: iyi" do
         end
 
         Consumer.go
-        CRYSTAL
+        CODE
     end
 
     it "resolves an otherwise ambiguous name once one directive is narrowed" do
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Greeter
             extend self
@@ -334,7 +334,7 @@ describe "Semantic: iyi" do
         end
 
         Consumer.go
-        CRYSTAL
+        CODE
     end
 
     # II.3's other rule, and the one that keeps a library from breaking its
@@ -347,8 +347,9 @@ describe "Semantic: iyi" do
     # satisfies it, so which one was chosen decides whether this compiles.
     # The pair of specs is what pins it down — the second shows the used
     # function really is found when there is no local one to beat it.
+
     it "raises on `using` of something that is not a module" do
-      assert_error <<-CRYSTAL, %(can't `using` App::Greeter, it's a struct)
+      assert_error <<-CODE, %(can't `using` App::Greeter, it's a struct)
         module App
           struct Greeter
           end
@@ -357,7 +358,7 @@ describe "Semantic: iyi" do
         module Consumer
           using app/greeter
         end
-        CRYSTAL
+        CODE
     end
   end
 
@@ -366,7 +367,7 @@ describe "Semantic: iyi" do
       # An iyi module is a compilation unit, so its `def`s are functions in
       # lexical scope. Crystal modules do not work this way, which is what the
       # next spec pins down.
-      assert_no_errors <<-CRYSTAL
+      assert_no_errors <<-CODE
         module app/thing
 
         def helper
@@ -380,11 +381,11 @@ describe "Semantic: iyi" do
         end
 
         T.new.go
-        CRYSTAL
+        CODE
     end
 
     it "leaves a Crystal module scoping exactly as it was" do
-      assert_error <<-CRYSTAL, "undefined local variable or method 'helper'"
+      assert_error <<-CODE, "undefined local variable or method 'helper'"
         module Thing
           extend self
 
@@ -400,13 +401,13 @@ describe "Semantic: iyi" do
         end
 
         Thing::T.new.go
-        CRYSTAL
+        CODE
     end
   end
 
   describe "traits are their own type (SPEC.md R-3)" do
     it "refuses to reopen a struct as a trait" do
-      assert_error <<-CRYSTAL, "Foo is not a trait, it's a struct"
+      assert_error <<-CODE, "Foo is not a trait, it's a struct"
         module App
           struct Foo
           end
@@ -415,11 +416,11 @@ describe "Semantic: iyi" do
             abstract def show
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses to reopen a module as a trait" do
-      assert_error <<-CRYSTAL, "Greet is not a trait, it's a module"
+      assert_error <<-CODE, "Greet is not a trait, it's a module"
         module App
           module Greet
           end
@@ -428,13 +429,13 @@ describe "Semantic: iyi" do
             abstract def greet
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses to `include` a trait" do
       # The whole point of R-3: a type acquires a trait through an impl, whose
       # location the orphan rule can check. `include` has no such rule.
-      assert_error <<-CRYSTAL, "can't include App::Show::Showable, it's a trait"
+      assert_error <<-CODE, "can't include App::Show::Showable, it's a trait"
         module App
           module Show
             trait Showable
@@ -450,11 +451,11 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses to `extend` a trait" do
-      assert_error <<-CRYSTAL, "can't extend App::Show::Showable, it's a trait"
+      assert_error <<-CODE, "can't extend App::Show::Showable, it's a trait"
         module App
           module Show
             trait Showable
@@ -466,13 +467,13 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "still lets an impl register the trait" do
       # `impl` reaches the same machinery `include` does, so refusing the
       # written directive must not close the path the impl needs.
-      assert_type(<<-CRYSTAL) { bool }
+      assert_type(<<-CODE) { bool }
         module App
           module Show
             trait Showable
@@ -491,11 +492,11 @@ describe "Semantic: iyi" do
         end
 
         App::Show::Foo.new.is_a?(App::Show::Showable)
-        CRYSTAL
+        CODE
     end
 
     it "refuses to `using` a trait" do
-      assert_error <<-CRYSTAL, "can't `using` App::Show::Showable, it's a trait"
+      assert_error <<-CODE, "can't `using` App::Show::Showable, it's a trait"
         module App
           module Show
             trait Showable
@@ -507,14 +508,14 @@ describe "Semantic: iyi" do
         module Consumer
           using app/show/showable
         end
-        CRYSTAL
+        CODE
     end
 
     it "still lets the selective form name a trait" do
       # `using app/show::{Showable}` uses the *module* and selects a type name
       # from it, which is II.3 working as specified — only naming the trait as
       # the used module itself is refused.
-      assert_type(<<-CRYSTAL) { types["App"].types["Show"].types["Foo"] }
+      assert_type(<<-CODE) { types["App"].types["Show"].types["Foo"] }
         module App
           module Show
             trait Showable
@@ -541,11 +542,11 @@ describe "Semantic: iyi" do
         end
 
         Consumer.build
-        CRYSTAL
+        CODE
     end
 
     it "refuses to implement a module" do
-      assert_error <<-CRYSTAL, "can't implement App::Greeter, it's a module. Only a trait can be implemented"
+      assert_error <<-CODE, "can't implement App::Greeter, it's a module. Only a trait can be implemented"
         module App
           module Greeter
           end
@@ -559,13 +560,13 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses to implement a trait for a trait" do
       # A blanket impl in disguise: it would give every implementer of one
       # trait a second one, from a module that has heard of neither.
-      assert_error <<-CRYSTAL, "it's a trait"
+      assert_error <<-CODE, "it's a trait"
         module App
           module Show
             trait Showable
@@ -583,13 +584,13 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "reports a requirement the impl does not satisfy, at the impl" do
       # Crystal's abstract-def check reports at the point the type is first
       # used and names the type. This names the impl and the method.
-      assert_error <<-CRYSTAL, "impl App::Show::Showable for App::Show::Foo is missing a method required by the trait: show"
+      assert_error <<-CODE, "impl App::Show::Showable for App::Show::Foo is missing a method required by the trait: show"
         module App
           module Show
             trait Showable
@@ -603,11 +604,11 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "reports every missing requirement at once" do
-      assert_error <<-CRYSTAL, "is missing methods required by the trait: shout, show"
+      assert_error <<-CODE, "is missing methods required by the trait: shout, show"
         module App
           module Show
             trait Showable
@@ -626,13 +627,13 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "does not report a requirement an unused type leaves unimplemented" do
       # The point of checking at the impl: today this compiles clean, because
       # Crystal only reports an unimplemented abstract where the type is used.
-      assert_error <<-CRYSTAL, "is missing a method required by the trait: show"
+      assert_error <<-CODE, "is missing a method required by the trait: show"
         module App
           module Show
             trait Showable
@@ -648,13 +649,13 @@ describe "Semantic: iyi" do
         end
 
         1
-        CRYSTAL
+        CODE
     end
 
     it "accepts a requirement satisfied by a default method" do
       # A trait method with a body is not a requirement, so an impl that
       # defines only the abstract one is complete.
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Show
             trait Showable
@@ -677,13 +678,13 @@ describe "Semantic: iyi" do
         end
 
         App::Show::Foo.new.shown
-        CRYSTAL
+        CODE
     end
 
     it "keeps a trait usable as a type restriction" do
       # The reason `TraitType` subclasses the module type rather than replacing
       # it: a value typed by the trait still dispatches to the impl.
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Show
             trait Showable
@@ -706,13 +707,13 @@ describe "Semantic: iyi" do
         end
 
         App::Show.render(App::Show::Foo.new)
-        CRYSTAL
+        CODE
     end
   end
 
   describe "impl coherence (R-3)" do
     it "allows an impl in the module that defines the trait" do
-      assert_type(<<-CRYSTAL) { types["App"].types["Data"].types["Foo"] }
+      assert_type(<<-CODE) { types["App"].types["Data"].types["Foo"] }
         module App
           module Data
             struct Foo
@@ -733,11 +734,11 @@ describe "Semantic: iyi" do
         end
 
         App::Data::Foo.new
-        CRYSTAL
+        CODE
     end
 
     it "allows an impl in the module that defines the type" do
-      assert_type(<<-CRYSTAL) { types["App"].types["Data"].types["Foo"] }
+      assert_type(<<-CODE) { types["App"].types["Data"].types["Foo"] }
         module App
           module Show
             trait Showable
@@ -758,13 +759,13 @@ describe "Semantic: iyi" do
         end
 
         App::Data::Foo.new
-        CRYSTAL
+        CODE
     end
 
     it "refuses an impl in a module that defines neither" do
       # The case the import DAG does not rule out on its own: a third module
       # that can name both is free to write the impl, and so is a fourth.
-      assert_error <<-CRYSTAL, "an impl must live in the module that defines the trait"
+      assert_error <<-CODE, "an impl must live in the module that defines the trait"
         module App
           module Show
             trait Showable
@@ -785,14 +786,14 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses an impl where neither declaration belongs to a module" do
       # The top level is not a module. Treating it as one is what used to make
       # the rule vacuous for `Error`, which the compiler owns, and for a
       # prelude type: every module was trivially "inside" it.
-      assert_error <<-CRYSTAL, "neither belongs to a module, so there is no module this impl could be at home in", filename: "x.iyi"
+      assert_error <<-CODE, "neither belongs to a module, so there is no module this impl could be at home in", filename: "x.iyi"
         module App
           module Orphan
             impl Error for String
@@ -802,13 +803,13 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses an impl of a module-less trait outside the type's module" do
       # With no module on the trait's side, only the type's side is left to
       # satisfy — and this impl is in neither.
-      assert_error <<-CRYSTAL, "an impl must live in the module that defines the type (App::Data)", filename: "x.iyi"
+      assert_error <<-CODE, "an impl must live in the module that defines the type (App::Data)", filename: "x.iyi"
         module App
           module Data
             struct Foo
@@ -823,11 +824,11 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "allows an impl of a module-less trait in the type's own module" do
-      assert_type(<<-CRYSTAL, filename: "x.iyi") { types["App"].types["Data"].types["Foo"] }
+      assert_type(<<-CODE, filename: "x.iyi") { types["App"].types["Data"].types["Foo"] }
         module App
           module Data
             struct Foo
@@ -842,13 +843,13 @@ describe "Semantic: iyi" do
         end
 
         App::Data::Foo.new
-        CRYSTAL
+        CODE
     end
 
     it "allows an impl for a module-less type from the trait's own module" do
       # Implementing a trait you own for a type you do not is the other side of
       # the rule, and it stays open — this is how `std/traits` reaches `Int32`.
-      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+      assert_type(<<-CODE, filename: "x.iyi") { int32 }
         module App
           module Show
             trait Showable
@@ -864,13 +865,13 @@ describe "Semantic: iyi" do
         end
 
         1
-        CRYSTAL
+        CODE
     end
 
     it "is vacuous when neither declaration is in a module" do
       # A program that never writes a module header is one compilation unit,
       # so there is no other module for an impl to have gone in.
-      assert_type(<<-CRYSTAL) { types["Foo"] }
+      assert_type(<<-CODE) { types["Foo"] }
         trait Showable
           abstract def show
         end
@@ -885,13 +886,13 @@ describe "Semantic: iyi" do
         end
 
         Foo.new
-        CRYSTAL
+        CODE
     end
   end
 
   describe "generic impls (SPEC.md II.7)" do
     it "implements a trait for every instantiation of a generic type" do
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         trait Showable
           abstract def show
         end
@@ -912,14 +913,14 @@ describe "Semantic: iyi" do
         end
 
         Box.new(1).show
-        CRYSTAL
+        CODE
     end
 
     it "binds the impl's own parameter names positionally" do
       # `Pair` declared `A, B`; the impl calls them `X, Y`. An impl states
       # arity, not vocabulary — Crystal requires a reopened generic to repeat
       # the declared names, which leaks a type's private naming.
-      assert_type(<<-CRYSTAL) { bool }
+      assert_type(<<-CODE) { bool }
         trait Showable
           abstract def show
         end
@@ -940,11 +941,11 @@ describe "Semantic: iyi" do
         end
 
         Pair.new(1, true).show
-        CRYSTAL
+        CODE
     end
 
     it "requires the binder" do
-      assert_error <<-CRYSTAL, "introduce the parameters with `forall`"
+      assert_error <<-CODE, "introduce the parameters with `forall`"
         trait Showable
           abstract def show
         end
@@ -957,11 +958,11 @@ describe "Semantic: iyi" do
             1
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses a specialised impl" do
-      assert_error <<-CRYSTAL, "iyi has no specialised impls"
+      assert_error <<-CODE, "iyi has no specialised impls"
         trait Showable
           abstract def show
         end
@@ -974,11 +975,11 @@ describe "Semantic: iyi" do
             1
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses a concrete argument alongside a binder" do
-      assert_error <<-CRYSTAL, "iyi has no specialised impls"
+      assert_error <<-CODE, "iyi has no specialised impls"
         trait Showable
           abstract def show
         end
@@ -991,11 +992,11 @@ describe "Semantic: iyi" do
             1
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses a blanket impl" do
-      assert_error <<-CRYSTAL, "can't implement Showable for every type"
+      assert_error <<-CODE, "can't implement Showable for every type"
         trait Showable
           abstract def show
         end
@@ -1005,13 +1006,13 @@ describe "Semantic: iyi" do
             1
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses a blanket impl before complaining about its bound" do
       # Refusing the blanket form is permanent; the bound being unimplemented
       # is not. The permanent answer is the more useful one.
-      assert_error <<-CRYSTAL, "can't implement Showable for every type"
+      assert_error <<-CODE, "can't implement Showable for every type"
         trait Showable
           abstract def show
         end
@@ -1021,11 +1022,11 @@ describe "Semantic: iyi" do
             1
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "rejects bounds as unimplemented" do
-      assert_error <<-CRYSTAL, "trait bounds on impl type parameters"
+      assert_error <<-CODE, "trait bounds on impl type parameters"
         trait Showable
           abstract def show
         end
@@ -1038,11 +1039,11 @@ describe "Semantic: iyi" do
             1
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "checks arity" do
-      assert_error <<-CRYSTAL, "wrong number of type vars"
+      assert_error <<-CODE, "wrong number of type vars"
         trait Showable
           abstract def show
         end
@@ -1055,11 +1056,11 @@ describe "Semantic: iyi" do
             1
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses binding one parameter twice" do
-      assert_error <<-CRYSTAL, "is bound twice"
+      assert_error <<-CODE, "is bound twice"
         trait Showable
           abstract def show
         end
@@ -1072,11 +1073,11 @@ describe "Semantic: iyi" do
             1
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses an unused binder name" do
-      assert_error <<-CRYSTAL, "which is never used"
+      assert_error <<-CODE, "which is never used"
         trait Showable
           abstract def show
         end
@@ -1089,13 +1090,13 @@ describe "Semantic: iyi" do
             1
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses a rename that would capture" do
       # `Pair` declared `A`; renaming the impl's `X` to `A` would silently turn
       # a body reference to `A` into the type parameter.
-      assert_error <<-CRYSTAL, "can't also be used as a name here"
+      assert_error <<-CODE, "can't also be used as a name here"
         trait Showable
           abstract def show
         end
@@ -1111,11 +1112,11 @@ describe "Semantic: iyi" do
             A.new
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses `forall` on a target that takes no parameters" do
-      assert_error <<-CRYSTAL, "has nothing to bind"
+      assert_error <<-CODE, "has nothing to bind"
         trait Showable
           abstract def show
         end
@@ -1128,7 +1129,7 @@ describe "Semantic: iyi" do
             1
           end
         end
-        CRYSTAL
+        CODE
     end
   end
 
@@ -1138,7 +1139,7 @@ describe "Semantic: iyi" do
   # stays unimplemented — see the `describe` above.
   describe "trait bounds on a method (SPEC.md II.7)" do
     it "accepts a call whose bound type implements the trait" do
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Show
             trait Showable
@@ -1161,11 +1162,11 @@ describe "Semantic: iyi" do
         end
 
         App::Show.render(App::Show::Foo.new)
-        CRYSTAL
+        CODE
     end
 
     it "refuses a call whose bound type does not implement the trait" do
-      assert_error <<-CRYSTAL, "Char does not implement App::Show::Showable, required by `T` in `render`"
+      assert_error <<-CODE, "Char does not implement App::Show::Showable, required by `T` in `render`"
         module App
           module Show
             trait Showable
@@ -1179,13 +1180,13 @@ describe "Semantic: iyi" do
         end
 
         App::Show.render('a')
-        CRYSTAL
+        CODE
     end
 
     it "binds through a block's return type" do
       # The shape the Kemal router needs: nothing in the parameter list
       # mentions the bounded variable.
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Router
             trait IntoBody
@@ -1208,11 +1209,11 @@ describe "Semantic: iyi" do
         end
 
         App::Router.add_route { |x| 'a' }
-        CRYSTAL
+        CODE
     end
 
     it "refuses a block whose return type does not implement the trait" do
-      assert_error <<-CRYSTAL, "Bool does not implement App::Router::IntoBody, required by `B` in `add_route`"
+      assert_error <<-CODE, "Bool does not implement App::Router::IntoBody, required by `B` in `add_route`"
         module App
           module Router
             trait IntoBody
@@ -1226,11 +1227,11 @@ describe "Semantic: iyi" do
         end
 
         App::Router.add_route { |x| true }
-        CRYSTAL
+        CODE
     end
 
     it "checks only the names that carry a bound" do
-      assert_error <<-CRYSTAL, "does not implement App::Show::Showable, required by `A` in `pair`"
+      assert_error <<-CODE, "does not implement App::Show::Showable, required by `A` in `pair`"
         module App
           module Show
             trait Showable
@@ -1251,11 +1252,11 @@ describe "Semantic: iyi" do
 
         App::Show.pair('a', true)
         App::Show.pair(true, 'a')
-        CRYSTAL
+        CODE
     end
 
     it "refuses a bound that is not a trait" do
-      assert_error <<-CRYSTAL, "can't bound T by App::Helpers, it's a module. A bound is a trait, and nothing else"
+      assert_error <<-CODE, "can't bound T by App::Helpers, it's a module. A bound is a trait, and nothing else"
         module App
           module Helpers
           end
@@ -1266,7 +1267,7 @@ describe "Semantic: iyi" do
         end
 
         App.f(1)
-        CRYSTAL
+        CODE
     end
   end
 
@@ -1277,7 +1278,7 @@ describe "Semantic: iyi" do
     it "lets a default method call a method the required trait provides" do
       # `Ord` never declares `eq`. It is the requirement that guarantees the
       # implementer has one.
-      assert_type(<<-CRYSTAL) { bool }
+      assert_type(<<-CODE) { bool }
         module App
           module Cmp
             trait Eq
@@ -1312,11 +1313,11 @@ describe "Semantic: iyi" do
         end
 
         App::Cmp::N.new.same
-        CRYSTAL
+        CODE
     end
 
     it "reports a required trait the type does not implement" do
-      assert_error <<-CRYSTAL, "needs an impl of App::Cmp::Eq for App::Cmp::N first"
+      assert_error <<-CODE, "needs an impl of App::Cmp::Eq for App::Cmp::N first"
         module App
           module Cmp
             trait Eq
@@ -1337,14 +1338,14 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "does not let implementing the requiring trait confer the required one" do
       # The reason this is a requirement rather than an `include`: if `Ord`
       # included `Eq`, every implementer of `Ord` would satisfy `Eq` with no
       # impl anywhere, which is the open-class hole R-3 closes.
-      assert_error <<-CRYSTAL, "needs an impl of App::Cmp::Eq for App::Cmp::M first"
+      assert_error <<-CODE, "needs an impl of App::Cmp::Eq for App::Cmp::M first"
         module App
           module Cmp
             trait Eq
@@ -1382,11 +1383,11 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "reports every required trait that is missing at once" do
-      assert_error <<-CRYSTAL, "needs impls of App::Cmp::Eq, App::Cmp::Show for App::Cmp::N first"
+      assert_error <<-CODE, "needs impls of App::Cmp::Eq, App::Cmp::Show for App::Cmp::N first"
         module App
           module Cmp
             trait Eq
@@ -1411,11 +1412,11 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses a requirement that is not a trait" do
-      assert_error <<-CRYSTAL, "can't require App::Cmp::Helpers, it's a module. A trait can only require another trait"
+      assert_error <<-CODE, "can't require App::Cmp::Helpers, it's a module. A trait can only require another trait"
         module App
           module Cmp
             module Helpers
@@ -1426,11 +1427,11 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses a trait that requires itself" do
-      assert_error <<-CRYSTAL, "App::Cmp::Ord can't require itself"
+      assert_error <<-CODE, "App::Cmp::Ord can't require itself"
         module App
           module Cmp
             trait Ord : Ord
@@ -1438,11 +1439,11 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses the same requirement twice" do
-      assert_error <<-CRYSTAL, "App::Cmp::Ord already requires App::Cmp::Eq"
+      assert_error <<-CODE, "App::Cmp::Ord already requires App::Cmp::Eq"
         module App
           module Cmp
             trait Eq
@@ -1454,7 +1455,7 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
   end
 
@@ -1463,7 +1464,7 @@ describe "Semantic: iyi" do
   # can be implemented only once for a type.
   describe "associated types" do
     it "resolves the trait's own signatures through the impl's answer" do
-      assert_type(<<-CRYSTAL) { string }
+      assert_type(<<-CODE) { string }
         module App
           module Coll
             trait Container
@@ -1492,11 +1493,11 @@ describe "Semantic: iyi" do
         end
 
         App::Coll::Names.new.describe
-        CRYSTAL
+        CODE
     end
 
     it "lets two types answer it differently" do
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Coll
             trait Container
@@ -1534,11 +1535,11 @@ describe "Semantic: iyi" do
         end
 
         App::Coll::Counts.new.first
-        CRYSTAL
+        CODE
     end
 
     it "checks the impl's signature against its own answer" do
-      assert_error <<-CRYSTAL, "must return String"
+      assert_error <<-CODE, "must return String"
         module App
           module Coll
             trait Container
@@ -1563,11 +1564,11 @@ describe "Semantic: iyi" do
         end
 
         App::Coll::Names.new.first
-        CRYSTAL
+        CODE
     end
 
     it "reports an associated type the impl does not answer" do
-      assert_error <<-CRYSTAL, "impl App::Coll::Container for App::Coll::Names does not answer an associated type the trait declares: Elem"
+      assert_error <<-CODE, "impl App::Coll::Container for App::Coll::Names does not answer an associated type the trait declares: Elem"
         module App
           module Coll
             trait Container
@@ -1586,11 +1587,11 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "reports an answer the trait never asked for" do
-      assert_error <<-CRYSTAL, "App::Coll::Container declares no associated type named Key. It declares: Elem"
+      assert_error <<-CODE, "App::Coll::Container declares no associated type named Key. It declares: Elem"
         module App
           module Coll
             trait Container
@@ -1612,13 +1613,13 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses a second impl of the same trait for one type" do
       # The whole difference from a parameter: a second answer would make a
       # call on the type ambiguous about which impl it meant.
-      assert_error <<-CRYSTAL, "already implements App::Coll::Container, and a trait with associated types can be implemented only once for a type"
+      assert_error <<-CODE, "already implements App::Coll::Container, and a trait with associated types can be implemented only once for a type"
         module App
           module Coll
             trait Container
@@ -1649,11 +1650,11 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses one declared anywhere but a trait or an impl body" do
-      assert_error <<-CRYSTAL, "an associated type can only be declared directly in a trait or an impl body"
+      assert_error <<-CODE, "an associated type can only be declared directly in a trait or an impl body"
         module App
           module Coll
             trait Container
@@ -1678,11 +1679,11 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "allows a default method bounded on the associated type" do
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Coll
             trait Cmp
@@ -1726,13 +1727,13 @@ describe "Semantic: iyi" do
         end
 
         App::Coll::Scores.new.biggest.cmp
-        CRYSTAL
+        CODE
     end
 
     it "reports an element type that does not meet the bound" do
       # The point of the bound: Crystal duck-types these and fails at
       # instantiation, naming neither the bound nor the element type.
-      assert_error <<-CRYSTAL, "Int32 does not implement App::Coll::Cmp, required by `where Elem : App::Coll::Cmp` in `biggest`"
+      assert_error <<-CODE, "Int32 does not implement App::Coll::Cmp, required by `where Elem : App::Coll::Cmp` in `biggest`"
         module App
           module Coll
             trait Cmp
@@ -1765,13 +1766,13 @@ describe "Semantic: iyi" do
         end
 
         App::Coll::Raw.new.biggest
-        CRYSTAL
+        CODE
     end
 
     it "leaves an unbounded method alone on the same trait" do
       # Only the bounded method is restricted; the rest of the trait stays
       # available whatever the element type is.
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Coll
             trait Cmp
@@ -1808,11 +1809,11 @@ describe "Semantic: iyi" do
         end
 
         App::Coll::Raw.new.any
-        CRYSTAL
+        CODE
     end
 
     it "refuses a where bound that is not a trait" do
-      assert_error <<-CRYSTAL, "can't bound Elem by App::Coll::Helpers, it's a module. A bound is a trait, and nothing else"
+      assert_error <<-CODE, "can't bound Elem by App::Coll::Helpers, it's a module. A bound is a trait, and nothing else"
         module App
           module Coll
             module Helpers
@@ -1844,11 +1845,11 @@ describe "Semantic: iyi" do
         end
 
         App::Coll::Raw.new.go
-        CRYSTAL
+        CODE
     end
 
     it "refuses a name that is both a parameter and an associated type" do
-      assert_error <<-CRYSTAL, "declares T both as a parameter and as an associated type"
+      assert_error <<-CODE, "declares T both as a parameter and as an associated type"
         module App
           module Coll
             trait Both(T)
@@ -1858,7 +1859,7 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
   end
 
@@ -1867,7 +1868,7 @@ describe "Semantic: iyi" do
   # its type implements it, which needs no new syntax and no new type machinery.
   describe "errors" do
     it "lets a module implement the compiler's Error trait" do
-      assert_type(<<-CRYSTAL) { types["App"].types["Fails"].types["IOError"] }
+      assert_type(<<-CODE) { types["App"].types["Fails"].types["IOError"] }
         module App
           module Fails
             struct IOError
@@ -1884,11 +1885,11 @@ describe "Semantic: iyi" do
         end
 
         App::Fails::IOError.new
-        CRYSTAL
+        CODE
     end
 
     it "checks Error's own requirement" do
-      assert_error <<-CRYSTAL, "impl Error for App::Fails::Bad is missing a method required by the trait: message"
+      assert_error <<-CODE, "impl Error for App::Fails::Bad is missing a method required by the trait: message"
         module App
           module Fails
             struct Bad
@@ -1898,13 +1899,13 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "reports an error member left unhandled" do
       # III.1.3, and the main ergonomic argument for the whole approach:
       # adding an error member turns every incomplete `case` into an error.
-      assert_error <<-CRYSTAL, "case is not exhaustive"
+      assert_error <<-CODE, "case is not exhaustive"
         module App
           module Fails
             struct IOError
@@ -1932,14 +1933,14 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.go
-        CRYSTAL
+        CODE
     end
 
     it "propagates an error member out of the enclosing method" do
       # III.1.2. `read` can fail; `load` says so in its own return type, and
       # `!` is what carries the failure across without a `case`. The filename
       # matters: `!` is the operator only in a `.iyi` file.
-      assert_type(<<-CRYSTAL, filename: "x.iyi") { union_of(int32, types["App"].types["Fails"].types["IOError"]) }
+      assert_type(<<-CODE, filename: "x.iyi") { union_of(int32, types["App"].types["Fails"].types["IOError"]) }
         module App
           module Fails
             struct IOError
@@ -1973,13 +1974,13 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.load(false)
-        CRYSTAL
+        CODE
     end
 
     it "refuses to propagate where there is no error member" do
       # III.1.1's degenerate cases are rejected rather than given a surprising
       # meaning: without this, `!` here compiles and silently does nothing.
-      assert_error <<-CRYSTAL, "`!` has no error to propagate: no member of (Int32 | Nil) implements `Error`", filename: "x.iyi"
+      assert_error <<-CODE, "`!` has no error to propagate: no member of (Int32 | Nil) implements `Error`", filename: "x.iyi"
         module App
           module Fails
             def self.maybe(missing : Bool) : Int32?
@@ -1994,11 +1995,11 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.go
-        CRYSTAL
+        CODE
     end
 
     it "refuses to propagate where every member is an error" do
-      assert_error <<-CRYSTAL, "`!` can never produce a value: every member of App::Fails::IOError implements `Error`", filename: "x.iyi"
+      assert_error <<-CODE, "`!` can never produce a value: every member of App::Fails::IOError implements `Error`", filename: "x.iyi"
         module App
           module Fails
             struct IOError
@@ -2023,7 +2024,7 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.go
-        CRYSTAL
+        CODE
     end
 
     it "reports an enclosing return type that does not admit the error" do
@@ -2031,7 +2032,7 @@ describe "Semantic: iyi" do
       # expansion wrote: "must return String but it is returning IOError",
       # which is true and mentions neither the operator that put it there nor
       # the two ways out. The operator asks the enclosing signature itself now.
-      assert_error <<-CRYSTAL, "`!` propagates App::Fails::IOError out of `go`", filename: "x.iyi"
+      assert_error <<-CODE, "`!` propagates App::Fails::IOError out of `go`", filename: "x.iyi"
         module App
           module Fails
             struct IOError
@@ -2057,13 +2058,13 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.go
-        CRYSTAL
+        CODE
     end
 
     it "does not make Nil an error" do
       # III.1.5: absence and failure stay distinct, so `T?` is not an error
       # union and nothing here touches it.
-      assert_type(<<-CRYSTAL) { nilable int32 }
+      assert_type(<<-CODE) { nilable int32 }
         module App
           module Fails
             def self.maybe(missing : Bool) : Int32?
@@ -2074,14 +2075,14 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.maybe(false)
-        CRYSTAL
+        CODE
     end
 
     # iyi: a module's initialisation may not fail (SPEC.md III.5). Already
     # rejected before this, but through Crystal's rule about `return` — which
     # is what the expansion happens to be made of, and explains nothing.
     it "refuses to propagate out of a module's initialisation" do
-      assert_error <<-CRYSTAL, "`!` can't propagate out of a module's initialisation", filename: "x.iyi"
+      assert_error <<-CODE, "`!` can't propagate out of a module's initialisation", filename: "x.iyi"
         module App
           module Fails
             struct IOError
@@ -2103,7 +2104,7 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.read(false)!
-        CRYSTAL
+        CODE
     end
 
     it "still reports a plain top-level `return` as itself" do
@@ -2115,7 +2116,7 @@ describe "Semantic: iyi" do
     # leaves the scope's type alone — the cleanup is an `ensure`, and an
     # `ensure` contributes nothing to a value.
     it "leaves the value of the scope alone" do
-      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+      assert_type(<<-CODE, filename: "x.iyi") { int32 }
         module App
           module Res
             def self.close : Char
@@ -2130,11 +2131,11 @@ describe "Semantic: iyi" do
         end
 
         App::Res.go
-        CRYSTAL
+        CODE
     end
 
     it "keeps a defer in a method that propagates" do
-      assert_type(<<-CRYSTAL, filename: "x.iyi") { union_of(int32, types["App"].types["Res"].types["IOError"]) }
+      assert_type(<<-CODE, filename: "x.iyi") { union_of(int32, types["App"].types["Res"].types["IOError"]) }
         module App
           module Res
             struct IOError
@@ -2165,7 +2166,7 @@ describe "Semantic: iyi" do
         end
 
         App::Res.go(false)
-        CRYSTAL
+        CODE
     end
 
     # iyi: `it` in a `case` branch (SPEC.md III.1.1). An assignment, not new
@@ -2173,7 +2174,7 @@ describe "Semantic: iyi" do
     it "binds `it` to the value a case is matching, narrowed per branch" do
       # `length` takes a `String`, so this only compiles if `it` is the narrowed
       # value and not the whole union.
-      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+      assert_type(<<-CODE, filename: "x.iyi") { int32 }
         module App
           module Fails
             struct IOError
@@ -2206,11 +2207,11 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.go(false)
-        CRYSTAL
+        CODE
     end
 
     it "binds `it` in a `when` branch and in the else" do
-      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+      assert_type(<<-CODE, filename: "x.iyi") { int32 }
         module App
           module Fails
             def self.go(n : Int32) : Int32
@@ -2223,13 +2224,13 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.go(1)
-        CRYSTAL
+        CODE
     end
 
     it "leaves `it` undefined where a case has a tuple subject" do
       # There is no single value to name, so `it` is left a call rather than
       # bound to one of the elements.
-      assert_error <<-CRYSTAL, "undefined local variable or method 'it'", filename: "x.iyi"
+      assert_error <<-CODE, "undefined local variable or method 'it'", filename: "x.iyi"
         module App
           module Fails
             def self.go(a : Int32, b : Int32) : Int32
@@ -2241,11 +2242,11 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.go(1, 2)
-        CRYSTAL
+        CODE
     end
 
     it "leaves `it` undefined in a Crystal file" do
-      assert_error <<-CRYSTAL, "undefined local variable or method 'it'"
+      assert_error <<-CODE, "undefined local variable or method 'it'"
         module App
           module Fails
             def self.go(n : Int32) : Int32
@@ -2258,7 +2259,7 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.go(1)
-        CRYSTAL
+        CODE
     end
 
     # iyi: `.or(default)` and `.or_panic` — III.1.3's two conveniences, for
@@ -2266,7 +2267,7 @@ describe "Semantic: iyi" do
     # by II.1 an ordinary call on `Int32 | IOError` would need *both* members
     # to implement it, which is the thing this design avoids.
     it "recovers from an error with a default" do
-      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+      assert_type(<<-CODE, filename: "x.iyi") { int32 }
         module App
           module Fails
             struct IOError
@@ -2292,13 +2293,13 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.port(true)
-        CRYSTAL
+        CODE
     end
 
     it "widens the result when the default is of another type" do
       # Nothing computes this: the expansion is an `if`, so the result is the
       # union of the default and what `is_a?(::Error)` left on the other side.
-      assert_type(<<-CRYSTAL, filename: "x.iyi") { union_of(int32, char) }
+      assert_type(<<-CODE, filename: "x.iyi") { union_of(int32, char) }
         module App
           module Fails
             struct IOError
@@ -2324,13 +2325,13 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.port(true)
-        CRYSTAL
+        CODE
     end
 
     it "recovers by panicking, leaving only the non-error members" do
       # `raise` is `NoReturn`, so the error branch contributes nothing to the
       # type. Defined here because the semantic harness runs without a prelude.
-      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+      assert_type(<<-CODE, filename: "x.iyi") { int32 }
         def raise(message : String) : NoReturn
           while true
           end
@@ -2361,14 +2362,14 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.port(false)
-        CRYSTAL
+        CODE
     end
 
     it "reaches `message` across a union of several error types" do
       # `.or_panic` calls `message` on the narrowed value, which here holds two
       # unrelated error types. That resolves by II.1: both implement `Error`,
       # so their union does, and the marker trait carries the call.
-      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+      assert_type(<<-CODE, filename: "x.iyi") { int32 }
         def raise(message : String) : NoReturn
           while true
           end
@@ -2411,11 +2412,11 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.port(false, false)
-        CRYSTAL
+        CODE
     end
 
     it "refuses to recover where there is no error member" do
-      assert_error <<-CRYSTAL, "`.or` has no error to recover: no member of (Int32 | Nil) implements `Error`", filename: "x.iyi"
+      assert_error <<-CODE, "`.or` has no error to recover: no member of (Int32 | Nil) implements `Error`", filename: "x.iyi"
         module App
           module Fails
             def self.maybe(missing : Bool) : Int32?
@@ -2430,13 +2431,13 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.go
-        CRYSTAL
+        CODE
     end
 
     it "refuses to recover where every member is an error" do
       # The default would be the only outcome, which is dead code dressed up as
       # a fallback — rejected for the same reason `!` rejects this operand.
-      assert_error <<-CRYSTAL, "`.or` can only ever return its default: every member of App::Fails::IOError implements `Error`", filename: "x.iyi"
+      assert_error <<-CODE, "`.or` can only ever return its default: every member of App::Fails::IOError implements `Error`", filename: "x.iyi"
         module App
           module Fails
             struct IOError
@@ -2461,11 +2462,11 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.go
-        CRYSTAL
+        CODE
     end
 
     it "refuses to panic-recover where every member is an error" do
-      assert_error <<-CRYSTAL, "`.or_panic` can never produce a value: every member of App::Fails::IOError implements `Error`", filename: "x.iyi"
+      assert_error <<-CODE, "`.or_panic` can never produce a value: every member of App::Fails::IOError implements `Error`", filename: "x.iyi"
         def raise(message : String) : NoReturn
           while true
           end
@@ -2495,7 +2496,7 @@ describe "Semantic: iyi" do
         end
 
         App::Fails.go
-        CRYSTAL
+        CODE
     end
   end
 
@@ -2507,7 +2508,7 @@ describe "Semantic: iyi" do
     # argument is wrong and not what would make it right. R-3 says exactly
     # where the `impl` may go, and the message names both places.
     it "names the impl to write, and the two modules it may live in" do
-      assert_error <<-CRYSTAL, "Write `impl"
+      assert_error <<-CODE, "Write `impl"
         module app/thing
 
         trait Speaker
@@ -2522,7 +2523,7 @@ describe "Semantic: iyi" do
         end
 
         hear(Dog.new)
-        CRYSTAL
+        CODE
     end
   end
 
@@ -2568,27 +2569,27 @@ describe "Semantic: iyi" do
     # packaged the module: a rule of the language reported as a packaging
     # error, at a build that need not be the author's.
     it "asks an exported def for its types where it is written" do
-      assert_error <<-CRYSTAL, "`twice` is exported and does not say what `x` is"
+      assert_error <<-CODE, "`twice` is exported and does not say what `x` is"
         module app/thing
 
         pub def twice(x)
           x + x
         end
-        CRYSTAL
+        CODE
     end
 
     it "asks an exported def what it returns" do
-      assert_error <<-CRYSTAL, "`twice` is exported and does not say what it returns"
+      assert_error <<-CODE, "`twice` is exported and does not say what it returns"
         module app/thing
 
         pub def twice(x : Int32)
           x + x
         end
-        CRYSTAL
+        CODE
     end
 
     it "leaves an unexported def to infer, which is the point of the mark" do
-      assert_no_errors <<-CRYSTAL
+      assert_no_errors <<-CODE
         module app/thing
 
         def twice(x)
@@ -2598,11 +2599,11 @@ describe "Semantic: iyi" do
         pub def four : Int32
           twice(2)
         end
-        CRYSTAL
+        CODE
     end
 
     it "refuses a selective `using` of a name the module does not export" do
-      assert_error <<-CRYSTAL, "App::Greeter does not export `internal`"
+      assert_error <<-CODE, "App::Greeter does not export `internal`"
         module app/greeter
 
         pub def polite : Int32
@@ -2616,11 +2617,11 @@ describe "Semantic: iyi" do
         module Consumer
           using app/greeter::{internal}
         end
-        CRYSTAL
+        CODE
     end
 
     it "names every unexported name the directive asked for" do
-      assert_error <<-CRYSTAL, "does not export `internal`, `Hidden`"
+      assert_error <<-CODE, "does not export `internal`, `Hidden`"
         module app/greeter
 
         def internal : Int32
@@ -2634,7 +2635,7 @@ describe "Semantic: iyi" do
         module Consumer
           using app/greeter::{internal, Hidden}
         end
-        CRYSTAL
+        CODE
     end
 
     it "allows a selective `using` of exported names" do
@@ -2642,7 +2643,7 @@ describe "Semantic: iyi" do
       # scopes the whole rest of the source into the module, so the last
       # expression is inside it and the program's type is the module's, not the
       # call's. What is being asserted here is that nothing raises.
-      semantic(<<-CRYSTAL)
+      semantic(<<-CODE)
         module app/greeter
 
         pub def polite : Int32
@@ -2662,7 +2663,7 @@ describe "Semantic: iyi" do
         end
 
         Consumer.go
-        CRYSTAL
+        CODE
     end
 
     # A bare `using app/greeter` reaching only the exported names cannot be
@@ -2673,7 +2674,7 @@ describe "Semantic: iyi" do
     # file and is where that half is exercised.
 
     it "refuses a qualified call to a name the module does not export" do
-      assert_error <<-CRYSTAL, "App::Greeter does not export 'helper'. Only what a module marks `pub` is reachable from outside it"
+      assert_error <<-CODE, "App::Greeter does not export 'helper'. Only what a module marks `pub` is reachable from outside it"
         module app/greeter
 
         pub def polite : Int32
@@ -2691,11 +2692,11 @@ describe "Semantic: iyi" do
         end
 
         Consumer.go
-        CRYSTAL
+        CODE
     end
 
     it "refuses a qualified reference to a type the module does not export" do
-      assert_error <<-CRYSTAL, "does not export App::Greeter::Closed"
+      assert_error <<-CODE, "does not export App::Greeter::Closed"
         module app/greeter
 
         struct Closed
@@ -2710,14 +2711,14 @@ describe "Semantic: iyi" do
         end
 
         Consumer.go
-        CRYSTAL
+        CODE
     end
 
     it "leaves the methods of an exported type alone" do
       # The carve-out that matters: only the unit's own body carries `pub`. A
       # `def` inside a `pub trait` belongs to the trait — `Enumerable#to_a`
       # writes no `pub` and has to stay callable on every implementer.
-      semantic(<<-CRYSTAL)
+      semantic(<<-CODE)
         module std/enumerable
 
         pub trait Container
@@ -2744,13 +2745,13 @@ describe "Semantic: iyi" do
         end
 
         Nums.new.again
-        CRYSTAL
+        CODE
     end
 
     it "leaves a Crystal module's names alone" do
       # A Crystal module has no `pub` and so no surface to enforce. Were the
       # rule applied to it, every `using` of one would reach nothing.
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Plain
             extend self
@@ -2770,7 +2771,7 @@ describe "Semantic: iyi" do
         end
 
         App::Consumer.go
-        CRYSTAL
+        CODE
     end
   end
 
@@ -2779,7 +2780,7 @@ describe "Semantic: iyi" do
   # element to ask when the collection is empty.
   describe "class-level requirements" do
     it "lets a default method reach the requirement through an associated type" do
-      assert_type(<<-CRYSTAL) { int32 }
+      assert_type(<<-CODE) { int32 }
         module App
           module Coll
             trait Num
@@ -2823,12 +2824,12 @@ describe "Semantic: iyi" do
         end
 
         App::Coll::Nums.new.start
-        CRYSTAL
+        CODE
     end
 
     it "reports a class-level requirement the impl does not satisfy" do
       # Named `self.zero`, because that is what has to be written to fix it.
-      assert_error <<-CRYSTAL, "is missing a method required by the trait: self.zero"
+      assert_error <<-CODE, "is missing a method required by the trait: self.zero"
         module App
           module Coll
             trait Num
@@ -2848,11 +2849,11 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "reports instance and class requirements together" do
-      assert_error <<-CRYSTAL, "is missing methods required by the trait: add, self.zero"
+      assert_error <<-CODE, "is missing methods required by the trait: add, self.zero"
         module App
           module Coll
             trait Num
@@ -2867,17 +2868,17 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "still refuses an abstract class method outside a trait" do
       # A trait is the only type whose implementers have their class methods
       # checked; anywhere else the requirement would oblige nobody.
-      assert_error <<-CRYSTAL, "can't define abstract def on metaclass"
+      assert_error <<-CODE, "can't define abstract def on metaclass"
         abstract class Base
           abstract def self.make : self
         end
-        CRYSTAL
+        CODE
     end
   end
 
@@ -2886,7 +2887,7 @@ describe "Semantic: iyi" do
   # the point; associated types are the form for a single answer per type.
   describe "parameterised traits" do
     it "implements a trait at a type argument" do
-      assert_type(<<-CRYSTAL) { string }
+      assert_type(<<-CODE) { string }
         module App
           module Conv
             trait Into(T)
@@ -2907,13 +2908,13 @@ describe "Semantic: iyi" do
         end
 
         App::Conv::User.new.into
-        CRYSTAL
+        CODE
     end
 
     it "checks the impl's signature against the type argument" do
       # The argument is not decoration: `Into(String)` instantiates the trait,
       # so the requirement being satisfied is `into : String`.
-      assert_error <<-CRYSTAL, "must return String"
+      assert_error <<-CODE, "must return String"
         module App
           module Conv
             trait Into(T)
@@ -2934,11 +2935,11 @@ describe "Semantic: iyi" do
         end
 
         App::Conv::User.new.into
-        CRYSTAL
+        CODE
     end
 
     it "reports a missing type argument at the impl" do
-      assert_error <<-CRYSTAL, "type arguments must be specified when implementing App::Conv::Into(T), one for each of T"
+      assert_error <<-CODE, "type arguments must be specified when implementing App::Conv::Into(T), one for each of T"
         module App
           module Conv
             trait Into(T)
@@ -2955,14 +2956,14 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     # iyi: II.7 × II.6. A generic impl answering an associated type with its own
     # parameter. Both halves were built long before they were ever written
     # together, and the meeting failed on `undefined constant T`.
     it "answers an associated type with the impl's own type parameter" do
-      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+      assert_type(<<-CODE, filename: "x.iyi") { int32 }
         module App
           module Coll
             trait Holder
@@ -2992,13 +2993,13 @@ describe "Semantic: iyi" do
         end
 
         App::Coll.go
-        CRYSTAL
+        CODE
     end
 
     it "keeps the trait's own name resolvable from the impl's module" do
       # The fix must not reach for the target's scope: `Cmp` lives where the
       # impl was written, and `Int32` has never heard of it.
-      assert_type(<<-CRYSTAL, filename: "x.iyi") { int32 }
+      assert_type(<<-CODE, filename: "x.iyi") { int32 }
         module App
           module Traits
             trait Sized
@@ -3018,11 +3019,11 @@ describe "Semantic: iyi" do
         end
 
         App::Traits.go
-        CRYSTAL
+        CODE
     end
 
     it "reports type arguments given to a trait that has no parameters" do
-      assert_error <<-CRYSTAL, "can't implement App::Conv::Plain with type arguments, it's not a generic trait"
+      assert_error <<-CODE, "can't implement App::Conv::Plain with type arguments, it's not a generic trait"
         module App
           module Conv
             trait Plain
@@ -3039,11 +3040,11 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
 
     it "reports the wrong number of type arguments" do
-      assert_error <<-CRYSTAL, "wrong number of type arguments for App::Conv::Into(T) (given 2, expected 1)"
+      assert_error <<-CODE, "wrong number of type arguments for App::Conv::Into(T) (given 2, expected 1)"
         module App
           module Conv
             trait Into(T)
@@ -3060,7 +3061,7 @@ describe "Semantic: iyi" do
             end
           end
         end
-        CRYSTAL
+        CODE
     end
   end
 end

@@ -48,14 +48,25 @@ SOURCES      := $(shell find src -name '*.cr') src/VERSION src/IYI_VERSION
 SPEC_SOURCES := $(shell find spec -name '*.cr')
 MAN1PAGES    := $(patsubst doc/man/%.adoc,man/%.1,$(wildcard doc/man/*.adoc))
 override FLAGS += -D strict_multi_assign -D preview_overload_order $(if $(release),--release )$(if $(stats),--stats )$(if $(progress),--progress )$(if $(threads),--threads $(threads) )$(if $(debug),-d )$(if $(static),--static )$(if $(LDFLAGS),--link-flags="$(LDFLAGS)" )$(if $(target),--cross-compile --target $(target) )
-override COMPILER_FLAGS +=  -Dwithout_openssl -Dwithout_zlib$(if $(sequential_codegen), -Dwithout_mt,)
+# iyi: -Dwithout_iconv because iyi's String has no encoding conversion, so the
+# compiler asks libiconv for nothing.
+#
+# -Dgc_none was tried here too and is not viable, which is worth recording so
+# nobody spends the afternoon again. A compiler built without a collector emits
+# invalid IR ("Load operand must be a pointer", from `LLVM::Module#verify`) on
+# some runs and dies in `main_user_code` on others: the compiler is not a short
+# lived process that allocates a little, it is a long walk over ASTs with
+# parallel codegen and fibers, and `src/gc/none.cr` never frees. So the compiler
+# keeps bdw-gc and the programs it builds do not, which is the split SPEC.md
+# III.9 already draws. The owned collector it tracks is what ends this.
+override COMPILER_FLAGS += -Dwithout_openssl -Dwithout_zlib -Dwithout_iconv$(if $(sequential_codegen), -Dwithout_mt,)
 SPEC_WARNINGS_OFF := --exclude-warnings spec/std --exclude-warnings spec/compiler --exclude-warnings spec/primitives --exclude-warnings src/float/printer --exclude-warnings src/random.cr
 override SPEC_FLAGS += $(if $(verbose),-v )$(if $(junit_output),--junit_output $(junit_output) )$(if $(order),--order=$(order) )
-CRYSTAL_CONFIG_LIBRARY_PATH := '$$ORIGIN/../lib/crystal'
-ifndef CRYSTAL_CONFIG_BUILD_COMMIT
-	CRYSTAL_CONFIG_BUILD_COMMIT := $(shell git rev-parse --short HEAD 2> /dev/null)
+IYI_CONFIG_LIBRARY_PATH := '$$ORIGIN/../lib/iyi'
+ifndef IYI_CONFIG_BUILD_COMMIT
+	IYI_CONFIG_BUILD_COMMIT := $(shell git rev-parse --short HEAD 2> /dev/null)
 endif
-CRYSTAL_CONFIG_PATH := '$$ORIGIN/../share/crystal/src'
+IYI_CONFIG_PATH := '$$ORIGIN/../share/crystal/src'
 ifndef BASE_CRYSTAL_VERSION
 	BASE_CRYSTAL_VERSION := $(shell $(CRYSTAL) env CRYSTAL_VERSION)
 endif
@@ -70,12 +81,12 @@ ifeq ($(shell $(check_lld)),1)
   EXPORT_CC ?= CC="$(CC) -fuse-ld=lld"
 endif
 override EXPORTS += \
-  CRYSTAL_CONFIG_BUILD_COMMIT="$(CRYSTAL_CONFIG_BUILD_COMMIT)" \
-  CRYSTAL_CONFIG_PATH=$(CRYSTAL_CONFIG_PATH) \
+  IYI_CONFIG_BUILD_COMMIT="$(IYI_CONFIG_BUILD_COMMIT)" \
+  IYI_CONFIG_PATH=$(IYI_CONFIG_PATH) \
   SOURCE_DATE_EPOCH="$(SOURCE_DATE_EPOCH)"
 override EXPORTS_BUILD += \
 	$(EXPORT_CC) \
-	CRYSTAL_CONFIG_LIBRARY_PATH=$(CRYSTAL_CONFIG_LIBRARY_PATH)
+	IYI_CONFIG_LIBRARY_PATH=$(IYI_CONFIG_LIBRARY_PATH)
 SHELL = sh
 
 manpages_gz := $(patsubst %.1,%.1.gz,$(MAN1PAGES))
@@ -263,7 +274,7 @@ uninstall: uninstall_compiler uninstall_man uninstall_completions
 
 # iyi: the binary and its prelude, and nothing else — an iyi program requires
 # only the prelude and the prelude requires only itself, so what is installed
-# beside `bin/iyi` is 56 KB rather than a standard library.
+# beside `bin/iyi` is 81 KB rather than a standard library.
 .PHONY: install_iyi
 install_iyi: ## iyi: install `iyi` and its prelude at DESTDIR
 install_iyi: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
@@ -282,7 +293,7 @@ install_iyi: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
 # iyi: the other library, because `--crystal` is not a developer's switch.
 #
 # A program built with it gets Crystal's standard library, and an install that
-# ships only iyi's own 56 KB answers `require "json"` with "can't find file",
+# ships only iyi's own 81 KB answers `require "json"` with "can't find file",
 # which is the headline feature failing in the thing people download.
 #
 # `compiler/` was cut from this, on the grounds that a compiler carrying its own
@@ -407,17 +418,16 @@ $(O)/std_spec$(EXE): $(DEPS) $(SOURCES) $(SPEC_SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
 	$(EXPORT_CC) ./bin/crystal build $(FLAGS) $(SPEC_WARNINGS_OFF) -o $@ spec/std_spec.cr
-
 $(O)/compiler_spec$(EXE): $(DEPS) $(SOURCES) $(SPEC_SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
-	$(EXPORT_CC) $(EXPORTS) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(SPEC_WARNINGS_OFF) -o $@ spec/compiler_spec.cr --release
+	$(EXPORT_CC) ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(SPEC_WARNINGS_OFF) -o $@ spec/compiler_spec.cr --release
 
 $(O)/primitives_spec$(EXE): $(O)/$(CRYSTAL_BIN) $(DEPS) $(SOURCES) $(SPEC_SOURCES)
 	@mkdir -p $(O)
 	$(EXPORT_CC) ./bin/crystal build $(FLAGS) $(SPEC_WARNINGS_OFF) -o $@ spec/primitives_spec.cr
 
-$(O)/cli_spec$(EXE): $(O)/$(CRYSTAL_BIN) $(O)/$(CRYSTAL_DAEMON_BIN) $(DEPS) $(SOURCES) $(SPEC_SOURCES)
+$(O)/cli_spec$(EXE): $(O)/$(CRYSTAL_BIN) $(O)/$(IYI_DAEMON_BIN) $(DEPS) $(SOURCES) $(SPEC_SOURCES)
 	@mkdir -p $(O)
 	$(EXPORT_CC) ./bin/crystal build $(FLAGS) $(SPEC_WARNINGS_OFF) -o $@ spec/cli_spec.cr
 
@@ -432,14 +442,14 @@ $(O)/$(CRYSTAL_BIN): $(DEPS) $(SOURCES)
 # iyi: the same compiler under its own name — the commands iyi has, a usage
 # line that names them, and a version that says what it is a fork of. It links
 # what `crystal` links, because it *is* `crystal`; what differs is the surface.
-# Its prelude is its own, and it is 56 KB: `iyi` installed as `bin/iyi` finds
+# Its prelude is its own, and it is 81 KB: `iyi` installed as `bin/iyi` finds
 # `share/iyi/src/iyi/prelude.iyi` beside it and needs nothing else — no
-# `CRYSTAL_PATH`, no standard library, because an iyi program requires only the
+# `IYI_PATH`, no standard library, because an iyi program requires only the
 # prelude and the prelude requires only itself.
 $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
-	$(EXPORTS) $(EXPORTS_BUILD) CRYSTAL_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
+	$(EXPORTS) $(EXPORTS_BUILD) IYI_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
 	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $@ src/compiler/iyi.cr
 	@echo "built $@ — run it as ./bin/iyi"
 
@@ -452,22 +462,22 @@ $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 $(O)/$(IYI_DAEMON_BIN): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
-	$(EXPORTS) $(EXPORTS_BUILD) CRYSTAL_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
+	$(EXPORTS) $(EXPORTS_BUILD) IYI_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
 	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_mt -o $@ src/compiler/iyi.cr
 	@echo "built $@ — \`iyi daemon start\` finds it beside iyi"
 
 # iyi: the front end on its own. Linking libLLVM costs 26 ms of load-time
 # initialisers whether or not anything generates code, and `--no-codegen` never
 # calls it — so this links none and starts in 6 ms rather than 39 (SPEC.md
-# 0.1.0, src/compiler/crystal/llvm_shim.cr).
+# 0.1.0, src/compiler/iyi/llvm_shim.cr).
 #
 # The host triple and the LLVM version are baked in from the compiler that has
 # LLVM, because without it there is nothing to ask.
 $(O)/crystal-front$(EXE): $(DEPS) $(SOURCES) $(O)/$(CRYSTAL_BIN)
 	@mkdir -p $(O)
 	$(EXPORTS) $(EXPORTS_BUILD) \
-	  CRYSTAL_CONFIG_TARGET="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^Default target: //p')" \
-	  CRYSTAL_CONFIG_LLVM_VERSION="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^LLVM: //p')" \
+	  IYI_CONFIG_TARGET="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^Default target: //p')" \
+	  IYI_CONFIG_LLVM_VERSION="$$($(O)/$(CRYSTAL_BIN) --version | sed -n 's/^LLVM: //p')" \
 	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_llvm -o $@ src/compiler/crystal_front.cr
 
 $(O)/$(CRYSTAL_DAEMON_BIN): $(DEPS) $(SOURCES)
@@ -500,8 +510,8 @@ clean_man:
 	rm -rf ./man
 
 .PHONY: clean_cache
-clean_cache: ## Clean up CRYSTAL_CACHE_DIR files
-	rm -rf $(shell ./bin/crystal env CRYSTAL_CACHE_DIR)
+clean_cache: ## Clean up IYI_CACHE_DIR files
+	rm -rf $(shell ./bin/crystal env IYI_CACHE_DIR)
 
 .PHONY: help
 help: ## Show this help

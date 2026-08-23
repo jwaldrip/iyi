@@ -2,25 +2,25 @@ require "../../spec_helper"
 
 describe "Semantic: enum" do
   it "types enum" do
-    assert_type(<<-CRYSTAL) { types["Foo"] }
+    assert_type(<<-CODE) { types["Foo"] }
       enum Foo
         A = 1
       end
       Foo::A
-      CRYSTAL
+      CODE
   end
 
   it "types enum value" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       enum Foo
         A = 1
       end
       Foo::A.value
-      CRYSTAL
+      CODE
   end
 
   it "disallows implicit conversion of int to enum" do
-    assert_error <<-CRYSTAL, "expected argument #1 to 'foo' to be Foo, not Int32"
+    assert_error <<-CODE, "expected argument #1 to 'foo' to be Foo, not Int32"
       enum Foo
         A = 1
       end
@@ -29,11 +29,11 @@ describe "Semantic: enum" do
       end
 
       foo 1
-      CRYSTAL
+      CODE
   end
 
   it "finds method in enum type" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       struct Enum
         def foo
           1
@@ -45,11 +45,11 @@ describe "Semantic: enum" do
       end
 
       Foo::A.foo
-      CRYSTAL
+      CODE
   end
 
   it "finds class method in enum type" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       struct Enum
         def self.foo
           1
@@ -61,31 +61,31 @@ describe "Semantic: enum" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "errors if using a name twice" do
-    assert_error <<-CRYSTAL, "enum 'Foo' already contains a member named 'A'"
+    assert_error <<-CODE, "enum 'Foo' already contains a member named 'A'"
       enum Foo
         A
         A
       end
-      CRYSTAL
+      CODE
   end
 
   it "creates enum from value" do
-    assert_type(<<-CRYSTAL) { types["Foo"] }
+    assert_type(<<-CODE) { types["Foo"] }
       enum Foo
         A
         B
       end
 
       Foo.new(1)
-      CRYSTAL
+      CODE
   end
 
   it "defines method on enum" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       enum Foo
         A
         B
@@ -96,11 +96,11 @@ describe "Semantic: enum" do
       end
 
       Foo::A.foo
-      CRYSTAL
+      CODE
   end
 
   it "defines class method on enum" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       enum Foo
         A
         B
@@ -111,11 +111,11 @@ describe "Semantic: enum" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "reopens an enum" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       enum Foo
         A
         B
@@ -128,11 +128,11 @@ describe "Semantic: enum" do
       end
 
       Foo::A.foo
-      CRYSTAL
+      CODE
   end
 
   it "errors if reopen but not enum" do
-    assert_error <<-CRYSTAL, "Foo is not a enum, it's a class"
+    assert_error <<-CODE, "Foo is not a enum, it's a class"
       class Foo
       end
 
@@ -140,11 +140,11 @@ describe "Semantic: enum" do
         A
         B
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors if reopen and tries to define constant" do
-    assert_error <<-CRYSTAL, "can't reopen enum and add more constants to it"
+    assert_error <<-CODE, "can't reopen enum and add more constants to it"
       enum Foo
         A
         B
@@ -153,11 +153,11 @@ describe "Semantic: enum" do
       enum Foo
         C
       end
-      CRYSTAL
+      CODE
   end
 
   it "has None value when defined as @[Flags]" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       @[Flags]
       enum Foo
         A
@@ -165,11 +165,11 @@ describe "Semantic: enum" do
       end
 
       Foo::None.value
-      CRYSTAL
+      CODE
   end
 
   it "has All value when defined as @[Flags]" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       @[Flags]
       enum Foo
         A
@@ -177,18 +177,18 @@ describe "Semantic: enum" do
       end
 
       Foo::All.value
-      CRYSTAL
+      CODE
   end
 
   it "doesn't break assigned values in enum flags when a member has value 0 (#5767)" do
-    result = semantic(<<-CRYSTAL)
+    result = semantic(<<-CODE)
       @[Flags]
       enum Foo
         OtherNone = 0
         Bar
         Baz
       end
-      CRYSTAL
+      CODE
     enum_type = result.program.types["Foo"].as(EnumType)
     enum_type.types["OtherNone"].as(Const).value.should eq(NumberLiteral.new("0", :i32))
     enum_type.types["Bar"].as(Const).value.should eq(NumberLiteral.new("1", :i32))
@@ -196,25 +196,25 @@ describe "Semantic: enum" do
   end
 
   it "disallows redefining None to non-0 for @[Flags] enum" do
-    assert_error <<-CRYSTAL, "flags enum can't redefine None member to non-0"
+    assert_error <<-CODE, "flags enum can't redefine None member to non-0"
       @[Flags]
       enum Foo
         None = 42
         Dummy
       end
-      CRYSTAL
+      CODE
 
-    assert_error <<-CRYSTAL, "flags enum can't redefine None member to non-0"
+    assert_error <<-CODE, "flags enum can't redefine None member to non-0"
       @[Flags]
       enum Foo
         None    # 1
         Dummy
       end
-      CRYSTAL
+      CODE
   end
 
   it "allows redefining None to 0 for @[Flags] enum" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       @[Flags]
       enum Foo
         None = 0
@@ -222,31 +222,31 @@ describe "Semantic: enum" do
       end
 
       Foo::None.value
-      CRYSTAL
+      CODE
   end
 
   it "disallows All value for @[Flags] enum" do
-    assert_error <<-CRYSTAL, "flags enum can't redefine All member"
+    assert_error <<-CODE, "flags enum can't redefine All member"
       @[Flags]
       enum Foo
         All = 50
       end
-      CRYSTAL
+      CODE
   end
 
   it "doesn't error when defining a non-flags enum with None or All" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       enum Foo
         None
         All = 50
       end
 
       Foo::None.value
-      CRYSTAL
+      CODE
   end
 
   it "doesn't error when defining a flags enum in a lib with None or All" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       lib Lib
         @[Flags]
         enum Foo
@@ -257,11 +257,11 @@ describe "Semantic: enum" do
       end
 
       Lib::Foo::None.value
-      CRYSTAL
+      CODE
   end
 
   it "doesn't error when defining a method for an enum with flags" do
-    assert_type(<<-CRYSTAL) { types["Foo"] }
+    assert_type(<<-CODE) { types["Foo"] }
       @[Flags]
       enum Foo
         A
@@ -273,11 +273,11 @@ describe "Semantic: enum" do
       end
 
       Foo::A.foo
-      CRYSTAL
+      CODE
   end
 
   it "allows class vars in enum" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       enum Foo
         A
 
@@ -289,11 +289,11 @@ describe "Semantic: enum" do
       end
 
       Foo.class_var
-      CRYSTAL
+      CODE
   end
 
   it "errors if invoking private enum method" do
-    assert_error <<-CRYSTAL, "private method 'foo' called for Foo"
+    assert_error <<-CODE, "private method 'foo' called for Foo"
       enum Foo
         A
 
@@ -303,27 +303,27 @@ describe "Semantic: enum" do
       end
 
       Foo::A.foo
-      CRYSTAL
+      CODE
   end
 
   it "errors if enum value is too big for type (#678)" do
-    assert_error <<-CRYSTAL, "invalid Int32: 2147486719"
+    assert_error <<-CODE, "invalid Int32: 2147486719"
       enum Foo
         A = 2147486719
       end
-      CRYSTAL
+      CODE
   end
 
   it "reports arithmetic overflow in enum value expression (#11746)" do
-    assert_error <<-CRYSTAL, "Arithmetic overflow", inject_primitives: true
+    assert_error <<-CODE, "Arithmetic overflow", inject_primitives: true
       enum Foo : UInt64
         A = 0_u64 - 1_u64
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors if using instance var inside enum (#991)" do
-    assert_error <<-CRYSTAL, "can't use instance variables inside enums (at enum Foo)"
+    assert_error <<-CODE, "can't use instance variables inside enums (at enum Foo)"
       enum Foo
         A
 
@@ -333,11 +333,11 @@ describe "Semantic: enum" do
       end
 
       Foo::A.meth
-      CRYSTAL
+      CODE
   end
 
   it "marks as flags with base type (#2185)" do
-    result = semantic(<<-CRYSTAL)
+    result = semantic(<<-CODE)
       @[Flags]
       enum SomeFacts : UInt8
         AppleLover
@@ -346,90 +346,90 @@ describe "Semantic: enum" do
       end
 
       SomeFacts::AppleLover
-      CRYSTAL
+      CODE
     enum_type = result.program.types["SomeFacts"].as(EnumType)
     annotation_type = result.program.types["Flags"].as(AnnotationType)
     enum_type.annotation(annotation_type).should_not be_nil
   end
 
   it "reopens enum without base type (1)" do
-    assert_no_errors <<-CRYSTAL
+    assert_no_errors <<-CODE
       enum Foo
         X
       end
 
       enum Foo
       end
-      CRYSTAL
+      CODE
   end
 
   it "reopens enum without base type (2)" do
-    assert_no_errors <<-CRYSTAL
+    assert_no_errors <<-CODE
       enum Foo : UInt8
         X
       end
 
       enum Foo
       end
-      CRYSTAL
+      CODE
   end
 
   it "reopens enum with same base type (1)" do
-    assert_no_errors <<-CRYSTAL
+    assert_no_errors <<-CODE
       enum Foo
         X
       end
 
       enum Foo : Int32
       end
-      CRYSTAL
+      CODE
   end
 
   it "reopens enum with same base type (2)" do
-    assert_no_errors <<-CRYSTAL
+    assert_no_errors <<-CODE
       enum Foo : UInt8
         X
       end
 
       enum Foo : UInt8
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors if reopening enum with different base type (1)" do
-    assert_error <<-CRYSTAL, "enum Foo's base type is Int32, not UInt8"
+    assert_error <<-CODE, "enum Foo's base type is Int32, not UInt8"
       enum Foo
         X
       end
 
       enum Foo : UInt8
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors if reopening enum with different base type (2)" do
-    assert_error <<-CRYSTAL, "enum Foo's base type is UInt8, not UInt16"
+    assert_error <<-CODE, "enum Foo's base type is UInt8, not UInt16"
       enum Foo : UInt8
         X
       end
 
       enum Foo : UInt16
       end
-      CRYSTAL
+      CODE
   end
 
   it "can use macro expression inside enum" do
-    assert_type(<<-CRYSTAL) { types["Foo"] }
+    assert_type(<<-CODE) { types["Foo"] }
       enum Foo
         {{ "A".id }}
       end
 
       Foo::A
-      CRYSTAL
+      CODE
   end
 
   it "can use macro for inside enum" do
-    assert_type(<<-CRYSTAL) { types["Foo"] }
+    assert_type(<<-CODE) { types["Foo"] }
       enum Foo
         {% for name in %w(A B C) %}
           {{name.id}}
@@ -437,54 +437,54 @@ describe "Semantic: enum" do
       end
 
       Foo::A
-      CRYSTAL
+      CODE
   end
 
   it "errors if inheriting Enum (#3592)" do
-    assert_error <<-CRYSTAL, "can't inherit Enum. Use the enum keyword to define enums"
+    assert_error <<-CODE, "can't inherit Enum. Use the enum keyword to define enums"
       struct Foo < Enum
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors on enum without members (#3447)" do
-    assert_error <<-CRYSTAL, "enum Foo must have at least one member"
+    assert_error <<-CODE, "enum Foo must have at least one member"
       enum Foo
       end
-      CRYSTAL
+      CODE
 
-    assert_error <<-CRYSTAL, "enum Foo must have at least one member"
+    assert_error <<-CODE, "enum Foo must have at least one member"
       @[Flags]
       enum Foo
         None = 0
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors if declaring type inside enum (#3127)" do
-    assert_error <<-CRYSTAL, "can't declare type inside enum Foo"
+    assert_error <<-CODE, "can't declare type inside enum Foo"
       enum Foo
         A
       end
 
       class Foo::Bar
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors if declaring type inside enum, nested (#3127)" do
-    assert_error <<-CRYSTAL, "can't declare type inside enum"
+    assert_error <<-CODE, "can't declare type inside enum"
       enum Foo
         A
       end
 
       class Foo::Bar::Baz
       end
-      CRYSTAL
+      CODE
   end
 
   it "attaches annotation to enum method (#6690)" do
-    result = semantic(<<-CRYSTAL)
+    result = semantic(<<-CODE)
       enum Foo
         X
 
@@ -492,25 +492,25 @@ describe "Semantic: enum" do
         def bar
         end
       end
-      CRYSTAL
+      CODE
 
     method = result.program.types["Foo"].lookup_first_def("bar", block: false).should_not(be_nil)
     method.always_inline?.should be_true
   end
 
   it "errors if defining initialize in Enum (#7238)" do
-    assert_error <<-CRYSTAL, "enums can't define an `initialize` method, try using `def self.new`"
+    assert_error <<-CODE, "enums can't define an `initialize` method, try using `def self.new`"
       enum Foo
         FOO = 1
 
         def initialize
         end
       end
-      CRYSTAL
+      CODE
   end
 
   it "can redefine Enum.new" do
-    assert_type(<<-CRYSTAL) { string }
+    assert_type(<<-CODE) { string }
       enum Foo
         FOO = 1
 
@@ -520,77 +520,77 @@ describe "Semantic: enum" do
       end
 
       Foo.new(1)
-      CRYSTAL
+      CODE
   end
 
   it "gives error on enum overflow" do
-    assert_error <<-CRYSTAL, "value of enum member V129 would overflow the base type Int8"
+    assert_error <<-CODE, "value of enum member V129 would overflow the base type Int8"
       enum Foo : Int8
         #{Array.new(129) { |i| "V#{i + 1}" }.join "\n"}
       end
-      CRYSTAL
+      CODE
   end
 
   it "gives error on flags enum overflow" do
-    assert_error <<-CRYSTAL, "value of enum member V9 would overflow the base type UInt8"
+    assert_error <<-CODE, "value of enum member V9 would overflow the base type UInt8"
       @[Flags]
       enum Foo : UInt8
         #{Array.new(9) { |i| "V#{i + 1}" }.join "\n"}
       end
-      CRYSTAL
+      CODE
   end
 
   it "gives error on enum overflow after a member with value" do
-    assert_error <<-CRYSTAL, "value of enum member B would overflow the base type Int32"
+    assert_error <<-CODE, "value of enum member B would overflow the base type Int32"
       enum Foo
         A = 0x7FFFFFFF
         B
       end
-      CRYSTAL
+      CODE
   end
 
   it "gives error on signed flags enum overflow after a member with value" do
-    assert_error <<-CRYSTAL, "value of enum member B would overflow the base type Int32"
+    assert_error <<-CODE, "value of enum member B would overflow the base type Int32"
       @[Flags]
       enum Foo
         A = 0x40000000
         B
       end
-      CRYSTAL
+      CODE
   end
 
   it "gives error on unsigned flags enum overflow after a member with value" do
-    assert_error <<-CRYSTAL, "value of enum member B would overflow the base type UInt32"
+    assert_error <<-CODE, "value of enum member B would overflow the base type UInt32"
       @[Flags]
       enum Foo : UInt32
         A = 0x80000000
         B
       end
-      CRYSTAL
+      CODE
   end
 
   it "doesn't overflow when going from negative to zero (#7874)" do
-    assert_no_errors <<-CRYSTAL
+    assert_no_errors <<-CODE
       enum Nums
         Zero  = -2
         One
         Two
       end
-      CRYSTAL
+      CODE
   end
 
   it "doesn't overflow on flags member (#7877)" do
-    assert_no_errors <<-CRYSTAL
+    assert_no_errors <<-CODE
       @[Flags]
       enum Filter
         A = 1 << 29
         B
       end
-      CRYSTAL
+      CODE
   end
 
   it "doesn't visit enum members generated by macros twice (#10104)" do
-    result = semantic(<<-CRYSTAL)
+    result = semantic(<<-CODE)
       enum Foo
         A = 1
 
@@ -599,30 +599,30 @@ describe "Semantic: enum" do
           end
         {% end %}
       end
-      CRYSTAL
+      CODE
     a_def = result.program.types["Foo"].lookup_defs("foo").first
     a_def.previous.should be_nil
   end
 
   it "adds docs to helper methods" do
-    result = top_level_semantic <<-CRYSTAL, wants_doc: true
+    result = top_level_semantic <<-CODE, wants_doc: true
     enum Foo
       # These are the docs for `Bar`
       Bar = 1
     end
-    CRYSTAL
+    CODE
 
     a_defs = result.program.types["Foo"].lookup_defs("bar?")
     a_defs.first.doc.should eq("Returns `true` if this enum value equals `Bar`")
   end
 
   it "marks helper methods with `:nodoc:` if the member is `:nodoc:`" do
-    result = top_level_semantic <<-CRYSTAL, wants_doc: true
+    result = top_level_semantic <<-CODE, wants_doc: true
     enum Foo
       # :nodoc:
       Bar = 1
     end
-    CRYSTAL
+    CODE
 
     a_defs = result.program.types["Foo"].lookup_defs("bar?")
     a_defs.first.doc.should eq(":nodoc:")

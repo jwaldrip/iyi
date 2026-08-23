@@ -1,0 +1,16 @@
+# Files — the missing piece between a demonstration and a tool.
+#
+#   ./bin/iyi run samples/iyi/files.iyi
+#
+# Writes a file, reads it back, checks `exists?`, then deletes it and proves it
+# is gone. The path is next to the process and named so it is obvious.
+
+module samples/files
+
+path = "iyi-files-sample.txt"
+File.write(path, "hello from iyi\n")
+puts File.read(path)
+puts File.exists?(path)
+puts File.exists?("iyi-files-sample-missing.txt")
+File.delete(path)
+puts File.exists?(path)

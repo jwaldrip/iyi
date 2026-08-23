@@ -18,12 +18,12 @@ describe "Code gen: def" do
   end
 
   it "call external function 'putchar'" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       lib LibC
         fun putchar(c : Char) : Char
       end
       LibC.putchar '\\0'
-      CRYSTAL
+      CODE
   end
 
   it "uses self" do
@@ -31,7 +31,7 @@ describe "Code gen: def" do
   end
 
   it "uses var after external" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       lib LibC
         fun putchar(c : Char) : Char
       end
@@ -39,7 +39,7 @@ describe "Code gen: def" do
       a = 1
       LibC.putchar '\\0'
       a
-      CRYSTAL
+      CODE
   end
 
   it "allows to change argument values" do
@@ -55,7 +55,7 @@ describe "Code gen: def" do
   end
 
   it "unifies all calls to same def" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       def raise(msg)
@@ -83,11 +83,11 @@ describe "Code gen: def" do
       hash = Hash2.new
       hash[1] = 2
       hash[1]
-      CRYSTAL
+      CODE
   end
 
   it "codegens recursive type with union" do
-    run(<<-CRYSTAL)
+    run(<<-CODE)
       class Foo
         @next : Foo?
 
@@ -103,11 +103,11 @@ describe "Code gen: def" do
       a = Foo.allocate
       a.next = Foo.allocate
       a = a.next
-      CRYSTAL
+      CODE
   end
 
   it "codegens with related types" do
-    run(<<-CRYSTAL)
+    run(<<-CODE)
       class Foo
         @next : Foo | Bar | Nil
 
@@ -147,11 +147,11 @@ describe "Code gen: def" do
       c.next = Bar.allocate
 
       foo(c, c.next)
-      CRYSTAL
+      CODE
   end
 
   it "codegens and doesn't break if obj is int and there's a mutation" do
-    run(<<-CRYSTAL)
+    run(<<-CODE)
       require "prelude"
 
       struct Int
@@ -161,31 +161,31 @@ describe "Code gen: def" do
 
       elems = [1]
       elems[0].baz [1]
-      CRYSTAL
+      CODE
   end
 
   it "codegens with and without default arguments" do
-    run(<<-CRYSTAL).to_i.should eq(5)
+    run(<<-CODE).to_i.should eq(5)
       def foo(x = 1)
         x &+ 1
       end
 
       foo(2) &+ foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens with and without many default arguments" do
-    run(<<-CRYSTAL).to_i.should eq(40)
+    run(<<-CODE).to_i.should eq(40)
       def foo(x = 1, y = 2, z = 3)
         x &+ y &+ z
       end
 
       foo &+ foo(9) &+ foo(3, 4) &+ foo(6, 3, 1)
-      CRYSTAL
+      CODE
   end
 
   it "codegens with interesting default argument" do
-    run(<<-CRYSTAL).to_i.should eq(5)
+    run(<<-CODE).to_i.should eq(5)
       class Foo
         def foo(x = self.bar)
           x &+ 1
@@ -199,11 +199,11 @@ describe "Code gen: def" do
       f = Foo.new
 
       f.foo(2) &+ f.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens dispatch on static method" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       def Object.foo(x)
         1
       end
@@ -211,11 +211,11 @@ describe "Code gen: def" do
       a = 1
       a = 1.5
       Object.foo(a)
-      CRYSTAL
+      CODE
   end
 
   it "use target def type as return type" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       require "prelude"
 
       def foo
@@ -225,11 +225,11 @@ describe "Code gen: def" do
       end
 
       foo.nil? ? 1 : 0
-      CRYSTAL
+      CODE
   end
 
   it "codegens recursive nasty code" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       class Foo
         def initialize(x)
         end
@@ -261,11 +261,11 @@ describe "Code gen: def" do
       end
 
       false && foo
-      CRYSTAL
+      CODE
   end
 
   it "looks up matches in super classes and merges them with subclasses" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def foo(other)
           1
@@ -280,11 +280,11 @@ describe "Code gen: def" do
 
       bar1 = Bar.new
       bar1.foo(1 || 1.5)
-      CRYSTAL
+      CODE
   end
 
   it "codegens def which changes type of arg" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       def foo(x)
         while x >= 0
           x = -0.5
@@ -293,44 +293,44 @@ describe "Code gen: def" do
       end
 
       foo(2).to_i!
-      CRYSTAL
+      CODE
   end
 
   it "codegens return nil when nilable type (1)" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       def foo
         return if 1 == 1
         Reference.new
       end
 
       foo.nil?
-      CRYSTAL
+      CODE
   end
 
   it "codegens return nil when nilable type (2)" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       def foo
         return nil if 1 == 1
         Reference.new
       end
 
       foo.nil?
-      CRYSTAL
+      CODE
   end
 
   it "codegens dispatch with nilable reference union type" do
-    run(<<-CRYSTAL).to_i.should eq(0)
+    run(<<-CODE).to_i.should eq(0)
       struct Nil; def object_id; 0_u64; end; end
       class Foo; end
       class Bar; end
 
       f = 1 == 1 ? nil : (Foo.new || Bar.new)
       f.object_id
-      CRYSTAL
+      CODE
   end
 
   it "codegens dispatch without obj, bug 1" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       def coco(x : Int32)
         2
       end
@@ -346,11 +346,11 @@ describe "Code gen: def" do
       end
 
       Foo.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens dispatch without obj, bug 1" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       def coco(x : Int32)
         2
       end
@@ -369,11 +369,11 @@ describe "Code gen: def" do
       end
 
       (Foo.new || Bar.new).foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens dispatch with single def when discarding unallocated ones (1)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def bar
           1
@@ -388,11 +388,11 @@ describe "Code gen: def" do
 
       foo = 1 == 1 ? Foo.new : Pointer(Int32).new(0_u64).as(Bar)
       foo.bar
-      CRYSTAL
+      CODE
   end
 
   it "codegens dispatch with single def when discarding unallocated ones (2)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
       end
 
@@ -409,20 +409,20 @@ describe "Code gen: def" do
 
       foo = 1 == 1 ? Foo.new : Pointer(Int32).new(0_u64).as(Bar)
       something(foo)
-      CRYSTAL
+      CODE
   end
 
   it "codegens bug #119" do
-    run(<<-CRYSTAL).to_b.should be_false
+    run(<<-CODE).to_b.should be_false
       require "prelude"
 
       x = {} of String => Hash(String, String)
       x.has_key?("a")
-      CRYSTAL
+      CODE
   end
 
   it "puts union before single type in matches preferences" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       abstract class Foo
       end
 
@@ -442,11 +442,11 @@ describe "Code gen: def" do
 
       node = Baz.new || Bar.new
       foo(node)
-      CRYSTAL
+      CODE
   end
 
   it "dispatches on virtual type implementing generic module (related to bug #165)" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       module Moo(T)
         def moo
           1
@@ -473,11 +473,11 @@ describe "Code gen: def" do
 
       foo = Bar.new || Baz.new
       method(foo)
-      CRYSTAL
+      CODE
   end
 
   it "fixes #230: include original owner in mangled def" do
-    run(<<-CRYSTAL).to_b.should be_true
+    run(<<-CODE).to_b.should be_true
       class Base
         def some(other : self)
           false
@@ -500,39 +500,39 @@ describe "Code gen: def" do
 
       c = Foo(Int32).new
       c.some(c)
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash on private def as last expression" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       private def foo
       end
-      CRYSTAL
+      CODE
   end
 
   it "uses previous argument in default value (#1062)" do
-    run(<<-CRYSTAL).to_i.should eq(123 * 2 + 456)
+    run(<<-CODE).to_i.should eq(123 * 2 + 456)
       def foo(x = 123, y = x &+ 456)
         x &+ y
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "can match N type argument of static array (#1203)" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       def fn(a : StaticArray(T, N)) forall T, N
         N
       end
 
       n = uninitialized StaticArray(Int32, 10)
       fn(n)
-      CRYSTAL
+      CODE
   end
 
   it "uses dispatch call type for phi (#3529)" do
-    codegen(<<-CRYSTAL, inject_primitives: false)
+    codegen(<<-CODE, inject_primitives: false)
       def foo(x : Int32)
         yield
         1.0
@@ -546,26 +546,26 @@ describe "Code gen: def" do
       foo(1 || 1_i64) do
         break
       end
-      CRYSTAL
+      CODE
   end
 
   it "codegens union to union assignment of mutable arg (#3691)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       def foo(arg)
         arg = ""
       end
 
       foo(1 || true)
-      CRYSTAL
+      CODE
   end
 
   it "codegens yield with destructing tuple having unreachable element" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       def foo
         yield({1, while true; end})
       end
 
       foo { |a, b| }
-      CRYSTAL
+      CODE
   end
 end

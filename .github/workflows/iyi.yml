@@ -82,6 +82,7 @@ jobs:
             spec/compiler/iyimod_spec.cr \
             spec/compiler/iyi_import_spec.cr \
             spec/compiler/semantic/iyi_spec.cr \
+            spec/compiler/iyi_derive_spec.cr \
             spec/compiler/compiler_spec.cr
 
       # The command surface and the build daemon, which is iyi's own (SPEC.md
@@ -90,7 +91,7 @@ jobs:
       # `mod` refusing the prefixes every other command accepts.
       - name: The commands, and the daemon
         run: |
-          export CRYSTAL_PATH="lib:$(pwd)/src"
+          export IYI_PATH="lib:$(pwd)/src"
           make -o .build/crystal cli_spec
 
   compiler-specs:
@@ -232,6 +233,36 @@ jobs:
       - name: Build the samples again with their modules' source deleted
         run: bash bench/samples_roundtrip.sh
 
+      # A library arriving with a feature is a decision, and this is where it
+      # gets noticed. Seven undefined symbols in any iyi program (SPEC.md III.9),
+      # and a new one fails here rather than on somebody's machine.
+      - name: The dependency floor
+        run: bash bench/dependency_floor.sh
+
+      # iyi is a permanent fork, so Crystal's name standing in for iyi's is a
+      # defect and not a detail. Both layers: a tree that should have been
+      # renamed, and a name left inside a file that was otherwise cut over.
+      # Every allowed occurrence carries its reason in the script.
+      - name: iyi owns its name
+        run: |
+          # The crystal docker image is a compiler toolchain, not a Python one.
+          # This gate is Python because the first draft was `grep -P` and the
+          # grep a script resolves has no `-P`, so every allowlist test errored
+          # and the gate failed open. Installing Python here is cheaper than
+          # rewriting the matching in a language whose regex we would then have
+          # to re-prove.
+          if ! command -v python3 >/dev/null; then
+            apt-get update -qq && apt-get install -y -qq python3
+          fi
+          python3 bench/identity_floor.py
+
+      # The docs quote sizes as facts a reader can check. Three times a number
+      # has gone stale unnoticed, the last one repeated in eleven places, so it
+      # is measured here rather than trusted. Python is already installed by the
+      # step above.
+      - name: The numbers the docs state
+        run: python3 bench/doc_numbers.py --list
+
   targets:
     needs: build
     runs-on: ubuntu-24.04
@@ -258,7 +289,7 @@ jobs:
           status=0
           for target in x86_64-linux-gnu x86_64-linux-musl aarch64-linux-gnu \
                         arm-linux-gnueabihf x86_64-darwin aarch64-darwin \
-                        x86_64-w64-mingw32 x86_64-windows-msvc; do
+                        x86_64-w64-mingw32 x86_64-windows-msvc wasm32-wasi; do
             printf '== %-24s' "$target"
             if ./bin/crystal build --cross-compile --target "$target" \
                  -o "/tmp/cross-$target" /tmp/hi.cr > "/tmp/log-$target" 2>&1; then
@@ -269,9 +300,49 @@ jobs:
           done
           exit $status
 
+      # iyi: the same cross-compile, for an iyi program rather than a Crystal
+      # one, and then read what the object actually asks the machine for. This
+      # is where "supports the platform out of the box" is either true or not:
+      # a target that type-checks can still emit a call nothing supplies, which
+      # is how `__multi3` went missing on wasm32 and arm.
+      #
+      # Each format is read by its own extension. `.o` for ELF and Mach-O,
+      # `.obj` for Windows, `.wasm` for wasm32. Reading the wrong one prints
+      # nothing and looks like a pass, which is exactly how two defects here
+      # survived their first audit.
+      - name: Build `iyi` for the per-target audit
+        run: make -o .build/crystal iyi
+
+      - name: What an iyi program asks each platform for
+        run: |
+          status=0
+          for target in x86_64-linux-gnu aarch64-linux-gnu x86_64-darwin \
+                        aarch64-darwin x86_64-windows-msvc x86_64-windows-gnu \
+                        wasm32-wasi; do
+            for sample in hello webapp; do
+              out="/tmp/iyi-$sample-$target"
+              if ! ./bin/iyi build --cross-compile --target "$target" \
+                    -o "$out" "samples/iyi/$sample.iyi" > "$out.log" 2>&1; then
+                echo "== $target $sample FAILED"; cat "$out.log"; status=1; continue
+              fi
+              obj=""
+              for candidate in "$out.o" "$out.obj" "$out.wasm"; do
+                [ -f "$candidate" ] && obj="$candidate" && break
+              done
+              if [ -z "$obj" ]; then
+                echo "== $target $sample emitted no object this script knows how to read"
+                status=1; continue
+              fi
+              printf '== %-22s %-7s %s\n' "$target" "$sample" \
+                "$(llvm-nm --undefined-only "$obj" 2>/dev/null |
+                     awk '{ print $NF }' | sed 's/^_*//' | sort -u | tr '\n' ' ')"
+            done
+          done
+          exit $status
   # Portability, taken past "the code generator has no objection". The README
-  # says an iyi program compiles for eight targets and is tested on one; these
-  # two jobs move two of the other seven from compiled to *run*.
+  # says an iyi program compiles for nine targets and is run on four of them;
+  # these jobs are the musl, aarch64 and Windows runs, and the native job is
+  # the fourth.
   #
   # Split in two because a job with a `container:` cannot run docker, and
   # running the program means running it somewhere else: the object is produced
@@ -296,7 +367,7 @@ jobs:
 
       # What the program prints here is what it has to print there. Taken from
       # a native run rather than written down, so the two cannot drift.
-      - name: Cross-compile hello for musl and aarch64
+      - name: Cross-compile hello for musl, aarch64, Windows and wasm
         run: |
           mkdir -p cross
           ./bin/iyi run samples/iyi/hello.iyi > cross/expected.txt
@@ -304,6 +375,29 @@ jobs:
             -o cross/hello-musl samples/iyi/hello.iyi
           ./bin/iyi build --cross-compile --target aarch64-linux-gnu \
             -o cross/hello-aarch64 samples/iyi/hello.iyi
+          # The Windows link is not written down here: it is whatever
+          # `--cross-compile` prints, saved and run as-is on the runner, so the
+          # command a person is told to type is the command that is tested.
+          ( cd cross && ../bin/iyi build --cross-compile \
+              --target x86_64-windows-msvc -o hello-windows \
+              ../samples/iyi/hello.iyi > hello-windows.link )
+          cat cross/hello-windows.link
+          ( cd cross && ../bin/iyi build --cross-compile \
+              --target wasm32-wasi -o hello-wasi \
+              ../samples/iyi/hello.iyi > hello-wasi.link )
+          cat cross/hello-wasi.link
+
+          # The Windows probe: the two shapes whose output has been seen wrong,
+          # a case conversion and a number rendered into a string, and nothing
+          # else. Small enough that a wrong answer names the path.
+          printf 'module probe\n\nputs "hello, iyi!".upcase\nputs "BEEP " + 7.to_s\n' \
+            > cross/strings.iyi
+          ./bin/iyi run cross/strings.iyi > cross/strings-expected.txt
+          cat cross/strings-expected.txt
+          ( cd cross && ../bin/iyi build --cross-compile \
+              --target x86_64-windows-msvc -o strings-windows \
+              strings.iyi > strings-windows.link )
+          cat cross/strings-windows.link
           ls -l cross
 
       - uses: actions/upload-artifact@v4
@@ -346,6 +440,120 @@ jobs:
             '
           diff cross/expected.txt cross/got.txt && echo "aarch64: same output"
 
+  # Windows is not a run target and nothing here is a gate. Three things happen
+  # when you run the same Windows binary twenty times: it prints the right
+  # answer, it prints memory it was never given (`ache\w` where `HELLO, IYI!`
+  # belongs, or `BEEP ` with the digits gone), or it exits `0xC0000005`. All
+  # three have been seen, and which one you get is luck — so there is no
+  # property to assert, only a tally to keep.
+  #
+  # This job always succeeds. It exists so the numbers are in every build's log,
+  # and so the day they read twenty right and nothing else, that is visible
+  # without anyone going looking. The claim itself lives in the README and in
+  # SPEC III.9 12c, where it says Windows compiles and links and stops there.
+  windows-probe:
+    needs: cross-objects
+    runs-on: windows-2022
+    name: "What a Windows binary does, twenty times (watch)"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-objects
+          path: cross
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: What the object asks Windows for
+        shell: cmd
+        run: dumpbin /nologo /symbols cross\hello-windows.obj | findstr /C:"UNDEF"
+
+      - name: One string, twenty runs, tallied
+        shell: pwsh
+        working-directory: cross
+        run: |
+          $command = (Get-Content strings-windows.link -Raw).Trim()
+          Write-Host "linking with: $command"
+          $parts = $command -split '\s+'
+          & $parts[0] $parts[1..($parts.Length - 1)]
+          if ($LASTEXITCODE -ne 0) { Write-Host "link failed with $LASTEXITCODE"; exit 0 }
+
+          # Normalised before comparing, both sides: `Out-String` hands back CRLF
+          # and the reference was written on Linux. The first version of this
+          # probe skipped that and called twenty correct answers wrong.
+          function normalise($text) { ($text -replace "`r`n", "`n").TrimEnd("`n") }
+
+          $wanted = normalise (Get-Content strings-expected.txt -Raw)
+          $right = 0
+          $crashed = 0
+          $wrong = 0
+
+          foreach ($run in 1..20) {
+            $got = normalise (.\strings-windows.exe | Out-String)
+            if ($LASTEXITCODE -ne 0) {
+              $crashed = $crashed + 1
+              Write-Host ("run {0,2}: exited {1}" -f $run, $LASTEXITCODE)
+            } elseif ($got -eq $wanted) {
+              $right = $right + 1
+            } else {
+              $wrong = $wrong + 1
+              Write-Host ("run {0,2}: {1}" -f $run, ($got -replace "`n", " | "))
+            }
+          }
+
+          Write-Host ""
+          Write-Host ("right {0} of 20, wrong output {1}, crashed {2}" -f $right, $wrong, $crashed)
+          if ($right -eq 20) {
+            Write-Host "Twenty out of twenty. Not proof on its own, but several clean builds"
+            Write-Host "in a row would be, and the README and SPEC III.9 12c would then both"
+            Write-Host "be wrong on purpose."
+          }
+          exit 0
+
+  # wasm32-wasi, run rather than type-checked. The module imports four
+  # `wasi_snapshot_preview1` functions and nothing else, and what makes it a
+  # program a host can start is wasi-libc's entry stub — which calls
+  # `__main_argc_argv`, not `main`. A module defining only `main` links without
+  # complaint and traps on `unreachable` the moment the entry calls through the
+  # weak reference it left behind; the prelude defines the name the entry
+  # actually calls.
+  #
+  # Linked with the command `--cross-compile` prints, run as-is, with wasi-sdk's
+  # clang as the `cc` it names — so the command a person is told to type is the
+  # command that is tested.
+  wasi-run:
+    needs: cross-objects
+    runs-on: ubuntu-24.04
+    name: "An iyi program, run on wasm32-wasi"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-objects
+          path: cross
+
+      - name: Install wasi-sdk and wasmtime
+        run: |
+          curl -sSL -o /tmp/wasi-sdk.tar.gz \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz
+          sudo mkdir -p /opt/wasi-sdk
+          sudo tar -xzf /tmp/wasi-sdk.tar.gz -C /opt/wasi-sdk --strip-components=1
+          curl -sSL https://wasmtime.dev/install.sh | bash
+
+      - name: What the module imports
+        run: /opt/wasi-sdk/bin/llvm-nm --undefined-only cross/hello-wasi.wasm
+
+      - name: Link with the command `--cross-compile` printed, and run it
+        run: |
+          # The driver the command names has to be one that can target wasi, and
+          # `cc` lives beside `wasm-ld` in the same sysroot for clang to find it.
+          ln -sf /opt/wasi-sdk/bin/clang /opt/wasi-sdk/bin/cc
+          export PATH="/opt/wasi-sdk/bin:$PATH"
+          command="$(cat cross/hello-wasi.link)"
+          echo "linking with: $command"
+          ( cd cross && eval "$command" )
+          "$HOME/.wasmtime/bin/wasmtime" cross/hello-wasi > got.txt
+          cat got.txt
+          cmp cross/expected.txt got.txt && echo "wasm32-wasi: same output"
+
   binary:
     needs: build
     runs-on: ubuntu-24.04
@@ -371,22 +579,26 @@ jobs:
         run: make -o .build/crystal iyi-tarball
 
       # What a person who downloads it does: unpack it somewhere else and run a
-      # program. Nothing here may need this checkout, a CRYSTAL_PATH, or a
+      # program. Nothing here may need this checkout, a IYI_PATH, or a
       # Crystal on the machine.
       - name: Unpack the tarball somewhere else and compile with it
         run: |
           mkdir -p /tmp/unpacked
           tar -xzf .build/iyi-*-linux-*.tar.gz -C /tmp/unpacked
           cd /tmp
-          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run /tmp/unpacked/share/iyi/samples/hello.iyi
-          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi version
+          # Both names unset, not just iyi's: the compiler falls back to
+          # `CRYSTAL_PATH` so `crystal` keeps working, which means a stray one
+          # in the environment would answer for the tarball and this would stop
+          # proving the tarball is self-contained.
+          env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run /tmp/unpacked/share/iyi/samples/hello.iyi
+          env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi version
 
       # Both libraries, because a tarball that ships one of them answers
       # `require "json"` with "can't find file" — the headline feature failing
       # in the thing people download, which is how this was found.
       - name: The other library, out of the tarball
         run: |
-          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run --crystal \
+          env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run --crystal \
             /tmp/unpacked/share/iyi/samples/crystal/stdlib.iyi
 
       # And all of it, which is what "ships the library" has to mean. The

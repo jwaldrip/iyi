@@ -16,6 +16,6 @@ crystal: ">= 1.0"
 
 license: Apache-2.0 WITH Swift-exception
 
-repository: https://github.com/sdogruyol/iyi
-homepage: https://github.com/sdogruyol/iyi
-documentation: https://github.com/sdogruyol/iyi/blob/master/SPEC.md
+repository: https://github.com/jwaldrip/iyi
+homepage: https://github.com/jwaldrip/iyi
+documentation: https://github.com/jwaldrip/iyi/blob/master/SPEC.md

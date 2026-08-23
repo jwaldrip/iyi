@@ -70,7 +70,7 @@ def with_temp_c_object_file(c_code, *, filename = "temp_c", file = __FILE__, &)
     File.write(c_filename, c_code)
 
     {% if flag?(:msvc) %}
-      # following is based on `Crystal::Compiler#linker_command`
+      # following is based on `Iyi::Compiler#linker_command`
       unless cl = ENV["CC"]?
         cl = "cl.exe"
         if msvc_path = Crystal::System::VisualStudio.find_latest_msvc_path

@@ -38,17 +38,17 @@ describe "Semantic: pointer" do
   end
 
   pending "allows using pointer with subclass" do
-    assert_type(<<-CRYSTAL) { union_of(object.virtual_type, int32) }
+    assert_type(<<-CODE) { union_of(object.virtual_type, int32) }
       a = Pointer(Object).malloc(1_u64)
       a.value = 1
       a.value
-      CRYSTAL
+      CODE
   end
 
   it "can't do Pointer.malloc without type var" do
-    assert_error <<-CRYSTAL, "can't malloc pointer without type, use Pointer(Type).malloc(size)", inject_primitives: true
+    assert_error <<-CODE, "can't malloc pointer without type, use Pointer(Type).malloc(size)", inject_primitives: true
       Pointer.malloc(1_u64)
-      CRYSTAL
+      CODE
   end
 
   it "create pointer by address" do
@@ -56,10 +56,10 @@ describe "Semantic: pointer" do
   end
 
   it "types pointer of constant" do
-    assert_type(<<-CRYSTAL) { pointer_of(int32) }
+    assert_type(<<-CODE) { pointer_of(int32) }
       FOO = 1
       pointerof(FOO)
-      CRYSTAL
+      CODE
   end
 
   it "pointer of class raises error" do
@@ -75,47 +75,47 @@ describe "Semantic: pointer" do
   end
 
   it "types pointer value on typedef" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       lib LibC
         type Foo = Int32*
         fun foo : Foo
       end
 
       LibC.foo.value
-      CRYSTAL
+      CODE
   end
 
   it "detects recursive pointerof expansion (#551) (#553)" do
-    assert_error <<-CRYSTAL, "recursive pointerof expansion"
+    assert_error <<-CODE, "recursive pointerof expansion"
       x = 1
       x = pointerof(x)
-      CRYSTAL
+      CODE
   end
 
   it "detects recursive pointerof expansion (2) (#1654)" do
-    assert_error <<-CRYSTAL, "recursive pointerof expansion"
+    assert_error <<-CODE, "recursive pointerof expansion"
       x = 1
       pointer = pointerof(x)
       x = pointerof(pointer)
-      CRYSTAL
+      CODE
   end
 
   it "detects recursive pointerof expansion (3)" do
-    assert_error <<-CRYSTAL, "recursive pointerof expansion"
+    assert_error <<-CODE, "recursive pointerof expansion"
       x = {1}
       x = pointerof(x)
-      CRYSTAL
+      CODE
   end
 
   it "detects recursive pointerof expansion (4)" do
-    assert_error <<-CRYSTAL, "recursive pointerof expansion"
+    assert_error <<-CODE, "recursive pointerof expansion"
       x = 1
       x = {pointerof(x)}
-      CRYSTAL
+      CODE
   end
 
   it "doesn't crash if pointerof expansion type has generic splat parameter (#11808)" do
-    assert_type(<<-CRYSTAL) { pointer_of(union_of int32, generic_class("Foo", string)) }
+    assert_type(<<-CODE) { pointer_of(union_of int32, generic_class("Foo", string)) }
       class Foo(*T)
       end
 
@@ -123,28 +123,28 @@ describe "Semantic: pointer" do
       pointer = pointerof(x)
       x = Foo(String).new
       pointer
-      CRYSTAL
+      CODE
   end
 
   it "can assign nil to void pointer" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { nil_type }
+    assert_type(<<-CODE, inject_primitives: true) { nil_type }
       ptr = Pointer(Void).malloc(1_u64)
       ptr.value = ptr.value
-      CRYSTAL
+      CODE
   end
 
   it "can pass any pointer to something expecting void* in lib call" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { float64 }
+    assert_type(<<-CODE, inject_primitives: true) { float64 }
       lib LibFoo
         fun foo(x : Void*) : Float64
       end
 
       LibFoo.foo(Pointer(Int32).malloc(1_u64))
-      CRYSTAL
+      CODE
   end
 
   it "can pass any pointer to something expecting void* in lib call, with to_unsafe" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { float64 }
+    assert_type(<<-CODE, inject_primitives: true) { float64 }
       lib LibFoo
         fun foo(x : Void*) : Float64
       end
@@ -156,33 +156,33 @@ describe "Semantic: pointer" do
       end
 
       LibFoo.foo(Foo.new)
-      CRYSTAL
+      CODE
   end
 
   it "errors if doing Pointer.allocate" do
-    assert_error <<-CRYSTAL, "can't create instance of a pointer type"
+    assert_error <<-CODE, "can't create instance of a pointer type"
       Pointer(Int32).allocate
-      CRYSTAL
+      CODE
   end
 
   it "takes pointerof lib external var" do
-    assert_type(<<-CRYSTAL) { pointer_of(int32) }
+    assert_type(<<-CODE) { pointer_of(int32) }
       lib LibFoo
         $extern : Int32
       end
 
       pointerof(LibFoo.extern)
-      CRYSTAL
+      CODE
   end
 
   it "says undefined variable (#7556)" do
-    assert_error <<-CRYSTAL, "undefined local variable or method 'foo'"
+    assert_error <<-CODE, "undefined local variable or method 'foo'"
       pointerof(foo)
-      CRYSTAL
+      CODE
   end
 
   it "can assign pointerof virtual type (#8216)" do
-    assert_no_errors <<-CRYSTAL
+    assert_no_errors <<-CODE
       class Base
       end
 
@@ -193,21 +193,21 @@ describe "Semantic: pointer" do
 
       x : Pointer(Base)
       x = pointerof(u)
-      CRYSTAL
+      CODE
   end
 
   it "errors with non-matching generic value with value= (#10211)" do
-    assert_error <<-CRYSTAL, "type must be Gen(Char | Int32), not Gen(Int32)", inject_primitives: true
+    assert_error <<-CODE, "type must be Gen(Char | Int32), not Gen(Int32)", inject_primitives: true
       class Gen(T)
       end
 
       ptr = Pointer(Gen(Char | Int32)).malloc(1_u64)
       ptr.value = Gen(Int32).new
-      CRYSTAL
+      CODE
   end
 
   it "errors with non-matching generic value with value=, generic type (#10211)" do
-    assert_error <<-CRYSTAL, "type must be Moo(Char | Int32), not Foo(Int32)", inject_primitives: true
+    assert_error <<-CODE, "type must be Moo(Char | Int32), not Foo(Int32)", inject_primitives: true
       module Moo(T)
       end
 
@@ -217,11 +217,11 @@ describe "Semantic: pointer" do
 
       ptr = Pointer(Moo(Char | Int32)).malloc(1_u64)
       ptr.value = Foo(Int32).new
-      CRYSTAL
+      CODE
   end
 
   it "errors with non-matching generic value with value=, union of generic types (#10544)" do
-    assert_error <<-CRYSTAL, "type must be Foo(Char | Int32), not (Foo(Char | Int32) | Foo(Int32))", inject_primitives: true
+    assert_error <<-CODE, "type must be Foo(Char | Int32), not (Foo(Char | Int32) | Foo(Int32))", inject_primitives: true
       class Foo(T)
       end
 
@@ -233,11 +233,11 @@ describe "Semantic: pointer" do
 
       ptr = Pointer(Foo(Char | Int32)).malloc(1_u64)
       ptr.value = Foo(Int32).new || Foo(Char | Int32).new
-      CRYSTAL
+      CODE
   end
 
   it "does not recalculate element type on multiple calls to `#value=` (#15742)" do
-    result = semantic <<-CRYSTAL
+    result = semantic <<-CODE
       module Foo
       end
 
@@ -264,7 +264,7 @@ describe "Semantic: pointer" do
       v.value = b
 
       v
-      CRYSTAL
+      CODE
 
     type = result.node.type.should be_a(PointerInstanceType)
     type.element_type.should_not eq(result.program.types["Foo"])

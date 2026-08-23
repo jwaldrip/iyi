@@ -16,31 +16,31 @@ describe "Semantic: sizeof" do
   end
 
   it "gives error if using instance_sizeof on something that's not a class" do
-    assert_error <<-CRYSTAL, "instance_sizeof can only be used with a class, but Int32 is a struct"
+    assert_error <<-CODE, "instance_sizeof can only be used with a class, but Int32 is a struct"
       instance_sizeof(Int32)
-      CRYSTAL
+      CODE
   end
 
   it "gives error if using instance_sizeof on a struct" do
-    assert_error <<-CRYSTAL, "instance_sizeof can only be used with a class, but Foo is a struct"
+    assert_error <<-CODE, "instance_sizeof can only be used with a class, but Foo is a struct"
       struct Foo
       end
 
       instance_sizeof(Foo)
-      CRYSTAL
+      CODE
   end
 
   it "gives error if using instance_sizeof on an abstract struct (#11855)" do
-    assert_error <<-CRYSTAL, "instance_sizeof can only be used with a class, but Foo is a struct"
+    assert_error <<-CODE, "instance_sizeof can only be used with a class, but Foo is a struct"
       abstract struct Foo
       end
 
       instance_sizeof(Foo)
-      CRYSTAL
+      CODE
   end
 
   it "gives error if using instance_sizeof on an abstract struct with multiple subtypes (#11855)" do
-    assert_error <<-CRYSTAL, "instance_sizeof can only be used with a class, but Foo is a struct"
+    assert_error <<-CODE, "instance_sizeof can only be used with a class, but Foo is a struct"
       abstract struct Foo
       end
 
@@ -51,25 +51,25 @@ describe "Semantic: sizeof" do
       end
 
       instance_sizeof(Foo)
-      CRYSTAL
+      CODE
   end
 
   it "gives error if using instance_sizeof on a module" do
-    assert_error <<-CRYSTAL, "instance_sizeof can only be used with a class, but Moo is a module"
+    assert_error <<-CODE, "instance_sizeof can only be used with a class, but Moo is a module"
       module Moo
       end
 
       instance_sizeof(Moo)
-      CRYSTAL
+      CODE
   end
 
   it "gives error if using instance_sizeof on a metaclass" do
-    assert_error <<-CRYSTAL, "instance_sizeof can only be used with a class, but Foo.class is a metaclass"
+    assert_error <<-CODE, "instance_sizeof can only be used with a class, but Foo.class is a metaclass"
       class Foo
       end
 
       instance_sizeof(Foo.class)
-      CRYSTAL
+      CODE
   end
 
   it "gives error if using instance_sizeof on a generic type without type vars" do

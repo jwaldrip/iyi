@@ -2,18 +2,18 @@ require "../../spec_helper"
 
 describe "Semantic: yield with scope" do
   it "uses scope in global method" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       require "prelude"
       def foo; with 1 yield; end
 
       foo do
         succ
       end
-      CRYSTAL
+      CODE
   end
 
   it "uses scope in instance method" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       require "prelude"
       def foo; with 1 yield; end
 
@@ -30,11 +30,11 @@ describe "Semantic: yield with scope" do
       end
 
       Foo.new.test
-      CRYSTAL
+      CODE
   end
 
   it "it uses self for instance method" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       require "prelude"
       def foo; with 1 yield; end
 
@@ -51,11 +51,11 @@ describe "Semantic: yield with scope" do
       end
 
       Foo.new.test
-      CRYSTAL
+      CODE
   end
 
   it "it invokes global method inside block of yield scope" do
-    run(<<-CRYSTAL).to_i.should eq(3)
+    run(<<-CODE).to_i.should eq(3)
       require "prelude"
 
       def foo
@@ -69,11 +69,11 @@ describe "Semantic: yield with scope" do
       foo do
         plus_two abs
       end
-      CRYSTAL
+      CODE
   end
 
   it "generate right code when yielding struct as scope" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       struct Foo
         def bar; end
       end
@@ -84,11 +84,11 @@ describe "Semantic: yield with scope" do
       end
 
       foo { bar }
-      CRYSTAL
+      CODE
   end
 
   it "doesn't explode if specifying &block but never using it (#181)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       class Foo
         def a(&block)
           with self yield
@@ -99,11 +99,11 @@ describe "Semantic: yield with scope" do
       a = Foo.new
       a.a { aa }
       a.a { aa }
-      CRYSTAL
+      CODE
   end
 
   it "uses instance variable of enclosing scope" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def foo
           with self yield
@@ -123,11 +123,11 @@ describe "Semantic: yield with scope" do
       end
 
       Bar.new.bar
-      CRYSTAL
+      CODE
   end
 
   it "uses method of enclosing scope" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def foo
           with self yield
@@ -147,11 +147,11 @@ describe "Semantic: yield with scope" do
       end
 
       Bar.new.bar
-      CRYSTAL
+      CODE
   end
 
   it "uses method of with object" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def initialize
           @x = 1
@@ -175,11 +175,11 @@ describe "Semantic: yield with scope" do
       end
 
       Bar.new.bar
-      CRYSTAL
+      CODE
   end
 
   it "yields with dispatch (#2171) (1)" do
-    run(<<-CRYSTAL).to_i.should eq(10)
+    run(<<-CODE).to_i.should eq(10)
       class Foo
         def method(x : Int32)
           10
@@ -197,11 +197,11 @@ describe "Semantic: yield with scope" do
       foo do
         method(1 || 1.5)
       end
-      CRYSTAL
+      CODE
   end
 
   it "yields virtual type (#2171) (2)" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Foo
         def method
           1
@@ -219,6 +219,6 @@ describe "Semantic: yield with scope" do
       end
 
       foo { method }
-      CRYSTAL
+      CODE
   end
 end

@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Semantic: new" do
   it "doesn't incorrectly redefines new for generic class" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo(T)
         def self.new
           1
@@ -10,11 +10,11 @@ describe "Semantic: new" do
       end
 
       Foo(Int32).new
-      CRYSTAL
+      CODE
   end
 
   it "evaluates initialize default value at the instance scope (1) (#731)" do
-    assert_type(<<-CRYSTAL) { types["Foo"] }
+    assert_type(<<-CODE) { types["Foo"] }
       class Foo
         def initialize(@x = self)
         end
@@ -25,11 +25,11 @@ describe "Semantic: new" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "evaluates initialize default value at the instance scope (2) (#731)" do
-    assert_type(<<-CRYSTAL) { char }
+    assert_type(<<-CODE) { char }
       class Foo
         def initialize(@x = self, @y = 'a')
         end
@@ -40,11 +40,11 @@ describe "Semantic: new" do
       end
 
       Foo.new(y: 'b').y
-      CRYSTAL
+      CODE
   end
 
   it "evaluates initialize default value at the instance scope (3) (#731)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         @x : Int32
 
@@ -64,11 +64,11 @@ describe "Semantic: new" do
       foo = Foo.new do |x, y|
       end
       foo.x
-      CRYSTAL
+      CODE
   end
 
   it "evaluates initialize default value at the instance scope (4) (#731)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         @x : Int32
 
@@ -87,11 +87,11 @@ describe "Semantic: new" do
       foo = Foo.new do
       end
       foo.x
-      CRYSTAL
+      CODE
   end
 
   it "evaluates initialize default value at the instance scope (5) (#731)" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       class Foo(R)
         @x : Int32
 
@@ -108,11 +108,11 @@ describe "Semantic: new" do
       end
 
       Foo.new { 1 }.r
-      CRYSTAL
+      CODE
   end
 
   it "evaluates initialize default value at the instance scope (6) (#731)" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       class Foo(R)
         @x : Int32
 
@@ -129,11 +129,11 @@ describe "Semantic: new" do
       end
 
       Foo(Int32).new { 1 }.r
-      CRYSTAL
+      CODE
   end
 
   it "errors if using self call in default argument (1)" do
-    assert_error <<-CRYSTAL, "this 'initialize' doesn't explicitly initialize instance variable '@caps' of My"
+    assert_error <<-CODE, "this 'initialize' doesn't explicitly initialize instance variable '@caps' of My"
       class My
         @name : String
         @caps : String
@@ -149,11 +149,11 @@ describe "Semantic: new" do
       end
 
       My.new("foo")
-      CRYSTAL
+      CODE
   end
 
   it "errors if using self call in default argument (2)" do
-    assert_error <<-CRYSTAL, "this 'initialize' doesn't explicitly initialize instance variable '@caps' of My"
+    assert_error <<-CODE, "this 'initialize' doesn't explicitly initialize instance variable '@caps' of My"
       class My
         @name : String
         @caps : String
@@ -168,11 +168,11 @@ describe "Semantic: new" do
       end
 
       My.new("foo")
-      CRYSTAL
+      CODE
   end
 
   it "errors if using self call in default argument (3)" do
-    assert_error <<-CRYSTAL, "this 'initialize' doesn't explicitly initialize instance variable '@caps' of My"
+    assert_error <<-CODE, "this 'initialize' doesn't explicitly initialize instance variable '@caps' of My"
       class My
         @name : String
         @caps : String
@@ -186,11 +186,11 @@ describe "Semantic: new" do
       end
 
       My.new("foo")
-      CRYSTAL
+      CODE
   end
 
   it "inherits initialize and new methods if doesn't define new (#3238)" do
-    assert_type(<<-CRYSTAL) { types["Bar"] }
+    assert_type(<<-CODE) { types["Bar"] }
       class Foo(T)
         def initialize(x : Int32)
         end
@@ -204,11 +204,11 @@ describe "Semantic: new" do
       end
 
       Bar.new('a')
-      CRYSTAL
+      CODE
   end
 
   it "doesn't have default new for inherited class from generic type" do
-    assert_error <<-CRYSTAL, "wrong number of arguments for 'Bar.new' (given 0, expected 1)"
+    assert_error <<-CODE, "wrong number of arguments for 'Bar.new' (given 0, expected 1)"
       class Foo(T)
         def initialize(x : Int32)
         end
@@ -218,11 +218,11 @@ describe "Semantic: new" do
       end
 
       Bar.new
-      CRYSTAL
+      CODE
   end
 
   it "uses correct receiver for `initialize` in namespaced generic classes (#4086)" do
-    assert_type <<-CRYSTAL { char }
+    assert_type <<-CODE { char }
       class Foo
         class Baz(T)
         end
@@ -240,6 +240,6 @@ describe "Semantic: new" do
       end
 
       Foo::Bar::Baz(Int32).new(1).foo
-      CRYSTAL
+      CODE
   end
 end

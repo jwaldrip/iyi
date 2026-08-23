@@ -2,17 +2,17 @@ require "../../spec_helper"
 
 describe "Code gen: def with default value" do
   it "codegens def with one default value" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       def foo(x = 1)
         x
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "codegens def new with one default value" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         def initialize(@x = 1)
         end
@@ -23,11 +23,11 @@ describe "Code gen: def with default value" do
       end
 
       Foo.new.x
-      CRYSTAL
+      CODE
   end
 
   it "considers first the one with more arguments" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       def foo(x, y = 1)
         1
       end
@@ -37,11 +37,11 @@ describe "Code gen: def with default value" do
       end
 
       foo 1, "hello"
-      CRYSTAL
+      CODE
   end
 
   it "considers first the one with a restriction" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       def foo(x : String, y = "")
         1
       end
@@ -51,11 +51,11 @@ describe "Code gen: def with default value" do
       end
 
       foo "hello"
-      CRYSTAL
+      CODE
   end
 
   it "doesn't mix types of instance vars with initialize and new" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         def initialize(x = 1)
           @x = x
@@ -73,11 +73,11 @@ describe "Code gen: def with default value" do
       Foo.new
       Foo.new(1)
       Foo.new("hello").x
-      CRYSTAL
+      CODE
   end
 
   it "resolves expanded call to current type, not to virtual type" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         def foo(x = 1)
           2
@@ -92,6 +92,6 @@ describe "Code gen: def with default value" do
 
       bar = Bar.new
       bar.foo
-      CRYSTAL
+      CODE
   end
 end

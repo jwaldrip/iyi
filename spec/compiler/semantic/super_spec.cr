@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Semantic: super" do
   it "types super without arguments" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         def foo
           1
@@ -16,11 +16,11 @@ describe "Semantic: super" do
       end
 
       Bar.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "types super without arguments and instance variable" do
-    result = assert_type(<<-CRYSTAL) { types["Bar"] }
+    result = assert_type(<<-CODE) { types["Bar"] }
       class Foo
         def foo
           @x = 1
@@ -36,7 +36,7 @@ describe "Semantic: super" do
       bar = Bar.new
       bar.foo
       bar
-      CRYSTAL
+      CODE
 
     mod, type = result.program, result.node.type.as(NonGenericClassType)
 
@@ -45,7 +45,7 @@ describe "Semantic: super" do
   end
 
   it "types super with forwarded arguments, parent has parameters" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         def foo(x)
           x
@@ -59,11 +59,11 @@ describe "Semantic: super" do
       end
 
       Bar.new.foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "types super with forwarded arguments, def has bare splat parameter (#8895)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         def foo(*, x)
           x
@@ -77,11 +77,11 @@ describe "Semantic: super" do
       end
 
       Bar.new.foo(x: 1)
-      CRYSTAL
+      CODE
   end
 
   it "types super with named arguments, def has bare splat parameter (#8895)" do
-    assert_type(<<-CRYSTAL) { union_of int32, char }
+    assert_type(<<-CODE) { union_of int32, char }
       class Foo
         def foo(*, x)
           x
@@ -95,11 +95,11 @@ describe "Semantic: super" do
       end
 
       Bar.new.foo(x: 1)
-      CRYSTAL
+      CODE
   end
 
   it "types super with named arguments, def has bare splat parameter (2) (#8895)" do
-    assert_type(<<-CRYSTAL) { union_of int32, char }
+    assert_type(<<-CODE) { union_of int32, char }
       class Foo
         def foo(x)
           x
@@ -113,11 +113,11 @@ describe "Semantic: super" do
       end
 
       Bar.new.foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "types super with forwarded arguments, different internal names (#8895)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         def foo(*, x a)
           a
@@ -131,11 +131,11 @@ describe "Semantic: super" do
       end
 
       Bar.new.foo(x: 1)
-      CRYSTAL
+      CODE
   end
 
   it "types super with forwarded arguments, def has double splat parameter (#8895)" do
-    assert_type(<<-CRYSTAL) { named_tuple_of({"x": int32, "y": char}) }
+    assert_type(<<-CODE) { named_tuple_of({"x": int32, "y": char}) }
       class Foo
         def foo(**opts)
           opts
@@ -149,11 +149,11 @@ describe "Semantic: super" do
       end
 
       Bar.new.foo(x: 1, y: 'a')
-      CRYSTAL
+      CODE
   end
 
   it "types super when container method is defined in parent class" do
-    nodes = parse <<-CRYSTAL
+    nodes = parse <<-CODE
       class Foo
         def initialize
           @x = 1
@@ -167,7 +167,7 @@ describe "Semantic: super" do
       class Baz < Bar
       end
       Baz.new
-      CRYSTAL
+      CODE
     result = semantic nodes
     mod, type = result.program, result.node.type.as(NonGenericClassType)
 
@@ -179,7 +179,7 @@ describe "Semantic: super" do
   end
 
   it "types super when container method is defined in parent class two levels up" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Base
         def foo
           1
@@ -196,11 +196,11 @@ describe "Semantic: super" do
       end
 
       Bar.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "types super when inside fun" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       class Foo
         def foo
           1
@@ -215,11 +215,11 @@ describe "Semantic: super" do
       end
 
       Bar.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "types super when inside fun and forwards args" do
-    assert_type(<<-CRYSTAL, inject_primitives: true) { int32 }
+    assert_type(<<-CODE, inject_primitives: true) { int32 }
       class Foo
         def foo(z)
           z
@@ -234,27 +234,27 @@ describe "Semantic: super" do
       end
 
       Bar.new.foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "errors no superclass method in top-level" do
-    assert_error <<-CRYSTAL, "there's no superclass in this scope"
+    assert_error <<-CODE, "there's no superclass in this scope"
       super
-      CRYSTAL
+      CODE
   end
 
   it "errors no superclass method in top-level def" do
-    assert_error <<-CRYSTAL, "there's no superclass in this scope"
+    assert_error <<-CODE, "there's no superclass in this scope"
       def foo
         super
       end
 
       foo
-      CRYSTAL
+      CODE
   end
 
   it "errors no superclass method" do
-    assert_error <<-CRYSTAL, "undefined method 'foo'"
+    assert_error <<-CODE, "undefined method 'foo'"
       require "prelude"
 
       class Foo
@@ -264,11 +264,11 @@ describe "Semantic: super" do
       end
 
       Foo.new.foo(1)
-      CRYSTAL
+      CODE
   end
 
   it "finds super initialize if not explicitly defined in superclass, 1 (#273)" do
-    assert_type(<<-CRYSTAL) { types["Foo"] }
+    assert_type(<<-CODE) { types["Foo"] }
       class Foo
         def initialize
           super
@@ -276,11 +276,11 @@ describe "Semantic: super" do
       end
 
       Foo.new
-      CRYSTAL
+      CODE
   end
 
   it "finds super initialize if not explicitly defined in superclass, 2 (#273)" do
-    assert_type(<<-CRYSTAL) { types["Foo"] }
+    assert_type(<<-CODE) { types["Foo"] }
       class Base
       end
 
@@ -291,11 +291,11 @@ describe "Semantic: super" do
       end
 
       Foo.new
-      CRYSTAL
+      CODE
   end
 
   it "says correct error message when no overload matches in super call (#272)" do
-    assert_error <<-CRYSTAL, "expected argument #1 to 'Foo#initialize' to be Char, not Int32"
+    assert_error <<-CODE, "expected argument #1 to 'Foo#initialize' to be Char, not Int32"
       abstract class Foo
         def initialize(x : Char)
         end
@@ -308,11 +308,11 @@ describe "Semantic: super" do
       end
 
       Bar.new(1, 2)
-      CRYSTAL
+      CODE
   end
 
   it "errors on implicit super in `#initialize` with partially-matching argument" do
-    assert_error <<-CRYSTAL, "expected argument #1 to 'Foo#initialize' to be Int32, not (Int32 | Nil)"
+    assert_error <<-CODE, "expected argument #1 to 'Foo#initialize' to be Int32, not (Int32 | Nil)"
       class Foo
         def initialize(@x : Int32)
         end
@@ -325,11 +325,11 @@ describe "Semantic: super" do
       end
 
       Bar.new(1 || nil)
-      CRYSTAL
+      CODE
   end
 
   it "calls super in module method (1) (#556)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Parent
         def a
           1
@@ -347,11 +347,11 @@ describe "Semantic: super" do
       end
 
       Child.new.a
-      CRYSTAL
+      CODE
   end
 
   it "calls super in module method (2) (#556)" do
-    assert_type(<<-CRYSTAL) { char }
+    assert_type(<<-CODE) { char }
       class Parent
         def a
           1
@@ -376,11 +376,11 @@ describe "Semantic: super" do
       end
 
       Child.new.a
-      CRYSTAL
+      CODE
   end
 
   it "calls super in module method (3) (#556)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Parent
         def a
           1
@@ -402,11 +402,11 @@ describe "Semantic: super" do
       end
 
       Child.new.a
-      CRYSTAL
+      CODE
   end
 
   it "errors if calling super on module method and not found" do
-    assert_error <<-CRYSTAL, "undefined method 'a'"
+    assert_error <<-CODE, "undefined method 'a'"
       module Mod
         def a
           super
@@ -418,11 +418,11 @@ describe "Semantic: super" do
       end
 
       Child.new.a
-      CRYSTAL
+      CODE
   end
 
   it "calls super in generic module method" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Parent
         def a
           1
@@ -440,11 +440,11 @@ describe "Semantic: super" do
       end
 
       Child.new.a
-      CRYSTAL
+      CODE
   end
 
   it "doesn't error if invoking super and match isn't found in direct superclass (even though it's find in one superclass)" do
-    assert_type(<<-CRYSTAL) { int32 }
+    assert_type(<<-CODE) { int32 }
       class Foo
         def foo
           1
@@ -464,11 +464,11 @@ describe "Semantic: super" do
       end
 
       Baz.new.foo
-      CRYSTAL
+      CODE
   end
 
   it "errors if invoking super and match isn't found in direct superclass in initialize (even though it's find in one superclass)" do
-    assert_error <<-CRYSTAL, "wrong number of argument"
+    assert_error <<-CODE, "wrong number of argument"
       class Foo
         def initialize
         end
@@ -486,11 +486,11 @@ describe "Semantic: super" do
       end
 
       Baz.new
-      CRYSTAL
+      CODE
   end
 
   it "gives correct error when calling super and target is abstract method (#2675)" do
-    assert_error <<-CRYSTAL, "undefined method 'Base#method()'"
+    assert_error <<-CODE, "undefined method 'Base#method()'"
       abstract class Base
         abstract def method
       end
@@ -502,19 +502,19 @@ describe "Semantic: super" do
       end
 
       Sub.new.method
-      CRYSTAL
+      CODE
   end
 
   it "errors on super outside method (#4481)" do
-    assert_error <<-CRYSTAL, "can't use 'super' outside method"
+    assert_error <<-CODE, "can't use 'super' outside method"
       class Foo
         super
       end
-      CRYSTAL
+      CODE
   end
 
   it "errors on super where only target would be a top level method (#5201)" do
-    assert_error <<-CRYSTAL, "no overload matches 'bar'"
+    assert_error <<-CODE, "no overload matches 'bar'"
       def bar
       end
 
@@ -525,11 +525,11 @@ describe "Semantic: super" do
       end
 
       Foo.new.bar
-      CRYSTAL
+      CODE
   end
 
   it "invokes super inside macro (#6636)" do
-    assert_type(<<-CRYSTAL) { char }
+    assert_type(<<-CODE) { char }
       class Foo
         def foo
           1
@@ -549,6 +549,6 @@ describe "Semantic: super" do
       end
 
       Bar.new.foo(3)
-      CRYSTAL
+      CODE
   end
 end

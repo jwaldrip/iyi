@@ -2,7 +2,7 @@ require "../../spec_helper"
 
 describe "Code gen: hooks" do
   it "does inherited macro" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Foo
         macro inherited
           @@x = 1
@@ -17,11 +17,11 @@ describe "Code gen: hooks" do
       end
 
       Bar.x
-      CRYSTAL
+      CODE
   end
 
   it "does included macro" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       module Foo
         macro included
           @@x = 1
@@ -37,11 +37,11 @@ describe "Code gen: hooks" do
       end
 
       Bar.x
-      CRYSTAL
+      CODE
   end
 
   it "does extended macro" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       module Foo
         macro extended
           @@x = 1
@@ -57,11 +57,11 @@ describe "Code gen: hooks" do
       end
 
       Bar.x
-      CRYSTAL
+      CODE
   end
 
   it "does added method macro" do
-    run(<<-CRYSTAL).to_i.should eq(1)
+    run(<<-CODE).to_i.should eq(1)
       class Global
         @@x = 0
 
@@ -82,11 +82,11 @@ describe "Code gen: hooks" do
       end
 
       Global.x
-      CRYSTAL
+      CODE
   end
 
   it "does inherited macro recursively" do
-    run(<<-CRYSTAL).to_i.should eq(2)
+    run(<<-CODE).to_i.should eq(2)
       class Global
         @@x = 0
 
@@ -111,11 +111,11 @@ describe "Code gen: hooks" do
       end
 
       Global.x
-      CRYSTAL
+      CODE
   end
 
   it "does inherited macro before class body" do
-    run(<<-CRYSTAL).to_i.should eq(123)
+    run(<<-CODE).to_i.should eq(123)
       require "prelude"
 
       class Global
@@ -144,11 +144,11 @@ describe "Code gen: hooks" do
       end
 
       Bar.y
-      CRYSTAL
+      CODE
   end
 
   it "does finished" do
-    run(<<-CRYSTAL).to_i.should eq(4)
+    run(<<-CODE).to_i.should eq(4)
       class Foo
         A = [1]
 
@@ -168,11 +168,11 @@ describe "Code gen: hooks" do
       end
 
       Foo.foo
-      CRYSTAL
+      CODE
   end
 
   it "fixes empty types in hooks (#3946)" do
-    codegen(<<-CRYSTAL)
+    codegen(<<-CODE)
       lib LibC
         fun exit(x : Int32) : NoReturn
       end
@@ -211,6 +211,6 @@ describe "Code gen: hooks" do
 
       class Bar < Foo
       end
-      CRYSTAL
+      CODE
   end
 end
