@@ -4,6 +4,21 @@
 
 ### Added
 
+- **A real shard is installed, built against and asked for two pages every
+  build.** `bench/shard_serves.sh` takes the README's headline example
+  literally: `require "kemal"` in an `.iyi` file, built `--crystal`, serving.
+  Nothing here checked it. The samples cannot — none of them requires a shard,
+  which is the point of the example — and CI's tarball job builds a *synthetic*
+  shard against `crystal/syntax_highlighter`, which proves the library ships
+  whole and cannot prove that a real shard's macros parse, that its route
+  blocks compile, or that the thing answers.
+
+  It reaches the network, which no other gate here does, and the shard is
+  pinned at 1.12.0 so it fetches one version rather than today's. Two routes,
+  because a single static string would pass with the router never running; the
+  second reads a URL parameter, so the answer is right only if the request
+  reached the block the shard's macros defined.
+
 - **A bound shard is built from its boundary, linked and run every build.**
   `bench/bind_roundtrip.sh` is `samples_roundtrip.sh`'s question asked of the
   other kind of artifact: object code that is a shard's, declarations that
@@ -402,6 +417,23 @@
   trigger is the wrapping group rather than the branch lengths.
 
 ### Fixed
+
+- **A boundary whose root is a module was read as carrying nothing.**
+  `bound_names` asks whether the program has a type by each name an artifact
+  declares, and asked it bare. That is right when the root is a *class* —
+  `-e ExceptionPage` declares `ExceptionPage` and the program has one — and
+  wrong when the root is a *module*: `-e Radix` declares `Node`, `Tree` and
+  `Result` at the artifact's own top level, and the program has no top-level
+  `Node`. It has `Radix::Node`.
+
+  So `radix.iyimod` read as **6 types, 0 this program can name** while sitting
+  in the same directory as a `Kemal` that names `Radix::Tree` eight times, and
+  every one of those signatures went on waiting for a boundary that was already
+  carrying the type. Asked under the artifact's root as well, and recorded
+  under it too because that is how the producer writes them.
+
+  Measured on the real shard: **`Kemal` goes from 168 signatures and 12 waiting
+  to 182 and 0.** Nothing it names is undeclared any more.
 
 - **A method that takes a block is now called with one, and rule 1's residual
   reaches zero.** `infer_return` instantiates a method on purpose to read what
