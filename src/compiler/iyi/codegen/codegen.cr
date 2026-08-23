@@ -373,6 +373,7 @@ module Iyi
 
       once_init
       initialize_simple_constants
+      iyi_declare_artifact_class_vars
 
       alloca_vars @program.vars, @program
 
@@ -419,6 +420,106 @@ module Iyi
 
         initialize_simple_const(initializer)
       end
+    end
+
+    # iyi: emits the class variables an imported artifact's object code refers
+    # to (SPEC.md IV.2).
+    #
+    # A class variable is a global defined in the main module, and a main
+    # module never travels. Codegen is demand-driven, so the consumer emits the
+    # globals its own code reaches — and the code that reaches these is a unit
+    # it did not compile. `App::Counter::Tally::seen` was undefined at the end
+    # of a build with every declaration it needed.
+    #
+    # Here rather than beside `iyi_define_all_type_ids`, which runs after
+    # `__crystal_main` is closed: a type id is a number and can be written into
+    # a global from anywhere, while a class variable may have an *initialiser*
+    # that has to run, and it has to run here — before the program's own code,
+    # in the same place the module's own build ran it.
+    #
+    # Resolved by name rather than carried as the variable, because when the
+    # artifact was read its declarations had only just been parsed: what settles
+    # a class variable's type is a later pass over the tree.
+    private def iyi_declare_artifact_class_vars : Nil
+      return if @program.iyi_artifact_class_vars.empty?
+
+      @program.iyi_artifact_class_vars.each do |qualified, lazy|
+        owner_name, separator, name = qualified.partition("::@@")
+        next if separator.empty?
+
+        owner = iyi_lookup_class_var_owner(owner_name)
+        next unless owner.is_a?(ClassVarContainer)
+
+        class_var = owner.class_vars?.try &.[]?("@@#{name}")
+        next unless class_var && class_var.type?
+
+        iyi_define_class_var class_var, lazy
+      end
+    end
+
+    # What the unit refers to, made to exist — and only that.
+    #
+    # *lazy* is the artifact's answer rather than this build's guess, and it has
+    # to be. A unit that reads a class variable with a live initialiser calls
+    # `~Owner::name:read`, a main-module function that initialises on first
+    # use; one reading a variable without an initialiser reads the global. Both
+    # are decided where the *producer* emitted the read, and neither side can
+    # work the other out: iyi's prelude has no `__crystal_once`, so nothing
+    # under it ever takes the lazy branch, and assuming it here dies on
+    # `BUG: __crystal_once is not defined`. Assuming the other leaves
+    # `~Exception::CallStack::skip:read` undefined in a `--crystal` build,
+    # which is what `bench/bind_roundtrip.sh` caught.
+    #
+    # Marked read before the read function is built, because that is what it
+    # *is*: something read it, in code this program links and did not compile.
+    # It also puts the consumer's own later pass on the same branch — a class
+    # variable it initialises for itself now does it through the flag rather
+    # than eagerly, so the initialiser still runs exactly once.
+    #
+    # Nothing here initialises. A variable whose declaration travelled has its
+    # initialiser in the consumer's own tree and runs on the ordinary path, and
+    # one of the library's runs where that library says. What is missing is
+    # only ever the global, and the function that reaches it.
+    private def iyi_define_class_var(class_var : MetaTypeVar, lazy : Bool) : Nil
+      initializer = class_var.initializer
+
+      if lazy && initializer && !class_var.uninitialized?
+        class_var.read = true
+        # Builds the init function, the global and the flag, and defines the
+        # read function in the main module. Not called: the unit calls it where
+        # it means to, and calling it here would make lazy state eager.
+        create_read_class_var_function(class_var, initializer)
+        return
+      end
+
+      global = declare_class_var(class_var)
+
+      # A global with no initialiser is a *declaration* in LLVM rather than a
+      # definition, and would leave the symbol as undefined as it was. Null is
+      # what the module's own build gave it: nothing had assigned it there
+      # either, which is the whole shape of a lazy `class_getter`. Anything
+      # that does assign it overwrites this.
+      unless global.initializer
+        global.initializer = @main_llvm_typer.llvm_type(class_var.type).null
+      end
+    end
+
+    # The type a qualified name refers to, walking the program's own namespaces.
+    #
+    # Own rather than looked up: `lookup_class_var?` walks ancestors and copies
+    # what it finds onto the asking type, which would answer for a name this
+    # program does not actually own.
+    private def iyi_lookup_class_var_owner(qualified : String) : Type?
+      found : Type = @program
+      qualified.split("::").each do |part|
+        next if part.empty?
+        types = found.types?
+        return nil unless types
+        child = types[part]?
+        return nil unless child
+        found = child
+      end
+      found
     end
 
     def wrap_builder(builder)

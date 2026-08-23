@@ -227,6 +227,42 @@ module Iyi
     # runs where it should. Empty unless `--emit-iyimod` asked for artifacts.
     getter iyi_unit_constants = {} of String => Set(Const)
 
+    # iyi: the class variables each unit's object code refers to, by unit name
+    # (SPEC.md IV.2).
+    #
+    # `iyi_unit_constants` above, asked of a global that nobody wrote a name
+    # for. A class variable's global is defined in the *main module*, which is
+    # the one part of a build that never travels, and the methods that read one
+    # travel as this module's machine code referring to it by symbol. So
+    # `App::Counter::Tally::seen` was a global nothing defined, and a module
+    # with a `@@seen` failed R-1's own round trip.
+    #
+    # The declaration travelling is not enough on its own and that was measured:
+    # `@@cache : String? = nil` has its initialiser dropped before this point —
+    # a nil initialiser assigns nothing — so the consumer read the declaration,
+    # made no initialiser out of it, and codegen never emitted the global. What
+    # closes it is the consumer being told the name and declaring it, which is
+    # what this carries.
+    #
+    # The `Bool` is *how* the unit refers to it: true when it calls
+    # `~Owner::name:read`, the main-module function that initialises on first
+    # use, false when it reads the global directly. The consumer owes exactly
+    # the one that was emitted, and neither side can guess the other's — see
+    # `iyi_record_unit_class_var`.
+    #
+    # Recorded only while writing artifacts, like the constants above.
+    getter iyi_unit_class_vars = {} of String => Hash(MetaTypeVar, Bool)
+
+    # iyi: the class variables an imported artifact's object code refers to, as
+    # `Owner::@@name` (SPEC.md IV.2).
+    #
+    # The consumer's half of `iyi_unit_class_vars`. Names rather than the
+    # variables themselves, because at the point an artifact is read the
+    # declarations have only just been parsed — an instance variable's type is
+    # settled by a later pass over the tree, and a class variable's is too. So
+    # codegen resolves them, which is also where they are needed.
+    getter iyi_artifact_class_vars = {} of String => Bool
+
     # iyi: what a synthesised regex constant was made from, by name (SPEC.md
     # IV.1g).
     #

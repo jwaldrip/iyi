@@ -4,6 +4,49 @@
 
 ### Added
 
+- **A class variable crosses a boundary, which nothing had ever carried.** A
+  class variable is a global. The methods that read one travel as a module's
+  machine code and refer to it by symbol, and the global itself is defined in
+  the main module — the one part of a build that never travels. Nothing in the
+  format mentioned class variables at all, so R-1's own claim was false for any
+  module that had one, in iyi's own language: build a module with a
+  `@@seen : Int32 = 0`, delete its source, build again from the artifact, and
+  the link ends on `undefined symbol: App::Counter::Tally::seen`.
+  `bench/samples_roundtrip.sh` is the gate for exactly that claim and passed,
+  because none of the six samples has a class variable.
+
+  `TypeDecl` carries the declaration now — name, resolved type, and the
+  initialiser as written — the way `fields` already do, one level up. That is
+  what a module's own needs, and a bound shard's too.
+
+  It is not enough alone, and `@@cache : String? = nil` is the case that says
+  so: a nil initialiser assigns nothing, so it is dropped before the artifact
+  is written, and the consumer that read the declaration made no initialiser
+  from it and emitted no global. So a `ClassVars` section carries the names a
+  unit's object code refers to and the consumer defines each. That second
+  channel is also all a class variable of *Crystal's* library needs — the
+  consumer has the declaration already, having compiled the same library, and
+  a bound shard calling `String#upcase` was left without
+  `Unicode::upcase_ranges`.
+
+  **The global is not the whole debt, and the consumer cannot work out the
+  rest.** A class variable with a live initialiser is read through
+  `~Owner::name:read`, a main-module function that initialises on first use;
+  one without is read straight off the global. Which a unit emitted is the
+  producer's fact, so the section carries a flag beside each name. Both guesses
+  were tried and each breaks a different world: assume the direct form and a
+  `--crystal` build leaves `~Exception::CallStack::skip:read` undefined, which
+  `bench/bind_roundtrip.sh` caught; assume the lazy form and an iyi-prelude
+  program dies on `BUG: __crystal_once is not defined`, because that prelude
+  has no `__crystal_once` and nothing under it ever takes the branch.
+
+  **The value is caught before the compiler rewrites it.** The initialiser
+  travels as source, and the node a class variable holds is not that source by
+  the time an artifact is written — `CleanupTransformer` has replaced it with
+  the literal's expansion. `@@nums = [1, 2, 3]` reached the format as five
+  statements over three temporaries, and the consumer said `read before
+  assignment to local variable '__temp_2'`.
+
 - **A regex literal's constant is named after the literal, and what it was made
   from crosses a boundary.** The compiler turns a regex literal into a
   program-level constant, and the name it invented was the order the literal

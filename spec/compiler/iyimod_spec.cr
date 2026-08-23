@@ -1193,6 +1193,79 @@ describe Iyi::IyiMod do
     end
   end
 
+  # A class variable is a global, and its global is defined in the main module
+  # — the one part of a build that never travels. The methods that read one
+  # travel as this module's machine code referring to it by symbol, so a module
+  # with a `@@seen` failed R-1's own round trip on
+  # `undefined symbol: App::Counter::Tally::seen`, and this file's own gate for
+  # that claim passed because no sample had a class variable.
+  #
+  # Two of them, and the nilable one is not decoration. `@@cache : String? = nil`
+  # has its initialiser dropped before an artifact is written — assigning nil
+  # assigns nothing — so the declaration travelling is not enough on its own:
+  # the consumer read it, made no initialiser from it, and codegen emitted no
+  # global. The name travelling in `ClassVars` is what closes that half.
+  it "carries a module's class variables, declaration and global" do
+    with_tempdir("iyimod_class_vars") do
+      Dir.mkdir_p "app"
+      File.write "app/counter.iyi", <<-IYI
+        module app/counter
+
+        pub struct Tally
+          @@cache : String? = nil
+          @@seen : Int32 = 0
+
+          def initialize
+          end
+
+          pub def remember(s : String) : String
+            @@cache = s
+            @@seen = @@seen + 1
+            (@@cache || "none") + ":" + @@seen.to_s
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/counter
+
+        t = App::Counter::Tally.new
+        puts t.remember("hello")
+        puts t.remember("again")
+        IYI
+
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "hello:1\nagain:2"
+
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "counter.iyimod"))
+      artifact.class_vars.map(&.name).should eq ["App::Counter::Tally::@@cache",
+                                                 "App::Counter::Tally::@@seen"]
+
+      # None of them lazy, and that is a fact about the prelude rather than
+      # about these two: iyi's has no `__crystal_once`, so a unit under it
+      # never reads a class variable through an init flag.
+      artifact.class_vars.map(&.lazy).should eq [false, false]
+
+      tally = artifact.exports.types.find { |type| type.name == "Tally" }.should_not be_nil
+      tally.class_vars.should eq [{"@@cache", "(String | Nil)", ""},
+                                  {"@@seen", "Int32", "0"}]
+
+      File.delete "app/counter.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "hello:1\nagain:2"
+    end
+  end
+
   # A constant is typed and initialised where it is *read*, and on the far side
   # of an artifact the only reader is machine code the consumer did not compile.
   # So `kemal/dsl`'s `APP` was declared, assigned by the initialiser that
@@ -2115,6 +2188,35 @@ describe Iyi::IyiMod do
       Iyi::IyiMod.write artifact, path
 
       Iyi::IyiMod.read(path).type_ids.should eq ["Array(App::Box::Item)", "Pointer(App::Box::Item)"]
+    end
+  end
+
+  # The flag beside the name, because the consumer cannot work it out. A unit
+  # that reads a class variable with a live initialiser calls
+  # `~Owner::name:read`; one reading a variable without an initialiser reads the
+  # global. Assume the first and an iyi-prelude program dies on
+  # `BUG: __crystal_once is not defined`; assume the second and a `--crystal`
+  # build leaves `~Exception::CallStack::skip:read` undefined.
+  it "round-trips how a unit refers to a class variable" do
+    with_temporary_file do |path|
+      artifact = Iyi::IyiMod::Artifact.new(
+        module_name: "app/box",
+        source_path: "/src/app/box.iyi",
+        compiler_version: "1.22.0-dev+abc1234",
+        target_triple: "x86_64-pc-linux-gnu",
+        flags: ["bits64"],
+        imports: [] of Iyi::IyiMod::ImportEdge,
+        class_vars: [
+          Iyi::IyiMod::ClassVarRef.new("App::Box::Store::@@cache", false),
+          Iyi::IyiMod::ClassVarRef.new("Exception::CallStack::@@skip", true),
+        ],
+      )
+      Iyi::IyiMod.write artifact, path
+
+      read = Iyi::IyiMod.read(path).class_vars
+      read.map(&.name).should eq ["App::Box::Store::@@cache",
+                                  "Exception::CallStack::@@skip"]
+      read.map(&.lazy).should eq [false, true]
     end
   end
 
