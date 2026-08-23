@@ -90,6 +90,7 @@ IYI_SPECS = (
     "spec/compiler/semantic/iyi_spec.cr",       # iyi's own semantics
     "spec/compiler/iyi/rx_spec.cr",             # the engine, differential
     "spec/compiler/formatter/iyi_formatter_spec.cr",  # `pub`, which Crystal has no word for
+    "spec/compiler/object_header_spec.cr",      # the collector's header, GC_DESIGN.md Stage 1
 )
 
 

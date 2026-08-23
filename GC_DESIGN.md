@@ -1,6 +1,16 @@
 # iyi Garbage Collector Design
 
-**Status:** Design for implementation. CollectorDesign unit, no code edits.
+**Status:** Stage 1 built. Stages 2 onward are design.
+
+What Stage 1 actually delivers, and what it does not: the artifact carries a
+pointer map per type it owns (`.iyimod` format v22, `Layouts` section), and the
+object header and its CAS-safe mark word exist and are tested as a unit. No
+object is allocated with that header yet, nothing marks, and nothing collects.
+Tasks 3 and 4 of Stage 1, work distribution and write barriers, are design here
+and deferred to Stage 6 by their own text; they were not built.
+
+So the point of no return is still ahead. bdw-gc remains the collector, opted in
+with `-Dgc_boehm`, and every other path still allocates and never frees.
 
 **Owner's Decision:** Own the garbage collector. Concurrency, parallelism, and performance control are the reasons. gcry is prior art: measurements, design hints, and a record of what has already been tried and cost what. iyi writes the heap, the STW mechanism, root discovery, and finalizers from scratch.
 
