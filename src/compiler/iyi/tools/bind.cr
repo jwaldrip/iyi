@@ -46,6 +46,13 @@ module Iyi
     # Written, and instantiation could not run. The restriction stands on the
     # shard's word, which is exactly what rule 1 describes.
     Unchecked
+    # Abstract: there is no body to instantiate and no symbol of its own. The
+    # declaration is the dispatch contract, and what a caller reaches is an
+    # implementation — each of which is an ordinary method this tool checks as
+    # itself. So this is not a return standing on the shard's word; it is one
+    # carried by the methods underneath it, and counting it beside them said
+    # the boundary was trusting something it had already verified.
+    Dispatched
   end
 
   record BindMethod,
@@ -227,6 +234,7 @@ module Iyi
       io.puts "written returns, held against what a caller is handed:"
       io.puts "  agrees                    #{written.count(&.checked.agrees?)}"
       io.puts "  disagrees                 #{disagreed.size}"
+      io.puts "  abstract, so dispatched   #{written.count(&.checked.dispatched?)}"
       io.puts "  could not be checked      #{written.count(&.checked.unchecked?)}"
       written.select { |m| m.checked.unchecked? && m.refused }
         .group_by { |m| m.refused.not_nil! }
@@ -282,6 +290,17 @@ module Iyi
     unblocked = 0
     waiting = 0
     never = 0
+    # What is left of III.6 rule 1, counted where it is actually owed.
+    #
+    # The report above counts every written return that could not be held
+    # against an answer, and most of those methods do not cross at all: a
+    # parameter with no type, a block nobody annotated, a splat. They are
+    # already refused by name further down, so counting them as unchecked risk
+    # says the boundary is trusting things it never carried.
+    #
+    # A method that *crosses* on a written return type nobody could verify is
+    # the one this rule is about, so it is counted separately and listed.
+    unchecked = [] of BindMethod
     known.each do |method|
       types = method.signature_types
       foreign = types.reject { |t| nameable?(t, root) }
@@ -295,6 +314,7 @@ module Iyi
       end
       if foreign.empty?
         lines << method.declaration
+        unchecked << method if method.checked.unchecked?
       else
         # Whether anything on this signature is a type somebody could declare.
         # If nothing is, no amount of work reaches it and it does not belong in
@@ -336,6 +356,23 @@ module Iyi
     end
     if unblocked > 0
       io.puts "  taking a block nobody annotated        #{unblocked}"
+    end
+    io.puts "  crossing on a return nobody checked    #{unchecked.size}"
+
+    unless unchecked.empty?
+      io.puts
+      io.puts "what is left of rule 1, by why the answer could not be read:"
+      unchecked.group_by { |m| m.refused || "no reason recorded" }
+        .to_a.sort_by { |(_, list)| -list.size }.each do |(reason, list)|
+        # Whole, not to a column. This list is three methods across Crystal's
+        # own library and each is somebody's next piece of work, so a reason
+        # cut at 38 characters is the one thing it must not be.
+        io.puts "  #{reason} — #{list.size}"
+        list.sort_by { |m| {m.owner, m.name} }.first(3).each do |method|
+          io.puts "    #{method.owner}##{method.name} : #{method.returns}"
+        end
+        io.puts "    ... and #{list.size - 3} more" if list.size > 3
+      end
     end
 
     unless outside.empty?
@@ -918,7 +955,23 @@ module Iyi
           next unless method.callable?
           next unless method.signature_types.all? { |t| nameable?(t, root) }
 
-          signatures << IyiMod::Signature.new(
+          # A block-taking method's machine code is the caller's, and IV.1g is
+          # explicit that this is a question about a `def` rather than about a
+          # type: the producer emits each instantiation private to the unit
+          # that called it, so no symbol for one ever leaves the artifact. A
+          # declaration without the body is therefore a promise nothing can
+          # keep, and `bench/bind_roundtrip.sh` says so in the only way that
+          # settles it — `undefined symbol:
+          # *Shard::Part#apply<&Proc(Int32, Int32)>`.
+          #
+          # So it travels the way a generic's methods already did, in
+          # `MonoBodies`, and the consumer compiles its own from the block it
+          # wrote. A body that is not there to carry cannot cross at all.
+          carries_body = !method.written_block.empty?
+          body = method.body
+          next if carries_body && (body.nil? || body.empty?)
+
+          signature = IyiMod::Signature.new(
             name: method.name,
             # `new` is synthesized from `initialize` and carries no receiver of
             # its own, so a class method would arrive on the far side as an
@@ -930,6 +983,10 @@ module Iyi
             free_variables: [] of String,
             required: false,
           )
+          signatures << signature
+          if carries_body && body
+            @@mono_bodies[IyiMod.mono_body_key(name, signature)] = body
+          end
         end
       end
 
@@ -1786,7 +1843,9 @@ module Iyi
       # type" exactly. So ask this half the question the other half answers.
       produced, refused = infer_return(owner, a_def)
       checked =
-        if produced.nil?
+        if a_def.abstract?
+          BindCheck::Dispatched
+        elsif produced.nil?
           BindCheck::Unchecked
         elsif produced == written
           BindCheck::Agrees
@@ -1794,6 +1853,7 @@ module Iyi
           BindCheck::Disagrees
         end
       produced = nil unless checked.disagrees?
+      refused = nil if checked.dispatched?
     end
 
     BindMethod.new(

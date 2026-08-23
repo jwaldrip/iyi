@@ -46,6 +46,13 @@ WORK="$(mktemp -d)"
 # `untyped_return` writes no return type at all, which is the half of rule 1
 # that was always instantiated. It is here so the two halves are checked by one
 # program.
+#
+# `each` takes a block, and a block-taking method's machine code is the
+# caller's by design (IV.1g) — the producer emits each instantiation private to
+# the unit that called it, so no symbol for one leaves the artifact. Its body
+# has to travel instead. It did not, for anything but a generic type, and this
+# line is what said so: `undefined symbol:
+# *Shard::Part#each<&Proc(Int32, Nil)>`.
 cat > "$WORK/shard.cr" <<'CR'
 module Shard
   extend self
@@ -71,6 +78,11 @@ module Shard
     def untyped_return(n : Int32)
       n * @seed
     end
+
+    def each(& : Int32 -> Nil) : Nil
+      yield @seed
+      yield @seed + 1
+    end
   end
 
   def make(seed : Int32) : Part
@@ -95,6 +107,11 @@ puts part.wider
 part.discards(STDOUT)
 puts ""
 puts part.untyped_return(3)
+total = 0
+part.each do |v|
+  total = total + v
+end
+puts total
 puts Shard.make(11).step(1)
 IYI
 

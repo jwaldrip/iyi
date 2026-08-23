@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 90,038 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 90,098 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,301 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -4038,6 +4038,25 @@ written on, a module's own `pub def` and a method of an exported class alike.
 **Built.** The producer emits each instantiation into the unit that called it,
 private to that unit, so no symbol for one leaves the artifact; the body travels
 in `MonoBodies`; and the consumer compiles its own from the block it wrote.
+
+**Built on one side of the boundary and not the other, which a round trip
+found.** The paragraph above says the question is about a `def` and not about a
+type. `crystal tool bind` was answering it about a type: only a *generic*
+type's methods carried their bodies, so an ordinary class's block-taking method
+crossed as a declaration with nothing behind it. The machine code stayed
+private to the producer, as designed, and the consumer asked for a symbol
+nobody had emitted — `undefined symbol: *Shard::Part#each<&Proc(Int32, Nil)>`,
+at the end of a build with no other complaint.
+
+Nothing here was wrong except where it was applied. A block-taking method now
+carries its body wherever it is written, the same way a generic's methods
+already did, and both shapes round-trip: one that `yield`s and one that
+captures its block as a `Proc`. The first guess at the cause was that `yield`
+is inlined and a captured block is not, which would have made this a narrower
+bug than it is; a captured block fails identically, so the rule is the block
+and not the `yield`. Both are in
+`bench/bind_roundtrip.sh`. The surface does not move: `JSON` 180 signatures,
+`YAML` 193, `URI` 55, before and after.
 
 **And behind that one, three more**: each of them invisible until a consumer
 started compiling a body against a type it had only ever imported.
