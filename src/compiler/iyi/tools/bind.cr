@@ -74,15 +74,29 @@ module Iyi
     storable : Bool,
     # What holding the written return type against the call answered.
     checked : BindCheck,
-    # What instantiation answered, when that differs from what was written. The
-    # declaration still says the written one; this is what says it is wrong.
+    # What instantiation answered, when that differs from what was written —
+    # and what travels, because the symbol is named after it.
     produced : String? do
+    # What this method answers, which is not always what the shard wrote.
+    #
+    # The instantiated answer wins where the two disagree, and the linker is
+    # what decided that rather than an argument. A shard writing
+    # `def wider : String?` over a body returning a `String` gets a symbol named
+    # `*Shard::Part#wider:String`; a declaration repeating the restriction has
+    # the consumer ask for `*Shard::Part#wider:(String | Nil)`, and nobody
+    # emitted one. `produced` is set only where they disagree, so this reads as
+    # the written type everywhere else.
+    def answer : String?
+      produced || returns || inferred
+    end
+
     # Every type this signature names, so the emitter can ask whether they can
     # all be named on the other side.
     def signature_types : Array(String)
       types = params.map { |(_, restriction)| restriction }
-      answer = returns || inferred
-      types << answer if answer
+      if declared = answer
+        types << declared
+      end
       # The restriction only. `&block : Int32 -> Int32` names one type and one
       # parameter, and reading the parameter as a type made every annotated
       # block look like it mentioned something nobody declared.
@@ -101,14 +115,13 @@ module Iyi
       !block || !written_block.empty?
     end
 
-    # The `pub def` an iyi module would carry. Written from what the source
-    # said where it said it, and from what instantiation answered where it did
-    # not, which is the only difference between the two halves of this file.
+    # The `pub def` an iyi module would carry. Parameters as the source wrote
+    # them; the return from `answer`, which is what the source wrote only where
+    # that is also what a caller is handed.
     def declaration : String
       args = params.map { |(name, restriction)| "#{name} : #{restriction}" }.join(", ")
-      answer = returns || inferred || "Nil"
       signature = args.empty? ? name : "#{name}(#{args})"
-      "pub def #{signature} : #{answer}"
+      "pub def #{signature} : #{answer || "Nil"}"
     end
   end
 
@@ -223,10 +236,10 @@ module Iyi
 
       unless disagreed.empty?
         io.puts
-        io.puts "  and the ones a consumer would be told wrong:"
+        io.puts "  and the ones that travel as the answer, not as written:"
         disagreed.sort_by { |m| {m.owner, m.name} }.first(12).each do |method|
           io.puts "    #{method.owner}##{method.name}"
-          io.puts "      says #{method.returns}, produces #{method.produced}"
+          io.puts "      writes #{method.returns}, answers #{method.produced}"
         end
         io.puts "    ... and #{disagreed.size - 12} more" if disagreed.size > 12
       end
@@ -427,7 +440,7 @@ module Iyi
         receiver: method.owner == "#{root}:Module" && method.receiver.empty? ? "self" : method.receiver,
         parameters: method.params.map { |(name, restriction)| "#{name} : #{restriction}" },
         block_parameter: method.written_block,
-        return_type: (method.returns || method.inferred).not_nil!,
+        return_type: method.answer.not_nil!,
         free_variables: [] of String,
         required: false,
       )
@@ -913,7 +926,7 @@ module Iyi
             receiver: on_metaclass && method.receiver.empty? ? "self" : method.receiver,
             parameters: method.params.map { |(argument, restriction)| "#{argument} : #{restriction}" },
             block_parameter: method.written_block,
-            return_type: (method.returns || method.inferred).not_nil!,
+            return_type: method.answer.not_nil!,
             free_variables: [] of String,
             required: false,
           )
@@ -1540,7 +1553,7 @@ module Iyi
           receiver: on_metaclass && method.receiver.empty? ? "self" : method.receiver,
           parameters: method.params.map { |(argument, restriction)| "#{argument} : #{restriction}" },
           block_parameter: method.written_block,
-          return_type: (method.returns || method.inferred).not_nil!,
+          return_type: method.answer.not_nil!,
           free_variables: [] of String,
           required: false,
         )

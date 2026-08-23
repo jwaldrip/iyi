@@ -748,7 +748,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 89,954 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 89,967 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,301 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -2524,11 +2524,35 @@ the whole of what was asked.
    left of this rule — a splat, an unannotated block, a generic — and it is a
    number now rather than a sentence.
 
-   **What is not yet decided is what should travel.** The declarations still
-   say what the shard wrote, because emitting the instantiated answer instead
-   changes what artifacts contain and that needs a consumer linking against
-   the corrected declaration to prove it, not an argument. The tool knows and
-   says; changing what it writes is the next step.
+   **What travels is the answer, and the linker decided it rather than an
+   argument.** This was left open for one commit on the grounds that changing
+   what artifacts contain needed a consumer linking against the corrected
+   declaration to prove it. `bench/bind_roundtrip.sh` is that consumer. Bound
+   with the restriction repeated, a program calling `wider` fails with
+
+   ```
+   ld.lld: error: undefined symbol: *Shard::Part#wider:(String | Nil)
+   ```
+
+   because the symbol Crystal emitted is named `:String` — rule 1's first
+   failure, at the end of a build that had no other complaint, reached with
+   nobody having written a wrong signature. Bound with the answer, the same
+   program links, runs, and prints what the source arm prints. The
+   declarations now carry the instantiated answer wherever the two disagree,
+   and the round trip is a gate so this cannot come back.
+
+   **A virtual parameter has no one symbol, and this is not closed.** The
+   round trip found it on the way: `def discards(io : IO)` is monomorphised on
+   what it is *passed*, so the keep file emits `discards<IO>` while a consumer
+   handing it `STDOUT` asks for `discards<IO::FileDescriptor>`. The producer
+   cannot know which concrete types a consumer will pass, so this is the
+   parameter-side twin of the return type above and it does not have the same
+   answer — the return type has one truth per method and a parameter has one
+   per call site. Either the keep file instantiates for every concrete subtype,
+   which is the whole-program work an artifact exists to avoid, or the boundary
+   refuses such methods and says so. Neither is built. `storable` already
+   refuses a parameter that names a *family head*; a virtual class is a
+   different shape and crosses today.
 
    **The check was built the wrong way round first, and the reason is worth
    the line.** It read the instantiated method's *body* rather than its call.

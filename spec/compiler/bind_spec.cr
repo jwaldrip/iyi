@@ -293,12 +293,21 @@ describe "tool bind" do
 
       report.should contain "written returns, held against what a caller is handed"
       report.should contain "Narrow#wider"
-      report.should contain "says (String | Nil), produces String"
+      report.should contain "writes (String | Nil), answers String"
 
       # The two that agree stay out of it. `discards` is the one that would be
       # named by a check that read the body.
       report.should_not contain "Narrow#exact"
       report.should_not contain "Narrow#discards"
+
+      # And the answer is what travels, because the symbol is named after it.
+      # The draft the report prints is the same text the artifact carries.
+      # `bench/bind_roundtrip.sh` is this claim with a linker behind it; this is
+      # the cheap half, and says which of the two spellings was written.
+      report.should contain "pub def wider : String\n"
+      report.should_not contain "pub def wider : (String | Nil)"
+
+      consume "mods", "narrow"
     end
   end
 end

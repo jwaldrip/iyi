@@ -216,7 +216,7 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r"Crystal (only ever|refuses|injects|module|needs|repository|path)", "a sentence about the other language"),
     (r"crystal (was compiled|code|repository)|in crystal\b|\.crystal\b", "a sentence about the other language"),
     (r"Crystal source files", "the formatter's description of `.cr` input"),
-    (r"\$crystal|regex crystal", "a shell variable and a type-name list"),
+    (r"\$crystal|\$CRYSTAL\b|\$\{CRYSTAL\}|regex crystal", "a shell variable and a type-name list"),
     (r"Crystal (resolves|infers|compiles|writes|builds|already|narrows|standard library)", "a sentence about the other language"),
     (r"other Crystal|the crystal\b|as crystal\b|CONST \(Crystal\)", "a sentence about the other language"),
     (r"crystal-lang/crystal#", "an upstream issue reference"),

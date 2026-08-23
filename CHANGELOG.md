@@ -4,6 +4,30 @@
 
 ### Added
 
+- **A bound shard is built from its boundary, linked and run every build.**
+  `bench/bind_roundtrip.sh` is `samples_roundtrip.sh`'s question asked of the
+  other kind of artifact: object code that is a shard's, declarations that
+  `crystal tool bind` wrote, and a `--crystal` consumer. It binds, fills the
+  units, builds the same program both ways, runs both and compares.
+
+  III.6 rule 1 names two failures for a boundary whose signatures are wrong —
+  an undefined symbol, or a call returning something of another type — and
+  `spec/compiler/bind_spec.cr` reaches neither, because it reads declarations
+  back and never links. That was written down as a deliberate limit. Nothing
+  covered it, and the first thing this gate did was fail:
+
+  ```
+  ld.lld: error: undefined symbol: *Shard::Part#wider:(String | Nil)
+  ```
+
+  **It also found a gap it does not close.** `def discards(io : IO)` is
+  monomorphised on what it is passed, so the keep file emits `discards<IO>`
+  and a consumer handing it `STDOUT` asks for `discards<IO::FileDescriptor>`.
+  A return type has one truth per method; a parameter has one per call site,
+  and the producer cannot know the call sites. The shard in this gate takes an
+  `Int32` for that reason, and SPEC.md III.6 says what the two answers would
+  cost.
+
 - **`pub enum`, and an enum crosses a boundary.** iyi took an `enum` already —
   the language has one and the compiler makes the type — but `pub` did not, so a
   module could declare one and never hand it out. It does now, and
@@ -383,8 +407,9 @@
   back `StringBased` and `IOBased`; `YAML::Schema::Core.parse_scalar` declares a
   union carrying `Slice(UInt8)`, which it never produces. The report names them
   and counts what is left: URI **40 agree, 0 disagree, 27 could not be checked**,
-  JSON 119/3/13, YAML 111/2/40. The declarations still travel as written — what
-  changes here is that the tool knows, and says, which of them are wrong.
+  JSON 119/3/13, YAML 111/2/40. Where the two disagree the artifact carries the
+  **answer**, because the symbol is named after the answer and not after the
+  restriction — see the round trip below, which is what settled that.
 
   **The first version of this check read the method's body rather than its call,
   and it was wrong in the direction that matters.** `def discards(io : IO) : Nil`
