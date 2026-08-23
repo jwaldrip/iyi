@@ -227,6 +227,43 @@ module Iyi
     # runs where it should. Empty unless `--emit-iyimod` asked for artifacts.
     getter iyi_unit_constants = {} of String => Set(Const)
 
+    # iyi: what a synthesised regex constant was made from, by name (SPEC.md
+    # IV.1g).
+    #
+    # A regex literal becomes a program-level constant, and the name it gets is
+    # a digest of the pattern rather than anything anybody wrote — see
+    # `regex_const_name`. That name is all `iyi_unit_constants` above can carry,
+    # and a consumer handed only a name has nothing to build: `$` is not legal
+    # in a constant, so it cannot travel as the source `Exports` is, and a
+    # digest cannot be read backwards into the pattern that made it. So the
+    # pattern and the flags are kept here, travel in their own section, and the
+    # consumer rebuilds the constant under the name its object code asks for.
+    #
+    # Filled by `LiteralExpander` for every literal this program expands, which
+    # includes the ones a consumer defined from an artifact — that is what makes
+    # a second artifact naming the same pattern share the constant rather than
+    # define it twice.
+    getter iyi_regex_constants = {} of String => {String, RegexOptions}
+
+    # The name a regex literal's constant gets: `$Regex:` and a digest of what
+    # it was written as.
+    #
+    # `$` keeps it unwritable, which is the half the old name already had. The
+    # digest is the half it did not: a name that means the same thing in a
+    # program that never compiled this source. Both halves matter to the
+    # linker — a unit reading the constant refers to `~<name>:const_read` —
+    # and only the digest makes that reference safe to resolve against
+    # somebody else's program.
+    #
+    # The flags are in the digest because they are in the pattern's meaning,
+    # and the length is in it because a pattern may hold anything at all: two
+    # different literals must not be able to spell the same key by moving the
+    # separator.
+    def self.regex_const_name(pattern : String, options : RegexOptions) : String
+      key = "#{options.value}:#{pattern.bytesize}:#{pattern}"
+      "$Regex:#{::Crystal::Digest::MD5.hexdigest(key)}"
+    end
+
     # iyi: the `using` directives each file's module unit writes, by absolute
     # filename and as written (SPEC.md II.3).
     #

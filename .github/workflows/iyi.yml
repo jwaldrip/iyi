@@ -241,6 +241,15 @@ jobs:
       - name: A bound shard, built from its boundary and run
         run: bash bench/bind_roundtrip.sh
 
+      # Two boundaries rather than one, because that is what it takes to ask
+      # whether a name the compiler invented is an identity. A regex literal
+      # becomes a constant named by the compiler, the name reaches the linker,
+      # and both shards below numbered their own from zero — so the second one
+      # matched against the first one's pattern, silently, with every other
+      # gate here green.
+      - name: Two bound shards keep their own regex literals
+        run: bash bench/bind_regex_identity.sh
+
       # The README's headline example, taken literally: `require "kemal"` in an
       # `.iyi` file, built `--crystal`, answering over HTTP. The synthetic shard
       # in the tarball job proves the library ships whole; it cannot prove that

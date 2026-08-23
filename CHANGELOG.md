@@ -4,6 +4,36 @@
 
 ### Added
 
+- **A regex literal's constant is named after the literal, and what it was made
+  from crosses a boundary.** The compiler turns a regex literal into a
+  program-level constant, and the name it invented was the order the literal
+  was met in: `$Regex:0`. That name reaches the linker — a unit reading the
+  constant refers to `~$Regex:0:const_read` — and encounter order is not an
+  identity two programs share. A consumer of a bound shard failed on
+  `undefined constant ::$Regex:0`, and the obvious fix, skipping such names,
+  was worse than the bug: the producer's object code still referred to the
+  mangled name, and whichever constant the consumer had numbered zero would
+  have satisfied it. A different pattern, silently.
+
+  The name is `$Regex:` and a digest of the pattern and the flags now, so it
+  means the same thing in a program that never compiled this source, and two
+  modules that wrote the same literal share one constant rather than defining
+  two. `$` still keeps it out of reach of anything anybody can write.
+
+  A digest cannot be read backwards, so the pattern travels too, in a
+  `Regexes` section beside the names in `Constants` — it cannot go through the
+  source channel, because `$` is not legal in a constant and `Exports` is
+  parsed text. The consumer builds the constant with the same `Regex.new` call
+  the expander builds for a literal met in source, and from there it is
+  ordinary: typed when read, initialised where read.
+
+  **The name is the load-bearing half, and the channel alone looks like it
+  works.** With the channel in and encounter-order naming restored, two bound
+  shards holding one literal each both wrote `$Regex:0`, and the second shard
+  matched against the first one's pattern with nothing raised and exit 0.
+  `bench/bind_regex_identity.sh` is the gate: it takes two boundaries, because
+  one can be wrong about the name and still right about the pattern.
+
 - **A real shard is installed, built against and asked for two pages every
   build.** `bench/shard_serves.sh` takes the README's headline example
   literally: `require "kemal"` in an `.iyi` file, built `--crystal`, serving.

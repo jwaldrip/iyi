@@ -6048,8 +6048,50 @@ Named honestly, so nobody mistakes this draft for complete.
     > > the probe was reverted rather than kept.
     > >
     > > So the fix is an identity rather than a filter: a synthesised constant
-    > > needs a name unique to the module that made it, and a channel that is
-    > > not parsed source to carry its initialiser. Not started.
+    > > needs a name that means the same thing in a program that never compiled
+    > > this source, and a channel that is not parsed source to carry its
+    > > initialiser. **Both are built.**
+    > >
+    > > **The identity is the literal, not the module.** This paragraph said
+    > > "unique to the module that made it" before it was tried, and that is
+    > > the wrong half of the problem. The expander has no module: it runs over
+    > > a whole program, and which of that program's types end up in which
+    > > artifact is decided much later, by a flag. What it does have is the
+    > > literal, so the name is `$Regex:` and a digest of the pattern and the
+    > > flags. `$` still keeps it unwritable, which is the half the old name
+    > > already had.
+    > >
+    > > Content addressing also turns the collision into the right answer
+    > > instead of merely avoiding it. Two modules that both wrote `/\d+/`
+    > > *should* share one constant, and under a module-qualified name they
+    > > would define two. It costs nothing else: a digest is stable under build
+    > > order, where a number is not — adding a file to a shard renumbered
+    > > every literal after it and changed an artifact that had not changed.
+    > >
+    > > The initialiser travels in a `Regexes` section beside the names in
+    > > `Constants`, as the pattern and the flags rather than as source, and the
+    > > consumer builds the constant with the same `Regex.new` call the expander
+    > > builds for a literal met in source. From there it is ordinary: typed
+    > > when read, initialised where read.
+    > >
+    > > **Measured, because the name is the load-bearing half and the channel
+    > > alone looks like it works.** With the channel in and encounter-order
+    > > naming restored, two bound shards holding one literal each both wrote
+    > > `$Regex:0`; the consumer can define one name once, so the second shard
+    > > matched against the first one's pattern. Nothing raised, nothing failed
+    > > to link, and the program exited 0:
+    > >
+    > > ```
+    > > --- source ---        --- artifact ---
+    > > alpha-[0-9]+          alpha-[0-9]+
+    > > beta-[a-z]+           alpha-[0-9]+
+    > > ```
+    > >
+    > > That is what the reverted probe would have shipped, now seen rather than
+    > > predicted, and `bench/bind_regex_identity.sh` is the gate that holds it.
+    > > It takes two boundaries: one can be wrong about the name and still right
+    > > about the pattern, because there is nothing for it to collide with —
+    > > which is why `bind_roundtrip.sh` could not have asked this.
     > >
     > > **Behind it, one more, and it is probably a class root.** With the probe
     > > in place the link wants `Backtracer::configuration` and
