@@ -20,13 +20,29 @@
   ld.lld: error: undefined symbol: *Shard::Part#wider:(String | Nil)
   ```
 
-  **It also found a gap it does not close.** `def discards(io : IO)` is
-  monomorphised on what it is passed, so the keep file emits `discards<IO>`
-  and a consumer handing it `STDOUT` asks for `discards<IO::FileDescriptor>`.
-  A return type has one truth per method; a parameter has one per call site,
-  and the producer cannot know the call sites. The shard in this gate takes an
-  `Int32` for that reason, and SPEC.md III.6 says what the two answers would
-  cost.
+  **And it found the same question on the other side of the arrow.**
+  `def discards(io : IO)` is monomorphised on what it is passed, so the keep
+  file emitted `discards<IO>` and a consumer handing it `STDOUT` asked for
+  `discards<IO::FileDescriptor>`. Both answers that suggest themselves are bad:
+  instantiating for every concrete subtype is the whole-program work an
+  artifact exists to avoid, and refusing such methods costs real surface —
+  `JSON` has 10 of 180 declarations taking an `IO`, `YAML` 10 of 193, `URI` 7
+  of 55, counting only `IO`.
+
+- **A call to a declaration read from a `.iyimod` is keyed on the parameter as
+  declared, not on what the call site passes.** One line of a consumer said
+  which answer the gap above wanted: `part.discards(STDOUT)` failed to link and
+  `part.discards(STDOUT.as(IO))` linked and ran. The symbol was callable the
+  whole time; the call was reading past the declaration.
+
+  Keying on the argument is right everywhere the body is present to be compiled
+  once per argument type. A declaration from an artifact has no body and
+  exactly one symbol, so the parameter as written is what the call is keyed on
+  and the argument is widened to it — the conversion `.as(IO)` was performing by
+  hand. Getting the direction backwards says so plainly:
+  `BUG: trying to downcast IO+ <- IO::FileDescriptor`, which is `downcast`
+  being handed a widening. Nothing is refused and nothing is instantiated per
+  subtype.
 
 - **`pub enum`, and an enum crosses a boundary.** iyi took an `enum` already —
   the language has one and the compiler makes the type — but `pub` did not, so a

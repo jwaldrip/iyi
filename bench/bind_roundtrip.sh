@@ -36,9 +36,12 @@ WORK="$(mktemp -d)"
 # `discards` is the opposite mistake, from the first version of the check that
 # found `wider`: `: Nil` throws away whatever the body produced, so a check
 # reading the *body* calls this broken when it is not. It has to keep crossing.
-# It takes an `Int32` rather than the `IO` it wanted to, because a parameter
-# whose type is abstract is a gap this round trip found and does not close —
-# SPEC.md III.6, "a virtual parameter has no one symbol".
+#
+# Its `IO` is the second thing this round trip found. A parameter whose type is
+# abstract is emitted once, against the declaration, and a consumer passing a
+# `STDOUT` used to ask for `discards<IO::FileDescriptor>` — a symbol nobody
+# wrote. The declaration is the contract now and the call is keyed on it, so
+# this line is the regression test for that as much as for `: Nil`.
 #
 # `untyped_return` writes no return type at all, which is the half of rule 1
 # that was always instantiated. It is here so the two halves are checked by one
@@ -61,8 +64,8 @@ module Shard
       "part-" + @seed.to_s
     end
 
-    def discards(n : Int32) : Nil
-      @seed &+ n
+    def discards(io : IO) : Nil
+      io << "seed=" << @seed
     end
 
     def untyped_return(n : Int32)
@@ -89,7 +92,8 @@ require "./shard"
 part = Shard::Part.new(7)
 puts part.step(5)
 puts part.wider
-puts part.discards(2).inspect
+part.discards(STDOUT)
+puts ""
 puts part.untyped_return(3)
 puts Shard.make(11).step(1)
 IYI

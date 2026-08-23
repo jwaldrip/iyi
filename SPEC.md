@@ -748,7 +748,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 89,967 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 90,038 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,301 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -2541,18 +2541,34 @@ the whole of what was asked.
    declarations now carry the instantiated answer wherever the two disagree,
    and the round trip is a gate so this cannot come back.
 
-   **A virtual parameter has no one symbol, and this is not closed.** The
-   round trip found it on the way: `def discards(io : IO)` is monomorphised on
-   what it is *passed*, so the keep file emits `discards<IO>` while a consumer
-   handing it `STDOUT` asks for `discards<IO::FileDescriptor>`. The producer
-   cannot know which concrete types a consumer will pass, so this is the
-   parameter-side twin of the return type above and it does not have the same
-   answer — the return type has one truth per method and a parameter has one
-   per call site. Either the keep file instantiates for every concrete subtype,
-   which is the whole-program work an artifact exists to avoid, or the boundary
-   refuses such methods and says so. Neither is built. `storable` already
-   refuses a parameter that names a *family head*; a virtual class is a
-   different shape and crosses today.
+   **A virtual parameter, which is the same question asked of the other side
+   of the arrow.** The round trip found it next: `def discards(io : IO)` is
+   monomorphised on what it is *passed*, so the keep file emitted
+   `discards<IO>` while a consumer handing it `STDOUT` asked for
+   `discards<IO::FileDescriptor>`. The producer cannot know which concrete
+   types a consumer will pass, and there is one symbol.
+
+   The two answers that suggest themselves are both bad. The keep file could
+   instantiate for every concrete subtype, which is the whole-program work an
+   artifact exists to avoid. Or the boundary could refuse such methods, which
+   costs real surface: **JSON 10 of 180 declarations take an `IO`, YAML 10 of
+   193, URI 7 of 55**, and that counts only `IO`.
+
+   Neither was needed, and one line of a consumer's source is what said so.
+   `part.discards(STDOUT)` failed to link and `part.discards(STDOUT.as(IO))`
+   linked, ran, and printed. The symbol the producer emitted was callable the
+   whole time; what was wrong was that the *call* was keyed on what the call
+   site passes. Everywhere else that is right, because the body is there to be
+   compiled once per argument type. For a declaration read from an artifact
+   there is no body and exactly one symbol, so the call is keyed on the
+   parameter **as declared** and the argument is widened to it — the same
+   conversion `.as(IO)` performs by hand. `Call#iyi_artifact_arg_types` decides
+   it and codegen upcasts rather than downcasts, which is the direction the
+   crash named when it was got backwards:
+   `BUG: trying to downcast IO+ <- IO::FileDescriptor`.
+
+   Nothing is refused and nothing is instantiated per subtype. The declaration
+   is the contract, which is what R-2 says it is.
 
    **The check was built the wrong way round first, and the reason is worth
    the line.** It read the instantiated method's *body* rather than its call.
