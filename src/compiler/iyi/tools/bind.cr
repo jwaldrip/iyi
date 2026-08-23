@@ -106,6 +106,20 @@ module Iyi
   # waiting on, and once it has an artifact it stops being a gap.
   @@bound = Set(String).new
 
+  # The types Crystal's library defines, which a consumer of a bound shard has.
+  #
+  # It has them because it must: the units number
+  # `Pointer(LibUnwind::Exception)` whatever the shard does, so the consumer is
+  # a `--crystal` program, and a `--crystal` program is one with Crystal's
+  # library in it. The shard's own requires travel beside this, so the files the
+  # prelude leaves out are there too.
+  #
+  # This predicate is what decides every count this tool prints, and it used to
+  # ask what an *iyi-prelude* program could name — a program that cannot consume
+  # one of these artifacts at all. So the surface read low: `Kemal::Route` and
+  # five more were refused for naming types their actual consumer would have.
+  @@crystal_types = Set(String).new
+
   # And what to call them from outside. A bound artifact's declarations sit
   # under the module the consumer imports, so `IO` is `Io::IO` there — the
   # producer's name is not the consumer's, and an artifact that referred to one
@@ -131,6 +145,7 @@ module Iyi
     end
 
     @@builtin = program.builtin_type_names
+    @@crystal_types = crystal_library_types program
     @@bound_prefix = {} of String => String
     @@mono_bodies = {} of String => String
     @@bound_module = {} of String => String
@@ -592,7 +607,7 @@ module Iyi
         answer = type.value.type?
         next unless answer
 
-        answer = answer.devirtualize.to_s
+        answer = global_name(answer.devirtualize.to_s, root)
         next unless nameable?(answer, root)
         # Only a type that travelled: a name under the shard's own namespace is
         # writable only if the artifact carries it.
@@ -1375,6 +1390,47 @@ module Iyi
     iyi_module_name(root).split('/').map(&.camelcase).join("::")
   end
 
+  # `Log` written `::Log`, where leaving it bare would find something else.
+  #
+  # An artifact's declarations are rendered *inside* the module they belong to,
+  # so a bare name is looked up there first. `Kemal::Log` is a constant and
+  # `::Log` is Crystal's class, and an accessor declared to return `Log` inside
+  # `module Kemal` finds the constant: *`Kemal::Log` is not a type, it's a
+  # constant*. Only a top-level name can be shadowed this way, and only a name
+  # of Crystal's — the shard's own are reached through the root on purpose.
+  private def self.global_name(name : String, root : String) : String
+    return name if name.includes?("::") || name.starts_with?("::")
+    return name unless @@crystal_types.includes?(name)
+    "::#{name}"
+  end
+
+  # Every type defined under Crystal's own source, by qualified name.
+  #
+  # Read from where each type was written rather than from a list: a list is a
+  # claim that everything not in it does not matter, and this file has already
+  # recorded what that costs once.
+  private def self.crystal_library_types(program : Program) : Set(String)
+    names = Set(String).new
+    library = program.requires.find(&.ends_with?("prelude.cr"))
+    return names unless library
+    root = File.dirname(library)
+
+    collect_crystal_types program.types?, "", root, names
+    names
+  end
+
+  private def self.collect_crystal_types(types : Hash(String, Type)?, prefix : String,
+                                         root : String, names : Set(String)) : Nil
+    return unless types
+
+    types.each do |name, type|
+      next unless type.is_a?(NamedType)
+      written_here = type.locations.try(&.any? { |location| location.filename.to_s.starts_with?(root) })
+      names << "#{prefix}#{name}" if written_here
+      collect_crystal_types type.types?, "#{prefix}#{name}::", root, names
+    end
+  end
+
   # The shard's requires of *Crystal's library*, for the consumer to replay.
   #
   # A unit numbers the types its source brought in — `Radix` reaches
@@ -1451,6 +1507,9 @@ module Iyi
       fields << {field, variable.type?.try(&.devirtualize.to_s) || "?"}
     end
 
+    nested = [] of IyiMod::TypeDecl
+    collect_declarations type, by_owner, root, nested
+
     IyiMod::TypeDecl.new(
       name: name,
       kind: type.type_desc.lchop("generic "),
@@ -1460,7 +1519,9 @@ module Iyi
       fields: fields,
       methods: signatures.sort_by(&.name),
       visibility: type.private? ? "private" : "pub",
-      types: [] of IyiMod::TypeDecl,
+      # A generic holds types too, and leaving them behind is how
+      # `Kemal::LRUCache::Node(K, V)` went missing while `LRUCache` travelled.
+      types: nested,
     )
   end
 
@@ -1523,6 +1584,11 @@ module Iyi
     owner.types?.try &.each do |name, type|
       case type
       when Const
+        # Not the compiler's own. A regex literal is cached in a constant named
+        # `$Regex:0`, which is not a name anybody wrote and not one anybody can
+        # write — the consumer makes its own when it compiles the body that
+        # needed it.
+        next if name.starts_with?('$')
         # A value the consumer cannot name is one it cannot rebuild, and a
         # constant it cannot rebuild is better left undefined than defined wrong.
         answer = type.value.type?.try(&.devirtualize.to_s)
@@ -1588,7 +1654,7 @@ module Iyi
   private def self.nameable_name?(name : String, root : String) : Bool
     return true if name == root || name.starts_with?("#{root}::")
     bare = name.lchop("::")
-    @@builtin.includes?(bare) || @@bound.includes?(bare)
+    @@builtin.includes?(bare) || @@bound.includes?(bare) || @@crystal_types.includes?(bare)
   end
 
   # Only the types the shard declares. A type it merely reopened belongs to

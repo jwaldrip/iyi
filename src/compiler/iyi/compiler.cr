@@ -665,6 +665,13 @@ module Iyi
         other.exports.types.each { |declaration| declared << declaration.name }
         next unless declared.any? { |name| artifact.type_ids.any?(&.includes?(name)) }
 
+        # Not if it already points here. Every one of these boundaries was bound
+        # in a program that held all of them, so each one's units number the
+        # others' instantiations — `Radix`'s number `Result(Kemal::Route)`,
+        # which is Kemal's instantiation and not Radix's. Read as a dependency
+        # both ways it is a cycle, and an import graph is a DAG (R-1).
+        next if other.imports.any? { |edge| edge.module_name == artifact.module_name }
+
         artifact.imports << IyiMod::ImportEdge.new(other.module_name)
         edges << other.module_name
       end

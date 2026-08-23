@@ -25,6 +25,27 @@
   how an alias lost its right-hand side and, once enums arrived, how one lost
   its members.
 
+- **`crystal tool bind` asks what the consumer of a bound shard can name, which
+  is not what it had been asking.** `nameable?` decides every count this tool
+  prints, and it asked what an *iyi-prelude* program could name — a program that
+  cannot consume one of these artifacts at all, because the units number
+  `Pointer(LibUnwind::Exception)` whatever the shard does. The consumer is a
+  `--crystal` program, which has Crystal's library, and now the shard's requires
+  besides. Read from where each type was written rather than from a list.
+
+  The surface had been reading low throughout. Without binding anything first:
+  `JSON` 168 → **181** signatures and 13 → **0** waiting, `YAML` 166 → **194**
+  and 32 → **0**, `URI` 48 → **55** and 9 → **0**. `Kemal` goes from 27 types
+  carrying 65 methods to **34 carrying 148**, and `Kemal::Route`,
+  `RouteDefinition`, `FileUpload` and three more stop being refused for naming
+  types their actual consumer would have.
+
+  Two things had to follow. A top-level name of Crystal's is written `::Log`,
+  because an artifact's declarations are rendered inside their own module and
+  `Kemal::Log` is a constant that would shadow it. And a generic carries the
+  types nested inside it, which is how `Kemal::LRUCache::Node(K, V)` went
+  missing while `LRUCache` travelled.
+
 - **A bound shard's requires travel, and so does a dependency that only its
   type ids show.** A unit numbers the types its own `require`s brought in —
   `Radix` reaches `Hash(String, HTTP::Cookie)` — and a consumer whose prelude is

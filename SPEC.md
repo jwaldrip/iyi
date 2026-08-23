@@ -5806,11 +5806,39 @@ Named honestly, so nobody mistakes this draft for complete.
     > > requires as well.
     > >
     > > So the measurement of what crosses has been made against the wrong
-    > > consumer since the tool was written, and it reads low: `Kemal::Route`,
-    > > `RouteDefinition`, `FileUpload` and three more are refused for naming
-    > > types their actual consumer would have. Widening `nameable?` to Crystal's
-    > > library is the next thing, and it is a bigger claim than it sounds —
-    > > every count in this item is downstream of that predicate.
+    > > consumer since the tool was written, and it read low.
+    > >
+    > > **Asked of the right one, with nothing bound first:**
+    > >
+    > > | | crossing | waiting |
+    > > |---|---|---|
+    > > | `JSON` | 168 → **181** | 13 → **0** |
+    > > | `YAML` | 166 → **194** | 32 → **0** |
+    > > | `URI` | 48 → **55** | 9 → **0** |
+    > >
+    > > None of the three waits on anything anybody could declare. `Kemal` goes
+    > > from 27 types carrying 65 methods to **34 carrying 148**, and what it
+    > > waits on is down to three names, every one of them another shard's:
+    > > `Radix::Tree`, `Radix::Result`, `ExceptionPage::Styles`.
+    > >
+    > > Two things had to follow it. A top-level name of Crystal's is written
+    > > `::Log`, because these declarations are rendered inside their own module
+    > > and `Kemal::Log` is a constant that shadows the class — the compiler said
+    > > so in those words. And a generic carries the types nested inside it,
+    > > which is how `Kemal::LRUCache::Node(K, V)` went missing while `LRUCache`
+    > > travelled.
+    > >
+    > > **`Kemal` still does not link, and this one is not settled.** With its
+    > > three shards bound the chain reaches an *import cycle*: every artifact's
+    > > units number the others' instantiations — `Radix`'s number
+    > > `Result(Kemal::Route)`, which is Kemal's instantiation and not Radix's —
+    > > and read as dependencies both ways that is a cycle, where an import graph
+    > > is a DAG. Binding each shard from its own entry rather than from the
+    > > app's removes it, which says the rule is partly about *how* a boundary is
+    > > made; but the state of the directory being bound into still changes the
+    > > answer, and a rule that depends on that is not a rule yet. It is the next
+    > > thing, and it is the first one in this item that is about the *graph*
+    > > rather than about a name or a type.
     > >
     > > **The first version of this measured nothing, and why is the useful
     > > part.** Its consumer called one method. Codegen is demand-driven, so a
