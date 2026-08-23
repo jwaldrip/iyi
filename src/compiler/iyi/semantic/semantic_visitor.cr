@@ -539,6 +539,13 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     begin
       parsed_nodes = parser.parse
       parsed_nodes = @program.normalize(parsed_nodes, inside_exp: false)
+      artifact.class_vars.each do |ref|
+        # `||=` on the flag: two artifacts may name the same class variable of
+        # the library, and the lazy reference is the one with a symbol behind
+        # it.
+        @program.iyi_artifact_class_vars[ref.name] =
+          ref.lazy || @program.iyi_artifact_class_vars[ref.name]? || false
+      end
       define_iyi_artifact_regexes artifact, artifact_path
       read_iyi_artifact_constants artifact, parsed_nodes, artifact_path
       parsed_nodes.accept IyiMod::DeclarationMarker.new

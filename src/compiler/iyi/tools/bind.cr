@@ -845,6 +845,15 @@ module Iyi
       fields = [] of {String, String}
     end
 
+    # A class variable whose type this boundary drops is one the consumer
+    # cannot declare, and a declaration that does not resolve is a hard error
+    # at import where the thing it replaces was an undefined symbol at link.
+    # Dropped, like the fields above and for the same reason: better left
+    # undefined than declared wrong. What it costs is named rather than hidden
+    # — the symbol comes back, and it comes back with the type that could not
+    # travel written next to it.
+    class_vars = declaration.class_vars.select { |(_, type_name, _)| resolvable.call(type_name) }
+
     methods = declaration.methods.select do |signature|
       (signature.parameters + [signature.return_type]).all? { |text| resolvable.call(text) }
     end
@@ -872,6 +881,7 @@ module Iyi
       value: declaration.value,
       macros: declaration.macros,
       members: declaration.members,
+      class_vars: class_vars,
     )
   end
 
@@ -1039,6 +1049,7 @@ module Iyi
         methods: signatures.sort_by(&.name),
         visibility: private_type ? "private" : "pub",
         types: nested,
+        class_vars: collect_class_vars(type),
       )
     end
   end
@@ -1432,6 +1443,12 @@ module Iyi
       value: strip_root(declaration.value, root),
       macros: declaration.macros,
       members: declaration.members,
+      # The value as well as the type. It is an expression that names types —
+      # `@@config = Config.new` — and it is rendered inside the module the same
+      # way an alias's right-hand side is.
+      class_vars: declaration.class_vars.map do |(name, type, value)|
+        {name, strip_root(type, root), strip_root(value, root)}
+      end,
     )
   end
 
@@ -1471,6 +1488,9 @@ module Iyi
       value: map_names(declaration.value),
       macros: declaration.macros,
       members: declaration.members,
+      class_vars: declaration.class_vars.map do |(name, type, value)|
+        {name, map_names(type), map_names(value)}
+      end,
     )
   end
 
@@ -1663,6 +1683,7 @@ module Iyi
       # A generic holds types too, and leaving them behind is how
       # `Kemal::LRUCache::Node(K, V)` went missing while `LRUCache` travelled.
       types: nested,
+      class_vars: collect_class_vars(type),
     )
   end
 
@@ -1744,6 +1765,30 @@ module Iyi
         collect_constant_source type, "#{prefix}#{name}::", root, lines
       end
     end
+  end
+
+  # A type's own class variables, `{"@@count", "Int32", "0"}`.
+  #
+  # A class variable is a global, and its global is defined in the main module
+  # of the build that compiled it — which for a bound shard is a build the
+  # consumer never sees. The methods that read one are in the object code this
+  # boundary carries, referring to it by symbol, so without the declaration the
+  # link ends on `undefined symbol: Shard::Part::count`.
+  #
+  # Devirtualised for the reason the fields beside it are: `IO+` is how a
+  # virtual type prints and not a name anybody can write back.
+  #
+  # Own only — `class_vars?` rather than a lookup, because looking one up walks
+  # ancestors and copies what it finds onto the asking type.
+  private def self.collect_class_vars(type : Type) : Array({String, String, String})
+    class_vars = [] of {String, String, String}
+    return class_vars unless type.responds_to?(:class_vars?)
+
+    type.class_vars?.try &.each do |name, variable|
+      initialiser = variable.iyi_initialiser_source
+      class_vars << {name, variable.type?.try(&.devirtualize.to_s) || "?", initialiser}
+    end
+    class_vars
   end
 
   # The foreign types one signature waits on.

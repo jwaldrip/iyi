@@ -67,6 +67,18 @@ module Iyi
           had_class_var = false
         end
 
+        # iyi: the value as it was *written*, before anything below expands it
+        # (SPEC.md IV.2). A class variable's value has to run on the far side of
+        # an artifact, so it travels as source — and by the time one is written
+        # `CleanupTransformer` has replaced this node with what the literal
+        # expanded to. `@@nums = [1, 2, 3]` reached the format as five
+        # statements over three temporaries, and the consumer parsing them back
+        # said "read before assignment to local variable '__temp_2'".
+        #
+        # Here rather than in the gather above, because the variable may not be
+        # on its owner yet: the line below this loop is what puts it there.
+        class_var.iyi_initialiser_source = node.to_s
+
         main_visitor.pushing_type(owner.as(ModuleType)) do
           # Check if we can autocast
           if node.supports_autocast?(!@program.has_flag?("no_number_autocast")) && (class_var_type = class_var.type?)

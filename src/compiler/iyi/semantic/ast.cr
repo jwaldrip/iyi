@@ -551,6 +551,21 @@ module Iyi
     # The (optional) initial value of a class variable
     property initializer : ClassVarInitializer?
 
+    # iyi: the initial value as it was *written*, for `TypeDecl#class_vars`
+    # (SPEC.md IV.2).
+    #
+    # A class variable's value has to run on the far side of an artifact, so it
+    # travels as source — and the node above is not that source by the time an
+    # artifact is written. `CleanupTransformer` replaces it with what the
+    # literal expanded to, so `@@nums = [1, 2, 3]` reached the format as five
+    # statements over three temporaries and a consumer parsing them back said
+    # "read before assignment to local variable '__temp_2'".
+    #
+    # Recorded where the initialiser is first gathered, which is before any of
+    # that. Empty for a variable with none, and for one written `= nil`: the
+    # compiler drops a nil initialiser because assigning nil assigns nothing.
+    property iyi_initialiser_source : String = ""
+
     property freeze_type : Type?
 
     # Flag used during codegen to indicate the initializer is simple

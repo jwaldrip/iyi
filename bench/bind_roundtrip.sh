@@ -47,6 +47,14 @@ WORK="$(mktemp -d)"
 # that was always instantiated. It is here so the two halves are checked by one
 # program.
 #
+# `bump` reads a class variable, which is a *global*. Its global is defined in
+# the main module of whatever build compiled it, and a main module is the one
+# part of a build that never travels — so the method arrived as machine code
+# referring to `Shard::Part::count`, a symbol nothing defined. Nothing carried
+# class variables at all: not this boundary and not a `.iyimod` written from
+# iyi's own source, where the same hole made R-1's claim false for any module
+# that had one.
+#
 # `each` takes a block, and a block-taking method's machine code is the
 # caller's by design (IV.1g) — the producer emits each instantiation private to
 # the unit that called it, so no symbol for one leaves the artifact. Its body
@@ -59,6 +67,7 @@ module Shard
 
   class Part
     @seed : Int32
+    @@count = 0
 
     def initialize(@seed : Int32)
     end
@@ -82,6 +91,11 @@ module Shard
     def each(& : Int32 -> Nil) : Nil
       yield @seed
       yield @seed + 1
+    end
+
+    def bump : Int32
+      @@count = @@count + 1
+      @@count
     end
   end
 
@@ -112,6 +126,8 @@ part.each do |v|
   total = total + v
 end
 puts total
+puts part.bump
+puts part.bump
 puts Shard.make(11).step(1)
 IYI
 

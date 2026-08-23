@@ -4765,32 +4765,70 @@ is the linker.
   is what the consumer has to allocate. For a generic type the resolution is in
   terms of its own parameters: `List(T)`'s `@items` is `Array(T)`, which is
   what lets one declaration stencil at every instantiation.
-- **Class variables.** **Not built, and this is a hole in R-1 rather than a
-  gap in the format's coverage.** A class variable is a global. The methods
-  that read it travel as machine code and refer to it by name — `@@seen` on
+- **Class variables.** **Built, and it was a hole in R-1 rather than a gap in
+  the format's coverage.** A class variable is a global. The methods that read
+  it travel as machine code and refer to it by name — `@@seen` on
   `App::Counter::Tally` is the symbol `App::Counter::Tally::seen` — and the
   global itself is defined in the *main module*, which is the one part of a
-  build that never travels. Nothing in the format mentions class variables at
+  build that never travels. Nothing in the format mentioned class variables at
   all: not `TypeDecl`, not `Constants`, nowhere.
 
-  So R-1's own claim is false for any module that has one, in iyi's own
+  So R-1's own claim was false for any module that had one, in iyi's own
   language and under iyi's own prelude. Build a module with a `@@seen : Int32
-  = 0`, delete its source, build again from the artifact, and the link ends on
+  = 0`, delete its source, build again from the artifact, and the link ended on
   `undefined symbol: App::Counter::Tally::seen`.
-  `bench/samples_roundtrip.sh` is the gate for exactly that claim and passes,
+  `bench/samples_roundtrip.sh` is the gate for exactly that claim and passed,
   because none of the six samples has a class variable.
 
-  It is the same shape as the constants above and needs two answers rather
-  than one, which is why it is not the same fix. A module's **own** class
-  variable is not in the declarations a consumer reads, so the declaration and
-  its initialiser have to travel — the way `fields` already do, one level up.
-  A class variable of the **library** is already declared in the consumer's
-  program, which compiles that library; what is missing there is only that
-  codegen never emitted the global, because demand-driven codegen emits what
-  the consumer's own code reaches and the reader is a unit it did not compile.
-  A bound shard reaching `String#upcase` leaves `Unicode::upcase_ranges` and
-  `Unicode::special_cases_upcase` undefined; one holding a regex it matches
-  leaves `Regex::PCRE2::current_jit_stack`. Both are the second kind.
+  **Two channels, and each closes half.** `TypeDecl` carries the declaration —
+  name, resolved type and the initialiser as written — the way `fields`
+  already do, one level up: the resolved type for the same reason a field's is
+  resolved, the value because it has to run on the far side. That is what a
+  module's **own** class variable needs, and it is all a bound shard's needs
+  too.
+
+  It is not enough on its own, and the case that says so is
+  `@@cache : String? = nil`: a nil initialiser assigns nothing, so the compiler
+  drops it before an artifact is written. The consumer read the declaration,
+  made no initialiser out of it, and codegen — which emits what the consuming
+  program *reaches* — emitted no global. So `ClassVars` carries the names a
+  unit's object code refers to, and the consumer defines each. That second
+  channel is also the whole of what a class variable of the **library** needs:
+  the consumer already has the declaration, having compiled the same library,
+  and only the global was missing. A bound shard reaching `String#upcase`
+  refers to `Unicode::@@upcase_ranges`; one holding a regex it matches refers
+  to `Regex::PCRE2::@@current_jit_stack`. One name answers both cases.
+
+  **What a consumer owes is not only the global, and it cannot work out which.**
+  A class variable with a live initialiser is read through `~Owner::name:read`,
+  a main-module function that initialises on first use; one without is read
+  straight off the global. Which of the two a unit emitted is decided where the
+  producer emitted it, and the far side has no way to reach the same answer —
+  so `ClassVars` carries a flag beside each name and the consumer builds
+  exactly what was emitted.
+
+  Both wrong guesses were made before that was clear, and each fails in a
+  different world. Assume the direct form and a `--crystal` consumer leaves
+  `~Exception::CallStack::skip:read` and
+  `~Crystal::EventLoop::Polling::arena:read` undefined — both Crystal's own,
+  both caught by `bench/bind_roundtrip.sh`. Assume the lazy form and an
+  iyi-prelude program dies on `BUG: __crystal_once is not defined`, because
+  iyi's prelude has no `__crystal_once` at all: **nothing under it ever takes
+  that branch**, which is a real difference between the two libraries and not
+  an accident of one program.
+
+  Nothing in that step initialises. A variable whose declaration travelled has
+  its initialiser in the consumer's own tree and runs on the ordinary path; one
+  of the library's runs where that library says. What is missing is only ever
+  the global, and the function that reaches it.
+
+  **And the value has to be caught before the compiler rewrites it.** The
+  initialiser travels as source, and the node a class variable holds is not
+  that source by the time an artifact is written: `CleanupTransformer` replaces
+  it with what the literal expanded to. `@@nums = [1, 2, 3]` reached the format
+  as five statements over three temporaries, and the consumer parsing them back
+  said `read before assignment to local variable '__temp_2'`. It is recorded
+  where the initialiser is first gathered instead, which is before any of that.
 - **Layout templates.** Size, alignment, and pointer map: expressed as a
   *function of the type parameters' shapes*, not a fixed layout. `Array(T)` is
   three words regardless of `T`; `Tuple(Int32, String)` is not. R-4 needs the
@@ -6125,10 +6163,21 @@ Named honestly, so nobody mistakes this draft for complete.
     > > `Unicode::upcase_ranges` for one that calls `String#upcase`, and
     > > `Shard::Part::count` for one that keeps a counter of its own. That last
     > > one is the general case and it is not about binding at all — an iyi
-    > > module with a class variable fails R-1's own round trip. It is written
-    > > up in IV.2, which is where a thing that is missing from `Exports`
-    > > belongs, and `Backtracer::configuration` below is the same finding
-    > > reached from the other end.
+    > > module with a class variable failed R-1's own round trip. **Built**, in
+    > > IV.2, which is where a thing missing from `Exports` belongs;
+    > > `Backtracer::configuration` below is the same finding reached from the
+    > > other end.
+    > >
+    > > **And behind that one, a third kind, which is neither a name nor a
+    > > global.** With the class variables crossing, a shard that *matches* a
+    > > regex still wants `*Regex::PCRE2::current_jit_stack` and
+    > > `*Regex::PCRE2::current_match_data` — the accessor **methods** — and
+    > > `Regex::MatchOptions:type_id`. A unit copies the library methods it
+    > > calls into itself, which is how `Unicode.upcase_ranges` arrived; these
+    > > two were not copied, and the consumer does not emit them because its
+    > > own code never reaches them. That is a question about the copy rule
+    > > rather than about the format, and it is where this item goes next. Not
+    > > started.
     > >
     > > **Behind it, one more, and it is probably a class root.** With the probe
     > > in place the link wants `Backtracer::configuration` and
