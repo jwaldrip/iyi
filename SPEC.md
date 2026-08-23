@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 90,098 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 90,142 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,301 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -4057,6 +4057,27 @@ bug than it is; a captured block fails identically, so the rule is the block
 and not the `yield`. Both are in
 `bench/bind_roundtrip.sh`. The surface does not move: `JSON` 180 signatures,
 `YAML` 193, `URI` 55, before and after.
+
+**And the other half of a block, which is reading what such a method returns.**
+`infer_return` instantiates a method on purpose and it did that with no block,
+so a method that takes one was answered `wrong number of arguments` by its own
+overload set — `JSON::Builder#string`, whose sibling takes a value. Its return
+type was the last thing on this boundary standing on the shard's word, over a
+block whose annotation described it in full.
+
+The call carries a `Block` of the annotated shape now, which is the same block
+the keep file has written as text since blocks first crossed, and a
+`parent_visitor`, because a block's body is code and code is visited. With
+both, **III.6 rule 1's residual over the crossing surface is zero**: `URI` 0 of
+55, `JSON` 0 of 181, `YAML` 0 of 194. It moves the untyped half as well — 64
+return types read in `JSON` that the tool had refused, and 81 in `YAML`.
+
+One caution the same run produced, because it looked like a third defect and
+was not. `YAML::Any#to_json_object_key` names `JSON::Error` in its body, and
+the probe it was measured against required only `yaml`; the tool refused
+correctly and the input was short. What a boundary is measured *with* is part
+of the measurement — `YAML` reads 194 signatures with both libraries required
+and 193 with one.
 
 **And behind that one, three more**: each of them invisible until a consumer
 started compiling a body against a type it had only ever imported.

@@ -403,6 +403,31 @@
 
 ### Fixed
 
+- **A method that takes a block is now called with one, and rule 1's residual
+  reaches zero.** `infer_return` instantiates a method on purpose to read what
+  it answers, and it did that with no block — so `JSON::Builder#string`, which
+  has an overload taking a value and one taking a block, matched the first and
+  answered `wrong number of arguments (given 0, expected 1)`. Its return type
+  was then the last thing on the boundary standing on the shard's word, over a
+  block the annotation had already described in full.
+
+  Two pieces. The call gets a `Block` of the annotated shape — the same block
+  the keep file has written as text since blocks first crossed, `{ |b0| nil }`
+  or an `uninitialized` of the output where the output is not `Nil`. And it
+  gets a `parent_visitor`, because a block's body is code and code is visited;
+  a blockless call never needed one, and the compiler says so exactly:
+  `Iyi::Call#parent_visitor cannot be nil`.
+
+  **Crossing on a return nobody checked: URI 0 of 55, JSON 0 of 181, YAML 0 of
+  194.** Blocks being instantiable moves the other half too — 64 return types
+  read in `JSON` where the tool had refused, 81 in `YAML`.
+
+  One of the two this closed was not the tool's fault and is worth saying so:
+  `YAML::Any#to_json_object_key` names `JSON::Error` in its body, and the probe
+  it was measured with required only `yaml`. The tool refused correctly and the
+  input was short. `YAML` reads 194 signatures with both required, against 193
+  with one.
+
 - **A block-taking method crossed a bound boundary and could not link.**
   IV.1g settles what such a method does: its machine code is the caller's, so
   the producer emits each instantiation private to the unit that called it and

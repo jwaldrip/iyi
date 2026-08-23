@@ -1946,6 +1946,29 @@ module Iyi
     {type.devirtualize.to_s, nil}
   end
 
+  # A block of the annotated shape, for a call nobody wrote.
+  #
+  # The arguments carry no types: a block literal takes them from the method
+  # being called, which is the thing being instantiated. The body has to be of
+  # the annotated output type, and `uninitialized` is how you name a value of a
+  # type without building one — the same answer the keep file's text gives.
+  private def self.synthesize_block(restriction : ASTNode) : Block?
+    return nil unless restriction.is_a?(ProcNotation)
+
+    inputs = restriction.inputs || [] of ASTNode
+    args = inputs.map_with_index { |_, index| Var.new("__bind_b#{index}") }
+
+    output = restriction.output
+    body =
+      if output.nil? || output.to_s == "Nil"
+        NilLiteral.new
+      else
+        UninitializedVar.new(Var.new("__bind_block_result"), output.clone)
+      end
+
+    Block.new(args, body)
+  end
+
   # Instantiate a method nobody called, and hand back the call.
   #
   # This is the whole trick, and it is why a shard's untyped surface is not the
@@ -1962,10 +1985,27 @@ module Iyi
     # A block whose own type is written is not the problem; one whose output is
     # `_`, or which was never annotated, is. What such a method returns depends
     # on what the caller passes, and there is no single answer to read.
+    block = nil
     if block_arg = a_def.block_arg
       restriction = block_arg.restriction
       return {nil, "block is not annotated"} unless restriction
       return {nil, "block returns `_`"} if restriction.to_s.includes?("_")
+
+      # And then hand the call one, which this did not do.
+      #
+      # A method that takes a block is called *with* a block or it is not
+      # called: `JSON::Builder#string` has an overload taking a value and one
+      # taking a block, so a synthesised call with neither matched the first
+      # and answered `wrong number of arguments (given 0, expected 1)`. The
+      # method's own return type was then the one thing on the boundary
+      # standing on the shard's word, which is the whole of what rule 1 is
+      # about, over a block the annotation had already described.
+      #
+      # The keep file has written exactly this block as text since blocks
+      # first crossed — `{ |b0| nil }`, or an `uninitialized` of the output
+      # where the output is not `Nil`. This is the same block as a node.
+      block = synthesize_block restriction
+      return {nil, "block shape not understood"} unless block
     end
     return {nil, "yields without a block parameter"} if a_def.block_arity && !a_def.block_arg
     return {nil, "splat"} if a_def.splat_index || a_def.double_splat
@@ -1985,8 +2025,12 @@ module Iyi
     end
 
     receiver = Var.new("self").tap(&.set_type(owner))
-    call = Call.new(receiver, a_def.name, args)
+    call = Call.new(receiver, a_def.name, args, block)
     call.scope = owner
+    # A block's body is code, and code is visited. A blockless call never
+    # needed one and so this was never set; with a block attached the compiler
+    # says so plainly — `Iyi::Call#parent_visitor cannot be nil`.
+    call.parent_visitor = MainVisitor.new(owner.program)
     call.recalculate
     {call, nil}
   rescue ex : Iyi::CodeError
