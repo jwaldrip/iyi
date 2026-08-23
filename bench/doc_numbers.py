@@ -73,6 +73,39 @@ def generated_project_lines() -> int:
         return wc(sorted((pathlib.Path(work) / "iyi").rglob("*.iyi")))
 
 
+# The spec files that exist because of iyi's own rules, named rather than
+# globbed. A glob for "iyi" in the path is the obvious measure and it is wrong:
+# the namespace rename moved a dozen of Crystal's tool specs under
+# `spec/compiler/iyi/`, and counting those claims Crystal's testing as iyi's.
+# `iyi_path_spec.cr`, `iyi-daemon_spec.cr` and `iyi/tools/unreachable_spec.cr`
+# are the same trap wearing an iyi name: each is a Crystal spec that was renamed.
+#
+# A missing file raises rather than counting short, because a rename that this
+# list does not follow would otherwise report a smaller number as though the
+# specs had shrunk.
+IYI_SPECS = (
+    "spec/compiler/iyimod_spec.cr",             # the artifact format
+    "spec/compiler/iyi_import_spec.cr",         # the import path
+    "spec/compiler/iyi_derive_spec.cr",         # derive, R-5
+    "spec/compiler/semantic/iyi_spec.cr",       # iyi's own semantics
+    "spec/compiler/iyi/rx_spec.cr",             # the engine, differential
+    "spec/compiler/formatter/iyi_formatter_spec.cr",  # `pub`, which Crystal has no word for
+)
+
+
+def iyi_spec_lines() -> int:
+    paths = []
+    for rel in IYI_SPECS:
+        path = REPO / rel
+        if not path.exists():
+            raise SystemExit(
+                f"doc_numbers: {rel} is gone, so the spec count cannot be measured. "
+                "If it moved, follow it here; the number is not allowed to shrink quietly."
+            )
+        paths.append(path)
+    return wc(paths)
+
+
 def measured() -> dict[str, int]:
     """The numbers, measured the way the docs say they are measured."""
     return {
@@ -87,6 +120,7 @@ def measured() -> dict[str, int]:
         ),
         "bang_names": bang_names(),
         "generated": generated_project_lines(),
+        "spec_iyi": iyi_spec_lines(),
         "targets": targets(),
     }
 
@@ -128,6 +162,7 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     ("prelude", r"against iyi's own ([\d,]+)-line", "samples/iyi/calc.iyi", 1),
     ("samples_std", r"own prelude \+ ([\d,]+) in samples", "SPEC.md", 1),
     ("compiler", r"\| ([\d,]+) lines, Crystal, forked", "SPEC.md", 1),
+    ("spec_iyi", r"\| ([\d,]+) for iyi \|", "SPEC.md", 1),
     ("prelude_kb", r"library is ([\d,]+) KB on disk", "README.md", 1),
     ("prelude_kb", r"carries both libraries: iyi's own ([\d,]+) KB", "README.md", 1),
     ("prelude_kb", r"beside `bin/iyi` is ([\d,]+) KB", "Makefile", 1),
