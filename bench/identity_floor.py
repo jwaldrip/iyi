@@ -241,6 +241,15 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # `bench/doc_numbers.py` holds the patterns that match the docs' own
     # sentences, so it quotes SPEC's "lines, Crystal, forked" verbatim.
     (r"lines, Crystal, forked", "a pattern matching SPEC's own sentence"),
+    # `tool bind` writes an artifact for a `--crystal` consumer, so two of the
+    # things it carries are Crystal's and are named for it. `crystal_types` is
+    # the set of names that consumer already has from Crystal's library, which
+    # is what decides whether a bound shard may name a type. `crystal_requires`
+    # is the `require`s a shard's source made that resolved into Crystal's
+    # library, replayed in the artifact because the consumer's prelude does not
+    # hold every file of it. Renaming either would claim a name iyi does not own.
+    (r"crystal_types|crystal_requires", "what a --crystal consumer already has, carried by name"),
+    (r"a \*Crystal\* source", "a sentence about the other language"),
 ]
 
 PATH_RES = [(re.compile(p), why) for p, why in ALLOWED_PATHS]
