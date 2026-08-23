@@ -363,6 +363,44 @@
 
 ### Fixed
 
+- **`crystal tool bind` holds a written return type against what a caller is
+  actually handed, and the two are not always the same.** III.6 rule 1 says the
+  binding asserts and is not checked. Half of it already was: a method whose
+  return type nobody wrote is instantiated on purpose and the answer read. The
+  other half — a method that *writes* its return type — was copied out verbatim
+  and held against nothing, on the premise that what Crystal was told is what
+  Crystal does.
+
+  It is not. Crystal narrows a return restriction to what the body produced, so
+  `def wider : String?` returning a `String` types its call **`String`**, and a
+  consumer told `String?` holds a union where the object code answers a bare
+  pointer. That is rule 1's "a call that returns something of another type",
+  reached without anybody writing a wrong signature.
+
+  Five in Crystal's own library, and each is a different shape: `JSON::Any#size`
+  and `YAML::Any#size` say `Int`, which is a family head and not a type anything
+  can hold; `JSON::Lexer.new` says the abstract base where the factory hands
+  back `StringBased` and `IOBased`; `YAML::Schema::Core.parse_scalar` declares a
+  union carrying `Slice(UInt8)`, which it never produces. The report names them
+  and counts what is left: URI **40 agree, 0 disagree, 27 could not be checked**,
+  JSON 119/3/13, YAML 111/2/40. The declarations still travel as written — what
+  changes here is that the tool knows, and says, which of them are wrong.
+
+  **The first version of this check read the method's body rather than its call,
+  and it was wrong in the direction that matters.** `def discards(io : IO) : Nil`
+  has a body producing an `IO` and a caller receiving `Nil`, because `: Nil`
+  discards; reading the body reported three defects in `URI` alone that were not
+  there. The question a boundary asks is what a *caller* is handed, and the spec
+  now pins the `: Nil` case for that reason.
+
+- **A return type is asked whether a variable could hold it, which only the
+  parameters were being asked.** `Int` is the head of a family on either side of
+  the arrow: a method answering one has a symbol per member exactly as a method
+  taking one does, and the generated keep file cannot compile either. `storable`
+  looked at the arguments alone, so `JSON::Any#size : Int` was counted as a
+  signature that crosses. JSON goes **181 → 180** and YAML **194 → 193**; URI is
+  unchanged at 55.
+
 - **`gsub` copied the tail twice on an empty match at the end of the subject.**
   `Iyi::Rx.gsub("abc", /$/, "<>")` answered `"abc<>abc"`. An empty match at the
   very end left the cursor behind it, so the text between the cursor and the
