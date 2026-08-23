@@ -663,7 +663,6 @@ module Iyi::IyiMod
     # only be taken once they are in it.
     property hashes : Hashes
 
-
     def initialize(@module_name, @source_path, @compiler_version, @target_triple,
                    @flags, @imports, @usings = [] of String, @exports = Exports.empty,
                    @object_code = [] of ObjectUnit, @has_initialiser = false,
@@ -900,7 +899,6 @@ module Iyi::IyiMod
         when Section::MonoBodies  then mono_bodies = decode_mono_bodies(payload)
         when Section::MacroBodies then macro_bodies = decode_macro_bodies(payload)
         when Section::Initialiser then initialiser = String.new(payload)
-
         when Section::TypeIds     then type_ids = decode_type_ids(payload)
         when Section::Constants   then constants = decode_constants(payload)
         when Section::Requires    then requires = decode_requires(payload)
@@ -915,7 +913,6 @@ module Iyi::IyiMod
       unless header
         raise Error.new("#{path} has no header section")
       end
-
 
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
@@ -1055,7 +1052,6 @@ module Iyi::IyiMod
       io.puts "object code"
       object_code.each { |unit| io.puts "  #{unit.name} — #{unit.code.size} bytes" }
     end
-
 
     # Said out loud on every dump, because a reader has no way to tell a field
     # list that is absent from one that is empty.
@@ -1646,6 +1642,7 @@ module Iyi::IyiMod
   private def self.decode_type_ids(payload : Bytes) : Array(String)
     read_strings(IO::Memory.new(payload))
   end
+
   private def self.encode_layouts(artifact : Artifact) : Bytes
     io = IO::Memory.new
     layouts = artifact.layouts
