@@ -249,8 +249,8 @@ jobs:
       # and the shard is pinned so it fetches one version rather than today's.
       - name: A real shard, built and served
         run: |
-          # The crystal image is a compiler toolchain. It ships `shards`, and
-          # it does not ship `curl` — the same reason the identity gate below
+          # The crystal docker image is a compiler toolchain. It ships `shards`,
+          # and it does not ship `curl` — the reason the identity gate below
           # installs Python. Asking for a page is the point of this step, so
           # the client it asks with cannot be assumed.
           if ! command -v curl >/dev/null; then
