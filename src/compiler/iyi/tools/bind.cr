@@ -1284,14 +1284,33 @@ module Iyi
 
       found = Set(String).new
       artifact.exports.types.each { |declaration| collect_known declaration, "", found }
-      kept = found.select { |name| declared_type? program, name }
-      names.concat kept
 
       # The consumer reaches an imported module by the camelcase of its path,
       # which is the mapping IV.6 #6 keeps reversible. Only the top-level names
       # are recorded: everything under one is reached through it, so prefixing
       # `IO` carries `IO::Memory` with it.
       prefix = artifact.module_name.split('/').map(&.camelcase).join("::")
+
+      # Asked under the root as well as bare, because whether a name needs the
+      # root depends on what the root *is*.
+      #
+      # `-e ExceptionPage` is a class, so the artifact declares
+      # `ExceptionPage` and the program has a type by that name. `-e Radix` is
+      # a module, so its members are declared at the artifact's own top level —
+      # `Node`, `Tree`, `Result` — and the program has no top-level `Node`. It
+      # has `Radix::Node`. Asking only the bare name answered "0 of 6 this
+      # program can name" for `Radix`, and `Kemal`, which names
+      # `Radix::Tree` eight times, went on waiting on a boundary sitting in the
+      # same directory.
+      kept = found.select do |name|
+        declared_type?(program, name) || declared_type?(program, "#{prefix}::#{name}")
+      end
+      names.concat kept
+      # Under the root as well, because that is how the *producer* writes them.
+      # `Radix` declares `Tree` and `Kemal` says `Radix::Tree`, so recording
+      # only the bare name left every one of those eight signatures waiting on
+      # a boundary that was carrying the type.
+      kept.each { |name| names << "#{prefix}::#{name}" }
       artifact.exports.types.each do |declaration|
         next unless kept.includes? declaration.name
         @@bound_prefix[declaration.name] = "#{prefix}::#{declaration.name}"

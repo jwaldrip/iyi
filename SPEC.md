@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 90,142 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 90,161 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,301 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -5990,6 +5990,44 @@ Named honestly, so nobody mistakes this draft for complete.
     > > measures its own consumer. The consumer calls all of it now, and the
     > > source arm scales with the shard where before it was flat — which is how
     > > the mistake was visible at all.
+    >
+    > > **Asked of the real shard, with the network.** Everything above was
+    > > measured against `Kemal` in a checkout; `bench/shard_serves.sh` now
+    > > installs it — pinned at 1.12.0, with `radix`, `exception_page` and
+    > > `backtracer` behind it — and the first thing that produced was the
+    > > README's headline example running: `require "kemal"` in an `.iyi` file,
+    > > built `--crystal`, answering two routes over HTTP. Nothing here had
+    > > checked that. The tarball job builds a *synthetic* shard, which proves
+    > > the library ships whole and cannot prove a real shard's macros parse.
+    > >
+    > > **What it waits on is zero now, and the fix was a name shape rather than
+    > > a type.** `bound_names` asked whether the program had a type by each
+    > > name an artifact declares, and asked it bare. That is right when the
+    > > root is a *class* — `-e ExceptionPage` declares `ExceptionPage`, and the
+    > > program has one. It is wrong when the root is a *module*: `-e Radix`
+    > > declares `Node`, `Tree` and `Result` at the artifact's own top level,
+    > > and the program has no top-level `Node`. It has `Radix::Node`. So
+    > > `radix.iyimod` read as "6 types, **0** this program can name" while
+    > > sitting in the same directory as a `Kemal` that names `Radix::Tree`
+    > > eight times. Asked under the root as well, and recorded under it too
+    > > because that is how the producer writes them: **`Kemal` 168 signatures
+    > > and 12 waiting → 182 and 0**.
+    > >
+    > > **The import cycle is about order, which the run pins.** Binding
+    > > `backtracer` last — after `kemal` was already in the directory — gives
+    > > `Error: import cycle`, because the fill step reads the boundaries beside
+    > > it and adds an edge in each direction. Binding in dependency order,
+    > > `backtracer` → `radix` → `exception_page` → `kemal`, removes it. That
+    > > is the same answer this item already guessed at; what the run adds is
+    > > that the directory's *state at bind time* is the whole of it, and a
+    > > boundary format that cannot say so is a rule waiting to be written.
+    > >
+    > > **And then a fifth thing, which is new.** With the cycle gone the
+    > > consumer fails on `undefined constant ::$Regex:0` — a regex literal in
+    > > the shard's source, which the compiler turns into a program-level
+    > > constant under a synthesised name. `Constants` carries a constant by
+    > > name for the consumer to build, and a name the compiler invented for a
+    > > literal is not one the consumer can resolve. Not started.
     >
     > One thing binding the library did leave behind, and it is only reachable
     > from there: a *class*-rooted namespace collides with its own wrapper. The
