@@ -403,6 +403,72 @@
 
 ### Fixed
 
+- **A method that takes a block is now called with one, and rule 1's residual
+  reaches zero.** `infer_return` instantiates a method on purpose to read what
+  it answers, and it did that with no block — so `JSON::Builder#string`, which
+  has an overload taking a value and one taking a block, matched the first and
+  answered `wrong number of arguments (given 0, expected 1)`. Its return type
+  was then the last thing on the boundary standing on the shard's word, over a
+  block the annotation had already described in full.
+
+  Two pieces. The call gets a `Block` of the annotated shape — the same block
+  the keep file has written as text since blocks first crossed, `{ |b0| nil }`
+  or an `uninitialized` of the output where the output is not `Nil`. And it
+  gets a `parent_visitor`, because a block's body is code and code is visited;
+  a blockless call never needed one, and the compiler says so exactly:
+  `Iyi::Call#parent_visitor cannot be nil`.
+
+  **Crossing on a return nobody checked: URI 0 of 55, JSON 0 of 181, YAML 0 of
+  194.** Blocks being instantiable moves the other half too — 64 return types
+  read in `JSON` where the tool had refused, 81 in `YAML`.
+
+  One of the two this closed was not the tool's fault and is worth saying so:
+  `YAML::Any#to_json_object_key` names `JSON::Error` in its body, and the probe
+  it was measured with required only `yaml`. The tool refused correctly and the
+  input was short. `YAML` reads 194 signatures with both required, against 193
+  with one.
+
+- **A block-taking method crossed a bound boundary and could not link.**
+  IV.1g settles what such a method does: its machine code is the caller's, so
+  the producer emits each instantiation private to the unit that called it and
+  no symbol for one leaves the artifact — and its body travels in `MonoBodies`
+  instead, for the consumer to compile its own from the block it wrote. That
+  paragraph says explicitly that the question is about a `def` and not about a
+  type.
+
+  `crystal tool bind` was answering it about a type. Only a *generic* type's
+  methods carried their bodies, so an ordinary class's block-taking method
+  crossed as a declaration with nothing behind it — a promise nothing could
+  keep, and `undefined symbol: *Shard::Part#each<&Proc(Int32, Nil)>` at the end
+  of a build with no other complaint.
+
+  It carries the body wherever the method is written now. Both shapes round
+  trip and both are in `bench/bind_roundtrip.sh`: one that `yield`s and one
+  that captures its block as a `Proc`. The first guess was that only the
+  yielding one broke, because `yield` is inlined; a captured block fails
+  identically, so the rule is the block. The surface does not move — `JSON`
+  180 signatures, `YAML` 193, `URI` 55, before and after.
+
+- **What is left of III.6 rule 1 is counted where it is owed, and it is two
+  methods rather than eighty.** The report counted every written return that
+  could not be held against an answer: URI 27, JSON 13, YAML 39. Most of those
+  methods do not cross at all — a parameter with no type, a block nobody
+  annotated, a splat — and are already refused by name further down, so
+  counting them as unchecked said the boundary was trusting things it had never
+  carried.
+
+  Counted over the signatures that actually travel: **URI 0 of 55, JSON 1 of
+  180, YAML 1 of 193**, and the report names them with the whole reason rather
+  than a reason cut to a column. `JSON::Builder#string` — the tool builds no
+  block for the call it synthesises — and `YAML::Any#to_json_object_key`.
+
+  An abstract def is not among them any more either. It has no body to
+  instantiate and no symbol of its own: what a caller reaches is an
+  implementation, and every implementation is an ordinary method this tool
+  checks as itself. `YAML::Nodes::Node#kind` was being counted as a return
+  standing on the shard's word when it is one carried by the methods
+  underneath it.
+
 - **`bench/bind_speed.py` said a shard reaching into another one cannot be
   bound, and that stopped being true two commits before anybody reread it.**
   The header gave `Kemal` numbering `Array(Radix::Node(...))` as the case and

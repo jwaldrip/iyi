@@ -285,6 +285,14 @@ describe "tool bind" do
           def discards(io : IO) : Nil
             io << "x"
           end
+
+          # Its return can only be read by calling it, and calling it needs a
+          # block. The tool synthesises one of the annotated shape; without
+          # that, overload resolution answered `wrong number of arguments`
+          # and the return stood on the shard's word.
+          def folded(& : Int32 -> Int32) : Int32
+            yield 1
+          end
         end
         CR
 
@@ -299,6 +307,10 @@ describe "tool bind" do
       # named by a check that read the body.
       report.should_not contain "Narrow#exact"
       report.should_not contain "Narrow#discards"
+
+      # And a block-taking method is checked like any other, rather than
+      # counted as a return nobody could read.
+      report.should contain "crossing on a return nobody checked    0"
 
       # And the answer is what travels, because the symbol is named after it.
       # The draft the report prints is the same text the artifact carries.
