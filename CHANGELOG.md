@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The collector's first stage: pointer maps travel in the artifact.**
+  `.iyimod` carries a `Layouts` section: per type a module
+  owns, its allocation size, its unrounded instance size, and the byte offsets
+  of its pointer fields. The offsets come from the target's own data layout, not
+  from adding field sizes up, because padding is the target's business and a map
+  that misses a field is a collector that frees a live object. A struct of
+  `String`, `String` and `Int32` reads back as 24 bytes, scan cap 20, offsets
+  `[0, 8]`. `iyi mod dump` shows them. A pointer word past offset 65535 is
+  refused by name rather than truncated into a `u16`.
+
+  Alongside it, the object header and its mark word: `type_id` and an atomic
+  `u64` holding colour in bits 0 and 1, flags in 2 to 5, and 58 reserved bits a
+  forwarding pointer could later use. Colour changes are compare-and-swap and
+  report whether they won, so two marking workers cannot both scan one object.
+  Proven with two real threads racing 10,000 rounds: exactly one winner every
+  round. The round count is 10,000 rather than 1,000 because the measured win
+  split at 1,000 was 32/968, one unlucky schedule from a spec that flakes.
+
+  What this is not: no object is allocated with that header, nothing marks and
+  nothing collects. `-Dgc_boehm` is still the only way to get collection, and
+  every other path still allocates and never frees. Stage 1's own tasks 3 and 4,
+  work distribution and write barriers, are design and deferred to Stage 6 by
+  their own text. `noscan_offsets` is empty everywhere on purpose: what "not
+  traced" means is Stage 6's to define, and guessing now risks a later stage
+  reading it as "do not retain" and collecting live buffers. Layouts are per
+  instantiation, not per GC shape, because shape keying is R-4 and unbuilt.
+
 ## 0.6.0 — 2026-09-01
 
 **A file reaches exactly what it imports, and a mistake dies where it
