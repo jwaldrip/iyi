@@ -627,6 +627,7 @@ module Iyi
       artifact.object_code = collect_iyi_object_code(names, units_by_name)
       artifact.type_ids = collect_iyi_type_ids(program, names)
       artifact.constants = collect_iyi_constants(program, names)
+      artifact.layouts = collect_iyi_layouts(program, type)
       IyiMod.write artifact, path
 
       carried = artifact.object_code.sum { |unit| unit.code.size }
@@ -653,6 +654,13 @@ module Iyi
         artifact.object_code = collect_iyi_object_code(unit_names, units_by_name)
         artifact.type_ids = collect_iyi_type_ids(program, unit_names)
         artifact.constants = collect_iyi_constants(program, unit_names)
+        # With the object code, because it is about the object code's types:
+        # a build that generated none has no lowered types to measure.
+        if units
+          if module_type = program.iyi_module_type(artifact.module_name)
+            artifact.layouts = collect_iyi_layouts(program, module_type)
+          end
+        end
         IyiMod.write artifact, path
       end
     end
@@ -864,6 +872,56 @@ module Iyi
       type.types?.try &.each_value do |declared|
         owners << declared unless declared.is_a?(GenericType)
         collect_iyi_owners declared, owners if declared.is_a?(ModuleType)
+      end
+    end
+
+    # iyi: the pointer maps of the types this module owns, for the `Layouts`
+    # section (GC_DESIGN.md Stage 1).
+    #
+    # The set is the walk `collect_iyi_unit_names` does, kept as types rather
+    # than names, with one relaxation: a generic the module declares
+    # contributes each instantiation this build has, because an instantiation
+    # is monomorphic and has a layout. An uninstantiated generic contributes
+    # nothing: one entry serving two instantiations by shape is R-4's
+    # per-GC-shape keying, which nothing implements yet, so no entry pretends.
+    #
+    # Only a type laid out as an object gets a map: a class, a struct, or an
+    # instantiation of one. `InstanceVarContainer` is not that filter, because
+    # a module and a trait are containers too, and a trait's indirection is
+    # the union of its implementors, which is exactly not a layout. A module,
+    # an enum and an alias declare no fields of their own to scan in any
+    # case.
+    private def collect_iyi_layouts(program : Program, module_type : ModuleType) : Array({String, IyiMod::TypeLayout})
+      types = [] of Type
+      collect_iyi_layout_types module_type, types
+
+      layouts = [] of {String, IyiMod::TypeLayout}
+      types.each do |type|
+        next unless type.is_a?(NonGenericClassType) || type.is_a?(GenericClassInstanceType)
+        next if type.is_a?(GenericType)
+        layouts << {type.to_s, program.gc_type_layout(type)}
+      end
+
+      # Sorted, for the reason `mono_bodies` is: a walk's order is not a fact
+      # about the module, and an artifact that changed between two identical
+      # builds would defeat IV.3.
+      layouts.sort_by! &.[0]
+      layouts
+    end
+
+    # The walk `collect_iyi_unit_names` does, keeping the types. A generic is
+    # not collected itself (it has no layout); each instantiation of it in
+    # this build is.
+    private def collect_iyi_layout_types(type : ModuleType, types : Array(Type)) : Nil
+      type.types?.try &.each_value do |declared|
+        if declared.is_a?(GenericType)
+          declared.instantiated_types.each do |instance|
+            types << instance unless instance.unbound?
+          end
+        else
+          types << declared
+        end
+        collect_iyi_layout_types declared, types if declared.is_a?(ModuleType)
       end
     end
 
