@@ -381,6 +381,23 @@
   than the status, because an exit code cannot see an empty string — a bench
   that cannot find the path now says which one it wanted.
 
+- **`bench/incremental.py` was broken the same way, and it is the harness
+  behind the number on the front page of the README.** Same shape exactly: it
+  asked `bin/crystal` for `IYI_PATH`, got an empty line and a 0, and every
+  build in it failed with `can't find file 'iyi/prelude'`. Fixed the same way,
+  and it exits non-zero too, so this was also not being run rather than being
+  believed.
+
+  Running: 30 modules, 300 types, 7,208 lines, editing one module's body —
+  **iyi 0.07 s, `go build` 0.09 s, Crystal 0.76 s** on a release compiler. The
+  same edit with no artifacts is 0.18 s, so R-1 is worth 0.11 s of it.
+
+  Worth putting beside the other bench rather than apart from it. `medium.iyi`
+  is 6,900 lines in **one file** — no modules, no artifacts, nothing to cache —
+  and there iyi is 0.13 s against Go's 0.02 s. iyi loses on a monolith and wins
+  on a project, and SPEC.md's 0.1.0 section said only the first half because
+  only the first bench could run.
+
 - **The same bench withheld iyi's own figures at scale whenever Go was
   absent.** The 300-type pair is timed only after both halves are built and run
   against each other, which is right for the comparison and wrong for
