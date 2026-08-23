@@ -4765,6 +4765,32 @@ is the linker.
   is what the consumer has to allocate. For a generic type the resolution is in
   terms of its own parameters: `List(T)`'s `@items` is `Array(T)`, which is
   what lets one declaration stencil at every instantiation.
+- **Class variables.** **Not built, and this is a hole in R-1 rather than a
+  gap in the format's coverage.** A class variable is a global. The methods
+  that read it travel as machine code and refer to it by name — `@@seen` on
+  `App::Counter::Tally` is the symbol `App::Counter::Tally::seen` — and the
+  global itself is defined in the *main module*, which is the one part of a
+  build that never travels. Nothing in the format mentions class variables at
+  all: not `TypeDecl`, not `Constants`, nowhere.
+
+  So R-1's own claim is false for any module that has one, in iyi's own
+  language and under iyi's own prelude. Build a module with a `@@seen : Int32
+  = 0`, delete its source, build again from the artifact, and the link ends on
+  `undefined symbol: App::Counter::Tally::seen`.
+  `bench/samples_roundtrip.sh` is the gate for exactly that claim and passes,
+  because none of the six samples has a class variable.
+
+  It is the same shape as the constants above and needs two answers rather
+  than one, which is why it is not the same fix. A module's **own** class
+  variable is not in the declarations a consumer reads, so the declaration and
+  its initialiser have to travel — the way `fields` already do, one level up.
+  A class variable of the **library** is already declared in the consumer's
+  program, which compiles that library; what is missing there is only that
+  codegen never emitted the global, because demand-driven codegen emits what
+  the consumer's own code reaches and the reader is a unit it did not compile.
+  A bound shard reaching `String#upcase` leaves `Unicode::upcase_ranges` and
+  `Unicode::special_cases_upcase` undefined; one holding a regex it matches
+  leaves `Regex::PCRE2::current_jit_stack`. Both are the second kind.
 - **Layout templates.** Size, alignment, and pointer map: expressed as a
   *function of the type parameters' shapes*, not a fixed layout. `Array(T)` is
   three words regardless of `T`; `Tuple(Int32, String)` is not. R-4 needs the
@@ -6092,6 +6118,17 @@ Named honestly, so nobody mistakes this draft for complete.
     > > It takes two boundaries: one can be wrong about the name and still right
     > > about the pattern, because there is nothing for it to collide with —
     > > which is why `bind_roundtrip.sh` could not have asked this.
+    > >
+    > > **And past it is not a name but a global.** With the constant built the
+    > > consumer reaches the linker, and what it wants there is a *class
+    > > variable*: `Regex::PCRE2::current_jit_stack` for a shard that matches,
+    > > `Unicode::upcase_ranges` for one that calls `String#upcase`, and
+    > > `Shard::Part::count` for one that keeps a counter of its own. That last
+    > > one is the general case and it is not about binding at all — an iyi
+    > > module with a class variable fails R-1's own round trip. It is written
+    > > up in IV.2, which is where a thing that is missing from `Exports`
+    > > belongs, and `Backtracer::configuration` below is the same finding
+    > > reached from the other end.
     > >
     > > **Behind it, one more, and it is probably a class root.** With the probe
     > > in place the link wants `Backtracer::configuration` and
