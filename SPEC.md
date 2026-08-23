@@ -6022,12 +6022,44 @@ Named honestly, so nobody mistakes this draft for complete.
     > > that the directory's *state at bind time* is the whole of it, and a
     > > boundary format that cannot say so is a rule waiting to be written.
     > >
-    > > **And then a fifth thing, which is new.** With the cycle gone the
-    > > consumer fails on `undefined constant ::$Regex:0` — a regex literal in
-    > > the shard's source, which the compiler turns into a program-level
-    > > constant under a synthesised name. `Constants` carries a constant by
-    > > name for the consumer to build, and a name the compiler invented for a
-    > > literal is not one the consumer can resolve. Not started.
+    > > **And then a fifth thing, which is new, and the obvious fix for it is
+    > > worse than the bug.** With the cycle gone the consumer fails on
+    > > `undefined constant ::$Regex:0`.
+    > >
+    > > The chain is short and every link is somewhere in this tree. A regex
+    > > literal becomes a program-level `Const` named `$Regex:N`, N assigned by
+    > > the order the literals are met (`literal_expander.cr`). A unit that
+    > > reads one records it, so `collect_iyi_constants` puts the name in
+    > > `Constants`. The consumer emits a *read* of every name there, because
+    > > that is how a constant crosses — the name travels and the consumer
+    > > builds it — and `::$Regex:0` is not a name the consumer's program has.
+    > >
+    > > It cannot be carried as source either: `$` is not legal in a constant,
+    > > and `Exports` is text the far side parses.
+    > >
+    > > **Dropping it from the list makes the build pass and must not be done.**
+    > > Measured: with those names skipped the semantic error goes and the link
+    > > gets two steps further. But the producer's object code still refers to
+    > > the mangled name, and a `--crystal` consumer compiles Crystal's library,
+    > > which has regex literals of its own numbered from zero in *its*
+    > > encounter order. The reference would be satisfied by whichever constant
+    > > mangles to the same name — a different pattern, silently. That is rule
+    > > 1's "returns something of another type" one level down, and it is why
+    > > the probe was reverted rather than kept.
+    > >
+    > > So the fix is an identity rather than a filter: a synthesised constant
+    > > needs a name unique to the module that made it, and a channel that is
+    > > not parsed source to carry its initialiser. Not started.
+    > >
+    > > **Behind it, one more, and it is probably a class root.** With the probe
+    > > in place the link wants `Backtracer::configuration` and
+    > > `ExceptionPage::Styles:type_id`, and both point at the same fact:
+    > > `exception_page.iyimod` fills with **0 units, 0 bytes, 0 type ids**
+    > > where `radix` fills 2, `backtracer` 7 and `kemal` 36. Its keep file
+    > > looks right and calls eleven methods. `ExceptionPage` is a *class* root,
+    > > which this item has already found to be the awkward one — see the note
+    > > below on a class-rooted namespace colliding with its own wrapper. Not
+    > > pinned further than that.
     >
     > One thing binding the library did leave behind, and it is only reachable
     > from there: a *class*-rooted namespace collides with its own wrapper. The
