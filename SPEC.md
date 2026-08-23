@@ -371,8 +371,29 @@ imported module's source deleted. Two is answered: the passes it named cost
 driver rebuilding the same link command: are fixed, which is what took
 `hello.iyi`'s warm build to 0.09 s against Go's 0.12 s. Three and four are done;
 five is done and its second pair is what says that win is a win at that size,
-at 6,900 lines Go is ahead 0.09 s to 0.23 s, and iyi is what grows. **What
-remains for a release is not on this list**: III.4's concurrency is specified
+at 6,900 lines Go is ahead 0.09 s to 0.23 s, and iyi is what grows.
+
+**That sentence is true and it is about the wrong program, which the edit-loop
+bench says plainly once both benches can run.** `medium.iyi` is 6,900 lines in
+**one file**: no module boundaries, so no artifacts, so nothing for R-1 to
+exploit — every rebuild retypes and regenerates IR for all of it. Measured on
+one release compiler on one machine, that is iyi 0.13 s against Go's 0.02 s,
+and the gap is wider than this section records rather than narrower.
+
+`bench/incremental.py` asks the same question of the shape the language is
+designed around — 30 modules, 300 types, 7,208 lines — and the ordering
+reverses: editing one module's body costs **iyi 0.07 s, Go 0.09 s**, Crystal
+0.76 s. The row beneath is what does it: the same edit **without** artifacts is
+0.18 s, so R-1 is worth 0.11 s of a 0.18 s build, and it is worth it by reading
+twenty-nine modules as declarations instead of as source.
+
+So iyi loses to Go on a monolith and beats it on a project, and the two numbers
+are not in tension: one measures a compiler with nothing to cache and the other
+measures the thing this design is. What the monolith figure locates is still
+worth having — it is the same unstarted work IV names, and it is the ceiling on
+how much the single-file case can improve.
+
+**What remains for a release is not on this list**: III.4's concurrency is specified
 and unbuilt, and III.5's "no import for side effects" is the one rule here with
 a cost and no measurement. Everything else in this section is a number that has
 been taken rather than a thing still to do.
@@ -729,6 +750,14 @@ So the work worth removing is generating IR for a unit whose object is going to
 be reused, and that needs a unit's *inputs* fingerprinted rather than its
 output. A dependency-tracking problem, not an optimisation. It is written down
 here rather than started.
+
+**Asked again on a release compiler, on another machine, and the shape is the
+same.** A one-line edit at 300 types rebuilds in 0.142 s; `306/307 .o files
+were reused`, and `Codegen (crystal)` is 0.036 s with 0.023 s more in `bc+obj`
+— so about 0.059 s of a 0.142 s rebuild, **42%**, is spent establishing that
+306 units did not change. The absolute figures are smaller than the debug ones
+above and the ratio is not: this is where the scale claim is decided, and it is
+still the same unstarted piece of work.
 
 **The front end was asked the same question and answered that there is nothing
 wrong with it.** At 150, 300, 600 and 1,200 types (3,462 to 27,612 lines) parse

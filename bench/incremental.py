@@ -53,7 +53,9 @@ from generate_project import write_project  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CRYSTAL = ROOT / ".build" / "crystal"
-WRAPPER = ROOT / "bin" / "crystal"
+# iyi: asked for paths, so it has to be the surface that knows them by the
+# names below — `crystal env IYI_PATH` prints an empty line and exits 0.
+WRAPPER = ROOT / "bin" / "iyi"
 
 # Enough to find a floor without the run costing a coffee: each sample is a
 # whole build, and the edited-module ones are the point of the exercise.
@@ -68,20 +70,29 @@ CONSTANTS = [3, 4, 5, 6, 7, 8]
 
 
 def compiler_env():
-    """The environment `bin/crystal` would have set, asked for once."""
+    """The environment the `iyi` wrapper would have set, asked for once.
+
+    The answer is checked rather than the exit status. `env` prints an empty
+    line for a name it does not know and exits 0, so asking the other command
+    surface — which answers in `CRYSTAL_*` — returned "" twice and left the
+    compiler with no search path at all. Every build here then failed with
+    `can't find file 'iyi/prelude'`, which is the whole bench.
+    """
     result = subprocess.run(
         [str(WRAPPER), "env", "IYI_PATH", "IYI_LIBRARY_PATH"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
-    env = {}
-    if result.returncode == 0:
-        lines = result.stdout.decode().split()
-        if len(lines) > 0:
-            env["IYI_PATH"] = lines[0]
-        if len(lines) > 1:
-            env["IYI_LIBRARY_PATH"] = lines[1]
-    else:
-        env["IYI_PATH"] = f"lib:{ROOT / 'src'}"
+    lines = result.stdout.decode().split() if result.returncode == 0 else []
+
+    if not lines or not lines[0]:
+        fallback = f"lib:{ROOT / 'src'}"
+        print(f"  note: {WRAPPER.name} did not answer IYI_PATH; using {fallback}",
+              file=sys.stderr)
+        return {"IYI_PATH": fallback}
+
+    env = {"IYI_PATH": lines[0]}
+    if len(lines) > 1 and lines[1]:
+        env["IYI_LIBRARY_PATH"] = lines[1]
     return env
 
 

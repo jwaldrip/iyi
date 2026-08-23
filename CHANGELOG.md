@@ -464,6 +464,52 @@
   signature that crosses. JSON goes **181 → 180** and YAML **194 → 193**; URI is
   unchanged at 55.
 
+- **`bench/build_speed.py` has not built anything since the identity cutover,
+  and it is the gate for the one claim this project is built around.** It asks
+  a wrapper where this checkout's sources are, and `f55ba16cb` renamed the
+  variables it asks for to `IYI_*` while leaving it asking `bin/crystal`. The
+  two command surfaces answer in their own vocabularies by design, so
+  `crystal env IYI_PATH` is not an error — it prints an empty line and exits 0.
+
+  The bench checked the exit status, got 0, and passed the compiler an
+  environment with no search path in it at all. Every build then failed with
+  `can't find file 'iyi/prelude'` and every row of the table printed a dash.
+  It does exit non-zero, so it was never *silently* wrong; it was simply not
+  being run.
+
+  Two changes, and the second is the one that matters. It asks `bin/iyi`, which
+  is the surface that knows those names. And it checks the **answer** rather
+  than the status, because an exit code cannot see an empty string — a bench
+  that cannot find the path now says which one it wanted.
+
+- **`bench/incremental.py` was broken the same way, and it is the harness
+  behind the number on the front page of the README.** Same shape exactly: it
+  asked `bin/crystal` for `IYI_PATH`, got an empty line and a 0, and every
+  build in it failed with `can't find file 'iyi/prelude'`. Fixed the same way,
+  and it exits non-zero too, so this was also not being run rather than being
+  believed.
+
+  Running: 30 modules, 300 types, 7,208 lines, editing one module's body —
+  **iyi 0.07 s, `go build` 0.09 s, Crystal 0.76 s** on a release compiler. The
+  same edit with no artifacts is 0.18 s, so R-1 is worth 0.11 s of it.
+
+  Worth putting beside the other bench rather than apart from it. `medium.iyi`
+  is 6,900 lines in **one file** — no modules, no artifacts, nothing to cache —
+  and there iyi is 0.13 s against Go's 0.02 s. iyi loses on a monolith and wins
+  on a project, and SPEC.md's 0.1.0 section said only the first half because
+  only the first bench could run.
+
+- **The same bench withheld iyi's own figures at scale whenever Go was
+  absent.** The 300-type pair is timed only after both halves are built and run
+  against each other, which is right for the comparison and wrong for
+  everything else: on a machine with no Go the whole block was dropped, and
+  that block is the size SPEC.md's scale question is about. "The pair disagreed"
+  and "there is no Go here" are now different answers. The first still drops the
+  rows; the second prints iyi's and marks the Go column as not measured.
+
+  With them back: at 6,912 lines, front end 0.05 s, end to end 0.39 s cold and
+  **0.13 s warm** on a release compiler.
+
 - **`gsub` copied the tail twice on an empty match at the end of the subject.**
   `Iyi::Rx.gsub("abc", /$/, "<>")` answered `"abc<>abc"`. An empty match at the
   very end left the cursor behind it, so the text between the cursor and the

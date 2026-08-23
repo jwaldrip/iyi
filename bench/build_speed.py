@@ -98,7 +98,12 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # It was worth timing while the front end cost 1.3 s and the wrapper was 2% of
 # it. At 0.03 s it is not.
 CRYSTAL = ROOT / ".build" / "crystal"
-WRAPPER = ROOT / "bin" / "crystal"
+# iyi: asked for paths, so it has to be the surface that knows them by the
+# names below. `crystal env IYI_PATH` is not an error — the two command
+# surfaces answer in their own vocabularies by design, so it prints an empty
+# line and exits 0, which is the shape that made this bench build nothing at
+# all for as long as it pointed here.
+WRAPPER = ROOT / "bin" / "iyi"
 
 # iyi: the front end as its own binary, when `make crystal-front` has built one.
 #
@@ -195,14 +200,24 @@ def compiler_env():
         [str(WRAPPER), "env", "IYI_PATH", "IYI_LIBRARY_PATH"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
-    if result.returncode != 0:
-        return {"IYI_PATH": f"lib:{ROOT / 'src'}"}
+    lines = result.stdout.decode().split() if result.returncode == 0 else []
 
-    lines = result.stdout.decode().split()
-    env = {}
-    if len(lines) > 0:
-        env["IYI_PATH"] = lines[0]
-    if len(lines) > 1:
+    # An exit status is not the check. `env` prints an empty line for a name it
+    # does not know and exits 0, so asking the wrong surface answered "" twice
+    # and this returned `{}` — leaving the compiler with no search path at all
+    # and every row of the report a dash. The compiler said `can't find file
+    # 'iyi/prelude'` on every run and the bench went on printing a table.
+    #
+    # So the answer is checked rather than the status, and a bench that cannot
+    # find the path says which one it wanted rather than measuring nothing.
+    if not lines or not lines[0]:
+        fallback = f"lib:{ROOT / 'src'}"
+        print(f"  note: {WRAPPER.name} did not answer IYI_PATH; using {fallback}",
+              file=sys.stderr)
+        return {"IYI_PATH": fallback}
+
+    env = {"IYI_PATH": lines[0]}
+    if len(lines) > 1 and lines[1]:
         env["IYI_LIBRARY_PATH"] = lines[1]
     return env
 
@@ -360,9 +375,17 @@ def same_program(iyi_source, go_source, out_dir):
     cache.mkdir(parents=True, exist_ok=True)
     iyi_binary, go_binary = out_dir / "same_iyi", out_dir / "same_go"
 
+    # False and None are different answers and the caller acts on the
+    # difference. False is "do not report these rows": the iyi half did not
+    # build, or the two printed different things, and either way there is
+    # nothing here worth a number. None is "there is no Go on this machine",
+    # which withholds the comparison and nothing else — iyi's own figures at
+    # this size are the ones SPEC.md's scale question is about, and refusing to
+    # print them because a second toolchain is absent is how a machine without
+    # Go came to report nothing at all about the size that matters.
     if not run([str(CRYSTAL), "build", "-o", str(iyi_binary), str(iyi_source)],
                env={**CRYSTAL_ENV, "IYI_CACHE_DIR": str(cache)}):
-        return None
+        return False
     if shutil.which("go") is None:
         return None
     if not run(["go", "build", "-o", str(go_binary), go_source.name],
@@ -455,7 +478,7 @@ def main():
         # git are a thing nobody reads and everybody diffs.
         medium_iyi, medium_go = generate_pair.write_pair(out, MEDIUM_TYPES)
         medium_agrees = same_program(medium_iyi, medium_go, out)
-        if medium_agrees:
+        if medium_agrees is not False:
             medium_front = time_crystal(medium_iyi, out, codegen=False, cold=True)
             medium_cold = time_crystal(medium_iyi, out, codegen=True, cold=True)
             medium_warm = time_crystal(medium_iyi, out, codegen=True, cold=False)
@@ -491,12 +514,17 @@ def main():
     print(f"  hello.iyi      end to end                 {show(e2e_cold)}  {show(e2e_warm)}")
     print(f"  hello.go       go build                   {show(go_cold)}  {show(go_warm)}")
     print("  " + "-" * 56)
-    if medium_agrees:
+    if medium_agrees is not False:
         lines = f"{MEDIUM_TYPES} types"
         print(f"  medium.iyi     front end (--no-codegen)   {show(medium_front)}       —")
         print(f"  medium.iyi     end to end                 {show(medium_cold)}  {show(medium_warm)}")
         print(f"  medium.go      go build                   {show(medium_go_cold)}  {show(medium_go_warm)}")
-        print(f"                 generated pair, {lines}, verified to print the same")
+        if medium_agrees:
+            print(f"                 generated pair, {lines}, verified to print the same")
+        else:
+            print(f"                 generated pair, {lines}; no Go here, so the two")
+            print("                 were not run against each other and only iyi's")
+            print("                 half of this block is a measurement")
     elif medium_agrees is False:
         print("  medium.iyi/.go the generated pair printed different things —")
         print("                 not timed, because it is not one program")
