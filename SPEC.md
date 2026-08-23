@@ -748,9 +748,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 89,615 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 90,156 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
-| Specs | 21,146 lines | 8,301 for iyi |
+| Specs | 21,146 lines | 8,769 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |
@@ -1071,6 +1071,20 @@ expensive half: stack maps, a frame walker, and correctness under every
 optimisation the back end runs. `gcry` has measured that half and found it is
 not even an RSS win. So the prerequisite stands and the bill is a table, not an
 epic. See III.9.
+
+**The table is now written.** `.iyimod` format v22 carries a `Layouts` section:
+per type this module owns, its allocation size, its unrounded instance size, and
+the byte offsets of its pointer fields, taken from the target's own data layout
+rather than added up by hand. `Probe::Shapes::Pair`, three fields of `String`,
+`String` and `Int32`, reads back as 24 bytes, scan cap 20, offsets `[0, 8]`, and
+the padding in those numbers is the evidence they came from the back end.
+
+Two things that table is not. It is per instantiation, not per GC shape: one
+entry serving `Box(String)` and `Box(Pointer)` together is R-4's own keying and
+nothing implements it, so a generic never instantiated in a module contributes
+nothing there. And `noscan_offsets` is empty everywhere, because what "not
+traced" means is Stage 6's to define and a guess now would risk a later stage
+reading it as "do not retain" and collecting live buffers.
 
 ### II.6 Traits × the standard library: **SETTLED by porting `Enumerable`**
 
