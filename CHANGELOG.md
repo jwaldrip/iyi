@@ -25,6 +25,21 @@
   how an alias lost its right-hand side and, once enums arrived, how one lost
   its members.
 
+- **A bound shard's requires travel, and so does a dependency that only its
+  type ids show.** A unit numbers the types its own `require`s brought in —
+  `Radix` reaches `Hash(String, HTTP::Cookie)` — and a consumer whose prelude is
+  Crystal's still does not have every file of it, so `require "http/cookie"`
+  goes in the artifact. Crystal's only: a require that resolved into somebody
+  else's `lib` is another shard, and replaying it would have the consumer
+  compile from source the thing an artifact exists to spare it.
+
+  The other half is an import edge nobody could see. `Kemal` names no `Radix`
+  type in any declaration and its object code refers to
+  `Array(Radix::Node(...))`, so a consumer that imported `kemal` had never heard
+  of `radix`. The build that fills the object code reads the boundaries beside
+  it and adds the edge, because only that build knows the type ids — `tool bind`
+  and this are different processes.
+
 - **A generic type crosses a boundary.** Its methods exist once per
   instantiation and the instantiations belong to whoever writes them — a
   consumer that writes `Holder(Float64)` needs a method the producer never made

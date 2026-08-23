@@ -248,6 +248,17 @@ module Iyi
     # travel in the artifact and the consumer replays them.
     getter iyi_module_requires = {} of String => Array(String)
 
+    # iyi: the library-name requires a *Crystal* source made, with where each
+    # one resolved. `tool bind` needs them and the map above cannot hold them:
+    # it is keyed on `.iyi` files, and a shard has none.
+    getter iyi_crystal_requires = {} of String => String
+
+    # iyi: the boundaries a `tool bind` run was given, by the top-level name
+    # each declares. The build that fills the artifact's object code needs them:
+    # a dependency can arrive through a *type id* rather than through a
+    # declaration, and only the type ids are known by then.
+    getter iyi_bind_boundaries = {} of String => String
+
     # iyi: the method bodies each file's module has to ship, by absolute
     # filename and then by `IyiMod.mono_body_key` (SPEC.md IV.2, `MonoBodies`).
     #

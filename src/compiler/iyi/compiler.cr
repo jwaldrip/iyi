@@ -627,12 +627,47 @@ module Iyi
       artifact.object_code = collect_iyi_object_code(names, units_by_name)
       artifact.type_ids = collect_iyi_type_ids(program, names)
       artifact.constants = collect_iyi_constants(program, names)
+
+      add_bind_boundary_imports artifact, dir, path
       IyiMod.write artifact, path
 
       carried = artifact.object_code.sum { |unit| unit.code.size }
       stdout.puts "filled #{path}: #{artifact.object_code.size} units, " \
                   "#{carried} bytes, #{artifact.type_ids.size} type ids, " \
                   "#{artifact.constants.size} constants"
+    end
+
+    # iyi: a boundary this one *numbers* is a boundary this one depends on.
+    #
+    # A type id is the only place that dependency shows. `Kemal` names no
+    # `Radix` type in any declaration and its object code refers to
+    # `Array(Radix::Node(...))` — so a consumer that imported `kemal` had never
+    # heard of `radix` and could not name what `kemal` numbered.
+    #
+    # Read from the boundaries sitting beside this one rather than from what
+    # `tool bind` knew, because the two are different processes: `tool bind`
+    # writes the declarations and this build fills the object code, and only
+    # this one knows the type ids.
+    private def add_bind_boundary_imports(artifact : IyiMod::Artifact, dir : String,
+                                          own : String) : Nil
+      edges = artifact.imports.map(&.module_name).to_set
+      Dir.glob(File.join(dir, "*.iyimod")).sort.each do |path|
+        next if File.expand_path(path) == File.expand_path(own)
+
+        begin
+          other = IyiMod.read path
+        rescue
+          next
+        end
+        next if edges.includes?(other.module_name)
+
+        declared = [] of String
+        other.exports.types.each { |declaration| declared << declaration.name }
+        next unless declared.any? { |name| artifact.type_ids.any?(&.includes?(name)) }
+
+        artifact.imports << IyiMod::ImportEdge.new(other.module_name)
+        edges << other.module_name
+      end
     end
 
     # iyi: attaches each module's object code and writes the artifacts.

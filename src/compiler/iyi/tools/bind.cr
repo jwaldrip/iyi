@@ -431,6 +431,7 @@ module Iyi
       flags: program.flags.to_a.sort!,
       imports: @@bound_used.to_a.sort.map { |name| IyiMod::ImportEdge.new(name) },
       mono_bodies: @@mono_bodies.dup,
+      requires: crystal_requires(program),
       exports: IyiMod::Exports.new(exported, carried_types, [] of IyiMod::ImplRecord),
       # True, and it was false here on an argument that measurement has since
       # answered. The argument was that a boundary stands *between* Crystal's
@@ -1158,6 +1159,7 @@ module Iyi
         next unless kept.includes? declaration.name
         @@bound_prefix[declaration.name] = "#{prefix}::#{declaration.name}"
         @@bound_module[declaration.name] = artifact.module_name
+        program.iyi_bind_boundaries[declaration.name] = artifact.module_name
       end
       io.puts "  %-24s %d types, %d this program can name" % [File.basename(path), found.size, kept.size]
     end
@@ -1371,6 +1373,31 @@ module Iyi
   # What the consumer will call it, having imported the module.
   private def self.consumer_name(root : String) : String
     iyi_module_name(root).split('/').map(&.camelcase).join("::")
+  end
+
+  # The shard's requires of *Crystal's library*, for the consumer to replay.
+  #
+  # A unit numbers the types its source brought in — `Radix` reaches
+  # `Hash(String, HTTP::Cookie)` — and a consumer whose prelude is Crystal's
+  # still does not have every file of it. So `require "http/cookie"` travels.
+  #
+  # Crystal's only. A require that resolved into somebody else's `lib` is
+  # another shard, and another shard is another boundary: replaying it here
+  # would have the consumer compile from source the very thing an artifact
+  # exists to spare it. Those arrive as import edges instead.
+  #
+  # Told apart by where each one resolved, which is why the resolution is what
+  # was recorded rather than the name alone.
+  private def self.crystal_requires(program : Program) : Array(String)
+    library = program.requires.find(&.ends_with?("prelude.cr"))
+    return [] of String unless library
+    root = File.dirname(library)
+
+    names = program.iyi_crystal_requires.compact_map do |name, resolved|
+      name if resolved.starts_with?(root)
+    end
+    names.sort!.uniq!
+    names
   end
 
   # The bodies a generic's methods travel as, keyed the way the reader looks

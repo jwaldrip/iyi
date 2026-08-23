@@ -97,6 +97,19 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       node.raise "#{message}\n\n#{notes.join("\n")}"
     end
 
+    # iyi: and the same for a Crystal source, when a boundary is being written.
+    #
+    # A bound shard's units number types its own `require`s brought in —
+    # `Hash(String, HTTP::Cookie)` needs `require "http/cookie"` — and a
+    # consumer whose prelude is Crystal's still does not have every file of it.
+    # Kept with where it resolved, because that is what tells a shard's own
+    # dependency from Crystal's library, and only the second may travel: the
+    # first is another boundary's to carry.
+    if filenames && !filename.starts_with?('.') &&
+       @program.compiler.try(&.emit_bind) && relative_to.try(&.ends_with?(".cr"))
+      @program.iyi_crystal_requires[filename] ||= filenames.first
+    end
+
     if filenames
       nodes = Array(ASTNode).new(filenames.size)
 

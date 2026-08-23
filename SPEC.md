@@ -5786,13 +5786,31 @@ Named honestly, so nobody mistakes this draft for complete.
     > > 20 of `Radix`'s 33 methods stay behind. That is R-2 landing hardest
     > > exactly where inference cannot help.
     > >
-    > > **`Kemal` still does not link, and the reason has moved again**, which is
-    > > the fourth time in this item. It is no longer a generic: it is that a
-    > > bound shard's `require`s do not travel. `Radix`'s units number
-    > > `Hash(String, HTTP::Cookie)`, and a consumer whose prelude is Crystal's
-    > > still has to `require "http/cookie"` before it can name one. The format
-    > > carries `Requires` for precisely this — 12d put it there — and `tool
-    > > bind` does not write it.
+    > > **The requires travel now**, Crystal's only: one that resolved into
+    > > somebody else's `lib` is another shard, and replaying it would have the
+    > > consumer compile from source the thing an artifact exists to spare it.
+    > > Those arrive as import edges instead — and one of those edges was
+    > > invisible. `Kemal` names no `Radix` type in any declaration and its
+    > > object code refers to `Array(Radix::Node(...))`, so the dependency shows
+    > > only in the type ids, which only the build that fills the object code
+    > > knows. It reads the boundaries sitting beside it and adds the edge.
+    > >
+    > > **And `Kemal` still does not link, for a fifth reason, which is the one
+    > > worth stopping on.** `Kemal::Route` does not travel, and the tool has
+    > > been saying why all along: *left out, because their fields name what an
+    > > iyi program cannot*. That sentence encodes an assumption this item has
+    > > since disproved. `nameable?` asks what an **iyi-prelude** program could
+    > > name — but the consumer of a bound shard has to be `--crystal`, because
+    > > the units number `Pointer(LibUnwind::Exception)` whatever the shard does.
+    > > Such a consumer has the whole of Crystal's library, and now the shard's
+    > > requires as well.
+    > >
+    > > So the measurement of what crosses has been made against the wrong
+    > > consumer since the tool was written, and it reads low: `Kemal::Route`,
+    > > `RouteDefinition`, `FileUpload` and three more are refused for naming
+    > > types their actual consumer would have. Widening `nameable?` to Crystal's
+    > > library is the next thing, and it is a bigger claim than it sounds —
+    > > every count in this item is downstream of that predicate.
     > >
     > > **The first version of this measured nothing, and why is the useful
     > > part.** Its consumer called one method. Codegen is demand-driven, so a
