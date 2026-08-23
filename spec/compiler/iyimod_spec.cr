@@ -2118,6 +2118,58 @@ describe Iyi::IyiMod do
     end
   end
 
+  # The pattern and not just the name, because the name is a digest of the
+  # pattern and a digest does not read backwards. `Constants` carries a name
+  # because for every other constant a name is enough — the consumer's own
+  # library has it, or the module's initialiser assigns it. Nobody wrote this
+  # one and `$` keeps it out of the source channel, so what a consumer needs to
+  # build it travels here or nowhere.
+  it "round-trips what a synthesised regex constant was made from" do
+    with_temporary_file do |path|
+      artifact = Iyi::IyiMod::Artifact.new(
+        module_name: "app/box",
+        source_path: "/src/app/box.cr",
+        compiler_version: "1.22.0-dev+abc1234",
+        target_triple: "x86_64-pc-linux-gnu",
+        flags: ["bits64"],
+        imports: [] of Iyi::IyiMod::ImportEdge,
+        constants: ["$Regex:0efd0f2ede78a843db3048bc8d79fcff"],
+        regexes: [Iyi::IyiMod::RegexConst.new("$Regex:0efd0f2ede78a843db3048bc8d79fcff",
+          "alpha-[0-9]+", 1_u32)],
+      )
+      Iyi::IyiMod.write artifact, path
+
+      read = Iyi::IyiMod.read(path).regexes
+      read.size.should eq 1
+      read[0].name.should eq "$Regex:0efd0f2ede78a843db3048bc8d79fcff"
+      read[0].pattern.should eq "alpha-[0-9]+"
+      read[0].options.should eq 1_u32
+    end
+  end
+
+  # Same pattern, same name, in a program that never met the other one — which
+  # is the whole of what the digest is for. Two boundaries numbering their own
+  # literals from zero both said `$Regex:0`, and a consumer holding both can
+  # only define one: the second module's machine code read the first module's
+  # pattern, with nothing raised and nothing linked wrong.
+  it "names a regex constant after the literal rather than the order it was met in" do
+    alpha = Iyi::Program.regex_const_name("alpha-[0-9]+", Iyi::RegexOptions::None)
+    beta = Iyi::Program.regex_const_name("beta-[a-z]+", Iyi::RegexOptions::None)
+
+    alpha.should_not eq beta
+    alpha.should eq Iyi::Program.regex_const_name("alpha-[0-9]+", Iyi::RegexOptions::None)
+
+    # The flags are part of what the literal means, so they are part of its
+    # name: `/a/i` and `/a/` are two patterns and must not share one constant.
+    Iyi::Program.regex_const_name("a", Iyi::RegexOptions::IGNORE_CASE)
+      .should_not eq Iyi::Program.regex_const_name("a", Iyi::RegexOptions::None)
+
+    # Unwritable, which the old name already was and this one has to keep: the
+    # consumer defines it, and a name a consumer could also *write* would be a
+    # constant two things own.
+    alpha.should start_with "$Regex:"
+  end
+
   it "renders the initialiser inside the module it belongs to" do
     artifact = Iyi::IyiMod::Artifact.new(
       module_name: "boot/config",

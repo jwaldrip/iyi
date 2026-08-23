@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 21_u32
+  FORMAT_VERSION = 22_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -64,7 +64,20 @@ module Iyi::IyiMod
     # iyi: under `--crystal`, the library files this module required, in the
     # order it required them. Same reason as `TypeIds` again — see IV.1g.
     Requires = 11
+
+    # iyi: what the synthesised regex constants in `Constants` were made from.
+    # A name is enough for every other constant there and not for these — see
+    # `Artifact#regexes` and IV.1g.
+    Regexes = 12
   end
+
+  # A regex literal's constant: the name its object code reads, and what a
+  # consumer has to build under that name.
+  #
+  # *options* is the flags as the number they are stored as rather than as the
+  # enum, because the enum belongs to the compiler that wrote this and the file
+  # outlives it. `Regex::Options.new` on the far side turns it back.
+  record RegexConst, name : String, pattern : String, options : UInt32
 
   class Error < Iyi::Error
   end
@@ -571,6 +584,28 @@ module Iyi::IyiMod
     # Settable alongside `object_code`, and for the same reason.
     property constants : Array(String)
 
+    # What the synthesised regex constants above were made from.
+    #
+    # `constants` carries a name, and for every other constant in it a name is
+    # the whole of what a consumer needs: it already has Crystal's, and the ones
+    # this module declared arrive in the initialiser that travels as source. A
+    # regex literal's constant is neither. Nobody wrote it — the compiler makes
+    # one per literal, named for the literal's own bytes — and `$` is not legal
+    # in a constant, so it cannot travel through the source channel at all.
+    #
+    # A consumer handed only the name has nothing to define, and defining
+    # nothing is what left `undefined constant ::$Regex:...` at the end of a
+    # build that had every declaration it needed. So the pattern and the flags
+    # come too, and the consumer builds the constant under the name its object
+    # code reads.
+    #
+    # Empty unless a body that travelled held a regex literal, which makes it
+    # empty for every module built under iyi's prelude: a `.iyi` file has no
+    # runtime `Regex` and its literals are refused where they are expanded.
+    #
+    # Settable alongside `object_code`, and for the same reason.
+    property regexes : Array(RegexConst)
+
     # Whether this module was compiled against Crystal's standard library
     # rather than iyi's prelude — `--crystal`.
     #
@@ -615,7 +650,8 @@ module Iyi::IyiMod
                    @mono_bodies = {} of String => String, @initialiser = "",
                    @type_ids = [] of String, @hashes = Hashes.empty,
                    @constants = [] of String, @macro_bodies = [] of String,
-                   @requires = [] of String, @crystal_library = false)
+                   @requires = [] of String, @crystal_library = false,
+                   @regexes = [] of RegexConst)
     end
   end
 
@@ -668,6 +704,12 @@ module Iyi::IyiMod
 
     unless artifact.constants.empty?
       sections << {Section::Constants, encode_constants(artifact)}
+    end
+
+    # Right behind the names it completes, and read the same way: what a
+    # consumer has to build before it can read them.
+    unless artifact.regexes.empty?
+      sections << {Section::Regexes, encode_regexes(artifact)}
     end
 
     # Last, and omitted when there is nothing in it. A consumer reading
@@ -811,6 +853,7 @@ module Iyi::IyiMod
       initialiser = ""
       type_ids = [] of String
       constants = [] of String
+      regexes = [] of RegexConst
       requires = [] of String
       hashes = Hashes.empty
 
@@ -838,6 +881,7 @@ module Iyi::IyiMod
         when Section::Initialiser then initialiser = String.new(payload)
         when Section::TypeIds     then type_ids = decode_type_ids(payload)
         when Section::Constants   then constants = decode_constants(payload)
+        when Section::Regexes     then regexes = decode_regexes(payload)
         when Section::Requires    then requires = decode_requires(payload)
         when Section::Hashes      then hashes = decode_hashes(payload)
         else
@@ -853,7 +897,8 @@ module Iyi::IyiMod
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
         object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
-        hashes, constants, macro_bodies, requires, header[:crystal_library])
+        hashes, constants, macro_bodies, requires, header[:crystal_library],
+        regexes)
     end
   rescue ex : Error
     raise ex
@@ -968,6 +1013,14 @@ module Iyi::IyiMod
     unless constants.empty?
       io.puts "constants"
       constants.each { |name| io.puts "  #{name}" }
+    end
+
+    # With the pattern, because the name is a digest: a reader looking at
+    # `$Regex:5f2b…` in the list above has no way to tell which literal it is.
+    regexes = artifact.regexes
+    unless regexes.empty?
+      io.puts "regex constants"
+      regexes.each { |regex| io.puts "  #{regex.name} = /#{regex.pattern}/ (#{regex.options})" }
     end
 
     object_code = artifact.object_code
@@ -1556,6 +1609,25 @@ module Iyi::IyiMod
 
   private def self.decode_constants(payload : Bytes) : Array(String)
     read_strings(IO::Memory.new(payload))
+  end
+
+  private def self.encode_regexes(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    regexes = artifact.regexes
+    io.write_bytes regexes.size.to_u32, FORMAT
+    regexes.each do |regex|
+      write_string io, regex.name
+      write_string io, regex.pattern
+      io.write_bytes regex.options, FORMAT
+    end
+    io.to_slice
+  end
+
+  private def self.decode_regexes(payload : Bytes) : Array(RegexConst)
+    io = IO::Memory.new(payload)
+    Array(RegexConst).new(io.read_bytes(UInt32, FORMAT)) do
+      RegexConst.new(read_string(io), read_string(io), io.read_bytes(UInt32, FORMAT))
+    end
   end
 
   private def self.encode_type_ids(artifact : Artifact) : Bytes

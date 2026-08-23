@@ -627,6 +627,7 @@ module Iyi
       artifact.object_code = collect_iyi_object_code(names, units_by_name)
       artifact.type_ids = collect_iyi_type_ids(program, names)
       artifact.constants = collect_iyi_constants(program, names)
+      artifact.regexes = collect_iyi_regexes(program, artifact.constants)
 
       add_bind_boundary_imports artifact, dir, path
       IyiMod.write artifact, path
@@ -695,6 +696,7 @@ module Iyi
         artifact.object_code = collect_iyi_object_code(unit_names, units_by_name)
         artifact.type_ids = collect_iyi_type_ids(program, unit_names)
         artifact.constants = collect_iyi_constants(program, unit_names)
+        artifact.regexes = collect_iyi_regexes(program, artifact.constants)
         IyiMod.write artifact, path
       end
     end
@@ -875,6 +877,27 @@ module Iyi
         program.iyi_unit_constants[unit_name]?.try &.each { |const| names << const.to_s }
       end
       names.to_a.sort!
+    end
+
+    # iyi: what a consumer needs to *build* the synthesised regex constants in
+    # `Constants`, for `Regexes` (SPEC.md IV.1g).
+    #
+    # Every other name in that list is one the consumer's own program already
+    # has: its own library's `Int::DIGITS_BASE62`, or a constant this module
+    # declared and whose initialiser travelled as source. A regex literal's is
+    # neither. It is named for the literal rather than written by anybody, and
+    # `$` keeps it out of the source channel — so the pattern travels here and
+    # the consumer defines the constant under the name the object code asks for.
+    #
+    # Read from the names already collected rather than from the units again:
+    # what a consumer has to build is exactly what it was told to read.
+    private def collect_iyi_regexes(program : Program,
+                                    constant_names : Array(String)) : Array(IyiMod::RegexConst)
+      constant_names.compact_map do |name|
+        next unless made = program.iyi_regex_constants[name]?
+        pattern, options = made
+        IyiMod::RegexConst.new(name, pattern, options.value.to_u32)
+      end
     end
 
     # The unit names of every type declared under *type*, recursively.
