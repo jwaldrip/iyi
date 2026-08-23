@@ -660,6 +660,7 @@ module Iyi
       path = File.join(dir, "#{Iyi.iyi_module_name(root).gsub('/', '-')}.iyimod")
       return unless File.file?(path)
 
+
       artifact = IyiMod.read path
       units_by_name = units.to_h { |unit| {unit.original_name, unit} }
       artifact.object_code = collect_iyi_object_code(names, units_by_name)
@@ -670,6 +671,7 @@ module Iyi
       artifact.match_types = collect_iyi_match_types(program, names)
       artifact.symbols = collect_iyi_symbols(program, names)
       artifact.libs = collect_iyi_libs(program, names)
+      artifact.layouts = collect_iyi_layouts(program, type)
       # Reached only if the keep file compiled, which is the whole of what this
       # says. A boundary whose fill died leaves every declaration on disk and no
       # machine code, and that is not the same thing as having none.
@@ -737,6 +739,7 @@ module Iyi
 
       units_by_name = units.try &.to_h { |unit| {unit.original_name, unit} }
 
+
       prepared.each do |(path, artifact)|
         # iyi: a package's artifact is III.7 step 5's story — signatures,
         # signing, the registry — and is not written here, because the one
@@ -771,6 +774,13 @@ module Iyi
         artifact.match_types = collect_iyi_match_types(program, unit_names)
         artifact.symbols = collect_iyi_symbols(program, carried)
         artifact.libs = collect_iyi_libs(program, unit_names)
+        # With the object code, because it is about the object code's types:
+        # a build that generated none has no lowered types to measure.
+        if units
+          if module_type = program.iyi_module_type(artifact.module_name)
+            artifact.layouts = collect_iyi_layouts(program, module_type)
+          end
+        end
         artifact.filled = true
         IyiMod.write artifact, path
       end
@@ -1080,6 +1090,52 @@ module Iyi
     end
 
     # The unit names of every type declared under *type*, recursively.
+    # iyi: the pointer maps of the types this module owns, for the `Layouts`
+    # section (GC_DESIGN.md Stage 1).
+    #
+    # The set is the walk `collect_iyi_unit_names` does, kept as types rather
+    # than names, with one relaxation: a generic the module declares
+    # contributes each instantiation this build has, because an instantiation
+    # is monomorphic and has a layout. An uninstantiated generic contributes
+    # nothing: one entry serving two instantiations by shape is R-4's
+    # per-GC-shape keying, which nothing implements yet, so no entry pretends.
+    #
+    # Only instance-variable containers get a map. A module, an enum, an
+    # alias and a trait declare no fields to scan, and a metaclass value is a
+    # type id, not a pointer.
+    private def collect_iyi_layouts(program : Program, module_type : ModuleType) : Array({String, IyiMod::TypeLayout})
+      types = [] of Type
+      collect_iyi_layout_types module_type, types
+
+      layouts = [] of {String, IyiMod::TypeLayout}
+      types.each do |type|
+        next unless type.is_a?(InstanceVarContainer)
+        next if type.is_a?(GenericType)
+        layouts << {type.to_s, program.gc_type_layout(type)}
+      end
+
+      # Sorted, for the reason `mono_bodies` is: a walk's order is not a fact
+      # about the module, and an artifact that changed between two identical
+      # builds would defeat IV.3.
+      layouts.sort_by! &.[0]
+      layouts
+    end
+
+    # The walk `collect_iyi_unit_names` does, keeping the types. A generic is
+    # not collected itself (it has no layout); each instantiation of it in
+    # this build is.
+    private def collect_iyi_layout_types(type : ModuleType, types : Array(Type)) : Nil
+      type.types?.try &.each_value do |declared|
+        if declared.is_a?(GenericType)
+          declared.instantiated_types.each do |instance|
+            types << instance unless instance.unbound?
+          end
+        else
+          types << declared
+        end
+        collect_iyi_layout_types declared, types if declared.is_a?(ModuleType)
+      end
+    end
     #
     # A unit is named after the type that owns the methods in it, and **a
     # generic type's instantiations are deliberately not here**. `List(T)` has
