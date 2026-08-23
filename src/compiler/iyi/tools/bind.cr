@@ -29,6 +29,25 @@ module Iyi
     NeedsHuman
   end
 
+  # What happened when a written return type was held against what a caller is
+  # handed. III.6 rule 1 says the binding asserts and is not checked; this is
+  # how much of that is still true, as a number rather than a sentence.
+  enum BindCheck
+    # Nothing was written, so there is nothing to check: what travels *is* what
+    # instantiation answered, which is the half that was already checked.
+    NotWritten
+    # Written, instantiated, and the call answers what the restriction says.
+    Agrees
+    # Written, instantiated, and the call answers something else — `Int` where
+    # a caller gets `Int32`, an abstract base where a factory hands back the
+    # concrete class, a union with a member the method never produces. A
+    # consumer told the written name is told something the symbol does not do.
+    Disagrees
+    # Written, and instantiation could not run. The restriction stands on the
+    # shard's word, which is exactly what rule 1 describes.
+    Unchecked
+  end
+
   record BindMethod,
     owner : String,
     name : String,
@@ -52,13 +71,32 @@ module Iyi
     # of a family, and a method taking one is compiled once per member with a
     # symbol apiece. The compiler answers this — `can_be_stored?` — and it is
     # the same answer that decides whether the generated keep file compiles.
-    storable : Bool do
+    storable : Bool,
+    # What holding the written return type against the call answered.
+    checked : BindCheck,
+    # What instantiation answered, when that differs from what was written —
+    # and what travels, because the symbol is named after it.
+    produced : String? do
+    # What this method answers, which is not always what the shard wrote.
+    #
+    # The instantiated answer wins where the two disagree, and the linker is
+    # what decided that rather than an argument. A shard writing
+    # `def wider : String?` over a body returning a `String` gets a symbol named
+    # `*Shard::Part#wider:String`; a declaration repeating the restriction has
+    # the consumer ask for `*Shard::Part#wider:(String | Nil)`, and nobody
+    # emitted one. `produced` is set only where they disagree, so this reads as
+    # the written type everywhere else.
+    def answer : String?
+      produced || returns || inferred
+    end
+
     # Every type this signature names, so the emitter can ask whether they can
     # all be named on the other side.
     def signature_types : Array(String)
       types = params.map { |(_, restriction)| restriction }
-      answer = returns || inferred
-      types << answer if answer
+      if declared = answer
+        types << declared
+      end
       # The restriction only. `&block : Int32 -> Int32` names one type and one
       # parameter, and reading the parameter as a type made every annotated
       # block look like it mentioned something nobody declared.
@@ -77,14 +115,13 @@ module Iyi
       !block || !written_block.empty?
     end
 
-    # The `pub def` an iyi module would carry. Written from what the source
-    # said where it said it, and from what instantiation answered where it did
-    # not, which is the only difference between the two halves of this file.
+    # The `pub def` an iyi module would carry. Parameters as the source wrote
+    # them; the return from `answer`, which is what the source wrote only where
+    # that is also what a caller is handed.
     def declaration : String
       args = params.map { |(name, restriction)| "#{name} : #{restriction}" }.join(", ")
-      answer = returns || inferred || "Nil"
       signature = args.empty? ? name : "#{name}(#{args})"
-      "pub def #{signature} : #{answer}"
+      "pub def #{signature} : #{answer || "Nil"}"
     end
   end
 
@@ -177,6 +214,34 @@ module Iyi
       machine.select(&.refused).group_by { |m| m.refused.not_nil! }
         .to_a.sort_by { |(_, v)| -v.size }.first(8).each do |(reason, list)|
         io.puts "    %-38s %d" % [reason[0, 38], list.size]
+      end
+    end
+
+    # III.6 rule 1 as a number. The half above reads a return nobody wrote; this
+    # half holds a return somebody did write against the same answer, and says
+    # how much of the boundary is still standing on the shard's word.
+    written = methods.reject(&.checked.not_written?)
+    unless written.empty?
+      disagreed = written.select(&.checked.disagrees?)
+      io.puts
+      io.puts "written returns, held against what a caller is handed:"
+      io.puts "  agrees                    #{written.count(&.checked.agrees?)}"
+      io.puts "  disagrees                 #{disagreed.size}"
+      io.puts "  could not be checked      #{written.count(&.checked.unchecked?)}"
+      written.select { |m| m.checked.unchecked? && m.refused }
+        .group_by { |m| m.refused.not_nil! }
+        .to_a.sort_by { |(_, v)| -v.size }.first(8).each do |(reason, list)|
+        io.puts "    %-38s %d" % [reason[0, 38], list.size]
+      end
+
+      unless disagreed.empty?
+        io.puts
+        io.puts "  and the ones that travel as the answer, not as written:"
+        disagreed.sort_by { |m| {m.owner, m.name} }.first(12).each do |method|
+          io.puts "    #{method.owner}##{method.name}"
+          io.puts "      writes #{method.returns}, answers #{method.produced}"
+        end
+        io.puts "    ... and #{disagreed.size - 12} more" if disagreed.size > 12
       end
     end
 
@@ -375,7 +440,7 @@ module Iyi
         receiver: method.owner == "#{root}:Module" && method.receiver.empty? ? "self" : method.receiver,
         parameters: method.params.map { |(name, restriction)| "#{name} : #{restriction}" },
         block_parameter: method.written_block,
-        return_type: (method.returns || method.inferred).not_nil!,
+        return_type: method.answer.not_nil!,
         free_variables: [] of String,
         required: false,
       )
@@ -861,7 +926,7 @@ module Iyi
             receiver: on_metaclass && method.receiver.empty? ? "self" : method.receiver,
             parameters: method.params.map { |(argument, restriction)| "#{argument} : #{restriction}" },
             block_parameter: method.written_block,
-            return_type: (method.returns || method.inferred).not_nil!,
+            return_type: method.answer.not_nil!,
             free_variables: [] of String,
             required: false,
           )
@@ -1488,7 +1553,7 @@ module Iyi
           receiver: on_metaclass && method.receiver.empty? ? "self" : method.receiver,
           parameters: method.params.map { |(argument, restriction)| "#{argument} : #{restriction}" },
           block_parameter: method.written_block,
-          return_type: (method.returns || method.inferred).not_nil!,
+          return_type: method.answer.not_nil!,
           free_variables: [] of String,
           required: false,
         )
@@ -1704,8 +1769,31 @@ module Iyi
 
     inferred = nil
     refused = nil
+    checked = BindCheck::NotWritten
+    produced = nil
+    written = resolve_restriction(owner, a_def.return_type)
+
     if verdict.needs_return?
       inferred, refused = infer_return(owner, a_def)
+    elsif written
+      # The other half of rule 1. A method that writes its return type was
+      # copied out verbatim and never instantiated, so nothing ever held the
+      # two against each other — and a written restriction is not the answer a
+      # caller gets. Crystal narrows it to what the body produced: `def f :
+      # String?` whose body returns a `String` types its call `String`, not
+      # `String?`. A consumer told the union holds one where the object code
+      # answers a bare pointer, which is rule 1's "returns something of another
+      # type" exactly. So ask this half the question the other half answers.
+      produced, refused = infer_return(owner, a_def)
+      checked =
+        if produced.nil?
+          BindCheck::Unchecked
+        elsif produced == written
+          BindCheck::Agrees
+        else
+          BindCheck::Disagrees
+        end
+      produced = nil unless checked.disagrees?
     end
 
     BindMethod.new(
@@ -1718,9 +1806,16 @@ module Iyi
       inferred: inferred,
       refused: refused,
       body: a_def.body.to_s,
-      storable: a_def.args.all? { |arg| storable_restriction?(owner, arg.restriction) },
+      # The return type is asked the same question the parameters are. `Int` is
+      # the head of a family on either side of the arrow, and a method that
+      # answers one has a symbol per member exactly as a method that takes one
+      # does. Asking it of the arguments alone was half the question.
+      storable: a_def.args.all? { |arg| storable_restriction?(owner, arg.restriction) } &&
+                (a_def.return_type.nil? || storable_restriction?(owner, a_def.return_type)),
       params: a_def.args.map { |arg| {arg.name, resolve_restriction(owner, arg.restriction) || "?"} },
-      returns: resolve_restriction(owner, a_def.return_type),
+      returns: written,
+      checked: checked,
+      produced: produced,
       receiver: a_def.receiver.try(&.to_s) || "",
       # `&block : Context -> B` travels as written. A block whose type nobody
       # wrote cannot: R-2 asks the block for its types like everything else.
@@ -1772,7 +1867,26 @@ module Iyi
     false
   end
 
-  # Instantiate a method nobody called, and read what it returns.
+  # What a caller of this method is handed.
+  #
+  # Not what the shard wrote, which is a different question and the one the
+  # written half used to answer with its own premise: Crystal narrows a return
+  # restriction to what the body produced, so this can disagree with a `def`
+  # that spells its return out. Both halves ask it now.
+  private def self.infer_return(owner : Type, a_def : Def) : {String?, String?}
+    call, refused = instantiate(owner, a_def)
+    return {nil, refused} unless call
+
+    type = call.type?
+    return {nil, "no type"} unless type
+
+    # `Foo+` is how a virtual type prints, and it is a fact about this build's
+    # dispatch rather than a name anybody can write down. A declaration says
+    # `Foo`, which is what the call site means and what parses.
+    {type.devirtualize.to_s, nil}
+  end
+
+  # Instantiate a method nobody called, and hand back the call.
   #
   # This is the whole trick, and it is why a shard's untyped surface is not the
   # wall it looks like. Crystal types a method when something calls it, so a
@@ -1784,7 +1898,7 @@ module Iyi
   # What it cannot do is written down beside what it can. A block is the honest
   # one: its type depends on what the caller passes, so there is no single
   # answer to read.
-  private def self.infer_return(owner : Type, a_def : Def) : {String?, String?}
+  private def self.instantiate(owner : Type, a_def : Def) : {Call?, String?}
     # A block whose own type is written is not the problem; one whose output is
     # `_`, or which was never annotated, is. What such a method returns depends
     # on what the caller passes, and there is no single answer to read.
@@ -1814,14 +1928,7 @@ module Iyi
     call = Call.new(receiver, a_def.name, args)
     call.scope = owner
     call.recalculate
-
-    type = call.type?
-    return {nil, "no type"} unless type
-
-    # `Foo+` is how a virtual type prints, and it is a fact about this build's
-    # dispatch rather than a name anybody can write down. A declaration says
-    # `Foo`, which is what the call site means and what parses.
-    {type.devirtualize.to_s, nil}
+    {call, nil}
   rescue ex : Iyi::CodeError
     {nil, ex.message.to_s.lines.first?.to_s}
   rescue ex

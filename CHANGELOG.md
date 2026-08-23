@@ -4,6 +4,46 @@
 
 ### Added
 
+- **A bound shard is built from its boundary, linked and run every build.**
+  `bench/bind_roundtrip.sh` is `samples_roundtrip.sh`'s question asked of the
+  other kind of artifact: object code that is a shard's, declarations that
+  `crystal tool bind` wrote, and a `--crystal` consumer. It binds, fills the
+  units, builds the same program both ways, runs both and compares.
+
+  III.6 rule 1 names two failures for a boundary whose signatures are wrong —
+  an undefined symbol, or a call returning something of another type — and
+  `spec/compiler/bind_spec.cr` reaches neither, because it reads declarations
+  back and never links. That was written down as a deliberate limit. Nothing
+  covered it, and the first thing this gate did was fail:
+
+  ```
+  ld.lld: error: undefined symbol: *Shard::Part#wider:(String | Nil)
+  ```
+
+  **And it found the same question on the other side of the arrow.**
+  `def discards(io : IO)` is monomorphised on what it is passed, so the keep
+  file emitted `discards<IO>` and a consumer handing it `STDOUT` asked for
+  `discards<IO::FileDescriptor>`. Both answers that suggest themselves are bad:
+  instantiating for every concrete subtype is the whole-program work an
+  artifact exists to avoid, and refusing such methods costs real surface —
+  `JSON` has 10 of 180 declarations taking an `IO`, `YAML` 10 of 193, `URI` 7
+  of 55, counting only `IO`.
+
+- **A call to a declaration read from a `.iyimod` is keyed on the parameter as
+  declared, not on what the call site passes.** One line of a consumer said
+  which answer the gap above wanted: `part.discards(STDOUT)` failed to link and
+  `part.discards(STDOUT.as(IO))` linked and ran. The symbol was callable the
+  whole time; the call was reading past the declaration.
+
+  Keying on the argument is right everywhere the body is present to be compiled
+  once per argument type. A declaration from an artifact has no body and
+  exactly one symbol, so the parameter as written is what the call is keyed on
+  and the argument is widened to it — the conversion `.as(IO)` was performing by
+  hand. Getting the direction backwards says so plainly:
+  `BUG: trying to downcast IO+ <- IO::FileDescriptor`, which is `downcast`
+  being handed a widening. Nothing is refused and nothing is instantiated per
+  subtype.
+
 - **`pub enum`, and an enum crosses a boundary.** iyi took an `enum` already —
   the language has one and the compiler makes the type — but `pub` did not, so a
   module could declare one and never hand it out. It does now, and
@@ -362,6 +402,67 @@
   trigger is the wrapping group rather than the branch lengths.
 
 ### Fixed
+
+- **`bench/bind_speed.py` said a shard reaching into another one cannot be
+  bound, and that stopped being true two commits before anybody reread it.**
+  The header gave `Kemal` numbering `Array(Radix::Node(...))` as the case and
+  a generic travelling as bodies rather than declarations as the reason. Both
+  halves have since been answered — a generic carries its declaration *and* its
+  bodies, and the build that fills a boundary reads the boundaries beside it and
+  adds the import edge — and the paragraph went on asserting the old state.
+
+  Corrected by measuring rather than by reasoning, and without the network: a
+  two-shard tree of exactly that shape — a generic `Node(T)` in one, a second
+  whose object code numbers `Array(Node(String))` and whose declarations name
+  no `Node` — binds, links, runs, and prints what the source arm prints. The
+  order matters and the header now says so: the reached-into shard is bound
+  first and named with `--use-iyimod`, because only a build that sees that
+  boundary can add the edge. Without it the consumer stops at import with
+  `"kemal" numbers Array(Radix::Node(String)), and this build cannot name it`.
+
+  SPEC.md III.6 already recorded the correction and needed nothing; it also
+  names what real `Kemal` still waits on, which is three types belonging to
+  other shards. The stale sentence carried a stale number besides — it called
+  the smallest sweep 1,627 lines where the bench prints 2,167.
+
+- **`crystal tool bind` holds a written return type against what a caller is
+  actually handed, and the two are not always the same.** III.6 rule 1 says the
+  binding asserts and is not checked. Half of it already was: a method whose
+  return type nobody wrote is instantiated on purpose and the answer read. The
+  other half — a method that *writes* its return type — was copied out verbatim
+  and held against nothing, on the premise that what Crystal was told is what
+  Crystal does.
+
+  It is not. Crystal narrows a return restriction to what the body produced, so
+  `def wider : String?` returning a `String` types its call **`String`**, and a
+  consumer told `String?` holds a union where the object code answers a bare
+  pointer. That is rule 1's "a call that returns something of another type",
+  reached without anybody writing a wrong signature.
+
+  Five in Crystal's own library, and each is a different shape: `JSON::Any#size`
+  and `YAML::Any#size` say `Int`, which is a family head and not a type anything
+  can hold; `JSON::Lexer.new` says the abstract base where the factory hands
+  back `StringBased` and `IOBased`; `YAML::Schema::Core.parse_scalar` declares a
+  union carrying `Slice(UInt8)`, which it never produces. The report names them
+  and counts what is left: URI **40 agree, 0 disagree, 27 could not be checked**,
+  JSON 119/3/13, YAML 111/2/40. Where the two disagree the artifact carries the
+  **answer**, because the symbol is named after the answer and not after the
+  restriction — see the round trip below, which is what settled that.
+
+  **The first version of this check read the method's body rather than its call,
+  and it was wrong in the direction that matters.** `def discards(io : IO) : Nil`
+  has a body producing an `IO` and a caller receiving `Nil`, because `: Nil`
+  discards; reading the body reported three defects in `URI` alone that were not
+  there. The question a boundary asks is what a *caller* is handed, and the spec
+  now pins the `: Nil` case for that reason.
+
+- **A return type is asked whether a variable could hold it, which only the
+  parameters were being asked.** `Int` is the head of a family on either side of
+  the arrow: a method answering one has a symbol per member exactly as a method
+  taking one does, and the generated keep file cannot compile either. `storable`
+  looked at the arguments alone, so `JSON::Any#size : Int` was counted as a
+  signature that crosses. JSON goes **181 → 180** and YAML **194 → 193**; URI is
+  unchanged at 55.
 
 - **`gsub` copied the tail twice on an empty match at the end of the subject.**
   `Iyi::Rx.gsub("abc", /$/, "<>")` answered `"abc<>abc"`. An empty match at the

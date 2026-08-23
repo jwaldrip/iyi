@@ -748,7 +748,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 89,860 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 90,038 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,301 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -2505,6 +2505,78 @@ the whole of what was asked.
    (check the binding against Crystal's inferred types) is available and is the
    better second version: the compiler *has* those types, because it inferred
    them to compile the shard.
+
+   **The return type is now checked, and the sentence above was hiding a
+   defect rather than a trade.** `crystal tool bind` always instantiated a
+   method whose return nobody wrote; a method that wrote one was copied out
+   verbatim, on the premise that Crystal's answer is what Crystal was told.
+   It is not — Crystal narrows a restriction to what the body produced, so
+   `def wider : String?` returning a `String` types its call `String`. A
+   consumer told the union holds one where the object code answers a bare
+   pointer, which is this rule's second failure reached with nobody having
+   written a wrong signature.
+
+   Held against the answer, Crystal's own library disagrees in five places
+   and each is its own shape: `Int` where a caller gets `Int32`, an abstract
+   base where a factory hands back the concrete class, a union carrying a
+   member the method never produces. **URI: 40 agree, 0 disagree, 27 cannot
+   be checked**; JSON 119/3/13; YAML 111/2/40. The third column is what is
+   left of this rule — a splat, an unannotated block, a generic — and it is a
+   number now rather than a sentence.
+
+   **What travels is the answer, and the linker decided it rather than an
+   argument.** This was left open for one commit on the grounds that changing
+   what artifacts contain needed a consumer linking against the corrected
+   declaration to prove it. `bench/bind_roundtrip.sh` is that consumer. Bound
+   with the restriction repeated, a program calling `wider` fails with
+
+   ```
+   ld.lld: error: undefined symbol: *Shard::Part#wider:(String | Nil)
+   ```
+
+   because the symbol Crystal emitted is named `:String` — rule 1's first
+   failure, at the end of a build that had no other complaint, reached with
+   nobody having written a wrong signature. Bound with the answer, the same
+   program links, runs, and prints what the source arm prints. The
+   declarations now carry the instantiated answer wherever the two disagree,
+   and the round trip is a gate so this cannot come back.
+
+   **A virtual parameter, which is the same question asked of the other side
+   of the arrow.** The round trip found it next: `def discards(io : IO)` is
+   monomorphised on what it is *passed*, so the keep file emitted
+   `discards<IO>` while a consumer handing it `STDOUT` asked for
+   `discards<IO::FileDescriptor>`. The producer cannot know which concrete
+   types a consumer will pass, and there is one symbol.
+
+   The two answers that suggest themselves are both bad. The keep file could
+   instantiate for every concrete subtype, which is the whole-program work an
+   artifact exists to avoid. Or the boundary could refuse such methods, which
+   costs real surface: **JSON 10 of 180 declarations take an `IO`, YAML 10 of
+   193, URI 7 of 55**, and that counts only `IO`.
+
+   Neither was needed, and one line of a consumer's source is what said so.
+   `part.discards(STDOUT)` failed to link and `part.discards(STDOUT.as(IO))`
+   linked, ran, and printed. The symbol the producer emitted was callable the
+   whole time; what was wrong was that the *call* was keyed on what the call
+   site passes. Everywhere else that is right, because the body is there to be
+   compiled once per argument type. For a declaration read from an artifact
+   there is no body and exactly one symbol, so the call is keyed on the
+   parameter **as declared** and the argument is widened to it — the same
+   conversion `.as(IO)` performs by hand. `Call#iyi_artifact_arg_types` decides
+   it and codegen upcasts rather than downcasts, which is the direction the
+   crash named when it was got backwards:
+   `BUG: trying to downcast IO+ <- IO::FileDescriptor`.
+
+   Nothing is refused and nothing is instantiated per subtype. The declaration
+   is the contract, which is what R-2 says it is.
+
+   **The check was built the wrong way round first, and the reason is worth
+   the line.** It read the instantiated method's *body* rather than its call.
+   `def discards(io : IO) : Nil` has a body producing an `IO` and a caller
+   receiving `Nil`, because `: Nil` discards whatever the body answered — so
+   the first run reported three defects in `URI` that were not there, all of
+   them that shape. A boundary is about what a caller is handed. The spec
+   pins the `: Nil` case so the wrong question cannot come back.
 2. **The shard's opens stay inside the shard.** It may reopen `String` for its
    own use; those methods are not visible to iyi and must not be, because a
    consumer reading the artifact cannot see them and R-3's coherence answer

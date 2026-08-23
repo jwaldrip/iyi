@@ -252,4 +252,62 @@ describe "tool bind" do
       consume "mods", "my_wire"
     end
   end
+
+  # III.6 rule 1, measured instead of asserted.
+  #
+  # The tool instantiated a method whose return type nobody wrote and read the
+  # answer, and copied a method whose return type somebody *did* write straight
+  # out. So the written half was never held against anything, and a written
+  # restriction is not what a caller is handed: Crystal narrows it to what the
+  # body produced. `def narrow : String?` returning a `String` types its call
+  # `String`, and a consumer told `String?` holds a union where the object code
+  # answers a bare pointer.
+  #
+  # `: Nil` is the case that says the question has to be asked of the call and
+  # not of the body. Its body produces an `IO` and its caller gets `Nil`, so a
+  # check reading the body reports a defect that is not there. It was written
+  # that way first and this is the spec that would have caught it.
+  it "holds a written return type against what a caller is handed" do
+    with_tempdir("bind_written_return") do
+      Dir.mkdir_p "mods"
+      File.write "shard.cr", <<-CR
+        module Narrow
+          extend self
+
+          def wider : String?
+            "s"
+          end
+
+          def exact : String
+            "s"
+          end
+
+          def discards(io : IO) : Nil
+            io << "x"
+          end
+        end
+        CR
+
+      bind_artifact "shard.cr", "Narrow", "mods"
+      report = LAST_REPORT.first
+
+      report.should contain "written returns, held against what a caller is handed"
+      report.should contain "Narrow#wider"
+      report.should contain "writes (String | Nil), answers String"
+
+      # The two that agree stay out of it. `discards` is the one that would be
+      # named by a check that read the body.
+      report.should_not contain "Narrow#exact"
+      report.should_not contain "Narrow#discards"
+
+      # And the answer is what travels, because the symbol is named after it.
+      # The draft the report prints is the same text the artifact carries.
+      # `bench/bind_roundtrip.sh` is this claim with a linker behind it; this is
+      # the cheap half, and says which of the two spellings was written.
+      report.should contain "pub def wider : String\n"
+      report.should_not contain "pub def wider : (String | Nil)"
+
+      consume "mods", "narrow"
+    end
+  end
 end

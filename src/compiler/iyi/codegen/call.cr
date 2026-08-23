@@ -98,7 +98,21 @@ class Iyi::CodeGenVisitor
       else
         call_arg = @last
         call_arg = llvm_nil if arg.type.nil_type?
-        call_arg = downcast(call_arg, def_arg.type, arg.type, true)
+        # iyi: a `.iyimod` declaration is one symbol, so the semantic pass keys
+        # its call on the parameter as *declared* rather than on what this call
+        # site passes (SPEC.md III.6). That makes the parameter the wider of the
+        # two, and widening is `upcast` — `downcast` is for the other direction
+        # and says `BUG: trying to downcast IO+ <- IO::FileDescriptor` when
+        # handed this one. It is the same conversion `.as(IO)` performs by hand
+        # at a call site, which is how the boundary was made to link before it
+        # was made to do it by itself.
+        call_arg =
+          if target_def.iyi_from_artifact? && arg.type != def_arg.type &&
+             arg.type.implements?(def_arg.type)
+            upcast(call_arg, def_arg.type, arg.type)
+          else
+            downcast(call_arg, def_arg.type, arg.type, true)
+          end
       end
 
       # - C calling convention passing needs a separate handling of pass-by-value
