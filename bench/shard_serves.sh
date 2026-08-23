@@ -40,6 +40,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Named rather than discovered halfway through. `shards` fetches the shard and
+# `curl` asks the server for a page; without either, the failure would arrive
+# as a confusing error from a step that had already done minutes of work.
+for tool in shards curl; do
+  if ! command -v "$tool" > /dev/null 2>&1; then
+    echo "needs $tool, which is not on the PATH"
+    exit 1
+  fi
+done
+
 cat > "$WORK/shard.yml" <<YML
 name: shard_serves
 version: 0.1.0
