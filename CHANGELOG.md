@@ -363,6 +363,35 @@
 
 ### Fixed
 
+- **`bench/build_speed.py` has not built anything since the identity cutover,
+  and it is the gate for the one claim this project is built around.** It asks
+  a wrapper where this checkout's sources are, and `f55ba16cb` renamed the
+  variables it asks for to `IYI_*` while leaving it asking `bin/crystal`. The
+  two command surfaces answer in their own vocabularies by design, so
+  `crystal env IYI_PATH` is not an error — it prints an empty line and exits 0.
+
+  The bench checked the exit status, got 0, and passed the compiler an
+  environment with no search path in it at all. Every build then failed with
+  `can't find file 'iyi/prelude'` and every row of the table printed a dash.
+  It does exit non-zero, so it was never *silently* wrong; it was simply not
+  being run.
+
+  Two changes, and the second is the one that matters. It asks `bin/iyi`, which
+  is the surface that knows those names. And it checks the **answer** rather
+  than the status, because an exit code cannot see an empty string — a bench
+  that cannot find the path now says which one it wanted.
+
+- **The same bench withheld iyi's own figures at scale whenever Go was
+  absent.** The 300-type pair is timed only after both halves are built and run
+  against each other, which is right for the comparison and wrong for
+  everything else: on a machine with no Go the whole block was dropped, and
+  that block is the size SPEC.md's scale question is about. "The pair disagreed"
+  and "there is no Go here" are now different answers. The first still drops the
+  rows; the second prints iyi's and marks the Go column as not measured.
+
+  With them back: at 6,912 lines, front end 0.05 s, end to end 0.39 s cold and
+  **0.13 s warm** on a release compiler.
+
 - **`gsub` copied the tail twice on an empty match at the end of the subject.**
   `Iyi::Rx.gsub("abc", /$/, "<>")` answered `"abc<>abc"`. An empty match at the
   very end left the cursor behind it, so the text between the cursor and the

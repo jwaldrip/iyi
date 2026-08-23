@@ -730,6 +730,14 @@ be reused, and that needs a unit's *inputs* fingerprinted rather than its
 output. A dependency-tracking problem, not an optimisation. It is written down
 here rather than started.
 
+**Asked again on a release compiler, on another machine, and the shape is the
+same.** A one-line edit at 300 types rebuilds in 0.142 s; `306/307 .o files
+were reused`, and `Codegen (crystal)` is 0.036 s with 0.023 s more in `bc+obj`
+— so about 0.059 s of a 0.142 s rebuild, **42%**, is spent establishing that
+306 units did not change. The absolute figures are smaller than the debug ones
+above and the ratio is not: this is where the scale claim is decided, and it is
+still the same unstarted piece of work.
+
 **The front end was asked the same question and answered that there is nothing
 wrong with it.** At 150, 300, 600 and 1,200 types (3,462 to 27,612 lines) parse
 goes 0.026, 0.048, 0.092, 0.165 s and `main` goes 0.029, 0.056, 0.114, 0.236 s:
