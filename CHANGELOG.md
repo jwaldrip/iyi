@@ -4,6 +4,51 @@
 
 ### Added
 
+- **A chain of four bound shards builds and runs.** `bench/bind_chain.sh`
+  installs kemal and the three shards under it, binds all four in dependency
+  order, and builds a program against the boundaries that prints what the same
+  program prints built against their source. Nothing smaller finds what it
+  finds: one boundary cannot collide with another's synthesised names, cannot
+  have an import edge to get wrong, and cannot be a *class* root standing
+  beside module roots.
+
+- **A class root is its own namespace, and needs no module header.** An
+  artifact's declarations are wrapped in `module <path>`; for a class root that
+  header camelcases to the class's own name, so the class arrived declared
+  inside a module of the same name and every type under it gained a level —
+  `Widget::Part` was `Widget::Widget::Part`, and a consumer told to number
+  `Widget::Part` could not name it. iyi wraps a file in its module only when a
+  header is there, so leaving it out puts the declarations where they belong,
+  and a `ClassType` is a `ModuleType`, so everything that looks a module unit
+  up by name still finds it.
+
+  Two things held the same wrong premise elsewhere. The marker that says "this
+  type came from an artifact" walked *into* the scope looking for the root's own
+  name, so a class root and everything under it went unmarked. And
+  `bound_names` prefixed another boundary's types with its module path, which
+  rewrote `Carrier` to `Carrier::Carrier`; with the prefix empty the rewrite is
+  a no-op, so the import edge is recorded where the name is **met** rather than
+  where the text changed.
+
+- **An artifact says which symbols its units define.** Four undefined symbols
+  were four wrong answers to one question. An artifact defines **more than it
+  declares** — its own units call methods Crystal owns, so `RouteHandler`'s
+  unit calls `FilterHandler#next=` and `next=` is `HTTP::Handler`'s — and
+  **less than its types suggest**, because `Reference::new` is instantiated per
+  receiver and exists only where something reached it. Assuming the first left
+  `Kemal::FilterHandler@Reference::new` undefined; assuming the second made it a
+  duplicate symbol; compiling a private copy in the consumer put the definition
+  where `_main` could not see it. A `Symbols` section carries the mangled names
+  each unit defines and the consumer compiles everything else: a list is not a
+  rule and does not have a wrong side.
+
+- **A `~match` function is defined under the name that travelled.**
+  `(Socket::IPAddress | Socket::UNIXAddress)` is a union in the producer and
+  collapses to `Socket::Address+` in a consumer that knows those are all of
+  `Socket::Address`'s subclasses — the same types, the same answer, a different
+  symbol. The function is built from the type resolved here and named for the
+  one the object code calls.
+
 - **The type-id list is the import graph, so it cannot be filtered.** Two
   separate failures at kemal's scale came from one list being less than whole.
 

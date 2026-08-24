@@ -630,6 +630,7 @@ module Iyi
       artifact.regexes = collect_iyi_regexes(program, artifact.constants)
       artifact.class_vars = collect_iyi_unit_class_vars(program, names)
       artifact.match_types = collect_iyi_match_types(program, names)
+      artifact.symbols = collect_iyi_symbols(program, names)
 
       add_bind_boundary_imports artifact, dir, path
       IyiMod.write artifact, path
@@ -701,6 +702,7 @@ module Iyi
         artifact.regexes = collect_iyi_regexes(program, artifact.constants)
         artifact.class_vars = collect_iyi_unit_class_vars(program, unit_names)
         artifact.match_types = collect_iyi_match_types(program, unit_names)
+        artifact.symbols = collect_iyi_symbols(program, unit_names)
         IyiMod.write artifact, path
       end
     end
@@ -900,6 +902,21 @@ module Iyi
       names = Set(String).new
       unit_names.each do |unit_name|
         program.iyi_unit_constants[unit_name]?.try &.each { |const| names << const.to_s }
+      end
+      names.to_a.sort!
+    end
+
+    # iyi: the symbols the module's object code defines, for `Symbols` (SPEC.md
+    # IV.1g).
+    #
+    # What a consumer needs in order to know what it has to compile for itself,
+    # and the one thing no rule about the *shape* of a def gets right: an
+    # artifact defines more than it declares and less than its types suggest.
+    private def collect_iyi_symbols(program : Program,
+                                    unit_names : Array(String)) : Array(String)
+      names = Set(String).new
+      unit_names.each do |unit_name|
+        program.iyi_unit_symbols[unit_name]?.try &.each { |symbol| names << symbol }
       end
       names.to_a.sort!
     end

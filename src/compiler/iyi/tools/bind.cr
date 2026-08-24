@@ -564,6 +564,10 @@ module Iyi
       imports: @@bound_used.to_a.sort.map { |name| IyiMod::ImportEdge.new(name) },
       mono_bodies: @@mono_bodies.dup,
       requires: crystal_requires(program),
+      # The declarations carry no `module` header when the root is a class: the
+      # class is the namespace, and a header of its own name would put it one
+      # level inside itself.
+      class_root: !module_root?(program, root),
       exports: IyiMod::Exports.new(exported, carried_types, [] of IyiMod::ImplRecord,
         [] of IyiMod::Signature, root_class_vars),
       # True, and it was false here on an argument that measurement has since
@@ -1318,7 +1322,11 @@ module Iyi
       # which is the mapping IV.6 #6 keeps reversible. Only the top-level names
       # are recorded: everything under one is reached through it, so prefixing
       # `IO` carries `IO::Memory` with it.
-      prefix = artifact.module_name.split('/').map(&.camelcase).join("::")
+      # Empty for a **class root**, whose declarations carry no module header at
+      # all: the class is the namespace, so the consumer names its types
+      # exactly as the artifact declares them. Prefixing anyway rewrote
+      # `Carrier` to `Carrier::Carrier` in a boundary that named it.
+      prefix = artifact.class_root ? "" : artifact.module_name.split('/').map(&.camelcase).join("::")
 
       # Asked under the root as well as bare, because whether a name needs the
       # root depends on what the root *is*.
@@ -1331,18 +1339,20 @@ module Iyi
       # program can name" for `Radix`, and `Kemal`, which names
       # `Radix::Tree` eight times, went on waiting on a boundary sitting in the
       # same directory.
+      qualify = ->(name : String) { prefix.empty? ? name : "#{prefix}::#{name}" }
+
       kept = found.select do |name|
-        declared_type?(program, name) || declared_type?(program, "#{prefix}::#{name}")
+        declared_type?(program, name) || declared_type?(program, qualify.call(name))
       end
       names.concat kept
       # Under the root as well, because that is how the *producer* writes them.
       # `Radix` declares `Tree` and `Kemal` says `Radix::Tree`, so recording
       # only the bare name left every one of those eight signatures waiting on
       # a boundary that was carrying the type.
-      kept.each { |name| names << "#{prefix}::#{name}" }
+      kept.each { |name| names << qualify.call(name) }
       artifact.exports.types.each do |declaration|
         next unless kept.includes? declaration.name
-        @@bound_prefix[declaration.name] = "#{prefix}::#{declaration.name}"
+        @@bound_prefix[declaration.name] = qualify.call(declaration.name)
         @@bound_module[declaration.name] = artifact.module_name
         program.iyi_bind_boundaries[declaration.name] = artifact.module_name
       end
@@ -1475,9 +1485,15 @@ module Iyi
   # has to stand alone on both sides: `JSON` is bound, `JSONThing` is not.
   private def self.map_names(text : String) : String
     @@bound_prefix.reduce(text) do |carried, (name, qualified)|
-      mapped = replace_on_boundary(carried, name, trailing_name_ends: true) { qualified }
-      @@bound_used << @@bound_module[name] if mapped != carried
-      mapped
+      # Recorded where the name is *met* rather than where the text changed. A
+      # class root needs no rewriting — the consumer names its types exactly as
+      # it declares them — so `mapped != carried` would have said "this
+      # boundary is not depended on" of every one of them, and the import edge
+      # that reads off this went missing.
+      replace_on_boundary(carried, name, trailing_name_ends: true) do
+        @@bound_used << @@bound_module[name]
+        qualified
+      end
     end
   end
 

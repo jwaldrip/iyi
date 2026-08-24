@@ -277,13 +277,44 @@ module Iyi
     # Recorded only while writing artifacts.
     getter iyi_unit_match_types = {} of String => Set(Type)
 
+    # iyi: the symbols each unit's object code defines, by unit name (SPEC.md
+    # IV.1g).
+    #
+    # An artifact defines more than it declares and less than its types
+    # suggest. More, because its own units call methods Crystal owns —
+    # `RouteHandler`'s unit calls `FilterHandler#next=`, and `next=` is
+    # `HTTP::Handler`'s. Less, because a method like `Reference::new` is
+    # instantiated per receiver and exists only where something reached it.
+    #
+    # Every rule that tried to derive this from the shape of a def was wrong on
+    # one side or the other: guessing "the artifact has it" left
+    # `Kemal::FilterHandler@Reference::new` undefined, guessing the reverse made
+    # it a duplicate, and compiling a private copy in the consumer put the
+    # definition where `_main` could not see it. So the producer says what it
+    # emitted.
+    #
+    # Recorded only while writing artifacts.
+    getter iyi_unit_symbols = {} of String => Set(String)
+
+    # iyi: the symbols an imported artifact's object code defines.
+    #
+    # The consumer's half. A method whose mangled name is in here is declared
+    # rather than compiled; everything else this build compiles for itself.
+    getter iyi_artifact_symbols = Set(String).new
+
     # iyi: the types an imported artifact's object code asks `~match<T>` about,
     # resolved (SPEC.md IV.1g).
     #
     # The consumer's half. A virtual type it could have enumerated from its own
     # classes; a union it could not — `(Char | Iyi::Keyword | String | Nil)` is
     # a type kemal's code formed and a consumer of kemal's never would.
-    getter iyi_artifact_match_types = Set(Type).new
+    # Keyed by the name the artifact carried, because that is the name its
+    # object code calls: a set of types the producer's build formed is not
+    # always the set this one forms. `(Socket::IPAddress | Socket::UNIXAddress)`
+    # is a union there and collapses to `Socket::Address+` here — the same
+    # types, the same answer, a different symbol — so the function is defined
+    # under the name that travelled and built from the type resolved here.
+    getter iyi_artifact_match_types = {} of String => Type
 
     # iyi: the class variables an imported artifact's object code refers to, as
     # `Owner::@@name` (SPEC.md IV.2).

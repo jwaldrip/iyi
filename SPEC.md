@@ -6323,14 +6323,65 @@ Named honestly, so nobody mistakes this draft for complete.
     > > is the dependency. Whole, it costs `Kemal` 303 names → 642, and a name
     > > is a string.
     > >
-    > > **What is left is one refusal, and the five behind it are no longer
-    > > measured.** The metaclass half above took the count from eight undefined
-    > > symbols to six. The import edge does not read as a count at all: with it
-    > > added, `ExceptionPage::Styles` stops being a mangled symbol at link time
-    > > and becomes a refusal naming the type — which arrives *before* the
-    > > linker, so nothing behind it is asked for. An earlier note here said
-    > > zero undefined symbols, and that was the same mistake in the other
-    > > direction: the build was dying before the linker ran.
+    > > **The chain builds and runs.** Four boundaries — `backtracer`, `radix`,
+    > > `exception_page`, `kemal` — installed from the network, bound in
+    > > dependency order, and a program built against all four that prints what
+    > > the same program prints built against their source.
+    > > `bench/bind_chain.sh` is the gate, and nothing smaller finds what it
+    > > finds: one boundary cannot collide with another's synthesised names,
+    > > cannot have an import edge to get wrong, and cannot be a *class* root
+    > > standing beside module roots.
+    > >
+    > > **The class root, which this item has carried as "the awkward one" the
+    > > whole way, was one line and a wrong premise.** A module's declarations
+    > > are wrapped in a `module <path>` header; for a class root that header
+    > > camelcases to the class's own name, so the class arrived declared inside
+    > > a module of the same name and every type under it gained a level.
+    > > `Widget::Part` was `Widget::Widget::Part`. A class root needs no header
+    > > at all — **the class is the namespace** — and iyi wraps a file in its
+    > > module only when a header is there, so leaving it out puts the
+    > > declarations where they belong. A `ClassType` is a `ModuleType`, so
+    > > everything that looks a module unit up by name still finds it.
+    > >
+    > > Two things followed it, both from the same premise held elsewhere. The
+    > > marker that says "this type came from an artifact" walked *into* the
+    > > scope looking for the root's own name and found nothing, so a class root
+    > > and everything under it went unmarked. And `bound_names` prefixed
+    > > another boundary's types with its module path, which for a class root
+    > > rewrote `Carrier` to `Carrier::Carrier` — with the prefix empty, the
+    > > rewrite is a no-op, and the import edge that used to be recorded *when
+    > > the text changed* is now recorded when the name is **met**.
+    > >
+    > > **And the last four symbols were four wrong answers to one question:
+    > > what does an artifact actually define?** An artifact defines *more than
+    > > it declares* — its own units call methods Crystal owns, so
+    > > `RouteHandler`'s unit calls `FilterHandler#next=` and `next=` is
+    > > `HTTP::Handler`'s — and *less than its types suggest*, because
+    > > `Reference::new` is instantiated per receiver and exists only where
+    > > something reached it. Assuming the first left
+    > > `Kemal::FilterHandler@Reference::new` undefined; assuming the second made
+    > > it a duplicate symbol; compiling a private copy in the consumer put the
+    > > definition where `_main` could not see it. A `Symbols` section carries
+    > > the mangled names each unit defines, and the consumer compiles
+    > > everything else. **A list is not a rule and does not have a wrong side.**
+    > >
+    > > One more, and it is the reason a name travels rather than a number: a
+    > > `~match` function is defined under the name that **travelled**, not
+    > > under what the resolved type prints as here.
+    > > `(Socket::IPAddress | Socket::UNIXAddress)` is a union in the producer
+    > > and collapses to `Socket::Address+` in a consumer that knows those are
+    > > all of `Socket::Address`'s subclasses — the same types, the same answer,
+    > > a different symbol.
+    > >
+    > > **The counts on the way there**, since they are the only reason the
+    > > order of the work was right: eleven undefined symbols after the
+    > > superclass edge, ten after the keep file learned to reach past a
+    > > generic, eight after a module's metaclass was numbered, then a refusal
+    > > naming `ExceptionPage::Styles` once the import edge existed — and zero
+    > > once the class root stopped nesting and the symbol list replaced the
+    > > guessing. One note here said zero much earlier, and that was not a
+    > > measurement: the build was dying before the linker ran, so nothing had
+    > > been asked for.
     > >
     > > The refusal comes first and names its own cause: `"kemal" numbers
     > > `ExceptionPage::Styles`, and this build cannot name it`. With the edge
