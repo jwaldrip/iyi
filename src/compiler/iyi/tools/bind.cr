@@ -1247,20 +1247,32 @@ module Iyi
     # IO::Encoder referenced`.
     return counter if declaration.visibility == "private"
 
+    qualified = "#{prefix}#{declaration.name}"
+
     # A generic has no machine code of its own to keep: its methods exist once
     # per instantiation, the instantiations are the consumer's, and what
     # travels is their source. `uninitialized Holder(T)` is not a thing anybody
     # can write, which is what this file found out.
-    return counter unless declaration.type_parameters.empty?
-
-    qualified = "#{prefix}#{declaration.name}"
-    receiver = "t#{counter}"
-    counter += 1
-    io << "  " << receiver << " = uninitialized " << qualified << "\n"
-    declaration.methods.each do |signature|
-      target = signature.receiver.empty? ? receiver : qualified
-      counter = keep_call(io, target, signature, counter)
+    #
+    # **What it declares is another matter, and skipping that with it was the
+    # bug.** `Radix::Tree(T)` holds two non-generic error classes; each has a
+    # unit in the artifact and neither was ever named here, so radix's keep
+    # file was empty and the only `to_s` symbols it emitted were the ones its
+    # own code happened to reach — `to_s<IO::Memory>` and
+    # `to_s<IO::FileDescriptor>` — while the boundary declared `io : IO` and a
+    # consumer asked for `to_s<IO+>`. A nested type is not parameterised by its
+    # container unless it says so, so `Radix::Tree::DuplicateError` is a name
+    # anybody can write.
+    if declaration.type_parameters.empty?
+      receiver = "t#{counter}"
+      counter += 1
+      io << "  " << receiver << " = uninitialized " << qualified << "\n"
+      declaration.methods.each do |signature|
+        target = signature.receiver.empty? ? receiver : qualified
+        counter = keep_call(io, target, signature, counter)
+      end
     end
+
     declaration.types.each do |nested|
       counter = keep_type io, "#{qualified}::", nested, counter
     end
