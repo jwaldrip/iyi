@@ -1362,6 +1362,13 @@ module Iyi
       counter += 1
       io << "  " << receiver << " = uninitialized " << qualified << "\n"
       declaration.methods.each do |signature|
+        # `initialize` is not called here. It is in the declarations only where
+        # `new` could not travel — a block-taking one — and then its body
+        # travels with it and the consumer compiles both. Naming it in this file
+        # is `protected method 'initialize' called`, which is Crystal saying the
+        # same thing: `new` is how you build one.
+        next if signature.name == "initialize"
+
         target = signature.receiver.empty? ? receiver : qualified
         counter = keep_call(io, target, signature, counter)
       end
@@ -2144,7 +2151,16 @@ module Iyi
     defs.each_value do |list|
       list.each do |item|
         a_def = item.def
-        next unless a_def.visibility.public?
+        # `initialize` is not public — Crystal reaches it through `new` — and
+        # that is fine while `new` travels. It does not when it takes a block:
+        # a synthesised `new`'s body is the compiler's, with a temporary for a
+        # receiver, and no consumer can parse that back. So the one a consumer
+        # needs in order to make its *own* `new` crosses instead, and only in
+        # that case: declaring `initialize` beside a `new` that also travels
+        # would be two ways to build the same type.
+        block_initialize = a_def.name == "initialize" &&
+                           (a_def.block_arg || a_def.block_arity)
+        next unless a_def.visibility.public? || block_initialize
         # A method with no location is the compiler's own — `allocate` exists
         # on every type and nobody wrote it. A boundary carries what a shard's
         # author wrote, and `new` comes back through `initialize`.

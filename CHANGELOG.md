@@ -4,6 +4,17 @@
 
 ### Added
 
+- **A block-taking `initialize` crosses, because its `new` cannot.** Crystal
+  reaches `initialize` through `new` and marks it not-public, which is fine
+  while `new` travels — and it does not when it takes a block, since a
+  synthesised `new`'s body is the compiler's, with a temporary for a receiver.
+  So the one a consumer needs in order to make its *own* `new` crosses instead,
+  and only in that case: declaring `initialize` beside a `new` that also travels
+  would be two ways to build the same type. The keep file does not call it —
+  `protected method 'initialize' called` is Crystal saying `new` is how you
+  build one — and it does not need to: a block-taking method's machine code is
+  the caller's.
+
 - **A body that travels is the body as it was written.** `Def#body` stops being
   source as soon as anything instantiates it: `Route.new(method, path,
   &handler)` becomes `_.initialize(method, path, &handler)`, and an underscore
