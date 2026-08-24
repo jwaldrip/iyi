@@ -1428,6 +1428,26 @@ module Iyi
       false
     end
 
+    # iyi: whether reading a variable as *node_type* widens rather than narrows.
+    #
+    # `implements?` alone is not the question and answering it that way broke
+    # the compiler's own build: a virtual type implements its base, so
+    # `Iyi::Def+` held in a slot and read as `Iyi::Def` looked like a widening
+    # and is the opposite. What separates the two is *shape* — a union or a
+    # virtual type is the wider thing, and widening is reading a concrete slot
+    # as one of those.
+    private def iyi_widening_read?(node_type, var_type) : Bool
+      return false if node_type == var_type
+      return false if iyi_many_typed?(var_type)
+      return false unless iyi_many_typed?(node_type)
+
+      var_type.implements?(node_type)
+    end
+
+    private def iyi_many_typed?(type) : Bool
+      type.is_a?(UnionType) || type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
+    end
+
     def check_assign_to_special_var_in_block(target, value)
       if (block_context = context.block_context?) && target.special_var?
         var = block_context.vars[target.name]
@@ -1578,7 +1598,25 @@ module Iyi
 
         # Special variables always have an extra pointer
         already_loaded = (node.special_var? ? false : var.already_loaded)
-        @last = downcast var.pointer, node.type, var.type, already_loaded, extern: false
+
+        # iyi: the slot can be *narrower* than the read, which is a shape only a
+        # boundary makes. A call to a method read from a `.iyimod` is keyed on
+        # the parameter as declared and the argument widened to it, so an `IO`
+        # parameter is read as `IO+`; inside a dispatch arm the same variable's
+        # slot holds the arm's concrete type. Widening is `upcast` — `downcast`
+        # is for the other direction and says
+        # `BUG: trying to downcast IO+ <- IO::Memory` when handed this one.
+        #
+        # The same correction the call arguments already carry, one level in.
+        # Nothing that links today changes: `downcast` *aborts* on a widening,
+        # so every build this branch is reached by is one that did not compile.
+        @last =
+          if iyi_widening_read?(node.type, var.type)
+            value = already_loaded ? var.pointer : to_lhs(var.pointer, var.type)
+            upcast value, node.type, var.type
+          else
+            downcast var.pointer, node.type, var.type, already_loaded, extern: false
+          end
       elsif node.name == "self"
         if node.type.metaclass?
           @last = type_id(node.type)
