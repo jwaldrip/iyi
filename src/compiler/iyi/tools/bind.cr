@@ -84,6 +84,18 @@ module Iyi
     # What instantiation answered, when that differs from what was written —
     # and what travels, because the symbol is named after it.
     produced : String?,
+    # Whether the method's own *body* is what answers it.
+    #
+    # A block whose output is written `_` means "whatever the block returns",
+    # and there is no single answer to read — which is why instantiating one is
+    # refused. But a block-taking method's body travels and the consumer is what
+    # compiles it (IV.1g), so the consumer infers the answer the same way the
+    # shard's own compiler would. `Kemal::RouteHandler#add_route` is the case,
+    # and the whole DSL is written on top of it.
+    #
+    # The declaration then carries no return type, which is the same shape a
+    # method that writes none already crosses in.
+    body_answers : Bool = false,
     # Whether the *compiler* refused to instantiate it — the method does not
     # compile. It must not be declared: the keep file names what a boundary
     # declares, and one method that does not typecheck takes the whole fill
@@ -497,7 +509,7 @@ module Iyi
         receiver: method.owner == "#{root}:Module" && method.receiver.empty? ? "self" : method.receiver,
         parameters: method.params.map { |(name, restriction)| "#{name} : #{restriction}" },
         block_parameter: method.written_block,
-        return_type: method.answer.not_nil!,
+        return_type: method.body_answers ? "" : method.answer.not_nil!,
         free_variables: [] of String,
         required: false,
       )
@@ -1219,15 +1231,21 @@ module Iyi
     # A block-taking method is compiled per block *type*, and the type is in
     # the symbol: `twice<Int32, &Proc(Int32, Int32)>`. So one is emitted here
     # by passing a block of the annotated type, and every consumer that writes
-    # a block of that type calls the same name. A block whose output is `_` has
-    # no annotated type and no single symbol, which is why it never got here.
+    # a block of that type calls the same name.
+    #
+    # A block whose output is written `_` has no annotated type and no single
+    # symbol — its method's *body* is what travels, and the consumer compiles
+    # one per block it writes. It is called here all the same, because the
+    # method's callees have to be emitted, and the block it is handed returns
+    # `nil`: `uninitialized _` is not a thing, and what the block returns is
+    # not what this call is for.
     unless signature.block_parameter.empty?
       inputs, output = block_shape signature.block_parameter
       names = inputs.map_with_index { |_, index| "b#{counter + index}" }
       counter += inputs.size
       io << " { "
       io << "|" << names.join(", ") << "| " unless names.empty?
-      if output.empty? || output == "Nil"
+      if output.empty? || output == "Nil" || output == "_"
         io << "nil"
       else
         io << "r#{counter} = uninitialized " << output << "; r#{counter}"
@@ -1795,7 +1813,10 @@ module Iyi
           receiver: on_metaclass && method.receiver.empty? ? "self" : method.receiver,
           parameters: method.params.map { |(argument, restriction)| "#{argument} : #{restriction}" },
           block_parameter: method.written_block,
-          return_type: method.answer.not_nil!,
+          # Empty where the body is what answers: there is no single return type
+          # to write for a block that returns `_`, and the consumer compiles the
+          # body and reads its own.
+          return_type: method.body_answers ? "" : method.answer.not_nil!,
           free_variables: [] of String,
           required: false,
         )
@@ -1939,7 +1960,7 @@ module Iyi
     abstract_owner = type.responds_to?(:abstract?) && type.abstract?
     { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
       by_owner[owner]?.try &.each do |method|
-        next unless method.verdict.ready? || method.inferred
+        next unless method.verdict.ready? || method.inferred || method.body_answers
         # A method the compiler refused to instantiate does not travel. The keep
         # file names what a boundary declares, so one that does not typecheck
         # takes the whole fill build with it — every declaration on disk and no
@@ -1962,6 +1983,14 @@ module Iyi
         # `MonoBodies`, and the consumer compiles its own from the block it
         # wrote. A body that is not there to carry cannot cross at all.
         carries_body = (!method.written_block.empty? || abstract_owner) && !method.abstract_def
+
+        # A block-taking `new` does not travel at all. It is synthesised from
+        # `initialize` rather than written, so its body is the compiler's —
+        # `_.initialize(method, path, &handler)`, with a temporary for a
+        # receiver — and that is not source anybody can parse back. The
+        # consumer makes its own from the `initialize` beside this, which is
+        # what `new` has always done here.
+        next if carries_body && method.name == "new"
         body = method.body
         next if carries_body && (body.nil? || body.empty?)
 
@@ -1973,7 +2002,7 @@ module Iyi
           receiver: on_metaclass && method.receiver.empty? ? "self" : method.receiver,
           parameters: method.params.map { |(argument, restriction)| "#{argument} : #{restriction}" },
           block_parameter: method.written_block,
-          return_type: method.answer.not_nil!,
+          return_type: method.body_answers ? "" : method.answer.not_nil!,
           free_variables: [] of String,
           required: method.abstract_def,
         )
@@ -2074,6 +2103,12 @@ module Iyi
     Rx.scan(name, BIND_TYPE_NAME).all? do |match|
       part = match[0].not_nil!
       next true if part == "class" # `Exception.class` is read as its own name
+      # `&handler : Context -> _` names one type and one *absence* of one. The
+      # scan above reads `_` as a name because a name may start with one, and
+      # answering "no program can write that" dropped every method whose block
+      # returns whatever the block returns — `Kemal::RouteHandler#add_route`,
+      # which the whole DSL is written on top of.
+      next true if part == "_"
       nameable_name?(part, root)
     end
   end
@@ -2174,9 +2209,14 @@ module Iyi
       location: a_def.location.try(&.to_s) || "?",
       inferred: inferred,
       refused: refused,
-      body: a_def.body.to_s,
+      # As written, not as instantiated: see `Program#iyi_def_bodies`.
+      # As written, not as instantiated: see `Program#iyi_def_bodies`.
+      body: a_def.location.try { |at| owner.program.iyi_def_bodies["#{at}##{a_def.name}"]? } ||
+            a_def.body.to_s,
       abstract_def: a_def.abstract?,
       uncompilable: uncompilable,
+      body_answers: refused == "block returns `_`" && !a_def.abstract? &&
+                    !a_def.body.nil? && !a_def.body.is_a?(Nop),
       # The return type is asked the same question the parameters are. `Int` is
       # the head of a family on either side of the arrow, and a method that
       # answers one has a symbol per member exactly as a method that takes one

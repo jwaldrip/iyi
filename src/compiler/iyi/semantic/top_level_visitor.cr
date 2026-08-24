@@ -1172,6 +1172,24 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
   def visit(node : Def)
     check_outside_exp node, "declare def"
 
+    # iyi: the body as it was *written*, for the bodies a boundary carries
+    # (SPEC.md IV.1g). Read here because this pass runs before anything expands
+    # it: by the time `tool bind` walks the types, `Route.new(...)` has become
+    # `_.initialize(...)` and an underscore is not a receiver anybody can write
+    # — the consumer said `can't read from _` about a body it was handed.
+    #
+    # Keyed on the location, which is what a `Def` and its declaration share.
+    # Recorded only while a boundary is being written.
+    if @program.compiler.try(&.emit_bind)
+      if location = node.location
+        # Keyed on the name as well as the place. A synthesised `new` carries
+        # the *location* of the `initialize` it was made from, so a key of one
+        # handed `new` the other's body — and `@block = ...` in a metaclass is
+        # `@instance_vars are not yet allowed in metaclasses`.
+        @program.iyi_def_bodies["#{location}##{node.name}"] ||= node.body.to_s
+      end
+    end
+
     annotations = read_annotations
 
     process_def_annotations(node, annotations) do |annotation_type, ann|

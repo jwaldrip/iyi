@@ -4,6 +4,29 @@
 
 ### Added
 
+- **A body that travels is the body as it was written.** `Def#body` stops being
+  source as soon as anything instantiates it: `Route.new(method, path,
+  &handler)` becomes `_.initialize(method, path, &handler)`, and an underscore
+  is not a receiver anybody can write — the consumer said `can't read from _`
+  about a body it was handed. It is recorded in the top-level pass now, which
+  runs before any of that, and keyed on the name as well as the place: a
+  synthesised `new` carries the *location* of the `initialize` it was made from,
+  so a key of one alone handed `new` the other's body.
+
+  A block-taking `new` does not travel at all now, for the same reason from the
+  other side: its body is the compiler's, with a temporary for a receiver, and
+  the consumer makes its own from the `initialize` beside it — which is what
+  `new` has always done here.
+
+- **A block that returns `_` crosses.** `&handler : Context -> _` names one type
+  and one *absence* of one, and the scan that asks whether a signature's names
+  can be written read `_` as a name — so every method whose block returns
+  whatever the block returns was dropped, `Kemal::RouteHandler#add_route` among
+  them, and kemal's whole DSL is written on top of that one. There is no single
+  return type to infer for such a method either, and none is needed: a
+  block-taking method's *body* travels and the consumer compiles it, so the
+  declaration carries no return type and the consumer reads its own.
+
 - **A shard that reopens a library namespace carries only what it added.**
   `openssl_ext` is `OpenSSL`, and a `--crystal` consumer replays the requires
   and gets Crystal's — so the artifact's declarations met the library's and the
