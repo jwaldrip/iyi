@@ -449,7 +449,468 @@ require "./file"
     LibGC.realloc(pointer, size)
   end
 {% else %}
-  {% if flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+  {% if flag?(:gc_iyi) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin)) %}
+    # iyi: `-Dgc_iyi` selects the size-class arena allocator of GC_DESIGN.md's
+    # Stage 2, the heap the collector's later stages grow from. It is opt-in:
+    # the default on every target stays the allocator below, and moving the
+    # default is a separate decision backed by measurement, not a thing to
+    # slip in beside the allocator itself. The flag names the collector it
+    # belongs to, but nothing here marks, scans or collects: this stage is
+    # allocation, explicit free and realloc. An object comes back only when a
+    # caller passes it to `IyiHeap.free`, which exists now precisely so it can
+    # be called explicitly and tested; Stage 6's sweep is the caller it is
+    # waiting for.
+    #
+    # The flag reaches POSIX and stops there, which is deliberate rather than
+    # unfinished. Linux binds it over raw syscalls and darwin over libSystem,
+    # the two interfaces this file already calls the platform's own. win32 and
+    # wasm32 keep the allocators they have under the flag: win32 has an open
+    # diagnosis for printing memory it was never given, and a new allocator
+    # landing there in the same change would confound that evidence; wasm32
+    # has no mmap, and its watermark arena is a separate design.
+    #
+    # Requests are rounded to size classes: 16, 32, 64 and doubling to 1 MiB,
+    # seventeen classes. A small fixed set is what keeps allocation and free
+    # O(1) list operations, and pure doubling is what keeps the per-class
+    # table to one page; the waste against the request is under half in the
+    # worst case, the standing trade for never splitting or coalescing. The
+    # class is the payload: a chunk is the class plus the eight bytes under
+    # the user pointer, which carry the requested size exactly as the bump
+    # allocator's do, so `realloc` still learns how much to copy from the one
+    # place that knows, and every user pointer stays 8-aligned. A request
+    # over 1 MiB is large and gets a mapping of its own.
+    #
+    # One arena is one contiguous 16 MiB mmap region holding chunks of a
+    # single class. Sixteen rather than thirty-two because address space is
+    # the cheap half of a mapping (pages commit when touched, on Linux and
+    # darwin alike) and a small program pays one arena per class it uses. The
+    # first 64 bytes of an arena are its header: the next arena in the heap's
+    # list, the mapped length, the chunk size, and the fill cursor with the
+    # count of chunks never handed out. Everything that varies per class
+    # lives in the directory, one mapped page holding seventeen free-list
+    # heads and seventeen fill-arena pointers: the language has no array
+    # class variable, so seventeen scalars would mean a seventeen-way branch
+    # on every allocation, and one zeroed page is the whole table.
+    #
+    # Allocation pops the class's free list; with the list empty it carves
+    # the next fresh chunk from the class's fill arena, and with the arena
+    # spent it maps another and links it in. Free reads the class back out of
+    # the eight bytes under the pointer and pushes the chunk onto that
+    # class's list. Neither walks the arena list: the list exists to be
+    # traversed, not to serve the hot path.
+    #
+    # The clearing contract is the stage's correctness point, because reuse
+    # is what is new here. `__crystal_malloc64` is documented to allocate
+    # *and clear*, and until now the clear was free: every byte any path
+    # handed out came from a fresh mapping, zero-filled by the kernel, and
+    # nothing was handed out twice. A free list hands memory back out, so a
+    # reused chunk is dirty, and a dirty chunk returned as cleared is the
+    # exact shape of the defect that has a win32 binary printing memory it
+    # was never given. A chunk popped from a free list is therefore cleared
+    # before it is returned; a chunk carved fresh from an arena is not,
+    # because the kernel already zeroed it and no second pass is owed. What
+    # is cleared is the whole class payload, not the requested size: the
+    # class rounds up, and the bytes past the request go to the caller with
+    # the chunk, reachable through the size header the next time a realloc
+    # grows into them. Zeroed slack keeps a reused chunk indistinguishable
+    # from a fresh mapping, the invariant every path in this file provided
+    # for free until now. `__crystal_malloc_atomic64` does not clear,
+    # matching `GC_malloc_atomic`: atomic means the collector never scans
+    # those bytes, so their initial value is no one's contract, and a reused
+    # chunk may come back dirty on that path on purpose.
+    #
+    # `realloc` keeps the eight-byte contract: within one class, growing or
+    # shrinking, it returns the same chunk with the header rewritten; across
+    # classes it allocates, copies the smaller of the two requested sizes,
+    # and frees the old chunk. A null pointer still means allocate, through
+    # the clearing path, which is what `GC_realloc`'s null means.
+    #
+    # Large objects, over the top class, get one mmap region each and a node
+    # on a separate list: the list's next pointer, the mapped length and the
+    # requested size in the twenty-four bytes under the user pointer, with
+    # the requested size in the usual eight so `realloc` reads one layout.
+    # Free unlinks the node and releases the mapping with `munmap`, checked
+    # the way `__iyi_mmap` is checked, because a release that failed quietly
+    # would leak the mapping with the node that named it already gone.
+    #
+    # Addressability is a question Stage 3's root scanning asks of every
+    # word, and it is a requirement now: `IyiHeap.containing(pointer)` walks
+    # the arena list and answers the containing arena's header address, or 0
+    # for a pointer in no arena, and the header's chunk field then names the
+    # size class. `IyiHeap.containing_large(pointer)` asks the same of the
+    # large-object list. A large object answers 0 from `containing`, because
+    # it is in no arena and the answer must never be a wrong arena; 0 from
+    # both is how a pointer that is not the heap's is reported. The walk is
+    # linear in arenas of 16 MiB each, so it is short; a page directory is
+    # Stage 3's optimization if profiles say so, not a Stage 2 requirement.
+    # Traversability is the same shape: `first_arena` and `arena_next`
+    # enumerate the arenas for Stage 6's sweep, `first_large` and
+    # `large_next` the large objects, and a list nothing can enumerate would
+    # fail the next stage.
+    #
+    # The state is three class variables with literal zero initializers plus
+    # the directory page, under the bump branch's rule: `$` globals are
+    # refused, a `fun` body cannot reach `@@` state, and literal initializers
+    # fold into the LLVM global's static zero, so zero means "not yet mapped"
+    # rather than a value startup installs. The entry points below stay
+    # `fun`s forwarding one frame into the class, the price of the only
+    # state-carrying construct the language offers.
+    {% if flag?(:darwin) %}
+      # `mmap` and `munmap` are libSystem's here, the same standing `write`
+      # has at the top of this file: Apple documents libSystem as the
+      # platform's interface and raw syscalls as not a stable ABI.
+      # PROT_READ|PROT_WRITE = 3, MAP_PRIVATE|MAP_ANONYMOUS = 0x1002 on
+      # darwin, and a failed `mmap` answers MAP_FAILED rather than -errno.
+      lib LibC
+        fun mmap(address : Void*, length : UInt64, prot : Int32, flags : Int32, fd : Int32, offset : UInt64) : Void*
+        fun munmap(address : Void*, length : UInt64) : Int32
+      end
+
+      fun __iyi_mmap(length : UInt64) : Pointer(Void)
+        result = LibC.mmap(Pointer(Void).new(0_u64), length, 3, 0x1002, -1, 0_u64)
+        if result.address == 0xFFFFFFFFFFFFFFFF_u64
+          __iyi_write(1, "iyi: out of memory\n".to_unsafe.as(Void*), 19_u64)
+          __iyi_exit(1)
+        end
+        result
+      end
+
+      fun __iyi_munmap(address : UInt64, length : UInt64) : Nil
+        if LibC.munmap(Pointer(Void).new(address), length) != 0
+          __iyi_write(1, "iyi: munmap failed\n".to_unsafe.as(Void*), 19_u64)
+          __iyi_exit(1)
+        end
+      end
+    {% else %}
+      # `mmap` the way the bump branch binds it, a raw syscall with the
+      # numbers `src/syscall/x86_64-linux.cr` and `aarch64-linux.cr` carry.
+      # `munmap` joins it here because large objects are released in this
+      # stage: syscall 11 on x86_64 and 215 on aarch64, checked rather than
+      # assumed for `__iyi_mmap`'s reason, a failure answered with -errno in
+      # the result register rather than a flag.
+      fun __iyi_mmap(length : UInt64) : Pointer(Void)
+        result = uninitialized Int64
+        {% if flag?(:x86_64) %}
+          # PROT_READ|PROT_WRITE = 3, MAP_PRIVATE|MAP_ANONYMOUS = 0x22.
+          asm("syscall" : "={rax}"(result)
+                        : "{rax}"(9_i64), "{rdi}"(0_i64), "{rsi}"(length), "{rdx}"(3_i64),
+                          "{r10}"(34_i64), "{r8}"(-1_i64), "{r9}"(0_i64)
+                        : "rcx", "r11", "memory"
+                        : "volatile")
+        {% else %}
+          asm("svc #0" : "={x0}"(result)
+                       : "{x8}"(222_i64), "{x0}"(0_i64), "{x1}"(length), "{x2}"(3_i64),
+                         "{x3}"(34_i64), "{x4}"(-1_i64), "{x5}"(0_i64)
+                       : "memory"
+                       : "volatile")
+        {% end %}
+        # A failed raw syscall answers with -errno in the result register
+        # rather than a flag: -4095..-1 is errno's whole range.
+        if result < 0 && result >= -4095
+          __iyi_write(1, "iyi: out of memory\n".to_unsafe.as(Void*), 19_u64)
+          __iyi_exit(1)
+        end
+        Pointer(Void).new(result.to_u64)
+      end
+
+      fun __iyi_munmap(address : UInt64, length : UInt64) : Nil
+        result = uninitialized Int64
+        {% if flag?(:x86_64) %}
+          asm("syscall" : "={rax}"(result)
+                        : "{rax}"(11_i64), "{rdi}"(address), "{rsi}"(length)
+                        : "rcx", "r11", "memory"
+                        : "volatile")
+        {% else %}
+          asm("svc #0" : "={x0}"(result)
+                       : "{x8}"(215_i64), "{x0}"(address), "{x1}"(length)
+                       : "memory"
+                       : "volatile")
+        {% end %}
+        if result < 0 && result >= -4095
+          __iyi_write(1, "iyi: munmap failed\n".to_unsafe.as(Void*), 19_u64)
+          __iyi_exit(1)
+        end
+      end
+    {% end %}
+
+    class IyiHeap
+      MAP = 16777216_u64
+      TOP = 1048576_u64
+      HEAD = 64_u64
+      DIR_LEN = 4096_u64
+      FILL = 17
+
+      OFF_NEXT = 0_u64
+      OFF_MAP = 8_u64
+      OFF_CHUNK = 16_u64
+      OFF_CURSOR = 24_u64
+      OFF_LEFT = 32_u64
+
+      @@directory : UInt64 = 0_u64
+      @@arenas : UInt64 = 0_u64
+      @@large : UInt64 = 0_u64
+
+      def self.read64(address : UInt64) : UInt64
+        Pointer(UInt64).new(address).value
+      end
+
+      def self.write64(address : UInt64, value : UInt64) : Nil
+        Pointer(UInt64).new(address).value = value
+      end
+
+      def self.directory : Pointer(UInt64)
+        if @@directory == 0
+          @@directory = __iyi_mmap(DIR_LEN).address
+        end
+        Pointer(UInt64).new(@@directory)
+      end
+
+      def self.class_index(size : UInt64) : Int32
+        index = 0
+        capacity = 16_u64
+        while capacity < size
+          capacity = capacity + capacity
+          index = index + 1
+        end
+        index
+      end
+
+      def self.payload(index : Int32) : UInt64
+        16_u64.unsafe_shl(index)
+      end
+
+      def self.class_for(size : UInt64) : UInt64
+        payload(class_index(size))
+      end
+
+      def self.alloc(size : UInt64) : Void*
+        Pointer(Void).new(take(size, true) + 8)
+      end
+
+      def self.alloc_atomic(size : UInt64) : Void*
+        Pointer(Void).new(take(size, false) + 8)
+      end
+
+      def self.take(size : UInt64, clear : Bool) : UInt64
+        return take_large(size) if size > TOP
+        index = class_index(size)
+        table = directory
+        head = table[index]
+        if head != 0
+          table[index] = read64(head)
+          clear_block(head + 8, payload(index)) if clear
+          write64(head, size)
+          return head
+        end
+        carve(table, size, index)
+      end
+
+      def self.carve(table : Pointer(UInt64), size : UInt64, index : Int32) : UInt64
+        arena = table[FILL + index]
+        if arena == 0 || read64(arena + OFF_LEFT) == 0
+          arena = map_arena(index)
+          table[FILL + index] = arena
+        end
+        cursor = read64(arena + OFF_CURSOR)
+        write64(arena + OFF_CURSOR, cursor + read64(arena + OFF_CHUNK))
+        write64(arena + OFF_LEFT, read64(arena + OFF_LEFT) - 1)
+        write64(cursor, size)
+        cursor
+      end
+
+      def self.map_arena(index : Int32) : UInt64
+        base = __iyi_mmap(MAP).address
+        chunk = payload(index) + 8
+        write64(base + OFF_NEXT, @@arenas)
+        write64(base + OFF_MAP, MAP)
+        write64(base + OFF_CHUNK, chunk)
+        write64(base + OFF_CURSOR, base + HEAD)
+        write64(base + OFF_LEFT, (MAP - HEAD).unsafe_div(chunk))
+        @@arenas = base
+        base
+      end
+
+      def self.take_large(size : UInt64) : UInt64
+        mapped = size + 24
+        base = __iyi_mmap(mapped).address
+        write64(base, @@large)
+        write64(base + 8, mapped)
+        write64(base + 16, size)
+        @@large = base
+        base + 16
+      end
+
+      def self.free(pointer : Void*) : Nil
+        return if pointer.address == 0
+        head = pointer.address - 8
+        size = read64(head)
+        if size <= TOP
+          index = class_index(size)
+          table = directory
+          write64(head, table[index])
+          table[index] = head
+        else
+          free_large(head)
+        end
+      end
+
+      def self.free_large(head : UInt64) : Nil
+        base = head - 16
+        previous = 0_u64
+        node = @@large
+        while node != 0
+          if node == base
+            if previous == 0
+              @@large = read64(node)
+            else
+              write64(previous, read64(node))
+            end
+            break
+          end
+          previous = node
+          node = read64(node)
+        end
+        __iyi_munmap(base, read64(base + 8))
+      end
+
+      # Same-chunk growth within a class, allocate-and-copy across one,
+      # because the old size rides in the eight bytes under the pointer,
+      # which is the only place that knows it.
+      def self.realloc(pointer : Void*, size : UInt64) : Void*
+        return alloc(size) if pointer.address == 0
+        head = pointer.address - 8
+        old_size = read64(head)
+        if old_size <= TOP && size <= TOP && class_index(old_size) == class_index(size)
+          write64(head, size)
+          return pointer
+        end
+        new_pointer = alloc(size)
+        source = pointer.as(Pointer(UInt8))
+        destination = new_pointer.as(Pointer(UInt8))
+        limit = old_size < size ? old_size : size
+        index = 0_u64
+        while index < limit
+          (destination + index.to_i64).value = (source + index.to_i64).value
+          index = index + 1
+        end
+        free(pointer)
+        new_pointer
+      end
+
+      # The whole payload, word at a time: pointer arithmetic counts
+      # elements here, so eight bytes is one step, not eight.
+      def self.clear_block(start : UInt64, count : UInt64) : Nil
+        words = Pointer(UInt64).new(start)
+        filled = 0_u64
+        while filled + 8 <= count
+          words.value = 0_u64
+          words = words + 1_i64
+          filled = filled + 8
+        end
+        bytes = Pointer(UInt8).new(start + filled)
+        while filled < count
+          bytes.value = 0_u8
+          bytes = bytes + 1_i64
+          filled = filled + 1
+        end
+      end
+
+      def self.containing(pointer : Void*) : UInt64
+        address = pointer.address
+        arena = @@arenas
+        while arena != 0
+          if address >= arena + HEAD && address < arena + read64(arena + OFF_MAP)
+            return arena
+          end
+          arena = read64(arena + OFF_NEXT)
+        end
+        0_u64
+      end
+
+      def self.containing_large(pointer : Void*) : UInt64
+        address = pointer.address
+        node = @@large
+        while node != 0
+          if address >= node + 24 && address < node + read64(node + 8)
+            return node
+          end
+          node = read64(node)
+        end
+        0_u64
+      end
+
+      def self.first_arena : UInt64
+        @@arenas
+      end
+
+      def self.arena_next(arena : UInt64) : UInt64
+        read64(arena + OFF_NEXT)
+      end
+
+      def self.arena_map(arena : UInt64) : UInt64
+        read64(arena + OFF_MAP)
+      end
+
+      def self.arena_chunk(arena : UInt64) : UInt64
+        read64(arena + OFF_CHUNK)
+      end
+
+      def self.first_large : UInt64
+        @@large
+      end
+
+      def self.large_next(node : UInt64) : UInt64
+        read64(node)
+      end
+
+      def self.large_mapped(node : UInt64) : UInt64
+        read64(node + 8)
+      end
+    end
+
+    # Codegen emits calls to these by name for every allocation, so they are not
+    # optional and their names are not ours to choose.
+    fun __crystal_malloc64(size : UInt64) : Void*
+      IyiHeap.alloc(size)
+    end
+
+    fun __crystal_malloc_atomic64(size : UInt64) : Void*
+      IyiHeap.alloc_atomic(size)
+    end
+
+    fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
+      IyiHeap.realloc(pointer, size)
+    end
+
+    # `memset` is defined locally for the bump branch's reason: codegen itself
+    # reaches for the name (`pre_initialize_aggregate` and
+    # `generic_array_malloc` lower to the LLVM `llvm.memset` intrinsic, which
+    # becomes a C `memset` call once the size is not a constant), and a
+    # definition with the same name, types and return is the only thing that
+    # can intercept that. The bulk goes eight bytes at a time, and the word
+    # store advances one word per store, because pointer arithmetic here
+    # counts elements: eight bytes is one step, not eight. The byte loop
+    # carries the tail, and the pattern word is the byte tiled eight wide.
+    fun memset(destination : Void*, value : Int32, count : UInt64) : Void*
+      byte = value.to_u8!
+
+      word = byte.to_u64 * 0x0101010101010101_u64
+      words = destination.as(Pointer(UInt64))
+      filled = 0_u64
+      while filled + 8_u64 <= count
+        words.value = word
+        words = words + 1_i64
+        filled = filled + 8_u64
+      end
+      bytes = words.as(Pointer(UInt8))
+      while filled < count
+        bytes.value = byte
+        bytes = bytes + 1_i64
+        filled = filled + 1_u64
+      end
+      destination
+    end
+  {% elsif flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
     # iyi: The default heap on Linux is a bump pointer over `mmap` regions:
     # allocate, never free, which is the contract the libc path below already
     # has (`free` is not bound there for the same reason, and a program that
@@ -650,7 +1111,11 @@ require "./file"
     # contract libc's `realloc` has on the other paths; a null pointer cannot
     # be handed to it, so it routes to a plain `HeapAlloc`. `free` is not
     # bound because nothing frees, and a program that outlives its memory is
-    # what allocating without collecting asks for.
+    # what allocating without collecting asks for. `-Dgc_iyi` does not reach
+    # this branch, deliberately rather than unfinished: the size-class arena
+    # allocator is POSIX-only in its stage, because this target has an open
+    # diagnosis for printing memory it was never given and a new allocator
+    # landing in the same change would confound that evidence.
     # Same reason as the block above: an LLVM-emitted object names no library
     # for itself, so the three heap functions have to name theirs.
     @[Link("kernel32")]
@@ -764,7 +1229,10 @@ require "./file"
     # word: `$` globals are refused, a `fun` body cannot reach `@@` state,
     # and literal initializers fold into the LLVM global's static zero, so
     # zero means "grow on the first allocation" rather than a value startup
-    # code installs.
+    # code installs. `-Dgc_iyi` does not reach this branch either, by design
+    # rather than omission: wasm32 has no mmap, and its arena is a watermark
+    # over linear memory, a separate design that GC_DESIGN.md's Stage 2
+    # defers, so the flag keeps this allocator.
     class IyiHeap
       @@cursor : UInt64 = 0_u64
       @@left : UInt64 = 0_u64

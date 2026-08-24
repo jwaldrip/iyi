@@ -4,6 +4,42 @@
 
 ### Added
 
+- **A heap that can hand memory back, behind `-Dgc_iyi`.** GC_DESIGN.md Stage 2:
+  size classes to 16 KiB over 16 MiB mmap arenas, per-class free lists, and
+  large objects in a mapping of their own released with `munmap`. Two properties
+  exist because Stage 3 needs them and not because they are tidy: an arbitrary
+  pointer resolves to its arena and size class, answering zero for a pointer
+  that belongs to no arena, and the arena list walks.
+
+  The correctness point is clearing, and it is not in the design. Today
+  `__crystal_malloc64`'s documented "allocate and clear" is free, because
+  `MAP_ANONYMOUS` zero-fills and no byte is ever handed out twice. A free list
+  hands memory back out, so a reused chunk is dirty and has to be cleared, or a
+  program reads memory it was never given. That is the same defect that makes an
+  iyi binary on Windows print `ache\` where `HELLO, IYI!` belongs. The atomic
+  entry point still does not clear, matching `GC_malloc_atomic`.
+
+  `bench/arena_exercise.sh` proves it rather than asserting it: 256 blocks
+  across 8 size classes keep their patterns, 100 chunks freed out of order and
+  reallocated keep every byte, a freed chunk of `0xAA` comes back zeroed, a
+  freed large object's mapping is gone (the read faults), and all 13 samples
+  print identical output under both allocators. The clearing check was proven
+  able to fail: with the clear disabled it exits 1 with `reused chunk dirty at
+  byte 0: got 170`.
+
+  Measured, not hidden: 7 ns per allocation for the bump pointer, 20 ns for the
+  arena, 15 ns per alloc-and-free pair. A size-class allocator costs more than a
+  bump pointer on the fast path, and that is the price of a heap that can hand
+  memory back.
+
+  Opt-in on purpose. The default on every target is unchanged, and switching it
+  is a separate decision backed by measurement rather than something to slip in.
+  Windows and wasm32 keep their allocators: Windows because its binaries already
+  print uninitialized memory and a second suspect would confound that, wasm32
+  because it has no mmap. The prelude's source grows 468 lines and 19 KB for
+  everyone, but the arena is inside a macro branch, so a default build does not
+  compile it and the default binary is the same size.
+
 - **The collector's first stage: pointer maps travel in the artifact.**
   `.iyimod` is format v24 and carries a `Layouts` section, numbered 14: per
   type a module owns, its allocation size, its unrounded instance size, and the
@@ -323,7 +359,7 @@
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 2,404-line library and nothing else. Every other
+  written against iyi's own 2,872-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
