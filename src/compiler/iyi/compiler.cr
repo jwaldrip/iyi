@@ -631,6 +631,10 @@ module Iyi
       artifact.class_vars = collect_iyi_unit_class_vars(program, names)
       artifact.match_types = collect_iyi_match_types(program, names)
       artifact.symbols = collect_iyi_symbols(program, names)
+      # Reached only if the keep file compiled, which is the whole of what this
+      # says. A boundary whose fill died leaves every declaration on disk and no
+      # machine code, and that is not the same thing as having none.
+      artifact.filled = true
 
       add_bind_boundary_imports artifact, dir, path
       IyiMod.write artifact, path
@@ -703,6 +707,7 @@ module Iyi
         artifact.class_vars = collect_iyi_unit_class_vars(program, unit_names)
         artifact.match_types = collect_iyi_match_types(program, unit_names)
         artifact.symbols = collect_iyi_symbols(program, unit_names)
+        artifact.filled = true
         IyiMod.write artifact, path
       end
     end

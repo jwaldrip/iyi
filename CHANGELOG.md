@@ -4,6 +4,20 @@
 
 ### Added
 
+- **A boundary says whether its object-code step finished.** `crystal tool bind`
+  writes the declarations and a second build fills them, compiling a keep file
+  that names every method a consumer might call. A shard can hold code its own
+  compilation never types — `openssl_ext` has a `LibCrypto` call whose argument
+  is a pointer too deep — and asking for all of it is what finds that. The build
+  dies and leaves an artifact with every declaration and no machine code.
+
+  Read as it stands, that boundary promises a hundred methods and defines none,
+  and the linker says so a hundred times without naming the cause once. It is
+  also indistinguishable from one that legitimately has no object code: an
+  abstract class with no subclass in its own shard is complete with zero units.
+  So the fill step records that it finished, and a consumer of an unfinished
+  boundary is refused by name.
+
 - **A constant's accessor names the constant it reads.** The accessor a boundary
   writes for `Kemal::Config::INSTANCE` is `config_instance`, flattened with `_`
   — and the path it reads was reconstructed from that name by reading every `_`

@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 27_u32
+  FORMAT_VERSION = 28_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -741,6 +741,28 @@ module Iyi::IyiMod
     # the version, the target and the flags (IV.5).
     property crystal_library : Bool
 
+    # Whether the step that puts object code in this artifact ran to the end.
+    #
+    # `crystal tool bind` writes the declarations and a second build fills them,
+    # and that second build compiles a *keep file* naming every method a
+    # consumer might call. A shard can hold code its own compilation never
+    # types — `openssl_ext` has a `LibCrypto` call whose argument is a pointer
+    # too deep — and asking for everything is what finds it. The build dies, and
+    # what is left on disk is an artifact with every declaration and no machine
+    # code at all.
+    #
+    # Indistinguishable, without this, from one that legitimately has none: an
+    # `abstract class` with no subclass in its own shard carries no object code
+    # and is complete. So the fill step says it finished, and a consumer of an
+    # unfinished boundary is refused rather than handed a hundred undefined
+    # symbols with no cause named.
+    #
+    # True by default, and that is not a convenience: only the two-step path
+    # can leave a boundary half-written, so only the step that starts it says
+    # so. An artifact anybody else builds — a spec's, a `--no-codegen` build's —
+    # is as finished as it was ever going to be.
+    property filled : Bool
+
     # Whether this artifact's root is a *class* rather than a module.
     #
     # It decides one thing and it is structural: a module's declarations are
@@ -790,7 +812,7 @@ module Iyi::IyiMod
                    @type_ids = [] of String, @hashes = Hashes.empty,
                    @constants = [] of String, @macro_bodies = [] of String,
                    @requires = [] of String, @crystal_library = false,
-                   @class_root = false,
+                   @class_root = false, @filled = true,
                    @regexes = [] of RegexConst, @class_vars = [] of ClassVarRef,
                    @match_types = [] of String, @symbols = [] of String)
     end
@@ -1057,7 +1079,7 @@ module Iyi::IyiMod
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
         object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
         hashes, constants, macro_bodies, requires, header[:crystal_library],
-        header[:class_root], regexes, class_vars, match_types, symbols)
+        header[:class_root], header[:filled], regexes, class_vars, match_types, symbols)
     end
   rescue ex : Error
     raise ex
@@ -1179,6 +1201,8 @@ module Iyi::IyiMod
 
     # With the pattern, because the name is a digest: a reader looking at
     # `$Regex:5f2b…` in the list above has no way to tell which literal it is.
+    io.puts "object code   never filled: the fill step did not finish" unless artifact.filled
+
     symbols = artifact.symbols
     io.puts "symbols       #{symbols.size} defined by this module's units" unless symbols.empty?
 
@@ -1760,6 +1784,7 @@ module Iyi::IyiMod
     io.write_byte(artifact.has_initialiser ? 1_u8 : 0_u8)
     io.write_byte(artifact.crystal_library ? 1_u8 : 0_u8)
     io.write_byte(artifact.class_root ? 1_u8 : 0_u8)
+    io.write_byte(artifact.filled ? 1_u8 : 0_u8)
     io.to_slice
   end
 
@@ -1773,10 +1798,11 @@ module Iyi::IyiMod
     has_initialiser = io.read_byte == 1_u8
     crystal_library = io.read_byte == 1_u8
     class_root = io.read_byte == 1_u8
+    filled = io.read_byte == 1_u8
     {module_name: module_name, source_path: source_path,
      compiler_version: compiler_version, target_triple: target_triple, flags: flags,
      has_initialiser: has_initialiser, crystal_library: crystal_library,
-     class_root: class_root}
+     class_root: class_root, filled: filled}
   end
 
   private def self.encode_requires(artifact : Artifact) : Bytes

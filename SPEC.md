@@ -6337,6 +6337,15 @@ Named honestly, so nobody mistakes this draft for complete.
     > > rather than itself. A boundary that degrades instead of failing is the
     > > next thing here.
     > >
+    > > **What it does not do any more is fail quietly.** The artifact left on
+    > > disk has every declaration and no machine code, which read as a boundary
+    > > promising a hundred methods and defining none — and it is
+    > > indistinguishable from one that legitimately has none, since an abstract
+    > > class with no subclass in its own shard is complete with zero units. The
+    > > fill step records that it finished, and a consumer of an unfinished
+    > > boundary is refused by name instead of being handed the linker's
+    > > hundred.
+    > >
     > > And a **stdlib-rooted** boundary is a third: `-e JSON` binds whole (24
     > > units, 14 MB) and a `--crystal` consumer of it replays `require "json"`
     > > from the artifact's own `Requires`, so the declarations reopen the real
