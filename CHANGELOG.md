@@ -4,6 +4,24 @@
 
 ### Added
 
+- **A module's own class variables travel, and so do the type ids of modules.**
+  Running kemal's four shards through boundaries in dependency order —
+  `backtracer` → `radix` → `exception_page` → `kemal` — found both. A
+  `TypeDecl` holds a type's class variables and a module is not a `TypeDecl`,
+  so `module Backtracer; class_getter(configuration)` left
+  `Backtracer::configuration` undefined at the end of a build that had every
+  one of that shard's types and their class variables. `Exports` holds the
+  module's own now.
+
+  And type ids are handed out by walking `Object`'s subclasses, which reaches a
+  class and neither an enum nor a module — `Backtracer::Backtrace::Parser` was
+  numbered nowhere in a consumer that never mentions it. `TypeIds` carries
+  those too, which turns the link error into the refusal that names the module
+  and the type it cannot reach.
+
+  `bench/bind_roundtrip.sh` keeps a class variable on the module root as well
+  as on the class under it.
+
 - **A bound shard can match a regex, which took two more holes than the
   constant did.** With the pattern crossing and the class variables crossing, a
   `--crystal` consumer of a shard that *matched* still ended on

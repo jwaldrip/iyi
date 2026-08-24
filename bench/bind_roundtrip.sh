@@ -65,6 +65,14 @@ cat > "$WORK/shard.cr" <<'CR'
 module Shard
   extend self
 
+  # On the module rather than on a type inside it, which is a different place
+  # for the format to have to put it: a module is not a `TypeDecl`. Kemal's
+  # `backtracer` is where this was found — `module Backtracer;
+  # class_getter(configuration)` left `Backtracer::configuration` undefined at
+  # the end of a build that had every one of that shard's types and their class
+  # variables.
+  @@made = 0
+
   class Part
     @seed : Int32
     @@count = 0
@@ -100,7 +108,12 @@ module Shard
   end
 
   def make(seed : Int32) : Part
+    @@made = @@made + 1
     Part.new(seed)
+  end
+
+  def made : Int32
+    @@made
   end
 end
 CR
@@ -129,6 +142,7 @@ puts total
 puts part.bump
 puts part.bump
 puts Shard.make(11).step(1)
+puts Shard.made
 IYI
 
 sed 's|require "./shard"|import shard|' "$WORK/app_source.iyi" > "$WORK/app_artifact.iyi"
