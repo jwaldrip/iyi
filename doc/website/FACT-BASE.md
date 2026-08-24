@@ -122,6 +122,73 @@ From README.md metrics (measured 2026-08-17, rows 15-21):
 | Binary size (hello) | 36 KB, starts in 1.6 ms |
 | Portability | Compiles for 9 targets, runs on 4 (x86-64 glibc, x86-64 musl, aarch64 under emulation, wasm32-wasi) |
 
+## Structural Measurements (Machine-Independent, CI-Gated)
+
+These nine measurements are checked by `python3 bench/doc_numbers.py` on every build. Silent drift is structurally impossible: the script fails if a quoted number diverges from the source. Measured at commit 03d013243, 2026-08-23 22:43:42 UTC:
+
+| Measurement | Value | Source | Measured By |
+|---|---|---|---|
+| iyi prelude lines | 2,872 | wc -l src/iyi/*.iyi | bench/doc_numbers.py |
+| samples/iyi/std lines | 777 | wc -l samples/iyi/std/*.iyi | bench/doc_numbers.py |
+| compiler implementation | 91,337 | wc -l src/compiler/**/*.cr | bench/doc_numbers.py |
+| sample programs | 13 | count of samples/iyi/*.iyi | bench/doc_numbers.py |
+| prelude disk size | 100 KB | sum(stat().st_size) / 1024 | bench/doc_numbers.py |
+| Crystal stdlib bang-methods | 51 | distinct `def name!` in Crystal source | bench/doc_numbers.py |
+| generated benchmark project | 7,207 | lines from bench/incremental/generate_project.py | bench/doc_numbers.py |
+| iyi spec files | 8,924 | wc -l iyi-specific spec files | bench/doc_numbers.py |
+| CI type-check targets | 9 | parsed from .github/workflows/iyi.yml | bench/doc_numbers.py |
+
+These numbers move only when the tree changes, never with machine or LLVM version.
+
+## Machine-Dependent Measurements
+
+Timing and binary sizes move with the platform, LLVM version, and compiler state. The README quotes ratios as the claim, not absolute seconds, because build time has noise and the minimum of N runs estimates a floor.
+
+**Edit-loop benchmark:** `python3 bench/build_speed.py`
+Machine: AMD Ryzen AI 9 465 under WSL2, LLVM 19.1.7, Go 1.25.2
+Method: best of 7 runs, release compiler, one idle machine
+
+| What changed | iyi | Crystal | Go |
+|---|---|---|---|
+| one module's body | 0.13 s | 1.17 s | 0.16 s |
+| entry file only | 0.12 s | 1.15 s | 0.16 s |
+| nothing at all | 0.12 s | 1.14 s | 0.08 s |
+| tired session | 0.22 s | 1.81 s | 0.27 s |
+
+The ratios hold constant across machine states. Read columns against each other since they measure on the same machine.
+
+**Full build benchmark:** `python3 bench/build_speed.py`
+Same machine: AMD Ryzen AI 9 465 under WSL2, LLVM 19.1.7
+Method: best of runs, cold and warm cache
+
+| Program | iyi | Go |
+|---|---|---|
+| hello (147 lines) | 0.07 s | 0.08 s |
+| generated pair (6,912 lines) | 0.24 s | 0.09 s |
+
+**Binary size and startup time:** `python3 bench/machine_probe.py`
+Machine: macOS arm64 with LLVM 22
+
+| Program | iyi | Crystal |
+|---|---|---|
+| hello binary size | 36 KB | 1,553 KB |
+| hello startup time | 1.6 ms | 3.2 ms |
+
+**Front end timing:** `python3 bench/machine_probe.py`
+Machine: macOS arm64 with LLVM 22
+Measurement: parse and semantic analysis only (--no-codegen)
+- iyi hello: 0.031 s (target: 0.050 s, MET)
+
+Repeat with `python3 bench/machine_probe.py <label>` across machine states to distinguish code changes from machine variance.
+
+## Internal Consistency: README Sample Count Drift
+
+README.md line 718 states "Nine programs in samples/iyi", but line 922 states "thirteen programs". The actual .iyi files are 13: basics, calc, collections, derive, errors, files, formatting, generics, hello, immutable, init_order, modules, webapp. The canonical value is 13, measured by bench/doc_numbers.py. Line 922 is correct; line 718 requires update.
+
+## Primary Checkout Status
+
+The primary checkout at /Users/jwaldrip/dev/src/github.com/jwaldrip/iyi is on branch gc/stage2-allocator with active uncommitted work (bench/arena_exercise.iyi modified). This branch is 32 commits ahead of origin/master (the current main branch). The branch carries the Stage 2 GC allocator implementation and has not yet been merged to master.
+
 **Implemented language features:**
 - Union types and nil-safety (from Crystal, unchanged)
 - Flow typing
