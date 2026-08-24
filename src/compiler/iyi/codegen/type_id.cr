@@ -73,6 +73,18 @@ class Iyi::CodeGenVisitor
   # program built from source linked fine. An `i32` per type is not a cost worth
   # a cleverer answer.
   def iyi_define_all_type_ids : Nil
+    # Numbered first, because the loop below defines what is numbered and an
+    # enum is numbered by nothing else. Ids come from walking `Object`'s
+    # subclasses, and that walk reaches a class and not an enum — an enum takes
+    # its id from the first code that asks for one, and a consumer whose own
+    # code never mentions `Regex::MatchOptions` never asks. The artifact says
+    # which ones its object code refers to; this is where they are given a
+    # number to define (SPEC.md IV.1g).
+    @program.iyi_artifact_numbered_types.each do |type|
+      next if type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
+      @program.llvm_id.type_id(type)
+    end
+
     @program.llvm_id.each_type do |type|
       next if type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
 

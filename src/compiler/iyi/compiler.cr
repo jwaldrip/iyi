@@ -841,11 +841,22 @@ module Iyi
     # behind, and nothing the consumer reads would ever create it. So the name
     # travels and the consumer instantiates it.
     #
-    # Only generic instances. Everything else the code can name is either the
-    # module's own — declared by this artifact — or somebody's the consumer
-    # imports for itself, and in both cases the consumer has the type already.
-    # An instantiation is the case with no declaration anywhere to arrive
-    # through.
+    # What the consumer's own numbering would not reach on its own, which is
+    # two kinds and not one.
+    #
+    # A **generic instance** may not exist there at all: `Array(Item)` is in the
+    # producing build because of a body that stayed behind, and nothing the
+    # consumer reads would create it. Naming it is what creates it.
+    #
+    # An **enum** exists and is still unnumbered. Ids are handed out by walking
+    # `Object`'s subclasses, and that walk does not reach an enum — one gets its
+    # id from the first code that asks for it, so a consumer whose own code
+    # never mentions `Regex::MatchOptions` numbers it nowhere, defines no id
+    # global for it, and a unit that referred to one linked against nothing.
+    #
+    # Everything else the code can name is the module's own — declared by this
+    # artifact — or somebody's the consumer imports for itself, and either way
+    # it is a class in that walk and numbered by having been created.
     private def collect_iyi_type_ids(program : Program, unit_names : Array(String)) : Array(String)
       names = Set(String).new
       unit_names.each do |unit_name|
@@ -855,7 +866,7 @@ module Iyi
           # the two undefined symbols and the one that reads as a different
           # problem.
           instance = type.instance_type
-          next unless instance.is_a?(GenericInstanceType)
+          next unless instance.is_a?(GenericInstanceType) || instance.is_a?(EnumType)
           names << instance.to_s
         end
       end

@@ -4,6 +4,32 @@
 
 ### Added
 
+- **A bound shard can match a regex, which took two more holes than the
+  constant did.** With the pattern crossing and the class variables crossing, a
+  `--crystal` consumer of a shard that *matched* still ended on
+  `undefined symbol: *Regex::PCRE2::current_jit_stack` and
+  `Regex::MatchOptions:type_id`. Both read as the copy rule failing to bring a
+  library method along, and both were something else — `nm` on the unit shows
+  the accessor was copied.
+
+  `@@current_jit_stack` is `@[ThreadLocal]`, and a thread-local global is read
+  through a `noinline` function that hands back its address rather than
+  directly, because LLVM would hoist the address out of the thread. That
+  function is the main module's, and a main module does not travel. It is the
+  third thing a class variable owes, after the global and the read function.
+
+  `Regex::MatchOptions` is an enum, and "a program defines every type id" means
+  every id it has *handed out*. Ids come from walking `Object`'s subclasses,
+  which reaches a class and not an enum — an enum takes its id from the first
+  code that asks, and a consumer that never mentions it never asks. `TypeIds`
+  carries the enums a unit numbers, beside the generic instances it already
+  carried, and the two are missing for opposite reasons: an instantiation does
+  not exist until it is named, an enum exists and is unnumbered.
+
+  `bench/bind_regex_identity.sh` matches with its patterns now instead of only
+  naming them, so each shard's literal is checked against text the other one's
+  would reject.
+
 - **A class variable crosses a boundary, which nothing had ever carried.** A
   class variable is a global. The methods that read one travel as a module's
   machine code and refer to it by symbol, and the global itself is defined in
