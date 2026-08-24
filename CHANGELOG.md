@@ -4,6 +4,23 @@
 
 ### Added
 
+- **A module crosses a boundary, and what was inside it comes with it.**
+  `crystal tool bind` recorded a module as a "nested namespace skipped" and
+  carried nothing for it. Two failures at kemal's scale were the same failure:
+  `Backtracer::Backtrace::Parser` is a module the object code *numbers* and a
+  consumer could not name, and `Kemal::Exceptions::CustomException` and three
+  like it had object-code units in the artifact — 1.8 MB each — with no
+  declaration anywhere, because the walk stopped at `Exceptions` and everything
+  under it went with it.
+
+  A module travels as a declaration now, with its nested types, its methods and
+  its class variables. Without `pub`: iyi's `pub` takes a def, a class, a
+  struct, a trait and an enum, and what a namespace owes is that the things
+  *inside* it can be named, each carrying its own visibility. A consumer of
+  kemal's four boundaries goes from **40 undefined symbols to 22**, and
+  `bench/bind_roundtrip.sh` keeps a nested module with a class and a
+  module-level `def self.` in it.
+
 - **A module's own class variables travel, and so do the type ids of modules.**
   Running kemal's four shards through boundaries in dependency order —
   `backtracer` → `radix` → `exception_page` → `kemal` — found both. A
