@@ -6241,12 +6241,38 @@ Named honestly, so nobody mistakes this draft for complete.
     > >    takes a def, a class, a struct, a trait and an enum, and a namespace
     > >    owes only that the things *inside* it can be named, each carrying its
     > >    own visibility. **40 undefined symbols → 22.**
-    > > 2. **`~match<…>` for unions the consumer does not have.** The same
-    > >    question as a type id, asked of a union — and unlike a virtual type,
-    > >    which `iyi_define_all_match_funs` already covers, a union cannot be
-    > >    enumerated: the consumer would have to guess which ones a unit asks
-    > >    about. It is the majority of what is left.
-    > > 3. **`new` synthesised from `initialize`.** Already written down in
+    > > 2. ~~**`~match<…>` for unions the consumer does not have.**~~ **Built.**
+    > >    The same question as a type id, asked of a union — and unlike a
+    > >    virtual type, which `iyi_define_all_match_funs` enumerates from the
+    > >    program's own classes, a union cannot be enumerated: no walk over a
+    > >    consumer arrives at `(Char | Iyi::Keyword | String | Nil)`, which is
+    > >    a type kemal's code formed. `MatchTypes` carries the names and the
+    > >    consumer builds each function with its own numbering, which is the
+    > >    whole reason a name travels rather than a copy: a copy compiled by
+    > >    the producer would compare the consumer's ids against the producer's
+    > >    numbers and answer wrongly with no symptom. **22 → 11.**
+    > > 3. **A bound class's superclass does not travel, and that is the next
+    > >    one.** `TypeDecl` has no field for it. Three of the four `~match`
+    > >    functions still missing are virtual — `HTTP::StaticFileHandler+`,
+    > >    `HTTP::WebSocketHandler+`, `Kemal::BaseLogHandler+` — and they are
+    > >    missing because `virtual_type` answers *the type itself* for a class
+    > >    with no subclasses. Kemal's `StaticFileHandler < HTTP::StaticFileHandler`
+    > >    arrives having lost the `<`, so the consumer's
+    > >    `HTTP::StaticFileHandler` has no subclasses and its virtual form is
+    > >    not a virtual type at all.
+    > >
+    > >    **The undefined symbol is the safe half of that.** A match against a
+    > >    virtual type compares an id against the *range* its subclasses
+    > >    occupy, and ids are assigned by walking that same tree — so a
+    > >    consumer missing an edge does not merely fail to define a function,
+    > >    it numbers the tree differently. Defining the function anyway would
+    > >    answer `is_a?` wrongly and link cleanly. The fix is the edge, not the
+    > >    function.
+    > >
+    > >    It is not a one-line field either: a subclass's `instance_vars`
+    > >    already include the ones it inherits, so carrying the superclass
+    > >    without taking those back out declares every inherited field twice.
+    > > 4. **`new` synthesised from `initialize`.** Already written down in
     > >    `collect_iyi_unit_names`, and it is what
     > >    `*Kemal::RouteHandler@Reference::new` is.
     > >

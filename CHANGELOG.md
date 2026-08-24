@@ -4,6 +4,24 @@
 
 ### Added
 
+- **The unions a bound module matches against travel.** `is_a?` against a union
+  or a virtual type compiles to `~match<T>`, a function that compares a type id
+  against a *range* of the program's own numbering — so it lives in the main
+  module, which does not travel, and it cannot be carried as code either: a
+  copy compiled by the producer would compare the consumer's ids against the
+  producer's numbers and answer wrongly with no symptom.
+
+  A virtual one the consumer could already find for itself, by taking the
+  virtual form of every class it numbers. A union it could not: no walk over a
+  program arrives at `(Char | Iyi::Keyword | String | Nil)`, which is a type
+  kemal's code formed and a consumer of kemal's never would. A `MatchTypes`
+  section carries the names and the consumer builds each function with its own
+  numbering, the same arrangement `TypeIds` already has. A consumer of kemal's
+  four boundaries goes from **22 undefined symbols to 11**.
+
+  `bench/bind_roundtrip.sh` matches against a union its consumer never forms,
+  and prints the carried name so the line cannot quietly stop testing anything.
+
 - **A module crosses a boundary, and what was inside it comes with it.**
   `crystal tool bind` recorded a module as a "nested namespace skipped" and
   carried nothing for it. Two failures at kemal's scale were the same failure:

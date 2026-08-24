@@ -629,6 +629,7 @@ module Iyi
       artifact.constants = collect_iyi_constants(program, names)
       artifact.regexes = collect_iyi_regexes(program, artifact.constants)
       artifact.class_vars = collect_iyi_unit_class_vars(program, names)
+      artifact.match_types = collect_iyi_match_types(program, names)
 
       add_bind_boundary_imports artifact, dir, path
       IyiMod.write artifact, path
@@ -699,6 +700,7 @@ module Iyi
         artifact.constants = collect_iyi_constants(program, unit_names)
         artifact.regexes = collect_iyi_regexes(program, artifact.constants)
         artifact.class_vars = collect_iyi_unit_class_vars(program, unit_names)
+        artifact.match_types = collect_iyi_match_types(program, unit_names)
         IyiMod.write artifact, path
       end
     end
@@ -896,6 +898,27 @@ module Iyi
       names = Set(String).new
       unit_names.each do |unit_name|
         program.iyi_unit_constants[unit_name]?.try &.each { |const| names << const.to_s }
+      end
+      names.to_a.sort!
+    end
+
+    # iyi: the types the module's object code asks `~match<T>` about, by name,
+    # for `MatchTypes` (SPEC.md IV.1g).
+    #
+    # `collect_iyi_type_ids`' question asked of a match. The consumer defines
+    # these with its own numbering, exactly as it defines the type ids, and for
+    # the same reason: the numbering is the program's.
+    #
+    # A virtual one it could have found for itself, by taking the virtual form
+    # of every class it numbers — that is what `iyi_define_all_match_funs`
+    # does. A union it could not: `(Char | Iyi::Keyword | String | Nil)` is a
+    # type the producer's code formed, and there is no walk over a program that
+    # arrives at it.
+    private def collect_iyi_match_types(program : Program,
+                                        unit_names : Array(String)) : Array(String)
+      names = Set(String).new
+      unit_names.each do |unit_name|
+        program.iyi_unit_match_types[unit_name]?.try &.each { |type| names << type.to_s }
       end
       names.to_a.sort!
     end

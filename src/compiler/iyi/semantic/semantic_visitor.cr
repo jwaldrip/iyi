@@ -571,6 +571,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     # declarations does nothing.
     mark_iyi_artifact_types artifact
     number_iyi_artifact_types node, artifact
+    resolve_iyi_artifact_match_types node, artifact
 
     FileNode.new(parsed_nodes, artifact_path)
   end
@@ -621,6 +622,51 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
         definition in this program — so this program has to have the type. This
         module's own types travel with its artifact, so the one it cannot name
         belongs to a module that does not export it (SPEC.md IV.1g).
+
+        Build the module from source, or export the type it names.
+        MESSAGE
+    end
+  end
+
+  # iyi: resolves the types an artifact's object code asks `~match<T>` about,
+  # so codegen can define those functions (SPEC.md IV.1g).
+  #
+  # `number_iyi_artifact_types`' walk, for a match rather than for an id. The
+  # consumer builds the function with its own numbering, which is the whole
+  # reason a name travels instead of a copy.
+  #
+  # A virtual type is written `Foo+` and a metaclass `Foo+.class`, neither of
+  # which is a name the parser takes — they are how a type *prints*, not how
+  # anybody writes one. Both are taken apart here and put back together from
+  # the base, which is the only place that knows they were ever one string.
+  private def resolve_iyi_artifact_match_types(node : ImportDecl,
+                                               artifact : IyiMod::Artifact) : Nil
+    return if artifact.object_code.empty?
+
+    artifact.match_types.each do |name|
+      metaclass = name.ends_with?(".class")
+      base = metaclass ? name.rchop(".class") : name
+      virtual = base.ends_with?('+')
+      base = base.rchop('+') if virtual
+
+      parser = @program.new_parser(base)
+      parser.next_token
+      type_node = parser.parse_bare_proc_type
+      parser.check :EOF
+
+      type = @program.lookup_type(type_node, include_private: true)
+      type = type.virtual_type if virtual
+      type = type.metaclass if metaclass
+      @program.iyi_artifact_match_types << type
+    rescue CodeError
+      # The same refusal a type id gets, for the same reason: the alternative
+      # is a mangled symbol at link time with no module named beside it.
+      node.raise <<-MESSAGE
+        "#{artifact.module_name}" matches against `#{name}`, and this build cannot name it
+
+        Its object code calls a function that compares a value's type id
+        against that type, and the comparison is built from this program's own
+        numbering — so this program has to have the type (SPEC.md IV.1g).
 
         Build the module from source, or export the type it names.
         MESSAGE

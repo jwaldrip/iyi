@@ -264,6 +264,27 @@ module Iyi
     # the names the artifact carried.
     getter iyi_artifact_numbered_types = Set(Type).new
 
+    # iyi: the types each unit's object code asks `~match<T>` about, by unit
+    # name (SPEC.md IV.1g).
+    #
+    # `iyi_unit_type_ids`' question asked of a *match*. A match against a union
+    # or a virtual type is a comparison against a range of the program's own
+    # type ids, so the function belongs to the program and the artifact carries
+    # a name rather than a copy — a copy compiled by the producer would compare
+    # the consumer's ids against the producer's numbers and answer wrongly with
+    # no symptom.
+    #
+    # Recorded only while writing artifacts.
+    getter iyi_unit_match_types = {} of String => Set(Type)
+
+    # iyi: the types an imported artifact's object code asks `~match<T>` about,
+    # resolved (SPEC.md IV.1g).
+    #
+    # The consumer's half. A virtual type it could have enumerated from its own
+    # classes; a union it could not — `(Char | Iyi::Keyword | String | Nil)` is
+    # a type kemal's code formed and a consumer of kemal's never would.
+    getter iyi_artifact_match_types = Set(Type).new
+
     # iyi: the class variables an imported artifact's object code refers to, as
     # `Owner::@@name` (SPEC.md IV.2).
     #
