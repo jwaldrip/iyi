@@ -521,6 +521,28 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
                  "cannot hold one module of each — #{fix}"
     end
 
+    # iyi: a boundary whose object-code step never finished (SPEC.md IV.1g).
+    #
+    # `crystal tool bind` writes the declarations and a second build fills them.
+    # That build compiles a keep file naming every method a consumer might call,
+    # and a shard can hold code its own compilation never types — so the build
+    # dies and leaves an artifact with every declaration and no machine code.
+    # Read as it stands it is a boundary that promises a hundred methods and
+    # defines none, and the linker says so a hundred times without naming the
+    # cause once.
+    # Only where this build links. A front-end-only build has nothing to link
+    # and nothing to miss — `spec/compiler/bind_spec.cr` reads declarations back
+    # on purpose and never gets as far as a symbol.
+    if !artifact.filled && @program.iyi_wants_object_code
+      node.raise "\"#{artifact.module_name}\" was never filled: `crystal tool bind` " \
+                 "wrote its declarations and the build that puts object code in " \
+                 "it did not finish. Every method it declares would be an " \
+                 "undefined symbol (SPEC.md IV.1g).\n\n" \
+                 "Run the fill step again and read what it says — a shard can " \
+                 "hold code its own compilation never types, and a boundary asks " \
+                 "for all of it."
+    end
+
     unless artifact.object_code.empty?
       @program.iyi_artifact_objects[artifact.module_name] = artifact.object_code
     end

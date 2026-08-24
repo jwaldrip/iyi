@@ -2191,6 +2191,56 @@ describe Iyi::IyiMod do
     end
   end
 
+  # An artifact with every declaration and no machine code is not the same
+  # thing as one that legitimately has none: an `abstract class` with no
+  # subclass in its own shard carries no object code and is complete, while a
+  # boundary whose fill build died carries none and promises everything. Read as
+  # it stands the second is a hundred undefined symbols with the cause named
+  # nowhere.
+  it "refuses a boundary whose object-code step never finished" do
+    with_tempdir("iyimod_unfilled") do
+      Dir.mkdir_p "app"
+      File.write "app/counter.iyi", <<-IYI
+        module app/counter
+
+        pub def total : Int32
+          42
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/counter
+
+        puts App::Counter.total
+        IYI
+
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+
+      # Written back as the fill step would have left it had the build died:
+      # everything it declares, and no record of having finished.
+      path = File.join("mods", "app", "counter.iyimod")
+      artifact = Iyi::IyiMod.read(path, want_object_code: true)
+      artifact.filled.should be_true
+      artifact.filled = false
+      Iyi::IyiMod.write artifact, path
+
+      File.delete "app/counter.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      expect_raises(Iyi::TypeException, /was never filled/) do
+        consumer.compile source, File.expand_path("from-artifact")
+      end
+    end
+  end
+
   # The flag beside the name, because the consumer cannot work it out. A unit
   # that reads a class variable with a live initialiser calls
   # `~Owner::name:read`; one reading a variable without an initialiser reads the

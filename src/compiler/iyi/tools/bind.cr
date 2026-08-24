@@ -580,6 +580,10 @@ module Iyi
       # class is the namespace, and a header of its own name would put it one
       # level inside itself.
       class_root: !module_root?(program, root),
+      # False until the *second* build puts object code in it. This is the one
+      # path that can leave a boundary half-written: the declarations are on
+      # disk before anything has been compiled against them.
+      filled: false,
       exports: IyiMod::Exports.new(exported, carried_types, [] of IyiMod::ImplRecord,
         [] of IyiMod::Signature, root_class_vars),
       # True, and it was false here on an argument that measurement has since
