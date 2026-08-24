@@ -83,6 +83,15 @@ class Iyi::CodeGenVisitor
     @program.iyi_artifact_numbered_types.each do |type|
       next if type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
       @program.llvm_id.type_id(type)
+
+      # And its metaclass, which is a second id and not always derived from the
+      # first. `Backtracer::Backtrace::Parser:Module` *is* the metaclass of a
+      # module — that suffix is how one prints — and the object code refers to
+      # its id while the walk that numbers metaclasses only reaches classes.
+      # Carrying the instance and stopping there defined
+      # `…::Parser:type_id` for code that wanted `…::Parser:Module:type_id`.
+      metaclass = type.metaclass
+      @program.llvm_id.type_id(metaclass) unless metaclass.is_a?(VirtualMetaclassType)
     end
 
     @program.llvm_id.each_type do |type|

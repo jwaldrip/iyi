@@ -4,6 +4,31 @@
 
 ### Added
 
+- **The type-id list is the import graph, so it cannot be filtered.** Two
+  separate failures at kemal's scale came from one list being less than whole.
+
+  A module's type id is its *metaclass's*: `Backtracer::Backtrace::Parser:Module`
+  is how a module's metaclass prints. Carrying the instance and stopping there
+  defined `…::Parser:type_id` for object code that wanted
+  `…::Parser:Module:type_id`, because the walk that numbers metaclasses reaches
+  only classes. The consumer numbers the metaclass too now.
+
+  And the list had been filtered to the kinds a consumer could not number for
+  itself, leaving plain classes out on the reasoning that the consumer has them
+  already. It has them only if it *imports the module that declares them* — and
+  that import edge is derived from this very list. `Kemal` numbers
+  `ExceptionPage::Styles`, the name was filtered, no edge was added, and the
+  consumer never read `exception_page` at all. Whole, the list costs `Kemal`
+  642 names where it carried 303, and a name is a string.
+
+  The metaclass half takes the kemal consumer from eight undefined symbols to
+  six. The import-edge half is not counted the same way: with the edge added,
+  `ExceptionPage::Styles` stops being a mangled symbol at link time and becomes
+  a refusal that names it, which arrives *before* the linker — so the five
+  behind it are no longer measured. Both the refusal and
+  `exception_page` filling with 0 units are the same item: a class-rooted
+  namespace colliding with its own module wrapper, in Part V item 12.
+
 - **What a generic declares is kept, even though the generic is not.** The keep
   file skips a generic type — rightly, since `uninitialized Holder(T)` is not a
   thing anybody can write — and skipped everything it declares along with it.

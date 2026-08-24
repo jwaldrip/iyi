@@ -848,23 +848,28 @@ module Iyi
     # behind, and nothing the consumer reads would ever create it. So the name
     # travels and the consumer instantiates it.
     #
-    # What the consumer's own numbering would not reach on its own, which is
-    # two kinds and not one.
+    # **Every one of them**, and the filters this used to have were each wrong
+    # for a different reason.
     #
-    # A **generic instance** may not exist there at all: `Array(Item)` is in the
-    # producing build because of a body that stayed behind, and nothing the
-    # consumer reads would create it. Naming it is what creates it.
+    # A **generic instance** may not exist in the consumer at all: `Array(Item)`
+    # is in the producing build because of a body that stayed behind, and
+    # nothing the consumer reads would create it. Naming it is what creates it.
     #
     # An **enum or a module** exists and is still unnumbered. Ids are handed out
     # by walking `Object`'s subclasses, and that walk reaches neither — both
     # take an id from the first code that asks for one, so a consumer whose own
     # code never mentions `Regex::MatchOptions` or `Backtracer::Backtrace::Parser`
-    # numbers them nowhere, defines no id global, and a unit that referred to
-    # one linked against nothing.
+    # numbers them nowhere and defines no id global.
     #
-    # Everything else the code can name is the module's own — declared by this
-    # artifact — or somebody's the consumer imports for itself, and either way
-    # it is a class in that walk and numbered by having been created.
+    # And a plain **class** was left out on the reasoning that the consumer has
+    # it already — which is true only if the consumer *imports the module that
+    # declares it*, and that import edge is derived from this very list.
+    # `Kemal` numbers `ExceptionPage::Styles`, the name was filtered out here,
+    # so no edge was added, so the consumer never read `exception_page` and
+    # never had the class. The list is the dependency, so it has to be whole.
+    #
+    # The cost is a longer list — `Kemal` goes from 303 names to 642 — and a
+    # name is a string.
     private def collect_iyi_type_ids(program : Program, unit_names : Array(String)) : Array(String)
       names = Set(String).new
       unit_names.each do |unit_name|
@@ -874,9 +879,6 @@ module Iyi
           # the two undefined symbols and the one that reads as a different
           # problem.
           instance = type.instance_type
-          next unless instance.is_a?(GenericInstanceType) ||
-                      instance.is_a?(EnumType) ||
-                      instance.is_a?(NonGenericModuleType)
           names << instance.to_s
         end
       end
