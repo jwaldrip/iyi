@@ -253,6 +253,17 @@ module Iyi
     # Recorded only while writing artifacts, like the constants above.
     getter iyi_unit_class_vars = {} of String => Hash(MetaTypeVar, Bool)
 
+    # iyi: the types an imported artifact's object code refers to a type id of,
+    # resolved (SPEC.md IV.1g).
+    #
+    # The consumer defines an id for every type it has *numbered*, and numbering
+    # comes from walking `Object`'s subclasses — which reaches a class and does
+    # not reach an enum. An enum gets its id from the first code that asks for
+    # one, and nothing in a consumer's own program asks for
+    # `Regex::MatchOptions`. So these are numbered explicitly, at codegen, from
+    # the names the artifact carried.
+    getter iyi_artifact_numbered_types = Set(Type).new
+
     # iyi: the class variables an imported artifact's object code refers to, as
     # `Owner::@@name` (SPEC.md IV.2).
     #

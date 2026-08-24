@@ -3875,6 +3875,16 @@ all. An `i32` per type is not a cost worth a cleverer answer, and the artifact
 must keep carrying a reference rather than a value: two programs number their
 types differently.
 
+*"All" is every type it has **numbered**, and that is not every type it has.*
+Ids are handed out by walking `Object`'s subclasses, and the walk reaches a
+class and not an enum — an enum takes its id from the first code that asks for
+one. So a consumer whose own code never mentions `Regex::MatchOptions` numbers
+it nowhere and defines no global for it, while a unit it links refers to one.
+`TypeIds` carries the enums a unit numbers for that reason, beside the generic
+instances it carries for the other one, and the two are missing for opposite
+reasons: an instantiation does not exist in the consumer until it is named, an
+enum exists and is unnumbered until it is asked for.
+
 **Some bodies have to travel, and `MonoBodies` is which ones.** A module's
 machine code answers for a method the producer could compile. Two kinds it
 cannot, and they are the two exceptions IV.2 already names:
@@ -4821,6 +4831,14 @@ is the linker.
   its initialiser in the consumer's own tree and runs on the ordinary path; one
   of the library's runs where that library says. What is missing is only ever
   the global, and the function that reaches it.
+
+  **A thread-local one owes a third thing.** `@[ThreadLocal] @@current_jit_stack`
+  is not read through its global but through a `noinline` function that hands
+  back the address — LLVM would hoist the address out of the thread otherwise —
+  and that function lives in the main module. So a consumer that had defined the
+  global and copied the accessor around it still ended on
+  `undefined symbol: *Regex::PCRE2::current_jit_stack`. It defines that function
+  too, whichever way the variable is read.
 
   **And the value has to be caught before the compiler rewrites it.** The
   initialiser travels as source, and the node a class variable holds is not
@@ -6168,16 +6186,28 @@ Named honestly, so nobody mistakes this draft for complete.
     > > `Backtracer::configuration` below is the same finding reached from the
     > > other end.
     > >
-    > > **And behind that one, a third kind, which is neither a name nor a
-    > > global.** With the class variables crossing, a shard that *matches* a
-    > > regex still wants `*Regex::PCRE2::current_jit_stack` and
-    > > `*Regex::PCRE2::current_match_data` — the accessor **methods** — and
-    > > `Regex::MatchOptions:type_id`. A unit copies the library methods it
-    > > calls into itself, which is how `Unicode.upcase_ranges` arrived; these
-    > > two were not copied, and the consumer does not emit them because its
-    > > own code never reaches them. That is a question about the copy rule
-    > > rather than about the format, and it is where this item goes next. Not
-    > > started.
+    > > **And behind that one, two more — and reading them as a third kind was
+    > > wrong.** With the class variables crossing, a shard that *matches* a
+    > > regex still wanted `*Regex::PCRE2::current_jit_stack` and
+    > > `Regex::MatchOptions:type_id`. Written up here first as the copy rule
+    > > failing to bring a library method along, which it was not: the accessor
+    > > *was* copied, and `nm` on the unit says so. What the copy calls is
+    > > something else.
+    > >
+    > > `@@current_jit_stack` is `@[ThreadLocal]`, and a thread-local global is
+    > > not read directly — it is read through a `noinline` function that hands
+    > > back its address, because LLVM would otherwise hoist the address out of
+    > > the thread. That function is the main module's, and a main module does
+    > > not travel. It is the third thing a class variable owes, after the
+    > > global and the read function, and it is in IV.2 with them.
+    > >
+    > > `Regex::MatchOptions` is an enum, and IV.1's "a program defines every
+    > > type id" means every id it has *handed out*. Ids come from walking
+    > > `Object`'s subclasses; that walk does not reach an enum, which takes its
+    > > id from the first code to ask. A consumer that never mentions the enum
+    > > never asks. Both are built, and `bench/bind_regex_identity.sh` matches
+    > > with its patterns now rather than only naming them — which is the line
+    > > that would catch either of them coming back.
     > >
     > > **Behind it, one more, and it is probably a class root.** With the probe
     > > in place the link wants `Backtracer::configuration` and

@@ -602,7 +602,12 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       # arrives declared and unreachable, exactly as it is when the module is
       # read from source, and this is the compiler restoring the module's own
       # instantiation rather than anybody naming it.
-      @program.lookup_type(type_node, include_private: true)
+      # Kept, not just resolved. Creating a class puts it in the numbering,
+      # because ids are handed out by walking `Object`'s subclasses — but that
+      # walk does not reach an enum, which gets its id from the first code that
+      # asks. Nothing in this program asks for `Regex::MatchOptions`, so
+      # codegen numbers these itself (SPEC.md IV.1g).
+      @program.iyi_artifact_numbered_types << @program.lookup_type(type_node, include_private: true)
     rescue CodeError
       # A name this build cannot resolve. The module's own types travel with
       # the artifact, unexported ones included, so what is left is an
