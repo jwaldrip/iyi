@@ -505,13 +505,26 @@ class Iyi::Call
         use_cache = false unless block_type
       end
 
+      # iyi: a def read from a `.iyimod` has exactly one symbol, and the
+      # producing build named it after the *declaration*.
+      #
+      # Everywhere else the name is built from what the call site passes, which
+      # is right when the body is here to be compiled per argument type. It is
+      # wrong here. `def writes(io : IO)` was emitted once as `writes<IO>`, and
+      # a consumer handing it a `STDOUT` asked for `writes<IO::FileDescriptor>`
+      # — a symbol nobody emitted, and III.6 rule 1's undefined symbol at the
+      # end of a build with no other complaint. Writing `STDOUT.as(IO)` at the
+      # call site linked and ran, which is what says the declaration is the
+      # contract and the call site was reading past it.
+      call_arg_types = iyi_artifact_arg_types(match) || match.arg_types
+
       lookup_self_type = self_type || match.context.instantiated_type
       if self_type
-        lookup_arg_types = Array(Type).new(match.arg_types.size + 1)
+        lookup_arg_types = Array(Type).new(call_arg_types.size + 1)
         lookup_arg_types.push self_type
-        lookup_arg_types.concat match.arg_types
+        lookup_arg_types.concat call_arg_types
       else
-        lookup_arg_types = match.arg_types
+        lookup_arg_types = call_arg_types
       end
       match_owner = match.context.instantiated_type
       def_instance_owner = (self_type || match_owner).as(DefInstanceContainer)
@@ -521,7 +534,7 @@ class Iyi::Call
       typed_def = def_instance_owner.lookup_def_instance def_instance_key if use_cache
 
       unless typed_def
-        typed_def, typed_def_args = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, match.arg_types, block_arg_type, named_args_types)
+        typed_def, typed_def_args = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, call_arg_types, block_arg_type, named_args_types)
         def_instance_owner.add_def_instance(def_instance_key, typed_def) if use_cache
 
         if typed_def_return_type = typed_def.return_type
@@ -586,6 +599,50 @@ class Iyi::Call
     end
 
     typed_defs
+  end
+
+  # iyi: the types a `.iyimod` declaration names for its parameters, or nil
+  # where this call is not one and nothing should change.
+  #
+  # The declaration is the contract, so what the call is keyed on has to be
+  # what the artifact's object code was keyed on: the restriction, not the
+  # argument. Widening here is what makes codegen upcast at the call site,
+  # which is the same conversion `.as(IO)` performs by hand.
+  #
+  # It answers nil rather than guessing wherever the shapes do not line up —
+  # a splat, a default argument the caller left out, a restriction this scope
+  # cannot resolve — and the call falls back to what it did before. R-2 says
+  # every parameter of a crossing method is written, so the ordinary case has
+  # all of them; the nils are the cases R-2 does not cover, and quietly using
+  # the argument type there is what happened before this existed anyway.
+  private def iyi_artifact_arg_types(match) : Array(Type)?
+    a_def = match.def
+    return nil unless a_def.iyi_from_artifact?
+    return nil if a_def.splat_index || a_def.double_splat || match.named_arg_types
+    return nil unless a_def.args.size == match.arg_types.size
+
+    owner = match.context.instantiated_type
+    declared = Array(Type).new(a_def.args.size)
+    a_def.args.each_with_index do |arg, index|
+      restriction = arg.restriction
+      return nil unless restriction
+
+      type = owner.lookup_type?(restriction)
+      return nil unless type.is_a?(Type)
+      # A free variable is bound per call and has no one symbol behind it.
+      return nil if type.is_a?(TypeParameter)
+
+      # `virtual_type` is what a value of a class with subclasses is held as,
+      # and what the producing build's keep file gave the method. A leaf class
+      # is its own virtual type, so this is the identity for everything else.
+      declared << type.virtual_type
+    end
+
+    # Nothing to do where the call already matches the declaration, which is
+    # every call whose arguments are exactly the types written down.
+    return nil if declared == match.arg_types
+
+    declared
   end
 
   def raise_if_block_too_nested(block_nest)

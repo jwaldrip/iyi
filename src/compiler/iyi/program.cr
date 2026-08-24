@@ -227,6 +227,79 @@ module Iyi
     # runs where it should. Empty unless `--emit-iyimod` asked for artifacts.
     getter iyi_unit_constants = {} of String => Set(Const)
 
+    # iyi: the class variables each unit's object code refers to, by unit name
+    # (SPEC.md IV.2).
+    #
+    # `iyi_unit_constants` above, asked of a global that nobody wrote a name
+    # for. A class variable's global is defined in the *main module*, which is
+    # the one part of a build that never travels, and the methods that read one
+    # travel as this module's machine code referring to it by symbol. So
+    # `App::Counter::Tally::seen` was a global nothing defined, and a module
+    # with a `@@seen` failed R-1's own round trip.
+    #
+    # The declaration travelling is not enough on its own and that was measured:
+    # `@@cache : String? = nil` has its initialiser dropped before this point —
+    # a nil initialiser assigns nothing — so the consumer read the declaration,
+    # made no initialiser out of it, and codegen never emitted the global. What
+    # closes it is the consumer being told the name and declaring it, which is
+    # what this carries.
+    #
+    # The `Bool` is *how* the unit refers to it: true when it calls
+    # `~Owner::name:read`, the main-module function that initialises on first
+    # use, false when it reads the global directly. The consumer owes exactly
+    # the one that was emitted, and neither side can guess the other's — see
+    # `iyi_record_unit_class_var`.
+    #
+    # Recorded only while writing artifacts, like the constants above.
+    getter iyi_unit_class_vars = {} of String => Hash(MetaTypeVar, Bool)
+
+    # iyi: the class variables an imported artifact's object code refers to, as
+    # `Owner::@@name` (SPEC.md IV.2).
+    #
+    # The consumer's half of `iyi_unit_class_vars`. Names rather than the
+    # variables themselves, because at the point an artifact is read the
+    # declarations have only just been parsed — an instance variable's type is
+    # settled by a later pass over the tree, and a class variable's is too. So
+    # codegen resolves them, which is also where they are needed.
+    getter iyi_artifact_class_vars = {} of String => Bool
+
+    # iyi: what a synthesised regex constant was made from, by name (SPEC.md
+    # IV.1g).
+    #
+    # A regex literal becomes a program-level constant, and the name it gets is
+    # a digest of the pattern rather than anything anybody wrote — see
+    # `regex_const_name`. That name is all `iyi_unit_constants` above can carry,
+    # and a consumer handed only a name has nothing to build: `$` is not legal
+    # in a constant, so it cannot travel as the source `Exports` is, and a
+    # digest cannot be read backwards into the pattern that made it. So the
+    # pattern and the flags are kept here, travel in their own section, and the
+    # consumer rebuilds the constant under the name its object code asks for.
+    #
+    # Filled by `LiteralExpander` for every literal this program expands, which
+    # includes the ones a consumer defined from an artifact — that is what makes
+    # a second artifact naming the same pattern share the constant rather than
+    # define it twice.
+    getter iyi_regex_constants = {} of String => {String, RegexOptions}
+
+    # The name a regex literal's constant gets: `$Regex:` and a digest of what
+    # it was written as.
+    #
+    # `$` keeps it unwritable, which is the half the old name already had. The
+    # digest is the half it did not: a name that means the same thing in a
+    # program that never compiled this source. Both halves matter to the
+    # linker — a unit reading the constant refers to `~<name>:const_read` —
+    # and only the digest makes that reference safe to resolve against
+    # somebody else's program.
+    #
+    # The flags are in the digest because they are in the pattern's meaning,
+    # and the length is in it because a pattern may hold anything at all: two
+    # different literals must not be able to spell the same key by moving the
+    # separator.
+    def self.regex_const_name(pattern : String, options : RegexOptions) : String
+      key = "#{options.value}:#{pattern.bytesize}:#{pattern}"
+      "$Regex:#{::Crystal::Digest::MD5.hexdigest(key)}"
+    end
+
     # iyi: the `using` directives each file's module unit writes, by absolute
     # filename and as written (SPEC.md II.3).
     #
@@ -247,6 +320,17 @@ module Iyi
     # program that required the same library has those names to define. So they
     # travel in the artifact and the consumer replays them.
     getter iyi_module_requires = {} of String => Array(String)
+
+    # iyi: the library-name requires a *Crystal* source made, with where each
+    # one resolved. `tool bind` needs them and the map above cannot hold them:
+    # it is keyed on `.iyi` files, and a shard has none.
+    getter iyi_crystal_requires = {} of String => String
+
+    # iyi: the boundaries a `tool bind` run was given, by the top-level name
+    # each declares. The build that fills the artifact's object code needs them:
+    # a dependency can arrive through a *type id* rather than through a
+    # declaration, and only the type ids are known by then.
+    getter iyi_bind_boundaries = {} of String => String
 
     # iyi: the method bodies each file's module has to ship, by absolute
     # filename and then by `IyiMod.mono_body_key` (SPEC.md IV.2, `MonoBodies`).

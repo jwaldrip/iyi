@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 22_u32
+  FORMAT_VERSION = 24_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -64,13 +64,45 @@ module Iyi::IyiMod
     # iyi: under `--crystal`, the library files this module required, in the
     # order it required them. Same reason as `TypeIds` again — see IV.1g.
     Requires = 11
+
+    # iyi: what the synthesised regex constants in `Constants` were made from.
+    # A name is enough for every other constant there and not for these — see
+    # `Artifact#regexes` and IV.1g.
+    Regexes = 12
+
+    # iyi: the class variables this module's object code refers to, as
+    # `Owner::@@name`. `Constants` asked of a global — see IV.2.
+    ClassVars = 13
+
     # iyi: the pointer maps of the types this module owns, one `TypeLayout`
     # per type, keyed in the file by the type's name. Same reason as
     # `TypeIds` for keying by name rather than by the number: two programs
     # number their types differently, and the numbering is the consuming
     # program's (IV.1g). What an entry carries is GC_DESIGN.md Stage 1.
-    Layouts = 12
+    #
+    # 14 rather than 12: this landed as 12 here while `Regexes` took 12
+    # upstream, and a section number is on-disk format, so the one that had
+    # not shipped in a release moved.
+    Layouts = 14
   end
+
+  # A regex literal's constant: the name its object code reads, and what a
+  # consumer has to build under that name.
+  #
+  # *options* is the flags as the number they are stored as rather than as the
+  # enum, because the enum belongs to the compiler that wrote this and the file
+  # outlives it. `Regex::Options.new` on the far side turns it back.
+  record RegexConst, name : String, pattern : String, options : UInt32
+
+  # A class variable a module's object code refers to: `Owner::@@name`, and how.
+  #
+  # *lazy* is true when the unit calls `~Owner::name:read` — the main-module
+  # function that initialises on first use — and false when it reads the global
+  # directly. The consumer owes exactly the one that was emitted, and it cannot
+  # be inferred on the far side: a program under iyi's prelude never takes the
+  # lazy branch, because that prelude has no `__crystal_once`, while one under
+  # Crystal's takes it for anything with a live initialiser.
+  record ClassVarRef, name : String, lazy : Bool
 
   class Error < Iyi::Error
   end
@@ -322,7 +354,22 @@ module Iyi::IyiMod
     # iyi: an enum's members, `{"Small", "0"}`. Its own field rather than a
     # reading of `fields`, because a member is not a field: it has a value where
     # a field has a type, and the two render differently and mean differently.
-    members : Array({String, String}) = [] of {String, String}
+    members : Array({String, String}) = [] of {String, String},
+    # iyi: the type's own class variables, `{"@@seen", "Int32", "0"}` — name,
+    # resolved type, and the initialiser as written, empty when it has none.
+    #
+    # Beside `fields` because it is the same kind of thing one level up: not
+    # part of the surface a consumer writes against, and something the consumer
+    # has to *allocate*. A class variable is a global, the methods that read it
+    # travel as machine code referring to it by name, and the global itself
+    # lives in a main module that never travels — so without this a module with
+    # one failed R-1's own round trip on an undefined symbol.
+    #
+    # Its own field rather than a reading of `fields`, and for the reason
+    # `members` is: it renders differently and means differently. A field is
+    # allocated per instance and has no value here; a class variable is
+    # allocated once and its value is half of what has to arrive.
+    class_vars : Array({String, String, String}) = [] of {String, String, String}
 
   # How a body is found again on the far side.
   #
@@ -625,6 +672,52 @@ module Iyi::IyiMod
     # exactly as the object code is absent from one.
     property layouts : Array({String, TypeLayout})
 
+    # What the synthesised regex constants above were made from.
+    #
+    # `constants` carries a name, and for every other constant in it a name is
+    # the whole of what a consumer needs: it already has Crystal's, and the ones
+    # this module declared arrive in the initialiser that travels as source. A
+    # regex literal's constant is neither. Nobody wrote it — the compiler makes
+    # one per literal, named for the literal's own bytes — and `$` is not legal
+    # in a constant, so it cannot travel through the source channel at all.
+    #
+    # A consumer handed only the name has nothing to define, and defining
+    # nothing is what left `undefined constant ::$Regex:...` at the end of a
+    # build that had every declaration it needed. So the pattern and the flags
+    # come too, and the consumer builds the constant under the name its object
+    # code reads.
+    #
+    # Empty unless a body that travelled held a regex literal, which makes it
+    # empty for every module built under iyi's prelude: a `.iyi` file has no
+    # runtime `Regex` and its literals are refused where they are expanded.
+    #
+    # Settable alongside `object_code`, and for the same reason.
+    property regexes : Array(RegexConst)
+
+    # The class variables this module's object code refers to, as
+    # `Owner::@@name`.
+    #
+    # `constants` asked of a global. A class variable's global is defined in
+    # the main module, and a main module is the one part of a build that never
+    # travels — so the methods that read one arrived as machine code referring
+    # to a symbol nothing defined, and a module with a `@@seen` failed R-1's
+    # own round trip.
+    #
+    # Two kinds of name are in here and the consumer treats them alike. One is
+    # this module's own, whose declaration travels with its type in
+    # `TypeDecl#class_vars`; the other is the library's — a shard that calls
+    # `String#upcase` refers to `Unicode::@@upcase_ranges` — and the consumer
+    # already has that declaration, having compiled the same library. Either
+    # way what is owed is the same: the global, emitted.
+    #
+    # The declaration alone does not do it, which is why both exist. A
+    # `@@cache : String? = nil` has its nil initialiser dropped before an
+    # artifact is written, so the consumer read the declaration, made no
+    # initialiser from it, and codegen emitted nothing.
+    #
+    # Settable alongside `object_code`, and for the same reason.
+    property class_vars : Array(ClassVarRef)
+
     # Whether this module was compiled against Crystal's standard library
     # rather than iyi's prelude — `--crystal`.
     #
@@ -670,6 +763,7 @@ module Iyi::IyiMod
                    @type_ids = [] of String, @hashes = Hashes.empty,
                    @constants = [] of String, @macro_bodies = [] of String,
                    @requires = [] of String, @crystal_library = false,
+                   @regexes = [] of RegexConst, @class_vars = [] of ClassVarRef,
                    @layouts = [] of {String, TypeLayout})
     end
   end
@@ -729,6 +823,16 @@ module Iyi::IyiMod
     # nothing to lay out.
     unless artifact.layouts.empty?
       sections << {Section::Layouts, encode_layouts(artifact)}
+    end
+
+    # Right behind the names it completes, and read the same way: what a
+    # consumer has to build before it can read them.
+    unless artifact.regexes.empty?
+      sections << {Section::Regexes, encode_regexes(artifact)}
+    end
+
+    unless artifact.class_vars.empty?
+      sections << {Section::ClassVars, encode_class_vars(artifact)}
     end
 
     # Last, and omitted when there is nothing in it. A consumer reading
@@ -873,6 +977,8 @@ module Iyi::IyiMod
 
       type_ids = [] of String
       constants = [] of String
+      regexes = [] of RegexConst
+      class_vars = [] of ClassVarRef
       requires = [] of String
       hashes = Hashes.empty
       layouts = [] of {String, TypeLayout}
@@ -901,6 +1007,8 @@ module Iyi::IyiMod
         when Section::Initialiser then initialiser = String.new(payload)
         when Section::TypeIds     then type_ids = decode_type_ids(payload)
         when Section::Constants   then constants = decode_constants(payload)
+        when Section::Regexes     then regexes = decode_regexes(payload)
+        when Section::ClassVars   then class_vars = decode_class_vars(payload)
         when Section::Requires    then requires = decode_requires(payload)
         when Section::Hashes      then hashes = decode_hashes(payload)
         when Section::Layouts     then layouts = decode_layouts(payload)
@@ -917,7 +1025,8 @@ module Iyi::IyiMod
       Artifact.new(header[:module_name], header[:source_path], header[:compiler_version],
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
         object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
-        hashes, constants, macro_bodies, requires, header[:crystal_library], layouts)
+        hashes, constants, macro_bodies, requires, header[:crystal_library],
+        regexes, class_vars, layouts)
     end
   rescue ex : Error
     raise ex
@@ -1045,6 +1154,22 @@ module Iyi::IyiMod
       end
     end
 
+    # With the pattern, because the name is a digest: a reader looking at
+    # `$Regex:5f2b…` in the list above has no way to tell which literal it is.
+    class_vars = artifact.class_vars
+    unless class_vars.empty?
+      io.puts "class variables"
+      class_vars.each do |ref|
+        io.puts "  #{ref.name}#{ref.lazy ? " (through its read function)" : ""}"
+      end
+    end
+
+    regexes = artifact.regexes
+    unless regexes.empty?
+      io.puts "regex constants"
+      regexes.each { |regex| io.puts "  #{regex.name} = /#{regex.pattern}/ (#{regex.options})" }
+    end
+
     object_code = artifact.object_code
     if object_code.empty?
       io.puts "object code   (none)"
@@ -1058,8 +1183,9 @@ module Iyi::IyiMod
     io.puts
     io.puts "note          format v#{FORMAT_VERSION} carries declarations,"
     io.puts "              signatures, field lists in declaration order, the"
-    io.puts "              constants this module's own code reads, the macros"
-    io.puts "              and bodies a consumer has to compile for itself, the"
+    io.puts "              the constants and class variables this module's"
+    io.puts "              own code reads, the macros and"
+    io.puts "              bodies a consumer has to compile for itself, the"
     io.puts "              object code of this module's own non-generic types,"
     io.puts "              and the pointer maps of the types this module owns"
     io.puts "              (SPEC.md IV.2, GC_DESIGN.md Stage 1)."
@@ -1369,6 +1495,9 @@ module Iyi::IyiMod
     declaration.macros.each { |source| io.puts "#{inner}#{source.lines.first? || ""}" }
     declaration.assoc_types.each { |name| io.puts "#{inner}type #{name}" }
     declaration.fields.each { |(name, type)| io.puts "#{inner}#{name} : #{type}" }
+    declaration.class_vars.each do |(name, type, value)|
+      io.puts "#{inner}#{name} : #{type}#{value.empty? ? "" : " = #{value}"}"
+    end
     declaration.types.each { |nested| dump_type_declaration io, nested, inner }
     declaration.methods.each { |signature| io.puts "#{inner}#{render_signature(signature)}" }
   end
@@ -1404,6 +1533,17 @@ module Iyi::IyiMod
     # them. They are also what a `def initialize` with no body leaves
     # unassigned, which is why they arrive declared rather than inferred.
     declaration.fields.each { |(name, type)| io << inner << name << " : " << type << '\n' }
+
+    # A class variable is a global, and this line is what makes the consumer
+    # define one. Written as a declaration with its value rather than as a bare
+    # assignment so that a variable with no initialiser still arrives typed —
+    # a lazy `class_getter` has its `||=` in the method that travels as machine
+    # code, and all that is owed here is the global it assigns to.
+    declaration.class_vars.each do |(name, type, value)|
+      io << inner << name << " : " << type
+      io << " = " << value unless value.empty?
+      io << '\n'
+    end
 
     # An enum's members, which are what an enum is. `Small = 0` rather than
     # `Small : Int32`: the number is the member, and a consumer that read it as
@@ -1633,6 +1773,43 @@ module Iyi::IyiMod
     read_strings(IO::Memory.new(payload))
   end
 
+  private def self.encode_class_vars(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    refs = artifact.class_vars
+    io.write_bytes refs.size.to_u32, FORMAT
+    refs.each do |ref|
+      write_string io, ref.name
+      io.write_byte(ref.lazy ? 1_u8 : 0_u8)
+    end
+    io.to_slice
+  end
+
+  private def self.decode_class_vars(payload : Bytes) : Array(ClassVarRef)
+    io = IO::Memory.new(payload)
+    Array(ClassVarRef).new(io.read_bytes(UInt32, FORMAT)) do
+      ClassVarRef.new(read_string(io), io.read_byte == 1_u8)
+    end
+  end
+
+  private def self.encode_regexes(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    regexes = artifact.regexes
+    io.write_bytes regexes.size.to_u32, FORMAT
+    regexes.each do |regex|
+      write_string io, regex.name
+      write_string io, regex.pattern
+      io.write_bytes regex.options, FORMAT
+    end
+    io.to_slice
+  end
+
+  private def self.decode_regexes(payload : Bytes) : Array(RegexConst)
+    io = IO::Memory.new(payload)
+    Array(RegexConst).new(io.read_bytes(UInt32, FORMAT)) do
+      RegexConst.new(read_string(io), read_string(io), io.read_bytes(UInt32, FORMAT))
+    end
+  end
+
   private def self.encode_type_ids(artifact : Artifact) : Bytes
     io = IO::Memory.new
     write_strings io, artifact.type_ids
@@ -1737,6 +1914,7 @@ module Iyi::IyiMod
       write_strings io, declaration.supertraits
       write_pairs io, declaration.fields
       write_pairs io, declaration.members
+      write_triples io, declaration.class_vars
       write_strings io, declaration.macros
       write_signatures io, declaration.methods
       write_type_declarations io, declaration.types
@@ -1754,10 +1932,11 @@ module Iyi::IyiMod
       supertraits = read_strings(io)
       fields = read_pairs(io)
       members = read_pairs(io)
+      class_vars = read_triples(io)
       macros = read_strings(io)
       methods = read_signatures(io)
       TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
-        visibility, read_type_declarations(io), value, macros, members)
+        visibility, read_type_declarations(io), value, macros, members, class_vars)
     end
   end
 
@@ -1822,6 +2001,21 @@ module Iyi::IyiMod
     values.each do |(first, second)|
       write_string io, first
       write_string io, second
+    end
+  end
+
+  private def self.write_triples(io : IO, values : Array({String, String, String})) : Nil
+    io.write_bytes values.size.to_u32, FORMAT
+    values.each do |(first, second, third)|
+      write_string io, first
+      write_string io, second
+      write_string io, third
+    end
+  end
+
+  private def self.read_triples(io : IO) : Array({String, String, String})
+    Array({String, String, String}).new(io.read_bytes(UInt32, FORMAT)) do
+      {read_string(io), read_string(io), read_string(io)}
     end
   end
 
