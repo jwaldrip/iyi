@@ -6485,9 +6485,21 @@ Named honestly, so nobody mistakes this draft for complete.
     > > the `initialize` it was made from. A block-taking `new` does not travel
     > > at all now, which is the same rule from the other side.
     > >
-    > > What a consumer driving the router still waits on is `Route#initialize`,
-    > > which takes a block and is not in the declarations. That is where this
-    > > goes next.
+    > > `Route#initialize` followed it. Crystal reaches `initialize` through
+    > > `new` and marks it not-public — fine while `new` travels, and it does
+    > > not when it takes a block — so a block-taking `initialize` crosses now,
+    > > and only that one: declaring it beside a `new` that also travels would
+    > > be two ways to build the same type.
+    > >
+    > > **What a consumer driving the router waits on now is a *private*
+    > > method.** `add_route`'s body calls `add_to_radix_tree`, which
+    > > `RouteHandler` keeps to itself — and a body that travels calls the
+    > > methods beside it. iyi's own side has carried those since the beginning
+    > > (`carried_functions`, "a name nobody may reach is still a name the
+    > > consumer has to typecheck a call against"); a boundary written by
+    > > `tool bind` carries none. Rendering one as `private def` inside the type
+    > > is what the shape asks for: reachable from the body that travels with
+    > > it, and from nowhere else. That is the next thing.
     > >
     > > **And `exception_page` filling with 0 units is not a bug.**
     > > `ExceptionPage` is an `abstract class` with no subclass in its own
