@@ -6308,15 +6308,42 @@ Named honestly, so nobody mistakes this draft for complete.
     > > parameterised by its container unless it says so, so the recursion is
     > > all it took. **Ten symbols to eight.**
     > >
-    > > **The consumer links now, and what it waits on is eight symbols.** An
-    > > earlier note here said zero, which was not a measurement: the build was
-    > > dying before the linker ran, so nothing had been asked for. Three kinds
-    > > remain — three type ids (two modules and a generic metaclass), four
-    > > methods inherited from `Object` or `Reference` and synthesised rather
-    > > than read (`new`, `to_s`), and one union `~match` whose members are both
-    > > Crystal's own. The three virtual `~match` functions this item named
-    > > before are gone, which is the superclass edge doing what it was built to
-    > > do.
+    > > **And the type-id list is the import graph, which is why it cannot be
+    > > filtered.** Two more went with one change. A module's id is its
+    > > *metaclass's* — `Backtracer::Backtrace::Parser:Module` is how a module's
+    > > metaclass prints — and carrying the instance and stopping there defined
+    > > `…::Parser:type_id` for code that wanted `…::Parser:Module:type_id`; the
+    > > walk that numbers metaclasses reaches only classes. And the list itself
+    > > had been filtered to the kinds a consumer could not number for itself,
+    > > leaving plain classes out on the reasoning that the consumer has them
+    > > already. It has them only if it *imports the module that declares them*,
+    > > and `add_bind_boundary_imports` derives that edge from this very list:
+    > > `Kemal` numbers `ExceptionPage::Styles`, the name was filtered, no edge
+    > > was added, and the consumer never read `exception_page` at all. The list
+    > > is the dependency. Whole, it costs `Kemal` 303 names → 642, and a name
+    > > is a string.
+    > >
+    > > **What is left is one refusal, and the five behind it are no longer
+    > > measured.** The metaclass half above took the count from eight undefined
+    > > symbols to six. The import edge does not read as a count at all: with it
+    > > added, `ExceptionPage::Styles` stops being a mangled symbol at link time
+    > > and becomes a refusal naming the type — which arrives *before* the
+    > > linker, so nothing behind it is asked for. An earlier note here said
+    > > zero undefined symbols, and that was the same mistake in the other
+    > > direction: the build was dying before the linker ran.
+    > >
+    > > The refusal comes first and names its own cause: `"kemal" numbers
+    > > `ExceptionPage::Styles`, and this build cannot name it`. With the edge
+    > > added the consumer reads `exception_page`, and what it cannot do is
+    > > *name* a type under a **class** root — the collision with its own module
+    > > wrapper recorded below. That is where this goes next, and it is the same
+    > > item as `exception_page` filling with 0 units.
+    > >
+    > > Behind it: four methods inherited from `Object` or `Reference` and
+    > > synthesised rather than read (`new`, `to_s`), and one union `~match`
+    > > whose members are both Crystal's own. The three virtual `~match`
+    > > functions this item named before are gone, which is the superclass edge
+    > > doing what it was built to do.
     > >
     > > **And the DSL is a separate question from all four.** `get "/" do …` is
     > > a top-level `def` of kemal's, outside `Kemal`, so a boundary rooted at
