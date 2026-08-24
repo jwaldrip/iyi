@@ -68,8 +68,7 @@ Five additional rules replace or constrain Crystal's open-class model:
 
 iyi's own prelude is small by design. From SPEC.md, section 0.1.0:
 
-- iyi's prelude: 2,872 lines, ceiling 3,551
-- Crystal's 0.1.0 prelude: 3,551 lines
+- iyi's prelude: 2,872 lines (measured via `wc -l src/iyi/*.iyi`). Designed to stay under 3,551 lines, which was Crystal's 0.1.0 prelude size (the historical ceiling).
 
 From CHANGELOG.md: iyi's prelude is written in iyi itself and deliberately minimal. From README.md, lines 97-99:
 
@@ -117,7 +116,7 @@ From README.md metrics (measured 2026-08-17, rows 15-21):
 
 | Feature | Measured Result |
 |---------|-----------------|
-| Edit one module, rebuild (30 modules, 7,208 lines) | iyi 0.13 s, Crystal 1.17 s, Go 0.16 s |
+| Edit one module, rebuild (30 modules, 7,207 lines) | iyi 0.13 s, Crystal 1.17 s, Go 0.16 s |
 | Warm full build, hello / 6,900-line pair | 0.07 s / 0.24 s vs Go's 0.08 s / 0.09 s |
 | Front end speed (hello.iyi) | 0.031 s (target: 0.050 s, MET) |
 | Binary size (hello) | 36 KB, starts in 1.6 ms |
@@ -553,4 +552,17 @@ The current compiler reports version 0.3.0-dev.
 **Distinguish design from implementation.** GC_DESIGN.md and SPEC.md Part II contain design; the code and samples show what is built. The CHANGELOG.md "Unreleased" section documents what is shipping next.
 
 **Crystal compatibility is checked.** The samples run identically to their Crystal equivalents, verified by the benches' own output comparison.
+**Em-dashes in README.** Verbatim quotes from README.md preserve em-dashes as they appear in the source. When writing site copy, use commas, colons, or full stops instead of em-dashes or en-dashes.
 
+**Numbers are gated.** The script `bench/doc_numbers.py` runs on every build and fails if quoted numbers drift from the source. It measures:
+- prelude: 2,872 lines (src/iyi/*.iyi)
+- samples_std: 777 lines (samples/iyi/std/*.iyi)
+- compiler: 91,337 lines (src/compiler/**/*.cr)
+- samples: 13 (count of samples/iyi/*.iyi)
+- prelude_kb: 100 KB on disk
+- bang_names: 51 distinct method names ending in ! in Crystal stdlib
+- generated: 7,207 lines (benchmark project from bench/incremental/generate_project.py)
+- spec_iyi: 8,924 lines
+- targets: 9 (CI type-check targets from .github/workflows/iyi.yml)
+
+A website build can consume `python3 bench/doc_numbers.py --list` to emit these numbers as structured data, making site numbers generated rather than hand-copied and eliminating silent drift.
