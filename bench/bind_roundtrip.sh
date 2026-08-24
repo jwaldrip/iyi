@@ -168,6 +168,20 @@ module Shard
     Derived.new(tag, extra)
   end
 
+  # An abstract class, whose concrete methods are the third thing whose body
+  # has to travel — beside a generic's and a block-taker's, and for the same
+  # reason each time: they are instantiated per *subclass*, and the subclass is
+  # the consumer's. A shard that declares one and never subclasses it carries
+  # **no machine code for it at all**, which is why `exception_page` fills with
+  # 0 units and why that is not a bug.
+  abstract class Sheet
+    abstract def title : String
+
+    def render : String
+      "[" + title + "]"
+    end
+  end
+
   # A non-generic type nested inside a generic one. The keep file skipped a
   # generic — rightly, since `uninitialized Holder(T)` is not a thing anybody
   # can write — and skipped everything it declared along with it. Those have
@@ -267,6 +281,16 @@ d = Shard.derived("hello", 42)
 puts d.tag
 puts d.extra
 puts d.describe
+class Report < Shard::Sheet
+  def initialize
+  end
+
+  def title : String
+    "report"
+  end
+end
+
+puts Report.new.render
 Shard.note("kept").write(STDOUT)
 puts ""
 puts part.kind(2)

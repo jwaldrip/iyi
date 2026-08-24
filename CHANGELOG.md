@@ -4,6 +4,29 @@
 
 ### Added
 
+- **An abstract class crosses a boundary, and its concrete methods travel as
+  bodies.** They are the third thing that has to, beside a generic's methods
+  and a block-taker's, and for the same reason each time: they are instantiated
+  per *subclass*, and every subclass is somebody else's. A shard that declares
+  an abstract class and never subclasses it carries **no machine code for it at
+  all** — which is why `exception_page` fills with 0 units, and why that is not
+  a bug — so a consumer writing `class Report < Sheet` asked for
+  `*Sheet+@Sheet#render` and nobody had made one.
+
+  Two smaller things sat in front of it. The keep file *called* the abstract
+  methods, and `t0.title` on a class with no subclass has no type: codegen said
+  so as `BUG: … has no type` rather than as an error anybody could act on.
+  And neither the method's nor the type's abstractness travelled, so a consumer
+  read `def title` where the shard wrote `abstract def title`.
+
+- **`pub abstract class`.** Being abstract and being reachable are different
+  questions — one says the type cannot be instantiated, the other says who may
+  name it — and `pub` took a class, a struct, a trait, a def, a macro and an
+  enum, but not an `abstract` anything. A bound abstract class is a type a
+  consumer subclasses and therefore has to be able to write; without this the
+  declaration came back as a plain `pub class` and the requirement inside it
+  was refused with `can't define abstract def on non-abstract class`.
+
 - **A chain of four bound shards builds and runs.** `bench/bind_chain.sh`
   installs kemal and the three shards under it, binds all four in dependency
   order, and builds a program against the boundaries that prints what the same

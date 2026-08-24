@@ -83,7 +83,13 @@ module Iyi
     checked : BindCheck,
     # What instantiation answered, when that differs from what was written —
     # and what travels, because the symbol is named after it.
-    produced : String? do
+    produced : String?,
+    # Whether it is an `abstract def`. It has no body to emit and no symbol
+    # behind it, so the keep file must not call one — `t0.title` on a class
+    # with no subclass has no type, and codegen said so as a compiler bug
+    # rather than as an error anybody could act on. What crosses is the
+    # *requirement*, which is what a consumer subclassing the type has to meet.
+    abstract_def : Bool = false do
     # What this method answers, which is not always what the shard wrote.
     #
     # The instantiated answer wins where the two disagree, and the linker is
@@ -1050,7 +1056,12 @@ module Iyi
 
       IyiMod::TypeDecl.new(
         name: name,
-        kind: type.type_desc,
+        # `abstract` is part of what the type *is*, not decoration: a consumer
+        # that reads `def title` where the shard wrote `abstract def title`
+        # inherits a method with no body, and one that reads `class` where the
+        # shard wrote `abstract class` is refused the requirement outright —
+        # `can't define abstract def on non-abstract class`.
+        kind: type.abstract? ? "abstract #{type.type_desc}" : type.type_desc,
         type_parameters: [] of String,
         assoc_types: [] of String,
         supertraits: [] of String,
@@ -1084,6 +1095,13 @@ module Iyi
 
   private def self.keep_call(io : IO, target : String, signature : IyiMod::Signature,
                              counter : Int32) : Int32
+    # An `abstract def` has nothing to emit and calling one is not a thing this
+    # file can do: `t0.title` on a class with no subclass has no type, and the
+    # compiler said so as `BUG: … has no type` from inside codegen rather than
+    # as an error anybody could act on. What a consumer needs from an abstract
+    # method is the *requirement*, which travels in the declaration.
+    return counter if signature.required
+
     declared = signature.parameters.map { |parameter| parameter.split(" : ").last }
     shapes = declared.map { |type| [type] + union_members(type) }
 
@@ -1811,6 +1829,15 @@ module Iyi
   private def self.collect_signatures(type : Type, name : String,
                                       by_owner, root : String) : Array(IyiMod::Signature)
     signatures = [] of IyiMod::Signature
+
+    # An abstract class's concrete methods are the **third** thing whose body
+    # has to travel, beside a generic's and a block-taker's, and for the same
+    # reason each time: they are instantiated per *subclass*, and the subclass
+    # is the consumer's. `abstract class ExceptionPage` fills with 0 units and
+    # that is not a bug — there is no machine code, because nothing in that
+    # shard subclasses it — so a consumer that writes `class Report < Sheet`
+    # asked for `*Sheet+@Sheet#render` and nobody had made one.
+    abstract_owner = type.responds_to?(:abstract?) && type.abstract?
     { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
       by_owner[owner]?.try &.each do |method|
         next unless method.verdict.ready? || method.inferred
@@ -1830,7 +1857,7 @@ module Iyi
         # So it travels the way a generic's methods already did, in
         # `MonoBodies`, and the consumer compiles its own from the block it
         # wrote. A body that is not there to carry cannot cross at all.
-        carries_body = !method.written_block.empty?
+        carries_body = (!method.written_block.empty? || abstract_owner) && !method.abstract_def
         body = method.body
         next if carries_body && (body.nil? || body.empty?)
 
@@ -1844,7 +1871,7 @@ module Iyi
           block_parameter: method.written_block,
           return_type: method.answer.not_nil!,
           free_variables: [] of String,
-          required: false,
+          required: method.abstract_def,
         )
         signatures << signature
         if carries_body && body
@@ -2040,6 +2067,7 @@ module Iyi
       inferred: inferred,
       refused: refused,
       body: a_def.body.to_s,
+      abstract_def: a_def.abstract?,
       # The return type is asked the same question the parameters are. `Int` is
       # the head of a family on either side of the arrow, and a method that
       # answers one has a symbol per member exactly as a method that takes one
