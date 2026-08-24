@@ -6360,10 +6360,19 @@ Named honestly, so nobody mistakes this draft for complete.
     > > `PKey::PKey::PKeyError`. The stripping goes a level deeper with each
     > > nesting now.
     > >
-    > > What `jwt` waits on now is a `lib`: `open_s_s_l` numbers
-    > > `Pointer(LibCrypto::Bignum)` and a `lib` declaration does not travel at
-    > > all, so a consumer cannot name it. That is the next thing, and it is a
-    > > question about C bindings rather than about Crystal types.
+    > > What `jwt` waits on now is bigger than a `lib`, and worth naming
+    > > exactly. `open_s_s_l` numbers `Pointer(LibCrypto::Bignum)`, and
+    > > `LibCrypto` is a **top-level** `lib` of Crystal's that the shard *adds a
+    > > struct to*. Carrying the addition is not carrying a type: an artifact's
+    > > declarations are rendered inside its own module, so a `lib LibCrypto`
+    > > written there is `OpenSSL::LibCrypto` and means something else.
+    > >
+    > > That is the general question this reaches, and it is not about C: **what
+    > > a shard adds to a type it does not own.** Crystal shards do it — a
+    > > method on `String`, a struct in somebody's `lib` — and every one of
+    > > those additions belongs to a namespace the consumer already has from a
+    > > different source. R-3 says iyi has no open classes, so there is no form
+    > > for it to arrive in, and that is the wall `jwt` stands at.
     > >
     > > **What it does not do any more is fail quietly.** The artifact left on
     > > disk has every declaration and no machine code, which read as a boundary
