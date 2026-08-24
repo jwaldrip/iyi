@@ -22,7 +22,22 @@ class Iyi::CodeGenVisitor
   end
 
   private def match_type_id_impl(type, restriction, type_id)
-    equal? type_id(restriction), type_id
+    # iyi: the restriction can be virtual while the value is not, which is a
+    # shape a whole-program build never makes and a boundary does. A call to a
+    # method read from a `.iyimod` is keyed on the parameter *as declared* and
+    # the argument widened to it, so an `IO` parameter is matched against `IO+`
+    # with a concrete `IO::FileDescriptor` in hand — and a single type id is
+    # not what `IO+` is. It is a range, and the range is what answers.
+    #
+    # Handled here rather than as an overload on the restriction, because the
+    # case above already takes a virtual *value* and the two would be ambiguous
+    # where both are virtual.
+    case restriction
+    when VirtualType, VirtualMetaclassType, UnionType
+      match_any_type_id(restriction, type_id)
+    else
+      equal? type_id(restriction), type_id
+    end
   end
 
   def match_any_type_id(type, type_id)

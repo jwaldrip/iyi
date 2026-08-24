@@ -4,6 +4,39 @@
 
 ### Added
 
+- **Inheritance crosses a boundary.** `TypeDecl` had no field for the `<`, so a
+  bound `Derived < Base` arrived without its base and without the fields it
+  inherits — a class's own field list is only its own — and the consumer said
+  `undefined method 'tag' for Shard::Derived`. The edge travels now, and the
+  declarations are written superclass-first so `class Derived < Base` resolves.
+
+  The edge alone left three more, each a place that had only ever seen a class
+  with nothing under it. **A method is keyed on the type that defines it**: a
+  boundary has one symbol per method where an ordinary build makes one per
+  receiver, which is the mirror of the rule the parameter side already carries.
+  That symbol is keyed on the class's **virtual form**, because a value of a
+  class something inherits from is held as one — the symbol is
+  `*Shard::Base+@Shard::Base#tag`. And a class with subclasses has a **second
+  unit**, `Shard::Base+`, holding the methods reached through that form; the
+  artifact was carrying neither it nor its callees.
+
+  **The undefined symbol was the safe half of the bug.** A match against a
+  virtual type compares an id against the *range* its subclasses occupy, and
+  ids are assigned by walking that same tree — so a consumer missing an edge
+  numbers the tree differently. Defining the function anyway would answer
+  `is_a?` wrongly and link cleanly.
+
+  Two more followed from more of a real shard crossing: a type read from a
+  `.iyimod` is exempt from the "not initialized in all of the 'initialize'
+  methods" check on the branch where the field's type does not include `Nil`,
+  as it already was on the other; and a restriction can be virtual while the
+  value is concrete — an `IO` parameter matched against `IO+` — which is
+  answered with the range rather than a single type id.
+
+  A consumer of kemal's four bound shards goes from **11 undefined symbols to
+  zero**. `bench/bind_roundtrip.sh` carries a base, a subclass, an inherited
+  method and an overridden one.
+
 - **The unions a bound module matches against travel.** `is_a?` against a union
   or a virtual type compiles to `~match<T>`, a function that compares a type id
   against a *range* of the program's own numbering — so it lives in the main

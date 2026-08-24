@@ -119,6 +119,55 @@ module Shard
     end
   end
 
+  # Inheritance, which a boundary lost entirely: `TypeDecl` had no field for
+  # the `<`, so `Derived` arrived without its base *and* without the fields it
+  # inherits — a subclass's own field list is only its own. The consumer said
+  # `undefined method 'tag' for Shard::Derived`.
+  #
+  # Three separate things had to follow the edge. A method is keyed on the type
+  # that *defines* it, because a boundary has one symbol per method and not one
+  # per receiver. That symbol is keyed on the class's *virtual* form, because a
+  # value of a class something inherits from is held as one. And a class with
+  # subclasses has a second unit — `Shard::Base+` — which is where the methods
+  # reached through that form are emitted, and which the artifact was not
+  # carrying at all.
+  class Base
+    @tag : String
+
+    def initialize(@tag : String)
+    end
+
+    def tag : String
+      @tag
+    end
+
+    def describe : String
+      "base:" + @tag
+    end
+  end
+
+  class Derived < Base
+    @extra : Int32
+
+    def initialize(tag : String, @extra : Int32)
+      super(tag)
+    end
+
+    def extra : Int32
+      @extra
+    end
+
+    # Overridden, so the two halves of dispatch are both checked: the inherited
+    # `tag` comes from the base's unit and this one does not.
+    def describe : String
+      "derived:" + @tag + ":" + @extra.to_s
+    end
+  end
+
+  def self.derived(tag : String, extra : Int32) : Derived
+    Derived.new(tag, extra)
+  end
+
   # A nested namespace, which a boundary used to drop whole and report as a
   # "nested namespace skipped". What that cost only shows at a shard's scale:
   # `Kemal::Exceptions` holds four exception classes, each with an object-code
@@ -179,6 +228,10 @@ puts part.bump
 puts Shard.make(11).step(1)
 puts Shard.made
 puts Shard::Inner.deep("nested").tag
+d = Shard.derived("hello", 42)
+puts d.tag
+puts d.extra
+puts d.describe
 puts part.kind(2)
 puts part.kind(1)
 puts part.kind(0)
