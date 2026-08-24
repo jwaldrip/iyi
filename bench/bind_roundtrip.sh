@@ -107,6 +107,29 @@ module Shard
     end
   end
 
+  # A nested namespace, which a boundary used to drop whole and report as a
+  # "nested namespace skipped". What that cost only shows at a shard's scale:
+  # `Kemal::Exceptions` holds four exception classes, each with an object-code
+  # unit in the artifact, so a consumer linked their machine code and had none
+  # of the classes. A module is also a type — the object code numbers one — and
+  # a consumer that cannot name it cannot number it.
+  module Inner
+    class Deep
+      @tag : String
+
+      def initialize(@tag : String)
+      end
+
+      def tag : String
+        @tag
+      end
+    end
+
+    def self.deep(tag : String) : Deep
+      Deep.new(tag)
+    end
+  end
+
   def make(seed : Int32) : Part
     @@made = @@made + 1
     Part.new(seed)
@@ -143,6 +166,7 @@ puts part.bump
 puts part.bump
 puts Shard.make(11).step(1)
 puts Shard.made
+puts Shard::Inner.deep("nested").tag
 IYI
 
 sed 's|require "./shard"|import shard|' "$WORK/app_source.iyi" > "$WORK/app_artifact.iyi"

@@ -952,10 +952,6 @@ module Iyi
     # referenced`. `keep_type` skips these instead.
     private_type = type.private?
 
-    # `pub` takes a def, a class, a struct and a trait — not a module, which
-    # is what a nested namespace like `Kemal::Exceptions` is. What it holds
-    # has to travel as its own nested declarations, and this walk does not go
-    # there yet.
     # An enum travels as itself: its members and the integer it is written on.
     #
     # It was skipped once and reported as a "namespace skipped whole", on the
@@ -966,55 +962,47 @@ module Iyi
       return enum_declaration name, type, private_type
     end
 
+    # A module travels as a namespace: the declarations under it and nothing
+    # else it is not asked for.
+    #
+    # It was dropped whole before, reported as a "nested namespace skipped", and
+    # what that cost only shows at a shard's scale. `Kemal::Exceptions` holds
+    # four exception classes, each with **an object-code unit in the artifact**
+    # — the units travelled and the declarations did not, so a consumer linked
+    # 7 MB of machine code for classes it did not have. And a module is a type:
+    # `Backtracer::Backtrace::Parser` is one, the object code numbers it, and a
+    # consumer that cannot name it cannot number it.
+    #
+    # Without `pub`, because iyi's `pub` takes a def, a class, a struct, a trait
+    # and an enum — not a module. That is not a gap here: what a namespace owes
+    # is that the things *inside* it can be named, and each of those carries its
+    # own visibility. The module arrives declared and unmarked, which is what it
+    # is when the shard is read from source.
+    if type.is_a?(NonGenericModuleType)
+      nested = [] of IyiMod::TypeDecl
+      collect_declarations type, by_owner, root, nested
+
+      return IyiMod::TypeDecl.new(
+        name: name,
+        kind: type.type_desc,
+        type_parameters: [] of String,
+        assoc_types: [] of String,
+        supertraits: [] of String,
+        fields: [] of {String, String},
+        methods: collect_signatures(type, name, by_owner, root).sort_by(&.name),
+        visibility: "",
+        types: nested,
+        class_vars: collect_class_vars(type),
+      )
+    end
+
     unless type.is_a?(ClassType)
       @@nested_namespaces << name
       return nil
     end
 
     begin
-      signatures = [] of IyiMod::Signature
-      {% begin %}{% end %}
-      { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
-        by_owner[owner]?.try &.each do |method|
-          next unless method.verdict.ready? || method.inferred
-          next unless method.storable
-          next unless method.callable?
-          next unless method.signature_types.all? { |t| nameable?(t, root) }
-
-          # A block-taking method's machine code is the caller's, and IV.1g is
-          # explicit that this is a question about a `def` rather than about a
-          # type: the producer emits each instantiation private to the unit
-          # that called it, so no symbol for one ever leaves the artifact. A
-          # declaration without the body is therefore a promise nothing can
-          # keep, and `bench/bind_roundtrip.sh` says so in the only way that
-          # settles it — `undefined symbol:
-          # *Shard::Part#apply<&Proc(Int32, Int32)>`.
-          #
-          # So it travels the way a generic's methods already did, in
-          # `MonoBodies`, and the consumer compiles its own from the block it
-          # wrote. A body that is not there to carry cannot cross at all.
-          carries_body = !method.written_block.empty?
-          body = method.body
-          next if carries_body && (body.nil? || body.empty?)
-
-          signature = IyiMod::Signature.new(
-            name: method.name,
-            # `new` is synthesized from `initialize` and carries no receiver of
-            # its own, so a class method would arrive on the far side as an
-            # instance method with the right name and the wrong reach.
-            receiver: on_metaclass && method.receiver.empty? ? "self" : method.receiver,
-            parameters: method.params.map { |(argument, restriction)| "#{argument} : #{restriction}" },
-            block_parameter: method.written_block,
-            return_type: method.answer.not_nil!,
-            free_variables: [] of String,
-            required: false,
-          )
-          signatures << signature
-          if carries_body && body
-            @@mono_bodies[IyiMod.mono_body_key(name, signature)] = body
-          end
-        end
-      end
+      signatures = collect_signatures(type, name, by_owner, root)
 
       fields = [] of {String, String}
       if type.is_a?(InstanceVarContainer)
@@ -1781,6 +1769,58 @@ module Iyi
         collect_constant_source type, "#{prefix}#{name}::", root, lines
       end
     end
+  end
+
+  # The signatures one type carries, both sides of it.
+  #
+  # A `def self.zero` is stored on the metaclass rather than on the type, so
+  # walking only the type's own defs drops every class method — which is what a
+  # module is mostly made of.
+  private def self.collect_signatures(type : Type, name : String,
+                                      by_owner, root : String) : Array(IyiMod::Signature)
+    signatures = [] of IyiMod::Signature
+    { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
+      by_owner[owner]?.try &.each do |method|
+        next unless method.verdict.ready? || method.inferred
+        next unless method.storable
+        next unless method.callable?
+        next unless method.signature_types.all? { |t| nameable?(t, root) }
+
+        # A block-taking method's machine code is the caller's, and IV.1g is
+        # explicit that this is a question about a `def` rather than about a
+        # type: the producer emits each instantiation private to the unit
+        # that called it, so no symbol for one ever leaves the artifact. A
+        # declaration without the body is therefore a promise nothing can
+        # keep, and `bench/bind_roundtrip.sh` says so in the only way that
+        # settles it — `undefined symbol:
+        # *Shard::Part#apply<&Proc(Int32, Int32)>`.
+        #
+        # So it travels the way a generic's methods already did, in
+        # `MonoBodies`, and the consumer compiles its own from the block it
+        # wrote. A body that is not there to carry cannot cross at all.
+        carries_body = !method.written_block.empty?
+        body = method.body
+        next if carries_body && (body.nil? || body.empty?)
+
+        signature = IyiMod::Signature.new(
+          name: method.name,
+          # `new` is synthesized from `initialize` and carries no receiver of
+          # its own, so a class method would arrive on the far side as an
+          # instance method with the right name and the wrong reach.
+          receiver: on_metaclass && method.receiver.empty? ? "self" : method.receiver,
+          parameters: method.params.map { |(argument, restriction)| "#{argument} : #{restriction}" },
+          block_parameter: method.written_block,
+          return_type: method.answer.not_nil!,
+          free_variables: [] of String,
+          required: false,
+        )
+        signatures << signature
+        if carries_body && body
+          @@mono_bodies[IyiMod.mono_body_key(name, signature)] = body
+        end
+      end
+    end
+    signatures
   end
 
   # A type's own class variables, `{"@@count", "Int32", "0"}`.

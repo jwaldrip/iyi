@@ -6227,20 +6227,26 @@ Named honestly, so nobody mistakes this draft for complete.
     > > of them is a symbol nobody understands.** In the order they will have to
     > > be answered:
     > >
-    > > 1. **A module a unit numbers, whose declaration does not travel.**
-    > >    `crystal tool bind` records a module as a "nested namespace skipped"
-    > >    and carries nothing for it, so `Backtracer::Backtrace::Parser` is a
-    > >    name the consumer cannot reach. With the type id now carried this is
-    > >    a refusal naming both, where it used to be an undefined symbol.
-    > > 2. **Types with object code and no declaration.**
-    > >    `Kemal::Exceptions::CustomException` and three like it have units in
-    > >    the artifact — 1.8 MB each — and appear in no declaration and no
-    > >    type-id list. The consumer links their machine code and never has the
-    > >    class.
-    > > 3. **`~match<…>` for unions the consumer does not have.** The same
-    > >    question as a type id, asked of a union: the function is the
-    > >    program's and the unit refers to it.
-    > > 4. **`new` synthesised from `initialize`.** Already written down in
+    > > 1. ~~**A module a unit numbers, whose declaration does not travel.**~~
+    > >    and ~~**types with object code and no declaration**~~ — **both built,
+    > >    and they were one thing.** `crystal tool bind` recorded a module as a
+    > >    "nested namespace skipped" and carried nothing for it, so
+    > >    `Backtracer::Backtrace::Parser` was a name the consumer could not
+    > >    reach *and* `Kemal::Exceptions::CustomException` and three like it had
+    > >    units in the artifact — 1.8 MB each — with no declaration anywhere.
+    > >    The walk stopped at `Exceptions`, so both the namespace and everything
+    > >    under it went missing at once.
+    > >
+    > >    A module travels as a declaration now, without `pub`: iyi's `pub`
+    > >    takes a def, a class, a struct, a trait and an enum, and a namespace
+    > >    owes only that the things *inside* it can be named, each carrying its
+    > >    own visibility. **40 undefined symbols → 22.**
+    > > 2. **`~match<…>` for unions the consumer does not have.** The same
+    > >    question as a type id, asked of a union — and unlike a virtual type,
+    > >    which `iyi_define_all_match_funs` already covers, a union cannot be
+    > >    enumerated: the consumer would have to guess which ones a unit asks
+    > >    about. It is the majority of what is left.
+    > > 3. **`new` synthesised from `initialize`.** Already written down in
     > >    `collect_iyi_unit_names`, and it is what
     > >    `*Kemal::RouteHandler@Reference::new` is.
     > >
