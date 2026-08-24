@@ -84,6 +84,13 @@ module Iyi
     # What instantiation answered, when that differs from what was written —
     # and what travels, because the symbol is named after it.
     produced : String?,
+    # Whether the *compiler* refused to instantiate it — the method does not
+    # compile. It must not be declared: the keep file names what a boundary
+    # declares, and one method that does not typecheck takes the whole fill
+    # build down with it, leaving every declaration on disk and no machine code
+    # anywhere. `openssl_ext` is the case — a `LibCrypto` call whose argument is
+    # a pointer too deep, in a method the shard's own compilation never types.
+    uncompilable : Bool = false,
     # Whether it is an `abstract def`. It has no body to emit and no symbol
     # behind it, so the keep file must not call one — `t0.title` on a class
     # with no subclass has no type, and codegen said so as a compiler bug
@@ -473,6 +480,7 @@ module Iyi
       next unless owners.includes?(method.owner)
       next unless seen.add?(method.name)
       next unless method.verdict.ready? || method.inferred
+      next if method.uncompilable
       next unless method.storable
       next unless method.callable?
       next unless method.signature_types.all? { |t| nameable?(t, root) }
@@ -1723,6 +1731,7 @@ module Iyi
       by_owner[owner]?.try &.each do |method|
         next if method.name == "new"
         next unless method.verdict.ready? || method.inferred
+        next if method.uncompilable
         next unless method.callable?
         # A type variable is nameable inside the type that binds it, which is
         # the whole point of carrying the parameters beside the methods.
@@ -1874,6 +1883,11 @@ module Iyi
     { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
       by_owner[owner]?.try &.each do |method|
         next unless method.verdict.ready? || method.inferred
+        # A method the compiler refused to instantiate does not travel. The keep
+        # file names what a boundary declares, so one that does not typecheck
+        # takes the whole fill build with it — every declaration on disk and no
+        # machine code anywhere.
+        next if method.uncompilable
         next unless method.storable
         next unless method.callable?
         next unless method.signature_types.all? { |t| nameable?(t, root) }
@@ -2064,8 +2078,9 @@ module Iyi
     produced = nil
     written = resolve_restriction(owner, a_def.return_type)
 
+    uncompilable = false
     if verdict.needs_return?
-      inferred, refused = infer_return(owner, a_def)
+      inferred, refused, uncompilable = infer_return(owner, a_def)
     elsif written
       # The other half of rule 1. A method that writes its return type was
       # copied out verbatim and never instantiated, so nothing ever held the
@@ -2075,7 +2090,7 @@ module Iyi
       # `String?`. A consumer told the union holds one where the object code
       # answers a bare pointer, which is rule 1's "returns something of another
       # type" exactly. So ask this half the question the other half answers.
-      produced, refused = infer_return(owner, a_def)
+      produced, refused, uncompilable = infer_return(owner, a_def)
       checked =
         if a_def.abstract?
           BindCheck::Dispatched
@@ -2087,7 +2102,10 @@ module Iyi
           BindCheck::Disagrees
         end
       produced = nil unless checked.disagrees?
-      refused = nil if checked.dispatched?
+      if checked.dispatched?
+        refused = nil
+        uncompilable = false
+      end
     end
 
     BindMethod.new(
@@ -2101,6 +2119,7 @@ module Iyi
       refused: refused,
       body: a_def.body.to_s,
       abstract_def: a_def.abstract?,
+      uncompilable: uncompilable,
       # The return type is asked the same question the parameters are. `Int` is
       # the head of a family on either side of the arrow, and a method that
       # answers one has a symbol per member exactly as a method that takes one
@@ -2168,17 +2187,17 @@ module Iyi
   # written half used to answer with its own premise: Crystal narrows a return
   # restriction to what the body produced, so this can disagree with a `def`
   # that spells its return out. Both halves ask it now.
-  private def self.infer_return(owner : Type, a_def : Def) : {String?, String?}
-    call, refused = instantiate(owner, a_def)
-    return {nil, refused} unless call
+  private def self.infer_return(owner : Type, a_def : Def) : {String?, String?, Bool}
+    call, refused, uncompilable = instantiate(owner, a_def)
+    return {nil, refused, uncompilable} unless call
 
     type = call.type?
-    return {nil, "no type"} unless type
+    return {nil, "no type", false} unless type
 
     # `Foo+` is how a virtual type prints, and it is a fact about this build's
     # dispatch rather than a name anybody can write down. A declaration says
     # `Foo`, which is what the call site means and what parses.
-    {type.devirtualize.to_s, nil}
+    {type.devirtualize.to_s, nil, false}
   end
 
   # A block of the annotated shape, for a call nobody wrote.
@@ -2216,15 +2235,20 @@ module Iyi
   # What it cannot do is written down beside what it can. A block is the honest
   # one: its type depends on what the caller passes, so there is no single
   # answer to read.
-  private def self.instantiate(owner : Type, a_def : Def) : {Call?, String?}
+  # The third value says the refusal was the *compiler's* — the method does not
+  # compile — as against this tool declining to ask. A method that cannot be
+  # checked because its block is unannotated is fine and travels; one whose body
+  # does not typecheck is not, and declaring it puts the failure in the keep
+  # file, where it takes the whole artifact down with it.
+  private def self.instantiate(owner : Type, a_def : Def) : {Call?, String?, Bool}
     # A block whose own type is written is not the problem; one whose output is
     # `_`, or which was never annotated, is. What such a method returns depends
     # on what the caller passes, and there is no single answer to read.
     block = nil
     if block_arg = a_def.block_arg
       restriction = block_arg.restriction
-      return {nil, "block is not annotated"} unless restriction
-      return {nil, "block returns `_`"} if restriction.to_s.includes?("_")
+      return {nil, "block is not annotated", false} unless restriction
+      return {nil, "block returns `_`", false} if restriction.to_s.includes?("_")
 
       # And then hand the call one, which this did not do.
       #
@@ -2240,21 +2264,21 @@ module Iyi
       # first crossed — `{ |b0| nil }`, or an `uninitialized` of the output
       # where the output is not `Nil`. This is the same block as a node.
       block = synthesize_block restriction
-      return {nil, "block shape not understood"} unless block
+      return {nil, "block shape not understood", false} unless block
     end
-    return {nil, "yields without a block parameter"} if a_def.block_arity && !a_def.block_arg
-    return {nil, "splat"} if a_def.splat_index || a_def.double_splat
-    return {nil, "generic type"} if owner.instance_type.is_a?(GenericType)
-    return {nil, "abstract"} if a_def.abstract?
+    return {nil, "yields without a block parameter", false} if a_def.block_arity && !a_def.block_arg
+    return {nil, "splat", false} if a_def.splat_index || a_def.double_splat
+    return {nil, "generic type", false} if owner.instance_type.is_a?(GenericType)
+    return {nil, "abstract", false} if a_def.abstract?
 
     args = [] of ASTNode
     a_def.args.each do |arg|
       restriction = arg.restriction
-      return {nil, "no restriction"} unless restriction
+      return {nil, "no restriction", false} unless restriction
 
       type = owner.lookup_type?(restriction)
-      return {nil, "cannot resolve #{restriction}"} unless type
-      return {nil, "generic parameter"} if type.is_a?(TypeParameter)
+      return {nil, "cannot resolve #{restriction}", false} unless type
+      return {nil, "generic parameter", false} if type.is_a?(TypeParameter)
 
       args << Var.new(arg.name).tap(&.set_type(type.virtual_type))
     end
@@ -2267,10 +2291,10 @@ module Iyi
     # says so plainly — `Iyi::Call#parent_visitor cannot be nil`.
     call.parent_visitor = MainVisitor.new(owner.program)
     call.recalculate
-    {call, nil}
+    {call, nil, false}
   rescue ex : Iyi::CodeError
-    {nil, ex.message.to_s.lines.first?.to_s}
+    {nil, ex.message.to_s.lines.first?.to_s, true}
   rescue ex
-    {nil, ex.message.to_s.lines.first?.to_s}
+    {nil, ex.message.to_s.lines.first?.to_s, true}
   end
 end

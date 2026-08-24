@@ -4,6 +4,22 @@
 
 ### Added
 
+- **A method the compiler refuses to instantiate does not travel, and the
+  boundary survives it.** `crystal tool bind` already instantiated every method
+  it declares — that is how a written return type is held against the answer —
+  and a method whose body did not typecheck was recorded as "could not be
+  checked" and **declared anyway**. The keep file then named it, and one method
+  that does not compile took the whole fill build with it: every declaration on
+  disk and no machine code anywhere.
+
+  What separates the two cases is who refused. This tool declining to ask — an
+  unannotated block, a splat, a free variable — is not a defect in the method,
+  and those still travel. The *compiler* refusing is, and those are dropped.
+  `openssl_ext` has a `LibCrypto` call whose argument is a pointer too deep, in
+  a method its own compilation never types: it went from **losing its whole
+  artifact** to binding at 35 units and 31 MB, and the chain under `jwt` —
+  `bindata`, `openssl_ext`, `jwt` — now binds end to end.
+
 - **A boundary says whether its object-code step finished.** `crystal tool bind`
   writes the declarations and a second build fills them, compiling a keep file
   that names every method a consumer might call. A shard can hold code its own
