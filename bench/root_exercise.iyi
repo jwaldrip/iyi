@@ -80,6 +80,17 @@
       false
     end
 
+    # The same question asked without the raw address ever being a value in
+    # the caller's frame. With optimisation on, a raw address the caller still
+    # needs after a scan is a value the compiler keeps live across that scan,
+    # which means a stack slot, which means the scan finds it and a check that
+    # meant to isolate one root has quietly stopped isolating anything.
+    # Unmasking one frame down, after the scan has run, is what avoids that.
+    @[NoInline]
+    def self.found_masked?(hidden : UInt64, mask : UInt64) : Bool
+      found?(hidden ^ mask)
+    end
+
     def self.wanted(index : UInt64) : UInt64
       Pointer(UInt64).new(want_buffer + index * 8_u64).value
     end
@@ -155,6 +166,29 @@
   # for its own reasons.
   MASK = 0x5A5A5A5A5A5A5A5A_u64
 
+  # The allocation happens one frame down and only the masked value comes
+  # back, so the raw pointer is never a value in the frame that runs the
+  # register check. `@[NoInline]` is what makes that true with optimisation
+  # on: inlined, the pointer lands back in the caller's frame and the
+  # register check finds it on the stack, which is a check proving nothing.
+  @[NoInline]
+  def hidden_allocation(size : UInt64) : UInt64
+    Pointer(UInt8).malloc(size).address ^ MASK
+  end
+
+  # Overwrites the frames below this one, which is where the copies the
+  # allocation left behind are. Each level keeps a word in a slot the frame
+  # holds across the call, so the level cannot be optimised into nothing, and
+  # the word is the mask rather than zero so a scrubbed slot is recognisable
+  # if this ever needs debugging.
+  @[NoInline]
+  def scrub(depth : Int32) : UInt64
+    filler = MASK &+ depth.to_u64
+    slot = pointerof(filler)
+    return filler if depth == 0
+    scrub(depth - 1) &+ slot.value
+  end
+
   status = 0
 
   # --- The bounds themselves, before anything relies on them ---
@@ -190,36 +224,56 @@
 
   # --- A root in a register is found ---
   # The only reference is put in a callee-saved register and nowhere else, and
-  # this check proves that twice over. First the stack and the globals are
-  # scanned without the registers and must NOT find it, which is what says the
-  # register is really the only path; a stale copy the compiler left in a frame
-  # would show up here and fail the check rather than making the next one pass
-  # for the wrong reason. Then the whole root set is scanned and must find it.
-  # Last, the register is read back, because if the register allocator had
-  # reused it the value would be gone and the check would have proved nothing.
-  register_hidden = Pointer(UInt8).malloc(96_u64).address ^ MASK
+  # the check refuses to pass unless that is true of the build it is running
+  # in. Three premises, each asserted rather than assumed.
+  #
+  # The pointer is allocated one frame down and comes back masked, and the
+  # frames it passed through are overwritten, so no copy of the raw address is
+  # a value in this frame. The stack and the globals are then scanned without
+  # the registers and must find nothing: a copy the compiler kept anyway shows
+  # up there and fails the check rather than making the next one pass for the
+  # wrong reason. Only then is the register loaded, and the full root set
+  # scanned, and the object must be found. Last the register is read back,
+  # because an allocator that had reused it would leave the whole thing
+  # proving nothing.
+  #
+  # The order is load-the-register, then scan, with nothing between them, and
+  # that is the whole reason this holds with optimisation on as well as off.
+  # With work in between, the optimiser sees a value that is dead the moment
+  # the asm block ends and reuses the register before the scan runs, and the
+  # read-back below reports exactly that. Keeping the value live instead is
+  # worse rather than better: it puts the pointer in a stack slot, which the
+  # negative scan then finds, which is the same check failing for the opposite
+  # reason. A register-residency check is a check about the register
+  # allocator, so it says out loud when its premise is gone.
+  register_hidden = hidden_allocation(96_u64)
+  scrub(64)
+  Tally.reset
+  IyiRoots.each_stack_root(RECORD)
+  stale_on_stack = Tally.found_masked?(register_hidden, MASK)
+  Tally.reset
+  IyiRoots.each_global_root(RECORD)
+  stale_in_globals = Tally.found_masked?(register_hidden, MASK)
+  raise "register root: the pointer was already on the stack without the registers, so this check would prove nothing" if stale_on_stack
+  raise "register root: the pointer was already in a global without the registers, so this check would prove nothing" if stale_in_globals
   register_value = register_hidden ^ MASK
+  Tally.reset
   {% if flag?(:x86_64) %}
     asm("" :: "{r12}"(register_value) :: "volatile")
   {% else %}
     asm("" :: "{x19}"(register_value) :: "volatile")
   {% end %}
   register_value = 0_u64
-  Tally.reset
-  IyiRoots.each_stack_root(RECORD)
-  IyiRoots.each_global_root(RECORD)
-  raise "register root: 0x#{hex(register_hidden ^ MASK)} was already reachable without the registers, so this check would prove nothing" if Tally.found?(register_hidden ^ MASK)
-  Tally.reset
   IyiRoots.each_root(RECORD)
-  raise "register root: 0x#{hex(register_hidden ^ MASK)} was not found once the registers were spilled" unless Tally.found?(register_hidden ^ MASK)
   register_check = uninitialized UInt64
   {% if flag?(:x86_64) %}
     asm("" : "={r12}"(register_check) :: : "volatile")
   {% else %}
     asm("" : "={x19}"(register_check) :: : "volatile")
   {% end %}
-  raise "register root: the register no longer held the pointer, so the check above proved nothing" if register_check != (register_hidden ^ MASK)
-  print "  register root: found, and not found without the spill\n"
+  raise "register root: the register no longer held the pointer when the scan ran, so nothing here proved anything" if register_check ^ MASK != register_hidden
+  raise "register root: the pointer was in the register and the spill did not find it" unless Tally.found_masked?(register_hidden, MASK)
+  print "  register root: found, and neither on the stack nor in a global without the spill\n"
 
   # --- A root in a global is found ---
   global_block = Pointer(UInt8).malloc(48_u64)
@@ -361,7 +415,14 @@
   raise "maps parser: found a [stack] line in a file that has none" if IyiRoots.stack_end_in_maps(NO_STACK.to_unsafe.address, NO_STACK.bytesize.to_u64) != 0
   TRUNCATED = "55d0d4a00000-55d0d4a01000 r--p 00000000 08:01 1 /tmp/prog\n7ffd9b3f2000-7ffd9b41"
   raise "maps parser: read an address out of a truncated line" if IyiRoots.stack_end_in_maps(TRUNCATED.to_unsafe.address, TRUNCATED.bytesize.to_u64) != 0
-  print "  maps parser: the [stack] end is read, a file without one answers zero, and a truncated file answers zero\n"
+  # The kernel's file ends with a newline, but a read that stopped on a buffer
+  # boundary does not, and neither does the last line of a file whose `[stack]`
+  # region is the final mapping. The parser has to treat the end of the buffer
+  # as the end of a line.
+  UNTERMINATED = "55d0d4a00000-55d0d4a01000 r--p 00000000 08:01 1 /tmp/prog\n7ffd9b3f2000-7ffd9b413000 rw-p 00000000 00:00 0 [stack]"
+  last = IyiRoots.stack_end_in_maps(UNTERMINATED.to_unsafe.address, UNTERMINATED.bytesize.to_u64)
+  raise "maps parser: an unterminated last [stack] line read 0x#{hex(last)}, not 0x7ffd9b413000" if last != 0x7ffd9b413000_u64
+  print "  maps parser: the [stack] end is read, terminated or not, and a file without one and a truncated line both answer zero\n"
 
   print "  all root checks passed\n"
   __iyi_exit(status)
