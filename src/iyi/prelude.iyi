@@ -871,6 +871,15 @@ require "./file"
         read64(arena + OFF_CHUNK)
       end
 
+      # The fill cursor names where carving stopped, which is what tells a
+      # chunk that was handed out from the untouched tail of an arena. Stage 3
+      # asks it of every candidate pointer and Stage 6's sweep will ask it of
+      # every arena, so it is an accessor beside the others rather than a
+      # thing either stage reaches into the header for.
+      def self.arena_cursor(arena : UInt64) : UInt64
+        read64(arena + OFF_CURSOR)
+      end
+
       def self.first_large : UInt64
         @@large
       end
@@ -925,6 +934,464 @@ require "./file"
         filled = filled + 1_u64
       end
       destination
+    end
+
+    # GC_DESIGN.md's Stage 3: the root set, made enumerable. Nothing marks and
+    # nothing collects here. What lands is the answer to "where could a
+    # pointer to a live object be", asked of the one thread this language has,
+    # and the answer to "is this word one", asked of the heap Stage 2 built.
+    # Stage 5 passes a marking function to `IyiRoots.each_root` and that is
+    # the whole interface it needs; `bench/root_exercise.iyi` is the only
+    # caller until then, and it is what says the mechanism works.
+    #
+    # Conservative, and deliberately biased toward retaining. A word that is
+    # not a pointer but lands inside an allocated chunk keeps that chunk alive
+    # for one cycle, which costs memory. A word that IS a pointer and is not
+    # reported frees a live object, which costs correctness. Every decision
+    # below is made in that direction: when in doubt, retain.
+    #
+    # Three places a root can be, and the second is the one that gets missed:
+    #
+    # 1. The stack, word by word between the current stack pointer and the
+    #    base. Both targets grow the stack downward, so the stack pointer is
+    #    the low end and the base is the high one, and the scan runs upward
+    #    from the first 8-aligned address. Only aligned words are candidates:
+    #    a pointer the compiler stored is 8-aligned on both targets, so an
+    #    unaligned word is a coincidence of neighbouring bytes and not a
+    #    reference anything can follow.
+    #
+    # 2. The registers. A root can sit in a callee-saved register and appear
+    #    nowhere on the stack, so a collector that scans only the stack frees
+    #    a live object. This is the part of GC_DESIGN.md's Stage 4 that is
+    #    real without threads: there is no thread to suspend and no register
+    #    state to read out of one, but the register file of the thread that
+    #    is running still holds references. They are spilled to memory before
+    #    the scan and that memory is a root range of its own.
+    #
+    # 3. The globals, whose ranges come from the platform rather than from a
+    #    guess. A range that cannot be obtained is fatal rather than empty,
+    #    because a missing root range is a collector that frees live objects
+    #    and an empty range looks exactly like a clean scan.
+    #
+    # Fibers are Stage 3's fourth task and there is nothing to enumerate.
+    # This language has neither fibers nor threads: SPEC.md III.4 leaves
+    # structured concurrency unbuilt, and III.9 records why a scheduler is
+    # not a small step, since reaching for pthreads puts libc back on the
+    # link line and moves the dependency floor this fork measures. A registry
+    # of fibers that cannot exist would be a mechanism no test can exercise,
+    # which is the objection III.4.8 already made to a concurrency marker
+    # that gates no operation. When III.4 lands, a fiber's stack is a fourth
+    # range and `each_root` grows one call.
+    #
+    # What is NOT here, for the same reason: nothing suspends a thread. Stage
+    # 4's `SIGSTOP` on Linux and Mach `thread_suspend` on darwin stop threads
+    # this runtime cannot create, and code that stops nothing cannot be
+    # tested for stopping the right things.
+    {% if flag?(:darwin) %}
+      # The stack base and the global segments, from libSystem, which has the
+      # same standing here that `write` and `mmap` do: Apple documents it as
+      # the platform's interface and raw syscalls as not a stable ABI.
+      # `pthread_get_stackaddr_np` is the sanctioned answer for the highest
+      # address of a thread's stack, and dyld's image list is the sanctioned
+      # answer for where a Mach-O image's segments landed after sliding.
+      lib LibC
+        fun pthread_self : Void*
+        fun pthread_get_stackaddr_np(thread : Void*) : Void*
+        fun _dyld_get_image_header(index : Int32) : Void*
+        fun _dyld_get_image_vmaddr_slide(index : Int32) : Int64
+      end
+    {% else %}
+      # The static data span on Linux, from the two symbols the link already
+      # defines: `__data_start` at the front of `.data` and `_end` past the
+      # back of `.bss`, which is GC_DESIGN.md's "`__data_start` to
+      # `__bss_end`" written the way the linker spells it. Declaring them and
+      # taking their addresses costs no library: `_end` comes from the linker
+      # itself and `__data_start` from the C runtime object every link
+      # template already adds, so they arrive as two undefined symbols and no
+      # new `-l`. A binary whose link provides neither fails at the link
+      # rather than scanning nothing at run time.
+      lib LibIyiImage
+        $__data_start : UInt8
+        $_end : UInt8
+      end
+    {% end %}
+
+    class IyiRoots
+      # Six callee-saved registers on x86_64 and twelve on aarch64, named
+      # where they are spilled.
+      {% if flag?(:x86_64) %}
+        SPILL = 48_u64
+      {% else %}
+        SPILL = 96_u64
+      {% end %}
+      PAGE = 4096_u64
+      MAPS = 65536_u64
+
+      # The same rule the allocator's state lives under: `$` globals are
+      # refused, a `fun` body cannot reach `@@` state, and a literal
+      # initializer folds into the LLVM global's static zero, so zero means
+      # "not discovered yet" rather than a value startup code installs. There
+      # is no array class variable either, which is why the register spill
+      # buffer is a mapped page named by one of these rather than a field.
+      @@spill : UInt64 = 0_u64
+      @@stack_base : UInt64 = 0_u64
+      @@data_low : UInt64 = 0_u64
+      @@data_high : UInt64 = 0_u64
+      @@const_low : UInt64 = 0_u64
+      @@const_high : UInt64 = 0_u64
+      @@found_globals : UInt64 = 0_u64
+
+      # A root range that cannot be obtained ends the program. The whole
+      # point of the range is that missing it frees live objects, so a
+      # diagnosis now is cheaper than a corrupted heap later.
+      def self.fatal(message : String) : NoReturn
+        __iyi_write(1, message.to_unsafe.as(Void*), message.bytesize.to_u64)
+        __iyi_exit(1)
+      end
+
+      # One page of its own for the register spill, mapped on first use the
+      # way the allocator's directory is. It is deliberately not heap memory:
+      # a spill buffer taken from `IyiHeap` would be a chunk the scan then
+      # reports as a live object, and a chunk holding a raw pointer to
+      # everything every register held.
+      def self.spill : UInt64
+        @@spill = __iyi_mmap(PAGE).address if @@spill == 0
+        @@spill
+      end
+
+      # The callee-saved registers, stored where the scan can see them.
+      # x86_64 System V preserves rbx, rbp and r12 through r15 across a call;
+      # aarch64 AAPCS64 preserves x19 through x28, x29 the frame pointer and
+      # x30 the link register. The caller-saved registers are not captured
+      # and do not need to be: their convention is that a caller keeps
+      # nothing live in them across a call, so any value still wanted was
+      # written to the frame that the stack scan already covers. The
+      # floating-point callee-saved registers (d8 to d15, xmm on Windows) are
+      # not captured either, because nothing in this language puts an object
+      # pointer in one.
+      #
+      # The destination is pinned to a caller-saved register, rdi or x0, so
+      # that the register holding it can never be one of the registers being
+      # captured. Slots left over from an earlier spill stay as they were,
+      # which retains a little more than it must and never less.
+      def self.spill_registers : Nil
+        buffer = spill
+        {% if flag?(:x86_64) %}
+          asm("movq %rbx, 0($0)
+               movq %rbp, 8($0)
+               movq %r12, 16($0)
+               movq %r13, 24($0)
+               movq %r14, 32($0)
+               movq %r15, 40($0)" :: "{rdi}"(buffer) : "memory" : "volatile")
+        {% else %}
+          asm("stp x19, x20, [$0, #0]
+               stp x21, x22, [$0, #16]
+               stp x23, x24, [$0, #32]
+               stp x25, x26, [$0, #48]
+               stp x27, x28, [$0, #64]
+               stp x29, x30, [$0, #80]" :: "{x0}"(buffer) : "memory" : "volatile")
+        {% end %}
+      end
+
+      # The low end of the stack, read out of the register that names it.
+      # Taken here rather than from the address of a local because a local's
+      # address is above whatever the current frame has already pushed, and
+      # the difference is exactly the words a compiler spills a pointer into.
+      def self.stack_pointer : UInt64
+        value = uninitialized UInt64
+        {% if flag?(:x86_64) %}
+          asm("movq %rsp, $0" : "=r"(value) :: : "volatile")
+        {% else %}
+          asm("mov $0, sp" : "=r"(value) :: : "volatile")
+        {% end %}
+        value
+      end
+
+      # The high end, discovered once. The main thread's stack grows down
+      # from a fixed top on both targets, so the number does not change over
+      # a run and reading it lazily is the same answer as recording it at
+      # startup, without the startup cost for a program that never collects.
+      def self.stack_base : UInt64
+        @@stack_base = discover_stack_base if @@stack_base == 0
+        @@stack_base
+      end
+
+      {% if flag?(:darwin) %}
+        # What this number is: the address one past the highest byte of the
+        # main thread's stack, which is what `pthread_get_stackaddr_np`
+        # returns and is the true base rather than an approximation of it.
+        def self.discover_stack_base : UInt64
+          base = LibC.pthread_get_stackaddr_np(LibC.pthread_self).address
+          fatal("iyi: stack base unavailable\n") if base == 0
+          base
+        end
+      {% else %}
+        # What this number is: the end address of the kernel's `[stack]`
+        # mapping for this process, read out of `/proc/self/maps`, which is
+        # the true base and not an approximation. The address of a local in
+        # `main` was the alternative and it is not the same number: it sits
+        # below argv, envp and the auxiliary vector, which the kernel places
+        # at the top of that mapping, so a base taken there is too low and a
+        # base that is too low silently loses roots.
+        #
+        # Reading a file is three syscalls this file already issues. The
+        # buffer is a mapping of its own rather than a heap chunk, because
+        # the heap is the thing being described and a scratch chunk in it
+        # would be one more object every later scan has to reason about.
+        def self.discover_stack_base : UInt64
+          buffer = __iyi_mmap(MAPS).address
+          handle = __iyi_open_read("/proc/self/maps".to_unsafe)
+          fatal("iyi: /proc/self/maps unreadable\n") if handle < 0
+          filled = 0_u64
+          while filled < MAPS
+            count = __iyi_read(handle.to_i32, Pointer(Void).new(buffer + filled), MAPS - filled)
+            break if count <= 0
+            filled = filled + count.to_u64
+          end
+          __iyi_close(handle)
+          base = stack_end_in_maps(buffer, filled)
+          __iyi_munmap(buffer, MAPS)
+          # The `[stack]` line is near the end of the file, so a read that
+          # filled the buffer and stopped short reports no line rather than a
+          # wrong one, and this is where that becomes a diagnosis.
+          fatal("iyi: no [stack] line in /proc/self/maps\n") if base == 0
+          base
+        end
+      {% end %}
+
+      # `/proc/self/maps` is a line per mapping, "low-high perms ..." in hex,
+      # with the region's name last. The line whose name is `[stack]` is the
+      # main thread's, and the number after the dash is its end. Kept off the
+      # platform branch and reachable on both, because parsing text is the
+      # half of this that a test can exercise anywhere and the syscalls are
+      # the half that cannot leave Linux.
+      def self.stack_end_in_maps(buffer : UInt64, length : UInt64) : UInt64
+        bytes = Pointer(UInt8).new(buffer)
+        start = 0_u64
+        index = 0_u64
+        while index <= length
+          if index == length || (bytes + index.to_i64).value == 10_u8
+            return line_stack_end(bytes, start, index) if line_names_stack?(bytes, start, index)
+            start = index + 1
+          end
+          index = index + 1
+        end
+        0_u64
+      end
+
+      def self.line_names_stack?(bytes : Pointer(UInt8), start : UInt64, stop : UInt64) : Bool
+        return false if stop < start + 7
+        name = "[stack]".to_unsafe
+        cursor = stop - 7
+        index = 0
+        while index < 7
+          return false if (bytes + (cursor + index.to_u64).to_i64).value != name[index]
+          index = index + 1
+        end
+        true
+      end
+
+      def self.line_stack_end(bytes : Pointer(UInt8), start : UInt64, stop : UInt64) : UInt64
+        cursor = start
+        # 45 is '-', which separates the two addresses.
+        while cursor < stop && (bytes + cursor.to_i64).value != 45_u8
+          cursor = cursor + 1
+        end
+        return 0_u64 if cursor >= stop
+        cursor = cursor + 1
+        value = 0_u64
+        digits = 0
+        while cursor < stop
+          digit = hex_digit((bytes + cursor.to_i64).value)
+          break if digit > 15
+          value = value * 16_u64 + digit
+          digits = digits + 1
+          cursor = cursor + 1
+        end
+        return 0_u64 if digits == 0
+        value
+      end
+
+      # 16 for anything that is not a hex digit, which is the terminator the
+      # caller reads rather than a second return value it has nowhere to put.
+      def self.hex_digit(byte : UInt8) : UInt64
+        return (byte - 48_u8).to_u64 if byte >= 48_u8 && byte <= 57_u8
+        return (byte - 97_u8).to_u64 + 10_u64 if byte >= 97_u8 && byte <= 102_u8
+        return (byte - 65_u8).to_u64 + 10_u64 if byte >= 65_u8 && byte <= 70_u8
+        16_u64
+      end
+
+      {% if flag?(:darwin) %}
+        # The main executable's `__DATA` and `__DATA_CONST`, walked out of its
+        # Mach header. Image 0 is the main executable, and it is the only
+        # image asked: nothing outside this program allocates from this heap,
+        # so no other image's data segment can hold a pointer into it. The
+        # segment addresses in the file are unslid, so the slide is added.
+        # `__DATA_CONST` is optional because a binary may genuinely have none;
+        # `__DATA` is not, because every binary has one and its absence means
+        # the walk is wrong rather than the binary unusual.
+        def self.discover_globals : Nil
+          header = LibC._dyld_get_image_header(0).address
+          fatal("iyi: no Mach header for the main image\n") if header == 0
+          fatal("iyi: main image is not 64-bit Mach-O\n") if IyiHeap.read64(header) & 0xFFFFFFFF_u64 != 0xFEEDFACF_u64
+          slide = LibC._dyld_get_image_vmaddr_slide(0).to_u64
+          count = IyiHeap.read64(header + 16) & 0xFFFFFFFF_u64
+          cursor = header + 32_u64
+          seen = 0_u64
+          while seen < count
+            word = IyiHeap.read64(cursor)
+            size = word.unsafe_shr(32)
+            fatal("iyi: zero-length Mach load command\n") if size == 0
+            # LC_SEGMENT_64. The name is sixteen bytes at offset 8, compared
+            # as two words rather than a loop: "__DATA" padded with zeros,
+            # and "__DATA_CONST" the same.
+            if word & 0xFFFFFFFF_u64 == 0x19_u64
+              first = IyiHeap.read64(cursor + 8)
+              second = IyiHeap.read64(cursor + 16)
+              if first == 0x415441445F5F_u64 && second == 0_u64
+                @@data_low = IyiHeap.read64(cursor + 24) &+ slide
+                @@data_high = @@data_low &+ IyiHeap.read64(cursor + 32)
+              elsif first == 0x435F415441445F5F_u64 && second == 0x54534E4F_u64
+                @@const_low = IyiHeap.read64(cursor + 24) &+ slide
+                @@const_high = @@const_low &+ IyiHeap.read64(cursor + 32)
+              end
+            end
+            cursor = cursor + size
+            seen = seen + 1_u64
+          end
+          fatal("iyi: no __DATA segment in the main image\n") if @@data_high <= @@data_low
+          @@found_globals = 1_u64
+        end
+      {% else %}
+        # `.data` and `.bss`, which are contiguous in every ELF layout the
+        # link templates produce, so the two symbols bound one range rather
+        # than two. There is no second range on this target, which is why
+        # `@@const_low` and `@@const_high` stay zero here and the scan skips
+        # an empty range rather than needing a flag to tell it to.
+        def self.discover_globals : Nil
+          low = pointerof(LibIyiImage.__data_start).address
+          high = pointerof(LibIyiImage._end).address
+          fatal("iyi: __data_start.._end is not a range\n") if high <= low
+          @@data_low = low
+          @@data_high = high
+          @@found_globals = 1_u64
+        end
+      {% end %}
+
+      def self.globals : Nil
+        discover_globals if @@found_globals == 0
+      end
+
+      def self.data_low : UInt64
+        globals
+        @@data_low
+      end
+
+      def self.data_high : UInt64
+        globals
+        @@data_high
+      end
+
+      def self.const_low : UInt64
+        globals
+        @@const_low
+      end
+
+      def self.const_high : UInt64
+        globals
+        @@const_high
+      end
+
+      # Is this word a pointer to a live object, and if so where does that
+      # object start? One answer for both questions, because a root usually
+      # points into the middle of an object and the marker needs the base.
+      # Zero means "not a heap pointer", which is also the answer for a null
+      # word, for a word in no arena, for a word in the part of an arena that
+      # was never carved, and for a word in a chunk that has been freed.
+      #
+      # Stage 2 answers the first half already: `containing` names the arena
+      # a pointer is in, and the arena's header names its chunk size, so the
+      # chunk a word falls in is arithmetic rather than a search. The rest is
+      # the part Stage 2 had no reason to answer. A chunk at or past the fill
+      # cursor was never handed out, which is also how the tail of an arena
+      # too short for one more chunk is rejected. A chunk on its class's free
+      # list was handed out and given back, and reporting it live would keep
+      # a dead object alive forever, since nothing would ever free it twice.
+      #
+      # The free-list walk is linear in the chunks freed for that one class,
+      # and it is only reached by a word that already landed inside an arena,
+      # which a word that is not a pointer almost never does. A per-arena
+      # allocation bitmap is the O(1) form and it is Stage 6's to add if
+      # sweeping wants one, not a thing to build before a profile asks.
+      def self.base_of(word : UInt64) : UInt64
+        return 0_u64 if word == 0
+        candidate = Pointer(Void).new(word)
+        arena = IyiHeap.containing(candidate)
+        if arena != 0
+          first = arena + IyiHeap::HEAD
+          chunk = IyiHeap.arena_chunk(arena)
+          head = first + (word - first).unsafe_div(chunk) * chunk
+          return 0_u64 if head >= IyiHeap.arena_cursor(arena)
+          return 0_u64 if free_listed?(head, chunk)
+          return head + 8
+        end
+        node = IyiHeap.containing_large(candidate)
+        return node + 24 if node != 0
+        0_u64
+      end
+
+      def self.free_listed?(head : UInt64, chunk : UInt64) : Bool
+        node = IyiHeap.directory[IyiHeap.class_index(chunk - 8)]
+        while node != 0
+          return true if node == head
+          node = IyiHeap.read64(node)
+        end
+        false
+      end
+
+      # Every 8-aligned word in [low, high), with the ones that validate
+      # handed to the callback as the base of the object they reach. The same
+      # base can be reported more than once, because more than one root can
+      # reach one object; marking is idempotent, so deduplicating is the
+      # caller's business and not worth a set here.
+      def self.scan_range(low : UInt64, high : UInt64, visit : Proc(UInt64, Nil)) : Nil
+        return if high <= low
+        cursor = low
+        remainder = cursor.unsafe_mod(8_u64)
+        cursor = cursor + (8_u64 - remainder) if remainder != 0
+        while cursor + 8_u64 <= high
+          base = base_of(IyiHeap.read64(cursor))
+          visit.call(base) if base != 0
+          cursor = cursor + 8_u64
+        end
+      end
+
+      def self.each_stack_root(visit : Proc(UInt64, Nil)) : Nil
+        scan_range(stack_pointer, stack_base, visit)
+      end
+
+      # The spill buffer as a root range. Writing the registers somewhere the
+      # scan does not reach would be the same as not capturing them.
+      def self.each_register_root(visit : Proc(UInt64, Nil)) : Nil
+        buffer = spill
+        scan_range(buffer, buffer + SPILL, visit)
+      end
+
+      def self.each_global_root(visit : Proc(UInt64, Nil)) : Nil
+        scan_range(data_low, data_high, visit)
+        scan_range(const_low, const_high, visit)
+      end
+
+      # The whole root set, which is stack, registers and globals, and would
+      # be fiber stacks too if this language had fibers (SPEC.md III.4). The
+      # spill happens first and before anything calls back into user code,
+      # because the callback is user code and user code uses registers.
+      def self.each_root(visit : Proc(UInt64, Nil)) : Nil
+        spill_registers
+        each_register_root(visit)
+        each_stack_root(visit)
+        each_global_root(visit)
+      end
     end
   {% elsif flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
     # iyi: The default heap on Linux is a bump pointer over `mmap` regions:
