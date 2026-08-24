@@ -6279,17 +6279,33 @@ Named honestly, so nobody mistakes this draft for complete.
     > >    `collect_iyi_unit_names`, and it is what
     > >    `*Kemal::RouteHandler@Reference::new` was.
     > >
-    > > **With those, the consumer of kemal's four boundaries has zero undefined
-    > > symbols.** It does not build yet, and what stops it is no longer a
-    > > missing name: it is two shapes a boundary makes reachable and a
-    > > whole-program build never does. A restriction that is virtual while the
-    > > value is concrete — an `IO` parameter matched against `IO+` with an
-    > > `IO::FileDescriptor` in hand — which `match_type_id` now answers with the
-    > > range rather than a single id. And the same widening asked of a *local*,
-    > > where `visit(Var)` still calls `downcast` on what is a widening and says
-    > > `BUG: trying to downcast IO+ <- IO::Memory`. That last one is where this
-    > > item goes next; it is a codegen rule rather than a thing the format
-    > > carries.
+    > > **With those, two shapes were left that a boundary makes reachable and
+    > > a whole-program build never does.** Both are the same widening seen from
+    > > different places. A restriction that is virtual while the value is
+    > > concrete — an `IO` parameter matched against `IO+` with an
+    > > `IO::FileDescriptor` in hand — which `match_type_id` answers with the
+    > > range rather than a single id. And the same widening asked of a *local*:
+    > > inside a dispatch arm the slot holds the arm's concrete type while the
+    > > read wants the declared one, and `visit(Var)` called `downcast` on it —
+    > > `BUG: trying to downcast IO+ <- IO::Memory`.
+    > >
+    > > **Which of the two directions it is cannot be asked of `implements?`,**
+    > > and asking it that way broke the compiler's own build: a virtual type
+    > > implements its base, so `Iyi::Def+` in a slot read as `Iyi::Def` looked
+    > > like a widening and is the opposite. What separates them is shape — a
+    > > union or a virtual type is the wider thing — so widening is reading a
+    > > *concrete* slot as one of those, and nothing else is.
+    > >
+    > > **The consumer links now, and what it waits on is ten symbols.** An
+    > > earlier note here said zero, which was not a measurement: the build was
+    > > dying before the linker ran, so nothing had been asked for. Four kinds
+    > > remain — three type ids (two modules and a generic metaclass), four
+    > > methods inherited from `Object` or `Reference` and synthesised rather
+    > > than read (`new`, `to_s`), one union `~match` whose members are
+    > > Crystal's own, and two `Radix::Tree::…::to_s<IO+>` where the boundary
+    > > declared a parameter the producer never emitted that instantiation for.
+    > > The three virtual `~match` functions this item named before are gone,
+    > > which is the superclass edge doing what it was built to do.
     > >
     > > **And the DSL is a separate question from all four.** `get "/" do …` is
     > > a top-level `def` of kemal's, outside `Kemal`, so a boundary rooted at

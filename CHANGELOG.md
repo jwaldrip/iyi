@@ -4,6 +4,25 @@
 
 ### Added
 
+- **A variable can be read wider than the slot that holds it, and that is a
+  widening.** Inside a dispatch arm the slot holds the arm's concrete type
+  while the read wants the type the boundary declared — an `IO` parameter read
+  as `IO+` — and `visit(Var)` called `downcast` on it:
+  `BUG: trying to downcast IO+ <- IO::Memory`. It is the same correction the
+  call arguments already carried, one level in.
+
+  **Which direction it is cannot be asked of `implements?`.** Answering it that
+  way broke the compiler's own build: a virtual type implements its base, so
+  `Iyi::Def+` held in a slot and read as `Iyi::Def` looked like a widening and
+  is the opposite. What separates them is shape — a union or a virtual type is
+  the wider thing — so a widening is reading a *concrete* slot as one of those,
+  and nothing else is.
+
+  With it the kemal consumer reaches the linker rather than aborting in
+  codegen. An earlier entry said that consumer had zero undefined symbols; that
+  was not a measurement — the build was dying before the linker ran. It links
+  now and waits on ten.
+
 - **Inheritance crosses a boundary.** `TypeDecl` had no field for the `<`, so a
   bound `Derived < Base` arrived without its base and without the fields it
   inherits — a class's own field list is only its own — and the consumer said
@@ -34,8 +53,10 @@
   answered with the range rather than a single type id.
 
   A consumer of kemal's four bound shards goes from **11 undefined symbols to
-  zero**. `bench/bind_roundtrip.sh` carries a base, a subclass, an inherited
-  method and an overridden one.
+  10**, and the three the superclass edge was built for — `~match` against
+  `HTTP::StaticFileHandler+` and two like it — are among the ones gone.
+  `bench/bind_roundtrip.sh` carries a base, a subclass, an inherited method and
+  an overridden one.
 
 - **The unions a bound module matches against travel.** `is_a?` against a union
   or a virtual type compiles to `~match<T>`, a function that compares a type id
