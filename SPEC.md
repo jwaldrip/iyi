@@ -6343,12 +6343,27 @@ Named honestly, so nobody mistakes this draft for complete.
     > > merging what *two* users of a shared module put in it, so no single
     > > method instantiation sees the error. That one is still open.
     > >
-    > > **And a shard that reopens a library namespace cannot be bound at that
-    > > root.** `openssl_ext` is `OpenSSL`, and a `--crystal` consumer replays
-    > > `require "openssl"` and gets Crystal's — so the declarations meet the
-    > > library's and the build stops on `superclass mismatch for class
-    > > OpenSSL::SSL::Error`. It is the same collision a stdlib root has, wearing
-    > > a shard's name, and it is what `jwt` waits on now.
+    > > **And a shard that reopens a library namespace carries only what it
+    > > added.** `openssl_ext` is `OpenSSL`, and a `--crystal` consumer replays
+    > > `require "openssl"` and gets Crystal's — so the declarations met the
+    > > library's on `superclass mismatch for class OpenSSL::SSL::Error`, and
+    > > then the constants met them on `already initialized constant
+    > > OpenSSL::BIO::CRYSTAL_BIO`. What separates them is where a thing is
+    > > *defined*: under the shard, or under the library. One the library wrote
+    > > is neither declared nor assigned; one they both touch counts as the
+    > > shard's, because what the shard added has to travel somehow.
+    > >
+    > > Behind that, a naming bug older than any of this and invisible until a
+    > > superclass gave a nested type a name to resolve:
+    > > `OpenSSL::PKey::PKeyError` stripped of the root is `PKey::PKeyError`,
+    > > and that declaration is rendered *inside* `module PKey`, where it means
+    > > `PKey::PKey::PKeyError`. The stripping goes a level deeper with each
+    > > nesting now.
+    > >
+    > > What `jwt` waits on now is a `lib`: `open_s_s_l` numbers
+    > > `Pointer(LibCrypto::Bignum)` and a `lib` declaration does not travel at
+    > > all, so a consumer cannot name it. That is the next thing, and it is a
+    > > question about C bindings rather than about Crystal types.
     > >
     > > **What it does not do any more is fail quietly.** The artifact left on
     > > disk has every declaration and no machine code, which read as a boundary

@@ -4,6 +4,23 @@
 
 ### Added
 
+- **A shard that reopens a library namespace carries only what it added.**
+  `openssl_ext` is `OpenSSL`, and a `--crystal` consumer replays the requires
+  and gets Crystal's — so the artifact's declarations met the library's and the
+  build stopped on `superclass mismatch for class OpenSSL::SSL::Error`, then on
+  `already initialized constant OpenSSL::BIO::CRYSTAL_BIO`. What separates the
+  two is where a type or a constant is *defined*: under the shard, or under the
+  library. One the library wrote is not declared and not assigned; one they
+  both touch counts as the shard's, because what the shard added has to travel
+  somehow.
+
+- **A nested declaration's names are stripped to where they are read from.**
+  `OpenSSL::PKey::PKeyError` stripped of the root is `PKey::PKeyError` — and
+  that declaration is rendered *inside* `module PKey`, where it means
+  `PKey::PKey::PKeyError` and resolves to nothing. The stripping goes one level
+  deeper with each nesting now, so from in there the name is `PKeyError`. It was
+  invisible until a superclass gave a nested type a name to resolve.
+
 - **A method the compiler refuses to instantiate does not travel, and the
   boundary survives it.** `crystal tool bind` already instantiated every method
   it declares — that is how a written return type is held against the answer —
