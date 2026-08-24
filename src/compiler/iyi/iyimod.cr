@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 24_u32
+  FORMAT_VERSION = 25_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -362,7 +362,21 @@ module Iyi::IyiMod
     # `members` is: it renders differently and means differently. A field is
     # allocated per instance and has no value here; a class variable is
     # allocated once and its value is half of what has to arrive.
-    class_vars : Array({String, String, String}) = [] of {String, String, String}
+    class_vars : Array({String, String, String}) = [] of {String, String, String},
+    # iyi: what this class inherits from, empty when it inherits from the root
+    # its kind implies.
+    #
+    # The edge and not decoration. A subclass's `fields` are its *own* — the
+    # inherited ones come with the superclass — so a class that lost its `<`
+    # arrived missing both the fields and the methods above it: the consumer
+    # said `undefined method 'tag' for Shard::Derived`.
+    #
+    # And a type id is assigned by walking that same tree, so a consumer with a
+    # missing edge does not merely lose a method: it *numbers the tree
+    # differently*, and a match against a virtual type — which compares an id
+    # against the range its subclasses occupy — would answer wrongly and link
+    # cleanly. That is why the edge travels rather than the ranges.
+    superclass : String = ""
 
   # How a body is found again on the far side.
   #
@@ -1246,7 +1260,7 @@ module Iyi::IyiMod
         body: bodies[mono_body_key(artifact.module_name, signature)]?
     end
 
-    exports.types.each do |declaration|
+    inheritance_order(exports.types).each do |declaration|
       io << '\n'
       render_type_declaration io, declaration, bodies
     end
@@ -1271,6 +1285,45 @@ module Iyi::IyiMod
     unless artifact.initialiser.empty?
       io << '\n' << artifact.initialiser << '\n'
     end
+  end
+
+  # The declarations reordered so a superclass is written before what inherits
+  # from it.
+  #
+  # `class Derived < Base` does not resolve if `Base` is below it, and the order
+  # these arrive in is the order the producer's walk found them — alphabetical
+  # for one root, which puts `Apple < Fruit` the wrong way round as often as
+  # the right one.
+  #
+  # Only siblings, which is the whole of what an order can fix: a superclass in
+  # another namespace is a name the consumer already has, or one the boundary
+  # declined to carry and left empty. Stable, so two identical builds write the
+  # same file (IV.3).
+  #
+  # Recursive, because a nested list has the same question. A cycle cannot
+  # happen in a type graph, and a name that matches nothing here simply keeps
+  # its place.
+  private def self.inheritance_order(types : Array(TypeDecl)) : Array(TypeDecl)
+    return types if types.all? &.superclass.empty?
+
+    by_name = types.to_h { |declaration| {declaration.name, declaration} }
+    ordered = [] of TypeDecl
+    placed = Set(String).new
+
+    place = uninitialized TypeDecl -> Nil
+    place = ->(declaration : TypeDecl) do
+      return if placed.includes?(declaration.name)
+      placed << declaration.name
+
+      parent = by_name[declaration.superclass]?
+      place.call(parent) if parent && parent.name != declaration.name
+
+      ordered << declaration
+      nil
+    end
+
+    types.each { |declaration| place.call declaration }
+    ordered
   end
 
   # One `def`'s header, as the artifact carries it.
@@ -1530,7 +1583,9 @@ module Iyi::IyiMod
     # a field would have a type where a value belongs.
     declaration.members.each { |(name, value)| io << inner << name << " = " << value << '\n' }
 
-    declaration.types.each { |nested| render_type_declaration io, nested, bodies, inner }
+    inheritance_order(declaration.types).each do |nested|
+      render_type_declaration io, nested, bodies, inner
+    end
 
     declaration.methods.each do |signature|
       render_declaration io, signature, indent: inner,
@@ -1554,6 +1609,10 @@ module Iyi::IyiMod
         parameters.join(io, ", ")
         io << ')'
       end
+
+      # What it inherits from, which is not what it implements: `<` is a class's
+      # superclass and `:` is a trait list, and the two are different edges.
+      io << " < " << declaration.superclass unless declaration.superclass.empty?
 
       supertraits = declaration.supertraits
       unless supertraits.empty?
@@ -1873,6 +1932,7 @@ module Iyi::IyiMod
       write_pairs io, declaration.fields
       write_pairs io, declaration.members
       write_triples io, declaration.class_vars
+      write_string io, declaration.superclass
       write_strings io, declaration.macros
       write_signatures io, declaration.methods
       write_type_declarations io, declaration.types
@@ -1891,10 +1951,12 @@ module Iyi::IyiMod
       fields = read_pairs(io)
       members = read_pairs(io)
       class_vars = read_triples(io)
+      superclass = read_string(io)
       macros = read_strings(io)
       methods = read_signatures(io)
       TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
-        visibility, read_type_declarations(io), value, macros, members, class_vars)
+        visibility, read_type_declarations(io), value, macros, members, class_vars,
+        superclass)
     end
   end
 

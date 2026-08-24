@@ -898,6 +898,7 @@ module Iyi
       macros: declaration.macros,
       members: declaration.members,
       class_vars: class_vars,
+      superclass: declaration.superclass,
     )
   end
 
@@ -1054,6 +1055,7 @@ module Iyi
         visibility: private_type ? "private" : "pub",
         types: nested,
         class_vars: collect_class_vars(type),
+        superclass: superclass_name(type, root),
       )
     end
   end
@@ -1453,6 +1455,7 @@ module Iyi
       class_vars: declaration.class_vars.map do |(name, type, value)|
         {name, strip_root(type, root), strip_root(value, root)}
       end,
+      superclass: strip_root(declaration.superclass, root),
     )
   end
 
@@ -1495,6 +1498,7 @@ module Iyi
       class_vars: declaration.class_vars.map do |(name, type, value)|
         {name, map_names(type), map_names(value)}
       end,
+      superclass: map_names(declaration.superclass),
     )
   end
 
@@ -1821,6 +1825,28 @@ module Iyi
       end
     end
     signatures
+  end
+
+  # What a class inherits from, or empty for the root its kind implies.
+  #
+  # `Reference` for a class and `Struct` or `Value` for a struct are what every
+  # one of them inherits from when nothing is written, so writing them back
+  # would be noise — and `class Foo < Reference` is not how anybody declares a
+  # class.
+  #
+  # Empty as well when the consumer could not name it. That is today's answer
+  # rather than a good one: the type crosses without the edge, which is what it
+  # did before this existed, and what it costs is written down in IV.2 rather
+  # than hidden. Dropping the type instead would take a whole namespace with it.
+  private def self.superclass_name(type : Type, root : String) : String
+    return "" unless type.responds_to?(:superclass)
+    superclass = type.superclass
+    return "" unless superclass
+
+    name = superclass.devirtualize.to_s
+    return "" if name == "Reference" || name == "Struct" || name == "Value"
+    return "" unless nameable?(name, root)
+    name
   end
 
   # A type's own class variables, `{"@@count", "Int32", "0"}`.

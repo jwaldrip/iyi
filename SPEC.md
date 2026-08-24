@@ -6251,30 +6251,45 @@ Named honestly, so nobody mistakes this draft for complete.
     > >    whole reason a name travels rather than a copy: a copy compiled by
     > >    the producer would compare the consumer's ids against the producer's
     > >    numbers and answer wrongly with no symptom. **22 → 11.**
-    > > 3. **A bound class's superclass does not travel, and that is the next
-    > >    one.** `TypeDecl` has no field for it. Three of the four `~match`
-    > >    functions still missing are virtual — `HTTP::StaticFileHandler+`,
-    > >    `HTTP::WebSocketHandler+`, `Kemal::BaseLogHandler+` — and they are
-    > >    missing because `virtual_type` answers *the type itself* for a class
-    > >    with no subclasses. Kemal's `StaticFileHandler < HTTP::StaticFileHandler`
-    > >    arrives having lost the `<`, so the consumer's
-    > >    `HTTP::StaticFileHandler` has no subclasses and its virtual form is
-    > >    not a virtual type at all.
+    > > 3. ~~**A bound class's superclass does not travel.**~~ **Built, and it
+    > >    was four things rather than one.** `TypeDecl` had no field for the
+    > >    `<`, so a subclass arrived without its base and without the fields it
+    > >    inherits — a class's own field list is only its own — and the
+    > >    consumer said `undefined method 'tag' for Shard::Derived`.
     > >
-    > >    **The undefined symbol is the safe half of that.** A match against a
-    > >    virtual type compares an id against the *range* its subclasses
-    > >    occupy, and ids are assigned by walking that same tree — so a
-    > >    consumer missing an edge does not merely fail to define a function,
-    > >    it numbers the tree differently. Defining the function anyway would
-    > >    answer `is_a?` wrongly and link cleanly. The fix is the edge, not the
-    > >    function.
+    > >    The edge alone left three more, each a place that had only ever seen
+    > >    a class with nothing under it. **A method is keyed on the type that
+    > >    defines it**, because a boundary has one symbol per method and an
+    > >    ordinary build makes one per receiver — the mirror of the parameter
+    > >    rule already here. That symbol is keyed on the class's **virtual
+    > >    form**, because a value of a class something inherits from is held as
+    > >    one: the symbol is `*Shard::Base+@Shard::Base#tag`. And a class with
+    > >    subclasses has a **second unit**, `Shard::Base+`, which is where the
+    > >    methods reached through that form are emitted and which the artifact
+    > >    was not carrying at all — so it also had to become an exported owner,
+    > >    or its callees were never copied into it.
     > >
-    > >    It is not a one-line field either: a subclass's `instance_vars`
-    > >    already include the ones it inherits, so carrying the superclass
-    > >    without taking those back out declares every inherited field twice.
+    > >    **The undefined symbol was the safe half.** A match against a virtual
+    > >    type compares an id against the *range* its subclasses occupy, and
+    > >    ids are assigned by walking that same tree — a consumer missing an
+    > >    edge does not merely fail to define a function, it numbers the tree
+    > >    differently. Defining the function anyway would answer `is_a?` wrongly
+    > >    and link cleanly.
     > > 4. **`new` synthesised from `initialize`.** Already written down in
     > >    `collect_iyi_unit_names`, and it is what
-    > >    `*Kemal::RouteHandler@Reference::new` is.
+    > >    `*Kemal::RouteHandler@Reference::new` was.
+    > >
+    > > **With those, the consumer of kemal's four boundaries has zero undefined
+    > > symbols.** It does not build yet, and what stops it is no longer a
+    > > missing name: it is two shapes a boundary makes reachable and a
+    > > whole-program build never does. A restriction that is virtual while the
+    > > value is concrete — an `IO` parameter matched against `IO+` with an
+    > > `IO::FileDescriptor` in hand — which `match_type_id` now answers with the
+    > > range rather than a single id. And the same widening asked of a *local*,
+    > > where `visit(Var)` still calls `downcast` on what is a widening and says
+    > > `BUG: trying to downcast IO+ <- IO::Memory`. That last one is where this
+    > > item goes next; it is a codegen rule rather than a thing the format
+    > > carries.
     > >
     > > **And the DSL is a separate question from all four.** `get "/" do …` is
     > > a top-level `def` of kemal's, outside `Kemal`, so a boundary rooted at

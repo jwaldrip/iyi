@@ -992,16 +992,51 @@ module Iyi
     # this file exists to end.
     private def collect_iyi_unit_names(type : ModuleType, names : Array(String)) : Nil
       type.types?.try &.each_value do |declared|
-        names << declared.to_s unless declared.is_a?(GenericType)
+        unless declared.is_a?(GenericType)
+          names << declared.to_s
+          virtual = iyi_virtual_unit_name(declared)
+          names << virtual unless virtual.empty?
+        end
         collect_iyi_unit_names declared, names if declared.is_a?(ModuleType)
       end
+    end
+
+    # iyi: `Shard::Base+`, the second unit a class with subclasses has.
+    #
+    # A value of a class that something inherits from is held as that class's
+    # *virtual* type, and codegen puts the methods reached through one in a
+    # module of their own — `*Shard::Base+@Shard::Base#describe` lives in
+    # `Shard::Base+`, not in `Shard::Base`. Naming only the plain form carried
+    # the wrong half: the artifact held a `Shard::Base` unit with the
+    # constructor in it and left every inherited method behind, and a consumer
+    # calling one linked against nothing.
+    #
+    # Empty for a class nothing inherits from, whose virtual type is itself —
+    # `names` is deduplicated, so an empty string would be the only thing to
+    # guard against, and there is nothing to add.
+    private def iyi_virtual_unit_name(type : Type) : String
+      return "" unless type.responds_to?(:virtual_type)
+      virtual = type.virtual_type
+      virtual == type ? "" : virtual.to_s
     end
 
     # The same walk as `collect_iyi_unit_names`, keeping the types rather than
     # their names — `try_inline_call` is handed an owner, not a string.
     private def collect_iyi_owners(type : ModuleType, owners : Set(Type)) : Nil
       type.types?.try &.each_value do |declared|
-        owners << declared unless declared.is_a?(GenericType)
+        unless declared.is_a?(GenericType)
+          owners << declared
+          # And the virtual form, for the reason `iyi_virtual_unit_name` gives:
+          # it is a second unit, it travels, and a unit that travels must have
+          # its callees copied into it. Without this the `Shard::Base+` unit
+          # arrived referring to `*String#+<String>:String` — a symbol in the
+          # consumer's `String` unit only if the consumer's own code happened
+          # to concatenate.
+          if declared.responds_to?(:virtual_type)
+            virtual = declared.virtual_type
+            owners << virtual unless virtual == declared
+          end
+        end
         collect_iyi_owners declared, owners if declared.is_a?(ModuleType)
       end
     end
