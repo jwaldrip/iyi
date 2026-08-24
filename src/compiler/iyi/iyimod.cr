@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 25_u32
+  FORMAT_VERSION = 27_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -77,6 +77,10 @@ module Iyi::IyiMod
     # iyi: the types this module's object code asks `~match<T>` about.
     # `TypeIds` asked of a match — see IV.1g.
     MatchTypes = 14
+
+    # iyi: the symbols this module's object code defines. What a consumer has
+    # to compile for itself is everything else — see IV.1g.
+    Symbols = 15
   end
 
   # A regex literal's constant: the name its object code reads, and what a
@@ -705,6 +709,26 @@ module Iyi::IyiMod
     # Settable alongside `object_code`, and for the same reason.
     property match_types : Array(String)
 
+    # The symbols this module's object code defines.
+    #
+    # A consumer compiles what an artifact does not define, and this is the
+    # only thing that answers which those are. An artifact defines **more than
+    # it declares** — its own units call methods Crystal owns, so
+    # `Kemal::RouteHandler`'s unit calls `FilterHandler#next=` and `next=` is
+    # `HTTP::Handler`'s — and **less than its types suggest**, because a method
+    # like `Reference::new` is instantiated per receiver and exists only where
+    # something reached it.
+    #
+    # Three rules were tried before this and each was wrong on one side.
+    # Assuming the artifact has whatever its types could answer left
+    # `Kemal::FilterHandler@Reference::new` undefined; assuming the reverse made
+    # it a duplicate symbol; compiling a private copy in the consumer put the
+    # definition where `_main` could not see it. A list is not a rule and does
+    # not have a wrong side.
+    #
+    # Settable alongside `object_code`, and for the same reason.
+    property symbols : Array(String)
+
     # Whether this module was compiled against Crystal's standard library
     # rather than iyi's prelude — `--crystal`.
     #
@@ -716,6 +740,22 @@ module Iyi::IyiMod
     # happen to agree and be wrong about the rest. Checked on import, beside
     # the version, the target and the flags (IV.5).
     property crystal_library : Bool
+
+    # Whether this artifact's root is a *class* rather than a module.
+    #
+    # It decides one thing and it is structural: a module's declarations are
+    # wrapped in a `module <path>` header, and for a class root that header
+    # camelcases to the class's own name — so the class was declared *inside* a
+    # module of the same name and every type under it gained a level.
+    # `Widget::Part` became `Widget::Widget::Part`, and a consumer told to
+    # number `Widget::Part` could not name it.
+    #
+    # A class root needs no header, because the class is the namespace. iyi's
+    # parser wraps a file in its module only when a header is there, so leaving
+    # it out puts the declarations where they belong — and a `ClassType` is a
+    # `ModuleType`, so everything that looks a module unit up by name still
+    # finds it.
+    property class_root : Bool
 
     # Under `--crystal`, the library files this module required, in the order
     # it required them.
@@ -750,8 +790,9 @@ module Iyi::IyiMod
                    @type_ids = [] of String, @hashes = Hashes.empty,
                    @constants = [] of String, @macro_bodies = [] of String,
                    @requires = [] of String, @crystal_library = false,
+                   @class_root = false,
                    @regexes = [] of RegexConst, @class_vars = [] of ClassVarRef,
-                   @match_types = [] of String)
+                   @match_types = [] of String, @symbols = [] of String)
     end
   end
 
@@ -818,6 +859,10 @@ module Iyi::IyiMod
 
     unless artifact.match_types.empty?
       sections << {Section::MatchTypes, encode_match_types(artifact)}
+    end
+
+    unless artifact.symbols.empty?
+      sections << {Section::Symbols, encode_symbols(artifact)}
     end
 
     # Last, and omitted when there is nothing in it. A consumer reading
@@ -964,6 +1009,7 @@ module Iyi::IyiMod
       regexes = [] of RegexConst
       class_vars = [] of ClassVarRef
       match_types = [] of String
+      symbols = [] of String
       requires = [] of String
       hashes = Hashes.empty
 
@@ -994,6 +1040,7 @@ module Iyi::IyiMod
         when Section::Regexes     then regexes = decode_regexes(payload)
         when Section::ClassVars   then class_vars = decode_class_vars(payload)
         when Section::MatchTypes  then match_types = decode_match_types(payload)
+        when Section::Symbols     then symbols = decode_symbols(payload)
         when Section::Requires    then requires = decode_requires(payload)
         when Section::Hashes      then hashes = decode_hashes(payload)
         else
@@ -1010,7 +1057,7 @@ module Iyi::IyiMod
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
         object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
         hashes, constants, macro_bodies, requires, header[:crystal_library],
-        regexes, class_vars, match_types)
+        header[:class_root], regexes, class_vars, match_types, symbols)
     end
   rescue ex : Error
     raise ex
@@ -1132,6 +1179,9 @@ module Iyi::IyiMod
 
     # With the pattern, because the name is a digest: a reader looking at
     # `$Regex:5f2b…` in the list above has no way to tell which literal it is.
+    symbols = artifact.symbols
+    io.puts "symbols       #{symbols.size} defined by this module's units" unless symbols.empty?
+
     match_types = artifact.match_types
     unless match_types.empty?
       io.puts "match types"
@@ -1191,7 +1241,12 @@ module Iyi::IyiMod
   # never reached `Exports`, and R-2b needs it to stay unreachable rather than
   # merely unmentioned.
   def self.declarations(artifact : Artifact, io : IO) : Nil
-    io << "module " << artifact.module_name << '\n'
+    # A class root writes no header, and the class below is the namespace. With
+    # one, iyi wraps the whole file in a module of the header's name — which
+    # for a class root is the class's own name — so `Widget` arrived as
+    # `Widget::Widget` and `Widget::Part` was a name the consumer could not
+    # reach. See `Artifact#class_root`.
+    io << "module " << artifact.module_name << '\n' unless artifact.class_root
 
     # The module's own imports, restated. A consumer needs them loaded before
     # these declarations mean anything — a signature here can name a type from
@@ -1704,6 +1759,7 @@ module Iyi::IyiMod
     artifact.flags.each { |flag| write_string io, flag }
     io.write_byte(artifact.has_initialiser ? 1_u8 : 0_u8)
     io.write_byte(artifact.crystal_library ? 1_u8 : 0_u8)
+    io.write_byte(artifact.class_root ? 1_u8 : 0_u8)
     io.to_slice
   end
 
@@ -1716,9 +1772,11 @@ module Iyi::IyiMod
     flags = Array(String).new(io.read_bytes(UInt32, FORMAT)) { read_string(io) }
     has_initialiser = io.read_byte == 1_u8
     crystal_library = io.read_byte == 1_u8
+    class_root = io.read_byte == 1_u8
     {module_name: module_name, source_path: source_path,
      compiler_version: compiler_version, target_triple: target_triple, flags: flags,
-     has_initialiser: has_initialiser, crystal_library: crystal_library}
+     has_initialiser: has_initialiser, crystal_library: crystal_library,
+     class_root: class_root}
   end
 
   private def self.encode_requires(artifact : Artifact) : Bytes
@@ -1809,6 +1867,16 @@ module Iyi::IyiMod
   end
 
   private def self.decode_constants(payload : Bytes) : Array(String)
+    read_strings(IO::Memory.new(payload))
+  end
+
+  private def self.encode_symbols(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    write_strings io, artifact.symbols
+    io.to_slice
+  end
+
+  private def self.decode_symbols(payload : Bytes) : Array(String)
     read_strings(IO::Memory.new(payload))
   end
 

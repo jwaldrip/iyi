@@ -539,6 +539,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     begin
       parsed_nodes = parser.parse
       parsed_nodes = @program.normalize(parsed_nodes, inside_exp: false)
+      @program.iyi_artifact_symbols.concat artifact.symbols
       artifact.class_vars.each do |ref|
         # `||=` on the flag: two artifacts may name the same class variable of
         # the library, and the lazy reference is the one with a symbol behind
@@ -657,7 +658,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       type = @program.lookup_type(type_node, include_private: true)
       type = type.virtual_type if virtual
       type = type.metaclass if metaclass
-      @program.iyi_artifact_match_types << type
+      @program.iyi_artifact_match_types[name] = type
     rescue CodeError
       # The same refusal a type id gets, for the same reason: the alternative
       # is a mangled symbol at link time with no module named beside it.
@@ -777,6 +778,17 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
   # every type a build makes.
   private def mark_iyi_artifact_types(artifact : IyiMod::Artifact) : Nil
     return unless scope = @program.iyi_module_type(artifact.module_name)
+
+    # A class root *is* the scope: the artifact declares one type, and it is
+    # the one the module name resolves to. Looking its own name up inside
+    # itself finds nothing, so the walk marked neither it nor anything under
+    # it — and a type nothing marks is one every "no `initialize` here" check
+    # fires on.
+    if artifact.class_root
+      scope.iyi_from_artifact = true
+      root = artifact.exports.types.find { |declaration| declaration.name == scope.to_s }
+      return mark_iyi_artifact_types scope, root.types if root
+    end
 
     mark_iyi_artifact_types scope, artifact.exports.types
   end

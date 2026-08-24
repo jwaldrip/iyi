@@ -74,6 +74,8 @@ class Iyi::CodeGenVisitor
     check_mod_fun self_type_mod, mangled_name, func
   end
 
+
+
   # iyi: the receiver a def read from a `.iyimod` is keyed on (SPEC.md IV.1g).
   #
   # The type that *defines* the method, not the one it was called through. A
@@ -98,6 +100,11 @@ class Iyi::CodeGenVisitor
     defining = target_def.original_owner?
     return self_type unless defining
     return self_type if defining == self_type
+
+    # Only what the artifact defines. `Reference::new` is instantiated per type
+    # and belongs to whoever compiles it, so keying it on `Reference` would ask
+    # for a symbol that means something else.
+    return self_type unless defining.instance_type.iyi_from_artifact?
     return self_type if defining.is_a?(GenericType) || defining.is_a?(GenericInstanceType)
 
     # Both sides of the type: a `def self.` is matched on the metaclass, and the
@@ -238,14 +245,28 @@ class Iyi::CodeGenVisitor
       # that finds this, because inference makes `new` a method on `Box(T)` —
       # the artifact's own type — while `Box(Int32).new(42)` is owned by an
       # instance and was never marked. Both are this build's to compile.
-      compiled_elsewhere = self_type.instance_type.iyi_from_artifact? &&
-                           !self_type.instance_type.is_a?(GenericType) &&
-                           !target_def.iyi_body_travelled? &&
-                           !is_fun_literal
+      # iyi: an artifact says which symbols its units define, so this is a
+      # lookup rather than a rule (SPEC.md IV.1g). Everything the old rule got
+      # right it still gets right — a def read from a `.iyimod` whose type is
+      # the artifact's is in the list — and the two it got wrong it no longer
+      # guesses at.
+      compiled_elsewhere = !is_fun_literal &&
+                           @program.iyi_artifact_symbols.includes?(mangled_name)
 
       needs_body = (!target_def.is_a?(External) || is_exported_fun) &&
                    !target_def.iyi_from_artifact? &&
                    !compiled_elsewhere
+
+      # iyi: what this unit *defines*, so the artifact can say so (SPEC.md
+      # IV.1g). A consumer compiles what the artifact does not define, and
+      # every rule that tried to work that out from the shape of the def was
+      # wrong somewhere: an artifact defines more than it declares — its own
+      # units call `FilterHandler#next=` and `HTTP::Handler` is Crystal's — and
+      # it defines less than its types suggest, because `Reference::new` is
+      # instantiated per type and only where something reached it.
+      if needs_body && !iyi_internal && !@program.iyi_exported_owners.empty? && @llvm_mod != @main_mod
+        (@program.iyi_unit_symbols[@llvm_mod.name] ||= Set(String).new) << mangled_name
+      end
 
       # iyi: a copy, private to the unit that will travel in the artifact.
       #

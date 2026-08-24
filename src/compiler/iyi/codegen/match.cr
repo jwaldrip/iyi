@@ -111,16 +111,24 @@ class Iyi::CodeGenVisitor
     # ask about. A union is not a type this program has unless its own code
     # formed it, and `(Char | Iyi::Keyword | String | Nil)` is one kemal's code
     # formed and a consumer of kemal's never would.
-    @program.iyi_artifact_match_types.each do |type|
+    @program.iyi_artifact_match_types.each do |carried, type|
       case type
       when VirtualType, VirtualMetaclassType, UnionType
-        iyi_define_match_fun_for(type)
+        iyi_define_match_fun_for(carried, type)
       end
     end
   end
 
-  private def iyi_define_match_fun_for(type) : Nil
-    name = "~match<#{type.llvm_name}>"
+  # Under the name that *travelled*, built from the type resolved here.
+  #
+  # The two are not always the same string and the difference is not an error
+  # in either build: `(Socket::IPAddress | Socket::UNIXAddress)` is a union in
+  # the producer and collapses to `Socket::Address+` in a consumer that knows
+  # those are all of `Socket::Address`'s subclasses. Same types, same answer,
+  # different symbol — and the symbol the object code calls is the one that
+  # travelled.
+  private def iyi_define_match_fun_for(carried : String, type) : Nil
+    name = "~match<#{carried}>"
     return if typed_fun?(@main_mod, name)
 
     create_match_fun(name, type)
