@@ -6402,15 +6402,24 @@ Named honestly, so nobody mistakes this draft for complete.
     > > `undefined method 'get'`. That is about what a root *is*, not about what
     > > crosses one.
     > >
-    > > **Behind it, one more, and it is probably a class root.** With the probe
-    > > in place the link wants `Backtracer::configuration` and
-    > > `ExceptionPage::Styles:type_id`, and both point at the same fact:
-    > > `exception_page.iyimod` fills with **0 units, 0 bytes, 0 type ids**
-    > > where `radix` fills 2, `backtracer` 7 and `kemal` 36. Its keep file
-    > > looks right and calls eleven methods. `ExceptionPage` is a *class* root,
-    > > which this item has already found to be the awkward one — see the note
-    > > below on a class-rooted namespace colliding with its own wrapper. Not
-    > > pinned further than that.
+    > > **And `exception_page` filling with 0 units is not a bug.**
+    > > `ExceptionPage` is an `abstract class` with no subclass in its own
+    > > shard, so there is no machine code to carry: an abstract class's
+    > > concrete methods are instantiated per *subclass*, and every subclass is
+    > > somebody else's. That makes them the **third** thing whose body has to
+    > > travel, beside a generic's and a block-taker's, and for the same reason
+    > > each time. A consumer writing `class Report < Sheet` asked for
+    > > `*Sheet+@Sheet#render` and nobody had made one.
+    > >
+    > > Two smaller things sat in front of it. The keep file *called* the
+    > > abstract methods — `t0.title` on a class with no subclass has no type,
+    > > and codegen said so as `BUG: … has no type` rather than as an error
+    > > anybody could act on — and neither the method's nor the type's
+    > > abstractness travelled, so a consumer read `def title` where the shard
+    > > wrote `abstract def title`. Writing it properly needed one thing the
+    > > language did not have: **`pub abstract class`**. Being abstract and
+    > > being reachable are different questions, and a bound abstract class is a
+    > > type a consumer subclasses and therefore has to be able to write.
     >
     > One thing binding the library did leave behind, and it is only reachable
     > from there: a *class*-rooted namespace collides with its own wrapper. The
