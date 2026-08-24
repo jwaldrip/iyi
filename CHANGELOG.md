@@ -4,6 +4,19 @@
 
 ### Added
 
+- **A constant's accessor names the constant it reads.** The accessor a boundary
+  writes for `Kemal::Config::INSTANCE` is `config_instance`, flattened with `_`
+  — and the path it reads was reconstructed from that name by reading every `_`
+  as `::`. It works until a type's own name has an underscore in it:
+  `class OpenSSL::GETS_BIO` came back as `OpenSSL::GETS::BIO`, and the keep file
+  named a constant no program has. The path travels beside the accessor now
+  rather than being derived from it.
+
+  Flattening still loses information — `A_B::C` and `A::B_C` both read `a_b_c` —
+  so a second constant claiming a taken accessor name is dropped and printed
+  beside the artifact, where two defs of one name would have been a broken
+  boundary.
+
 - **An abstract class crosses a boundary, and its concrete methods travel as
   bodies.** They are the third thing that has to, beside a generic's methods
   and a block-taker's, and for the same reason each time: they are instantiated

@@ -6323,6 +6323,27 @@ Named honestly, so nobody mistakes this draft for complete.
     > > is the dependency. Whole, it costs `Kemal` 303 names → 642, and a name
     > > is a string.
     > >
+    > > **Asked of shards nobody here chose.** `jwt` and `bindata` bind clean —
+    > > 14 units and 10 — and `habitat` binds at 3. Two limits showed up that
+    > > kemal's four never touched, and both are about **force-instantiation**:
+    > > the keep file exists to emit every method a consumer might call, and a
+    > > shard can hold code its own compilation never types. `openssl_ext` has
+    > > a `LibCrypto.x509_get0_signature` call whose argument is a pointer too
+    > > deep, and Crystal's own `yaml` reaches `JSON::Error` from a method
+    > > `require "yaml"` alone never instantiates. Both compile whole-program
+    > > and neither survives being asked for everything. `tool bind` refuses the
+    > > method — the report says so — and the *fill* build still reaches it
+    > > through something else, so one bad method loses the whole artifact
+    > > rather than itself. A boundary that degrades instead of failing is the
+    > > next thing here.
+    > >
+    > > And a **stdlib-rooted** boundary is a third: `-e JSON` binds whole (24
+    > > units, 14 MB) and a `--crystal` consumer of it replays `require "json"`
+    > > from the artifact's own `Requires`, so the declarations reopen the real
+    > > types — `can't reopen enum and add more constants to it`. The
+    > > measurement those roots were bound for still holds; consuming one is
+    > > `require "json"` with extra steps, and is not what a boundary is for.
+    > >
     > > **The chain builds and runs.** Four boundaries — `backtracer`, `radix`,
     > > `exception_page`, `kemal` — installed from the network, bound in
     > > dependency order, and a program built against all four that prints what

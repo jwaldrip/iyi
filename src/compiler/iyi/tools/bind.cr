@@ -248,6 +248,12 @@ module Iyi
         io.puts "    %-38s %d" % [reason[0, 38], list.size]
       end
 
+      unless @@flattened.empty?
+        io.puts
+        io.puts "  constants whose accessor name was already taken:"
+        @@flattened.sort.first(8).each { |constant| io.puts "    #{constant}" }
+      end
+
       unless disagreed.empty?
         io.puts
         io.puts "  and the ones that travel as the answer, not as written:"
@@ -717,13 +723,26 @@ module Iyi
     root_type = program.types?.try &.[]?(root)
     return accessors unless root_type.is_a?(NamedType)
 
-    collect_constants root_type, root, "", known, accessors
+    collect_constants root_type, root, "", "", known, accessors, Set(String).new
     accessors
   end
 
+  # *prefix* is the accessor's, flattened with `_`; *path* is the constant's own,
+  # written with `::`.
+  #
+  # Two of them and not one, because the first cannot be turned back into the
+  # second. Reconstructing the path by reading `_` as `::` works until a type's
+  # own name has an underscore in it: `class OpenSSL::GETS_BIO` came back as
+  # `OpenSSL::GETS::BIO`, and the keep file named a constant no program has.
+  #
+  # *taken* is the accessor names already used. Flattening loses information —
+  # `A_B::C` and `A::B_C` both read `a_b_c` — and two defs of one name is a
+  # broken artifact rather than a missing accessor, so the second is dropped and
+  # counted.
   private def self.collect_constants(owner : NamedType, root : String, prefix : String,
-                                     known : Set(String),
-                                     accessors : Array({IyiMod::Signature, String})) : Nil
+                                     path : String, known : Set(String),
+                                     accessors : Array({IyiMod::Signature, String}),
+                                     taken : Set(String)) : Nil
     owner.types?.try &.each do |name, type|
       case type
       when Const
@@ -742,8 +761,12 @@ module Iyi
         next unless answer == root || !answer.starts_with?("#{root}::") || known.includes?(answer)
 
         accessor = "#{prefix}#{name}".downcase
-        constant = "#{root}::#{prefix.gsub("_", "::")}#{name}"
-        constant = "#{root}::#{name}" if prefix.empty?
+        constant = "#{root}::#{path}#{name}"
+
+        unless taken.add?(accessor)
+          @@flattened << constant
+          next
+        end
 
         accessors << {
           IyiMod::Signature.new(
@@ -765,7 +788,8 @@ module Iyi
         # compiler refuses (`private constant ... referenced`).
         next if type.is_a?(EnumType)
         next if type.private?
-        collect_constants type, root, "#{prefix}#{name}_", known, accessors
+        collect_constants type, root, "#{prefix}#{name}_", "#{path}#{name}::",
+          known, accessors, taken
       end
     end
   end
@@ -1122,6 +1146,11 @@ module Iyi
 
   # The signatures whose shapes outran the cap, reported beside the artifact.
   @@capped = [] of String
+
+  # Constants whose accessor name was already taken by another constant. See
+  # `collect_constants`: the accessor flattens a path with `_` and two paths can
+  # flatten alike.
+  @@flattened = [] of String
 
   # `(A | B)` as `["A", "B"]`, and anything else as `[]`. Split at the top level
   # only: `(Array(A | B) | C)` is two members, not three.
