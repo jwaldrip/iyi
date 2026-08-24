@@ -203,18 +203,19 @@ describe Iyi::IyiMod do
       end
     end
   end
-  # The one a v21 artifact in a cache actually hits: the `Layouts` section
-  # bumped the format to v22, and the rule above applies to the version this
-  # tree wrote yesterday exactly as to one it never wrote.
-  it "refuses a v21 artifact" do
+  # The one a stale artifact in a cache actually hits. v23 is the version this
+  # tree wrote yesterday: `Regexes` and `ClassVars` took it there, `Layouts`
+  # took it to v24, and the rule applies to a version this tree wrote itself
+  # exactly as to one it never wrote.
+  it "refuses a v23 artifact" do
     with_temporary_file do |path|
       Iyi::IyiMod.write sample_artifact, path
       bytes = File.read(path).to_slice.dup
       # The version is the u32 right after the 8-byte magic.
-      Iyi::IyiMod::FORMAT.encode(21_u32, bytes[8, 4])
+      Iyi::IyiMod::FORMAT.encode(23_u32, bytes[8, 4])
       File.write path, bytes
 
-      expect_raises(Iyi::IyiMod::Error, /format v21/) do
+      expect_raises(Iyi::IyiMod::Error, /format v23/) do
         Iyi::IyiMod.read(path)
       end
     end
@@ -1209,6 +1210,79 @@ describe Iyi::IyiMod do
       rendered.should contain "box.iyimod"
       # The bytes the artifact starts with, which is what used to be shown.
       rendered.should_not contain "IYIMOD"
+    end
+  end
+
+  # A class variable is a global, and its global is defined in the main module
+  # — the one part of a build that never travels. The methods that read one
+  # travel as this module's machine code referring to it by symbol, so a module
+  # with a `@@seen` failed R-1's own round trip on
+  # `undefined symbol: App::Counter::Tally::seen`, and this file's own gate for
+  # that claim passed because no sample had a class variable.
+  #
+  # Two of them, and the nilable one is not decoration. `@@cache : String? = nil`
+  # has its initialiser dropped before an artifact is written — assigning nil
+  # assigns nothing — so the declaration travelling is not enough on its own:
+  # the consumer read it, made no initialiser from it, and codegen emitted no
+  # global. The name travelling in `ClassVars` is what closes that half.
+  it "carries a module's class variables, declaration and global" do
+    with_tempdir("iyimod_class_vars") do
+      Dir.mkdir_p "app"
+      File.write "app/counter.iyi", <<-IYI
+        module app/counter
+
+        pub struct Tally
+          @@cache : String? = nil
+          @@seen : Int32 = 0
+
+          def initialize
+          end
+
+          pub def remember(s : String) : String
+            @@cache = s
+            @@seen = @@seen + 1
+            (@@cache || "none") + ":" + @@seen.to_s
+          end
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/counter
+
+        t = App::Counter::Tally.new
+        puts t.remember("hello")
+        puts t.remember("again")
+        IYI
+
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "hello:1\nagain:2"
+
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "counter.iyimod"))
+      artifact.class_vars.map(&.name).should eq ["App::Counter::Tally::@@cache",
+                                                 "App::Counter::Tally::@@seen"]
+
+      # None of them lazy, and that is a fact about the prelude rather than
+      # about these two: iyi's has no `__crystal_once`, so a unit under it
+      # never reads a class variable through an init flag.
+      artifact.class_vars.map(&.lazy).should eq [false, false]
+
+      tally = artifact.exports.types.find { |type| type.name == "Tally" }.should_not be_nil
+      tally.class_vars.should eq [{"@@cache", "(String | Nil)", ""},
+                                  {"@@seen", "Int32", "0"}]
+
+      File.delete "app/counter.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq "hello:1\nagain:2"
     end
   end
 
@@ -2356,6 +2430,87 @@ describe Iyi::IyiMod do
         end
       end
     end
+  end
+
+  # The flag beside the name, because the consumer cannot work it out. A unit
+  # that reads a class variable with a live initialiser calls
+  # `~Owner::name:read`; one reading a variable without an initialiser reads the
+  # global. Assume the first and an iyi-prelude program dies on
+  # `BUG: __crystal_once is not defined`; assume the second and a `--crystal`
+  # build leaves `~Exception::CallStack::skip:read` undefined.
+  it "round-trips how a unit refers to a class variable" do
+    with_temporary_file do |path|
+      artifact = Iyi::IyiMod::Artifact.new(
+        module_name: "app/box",
+        source_path: "/src/app/box.iyi",
+        compiler_version: "1.22.0-dev+abc1234",
+        target_triple: "x86_64-pc-linux-gnu",
+        flags: ["bits64"],
+        imports: [] of Iyi::IyiMod::ImportEdge,
+        class_vars: [
+          Iyi::IyiMod::ClassVarRef.new("App::Box::Store::@@cache", false),
+          Iyi::IyiMod::ClassVarRef.new("Exception::CallStack::@@skip", true),
+        ],
+      )
+      Iyi::IyiMod.write artifact, path
+
+      read = Iyi::IyiMod.read(path).class_vars
+      read.map(&.name).should eq ["App::Box::Store::@@cache",
+                                  "Exception::CallStack::@@skip"]
+      read.map(&.lazy).should eq [false, true]
+    end
+  end
+
+  # The pattern and not just the name, because the name is a digest of the
+  # pattern and a digest does not read backwards. `Constants` carries a name
+  # because for every other constant a name is enough — the consumer's own
+  # library has it, or the module's initialiser assigns it. Nobody wrote this
+  # one and `$` keeps it out of the source channel, so what a consumer needs to
+  # build it travels here or nowhere.
+  it "round-trips what a synthesised regex constant was made from" do
+    with_temporary_file do |path|
+      artifact = Iyi::IyiMod::Artifact.new(
+        module_name: "app/box",
+        source_path: "/src/app/box.cr",
+        compiler_version: "1.22.0-dev+abc1234",
+        target_triple: "x86_64-pc-linux-gnu",
+        flags: ["bits64"],
+        imports: [] of Iyi::IyiMod::ImportEdge,
+        constants: ["$Regex:0efd0f2ede78a843db3048bc8d79fcff"],
+        regexes: [Iyi::IyiMod::RegexConst.new("$Regex:0efd0f2ede78a843db3048bc8d79fcff",
+          "alpha-[0-9]+", 1_u32)],
+      )
+      Iyi::IyiMod.write artifact, path
+
+      read = Iyi::IyiMod.read(path).regexes
+      read.size.should eq 1
+      read[0].name.should eq "$Regex:0efd0f2ede78a843db3048bc8d79fcff"
+      read[0].pattern.should eq "alpha-[0-9]+"
+      read[0].options.should eq 1_u32
+    end
+  end
+
+  # Same pattern, same name, in a program that never met the other one — which
+  # is the whole of what the digest is for. Two boundaries numbering their own
+  # literals from zero both said `$Regex:0`, and a consumer holding both can
+  # only define one: the second module's machine code read the first module's
+  # pattern, with nothing raised and nothing linked wrong.
+  it "names a regex constant after the literal rather than the order it was met in" do
+    alpha = Iyi::Program.regex_const_name("alpha-[0-9]+", Iyi::RegexOptions::None)
+    beta = Iyi::Program.regex_const_name("beta-[a-z]+", Iyi::RegexOptions::None)
+
+    alpha.should_not eq beta
+    alpha.should eq Iyi::Program.regex_const_name("alpha-[0-9]+", Iyi::RegexOptions::None)
+
+    # The flags are part of what the literal means, so they are part of its
+    # name: `/a/i` and `/a/` are two patterns and must not share one constant.
+    Iyi::Program.regex_const_name("a", Iyi::RegexOptions::IGNORE_CASE)
+      .should_not eq Iyi::Program.regex_const_name("a", Iyi::RegexOptions::None)
+
+    # Unwritable, which the old name already was and this one has to keep: the
+    # consumer defines it, and a name a consumer could also *write* would be a
+    # constant two things own.
+    alpha.should start_with "$Regex:"
   end
 
   it "renders the initialiser inside the module it belongs to" do

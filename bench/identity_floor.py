@@ -216,8 +216,8 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r"Crystal (only ever|refuses|injects|module|needs|repository|path)", "a sentence about the other language"),
     (r"crystal (was compiled|code|repository)|in crystal\b|\.crystal\b", "a sentence about the other language"),
     (r"Crystal source files", "the formatter's description of `.cr` input"),
-    (r"\$crystal|regex crystal", "a shell variable and a type-name list"),
-    (r"Crystal (resolves|infers|compiles|writes|builds|already|standard library)", "a sentence about the other language"),
+    (r"\$crystal|\$CRYSTAL\b|\$\{CRYSTAL\}|regex crystal", "a shell variable and a type-name list"),
+    (r"Crystal (resolves|infers|compiles|writes|builds|already|narrows|standard library)", "a sentence about the other language"),
     (r"other Crystal|the crystal\b|as crystal\b|CONST \(Crystal\)", "a sentence about the other language"),
     (r"crystal-lang/crystal#", "an upstream issue reference"),
     (r"^\s*#\s+Crystal (and|is|are|does|has|was)\b", "a wrapped sentence about the other language"),
@@ -241,6 +241,15 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # `bench/doc_numbers.py` holds the patterns that match the docs' own
     # sentences, so it quotes SPEC's "lines, Crystal, forked" verbatim.
     (r"lines, Crystal, forked", "a pattern matching SPEC's own sentence"),
+    # `tool bind` writes an artifact for a `--crystal` consumer, so two of the
+    # things it carries are Crystal's and are named for it. `crystal_types` is
+    # the set of names that consumer already has from Crystal's library, which
+    # is what decides whether a bound shard may name a type. `crystal_requires`
+    # is the `require`s a shard's source made that resolved into Crystal's
+    # library, replayed in the artifact because the consumer's prelude does not
+    # hold every file of it. Renaming either would claim a name iyi does not own.
+    (r"crystal_types|crystal_requires", "what a --crystal consumer already has, carried by name"),
+    (r"a \*Crystal\* source", "a sentence about the other language"),
 ]
 
 PATH_RES = [(re.compile(p), why) for p, why in ALLOWED_PATHS]

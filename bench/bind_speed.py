@@ -11,13 +11,25 @@ not otherwise have — and it asks it end to end: `crystal tool bind` writes the
 declarations, an ordinary build of the keep file puts the per-type units in the
 artifact, and a program is built against it and run.
 
-The shard is generated rather than borrowed, and the reason is not convenience.
-`Kemal` cannot be bound today: its object code numbers
-`Array(Radix::Node(...))`, a generic instance from another shard, and a generic
-travels as bodies rather than as declarations (IV.2). So a real shard would
-measure that gap instead of this question. What is generated here is the shape
-the question needs — ordinary types with ordinary methods — and its size is
-stated rather than hidden: twenty types of twenty-five methods, 1,627 lines.
+The shard is generated rather than borrowed, and the reason is size rather than
+capability. What is generated is the shape the question needs — ordinary types
+with ordinary methods — swept at three sizes that are stated rather than hidden.
+
+This paragraph used to say a shard reaching into another one could not be bound
+at all, `Kemal` numbering `Array(Radix::Node(...))` being the case, because a
+generic travelled as bodies rather than as declarations. That is no longer
+true and the correction was measured rather than assumed: a two-shard tree of
+exactly that shape — a generic `Node(T)` in one, a second whose object code
+numbers `Array(Node(String))` and whose declarations name no `Node` — binds,
+links, runs, and prints what the source arm prints. A generic carries its
+declaration *and* its bodies now, and the build that fills a boundary reads the
+boundaries beside it and adds the import edge.
+
+The order is the part worth knowing. The reached-into shard has to be bound
+first and named with `--use-iyimod`, because only a build that can see that
+boundary can add the edge. Without it the consumer stops at import with
+`"kemal" numbers Array(Radix::Node(String)), and this build cannot name it`,
+which is a sentence rather than an undefined symbol four steps later.
 
 Cold and warm are the two numbers that matter and they answer different things.
 Cold is what a consumer pays the first time, or on a machine that has never

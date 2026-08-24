@@ -10,9 +10,13 @@ end
 
 describe "Normalize: regex literal" do
   describe "StringLiteral" do
-    it "expands to const" do
+    # iyi: the name is the literal's, not the order it was met in. It reaches a
+    # linker — a unit reading this constant refers to `~<name>:const_read` —
+    # and a boundary carrying `$Regex:0` was read by a consumer that had
+    # numbered its own literals from zero too (SPEC.md IV.1g).
+    it "expands to a const named after the literal" do
       assert_expand Parser.parse(%q(/foo/)) do |to_nodes, program|
-        to_nodes.to_s.should eq "$Regex:0"
+        to_nodes.to_s.should eq Program.regex_const_name("foo", Iyi::RegexOptions::None)
       end
     end
 

@@ -5,14 +5,14 @@
 ### Added
 
 - **The collector's first stage: pointer maps travel in the artifact.**
-  `.iyimod` is format v22 and carries a `Layouts` section: per type a module
-  owns, its allocation size, its unrounded instance size, and the byte offsets
-  of its pointer fields. The offsets come from the target's own data layout, not
-  from adding field sizes up, because padding is the target's business and a map
-  that misses a field is a collector that frees a live object. A struct of
-  `String`, `String` and `Int32` reads back as 24 bytes, scan cap 20, offsets
-  `[0, 8]`. `iyi mod dump` shows them. A pointer word past offset 65535 is
-  refused by name rather than truncated into a `u16`.
+  `.iyimod` is format v24 and carries a `Layouts` section, numbered 14: per
+  type a module owns, its allocation size, its unrounded instance size, and the
+  byte offsets of its pointer fields. The offsets come from the target's own
+  data layout rather than from adding field sizes up, because padding is the
+  target's business and a map that misses a field is a collector that frees a
+  live object. A struct of `String`, `String` and `Int32` reads back as 24
+  bytes, scan cap 20, offsets `[0, 8]`. `iyi mod dump` shows them. A pointer
+  word past offset 65535 is refused by name rather than truncated into a `u16`.
 
   Alongside it, the object header and its mark word: `type_id` and an atomic
   `u64` holding colour in bits 0 and 1, flags in 2 to 5, and 58 reserved bits a
@@ -30,6 +30,134 @@
   traced" means is Stage 6's to define, and guessing now risks a later stage
   reading it as "do not retain" and collecting live buffers. Layouts are per
   instantiation, not per GC shape, because shape keying is R-4 and unbuilt.
+
+- **A class variable crosses a boundary, which nothing had ever carried.** A
+  class variable is a global. The methods that read one travel as a module's
+  machine code and refer to it by symbol, and the global itself is defined in
+  the main module — the one part of a build that never travels. Nothing in the
+  format mentioned class variables at all, so R-1's own claim was false for any
+  module that had one, in iyi's own language: build a module with a
+  `@@seen : Int32 = 0`, delete its source, build again from the artifact, and
+  the link ends on `undefined symbol: App::Counter::Tally::seen`.
+  `bench/samples_roundtrip.sh` is the gate for exactly that claim and passed,
+  because none of the six samples has a class variable.
+
+  `TypeDecl` carries the declaration now — name, resolved type, and the
+  initialiser as written — the way `fields` already do, one level up. That is
+  what a module's own needs, and a bound shard's too.
+
+  It is not enough alone, and `@@cache : String? = nil` is the case that says
+  so: a nil initialiser assigns nothing, so it is dropped before the artifact
+  is written, and the consumer that read the declaration made no initialiser
+  from it and emitted no global. So a `ClassVars` section carries the names a
+  unit's object code refers to and the consumer defines each. That second
+  channel is also all a class variable of *Crystal's* library needs — the
+  consumer has the declaration already, having compiled the same library, and
+  a bound shard calling `String#upcase` was left without
+  `Unicode::upcase_ranges`.
+
+  **The global is not the whole debt, and the consumer cannot work out the
+  rest.** A class variable with a live initialiser is read through
+  `~Owner::name:read`, a main-module function that initialises on first use;
+  one without is read straight off the global. Which a unit emitted is the
+  producer's fact, so the section carries a flag beside each name. Both guesses
+  were tried and each breaks a different world: assume the direct form and a
+  `--crystal` build leaves `~Exception::CallStack::skip:read` undefined, which
+  `bench/bind_roundtrip.sh` caught; assume the lazy form and an iyi-prelude
+  program dies on `BUG: __crystal_once is not defined`, because that prelude
+  has no `__crystal_once` and nothing under it ever takes the branch.
+
+  **The value is caught before the compiler rewrites it.** The initialiser
+  travels as source, and the node a class variable holds is not that source by
+  the time an artifact is written — `CleanupTransformer` has replaced it with
+  the literal's expansion. `@@nums = [1, 2, 3]` reached the format as five
+  statements over three temporaries, and the consumer said `read before
+  assignment to local variable '__temp_2'`.
+
+- **A regex literal's constant is named after the literal, and what it was made
+  from crosses a boundary.** The compiler turns a regex literal into a
+  program-level constant, and the name it invented was the order the literal
+  was met in: `$Regex:0`. That name reaches the linker — a unit reading the
+  constant refers to `~$Regex:0:const_read` — and encounter order is not an
+  identity two programs share. A consumer of a bound shard failed on
+  `undefined constant ::$Regex:0`, and the obvious fix, skipping such names,
+  was worse than the bug: the producer's object code still referred to the
+  mangled name, and whichever constant the consumer had numbered zero would
+  have satisfied it. A different pattern, silently.
+
+  The name is `$Regex:` and a digest of the pattern and the flags now, so it
+  means the same thing in a program that never compiled this source, and two
+  modules that wrote the same literal share one constant rather than defining
+  two. `$` still keeps it out of reach of anything anybody can write.
+
+  A digest cannot be read backwards, so the pattern travels too, in a
+  `Regexes` section beside the names in `Constants` — it cannot go through the
+  source channel, because `$` is not legal in a constant and `Exports` is
+  parsed text. The consumer builds the constant with the same `Regex.new` call
+  the expander builds for a literal met in source, and from there it is
+  ordinary: typed when read, initialised where read.
+
+  **The name is the load-bearing half, and the channel alone looks like it
+  works.** With the channel in and encounter-order naming restored, two bound
+  shards holding one literal each both wrote `$Regex:0`, and the second shard
+  matched against the first one's pattern with nothing raised and exit 0.
+  `bench/bind_regex_identity.sh` is the gate: it takes two boundaries, because
+  one can be wrong about the name and still right about the pattern.
+
+- **A real shard is installed, built against and asked for two pages every
+  build.** `bench/shard_serves.sh` takes the README's headline example
+  literally: `require "kemal"` in an `.iyi` file, built `--crystal`, serving.
+  Nothing here checked it. The samples cannot — none of them requires a shard,
+  which is the point of the example — and CI's tarball job builds a *synthetic*
+  shard against `crystal/syntax_highlighter`, which proves the library ships
+  whole and cannot prove that a real shard's macros parse, that its route
+  blocks compile, or that the thing answers.
+
+  It reaches the network, which no other gate here does, and the shard is
+  pinned at 1.12.0 so it fetches one version rather than today's. Two routes,
+  because a single static string would pass with the router never running; the
+  second reads a URL parameter, so the answer is right only if the request
+  reached the block the shard's macros defined.
+
+- **A bound shard is built from its boundary, linked and run every build.**
+  `bench/bind_roundtrip.sh` is `samples_roundtrip.sh`'s question asked of the
+  other kind of artifact: object code that is a shard's, declarations that
+  `crystal tool bind` wrote, and a `--crystal` consumer. It binds, fills the
+  units, builds the same program both ways, runs both and compares.
+
+  III.6 rule 1 names two failures for a boundary whose signatures are wrong —
+  an undefined symbol, or a call returning something of another type — and
+  `spec/compiler/bind_spec.cr` reaches neither, because it reads declarations
+  back and never links. That was written down as a deliberate limit. Nothing
+  covered it, and the first thing this gate did was fail:
+
+  ```
+  ld.lld: error: undefined symbol: *Shard::Part#wider:(String | Nil)
+  ```
+
+  **And it found the same question on the other side of the arrow.**
+  `def discards(io : IO)` is monomorphised on what it is passed, so the keep
+  file emitted `discards<IO>` and a consumer handing it `STDOUT` asked for
+  `discards<IO::FileDescriptor>`. Both answers that suggest themselves are bad:
+  instantiating for every concrete subtype is the whole-program work an
+  artifact exists to avoid, and refusing such methods costs real surface —
+  `JSON` has 10 of 180 declarations taking an `IO`, `YAML` 10 of 193, `URI` 7
+  of 55, counting only `IO`.
+
+- **A call to a declaration read from a `.iyimod` is keyed on the parameter as
+  declared, not on what the call site passes.** One line of a consumer said
+  which answer the gap above wanted: `part.discards(STDOUT)` failed to link and
+  `part.discards(STDOUT.as(IO))` linked and ran. The symbol was callable the
+  whole time; the call was reading past the declaration.
+
+  Keying on the argument is right everywhere the body is present to be compiled
+  once per argument type. A declaration from an artifact has no body and
+  exactly one symbol, so the parameter as written is what the call is keyed on
+  and the argument is widened to it — the conversion `.as(IO)` was performing by
+  hand. Getting the direction backwards says so plainly:
+  `BUG: trying to downcast IO+ <- IO::FileDescriptor`, which is `downcast`
+  being handed a widening. Nothing is refused and nothing is instantiated per
+  subtype.
 
 - **`pub enum`, and an enum crosses a boundary.** iyi took an `enum` already —
   the language has one and the compiler makes the type — but `pub` did not, so a
@@ -51,6 +179,60 @@
   both reconstructed a `TypeDecl` and left `value` and `macros` behind, which is
   how an alias lost its right-hand side and, once enums arrived, how one lost
   its members.
+
+- **`crystal tool bind` asks what the consumer of a bound shard can name, which
+  is not what it had been asking.** `nameable?` decides every count this tool
+  prints, and it asked what an *iyi-prelude* program could name — a program that
+  cannot consume one of these artifacts at all, because the units number
+  `Pointer(LibUnwind::Exception)` whatever the shard does. The consumer is a
+  `--crystal` program, which has Crystal's library, and now the shard's requires
+  besides. Read from where each type was written rather than from a list.
+
+  The surface had been reading low throughout. Without binding anything first:
+  `JSON` 168 → **181** signatures and 13 → **0** waiting, `YAML` 166 → **194**
+  and 32 → **0**, `URI` 48 → **55** and 9 → **0**. `Kemal` goes from 27 types
+  carrying 65 methods to **34 carrying 148**, and `Kemal::Route`,
+  `RouteDefinition`, `FileUpload` and three more stop being refused for naming
+  types their actual consumer would have.
+
+  Two things had to follow. A top-level name of Crystal's is written `::Log`,
+  because an artifact's declarations are rendered inside their own module and
+  `Kemal::Log` is a constant that would shadow it. And a generic carries the
+  types nested inside it, which is how `Kemal::LRUCache::Node(K, V)` went
+  missing while `LRUCache` travelled.
+
+- **A bound shard's requires travel, and so does a dependency that only its
+  type ids show.** A unit numbers the types its own `require`s brought in —
+  `Radix` reaches `Hash(String, HTTP::Cookie)` — and a consumer whose prelude is
+  Crystal's still does not have every file of it, so `require "http/cookie"`
+  goes in the artifact. Crystal's only: a require that resolved into somebody
+  else's `lib` is another shard, and replaying it would have the consumer
+  compile from source the thing an artifact exists to spare it.
+
+  The other half is an import edge nobody could see. `Kemal` names no `Radix`
+  type in any declaration and its object code refers to
+  `Array(Radix::Node(...))`, so a consumer that imported `kemal` had never heard
+  of `radix`. The build that fills the object code reads the boundaries beside
+  it and adds the edge, because only that build knows the type ids — `tool bind`
+  and this are different processes.
+
+- **A generic type crosses a boundary.** Its methods exist once per
+  instantiation and the instantiations belong to whoever writes them — a
+  consumer that writes `Holder(Float64)` needs a method the producer never made
+  — so what travels is the declaration with its type parameters and the
+  *source* of its methods, in `MonoBodies`, which is the answer IV.2 already
+  names and `crystal tool bind` was not using. `new` stays out: it is
+  synthesized from `initialize`, so a consumer makes its own and a carried one
+  would meet it at the linker.
+
+  A generic travels even with no methods to carry, because a consumer may need
+  only to *name* it: `Kemal` refers to `Array(Radix::Node(...))` and calls no
+  `Node` method. `Radix` carries three types where it carried none.
+
+  What a generic's methods must have is a written return type. The trick that
+  rescues an ordinary method — instantiate it on purpose and read what comes
+  back — has no single answer when the owner is generic, so 20 of `Radix`'s 33
+  methods stay behind.
 
 - **A harness for what a consumer pays for a shard** (`bench/bind_speed.py`),
   from its source and from its boundary, at three sizes. A boundary pays once
@@ -335,6 +517,196 @@
   trigger is the wrapping group rather than the branch lengths.
 
 ### Fixed
+
+- **A boundary whose root is a module was read as carrying nothing.**
+  `bound_names` asks whether the program has a type by each name an artifact
+  declares, and asked it bare. That is right when the root is a *class* —
+  `-e ExceptionPage` declares `ExceptionPage` and the program has one — and
+  wrong when the root is a *module*: `-e Radix` declares `Node`, `Tree` and
+  `Result` at the artifact's own top level, and the program has no top-level
+  `Node`. It has `Radix::Node`.
+
+  So `radix.iyimod` read as **6 types, 0 this program can name** while sitting
+  in the same directory as a `Kemal` that names `Radix::Tree` eight times, and
+  every one of those signatures went on waiting for a boundary that was already
+  carrying the type. Asked under the artifact's root as well, and recorded
+  under it too because that is how the producer writes them.
+
+  Measured on the real shard: **`Kemal` goes from 168 signatures and 12 waiting
+  to 182 and 0.** Nothing it names is undeclared any more.
+
+- **A method that takes a block is now called with one, and rule 1's residual
+  reaches zero.** `infer_return` instantiates a method on purpose to read what
+  it answers, and it did that with no block — so `JSON::Builder#string`, which
+  has an overload taking a value and one taking a block, matched the first and
+  answered `wrong number of arguments (given 0, expected 1)`. Its return type
+  was then the last thing on the boundary standing on the shard's word, over a
+  block the annotation had already described in full.
+
+  Two pieces. The call gets a `Block` of the annotated shape — the same block
+  the keep file has written as text since blocks first crossed, `{ |b0| nil }`
+  or an `uninitialized` of the output where the output is not `Nil`. And it
+  gets a `parent_visitor`, because a block's body is code and code is visited;
+  a blockless call never needed one, and the compiler says so exactly:
+  `Iyi::Call#parent_visitor cannot be nil`.
+
+  **Crossing on a return nobody checked: URI 0 of 55, JSON 0 of 181, YAML 0 of
+  194.** Blocks being instantiable moves the other half too — 64 return types
+  read in `JSON` where the tool had refused, 81 in `YAML`.
+
+  One of the two this closed was not the tool's fault and is worth saying so:
+  `YAML::Any#to_json_object_key` names `JSON::Error` in its body, and the probe
+  it was measured with required only `yaml`. The tool refused correctly and the
+  input was short. `YAML` reads 194 signatures with both required, against 193
+  with one.
+
+- **A block-taking method crossed a bound boundary and could not link.**
+  IV.1g settles what such a method does: its machine code is the caller's, so
+  the producer emits each instantiation private to the unit that called it and
+  no symbol for one leaves the artifact — and its body travels in `MonoBodies`
+  instead, for the consumer to compile its own from the block it wrote. That
+  paragraph says explicitly that the question is about a `def` and not about a
+  type.
+
+  `crystal tool bind` was answering it about a type. Only a *generic* type's
+  methods carried their bodies, so an ordinary class's block-taking method
+  crossed as a declaration with nothing behind it — a promise nothing could
+  keep, and `undefined symbol: *Shard::Part#each<&Proc(Int32, Nil)>` at the end
+  of a build with no other complaint.
+
+  It carries the body wherever the method is written now. Both shapes round
+  trip and both are in `bench/bind_roundtrip.sh`: one that `yield`s and one
+  that captures its block as a `Proc`. The first guess was that only the
+  yielding one broke, because `yield` is inlined; a captured block fails
+  identically, so the rule is the block. The surface does not move — `JSON`
+  180 signatures, `YAML` 193, `URI` 55, before and after.
+
+- **What is left of III.6 rule 1 is counted where it is owed, and it is two
+  methods rather than eighty.** The report counted every written return that
+  could not be held against an answer: URI 27, JSON 13, YAML 39. Most of those
+  methods do not cross at all — a parameter with no type, a block nobody
+  annotated, a splat — and are already refused by name further down, so
+  counting them as unchecked said the boundary was trusting things it had never
+  carried.
+
+  Counted over the signatures that actually travel: **URI 0 of 55, JSON 1 of
+  180, YAML 1 of 193**, and the report names them with the whole reason rather
+  than a reason cut to a column. `JSON::Builder#string` — the tool builds no
+  block for the call it synthesises — and `YAML::Any#to_json_object_key`.
+
+  An abstract def is not among them any more either. It has no body to
+  instantiate and no symbol of its own: what a caller reaches is an
+  implementation, and every implementation is an ordinary method this tool
+  checks as itself. `YAML::Nodes::Node#kind` was being counted as a return
+  standing on the shard's word when it is one carried by the methods
+  underneath it.
+
+- **`bench/bind_speed.py` said a shard reaching into another one cannot be
+  bound, and that stopped being true two commits before anybody reread it.**
+  The header gave `Kemal` numbering `Array(Radix::Node(...))` as the case and
+  a generic travelling as bodies rather than declarations as the reason. Both
+  halves have since been answered — a generic carries its declaration *and* its
+  bodies, and the build that fills a boundary reads the boundaries beside it and
+  adds the import edge — and the paragraph went on asserting the old state.
+
+  Corrected by measuring rather than by reasoning, and without the network: a
+  two-shard tree of exactly that shape — a generic `Node(T)` in one, a second
+  whose object code numbers `Array(Node(String))` and whose declarations name
+  no `Node` — binds, links, runs, and prints what the source arm prints. The
+  order matters and the header now says so: the reached-into shard is bound
+  first and named with `--use-iyimod`, because only a build that sees that
+  boundary can add the edge. Without it the consumer stops at import with
+  `"kemal" numbers Array(Radix::Node(String)), and this build cannot name it`.
+
+  SPEC.md III.6 already recorded the correction and needed nothing; it also
+  names what real `Kemal` still waits on, which is three types belonging to
+  other shards. The stale sentence carried a stale number besides — it called
+  the smallest sweep 1,627 lines where the bench prints 2,167.
+
+- **`crystal tool bind` holds a written return type against what a caller is
+  actually handed, and the two are not always the same.** III.6 rule 1 says the
+  binding asserts and is not checked. Half of it already was: a method whose
+  return type nobody wrote is instantiated on purpose and the answer read. The
+  other half — a method that *writes* its return type — was copied out verbatim
+  and held against nothing, on the premise that what Crystal was told is what
+  Crystal does.
+
+  It is not. Crystal narrows a return restriction to what the body produced, so
+  `def wider : String?` returning a `String` types its call **`String`**, and a
+  consumer told `String?` holds a union where the object code answers a bare
+  pointer. That is rule 1's "a call that returns something of another type",
+  reached without anybody writing a wrong signature.
+
+  Five in Crystal's own library, and each is a different shape: `JSON::Any#size`
+  and `YAML::Any#size` say `Int`, which is a family head and not a type anything
+  can hold; `JSON::Lexer.new` says the abstract base where the factory hands
+  back `StringBased` and `IOBased`; `YAML::Schema::Core.parse_scalar` declares a
+  union carrying `Slice(UInt8)`, which it never produces. The report names them
+  and counts what is left: URI **40 agree, 0 disagree, 27 could not be checked**,
+  JSON 119/3/13, YAML 111/2/40. Where the two disagree the artifact carries the
+  **answer**, because the symbol is named after the answer and not after the
+  restriction — see the round trip below, which is what settled that.
+
+  **The first version of this check read the method's body rather than its call,
+  and it was wrong in the direction that matters.** `def discards(io : IO) : Nil`
+  has a body producing an `IO` and a caller receiving `Nil`, because `: Nil`
+  discards; reading the body reported three defects in `URI` alone that were not
+  there. The question a boundary asks is what a *caller* is handed, and the spec
+  now pins the `: Nil` case for that reason.
+
+- **A return type is asked whether a variable could hold it, which only the
+  parameters were being asked.** `Int` is the head of a family on either side of
+  the arrow: a method answering one has a symbol per member exactly as a method
+  taking one does, and the generated keep file cannot compile either. `storable`
+  looked at the arguments alone, so `JSON::Any#size : Int` was counted as a
+  signature that crosses. JSON goes **181 → 180** and YAML **194 → 193**; URI is
+  unchanged at 55.
+
+- **`bench/build_speed.py` has not built anything since the identity cutover,
+  and it is the gate for the one claim this project is built around.** It asks
+  a wrapper where this checkout's sources are, and `f55ba16cb` renamed the
+  variables it asks for to `IYI_*` while leaving it asking `bin/crystal`. The
+  two command surfaces answer in their own vocabularies by design, so
+  `crystal env IYI_PATH` is not an error — it prints an empty line and exits 0.
+
+  The bench checked the exit status, got 0, and passed the compiler an
+  environment with no search path in it at all. Every build then failed with
+  `can't find file 'iyi/prelude'` and every row of the table printed a dash.
+  It does exit non-zero, so it was never *silently* wrong; it was simply not
+  being run.
+
+  Two changes, and the second is the one that matters. It asks `bin/iyi`, which
+  is the surface that knows those names. And it checks the **answer** rather
+  than the status, because an exit code cannot see an empty string — a bench
+  that cannot find the path now says which one it wanted.
+
+- **`bench/incremental.py` was broken the same way, and it is the harness
+  behind the number on the front page of the README.** Same shape exactly: it
+  asked `bin/crystal` for `IYI_PATH`, got an empty line and a 0, and every
+  build in it failed with `can't find file 'iyi/prelude'`. Fixed the same way,
+  and it exits non-zero too, so this was also not being run rather than being
+  believed.
+
+  Running: 30 modules, 300 types, 7,208 lines, editing one module's body —
+  **iyi 0.07 s, `go build` 0.09 s, Crystal 0.76 s** on a release compiler. The
+  same edit with no artifacts is 0.18 s, so R-1 is worth 0.11 s of it.
+
+  Worth putting beside the other bench rather than apart from it. `medium.iyi`
+  is 6,900 lines in **one file** — no modules, no artifacts, nothing to cache —
+  and there iyi is 0.13 s against Go's 0.02 s. iyi loses on a monolith and wins
+  on a project, and SPEC.md's 0.1.0 section said only the first half because
+  only the first bench could run.
+
+- **The same bench withheld iyi's own figures at scale whenever Go was
+  absent.** The 300-type pair is timed only after both halves are built and run
+  against each other, which is right for the comparison and wrong for
+  everything else: on a machine with no Go the whole block was dropped, and
+  that block is the size SPEC.md's scale question is about. "The pair disagreed"
+  and "there is no Go here" are now different answers. The first still drops the
+  rows; the second prints iyi's and marks the Go column as not measured.
+
+  With them back: at 6,912 lines, front end 0.05 s, end to end 0.39 s cold and
+  **0.13 s warm** on a release compiler.
 
 - **`gsub` copied the tail twice on an empty match at the end of the subject.**
   `Iyi::Rx.gsub("abc", /$/, "<>")` answered `"abc<>abc"`. An empty match at the

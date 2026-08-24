@@ -628,12 +628,56 @@ module Iyi
       artifact.type_ids = collect_iyi_type_ids(program, names)
       artifact.constants = collect_iyi_constants(program, names)
       artifact.layouts = collect_iyi_layouts(program, type)
+      artifact.regexes = collect_iyi_regexes(program, artifact.constants)
+      artifact.class_vars = collect_iyi_unit_class_vars(program, names)
+
+      add_bind_boundary_imports artifact, dir, path
       IyiMod.write artifact, path
 
       carried = artifact.object_code.sum { |unit| unit.code.size }
       stdout.puts "filled #{path}: #{artifact.object_code.size} units, " \
                   "#{carried} bytes, #{artifact.type_ids.size} type ids, " \
                   "#{artifact.constants.size} constants"
+    end
+
+    # iyi: a boundary this one *numbers* is a boundary this one depends on.
+    #
+    # A type id is the only place that dependency shows. `Kemal` names no
+    # `Radix` type in any declaration and its object code refers to
+    # `Array(Radix::Node(...))` — so a consumer that imported `kemal` had never
+    # heard of `radix` and could not name what `kemal` numbered.
+    #
+    # Read from the boundaries sitting beside this one rather than from what
+    # `tool bind` knew, because the two are different processes: `tool bind`
+    # writes the declarations and this build fills the object code, and only
+    # this one knows the type ids.
+    private def add_bind_boundary_imports(artifact : IyiMod::Artifact, dir : String,
+                                          own : String) : Nil
+      edges = artifact.imports.map(&.module_name).to_set
+      Dir.glob(File.join(dir, "*.iyimod")).sort.each do |path|
+        next if File.expand_path(path) == File.expand_path(own)
+
+        begin
+          other = IyiMod.read path
+        rescue
+          next
+        end
+        next if edges.includes?(other.module_name)
+
+        declared = [] of String
+        other.exports.types.each { |declaration| declared << declaration.name }
+        next unless declared.any? { |name| artifact.type_ids.any?(&.includes?(name)) }
+
+        # Not if it already points here. Every one of these boundaries was bound
+        # in a program that held all of them, so each one's units number the
+        # others' instantiations — `Radix`'s number `Result(Kemal::Route)`,
+        # which is Kemal's instantiation and not Radix's. Read as a dependency
+        # both ways it is a cycle, and an import graph is a DAG (R-1).
+        next if other.imports.any? { |edge| edge.module_name == artifact.module_name }
+
+        artifact.imports << IyiMod::ImportEdge.new(other.module_name)
+        edges << other.module_name
+      end
     end
 
     # iyi: attaches each module's object code and writes the artifacts.
@@ -661,6 +705,8 @@ module Iyi
             artifact.layouts = collect_iyi_layouts(program, module_type)
           end
         end
+        artifact.regexes = collect_iyi_regexes(program, artifact.constants)
+        artifact.class_vars = collect_iyi_unit_class_vars(program, unit_names)
         IyiMod.write artifact, path
       end
     end
@@ -843,6 +889,57 @@ module Iyi
       names.to_a.sort!
     end
 
+    # iyi: the class variables the module's object code refers to, as
+    # `Owner::@@name`, for `ClassVars` (SPEC.md IV.2).
+    #
+    # `collect_iyi_constants`' question asked of a global. A class variable's
+    # global lives in the main module and a main module does not travel, so a
+    # consumer that was not told the name emitted nothing and the link ended on
+    # an undefined symbol.
+    #
+    # Not the same list as the declarations. A unit refers to the library's
+    # class variables too — a shard that calls `String#upcase` refers to
+    # `Unicode::@@upcase_ranges` — and those are already declared in the
+    # consumer's own program, which compiles that library. What is missing
+    # there is only that codegen never emitted the global, because it emits
+    # what the consuming program *reaches* and the reader is a unit it did not
+    # compile. One name answers both cases.
+    #
+    # The separator is `::@@` and it is unambiguous: a type's name may hold
+    # `::` and cannot hold `@`.
+    private def collect_iyi_unit_class_vars(program : Program,
+                                            unit_names : Array(String)) : Array(IyiMod::ClassVarRef)
+      lazy = {} of String => Bool
+      unit_names.each do |unit_name|
+        program.iyi_unit_class_vars[unit_name]?.try &.each do |variable, through_read|
+          name = "#{variable.owner}::#{variable.name}"
+          lazy[name] = through_read || lazy[name]? || false
+        end
+      end
+      lazy.keys.sort!.map { |name| IyiMod::ClassVarRef.new(name, lazy[name]) }
+    end
+
+    # iyi: what a consumer needs to *build* the synthesised regex constants in
+    # `Constants`, for `Regexes` (SPEC.md IV.1g).
+    #
+    # Every other name in that list is one the consumer's own program already
+    # has: its own library's `Int::DIGITS_BASE62`, or a constant this module
+    # declared and whose initialiser travelled as source. A regex literal's is
+    # neither. It is named for the literal rather than written by anybody, and
+    # `$` keeps it out of the source channel — so the pattern travels here and
+    # the consumer defines the constant under the name the object code asks for.
+    #
+    # Read from the names already collected rather than from the units again:
+    # what a consumer has to build is exactly what it was told to read.
+    private def collect_iyi_regexes(program : Program,
+                                    constant_names : Array(String)) : Array(IyiMod::RegexConst)
+      constant_names.compact_map do |name|
+        next unless made = program.iyi_regex_constants[name]?
+        pattern, options = made
+        IyiMod::RegexConst.new(name, pattern, options.value.to_u32)
+      end
+    end
+
     # The unit names of every type declared under *type*, recursively.
     #
     # A unit is named after the type that owns the methods in it, and **a
@@ -972,6 +1069,7 @@ module Iyi
         assoc_types: assoc_types,
         supertraits: type.responds_to?(:supertraits) ? type.supertraits.map(&.to_s) : [] of String,
         fields: collect_iyi_fields(type),
+        class_vars: collect_iyi_class_vars(type),
         methods: methods,
         visibility: "pub",
         types: iyi_carried_types(program, filename, type),
@@ -1041,6 +1139,7 @@ module Iyi
           assoc_types: [] of String,
           supertraits: [] of String,
           fields: collect_iyi_fields(declared),
+          class_vars: collect_iyi_class_vars(declared),
           methods: iyi_carried_methods(program, filename, name, declared),
           visibility: declared.private? ? "private" : "",
           types: iyi_carried_types(program, filename, declared),
@@ -1228,6 +1327,40 @@ module Iyi
         fields << {name, variable.type?.try(&.to_s) || "?"}
       end
       fields
+    end
+
+    # iyi: a type's own class variables, for `TypeDecl#class_vars` (SPEC.md
+    # IV.2).
+    #
+    # A class variable is a *global*. The methods that read one travel as this
+    # module's machine code and refer to it by name, and the global they refer
+    # to is defined in the main module — the one part of a build that never
+    # travels. So a module with a `@@seen` failed R-1's own round trip: build,
+    # delete the source, build again, and the link ended on
+    # `undefined symbol: App::Counter::Tally::seen`.
+    #
+    # Its type comes from the resolved type for the same reason a field's does:
+    # what a consumer needs is not the annotation somebody wrote, it is the
+    # thing it has to allocate a global of.
+    #
+    # Its *value* does not. The initialiser has to run on the far side, so what
+    # travels is the node as written — the same channel a module's top-level
+    # code takes, and faithful for the same reason: normalisation rewrites
+    # control flow, not literals.
+    #
+    # Own only, and `class_vars?` rather than `class_vars` says so. Looking one
+    # up walks ancestors and *copies* what it finds onto the asking type, so a
+    # module that merely reads `@@x` from an included module would otherwise
+    # declare a second one of its own.
+    private def collect_iyi_class_vars(type : Type) : Array({String, String, String})
+      class_vars = [] of {String, String, String}
+      return class_vars unless type.responds_to?(:class_vars?)
+
+      type.class_vars?.try &.each do |name, variable|
+        initialiser = variable.iyi_initialiser_source
+        class_vars << {name, variable.type?.try(&.to_s) || "?", initialiser}
+      end
+      class_vars
     end
 
     # Measures what a compile costs when the prelude has already been analysed,

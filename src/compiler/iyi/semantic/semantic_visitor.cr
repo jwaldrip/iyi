@@ -97,6 +97,19 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       node.raise "#{message}\n\n#{notes.join("\n")}"
     end
 
+    # iyi: and the same for a Crystal source, when a boundary is being written.
+    #
+    # A bound shard's units number types its own `require`s brought in —
+    # `Hash(String, HTTP::Cookie)` needs `require "http/cookie"` — and a
+    # consumer whose prelude is Crystal's still does not have every file of it.
+    # Kept with where it resolved, because that is what tells a shard's own
+    # dependency from Crystal's library, and only the second may travel: the
+    # first is another boundary's to carry.
+    if filenames && !filename.starts_with?('.') &&
+       @program.compiler.try(&.emit_bind) && relative_to.try(&.ends_with?(".cr"))
+      @program.iyi_crystal_requires[filename] ||= filenames.first
+    end
+
     if filenames
       nodes = Array(ASTNode).new(filenames.size)
 
@@ -526,6 +539,14 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     begin
       parsed_nodes = parser.parse
       parsed_nodes = @program.normalize(parsed_nodes, inside_exp: false)
+      artifact.class_vars.each do |ref|
+        # `||=` on the flag: two artifacts may name the same class variable of
+        # the library, and the lazy reference is the one with a symbol behind
+        # it.
+        @program.iyi_artifact_class_vars[ref.name] =
+          ref.lazy || @program.iyi_artifact_class_vars[ref.name]? || false
+      end
+      define_iyi_artifact_regexes artifact, artifact_path
       read_iyi_artifact_constants artifact, parsed_nodes, artifact_path
       parsed_nodes.accept IyiMod::DeclarationMarker.new
       iyi_at_top_level { parsed_nodes.accept self }
@@ -636,6 +657,56 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     location = Location.new(artifact_path, 1, 1)
     artifact.constants.each do |name|
       nodes.expressions << Path.new(name.split("::"), global: true).at(location)
+    end
+  end
+
+  # iyi: builds the synthesised regex constants the artifact's object code
+  # reads, under the names it reads them by (SPEC.md IV.1g).
+  #
+  # Every other name in `Constants` resolves without help: Crystal's own belong
+  # to the library this program compiles, and the module's own arrive in the
+  # initialiser that travelled as source. A regex literal's constant is in
+  # neither place. The compiler makes it, names it for the literal's own bytes,
+  # and `$` keeps it out of any source channel — so the read appended below
+  # found nothing and the build ended on `undefined constant ::$Regex:...`
+  # with every declaration it needed already in hand.
+  #
+  # The value is the same call the expander builds for a literal met in source,
+  # which is what makes the rest ordinary: this constant is typed when it is
+  # read and initialised where it is read, like any other.
+  #
+  # **Before the declarations are analysed**, because the read that marks it
+  # used is appended to them.
+  #
+  # Skipped when the program already has the name, which is not an edge case
+  # but the common one: the name is a digest of the pattern, so a second
+  # artifact naming the same literal — or this program's own source writing it
+  # — means the same constant, and defining it twice would be two symbols where
+  # the object code refers to one. Recorded in `iyi_regex_constants` for the
+  # same reason from the other side: an artifact this build goes on to write
+  # has to be able to say what it was made from.
+  private def define_iyi_artifact_regexes(artifact : IyiMod::Artifact,
+                                          artifact_path : String) : Nil
+    return if artifact.regexes.empty?
+
+    # The artifact's own path, for the reason the reads below carry one: a
+    # constant's initialiser becomes a call in a function with debug info, and
+    # LLVM wants a location for it.
+    location = Location.new(artifact_path, 1, 1)
+
+    artifact.regexes.each do |regex|
+      next if @program.types[regex.name]?
+
+      options = RegexOptions.new(regex.options.to_i32)
+      value = Call.new(
+        Path.global("Regex").at(location), "new",
+        StringLiteral.new(regex.pattern).at(location),
+        Call.new(Path.global(["Regex", "Options"]).at(location), "new",
+          NumberLiteral.new(options.value.to_s).at(location)).at(location)
+      ).at(location)
+
+      @program.types[regex.name] = Const.new(@program, @program, regex.name, value)
+      @program.iyi_regex_constants[regex.name] = {regex.pattern, options}
     end
   end
 

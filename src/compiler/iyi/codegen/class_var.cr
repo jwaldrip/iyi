@@ -194,6 +194,7 @@ class Iyi::CodeGenVisitor
     initializer = class_var.initializer
     if !initializer || class_var.uninitialized? || class_var.no_init_flag?
       # Read directly without init flag, but make sure to declare the global in this module too
+      iyi_record_unit_class_var class_var, lazy: false
       return get_class_var_global(class_var)
     end
 
@@ -201,11 +202,42 @@ class Iyi::CodeGenVisitor
 
     func = create_read_class_var_function(class_var, initializer)
     if func
+      iyi_record_unit_class_var class_var, lazy: true
       func = check_main_fun func.func.name, func
       call func
     else
+      iyi_record_unit_class_var class_var, lazy: false
       get_class_var_global(class_var)
     end
+  end
+
+  # iyi: which unit refers to this class variable, and *how* (SPEC.md IV.2).
+  #
+  # Recorded at the two branches above rather than at the top, because the
+  # branch is the whole of what the consumer has to be told. A variable with a
+  # live initialiser is read through `~Owner::name:read`, a main-module
+  # function that initialises on first use; one without is read straight off
+  # the global. The unit's object code carries whichever call was emitted here,
+  # and the consumer owes exactly that one.
+  #
+  # Guessing it on the far side does not work in either direction. Assume the
+  # lazy form and an iyi-prelude program dies on `BUG: __crystal_once is not
+  # defined` — iyi's prelude has no `__crystal_once`, so nothing under it ever
+  # takes that branch. Assume the direct form and a `--crystal` consumer leaves
+  # `~Exception::CallStack::skip:read` undefined.
+  #
+  # Both reading and assigning arrive here — an assignment asks for the pointer
+  # through this method — which is what makes it the one hook a unit's use of a
+  # class variable cannot get past. Recorded only while writing artifacts.
+  private def iyi_record_unit_class_var(class_var : MetaTypeVar, *, lazy : Bool) : Nil
+    return if @program.iyi_exported_owners.empty?
+    return if @llvm_mod == @main_mod
+
+    unit = (@program.iyi_unit_class_vars[@llvm_mod.name] ||= {} of MetaTypeVar => Bool)
+
+    # `||=` rather than `=`: one unit may reach the same variable both ways,
+    # and the lazy reference is the one with a symbol behind it.
+    unit[class_var] = lazy || unit[class_var]? || false
   end
 
   def get_class_var_global(class_var)

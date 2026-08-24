@@ -1,7 +1,6 @@
 module Iyi
   class LiteralExpander
     def initialize(@program : Program)
-      @regexes = [] of {String, RegexOptions}
     end
 
     # Converts an array literal to creating an Array and storing the values:
@@ -334,19 +333,34 @@ module Iyi
       when StringLiteral
         string = node_value.value
 
-        key = {string, node.options}
-        index = @regexes.index(key) || @regexes.size
-        const_name = "$Regex:#{index}"
+        # iyi: named after the literal rather than after the order it was met
+        # in (SPEC.md IV.1g). The name reaches a linker — a unit that reads this
+        # constant refers to `~$Regex:<name>:const_read` — and encounter order
+        # is not an identity a second program shares. A `.iyimod` whose object
+        # code said `$Regex:0` linked against a consumer's own first regex
+        # literal, which is a different pattern, silently.
+        #
+        # Content-addressed rather than qualified by the module that made it,
+        # for two reasons. This expander has no module: it runs over a whole
+        # program, and which of that program's types end up in which artifact is
+        # decided much later. And the same name here means the same pattern and
+        # the same flags, so two modules meeting `/\d+/` share one constant
+        # instead of racing to define two — sharing is the right answer rather
+        # than the hazard, which is what content addressing buys over a number.
+        const_name = Program.regex_const_name(string, node.options)
 
-        if index == @regexes.size
-          @regexes << key
-
+        if existing = @program.types[const_name]?
+          const = existing.as(Const)
+        else
           const_value = regex_new_call(node, StringLiteral.new(string).at(node))
           const = Const.new(@program, @program, const_name, const_value)
 
           @program.types[const_name] = const
-        else
-          const = @program.types[const_name].as(Const)
+
+          # What the name no longer says. A consumer has to *build* this
+          # constant, and it cannot read the pattern back out of a digest — so
+          # the pattern travels beside the name (IV.1g).
+          @program.iyi_regex_constants[const_name] = {string, node.options}
         end
 
         Path.new(const_name).at(const.value)
