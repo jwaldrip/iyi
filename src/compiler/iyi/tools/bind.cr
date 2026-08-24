@@ -735,7 +735,8 @@ module Iyi
     root_type = program.types?.try &.[]?(root)
     return accessors unless root_type.is_a?(NamedType)
 
-    collect_constants root_type, root, "", "", known, accessors, Set(String).new
+    collect_constants root_type, root, "", "", known, accessors, Set(String).new,
+      library_root(program)
     accessors
   end
 
@@ -754,8 +755,12 @@ module Iyi
   private def self.collect_constants(owner : NamedType, root : String, prefix : String,
                                      path : String, known : Set(String),
                                      accessors : Array({IyiMod::Signature, String}),
-                                     taken : Set(String)) : Nil
+                                     taken : Set(String), library : String?) : Nil
     owner.types?.try &.each do |name, type|
+      # An accessor for the library's own constant is a method a consumer does
+      # not need: it has the constant.
+      next if library_type?(type, library)
+
       case type
       when Const
         # A private constant cannot be handed out: an accessor reads it, and
@@ -801,7 +806,7 @@ module Iyi
         next if type.is_a?(EnumType)
         next if type.private?
         collect_constants type, root, "#{prefix}#{name}_", "#{path}#{name}::",
-          known, accessors, taken
+          known, accessors, taken, library
       end
     end
   end
@@ -957,7 +962,15 @@ module Iyi
   # produced an artifact naming a constant nobody had.
   private def self.collect_declarations(owner_type : NamedType, by_owner, root : String,
                                         declarations : Array(IyiMod::TypeDecl)) : Nil
+    library = library_root(owner_type.program)
     owner_type.types?.try &.each do |name, type|
+      # The library's own, when the shard reopened a namespace that has some.
+      # A consumer under `--crystal` replays the requires and already has them;
+      # declaring one a second time is `superclass mismatch for class
+      # OpenSSL::SSL::Error`, an artifact and a `require` disagreeing about the
+      # same name.
+      next if library_type?(type, library)
+
       declaration = declaration_for name, type, by_owner, root
       declarations << declaration if declaration
     end
@@ -1526,7 +1539,14 @@ module Iyi
       fields: declaration.fields.map { |(name, type)| {name, strip_root(type, root)} },
       methods: declaration.methods.map { |signature| strip_root signature, root },
       visibility: declaration.visibility,
-      types: declaration.types.map { |nested| strip_root_declaration nested, root },
+      # Deeper for what is inside it, because a name is read from where it is
+      # written. `OpenSSL::PKey::PKeyError` stripped of the root is
+      # `PKey::PKeyError`, and that declaration is rendered *inside*
+      # `module PKey` — where it means `PKey::PKey::PKeyError` and resolves to
+      # nothing. From in there the name is `PKeyError`.
+      types: declaration.types.map do |nested|
+        strip_root_declaration nested, "#{root}::#{declaration.name}"
+      end,
       value: strip_root(declaration.value, root),
       macros: declaration.macros,
       members: declaration.members,
@@ -1700,10 +1720,40 @@ module Iyi
   #
   # Told apart by where each one resolved, which is why the resolution is what
   # was recorded rather than the name alone.
-  private def self.crystal_requires(program : Program) : Array(String)
+  # Where Crystal's own library lives, or nil when this build has no prelude of
+  # its own to measure against.
+  private def self.library_root(program : Program) : String?
     library = program.requires.find(&.ends_with?("prelude.cr"))
-    return [] of String unless library
-    root = File.dirname(library)
+    library ? File.dirname(library) : nil
+  end
+
+  # Whether a type is the *library's* rather than the shard's.
+  #
+  # A shard may reopen a namespace the library already has — `openssl_ext` is
+  # `OpenSSL` — and a consumer under `--crystal` replays the requires and gets
+  # the library's version. Declaring it a second time is how a build stops on
+  # `superclass mismatch for class OpenSSL::SSL::Error`: the artifact says one
+  # thing and `require "openssl"` says another about the same name.
+  #
+  # Asked of where it is *defined*, which is the only thing that separates the
+  # two: a type the shard wrote is under the shard, and one the library wrote is
+  # under the library. A type both of them touch counts as the shard's, because
+  # what the shard added to it has to travel somehow.
+  private def self.library_type?(type : Type, root : String?) : Bool
+    return false unless root
+    return false unless type.responds_to?(:locations)
+    locations = type.locations
+    return false unless locations && !locations.empty?
+
+    locations.all? do |location|
+      filename = location.filename
+      filename.is_a?(String) && filename.starts_with?(root)
+    end
+  end
+
+  private def self.crystal_requires(program : Program) : Array(String)
+    root = library_root(program)
+    return [] of String unless root
 
     names = program.iyi_crystal_requires.compact_map do |name, resolved|
       name if resolved.starts_with?(root)
@@ -1832,14 +1882,21 @@ module Iyi
     return "" unless root_type.is_a?(NamedType)
 
     lines = [] of String
-    collect_constant_source root_type, "", root, lines
+    collect_constant_source root_type, "", root, lines, library_root(program)
     lines.sort!
     lines.empty? ? "" : lines.join('\n')
   end
 
   private def self.collect_constant_source(owner : NamedType, prefix : String,
-                                           root : String, lines : Array(String)) : Nil
+                                           root : String, lines : Array(String),
+                                           library : String?) : Nil
     owner.types?.try &.each do |name, type|
+      # The library's own, where the shard reopened a namespace that has some.
+      # A consumer under `--crystal` replays the requires and already has it, and
+      # assigning it again is `already initialized constant
+      # OpenSSL::BIO::CRYSTAL_BIO`.
+      next if library_type?(type, library)
+
       case type
       when Const
         # Not the compiler's own. A regex literal is cached in a constant named
@@ -1858,7 +1915,7 @@ module Iyi
         # An enum's members are its own and travel with it. Written out here
         # they would be assignments into a type that already has them.
         next if type.is_a?(EnumType)
-        collect_constant_source type, "#{prefix}#{name}::", root, lines
+        collect_constant_source type, "#{prefix}#{name}::", root, lines, library
       end
     end
   end
