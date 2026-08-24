@@ -515,9 +515,21 @@ module Iyi
     # object file at all.
     exported = signatures
     carried_types = types
+
+    # The root's own class variables, which belong to no declaration because a
+    # module is not a `TypeDecl`. `module Backtracer; class_getter(configuration)`
+    # is the case that said so: every type of that shard travelled with its
+    # class variables and `Backtracer::configuration` was still undefined at the
+    # end of the link.
+    root_type = program.types?.try &.[]?(root)
+    root_class_vars = root_type ? collect_class_vars(root_type) : [] of {String, String, String}
+
     if module_root? program, root
       exported = exported.map { |signature| strip_root signature, root }
       carried_types = carried_types.map { |declaration| strip_root_declaration declaration, root }
+      root_class_vars = root_class_vars.map do |(name, type, value)|
+        {name, strip_root(type, root), strip_root(value, root)}
+      end
     end
 
     # And a reference to somebody else's boundary is written the way the
@@ -525,6 +537,9 @@ module Iyi
     unless @@bound_prefix.empty?
       exported = exported.map { |signature| map_names signature }
       carried_types = carried_types.map { |declaration| map_names_declaration declaration }
+      root_class_vars = root_class_vars.map do |(name, type, value)|
+        {name, map_names(type), map_names(value)}
+      end
     end
 
     artifact = IyiMod::Artifact.new(
@@ -549,7 +564,8 @@ module Iyi
       imports: @@bound_used.to_a.sort.map { |name| IyiMod::ImportEdge.new(name) },
       mono_bodies: @@mono_bodies.dup,
       requires: crystal_requires(program),
-      exports: IyiMod::Exports.new(exported, carried_types, [] of IyiMod::ImplRecord),
+      exports: IyiMod::Exports.new(exported, carried_types, [] of IyiMod::ImplRecord,
+        [] of IyiMod::Signature, root_class_vars),
       # True, and it was false here on an argument that measurement has since
       # answered. The argument was that a boundary stands *between* Crystal's
       # library and the consumer, so what crosses is handles and primitives and

@@ -433,13 +433,24 @@ module Iyi::IyiMod
     functions : Array(Signature),
     types : Array(TypeDecl),
     impls : Array(ImplRecord),
-    carried_functions : Array(Signature) = [] of Signature do
+    carried_functions : Array(Signature) = [] of Signature,
+    # iyi: the module's own class variables, the ones owned by the module
+    # rather than by a type inside it. Same triple as `TypeDecl#class_vars`
+    # and there for the same reason — a class variable is a global, and the
+    # global lives in a main module that does not travel.
+    #
+    # Its own field because there is nowhere else for it: a module is not a
+    # `TypeDecl`. `module Backtracer; class_getter(configuration)` is the case
+    # — `Backtracer::configuration` was undefined at the end of a build that
+    # had every one of the shard's *types* and their class variables.
+    class_vars : Array({String, String, String}) = [] of {String, String, String} do
     def self.empty
       new([] of Signature, [] of TypeDecl, [] of ImplRecord)
     end
 
     def empty?
-      functions.empty? && types.empty? && impls.empty? && carried_functions.empty?
+      functions.empty? && types.empty? && impls.empty? && carried_functions.empty? &&
+        class_vars.empty?
     end
   end
 
@@ -1027,6 +1038,9 @@ module Iyi::IyiMod
       io.puts "exports       (none)"
     else
       io.puts "exports"
+      exports.class_vars.each do |(name, type, value)|
+        io.puts "  #{name} : #{type}#{value.empty? ? "" : " = #{value}"}"
+      end
       exports.functions.each { |signature| io.puts "  #{render_signature(signature)}" }
 
       # Named for what they are, because the dump renders an exported def and
@@ -1165,6 +1179,18 @@ module Iyi::IyiMod
     # read, and the bodies below are full of code that calls them.
     artifact.macro_bodies.each do |source|
       io << '\n' << source << '\n'
+    end
+
+    # Before the functions, because one of them reads it: `Backtracer.configure`
+    # yields `configuration`, and the accessor around a lazy `class_getter` is
+    # a method like any other.
+    unless exports.class_vars.empty?
+      io << '\n'
+      exports.class_vars.each do |(name, type, value)|
+        io << name << " : " << type
+        io << " = " << value unless value.empty?
+        io << '\n'
+      end
     end
 
     exports.functions.each do |signature|
@@ -1782,6 +1808,8 @@ module Iyi::IyiMod
 
     write_signatures io, artifact.exports.carried_functions
 
+    write_triples io, artifact.exports.class_vars
+
     io.to_slice
   end
 
@@ -1870,7 +1898,7 @@ module Iyi::IyiMod
         free_variable_bounds, assoc_types, read_signatures(io))
     end
 
-    Exports.new(functions, types, impls, read_signatures(io))
+    Exports.new(functions, types, impls, read_signatures(io), read_triples(io))
   end
 
   private def self.write_strings(io : IO, values : Array(String)) : Nil

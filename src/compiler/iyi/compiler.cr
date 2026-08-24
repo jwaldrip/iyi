@@ -774,7 +774,12 @@ module Iyi
 
       impls = program.iyi_impls[filename]? || [] of IyiMod::ImplRecord
 
-      IyiMod::Exports.new(functions, types, impls, carried_functions)
+      # The module's own class variables — the ones owned by the module unit
+      # rather than by a type inside it. They belong to no `TypeDecl`, because
+      # a module is not one, and a class variable is a global either way.
+      module_class_vars = type ? collect_iyi_class_vars(type) : [] of {String, String, String}
+
+      IyiMod::Exports.new(functions, types, impls, carried_functions, module_class_vars)
     end
 
     # iyi: the machine code for a module's own definitions, for `ObjectCode`
@@ -848,11 +853,12 @@ module Iyi
     # producing build because of a body that stayed behind, and nothing the
     # consumer reads would create it. Naming it is what creates it.
     #
-    # An **enum** exists and is still unnumbered. Ids are handed out by walking
-    # `Object`'s subclasses, and that walk does not reach an enum — one gets its
-    # id from the first code that asks for it, so a consumer whose own code
-    # never mentions `Regex::MatchOptions` numbers it nowhere, defines no id
-    # global for it, and a unit that referred to one linked against nothing.
+    # An **enum or a module** exists and is still unnumbered. Ids are handed out
+    # by walking `Object`'s subclasses, and that walk reaches neither — both
+    # take an id from the first code that asks for one, so a consumer whose own
+    # code never mentions `Regex::MatchOptions` or `Backtracer::Backtrace::Parser`
+    # numbers them nowhere, defines no id global, and a unit that referred to
+    # one linked against nothing.
     #
     # Everything else the code can name is the module's own — declared by this
     # artifact — or somebody's the consumer imports for itself, and either way
@@ -866,7 +872,9 @@ module Iyi
           # the two undefined symbols and the one that reads as a different
           # problem.
           instance = type.instance_type
-          next unless instance.is_a?(GenericInstanceType) || instance.is_a?(EnumType)
+          next unless instance.is_a?(GenericInstanceType) ||
+                      instance.is_a?(EnumType) ||
+                      instance.is_a?(NonGenericModuleType)
           names << instance.to_s
         end
       end

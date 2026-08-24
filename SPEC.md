@@ -3877,13 +3877,14 @@ types differently.
 
 *"All" is every type it has **numbered**, and that is not every type it has.*
 Ids are handed out by walking `Object`'s subclasses, and the walk reaches a
-class and not an enum — an enum takes its id from the first code that asks for
-one. So a consumer whose own code never mentions `Regex::MatchOptions` numbers
-it nowhere and defines no global for it, while a unit it links refers to one.
-`TypeIds` carries the enums a unit numbers for that reason, beside the generic
-instances it carries for the other one, and the two are missing for opposite
-reasons: an instantiation does not exist in the consumer until it is named, an
-enum exists and is unnumbered until it is asked for.
+class — not an enum and not a module. Both take an id from the first code that
+asks for one, so a consumer whose own code never mentions
+`Regex::MatchOptions` or `Backtracer::Backtrace::Parser` numbers them nowhere
+and defines no global, while a unit it links refers to one. `TypeIds` carries
+those beside the generic instances it already carried, and the two kinds are
+missing for opposite reasons: an instantiation does not exist in the consumer
+until it is named, an enum or a module exists and is unnumbered until it is
+asked for.
 
 **Some bodies have to travel, and `MonoBodies` is which ones.** A module's
 machine code answers for a method the producer could compile. Two kinds it
@@ -4831,6 +4832,13 @@ is the linker.
   its initialiser in the consumer's own tree and runs on the ordinary path; one
   of the library's runs where that library says. What is missing is only ever
   the global, and the function that reaches it.
+
+  **And a module has them too, which is a different place to put them.** A
+  `TypeDecl` holds a type's; a module is not a `TypeDecl`, so `Exports` holds
+  the module's own. `module Backtracer; class_getter(configuration)` is what
+  said so — `Backtracer::configuration` was undefined at the end of a build
+  that had every one of that shard's types *and* their class variables, because
+  the one that mattered belonged to the root.
 
   **A thread-local one owes a third thing.** `@[ThreadLocal] @@current_jit_stack`
   is not read through its global but through a `noinline` function that hands
@@ -6208,6 +6216,39 @@ Named honestly, so nobody mistakes this draft for complete.
     > > never asks. Both are built, and `bench/bind_regex_identity.sh` matches
     > > with its patterns now rather than only naming them — which is the line
     > > that would catch either of them coming back.
+    > >
+    > > **The chain was run, and it binds.** All four shards installed from the
+    > > network and bound in dependency order: `backtracer` **7 units**,
+    > > `radix` **2**, `exception_page` **0**, `kemal` **36**. No cycle, no
+    > > bind failure. `Backtracer::configuration` — named below as one of the
+    > > two things left — was a *module's* class variable, and it crosses now.
+    > >
+    > > **What a consumer of that chain still waits on is four things, and none
+    > > of them is a symbol nobody understands.** In the order they will have to
+    > > be answered:
+    > >
+    > > 1. **A module a unit numbers, whose declaration does not travel.**
+    > >    `crystal tool bind` records a module as a "nested namespace skipped"
+    > >    and carries nothing for it, so `Backtracer::Backtrace::Parser` is a
+    > >    name the consumer cannot reach. With the type id now carried this is
+    > >    a refusal naming both, where it used to be an undefined symbol.
+    > > 2. **Types with object code and no declaration.**
+    > >    `Kemal::Exceptions::CustomException` and three like it have units in
+    > >    the artifact — 1.8 MB each — and appear in no declaration and no
+    > >    type-id list. The consumer links their machine code and never has the
+    > >    class.
+    > > 3. **`~match<…>` for unions the consumer does not have.** The same
+    > >    question as a type id, asked of a union: the function is the
+    > >    program's and the unit refers to it.
+    > > 4. **`new` synthesised from `initialize`.** Already written down in
+    > >    `collect_iyi_unit_names`, and it is what
+    > >    `*Kemal::RouteHandler@Reference::new` is.
+    > >
+    > > **And the DSL is a separate question from all four.** `get "/" do …` is
+    > > a top-level `def` of kemal's, outside `Kemal`, so a boundary rooted at
+    > > `Kemal` cannot carry it: `import kemal` gives a consumer
+    > > `undefined method 'get'`. That is about what a root *is*, not about what
+    > > crosses one.
     > >
     > > **Behind it, one more, and it is probably a class root.** With the probe
     > > in place the link wants `Backtracer::configuration` and
