@@ -6469,6 +6469,26 @@ Named honestly, so nobody mistakes this draft for complete.
     > > `undefined method 'get'`. That is about what a root *is*, not about what
     > > crosses one.
     > >
+    > > **What the DSL is written on top of does cross now.**
+    > > `Kemal::RouteHandler#add_route` takes `&handler : Context -> _`, and the
+    > > scan that asks whether a signature's names can be written read `_` as a
+    > > name — so every method whose block returns whatever the block returns
+    > > was dropped. There is no single return type to infer for one either, and
+    > > none is needed: a block-taking method's body travels and the consumer
+    > > compiles it.
+    > >
+    > > Carrying that body found the older thing under it. `Def#body` stops
+    > > being *source* as soon as anything instantiates it — `Route.new(…)`
+    > > becomes `_.initialize(…)`, with a temporary for a receiver — so the body
+    > > is recorded in the top-level pass, before any of that, and keyed on the
+    > > name as well as the place: a synthesised `new` carries the location of
+    > > the `initialize` it was made from. A block-taking `new` does not travel
+    > > at all now, which is the same rule from the other side.
+    > >
+    > > What a consumer driving the router still waits on is `Route#initialize`,
+    > > which takes a block and is not in the declarations. That is where this
+    > > goes next.
+    > >
     > > **And `exception_page` filling with 0 units is not a bug.**
     > > `ExceptionPage` is an `abstract class` with no subclass in its own
     > > shard, so there is no machine code to carry: an abstract class's

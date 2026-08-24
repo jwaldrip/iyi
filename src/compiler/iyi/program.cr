@@ -277,6 +277,17 @@ module Iyi
     # Recorded only while writing artifacts.
     getter iyi_unit_match_types = {} of String => Set(Type)
 
+    # iyi: a def's body as it was written, by the location it was written at
+    # (SPEC.md IV.1g).
+    #
+    # A body that travels has to be *source*, and the node a `Def` holds stops
+    # being that as soon as anything instantiates it: `Route.new(method, path,
+    # &handler)` becomes `_.initialize(method, path, &handler)`, and an
+    # underscore is not a receiver anybody can write. Recorded in the top-level
+    # pass, which runs before any of that, and only while a boundary is being
+    # written.
+    getter iyi_def_bodies = {} of String => String
+
     # iyi: the symbols each unit's object code defines, by unit name (SPEC.md
     # IV.1g).
     #
