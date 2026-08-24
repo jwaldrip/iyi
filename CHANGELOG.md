@@ -4,6 +4,22 @@
 
 ### Added
 
+- **What a generic declares is kept, even though the generic is not.** The keep
+  file skips a generic type — rightly, since `uninitialized Holder(T)` is not a
+  thing anybody can write — and skipped everything it declares along with it.
+  Those have object-code units in the artifact all the same: `Radix::Tree(T)`
+  holds two error classes carrying 1.3 MB each, radix's keep file was **empty**,
+  and the only `to_s` symbols it emitted were the ones radix's own code
+  happened to reach — `to_s<IO::Memory>`, `to_s<IO::FileDescriptor>` — while
+  the boundary declared `io : IO` and a consumer asked for the declared
+  `to_s<IO+>`.
+
+  A nested type is not parameterised by its container unless it says so, so
+  recursing past the generic is all it took. The kemal consumer goes from ten
+  undefined symbols to eight, and `bench/bind_roundtrip.sh` carries a
+  non-generic class inside a generic one and prints the symbol its declaration
+  produced.
+
 - **A variable can be read wider than the slot that holds it, and that is a
   widening.** Inside a dispatch arm the slot holds the arm's concrete type
   while the read wants the type the boundary declared — an `IO` parameter read

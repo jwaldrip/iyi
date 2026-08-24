@@ -6296,16 +6296,27 @@ Named honestly, so nobody mistakes this draft for complete.
     > > union or a virtual type is the wider thing — so widening is reading a
     > > *concrete* slot as one of those, and nothing else is.
     > >
-    > > **The consumer links now, and what it waits on is ten symbols.** An
+    > > **A generic's declarations were kept out of the keep file with it.**
+    > > `keep_type` skips a generic — rightly, since `uninitialized Holder(T)`
+    > > is not a thing anybody can write — and skipped everything it *declares*
+    > > along with it. Those have units in the artifact all the same:
+    > > `Radix::Tree(T)` holds two error classes carrying 1.3 MB each, radix's
+    > > keep file was **empty**, and the only `to_s` symbols it emitted were the
+    > > ones radix's own code happened to reach — `to_s<IO::Memory>` and
+    > > `to_s<IO::FileDescriptor>` — while the boundary declared `io : IO` and
+    > > the consumer asked for the declared `to_s<IO+>`. A nested type is not
+    > > parameterised by its container unless it says so, so the recursion is
+    > > all it took. **Ten symbols to eight.**
+    > >
+    > > **The consumer links now, and what it waits on is eight symbols.** An
     > > earlier note here said zero, which was not a measurement: the build was
-    > > dying before the linker ran, so nothing had been asked for. Four kinds
+    > > dying before the linker ran, so nothing had been asked for. Three kinds
     > > remain — three type ids (two modules and a generic metaclass), four
     > > methods inherited from `Object` or `Reference` and synthesised rather
-    > > than read (`new`, `to_s`), one union `~match` whose members are
-    > > Crystal's own, and two `Radix::Tree::…::to_s<IO+>` where the boundary
-    > > declared a parameter the producer never emitted that instantiation for.
-    > > The three virtual `~match` functions this item named before are gone,
-    > > which is the superclass edge doing what it was built to do.
+    > > than read (`new`, `to_s`), and one union `~match` whose members are both
+    > > Crystal's own. The three virtual `~match` functions this item named
+    > > before are gone, which is the superclass edge doing what it was built to
+    > > do.
     > >
     > > **And the DSL is a separate question from all four.** `get "/" do …` is
     > > a top-level `def` of kemal's, outside `Kemal`, so a boundary rooted at

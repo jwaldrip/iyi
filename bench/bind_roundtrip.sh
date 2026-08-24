@@ -168,6 +168,41 @@ module Shard
     Derived.new(tag, extra)
   end
 
+  # A non-generic type nested inside a generic one. The keep file skipped a
+  # generic — rightly, since `uninitialized Holder(T)` is not a thing anybody
+  # can write — and skipped everything it declared along with it. Those have
+  # units in the artifact all the same, so radix's keep file was empty while
+  # its two error classes carried 1.3 MB each, and the only `to_s` symbols it
+  # emitted were the ones its own code happened to reach: a consumer asking
+  # for the declared `to_s<IO+>` found nothing.
+  class Holder(T)
+    @value : T
+
+    def initialize(@value : T)
+    end
+
+    def value : T
+      @value
+    end
+
+    class Note
+      @text : String
+
+      def initialize(@text : String)
+      end
+
+      # An abstract parameter, so the symbol is the declared one and not one
+      # per argument type — which is what made the gap visible.
+      def write(io : IO) : Nil
+        io << "note:" << @text
+      end
+    end
+  end
+
+  def self.note(text : String) : Holder::Note
+    Holder::Note.new(text)
+  end
+
   # A nested namespace, which a boundary used to drop whole and report as a
   # "nested namespace skipped". What that cost only shows at a shard's scale:
   # `Kemal::Exceptions` holds four exception classes, each with an object-code
@@ -232,6 +267,8 @@ d = Shard.derived("hello", 42)
 puts d.tag
 puts d.extra
 puts d.describe
+Shard.note("kept").write(STDOUT)
+puts ""
 puts part.kind(2)
 puts part.kind(1)
 puts part.kind(0)
@@ -265,6 +302,10 @@ fi
 
 # Printed because it is the evidence: without this line the union above could
 # be one the consumer forms for itself, and the gate would be checking nothing.
+printf 'the nested-in-a-generic method, emitted against its declaration: '
+grep -c 'Shard::Holder::Note' mods/shard_keep.cr > /dev/null && \
+  strings -a mods/shard.iyimod | grep -oE '\*Shard::Holder::Note#write[^ ]*' | sort -u | head -1 || echo "MISSING"
+
 printf 'the union this shard matches against, carried: '
 "$IYI" mod dump mods/shard.iyimod | grep -F '(Char | Int32)' | tr -d ' ' || echo "MISSING"
 
