@@ -1,16 +1,28 @@
 # iyi Garbage Collector Design
 
-**Status:** Stage 1 built. Stages 2 onward are design.
+**Status:** Stages 1 and 2 built. Stages 3 onward are design.
 
-What Stage 1 actually delivers, and what it does not: the artifact carries a
-pointer map per type it owns (`.iyimod` format v24, `Layouts` section 14), and the
-object header and its CAS-safe mark word exist and are tested as a unit. No
-object is allocated with that header yet, nothing marks, and nothing collects.
-Tasks 3 and 4 of Stage 1, work distribution and write barriers, are design here
-and deferred to Stage 6 by their own text; they were not built.
+Stage 1: the artifact carries a pointer map per type it owns (`.iyimod` format
+v24, `Layouts` section 14), and the object header and its CAS-safe mark word
+exist and are tested as a unit. Stage 1's own tasks 3 and 4, work distribution
+and write barriers, are design here and deferred to Stage 6 by their own text;
+they were not built.
 
-So the point of no return is still ahead. bdw-gc remains the collector, opted in
-with `-Dgc_boehm`, and every other path still allocates and never frees.
+Stage 2: a size-class arena allocator, `-Dgc_iyi`, on Linux x86_64 and aarch64
+and on darwin. Size classes to 16 KiB, 16 MiB arenas, free lists, large objects
+by their own mapping and released with `munmap`, and the two properties Stage 3
+needs: a pointer resolves to its arena and class, and the arena list walks. It
+costs no symbol and no library beyond `munmap`, so the dependency floor holds.
+
+What none of it does yet: no object is allocated with the header, nothing marks,
+nothing collects, and nothing calls `free` except the exercise. `-Dgc_boehm` is
+still the only way to get collection and every default path still allocates and
+never frees. Windows and wasm32 keep their existing allocators on purpose, the
+first because its binaries currently print uninitialized memory and a new
+allocator there would confound that diagnosis, the second because it has no
+mmap and its watermark arena is a separate design.
+
+So the point of no return, Stage 5, is still ahead.
 
 **Owner's Decision:** Own the garbage collector. Concurrency, parallelism, and performance control are the reasons. gcry is prior art: measurements, design hints, and a record of what has already been tried and cost what. iyi writes the heap, the STW mechanism, root discovery, and finalizers from scratch.
 
