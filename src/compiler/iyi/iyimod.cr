@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 23_u32
+  FORMAT_VERSION = 24_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -73,6 +73,10 @@ module Iyi::IyiMod
     # iyi: the class variables this module's object code refers to, as
     # `Owner::@@name`. `Constants` asked of a global — see IV.2.
     ClassVars = 13
+
+    # iyi: the types this module's object code asks `~match<T>` about.
+    # `TypeIds` asked of a match — see IV.1g.
+    MatchTypes = 14
   end
 
   # A regex literal's constant: the name its object code reads, and what a
@@ -670,6 +674,23 @@ module Iyi::IyiMod
     # Settable alongside `object_code`, and for the same reason.
     property class_vars : Array(ClassVarRef)
 
+    # The types this module's object code asks `~match<T>` about, by name.
+    #
+    # `type_ids` asked of a match. A match against a union or a virtual type is
+    # a comparison against a range of the program's own type ids, so the
+    # function belongs to the program and cannot be carried as code: a copy
+    # compiled by the producer would compare the consumer's ids against the
+    # producer's numbers and answer wrongly with no symptom. The name travels
+    # and the consumer builds the function with its own numbering.
+    #
+    # A virtual one the consumer could have found for itself, by taking the
+    # virtual form of every class it numbers. A **union** it could not:
+    # `(Char | Iyi::Keyword | String | Nil)` is a type the producer's code
+    # formed, and no walk over the consumer's program arrives at it.
+    #
+    # Settable alongside `object_code`, and for the same reason.
+    property match_types : Array(String)
+
     # Whether this module was compiled against Crystal's standard library
     # rather than iyi's prelude — `--crystal`.
     #
@@ -715,7 +736,8 @@ module Iyi::IyiMod
                    @type_ids = [] of String, @hashes = Hashes.empty,
                    @constants = [] of String, @macro_bodies = [] of String,
                    @requires = [] of String, @crystal_library = false,
-                   @regexes = [] of RegexConst, @class_vars = [] of ClassVarRef)
+                   @regexes = [] of RegexConst, @class_vars = [] of ClassVarRef,
+                   @match_types = [] of String)
     end
   end
 
@@ -778,6 +800,10 @@ module Iyi::IyiMod
 
     unless artifact.class_vars.empty?
       sections << {Section::ClassVars, encode_class_vars(artifact)}
+    end
+
+    unless artifact.match_types.empty?
+      sections << {Section::MatchTypes, encode_match_types(artifact)}
     end
 
     # Last, and omitted when there is nothing in it. A consumer reading
@@ -923,6 +949,7 @@ module Iyi::IyiMod
       constants = [] of String
       regexes = [] of RegexConst
       class_vars = [] of ClassVarRef
+      match_types = [] of String
       requires = [] of String
       hashes = Hashes.empty
 
@@ -952,6 +979,7 @@ module Iyi::IyiMod
         when Section::Constants   then constants = decode_constants(payload)
         when Section::Regexes     then regexes = decode_regexes(payload)
         when Section::ClassVars   then class_vars = decode_class_vars(payload)
+        when Section::MatchTypes  then match_types = decode_match_types(payload)
         when Section::Requires    then requires = decode_requires(payload)
         when Section::Hashes      then hashes = decode_hashes(payload)
         else
@@ -968,7 +996,7 @@ module Iyi::IyiMod
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
         object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
         hashes, constants, macro_bodies, requires, header[:crystal_library],
-        regexes, class_vars)
+        regexes, class_vars, match_types)
     end
   rescue ex : Error
     raise ex
@@ -1090,6 +1118,12 @@ module Iyi::IyiMod
 
     # With the pattern, because the name is a digest: a reader looking at
     # `$Regex:5f2b…` in the list above has no way to tell which literal it is.
+    match_types = artifact.match_types
+    unless match_types.empty?
+      io.puts "match types"
+      match_types.each { |name| io.puts "  #{name}" }
+    end
+
     class_vars = artifact.class_vars
     unless class_vars.empty?
       io.puts "class variables"
@@ -1716,6 +1750,16 @@ module Iyi::IyiMod
   end
 
   private def self.decode_constants(payload : Bytes) : Array(String)
+    read_strings(IO::Memory.new(payload))
+  end
+
+  private def self.encode_match_types(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    write_strings io, artifact.match_types
+    io.to_slice
+  end
+
+  private def self.decode_match_types(payload : Bytes) : Array(String)
     read_strings(IO::Memory.new(payload))
   end
 

@@ -105,6 +105,18 @@ module Shard
       @@count = @@count + 1
       @@count
     end
+
+    # A union the consumer never forms, checked against a union restriction.
+    # `is_a?` against a union compiles to `~match<(Char | Int32)>`, a function
+    # that compares a type id against the *program's* numbering — so it is the
+    # main module's and the main module does not travel. A virtual type the
+    # consumer could have found for itself by taking the virtual form of every
+    # class it numbers; a union it cannot, because no walk over a program
+    # arrives at one its own code never wrote.
+    def kind(n : Int32) : String
+      v = n > 1 ? 1 : (n > 0 ? 'x' : "s")
+      v.is_a?(Char | Int32) ? "small" : "other"
+    end
   end
 
   # A nested namespace, which a boundary used to drop whole and report as a
@@ -167,6 +179,9 @@ puts part.bump
 puts Shard.make(11).step(1)
 puts Shard.made
 puts Shard::Inner.deep("nested").tag
+puts part.kind(2)
+puts part.kind(1)
+puts part.kind(0)
 IYI
 
 sed 's|require "./shard"|import shard|' "$WORK/app_source.iyi" > "$WORK/app_artifact.iyi"
@@ -194,6 +209,11 @@ if ! (cd mods && "$CRYSTAL" build --iyi-keep Shard --emit-bind . \
   echo "workdir $WORK"
   exit 1
 fi
+
+# Printed because it is the evidence: without this line the union above could
+# be one the consumer forms for itself, and the gate would be checking nothing.
+printf 'the union this shard matches against, carried: '
+"$IYI" mod dump mods/shard.iyimod | grep -F '(Char | Int32)' | tr -d ' ' || echo "MISSING"
 
 # `--crystal` on both arms. A bound shard's artifact says it was built against
 # Crystal's standard library, because it was, and a program cannot hold one

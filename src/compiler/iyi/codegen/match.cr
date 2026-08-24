@@ -39,6 +39,20 @@ class Iyi::CodeGenVisitor
 
   private def match_any_type_id_with_function(type, type_id)
     match_fun_name = "~match<#{type.llvm_name}>"
+
+    # iyi: which unit asks about it, so an artifact carrying that unit can say
+    # so (SPEC.md IV.1g). The function is the main module's and the main module
+    # does not travel, so the consumer defines it — and for a *union* it cannot
+    # work out which ones to define. A virtual type is enumerable from the
+    # program's own classes, which is what `iyi_define_all_match_funs` does; a
+    # union is a type the producer's code made and the consumer may never form.
+    # Recorded only while writing artifacts.
+    unless @program.iyi_exported_owners.empty?
+      if @llvm_mod != @main_mod
+        (@program.iyi_unit_match_types[@llvm_mod.name] ||= Set(Type).new) << type
+      end
+    end
+
     func = typed_fun?(@main_mod, match_fun_name) || create_match_fun(match_fun_name, type)
     func = check_main_fun match_fun_name, func
     call func, [type_id] of LLVM::Value
@@ -77,6 +91,24 @@ class Iyi::CodeGenVisitor
       iyi_define_match_fun(virtual)
       iyi_define_match_fun(virtual.metaclass.as(VirtualMetaclassType))
     end
+
+    # And the ones the walk above cannot reach: the unions an artifact's units
+    # ask about. A union is not a type this program has unless its own code
+    # formed it, and `(Char | Iyi::Keyword | String | Nil)` is one kemal's code
+    # formed and a consumer of kemal's never would.
+    @program.iyi_artifact_match_types.each do |type|
+      case type
+      when VirtualType, VirtualMetaclassType, UnionType
+        iyi_define_match_fun_for(type)
+      end
+    end
+  end
+
+  private def iyi_define_match_fun_for(type) : Nil
+    name = "~match<#{type.llvm_name}>"
+    return if typed_fun?(@main_mod, name)
+
+    create_match_fun(name, type)
   end
 
   private def iyi_define_match_fun(type : VirtualType | VirtualMetaclassType) : Nil
