@@ -181,9 +181,37 @@ Measurement: parse and semantic analysis only (--no-codegen)
 
 Repeat with `python3 bench/machine_probe.py <label>` across machine states to distinguish code changes from machine variance.
 
-## Internal Consistency: README Sample Count Drift
+## Verified Drifts and Their Sources
 
-README.md line 718 states "Nine programs in samples/iyi", but line 922 states "thirteen programs". The actual .iyi files are 13: basics, calc, collections, derive, errors, files, formatting, generics, hello, immutable, init_order, modules, webapp. The canonical value is 13, measured by bench/doc_numbers.py. Line 922 is correct; line 718 requires update.
+Three drifts were found in prose claims about what the tree does. Numbers are gated by bench/doc_numbers.py, but prose claims are not.
+
+**Drift 1: Sample count (CONFIRMED)**
+README.md line 718: "Nine programs in `samples/iyi`"
+README.md line 922: "thirteen programs"
+Actual tree: 13 .iyi files (bench/doc_numbers.py measured().samples = 13)
+Verdict: Line 718 is stale. It contradicts line 922 and the measured count.
+
+**Drift 2: Import count (CONFIRMED)**
+README.md line 727: "the five samples that import anything"
+Source: bench/samples_roundtrip.sh line 29
+Actual list: `SAMPLES="modules immutable collections init_order webapp derive"`
+Count: six samples, not five
+Verdict: README.md line 727 is off by one. The script lists six.
+
+**Drift 3: Artifact build capability (STALE COMMENTS)**
+samples/iyi/modules.iyi lines 121-122: artifact build "cannot yet produce a program"
+samples/iyi/hello.iyi lines 136-137: artifact build "cannot yet produce a program"
+README.md lines 383-387: demonstrates artifact build producing a working binary
+Evidence: bench/samples_roundtrip.sh lines 50-65 builds each sample from artifacts (--use-iyimod) and runs the resulting binary, diffing output against source-built version
+Verdict: The sample comments are stale. The script proves artifact builds produce runnable programs. These comments state the opposite of what the tree does.
+
+### The Prose Claims Gap
+
+bench/doc_numbers.py gates NUMBERS: line counts, sample counts, target counts. When a number drifts from the source, the script fails and blocks merge. But it does not gate PROSE CLAIMS about what the compiler does, what is implemented, or what is possible.
+
+Two of these three drifts are in README.md itself, the very file doc_numbers.py exists to keep honest. The third is in sample files that function as documentation. All three are false claims that contradict evidence in the tree: the script, the running programs, the measured counts.
+
+A website that hand-copies these claims inherits all three drifts. The site must either regenerate numbers from doc_numbers.py (already documented) or develop a separate gate for prose claims that compares README.md against the actual tree state (compiler capabilities, what samples do, what the gate measures).
 
 ## Primary Checkout Status
 
