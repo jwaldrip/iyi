@@ -6332,10 +6332,23 @@ Named honestly, so nobody mistakes this draft for complete.
     > > deep, and Crystal's own `yaml` reaches `JSON::Error` from a method
     > > `require "yaml"` alone never instantiates. Both compile whole-program
     > > and neither survives being asked for everything. `tool bind` refuses the
-    > > method — the report says so — and the *fill* build still reaches it
-    > > through something else, so one bad method loses the whole artifact
-    > > rather than itself. A boundary that degrades instead of failing is the
-    > > next thing here.
+    > > method — and **declared it anyway**, which is what put it in the keep
+    > > file. What separates the two cases is who refused: this tool declining
+    > > to ask (an unannotated block, a splat, a free variable) is not a defect
+    > > in the method and those still travel, while the *compiler* refusing is.
+    > > Dropped, `openssl_ext` goes from losing its whole artifact to **35
+    > > units, 31 MB**, and the chain under `jwt` binds end to end.
+    > >
+    > > `yaml` is not that shape and still fails: its `@anchors` is typed by
+    > > merging what *two* users of a shared module put in it, so no single
+    > > method instantiation sees the error. That one is still open.
+    > >
+    > > **And a shard that reopens a library namespace cannot be bound at that
+    > > root.** `openssl_ext` is `OpenSSL`, and a `--crystal` consumer replays
+    > > `require "openssl"` and gets Crystal's — so the declarations meet the
+    > > library's and the build stops on `superclass mismatch for class
+    > > OpenSSL::SSL::Error`. It is the same collision a stdlib root has, wearing
+    > > a shard's name, and it is what `jwt` waits on now.
     > >
     > > **What it does not do any more is fail quietly.** The artifact left on
     > > disk has every declaration and no machine code, which read as a boundary
