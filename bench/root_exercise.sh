@@ -129,6 +129,19 @@ if ! grep -q "root discovery needs -Dgc_iyi" "$WORK/roots-default.out" 2>/dev/nu
 fi
 
 echo
+echo "== the same program with optimisation on"
+# A register-residency check is a check about the register allocator, so the
+# build that changes register allocation is the one worth running twice. The
+# register check names its own premises and fails when one is gone, so this
+# run is not a formality: it is the one that would catch the ordering that
+# lets the optimiser reuse the register before the scan reaches it.
+build_and_run "release" roots-release -Dgc_iyi --release
+if ! grep -q "all root checks passed" "$WORK/roots-release.out" 2>/dev/null; then
+  echo "  MISSING: the optimised build did not reach the end"
+  status=1
+fi
+
+echo
 echo "== what root discovery asks the machine for"
 # Linux adds two undefined symbols and no library: `__data_start` and `_end`
 # bound the static data, and both come from the link that is already happening,
