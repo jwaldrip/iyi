@@ -1421,6 +1421,11 @@ module Iyi
         # one. A generic is not kept here at all, so its `initialize` is nobody's
         # to call from this file.
         next if signature.name == "initialize"
+        # Nor a private one, for the same reason and one more: its parameters
+        # travel as the source wrote them, so there is not always a type to say
+        # `uninitialized` of. Its symbol is in the unit already — whatever
+        # travelling body calls it is what emitted it.
+        next if signature.visibility == "private"
 
         target = signature.receiver.empty? ? receiver : qualified
         counter = keep_call(io, target, signature, counter)
@@ -1861,8 +1866,12 @@ module Iyi
         # A generic's `new` is never carried — it is synthesised per
         # instantiation and the consumer makes its own — so its `initialize` is
         # what a consumer builds one with. It answers nothing to infer.
-        next unless method.verdict.ready? || method.inferred ||
-                    method.name == "initialize" || method.private_def
+        # Every one of a generic's methods is compiled by the consumer from the
+        # body below, so what one *returns* is the consumer's to infer — exactly
+        # as it was the shard's own compiler's. Requiring an answer here dropped
+        # `Radix::Tree(T)#add`, and a consumer holding a `@routes` had nothing
+        # to call on it.
+        next unless method.verdict.ready? || method.inferred || method.body
         next if method.uncompilable
         next unless method.callable?
         # A type variable is nameable inside the type that binds it, which is
@@ -2029,8 +2038,8 @@ module Iyi
     abstract_owner = type.responds_to?(:abstract?) && type.abstract?
     { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
       by_owner[owner]?.try &.each do |method|
-        # A plain type carries no private method: its bodies do not travel, so
-        # a declaration would be a name with nothing under it.
+        # A private one is decided below, once it is known which bodies travel
+        # and what they call.
         next if method.private_def
 
         # A plain type's `initialize` travels only where its `new` could not —
@@ -2090,7 +2099,91 @@ module Iyi
         end
       end
     end
+
+    signatures.concat called_privates(type, name, by_owner, signatures)
     signatures
+  end
+
+  # The private methods a travelling body calls, and the ones those call.
+  #
+  # A plain type's methods are machine code in the artifact, so a consumer needs
+  # no declaration for what they call — except where a *body* travels. A
+  # block-taking method's does, because its machine code is the caller's, and
+  # the consumer compiling it needs every name the body names.
+  # `Kemal::RouteHandler#add_route` calls `add_to_radix_tree`, which the shard
+  # keeps to itself, and the consumer said `undefined method`.
+  #
+  # Which ones is a call graph, and the bodies are text: a private method is
+  # called if its name stands in one of them as a word. Reaching too far costs a
+  # declaration nobody uses; reaching too short is the error above, so this errs
+  # long. Transitive, because what a private body calls travels with it, and to
+  # a fixed point because that recursion has to end somewhere.
+  private def self.called_privates(type : Type, name : String, by_owner,
+                                   carried : Array(IyiMod::Signature)) : Array(IyiMod::Signature)
+    added = [] of IyiMod::Signature
+
+    pool = [] of BindMethod
+    { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
+      by_owner[owner]?.try &.each do |method|
+        next unless method.private_def
+        next if method.uncompilable
+        next if method.abstract_def
+        body = method.body
+        next if body.nil? || body.empty?
+        pool << method
+      end
+    end
+    return added if pool.empty?
+
+    # The bodies already going over, which is where the search starts.
+    reach = carried.compact_map { |signature| @@mono_bodies[IyiMod.mono_body_key(name, signature)]? }
+    return added if reach.empty?
+
+    taken = Set(String).new
+    until pool.empty?
+      wanted = pool.select do |method|
+        reach.any? { |body| calls?(body, method.name) }
+      end
+      break if wanted.empty?
+
+      wanted.each do |method|
+        next unless taken.add?(method.name)
+        signature = IyiMod::Signature.new(
+          name: method.name,
+          receiver: method.receiver,
+          parameters: method.params.map { |(argument, restriction, default)| bind_parameter(argument, restriction, default) },
+          block_parameter: method.written_block,
+          return_type: method.answer || "",
+          free_variables: [] of String,
+          required: false,
+          visibility: "private",
+        )
+        added << signature
+        body = method.body
+        if body
+          @@mono_bodies[IyiMod.mono_body_key(name, signature)] = body
+          reach << body
+        end
+      end
+      pool.reject! { |method| taken.includes?(method.name) }
+    end
+
+    added
+  end
+
+  # Whether *body* names *method* as a word rather than as part of one.
+  private def self.calls?(body : String, method : String) : Bool
+    return false unless body.includes?(method)
+
+    index = 0
+    while (found = body.index(method, index))
+      after = found + method.bytesize
+      before_ok = found == 0 || !identifier_byte?(body.to_unsafe[found - 1])
+      after_ok = after >= body.bytesize || !identifier_byte?(body.to_unsafe[after])
+      return true if before_ok && after_ok
+      index = found + 1
+    end
+    false
   end
 
   # What a class inherits from, or empty for the root its kind implies.
