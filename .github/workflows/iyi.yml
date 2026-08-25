@@ -80,6 +80,17 @@ jobs:
       - name: Formatted
         run: ./bin/crystal tool format --check src spec samples
 
+      # `llvm_ext.o` before anything links the compiler's own source. Every
+      # compiler build needs it again: `Codegen::Target#to_target_machine` calls
+      # `LibLLVMExt.create_target_machine_wasm_eh` for wasm32, so the `@[Link]`
+      # on `lib LibLLVMExt` is emitted and the object has to be there. The
+      # Makefile's own rules already depend on `$(DEPS)`; this step is here
+      # because the specs below are run through `bin/crystal` directly, and
+      # without it they fail at the linker with
+      # `cannot open .../src/llvm/ext/llvm_ext.o: No such file or directory`.
+      - name: The C++ shim the compiler links
+        run: make -o .build/crystal deps
+
       - name: iyi's own specs
         run: |
           ./bin/crystal spec \
