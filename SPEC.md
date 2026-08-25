@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 93,744 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 94,010 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,556 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -7498,6 +7498,90 @@ Named honestly, so nobody mistakes this draft for complete.
     consumer read `Log#info` as `Top.info(exception: exception)` — which is
     `Log#info` calling itself — and said `recursive block expansion: blocks
     that yield are always inlined`.
+
+    **`db` and `sqlite3` are the shard that asks for everything at once**, and
+    they are not through yet. What they found is eleven more rules, each
+    measured, and one named blocker left.
+
+    **A record rebuilt field by field loses what was added to it later.**
+    `map_names_declaration`, `strip_root_declaration` and `prune_declaration`
+    each constructed a fresh `TypeDecl` by listing its fields, and each list
+    was written before `funs` existed — so a reopened `lib` arrived with every
+    type in it and not one `fun`. `copy_with` names only what changes, which is
+    the shape a rewrite should have had all along. An alias had lost its
+    right-hand side the same way once, and an enum its members.
+
+    **A generic module's nested types are not parameterised by being nested.**
+    `db` writes `module SessionMethods(Session, Stmt)` and puts `struct
+    UnpreparedQuery(Session, Stmt)` inside it; the module was dropped whole and
+    took the struct with it, and the object code numbers the struct. The same
+    correction a generic *class* took when `Radix::Tree(T)`'s error classes went
+    missing, one kind of type over. A generic's `superclass` and `includes`
+    were missing too — `SessionMethods` includes `QueryMethods(Stmt)`, and
+    `QueryMethods` is where `exec` lives.
+
+    **A `lib` the shard owns outright belongs inside its module.** `Reopened`
+    is for a `lib` the *library* also declares, written `lib ::LibCrypto` so it
+    reopens the real one; `sqlite3` writes `lib LibSQLite3` beside `module
+    SQLite3` and owns all of it. Outside the module its funs cannot name the
+    shard's own types — `undefined constant SQLite3::Flag` — and inside them
+    the root-stripping every other declaration takes rewrites them correctly.
+    Its funs are text and take the same rewrites; a `lib` has nothing for the
+    keep file to name.
+
+    **An include is an ordering edge like a superclass, and so is every name
+    in it.** `class Connection` including `module BeginTransaction` sorted
+    before it; `include SessionMethods(Connection, Statement)` needs all three
+    names placed first. And a generic's include may name the generic's own
+    parameters — `QueryMethods(Stmt)` inside `SessionMethods(Session, Stmt)` —
+    which is the same argument the methods beside it already took.
+
+    **A generic module's instantiation is not a `ModuleType`.** It is a
+    `GenericModuleInstanceType`, and the test that decides which parents are
+    includes knew only the first name. `include SessionMethods(Database,
+    PoolStatement)` was dropped and a consumer said `undefined method 'exec'
+    for DB::Database` about a `Database` carrying every other method.
+
+    **A block's annotation travelled as written while everything beside it
+    travelled resolved.** `&factory : -> Connection` means `-> DB::Connection`,
+    and unresolved it failed the nameability test that decides whether the
+    method crosses — so `Database#initialize`, the one thing a consumer builds
+    a `Database` with, was dropped. Resolved it has to stay an *arrow*: the
+    resolved type prints `Proc(DB::Connection, Nil)`, the keep file reads the
+    arrow to count block parameters, and handed the `Proc` form it counted the
+    output as an input. The synthesised block's `uninitialized` needs resolving
+    for the same reason from the other end — it is typed by a visitor scoped to
+    the program, where `Connection` is nothing.
+
+    **`uncompilable` is not a question to ask of a private callee**, and a bare
+    generic is a name rather than a type. The first says this tool could not
+    instantiate a method to read its answer, and these declarations exist for a
+    travelling body to typecheck against — the keep file, where an
+    uninstantiable method would do damage, skips a private one on purpose. The
+    second is `private def perform_exec_and_release(args : Enumerable)`, whose
+    resolved restriction prints `Enumerable(T)` with a `T` declared nowhere.
+
+    **A body that travels is compiled per subclass, so the privates it calls
+    travel per subclass too.** `db` writes `private abstract def
+    build_statement` on `PoolStatement` and a concrete one on each subclass,
+    and the body that calls it travels on the ancestor.
+
+    **And `NoReturn` is an answer only where the body stays behind.**
+    `NullIO#read` raises `NotImplementedError` and nothing overrides it, so
+    `NoReturn` is true. `DB.build_driver` answers `NoReturn` because a build of
+    `db` alone has no driver registered — and its body travels, so the answer
+    is the consumer's to infer. Refusing it outright was the first attempt and
+    it dropped `NullIO#read`, which an abstract `IO` requires.
+
+    **What `sqlite3` waits on now is `previous_def`.** `db` writes a macro that
+    *redefines* `around_query_or_exec` with a body calling the definition it
+    replaced, and only the last of the two definitions travels: `MonoBodies` is
+    keyed on a signature and two definitions of one signature are one key. The
+    body arrives naming something the declarations do not have — `there is no
+    previous definition of 'around_query_or_exec'`. Carrying both would need an
+    ordinal in the key and a reader that renders them in order, which is a
+    piece of work rather than a line, and nothing else measured has asked for
+    it yet.
 
     **And a name resolves in its own scope first.** `openssl_ext` writes a
     constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type

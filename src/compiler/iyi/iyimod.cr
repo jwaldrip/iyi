@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 35_u32
+  FORMAT_VERSION = 36_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -1571,24 +1571,50 @@ module Iyi::IyiMod
     end
   end
 
-  # The declarations reordered so a superclass is written before what inherits
-  # from it.
+  # The declarations reordered so what a type is written in terms of comes
+  # before it.
   #
   # `class Derived < Base` does not resolve if `Base` is below it, and the order
   # these arrive in is the order the producer's walk found them — alphabetical
   # for one root, which puts `Apple < Fruit` the wrong way round as often as
   # the right one.
   #
-  # Only siblings, which is the whole of what an order can fix: a superclass in
-  # another namespace is a name the consumer already has, or one the boundary
+  # Both edges, because an `include` is resolved where it stands exactly as a
+  # `<` is. `db` declares `module BeginTransaction` and a `class Connection`
+  # that includes it, alphabetical order puts the class first, and the consumer
+  # said `undefined constant BeginTransaction`. Ordering by the superclass
+  # alone left every `include` to luck, and the luck held until a shard whose
+  # module sorts after its includer.
+  #
+  # Only siblings, which is the whole of what an order can fix: a name in
+  # another namespace is one the consumer already has, or one the boundary
   # declined to carry and left empty. Stable, so two identical builds write the
   # same file (IV.3).
   #
-  # Recursive, because a nested list has the same question. A cycle cannot
-  # happen in a type graph, and a name that matches nothing here simply keeps
-  # its place.
+  # Recursive, because a nested list has the same question. A cycle in these
+  # edges cannot happen — a type cannot inherit from or include something
+  # written in terms of itself — and `placed` would stop one anyway; a name
+  # that matches nothing here simply keeps its place.
+  # The names in a piece of declaration text, `Foo::Bar` counted whole.
+  private def self.iyi_names_in(text : String) : Array(String)
+    names = [] of String
+    current = String::Builder.new
+    text.each_char do |character|
+      if character.alphanumeric? || character == '_' || character == ':'
+        current << character
+      else
+        found = current.to_s
+        names << found unless found.empty?
+        current = String::Builder.new
+      end
+    end
+    last = current.to_s
+    names << last unless last.empty?
+    names
+  end
+
   private def self.inheritance_order(types : Array(TypeDecl)) : Array(TypeDecl)
-    return types if types.all? &.superclass.empty?
+    return types if types.all? { |declaration| declaration.superclass.empty? && declaration.includes.empty? }
 
     by_name = types.to_h { |declaration| {declaration.name, declaration} }
     ordered = [] of TypeDecl
@@ -1599,8 +1625,24 @@ module Iyi::IyiMod
       return if placed.includes?(declaration.name)
       placed << declaration.name
 
-      parent = by_name[declaration.superclass]?
-      place.call(parent) if parent && parent.name != declaration.name
+      # Every name in the text, not the text itself. An include may be written
+      # with type arguments — `include SessionMethods(Connection, Statement)` —
+      # and all three of those names are resolved where the line stands: the
+      # module under its bare name, and each argument as itself. Matching the
+      # whole text found nothing (`undefined constant SessionMethods`), and
+      # matching only the head left the arguments behind it (`undefined
+      # constant Statement`).
+      needed = [declaration.superclass].concat(declaration.includes)
+      needed.each do |written|
+        # Split by hand rather than with a literal: a regex in the compiler's
+        # own source is a link against PCRE2, and `bench/dependency_floor.sh`
+        # forbids one by name — iyi does not get to need a library it tells
+        # programs they can do without.
+        iyi_names_in(written).each do |name|
+          first = by_name[name]?
+          place.call(first) if first && first.name != declaration.name
+        end
+      end
 
       ordered << declaration
       nil
@@ -1843,8 +1885,16 @@ module Iyi::IyiMod
   # the module is read from source rather than from this file. Nesting is kept
   # for the same reason — a nested type belongs to its container, and iyi has
   # no way to reopen the container to add one later.
+  # *path* is the container half of a body's key: the declaration's own name
+  # with the names it is nested inside in front of it. The simple name was what
+  # this used, and two nested types can share one — `db` declares
+  # `Connection::Options` and `Pool::Options`, and the second's
+  # `from_http_params` body was rendered inside the first, where `default`
+  # answers a different struct: `undefined method 'initial_pool_size' for
+  # DB::Connection::Options`.
   def self.render_type_declaration(io : IO, declaration : TypeDecl,
-                                   bodies : Hash(String, String), indent = "") : Nil
+                                   bodies : Hash(String, String), indent = "",
+                                   path = "") : Nil
     io << indent
     io << declaration.visibility << ' ' unless declaration.visibility.empty?
     io << render_type_header(declaration) << '\n'
@@ -1887,8 +1937,9 @@ module Iyi::IyiMod
     # a field would have a type where a value belongs.
     declaration.members.each { |(name, value)| io << inner << name << " = " << value << '\n' }
 
+    here = path.empty? ? declaration.name : path
     inheritance_order(declaration.types).each do |nested|
-      render_type_declaration io, nested, bodies, inner
+      render_type_declaration io, nested, bodies, inner, "#{here}::#{nested.name}"
     end
 
     # After the types this one declares, because one of them may be the module
@@ -1903,7 +1954,7 @@ module Iyi::IyiMod
 
     declaration.methods.each do |signature|
       render_declaration io, signature, indent: inner,
-        body: bodies[mono_body_key(declaration.name, signature)]?
+        body: bodies[mono_body_key(here, signature)]?
     end
     io << indent << "end\n"
   end

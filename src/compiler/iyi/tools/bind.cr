@@ -630,7 +630,11 @@ module Iyi
     # and `new` dropped with them, which is what keeps a handle honest — and
     # the consumer could not build a key: `expected argument #1 to
     # 'OpenSSL::PKey::RSA.new' to be IO, Int32 or String, not Bool`.
-    reopened.each do |declaration|
+    # And the `lib`s the shard owns outright, which are nameable for the same
+    # reason and are declared inside the module rather than beside it.
+    owned = owned_libs(program)
+
+    (reopened + owned).each do |declaration|
       names = Set(String).new
       collect_known declaration, "", names
       names.each { |name| @@crystal_types << name.lchop("::") }
@@ -659,6 +663,9 @@ module Iyi
       end
 
     types = type_declarations program, methods, root
+    # Beside the shard's own types, because that is what they are. See
+    # `owned_libs`.
+    types.concat owned
 
     # A constant crosses as a function, and that function gets an iyi module
     # function's symbol from `extend self` — which only a module takes. So a
@@ -1189,24 +1196,18 @@ module Iyi
       nested << kept if kept
     end
 
-    IyiMod::TypeDecl.new(
-      name: declaration.name,
-      kind: declaration.kind,
-      type_parameters: declaration.type_parameters,
-      assoc_types: declaration.assoc_types,
-      supertraits: declaration.supertraits,
+    # `copy_with` rather than a fresh `TypeDecl`, and that is not a style
+    # choice. Listing the fields means listing them *all*, and a field added to
+    # the record later is one a rebuild written this way silently drops — an
+    # alias lost its right-hand side that way once, an enum lost its members,
+    # and a reopened `lib` lost every `fun` in it. `copy_with` names only what
+    # changes, so what is added later travels without anybody remembering to
+    # carry it.
+    declaration.copy_with(
       fields: fields,
       methods: methods,
-      visibility: declaration.visibility,
       types: nested,
-      # Everything a rebuild has to carry forward. Dropped here once, which is
-      # how an alias lost its right-hand side and an enum its members: a pruner
-      # that reconstructs a declaration has to reconstruct all of it.
-      value: declaration.value,
-      macros: declaration.macros,
-      members: declaration.members,
       class_vars: class_vars,
-      superclass: declaration.superclass,
       includes: includes,
     )
   end
@@ -1219,7 +1220,8 @@ module Iyi
   # nested declarations for exactly this, and a walk that stopped at the top
   # produced an artifact naming a constant nobody had.
   private def self.collect_declarations(owner_type : NamedType, by_owner, root : String,
-                                        declarations : Array(IyiMod::TypeDecl)) : Nil
+                                        declarations : Array(IyiMod::TypeDecl),
+                                        container : String = "") : Nil
     library = library_root(owner_type.program)
     owner_type.types?.try &.each do |name, type|
       # The library's own, when the shard reopened a namespace that has some.
@@ -1232,7 +1234,11 @@ module Iyi
         next
       end
 
-      declaration = declaration_for name, type, by_owner, root
+      # The container half of a body's key: where this declaration sits in the
+      # tree a consumer renders, which is what tells `Connection::Options`'
+      # bodies from `Pool::Options`'.
+      declaration = declaration_for name, type, by_owner, root,
+        container.empty? ? name : "#{container}::#{name}"
       declarations << declaration if declaration
     end
   end
@@ -1244,7 +1250,8 @@ module Iyi
   # a core type's root is a class, whose methods are its type's and have to
   # travel here.
   private def self.declaration_for(name : String, type : Type, by_owner,
-                                   root : String) : IyiMod::TypeDecl?
+                                   root : String,
+                                   container : String = name) : IyiMod::TypeDecl?
     # A constant lives in the same table as a type — `Kemal::VERSION` is in
     # here — and asking one for its instance variables is how this found out.
     return nil unless type.is_a?(ModuleType)
@@ -1256,8 +1263,15 @@ module Iyi
     # the declarations the consumer parses (IV.2, `MonoBodies`). Skipping them
     # is what left `Radix` with nothing to carry, and `Radix` is what `Kemal`
     # waits on.
-    if type.is_a?(GenericClassType)
-      return generic_declaration name, type, by_owner, root
+    # A generic *module* too, and for the same reason one level down: what it
+    # holds is not parameterised by holding. `db` writes `module
+    # SessionMethods(Session, Stmt)` and puts `struct UnpreparedQuery(Session,
+    # Stmt)` inside it; dropping the module dropped the struct, and the object
+    # code numbers the struct — `"d_b" numbers
+    # `DB::SessionMethods::UnpreparedQuery(DB::Connection, DB::Statement)`, and
+    # this build cannot name it`.
+    if type.is_a?(GenericClassType) || type.is_a?(GenericModuleType)
+      return generic_declaration name, type, by_owner, root, container
     end
     return nil if type.is_a?(GenericType)
     # A private type travels *as private*, which is a different thing from
@@ -1301,7 +1315,7 @@ module Iyi
     # is when the shard is read from source.
     if type.is_a?(NonGenericModuleType)
       nested = [] of IyiMod::TypeDecl
-      collect_declarations type, by_owner, root, nested
+      collect_declarations type, by_owner, root, nested, container
 
       return IyiMod::TypeDecl.new(
         name: name,
@@ -1310,7 +1324,7 @@ module Iyi
         assoc_types: [] of String,
         supertraits: [] of String,
         fields: [] of {String, String},
-        methods: collect_signatures(type, name, by_owner, root).sort_by(&.name),
+        methods: collect_signatures(type, container, by_owner, root).sort_by(&.name),
         visibility: "",
         types: nested,
         class_vars: declared_class_vars(type),
@@ -1325,7 +1339,7 @@ module Iyi
     @@self_shadowed << name if type.types?.try(&.[]?(name)).is_a?(Const)
 
     begin
-      signatures = collect_signatures(type, name, by_owner, root)
+      signatures = collect_signatures(type, container, by_owner, root)
 
       fields = [] of {String, String}
       if type.is_a?(InstanceVarContainer)
@@ -1376,7 +1390,7 @@ module Iyi
       end
 
       nested = [] of IyiMod::TypeDecl
-      collect_declarations type, by_owner, root, nested
+      collect_declarations type, by_owner, root, nested, container
 
       IyiMod::TypeDecl.new(
         name: name,
@@ -1685,6 +1699,12 @@ module Iyi
     # IO::Encoder referenced`.
     return counter if declaration.visibility == "private"
 
+    # A `lib` has nothing to keep alive and nothing to name. Its funs are C
+    # symbols the system linker resolves, its types are `type` aliases and
+    # structs with no methods, and `uninitialized SQLite3::LibSQLite3` is not a
+    # value: `undefined constant`, from a file nobody wrote.
+    return counter if declaration.kind == "lib"
+
     qualified = "#{prefix}#{declaration.name}"
 
     # A generic has no machine code of its own to keep: its methods exist once
@@ -1946,30 +1966,27 @@ module Iyi
     )
   end
 
+  # *path* is the container half of a body's key — see
+  # `IyiMod.render_type_declaration`. It defaults to the declaration's own
+  # name, which is what a top-level one has.
   private def self.strip_root_declaration(declaration : IyiMod::TypeDecl,
-                                          root : String) : IyiMod::TypeDecl
-    IyiMod::TypeDecl.new(
-      name: declaration.name,
-      kind: declaration.kind,
-      type_parameters: declaration.type_parameters,
-      assoc_types: declaration.assoc_types,
-      supertraits: declaration.supertraits,
+                                          root : String,
+                                          path : String = declaration.name) : IyiMod::TypeDecl
+    # `copy_with`, for the reason `prune_declaration` gives.
+    declaration.copy_with(
       fields: declaration.fields.map { |(name, type)| {name, strip_root(type, root)} },
       methods: declaration.methods.map do |signature|
-        rekey_body declaration.name, signature, strip_root(signature, root)
+        rekey_body path, signature, strip_root(signature, root)
       end,
-      visibility: declaration.visibility,
       # Deeper for what is inside it, because a name is read from where it is
       # written. `OpenSSL::PKey::PKeyError` stripped of the root is
       # `PKey::PKeyError`, and that declaration is rendered *inside*
       # `module PKey` — where it means `PKey::PKey::PKeyError` and resolves to
       # nothing. From in there the name is `PKeyError`.
       types: declaration.types.map do |nested|
-        strip_root_declaration nested, "#{root}::#{declaration.name}"
+        strip_root_declaration nested, "#{root}::#{declaration.name}", "#{path}::#{nested.name}"
       end,
       value: strip_root(declaration.value, root),
-      macros: declaration.macros,
-      members: declaration.members,
       # The value as well as the type. It is an expression that names types —
       # `@@config = Config.new` — and it is rendered inside the module the same
       # way an alias's right-hand side is.
@@ -1978,6 +1995,10 @@ module Iyi
       end,
       superclass: strip_root(declaration.superclass, root),
       includes: declaration.includes.map { |name| strip_root(name, root) },
+      # A `fun` line is text and the types in it are the shard's like any
+      # other: `fun open_v2 = sqlite3_open_v2(… flags : SQLite3::Flag …)` is
+      # `flags : Flag` once the declaration is inside the module.
+      funs: declaration.funs.map { |source| strip_root(source, root) },
     )
   end
 
@@ -2029,27 +2050,25 @@ module Iyi
     )
   end
 
-  private def self.map_names_declaration(declaration : IyiMod::TypeDecl) : IyiMod::TypeDecl
-    IyiMod::TypeDecl.new(
-      name: declaration.name,
-      kind: declaration.kind,
-      type_parameters: declaration.type_parameters,
-      assoc_types: declaration.assoc_types,
-      supertraits: declaration.supertraits,
+  private def self.map_names_declaration(declaration : IyiMod::TypeDecl,
+                                         path : String = declaration.name) : IyiMod::TypeDecl
+    # `copy_with`, for the reason `prune_declaration` gives — and this is the
+    # rebuild that proved it: written the other way it dropped every `fun` a
+    # reopened `lib` carried, so `sqlite3`'s consumer said `undefined fun
+    # 'value_text' for LibSQLite3` about a lib whose types had all arrived.
+    declaration.copy_with(
       fields: declaration.fields.map { |(name, type)| {name, map_names(type)} },
       methods: declaration.methods.map do |signature|
-        rekey_body declaration.name, signature, map_names(signature)
+        rekey_body path, signature, map_names(signature)
       end,
-      visibility: declaration.visibility,
-      types: declaration.types.map { |nested| map_names_declaration nested },
+      types: declaration.types.map { |nested| map_names_declaration nested, "#{path}::#{nested.name}" },
       value: map_names(declaration.value),
-      macros: declaration.macros,
-      members: declaration.members,
       class_vars: declaration.class_vars.map do |(name, type, value)|
         {name, map_names(type), map_names(value)}
       end,
       superclass: map_names(declaration.superclass),
       includes: declaration.includes.map { |name| map_names(name) },
+      funs: declaration.funs.map { |source| map_names(source) },
     )
   end
 
@@ -2216,8 +2235,9 @@ module Iyi
   # synthesized from `initialize` rather than read from an artifact, so a
   # consumer makes its own — and one carried here would meet it at the linker
   # as a duplicate.
-  private def self.generic_declaration(name : String, type : GenericClassType,
-                                       by_owner, root : String) : IyiMod::TypeDecl?
+  private def self.generic_declaration(name : String, type : GenericType,
+                                       by_owner, root : String,
+                                       container : String = name) : IyiMod::TypeDecl?
     parameters = type.type_vars
     signatures = [] of IyiMod::Signature
 
@@ -2260,7 +2280,7 @@ module Iyi
           visibility: method.private_def ? "private" : "",
         )
         signatures << signature
-        @@mono_bodies[IyiMod.mono_body_key(name, signature)] = body
+        @@mono_bodies[IyiMod.mono_body_key(container, signature)] = body
       end
     end
 
@@ -2270,12 +2290,14 @@ module Iyi
     # what a declaration is for. Dropping the empty ones is what left `Kemal`
     # waiting on a type whose methods it had no use for.
     fields = [] of {String, String}
-    type.instance_vars.each do |field, variable|
-      fields << {field, variable.type?.try(&.devirtualize.to_s) || "?"}
+    if type.is_a?(InstanceVarContainer)
+      type.instance_vars.each do |field, variable|
+        fields << {field, variable.type?.try(&.devirtualize.to_s) || "?"}
+      end
     end
 
     nested = [] of IyiMod::TypeDecl
-    collect_declarations type, by_owner, root, nested
+    collect_declarations type, by_owner, root, nested, container
 
     IyiMod::TypeDecl.new(
       name: name,
@@ -2285,11 +2307,22 @@ module Iyi
       supertraits: [] of String,
       fields: fields,
       methods: signatures.sort_by(&.name),
-      visibility: type.private? ? "private" : "pub",
+      # A module takes neither word, which is the same rule the non-generic
+      # ones take: `pub` marks a def, a class, a struct, a trait or an enum,
+      # and what a namespace owes is that the things inside it can be named.
+      visibility: type.is_a?(GenericModuleType) ? "" : (type.private? ? "private" : "pub"),
       # A generic holds types too, and leaving them behind is how
       # `Kemal::LRUCache::Node(K, V)` went missing while `LRUCache` travelled.
       types: nested,
       class_vars: declared_class_vars(type),
+      # The same two edges every other declaration carries, and they were left
+      # out here. `db` writes `module SessionMethods(Session, Stmt)` that
+      # includes `QueryMethods(Stmt)`, and `QueryMethods` is where `exec` and
+      # `query` live — the two methods the whole shard exists to offer. Without
+      # the edge a consumer said `undefined method 'exec' for DB::Database`
+      # about a `Database` that had every other method on it.
+      superclass: superclass_name(type, root),
+      includes: included_modules(type, root, parameters),
     )
   end
 
@@ -2588,7 +2621,19 @@ module Iyi
     { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
       by_owner[owner]?.try &.each do |method|
         next unless method.private_def || !crossed.includes?(method.name)
-        next if method.uncompilable
+        # `uncompilable` is not asked here, and asking it was wrong. It says
+        # this tool could not *instantiate* the method to read its answer, and
+        # what these declarations are for is a travelling body to typecheck
+        # against — the consumer compiles the body, from the text beside it,
+        # and never calls the method by symbol. The keep file is where an
+        # uninstantiable method would do damage, and the keep file skips a
+        # private one on purpose.
+        #
+        # `db` writes `private def perform_exec_and_release(args : Enumerable)`
+        # — a restriction that is a generic module, which this tool cannot make
+        # a value of — and `Statement#exec`'s body, which travels, calls it.
+        # A consumer said `undefined method 'perform_exec_and_release' for
+        # SQLite3::Statement`.
         next if method.abstract_def
         body = method.body
         next if body.nil? || body.empty?
@@ -2607,7 +2652,43 @@ module Iyi
     # and `io_for` is `private def self.`; the consumer said `undefined method
     # 'io_for' for OpenSSL::GETS_BIO.class`.
     reach.concat own_constant_sources(type)
+
+    # And the bodies its *ancestors* hand it, because a body that travels is
+    # compiled per subclass. `db` writes `private abstract def build_statement`
+    # on `PoolStatement` and a concrete one on each subclass, and the body that
+    # calls it — `statement_with_retry`, which yields — travels on the
+    # ancestor. Asked only of `PoolPreparedStatement`'s own bodies the search
+    # found nothing to search, so the subclass's own `build_statement` stayed
+    # behind: `undefined local variable or method 'build_statement' for
+    # DB::PoolPreparedStatement`.
+    #
+    # Errs long like the rest of this: a body that names nothing private costs
+    # nothing to search, and `calls?` only matches a name that is actually
+    # there.
+    if type.responds_to?(:ancestors)
+      type.ancestors.each do |ancestor|
+        { {ancestor.to_s, false}, {ancestor.metaclass.to_s, true} }.each do |(owner, _)|
+          by_owner[owner]?.try &.each do |method|
+            body = method.body
+            reach << body if body && !body.empty?
+          end
+        end
+      end
+    end
+
     return added if reach.empty?
+
+    # By *signature*, not by name, which is the same correction the module
+    # functions took: a name is what a shard's overloads share. `db` writes
+    # `private def self.build_database(connection_string : String)` and
+    # `private def self.build_database(uri : URI)`, the first took the name and
+    # the second was dropped — and the first's body calls the second.
+    # `expected argument #1 to 'DB.build_database' to be String, not URI`,
+    # with one overload listed.
+    key = ->(method : BindMethod) do
+      "#{method.receiver}##{method.name}" \
+      "(#{method.params.map(&.[0]).join(", ")})#{method.written_block}"
+    end
 
     taken = Set(String).new
     until pool.empty?
@@ -2617,13 +2698,28 @@ module Iyi
       break if wanted.empty?
 
       wanted.each do |method|
-        next unless taken.add?(method.name)
+        next unless taken.add?(key.call(method))
         signature = IyiMod::Signature.new(
           name: method.name,
           receiver: method.receiver,
           parameters: method.params.map { |(argument, restriction, default)| bind_parameter(argument, restriction, default) },
           block_parameter: method.written_block,
-          return_type: method.answer || "",
+          # Not `NoReturn`, and this is the one place that distinction can be
+          # drawn. A method that only ever raises answers `NoReturn` and that
+          # is a true thing to write — `NullIO#read` raises
+          # `NotImplementedError` and nothing overrides it. A method that
+          # answers `NoReturn` because *this build* reached nothing is
+          # different, and the two look identical from here: `db` writes
+          # `private def self.build_driver(uri : URI)` whose body looks a
+          # driver up, and a build of `db` alone has none registered.
+          #
+          # What separates them is whether the body travels. These do — the
+          # consumer compiles them, with `sqlite3` linked and a driver
+          # registered — so the answer is the consumer's to infer, and an empty
+          # return type is how this file says so. Written, it was a promise the
+          # consumer could falsify: `method DB.build_driver must return
+          # NoReturn but it is returning SQLite3::Driver`.
+          return_type: method.answer == "NoReturn" ? "" : (method.answer || ""),
           free_variables: [] of String,
           required: false,
           # Not `pub`, whatever the shard said. These are here for a travelling
@@ -2638,7 +2734,7 @@ module Iyi
           reach << body
         end
       end
-      pool.reject! { |method| taken.includes?(method.name) }
+      pool.reject! { |method| taken.includes?(key.call(method)) }
     end
 
     added
@@ -2760,7 +2856,15 @@ module Iyi
   # type's business either — they arrive with the library, and a consumer under
   # `--crystal` has it. What matters is the include a shard writes, and
   # `include HTTP::Handler` is the one this exists for.
-  private def self.included_modules(type : Type, root : String) : Array(String)
+  #
+  # *bound* is the type parameters of the generic this include is written
+  # inside, which are names it may use and nobody else may — the same argument
+  # the methods beside it take. `db` writes `module SessionMethods(Session,
+  # Stmt)` including `QueryMethods(Stmt)`, and asked without the parameters
+  # `Stmt` is a name nobody declared, so the edge was dropped and `exec` — the
+  # method that shard exists to offer — was on nothing a consumer could reach.
+  private def self.included_modules(type : Type, root : String,
+                                    bound : Array(String)? = nil) : Array(String)
     names = [] of String
     return names unless type.responds_to?(:parents)
     parents = type.parents
@@ -2769,11 +2873,17 @@ module Iyi
     superclass = type.responds_to?(:superclass) ? type.superclass : nil
     parents.each do |parent|
       next if superclass && parent.same?(superclass)
-      next unless parent.is_a?(ModuleType)
+      # A generic module's instantiation is not a `ModuleType` — it is a
+      # `GenericModuleInstanceType`, which descends from `GenericInstanceType`
+      # and from nothing else this test knew about. `db` writes `include
+      # SessionMethods(Database, PoolStatement)` on `Database`, the include was
+      # dropped, and a consumer said `undefined method 'exec' for DB::Database`
+      # about the method that whole shard exists to offer.
+      next unless parent.is_a?(ModuleType) || parent.is_a?(GenericModuleInstanceType)
       next if parent.is_a?(ClassType)
 
       name = parent.devirtualize.to_s
-      next unless nameable?(name, root)
+      next unless nameable?(name, root, bound)
       names << name unless names.includes?(name)
     end
     names
@@ -2960,6 +3070,36 @@ module Iyi
     declarations
   end
 
+  # The `lib`s the shard owns outright, which belong *inside* its module.
+  #
+  # `sqlite3` writes `lib LibSQLite3` beside `module SQLite3`, and its funs
+  # take the shard's own types: `fun open_v2 = sqlite3_open_v2(… flags :
+  # SQLite3::Flag …)`. Rendered outside the module — where a reopened lib goes,
+  # because a reopened one *is* the library's — that name is the top level's
+  # and there is nothing there: `undefined constant SQLite3::Flag`. Inside, it
+  # is the boundary's own, and the root-stripping every other declaration takes
+  # rewrites it to the name it has in there.
+  #
+  # Top level only. A lib nested inside the root is already under it and comes
+  # through the ordinary walk.
+  private def self.owned_libs(program : Program) : Array(IyiMod::TypeDecl)
+    declarations = [] of IyiMod::TypeDecl
+    source = program.filename
+    return declarations unless source.is_a?(String)
+    directory = File.dirname(source)
+    return declarations if directory.empty?
+
+    library = library_root(program)
+    return declarations unless library
+
+    program.types?.try &.each_value do |type|
+      next unless type.is_a?(LibType)
+      declaration = reopened_lib type, directory, library, true
+      declarations << declaration if declaration
+    end
+    declarations
+  end
+
   private def self.collect_reopened(types : Hash(String, Type)?, directory : String,
                                     library : String, root : String,
                                     declarations : Array(IyiMod::TypeDecl)) : Nil
@@ -2996,14 +3136,29 @@ module Iyi
   # needs is to be able to *name* the types, because naming is what numbering
   # is made of.
   private def self.reopened_lib(type : NamedType, directory : String,
-                                library : String) : IyiMod::TypeDecl?
+                                library : String, owned : Bool) : IyiMod::TypeDecl?
     return nil unless type.responds_to?(:locations)
     locations = type.locations
     return nil unless locations
     files = locations.compact_map { |location| location.filename.as?(String) }
-    return nil unless files.any? &.starts_with?(library)
     return nil unless files.any? &.starts_with?(directory)
+    # One list or the other, never both: a lib the shard shares with the
+    # library is reopened outside the module, and one it owns is declared
+    # inside it.
+    return nil if owned != !files.any?(&.starts_with?(library))
 
+    # The library's half is not required, and requiring it was the bug. A
+    # `lib` the shard wrote *entirely* is still a top-level name a boundary
+    # rooted at `SQLite3` cannot reach — the same position kemal's `get` and
+    # `post` are in, one kind of declaration over. `sqlite3` writes `lib
+    # LibSQLite3` beside `module SQLite3`, and its `REGEXP_FN` is a proc whose
+    # type names `LibSQLite3::SQLite3Context`; the constant was dropped as a
+    # value the consumer could not name, and the consumer said `undefined
+    # constant ::SQLite3::REGEXP_FN`.
+    #
+    # What travels is the same either way: the members written under
+    # *directory*. For a `lib` the shard shares that is what it added, and for
+    # one it owns outright that is all of it.
     nested = [] of IyiMod::TypeDecl
     constants = [] of {String, String}
     type.types?.try &.each do |simple, member|
@@ -3069,7 +3224,12 @@ module Iyi
     return nil if nested.empty? && funs.empty? && constants.empty?
 
     IyiMod::TypeDecl.new(
-      name: "::#{type}",
+      # `::` for a lib the *library* also declares, because that one is
+      # rendered outside the module and means the real `LibCrypto`. A lib the
+      # shard owns outright is declared inside the module like every other type
+      # of the shard's, and takes its plain name — `::LibSQLite3` at the top
+      # level would be a second, empty lib beside the one the module has.
+      name: owned ? type.to_s : "::#{type}",
       kind: "lib",
       type_parameters: [] of String,
       assoc_types: [] of String,
@@ -3130,7 +3290,12 @@ module Iyi
           # ASN1_dup(i2d : Void*, ...)` reached this with three empty
           # restrictions and rendered `(i2d : , ...)`.
           written = argument.restriction || argument.type?
-          inner << argument.name << " : " << written
+          # A `fun` parameter may have no name — `fun backup_finish =
+          # sqlite3_backup_finish(SQLite3Backup)` is how `sqlite3` writes half
+          # of them — and a name is not what a C call needs. Written with the
+          # colon anyway it is `unexpected token: ":"`.
+          inner << argument.name << " : " unless argument.name.empty?
+          inner << written
         end
         io << ", ..." if a_def.varargs?
         io << ')'
@@ -3154,7 +3319,7 @@ module Iyi
     # `Number::RoundingMode` raised `BUG: doesn't implement instance_vars`,
     # which is the compiler saying the question was wrong rather than the
     # answer missing.
-    return reopened_lib type, directory, library if type.is_a?(LibType)
+    return reopened_lib type, directory, library, false if type.is_a?(LibType)
     return nil if type.is_a?(EnumType)
     return nil if type.is_a?(TypeDefType)
 
@@ -3488,8 +3653,20 @@ module Iyi
       # call needs the shape — and a method whose body travels hands the
       # consumer the body instead, which is the shape. `Kemal.run` is written
       # `def self.run(…, &)` and the whole of running a kemal app is behind it.
+      # Resolved, like every parameter beside it. It was the one restriction
+      # that travelled as *written*, and a name written in the shard's own
+      # namespace is not a name the far side reads the same way: `db`'s
+      # `Database#initialize(… &factory : -> Connection)` is `-> DB::Connection`
+      # once resolved, and unresolved it failed the nameability test that
+      # decides whether the method crosses at all — so the one `initialize`
+      # a consumer needs to build a `Database` with was dropped, and the body
+      # that calls `Database.new(…, &factory)` met a `new` that takes no block.
       written_block: a_def.block_arg.try do |argument|
-        argument.restriction ? "&#{argument}" : "&#{argument.name}"
+        if restriction = argument.restriction
+          "&#{argument.name} : #{resolve_block_restriction(owner, restriction)}"
+        else
+          "&#{argument.name}"
+        end
       end || (a_def.block_arity ? "&" : ""),
     )
   end
@@ -3623,6 +3800,28 @@ module Iyi
   # Resolution can fail — a free variable, `_`, a restriction this scope cannot
   # see — and then the written text stands, which is what this did for
   # everything before.
+  # A block's annotation, resolved but still written as an arrow.
+  #
+  # `resolve_restriction` answers with the *type*, and a resolved proc type
+  # prints `Proc(DB::Connection, Nil)` where the shard wrote `Connection ->
+  # Nil`. Both name the same thing and only one of them is a block shape: the
+  # keep file reads the arrow to know how many parameters to write, and
+  # `synthesize_block` needs a `ProcNotation` to make a call out of. Handed the
+  # `Proc` form, the keep file counted the output as an input and wrote
+  # `{ |b115, b116| nil }` for a block that yields one — `wrong number of block
+  # parameters (given 2, expected 1)`.
+  #
+  # So each side of the arrow is resolved on its own and the arrow is written
+  # back. A bare name with no arrow is not a block shape and goes the ordinary
+  # way.
+  private def self.resolve_block_restriction(owner : Type, node : ASTNode) : String
+    return resolve_restriction(owner, node).to_s unless node.is_a?(ProcNotation)
+
+    inputs = (node.inputs || [] of ASTNode).map { |input| resolve_restriction(owner, input).to_s }
+    output = node.output.try { |type| resolve_restriction(owner, type).to_s }
+    "#{inputs.join(", ")} -> #{output}".strip
+  end
+
   private def self.resolve_restriction(owner : Type, node : ASTNode?) : String?
     return nil unless node
     written = node.to_s
@@ -3633,6 +3832,14 @@ module Iyi
     return written unless type
     # A free variable is a name this method binds, not one anybody declares.
     return written if type.is_a?(TypeParameter)
+
+    # And a bare generic is a name too. `private def
+    # perform_exec_and_release(args : Enumerable)` means "any Enumerable", and
+    # the type it resolves to prints `Enumerable(T)` — with a `T` that is the
+    # *method's* free variable and is declared nowhere a reader can see:
+    # `undefined constant T`. What the shard wrote is what a reader can read.
+    return written if type.is_a?(GenericType)
+
     type.devirtualize.to_s
   rescue
     node.to_s
@@ -3675,7 +3882,7 @@ module Iyi
   # being called, which is the thing being instantiated. The body has to be of
   # the annotated output type, and `uninitialized` is how you name a value of a
   # type without building one — the same answer the keep file's text gives.
-  private def self.synthesize_block(restriction : ASTNode) : Block?
+  private def self.synthesize_block(owner : Type, restriction : ASTNode) : Block?
     return nil unless restriction.is_a?(ProcNotation)
 
     inputs = restriction.inputs || [] of ASTNode
@@ -3686,7 +3893,15 @@ module Iyi
       if output.nil? || output.to_s == "Nil"
         NilLiteral.new
       else
-        UninitializedVar.new(Var.new("__bind_block_result"), output.clone)
+        # Resolved against the owner, because the call this block goes into is
+        # typed by a visitor whose scope is the *program*. `db` writes
+        # `&factory : -> Connection` inside `DB`, and `uninitialized Connection`
+        # visited at the top level is `undefined constant Connection` — which
+        # this tool read as "the method does not compile" and dropped
+        # `Database#initialize`, the one thing a consumer builds a `Database`
+        # with.
+        written = resolve_restriction(owner, output) || output.to_s
+        UninitializedVar.new(Var.new("__bind_block_result"), Path.new(written.split("::"), global: true))
       end
 
     Block.new(args, body)
@@ -3732,7 +3947,7 @@ module Iyi
       # The keep file has written exactly this block as text since blocks
       # first crossed — `{ |b0| nil }`, or an `uninitialized` of the output
       # where the output is not `Nil`. This is the same block as a node.
-      block = synthesize_block restriction
+      block = synthesize_block owner, restriction
       return {nil, "block shape not understood", false} unless block
     end
     return {nil, "yields without a block parameter", false} if a_def.block_arity && !a_def.block_arg
