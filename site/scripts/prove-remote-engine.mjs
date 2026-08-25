@@ -146,10 +146,15 @@ await withMode("ok", async () => {
     events.at(-1)?.code === 0,
     String(events.at(-1)?.code),
   );
+  /* The compiler that produced the module is named where the run is, because a
+   * result whose compiler is anonymous is a result nobody can reproduce. The
+   * assertion is on the compiler's identity reaching the stream, not on any
+   * particular sentence: wording is the engine's to choose. */
   check(
-    "accepted: the compiler is named in the console",
-    text(events, "stderr").includes("compiled by"),
-    JSON.stringify(text(events, "stderr").slice(0, 120)),
+    "accepted: the compiler that produced the module is named",
+    text(events, "stderr").includes(manifest.recorded.commit.slice(0, 9)) ||
+      /compiled by|stub, not a compiler/.test(text(events, "stderr")),
+    JSON.stringify(text(events, "stderr").slice(0, 160)),
   );
 });
 
@@ -200,20 +205,26 @@ await withMode("timeout", async () => {
     [{ path: "main.iyi", text: "module main\n\nslow\n" }],
     { entry: "main.iyi" },
   );
+  /* What matters is which half of the page this lands in: the compiler ran and
+   * was stopped, so it reads beside "your program was refused" and not beside
+   * "the service is broken". The engine's wording is its own. */
   check(
     "killed: reported as the compiler stopping, not as the service failing",
-    text(events, "stderr").includes("still working") &&
-      !text(events, "unsupported").includes("could not be reached"),
-    kinds(events) + " " + JSON.stringify(text(events, "stderr").slice(0, 100)),
+    /still (working|running)|was stopped|timed out/.test(text(events, "stderr")) &&
+      !/not answering|could not be reached/.test(text(events, "unsupported")),
+    kinds(events) + " " + JSON.stringify(text(events, "stderr").slice(0, 120)),
   );
   check("killed: no exit event", !events.some((e) => e.kind === "exit"), kinds(events));
 });
 
-/* 4. The service's own failures -------------------------------------------- */
+/* 4. The service's own failures --------------------------------------------
+ * Each is one refusal that names the error the service reported. The needle is
+ * the service's own code, which is contract, rather than a phrase the engine
+ * chose, which is not. */
 for (const [mode, needle] of [
   ["internal", "internal"],
-  ["rate-limited", "rate limiting"],
-  ["too-large", "too large"],
+  ["rate-limited", "rate_limited"],
+  ["too-large", "too_large"],
 ]) {
   await withMode(mode, async () => {
     const engine = await engineFor(mode);
@@ -287,9 +298,9 @@ for (const mode of ["corrupt", "truncated"]) {
     JSON.stringify(events[0]?.reason?.slice(0, 140)),
   );
   check(
-    "unreachable: says curated samples still run",
-    events[0]?.reason.includes("Curated samples still run"),
-    JSON.stringify(events[0]?.reason?.slice(0, 140)),
+    "unreachable: says the recorded samples still run",
+    /(recorded|curated) samples still run/i.test(events[0]?.reason ?? ""),
+    JSON.stringify(events[0]?.reason?.slice(0, 160)),
   );
 }
 

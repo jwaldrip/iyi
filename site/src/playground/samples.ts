@@ -60,6 +60,20 @@ export interface CuratedSample {
    * record, and the module's own name in iyi, since a module's path is its
    * file's path. */
   path: string;
+  /**
+   * SHA-256 of the raw bytes of the source file at `path`, as it was when the
+   * module was recorded. `scripts/records.mjs` checks it against the file on
+   * every build, so a sample edited without re-recording fails the build
+   * rather than shipping a module built from text nobody can see any more.
+   *
+   * The playground compares the editor's text against this to tell an
+   * unedited curated sample, which can run from its recorded module, from
+   * something the visitor changed, which has to go to the compile service.
+   * A digest rather than the text itself, because the only client reachable
+   * copy of the text is the highlight record, and importing that ships a
+   * quarter of a megabyte of listings to every visitor.
+   */
+  sourceSha256: string;
   /** File name of the linked module, sitting beside the manifest. */
   wasm: string;
   /** Size of the linked module. Recorded: a compiler on a machine produced it. */

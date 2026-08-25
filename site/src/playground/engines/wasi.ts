@@ -9,7 +9,11 @@
  * instantiates it against the WASI preview1 host in `wasi-preview1.ts`, calls
  * `_start`, and reports what the program wrote, the status it really exited
  * with, and the wall clock the run took in this tab. That is a real execution
- * of real compiler output, not a recording played back.
+ * of real compiler output, not a recording played back. The execution itself,
+ * once the bytes are here and shown to be the recorded ones, is `execute.ts`,
+ * shared with the engine that runs bytes a compile service produced: two
+ * engines that could disagree about what running means would be a defect no
+ * visitor is in a position to see.
  *
  * WHAT IT DOES NOT DO, and this is the part the interface exists to keep
  * honest: it does not compile. There is no iyi compiler in this page. So the
@@ -42,7 +46,7 @@ import type {
 } from "../types";
 import { curatedSamples, findSample, wasmProvenance } from "../samples";
 import { recordedDiagnostics } from "../diagnostics";
-import { WasiExit, WasiHost, decodeWrites } from "./wasi-preview1";
+import { executeWasm, sha256Hex } from "./execute";
 
 /**
  * The editor's budget.
@@ -99,21 +103,9 @@ function moduleUrl(wasm: string): string {
   return `${base}wasm/${wasm}`;
 }
 
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  /* A fresh copy, because `crypto.subtle` wants an ArrayBuffer and a subarray
-   * view would hash the whole underlying buffer. */
-  const digest = await crypto.subtle.digest("SHA-256", bytes.slice().buffer);
-  return Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-}
-
-/** Yield to the event loop so the page paints one chunk before the next. */
-function nextFrame(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, 0);
-  return promise;
-}
+/* `sha256Hex` is imported rather than written here. It is the same hash on the
+ * same bytes for both engines, and the note about copying before handing the
+ * buffer to `crypto.subtle` lives with it in `execute.ts`. */
 
 /** Modules already fetched and verified in this tab, by sample id. */
 const loaded: Record<string, WebAssembly.Module> = {};
@@ -253,13 +245,14 @@ export const wasiEngine: PlaygroundEngine = {
         `that file, your edit is not in this run.`,
     };
 
-    /* Fetch and verify. A module is loaded once per tab and kept, because a
-     * visitor pressing run twice should not pay for it twice, and because the
-     * second run is then measuring execution rather than the network. */
-    let module_ = loaded[sample.id];
+    /* Fetch and verify. A module is fetched and checked once per tab and then
+     * kept, because a visitor pressing run twice should not pay the network
+     * twice, and because the second run is then measuring the program rather
+     * than the download. */
+    const cached = loaded[sample.id];
     let bytes = loadedBytes[sample.id];
 
-    if (module_ === undefined) {
+    if (cached === undefined) {
       const url = moduleUrl(sample.wasm);
       let response: Response;
       try {
@@ -308,107 +301,36 @@ export const wasiEngine: PlaygroundEngine = {
         return;
       }
 
-      if (cancelled) return;
-      module_ = await WebAssembly.compile(bytes.slice().buffer);
-      loaded[sample.id] = module_;
       loadedBytes[sample.id] = bytes;
     }
 
-    if (cancelled) return;
-
-    /* The bytes about to execute, named and handed over. The page holds the
-     * artifact itself, so its size is checkable in this tab rather than taken
-     * on trust from the record. */
-    yield {
-      kind: "artifact",
-      name: sample.wasm,
-      bytes: bytes.length,
-      data: bytes,
-    };
-
-    /* Instantiate and run.
+    /* Instantiate and run, which from here on is `execute.ts`. The
+     * instantiation, the argv, the trap handling, the write ordering and the
+     * exit accounting are identical for a recorded module and for one a
+     * compile service produced, so they are written once there: a visitor
+     * cannot tell which engine produced a run, and the two must not be able to
+     * disagree about what running means. The reasoning about traps having no
+     * status, and about output arriving after `_start` returns, is stated with
+     * the code that implements it.
      *
      * `argv[0]` is the sample's own repository relative path, which is both
-     * what the program is and, in iyi, the module's own name. wasi-libc's
-     * start stub reads it, so it is a requirement rather than a flourish. */
-    const host = new WasiHost({ args: [sample.path] });
-    let instance: WebAssembly.Instance;
-    try {
-      instance = await WebAssembly.instantiate(module_, host.imports());
-    } catch (error) {
-      yield {
-        kind: "unsupported",
-        capability: "run",
-        reason:
-          `${sample.wasm} would not instantiate against a WASI preview1 host ` +
-          `in this page: ` +
-          `${error instanceof Error ? error.message : String(error)}. A module ` +
-          `built with threads or atomics cannot instantiate here, because ` +
-          `this document is not cross-origin isolated and a shared memory ` +
-          `cannot be created.`,
-      };
-      return;
-    }
-    host.bind(instance);
-
-    const start = instance.exports._start;
-    if (typeof start !== "function") {
-      yield {
-        kind: "unsupported",
-        capability: "run",
-        reason:
-          `${sample.wasm} exports no _start, so it is a reactor rather than a ` +
-          `command module and there is no entry point to call.`,
-      };
-      return;
-    }
-
-    let code: number | null = null;
-    let trap: string | null = null;
-    const began = performance.now();
-    try {
-      (start as () => void)();
-      /* `_start` returned without calling `proc_exit`. wasi-libc's stub does
-       * call it, so this path means the module was linked differently; a
-       * command module that returns normally has exited 0 by definition. */
-      code = 0;
-    } catch (error) {
-      if (error instanceof WasiExit) {
-        code = error.code;
-      } else {
-        /* A trap. The program did not exit, it died, and it therefore has no
-         * status. Reporting one would be inventing it, so the message is
-         * reported and no `exit` event follows. */
-        trap =
-          error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      }
-    }
-    const elapsed = performance.now() - began;
-
-    /* Deliver what the program wrote, one event per `fd_write`, in the order
-     * the program made them, stdout and stderr kept apart. */
-    for (const write of decodeWrites(host.writes)) {
-      if (cancelled) return;
-      if (write.text.length === 0) continue;
-      yield write.fd === 2
-        ? { kind: "stderr", text: write.text }
-        : { kind: "stdout", text: write.text };
-      await nextFrame();
-    }
-
-    if (cancelled) return;
-
-    if (trap !== null) {
-      yield {
-        kind: "stderr",
-        text:
-          `the module trapped and did not exit, so it has no status to ` +
-          `report: ${trap}\n`,
-      };
-      return;
-    }
-
-    yield { kind: "exit", code: code ?? 0, ms: Math.round(elapsed * 100) / 100 };
+     * what the program is and, in iyi, the module's own name.
+     *
+     * `compiled` and `onCompiled` are this tab's cache. A visitor pressing run
+     * twice should not pay to compile twice, and the second run then measures
+     * execution rather than compilation. The compiled module is only cached
+     * once `execute.ts` has it, so a module that will not compile is refetched
+     * and reverified next time rather than remembered as unusable. */
+    yield* executeWasm({
+      bytes,
+      name: sample.wasm,
+      argv0: sample.path,
+      isCancelled: () => cancelled,
+      compiled: cached,
+      onCompiled: (module_) => {
+        loaded[sample.id] = module_;
+      },
+    });
   },
 
   /**
