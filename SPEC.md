@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 92,972 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 93,062 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,505 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -7288,17 +7288,30 @@ Named honestly, so nobody mistakes this draft for complete.
     kemal's own `setup_404`, which `Kemal.run` reaches through a private module
     function whose body travels.
 
-    **`jwt`, measured.** All four boundaries bind and fill — `openssl_ext`,
-    `bindata`, `bindata/asn1`, `jwt` — and a consumer that signs and verifies a
-    token stops on `"open_s_s_l" numbers `Pointer(LibCrypto::Bignum)``.
-    `openssl_ext` reopens `lib LibCrypto` and adds C structs and `fun`s to it,
-    which is this item's remaining open question reached rather than argued.
+    **What a shard adds to a `lib` travels**, which is this item's remaining
+    open question answered rather than argued. `openssl_ext` reopens `lib
+    LibCrypto` with a dozen C structs, two unions and a handful of `type`
+    aliases, and a consumer stopped on `"open_s_s_l" numbers
+    `Pointer(LibCrypto::Bignum)``.
 
-    It is the sibling of `Reopened` and not the same size. A class's members are
-    declarations the artifact has shapes for; a `lib`'s are C ones — a struct
-    whose fields are `LibC::Int` and pointers to other structs in the same
-    `lib`, and `fun`s with C signatures — and nothing here has a shape for that
-    yet. Deciding it is a piece of design, not a collector.
+    **Types only, and that is the finding.** A `fun` is a C symbol — `BN_new`
+    is resolved by the system linker against `-lcrypto`, not by anything either
+    side compiles — so a consumer that does not call one needs no declaration
+    for it. What it needs is to *name* the types, because naming is what
+    numbering is made of. A `lib` extension is then the same shape as
+    `Reopened` rather than a new kind of thing.
+
+    Two smaller rules came with it. A `lib`'s alias is `type Engine = Void*`
+    where a class's is `alias`, and writing one without its right-hand side is
+    `expecting token '=', not 'end'`. And **a class root keeps its class
+    variables in its class** — they were written at the module level as well,
+    which is right for a module root, that being no `TypeDecl` and having
+    nowhere else to put them, and wrong for a class that is already carrying
+    them.
+
+    `jwt` stops one step further on: `ASN1::BER`'s own `@@bit_fields` crosses
+    without the initialiser its superclass's macro gives it, and a non-nilable
+    class variable must have one.
 
     Two smaller facts came out of the same measurement, and both read as
     compiler bugs without being one. A shard is not always one boundary:

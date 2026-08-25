@@ -4,18 +4,33 @@
 
 ### Added
 
-- **`jwt` measured, and what stops it named exactly.** All four boundaries bind
-  and fill — `openssl_ext`, `bindata`, `bindata/asn1` and `jwt` — and a
-  consumer that signs and verifies a token stops on `"open_s_s_l" numbers
-  \`Pointer(LibCrypto::Bignum)\`, and this build cannot name it`. That is Part V
-  item 12's own open question, reached: `openssl_ext` reopens `lib LibCrypto`
-  and adds C structs and `fun`s to it.
+- **What a shard adds to a `lib` travels, and that was smaller than it
+  looked.** `openssl_ext` reopens `lib LibCrypto` with a dozen C structs, two
+  unions and a handful of `type` aliases, and a consumer stopped on
+  `"open_s_s_l" numbers \`Pointer(LibCrypto::Bignum)\`, and this build cannot
+  name it` — Part V item 12's own open question, reached.
 
-  It is the sibling of the `Reopened` work and not the same size. A class's
-  members are declarations the artifact already has shapes for; a `lib`'s are C
-  ones — a struct whose fields are `LibC::Int` and pointers to other structs in
-  the same `lib`, and `fun`s with C signatures — and `TypeDecl` has no shape
-  for any of it. Left as its own piece rather than half-carried.
+  **Types only, and the reason is the whole finding.** A `fun` is a C symbol:
+  `BN_new` is resolved by the system linker against `-lcrypto`, not by anything
+  either side compiles, so a consumer that does not call one itself needs no
+  declaration for it. What it needs is to be able to *name* the types, because
+  naming is what numbering is made of. That turns a `lib` extension into the
+  same shape as `Reopened` — `lib ::LibCrypto` with the members the shard
+  wrote — rather than a new kind of thing.
+
+  Two smaller rules came with it, each found by the next failure. A `lib`'s
+  alias is spelled `type Engine = Void*` where a class's is `alias`, and the
+  renderer knew only the second, so it wrote `type Engine` and closed it:
+  `expecting token '=', not 'end'`. And **a class root keeps its class
+  variables in its class.** They were written at the module level too — right
+  for a module root, which is not a `TypeDecl` and has nowhere else to put
+  them, and wrong for a class, which is already carrying them. `bindata` is the
+  first shard here whose root is a class, and it said `can't use class
+  variables at the top level`.
+
+  What stops `jwt` now is one step further on: `ASN1::BER`'s own
+  `@@bit_fields` crosses without the initialiser its superclass's macro gives
+  it, and a non-nilable class variable must have one.
 
   Two things came out of measuring it. `bindata` defines **two** top-level
   namespaces, `BinData` and `ASN1`, and the second lives in its own file that
