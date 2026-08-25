@@ -88,12 +88,12 @@ The two classes of number are rendered differently by design; see
 ## What is generated versus authored
 
 - **Generated, verbatim, never edited:** the SPEC sections and the CHANGELOG,
-  split from the repository's own files by `scripts/reference.mjs`, each page
+  split from the repository's own files by `site/scripts/reference.mjs`, each
   carrying a generated-from banner with the commit. PROPOSED sections are
   badged in the signal colour because they are exactly the parts that will
   move.
 - **Generated, transcluded:** sample code in lessons, copied from
-  `samples/iyi/` by `scripts/samples.mjs`, so a sample that changes in the
+  `samples/iyi/` by `site/scripts/samples.mjs`, so a sample that changes in the
   repository changes on the site. Renaming a sample a lesson names fails the
   build.
 - **Generated, measured:** all numbers, via the pipeline above.
