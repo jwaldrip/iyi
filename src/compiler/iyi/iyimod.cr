@@ -1782,8 +1782,11 @@ module Iyi::IyiMod
     io << render_type_header(declaration) << '\n'
 
     # An alias is the whole declaration, and there is nothing to close: it
-    # names a type rather than declaring one.
-    return if declaration.kind == "alias"
+    # names a type rather than declaring one. A `lib`'s `type Engine = Void*`
+    # is the same shape under a different keyword — inside a `lib` Crystal
+    # spells it `type` — and closing it produced `expecting token '=', not
+    # 'end'`, the parser reading the `end` as the missing right-hand side.
+    return if declaration.kind == "alias" || declaration.kind == "type"
 
     inner = indent + "  "
 
@@ -1876,7 +1879,9 @@ module Iyi::IyiMod
       # the alias resolved to rather than the text it was written as, for the
       # reason a field's type is: this file is read where the module was not,
       # and a name that resolved there may not resolve here.
-      io << " = " << declaration.value if declaration.kind == "alias"
+      if declaration.kind == "alias" || declaration.kind == "type"
+        io << " = " << declaration.value
+      end
 
       # An enum's base type, written the way it is declared. The same field as
       # an alias's right-hand side, and for the same reason: it is the type this

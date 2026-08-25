@@ -668,8 +668,19 @@ module Iyi
     # is the case that said so: every type of that shard travelled with its
     # class variables and `Backtracer::configuration` was still undefined at the
     # end of the link.
+    #
+    # A *class* root has one, so it takes them with it: they are already in the
+    # declaration below, and writing them here as well puts a `@@` outside every
+    # type — `can't use class variables at the top level`, which is what
+    # `bindata` said, its root being `abstract class BinData` with a
+    # `@@bit_fields`.
     root_type = program.types?.try &.[]?(root)
-    root_class_vars = root_type ? collect_class_vars(root_type) : [] of {String, String, String}
+    root_class_vars =
+      if root_type && module_root?(program, root)
+        collect_class_vars(root_type)
+      else
+        [] of {String, String, String}
+      end
 
     if module_root? program, root
       exported = exported.map do |signature|
@@ -2725,6 +2736,79 @@ module Iyi
     end
   end
 
+  # One `lib` of the library's, with only what the shard put in it.
+  #
+  # `openssl_ext` reopens `lib LibCrypto` and adds a dozen C structs, two
+  # unions and a handful of `type` aliases. A consumer said `"open_s_s_l"
+  # numbers `Pointer(LibCrypto::Bignum)`, and this build cannot name it`: the
+  # shard's object code refers to that type's id, the id is resolved from a
+  # definition in the consumer's program, and the consumer had never heard of
+  # the type.
+  #
+  # Types only. A `fun` is a C symbol — `BN_new` is resolved by the system
+  # linker against `-lcrypto`, not by anything either side compiles — so a
+  # consumer that does not call one itself needs no declaration for it. What it
+  # needs is to be able to *name* the types, because naming is what numbering
+  # is made of.
+  private def self.reopened_lib(type : NamedType, directory : String,
+                                library : String) : IyiMod::TypeDecl?
+    return nil unless type.responds_to?(:locations)
+    locations = type.locations
+    return nil unless locations
+    files = locations.compact_map { |location| location.filename.as?(String) }
+    return nil unless files.any? &.starts_with?(library)
+    return nil unless files.any? &.starts_with?(directory)
+
+    nested = [] of IyiMod::TypeDecl
+    type.types?.try &.each do |simple, member|
+      next unless member.is_a?(NamedType)
+      next unless written_in(member.locations.try(&.first?)).try &.starts_with?(directory)
+
+      case member
+      when TypeDefType
+        nested << IyiMod::TypeDecl.new(
+          name: simple, kind: "type",
+          type_parameters: [] of String, assoc_types: [] of String,
+          supertraits: [] of String, fields: [] of {String, String},
+          methods: [] of IyiMod::Signature, visibility: "",
+          value: member.typedef.to_s,
+        )
+      else
+        fields = [] of {String, String}
+        if member.is_a?(InstanceVarContainer)
+          member.instance_vars.each do |field, variable|
+            # `@` off: a `lib` struct writes its fields as plain names, which is
+            # what the shard wrote and what the far side has to parse back.
+            fields << {field.lchop('@'), variable.type?.try(&.devirtualize.to_s) || "?"}
+          end
+        end
+        next if fields.empty?
+        nested << IyiMod::TypeDecl.new(
+          name: simple, kind: member.type_desc,
+          type_parameters: [] of String, assoc_types: [] of String,
+          supertraits: [] of String, fields: fields,
+          methods: [] of IyiMod::Signature, visibility: "",
+        )
+      end
+    end
+
+    return nil if nested.empty?
+
+    IyiMod::TypeDecl.new(
+      name: "::#{type}",
+      kind: "lib",
+      type_parameters: [] of String,
+      assoc_types: [] of String,
+      supertraits: [] of String,
+      fields: [] of {String, String},
+      methods: [] of IyiMod::Signature,
+      # No `pub`: a `lib` is not a thing a consumer writes against, and this one
+      # is the library's besides. It is here so the types can be named.
+      visibility: "",
+      types: nested,
+    )
+  end
+
   # One library type, with only what the shard put in it.
   private def self.reopened_declaration(type : NamedType, directory : String,
                                         library : String,
@@ -2737,7 +2821,8 @@ module Iyi
     # `Number::RoundingMode` raised `BUG: doesn't implement instance_vars`,
     # which is the compiler saying the question was wrong rather than the
     # answer missing.
-    return nil if type.is_a?(EnumType) || type.is_a?(LibType)
+    return reopened_lib type, directory, library if type.is_a?(LibType)
+    return nil if type.is_a?(EnumType)
     return nil if type.is_a?(TypeDefType)
 
     # Written in both places, which is what a reopening *is*.
