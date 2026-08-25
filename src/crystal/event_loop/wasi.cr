@@ -61,8 +61,28 @@ class Crystal::EventLoop::Wasi < Crystal::EventLoop
     raise NotImplementedError.new("Crystal::EventLoop::Wasi#pipe")
   end
 
+  # iyi: `read` and `write` on this event loop were already implemented against
+  # `LibC.read` and `LibC.write`, and `LibC.open` is bound for the target
+  # (`src/lib_c/wasm32-wasi/c/fcntl.cr:24`), so opening was the one step of
+  # reading a file that raised. A compiler is a program that reads files, so on
+  # this target it could not read its own prelude.
+  #
+  # It reports the errno rather than raising, which is this method's contract;
+  # `File.open` turns that into `File::Error`. Two differences from the
+  # libevent version above, both because of what wasi is: no `O_CLOEXEC`, since
+  # there is no exec to close across (wasi-libc defines it as 0 anyway), and
+  # the descriptor is always blocking, since `set_blocking` has no
+  # implementation here and there is no event loop to hand a non-blocking fd
+  # to. wasi's own `path_open` is the richer call underneath, and `LibC.open`
+  # in wasi-libc is a wrapper over it that resolves the path against the
+  # preopened directories, which is what makes a bare path work at all.
   def open(path : String, flags : Int32, permissions : File::Permissions, blocking : Bool?) : {System::FileDescriptor::Handle, Bool} | Errno | WinError
-    raise NotImplementedError.new("Crystal::Wasi::EventLoop#open")
+    path.check_no_null_byte
+
+    fd = LibC.open(path, flags, permissions)
+    return Errno.value if fd == -1
+
+    {fd, true}
   end
 
   # TODO: LibWasi.fd_read
