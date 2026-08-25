@@ -4,6 +4,61 @@
 
 ### Added
 
+- **`Kemal.run` crosses a boundary, and nine separate things were in the way.**
+  Running a kemal app is behind one method, and every one of these hid the next,
+  so each was found only by fixing the one before it:
+
+  - **"Yields without a block parameter" is the body being the shape.** A method
+    written `&` — or a bare `yield` — has no annotated block type and so no
+    single symbol; its machine code is the caller's and its body has to travel.
+    Two spellings of that already counted; the third, which is how Crystal's own
+    libraries are written far more often, did not.
+  - **The question was never asked.** `Kemal.run(args = ARGV, …, &)` writes no
+    type on `args`, so the method was refused as one a human has to write and
+    its block was never looked at. The verdict is about a *declaration a
+    consumer typechecks against*; a method whose body travels is not declared
+    that way.
+  - **A name was spent by the first overload seen rather than by the one that
+    crosses.** `Kemal` writes four `run`s and two `config`s. Dedup is by
+    signature now, which is what tells two methods apart — one per name dropped
+    `Kemal.config`'s blockless form, and a travelling body calling it stopped
+    the consumer on `is expected to be invoked with a block`.
+  - **A module function's body never travelled.** It had a collector and no
+    `MonoBodies` line, so the declaration arrived without a body and the
+    consumer read a `def` nobody had compiled.
+  - **R-2 refused the arrival.** Its premise is "nothing here can be recovered
+    from the body, because the body is what stays behind" — and a `MonoBodies`
+    entry is the body not staying behind. The exemption is the rule, not an
+    exception to it. An author's own `pub def twice(x)` is untouched: the flag
+    is set only on a def parsed back out of an artifact.
+
+  The keep file learned two refusals of the same shape. It cannot call a
+  method whose parameter has no type — the parameter's *name* stood where the
+  type would, `uninitialized args` — and it cannot call one whose block nobody
+  annotated, because writing a block needs its arity and `&` says nothing about
+  it: `Kemal::Router#namespace(path : String, &)` was handed one parameter where
+  the method yields none. Neither is a call worth making. Such a method has no
+  symbol to keep alive; that is why its body travels.
+
+  Two more, once the body arrived somewhere it could run. A class's travelling
+  `initialize` was collected *after* the search for the private methods a
+  travelling body calls, so nothing looked inside it: `Kemal::CLI#initialize`
+  travels — its `new` is not a symbol anybody can name — and its body calls
+  `parse`, which the class keeps to itself. And a module's own private
+  functions never travelled at all. `Exports#carried_functions` was written for
+  exactly this case, down to the example in its comment, and `crystal tool bind`
+  never filled it: `Kemal.run`'s body calls `setup_404` and
+  `setup_trap_signal`.
+
+  `Kemal.run` crosses now, with its body and everything that body reaches
+  inside `Kemal`. What stops the call one step further is not a gap in any of
+  this: `setup_404` calls `error`, and `error` is a **top-level `def`** in
+  kemal's `dsl.cr` — as are `get` and `post`, which is the whole DSL. A boundary
+  rooted at `Kemal` cannot carry a method defined outside `Kemal`. That is the
+  root-shape question, named rather than worked around.
+
+  Kemal's boundary carries 37 units where it carried 20.
+
 - **A method whose body travels may have an unannotated block.** R-2 refuses an
   exported signature without a block annotation because a consumer typechecking
   a call needs the shape — and a method whose machine code is the caller's hands

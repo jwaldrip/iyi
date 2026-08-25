@@ -777,9 +777,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 90,161 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 92,259 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
-| Specs | 21,146 lines | 8,301 for iyi |
+| Specs | 21,146 lines | 8,505 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |
@@ -7107,6 +7107,47 @@ Named honestly, so nobody mistakes this draft for complete.
     API rather than any missing machinery: what a `-> _` block returns, and
     what `HTTP::Server::Context` and a dozen more become on this side. 104
     signatures wait on the second.
+
+    **What a travelling body costs, measured against `Kemal.run`.** A method
+    that yields has no machine code of its own — the block is the caller's — so
+    the consumer compiles the method from text, and everything that text names
+    has to be there. Running a kemal app is behind one such method, and getting
+    it across took nine fixes, each of which was invisible until the one before
+    it landed. They fall into three groups, and the grouping is the finding:
+
+    - **The tool did not know the body was travelling.** A block written `&`, or
+      a bare `yield`, is the same fact as a block written `-> _`: nobody wrote
+      the shape, so there is no single symbol. Two spellings counted and the
+      third did not — and the third is how Crystal's own libraries are written.
+      Worse, the question was never asked of `Kemal.run` at all: `args` has no
+      type, so it was refused as a method a human must write before its block
+      was looked at. That verdict is about *a declaration a consumer typechecks
+      a call against*, which is exactly what a method whose body travels is not.
+
+    - **Bodies were collected but not carried.** Module functions had a
+      collector and no `MonoBodies` line. A module's own private functions had
+      neither, though `Exports#carried_functions` was specified for that case.
+      And a class's travelling `initialize` was collected after the search for
+      what a travelling body calls, so nothing ever looked inside it.
+
+    - **The two sides disagreed about what a declaration is.** R-2 refuses an
+      exported signature with an untyped parameter because "the body is what
+      stays behind" — which is the one thing that is not true of a `MonoBodies`
+      entry. And the keep file tried to *call* these methods to force a symbol
+      out of them, which cannot work twice over: it cannot synthesise an
+      argument for a parameter with no type, and it cannot write a block for one
+      whose arity nobody wrote. There is nothing to keep alive; that is what
+      "the body travels" means.
+
+    **Where it stops, and it is not machinery.** `Kemal.run` crosses with its
+    body, and its body reaches `setup_404`, which calls `error` — a **top-level
+    `def`** in kemal's `dsl.cr`, outside `Kemal`. `get` and `post` are there
+    too, which is the whole DSL. A boundary rooted at `Kemal` cannot carry a
+    method defined outside `Kemal`, and widening the root is a decision about
+    what a boundary *is*, not a collector to write. The chain gate's consumer
+    adds a route through the router's own API for this reason.
+
+    Kemal's boundary carries 37 units where it carried 20.
 
 13. ~~**Dependencies and discovery.**~~ **Specified in III.7**: path identity,
     minimal version selection, a manifest and a sums file, source as the primary
