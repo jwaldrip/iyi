@@ -113,12 +113,23 @@ module Iyi
         .map! { |file| File.expand_path(file) }
         .uniq!
 
-      # Asked only for the name: the first candidate that is already a
-      # directory, and otherwise the first candidate, which is what would be
-      # created if anything ever needed to. Nothing is written and the answer is
-      # not memoised, so a later caller that does need the directory still
-      # creates it.
+      # Asked only for the name.
+      #
+      # A configured directory is the answer with no searching: `IYI_CACHE_DIR`
+      # is a decision, not a candidate, and `Crystal::CACHE_DIR` documents
+      # itself as what that variable says. Getting this wrong is what
+      # `cli_spec`'s "`crystal env` prints var from ENV" catches: searching for
+      # a directory that exists answered `/github/home/.cache/iyi` for a run
+      # that had asked for `foobarbaz`.
+      #
+      # Otherwise the first candidate that is already a directory, and failing
+      # that the first candidate, which is what the creating path would make.
+      # Nothing is written and the answer is not memoised, so a later caller
+      # that does need the directory still creates it.
       unless create
+        if configured = Config.env("CACHE_DIR").presence
+          return File.expand_path(configured)
+        end
         return candidates.find { |candidate| Dir.exists?(candidate) } || candidates.first
       end
 
