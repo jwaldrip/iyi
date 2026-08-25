@@ -496,7 +496,6 @@ module Iyi
     methods.each do |method|
       next unless module_root? program, root
       next unless owners.includes?(method.owner)
-      next unless seen.add?(method.name)
       next if method.private_def
       next unless method.verdict.ready? || method.inferred || method.body_answers
       next if method.uncompilable
@@ -508,7 +507,7 @@ module Iyi
       next unless method.callable?
       next unless method.body_answers || method.signature_types.all? { |t| nameable?(t, root) }
 
-      signatures << IyiMod::Signature.new(
+      signature = IyiMod::Signature.new(
         name: method.name,
         # Whose method it is, which the symbol carries. A module written
         # `extend self` defines `polite` on the module and mangles
@@ -524,7 +523,53 @@ module Iyi
         free_variables: [] of String,
         required: false,
       )
+      # One declaration per *signature*, which is what tells two methods apart.
+      #
+      # This was one per name, and a name is what a shard's overloads share.
+      # `Kemal` writes four `run`s and two `config`s; the first one seen took
+      # the name and the rest were dropped, so `Kemal.config` crossed as the
+      # form taking a block and a body calling it without one stopped the
+      # consumer on `is expected to be invoked with a block`. Crystal's own
+      # overload resolution tells them apart by their parameters, and so does
+      # the declaration a consumer reads: nothing here needed collapsing.
+      #
+      # What the set is still for is the same method arriving twice. A module
+      # written `extend self` defines its functions on both the module and its
+      # metaclass, and both spellings are in `owners` above.
+      key = "#{signature.receiver}##{signature.name}" \
+            "(#{signature.parameters.join(", ")})#{signature.block_parameter}"
+      next unless seen.add?(key)
+      signatures << signature
+
+      # And the body, where the body is what answers.
+      #
+      # A module function that yields has no machine code of its own — the
+      # block is the consumer's, so the consumer compiles the method. Its
+      # declaration crossed without one, and the consumer read a `def` nobody
+      # had compiled: `Kemal.run` arrived as a name and the link ended on it.
+      # Every other travelling body in this file goes over the same way; this
+      # is the one place that had a collector and no `MonoBodies` line.
+      if method.body_answers && (body = method.body) && !body.empty?
+        @@mono_bodies[IyiMod.mono_body_key(iyi_module_name(root), signature)] = body
+      end
     end
+
+    # The private module functions those bodies call.
+    #
+    # `Exports#carried_functions` was written for exactly this and `tool bind`
+    # never filled it: `Kemal.run` yields, so the consumer compiles its body,
+    # and that body calls `setup_404` and `setup_trap_signal`, which kemal keeps
+    # to itself. The consumer said `undefined local variable or method
+    # 'setup_404' for Kemal:Module`. It is the same walk a type's methods
+    # already take — the module is the container and its two owner spellings are
+    # the pool — so it is the same call.
+    carried_functions =
+      if (root_module = program.types?.try &.[]?(root)) && module_root?(program, root)
+        called_privates root_module, iyi_module_name(root),
+          methods.group_by(&.owner), signatures
+      else
+        [] of IyiMod::Signature
+      end
 
     types = type_declarations program, methods, root
 
@@ -568,7 +613,12 @@ module Iyi
     root_class_vars = root_type ? collect_class_vars(root_type) : [] of {String, String, String}
 
     if module_root? program, root
-      exported = exported.map { |signature| strip_root signature, root }
+      exported = exported.map do |signature|
+        rekey_body iyi_module_name(root), signature, strip_root(signature, root)
+      end
+      carried_functions = carried_functions.map do |signature|
+        rekey_body iyi_module_name(root), signature, strip_root(signature, root)
+      end
       carried_types = carried_types.map { |declaration| strip_root_declaration declaration, root }
       root_class_vars = root_class_vars.map do |(name, type, value)|
         {name, strip_root(type, root), strip_root(value, root)}
@@ -590,7 +640,12 @@ module Iyi
     # And a reference to somebody else's boundary is written the way the
     # consumer will see it.
     unless @@bound_prefix.empty?
-      exported = exported.map { |signature| map_names signature }
+      exported = exported.map do |signature|
+        rekey_body iyi_module_name(root), signature, map_names(signature)
+      end
+      carried_functions = carried_functions.map do |signature|
+        rekey_body iyi_module_name(root), signature, map_names(signature)
+      end
       carried_types = carried_types.map { |declaration| map_names_declaration declaration }
       root_class_vars = root_class_vars.map do |(name, type, value)|
         {name, map_names(type), map_names(value)}
@@ -628,7 +683,7 @@ module Iyi
       # disk before anything has been compiled against them.
       filled: false,
       exports: IyiMod::Exports.new(exported, carried_types, [] of IyiMod::ImplRecord,
-        [] of IyiMod::Signature, root_class_vars),
+        carried_functions, root_class_vars),
       # True, and it was false here on an argument that measurement has since
       # answered. The argument was that a boundary stands *between* Crystal's
       # library and the consumer, so what crosses is handles and primitives and
@@ -1205,6 +1260,35 @@ module Iyi
     # as an error anybody could act on. What a consumer needs from an abstract
     # method is the *requirement*, which travels in the declaration.
     return counter if signature.required
+
+    # Nor is a method whose block nobody annotated.
+    #
+    # The call below hands every block-taking method a block, because the symbol
+    # is per block *type* — but writing one needs the block's arity, and `&`
+    # says nothing about it. `block_shape` read the `&` itself as a single
+    # input, so `Kemal::Router#namespace(path : String, &)` was called with one
+    # block parameter where the method yields none, and the fill build stopped
+    # on `too many block parameters (given 1, expected maximum 0)`.
+    #
+    # Guessing is not the answer, and neither is a shape: there is nothing here
+    # to emit. A method whose block is unwritten has no single symbol at all —
+    # that is exactly why its body travels — and the consumer compiles one per
+    # block it writes, from the text in `MonoBodies`.
+    if written = signature.block_parameter
+      return counter if !written.empty? && !written.includes?(" : ")
+    end
+
+    # A parameter with no written type is not a call this file can make.
+    #
+    # Such a signature is here because its *body* travels: the method yields, so
+    # its machine code is the consumer's and there is no symbol to keep alive.
+    # Naming it anyway means synthesising an argument of a type nobody wrote,
+    # and the parameter's own name is what stands where the type would —
+    # `uninitialized args`, from a file nobody wrote, which takes the whole
+    # artifact down at fill time.
+    return counter if signature.parameters.any? do |parameter|
+                        !parameter.includes?(" : ") && parameter != "*"
+                      end
 
     # The type only. A parameter is written `tag : String = "none"` now that
     # defaults travel, and `uninitialized String = "none"` is not a thing —
@@ -2128,8 +2212,17 @@ module Iyi
       end
     end
 
-    signatures.concat called_privates(type, name, by_owner, signatures)
+    # `initialize` first, because what it calls is the next line's question.
+    #
+    # These ran the other way round, so the body `fallback_initialize` adds was
+    # never searched: `Kemal::CLI#initialize(args)` travels — its `new` is not a
+    # symbol anybody can name — and its body calls `parse`, which the class
+    # keeps to itself. The consumer compiled the body it was given and stopped
+    # on `undefined method 'parse' for Kemal::CLI`. `fallback_initialize` asks
+    # only whether `new` or `initialize` already crossed, which no private
+    # method is, so nothing is owed in the other direction.
     signatures.concat fallback_initialize(type, name, by_owner, signatures)
+    signatures.concat called_privates(type, name, by_owner, signatures)
     signatures
   end
 
@@ -2456,6 +2549,21 @@ module Iyi
     uncompilable = false
     if verdict.needs_return?
       inferred, refused, uncompilable = infer_return(owner, a_def)
+    elsif verdict.needs_human? && (a_def.block_arg || a_def.block_arity)
+      # A method whose body travels is not blocked by an untyped parameter.
+      #
+      # The verdict above is about a *declaration a consumer typechecks a call
+      # against*: a parameter with no type leaves it nothing to check. A method
+      # that yields is not declared that way — the consumer compiles its body,
+      # and the body is what types the call, exactly as it does for the shard's
+      # own callers. So the question is not the parameter's, it is the block's,
+      # and asking it means asking `instantiate`, which checks the block before
+      # it looks at an argument and so never trips over the missing type.
+      #
+      # `Kemal.run(args = ARGV, trap_signal : Bool = true, &)` is the method
+      # this is about: `args` is untyped, and the whole of running a kemal app
+      # is behind it.
+      _, refused, uncompilable = infer_return(owner, a_def)
     elsif written
       # The other half of rule 1. A method that writes its return type was
       # copied out verbatim and never instantiated, so nothing ever held the
@@ -2502,8 +2610,14 @@ module Iyi
       # `Radix::Node(T)#add` calls.
       private_def: a_def.visibility.private? || a_def.visibility.protected?,
       uncompilable: uncompilable,
+      # Three ways of saying the same thing: nobody wrote the block's shape, so
+      # what this method returns depends on the caller and the body has to
+      # travel. The third is `&` — or a bare `yield` — which names no block
+      # parameter at all, and which is how Crystal's own libraries are written
+      # far more often than the annotated form.
       body_answers: (refused == "block returns `_`" ||
-                     refused == "block is not annotated") && !a_def.abstract? &&
+                     refused == "block is not annotated" ||
+                     refused == "yields without a block parameter") && !a_def.abstract? &&
                     !a_def.body.nil? && !a_def.body.is_a?(Nop),
       # The return type is asked the same question the parameters are. `Int` is
       # the head of a family on either side of the arrow, and a method that

@@ -1512,6 +1512,22 @@ module Iyi::IyiMod
     # them, and a consumer types the call from the trait rather than from here.
     return if a_def.iyi_from_impl?
 
+    # Nor is one whose body came with it, and this is R-2's own premise rather
+    # than an exception to it. The rule is "nothing here can be recovered from
+    # the body, because the body is what stays behind" — and a `MonoBodies`
+    # entry is the body not staying behind. The consumer compiles it, types the
+    # call from it, and emits the symbol itself, so there is no header for a
+    # missing annotation to make wrong.
+    #
+    # `Kemal.run(args = ARGV, trap_signal : Bool = true, &)` is what this is
+    # for: it yields, so its machine code was always going to be the consumer's,
+    # and `args` is untyped in the shard the same way it is untyped in every
+    # program that already calls it.
+    #
+    # An author's own `pub def twice(x)` is untouched — this flag is set only by
+    # `DeclarationMarker`, on a def parsed back out of an artifact.
+    return if a_def.iyi_body_travelled?
+
     untyped = a_def.args.reject(&.restriction).map(&.name)
     unless untyped.empty?
       a_def.raise <<-MSG
