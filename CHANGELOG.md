@@ -4,6 +4,18 @@
 
 ### Added
 
+- **A name a shard declares itself is not somebody else's.** A boundary rewrites
+  references to another boundary's types so the consumer reads them the way it
+  will see them — and the map is keyed on the simple name, so `radix` declaring
+  a top-level `Node` made every bare `Node` in `Kemal` into `Radix::Node`,
+  including `Kemal::LRUCache::Node`. The consumer stopped on `wrong number of
+  type vars for Radix::Node(T) (given 2, expected 1)`. The shard's own names
+  are taken out of the map now: a bare name in its source means its own.
+
+  It was invisible until `bench/bind_chain.sh` started binding the way a shard's
+  author should — `--use-iyimod mods`, so each boundary sees the ones before it
+  — which is also what takes kemal's three handle types to zero.
+
 - **A boundary that crosses without its fields says which field did it.**
   A reference type whose fields name something the consumer cannot write
   crosses as a *handle* — a pointer, with no `new` — and the report said only

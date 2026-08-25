@@ -64,16 +64,12 @@ mkdir mods
 # `kemal` adds an edge in each direction (SPEC.md Part V item 12).
 bind_one() {
   shard="$1"; root="$2"
-  # Without `--use-iyimod mods` a boundary cannot see the ones bound before it,
-  # so `Radix::Tree` is a name `Kemal` cannot write and `RouteHandler` crosses
-  # as a *handle*, without the fields a travelling body needs. The report names
-  # both the type and the field that did it, and this line counts them.
-  #
-  # Passing it is what a shard's author should do and what this gate cannot yet:
-  # with the fields carried, `Kemal::LRUCache::Node(K, V)` resolves to
-  # `Radix::Node(T)` and the consumer stops on `wrong number of type vars`.
-  # SPEC.md Part V item 12 has it.
-  if ! "$CRYSTAL" tool bind -e "$root" --emit-bind mods \
+  # `--use-iyimod mods` is what lets a boundary see the ones bound before it,
+  # and the count beside each line is why it matters: without it `Radix::Tree`
+  # is a name `Kemal` cannot write, so all three of its handlers cross as
+  # *handles* — a pointer with no fields — and a body that travels and touches
+  # one cannot be compiled by the consumer at all.
+  if ! "$CRYSTAL" tool bind -e "$root" --emit-bind mods --use-iyimod mods \
         "lib/$shard/src/$shard.cr" > "bind-$shard.log" 2>&1; then
     echo "binding $shard failed"
     tail -10 "bind-$shard.log"
