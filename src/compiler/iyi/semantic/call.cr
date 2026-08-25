@@ -35,6 +35,43 @@ class Iyi::Call
   end
 
   def recalculate
+    # iyi: a depth this can be asked to stop at, and nothing sets one but
+    # `tool bind` (SPEC.md IV.1g).
+    #
+    # That tool asks a question a shard's own compilation never asks — what
+    # does this method answer, called on nothing in particular — and for some
+    # methods the answer is that typing the call does not terminate. `Log`'s
+    # does: it recurses through here building a metaclass of a metaclass of a
+    # metaclass, twelve hundred deep, until the stack ends. Whole-program
+    # nothing reaches that call and the recursion never starts.
+    #
+    # A stack overflow is a signal rather than an exception, so the `rescue`
+    # the tool already has cannot see one. A limit turns it into a refusal the
+    # tool knows how to report, and a tool that names the method it could not
+    # measure is worth more than one that dies on the input.
+    #
+    # Here rather than at `instantiate`, which is where this was first put and
+    # was wrong: the recursion passes through that five times and through this
+    # twelve hundred, so a limit there is a limit on the wrong number.
+    #
+    # Nil for every ordinary build, which is what keeps it free: the counter is
+    # only touched when somebody has asked for a limit.
+    if limit = program.iyi_instantiation_limit
+      program.iyi_instantiation_depth += 1
+      begin
+        if program.iyi_instantiation_depth > limit
+          ::raise Iyi::TypeException.new("typing the call did not terminate")
+        end
+        return iyi_recalculate
+      ensure
+        program.iyi_instantiation_depth -= 1
+      end
+    end
+
+    iyi_recalculate
+  end
+
+  private def iyi_recalculate
     obj = @obj
     obj_type = obj.type? if obj
 

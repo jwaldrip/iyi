@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 34_u32
+  FORMAT_VERSION = 35_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -482,12 +482,23 @@ module Iyi::IyiMod
   # How a body is found again on the far side.
   #
   # A container plus the whole of what distinguishes one overload from another,
-  # which is the parameter list and the block. Text rather than an index,
-  # because an index is a promise that two builds walked the same declarations
-  # in the same order, and nothing in the format makes that true.
+  # which is the *side of the type*, the name, the parameter list and the
+  # block. Text rather than an index, because an index is a promise that two
+  # builds walked the same declarations in the same order, and nothing in the
+  # format makes that true.
+  #
+  # The side was missing, and `Log` is written the way that finds it: a
+  # `{% for %}` loop writes `def info(*, exception : Exception)` on the
+  # instance and another writes `def self.info(*, exception : Exception)` on
+  # the class. Same container, same name, same parameters, no block — one key,
+  # and the second body took it. The consumer read `Log#info` as
+  # `Top.info(exception: exception)`, which is `Log#info` calling itself, and
+  # said `recursive block expansion: blocks that yield are always inlined`.
   def self.mono_body_key(container : String, signature : Signature) : String
     String.build do |io|
-      io << container << '#' << signature.name
+      io << container << '#'
+      io << signature.receiver << '.' unless signature.receiver.empty?
+      io << signature.name
       io << '(' << signature.parameters.join(", ") << ')'
       io << signature.block_parameter
     end

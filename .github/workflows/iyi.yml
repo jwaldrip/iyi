@@ -312,6 +312,14 @@ jobs:
       - name: A YAML document, through a boundary built from the library
         run: bash bench/yaml_reads.sh
 
+      # And three more of the library's own namespaces, because what a boundary
+      # breaks on depends on what the namespace holds. `Log` is the one that
+      # found things: global state written by macros — a private constant, a
+      # class variable with a live initialiser, and two `{% for %}` loops that
+      # write a method of the same name on both sides of the class.
+      - name: Three library namespaces, bound and consumed
+        run: bash bench/library_boundaries.sh
+
       # A library arriving with a feature is a decision, and this is where it
       # gets noticed. Seven undefined symbols in any iyi program (SPEC.md III.9),
       # and a new one fails here rather than on somebody's machine.

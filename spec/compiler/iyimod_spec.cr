@@ -2261,6 +2261,24 @@ describe Iyi::IyiMod do
   # `@[Link("yaml")]`, and drops the flag anyway — a flag is collected from the
   # libs that build marked `used?`, and the call to `yaml_parser_parse` is in
   # an object file it reads rather than compiles.
+  # An instance method and a class method of the same name and parameters are
+  # two methods, and the key that finds a body again was missing the only thing
+  # that tells them apart. `Log` has a `{% for %}` loop writing `def info(*,
+  # exception : Exception)` on the instance and another writing `def self.info`
+  # with the same parameters on the class; the second took the first's key, and
+  # a consumer read `Log#info` as `Log#info` calling itself.
+  it "tells a class method's body from an instance method's" do
+    instance = Iyi::IyiMod::Signature.new(
+      name: "info", receiver: "", parameters: ["exception : Exception"],
+      block_parameter: "", return_type: "Nil",
+      free_variables: [] of String, required: false,
+    )
+    on_class = instance.copy_with(receiver: "self")
+
+    Iyi::IyiMod.mono_body_key("Log", instance)
+      .should_not eq Iyi::IyiMod.mono_body_key("Log", on_class)
+  end
+
   it "round-trips the libs a module's object code calls into" do
     with_temporary_file do |path|
       artifact = Iyi::IyiMod::Artifact.new(
