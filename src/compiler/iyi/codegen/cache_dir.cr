@@ -63,12 +63,32 @@ module Iyi
       File.join(dir, filename)
     end
 
-    # Returns the cache directory.
+    # Returns the cache directory, without creating it.
+    #
+    # iyi: naming a cache directory is not the same as needing one, and this
+    # method has only ever been asked the first question: its one caller is
+    # `Crystal::CACHE_DIR` in `program.cr`, a constant every analysed program
+    # gets whether or not it reads it, and whose documented meaning is what
+    # `IYI_CACHE_DIR` is configured to. It used to answer by creating a
+    # directory and calling `exit 1` when it could not, which made the front end
+    # — a binary that generates no code and writes no cache — refuse to analyse
+    # anything on a filesystem with nowhere writable:
+    #
+    #     Error: can't create cache directory.
+    #     crystal needs a cache directory. These directories were candidates for it:
+    #      - /.iyi
+    #     but none of them are writable.
+    #
+    # That is a wasm module reading source out of a host's virtual filesystem,
+    # and it is also any sandbox, any read-only root, and any CI container
+    # running `--no-codegen`. The paths that actually write a cache — `#join`,
+    # `#directory_for`, `#cleanup` — still create it, which is where creating it
+    # belongs.
     def dir
-      compute_dir
+      compute_dir(create: false)
     end
 
-    private def compute_dir
+    private def compute_dir(create : Bool = true)
       dir = @dir
       return dir if dir
 
@@ -92,6 +112,15 @@ module Iyi
         .compact
         .map! { |file| File.expand_path(file) }
         .uniq!
+
+      # Asked only for the name: the first candidate that is already a
+      # directory, and otherwise the first candidate, which is what would be
+      # created if anything ever needed to. Nothing is written and the answer is
+      # not memoised, so a later caller that does need the directory still
+      # creates it.
+      unless create
+        return candidates.find { |candidate| Dir.exists?(candidate) } || candidates.first
+      end
 
       # Return the first one for which we could create a directory
       candidates.each do |candidate|
