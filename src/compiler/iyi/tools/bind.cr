@@ -554,6 +554,62 @@ module Iyi
       end
     end
 
+    # And the shard's own top-level `def`s, which are on nobody's namespace.
+    #
+    # Every filter the module functions take applies here for the same reason,
+    # save the two that are about *being* a module function: the owner, which
+    # is `Object`, and `module_root?`, which asks a question about `root` and
+    # not about these. A `-> _` block is what most of them take, so most of
+    # them travel as bodies — which is the whole reason the DSL could not cross
+    # before there was a body to carry.
+    top_level = [] of IyiMod::Signature
+    top_seen = Set(String).new
+    top_methods = [] of BindMethod
+    collect_top_level program, top_methods
+    top_methods.each do |method|
+      next if method.private_def
+      next unless method.verdict.ready? || method.inferred || method.body_answers
+      next if method.uncompilable
+      next unless method.storable || method.body_answers
+      next unless method.callable?
+      next unless method.body_answers || method.signature_types.all? { |t| nameable?(t, root) }
+
+      signature = IyiMod::Signature.new(
+        name: method.name,
+        receiver: "",
+        parameters: method.params.map { |(name, restriction, default)| bind_parameter(name, restriction, default) },
+        block_parameter: method.written_block,
+        return_type: method.body_answers ? "" : (method.answer || ""),
+        free_variables: [] of String,
+        required: false,
+      )
+      # With its body, always, and that is what a top level *is*.
+      #
+      # Every other declaration here names a symbol in this artifact's object
+      # code, and the object code is per type: a shard's types each have a unit
+      # and the units travel. A `def` outside every namespace has no type and
+      # so no unit — it is compiled into the producing program's own main
+      # module, which is the one thing a boundary never carries. `render_404`
+      # crossed as a header and the link ended on `undefined symbol:
+      # *render_404:String`.
+      #
+      # So the consumer compiles them, which it can: they are ordinary source,
+      # and the declarations above give them every name they use. One without a
+      # body cannot cross at all, and that is honest rather than a link error.
+      body = method.body
+      next if body.nil? || body.empty?
+
+      key = "#{signature.name}(#{signature.parameters.join(", ")})#{signature.block_parameter}"
+      next unless top_seen.add?(key)
+      top_level << signature
+      @@mono_bodies[IyiMod.mono_body_key(IyiMod::TOP_LEVEL_CONTAINER, signature)] = body
+    end
+
+    # The copy the consumer reads. The one above is the keep file's, and it is
+    # written in the shard's own names: `Kemal::Router` is `Router` on the far
+    # side and `Router` in a file compiled against the shard is nothing at all.
+    top_exported = top_level
+
     # The private module functions those bodies call.
     #
     # `Exports#carried_functions` was written for exactly this and `tool bind`
@@ -619,6 +675,9 @@ module Iyi
       carried_functions = carried_functions.map do |signature|
         rekey_body iyi_module_name(root), signature, strip_root(signature, root)
       end
+      top_exported = top_exported.map do |signature|
+        rekey_body IyiMod::TOP_LEVEL_CONTAINER, signature, strip_root(signature, root)
+      end
       carried_types = carried_types.map { |declaration| strip_root_declaration declaration, root }
       root_class_vars = root_class_vars.map do |(name, type, value)|
         {name, strip_root(type, root), strip_root(value, root)}
@@ -645,6 +704,9 @@ module Iyi
       end
       carried_functions = carried_functions.map do |signature|
         rekey_body iyi_module_name(root), signature, map_names(signature)
+      end
+      top_exported = top_exported.map do |signature|
+        rekey_body IyiMod::TOP_LEVEL_CONTAINER, signature, map_names(signature)
       end
       carried_types = carried_types.map { |declaration| map_names_declaration declaration }
       root_class_vars = root_class_vars.map do |(name, type, value)|
@@ -693,6 +755,7 @@ module Iyi
       # `String#+` can raise. An iyi program cannot name that type, and telling
       # it the artifact is one of its own only moved the refusal later.
       crystal_library: true,
+      top_level: top_exported,
     )
 
     path = File.join(dir, "#{iyi_module_name(root).gsub('/', '-')}.iyimod")
@@ -700,6 +763,16 @@ module Iyi
 
     keep_path = File.join(dir, "#{iyi_module_name(root).gsub('/', '-')}_keep.cr")
     File.write keep_path, keep_file(program, root, signatures, types, accessors, dir)
+
+    unless top_exported.empty?
+      io.puts
+      io.puts "top-level defs, outside every namespace: #{top_exported.size}"
+      io.puts "  a `def` the shard writes outside its own namespace is on"
+      io.puts "  `Object`, where a boundary rooted at #{root} cannot reach it."
+      io.puts "  These travel in their own section and the consumer puts them"
+      io.puts "  back where they were: at its top level."
+      top_exported.each { |signature| io.puts "    #{signature.name}" }
+    end
 
     io.puts
     carried = count_methods types
@@ -1360,7 +1433,10 @@ module Iyi
       io << "  " << name << " = uninitialized " << type << "\n"
       name
     end
-    io << "  " << target << "." << signature.name
+    # An empty target is a top-level `def`, which has no receiver at all.
+    io << "  " << target
+    io << '.' unless target.empty?
+    io << signature.name
     io << "(" << args.join(", ") << ")" unless args.empty?
 
     # A block-taking method is compiled per block *type*, and the type is in
@@ -2181,7 +2257,12 @@ module Iyi
         # So it travels the way a generic's methods already did, in
         # `MonoBodies`, and the consumer compiles its own from the block it
         # wrote. A body that is not there to carry cannot cross at all.
-        carries_body = (!method.written_block.empty? || abstract_owner) && !method.abstract_def
+        #
+        # And a setter, for the same reason written a third way: its answer is
+        # the value it was handed, so there is no one return type and no one
+        # symbol. `body_answers` is the question both cases are asking.
+        carries_body = (!method.written_block.empty? || abstract_owner ||
+                        method.body_answers) && !method.abstract_def
 
         # A block-taking `new` does not travel at all. It is synthesised from
         # `initialize` rather than written, so its body is the compiler's —
@@ -2286,10 +2367,19 @@ module Iyi
                                    carried : Array(IyiMod::Signature)) : Array(IyiMod::Signature)
     added = [] of IyiMod::Signature
 
+    # What crossed already, by name. A body may call a method that is public
+    # and still could not be declared — `Kemal.run` calls
+    # `def self.display_startup_message(config, server)`, whose parameters have
+    # no types, so R-2 has nothing to write down and the consumer said
+    # `undefined method`. Visibility was never the question: the question is
+    # whether the consumer has it, and one that could not cross is in exactly
+    # the same position as one the shard keeps to itself.
+    crossed = carried.map(&.name).to_set
+
     pool = [] of BindMethod
     { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
       by_owner[owner]?.try &.each do |method|
-        next unless method.private_def
+        next unless method.private_def || !crossed.includes?(method.name)
         next if method.uncompilable
         next if method.abstract_def
         body = method.body
@@ -2320,6 +2410,9 @@ module Iyi
           return_type: method.answer || "",
           free_variables: [] of String,
           required: false,
+          # Not `pub`, whatever the shard said. These are here for a travelling
+          # body to typecheck against, and a name the consumer could write is a
+          # name R-2 would have had to check.
           visibility: "private",
         )
         added << signature
@@ -2495,6 +2588,32 @@ module Iyi
     end
   end
 
+  # The shard's own top-level `def`s.
+  #
+  # Not under `root`, which is why the walk above cannot find them: they are on
+  # `Object`, where Crystal puts a `def` written outside every namespace. Kemal
+  # writes `get`, `post` and `error` there — the whole DSL — and `Kemal.run`'s
+  # own body reaches one through `setup_404`.
+  #
+  # The shard's, decided by where they are written, which is the same test
+  # `library_type?` makes of a type: a `def` under the bound file's directory
+  # is the shard's, and the prelude's thousands are not. Nothing else separates
+  # them, because at this point they are all on the same type.
+  private def self.collect_top_level(program : Program,
+                                     methods : Array(BindMethod)) : Nil
+    source = program.filename
+    return unless source.is_a?(String)
+    directory = File.dirname(source)
+    return if directory.empty?
+
+    each_bind_def(program) do |a_def|
+      filename = a_def.location.try &.filename
+      next unless filename.is_a?(String)
+      next unless filename.starts_with?(directory)
+      methods << classify_bind(program, a_def)
+    end
+  end
+
   private def self.each_bind_def(type : Type, & : Def ->) : Nil
     defs = type.as?(ModuleType).try &.defs
     return unless defs
@@ -2615,7 +2734,8 @@ module Iyi
       # travel. The third is `&` — or a bare `yield` — which names no block
       # parameter at all, and which is how Crystal's own libraries are written
       # far more often than the annotated form.
-      body_answers: (refused == "block returns `_`" ||
+      body_answers: setter_body?(a_def) ||
+                    (refused == "block returns `_`" ||
                      refused == "block is not annotated" ||
                      refused == "yields without a block parameter") && !a_def.abstract? &&
                     !a_def.body.nil? && !a_def.body.is_a?(Nop),
@@ -2644,6 +2764,34 @@ module Iyi
         argument.restriction ? "&#{argument}" : "&#{argument.name}"
       end || (a_def.block_arity ? "&" : ""),
     )
+  end
+
+  # Whether this is a setter whose answer is the value it was handed.
+  #
+  # `property thing : Thing?` writes `def thing=(@thing : Thing?)`, whose body
+  # is `@thing = thing` — and an assignment's type is what was assigned, so the
+  # shard's own callers get `Thing` from `config.thing = Thing.new`. A single
+  # return annotation cannot say that: written `: (Thing | Nil)` it is right for
+  # the declaration and wrong for every call, and `config.server ||=
+  # HTTP::Server.new(…)` in `Kemal.run`'s own body came out nilable and stopped
+  # the consumer on `undefined method 'each_address' for Nil`.
+  #
+  # R-2 says this already — "a setter answers what it was handed" is why one is
+  # exempt from writing a return type. What it did not have was a way to carry
+  # the answer, and that is the same way every other caller-dependent answer
+  # travels: the body goes, and the consumer compiles it.
+  #
+  # The shape is exactly `property`'s, asked of the tree rather than of the
+  # name: one parameter, and a body that is one assignment to an instance
+  # variable. A setter that computes something is a method like any other.
+  private def self.setter_body?(a_def : Def) : Bool
+    return false unless a_def.name.ends_with?('=')
+    return false unless a_def.args.size == 1
+    return false if a_def.block_arg || a_def.block_arity
+    body = a_def.body
+    body = body.expressions.first? if body.is_a?(Expressions) && body.expressions.size == 1
+    return false unless body.is_a?(Assign)
+    body.target.is_a?(InstanceVar)
   end
 
   # The type a restriction names, rather than the text somebody typed.
