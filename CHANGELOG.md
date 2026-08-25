@@ -135,6 +135,45 @@
   block, one key. The class method's body took it, and the consumer read
   `Log#info` as `Log#info` calling itself — `recursive block expansion`.
 
+  **`db` and `sqlite3` ask for everything at once**, and they are not through
+  yet — eleven more rules came out of them, and one named blocker is left.
+
+  **A record rebuilt field by field loses what was added to it later.** Three
+  rewrites constructed a fresh `TypeDecl` by listing its fields, and every list
+  was written before `funs` existed — so a reopened `lib` arrived with all its
+  types and not one `fun`. `copy_with` names only what changes.
+
+  **A generic module's nested types are not parameterised by being nested**, and
+  a generic's `superclass` and `includes` were missing entirely —
+  `SessionMethods(Session, Stmt)` includes `QueryMethods(Stmt)`, which is where
+  `exec` lives. **A generic module's instantiation is not a `ModuleType`**
+  either, so `include SessionMethods(Database, PoolStatement)` was dropped.
+
+  **A `lib` the shard owns outright belongs inside its module**, where its funs
+  can name the shard's own types. `Reopened` is for one the library also
+  declares.
+
+  **An include is an ordering edge like a superclass, and so is every name in
+  it** — the module and each of its type arguments.
+
+  **A block's annotation travelled as written while everything beside it
+  travelled resolved**, and resolved it has to stay an arrow: the keep file
+  reads the arrow to count block parameters, and the `Proc` form counts the
+  output as an input.
+
+  **`uncompilable` is not a question to ask of a private callee**, a bare
+  generic is a name rather than a type, and **a body that travels is compiled
+  per subclass, so the privates it calls travel per subclass too**.
+
+  **And `NoReturn` is an answer only where the body stays behind.**
+  `NullIO#read` raises and nothing overrides it; `DB.build_driver` answers
+  `NoReturn` only because this build registered no driver, and its body
+  travels.
+
+  **What `sqlite3` waits on now is `previous_def`**: `MonoBodies` is keyed on a
+  signature, `db` redefines `around_query_or_exec` with a body calling the
+  definition it replaced, and two definitions of one signature are one key.
+
   **And a name resolves in its own scope first.** `openssl_ext` writes a
   constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type R-2
   asks for on its `new` read as the constant. `self` is the spelling with no
