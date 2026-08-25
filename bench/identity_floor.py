@@ -148,6 +148,12 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # And the driver's, for the same reason: `crystal-lang/crystal-sqlite3` is
     # where `shards install` looks and there is no other spelling of it.
     (r"github: crystal-lang/", "a shard's own coordinates"),
+    # A probe written in Crystal, quoted by doc/website/PLAYGROUND-FEASIBILITY.md
+    # as the one line that reproduces the wasm32-wasi link defect: a Crystal
+    # prelude program collides with wasi-libc's `crt1-command.o` over `_start`,
+    # which iyi's own prelude deliberately does not define. The program is
+    # Crystal's, and so is the string it prints.
+    (r'puts "hi from crystal"', "a Crystal probe program's own source line"),
     (
         r"Crystal's (own|library|licence|license|compiler|semantics|stdlib|"
         r"standard|prelude|codegen|cache|interpreter|fibers|ecosystem|list|"
