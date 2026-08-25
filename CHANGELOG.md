@@ -4,6 +4,51 @@
 
 ### Added
 
+- **A shard's top-level `def`s cross, and kemal's DSL is 22 of them.** A
+  boundary is rooted at a namespace and `get`, `post`, `error`, `ws` and `sse`
+  are written outside every namespace, on `Object`, where a boundary rooted at
+  `Kemal` cannot reach them. `Kemal.run`'s own body reaches one: `setup_404`
+  calls `error`.
+
+  They travel in a section of their own (`TopLevel`, format v30), because where
+  a declaration goes is not a property of the declaration: the file of
+  declarations opens with `module <name>` and never closes it, which is what
+  puts everything below it inside the module. These belong outside, so the
+  reader parses a second text and accepts it where it stands.
+
+  **With their bodies, always.** Every other declaration names a symbol in the
+  artifact's object code, and that code is per type — a `def` outside every
+  namespace has no type and so no unit, being compiled into the producing
+  program's own main module, the one thing a boundary never carries.
+  `render_404` crossed as a header and the link ended on `undefined symbol:
+  *render_404:String`. One without a body cannot cross at all, which is honest
+  rather than a link error.
+
+- **A setter answers what it was handed, and now it can say so.** R-2 has said
+  this since it was written — it is why a setter is exempt from writing a
+  return type — and the boundary had no way to carry it. `property thing :
+  Thing?` writes `def thing=(@thing : Thing?)` whose body is `@thing = thing`,
+  so the shard's own callers get `Thing` from `config.thing = Thing.new`. A
+  single annotation cannot say that: `: (Thing | Nil)` is right for the
+  declaration and wrong for every call. `config.server ||= HTTP::Server.new(…)`
+  in `Kemal.run`'s body came out nilable and the consumer stopped on `undefined
+  method 'each_address' for Nil`. So the body travels, like every other
+  caller-dependent answer.
+
+- **A body that travels needs what it calls, whatever the shard called it.**
+  The search for that was written as "the private methods a travelling body
+  calls", and visibility was never the question. `Kemal.run` calls `def
+  self.display_startup_message(config, server)`, which is public and whose
+  parameters have no types — so R-2 has nothing to write down, it could not
+  cross, and the consumer said `undefined method`. A method that could not
+  cross is in exactly the position of one the shard keeps to itself.
+
+- **A superclass with the same name as the class is written `::`.** Nothing
+  inherits from itself, so two identical names are certainly two types.
+  `Kemal::ExceptionPage` extends the `exception_page` shard's own root and both
+  lose their namespace on the way out — one because an artifact's declarations
+  are relative to its root, the other because a class root *is* the top level.
+
 - **`Kemal.run` crosses a boundary, and nine separate things were in the way.**
   Running a kemal app is behind one method, and every one of these hid the next,
   so each was found only by fixing the one before it:

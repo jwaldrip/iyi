@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 29_u32
+  FORMAT_VERSION = 30_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -81,6 +81,23 @@ module Iyi::IyiMod
     # iyi: the symbols this module's object code defines. What a consumer has
     # to compile for itself is everything else — see IV.1g.
     Symbols = 15
+
+    # iyi: under `--crystal`, the shard's own *top-level* `def`s — the ones it
+    # writes outside any namespace of its own.
+    #
+    # Nothing else in this file is outside the module, and that is the point.
+    # A shard's boundary is rooted at a namespace, and kemal's `get`, `post`
+    # and `error` are written at Crystal's top level, on `Object`, where a
+    # boundary rooted at `Kemal` cannot reach them. They are the whole DSL, and
+    # `Kemal.run`'s own body calls one — `setup_404` calls `error`.
+    #
+    # They travel as declarations *and* bodies, because the DSL's blocks are
+    # written `-> _`: there is no symbol per method, only one per block a
+    # consumer writes, so the consumer compiles them. A separate section rather
+    # than a flag on `Exports`, because where a declaration goes is not a
+    # property of the declaration — the reader has to put these somewhere the
+    # module's own header does not reach.
+    TopLevel = 16
   end
 
   # A regex literal's constant: the name its object code reads, and what a
@@ -738,6 +755,13 @@ module Iyi::IyiMod
     # Settable alongside `object_code`, and for the same reason.
     property symbols : Array(String)
 
+    # iyi: the shard's own top-level `def`s. See `Section::TopLevel`.
+    #
+    # Their bodies are in `mono_bodies`, keyed on `TOP_LEVEL_CONTAINER` — a
+    # name no namespace can have, because a module path is `[a-z][a-z0-9]*` and
+    # a type name starts with a capital, so nothing else can key against it.
+    property top_level : Array(Signature)
+
     # Whether this module was compiled against Crystal's standard library
     # rather than iyi's prelude — `--crystal`.
     #
@@ -823,9 +847,13 @@ module Iyi::IyiMod
                    @requires = [] of String, @crystal_library = false,
                    @class_root = false, @filled = true,
                    @regexes = [] of RegexConst, @class_vars = [] of ClassVarRef,
-                   @match_types = [] of String, @symbols = [] of String)
+                   @match_types = [] of String, @symbols = [] of String,
+                   @top_level = [] of Signature)
     end
   end
+
+  # The `mono_bodies` key a top-level `def`'s body is stored under.
+  TOP_LEVEL_CONTAINER = "::"
 
   # Writes *artifact* to *path*, atomically.
   #
@@ -894,6 +922,10 @@ module Iyi::IyiMod
 
     unless artifact.symbols.empty?
       sections << {Section::Symbols, encode_symbols(artifact)}
+    end
+
+    unless artifact.top_level.empty?
+      sections << {Section::TopLevel, encode_top_level(artifact)}
     end
 
     # Last, and omitted when there is nothing in it. A consumer reading
@@ -1041,6 +1073,7 @@ module Iyi::IyiMod
       class_vars = [] of ClassVarRef
       match_types = [] of String
       symbols = [] of String
+      top_level = [] of Signature
       requires = [] of String
       hashes = Hashes.empty
 
@@ -1072,6 +1105,7 @@ module Iyi::IyiMod
         when Section::ClassVars   then class_vars = decode_class_vars(payload)
         when Section::MatchTypes  then match_types = decode_match_types(payload)
         when Section::Symbols     then symbols = decode_symbols(payload)
+        when Section::TopLevel    then top_level = decode_top_level(payload)
         when Section::Requires    then requires = decode_requires(payload)
         when Section::Hashes      then hashes = decode_hashes(payload)
         else
@@ -1088,7 +1122,8 @@ module Iyi::IyiMod
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
         object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
         hashes, constants, macro_bodies, requires, header[:crystal_library],
-        header[:class_root], header[:filled], regexes, class_vars, match_types, symbols)
+        header[:class_root], header[:filled], regexes, class_vars, match_types, symbols,
+        top_level)
     end
   rescue ex : Error
     raise ex
@@ -1215,6 +1250,11 @@ module Iyi::IyiMod
     symbols = artifact.symbols
     io.puts "symbols       #{symbols.size} defined by this module's units" unless symbols.empty?
 
+    unless artifact.top_level.empty?
+      io.puts "top-level defs"
+      artifact.top_level.each { |signature| io.puts "  #{render_signature(signature)}" }
+    end
+
     match_types = artifact.match_types
     unless match_types.empty?
       io.puts "match types"
@@ -1273,6 +1313,25 @@ module Iyi::IyiMod
   # Everything is `pub`, because everything in the file is: an unexported name
   # never reached `Exports`, and R-2b needs it to stay unreachable rather than
   # merely unmentioned.
+  # The shard's top-level `def`s, as their own text.
+  #
+  # Separate from `declarations` because there is nowhere in that file for
+  # them: it opens with `module <name>` and never closes it, which is what puts
+  # everything below into the module. These belong outside it — that is what
+  # "top-level" means and it is the whole of why they could not travel — so the
+  # reader parses this second text and accepts it where it stands.
+  #
+  # Empty for every module that has none, which is every iyi module: iyi has no
+  # top level to write a `def` at. This is a `--crystal` shard's shape.
+  def self.top_level_declarations(artifact : Artifact, io : IO) : Nil
+    bodies = artifact.mono_bodies
+    artifact.top_level.each_with_index do |signature, index|
+      io << '\n' if index > 0
+      render_declaration io, signature,
+        body: bodies[mono_body_key(TOP_LEVEL_CONTAINER, signature)]?
+    end
+  end
+
   def self.declarations(artifact : Artifact, io : IO) : Nil
     # A class root writes no header, and the class below is the namespace. With
     # one, iyi wraps the whole file in a module of the header's name — which
@@ -1717,7 +1776,19 @@ module Iyi::IyiMod
 
       # What it inherits from, which is not what it implements: `<` is a class's
       # superclass and `:` is a trait list, and the two are different edges.
-      io << " < " << declaration.superclass unless declaration.superclass.empty?
+      #
+      # `::` where the two names are the same, because then they are certainly
+      # not the same type: nothing inherits from itself. `Kemal::ExceptionPage`
+      # extends the `exception_page` shard's own root, and both lose their
+      # namespace on the way out — one because this artifact's declarations are
+      # written relative to its root, the other because a class root *is* the
+      # top level. `class ExceptionPage < ExceptionPage` then read as the one
+      # being defined and the consumer stopped on `undefined constant`.
+      unless declaration.superclass.empty?
+        io << " < "
+        io << "::" if declaration.superclass == declaration.name
+        io << declaration.superclass
+      end
 
       supertraits = declaration.supertraits
       unless supertraits.empty?
@@ -1920,6 +1991,16 @@ module Iyi::IyiMod
 
   private def self.decode_constants(payload : Bytes) : Array(String)
     read_strings(IO::Memory.new(payload))
+  end
+
+  private def self.encode_top_level(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    write_signatures io, artifact.top_level
+    io.to_slice
+  end
+
+  private def self.decode_top_level(payload : Bytes) : Array(Signature)
+    read_signatures(IO::Memory.new(payload))
   end
 
   private def self.encode_symbols(artifact : Artifact) : Bytes

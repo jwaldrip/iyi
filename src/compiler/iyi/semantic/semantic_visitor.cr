@@ -572,6 +572,35 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       define_iyi_artifact_regexes artifact, artifact_path
       read_iyi_artifact_constants artifact, parsed_nodes, artifact_path
       parsed_nodes.accept IyiMod::DeclarationMarker.new
+
+      # The shard's top-level `def`s, before the module that calls them.
+      #
+      # Their own text and their own parse, because the text above opens with
+      # `module <name>` and never closes it: everything in it is inside the
+      # module, and these are the declarations that are not. Accepted first so
+      # that a body inside the module naming one finds it already defined —
+      # `Kemal.run` reaches `setup_404`, which calls `error`.
+      #
+      # Nothing marks them as an artifact's: they arrive with their bodies for
+      # the same reason the DSL could not travel before — `-> _` blocks have no
+      # symbol per method — so the consumer compiles them like its own.
+      unless artifact.top_level.empty?
+        top_source = String.build { |io| IyiMod.top_level_declarations(artifact, io) }
+        top_path = "#{artifact_path} (top level)"
+        top_parser = @program.new_parser(top_source)
+        top_parser.filename = top_path
+        Iyi.register_iyi_declarations top_path, top_source
+        top_nodes = @program.normalize(top_parser.parse, inside_exp: false)
+        # The same mark the module's own declarations take, and for the same
+        # two reasons: one that arrived without a body is a header, and a call
+        # to it is typed from its return annotation rather than from the body
+        # that is not there. Without it `def render_404 : String` read as a
+        # definition whose body is empty — `must return String but it is
+        # returning Nil`.
+        top_nodes.accept IyiMod::DeclarationMarker.new
+        iyi_at_top_level { top_nodes.accept self }
+      end
+
       iyi_at_top_level { parsed_nodes.accept self }
     rescue ex : CodeError
       node.raise "while importing \"#{node.path.join('/')}\" from its .iyimod", ex

@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 92,259 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 92,517 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,505 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -7148,6 +7148,55 @@ Named honestly, so nobody mistakes this draft for complete.
     adds a route through the router's own API for this reason.
 
     Kemal's boundary carries 37 units where it carried 20.
+
+    **A shard's top level is part of its boundary, and it needed a section of
+    its own.** `get`, `post`, `error`, `ws` and `sse` are written outside every
+    namespace — on `Object`, which is where Crystal puts a `def` nobody put
+    anywhere — and a boundary rooted at `Kemal` cannot reach them. That is the
+    whole DSL, and `Kemal.run`'s own body reaches one through `setup_404`.
+
+    Where a declaration goes is not a property of the declaration, which is why
+    this is a section (`TopLevel`, IV.1g) rather than a flag. The file of
+    declarations opens with `module <name>` and never closes it: that is what
+    puts everything below it *in* the module, and there is consequently nowhere
+    in that file for something outside it. The reader parses a second text and
+    accepts it where it stands.
+
+    They travel **with their bodies, always**, and the reason is the same one
+    that decides everything else here. Every other declaration names a symbol
+    in the artifact's object code, and that code is per *type*: a shard's types
+    each have a unit and the units travel. A `def` outside every namespace has
+    no type, so it has no unit — it is compiled into the producing program's
+    own main module, the one part of a build a boundary never carries.
+    `render_404` crossed as a header and the link ended on `undefined symbol`.
+    One with no body to carry cannot cross, and saying so is better than a link
+    error.
+
+    **A setter's answer is the value it was handed**, and R-2 has said so since
+    it was written — it is why a setter is exempt from writing a return type.
+    What was missing was a way to *carry* that answer. `property thing : Thing?`
+    is `def thing=(@thing : Thing?)` whose body is `@thing = thing`, and an
+    assignment's type is what was assigned; no single annotation says that, so
+    `: (Thing | Nil)` is right for the declaration and wrong for every call.
+    `config.server ||= HTTP::Server.new(…)` came out nilable. The body travels,
+    which is what this whole part does whenever the answer depends on the
+    caller.
+
+    Two smaller rules came out of the same walk. **A body that travels needs
+    what it calls, whatever the shard called it**: the search was written as
+    "the private methods a travelling body calls" and visibility was never the
+    question — `display_startup_message` is public, has untyped parameters, and
+    so could not cross, which puts it exactly where a private one is. And **a
+    superclass with the class's own name is written `::`**: nothing inherits
+    from itself, so two identical names are two types, and
+    `Kemal::ExceptionPage` extends the `exception_page` shard's own root.
+
+    **Where it stands.** `Kemal.run` compiles, links and runs across four
+    boundaries. It stops at run time, in `HTTP::Server.new(config.handlers)`:
+    the array reports `size 8` and `empty? false`, `first` and `last` answer the
+    same object, and `handlers[0]` is out of bounds. That is virtual dispatch
+    landing on the wrong method for `Array(HTTP::Handler)+` — a numbering
+    question, which is `TypeIds`' subject (IV.1g) and not this one's.
 
 13. ~~**Dependencies and discovery.**~~ **Specified in III.7**: path identity,
     minimal version selection, a manifest and a sums file, source as the primary
