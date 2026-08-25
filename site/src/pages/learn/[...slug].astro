@@ -101,8 +101,7 @@ const ticks = Array.from({ length: total }, (_, i) => i + 1);
           <blockquote class="premise">
             <p set:html={inlineMarkdown(rule.premise)} />
             <cite>
-              <span class="premise-id">{rule.id}</span>
-              {rule.cite}
+              <span class="premise-id">{rule.id}</span> {rule.cite}
             </cite>
           </blockquote>
         ))
@@ -121,11 +120,10 @@ const ticks = Array.from({ length: total }, (_, i) => i + 1);
         {
           run.href ? (
             <Fragment>
-              <a class="runs-link" href={run.href}>
-                Open it in the playground
-              </a>
+              <a class="runs-link" href={run.href}>Run it in the page</a>
               <span class="runs-none">
-                {" "}where you can change it and run what you changed, and{" "}
+                {" "}where the module the compiler built from it executes in
+                your own tab, and{" "}
                 <a href={`${base.replace(/\/*$/, "/")}playground/evidence/`}>
                   the recording behind it
                 </a>{" "}

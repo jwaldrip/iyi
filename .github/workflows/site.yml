@@ -49,22 +49,8 @@ jobs:
         working-directory: site
         run: npm ci
 
-      # Where the playground posts source to be compiled. A build time value,
-      # because the playground's engine has to answer the same way in node
-      # during the static build and in the browser afterwards: if those two
-      # disagreed, the built HTML would render controls the running page cannot
-      # honour.
-      #
-      # EMPTY IS A REAL STATE AND NOT A MISCONFIGURATION. A repository with no
-      # IYI_COMPILE_ENDPOINT variable set builds a playground that runs the
-      # thirteen recorded samples, says on its badge that this build was given
-      # no compile service, and refuses to pretend it can build what a visitor
-      # types. That is the honest smaller playground rather than a broken one,
-      # so this step must not fail when the variable is unset.
       - name: Generate facts, reference and samples, then build
         working-directory: site
-        env:
-          PUBLIC_IYI_COMPILE_ENDPOINT: ${{ vars.IYI_COMPILE_ENDPOINT }}
         run: npm run build
 
       - uses: actions/configure-pages@v5

@@ -1,22 +1,24 @@
 /**
- * Executing a wasm32-wasi module in the page, which is the one thing both
- * engines do and therefore the one place it is written.
+ * Executing a wasm32-wasi module in the page, which is the one thing every
+ * engine does and therefore the one place it is written.
  *
- * `wasi.ts` runs recorded modules the compiler produced elsewhere. `remote.ts`
- * runs modules a compile service produced from source a visitor typed. Where
- * those two differ is entirely in how the bytes arrive; once the bytes are
- * here, the instantiation, the argv, the trap handling, the output ordering
- * and the exit accounting are identical, and duplicating them would mean a
- * defect could be fixed on one path and live on for the other. A visitor
- * cannot tell which engine produced a run, so the two must not be able to
- * disagree about what running means.
+ * `wasi.ts` runs recorded modules the compiler produced elsewhere, and today it
+ * is the only engine there is. The engine that fills the `PlaygroundEngine`
+ * slot next is a local wasm build of iyi's own compiler, and it will run
+ * modules it compiled in the tab from source a visitor typed. Where those two
+ * differ is entirely in how the bytes arrive; once the bytes are here, the
+ * instantiation, the argv, the trap handling, the output ordering and the exit
+ * accounting are identical, and duplicating them would mean a defect could be
+ * fixed on one path and live on for the other. A visitor cannot tell which
+ * engine produced a run, so the two must not be able to disagree about what
+ * running means.
  *
  * Nothing in this file fetches, verifies a digest, or decides whether bytes
  * are trustworthy. That is the caller's job, and keeping it out of here is
- * deliberate: the two engines answer "are these the bytes I think they are"
- * with different evidence, a manifest on one side and the service's declared
- * digest on the other, and folding those together would blur two different
- * claims into one function.
+ * deliberate: the two callers answer "are these the bytes I think they are"
+ * with different evidence, a committed manifest for a recorded module on one
+ * side and the fact that this session compiled it for a fresh one on the
+ * other, and folding those two claims into one function would blur them.
  */
 import type { RunEvent } from "../types";
 import { WasiExit, WasiHost, decodeWrites } from "./wasi-preview1";

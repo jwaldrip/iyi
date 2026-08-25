@@ -1,16 +1,18 @@
 ---
 /**
- * The playground, one static route per way in.
+ * One route per recorded sample, and each one really runs.
  *
- * WHAT A ROUTE MEANS NOW. It used to mean "a page about this sample". It means
- * "open the editor with this sample in it". The URLs are unchanged, so every
- * deep link the lessons already emit keeps working, but what a visitor lands on
- * is an editor rather than a listing.
+ * WHAT THESE PAGES ARE. `/playground/` itself is parked: the playground worth
+ * having is an editor with iyi's own compiler running in the tab, and that
+ * waits on language work. These routes are the part that honestly works today.
+ * Each one carries one program, its recorded colouring from the compiler's own
+ * lexer, and a run that fetches the module the compiler built from that file,
+ * checks its digest against the record, and executes it in this page.
  *
- * `/playground/` is the bare route and it opens on a short starter program
- * rather than on a curated sample, because landing on one of those is exactly
- * the complaint this rebuild answers: a page whose first screen is a
- * hundred-line teaching file is an example page, whatever the button says.
+ * So the lessons' deep links keep resolving to something that does something,
+ * which is the whole reason the routes survived the parking of the page above
+ * them. `index.astro` owns `/playground/` and a static route wins over a rest
+ * parameter, so the bare path is not generated here.
  *
  * WHY A ROUTE PER SAMPLE RATHER THAN A PICKER THAT SWAPS IN THE BROWSER. Each
  * page carries exactly one program and one recorded colouring. The alternative
@@ -20,47 +22,34 @@
  * and there is a second reason that matters more: a real URL resolves before
  * any script runs, so a lesson's link works with scripts off and survives being
  * bookmarked or shared.
- *
- * The evidence material that used to live under this page is at
- * `/playground/evidence/`, which is its own file rather than a route generated
- * here, so it cannot collide with a sample id and it does not depend on the
- * recording to exist.
  */
 import Page from "../../layouts/Page.astro";
 import Playground from "../../components/Playground.astro";
-import { compileEndpoint, hasCompileService } from "../../playground/engines/remote";
 import type { CuratedSample } from "../../playground/samples";
 import { curatedSamples } from "../../playground/samples";
 
 export function getStaticPaths() {
-  /* The bare route, plus one per recorded sample. The recording decides what
+  /* One per recorded sample, and nothing else. The recording decides what
    * exists, so a sample that failed to record has no page rather than a page
    * that cannot run. */
-  return [
-    { params: { sample: undefined }, props: { sample: null } },
-    ...curatedSamples.map((sample) => ({
-      params: { sample: sample.id },
-      props: { sample },
-    })),
-  ];
+  return curatedSamples.map((sample) => ({
+    params: { sample: sample.id },
+    props: { sample },
+  }));
 }
 
 interface Props {
-  sample: CuratedSample | null;
+  sample: CuratedSample;
 }
 
 const { sample } = Astro.props as Props;
-
-const title = sample === null ? "Playground | iyi" : `Playground: ${sample.id} | iyi`;
-const summary =
-  sample === null
-    ? hasCompileService
-      ? "An editor you can type iyi into. The source is compiled by a real iyi compiler and the module it produces runs in your own tab against a WASI host written in TypeScript."
-      : "An editor you can type iyi into. This build has no compile service, so it runs the recorded samples and says plainly that it cannot compile what you type."
-    : `The iyi playground, opened on ${sample.path}. The sample runs from the module the compiler built from it, checked by digest, and the editor takes anything else you type.`;
+const base = import.meta.env.BASE_URL.replace(/\/*$/, "/");
 ---
 
-<Page title={title} summary={summary}>
+<Page
+  title={`Playground: ${sample.id} | iyi`}
+  summary={`${sample.path}, cross-compiled to wasm32-wasi by the iyi compiler and executed on this page against a WASI host written in TypeScript. It does not compile, and it says so.`}
+>
   <Playground sample={sample} />
 
   <section class="spread">
@@ -68,81 +57,44 @@ const summary =
       <hr class="rule" />
       <h2>What is not here</h2>
       <p>
-        The same treatment the rest of this site gives its own losses, applied to
-        this page. Three of these are structural and will not be fixed by
-        finishing something.
+        Three sentences, because two of these are structural and will not be
+        fixed by finishing something.
       </p>
       <ul>
         <li>
-          <strong>Nothing in this page compiles iyi.</strong> The compiler
-          reports an error by raising, and <code>raise</code> on
-          <code>wasm32</code> does not unwind, so a compiler compiled for this
-          page could not hand a diagnostic back to whatever called it: it could
-          only die. The investigation is at
-          <code>doc/website/PLAYGROUND-FEASIBILITY.md</code>. That is why the
-          compiling happens elsewhere and only the running happens here.
-        </li>
-        <li>
-          <strong>Compiling iyi is itself code execution, by design.</strong>
-          <code>src/compiler/iyi/macros/methods.cr</code> dispatches
-          <code>system</code> and the backtick form through
-          <code>interpret_system</code>, which runs a shell command;
-          <code>read_file</code> and <code>read_file?</code>, which read any path
-          the compiler can reach; <code>env</code>, which reads the compiler's
-          own environment; and <code>run</code>, which through
-          <code>interpret_run</code> compiles and executes another program and
-          substitutes its output into the source being compiled. All of that
-          happens at compile time. So posting arbitrary iyi to a compile service
-          is remote code execution unless the service contains it, and{" "}
-          {
-            hasCompileService
-              ? "the sentence in the rail above is that service's own account of how it does."
-              : "there is no service in this build to contain anything, because there is no service in this build."
-          }
-        </li>
-        <li>
-          <strong>
-            A program that reaches the host at compile time may behave
-            differently here than in a local build.
-          </strong>
-          That follows from the point above rather than from a decision anyone
-          made about this page. If the service blocks the macro methods that
-          reach the host, then a macro that shells out or reads a file works on
-          your machine and does not work here, and the difference is real rather
-          than a limitation of the editor. The page will not pretend otherwise,
-          and it will not guess which way{" "}
-          {hasCompileService ? compileEndpoint : "a service"} resolved it: the
-          rail carries the service's own sentence and nothing else.
+          <strong>Nothing in this page compiles iyi.</strong> On{" "}
+          <code>wasm32</code>, <code>raise</code> prints and exits instead of
+          unwinding, and iyi's compiler reports every error by raising, so a
+          compiler compiled for a browser could only die where it should have
+          returned a diagnostic. Clearing that is language work and it is under
+          way. Until it lands, the module this page runs was built elsewhere and
+          editing the pane cannot change it, which the pane says the moment you
+          type.
         </li>
         <li>
           <strong>There are no threads, and there cannot be.</strong> GitHub
-          Pages cannot set HTTP response headers, so
-          <code>Cross-Origin-Opener-Policy</code> and
+          Pages cannot set HTTP response headers, so{" "}
+          <code>Cross-Origin-Opener-Policy</code> and{" "}
           <code>Cross-Origin-Embedder-Policy</code> cannot be sent, so this
-          document is never cross-origin isolated, so
+          document is never cross-origin isolated and{" "}
           <code>SharedArrayBuffer</code> does not exist here. That rules out wasm
-          threads and it rules out synchronous standard input through
+          threads and synchronous standard input through{" "}
           <code>Atomics.wait</code>. It is also why output arrives in the chunks
           the program wrote but only once <code>_start</code> returns: a wasm
           call in this page cannot be suspended.
         </li>
         <li>
           <strong>There is no standard input and no filesystem.</strong> Reads
-          from descriptor zero succeed and report end of file, which is what a
-          program sees when its input is redirected from nothing, and no
-          directory is preopened, so every path call fails the way it would under
-          a host that granted no capabilities. One curated sample fails on
-          purpose for exactly that reason, the recording marks it, and it is in
-          the set because a target that cannot open a file is a thing worth
-          knowing about the target.
+          from descriptor zero succeed and report end of file, and no directory
+          is preopened, so every path call fails the way it would under a host
+          that granted no capabilities. One sample fails on purpose for exactly
+          that reason and the recording marks it, because a target that cannot
+          open a file is a thing worth knowing about the target.
         </li>
       </ul>
       <p>
-        The recordings behind all of this, and the proof that a module printed
-        what the native binary printed, are on the
-        <a href={`${import.meta.env.BASE_URL.replace(/\/*$/, "/")}playground/evidence/`}
-          >evidence page</a
-        >.
+        <a href={`${base}playground/evidence/`}>The recordings behind this</a>{" "}
+        say which bytes ran and what checked them.
       </p>
     </div>
   </section>

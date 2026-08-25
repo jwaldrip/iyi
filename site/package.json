@@ -12,6 +12,7 @@
     "dev": "astro dev",
     "prebuild": "npm run generate",
     "build": "astro build",
+    "postbuild": "node scripts/prose.mjs",
     "preview": "astro preview",
     "check": "astro check"
   },

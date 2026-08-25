@@ -1,21 +1,20 @@
 ---
 /**
- * The playground shell, editor first.
+ * One recorded program, and a run that really runs it.
  *
- * WHAT CHANGED AND WHY. This page used to be an evidence page: a curated
- * listing, a recorded diagnostics table, a card proving a module printed what
- * the native binary printed. That material is good, it is the site's character,
- * and none of it is deleted: it moved to `/playground/evidence/`. But it is not
- * a playground. A playground is an editor you can type anything into, a control
- * that runs it, and output. So the editor is now the subject of the page and
- * everything else is arranged around it.
+ * WHAT THIS IS AND IS NOT. It is not the playground. The playground is parked at
+ * `/playground/` until iyi's own compiler runs in the browser, and
+ * `doc/website/PLAYGROUND-SERVICE.md` specifies what it will be. This is the
+ * part that honestly works today: the module the compiler built from this file,
+ * fetched, digest checked against the record, and executed in the visitor's own
+ * tab against the WASI host in `src/playground/engines/wasi-preview1.ts`.
  *
- * THE SLOT IS UNCHANGED. Everything about compiling and running iyi still
- * arrives through one interface, `PlaygroundEngine` (src/playground/types.ts),
- * resolved in one place, `activeEngine()` (src/playground/registry.ts). This
- * component is built twice, once in node during the static build and once as a
- * page in a browser, and it renders the SAME interface on both sides, so
- * nothing here is conditional on the browser existing.
+ * THE SLOT IS UNCHANGED. Everything about compiling and running iyi arrives
+ * through one interface, `PlaygroundEngine` (src/playground/types.ts), resolved
+ * in one place, `activeEngine()` (src/playground/registry.ts). This component is
+ * built twice, once in node during the static build and once as a page in a
+ * browser, and it renders the SAME interface on both sides, so nothing here is
+ * conditional on the browser existing.
  *
  * THE REDUCED-UI RULE, applied here: the shell renders a control for every
  * capability the contract knows. A control whose capability the active engine
@@ -24,29 +23,27 @@
  * imply the playground is whole, and it is not left clickable, because a
  * control that does nothing is a lie told by an affordance.
  *
- * THREE RULES THAT SURVIVE THE REBUILD, each a consequence of the site's own
- * argument rather than a preference.
+ * THREE RULES, each a consequence of the site's own argument.
  *
- * 1. THE PAGE NEVER RENDERS OUTPUT NOTHING PRODUCED. Not a spinner that never
- *    resolves, not a fallback to a sample's recording when the visitor typed
- *    something else, not a synthesised exit status. Every state a visitor can
- *    reach either shows what really happened or says in words what did not.
+ * 1. THE PAGE NEVER RENDERS OUTPUT NOTHING PRODUCED. No spinner that never
+ *    resolves, no synthesised exit status, no output attributed to a program
+ *    that did not run. Every state a visitor can reach either shows what really
+ *    happened or says in words what did not.
  *
- * 2. COLOURING COMES FROM THE COMPILER'S LEXER OR IT DOES NOT COME AT ALL.
- *    Three states, and the caption under the editor says which one is on. A
- *    loaded sample renders from its recorded token stream. Text the visitor
- *    typed renders from the compiler's own lexer over the wire, when the
- *    service offers `lex`, verified to encode the exact characters on screen
- *    before it is painted. Otherwise plain ink. There is no grammar in this
- *    page and there will not be one: a second grammar drifts from the first
- *    silently, and the drift shows up as a keyword the site does not think is a
- *    keyword.
+ * 2. THE RUN IS PRECOMPILED, AND THE PAGE SAYS SO WHEREVER IT MATTERS. Nothing
+ *    here compiles. So the pane is editable, because a reader should be able to
+ *    move around in the program, and the moment the text stops being the
+ *    recorded text the page says in one line that the run executes the recorded
+ *    program instead, the run control renames itself to say the same thing, and
+ *    the recorded colouring is withdrawn rather than left to imply a lexer that
+ *    is not here.
  *
- * 3. THE SERVICE SPEAKS FOR ITSELF. The badge has four states and never
- *    guesses. The sentence about what the service does with submitted source is
- *    the service's own, rendered verbatim, and when the field is absent the
- *    page says the service did not state its containment rather than offering a
- *    reassurance nobody measured.
+ * 3. COLOURING COMES FROM THE COMPILER'S LEXER OR IT DOES NOT COME AT ALL.
+ *    Recorded for this file, plain ink for anything typed over it. When the
+ *    compiler runs in the tab it will lex what you type and the page paints
+ *    that instead, which is an engine change: `inkLines` in `src/lib/tokens.ts`
+ *    is the receiving end and it already refuses to paint a stream that does not
+ *    encode the characters on screen.
  */
 import { activeEngine } from "../playground/registry";
 import type { Capability } from "../playground/types";
@@ -57,24 +54,11 @@ import {
   playgroundHref,
   wasmProvenance,
 } from "../playground/samples";
-import {
-  compileEndpoint,
-  hasCompileService,
-} from "../playground/engines/remote";
 import { highlightedLines, recordedText } from "../lib/highlight";
-import { SHARE_LIMIT } from "../playground/share";
-import { STARTER_ENTRY, STARTER_SOURCE } from "../playground/starter";
 
 interface Props {
-  /**
-   * The curated sample this route loads, or null for the bare route.
-   *
-   * Null is not an empty state. It is the route that opens the editor on a
-   * short starter program, which is the page a visitor who came to type
-   * something wants, and it is deliberately not a curated sample: landing on
-   * one of those is what made this page read as an example page.
-   */
-  sample: CuratedSample | null;
+  /** The curated sample this route carries. */
+  sample: CuratedSample;
 }
 
 const { sample } = Astro.props;
@@ -83,73 +67,61 @@ const engine = activeEngine();
 const caps = engine.capabilities();
 const supports = (cap: Capability) => caps.supported.includes(cap);
 
-/* The program the route opens with, and its colouring if a record covers it.
- *
- * Read here at build time rather than through the engine, which keeps the
- * quarter of a megabyte of listings in `site/records/highlight.json` out of the
- * client bundle. A sample gets the compiler's own recorded token stream. The
- * starter gets none, because nothing recorded it, and the caption says so. */
-const source = sample === null ? STARTER_SOURCE : recordedText(sample.path);
-const inkLines = sample === null ? null : highlightedLines(sample.path);
-const entryPath = sample === null ? STARTER_ENTRY : sample.path;
+/* The program and its colouring, both out of the records and both read here at
+ * build time, which keeps the quarter of a megabyte of listings in
+ * `site/records/highlight.json` out of the client bundle. */
+const source = recordedText(sample.path);
+const inkLines = highlightedLines(sample.path);
 
 /* The HTML parser drops one newline immediately after a `<textarea>` open tag
  * and after a `<pre>` open tag. Every sample begins with a comment, so this
  * costs nothing today; it is here so that a program beginning with a blank line
  * does not silently lose it and shift every line number by one. */
 const seed = source.startsWith("\n") ? `\n${source}` : source;
-const ink = inkLines === null ? null : inkLines.join("\n");
-const seedInk = ink === null ? null : ink.startsWith("\n") ? `\n${ink}` : ink;
+const ink = inkLines.join("\n");
+const seedInk = ink.startsWith("\n") ? `\n${ink}` : ink;
 
-/* Every control the contract knows, in the order a person reaches for them.
- * `run` leads the primary bar; the rest are stages of the same pipeline and sit
- * in a second row so the bar a visitor uses stays a bar rather than a palette.
- * `diagnostics` is not a control: it is a property of what `run` reports. */
+/* The stages of the pipeline, each exactly one capability so a disabled note can
+ * name its absence precisely. `diagnostics` is not a control: it is a property
+ * of what `run` reports. */
 const stages: Capability[] = ["compile", "emit-iyimod", "mod-dump", "format"];
 
 const editable = caps.maxSourceBytes > 0;
-
-/* The badge's resting state, decided by a build time value so the HTML a
- * visitor receives already carries it and the client only ever moves it off
- * `checking`. Four states, and none of them is a guess: `absent` is what a
- * build with no endpoint is, and it is a real state rather than a
- * misconfiguration. */
-const badgeAtRest = hasCompileService ? "checking" : "absent";
-const badgeWords: Record<string, string> = {
-  absent: "not configured in this build",
-  checking: "checking",
-  answering: "answering",
-  silent: "not answering",
-};
+const base = import.meta.env.BASE_URL.replace(/\/*$/, "/");
 ---
 
-<section class="bench spread" aria-label="Playground">
+<section class="bench spread" aria-label="Run a recorded program">
   <div class="bench-head to-wide">
     <div class="bench-title">
-      <h1>playground</h1>
+      <p class="label">
+        <a href={`${base}playground/`}>playground</a>, parked
+      </p>
+      <h1>{sample.id}</h1>
       <p class="pitch">
-        {
-          hasCompileService
-            ? "Type iyi. It is compiled by a real iyi compiler and runs in this tab."
-            : "Type iyi, and read what this build can honestly do with it. The thirteen recorded samples run in this tab; nothing here compiles, because this build of the site was given no compile service."
-        }
+        This program really runs, here, in your tab. What is parked is the
+        editor: nothing on this page compiles iyi.
       </p>
     </div>
-    <p class="badge mono" data-role="badge" data-state={badgeAtRest}>
-      <span class="badge-label">service</span>
-      <span data-role="badge-words">{badgeWords[badgeAtRest]}</span>
+    <p class="badge mono">
+      <span class="badge-label">compiler</span>
+      <span>not in this page, and nothing you type is sent anywhere</span>
     </p>
   </div>
 
   <div class="bar to-wide">
+    {/* The label is its own element and the chord is its sibling, with a real
+        space between the two. Both halves of that matter: the script renames
+        the label when the pane is edited, and writing that name to the button
+        would replace every child and take the chord with it. */}
     <button
       type="button"
       class="decl-toggle run"
       data-control="run"
-      data-label={CAPABILITY_LABEL.run}
+      data-label="run"
+      data-label-stale="run recorded"
       disabled={supports("run") && editable ? undefined : true}
     >
-      run
+      <span class="run-label">run</span>{" "}
       <span class="chord">Cmd or Ctrl + Enter</span>
     </button>
 
@@ -161,22 +133,13 @@ const badgeWords: Record<string, string> = {
       <summary class="decl-toggle">sample</summary>
       <div class="menu-body">
         <ul>
-          <li>
-            <a
-              href={`${import.meta.env.BASE_URL.replace(/\/*$/, "/")}playground/`}
-              class="pick mono"
-              aria-current={sample === null ? "page" : undefined}
-            >
-              a program to start from
-            </a>
-          </li>
           {
             curatedSamples.map((entry) => (
               <li>
                 <a
                   href={playgroundHref(entry.id)}
                   class="pick mono"
-                  aria-current={entry.id === sample?.id ? "page" : undefined}
+                  aria-current={entry.id === sample.id ? "page" : undefined}
                   data-lesson={entry.note === null ? undefined : "true"}
                 >
                   {entry.id}
@@ -186,15 +149,13 @@ const badgeWords: Record<string, string> = {
           }
         </ul>
         <p class="menu-note mono">
-          A sample runs from the module the compiler already built from it,
-          checked by digest, so it runs whether or not a service is answering.
-          Change a character and it becomes a program that needs compiling.
+          Each one is the module the compiler built from that file, digest
+          checked against the record before it is instantiated.
         </p>
       </div>
     </details>
 
-    <button type="button" class="decl-toggle" data-role="share">share</button>
-    <button type="button" class="decl-toggle" data-role="reset" disabled={true}>
+    <button type="button" class="decl-toggle" data-role="reset" hidden={true}>
       reset
     </button>
     <button type="button" class="decl-toggle" data-role="cancel" disabled={true}>
@@ -202,52 +163,44 @@ const badgeWords: Record<string, string> = {
     </button>
   </div>
 
-  {/* The panes. Editor first in source order, which is also the order they
-      stack in below the breakpoint, so the thing the page is about is the
-      thing a narrow screen shows first. */}
+  {/* Editor first in source order, which is also the order the panes stack in
+      below the breakpoint, so the program is what a narrow screen shows first. */}
   <div class="panes to-wide">
     <figure class="source pane-editor">
       <figcaption class="source-head">
-        <span class="path mono" data-role="entry">{entryPath}</span>
+        <span class="path mono">{sample.path}</span>
         <span class="mono" data-role="ink-state">
-          {
-            seedInk === null
-              ? "plain ink: nothing has lexed this text"
-              : "tokens from the compiler's own lexer, recorded"
-          }
+          tokens from the compiler's own lexer, recorded
         </span>
       </figcaption>
 
       <div class="editor">
-        {
-          seedInk === null ? null : (
-            <pre
-              class="editor-ink"
-              data-role="ink"
-              aria-hidden="true"
-              set:html={seedInk}
-            />
-          )
-        }
+        <pre
+          class="editor-ink"
+          data-role="ink"
+          aria-hidden="true"
+          set:html={seedInk}
+        />
         <textarea
-          class:list={["editor-text", { plain: seedInk === null }]}
+          class="editor-text"
           data-role="source"
+          data-path={sample.path}
           spellcheck="false"
           autocomplete="off"
           autocapitalize="off"
           autocorrect="off"
           wrap="off"
           readonly={editable ? undefined : true}
-          aria-label={`iyi source, ${entryPath}`}>{seed}</textarea
+          aria-label={`iyi source, ${sample.path}`}>{seed}</textarea
         >
       </div>
 
       <figcaption class="source-head source-foot">
-        <span class="mono" data-role="custody">
+        <span class="mono" data-role="staleness">
           {
-            hasCompileService
-              ? `to run this, its text is posted to ${compileEndpoint}. The service has not been asked yet what it does with it.`
-              : "nothing you type leaves this page, because this build has nowhere to send it"
+            supports("run")
+              ? `run executes ${sample.wasm}, the module the compiler produced from this file on the machine stamped below`
+              : "the active engine cannot run, so nothing here executes"
           }
         </span>
       </figcaption>
@@ -265,20 +218,19 @@ const badgeWords: Record<string, string> = {
 
       <div class="diagnostics" data-role="diagnostics">
         <p class="label">diagnostics</p>
-        <p class="pane-note mono" data-role="diag-note">
-          {
-            supports("compile")
-              ? "When the compiler refuses a program, its message lands here verbatim: the caret line, the leading spaces, and the rule it cites."
-              : "Nothing here can refuse a program, because nothing here compiles one. The recorded diagnostics, which are the real compiler's output on real broken programs, are on the evidence page."
-          }
+        <p class="pane-note mono">
+          Nothing here can refuse a program, because nothing here compiles one.
+          The real compiler's output on real broken programs is on the
+          <a href={`${base}playground/evidence/`}>evidence page</a>, captured
+          verbatim.
         </p>
       </div>
     </div>
   </div>
 
-  {/* The stages of the pipeline this engine does not reach. Disabled for real,
-      each naming the capability it is missing, because a smaller playground is
-      the honest one and a hidden control would imply a whole one. */}
+  {/* The stages this engine does not reach. Disabled for real, each naming the
+      capability it is missing, because a smaller playground is the honest one
+      and a hidden control would imply a whole one. */}
   <div class="stages to-wide">
     {
       stages.map((cap) =>
@@ -316,38 +268,18 @@ const badgeWords: Record<string, string> = {
           ? "no capabilities"
           : caps.supported.map((cap) => CAPABILITY_LABEL[cap]).join(", ")}
       </dd>
-      <dt>compile service</dt>
-      <dd data-role="rail-endpoint">
-        {hasCompileService ? compileEndpoint : "none in this build"}
-      </dd>
-      <dt>its compiler</dt>
-      <dd data-role="rail-compiler">
-        {
-          hasCompileService
-            ? "not asked yet"
-            : "there is none, so a program you type is not compiled anywhere"
-        }
-      </dd>
-      <dt>what it does with your source</dt>
-      <dd data-role="rail-sandbox">
-        {
-          hasCompileService
-            ? "not asked yet. This sentence is the service's own, rendered exactly as it sends it, and if it sends none the page says so rather than reassuring you on its behalf."
-            : "nothing, because nothing is sent"
-        }
-      </dd>
-      <dt>recorded modules</dt>
+      <dt>where your keystrokes go</dt>
       <dd>
-        compiled by {wasmProvenance.compiler} at commit{" "}
+        nowhere. There is no compile service and there is no request: the module
+        this page runs was built before you arrived, and the text in the pane is
+        never sent anywhere at all.
+      </dd>
+      <dt>this module</dt>
+      <dd>
+        {sample.wasm}, compiled by {wasmProvenance.compiler} at commit{" "}
         {wasmProvenance.commit.slice(0, 12)} on {wasmProvenance.machine}, digest
-        checked against site/records/wasm/manifest.json before this page runs one
-      </dd>
-      <dt>sharing</dt>
-      <dd>
-        a shared link carries the program in the URL fragment, which a browser
-        never sends to a server, so nothing is stored and no moderation queue
-        exists. The control refuses above {SHARE_LIMIT} encoded characters and
-        says by how much.
+        checked against site/records/wasm/manifest.json before it is
+        instantiated
       </dd>
       {
         caps.notes.map((note) => (
@@ -359,58 +291,25 @@ const badgeWords: Record<string, string> = {
       }
       <dt>the recordings</dt>
       <dd>
-        <a
-          href={`${import.meta.env.BASE_URL.replace(/\/*$/, "/")}playground/evidence/`}
+        <a href={`${base}playground/evidence/`}
           >what is real here, precisely</a
         >
       </dd>
     </dl>
   </aside>
-
-  {/* The original program, for reset and for deciding whether the recorded
-      colouring still describes what is on screen. JSON rather than a data
-      attribute because a program has newlines in it, and read from the page
-      rather than shipped a second time in the island's bundle. */}
-  <script
-    type="application/json"
-    data-role="original"
-    set:html={JSON.stringify({ source, entry: entryPath })}
-  />
 </section>
 
 <script>
   /**
-   * The live half of the playground.
-   *
-   * It imports the same registry the build did, so what runs in the browser is
-   * what the page said it was. Every state it can reach is either something
-   * that really happened or a sentence about what did not, and there is no
-   * branch in here that renders a result the engine did not produce.
+   * The live half. It imports the same registry the build did, so what runs in
+   * the browser is what the page said it was. Until an engine claims at least
+   * one capability this script does nothing at all, which is the honest resting
+   * state and not an error.
    */
   import { activeEngine } from "../playground/registry";
   import type { Capability, RunEvent } from "../playground/types";
   import { CAPABILITY_LABEL } from "../playground/types";
   import { diagnosticHtml } from "../playground/render";
-  import {
-    compileEndpoint,
-    hasCompileService,
-    health,
-    lex,
-    serviceHandles,
-    serviceState,
-  } from "../playground/engines/remote";
-  import { inkLines } from "../lib/tokens";
-  import {
-    DEFAULT_ENTRY,
-    SHARE_LIMIT,
-    decodeShare,
-    encodeShare,
-  } from "../playground/share";
-
-  /** How long the editor settles before the page asks the compiler's lexer.
-   * Long enough that typing a word is one request rather than five, short
-   * enough that a pause gets colour. */
-  const LEX_SETTLE = 300;
 
   (() => {
     const engine = activeEngine();
@@ -421,212 +320,96 @@ const badgeWords: Record<string, string> = {
       document.querySelector<T>(`[data-role="${role}"]`);
 
     const source = pick<HTMLTextAreaElement>("source");
-    const output = pick<HTMLDivElement>("output");
-    const diagnostics = pick<HTMLDivElement>("diagnostics");
-    const inkState = pick<HTMLElement>("ink-state");
-    const entryLabel = pick<HTMLElement>("entry");
-    const custody = pick<HTMLElement>("custody");
-    const badge = pick<HTMLElement>("badge");
-    const badgeWords = pick<HTMLElement>("badge-words");
-    const railCompiler = pick<HTMLElement>("rail-compiler");
-    const railSandbox = pick<HTMLElement>("rail-sandbox");
-    const resetBtn = pick<HTMLButtonElement>("reset");
-    const shareBtn = pick<HTMLButtonElement>("share");
-    const cancelBtn = pick<HTMLButtonElement>("cancel");
-    const originalJson = pick<HTMLScriptElement>("original");
     const ink = pick<HTMLPreElement>("ink");
+    const output = pick<HTMLDivElement>("output");
+    const inkState = pick<HTMLElement>("ink-state");
+    const staleness = pick<HTMLElement>("staleness");
+    const resetBtn = pick<HTMLButtonElement>("reset");
+    const cancelBtn = pick<HTMLButtonElement>("cancel");
 
-    if (!source || !output || !diagnostics || !inkState || !custody) return;
-    if (!badge || !badgeWords || !resetBtn || !shareBtn || !cancelBtn) return;
-    if (!railCompiler || !railSandbox || !originalJson || !entryLabel) return;
+    if (!source || !ink || !output || !inkState || !staleness) return;
+    if (!resetBtn || !cancelBtn) return;
+    if (caps.supported.length === 0) return;
 
-    const original = JSON.parse(originalJson.textContent ?? "{}") as {
-      source: string;
-      entry: string;
-    };
-    /** The recorded colouring, kept so a reset can put it back. Null on the
-     * bare route, where nothing recorded the starter program. */
-    const recordedInk = ink === null ? null : ink.innerHTML;
-
-    let entry = original.entry;
-    let running = false;
-    /** The text the last painted colouring describes. A response that arrives
-     * for text the visitor has since changed is dropped rather than painted,
-     * because painting it would put one program's tokens over another
-     * program's characters. */
-    let paintedFor: string | null =
-      recordedInk === null ? null : original.source;
-
-    const encoder = new TextEncoder();
-    /* A textarea normalises its own line endings, so comparing raw would report
-     * an edit the visitor did not make. */
-    const normalised = () => source.value.replace(/\r\n/g, "\n");
-    const isOriginal = () =>
-      normalised() === original.source.replace(/\r\n/g, "\n");
-    const withinBudget = () =>
-      caps.maxSourceBytes > 0 &&
-      encoder.encode(source.value).length <= caps.maxSourceBytes;
+    /* The recorded program and its recorded colouring, taken from the page the
+     * build produced rather than shipped a second time in this bundle. The
+     * `<pre>` holds exactly the file's text, so reading it back costs nothing
+     * and cannot disagree with what is on screen. */
+    const recorded = ink.textContent ?? "";
+    const recordedInk = ink.innerHTML;
+    const entry = source.dataset.path ?? "main.iyi";
+    const wasm = `${entry.replace(/^.*\//, "").replace(/\.iyi$/, "")}.wasm`;
 
     const buttons = Array.from(
       document.querySelectorAll<HTMLButtonElement>("button[data-control]"),
     );
 
-    /* ---------------------------------------------------------------------
-     * The badge and the rail, moved only by what the service actually said
-     * ------------------------------------------------------------------- */
+    const encoder = new TextEncoder();
+    const withinBudget = () =>
+      caps.maxSourceBytes > 0 &&
+      encoder.encode(source.value).length <= caps.maxSourceBytes;
+    /* A textarea normalises its own line endings, so comparing raw would report
+     * an edit the visitor did not make. */
+    const edited = () =>
+      source.value.replace(/\r\n/g, "\n") !== recorded.replace(/\r\n/g, "\n");
 
-    const words: Record<string, string> = {
-      absent: "not configured in this build",
-      checking: "checking",
-      answering: "answering",
-      silent: "not answering",
-    };
+    let running = false;
 
-    const paintService = () => {
-      const state = serviceState();
-      badge.dataset.state = state.state;
-      badgeWords.textContent =
-        state.state === "answering" && state.health !== null
-          ? `answering, ${state.health.compiler.version}`
-          : state.state === "silent"
-            ? `not answering: ${state.failure ?? "no reason given"}`
-            : words[state.state];
-
-      if (state.state === "answering" && state.health !== null) {
-        railCompiler.textContent = `${state.health.compiler.version}, commit ${state.health.compiler.commit}, target ${state.health.compiler.target}`;
-        /* Verbatim, and the absence of the field is reported as an absence.
-         * The page never writes this sentence for the service. */
-        railSandbox.textContent =
-          typeof state.health.sandbox === "string" &&
-          state.health.sandbox.trim() !== ""
-            ? state.health.sandbox
-            : "the service did not state its containment, so this page will not state it either";
-        custody.textContent = `to run this, its text is posted to ${compileEndpoint}, which says: ${
-          state.health.sandbox ?? "nothing about what it does with it"
-        }`;
-      } else if (state.state === "silent") {
-        railCompiler.textContent = `unknown: ${compileEndpoint} did not answer`;
-        railSandbox.textContent =
-          "unknown, because the service did not answer, so nothing you type can be compiled and nothing is being sent";
-        custody.textContent = `${compileEndpoint} is not answering, so nothing you type is being sent anywhere`;
+    const refreshDisabled = () => {
+      for (const btn of buttons) {
+        const cap = btn.dataset.control as Capability;
+        btn.disabled = !supports(cap) || !withinBudget() || running;
       }
-    };
-
-    /* ---------------------------------------------------------------------
-     * Colouring: recorded, live from the compiler's lexer, or plain
-     * ------------------------------------------------------------------- */
-
-    const setPlain = (why: string) => {
-      if (ink !== null) ink.hidden = true;
-      source.classList.add("plain");
-      inkState.textContent = why;
-      paintedFor = null;
-    };
-
-    const paint = (html: string, text: string, why: string) => {
-      if (ink === null) return false;
-      ink.innerHTML = html;
-      ink.hidden = false;
-      source.classList.remove("plain");
-      inkState.textContent = why;
-      paintedFor = text;
-      return true;
+      cancelBtn.disabled = !running;
     };
 
     /**
-     * Put the recorded colouring back, or take it away.
+     * The honest treatment of a stale edit, in three places at once.
      *
-     * The recorded token stream describes exactly one program. The moment the
-     * text stops being that program the stream is withdrawn rather than left
-     * over changed characters, which is the same rule the previous version of
-     * this page enforced and the reason the emphasis can be trusted at all.
+     * The colouring is withdrawn, because the tokens came from the compiler's
+     * lexer and there is no lexer in this page, so leaving them over changed
+     * text would be showing one program's tokens over another program's
+     * characters. The run control renames itself, because the affordance is
+     * where a person decides. And the line under the pane says which bytes will
+     * execute. None of the three is a warning: the run is real and the module is
+     * real, and the only thing that is not real is the idea that the edit
+     * reached it.
      */
-    const refreshInk = () => {
-      if (recordedInk !== null && isOriginal()) {
-        paint(
-          recordedInk,
-          original.source,
-          "tokens from the compiler's own lexer, recorded",
-        );
-        return;
+    const refreshStaleness = () => {
+      const stale = edited();
+
+      ink.hidden = stale;
+      source.classList.toggle("plain", stale);
+      resetBtn.hidden = !stale;
+
+      inkState.textContent = stale
+        ? "plain ink: the recorded colouring is withdrawn, because there is no lexer in this page to replace it"
+        : "tokens from the compiler's own lexer, recorded";
+
+      if (supports("run")) {
+        staleness.textContent = stale
+          ? `run executes the RECORDED program ${wasm}, not what you typed: nothing in this page compiles iyi`
+          : `run executes ${wasm}, the module the compiler produced from this file on the machine stamped below`;
       }
-      if (paintedFor !== null && paintedFor === normalised()) return;
-      setPlain(
-        recordedInk !== null
-          ? "edited, so the recorded colouring is withdrawn: there is no lexer in this page"
-          : hasCompileService && serviceHandles("lex")
-            ? "plain ink until the compiler's lexer answers"
-            : "plain ink: nothing here has lexed this text",
-      );
+
+      for (const btn of buttons) {
+        const stalest = btn.dataset.labelStale;
+        const plain = btn.dataset.label;
+        if (stalest === undefined || plain === undefined) continue;
+        /* The name goes on the label element, not on the button. A button
+         * whose textContent is assigned loses every child it had, so writing
+         * the name here used to delete the keyboard chord sitting beside it
+         * and the chord never survived the first call. A control with no
+         * label element is written directly, because it has nothing beside
+         * the name to lose. */
+        const label = btn.querySelector<HTMLElement>(".run-label") ?? btn;
+        label.textContent = stale ? stalest : plain;
+      }
     };
 
-    /**
-     * Ask the compiler's own lexer to colour what is on screen.
-     *
-     * Best effort and silent about its own failures. A null answer means no
-     * service, no lex support, a refusal or a transport failure, and the page
-     * stays in plain ink, which is the state it was already in. Saying
-     * something about it would be noise about the page rather than information
-     * about the program.
-     *
-     * The verification inside `inkLines` is the load bearing part: the stream
-     * must encode the exact characters on screen or it is not painted. That is
-     * what keeps a live colouring from becoming one program's tokens over
-     * another program's characters, which is the defect the recorded path's
-     * staleness rule exists to prevent.
-     */
-    const askLexer = async () => {
-      if (!hasCompileService || !serviceHandles("lex")) return;
-      const text = normalised();
-      if (recordedInk !== null && isOriginal()) return;
-      const html = await lex([{ path: entry, text }], entry);
-      if (html === null) return;
-      /* The visitor kept typing while the request was in flight. */
-      if (normalised() !== text) return;
-      let lines: string[];
-      try {
-        lines = inkLines(html, entry, text);
-      } catch {
-        return;
-      }
-      if (ink === null) {
-        /* The bare route has no ink layer in its markup, because nothing had
-         * lexed the starter program when the page was built. One is created
-         * now, and only now, because now something has. */
-        const layer = document.createElement("pre");
-        layer.className = "editor-ink";
-        layer.setAttribute("aria-hidden", "true");
-        layer.dataset.role = "ink";
-        source.parentElement?.insertBefore(layer, source);
-        layer.innerHTML = lines.join("\n");
-        layer.addEventListener("scroll", () => {
-          layer.scrollTop = source.scrollTop;
-        });
-        source.classList.remove("plain");
-        inkState.textContent = "tokens from the compiler's own lexer, live";
-        paintedFor = text;
-        syncScroll(layer);
-        return;
-      }
-      paint(
-        lines.join("\n"),
-        text,
-        "tokens from the compiler's own lexer, live",
-      );
-      syncScroll(ink);
-    };
-
-    /* The colouring sits behind the text, so the two scroll together or the
-     * emphasis slides off the tokens it belongs to. */
-    const syncScroll = (layer: HTMLElement) => {
-      layer.scrollTop = source.scrollTop;
-      layer.scrollLeft = source.scrollLeft;
-    };
-
-    /* ---------------------------------------------------------------------
-     * The output pane
-     * ------------------------------------------------------------------- */
-
+    /* Runtime nodes cannot carry Astro's scoped attributes, so they use the
+     * global classes code.css already defines plus the stamped classes styled
+     * below. */
     const appendBlock = (cls: string, text: string) => {
       const pre = document.createElement("pre");
       pre.className = cls;
@@ -644,13 +427,12 @@ const badgeWords: Record<string, string> = {
     };
 
     /**
-     * The block a run of output is flowing into, and which stream it belongs
-     * to.
+     * The block a run of output is flowing into, and which stream it belongs to.
      *
      * The engine reports one event per `fd_write`, because the writes a program
      * made are a fact about the program and flattening them would throw it
-     * away. A terminal draws no boundary between two writes, so a contiguous
-     * run of writes to the same descriptor flows into one block here and only a
+     * away. A terminal draws no boundary between two writes, so a contiguous run
+     * of writes to the same descriptor flows into one block here and only a
      * change of descriptor, or anything else happening, starts a new one.
      */
     let flowing: { fd: "out" | "err"; pre: HTMLPreElement } | null = null;
@@ -669,18 +451,6 @@ const badgeWords: Record<string, string> = {
       flowing.pre.appendChild(document.createTextNode(text));
     };
 
-    /** Diagnostics land under the output, and the pane is emptied per run so a
-     * fixed error does not linger beside a program that now compiles. */
-    const clearDiagnostics = () => {
-      for (const node of Array.from(
-        diagnostics.querySelectorAll(".case"),
-      )) {
-        node.remove();
-      }
-    };
-
-    let sawDiagnostic = false;
-
     const onEvent = (event: RunEvent) => {
       /* Anything that is not a chunk of output ends the run of output, so a
        * stamp or a diagnostic cannot land inside a terminal block. */
@@ -694,33 +464,23 @@ const badgeWords: Record<string, string> = {
           appendStream("err", event.text);
           break;
         case "diagnostic": {
-          sawDiagnostic = true;
-          const article = document.createElement("article");
-          article.className = "case";
-          const head = document.createElement("h3");
-          head.className = "mono";
-          head.textContent =
-            event.line > 0
-              ? `${event.file}:${event.line}:${event.column}`
-              : event.file;
           const block = document.createElement("div");
           block.className = "diagnostic";
           block.innerHTML = diagnosticHtml(event);
-          article.append(head, block);
-          diagnostics.appendChild(article);
+          output.appendChild(block);
           break;
         }
         case "artifact":
           appendStamp(
             `${event.name}, ${event.bytes} bytes, executed in this tab`,
             event.data !== null
-              ? "the engine held these bytes and checked their sha256 before instantiating them, so this is the module it says it is and not a module like it"
+              ? "the engine handed these bytes to the page and checked their sha256 against site/records/wasm/manifest.json before instantiating them, so this is the recorded module and not a module like it"
               : "the engine reported this size without delivering the bytes, so it is the engine's word and not this page's measurement",
           );
           break;
         case "exit":
           appendStamp(
-            `exit ${event.code}, ${event.ms} on a millisecond clock`,
+            `exit ${event.code}, ${event.ms} ms wall clock`,
             "a recorded number: the wall clock of your own browser on your own machine, coarsened by the same isolation rule that rules out threads here, and never a benchmark. The project's measurements live in bench/.",
           );
           break;
@@ -733,35 +493,23 @@ const badgeWords: Record<string, string> = {
       }
     };
 
-    const refreshDisabled = () => {
-      for (const btn of buttons) {
-        const cap = btn.dataset.control as Capability;
-        btn.disabled = !supports(cap) || !withinBudget() || running;
-      }
-      cancelBtn.disabled = !running;
-      resetBtn.disabled = isOriginal();
-    };
-
     const doRun = async (want: Capability) => {
       if (running) return;
       if (!withinBudget()) {
         output.replaceChildren();
         appendBlock(
           "gap",
-          `this engine accepts ${caps.maxSourceBytes} bytes of source and the editor holds ${encoder.encode(source.value).length}, so nothing was sent and nothing ran`,
+          `this engine accepts ${caps.maxSourceBytes} bytes of source and the pane holds ${encoder.encode(source.value).length}, so nothing ran`,
         );
         return;
       }
       running = true;
-      sawDiagnostic = false;
       refreshDisabled();
       output.replaceChildren();
-      clearDiagnostics();
       flowing = null;
       const waiting = appendBlock("out idle", "working");
       try {
         await engine.ready();
-        paintService();
         let first = true;
         for await (const event of engine.run(
           [{ path: entry, text: source.value }],
@@ -775,8 +523,8 @@ const badgeWords: Record<string, string> = {
         }
         if (first) {
           /* The engine completed without a single event. That is a contract
-           * violation rather than a quiet success, and saying so is better
-           * than an empty pane a visitor reads as "it worked". */
+           * violation rather than a quiet success, and saying so is better than
+           * an empty pane a visitor reads as "it worked". */
           waiting.remove();
           appendBlock(
             "gap",
@@ -794,56 +542,8 @@ const badgeWords: Record<string, string> = {
       } finally {
         running = false;
         refreshDisabled();
-        if (!sawDiagnostic) clearDiagnostics();
       }
     };
-
-    /* ---------------------------------------------------------------------
-     * Sharing, by URL fragment
-     * ------------------------------------------------------------------- */
-
-    const shareNote = document.createElement("p");
-    shareNote.className = "share-note mono";
-    shareNote.hidden = true;
-    shareBtn.parentElement?.appendChild(shareNote);
-
-    const say = (text: string, refused: boolean) => {
-      shareNote.textContent = text;
-      shareNote.hidden = false;
-      shareNote.classList.toggle("refused", refused);
-    };
-
-    shareBtn.addEventListener("click", async () => {
-      const encoded = await encodeShare(source.value, entry);
-      if (encoded.over > 0) {
-        say(
-          `not shared: the link would carry ${encoded.length} encoded characters and the ceiling is ${SHARE_LIMIT}, so it is over by ${encoded.over}. Browsers and the things between them stop being reliable past roughly that length, and a link that silently truncates a program is worse than no link.`,
-          true,
-        );
-        return;
-      }
-      const url = `${location.origin}${location.pathname}#${encoded.fragment}`;
-      history.replaceState(null, "", `#${encoded.fragment}`);
-      let copied = false;
-      try {
-        if (navigator.clipboard !== undefined) {
-          await navigator.clipboard.writeText(url);
-          copied = true;
-        }
-      } catch {
-        copied = false;
-      }
-      say(
-        copied
-          ? "copied. The program is in the fragment of that link, which a browser never sends to a server, so nothing was stored anywhere."
-          : "the address bar now holds the link. Its fragment carries the program, and a browser never sends a fragment to a server, so nothing was stored anywhere.",
-        false,
-      );
-    });
-
-    /* ---------------------------------------------------------------------
-     * Wiring
-     * ------------------------------------------------------------------- */
 
     for (const btn of buttons) {
       btn.addEventListener("click", () =>
@@ -854,39 +554,36 @@ const badgeWords: Record<string, string> = {
     cancelBtn.addEventListener("click", () => engine.cancel());
 
     resetBtn.addEventListener("click", () => {
-      source.value = original.source;
-      entry = original.entry;
-      entryLabel.textContent = entry;
-      refreshInk();
+      source.value = recorded;
+      ink.innerHTML = recordedInk;
+      refreshStaleness();
       refreshDisabled();
       /* Back to the top of the program, not to wherever assigning the value
-       * left the caret. A reset that lands at the end of the file has undone
-       * the edit without looking like it. */
+       * left the caret. A reset that lands at the end of the file has undone the
+       * edit without looking like it. */
       source.focus();
       source.setSelectionRange(0, 0);
       source.scrollTop = 0;
       source.scrollLeft = 0;
-      if (ink !== null) syncScroll(ink);
-      shareNote.hidden = true;
+      ink.scrollTop = 0;
+      ink.scrollLeft = 0;
     });
 
+    /* The colouring sits behind the text, so the two have to scroll together or
+     * the emphasis slides off the tokens it belongs to. */
     source.addEventListener("scroll", () => {
-      const layer = document.querySelector<HTMLElement>('[data-role="ink"]');
-      if (layer !== null) syncScroll(layer);
+      ink.scrollTop = source.scrollTop;
+      ink.scrollLeft = source.scrollLeft;
     });
 
-    let settle = 0;
     source.addEventListener("input", () => {
-      refreshInk();
+      refreshStaleness();
       refreshDisabled();
-      shareNote.hidden = true;
-      window.clearTimeout(settle);
-      settle = window.setTimeout(() => void askLexer(), LEX_SETTLE);
     });
 
-    /* Cmd or Ctrl and Enter runs, from the editor and from anywhere else on the
+    /* Cmd or Ctrl and Enter runs, from the pane and from anywhere else on the
      * page, because a person who just read the output should not have to click
-     * back into the editor to run again. */
+     * back into the pane to run again. */
     const chord = (event: KeyboardEvent) => {
       if (event.key !== "Enter") return;
       if (!event.metaKey && !event.ctrlKey) return;
@@ -896,43 +593,8 @@ const badgeWords: Record<string, string> = {
     source.addEventListener("keydown", chord);
     document.addEventListener("keydown", chord);
 
-    /* A shared program, decoded before anything else is decided, so the
-     * staleness and colouring rules see the text the visitor arrived with. A
-     * fragment that will not decode is reported as one rather than silently
-     * ignored, because a link that quietly loses a program is worse than a link
-     * that says it did. */
-    const arrive = async () => {
-      if (location.hash.length <= 1) return;
-      if (!location.hash.includes("src=")) return;
-      const shared = await decodeShare(location.hash);
-      if (shared === null) {
-        appendBlock(
-          "gap",
-          "that link carries a program this page cannot decode, so the editor holds its own starting program instead. Nothing was guessed at: a half decoded program would be worse than none.",
-        );
-        return;
-      }
-      source.value = shared.source;
-      if (shared.entry !== DEFAULT_ENTRY) {
-        entry = shared.entry;
-        entryLabel.textContent = entry;
-      }
-      refreshInk();
-      refreshDisabled();
-    };
-
-    void (async () => {
-      await arrive();
-      refreshInk();
-      refreshDisabled();
-      /* Health first, because both the badge and whether the lexer can be
-       * asked at all depend on the answer, and it is one call per tab. */
-      if (hasCompileService) {
-        await health();
-        paintService();
-        void askLexer();
-      }
-    })();
+    refreshStaleness();
+    refreshDisabled();
   })();
 </script>
 
@@ -952,8 +614,13 @@ const badgeWords: Record<string, string> = {
   }
 
   .bench-title h1 {
-    font-size: var(--step-3);
-    margin: 0 0 0.25rem;
+    font-family: var(--font-mono);
+    font-size: var(--step-2);
+    margin: 0.1rem 0 0.35rem;
+  }
+
+  .bench-title .label a {
+    color: inherit;
   }
 
   .pitch {
@@ -964,9 +631,6 @@ const badgeWords: Record<string, string> = {
     line-height: var(--lead-snug);
   }
 
-  /* The badge. Four states, and the signal colour appears on exactly one of
-   * them, because a service that is not answering is a caveat and that is the
-   * only thing this colour means on the site. */
   .badge {
     margin: 0;
     font-size: var(--step--2);
@@ -984,16 +648,6 @@ const badgeWords: Record<string, string> = {
     margin-inline-end: 0.6ch;
   }
 
-  .badge[data-state="silent"] {
-    color: var(--signal-deep);
-    border-color: var(--signal);
-  }
-
-  .badge[data-state="absent"] {
-    color: var(--mute);
-  }
-
-  /* The control bar. */
   .bar {
     display: flex;
     flex-wrap: wrap;
@@ -1018,8 +672,8 @@ const badgeWords: Record<string, string> = {
     color: var(--track);
   }
 
-  /* The sample menu. A disclosure holding real links, so it needs no script
-   * and a deep link into it is a URL rather than a state. */
+  /* The sample menu. A disclosure holding real links, so it needs no script and
+   * a deep link into it is a URL rather than a state. */
   .menu {
     position: relative;
   }
@@ -1104,22 +758,8 @@ const badgeWords: Record<string, string> = {
     line-height: 1.5;
   }
 
-  .share-note {
-    flex-basis: 100%;
-    margin: 0.2rem 0 0;
-    font-size: var(--step--2);
-    color: var(--graphite);
-    max-width: var(--measure);
-    line-height: 1.5;
-  }
-
-  .share-note.refused {
-    color: var(--signal-deep);
-  }
-
   /* THE PANES. Editor first in source order, so the stacked order below the
-   * breakpoint is editor then output with no reordering: the thing the page is
-   * about is the thing a narrow screen shows first. */
+   * breakpoint is program then output with no reordering. */
   .panes {
     display: grid;
     grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
@@ -1144,11 +784,11 @@ const badgeWords: Record<string, string> = {
     min-width: 0;
   }
 
-  /* The editor. Two layers in one grid cell: the colouring behind, the editable
-   * text in front with its glyphs made transparent so the layer underneath
-   * shows through. Every metric that affects where a glyph lands is declared on
-   * both, because one difference in padding or line height slides the emphasis
-   * off the tokens it belongs to.
+  /* Two layers in one grid cell: the recorded colouring behind, the editable
+   * text in front with its glyphs made transparent so the layer underneath shows
+   * through. Every metric that affects where a glyph lands is declared on both,
+   * because one difference in padding or line height slides the emphasis off the
+   * tokens it belongs to.
    *
    * Selectors are two classes deep so they beat `.source pre` from code.css,
    * which sets `overflow: visible` and would otherwise stop the two layers
@@ -1175,7 +815,7 @@ const badgeWords: Record<string, string> = {
     white-space: pre;
   }
 
-  .editor :global(.editor-ink) {
+  .editor .editor-ink {
     color: var(--ink);
     overflow: hidden;
     pointer-events: none;
@@ -1189,7 +829,9 @@ const badgeWords: Record<string, string> = {
     resize: none;
   }
 
-  /* No colouring to show through, so the text becomes ink in its own right. */
+  /* Edited: the colouring is withdrawn and the text becomes ink in its own
+   * right, because the tokens underneath were the compiler's reading of a
+   * different program. */
   .editor .editor-text.plain {
     color: var(--ink);
     -webkit-text-fill-color: var(--ink);
@@ -1241,17 +883,10 @@ const badgeWords: Record<string, string> = {
     line-height: 1.5;
   }
 
-  .diagnostics :global(.case) {
-    margin-block-start: 1rem;
+  .pane-note a {
+    color: inherit;
   }
 
-  .diagnostics :global(.case h3) {
-    font-size: var(--step--2);
-    color: var(--mute);
-    margin: 0 0 0.3rem;
-  }
-
-  /* The stages this engine does not reach. */
   .stages {
     display: flex;
     flex-wrap: wrap;

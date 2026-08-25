@@ -7,9 +7,10 @@
  *   1. The recording. `site/records/highlight.json` holds one HTML string per
  *      file, produced by `Crystal::SyntaxHighlighter::HTML` running inside the
  *      iyi fork's own compiler. `highlight.ts` owns that file.
- *   2. A live lexer. When a compile service is reachable it exposes a lex-only
- *      capability, so the playground can hand the compiler's own lexer whatever
- *      someone is typing and paint the answer while they type.
+ *   2. A live lexer. When iyi's own compiler runs as wasm in the page it can
+ *      lex what somebody is typing, with no network involved and nothing
+ *      leaving the machine, and this module is the receiving end of that
+ *      stream.
  *
  * If the reflow and the rule-word emphasis lived inside `highlight.ts`, the
  * live path could not use them: that module imports the whole recording at

@@ -11,9 +11,10 @@
  * with, and the wall clock the run took in this tab. That is a real execution
  * of real compiler output, not a recording played back. The execution itself,
  * once the bytes are here and shown to be the recorded ones, is `execute.ts`,
- * shared with the engine that runs bytes a compile service produced: two
- * engines that could disagree about what running means would be a defect no
- * visitor is in a position to see.
+ * shared with the engine that will run a local wasm build of iyi's own
+ * compiler and execute what it compiled in the tab: two engines that could
+ * disagree about what running means would be a defect no visitor is in a
+ * position to see.
  *
  * WHAT IT DOES NOT DO, and this is the part the interface exists to keep
  * honest: it does not compile. There is no iyi compiler in this page. So the
@@ -306,12 +307,12 @@ export const wasiEngine: PlaygroundEngine = {
 
     /* Instantiate and run, which from here on is `execute.ts`. The
      * instantiation, the argv, the trap handling, the write ordering and the
-     * exit accounting are identical for a recorded module and for one a
-     * compile service produced, so they are written once there: a visitor
-     * cannot tell which engine produced a run, and the two must not be able to
-     * disagree about what running means. The reasoning about traps having no
-     * status, and about output arriving after `_start` returns, is stated with
-     * the code that implements it.
+     * exit accounting are identical for a recorded module and for one the
+     * in-browser compiler will produce in the tab, so they are written once
+     * there: a visitor cannot tell which engine produced a run, and the two
+     * must not be able to disagree about what running means. The reasoning
+     * about traps having no status, and about output arriving after `_start`
+     * returns, is stated with the code that implements it.
      *
      * `argv[0]` is the sample's own repository relative path, which is both
      * what the program is and, in iyi, the module's own name.
