@@ -803,3 +803,129 @@ links no LLVM" does not currently build. Given that the front end is the
 standing proof behind the fork's front-end timing claims, and given it is the
 foundation of the most valuable version of this website, that is the one to fix
 first.
+
+## 11. The wall is down, and it moved the question
+
+Sections 7 and 9 are now out of date in one direction and confirmed in another.
+Both updates are measurements.
+
+### `rescue` works on wasm32
+
+The item section 7 called "the only item on this list that is genuinely hard"
+is done. `bench/wasm_exceptions.sh` is the acceptance test this report asked
+for, gated in CI by the `wasm-exceptions` job:
+
+```
+$ bash bench/wasm_exceptions.sh
+engine: node v26.7.0, V8 14.6.202.34-node.28
+same output natively and on wasm32-wasi:
+  before
+  rescued: boom
+  after
+imports only wasi_snapshot_preview1
+```
+
+27 bytes each way, identical. The same program before the change, on the same
+machine, linked around the `_start` collision:
+
+```
+before
+EXITING: Attempting to raise:
+boom (Exception)
+RuntimeError: unreachable
+```
+
+The linked module asks the host for **seven `wasi_snapshot_preview1` functions
+and nothing else**. No `_Unwind_*`, no libc++abi, no libunwind, and no imported
+tag. The exception tag is defined inside the module, in module-level assembly,
+because nothing in LLVM IR can declare a wasm tag, wasm-ld does not synthesise
+one, and no library wasi-sdk ships defines it:
+
+```
+$ llvm-nm libc++abi.a libc++.a libc.a | grep -c __cpp_exception
+0
+```
+
+Blockers 3, 4, 5 and 6 are fixed rather than probed, including blocker 5, so
+the gate above links with no `-nostartfiles`. Section 10's items 1 to 4 are
+closed.
+
+### The interpreter runs the macro language, not the language
+
+Section 4 said the REPL "is a subset of the language rather than the language"
+and left it there. With the wall down that sentence is the whole remaining
+question: the front end gives a type checker in a browser, and a playground
+needs a visitor's program to **execute**. The macro AST interpreter
+(`src/compiler/iyi/macros/interpreter.cr`, 809 lines) is the only thing in the
+tree that can execute anything with no LLVM and no linker, so what it can run
+is what a playground can offer.
+
+Measured, not argued. A probe parses a whole file and hands the AST to
+`Iyi::MacroInterpreter#accept`, which is what a playground engine would do. All
+13 programs in `samples/iyi/`, unmodified:
+
+```
+basics       REFUSED: can't execute ModuleHeader in a macro
+calc         REFUSED: can't execute ModuleHeader in a macro
+collections  REFUSED: can't execute ModuleHeader in a macro
+derive       REFUSED: can't execute ModuleHeader in a macro
+errors       REFUSED: can't execute ModuleHeader in a macro
+files        REFUSED: can't execute ModuleHeader in a macro
+formatting   REFUSED: can't execute ModuleHeader in a macro
+generics     REFUSED: can't execute ModuleHeader in a macro
+hello        REFUSED: can't execute ModuleHeader in a macro
+immutable    REFUSED: can't execute ModuleHeader in a macro
+init_order   REFUSED: can't execute ModuleHeader in a macro
+modules      REFUSED: can't execute ModuleHeader in a macro
+webapp       REFUSED: can't execute ModuleHeader in a macro
+ran=0 refused=13
+```
+
+**Nought out of thirteen, and every one of them on line 1.** `module
+samples/hello` is R-1, the compilation-unit header every iyi file opens with,
+and the interpreter has no visit for it.
+
+Deleting the header and the `import` lines is a modification, so no sample runs
+as written, but it answers the more useful question of what stops it next:
+
+```
+basics       ran 19 of 30 output lines, then: undefined macro method 'ArrayLiteral#sorted'
+formatting   ran 3 lines, then: wrong argument for StringLiteral#[] (NumberLiteral): -1
+init_order   ran 1 line, then: undefined constant Boot::Registry
+calc         REFUSED: can't execute UsingDecl in a macro
+collections  REFUSED: can't execute UsingDecl in a macro
+derive       REFUSED: can't execute UsingDecl in a macro
+immutable    REFUSED: can't execute UsingDecl in a macro
+modules      REFUSED: can't execute UsingDecl in a macro
+webapp       REFUSED: can't execute UsingDecl in a macro
+generics     REFUSED: can't execute TraitDef in a macro
+hello        REFUSED: can't execute TraitDef in a macro
+errors       REFUSED: can't execute ClassDef in a macro
+files        REFUSED: undefined constant File
+ran=0 refused=13
+```
+
+Still nought. Three get partway and none finishes. The refusals are not a list
+of missing conveniences, they are the language's declaration forms: `module`,
+`using`, `trait`, `class`. `basics` gets furthest because most of it is integer
+arithmetic, `if`, `while` and `puts` over literals, which is what the macro
+language is for; it dies the moment it calls `Array#sort`, because
+`ArrayLiteral` is a compile-time node and `sorted` is not one of its methods.
+
+**The boundary, for a website to publish.** The interpreter evaluates iyi's
+*macro* language: literal arithmetic on integers and strings, `if`, `while`,
+array and hash literal methods, `puts`, and the compile-time reflection a macro
+body uses, all over AST nodes. It does not execute the language. It cannot read
+a module header, declare a trait, a class or a `using`, define a method and
+then call it, or reach the standard library, and it has no runtime values at
+all: an integer in it is a `NumberLiteral`, not an `Int32`. A visitor could
+type expressions and see them evaluated. A visitor could not type any program
+in `samples/iyi/`, or any program that begins the way iyi says a program
+begins.
+
+So a playground that runs the visitor's own code is not reachable through this
+interpreter as it stands, and the gap is not polish. What is reachable now that
+the wall is down is the front end in the browser: real parsing, real semantic
+analysis, real iyi diagnostics on what the visitor typed, with no server and no
+backend of any kind. That is a type checker, not a playground, and the
+difference is worth naming rather than blurring.
