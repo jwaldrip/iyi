@@ -102,6 +102,17 @@ class Iyi::Program
 
     flags.add "bsd" if target.bsd?
 
+    # iyi: wasm32 has no threads, so there is no multi-threaded build of it and
+    # the flag that says so belongs to the target rather than to whoever
+    # remembers to type it. `src/crystal/system/wasi/thread.cr` raises
+    # `NotImplementedError` from every method that would make or switch one.
+    #
+    # Without this, `Crystal::EventLoop.current`
+    # (`src/crystal/event_loop.cr:49`) routes IO through an execution context
+    # the wasi runtime never establishes, and the first `puts` in any program
+    # dies with `Thread#execution_context cannot be nil`.
+    flags.add "without_mt" if target.architecture == "wasm32"
+
     # iyi: the one place outside codegen that wants a target machine, and it
     # wants a CPU name off it. A front-end build has no LLVM to make one with
     # and no AVR program to compile with it (see `../llvm_shim.cr`).

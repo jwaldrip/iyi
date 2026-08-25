@@ -117,23 +117,40 @@ module Iyi
       end
     end
 
+    # iyi: `{% if %}` rather than `if`, because the branch is not reached at run
+    # time on a target with no subprocesses and is still instantiated. Compiling
+    # this compiler for wasm32-wasi failed here:
+    #
+    #     In src/compiler/iyi/config.cr:122:17
+    #      122 | Process.run("ldd", {"--version"}, output: io, error: io)
+    #     Error: instantiating 'Process.run(...)'
+    #     ...
+    #     Error: undefined method 'prepare_args' for Crystal::System::Process.class
+    #
+    # `Config.host_target` only asks this when the host is Linux, so on a wasm
+    # build the answer is unreachable rather than wrong: a compiler running in a
+    # browser has no host libc to tell gnu from musl, and nothing can ask it.
     def self.linux_runtime_libc
-      ldd_version = String.build do |io|
-        Process.run("ldd", {"--version"}, output: io, error: io)
-      rescue
-        # In case of an error (eg. `ldd` not available), we assume it's gnu.
-        return "gnu"
-      end
-
-      # Generally, `ldd --version` should print `musl`.
-      # But there is a bug in alpine 3.10 which breaks `ldd --version`.
-      # But detection still works with `-musl`, and it doesn't do harm in other
-      # cases.
-      if ldd_version.starts_with?("musl") || ldd_version.includes?("-musl")
-        "musl"
-      else
+      {% if flag?(:wasm32) %}
         "gnu"
-      end
+      {% else %}
+        ldd_version = String.build do |io|
+          Process.run("ldd", {"--version"}, output: io, error: io)
+        rescue
+          # In case of an error (eg. `ldd` not available), we assume it's gnu.
+          return "gnu"
+        end
+
+        # Generally, `ldd --version` should print `musl`.
+        # But there is a bug in alpine 3.10 which breaks `ldd --version`.
+        # But detection still works with `-musl`, and it doesn't do harm in other
+        # cases.
+        if ldd_version.starts_with?("musl") || ldd_version.includes?("-musl")
+          "musl"
+        else
+          "gnu"
+        end
+      {% end %}
     end
 
     def self.library_path

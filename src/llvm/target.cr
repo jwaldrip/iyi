@@ -41,6 +41,31 @@ struct LLVM::Target
     target_machine ? TargetMachine.new(target_machine) : raise "Couldn't create target machine"
   end
 
+  # iyi: a target machine that emits wasm exception-handling instructions
+  # (`try`/`catch`/`throw`) for `invoke` and its landing pads, instead of
+  # deleting them.
+  #
+  # This is a separate entry point rather than a parameter on
+  # `create_target_machine` because it cannot go through `LLVMCreateTargetMachine`
+  # at all: the exception model lives in `TargetOptions`, which that function
+  # builds itself. `src/llvm/ext/llvm_ext.cc` records the sequence.
+  #
+  # *legacy_eh* picks the encoding: `false` emits the standardised proposal
+  # (`try_table`/`throw_ref`), `true` the earlier `try`/`catch`/`end_try` one
+  # that engines shipped first.
+  def create_wasm_eh_target_machine(triple, cpu = "", features = "",
+                                    opt_level = LLVM::CodeGenOptLevel::Default,
+                                    reloc = LLVM::RelocMode::PIC,
+                                    code_model = LLVM::CodeModel::Default,
+                                    legacy_eh = false) : LLVM::TargetMachine
+    {% if LibLLVM::IS_LT_180 %}
+      raise "wasm exception handling needs LLVM 18 or newer, and this compiler was built against #{LibLLVM::VERSION}"
+    {% else %}
+      target_machine = LibLLVMExt.create_target_machine_wasm_eh(self, triple, cpu, features, opt_level, reloc, code_model, legacy_eh ? 1 : 0)
+      target_machine ? TargetMachine.new(target_machine) : raise "Couldn't create wasm target machine"
+    {% end %}
+  end
+
   def to_s(io : IO) : Nil
     io << "LLVM::Target(name="
     name.inspect(io)

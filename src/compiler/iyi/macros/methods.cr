@@ -252,23 +252,33 @@ module Iyi
       end
       cmd = cmd.join " "
 
-      begin
-        result = `#{cmd}`
-      rescue exc : File::Error | IO::Error
-        # Taking the os_error message to avoid duplicating the "error executing process: "
-        # prefix of the error message and ensure uniqueness between all error messages.
-        node.raise "error executing command: #{cmd}: #{exc.os_error.try(&.message) || exc.message}"
-      rescue exc
-        node.raise "error executing command: #{cmd}: #{exc.message}"
-      end
+      # iyi: `{{ system(...) }}` runs a command while the program is being
+      # analysed, and a compiler built for wasm32-wasi has no way to run one:
+      # wasi has no subprocesses, so `Process` has no backend and the backtick
+      # cannot even be instantiated. This is a language feature that this build
+      # of the compiler does not have, so it says so at the macro's own
+      # location instead of being gated silently.
+      {% if flag?(:wasm32) %}
+        node.raise "`system` is not available in a compiler built for wasm32-wasi: the target has no subprocesses, so a macro cannot run `#{cmd}`"
+      {% else %}
+        begin
+          result = `#{cmd}`
+        rescue exc : File::Error | IO::Error
+          # Taking the os_error message to avoid duplicating the "error executing process: "
+          # prefix of the error message and ensure uniqueness between all error messages.
+          node.raise "error executing command: #{cmd}: #{exc.os_error.try(&.message) || exc.message}"
+        rescue exc
+          node.raise "error executing command: #{cmd}: #{exc.message}"
+        end
 
-      if $?.success?
-        @last = MacroId.new(result)
-      elsif result.empty?
-        node.raise "error executing command: #{cmd}, got exit status #{$?}"
-      else
-        node.raise "error executing command: #{cmd}, got exit status #{$?}:\n\n#{result}\n"
-      end
+        if $?.success?
+          @last = MacroId.new(result)
+        elsif result.empty?
+          node.raise "error executing command: #{cmd}, got exit status #{$?}"
+        else
+          node.raise "error executing command: #{cmd}, got exit status #{$?}:\n\n#{result}\n"
+        end
+      {% end %}
     end
 
     def interpret_raise(node)

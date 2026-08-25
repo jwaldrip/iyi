@@ -23,6 +23,12 @@ class LLVM::Context
     Type.new LibLLVM.void_type_in_context(self)
   end
 
+  # iyi: the type of a `catchpad`, which is what `llvm.wasm.get.exception` takes
+  # to say which funclet's exception it wants.
+  def token : Type
+    Type.new LibLLVM.token_type_in_context(self)
+  end
+
   def int1 : Type
     Type.new LibLLVM.int1_type_in_context(self)
   end

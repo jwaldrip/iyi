@@ -403,6 +403,31 @@ module Iyi
         end
       end
 
+      # iyi: a wasm `throw` names a tag, and the tag `llvm.wasm.throw` names is
+      # `__cpp_exception`. LLVM only ever *references* it: WebAssemblyAsmPrinter
+      # marks the symbol external and undefined
+      # (WebAssemblyAsmPrinter.cpp:250), nothing in LLVM IR can declare a wasm
+      # tag, wasm-ld does not synthesise one, and it is defined in no library
+      # wasi-sdk ships. An undefined tag does not link:
+      #
+      #     wasm-ld: error: hello.wasm.o: undefined symbol: __cpp_exception
+      #
+      # So iyi defines it, in module assembly, which is the one place a tag
+      # definition can be written. Weak, and therefore emitted in every module,
+      # because codegen runs in parallel over many of them and a strong
+      # definition in two objects is a duplicate symbol.
+      #
+      # The tag's parameter is the thrown pointer, i32 on wasm32, which is what
+      # `llvm.wasm.get.exception` hands back on the other side.
+      if @program.has_flag?("wasm32")
+        llvm_mod.append_inline_asm <<-ASM
+          \t.tagtype\t__cpp_exception i32
+          \t.weak\t__cpp_exception
+          \t.section\t.text.__cpp_exception,"",@
+          __cpp_exception:
+          ASM
+      end
+
       llvm_mod
     end
 
