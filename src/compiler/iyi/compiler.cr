@@ -969,8 +969,7 @@ module Iyi
                                             unit_names : Array(String)) : Array(IyiMod::ClassVarRef)
       lazy = {} of String => Bool
       unit_names.each do |unit_name|
-        program.iyi_unit_class_vars[unit_name]?.try &.each do |variable, through_read|
-          name = "#{variable.owner}::#{variable.name}"
+        program.iyi_unit_class_vars[unit_name]?.try &.each do |name, through_read|
           lazy[name] = through_read || lazy[name]? || false
         end
       end

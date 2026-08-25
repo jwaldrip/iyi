@@ -2247,6 +2247,14 @@ describe Iyi::IyiMod do
   # global. Assume the first and an iyi-prelude program dies on
   # `BUG: __crystal_once is not defined`; assume the second and a `--crystal`
   # build leaves `~Exception::CallStack::skip:read` undefined.
+  # Two of them share a *name* and differ only in their owner, and that is the
+  # case this list was once unable to hold: the bookkeeping behind it was keyed
+  # on the variable, `MetaTypeVar` is a `Var`, and a `Var`'s equality is its
+  # name. A class variable declared on a superclass is copied onto every
+  # subclass that reads one, so `bindata`'s `@@bit_fields` is six variables and
+  # was one key — the last write took the entry and the link ended on
+  # `~ASN1::BER::bit_fields:read`.
+  #
   it "round-trips how a unit refers to a class variable" do
     with_temporary_file do |path|
       artifact = Iyi::IyiMod::Artifact.new(
@@ -2258,6 +2266,7 @@ describe Iyi::IyiMod do
         imports: [] of Iyi::IyiMod::ImportEdge,
         class_vars: [
           Iyi::IyiMod::ClassVarRef.new("App::Box::Store::@@cache", false),
+          Iyi::IyiMod::ClassVarRef.new("App::Box::Crate::@@cache", false),
           Iyi::IyiMod::ClassVarRef.new("Exception::CallStack::@@skip", true),
         ],
       )
@@ -2265,8 +2274,9 @@ describe Iyi::IyiMod do
 
       read = Iyi::IyiMod.read(path).class_vars
       read.map(&.name).should eq ["App::Box::Store::@@cache",
+                                  "App::Box::Crate::@@cache",
                                   "Exception::CallStack::@@skip"]
-      read.map(&.lazy).should eq [false, true]
+      read.map(&.lazy).should eq [false, false, true]
     end
   end
 

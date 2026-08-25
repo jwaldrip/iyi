@@ -251,7 +251,16 @@ module Iyi
     # `iyi_record_unit_class_var`.
     #
     # Recorded only while writing artifacts, like the constants above.
-    getter iyi_unit_class_vars = {} of String => Hash(MetaTypeVar, Bool)
+    # Keyed by `Owner::@@name`, and the qualified name is the whole of it. This
+    # was keyed by the variable itself, and `MetaTypeVar` is a `Var`, whose
+    # equality is `def_equals_and_hash name` — its *name*, with nothing of its
+    # owner in it. A class variable declared on a superclass is copied onto
+    # every subclass that reads it, so `bindata`'s `@@bit_fields` is six
+    # variables and one hash key: the unit `ASN1::BER` reads four of them and
+    # the last write took the entry. The consumer was told about one, made one
+    # read function, and the link ended on `undefined symbol:
+    # ~ASN1::BER::bit_fields:read`.
+    getter iyi_unit_class_vars = {} of String => Hash(String, Bool)
 
     # iyi: the types an imported artifact's object code refers to a type id of,
     # resolved (SPEC.md IV.1g).

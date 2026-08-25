@@ -290,6 +290,18 @@ jobs:
           fi
           bash bench/kemal_serves.sh
 
+      # And a shard of a different kind, because the one above reaches nothing
+      # outside Crystal's own library. `jwt` reaches OpenSSL through a reopened
+      # `lib`, and under it `bindata` writes classes with macros that write
+      # classes and hangs an exception hierarchy off `Exception`. What that
+      # exercises is not what kemal exercises: a `fun` a travelling body calls,
+      # a `lib` constant, a class variable four subclasses share the name of, a
+      # `to_s` reached through a class held virtually. A token is a signature
+      # over bytes, so this fails loudly where a boundary that dropped a field
+      # would otherwise just sign something else.
+      - name: A signed JWT, through four boundaries
+        run: bash bench/jwt_signs.sh
+
       # A library arriving with a feature is a decision, and this is where it
       # gets noticed. Seven undefined symbols in any iyi program (SPEC.md III.9),
       # and a new one fails here rather than on somebody's machine.

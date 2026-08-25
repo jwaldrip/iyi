@@ -1212,6 +1212,16 @@ module Iyi
           var.owner = self
           var.thread_local = class_var.thread_local?
           var.initializer = class_var.initializer
+          # iyi: and the value as it was written, for the same reason the line
+          # above carries the node. A subclass's copy of an inherited class
+          # variable is a variable in its own right — its own storage, its own
+          # initialiser run — so a boundary that declares it has to say what it
+          # starts as. `bindata` writes `@@bit_fields = {} of String =>
+          # BitField` on `BinData` and never again; the copy on `ASN1::BER`
+          # crossed with the type and without the value, and the consumer said
+          # `class variable '@@bit_fields' of ASN1::BER is not nilable so it
+          # must have an initializer`.
+          var.iyi_initialiser_source = class_var.iyi_initialiser_source
           var.bind_to(class_var)
           self.class_vars[name] = var
           return var
@@ -3590,6 +3600,19 @@ module Iyi
 
     # Was this const's value cleaned up by CleanupTransformer yet?
     property? cleaned_up = false
+
+    # iyi: the value as it was *written*, for `Artifact#initialiser` (SPEC.md
+    # IV.2), and recorded for the same reason a class variable's is: a
+    # constant's value has to run on the far side of an artifact, so it travels
+    # as source, and the node above stops being that source. `CleanupTransformer`
+    # replaces an array literal with what it expands to, so `bindata`'s
+    # `KLASS_NAME = [ASN1::BER::ExtendedIdentifier]` reached the format as five
+    # statements over three temporaries and the consumer said `undefined local
+    # variable or method '__temp_829'`.
+    #
+    # Empty for a constant nobody wrote — the compiler's own `$Regex:0`, the
+    # program's `ARGV_UNSAFE` — which is right: those are not a shard's to carry.
+    property iyi_value_source : String = ""
 
     # Is this constant accessed with pointerof(...)?
     property? pointer_read = false

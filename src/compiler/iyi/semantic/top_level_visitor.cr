@@ -1682,6 +1682,9 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     end
 
     const = Const.new(@program, scope, name, value)
+    # iyi: here, because here is the only place the value is still what the
+    # shard wrote. See `Const#iyi_value_source`.
+    const.iyi_value_source = value.to_s
     const.declared_type = declared_type
     const.private = true if target.visibility.private?
 

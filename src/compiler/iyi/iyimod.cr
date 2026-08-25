@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 32_u32
+  FORMAT_VERSION = 33_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -394,6 +394,11 @@ module Iyi::IyiMod
     # iyi: an enum's members, `{"Small", "0"}`. Its own field rather than a
     # reading of `fields`, because a member is not a field: it has a value where
     # a field has a type, and the two render differently and mean differently.
+    #
+    # And a reopened `lib`'s constants, which are the same shape and the same
+    # line: `EVP_PKEY_RSA = 6`. A `lib` has no enum of its own to confuse them
+    # with, and a name with a value beside it is one thing however it was
+    # declared.
     members : Array({String, String}) = [] of {String, String},
     # iyi: the type's own class variables, `{"@@seen", "Int32", "0"}` — name,
     # resolved type, and the initialiser as written, empty when it has none.
@@ -438,7 +443,25 @@ module Iyi::IyiMod
     # Written back as `include` lines rather than into `supertraits`. A trait
     # list is iyi's own `:` syntax and means something R-2b checks; this is
     # what the shard wrote, in the language it wrote it in.
-    includes : Array(String) = [] of String
+    includes : Array(String) = [] of String,
+    # iyi: a `lib`'s `fun` lines, as the shard wrote them.
+    #
+    # Text rather than a `Signature`, for the reason `macros` is text: a `fun`
+    # has a shape no `def` has — a C name beside Crystal's, a return
+    # that is not optional, and no receiver, no block, no visibility — and
+    # rendering one back through a record built for methods would be a
+    # translation with nothing to gain by it.
+    #
+    # Why they travel at all is a correction. The first reading was that a
+    # `fun` is a C symbol: `BN_new` is resolved by the system linker against
+    # `-lcrypto`, so a consumer that never calls one needs no declaration, and
+    # what it needed from a reopened `lib` was only to be able to *name* the
+    # types. That is true of the object code this artifact carries and false of
+    # the bodies it carries — a body the consumer compiles makes the call
+    # itself, so the consumer needs the declaration to make it with.
+    # `openssl_ext`'s `PKey.read` travels, and it said `undefined fun
+    # 'pem_read_bio_rsa_private_key' for LibCrypto`.
+    funs : Array(String) = [] of String
 
   # How a body is found again on the far side.
   #
@@ -1830,6 +1853,9 @@ module Iyi::IyiMod
     # methods, which may override what it brings. See `TypeDecl#includes`.
     declaration.includes.each { |name| io << inner << "include " << name << '\n' }
 
+    # A `lib`'s own, written as the shard wrote them. See `TypeDecl#funs`.
+    declaration.funs.each { |source| io << inner << source << '\n' }
+
     declaration.methods.each do |signature|
       render_declaration io, signature, indent: inner,
         body: bodies[mono_body_key(declaration.name, signature)]?
@@ -2227,6 +2253,7 @@ module Iyi::IyiMod
       write_string io, declaration.superclass
       write_strings io, declaration.includes
       write_strings io, declaration.macros
+      write_strings io, declaration.funs
       write_signatures io, declaration.methods
       write_type_declarations io, declaration.types
     end
@@ -2247,10 +2274,11 @@ module Iyi::IyiMod
       superclass = read_string(io)
       includes = read_strings(io)
       macros = read_strings(io)
+      funs = read_strings(io)
       methods = read_signatures(io)
       TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
         visibility, read_type_declarations(io), value, macros, members, class_vars,
-        superclass, includes)
+        superclass, includes, funs)
     end
   end
 
