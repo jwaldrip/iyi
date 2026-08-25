@@ -1,0 +1,1063 @@
+---
+/**
+ * The playground shell.
+ *
+ * The slot: everything about compiling and running iyi arrives through one
+ * interface, `PlaygroundEngine` (src/playground/types.ts), resolved in one
+ * place, `activeEngine()` (src/playground/registry.ts). This component is
+ * built twice, once in node during the static build and once as a page in a
+ * browser, and it must render the SAME interface on both sides, so nothing
+ * here is conditional on the browser existing.
+ *
+ * THE REDUCED-UI RULE, applied here: the shell renders a control for every
+ * capability the contract knows. A control whose capability the active engine
+ * does not claim is disabled for real and carries a mono note naming the
+ * missing capability. It is not hidden, and it is not clickable. An engine
+ * that does part of the job gets a smaller playground, never a broken one.
+ *
+ * THREE FURTHER RULES, each one a consequence of the site's own argument.
+ *
+ * 1. NOTHING ON THIS PAGE IS TYPED. The program in the pane is the recorded
+ *    text of a real file in `samples/iyi/`, its colouring is the compiler's own
+ *    lexer, the module the run executes is a recorded artifact checked by
+ *    digest, and the diagnostics are the real compiler's output. Every one of
+ *    those arrives from a record under `site/records/`, and a record with a
+ *    hole in it fails this build.
+ *
+ * 2. THE RUN IS PRECOMPILED, AND THE PAGE SAYS SO WHEREVER IT MATTERS. There is
+ *    no iyi compiler in a browser. So the pane is editable, because a reader
+ *    should be able to move around in the program, and the moment the text
+ *    stops being the recorded text the page says in one line that the run
+ *    executes the recorded program instead, the run button changes its own
+ *    label to say the same thing, and the recorded colouring is withdrawn
+ *    rather than left to imply a lexer that is not here.
+ *
+ * 3. THE DIAGNOSTICS PANE IS AN EVENT SINK. It is fed by
+ *    `engine.run(..., { want: "diagnostics" })`, which is the path a checking
+ *    engine would feed, so wiring one in changes the engine and nothing else.
+ *    Whether the pane refreshes as the visitor types is derived from the
+ *    contract rather than from a flag: an engine that claims `compile` can
+ *    check what you typed, so its diagnostics depend on the pane and are
+ *    re-requested when it changes; an engine that does not claim `compile`
+ *    cannot, so they are not.
+ */
+import { activeEngine } from "../playground/registry";
+import type { Capability, RunEvent } from "../playground/types";
+import { CAPABILITY_LABEL } from "../playground/types";
+import type { CuratedSample } from "../playground/samples";
+import {
+  curatedSamples,
+  playgroundHref,
+  wasmProvenance,
+} from "../playground/samples";
+import { diagnosticCases, diagnosticsProvenance } from "../playground/diagnostics";
+import { diagnosticHtml } from "../playground/render";
+import { highlightProvenance, highlightedLines, recordedText } from "../lib/highlight";
+import Stamped from "./Stamped.astro";
+
+interface Props {
+  /** The curated sample this page is for, resolved by the route. */
+  sample: CuratedSample;
+}
+
+const { sample } = Astro.props;
+
+const engine = activeEngine();
+const caps = engine.capabilities();
+const supports = (cap: Capability) => caps.supported.includes(cap);
+const labelOf = (cap: Capability) => CAPABILITY_LABEL[cap];
+
+/* The program, and its colouring, both out of the records, and both read here
+ * at build time. `src/lib/highlight.ts` proves the round trip through the
+ * record, so this is the file's bytes and not an approximation of them, and
+ * reading it in the shell rather than through the engine keeps the record out
+ * of the client bundle. */
+const text = recordedText(sample.path);
+const inkLines = highlightedLines(sample.path);
+const ink = inkLines.join("\n");
+
+/* The HTML parser drops one newline immediately after a `<textarea>` open tag
+ * and after a `<pre>` open tag. Every sample begins with a comment, so this
+ * costs nothing today; it is here so that a sample that begins with a blank
+ * line does not silently lose it and shift every line number by one. */
+const seed = text.startsWith("\n") ? `\n${text}` : text;
+const seedInk = ink.startsWith("\n") ? `\n${ink}` : ink;
+
+/* Controls the page offers, in the order a person reaches for them. Each one is
+ * exactly one capability, so a disabled note can name its absence precisely.
+ * `diagnostics` is not a control: it is a property of what `run` reports, and
+ * the pane below states whether the engine computes them or replays them. */
+const controls: Capability[] = [
+  "compile",
+  "run",
+  "emit-iyimod",
+  "mod-dump",
+  "format",
+];
+
+const editable = caps.maxSourceBytes > 0;
+const emptySlot = caps.supported.length === 0;
+
+/* Whether a diagnostic on this page can be about the text in the pane.
+ * Derived from the contract, not from a setting: checking source is what
+ * `compile` means, so an engine that does not claim it cannot be reporting on
+ * what the visitor typed, and the page says which of the two it is. */
+const liveChecking = supports("compile") && supports("diagnostics");
+
+/* THE DIAGNOSTICS PANE, built from the engine's own event stream.
+ *
+ * This is the same call the browser makes. Doing it here as well means the
+ * static page carries the real compiler output for a visitor with no scripts,
+ * and it means a future engine that breaks the contract fails this build rather
+ * than shipping a pane that renders nothing. */
+const diagnosticEvents: Extract<RunEvent, { kind: "diagnostic" }>[] = [];
+if (supports("diagnostics")) {
+  for await (const event of engine.run([{ path: sample.path, text }], {
+    entry: sample.path,
+    want: "diagnostics",
+  })) {
+    if (event.kind === "diagnostic") diagnosticEvents.push(event);
+    else if (event.kind !== "unsupported") {
+      throw new Error(
+        `Playground: the active engine claims diagnostics but answered a ` +
+          `diagnostics request with a "${event.kind}" event. The pane renders ` +
+          `diagnostics, and an engine that streams output into it is reporting ` +
+          `something other than what was asked for.`,
+      );
+    }
+  }
+  if (diagnosticEvents.length === 0) {
+    throw new Error(
+      "Playground: the active engine claims the diagnostics capability and " +
+        "produced no diagnostic for any recorded case. An empty pane rendered " +
+        "without complaint would imply that nothing in this language can be " +
+        "got wrong.",
+    );
+  }
+}
+
+/* Build-time probe of the empty case. The contract demands that an engine
+ * claiming no capabilities still answers `run`, with exactly one refusal naming
+ * what is missing, and the page renders that refusal instead of a placeholder.
+ * Enforcing it here means a future engine that violates it fails this build. */
+let refusal = "";
+if (emptySlot) {
+  const events: RunEvent[] = [];
+  for await (const event of engine.run([{ path: sample.path, text }], {
+    entry: sample.path,
+  })) {
+    events.push(event);
+  }
+  if (
+    events.length !== 1 ||
+    events[0].kind !== "unsupported" ||
+    !events[0].reason
+  ) {
+    throw new Error(
+      "Playground: the active engine claims no capabilities, so run() must " +
+        "yield exactly one unsupported event naming what is missing. That is " +
+        "the contract, and a silent no-op here is how a slot ends up looking " +
+        "like it ran something.",
+    );
+  }
+  refusal = events[0].reason;
+}
+
+const kb = (bytes: number) =>
+  `${(bytes / 1024).toLocaleString("en-GB", { maximumFractionDigits: 1 })} KB`;
+
+/* The claim the recording supports. A ratio survives the machine and an
+ * absolute does not, and there is no ratio here, so the headline is the claim
+ * itself and every figure is demoted into the body of the card beside the
+ * machine that produced it. `identical` is a recorded fact. */
+const claim = sample.identical
+  ? "The module printed exactly what the native binary printed"
+  : "On this target the module and the native binary do not print the same thing";
+---
+
+<section class="playground spread" aria-label="Playground">
+  <div class="play-inner to-wide">
+    <div class="play-head">
+      <span class="label">engine</span>
+      <span class="engine-name mono">{engine.id}</span>
+      <span class="label">budget</span>
+      <span class="engine-name mono"
+        >{caps.maxSourceBytes === 0
+          ? "no source accepted"
+          : kb(caps.maxSourceBytes)}</span
+      >
+      <span class="label">can</span>
+      <span class="engine-name mono"
+        >{caps.supported.length === 0
+          ? "nothing, and it says so"
+          : caps.supported.map(labelOf).join(", ")}</span
+      >
+    </div>
+
+    {/* The curated set, as links rather than a select, so a lesson's deep
+        link is a real URL and the picker works before any script runs. Each
+        page carries only its own program and its own recording, which is the
+        same argument the language makes about linking only what you use. */}
+    <nav class="picker" aria-label="Curated samples">
+      <span class="label">sample</span>
+      <ul>
+        {
+          curatedSamples.map((entry) => (
+            <li>
+              <a
+                href={playgroundHref(entry.id)}
+                class="pick mono"
+                aria-current={entry.id === sample.id ? "page" : undefined}
+                data-lesson={entry.note === null ? undefined : "true"}
+              >
+                {entry.id}
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+    </nav>
+
+    <figure class="source">
+      <figcaption class="source-head">
+        <span class="path">{sample.path}</span>
+        <span
+          >{inkLines.length} lines, tokens from the compiler's own lexer</span
+        >
+      </figcaption>
+
+      {/* The recorded colouring sits behind the editable text. The two are
+          metric for metric identical, and the moment the text stops being the
+          recorded text the colouring is withdrawn rather than left to imply a
+          lexer that is not in this page. */}
+      <div class="editor" data-role="editor">
+        <pre class="editor-ink" data-role="ink" aria-hidden="true" set:html={seedInk} />
+        <textarea
+          class="editor-text"
+          data-role="source"
+          data-path={sample.path}
+          spellcheck="false"
+          autocomplete="off"
+          autocapitalize="off"
+          autocorrect="off"
+          wrap="off"
+          readonly={editable ? undefined : true}
+          aria-label={`Source of ${sample.path}`}>{seed}</textarea
+        >
+      </div>
+
+      <figcaption class="source-head source-foot">
+        <span class="mono" data-role="edit-state">
+          {
+            editable
+              ? "this is the recorded program, exactly as the module was built from it"
+              : "read only: the active engine accepts no source, so editing is disabled rather than faked"
+          }
+        </span>
+        <button
+          type="button"
+          class="decl-toggle"
+          data-role="reset"
+          hidden={true}
+        >
+          reset
+        </button>
+      </figcaption>
+    </figure>
+
+    <div class="controls">
+      {
+        controls.map((cap) =>
+          supports(cap) ? (
+            <button
+              type="button"
+              class="decl-toggle"
+              data-control={cap}
+              data-label={labelOf(cap)}
+              data-label-stale={cap === "run" ? "run recorded" : undefined}
+              disabled={editable ? undefined : true}
+            >
+              {labelOf(cap)}
+            </button>
+          ) : (
+            <div class="control">
+              <button type="button" class="decl-toggle" disabled={true}>
+                {labelOf(cap)}
+              </button>
+              <span class="control-note mono">
+                no {labelOf(cap)}: capability missing
+              </span>
+            </div>
+          ),
+        )
+      }
+      <button
+        type="button"
+        class="decl-toggle"
+        data-role="cancel"
+        disabled={true}
+      >
+        cancel
+      </button>
+    </div>
+
+    {/* The one line about what a run actually executes. Rewritten by the
+        client the moment the pane diverges, and true before any script runs. */}
+    <p class="staleness mono" data-role="staleness">
+      {
+        supports("run")
+          ? `run executes ${sample.wasm}, the module the compiler produced from this file on the machine stamped below`
+          : "the active engine cannot run, so nothing here executes"
+      }
+    </p>
+
+    <div class="console" data-role="output">
+      <div class="console-chrome">
+        <i aria-hidden="true"></i><i aria-hidden="true"></i><i
+          aria-hidden="true"></i>
+        <span class="caption">playground output, {engine.id} engine</span>
+      </div>
+      <pre>{refusal ? refusal : ""}</pre>
+    </div>
+
+    {/* The recording. A byte count and an exit status are recorded numbers, so
+        they appear only inside the stamped frame that carries the machine and
+        the command, never as bare figures on the page. */}
+    <Stamped
+      claim={claim}
+      subject={`${sample.wasm} from ${sample.path}`}
+      machine={wasmProvenance.machine}
+      command={wasmProvenance.command}
+      outcome={sample.identical ? "flat" : "loss"}
+    >
+      <dl class="recording">
+        <div>
+          <dt>module</dt>
+          <dd>{sample.wasm}, {sample.bytes} bytes</dd>
+        </div>
+        <div>
+          <dt>sha256</dt>
+          <dd>{sample.sha256}</dd>
+        </div>
+        <div>
+          <dt>recorded exit</dt>
+          <dd>{sample.exitCode}</dd>
+        </div>
+        <div>
+          <dt>compiler</dt>
+          <dd>{wasmProvenance.compiler}</dd>
+        </div>
+        <div>
+          <dt>commit</dt>
+          <dd>{wasmProvenance.commit}</dd>
+        </div>
+        {
+          sample.note !== null && (
+            <div class="lesson">
+              <dt>the lesson</dt>
+              <dd>{sample.note}</dd>
+            </div>
+          )
+        }
+      </dl>
+    </Stamped>
+
+    <aside class="evidence evidence-block">
+      <dl>
+        <dt>engine</dt>
+        <dd>{engine.id}, {engine.label}</dd>
+        <dt>claims</dt>
+        <dd>
+          {caps.supported.length === 0
+            ? "no capabilities"
+            : caps.supported.map(labelOf).join(", ")}
+        </dd>
+        <dt>max source</dt>
+        <dd>
+          {caps.maxSourceBytes === 0
+            ? "0 bytes, nothing accepted"
+            : `${caps.maxSourceBytes} bytes`}
+        </dd>
+        <dt>diagnostics</dt>
+        <dd>
+          {
+            supports("diagnostics")
+              ? liveChecking
+                ? "computed from the pane above, with file, line, column and rule"
+                : "reported with file, line, column and rule, replayed from a recording of the real compiler"
+              : "not reported, failures have no location"
+          }
+        </dd>
+        <dt>colouring</dt>
+        <dd>
+          the compiler's own lexer, recorded by {highlightProvenance.command}
+        </dd>
+        {
+          caps.notes.map((note) => (
+            <Fragment>
+              <dt>caveat</dt>
+              <dd>{note}</dd>
+            </Fragment>
+          ))
+        }
+      </dl>
+    </aside>
+  </div>
+</section>
+
+{
+  supports("diagnostics") && (
+    <section class="spread diagnostics" aria-label="Diagnostics">
+      <div class="to-wide">
+        <hr class="rule" />
+        <h2>What the compiler says when it refuses</h2>
+        <p class="pane-note">
+          {
+            liveChecking
+              ? "Live: the active engine checks the program in the pane above, and these are its own diagnostics."
+              : "Recorded, not live, and the reason is structural rather than unfinished work. iyi's compiler reports an error by raising, and raise on wasm32 does not unwind, so a compiler compiled for this page could not hand a diagnostic back to whatever called it: it could only die. The investigation is at doc/website/PLAYGROUND-FEASIBILITY.md. So the programs below are real files under site/records/break/, they are really wrong, and this is the real compiler's output on them, captured verbatim."
+          }
+        </p>
+        <div class="cases" data-role="diagnostics">
+          {
+            diagnosticEvents.map((event, index) => (
+              <article class="case" data-case={diagnosticCases[index]?.id}>
+                <h3>{diagnosticCases[index]?.title ?? event.file}</h3>
+                <p class="case-meta mono">
+                  {diagnosticCases[index]?.path ?? event.file}, exit
+                  {" "}
+                  {diagnosticCases[index]?.exitCode ?? 1}
+                </p>
+                <div
+                  class="diagnostic"
+                  set:html={diagnosticHtml(
+                    event,
+                    diagnosticCases[index]?.command,
+                  )}
+                />
+              </article>
+            ))
+          }
+        </div>
+        <aside class="evidence">
+          <dl>
+            <dt>recorded by</dt>
+            <dd>{diagnosticsProvenance.command}</dd>
+            <dt>compiler</dt>
+            <dd>{diagnosticsProvenance.compiler}</dd>
+            <dt>machine</dt>
+            <dd>{diagnosticsProvenance.machine}</dd>
+            <dt>commit</dt>
+            <dd>{diagnosticsProvenance.commit}</dd>
+          </dl>
+        </aside>
+      </div>
+    </section>
+  )
+}
+
+<script>
+  /**
+   * The live half of the slot. It imports the same registry the build did, so
+   * what runs in the browser is what the page said it was. Until an engine
+   * claims at least one capability this script does nothing at all: that is
+   * the honest resting state, not an error.
+   */
+  import { activeEngine } from "../playground/registry";
+  import type { Capability, RunEvent } from "../playground/types";
+  import { CAPABILITY_LABEL } from "../playground/types";
+  import { diagnosticHtml } from "../playground/render";
+
+  (() => {
+    const engine = activeEngine();
+    const caps = engine.capabilities();
+    const supports = (cap: Capability) => caps.supported.includes(cap);
+
+    const source = document.querySelector<HTMLTextAreaElement>(
+      '[data-role="source"]',
+    );
+    const ink = document.querySelector<HTMLPreElement>('[data-role="ink"]');
+    const output = document.querySelector<HTMLDivElement>(
+      '[data-role="output"]',
+    );
+    const cancelBtn = document.querySelector<HTMLButtonElement>(
+      '[data-role="cancel"]',
+    );
+    const resetBtn = document.querySelector<HTMLButtonElement>(
+      '[data-role="reset"]',
+    );
+    const state = document.querySelector<HTMLElement>(
+      '[data-role="edit-state"]',
+    );
+    const staleness = document.querySelector<HTMLElement>(
+      '[data-role="staleness"]',
+    );
+    const cases = document.querySelector<HTMLDivElement>(
+      '[data-role="diagnostics"]',
+    );
+    const buttons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button[data-control]"),
+    );
+
+    if (!source || !ink || !output || !cancelBtn || !resetBtn) return;
+    if (!state || !staleness || buttons.length === 0) return;
+    if (caps.supported.length === 0) return;
+
+    /* The recorded program and its recorded colouring, taken from the page the
+     * build produced rather than shipped a second time in this bundle. The
+     * `<pre>` holds exactly the file's text, so reading it back costs nothing
+     * and cannot disagree with what is on screen. */
+    const recordedText = ink.textContent ?? "";
+    const recordedInk = ink.innerHTML;
+    const entryPath = source.dataset.path ?? "main.iyi";
+    const wasm = `${entryPath.replace(/^.*\//, "").replace(/\.iyi$/, "")}.wasm`;
+
+    const byteLength = (text: string) => new TextEncoder().encode(text).length;
+    const withinBudget = () =>
+      caps.maxSourceBytes > 0 && byteLength(source.value) <= caps.maxSourceBytes;
+    /* A textarea normalises its own line endings, so comparing raw would report
+     * an edit the visitor did not make. */
+    const edited = () =>
+      source.value.replace(/\r\n/g, "\n") !== recordedText.replace(/\r\n/g, "\n");
+
+    let running = false;
+
+    const refreshDisabled = () => {
+      for (const btn of buttons) {
+        const cap = btn.dataset.control as Capability;
+        btn.disabled = !supports(cap) || !withinBudget() || running;
+      }
+      cancelBtn.disabled = !running;
+    };
+
+    /**
+     * The honest treatment of a stale edit, in three places at once.
+     *
+     * The colouring is withdrawn, because the tokens came from the compiler's
+     * lexer and there is no lexer in this page, so leaving them over changed
+     * text would be showing one program's tokens over another program's
+     * characters. The run control renames itself, because the affordance is
+     * where a person decides. And the line under the controls says which bytes
+     * will execute. None of the three is a warning: the run is real, the
+     * module is real, and the only thing that is not real is the idea that the
+     * edit reached it.
+     */
+    const refreshStaleness = () => {
+      const stale = edited();
+
+      ink.hidden = stale;
+      source.classList.toggle("plain", stale);
+      resetBtn.hidden = !stale;
+
+      state.textContent = stale
+        ? "edited, so the recorded colouring is withdrawn: the tokens on this site come from the compiler's own lexer and there is no lexer in this page"
+        : "this is the recorded program, exactly as the module was built from it";
+
+      if (supports("run")) {
+        staleness.textContent = stale
+          ? `run executes the RECORDED program ${wasm}, not what you typed: nothing in this page compiles iyi`
+          : `run executes ${wasm}, the module the compiler produced from this file on the machine stamped below`;
+      }
+
+      for (const btn of buttons) {
+        const stalest = btn.dataset.labelStale;
+        const plain = btn.dataset.label;
+        if (stalest === undefined || plain === undefined) continue;
+        btn.textContent = stale ? stalest : plain;
+      }
+    };
+
+    /* Runtime nodes cannot carry Astro's scoped attributes, so they use the
+     * global classes code.css already defines (.out, .prompt, .diagnostic and
+     * its parts) plus the two stamped classes styled below. */
+    const appendBlock = (cls: string, text: string) => {
+      const pre = document.createElement("pre");
+      pre.className = cls;
+      pre.textContent = text;
+      output.appendChild(pre);
+      return pre;
+    };
+
+    const appendStamp = (headline: string, note: string) => {
+      const pre = appendBlock("stamp", headline);
+      const tail = document.createElement("span");
+      tail.className = "stamp-note";
+      tail.textContent = note;
+      pre.appendChild(tail);
+    };
+
+    /**
+     * The block a run of output is currently flowing into, and which stream it
+     * belongs to.
+     *
+     * The engine reports one event per `fd_write`, because the writes a program
+     * made are a fact about the program and flattening them would throw it
+     * away. A terminal does not draw a boundary between two writes, though, so
+     * a contiguous run of writes to the same descriptor flows into one block
+     * here and only a change of descriptor, or anything else happening, starts
+     * a new one. The events keep the chunks; the rendering keeps the reading.
+     */
+    let flowing: { fd: "out" | "err"; pre: HTMLPreElement } | null = null;
+
+    const appendStream = (fd: "out" | "err", text: string) => {
+      if (flowing === null || flowing.fd !== fd) {
+        const pre = appendBlock("out", "");
+        if (fd === "err") {
+          const lead = document.createElement("span");
+          lead.className = "prompt";
+          lead.textContent = "[stderr] ";
+          pre.appendChild(lead);
+        }
+        flowing = { fd, pre };
+      }
+      flowing.pre.appendChild(document.createTextNode(text));
+    };
+
+    const onEvent = (event: RunEvent) => {
+      /* Anything that is not a chunk of output ends the run of output, so a
+       * stamp or a diagnostic cannot land inside a terminal block. */
+      if (event.kind !== "stdout" && event.kind !== "stderr") flowing = null;
+
+      switch (event.kind) {
+        case "stdout": {
+          appendStream("out", event.text);
+          break;
+        }
+        case "stderr": {
+          appendStream("err", event.text);
+          break;
+        }
+        case "diagnostic": {
+          /* The same renderer the build used, so a diagnostic looks the same
+           * whether it was recorded or computed. */
+          const block = document.createElement("div");
+          block.className = "diagnostic";
+          block.innerHTML = diagnosticHtml(event);
+          output.appendChild(block);
+          break;
+        }
+        case "artifact": {
+          appendStamp(
+            `${event.name}, ${event.bytes} bytes, executed in this tab`,
+            event.data !== null
+              ? "the engine handed these bytes to the page and checked their sha256 against site/records/wasm/manifest.json before instantiating them, so this is the recorded module and not a module like it"
+              : "the engine reported this size without delivering the bytes, so it is the engine's word and not this page's measurement",
+          );
+          break;
+        }
+        case "exit": {
+          appendStamp(
+            `exit ${event.code}, ${event.ms} ms wall clock`,
+            "a recorded number: the wall clock of your own browser on your own machine, coarsened by the same isolation rule that rules out threads here, and never a benchmark. The project's measurements live in bench/.",
+          );
+          break;
+        }
+        case "unsupported": {
+          appendBlock(
+            "gap",
+            `cannot ${CAPABILITY_LABEL[event.capability]} here: ${event.reason}`,
+          );
+          break;
+        }
+      }
+    };
+
+    const doRun = async (want: Capability) => {
+      if (running || !withinBudget()) return;
+      running = true;
+      refreshDisabled();
+      output.textContent = "";
+      flowing = null;
+      try {
+        await engine.ready();
+        for await (const event of engine.run(
+          [{ path: entryPath, text: source.value }],
+          { entry: entryPath, want },
+        )) {
+          onEvent(event);
+        }
+      } catch (error) {
+        appendBlock(
+          "gap",
+          `the engine itself failed, which is not the program's fault: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      } finally {
+        running = false;
+        refreshDisabled();
+      }
+    };
+
+    /**
+     * Re-request diagnostics from the engine and rebuild the pane from what it
+     * streams back.
+     *
+     * Only wired up when the engine claims `compile`, because checking source
+     * is what that capability means: an engine that does not claim it cannot be
+     * reporting on the text in the pane, so re-asking as the visitor types
+     * would be spending work to receive the same recording again. When it is
+     * wired up, the headings come from the events rather than from the
+     * recording, because a computed diagnostic has no recorded title and
+     * borrowing one would label it with a case it is not.
+     */
+    const refreshDiagnostics = async () => {
+      if (!cases) return;
+      const rendered: HTMLElement[] = [];
+      for await (const event of engine.run(
+        [{ path: entryPath, text: source.value }],
+        { entry: entryPath, want: "diagnostics" },
+      )) {
+        if (event.kind !== "diagnostic") continue;
+        const article = document.createElement("article");
+        article.className = "case";
+        const head = document.createElement("h3");
+        head.textContent = `${event.file}:${event.line}:${event.column}`;
+        const block = document.createElement("div");
+        block.className = "diagnostic";
+        block.innerHTML = diagnosticHtml(event);
+        article.append(head, block);
+        rendered.push(article);
+      }
+      cases.replaceChildren(...rendered);
+    };
+
+    for (const btn of buttons) {
+      btn.addEventListener("click", () =>
+        doRun(btn.dataset.control as Capability),
+      );
+    }
+
+    cancelBtn.addEventListener("click", () => engine.cancel());
+
+    resetBtn.addEventListener("click", () => {
+      source.value = recordedText;
+      ink.innerHTML = recordedInk;
+      refreshStaleness();
+      refreshDisabled();
+      /* Back to the top of the program, not to wherever assigning the value
+       * left the caret. A reset that lands at the end of the file has undone
+       * the edit without looking like it. */
+      source.focus();
+      source.setSelectionRange(0, 0);
+      source.scrollTop = 0;
+      source.scrollLeft = 0;
+      ink.scrollTop = 0;
+      ink.scrollLeft = 0;
+    });
+
+    /* The colouring sits behind the text, so the two have to scroll together
+     * or the emphasis slides off the tokens it belongs to. */
+    source.addEventListener("scroll", () => {
+      ink.scrollTop = source.scrollTop;
+      ink.scrollLeft = source.scrollLeft;
+    });
+
+    source.addEventListener("input", () => {
+      refreshStaleness();
+      refreshDisabled();
+    });
+
+    if (supports("compile") && supports("diagnostics")) {
+      let settle = 0;
+      source.addEventListener("input", () => {
+        window.clearTimeout(settle);
+        settle = window.setTimeout(() => void refreshDiagnostics(), 250);
+      });
+    }
+
+    refreshStaleness();
+    refreshDisabled();
+  })();
+</script>
+
+<style>
+  .playground {
+    margin-block: 2rem 3rem;
+  }
+
+  .play-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+  }
+
+  /* The head strip repeats the evidence rule of the site: the machine's name
+   * and its budget sit beside it, in the machine's voice, always visible. */
+  .play-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.4rem;
+    align-items: baseline;
+    font-size: var(--step--2);
+  }
+
+  .engine-name {
+    color: var(--graphite);
+  }
+
+  /* The curated set. Links, not a control: each sample is a real page carrying
+   * only its own program and its own recording, so a lesson can deep link one
+   * and the picker works before any script runs. */
+  .picker {
+    display: flex;
+    align-items: baseline;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+    border-block: var(--hair) solid var(--hairline);
+    padding-block: 0.5rem;
+  }
+
+  .picker ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.9rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .pick {
+    font-size: var(--step--2);
+    color: var(--graphite);
+    text-decoration: none;
+  }
+
+  .pick:hover {
+    color: var(--ink);
+    text-decoration: underline;
+    text-decoration-color: var(--signal);
+    text-underline-offset: 0.18em;
+  }
+
+  .pick[aria-current="page"] {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  /* A sample the recording gave a note to is a sample that behaves unusually on
+   * this target, which is a caveat, which is the one thing the signal colour
+   * means. The tittle marks it rather than a badge. */
+  .pick[data-lesson]::after {
+    content: "";
+    display: inline-block;
+    width: var(--tittle);
+    height: var(--tittle);
+    margin-inline-start: 0.35ch;
+    vertical-align: 0.28em;
+    border-radius: 50%;
+    background: var(--signal);
+  }
+
+  /* The editor. Two layers in one grid cell: the recorded colouring behind,
+   * the editable text in front with its glyphs made transparent so the layer
+   * underneath shows through. Every metric that affects where a glyph lands is
+   * declared on both, because a single difference in padding or line height
+   * slides the emphasis off the tokens it belongs to.
+   *
+   * Selectors are two classes deep so they beat `.source pre` from code.css,
+   * which sets `overflow: visible` and would otherwise stop the two layers
+   * scrolling as one. */
+  .editor {
+    display: grid;
+    height: clamp(16rem, 46vh, 32rem);
+  }
+
+  .editor .editor-ink,
+  .editor .editor-text {
+    grid-area: 1 / 1;
+    margin: 0;
+    padding: 0.95rem 1.1rem;
+    border: 0;
+    background: none;
+    font-family: var(--font-mono);
+    font-size: var(--step--1);
+    font-variant-ligatures: none;
+    line-height: 1.58;
+    letter-spacing: normal;
+    word-spacing: normal;
+    tab-size: 2;
+    white-space: pre;
+  }
+
+  .editor .editor-ink {
+    color: var(--ink);
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .editor .editor-text {
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    caret-color: var(--ink);
+    overflow: auto;
+    resize: none;
+  }
+
+  /* Edited: the colouring is withdrawn and the text becomes ink in its own
+   * right, because the tokens underneath were the compiler's reading of a
+   * different program. */
+  .editor .editor-text.plain {
+    color: var(--ink);
+    -webkit-text-fill-color: var(--ink);
+  }
+
+  .editor .editor-text::selection {
+    background: var(--track);
+  }
+
+  .editor .editor-text:focus {
+    outline: none;
+    box-shadow: inset 0 0 0 var(--hair) var(--graphite);
+  }
+
+  .source-foot {
+    border-top: var(--hair) solid var(--hairline);
+    border-bottom: 0;
+    gap: 0.8rem;
+  }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem 1rem;
+    align-items: flex-start;
+  }
+
+  /* A capability the engine does not claim: disabled for real, with the
+   * missing capability named beneath it. */
+  .control {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  .control-note {
+    font-size: var(--step--2);
+    color: var(--mute);
+  }
+
+  .controls .decl-toggle:disabled {
+    cursor: not-allowed;
+    color: var(--mute);
+    border-color: var(--track);
+    background: var(--paper);
+  }
+
+  /* Which bytes a run executes. Not a warning and not styled as one: it is a
+   * statement of fact that changes when the fact changes. */
+  .staleness {
+    font-size: var(--step--2);
+    color: var(--graphite);
+    margin: 0;
+  }
+
+  /* The frame keeps its presence when the console is empty, and the blocks
+   * inside it do not each claim that height: a run appends several, and a
+   * minimum on each one would space a program's own output apart. */
+  .console {
+    min-height: 7rem;
+  }
+
+  .console pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* The recording's own figures, inside the stamped frame and nowhere else. */
+  .recording {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 22ch), 1fr));
+    gap: 0.4rem 1.4rem;
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: var(--step--2);
+  }
+
+  .recording dt {
+    color: var(--mute);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
+  .recording dd {
+    color: var(--graphite);
+    margin: 0.1rem 0 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* A note the recorder wrote is a caveat about this target, so it reads in the
+   * signal colour, which is the one thing that colour means here. */
+  .recording .lesson dd {
+    color: var(--signal-deep);
+  }
+
+  /* Engine caveats, rendered verbatim as the provenance rail. */
+  .evidence-block {
+    margin-block: 0.6rem 0;
+  }
+
+  /* Diagnostics -------------------------------------------------------- */
+
+  .diagnostics {
+    margin-block: 1rem 3rem;
+  }
+
+  .diagnostics h2 {
+    margin-block: 1.6rem 0.7rem;
+  }
+
+  .pane-note {
+    color: var(--graphite);
+    max-width: var(--measure);
+  }
+
+  .cases {
+    display: flex;
+    flex-direction: column;
+    gap: 1.6rem;
+  }
+
+  .case h3 {
+    font-size: var(--step-0);
+    font-weight: 640;
+    margin-block-end: 0.2rem;
+  }
+
+  .case-meta {
+    font-size: var(--step--2);
+    color: var(--mute);
+    margin: 0 0 0.5rem;
+  }
+
+  /* Runtime-only blocks: nodes the client script creates cannot carry Astro's
+   * scoped attributes, so these are declared global. They use only tokens, and
+   * the signal colour appears only on a refusal, which is a caveat. */
+  :global(.gap) {
+    color: var(--signal);
+    font-family: var(--font-mono);
+    font-size: var(--step--1);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  :global(.stamp) {
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: var(--step--1);
+    line-height: 1.6;
+    border: var(--hair) solid var(--hairline);
+    border-left: 2px solid var(--hairline);
+    background: var(--paper);
+    padding: 0.6rem 1.1rem;
+    border-radius: 2px;
+  }
+
+  :global(.stamp-note) {
+    display: block;
+    margin-block-start: 0.3rem;
+    font-size: var(--step--2);
+    color: var(--mute);
+  }
+</style>
