@@ -1278,8 +1278,8 @@ much better error for the caller.
 separates it from `forall`: `forall` introduces a name and may bound it, `where`
 bounds an associated type the enclosing trait already introduced. The check runs
 where the call is matched, because by then the associated type is a type, and it
-reports `Int32 does not implement Comparable, required by `where Elem :
-Comparable` in `max``. The unbounded methods of the same trait stay available
+reports `` Int32 does not implement Comparable, required by `where Elem :
+Comparable` in `max` ``. The unbounded methods of the same trait stay available
 whatever the element type is; only the bounded one is withheld.
 
 **3a. A trait needs to require another trait.** `Comparable` reaching 21 more

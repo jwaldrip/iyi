@@ -14,6 +14,20 @@
 // manifest, not the compiler's unlinked object. `exitCode` is the wasm run's,
 // since that is the run the record exists to describe; a sample whose native
 // run is not clean fails this script instead of reaching the manifest.
+// `sourceSha256` is the other file entirely: the sample's own text at `path`,
+// hashed as it sat on disk when this ran.
+//
+// That last field is here for the playground. The editor has to decide
+// whether the text in front of the visitor is still the program that was
+// recorded or something they changed, because an unedited curated sample can
+// run straight from its recorded module while edited text has to go to the
+// compile service. The only copy of the recorded text the client can reach is
+// site/records/highlight.json, which is roughly a quarter of a megabyte of
+// listings; importing that into an engine to answer one yes-or-no question
+// would ship all of it to every visitor. A digest is a few dozen bytes and
+// answers the same question. It doubles as a staleness gate: a sample edited
+// since this ran no longer matches its own recorded module either, and
+// records.mjs says so by name.
 //
 // Regenerate with: npm run record:wasm
 
@@ -367,9 +381,15 @@ for (const id of order) {
   }
 
   const bytes = readFileSync(linked);
+  // The sample's own bytes, not its text: hashing the file rather than a
+  // decoded string keeps the digest identical to what `shasum -a 256` on the
+  // sample prints, and to what a browser gets from hashing the editor's
+  // contents encoded as UTF-8.
+  const sourceBytes = readFileSync(source);
   samples.push({
     id,
     path: relative,
+    sourceSha256: createHash("sha256").update(sourceBytes).digest("hex"),
     wasm: `${id}.wasm`,
     bytes: bytes.length,
     sha256: createHash("sha256").update(bytes).digest("hex"),

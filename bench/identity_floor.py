@@ -297,6 +297,14 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # hold every file of it. Renaming either would claim a name iyi does not own.
     (r"crystal_types|crystal_requires", "what a --crystal consumer already has, carried by name"),
     (r"a \*Crystal\* source", "a sentence about the other language"),
+    # `trycrystal.org` is Crystal's own playground, and it is the reference the
+    # iyi playground's specification is written against: the site takes its
+    # structure and interaction model, three panes with the editor dominant and
+    # one primary Run, while explicitly refusing its look because this site has
+    # its own art direction. Naming it is the point, since a specification that
+    # said "a playground like the good one" would be unbuildable, and the name
+    # is a domain rather than a claim about which language this is.
+    (r"trycrystal\.org", "Crystal's own playground, named as the reference"),
 ]
 
 PATH_RES = [(re.compile(p), why) for p, why in ALLOWED_PATHS]

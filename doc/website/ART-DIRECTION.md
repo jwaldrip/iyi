@@ -362,13 +362,19 @@ is beaten outright.
 
 ### Where iyi loses
 
-No community, no package manager, and the lessons are recordings rather than a
-live compiler. Gleam ships its whole compiler as wasm and checks what you type;
-iyi cannot, because `raise` on wasm32 prints and exits instead of unwinding,
-and iyi reports diagnostics by raising. That is measured, not assumed:
-`doc/website/PLAYGROUND-FEASIBILITY.md` names the six blockers cleared and the
-one that stands. The site says this on the playground page in one line rather
-than letting a visitor discover it by typing.
+No community and no package manager. Gleam ships its whole compiler as wasm and
+compiles what you type in the page; iyi cannot yet, so its playground is parked
+rather than shipped, because a browser has no linker and producing a program
+from a module needs one. A compile service would have closed the gap and was
+refused on purpose: compiling elsewhere proves the elsewhere has a compiler and
+says nothing about the claim. The gap narrowed while this site was being built:
+work on `wasm/compiler-in-browser` cleared the wasm exception wall, so a type
+checker in the page is reachable in a way it was not, while executing a
+visitor's program there still is not, because the only interpreter that needs no
+LLVM runs iyi's macro language and refuses every sample program at its module
+header. That branch carries the measurements and this document gains their
+citations when it lands. The playground page says which half is which in one
+line rather than letting a visitor find out by typing.
 
 ### The structural moves this study produced
 
@@ -416,6 +422,18 @@ load.
 | `screenshots/25-changelog-{light,dark}.png` | The changelog, generated verbatim, with its generated-from banner and byte counts. Captured at viewport height rather than full page, because the document is one generated record 48,640 pixels tall: a full-page capture ran to 27 MB per scheme and carried nothing the first screen does not. Pagination was considered and refused; `CHANGELOG.md` holds three releases and splitting it would produce three thin pages and break in-page anchors, which is the opposite of the split `SPEC.md` earns by having 55 sections. |
 | `screenshots/26-learn-path-{light,dark}.png` | The path's entrance: five numbered steps, tick rows, one marked start. |
 | `screenshots/27-deployed-playground-run.png` | The same run, on the deployed site rather than a local preview: `https://jwaldrip.github.io/iyi/playground/hello/` fetched `/iyi/wasm/hello.wasm` over the network, matched its digest against the manifest, executed it, and printed the sample's own output with exit 0. This is the frame that proves the base path, since a preview and Pages disagree about it and nothing else catches that. |
+
+The playground, parked. Captured from a clean build served by `astro preview`,
+driven in a real browser, both schemes by emulating `prefers-color-scheme`. The
+specification for the interactive version is
+`doc/website/PLAYGROUND-SERVICE.md`.
+
+| File | What it shows |
+|---|---|
+| `screenshots/30-playground-parked-{light,dark}.png` | `/playground/`, parked. One line on what is coming, two sentences on the blocker with one link to the account, a typographic structure diagram of the planned three panes, and three ways to reach what does run. The diagram is drawn rather than mocked up: the page contains no `button`, no `textarea` and no `input` element at all, which is measured in the browser rather than asserted, because a greyed out control is a lie told by an affordance and this page has none to tell it with. |
+| `screenshots/31-sample-run-{light,dark}.png` | A sample route doing the thing the parked page cannot: `hello.wasm` fetched, digest matched against the manifest, instantiated, printing the program's own output with exit 0, and the wall clock inside a stamped frame. |
+| `screenshots/32-sample-edited-light.png` | The honest treatment of an edit, in three places at once. The recorded colouring is withdrawn because there is no lexer in the page to replace it, the run control renames itself to `run recorded`, and the line under the pane names the bytes that will actually execute. |
+| `screenshots/33-evidence-{light,dark}.png` | `/playground/evidence/`, where the recordings, the digests and the recorded diagnostics moved to. Five build-time gates stand over this page and every one has been broken on purpose to prove it fails. |
 
 ## Prohibitions
 

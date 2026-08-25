@@ -60,6 +60,28 @@ export interface CuratedSample {
    * record, and the module's own name in iyi, since a module's path is its
    * file's path. */
   path: string;
+  /**
+   * SHA-256 of the raw bytes of the source file at `path`, as it was when the
+   * module was recorded.
+   *
+   * No engine reads this field today, and the reason to keep it is not that an
+   * engine will one day want it. Its job now is the staleness gate in
+   * `scripts/records.mjs`: on every build that script hashes the file on disk
+   * at `path` and, when the digest differs from the one recorded here, fails
+   * naming the sample and saying that the recorded module was compiled from
+   * text that is no longer in the tree, with `npm run record:wasm` as the way
+   * out. Without that comparison a sample could be edited and the site would
+   * keep shipping a module built from the previous text, running a program the
+   * listing beside it does not show. The same script also rejects a missing or
+   * malformed digest, so the gate cannot be disarmed by deleting the field.
+   *
+   * The in-browser compiler engine will want it too, to tell an unedited
+   * curated sample, which can run from its recorded module, from an edit, which
+   * has to be compiled in the tab. A digest rather than the text itself,
+   * because the only client reachable copy of the text is the highlight record,
+   * and importing that ships every listing on the site to every visitor.
+   */
+  sourceSha256: string;
   /** File name of the linked module, sitting beside the manifest. */
   wasm: string;
   /** Size of the linked module. Recorded: a compiler on a machine produced it. */

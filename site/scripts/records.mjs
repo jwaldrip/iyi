@@ -153,6 +153,43 @@ if (manifest) {
         }
       }
 
+      // The digest of the sample's own source. The playground compares it
+      // against a hash of the editor's text to tell an unedited curated
+      // sample, which can run from its recorded module, from text the visitor
+      // changed, which has to go to the compile service. Checking it against
+      // the file on disk is therefore a staleness gate and not a formality: a
+      // sample edited since the recording no longer matches its recorded
+      // module either, so the page would hand a visitor bytes compiled from
+      // text that is no longer in the tree.
+      if (
+        typeof sample.sourceSha256 !== "string" ||
+        sample.sourceSha256 === ""
+      ) {
+        problem(file, `sample "${id}" records no sourceSha256`);
+      } else if (!/^[0-9a-f]{64}$/.test(sample.sourceSha256)) {
+        problem(
+          file,
+          `sample "${id}" records "${sample.sourceSha256}" as its ` +
+            `sourceSha256, which is not a 64 character lowercase hex digest`,
+        );
+      } else if (
+        typeof sample.path === "string" &&
+        sample.path !== "" &&
+        existsSync(resolve(repo, sample.path))
+      ) {
+        const source = readFileSync(resolve(repo, sample.path));
+        const digest = createHash("sha256").update(source).digest("hex");
+        if (digest !== sample.sourceSha256) {
+          problem(
+            file,
+            `sample "${id}" is stale: ${sample.path} hashes to ${digest} ` +
+              `where the manifest says ${sample.sourceSha256}, so the ` +
+              `recorded module was compiled from text that is no longer in ` +
+              `the tree. Regenerate with: npm run record:wasm`,
+          );
+        }
+      }
+
       if (typeof sample.wasm !== "string" || sample.wasm === "") continue;
       const module = join(records, "wasm", sample.wasm);
       if (!existsSync(module)) {

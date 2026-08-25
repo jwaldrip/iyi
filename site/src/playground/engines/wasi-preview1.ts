@@ -110,8 +110,16 @@ export interface WriteChunk {
  * reported as one.
  */
 export class WasiExit extends Error {
-  constructor(readonly code: number) {
+  /* Written as a field and an assignment rather than a constructor parameter
+   * property, because node's type stripping refuses a parameter property, and
+   * this module is then loadable by a plain node harness with no bundler,
+   * which is how the execution path can be driven outside a browser. A
+   * testable module is worth three lines. */
+  readonly code: number;
+
+  constructor(code: number) {
     super(`wasi: proc_exit(${code})`);
+    this.code = code;
     this.name = "WasiExit";
   }
 }

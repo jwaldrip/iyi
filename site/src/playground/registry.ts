@@ -83,6 +83,21 @@ export function activeEngine(): PlaygroundEngine {
  * `diagnostics` and nothing else, so the shell renders build, emit .iyimod,
  * mod dump and format disabled with the missing capability named under each,
  * which is the honest interface rather than a reduced one by accident.
+ *
+ * WHAT WENT IN THIS SLOT AND WAS TAKEN BACK OUT, recorded because the next
+ * person to fill it should not have to rediscover the decision. A `remote`
+ * engine was written here that posted source to a compile service and executed
+ * the module it returned. It worked, but it answered the wrong question: the
+ * point of a playground for this language is that iyi's own compiler runs in
+ * the tab, and a service that compiles elsewhere proves nothing about that.
+ * So the architecture was overruled in favour of the harder thing, and the
+ * engine that fills this slot next is a local wasm build of the compiler with
+ * no handoff to a backend of any kind. `doc/website/PLAYGROUND-SERVICE.md` now
+ * holds the specification for what the page around it has to be.
+ *
+ * Until that lands, this slot holds exactly what honestly works, which is why
+ * the playground itself is parked at `/playground/` and the routes that really
+ * run a program are the sample routes underneath it.
  * ========================================================================= */
 
 import { wasiEngine } from "./engines/wasi";
