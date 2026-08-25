@@ -112,9 +112,9 @@ export interface WriteChunk {
 export class WasiExit extends Error {
   /* Written as a field and an assignment rather than a constructor parameter
    * property, because node's type stripping refuses a parameter property, and
-   * this module is loaded directly by node in
-   * `site/scripts/prove-remote-engine.mjs` to drive the engine's branches
-   * without a browser. A testable module is worth three lines. */
+   * this module is then loadable by a plain node harness with no bundler,
+   * which is how the execution path can be driven outside a browser. A
+   * testable module is worth three lines. */
   readonly code: number;
 
   constructor(code: number) {

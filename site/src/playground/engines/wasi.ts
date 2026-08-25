@@ -26,9 +26,12 @@
  * WHY IT CANNOT CHECK WHAT YOU TYPE. Because it is not a compiler and never
  * calls one: it fetches a module somebody else compiled and runs it. That is
  * the whole reason, and it is a property of this engine rather than of the
- * target. `engines/remote.ts` is the one that compiles, by sending source to a
- * service, and it exists because a page has no linker rather than because of
- * anything to do with how errors are reported.
+ * target. The engine that will check what you type is the compiler itself
+ * running as wasm in this page, which is what
+ * `doc/website/PLAYGROUND-SERVICE.md` specifies and why the playground is
+ * parked rather than shipped. Sending source to a backend was refused on
+ * purpose: it would prove a machine somewhere has a compiler, which is not
+ * the claim this site is making.
  *
  * An earlier version of this comment gave a different reason, that a compiler
  * built for `wasm32` could not report a diagnostic at all. That was true when

@@ -62,14 +62,13 @@ const base = import.meta.env.BASE_URL.replace(/\/*$/, "/");
       </p>
       <ul>
         <li>
-          <strong>Nothing in this page compiles iyi.</strong> On{" "}
-          <code>wasm32</code>, <code>raise</code> prints and exits instead of
-          unwinding, and iyi's compiler reports every error by raising, so a
-          compiler compiled for a browser could only die where it should have
-          returned a diagnostic. Clearing that is language work and it is under
-          way. Until it lands, the module this page runs was built elsewhere and
-          editing the pane cannot change it, which the pane says the moment you
-          type.
+          <strong>Nothing in this page compiles iyi.</strong> A browser has no
+          linker, and producing a program out of a module shells out to a linker
+          driver, which a page cannot do because it has no subprocesses. So the
+          module this page runs was built elsewhere and editing the pane cannot
+          change it, which the pane says the moment you type. A compile service
+          would have closed that gap and was refused: compiling somewhere else
+          proves only that somewhere else has a compiler.
         </li>
         <li>
           <strong>There are no threads, and there cannot be.</strong> GitHub

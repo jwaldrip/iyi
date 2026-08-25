@@ -8,8 +8,11 @@
  *
  * The reason a page cannot compile for itself is the linker. Producing a
  * program from a module shells out to a linker driver, and a page has no
- * subprocesses, so the compile happens on a service and the module runs here.
- * That is `doc/website/PLAYGROUND-SERVICE.md`.
+ * subprocesses, so the playground is parked rather than shipped. Sending the
+ * source to a service instead was refused on purpose, because compiling
+ * elsewhere proves the elsewhere has a compiler.
+ * `doc/website/PLAYGROUND-SERVICE.md` carries the specification and the
+ * refusal.
  *
  * The older reason, that the compiler could not report a diagnostic from wasm
  * at all, no longer holds: the exception wall is cleared and `rescue` works on

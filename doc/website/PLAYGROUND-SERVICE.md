@@ -37,7 +37,7 @@ One finding from that work outlives it and is repeated below, because it is
 about the language rather than about the service: compiling untrusted iyi is
 code execution.
 
-## Why a service, and not the browser
+## Why the browser cannot do it yet, and it is not the errors
 
 A browser has no iyi compiler and no linker, and that is the whole of it.
 Running a program a visitor typed means producing a module and then producing a
@@ -46,7 +46,10 @@ program out of it, and the second step shells out to a linker driver
 rather than `wasm-ld` because a wasi program is more than the module). There
 are no subprocesses in a page, so the link cannot happen there. That reason is
 independent of anything the compiler's exception handling does, and it is why
-this architecture compiles on a service and runs in the tab.
+the playground is parked rather than shipped. It is emphatically NOT an argument
+for a service: a backend was refused above and stays refused. It is the next
+piece of language work, and the shape of the answer is either a linker that runs
+as wasm or an interpreter that needs neither it nor LLVM.
 
 **Two measurements arriving on another branch, named here rather than quoted.**
 Work on `wasm/compiler-in-browser` has cleared the wasm exception wall, so

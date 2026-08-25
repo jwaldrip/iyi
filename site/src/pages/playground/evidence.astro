@@ -267,14 +267,15 @@ const differing = curatedSamples.filter((sample) => !sample.identical);
           alone. Any one of those failing stops this page from building.
         </li>
         <li>
-          <strong>The type checking is not in this page, and that is not
-          laziness.</strong> The compiler reports an error by raising, and{" "}
-          <code>raise</code> on <code>wasm32</code> does not unwind, so a
-          compiler compiled for this page could not hand a diagnostic back to
-          whatever called it. It could only die. The full investigation is at{" "}
-          <code>doc/website/PLAYGROUND-FEASIBILITY.md</code>, and clearing it is
-          language work that is under way. So the diagnostics below are
-          recorded, and the page says so rather than leaving a reader to assume.
+          <strong>The type checking is not in this page, and the reason
+          changed.</strong> It used to be that the compiler could not report a
+          diagnostic from wasm at all. Work on{" "}
+          <code>wasm/compiler-in-browser</code> cleared that, so a checker in
+          the page is reachable now and when one lands it feeds this same event
+          path. What is not reachable is running the program afterwards: a
+          browser has no linker and producing a program out of a module needs
+          one. So the diagnostics below are recorded, and the page says so
+          rather than leaving a reader to assume.
         </li>
         <li>
           <strong>{differing.length} of the samples do not print the same
@@ -361,10 +362,9 @@ const differing = curatedSamples.filter((sample) => !sample.identical);
           <hr class="rule" />
           <h2>What the compiler says when it refuses</h2>
           <p class="pane-note">
-            Recorded, not live, and the reason is structural rather than
-            unfinished work: iyi's compiler reports an error by raising, and
-            raise on wasm32 does not unwind, so a compiler compiled for a page
-            could not hand a diagnostic back to whatever called it. The programs
+            Recorded, not live, because nothing in this page compiles: a browser
+            has no linker and producing a program out of a module needs one. The
+            programs
             below are real files under{" "}
             <code>site/records/break/</code>, they are really wrong, and this is
             the real compiler's output on them, captured verbatim, caret line
