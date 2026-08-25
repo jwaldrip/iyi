@@ -1,0 +1,435 @@
+/**
+ * The engine that runs iyi in the page, and the precise account of what that
+ * sentence does and does not mean.
+ *
+ * WHAT IT DOES. Every curated sample in `site/records/wasm/manifest.json` was
+ * compiled by the iyi compiler for `wasm32-wasi` and linked by wasi-sdk on the
+ * machine the record names. Those modules ship with the site. This engine
+ * fetches the one the visitor selected, checks its SHA-256 against the record,
+ * instantiates it against the WASI preview1 host in `wasi-preview1.ts`, calls
+ * `_start`, and reports what the program wrote, the status it really exited
+ * with, and the wall clock the run took in this tab. That is a real execution
+ * of real compiler output, not a recording played back.
+ *
+ * WHAT IT DOES NOT DO, and this is the part the interface exists to keep
+ * honest: it does not compile. There is no iyi compiler in this page. So the
+ * text in the editor is not the program that runs, and the moment those two
+ * differ the engine says so before it runs anything, in a refusal naming the
+ * `compile` capability it does not have. It never edits, ignores, or pretends
+ * to have used what the visitor typed.
+ *
+ * WHY IT CANNOT CHECK WHAT YOU TYPE, which is a stronger statement than "not
+ * yet". The compiler reports an error by raising, and `raise` on `wasm32` does
+ * not unwind, so a compiler compiled to this target cannot hand a diagnostic
+ * back to its caller: it can only die. The investigation is written up on
+ * branch `docs/playground-feasibility` at
+ * `doc/website/PLAYGROUND-FEASIBILITY.md`. That is why `diagnostics` below are
+ * sourced from a recording of the real compiler rather than computed here, and
+ * why the page says so in a sentence rather than in a footnote.
+ *
+ * WHY THAT COSTS NOTHING WHEN IT IS FIXED. Diagnostics leave this engine as
+ * `diagnostic` events on the same stream as everything else, so the pane that
+ * renders them is fed by the event path a checking engine would use. Wiring one
+ * in replaces this file and touches nothing else, which is the property the
+ * whole `playground/` directory is arranged to have.
+ */
+import type {
+  Capabilities,
+  PlaygroundEngine,
+  RunEvent,
+  RunOptions,
+  SourceFile,
+} from "../types";
+import { curatedSamples, findSample, wasmProvenance } from "../samples";
+import { recordedDiagnostics } from "../diagnostics";
+import { WasiExit, WasiHost, decodeWrites } from "./wasi-preview1";
+
+/**
+ * The editor's budget.
+ *
+ * Nonzero because the pane is editable: a visitor should be able to read the
+ * program, move around in it, and see for themselves that changing it changes
+ * what the page says about the run. 64 KiB because a tab has a memory ceiling
+ * and the largest curated sample is a fraction of it, so this is a real limit
+ * that no honest use reaches rather than a number chosen to look generous.
+ */
+const MAX_SOURCE_BYTES = 64 * 1024;
+
+/**
+ * The caveats, verbatim in the rail beside the playground. Each one is a thing
+ * a sceptic would otherwise have to discover by testing.
+ */
+const NOTES: string[] = [
+  "this engine runs precompiled modules and does not compile: there is no iyi compiler in this page, so the text in the editor is never the program that runs",
+  `each module was compiled and linked on ${wasmProvenance.machine} by ${wasmProvenance.compiler} at commit ${wasmProvenance.commit.slice(0, 12)}, and its sha256 is checked against site/records/wasm/manifest.json before it is instantiated`,
+  "diagnostics are recorded, not live: the compiler reports errors by raising, and raise on wasm32 does not unwind, so a compiler on this target cannot return a diagnostic to its caller (doc/website/PLAYGROUND-FEASIBILITY.md)",
+  "stdout arrives in the exact chunks fd_write produced, in that order, but after _start returns: suspending a wasm call needs Atomics.wait on a SharedArrayBuffer, and GitHub Pages cannot send the headers that would make this document cross-origin isolated",
+  "there is no stdin: reads from fd 0 succeed and report end of file, which is what a program sees when it is run with its input redirected from nothing",
+  "there is no filesystem: no directory is preopened, so every path call fails the way it would under a real host with no capabilities granted",
+  "the wall clock of a run is a property of your browser on your machine, coarsened by the same isolation rule, and is never a benchmark: the project's measurements live in bench/",
+];
+
+const CAPABILITIES: Capabilities = {
+  /**
+   * Two, and the two it can actually back.
+   *
+   * `run` because it really executes a module and reports the real status.
+   * `diagnostics` because when it reports a compiler error it reports a file, a
+   * line, a column and the rule that was enforced, which is what the capability
+   * names. It claims neither `compile` nor `emit-iyimod` nor `mod-dump` nor
+   * `format`, because it has no compiler, and the shell therefore renders those
+   * four controls disabled with the missing capability named under each. That
+   * reduced interface is the correct one.
+   */
+  supported: ["run", "diagnostics"],
+  maxSourceBytes: MAX_SOURCE_BYTES,
+  notes: NOTES,
+};
+
+/**
+ * Where the modules are served from.
+ *
+ * `site/scripts/records.mjs` copies them out of the record into `public/wasm/`
+ * at build time, so they are static assets under the site's base path. The base
+ * is read rather than written because it is `/iyi` on Pages and `/` on a custom
+ * domain.
+ */
+function moduleUrl(wasm: string): string {
+  const base = import.meta.env.BASE_URL.replace(/\/*$/, "/");
+  return `${base}wasm/${wasm}`;
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  /* A fresh copy, because `crypto.subtle` wants an ArrayBuffer and a subarray
+   * view would hash the whole underlying buffer. */
+  const digest = await crypto.subtle.digest("SHA-256", bytes.slice().buffer);
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+/** Yield to the event loop so the page paints one chunk before the next. */
+function nextFrame(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, 0);
+  return promise;
+}
+
+/** Modules already fetched and verified in this tab, by sample id. */
+const loaded: Record<string, WebAssembly.Module> = {};
+/** The verified bytes, kept so the run can report the artifact it executed. */
+const loadedBytes: Record<string, Uint8Array> = {};
+
+let cancelled = false;
+
+export const wasiEngine: PlaygroundEngine = {
+  id: "wasi-preview1",
+  label: "precompiled wasm32-wasi, run in this page",
+
+  /**
+   * Nothing to preload: which module is needed depends on which sample is
+   * selected, and fetching all of them to answer a question nobody asked would
+   * spend the visitor's bandwidth on the site's convenience.
+   *
+   * So this checks the two things whose absence would make every later step
+   * fail for a reason the page could not explain, and rejects on either,
+   * because both are the engine being genuinely broken rather than honestly
+   * limited.
+   */
+  async ready(): Promise<void> {
+    if (typeof WebAssembly?.instantiate !== "function") {
+      throw new Error(
+        "this browser has no WebAssembly, so a wasm32-wasi module cannot be " +
+          "instantiated here at all",
+      );
+    }
+    if (typeof crypto?.subtle?.digest !== "function") {
+      throw new Error(
+        "this page has no SubtleCrypto, so the module's sha256 cannot be " +
+          "checked against the record. The engine will not run bytes it " +
+          "cannot verify are the recorded bytes.",
+      );
+    }
+  },
+
+  capabilities(): Capabilities {
+    return CAPABILITIES;
+  },
+
+  /**
+   * `_files` is unread, and the underscore is the point: this engine never
+   * looks at the visitor's source, so it cannot accidentally report anything
+   * about it. What runs is decided entirely by `opts.entry`, which names a
+   * curated sample, and by the recorded module for that sample. An engine that
+   * could compile would read this parameter; this one says in the console, on
+   * every run, that it did not.
+   */
+  async *run(
+    _files: SourceFile[],
+    opts: RunOptions,
+  ): AsyncIterable<RunEvent> {
+    cancelled = false;
+    const want = opts.want ?? "run";
+
+    /* Diagnostics --------------------------------------------------------- */
+
+    if (want === "diagnostics") {
+      /* Recorded real compiler output, streamed as structured events on the
+       * same path a checking engine would use. The events carry a file, a
+       * line, a column and the rule, which is exactly what the capability
+       * claims, and the pane states in a sentence that they are recorded. */
+      for (const diagnostic of recordedDiagnostics()) {
+        if (cancelled) return;
+        yield diagnostic;
+      }
+      return;
+    }
+
+    if (want !== "run") {
+      yield {
+        kind: "unsupported",
+        capability: want,
+        reason:
+          `There is no iyi compiler in this page, so nothing here can ` +
+          `${want === "format" ? "format" : "produce that"}. This engine runs ` +
+          `modules the compiler already produced, on the machine named in the ` +
+          `stamp beside each sample. Every curated sample is a real ` +
+          `wasm32-wasi build of a real file in samples/iyi/, and the run ` +
+          `below is a real execution of it, but the pipeline that made it ran ` +
+          `elsewhere.`,
+      };
+      return;
+    }
+
+    /* Run ----------------------------------------------------------------- */
+
+    const sample = findSample(opts.entry);
+    if (sample === null) {
+      yield {
+        kind: "unsupported",
+        capability: "run",
+        reason:
+          `"${opts.entry}" is not in the recording, so there is no module to ` +
+          `run for it. The recording covers ` +
+          `${curatedSamples.map((entry) => entry.path).join(", ")}. This ` +
+          `engine cannot compile, so a program it has no module for is a ` +
+          `program it cannot run.`,
+      };
+      return;
+    }
+
+    /* WHAT THIS ENGINE CANNOT DO, said before every run rather than only when
+     * the pane has been edited.
+     *
+     * It would have been possible to compare the submitted text against the
+     * recorded source and speak up only when they differ. Two reasons not to.
+     *
+     * The first is that the statement is true either way: nothing in this page
+     * compiled anything, and a console that only mentions it sometimes invites
+     * the reading that on the other runs something did. This site publishes
+     * where it loses; it does not publish it conditionally.
+     *
+     * The second is a cost. The recorded source lives in the highlight record,
+     * a quarter of a megabyte of listings, and an engine that imports it ships
+     * all of it to every visitor, an order of magnitude more JavaScript than
+     * the page's other island. Paying that to make a true
+     * sentence conditional is the wrong trade twice over.
+     *
+     * The page still answers the conditional question, and answers it before
+     * the visitor clicks: the shell holds the recorded text already, so it
+     * renames the run control, rewrites the line under it, and withdraws the
+     * recorded colouring the moment the pane diverges. That is where the
+     * question belongs, because it is a question about the page rather than
+     * about the engine. */
+    yield {
+      kind: "unsupported",
+      capability: "compile",
+      reason:
+        `Nothing in this page compiled anything: there is no iyi compiler in ` +
+        `a browser. The run below executes the RECORDED module ${sample.wasm}, ` +
+        `${sample.bytes} bytes, sha256 ${sample.sha256.slice(0, 16)}, built ` +
+        `from ${sample.path} by ${wasmProvenance.compiler} at commit ` +
+        `${wasmProvenance.commit.slice(0, 12)}. If the pane no longer holds ` +
+        `that file, your edit is not in this run.`,
+    };
+
+    /* Fetch and verify. A module is loaded once per tab and kept, because a
+     * visitor pressing run twice should not pay for it twice, and because the
+     * second run is then measuring execution rather than the network. */
+    let module_ = loaded[sample.id];
+    let bytes = loadedBytes[sample.id];
+
+    if (module_ === undefined) {
+      const url = moduleUrl(sample.wasm);
+      let response: Response;
+      try {
+        response = await fetch(url);
+      } catch (error) {
+        yield {
+          kind: "unsupported",
+          capability: "run",
+          reason:
+            `${url} could not be fetched, so there are no bytes to run: ` +
+            `${error instanceof Error ? error.message : String(error)}. The ` +
+            `modules are copied into public/wasm/ by site/scripts/records.mjs ` +
+            `at build time.`,
+        };
+        return;
+      }
+      if (!response.ok) {
+        yield {
+          kind: "unsupported",
+          capability: "run",
+          reason:
+            `${url} answered ${response.status} ${response.statusText}, so ` +
+            `there are no bytes to run. The modules are copied into ` +
+            `public/wasm/ by site/scripts/records.mjs at build time.`,
+        };
+        return;
+      }
+
+      bytes = new Uint8Array(await response.arrayBuffer());
+      const digest = await sha256Hex(bytes);
+      if (digest !== sample.sha256) {
+        /* Refuse. Running bytes that are not the recorded bytes would make
+         * every statement the page then makes about provenance false, and it
+         * would do it silently, which is worse than not running. */
+        yield {
+          kind: "unsupported",
+          capability: "run",
+          reason:
+            `${url} served ${bytes.length} bytes whose sha256 is ` +
+            `${digest.slice(0, 16)}, and the record says ${sample.bytes} ` +
+            `bytes at ${sample.sha256.slice(0, 16)}. This engine will not run ` +
+            `a module it cannot show is the recorded one, because everything ` +
+            `the page says about where that module came from would then be ` +
+            `unfounded. Regenerate with ${wasmProvenance.command}.`,
+        };
+        return;
+      }
+
+      if (cancelled) return;
+      module_ = await WebAssembly.compile(bytes.slice().buffer);
+      loaded[sample.id] = module_;
+      loadedBytes[sample.id] = bytes;
+    }
+
+    if (cancelled) return;
+
+    /* The bytes about to execute, named and handed over. The page holds the
+     * artifact itself, so its size is checkable in this tab rather than taken
+     * on trust from the record. */
+    yield {
+      kind: "artifact",
+      name: sample.wasm,
+      bytes: bytes.length,
+      data: bytes,
+    };
+
+    /* Instantiate and run.
+     *
+     * `argv[0]` is the sample's own repository relative path, which is both
+     * what the program is and, in iyi, the module's own name. wasi-libc's
+     * start stub reads it, so it is a requirement rather than a flourish. */
+    const host = new WasiHost({ args: [sample.path] });
+    let instance: WebAssembly.Instance;
+    try {
+      instance = await WebAssembly.instantiate(module_, host.imports());
+    } catch (error) {
+      yield {
+        kind: "unsupported",
+        capability: "run",
+        reason:
+          `${sample.wasm} would not instantiate against a WASI preview1 host ` +
+          `in this page: ` +
+          `${error instanceof Error ? error.message : String(error)}. A module ` +
+          `built with threads or atomics cannot instantiate here, because ` +
+          `this document is not cross-origin isolated and a shared memory ` +
+          `cannot be created.`,
+      };
+      return;
+    }
+    host.bind(instance);
+
+    const start = instance.exports._start;
+    if (typeof start !== "function") {
+      yield {
+        kind: "unsupported",
+        capability: "run",
+        reason:
+          `${sample.wasm} exports no _start, so it is a reactor rather than a ` +
+          `command module and there is no entry point to call.`,
+      };
+      return;
+    }
+
+    let code: number | null = null;
+    let trap: string | null = null;
+    const began = performance.now();
+    try {
+      (start as () => void)();
+      /* `_start` returned without calling `proc_exit`. wasi-libc's stub does
+       * call it, so this path means the module was linked differently; a
+       * command module that returns normally has exited 0 by definition. */
+      code = 0;
+    } catch (error) {
+      if (error instanceof WasiExit) {
+        code = error.code;
+      } else {
+        /* A trap. The program did not exit, it died, and it therefore has no
+         * status. Reporting one would be inventing it, so the message is
+         * reported and no `exit` event follows. */
+        trap =
+          error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      }
+    }
+    const elapsed = performance.now() - began;
+
+    /* Deliver what the program wrote, one event per `fd_write`, in the order
+     * the program made them, stdout and stderr kept apart. */
+    for (const write of decodeWrites(host.writes)) {
+      if (cancelled) return;
+      if (write.text.length === 0) continue;
+      yield write.fd === 2
+        ? { kind: "stderr", text: write.text }
+        : { kind: "stdout", text: write.text };
+      await nextFrame();
+    }
+
+    if (cancelled) return;
+
+    if (trap !== null) {
+      yield {
+        kind: "stderr",
+        text:
+          `the module trapped and did not exit, so it has no status to ` +
+          `report: ${trap}\n`,
+      };
+      return;
+    }
+
+    yield { kind: "exit", code: code ?? 0, ms: Math.round(elapsed * 100) / 100 };
+  },
+
+  /**
+   * A wasm call cannot be interrupted from the outside in a page that is not
+   * cross-origin isolated: there is no second thread to signal from. So this
+   * stops the stream at the next event boundary, which is honest about what it
+   * can do, and it deliberately does not emit an `exit`, because a run
+   * abandoned between events has no status the engine knows.
+   */
+  cancel(): void {
+    cancelled = true;
+  },
+
+  /**
+   * Drop the compiled modules. `ready()` is cheap, so the next run refetches,
+   * reverifies and recompiles, which is the correct behaviour: after a dispose
+   * nothing in this tab has been shown to be the recorded bytes.
+   */
+  dispose(): void {
+    for (const key of Object.keys(loaded)) delete loaded[key];
+    for (const key of Object.keys(loadedBytes)) delete loadedBytes[key];
+    cancelled = false;
+  },
+};
