@@ -1005,6 +1005,15 @@ jobs:
             console.log("the committed record matches this run");
           '
 
+      # The payoff of the two above, and the thing the website is pointed at:
+      # iyi's own front end as a wasm module, reporting a real trait-bound
+      # diagnostic with its location, source line and caret, in V8, and saying
+      # the same bytes as the native front end. This is the step that fails if
+      # exceptions work in a three-line program but not in a compiler, since the
+      # front end reports every diagnostic by raising.
+      - name: The front end as a wasm module, saying what the native one says
+        run: WASI_SDK=/opt/wasi-sdk bash bench/wasm_front_end.sh
+
   binary:
     needs: build
     runs-on: ubuntu-24.04

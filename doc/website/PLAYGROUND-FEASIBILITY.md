@@ -27,9 +27,16 @@ Two tiers, and they are independent.
 
 Tier two is done in the sense that matters: the artifacts build, link, load in
 V8, and print the same bytes as a native run, under a pure JavaScript WASI
-implementation. Tier one gets remarkably far and then hits one wall that is not
-a matter of effort ordering: **`raise` on wasm32 does not unwind, it prints and
-exits**, and iyi's semantic analysis uses exceptions as ordinary control flow.
+implementation. Tier one gets remarkably far and then hit one wall that was not
+a matter of effort ordering: **`raise` on wasm32 did not unwind, it printed and
+exited**, and iyi's semantic analysis uses exceptions as ordinary control flow.
+
+**That wall is down. Section 11 supersedes this paragraph and the section titled
+"The wall" below**: `rescue` works on wasm32, the front end runs as a wasm
+module and reports iyi's real diagnostics in V8, and the question that decides a
+playground has moved to whether a visitor's program can execute. Everything
+between here and section 11 is the record as it was measured before that, kept
+because the blockers it names are the reason the fix took the shape it did.
 
 ## How this was measured
 
@@ -597,7 +604,7 @@ A probe reading `STDIN.gets_to_end` and writing to `STDERR` printed
 browser type-checker needs, which means blocker 6 could be sidestepped for
 user source, though not for the prelude.
 
-### The wall: `raise` on wasm32 does not unwind
+### The wall: `raise` on wasm32 does not unwind (superseded by section 11)
 
 With blockers 1 through 6 cleared, the wasm front end reads the prelude and
 runs deep into type analysis. It then dies here:
@@ -929,3 +936,72 @@ the wall is down is the front end in the browser: real parsing, real semantic
 analysis, real iyi diagnostics on what the visitor typed, with no server and no
 backend of any kind. That is a type checker, not a playground, and the
 difference is worth naming rather than blurring.
+
+### The other interpreter: Crystal's bytecode VM
+
+Before concluding that execution is impossible, the second candidate had to be
+checked, because it is a different thing from the macro evaluator: upstream
+Crystal ships `crystal i`, a real interpreter backed by a bytecode VM under
+`src/compiler/crystal/interpreter/`.
+
+**It is not in this tree, and it was deleted rather than compiled out.**
+
+```
+$ ls -d src/compiler/iyi/interpreter src/compiler/crystal/interpreter
+ls: cannot access 'src/compiler/iyi/interpreter': No such file or directory
+ls: cannot access 'src/compiler/crystal/interpreter': No such file or directory
+
+$ git log --oneline --all --diff-filter=D -- '*/interpreter/*' | head -1
+125febdca Remove the interpreter
+
+$ git show --stat 125febdca | tail -1
+ 151 files changed, 673 insertions(+), 21211 deletions(-)
+```
+
+And the reason it went is the same finding as section 11's, arrived at
+independently a week earlier. From `125febdca`'s own message:
+
+> it cannot run an iyi program: given samples/iyi/hello.iyi it stops on line 12
+> with "BUG: missing interpret for Crystal::ModuleHeader", which is R-1, the
+> first rule this language has.
+
+> An interpreter is a second implementation of the language's semantics, and
+> traits, impl, using, error unions, defer and the module header would each have
+> to exist twice or the second copy would quietly mean something else. The
+> language is not finished moving, so that price is not paid once.
+
+That is worth sitting with. **Both interpreters this fork has ever had fail on
+the same node.** The bytecode VM stopped at `BUG: missing interpret for
+Crystal::ModuleHeader`; the macro evaluator stops at `can't execute ModuleHeader
+in a macro`. R-1, the module header, the first line of every iyi file, defeats
+both, and for the same reason: neither implements iyi, one because it implements
+Crystal and one because it implements the macro language.
+
+On what it would need, the tree's own record is more precise than a guess.
+`SPEC.md` lines 3533 to 3543 settle the dependency question, and it is not the
+obstacle it looks like:
+
+> It is needed for one thing only: interpreted code calling out to C. An
+> interpreter that does not offer C calls needs no libffi, which is Elixir's
+> model.
+
+So libffi is not fatal in principle; it is the price of C interop, and a browser
+session has nothing to call out to. `bench/dependency_floor.sh` forbids libffi
+and is proven to fire, but that forbids the C-interop *path*, not interpretation.
+A bytecode VM needs no LLVM at run time by construction, and needs no linker and
+no subprocess, so nothing about wasm32-wasi rules one out now that unwinding
+works.
+
+**The verdict, stated as the evidence supports it and no further.** Reverting
+`125febdca` is not a path: it restores 11,377 lines that interpret Crystal and
+stop on line 12 of `hello.iyi`, and every iyi construct added since would have to
+be implemented in it. Writing an interpreter that runs iyi is a path, and it is
+the one the tree already chose in `SPEC.md` III.11, starting from the 781-line
+macro evaluator rather than the deleted VM. Neither of those is blocked by wasm
+or by a dependency. Both are a second implementation of a language the fork is
+still changing, which is the objection `125febdca` and V.11 both raised and
+which no amount of wasm work answers.
+
+What this report can say, and the distinction matters for the site: **the
+browser can now type-check a visitor's iyi. It cannot run it, and nothing in the
+tree can, and the reason is not the browser.**
