@@ -316,6 +316,26 @@ module Iyi
     # Recorded only while writing artifacts.
     getter iyi_unit_symbols = {} of String => Set(String)
 
+    # iyi: the `lib`s a unit calls into, by name (SPEC.md IV.1g, `Libs`).
+    #
+    # Which C libraries a boundary's object code needs is the other half of
+    # what `Requires` answers, and nothing was answering it. `link_annotations`
+    # walks the program for a `LibType` that is `used?`, and used is a question
+    # about this build's own code: the call to `yaml_parser_parse` is in the
+    # artifact's `YAML::PullParser` unit, which the consumer did not compile.
+    # So the consumer had the `lib` from a replayed `require "yaml"`, never
+    # marked it, and never passed `-lyaml`.
+    #
+    # Recorded only while writing artifacts.
+    getter iyi_unit_libs = {} of String => Set(String)
+
+    # iyi: the `lib`s an imported artifact's object code calls into.
+    #
+    # The consumer's half. Marking one used is the whole of it: everything the
+    # link line needs — `pkg_config`, `ldflags`, `framework`, static — is on
+    # the consumer's own copy of the annotation already.
+    getter iyi_artifact_libs = Set(String).new
+
     # iyi: the symbols an imported artifact's object code defines.
     #
     # The consumer's half. A method whose mangled name is in here is declared

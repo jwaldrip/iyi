@@ -302,6 +302,16 @@ jobs:
       - name: A signed JWT, through four boundaries
         run: bash bench/jwt_signs.sh
 
+      # And a boundary built from the standard library itself, which is not a
+      # shard and asks a question no shard asked: `YAML` calls libyaml, and
+      # which C libraries a boundary's object code needs was a question the
+      # format did not answer. A consumer that replays `require "yaml"` has the
+      # `lib` and its `@[Link("yaml")]` and drops the flag anyway, because a
+      # flag comes from the libs *this* build marked used and the call is in an
+      # object file it reads rather than compiles.
+      - name: A YAML document, through a boundary built from the library
+        run: bash bench/yaml_reads.sh
+
       # A library arriving with a feature is a decision, and this is where it
       # gets noticed. Seven undefined symbols in any iyi program (SPEC.md III.9),
       # and a new one fails here rather than on somebody's machine.

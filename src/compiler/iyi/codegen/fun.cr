@@ -266,6 +266,34 @@ class Iyi::CodeGenVisitor
         (@program.iyi_unit_symbols[@llvm_mod.name] ||= Set(String).new) << mangled_name
       end
 
+      # iyi: and the `lib` a unit calls into, so the artifact can say which C
+      # libraries its object code needs (SPEC.md IV.1g, `Libs`).
+      #
+      # `link_annotations` walks the program for a `LibType` that is `used?`,
+      # and used is a question about *this* build's own code: the call is in
+      # the artifact's object code, which the consumer did not compile. So a
+      # consumer that has the `lib` — the replayed `require "yaml"` gives it
+      # one — still never marks it, and `-lyaml` never reaches the link line:
+      # `undefined symbol: yaml_parser_parse`, from `YAML::PullParser`'s own
+      # unit.
+      #
+      # The lib's *name*, not the annotation. The consumer has the annotation
+      # already and everything on it — `pkg_config`, `ldflags`, `framework`,
+      # static — and carrying a copy would be a second answer to a question
+      # that already has one. What the consumer is missing is only that
+      # somebody used it.
+      #
+      # At the declaration rather than at the call, because a declaration is
+      # exactly the condition: a unit that names a C symbol is a unit whose
+      # object file refers to it.
+      if target_def.is_a?(External) && !target_def.external_var? &&
+         !@program.iyi_exported_owners.empty? && @llvm_mod != @main_mod
+        owner = target_def.owner
+        if owner.is_a?(LibType)
+          (@program.iyi_unit_libs[@llvm_mod.name] ||= Set(String).new) << owner.to_s
+        end
+      end
+
       # iyi: a copy, private to the unit that will travel in the artifact.
       #
       # Only where there is a body to copy, because internal linkage on a

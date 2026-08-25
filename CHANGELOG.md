@@ -85,6 +85,27 @@
   `new`: a virtual metaclass dispatches it to every subclass, and a subclass
   builds itself its own way.
 
+  **`yaml` crosses too, and what stood in its way was one link flag.**
+  `bench/yaml_reads.sh` binds a boundary from Crystal's own library — not a
+  shard, which is what makes it a different measurement — and a consumer parses
+  a document with an anchor and a merge key in it. The older reading, that its
+  `@anchors` is typed by merging what two users of a shared module put in it,
+  is no longer what happens; what was left was `undefined symbol:
+  yaml_parser_parse`.
+
+  **Which C libraries a boundary's object code needs now travels, as `Libs`
+  (section 18).** `Requires` says what the consumer has to have *compiled*;
+  this says what it has to have *linked against*. The consumer replays `require
+  "yaml"` and so has `lib LibYAML` and its `@[Link("yaml")]` — and
+  `link_annotations` collects a flag only from a `LibType` that is `used?`,
+  which is a question about this build's own code. The call is in the
+  artifact's `YAML::PullParser` unit, an object file the consumer reads rather
+  than compiles.
+
+  Names and nothing else: everything a link line needs — `pkg_config`,
+  `ldflags`, `framework`, static — is already on the consumer's own copy of the
+  annotation. What was missing is only that somebody used it.
+
   **And a name resolves in its own scope first.** `openssl_ext` writes a
   constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type R-2
   asks for on its `new` read as the constant. `self` is the spelling with no
