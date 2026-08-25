@@ -4,6 +4,30 @@
 
 ### Added
 
+- **A route is added to kemal's router through four boundaries.** That call is
+  the DSL's own foundation, and it needed a chain of things to cross:
+  `add_route` takes a block, so its machine code is the caller's and its body is
+  compiled by the consumer — and that body calls `add_to_radix_tree`, which
+  kemal keeps private, which calls `Radix::Tree#add`, whose body calls a private
+  overload of itself, which calls `Node#add` and a `protected sort!`.
+
+  Three things were still in the way. A body is found again by its **signature**,
+  and a declaration's signatures are rewritten on the way out — stripped of the
+  root, then mapped to what a consumer calls another boundary's types — so a key
+  left behind was a body nobody found: the declaration arrived without one and
+  the link ended on `undefined symbol:
+  *Radix::Tree(Kemal::Route)@Radix::Tree(T)#add<…>`. A **bare `*`** is a
+  parameter with no name, and written as nothing it is `, ,`. And
+  **`protected`** is the same case as `private` here: a name a travelling body
+  may call and a consumer may not write.
+
+  `initialize` also travels where `new` could not be declared at all —
+  `SharedKeyError#initialize(new_key, existing_key)` writes no restrictions, so
+  its `new` is not a symbol anybody can name, and a body that travels and raises
+  one met a class it could not construct.
+
+  `bench/bind_chain.sh` adds a route now, in both arms.
+
 - **A private method a travelling body calls travels with it.** A plain type's
   methods are machine code in the artifact, so a consumer needs no declaration
   for what they call — except where a *body* travels, and a block-taking

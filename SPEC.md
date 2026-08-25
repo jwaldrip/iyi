@@ -6562,16 +6562,28 @@ Named honestly, so nobody mistakes this draft for complete.
     > > declaration nobody uses; reaching too short is `undefined method`, so it
     > > errs long. `add_to_radix_tree` crosses now.
     > >
-    > > **What the router waits on now is a symbol rather than a name.** The
-    > > consumer compiles `Tree#add`, whose body calls the private three-argument
-    > > `add` beside it, and *declares* that one instead of compiling it —
-    > > `Symbols` says the artifact has it. It does, in a sense that does not
-    > > link: a block-taking method is emitted private to the unit that called
-    > > it, and what the closure copies in beside it is emitted the same way. A
-    > > symbol emitted with internal linkage is not one a consumer can be told
-    > > about, and telling it is what `undefined symbol:
-    > > *Radix::Tree(Kemal::Route)@Radix::Tree(T)#add<…>` is. That is the next
-    > > thing, and it is one line of the recording rule rather than a rule.
+    > > **And the router works.** A consumer built against all four boundaries
+    > > adds a route to kemal's, which is the DSL's own foundation. What it took
+    > > was a chain: `add_route` takes a block, so its body is compiled here,
+    > > and that body calls `add_to_radix_tree`, which kemal keeps private,
+    > > which calls `Radix::Tree#add`, whose body calls a private overload of
+    > > itself, which calls `Node#add` and a `protected sort!`.
+    > >
+    > > Three things were in the way and each was small. A body is found again
+    > > by its **signature**, and a declaration's signatures are rewritten twice
+    > > on the way out — so a key left behind was a body nobody found, and the
+    > > link ended on `undefined symbol:
+    > > *Radix::Tree(Kemal::Route)@Radix::Tree(T)#add<…>`. That was read here
+    > > first as a symbol emitted with internal linkage being listed, which it
+    > > was not. A **bare `*`** is a parameter with no name and written as
+    > > nothing it is `, ,`. And **`protected`** is the same case as `private`:
+    > > a name a travelling body may call and a consumer may not write.
+    > >
+    > > `initialize` also travels where `new` could not be declared at all.
+    > > `SharedKeyError#initialize(new_key, existing_key)` writes no
+    > > restrictions, so its `new` is not a symbol anybody can name — and the
+    > > rule was already here, in narrower words: a plain type's `initialize`
+    > > travels where its `new` could not.
     > >
     > > Passing it opened one more, and it was a rewrite rather than a lookup.
     > > A boundary rewrites references to another boundary's types so the

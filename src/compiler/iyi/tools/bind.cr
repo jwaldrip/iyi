@@ -1620,7 +1620,9 @@ module Iyi
       assoc_types: declaration.assoc_types,
       supertraits: declaration.supertraits,
       fields: declaration.fields.map { |(name, type)| {name, strip_root(type, root)} },
-      methods: declaration.methods.map { |signature| strip_root signature, root },
+      methods: declaration.methods.map do |signature|
+        rekey_body declaration.name, signature, strip_root(signature, root)
+      end,
       visibility: declaration.visibility,
       # Deeper for what is inside it, because a name is read from where it is
       # written. `OpenSSL::PKey::PKeyError` stripped of the root is
@@ -1641,6 +1643,26 @@ module Iyi
       end,
       superclass: strip_root(declaration.superclass, root),
     )
+  end
+
+  # A body is found again by its signature, so rewriting one moves the other.
+  #
+  # `MonoBodies` is keyed on the container and the signature as written, and a
+  # declaration's signatures are rewritten twice on the way out — stripped of
+  # the root, then mapped to what a consumer calls another boundary's types. A
+  # key left behind is a body nobody finds: the declaration arrives without one,
+  # the consumer reads it as a method somebody else compiled, and the link ends
+  # on `undefined symbol: *Radix::Tree(Kemal::Route)@Radix::Tree(T)#add<…>`.
+  private def self.rekey_body(container : String, before : IyiMod::Signature,
+                              after : IyiMod::Signature) : IyiMod::Signature
+    old_key = IyiMod.mono_body_key(container, before)
+    new_key = IyiMod.mono_body_key(container, after)
+    return after if old_key == new_key
+
+    if body = @@mono_bodies.delete(old_key)
+      @@mono_bodies[new_key] = body
+    end
+    after
   end
 
   # Rewrites every bound name in *text* to what the consumer calls it. The name
@@ -1679,7 +1701,9 @@ module Iyi
       assoc_types: declaration.assoc_types,
       supertraits: declaration.supertraits,
       fields: declaration.fields.map { |(name, type)| {name, map_names(type)} },
-      methods: declaration.methods.map { |signature| map_names signature },
+      methods: declaration.methods.map do |signature|
+        rekey_body declaration.name, signature, map_names(signature)
+      end,
       visibility: declaration.visibility,
       types: declaration.types.map { |nested| map_names_declaration nested },
       value: map_names(declaration.value),
@@ -2101,7 +2125,50 @@ module Iyi
     end
 
     signatures.concat called_privates(type, name, by_owner, signatures)
+    signatures.concat fallback_initialize(type, name, by_owner, signatures)
     signatures
+  end
+
+  # `initialize`, where `new` could not be declared at all.
+  #
+  # A consumer builds one of these types by calling `new`, and `new` is
+  # synthesised from `initialize` — so where the synthesised one cannot be
+  # written down, the thing it was made from has to be. `radix`'s
+  # `SharedKeyError#initialize(new_key, existing_key)` writes no restrictions, so
+  # its `new` is not a symbol anybody can name, and a body that travels and
+  # raises one met a class it could not construct.
+  #
+  # With its own body, because that is the whole of what the consumer needs: it
+  # synthesises `new` and compiles both, exactly as the shard's own compiler
+  # did. Only where `new` is absent — declaring both is two ways to build one
+  # type.
+  private def self.fallback_initialize(type : Type, name : String, by_owner,
+                                       carried : Array(IyiMod::Signature)) : Array(IyiMod::Signature)
+    added = [] of IyiMod::Signature
+    return added if carried.any? { |signature| signature.name == "new" }
+    return added if carried.any? { |signature| signature.name == "initialize" }
+
+    by_owner[type.to_s]?.try &.each do |method|
+      next unless method.name == "initialize"
+      next if method.uncompilable
+      body = method.body
+      next if body.nil? || body.empty?
+      next unless added.empty?
+
+      signature = IyiMod::Signature.new(
+        name: "initialize",
+        receiver: "",
+        parameters: method.params.map { |(argument, restriction, default)| bind_parameter(argument, restriction, default) },
+        block_parameter: method.written_block,
+        return_type: "",
+        free_variables: [] of String,
+        required: false,
+      )
+      added << signature
+      @@mono_bodies[IyiMod.mono_body_key(name, signature)] = body
+    end
+
+    added
   end
 
   # The private methods a travelling body calls, and the ones those call.
@@ -2238,6 +2305,11 @@ module Iyi
   # caller may pass fewer arguments than there are parameters, or name one and
   # skip another, and a declaration missing the defaults refuses both.
   private def self.bind_parameter(name : String, restriction : String, default : String) : String
+    # A bare `*` is a parameter with no name: it marks what follows as
+    # named-only. Written as nothing it is `, ,` and the far side stops on
+    # `unexpected token: ","`.
+    return "*" if name.empty?
+
     # `?` is what an unresolved restriction is recorded as, and it is not a type
     # and not syntax. A method that reaches a declaration with one is a method
     # the consumer compiles from its body — a generic's, a private one's — and
@@ -2349,7 +2421,7 @@ module Iyi
         # they travel is the collectors' question — only the generic path takes
         # them, because only there is every body the consumer's to compile.
         next unless a_def.visibility.public? || a_def.name == "initialize" ||
-                    a_def.visibility.private?
+                    a_def.visibility.private? || a_def.visibility.protected?
         # A method with no location is the compiler's own — `allocate` exists
         # on every type and nobody wrote it. A boundary carries what a shard's
         # author wrote, and `new` comes back through `initialize`.
@@ -2419,7 +2491,10 @@ module Iyi
       body: a_def.location.try { |at| owner.program.iyi_def_bodies["#{at}##{a_def.name}"]? } ||
             a_def.body.to_s,
       abstract_def: a_def.abstract?,
-      private_def: a_def.visibility.private?,
+      # Protected counts as private here: both are names a travelling body may
+      # call and a consumer may not write, and `protected def sort!` is one
+      # `Radix::Node(T)#add` calls.
+      private_def: a_def.visibility.private? || a_def.visibility.protected?,
       uncompilable: uncompilable,
       body_answers: refused == "block returns `_`" && !a_def.abstract? &&
                     !a_def.body.nil? && !a_def.body.is_a?(Nop),
