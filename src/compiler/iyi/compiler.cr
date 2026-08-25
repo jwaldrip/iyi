@@ -630,6 +630,12 @@ module Iyi
       artifact.layouts = collect_iyi_layouts(program, type)
       artifact.regexes = collect_iyi_regexes(program, artifact.constants)
       artifact.class_vars = collect_iyi_unit_class_vars(program, names)
+      artifact.match_types = collect_iyi_match_types(program, names)
+      artifact.symbols = collect_iyi_symbols(program, names)
+      # Reached only if the keep file compiled, which is the whole of what this
+      # says. A boundary whose fill died leaves every declaration on disk and no
+      # machine code, and that is not the same thing as having none.
+      artifact.filled = true
 
       add_bind_boundary_imports artifact, dir, path
       IyiMod.write artifact, path
@@ -707,6 +713,9 @@ module Iyi
         end
         artifact.regexes = collect_iyi_regexes(program, artifact.constants)
         artifact.class_vars = collect_iyi_unit_class_vars(program, unit_names)
+        artifact.match_types = collect_iyi_match_types(program, unit_names)
+        artifact.symbols = collect_iyi_symbols(program, unit_names)
+        artifact.filled = true
         IyiMod.write artifact, path
       end
     end
@@ -782,7 +791,12 @@ module Iyi
 
       impls = program.iyi_impls[filename]? || [] of IyiMod::ImplRecord
 
-      IyiMod::Exports.new(functions, types, impls, carried_functions)
+      # The module's own class variables — the ones owned by the module unit
+      # rather than by a type inside it. They belong to no `TypeDecl`, because
+      # a module is not one, and a class variable is a global either way.
+      module_class_vars = type ? collect_iyi_class_vars(type) : [] of {String, String, String}
+
+      IyiMod::Exports.new(functions, types, impls, carried_functions, module_class_vars)
     end
 
     # iyi: the machine code for a module's own definitions, for `ObjectCode`
@@ -849,11 +863,28 @@ module Iyi
     # behind, and nothing the consumer reads would ever create it. So the name
     # travels and the consumer instantiates it.
     #
-    # Only generic instances. Everything else the code can name is either the
-    # module's own — declared by this artifact — or somebody's the consumer
-    # imports for itself, and in both cases the consumer has the type already.
-    # An instantiation is the case with no declaration anywhere to arrive
-    # through.
+    # **Every one of them**, and the filters this used to have were each wrong
+    # for a different reason.
+    #
+    # A **generic instance** may not exist in the consumer at all: `Array(Item)`
+    # is in the producing build because of a body that stayed behind, and
+    # nothing the consumer reads would create it. Naming it is what creates it.
+    #
+    # An **enum or a module** exists and is still unnumbered. Ids are handed out
+    # by walking `Object`'s subclasses, and that walk reaches neither — both
+    # take an id from the first code that asks for one, so a consumer whose own
+    # code never mentions `Regex::MatchOptions` or `Backtracer::Backtrace::Parser`
+    # numbers them nowhere and defines no id global.
+    #
+    # And a plain **class** was left out on the reasoning that the consumer has
+    # it already — which is true only if the consumer *imports the module that
+    # declares it*, and that import edge is derived from this very list.
+    # `Kemal` numbers `ExceptionPage::Styles`, the name was filtered out here,
+    # so no edge was added, so the consumer never read `exception_page` and
+    # never had the class. The list is the dependency, so it has to be whole.
+    #
+    # The cost is a longer list — `Kemal` goes from 303 names to 642 — and a
+    # name is a string.
     private def collect_iyi_type_ids(program : Program, unit_names : Array(String)) : Array(String)
       names = Set(String).new
       unit_names.each do |unit_name|
@@ -863,7 +894,6 @@ module Iyi
           # the two undefined symbols and the one that reads as a different
           # problem.
           instance = type.instance_type
-          next unless instance.is_a?(GenericInstanceType)
           names << instance.to_s
         end
       end
@@ -885,6 +915,42 @@ module Iyi
       names = Set(String).new
       unit_names.each do |unit_name|
         program.iyi_unit_constants[unit_name]?.try &.each { |const| names << const.to_s }
+      end
+      names.to_a.sort!
+    end
+
+    # iyi: the symbols the module's object code defines, for `Symbols` (SPEC.md
+    # IV.1g).
+    #
+    # What a consumer needs in order to know what it has to compile for itself,
+    # and the one thing no rule about the *shape* of a def gets right: an
+    # artifact defines more than it declares and less than its types suggest.
+    private def collect_iyi_symbols(program : Program,
+                                    unit_names : Array(String)) : Array(String)
+      names = Set(String).new
+      unit_names.each do |unit_name|
+        program.iyi_unit_symbols[unit_name]?.try &.each { |symbol| names << symbol }
+      end
+      names.to_a.sort!
+    end
+
+    # iyi: the types the module's object code asks `~match<T>` about, by name,
+    # for `MatchTypes` (SPEC.md IV.1g).
+    #
+    # `collect_iyi_type_ids`' question asked of a match. The consumer defines
+    # these with its own numbering, exactly as it defines the type ids, and for
+    # the same reason: the numbering is the program's.
+    #
+    # A virtual one it could have found for itself, by taking the virtual form
+    # of every class it numbers — that is what `iyi_define_all_match_funs`
+    # does. A union it could not: `(Char | Iyi::Keyword | String | Nil)` is a
+    # type the producer's code formed, and there is no walk over a program that
+    # arrives at it.
+    private def collect_iyi_match_types(program : Program,
+                                        unit_names : Array(String)) : Array(String)
+      names = Set(String).new
+      unit_names.each do |unit_name|
+        program.iyi_unit_match_types[unit_name]?.try &.each { |type| names << type.to_s }
       end
       names.to_a.sort!
     end
@@ -958,16 +1024,51 @@ module Iyi
     # this file exists to end.
     private def collect_iyi_unit_names(type : ModuleType, names : Array(String)) : Nil
       type.types?.try &.each_value do |declared|
-        names << declared.to_s unless declared.is_a?(GenericType)
+        unless declared.is_a?(GenericType)
+          names << declared.to_s
+          virtual = iyi_virtual_unit_name(declared)
+          names << virtual unless virtual.empty?
+        end
         collect_iyi_unit_names declared, names if declared.is_a?(ModuleType)
       end
+    end
+
+    # iyi: `Shard::Base+`, the second unit a class with subclasses has.
+    #
+    # A value of a class that something inherits from is held as that class's
+    # *virtual* type, and codegen puts the methods reached through one in a
+    # module of their own — `*Shard::Base+@Shard::Base#describe` lives in
+    # `Shard::Base+`, not in `Shard::Base`. Naming only the plain form carried
+    # the wrong half: the artifact held a `Shard::Base` unit with the
+    # constructor in it and left every inherited method behind, and a consumer
+    # calling one linked against nothing.
+    #
+    # Empty for a class nothing inherits from, whose virtual type is itself —
+    # `names` is deduplicated, so an empty string would be the only thing to
+    # guard against, and there is nothing to add.
+    private def iyi_virtual_unit_name(type : Type) : String
+      return "" unless type.responds_to?(:virtual_type)
+      virtual = type.virtual_type
+      virtual == type ? "" : virtual.to_s
     end
 
     # The same walk as `collect_iyi_unit_names`, keeping the types rather than
     # their names — `try_inline_call` is handed an owner, not a string.
     private def collect_iyi_owners(type : ModuleType, owners : Set(Type)) : Nil
       type.types?.try &.each_value do |declared|
-        owners << declared unless declared.is_a?(GenericType)
+        unless declared.is_a?(GenericType)
+          owners << declared
+          # And the virtual form, for the reason `iyi_virtual_unit_name` gives:
+          # it is a second unit, it travels, and a unit that travels must have
+          # its callees copied into it. Without this the `Shard::Base+` unit
+          # arrived referring to `*String#+<String>:String` — a symbol in the
+          # consumer's `String` unit only if the consumer's own code happened
+          # to concatenate.
+          if declared.responds_to?(:virtual_type)
+            virtual = declared.virtual_type
+            owners << virtual unless virtual == declared
+          end
+        end
         collect_iyi_owners declared, owners if declared.is_a?(ModuleType)
       end
     end

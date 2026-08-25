@@ -4229,6 +4229,29 @@ module Iyi
       it_parses "trait Greet\nend", TraitDef.new(Path.new(["Greet"]))
       it_parses "pub trait Greet\nend", TraitDef.new(Path.new(["Greet"]), exported: true)
 
+      # iyi: being abstract and being reachable are different questions — one
+      # says the type cannot be instantiated, the other says who may name it —
+      # and a boundary needs both at once: a bound `abstract class` is a type a
+      # consumer subclasses and therefore has to be able to write (SPEC.md
+      # IV.2).
+      it "parses a pub abstract class" do
+        node = parse("pub abstract class Sheet
+end").as(ClassDef)
+        node.abstract?.should be_true
+        node.exported?.should be_true
+      end
+
+      it "parses a pub abstract struct" do
+        node = parse("pub abstract struct Sheet
+end").as(ClassDef)
+        node.abstract?.should be_true
+        node.struct?.should be_true
+        node.exported?.should be_true
+      end
+
+      assert_syntax_error "pub abstract module Sheet\nend",
+        "`pub abstract` takes a class, a struct or a def"
+
       it "parses an impl" do
         node = parse("impl Greet for User\ndef greet\nend\nend").as(ImplDef)
         node.trait.should eq(Path.new(["Greet"]))

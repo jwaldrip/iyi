@@ -203,19 +203,19 @@ describe Iyi::IyiMod do
       end
     end
   end
-  # The one a stale artifact in a cache actually hits. v23 is the version this
-  # tree wrote yesterday: `Regexes` and `ClassVars` took it there, `Layouts`
-  # took it to v24, and the rule applies to a version this tree wrote itself
-  # exactly as to one it never wrote.
-  it "refuses a v23 artifact" do
+  # The one a stale artifact in a cache actually hits. v28 is the version
+  # upstream shipped: `MatchTypes` and `Symbols` took it there, `Layouts` took
+  # it to v29, and the rule applies to a version this tree wrote itself exactly
+  # as to one it never wrote.
+  it "refuses a v28 artifact" do
     with_temporary_file do |path|
       Iyi::IyiMod.write sample_artifact, path
       bytes = File.read(path).to_slice.dup
       # The version is the u32 right after the 8-byte magic.
-      Iyi::IyiMod::FORMAT.encode(23_u32, bytes[8, 4])
+      Iyi::IyiMod::FORMAT.encode(28_u32, bytes[8, 4])
       File.write path, bytes
 
-      expect_raises(Iyi::IyiMod::Error, /format v23/) do
+      expect_raises(Iyi::IyiMod::Error, /format v28/) do
         Iyi::IyiMod.read(path)
       end
     end
@@ -2428,6 +2428,56 @@ describe Iyi::IyiMod do
           layout.noscan_offsets.should be_empty
           layout.type_id.should be > 0
         end
+      end
+    end
+  end
+
+  # An artifact with every declaration and no machine code is not the same
+  # thing as one that legitimately has none: an `abstract class` with no
+  # subclass in its own shard carries no object code and is complete, while a
+  # boundary whose fill build died carries none and promises everything. Read as
+  # it stands the second is a hundred undefined symbols with the cause named
+  # nowhere.
+  it "refuses a boundary whose object-code step never finished" do
+    with_tempdir("iyimod_unfilled") do
+      Dir.mkdir_p "app"
+      File.write "app/counter.iyi", <<-IYI
+        module app/counter
+
+        pub def total : Int32
+          42
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/counter
+
+        puts App::Counter.total
+        IYI
+
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+
+      # Written back as the fill step would have left it had the build died:
+      # everything it declares, and no record of having finished.
+      path = File.join("mods", "app", "counter.iyimod")
+      artifact = Iyi::IyiMod.read(path, want_object_code: true)
+      artifact.filled.should be_true
+      artifact.filled = false
+      Iyi::IyiMod.write artifact, path
+
+      File.delete "app/counter.iyi"
+
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      expect_raises(Iyi::TypeException, /was never filled/) do
+        consumer.compile source, File.expand_path("from-artifact")
       end
     end
   end

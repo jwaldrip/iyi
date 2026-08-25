@@ -65,6 +65,14 @@ cat > "$WORK/shard.cr" <<'CR'
 module Shard
   extend self
 
+  # On the module rather than on a type inside it, which is a different place
+  # for the format to have to put it: a module is not a `TypeDecl`. Kemal's
+  # `backtracer` is where this was found — `module Backtracer;
+  # class_getter(configuration)` left `Backtracer::configuration` undefined at
+  # the end of a build that had every one of that shard's types and their class
+  # variables.
+  @@made = 0
+
   class Part
     @seed : Int32
     @@count = 0
@@ -97,10 +105,148 @@ module Shard
       @@count = @@count + 1
       @@count
     end
+
+    # A union the consumer never forms, checked against a union restriction.
+    # `is_a?` against a union compiles to `~match<(Char | Int32)>`, a function
+    # that compares a type id against the *program's* numbering — so it is the
+    # main module's and the main module does not travel. A virtual type the
+    # consumer could have found for itself by taking the virtual form of every
+    # class it numbers; a union it cannot, because no walk over a program
+    # arrives at one its own code never wrote.
+    def kind(n : Int32) : String
+      v = n > 1 ? 1 : (n > 0 ? 'x' : "s")
+      v.is_a?(Char | Int32) ? "small" : "other"
+    end
+  end
+
+  # Inheritance, which a boundary lost entirely: `TypeDecl` had no field for
+  # the `<`, so `Derived` arrived without its base *and* without the fields it
+  # inherits — a subclass's own field list is only its own. The consumer said
+  # `undefined method 'tag' for Shard::Derived`.
+  #
+  # Three separate things had to follow the edge. A method is keyed on the type
+  # that *defines* it, because a boundary has one symbol per method and not one
+  # per receiver. That symbol is keyed on the class's *virtual* form, because a
+  # value of a class something inherits from is held as one. And a class with
+  # subclasses has a second unit — `Shard::Base+` — which is where the methods
+  # reached through that form are emitted, and which the artifact was not
+  # carrying at all.
+  class Base
+    @tag : String
+
+    def initialize(@tag : String)
+    end
+
+    def tag : String
+      @tag
+    end
+
+    def describe : String
+      "base:" + @tag
+    end
+  end
+
+  class Derived < Base
+    @extra : Int32
+
+    def initialize(tag : String, @extra : Int32)
+      super(tag)
+    end
+
+    def extra : Int32
+      @extra
+    end
+
+    # Overridden, so the two halves of dispatch are both checked: the inherited
+    # `tag` comes from the base's unit and this one does not.
+    def describe : String
+      "derived:" + @tag + ":" + @extra.to_s
+    end
+  end
+
+  def self.derived(tag : String, extra : Int32) : Derived
+    Derived.new(tag, extra)
+  end
+
+  # An abstract class, whose concrete methods are the third thing whose body
+  # has to travel — beside a generic's and a block-taker's, and for the same
+  # reason each time: they are instantiated per *subclass*, and the subclass is
+  # the consumer's. A shard that declares one and never subclasses it carries
+  # **no machine code for it at all**, which is why `exception_page` fills with
+  # 0 units and why that is not a bug.
+  abstract class Sheet
+    abstract def title : String
+
+    def render : String
+      "[" + title + "]"
+    end
+  end
+
+  # A non-generic type nested inside a generic one. The keep file skipped a
+  # generic — rightly, since `uninitialized Holder(T)` is not a thing anybody
+  # can write — and skipped everything it declared along with it. Those have
+  # units in the artifact all the same, so radix's keep file was empty while
+  # its two error classes carried 1.3 MB each, and the only `to_s` symbols it
+  # emitted were the ones its own code happened to reach: a consumer asking
+  # for the declared `to_s<IO+>` found nothing.
+  class Holder(T)
+    @value : T
+
+    def initialize(@value : T)
+    end
+
+    def value : T
+      @value
+    end
+
+    class Note
+      @text : String
+
+      def initialize(@text : String)
+      end
+
+      # An abstract parameter, so the symbol is the declared one and not one
+      # per argument type — which is what made the gap visible.
+      def write(io : IO) : Nil
+        io << "note:" << @text
+      end
+    end
+  end
+
+  def self.note(text : String) : Holder::Note
+    Holder::Note.new(text)
+  end
+
+  # A nested namespace, which a boundary used to drop whole and report as a
+  # "nested namespace skipped". What that cost only shows at a shard's scale:
+  # `Kemal::Exceptions` holds four exception classes, each with an object-code
+  # unit in the artifact, so a consumer linked their machine code and had none
+  # of the classes. A module is also a type — the object code numbers one — and
+  # a consumer that cannot name it cannot number it.
+  module Inner
+    class Deep
+      @tag : String
+
+      def initialize(@tag : String)
+      end
+
+      def tag : String
+        @tag
+      end
+    end
+
+    def self.deep(tag : String) : Deep
+      Deep.new(tag)
+    end
   end
 
   def make(seed : Int32) : Part
+    @@made = @@made + 1
     Part.new(seed)
+  end
+
+  def made : Int32
+    @@made
   end
 end
 CR
@@ -129,6 +275,27 @@ puts total
 puts part.bump
 puts part.bump
 puts Shard.make(11).step(1)
+puts Shard.made
+puts Shard::Inner.deep("nested").tag
+d = Shard.derived("hello", 42)
+puts d.tag
+puts d.extra
+puts d.describe
+class Report < Shard::Sheet
+  def initialize
+  end
+
+  def title : String
+    "report"
+  end
+end
+
+puts Report.new.render
+Shard.note("kept").write(STDOUT)
+puts ""
+puts part.kind(2)
+puts part.kind(1)
+puts part.kind(0)
 IYI
 
 sed 's|require "./shard"|import shard|' "$WORK/app_source.iyi" > "$WORK/app_artifact.iyi"
@@ -156,6 +323,15 @@ if ! (cd mods && "$CRYSTAL" build --iyi-keep Shard --emit-bind . \
   echo "workdir $WORK"
   exit 1
 fi
+
+# Printed because it is the evidence: without this line the union above could
+# be one the consumer forms for itself, and the gate would be checking nothing.
+printf 'the nested-in-a-generic method, emitted against its declaration: '
+grep -c 'Shard::Holder::Note' mods/shard_keep.cr > /dev/null && \
+  strings -a mods/shard.iyimod | grep -oE '\*Shard::Holder::Note#write[^ ]*' | sort -u | head -1 || echo "MISSING"
+
+printf 'the union this shard matches against, carried: '
+"$IYI" mod dump mods/shard.iyimod | grep -F '(Char | Int32)' | tr -d ' ' || echo "MISSING"
 
 # `--crystal` on both arms. A bound shard's artifact says it was built against
 # Crystal's standard library, because it was, and a program cannot hold one

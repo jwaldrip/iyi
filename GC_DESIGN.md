@@ -3,7 +3,7 @@
 **Status:** Stages 1 and 2 built. Stages 3 onward are design.
 
 Stage 1: the artifact carries a pointer map per type it owns (`.iyimod` format
-v24, `Layouts` section 14), and the object header and its CAS-safe mark word
+v29, `Layouts` section 64), and the object header and its CAS-safe mark word
 exist and are tested as a unit. Stage 1's own tasks 3 and 4, work distribution
 and write barriers, are design here and deferred to Stage 6 by their own text;
 they were not built.
@@ -21,6 +21,36 @@ never frees. Windows and wasm32 keep their existing allocators on purpose, the
 first because its binaries currently print uninitialized memory and a new
 allocator there would confound that diagnosis, the second because it has no
 mmap and its watermark arena is a separate design.
+
+## What the staging above got wrong, found while building it
+
+This plan was written assuming iyi has threads and fibers. It has neither. Grep
+the prelude: no `Fiber`, no `Thread`, no `spawn`, no `pthread`, no `Mutex`.
+SPEC.md III.4 leaves concurrency unbuilt, and III.9 records why a scheduler is
+not a free addition: one that reached for pthreads would put libc back on the
+link line and take the dependency floor with it.
+
+So four of the ten stages are not "later", they are blocked on something outside
+this document:
+
+* **Stage 3's fiber enumeration** has nothing to enumerate. The registry is not
+  built, because a registry of a type that cannot exist cannot be tested.
+* **Stage 4's thread suspension** has nothing to suspend. `SIGSTOP`, Mach
+  `thread_suspend` and `SuspendThread` are all machinery for a second thread.
+  What is real in Stage 4 with one thread is register capture, because a live
+  root can sit in a callee-saved register and never touch the stack, and a
+  collector that scans only the stack frees it. That part moved into Stage 3,
+  where it can be tested.
+* **Stages 7 and 8**, parallel marking and concurrent sweeping, are the reason
+  the owner chose to own a collector, and they cannot be built or measured with
+  one thread. They wait on III.4. The mark word is already CAS-safe and the
+  header already reserves its bits, so the wait costs a redesign of nothing.
+* **Stage 9** is conditional on measuring Stage 7, so it inherits the same wait.
+
+This is worth stating plainly rather than leaving the plan to read as ten
+achievable steps: the collector can reach a working single-threaded
+mark-and-sweep, and the concurrency the decision was made for arrives after a
+scheduler does.
 
 So the point of no return, Stage 5, is still ahead.
 

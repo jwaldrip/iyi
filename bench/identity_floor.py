@@ -141,6 +141,14 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r"as Crystal\b", "a comparison with the other language"),
     (r"than Crystal\b", "a comparison with the other language"),
     (r"Crystal\b.*(shard|Kemal|ecosystem)", "the ecosystem it borrows"),
+    # Arriving with upstream's boundary work, and all five genuinely denote the
+    # other language: a bound shard's units call into Crystal's library, the
+    # errors quoted are Crystal's compiler talking, and `CRYSTAL_BIO` is a real
+    # constant in Crystal's OpenSSL bindings.
+    (r"methods Crystal owns", "the other library's methods, called across a boundary"),
+    (r"which is Crystal saying", "an error message quoted from the other compiler"),
+    (r"Crystal reaches it through", "a sentence about the other language's semantics"),
+    (r"OpenSSL::BIO::CRYSTAL_BIO", "a constant inside Crystal's standard library"),
     # The compiler is a Crystal program, built by a Crystal bootstrap, and
     # ships a second binary called `crystal`. Naming that toolchain is not
     # leakage: it is the build saying which compiler compiles this one.

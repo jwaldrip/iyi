@@ -41,7 +41,7 @@
   compile it and the default binary is the same size.
 
 - **The collector's first stage: pointer maps travel in the artifact.**
-  `.iyimod` is format v24 and carries a `Layouts` section, numbered 14: per
+  `.iyimod` is format v29 and carries a `Layouts` section, numbered 64: per
   type a module owns, its allocation size, its unrounded instance size, and the
   byte offsets of its pointer fields. The offsets come from the target's own
   data layout rather than from adding field sizes up, because padding is the
@@ -66,6 +66,341 @@
   traced" means is Stage 6's to define, and guessing now risks a later stage
   reading it as "do not retain" and collecting live buffers. Layouts are per
   instantiation, not per GC shape, because shape keying is R-4 and unbuilt.
+- **A block-taking `initialize` crosses, because its `new` cannot.** Crystal
+  reaches `initialize` through `new` and marks it not-public, which is fine
+  while `new` travels — and it does not when it takes a block, since a
+  synthesised `new`'s body is the compiler's, with a temporary for a receiver.
+  So the one a consumer needs in order to make its *own* `new` crosses instead,
+  and only in that case: declaring `initialize` beside a `new` that also travels
+  would be two ways to build the same type. The keep file does not call it —
+  `protected method 'initialize' called` is Crystal saying `new` is how you
+  build one — and it does not need to: a block-taking method's machine code is
+  the caller's.
+
+- **A body that travels is the body as it was written.** `Def#body` stops being
+  source as soon as anything instantiates it: `Route.new(method, path,
+  &handler)` becomes `_.initialize(method, path, &handler)`, and an underscore
+  is not a receiver anybody can write — the consumer said `can't read from _`
+  about a body it was handed. It is recorded in the top-level pass now, which
+  runs before any of that, and keyed on the name as well as the place: a
+  synthesised `new` carries the *location* of the `initialize` it was made from,
+  so a key of one alone handed `new` the other's body.
+
+  A block-taking `new` does not travel at all now, for the same reason from the
+  other side: its body is the compiler's, with a temporary for a receiver, and
+  the consumer makes its own from the `initialize` beside it — which is what
+  `new` has always done here.
+
+- **A block that returns `_` crosses.** `&handler : Context -> _` names one type
+  and one *absence* of one, and the scan that asks whether a signature's names
+  can be written read `_` as a name — so every method whose block returns
+  whatever the block returns was dropped, `Kemal::RouteHandler#add_route` among
+  them, and kemal's whole DSL is written on top of that one. There is no single
+  return type to infer for such a method either, and none is needed: a
+  block-taking method's *body* travels and the consumer compiles it, so the
+  declaration carries no return type and the consumer reads its own.
+
+- **A shard that reopens a library namespace carries only what it added.**
+  `openssl_ext` is `OpenSSL`, and a `--crystal` consumer replays the requires
+  and gets Crystal's — so the artifact's declarations met the library's and the
+  build stopped on `superclass mismatch for class OpenSSL::SSL::Error`, then on
+  `already initialized constant OpenSSL::BIO::CRYSTAL_BIO`. What separates the
+  two is where a type or a constant is *defined*: under the shard, or under the
+  library. One the library wrote is not declared and not assigned; one they
+  both touch counts as the shard's, because what the shard added has to travel
+  somehow.
+
+- **A nested declaration's names are stripped to where they are read from.**
+  `OpenSSL::PKey::PKeyError` stripped of the root is `PKey::PKeyError` — and
+  that declaration is rendered *inside* `module PKey`, where it means
+  `PKey::PKey::PKeyError` and resolves to nothing. The stripping goes one level
+  deeper with each nesting now, so from in there the name is `PKeyError`. It was
+  invisible until a superclass gave a nested type a name to resolve.
+
+- **A method the compiler refuses to instantiate does not travel, and the
+  boundary survives it.** `crystal tool bind` already instantiated every method
+  it declares — that is how a written return type is held against the answer —
+  and a method whose body did not typecheck was recorded as "could not be
+  checked" and **declared anyway**. The keep file then named it, and one method
+  that does not compile took the whole fill build with it: every declaration on
+  disk and no machine code anywhere.
+
+  What separates the two cases is who refused. This tool declining to ask — an
+  unannotated block, a splat, a free variable — is not a defect in the method,
+  and those still travel. The *compiler* refusing is, and those are dropped.
+  `openssl_ext` has a `LibCrypto` call whose argument is a pointer too deep, in
+  a method its own compilation never types: it went from **losing its whole
+  artifact** to binding at 35 units and 31 MB, and the chain under `jwt` —
+  `bindata`, `openssl_ext`, `jwt` — now binds end to end.
+
+- **A boundary says whether its object-code step finished.** `crystal tool bind`
+  writes the declarations and a second build fills them, compiling a keep file
+  that names every method a consumer might call. A shard can hold code its own
+  compilation never types — `openssl_ext` has a `LibCrypto` call whose argument
+  is a pointer too deep — and asking for all of it is what finds that. The build
+  dies and leaves an artifact with every declaration and no machine code.
+
+  Read as it stands, that boundary promises a hundred methods and defines none,
+  and the linker says so a hundred times without naming the cause once. It is
+  also indistinguishable from one that legitimately has no object code: an
+  abstract class with no subclass in its own shard is complete with zero units.
+  So the fill step records that it finished, and a consumer of an unfinished
+  boundary is refused by name.
+
+- **A constant's accessor names the constant it reads.** The accessor a boundary
+  writes for `Kemal::Config::INSTANCE` is `config_instance`, flattened with `_`
+  — and the path it reads was reconstructed from that name by reading every `_`
+  as `::`. It works until a type's own name has an underscore in it:
+  `class OpenSSL::GETS_BIO` came back as `OpenSSL::GETS::BIO`, and the keep file
+  named a constant no program has. The path travels beside the accessor now
+  rather than being derived from it.
+
+  Flattening still loses information — `A_B::C` and `A::B_C` both read `a_b_c` —
+  so a second constant claiming a taken accessor name is dropped and printed
+  beside the artifact, where two defs of one name would have been a broken
+  boundary.
+
+- **An abstract class crosses a boundary, and its concrete methods travel as
+  bodies.** They are the third thing that has to, beside a generic's methods
+  and a block-taker's, and for the same reason each time: they are instantiated
+  per *subclass*, and every subclass is somebody else's. A shard that declares
+  an abstract class and never subclasses it carries **no machine code for it at
+  all** — which is why `exception_page` fills with 0 units, and why that is not
+  a bug — so a consumer writing `class Report < Sheet` asked for
+  `*Sheet+@Sheet#render` and nobody had made one.
+
+  Two smaller things sat in front of it. The keep file *called* the abstract
+  methods, and `t0.title` on a class with no subclass has no type: codegen said
+  so as `BUG: … has no type` rather than as an error anybody could act on.
+  And neither the method's nor the type's abstractness travelled, so a consumer
+  read `def title` where the shard wrote `abstract def title`.
+
+- **`pub abstract class`.** Being abstract and being reachable are different
+  questions — one says the type cannot be instantiated, the other says who may
+  name it — and `pub` took a class, a struct, a trait, a def, a macro and an
+  enum, but not an `abstract` anything. A bound abstract class is a type a
+  consumer subclasses and therefore has to be able to write; without this the
+  declaration came back as a plain `pub class` and the requirement inside it
+  was refused with `can't define abstract def on non-abstract class`.
+
+- **A chain of four bound shards builds and runs.** `bench/bind_chain.sh`
+  installs kemal and the three shards under it, binds all four in dependency
+  order, and builds a program against the boundaries that prints what the same
+  program prints built against their source. Nothing smaller finds what it
+  finds: one boundary cannot collide with another's synthesised names, cannot
+  have an import edge to get wrong, and cannot be a *class* root standing
+  beside module roots.
+
+- **A class root is its own namespace, and needs no module header.** An
+  artifact's declarations are wrapped in `module <path>`; for a class root that
+  header camelcases to the class's own name, so the class arrived declared
+  inside a module of the same name and every type under it gained a level —
+  `Widget::Part` was `Widget::Widget::Part`, and a consumer told to number
+  `Widget::Part` could not name it. iyi wraps a file in its module only when a
+  header is there, so leaving it out puts the declarations where they belong,
+  and a `ClassType` is a `ModuleType`, so everything that looks a module unit
+  up by name still finds it.
+
+  Two things held the same wrong premise elsewhere. The marker that says "this
+  type came from an artifact" walked *into* the scope looking for the root's own
+  name, so a class root and everything under it went unmarked. And
+  `bound_names` prefixed another boundary's types with its module path, which
+  rewrote `Carrier` to `Carrier::Carrier`; with the prefix empty the rewrite is
+  a no-op, so the import edge is recorded where the name is **met** rather than
+  where the text changed.
+
+- **An artifact says which symbols its units define.** Four undefined symbols
+  were four wrong answers to one question. An artifact defines **more than it
+  declares** — its own units call methods Crystal owns, so `RouteHandler`'s
+  unit calls `FilterHandler#next=` and `next=` is `HTTP::Handler`'s — and
+  **less than its types suggest**, because `Reference::new` is instantiated per
+  receiver and exists only where something reached it. Assuming the first left
+  `Kemal::FilterHandler@Reference::new` undefined; assuming the second made it a
+  duplicate symbol; compiling a private copy in the consumer put the definition
+  where `_main` could not see it. A `Symbols` section carries the mangled names
+  each unit defines and the consumer compiles everything else: a list is not a
+  rule and does not have a wrong side.
+
+- **A `~match` function is defined under the name that travelled.**
+  `(Socket::IPAddress | Socket::UNIXAddress)` is a union in the producer and
+  collapses to `Socket::Address+` in a consumer that knows those are all of
+  `Socket::Address`'s subclasses — the same types, the same answer, a different
+  symbol. The function is built from the type resolved here and named for the
+  one the object code calls.
+
+- **The type-id list is the import graph, so it cannot be filtered.** Two
+  separate failures at kemal's scale came from one list being less than whole.
+
+  A module's type id is its *metaclass's*: `Backtracer::Backtrace::Parser:Module`
+  is how a module's metaclass prints. Carrying the instance and stopping there
+  defined `…::Parser:type_id` for object code that wanted
+  `…::Parser:Module:type_id`, because the walk that numbers metaclasses reaches
+  only classes. The consumer numbers the metaclass too now.
+
+  And the list had been filtered to the kinds a consumer could not number for
+  itself, leaving plain classes out on the reasoning that the consumer has them
+  already. It has them only if it *imports the module that declares them* — and
+  that import edge is derived from this very list. `Kemal` numbers
+  `ExceptionPage::Styles`, the name was filtered, no edge was added, and the
+  consumer never read `exception_page` at all. Whole, the list costs `Kemal`
+  642 names where it carried 303, and a name is a string.
+
+  The metaclass half takes the kemal consumer from eight undefined symbols to
+  six. The import-edge half is not counted the same way: with the edge added,
+  `ExceptionPage::Styles` stops being a mangled symbol at link time and becomes
+  a refusal that names it, which arrives *before* the linker — so the five
+  behind it are no longer measured. Both the refusal and
+  `exception_page` filling with 0 units are the same item: a class-rooted
+  namespace colliding with its own module wrapper, in Part V item 12.
+
+- **What a generic declares is kept, even though the generic is not.** The keep
+  file skips a generic type — rightly, since `uninitialized Holder(T)` is not a
+  thing anybody can write — and skipped everything it declares along with it.
+  Those have object-code units in the artifact all the same: `Radix::Tree(T)`
+  holds two error classes carrying 1.3 MB each, radix's keep file was **empty**,
+  and the only `to_s` symbols it emitted were the ones radix's own code
+  happened to reach — `to_s<IO::Memory>`, `to_s<IO::FileDescriptor>` — while
+  the boundary declared `io : IO` and a consumer asked for the declared
+  `to_s<IO+>`.
+
+  A nested type is not parameterised by its container unless it says so, so
+  recursing past the generic is all it took. The kemal consumer goes from ten
+  undefined symbols to eight, and `bench/bind_roundtrip.sh` carries a
+  non-generic class inside a generic one and prints the symbol its declaration
+  produced.
+
+- **A variable can be read wider than the slot that holds it, and that is a
+  widening.** Inside a dispatch arm the slot holds the arm's concrete type
+  while the read wants the type the boundary declared — an `IO` parameter read
+  as `IO+` — and `visit(Var)` called `downcast` on it:
+  `BUG: trying to downcast IO+ <- IO::Memory`. It is the same correction the
+  call arguments already carried, one level in.
+
+  **Which direction it is cannot be asked of `implements?`.** Answering it that
+  way broke the compiler's own build: a virtual type implements its base, so
+  `Iyi::Def+` held in a slot and read as `Iyi::Def` looked like a widening and
+  is the opposite. What separates them is shape — a union or a virtual type is
+  the wider thing — so a widening is reading a *concrete* slot as one of those,
+  and nothing else is.
+
+  With it the kemal consumer reaches the linker rather than aborting in
+  codegen. An earlier entry said that consumer had zero undefined symbols; that
+  was not a measurement — the build was dying before the linker ran. It links
+  now and waits on ten.
+
+- **Inheritance crosses a boundary.** `TypeDecl` had no field for the `<`, so a
+  bound `Derived < Base` arrived without its base and without the fields it
+  inherits — a class's own field list is only its own — and the consumer said
+  `undefined method 'tag' for Shard::Derived`. The edge travels now, and the
+  declarations are written superclass-first so `class Derived < Base` resolves.
+
+  The edge alone left three more, each a place that had only ever seen a class
+  with nothing under it. **A method is keyed on the type that defines it**: a
+  boundary has one symbol per method where an ordinary build makes one per
+  receiver, which is the mirror of the rule the parameter side already carries.
+  That symbol is keyed on the class's **virtual form**, because a value of a
+  class something inherits from is held as one — the symbol is
+  `*Shard::Base+@Shard::Base#tag`. And a class with subclasses has a **second
+  unit**, `Shard::Base+`, holding the methods reached through that form; the
+  artifact was carrying neither it nor its callees.
+
+  **The undefined symbol was the safe half of the bug.** A match against a
+  virtual type compares an id against the *range* its subclasses occupy, and
+  ids are assigned by walking that same tree — so a consumer missing an edge
+  numbers the tree differently. Defining the function anyway would answer
+  `is_a?` wrongly and link cleanly.
+
+  Two more followed from more of a real shard crossing: a type read from a
+  `.iyimod` is exempt from the "not initialized in all of the 'initialize'
+  methods" check on the branch where the field's type does not include `Nil`,
+  as it already was on the other; and a restriction can be virtual while the
+  value is concrete — an `IO` parameter matched against `IO+` — which is
+  answered with the range rather than a single type id.
+
+  A consumer of kemal's four bound shards goes from **11 undefined symbols to
+  10**, and the three the superclass edge was built for — `~match` against
+  `HTTP::StaticFileHandler+` and two like it — are among the ones gone.
+  `bench/bind_roundtrip.sh` carries a base, a subclass, an inherited method and
+  an overridden one.
+
+- **The unions a bound module matches against travel.** `is_a?` against a union
+  or a virtual type compiles to `~match<T>`, a function that compares a type id
+  against a *range* of the program's own numbering — so it lives in the main
+  module, which does not travel, and it cannot be carried as code either: a
+  copy compiled by the producer would compare the consumer's ids against the
+  producer's numbers and answer wrongly with no symptom.
+
+  A virtual one the consumer could already find for itself, by taking the
+  virtual form of every class it numbers. A union it could not: no walk over a
+  program arrives at `(Char | Iyi::Keyword | String | Nil)`, which is a type
+  kemal's code formed and a consumer of kemal's never would. A `MatchTypes`
+  section carries the names and the consumer builds each function with its own
+  numbering, the same arrangement `TypeIds` already has. A consumer of kemal's
+  four boundaries goes from **22 undefined symbols to 11**.
+
+  `bench/bind_roundtrip.sh` matches against a union its consumer never forms,
+  and prints the carried name so the line cannot quietly stop testing anything.
+
+- **A module crosses a boundary, and what was inside it comes with it.**
+  `crystal tool bind` recorded a module as a "nested namespace skipped" and
+  carried nothing for it. Two failures at kemal's scale were the same failure:
+  `Backtracer::Backtrace::Parser` is a module the object code *numbers* and a
+  consumer could not name, and `Kemal::Exceptions::CustomException` and three
+  like it had object-code units in the artifact — 1.8 MB each — with no
+  declaration anywhere, because the walk stopped at `Exceptions` and everything
+  under it went with it.
+
+  A module travels as a declaration now, with its nested types, its methods and
+  its class variables. Without `pub`: iyi's `pub` takes a def, a class, a
+  struct, a trait and an enum, and what a namespace owes is that the things
+  *inside* it can be named, each carrying its own visibility. A consumer of
+  kemal's four boundaries goes from **40 undefined symbols to 22**, and
+  `bench/bind_roundtrip.sh` keeps a nested module with a class and a
+  module-level `def self.` in it.
+
+- **A module's own class variables travel, and so do the type ids of modules.**
+  Running kemal's four shards through boundaries in dependency order —
+  `backtracer` → `radix` → `exception_page` → `kemal` — found both. A
+  `TypeDecl` holds a type's class variables and a module is not a `TypeDecl`,
+  so `module Backtracer; class_getter(configuration)` left
+  `Backtracer::configuration` undefined at the end of a build that had every
+  one of that shard's types and their class variables. `Exports` holds the
+  module's own now.
+
+  And type ids are handed out by walking `Object`'s subclasses, which reaches a
+  class and neither an enum nor a module — `Backtracer::Backtrace::Parser` was
+  numbered nowhere in a consumer that never mentions it. `TypeIds` carries
+  those too, which turns the link error into the refusal that names the module
+  and the type it cannot reach.
+
+  `bench/bind_roundtrip.sh` keeps a class variable on the module root as well
+  as on the class under it.
+
+- **A bound shard can match a regex, which took two more holes than the
+  constant did.** With the pattern crossing and the class variables crossing, a
+  `--crystal` consumer of a shard that *matched* still ended on
+  `undefined symbol: *Regex::PCRE2::current_jit_stack` and
+  `Regex::MatchOptions:type_id`. Both read as the copy rule failing to bring a
+  library method along, and both were something else — `nm` on the unit shows
+  the accessor was copied.
+
+  `@@current_jit_stack` is `@[ThreadLocal]`, and a thread-local global is read
+  through a `noinline` function that hands back its address rather than
+  directly, because LLVM would hoist the address out of the thread. That
+  function is the main module's, and a main module does not travel. It is the
+  third thing a class variable owes, after the global and the read function.
+
+  `Regex::MatchOptions` is an enum, and "a program defines every type id" means
+  every id it has *handed out*. Ids come from walking `Object`'s subclasses,
+  which reaches a class and not an enum — an enum takes its id from the first
+  code that asks, and a consumer that never mentions it never asks. `TypeIds`
+  carries the enums a unit numbers, beside the generic instances it already
+  carried, and the two are missing for opposite reasons: an instantiation does
+  not exist until it is named, an enum exists and is unnumbered.
+
+  `bench/bind_regex_identity.sh` matches with its patterns now instead of only
+  naming them, so each shard's literal is checked against text the other one's
+  would reject.
 
 - **A class variable crosses a boundary, which nothing had ever carried.** A
   class variable is a global. The methods that read one travel as a module's
@@ -359,7 +694,7 @@
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 2,872-line library and nothing else. Every other
+  written against iyi's own 3,339-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

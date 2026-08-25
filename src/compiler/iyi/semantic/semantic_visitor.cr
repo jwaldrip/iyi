@@ -521,6 +521,28 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
                  "cannot hold one module of each — #{fix}"
     end
 
+    # iyi: a boundary whose object-code step never finished (SPEC.md IV.1g).
+    #
+    # `crystal tool bind` writes the declarations and a second build fills them.
+    # That build compiles a keep file naming every method a consumer might call,
+    # and a shard can hold code its own compilation never types — so the build
+    # dies and leaves an artifact with every declaration and no machine code.
+    # Read as it stands it is a boundary that promises a hundred methods and
+    # defines none, and the linker says so a hundred times without naming the
+    # cause once.
+    # Only where this build links. A front-end-only build has nothing to link
+    # and nothing to miss — `spec/compiler/bind_spec.cr` reads declarations back
+    # on purpose and never gets as far as a symbol.
+    if !artifact.filled && @program.iyi_wants_object_code
+      node.raise "\"#{artifact.module_name}\" was never filled: `crystal tool bind` " \
+                 "wrote its declarations and the build that puts object code in " \
+                 "it did not finish. Every method it declares would be an " \
+                 "undefined symbol (SPEC.md IV.1g).\n\n" \
+                 "Run the fill step again and read what it says — a shard can " \
+                 "hold code its own compilation never types, and a boundary asks " \
+                 "for all of it."
+    end
+
     unless artifact.object_code.empty?
       @program.iyi_artifact_objects[artifact.module_name] = artifact.object_code
     end
@@ -539,6 +561,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     begin
       parsed_nodes = parser.parse
       parsed_nodes = @program.normalize(parsed_nodes, inside_exp: false)
+      @program.iyi_artifact_symbols.concat artifact.symbols
       artifact.class_vars.each do |ref|
         # `||=` on the flag: two artifacts may name the same class variable of
         # the library, and the lazy reference is the one with a symbol behind
@@ -571,6 +594,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     # declarations does nothing.
     mark_iyi_artifact_types artifact
     number_iyi_artifact_types node, artifact
+    resolve_iyi_artifact_match_types node, artifact
 
     FileNode.new(parsed_nodes, artifact_path)
   end
@@ -602,7 +626,12 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       # arrives declared and unreachable, exactly as it is when the module is
       # read from source, and this is the compiler restoring the module's own
       # instantiation rather than anybody naming it.
-      @program.lookup_type(type_node, include_private: true)
+      # Kept, not just resolved. Creating a class puts it in the numbering,
+      # because ids are handed out by walking `Object`'s subclasses — but that
+      # walk does not reach an enum, which gets its id from the first code that
+      # asks. Nothing in this program asks for `Regex::MatchOptions`, so
+      # codegen numbers these itself (SPEC.md IV.1g).
+      @program.iyi_artifact_numbered_types << @program.lookup_type(type_node, include_private: true)
     rescue CodeError
       # A name this build cannot resolve. The module's own types travel with
       # the artifact, unexported ones included, so what is left is an
@@ -616,6 +645,51 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
         definition in this program — so this program has to have the type. This
         module's own types travel with its artifact, so the one it cannot name
         belongs to a module that does not export it (SPEC.md IV.1g).
+
+        Build the module from source, or export the type it names.
+        MESSAGE
+    end
+  end
+
+  # iyi: resolves the types an artifact's object code asks `~match<T>` about,
+  # so codegen can define those functions (SPEC.md IV.1g).
+  #
+  # `number_iyi_artifact_types`' walk, for a match rather than for an id. The
+  # consumer builds the function with its own numbering, which is the whole
+  # reason a name travels instead of a copy.
+  #
+  # A virtual type is written `Foo+` and a metaclass `Foo+.class`, neither of
+  # which is a name the parser takes — they are how a type *prints*, not how
+  # anybody writes one. Both are taken apart here and put back together from
+  # the base, which is the only place that knows they were ever one string.
+  private def resolve_iyi_artifact_match_types(node : ImportDecl,
+                                               artifact : IyiMod::Artifact) : Nil
+    return if artifact.object_code.empty?
+
+    artifact.match_types.each do |name|
+      metaclass = name.ends_with?(".class")
+      base = metaclass ? name.rchop(".class") : name
+      virtual = base.ends_with?('+')
+      base = base.rchop('+') if virtual
+
+      parser = @program.new_parser(base)
+      parser.next_token
+      type_node = parser.parse_bare_proc_type
+      parser.check :EOF
+
+      type = @program.lookup_type(type_node, include_private: true)
+      type = type.virtual_type if virtual
+      type = type.metaclass if metaclass
+      @program.iyi_artifact_match_types[name] = type
+    rescue CodeError
+      # The same refusal a type id gets, for the same reason: the alternative
+      # is a mangled symbol at link time with no module named beside it.
+      node.raise <<-MESSAGE
+        "#{artifact.module_name}" matches against `#{name}`, and this build cannot name it
+
+        Its object code calls a function that compares a value's type id
+        against that type, and the comparison is built from this program's own
+        numbering — so this program has to have the type (SPEC.md IV.1g).
 
         Build the module from source, or export the type it names.
         MESSAGE
@@ -726,6 +800,17 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
   # every type a build makes.
   private def mark_iyi_artifact_types(artifact : IyiMod::Artifact) : Nil
     return unless scope = @program.iyi_module_type(artifact.module_name)
+
+    # A class root *is* the scope: the artifact declares one type, and it is
+    # the one the module name resolves to. Looking its own name up inside
+    # itself finds nothing, so the walk marked neither it nor anything under
+    # it — and a type nothing marks is one every "no `initialize` here" check
+    # fires on.
+    if artifact.class_root
+      scope.iyi_from_artifact = true
+      root = artifact.exports.types.find { |declaration| declaration.name == scope.to_s }
+      return mark_iyi_artifact_types scope, root.types if root
+    end
 
     mark_iyi_artifact_types scope, artifact.exports.types
   end
