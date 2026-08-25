@@ -1416,8 +1416,8 @@ module Iyi
         # `initialize` is not called here. It is in the declarations only where
         # `new` could not travel — a block-taking one — and then its body
         # travels with it and the consumer compiles both. Naming it in this file
-        # is `protected method 'initialize' called`, which is Crystal saying the
-        # same thing: `new` is how you build one.
+        # is `protected method 'initialize' called`, which is Crystal's own
+        # compiler saying the same thing: `new` is how you build one.
         next if signature.name == "initialize"
 
         # Not `initialize`: Crystal refuses that call from outside the type —
@@ -2409,14 +2409,16 @@ module Iyi
     defs.each_value do |list|
       list.each do |item|
         a_def = item.def
-        # `initialize` is not public — Crystal reaches it through `new` — and
+        # `initialize` is not public — Crystal's own rule reaches it through
+        # `new` — and
         # that is fine while `new` travels. It does not when it takes a block:
         # a synthesised `new`'s body is the compiler's, with a temporary for a
         # receiver, and no consumer can parse that back. So the one a consumer
         # needs in order to make its *own* `new` crosses instead, and only in
         # that case: declaring `initialize` beside a `new` that also travels
         # would be two ways to build the same type.
-        # `initialize` is not public — Crystal reaches it through `new` — and
+        # `initialize` is not public — Crystal's own rule reaches it through
+        # `new` — and
         # whether it travels is the collectors' question, not this one. A
         # generic's `new` is never carried, so its `initialize` always is; a
         # plain type's travels only where its `new` could not.

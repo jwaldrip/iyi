@@ -292,7 +292,7 @@ module Iyi
     # IV.1g).
     #
     # An artifact defines more than it declares and less than its types
-    # suggest. More, because its own units call methods Crystal owns —
+    # suggest. More, because its own units call methods from Crystal's library —
     # `RouteHandler`'s unit calls `FilterHandler#next=`, and `next=` is
     # `HTTP::Handler`'s. Less, because a method like `Reference::new` is
     # instantiated per receiver and exists only where something reached it.

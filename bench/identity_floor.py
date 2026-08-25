@@ -127,6 +127,11 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r"CRYSTAL_DAEMON_(BIN|SOCKET)", "the other command surface's own daemon"),
     (r"Crystal (caches|runs|takes)", "a sentence about the other language"),
     (r"Crystal::EventLoop", "a class inside Crystal's standard library"),
+    # A constant `openssl_ext` defines inside its own `lib`, named for the
+    # language whose `IO` it bridges. A boundary that reopens a namespace the
+    # library already has must not assign it twice, and naming the one that
+    # caught it is the finding.
+    (r"CRYSTAL_BIO", "a constant a shard defines, named for the other language"),
     (
         r"Crystal's (own|library|licence|license|compiler|semantics|stdlib|"
         r"standard|prelude|codegen|cache|interpreter|fibers|ecosystem|list|"
