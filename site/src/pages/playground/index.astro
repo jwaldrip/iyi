@@ -58,21 +58,15 @@ const runnable = curatedSamples.filter((sample) => sample.identical).length;
     <div class="to-wide blocker">
       <hr class="rule" />
       <p>
-        A browser has no linker. Running a program you typed means producing a
-        module and then producing a program out of it, and that second step
-        shells out to a linker driver, which a page cannot do because it has no
-        subprocesses.
+        The compiler can already tell you what is wrong with your code from
+        inside a browser. What it cannot do there is run it: that needs a linker
+        a page cannot shell out to, and an interpreter this language does not
+        have.
       </p>
       <p>
-        One wall did come down. Work on{" "}
-        <code>wasm/compiler-in-browser</code> cleared wasm exception
-        handling, so a type checker in the page is now reachable where it was
-        not. Running your program there still is not. Those were one question
-        and they are two.
-      </p>
-      <p>
-        Sending it to a server instead would have worked and was refused:
-        compiling somewhere else proves that somewhere else has a compiler.
+        Sending your code to a server instead would have worked, and was
+        refused: compiling somewhere else proves only that somewhere else has a
+        compiler.
       </p>
       <p class="one-link">
         <a href={`${base}spec/iii-8-tooling/`}>The full account is in the spec</a
