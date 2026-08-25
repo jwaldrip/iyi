@@ -415,6 +415,7 @@ load.
 | `screenshots/24-spec-section-{light,dark}.png` | A generated SPEC section with its generated-from banner. |
 | `screenshots/25-changelog-{light,dark}.png` | The changelog, generated verbatim, with its generated-from banner and byte counts. Captured at viewport height rather than full page, because the document is one generated record 48,640 pixels tall: a full-page capture ran to 27 MB per scheme and carried nothing the first screen does not. Pagination was considered and refused; `CHANGELOG.md` holds three releases and splitting it would produce three thin pages and break in-page anchors, which is the opposite of the split `SPEC.md` earns by having 55 sections. |
 | `screenshots/26-learn-path-{light,dark}.png` | The path's entrance: five numbered steps, tick rows, one marked start. |
+| `screenshots/27-deployed-playground-run.png` | The same run, on the deployed site rather than a local preview: `https://jwaldrip.github.io/iyi/playground/hello/` fetched `/iyi/wasm/hello.wasm` over the network, matched its digest against the manifest, executed it, and printed the sample's own output with exit 0. This is the frame that proves the base path, since a preview and Pages disagree about it and nothing else catches that. |
 
 ## Prohibitions
 
