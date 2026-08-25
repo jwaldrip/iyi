@@ -34,10 +34,15 @@ CRYSTAL="$REPO/bin/crystal"
 IYI="$REPO/bin/iyi"
 WORK="$(mktemp -d)"
 
-# `.source` rather than a match, and deliberately. What is under test is which
-# constant the unit reads, and reading it is enough to say so — matching would
-# pull PCRE2's own thread-local state across the boundary, which is a different
-# gap with a different answer.
+# Each shard matches as well as naming its pattern, and the match is the half
+# that took longest to make true. Reading the constant says which one the unit
+# got; running it says the whole path works, and that path was three separate
+# holes deep. `Regex::PCRE2::@@current_jit_stack` is thread-local, so it is
+# reached through a `noinline` function in the main module — which does not
+# travel. `Regex::MatchOptions` is an enum, and ids are handed out by walking
+# `Object`'s subclasses, which does not reach one: a consumer whose own code
+# never mentions it numbers it nowhere. Both are fixed, and this line is what
+# keeps them fixed.
 #
 # The explicit `initialize` is not decoration either: `new` is synthesised from
 # it rather than read from the artifact, and a class without one leaves the
@@ -59,6 +64,10 @@ module $root
     def pattern : String
       /$pattern/.source
     end
+
+    def matches(s : String) : Bool
+      !!(s =~ /$pattern/)
+    end
   end
 end
 CR
@@ -73,6 +82,10 @@ require "./beta"
 
 puts Alpha::Part.new(1).pattern
 puts Beta::Part.new(2).pattern
+puts Alpha::Part.new(1).matches("alpha-42")
+puts Alpha::Part.new(1).matches("beta-xy")
+puts Beta::Part.new(2).matches("beta-xy")
+puts Beta::Part.new(2).matches("alpha-42")
 IYI
 
 sed -e 's|require "./alpha"|import alpha|' -e 's|require "./beta"|import beta|' \
@@ -130,7 +143,7 @@ done
 
 if [ -f out-source.txt ] && [ -f out-artifact.txt ]; then
   if diff -q out-source.txt out-artifact.txt > /dev/null; then
-    echo "each boundary kept its own literal"
+    echo "each boundary kept its own literal, and matched with it"
     sed 's/^/  /' out-artifact.txt
   else
     echo "OUTPUT DIFFERS"

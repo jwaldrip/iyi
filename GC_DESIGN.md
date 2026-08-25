@@ -3,7 +3,7 @@
 **Status:** Stages 1 and 2 built. Stages 3 onward are design.
 
 Stage 1: the artifact carries a pointer map per type it owns (`.iyimod` format
-v24, `Layouts` section 14), and the object header and its CAS-safe mark word
+v29, `Layouts` section 64), and the object header and its CAS-safe mark word
 exist and are tested as a unit. Stage 1's own tasks 3 and 4, work distribution
 and write barriers, are design here and deferred to Stage 6 by their own text;
 they were not built.

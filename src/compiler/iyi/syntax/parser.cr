@@ -2233,6 +2233,31 @@ module Iyi
           enum_def = parse_enum_def
           enum_def.exported = true if enum_def.is_a?(EnumDef)
           enum_def
+        when Keyword::ABSTRACT
+          # `pub abstract class`. Being abstract and being reachable are
+          # different questions — one says the type cannot be instantiated, the
+          # other says who may name it — and a boundary needs both at once: a
+          # bound `abstract class ExceptionPage` is a type a consumer subclasses
+          # and therefore has to be able to write. Without this the declaration
+          # came back as a plain `pub class`, and the requirement inside it was
+          # refused with `can't define abstract def on non-abstract class`.
+          next_token_skip_space_or_newline
+          case @token.value
+          when Keyword::CLASS
+            cls = parse_class_def is_abstract: true
+            cls.exported = true if cls.is_a?(ClassDef)
+            cls
+          when Keyword::STRUCT
+            cls = parse_class_def is_abstract: true, is_struct: true
+            cls.exported = true if cls.is_a?(ClassDef)
+            cls
+          when Keyword::DEF
+            a_def = parse_def is_abstract: true
+            a_def.exported = true
+            a_def
+          else
+            raise "`pub abstract` takes a class, a struct or a def", @token.line_number, @token.column_number
+          end
         else
           raise "can't apply `pub` to #{@token}", @token.line_number, @token.column_number
         end

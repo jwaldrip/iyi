@@ -250,6 +250,14 @@ jobs:
       - name: Two bound shards keep their own regex literals
         run: bash bench/bind_regex_identity.sh
 
+      # And a chain of four, installed from the network. One boundary cannot
+      # collide with another's synthesised names, cannot have an import edge to
+      # get wrong, and cannot be a *class* root standing beside module roots —
+      # `ExceptionPage` is one, and a class root's declarations used to be
+      # wrapped in a module of the class's own name.
+      - name: A chain of four bound shards, built against and run
+        run: bash bench/bind_chain.sh
+
       # The README's headline example, taken literally: `require "kemal"` in an
       # `.iyi` file, built `--crystal`, answering over HTTP. The synthetic shard
       # in the tarball job proves the library ships whole; it cannot prove that
