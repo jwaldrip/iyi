@@ -722,7 +722,7 @@ module Iyi::IyiMod
     #
     # A consumer compiles what an artifact does not define, and this is the
     # only thing that answers which those are. An artifact defines **more than
-    # it declares** — its own units call methods Crystal owns, so
+    # it declares** — its own units call methods from Crystal's library, so
     # `Kemal::RouteHandler`'s unit calls `FilterHandler#next=` and `next=` is
     # `HTTP::Handler`'s — and **less than its types suggest**, because a method
     # like `Reference::new` is instantiated per receiver and exists only where
