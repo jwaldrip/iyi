@@ -498,11 +498,15 @@ module Iyi
       next unless owners.includes?(method.owner)
       next unless seen.add?(method.name)
       next if method.private_def
-      next unless method.verdict.ready? || method.inferred
+      next unless method.verdict.ready? || method.inferred || method.body_answers
       next if method.uncompilable
-      next unless method.storable
+      # `storable` asks what a method *called by symbol* needs. One whose body
+      # travels is compiled by the consumer, so what its parameters are written
+      # as is not this file's business — `Kemal.run(args = ARGV, &)` writes no
+      # restriction on `args` and the whole of running an app is behind it.
+      next unless method.storable || method.body_answers
       next unless method.callable?
-      next unless method.signature_types.all? { |t| nameable?(t, root) }
+      next unless method.body_answers || method.signature_types.all? { |t| nameable?(t, root) }
 
       signatures << IyiMod::Signature.new(
         name: method.name,
@@ -516,7 +520,7 @@ module Iyi
         receiver: method.owner == "#{root}:Module" && method.receiver.empty? ? "self" : method.receiver,
         parameters: method.params.map { |(name, restriction, default)| bind_parameter(name, restriction, default) },
         block_parameter: method.written_block,
-        return_type: method.body_answers ? "" : method.answer.not_nil!,
+        return_type: method.body_answers ? "" : (method.answer || ""),
         free_variables: [] of String,
         required: false,
       )
@@ -2496,7 +2500,8 @@ module Iyi
       # `Radix::Node(T)#add` calls.
       private_def: a_def.visibility.private? || a_def.visibility.protected?,
       uncompilable: uncompilable,
-      body_answers: refused == "block returns `_`" && !a_def.abstract? &&
+      body_answers: (refused == "block returns `_`" ||
+                     refused == "block is not annotated") && !a_def.abstract? &&
                     !a_def.body.nil? && !a_def.body.is_a?(Nop),
       # The return type is asked the same question the parameters are. `Int` is
       # the head of a family on either side of the arrow, and a method that
@@ -2514,7 +2519,14 @@ module Iyi
       receiver: a_def.receiver.try(&.to_s) || "",
       # `&block : Context -> B` travels as written. A block whose type nobody
       # wrote cannot: R-2 asks the block for its types like everything else.
-      written_block: a_def.block_arg.try { |argument| argument.restriction ? "&#{argument}" : "" } || "",
+      # An unannotated block is written back as the bare `&` it was. R-2 refuses
+      # an *exported* signature without one because a consumer typechecking a
+      # call needs the shape — and a method whose body travels hands the
+      # consumer the body instead, which is the shape. `Kemal.run` is written
+      # `def self.run(…, &)` and the whole of running a kemal app is behind it.
+      written_block: a_def.block_arg.try do |argument|
+        argument.restriction ? "&#{argument}" : "&#{argument.name}"
+      end || (a_def.block_arity ? "&" : ""),
     )
   end
 

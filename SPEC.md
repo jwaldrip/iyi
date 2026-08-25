@@ -6579,6 +6579,14 @@ Named honestly, so nobody mistakes this draft for complete.
     > > nothing it is `, ,`. And **`protected`** is the same case as `private`:
     > > a name a travelling body may call and a consumer may not write.
     > >
+    > > **An unannotated block travels too, where the body does.** R-2 refuses
+    > > an exported signature without a block annotation because a consumer
+    > > typechecking a call needs the shape; a method whose machine code is the
+    > > caller's hands over the body instead, which is the shape. `Kemal.run` is
+    > > `def self.run(…, &)` and the whole of running an app is behind it — it
+    > > still does not cross, on a filter one further in, and that is where the
+    > > *serving* example stands.
+    > >
     > > `initialize` also travels where `new` could not be declared at all.
     > > `SharedKeyError#initialize(new_key, existing_key)` writes no
     > > restrictions, so its `new` is not a symbol anybody can name — and the
