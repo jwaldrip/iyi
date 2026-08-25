@@ -156,8 +156,16 @@ export const wasiEngine: PlaygroundEngine = {
     return CAPABILITIES;
   },
 
+  /**
+   * `_files` is unread, and the underscore is the point: this engine never
+   * looks at the visitor's source, so it cannot accidentally report anything
+   * about it. What runs is decided entirely by `opts.entry`, which names a
+   * curated sample, and by the recorded module for that sample. An engine that
+   * could compile would read this parameter; this one says in the console, on
+   * every run, that it did not.
+   */
   async *run(
-    files: SourceFile[],
+    _files: SourceFile[],
     opts: RunOptions,
   ): AsyncIterable<RunEvent> {
     cancelled = false;
@@ -223,8 +231,8 @@ export const wasiEngine: PlaygroundEngine = {
      *
      * The second is a cost. The recorded source lives in the highlight record,
      * a quarter of a megabyte of listings, and an engine that imports it ships
-     * all of it to every visitor: measured at 296 KB of client JavaScript for
-     * a page whose other island is 529 bytes. Paying that to make a true
+     * all of it to every visitor, an order of magnitude more JavaScript than
+     * the page's other island. Paying that to make a true
      * sentence conditional is the wrong trade twice over.
      *
      * The page still answers the conditional question, and answers it before

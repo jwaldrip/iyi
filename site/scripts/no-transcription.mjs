@@ -20,7 +20,11 @@ import { fileURLToPath } from "node:url";
 const here = fileURLToPath(new URL(".", import.meta.url));
 const root = join(here, "..", "src");
 
-const SCAN = ["pages", "components", "layouts", "content"];
+// Authored directories. `lib` and `playground` are here because the playground
+// moved copy into TypeScript: the engine and the shell write sentences about
+// bytes and milliseconds into the console, and a figure typed into one of those
+// sentences would reach a reader exactly like a figure typed into a paragraph.
+const SCAN = ["pages", "components", "layouts", "content", "lib", "playground"];
 
 // A decimal with a unit, allowing the common authored spellings. The unit must
 // be a time or size unit; a bare number is a structural count and is legal.
@@ -40,7 +44,7 @@ function walk(dir) {
       walk(path);
       continue;
     }
-    if (!/\.(astro|mdx|md)$/.test(entry)) continue;
+    if (!/\.(astro|mdx|md|ts)$/.test(entry)) continue;
     const text = readFileSync(path, "utf8");
     text.split("\n").forEach((line, index) => {
       if (!RECORDED.test(line)) return;
