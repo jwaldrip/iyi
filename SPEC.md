@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 92,386 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 92,409 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,339-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,974 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -6529,8 +6529,22 @@ Named honestly, so nobody mistakes this draft for complete.
     > > write. A body that travels needs the fields the shard's own compiler
     > > had. So the three are one question: **what a travelling body is allowed
     > > to see.** It is the same question `carried_functions` answers on the iyi
-    > > side, asked of a shard, and it wants an answer before more of the DSL
-    > > can cross.
+    > > side, asked of a shard.
+    > >
+    > > **And the fields were a flag.** `tool bind` reads the boundaries beside
+    > > it only when told where they are — `--use-iyimod mods` — and without it
+    > > `Radix::Tree` is a name `Kemal` cannot write, so all three handlers
+    > > crossed without their fields. With it, none of them does: **3 handle
+    > > types → 0**, and `exception_page` gains its own. The report names the
+    > > type and the field that did it now, because a count says three and a
+    > > name says which three.
+    > >
+    > > Passing it also opens the next failure, which is why the gate does not
+    > > yet: with the fields carried, `Kemal::LRUCache::Node(K, V)` resolves to
+    > > `Radix::Node(T)` — a name inside kemal's own generic reaching a bound
+    > > boundary's top-level one — and the consumer stops on `wrong number of
+    > > type vars`. That is the nested-name question again, one level further
+    > > in, and it is what the DSL waits on.
     > >
     > > **And `exception_page` filling with 0 units is not a bug.**
     > > `ExceptionPage` is an `abstract class` with no subclass in its own

@@ -66,6 +66,19 @@
   traced" means is Stage 6's to define, and guessing now risks a later stage
   reading it as "do not retain" and collecting live buffers. Layouts are per
   instantiation, not per GC shape, because shape keying is R-4 and unbuilt.
+- **A boundary that crosses without its fields says which field did it.**
+  A reference type whose fields name something the consumer cannot write
+  crosses as a *handle* — a pointer, with no `new` — and the report said only
+  how many. It names them now, and the name inside the field type that failed:
+  `RouteHandler — Radix::Result, Radix::Tree`. Which ones matters, because a
+  body that travels and touches a field of one cannot be compiled by the
+  consumer, and that comes out as `can't infer the type of instance variable`
+  in a file nobody wrote.
+
+  It also showed that `--use-iyimod` is not optional when binding a chain:
+  without it a boundary cannot see the ones bound before it, so `Radix::Tree` is
+  a name `Kemal` cannot write. With it, kemal's three handle types become zero.
+
 - **A block-taking `initialize` crosses, because its `new` cannot.** Crystal
   reaches `initialize` through `new` and marks it not-public, which is fine
   while `new` travels — and it does not when it takes a block, since a
