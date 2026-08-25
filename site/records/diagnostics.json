@@ -1,10 +1,10 @@
 {
   "recorded": {
     "compiler": "iyi 0.3.0-dev (built on Crystal 1.22.0-dev [af509de9e] (2026-08-23))",
-    "commit": "13306c922289ae606640749f173a115796d90071",
+    "commit": "3975a179fc5d0c56572148c1f6ce46d5627da046",
     "machine": "Darwin 25.5.0 arm64, Apple M5 Max",
     "command": "npm run record:diagnostics",
-    "when": "2026-08-25T05:22:06.800Z"
+    "when": "2026-08-25T05:38:43.873Z"
   },
   "cases": [
     {
