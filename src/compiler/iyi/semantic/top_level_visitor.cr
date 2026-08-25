@@ -1186,7 +1186,7 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
         # the *location* of the `initialize` it was made from, so a key of one
         # handed `new` the other's body — and `@block = ...` in a metaclass is
         # `@instance_vars are not yet allowed in metaclasses`.
-        @program.iyi_def_bodies["#{location}##{node.name}"] ||= node.body.to_s
+        @program.iyi_def_bodies[Program.iyi_def_body_key(location, node.name)] ||= node.body.to_s
       end
     end
 

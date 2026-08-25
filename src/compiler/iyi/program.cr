@@ -297,6 +297,29 @@ module Iyi
     # written.
     getter iyi_def_bodies = {} of String => String
 
+    # iyi: the key one of those is stored under.
+    #
+    # The place and the name, which is what a `Def` and its declaration share —
+    # and for a macro-written one the place is not a place. A `Location` whose
+    # filename is a `VirtualFile` prints as `expanded macro: <name>`, with no
+    # file and no line in it, so every def a macro of that name wrote collapses
+    # to one key. `Log` has two `{% for %}` loops that write a `def info` each,
+    # one on the instance and one on the class, and the second took the first's
+    # body: the consumer read `Log#info` as `Top.info(…) { yield }`, which is
+    # `Log#info` calling itself — `recursive block expansion: blocks that yield
+    # are always inlined`.
+    #
+    # So a macro-written def is keyed on where the macro was *invoked*, which
+    # is a real file and line, plus where it sits inside the expansion. Both
+    # halves are needed: the first tells two macro calls apart and the second
+    # tells two defs inside one expansion apart.
+    def self.iyi_def_body_key(location : Location, name : String) : String
+      return "#{location}##{name}" if location.filename.is_a?(String)
+
+      site = location.expanded_location
+      "#{site}|#{location.line_number}:#{location.column_number}##{name}"
+    end
+
     # iyi: the symbols each unit's object code defines, by unit name (SPEC.md
     # IV.1g).
     #
@@ -328,6 +351,18 @@ module Iyi
     #
     # Recorded only while writing artifacts.
     getter iyi_unit_libs = {} of String => Set(String)
+
+    # iyi: how deep `Call#instantiate` may recurse before it gives up, and how
+    # deep it is now.
+    #
+    # Nil for every ordinary build. `tool bind` sets one because it asks a
+    # question a shard's own compilation never asks — what does this method
+    # answer, called on nothing in particular — and for some methods the answer
+    # is that instantiating it does not terminate. A stack overflow is a signal
+    # rather than an exception, so the tool's own `rescue` cannot see one; a
+    # limit turns it into a refusal the tool already knows how to report.
+    property iyi_instantiation_limit : Int32? = nil
+    property iyi_instantiation_depth = 0
 
     # iyi: the `lib`s an imported artifact's object code calls into.
     #

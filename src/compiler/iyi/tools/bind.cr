@@ -212,12 +212,22 @@ module Iyi
   # of maintaining four hand-written tokenizers (SPEC.md III.10).
   private BIND_TYPE_NAME = Rx::Pattern.compile("[A-Za-z_][A-Za-z0-9_:]*")
 
+  # How deep `Call#instantiate` may go before this tool calls it non-terminating.
+  # See `Program#iyi_instantiation_limit`.
+  INSTANTIATION_LIMIT = 256
+
   def self.print_bind(program : Program, root : String?, io : IO,
                       artifact_dir : String? = nil, bound_dir : String? = nil) : Nil
     unless root
       io.puts "tool bind needs the shard's own namespace: -e Kemal"
       return
     end
+
+    # Deep enough that no method anybody wrote reaches it, and shallow enough
+    # that the stack does not end first. What it is for is a recursion with no
+    # bottom, which is a different thing from a deep one: `Log`'s
+    # instantiation recurses forever, and the frames it repeats are five deep.
+    program.iyi_instantiation_limit = INSTANTIATION_LIMIT
 
     @@builtin = program.builtin_type_names
     @@crystal_types = crystal_library_types program
@@ -1303,7 +1313,7 @@ module Iyi
         methods: collect_signatures(type, name, by_owner, root).sort_by(&.name),
         visibility: "",
         types: nested,
-        class_vars: collect_class_vars(type),
+        class_vars: declared_class_vars(type),
       )
     end
 
@@ -1383,11 +1393,32 @@ module Iyi
         methods: signatures.sort_by(&.name),
         visibility: private_type ? "private" : "pub",
         types: nested,
-        class_vars: collect_class_vars(type),
+        class_vars: declared_class_vars(type),
         superclass: superclass_name(type, root),
         includes: included_modules(type, root),
       )
     end
+  end
+
+  # A type's class variables, or none where the library declares them itself.
+  #
+  # A boundary rooted at the library's own namespace declares that namespace's
+  # type whole — `Log` is a class of Crystal's, and `tool bind -e Log` writes
+  # `pub class Log` with everything on it. A consumer replays `require "log"`
+  # and has the real one, so the declaration reopens it, and a class variable
+  # arrives *twice*: once from the library with the initialiser that runs, and
+  # once from here. One of the two wins and the artifact's is not the one that
+  # runs, so `Log.setup` reached a `@@builder` nobody had built —
+  # `Invalid memory access` inside `Log::Builder#clear`.
+  #
+  # The same rule the constants beside them already take, one field over: a
+  # consumer under `--crystal` has the library's, and saying it again is worse
+  # than saying nothing. The name still travels in `ClassVars`, which is what
+  # makes the *global* exist for the object code to refer to — that half was
+  # never the library's to provide.
+  private def self.declared_class_vars(type : Type) : Array({String, String, String})
+    return [] of {String, String, String} if library_type?(type, library_root(type.program))
+    collect_class_vars(type)
   end
 
   # A method has as many symbols as it has ways of being called, and this emits
@@ -2258,7 +2289,7 @@ module Iyi
       # A generic holds types too, and leaving them behind is how
       # `Kemal::LRUCache::Node(K, V)` went missing while `LRUCache` travelled.
       types: nested,
-      class_vars: collect_class_vars(type),
+      class_vars: declared_class_vars(type),
     )
   end
 
@@ -3420,7 +3451,7 @@ module Iyi
       refused: refused,
       # As written, not as instantiated: see `Program#iyi_def_bodies`.
       # As written, not as instantiated: see `Program#iyi_def_bodies`.
-      body: a_def.location.try { |at| owner.program.iyi_def_bodies["#{at}##{a_def.name}"]? } ||
+      body: a_def.location.try { |at| owner.program.iyi_def_bodies[Program.iyi_def_body_key(at, a_def.name)]? } ||
             a_def.body.to_s,
       abstract_def: a_def.abstract?,
       # Protected counts as private here: both are names a travelling body may
@@ -3718,6 +3749,16 @@ module Iyi
       return {nil, "cannot resolve #{restriction}", false} unless type
       return {nil, "generic parameter", false} if type.is_a?(TypeParameter)
 
+      # `Class` is every metaclass there is, and there is no end to them:
+      # `Foo.class`, `Foo.class.class`, and so on for as long as anybody asks.
+      # A real caller writes `Log.for(MyThing)` and names one; a call
+      # synthesised here would hand the compiler the whole family and ask it to
+      # enumerate them, which is `Log.for(type : Class)` recursing through
+      # `Call#recalculate` until the stack ends. The `Program#iyi_instantiation_limit`
+      # this tool sets is what turns that into a diagnosis rather than a crash;
+      # this is what keeps it from being asked.
+      return {nil, "unbounded receiver", false} if type == owner.program.class_type
+
       args << Var.new(arg.name).tap(&.set_type(type.virtual_type))
     end
 
@@ -3734,5 +3775,10 @@ module Iyi
     {nil, ex.message.to_s.lines.first?.to_s, true}
   rescue ex
     {nil, ex.message.to_s.lines.first?.to_s, true}
+  ensure
+    # Whatever happened, this tool's next question starts from the top. An
+    # instantiation that stopped part way — refused, or found not to terminate
+    # — leaves the counter where it stopped, and the depth is per *question*.
+    owner.program.iyi_instantiation_depth = 0
   end
 end

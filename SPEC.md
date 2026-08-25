@@ -777,9 +777,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 93,615 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 93,744 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
-| Specs | 21,146 lines | 8,538 for iyi |
+| Specs | 21,146 lines | 8,556 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |
@@ -7450,6 +7450,54 @@ Named honestly, so nobody mistakes this draft for complete.
     `bench/yaml_reads.sh` holds it, and it holds the name rather than the
     count — the point of the section is *which* library, and a gate that
     counted would pass on the wrong one.
+
+    **A boundary built from the library is a different question from a shard,
+    and `Log` is where it stops being an easy one.** `JSON`, `URI`, `HTTP`,
+    `Compress`, `Digest` and `OptionParser` all bind, fill and answer what
+    their source answers; `bench/library_boundaries.sh` holds three of them and
+    `bench/yaml_reads.sh` a fourth. `Log` is global state written by macros,
+    and it found four things.
+
+    **`tool bind` has to survive its own question.** It asks what a shard's own
+    compilation never asks — what does this method answer, called on nothing in
+    particular — and for `Log` the answer is that typing the call does not
+    terminate: it recurses through `Call#recalculate` building a metaclass of a
+    metaclass, twelve hundred deep, until the stack ends. A stack overflow is a
+    signal rather than an exception, so the `rescue` this tool already had
+    could not see one. `Program#iyi_instantiation_limit` is nil for every
+    ordinary build and set by this tool, and past it the recursion becomes a
+    refusal the tool already knows how to report. It went in at `instantiate`
+    first, which was wrong for a measurable reason: the recursion passes
+    through that five times and through `recalculate` twelve hundred, so a
+    limit there is a limit on the wrong number.
+
+    **And a parameter written `Class` is one there is no value to stand for.**
+    `Class` is every metaclass there is and there is no end to them — `Foo.class`,
+    `Foo.class.class`, and on. A real caller of `Log.for(type : Class)` names
+    one; a call synthesised here hands the compiler the whole family. The limit
+    above turns that into a diagnosis and this keeps it from being asked.
+
+    **A class variable the library declares is not the artifact's to declare
+    again.** A boundary rooted at the library's own namespace writes that
+    namespace's type whole — `pub class Log`, with everything on it — and a
+    consumer that replays `require "log"` has the real one, so the declaration
+    reopens it and the variable arrives twice. One initialiser wins and it is
+    not the artifact's, so `Log.setup` reached a `@@builder` nobody had built:
+    `Invalid memory access` inside `Log::Builder#clear`. The same rule the
+    constants beside them already took. The *name* still travels in
+    `ClassVars`, which is what makes the global exist for the object code —
+    that half was never the library's to provide.
+
+    **And `MonoBodies` was keyed without the side of the type.** The key was
+    documented as "the whole of what distinguishes one overload from another,
+    which is the parameter list and the block", and it was missing the first
+    thing that does. `Log` has a `{% for %}` loop writing `def info(*,
+    exception : Exception)` on the instance and another writing `def self.info`
+    with the same parameters on the class: same container, same name, same
+    parameters, no block, one key. The class method's body took it, so the
+    consumer read `Log#info` as `Top.info(exception: exception)` — which is
+    `Log#info` calling itself — and said `recursive block expansion: blocks
+    that yield are always inlined`.
 
     **And a name resolves in its own scope first.** `openssl_ext` writes a
     constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type

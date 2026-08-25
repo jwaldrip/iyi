@@ -106,6 +106,35 @@
   `ldflags`, `framework`, static — is already on the consumer's own copy of the
   annotation. What was missing is only that somebody used it.
 
+  **A boundary built from the library is a different question from a shard.**
+  `JSON`, `URI`, `HTTP`, `Compress`, `Digest` and `OptionParser` all bind, fill
+  and answer what their source answers; `bench/library_boundaries.sh` holds
+  three and `bench/yaml_reads.sh` a fourth. `Log` is global state written by
+  macros, and it found four things.
+
+  **`tool bind` has to survive its own question.** It asks what a shard's own
+  compilation never asks, and for `Log` the answer is that typing the call does
+  not terminate — it recurses through `Call#recalculate` building a metaclass
+  of a metaclass until the stack ends. A stack overflow is a signal rather than
+  an exception, so the `rescue` the tool had could not see one.
+  `Program#iyi_instantiation_limit` is nil for every ordinary build and set by
+  this tool, and past it the recursion becomes a refusal it knows how to
+  report. **And a parameter written `Class` is one there is no value to stand
+  for** — every metaclass there is, and there is no end to them.
+
+  **A class variable the library declares is not the artifact's to declare
+  again.** A boundary rooted at the library's own namespace writes that type
+  whole, the consumer replays the require and has the real one, and the
+  variable arrives twice — one initialiser wins and it is not the artifact's.
+  `Log.setup` reached a `@@builder` nobody had built. The name still travels in
+  `ClassVars`, which is what makes the global exist for the object code.
+
+  **And `MonoBodies` was keyed without the side of the type** (format v35). Two
+  `{% for %}` loops in `Log` write `info(*, exception : Exception)` on the
+  instance and on the class: same container, same name, same parameters, no
+  block, one key. The class method's body took it, and the consumer read
+  `Log#info` as `Log#info` calling itself — `recursive block expansion`.
+
   **And a name resolves in its own scope first.** `openssl_ext` writes a
   constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type R-2
   asks for on its `new` read as the constant. `self` is the spelling with no
