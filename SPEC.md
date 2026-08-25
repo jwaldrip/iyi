@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 92,409 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 92,421 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,339-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,974 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -6539,12 +6539,36 @@ Named honestly, so nobody mistakes this draft for complete.
     > > type and the field that did it now, because a count says three and a
     > > name says which three.
     > >
-    > > Passing it also opens the next failure, which is why the gate does not
-    > > yet: with the fields carried, `Kemal::LRUCache::Node(K, V)` resolves to
-    > > `Radix::Node(T)` — a name inside kemal's own generic reaching a bound
-    > > boundary's top-level one — and the consumer stops on `wrong number of
-    > > type vars`. That is the nested-name question again, one level further
-    > > in, and it is what the DSL waits on.
+    > > **Carrying more of what a travelling body sees was tried and taken
+    > > back.** With the fields in place the rest of it follows: a private
+    > > method travels as `private def`, with no verdict — R-2 asks its question
+    > > of a surface a consumer writes against and this is not one — with its
+    > > parameters as the source wrote them and its own body, and a generic's
+    > > methods travel the same way, since the consumer compiles them and reads
+    > > their answer for itself. Each step worked and named the next: the
+    > > private body, then `Radix::Tree#add` which had no declaration because a
+    > > generic's methods were dropped for want of an inferred return, then
+    > > `Node(T).new` which had none because a generic's `new` never travels and
+    > > its `initialize` was not carried in its place.
+    > >
+    > > It stopped at `Node(T).new("", placeholder: true)`: the `initialize`
+    > > that reached the far side had **no parameters at all**, and the chain
+    > > gate went from green to `no parameter named 'placeholder'`. So the whole
+    > > of it was taken back rather than half-landed. What it establishes is
+    > > that the question is one question and the pieces of the answer are
+    > > known — what remains is a `params` that carries defaults and named
+    > > arguments, which is where it starts again.
+    > >
+    > > Passing it opened one more, and it was a rewrite rather than a lookup.
+    > > A boundary rewrites references to another boundary's types so the
+    > > consumer reads them as it will see them, and the map is keyed on the
+    > > *simple* name — so `radix` declaring a top-level `Node` made every bare
+    > > `Node` in `Kemal` into `Radix::Node`, `Kemal::LRUCache::Node` included,
+    > > and the consumer stopped on `wrong number of type vars for
+    > > Radix::Node(T) (given 2, expected 1)`. A bare name in a shard's own
+    > > source means its own, so the shard's names come out of the map. The gate
+    > > binds the way a shard's author should now, and the counts beside it are
+    > > **0 types without their fields** all the way down.
     > >
     > > **And `exception_page` filling with 0 units is not a bug.**
     > > `ExceptionPage` is an `abstract class` with no subclass in its own

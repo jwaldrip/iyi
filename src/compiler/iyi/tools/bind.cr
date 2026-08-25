@@ -564,6 +564,18 @@ module Iyi
       end
     end
 
+    # A name this shard declares itself is not somebody else's, whatever the
+    # boundary beside it calls its own. `radix` declares `Node` at its top
+    # level, so the map says `Node` → `Radix::Node` — and kemal has a
+    # `LRUCache::Node` of its own, which came out as `Radix::Node(K, V)` and
+    # stopped the consumer on `wrong number of type vars`.
+    mine = Set(String).new
+    carried_types.each { |declaration| collect_known declaration, "", mine }
+    # By the simple name, because that is what the map is keyed on and what a
+    # bare reference in this shard's own source means: `Node` inside `Kemal` is
+    # `Kemal::LRUCache::Node`, whatever `radix` calls its own.
+    mine.each { |name| @@bound_prefix.delete(name.split("::").last) }
+
     # And a reference to somebody else's boundary is written the way the
     # consumer will see it.
     unless @@bound_prefix.empty?
