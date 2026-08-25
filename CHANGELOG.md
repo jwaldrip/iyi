@@ -4,6 +4,53 @@
 
 ### Added
 
+- **A real kemal application serves HTTP through four boundaries.** `GET
+  /bound` answers `hello from a boundary`, `GET /missing` answers 404, and
+  kemal logs `200 GET /bound` — the request walking its whole handler chain,
+  the router matching, the DSL's own `get` writing the route. That was the
+  measure this part existed to reach.
+
+  What it took was the one question Part V item 12 had left open: **a shard
+  that adds to a type it does not own.** Kemal reopens
+  `HTTP::Server::Context` — the library's class — and gives it `@params` and
+  eighteen methods. A boundary carries none of the library's types on purpose,
+  because the consumer replays the requires and has them, and declaring one
+  twice is how a build stops on `superclass mismatch`. So the addition had
+  nowhere to go: the consumer said `undefined method 'params'` where its own
+  code asked, and where the shard's compiled code asked it read a field the
+  consumer had never allocated — a segfault several handlers into a request.
+
+  The answer is the rule the tool already used one level up, asked of a type's
+  members instead of a namespace's types: **what the shard wrote travels, and
+  what the library wrote stays**, decided by where each member is written.
+  `Section::Reopened` carries it, rendered `class ::HTTP::Server::Context`, and
+  with bodies — these methods are compiled into the *library's* unit, which a
+  boundary does not carry.
+
+  Three things had to travel with it, each its own small rule:
+
+  - **A member written by a macro belongs to the file that wrote the macro.**
+    `macro finished` declares three of `Context`'s fields, and their location
+    is the expansion. Asked naively they looked like nobody's, so they did not
+    travel and the consumer inferred them: `@cached_route_lookup was inferred
+    to be Nil, but Nil alone provides no information`.
+    `Location#expanded_location` is that walk and already existed. It also
+    brought **`get` and `post`** across, which a macro loop writes and which
+    are the other half of kemal's DSL.
+  - **A field travels with its default.** `@store = {} of String => StoreTypes`
+    has one, and the library's own `initialize` knows nothing about it: `this
+    'initialize' doesn't explicitly initialize instance variable '@store'`.
+  - **And that default is written with its names resolved**, like every other
+    text here, because it is read where the shard is not: `StoreTypes` is an
+    alias kemal declares inside `Context`, and the consumer said `undefined
+    constant`.
+
+  One filter came off on the way. A field whose type this boundary could not
+  name relative to the shard was dropped, and a dropped field is worse than one
+  that arrives needing a name — the second says so, the first leaves the
+  consumer to guess `Nil`. What makes another boundary's `Radix::Result`
+  writable is the name mapping, not that filter.
+
 - **A `new` read from an artifact, called without a default argument, never
   ran `initialize`.** The quietest failure a boundary has produced. A def from
   a `.iyimod` is a header — no body, the machine code is in the artifact — and
