@@ -4,6 +4,70 @@
 
 ### Added
 
+- **A `new` read from an artifact, called without a default argument, never
+  ran `initialize`.** The quietest failure a boundary has produced. A def from
+  a `.iyimod` is a header — no body, the machine code is in the artifact — and
+  a call that leaves out a default gets a wrapper that evaluates the default
+  and forwards the whole list to the symbol. Two things stopped that wrapper
+  from being written.
+
+  `expand_default_arguments` retains the original body whenever an argument has
+  both a default and a restriction, which `ParamParser.new(request, url :
+  Hash(String, String) = {} of String => String)` does. Retaining a header's
+  body copies `Nop` and drops the forwarding call on the floor, so `new`
+  returned the default it had just computed, having allocated nothing.
+
+  And the wrapper's body was never typed: the fast path for an artifact def
+  keys on `match.def`, which is still the header, and skips the body visit. The
+  default assignment therefore reached `CleanupTransformer` untyped, which
+  replaces an untyped node with a `raise` — so the program compiled, linked,
+  and died on `can't execute \`url = {} of String => String\`` the first time a
+  request reached it. A header's body is `Nop` and a wrapper's is not, which is
+  what tells the two apart.
+
+  Measured, through four boundaries: kemal binds its port, logs `Kemal is ready
+  to lead`, and a request walks the whole handler chain in kemal's own order.
+  What stops it now is the gap Part V names rather than anything here: kemal
+  reopens `HTTP::Server::Context` — a type the *library* owns, which a boundary
+  deliberately does not carry — and adds `@params` to it. The consumer's
+  `Context` has no such field and the artifact's compiled code reads one.
+
+- **A class carries what it includes, and kemal's handler chain runs.** A
+  `TypeDecl` had `superclass` and nothing for `include`, so a class that mixed
+  a module in arrived as something else entirely: kemal's handlers
+  `include HTTP::Handler`, `HANDLERS` is an `Array(HTTP::Handler)`, and the
+  consumer — asked directly — said `type must be HTTP::Handler, not
+  Kemal::InitHandler`. Where it was not asked directly it dispatched to
+  whichever subtype it *did* know, and `handler.class.to_s` answered
+  `HTTP::CompressHandler` for seven handlers in a row. The first reading of
+  that was a type-id numbering fault; it was a missing edge, and the edge is
+  `superclass`'s own argument one word further.
+
+  Written back as `include` lines rather than into `supertraits`: a trait list
+  is iyi's own `:` syntax and means something R-2b checks, and this is what the
+  shard wrote in the language it wrote it in. After the types the class
+  declares, because one of them may be the module — `ExceptionPage` includes an
+  `ExceptionPage::Helpers` written inside it — and pruned when the module did
+  not travel, by the rule that governs every other name here.
+
+- **An abstract `def` is a written signature, and the method answering it may
+  lean on that.** It is the one thing a shard's implementation is allowed to
+  leave out: `HTTP::Handler` writes `abstract def call(context :
+  HTTP::Server::Context)` and kemal's handlers write `def call(context) : Nil`,
+  which R-2 refuses for having no type to write down. R-2 already says this for
+  iyi's own impls — the trait wrote the types down, and a consumer types the
+  call from the trait — and the same sentence is true of a Crystal module's
+  abstract method. Matched on name and arity, which is all an abstract def has.
+
+  Measured: the handler list read through the boundary is now kemal's own, in
+  order, each with its own name. `Kemal.run` runs, kemal binds its port and
+  logs `Kemal is ready to lead`, and a request walks the whole chain —
+  `InitHandler`, `RequestLogHandler`, `HeadRequestHandler`, `ExceptionHandler`,
+  `FilterHandler`, `WebSocketHandler`, `RouteHandler`. It stops in
+  `ParamParser#cleanup_temporary_files`, which returns early for a request with
+  no uploads and did not: `@files.each_value &.cleanup` ran on an empty hash
+  and `FileUpload#cleanup` read a null receiver. That is the next thing.
+
 - **A shard's top-level `def`s cross, and kemal's DSL is 22 of them.** A
   boundary is rooted at a namespace and `get`, `post`, `error`, `ws` and `sse`
   are written outside every namespace, on `Object`, where a boundary rooted at

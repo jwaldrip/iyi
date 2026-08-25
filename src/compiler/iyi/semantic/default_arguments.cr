@@ -36,6 +36,20 @@ class Iyi::Def
 
     retain_body = block_arity || splat_index || double_splat || assigns_special_var? || macro_def? || args.any? { |arg| arg.default_value && arg.restriction }
 
+    # iyi: a def read from a `.iyimod` has no body to retain (SPEC.md IV.1).
+    #
+    # It is a header: the machine code is in the artifact and the call reaches
+    # it by symbol. Retaining the body copies `Nop` and drops the call on the
+    # floor — `ParamParser.new(request)` then evaluated the default for `url`
+    # and returned *that*, having never run an `initialize`, and the object it
+    # handed back read as garbage several handlers later. The other path is
+    # exactly right for a header: evaluate the defaults here, then forward the
+    # whole argument list to the symbol.
+    #
+    # A body that *travelled* is not this case — it has a real body and the
+    # consumer compiles it like its own.
+    retain_body = false if iyi_from_artifact?
+
     splat_index = self.splat_index
     double_splat = self.double_splat
 

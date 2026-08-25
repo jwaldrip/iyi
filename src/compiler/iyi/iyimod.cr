@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 30_u32
+  FORMAT_VERSION = 31_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -406,7 +406,22 @@ module Iyi::IyiMod
     # differently*, and a match against a virtual type — which compares an id
     # against the range its subclasses occupy — would answer wrongly and link
     # cleanly. That is why the edge travels rather than the ranges.
-    superclass : String = ""
+    superclass : String = "",
+    # iyi: the modules this type includes, by name.
+    #
+    # The same edge as `superclass` and the same argument, one word further:
+    # a class that lost its `include` is not the module's type any more.
+    # Kemal's handlers `include HTTP::Handler`, `HANDLERS` is an
+    # `Array(HTTP::Handler)`, and a consumer that never saw the include said
+    # `type must be HTTP::Handler, not Kemal::InitHandler` — and, where it was
+    # not asked that directly, dispatched a virtual call to whichever subtype
+    # it *did* know: `handler.class.to_s` answered `HTTP::CompressHandler` for
+    # seven handlers in a row.
+    #
+    # Written back as `include` lines rather than into `supertraits`. A trait
+    # list is iyi's own `:` syntax and means something R-2b checks; this is
+    # what the shard wrote, in the language it wrote it in.
+    includes : Array(String) = [] of String
 
   # How a body is found again on the far side.
   #
@@ -1751,6 +1766,13 @@ module Iyi::IyiMod
       render_type_declaration io, nested, bodies, inner
     end
 
+    # After the types this one declares, because one of them may be the module
+    # it includes: `ExceptionPage` includes an `ExceptionPage::Helpers` written
+    # inside it, and an `include` is resolved where it stands — written above
+    # them it named a module that was still eleven lines away. Before the
+    # methods, which may override what it brings. See `TypeDecl#includes`.
+    declaration.includes.each { |name| io << inner << "include " << name << '\n' }
+
     declaration.methods.each do |signature|
       render_declaration io, signature, indent: inner,
         body: bodies[mono_body_key(declaration.name, signature)]?
@@ -2134,6 +2156,7 @@ module Iyi::IyiMod
       write_pairs io, declaration.members
       write_triples io, declaration.class_vars
       write_string io, declaration.superclass
+      write_strings io, declaration.includes
       write_strings io, declaration.macros
       write_signatures io, declaration.methods
       write_type_declarations io, declaration.types
@@ -2153,11 +2176,12 @@ module Iyi::IyiMod
       members = read_pairs(io)
       class_vars = read_triples(io)
       superclass = read_string(io)
+      includes = read_strings(io)
       macros = read_strings(io)
       methods = read_signatures(io)
       TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
         visibility, read_type_declarations(io), value, macros, members, class_vars,
-        superclass)
+        superclass, includes)
     end
   end
 

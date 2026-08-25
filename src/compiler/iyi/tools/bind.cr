@@ -1097,6 +1097,14 @@ module Iyi
     end
     methods = methods.reject { |signature| signature.name == "new" } if fields.empty? && !declaration.fields.empty?
 
+    # And an `include` of a module this boundary did not carry. The same rule
+    # as everything above — nothing may name a type that did not travel — and
+    # the same cost, named rather than hidden: the type is no longer the
+    # module's, which is what the include was for. `ExceptionPage` includes an
+    # `ExceptionPage::Helpers` the walk never reached, and a consumer reading
+    # the include stopped on `undefined constant`.
+    includes = declaration.includes.select { |name| resolvable.call(name) }
+
     nested = [] of IyiMod::TypeDecl
     declaration.types.each do |child|
       kept = prune_declaration child, "#{prefix}#{declaration.name}::", known, root
@@ -1121,6 +1129,7 @@ module Iyi
       members: declaration.members,
       class_vars: class_vars,
       superclass: declaration.superclass,
+      includes: includes,
     )
   end
 
@@ -1303,6 +1312,7 @@ module Iyi
         types: nested,
         class_vars: collect_class_vars(type),
         superclass: superclass_name(type, root),
+        includes: included_modules(type, root),
       )
     end
   end
@@ -1806,6 +1816,7 @@ module Iyi
         {name, strip_root(type, root), strip_root(value, root)}
       end,
       superclass: strip_root(declaration.superclass, root),
+      includes: declaration.includes.map { |name| strip_root(name, root) },
     )
   end
 
@@ -1877,6 +1888,7 @@ module Iyi
         {name, map_names(type), map_names(value)}
       end,
       superclass: map_names(declaration.superclass),
+      includes: declaration.includes.map { |name| map_names(name) },
     )
   end
 
@@ -2454,6 +2466,36 @@ module Iyi
   # rather than a good one: the type crosses without the edge, which is what it
   # did before this existed, and what it costs is written down in IV.2 rather
   # than hidden. Dropping the type instead would take a whole namespace with it.
+  # The modules this type includes, by name.
+  #
+  # `parents` is the superclass and the included modules together, in the order
+  # Crystal resolves them, so the superclass comes off and what is left is the
+  # includes. A module the consumer cannot name is left out for the reason a
+  # field's type is: a declaration may not name something nobody has.
+  #
+  # `Enumerable` and friends included by the *library's* own types are not this
+  # type's business either — they arrive with the library, and a consumer under
+  # `--crystal` has it. What matters is the include a shard writes, and
+  # `include HTTP::Handler` is the one this exists for.
+  private def self.included_modules(type : Type, root : String) : Array(String)
+    names = [] of String
+    return names unless type.responds_to?(:parents)
+    parents = type.parents
+    return names unless parents
+
+    superclass = type.responds_to?(:superclass) ? type.superclass : nil
+    parents.each do |parent|
+      next if superclass && parent.same?(superclass)
+      next unless parent.is_a?(ModuleType)
+      next if parent.is_a?(ClassType)
+
+      name = parent.devirtualize.to_s
+      next unless nameable?(name, root)
+      names << name unless names.includes?(name)
+    end
+    names
+  end
+
   private def self.superclass_name(type : Type, root : String) : String
     return "" unless type.responds_to?(:superclass)
     superclass = type.superclass
@@ -2649,7 +2691,58 @@ module Iyi
     end
   end
 
-  private def self.classify_bind(owner : Type, a_def : Def) : BindMethod
+  # The abstract `def` this one answers, in a module the type includes or a
+  # class it inherits from.
+  #
+  # An abstract def is a written signature, which is the one thing a shard's
+  # own implementation is allowed to leave out: `HTTP::Handler` writes
+  # `abstract def call(context : HTTP::Server::Context)` and kemal's handlers
+  # write `def call(context) : Nil`. R-2 says this already for iyi's own impls
+  # — "the trait already wrote the types down, and a consumer types the call
+  # from the trait rather than from here" — and the same sentence is true of a
+  # Crystal module's abstract method.
+  #
+  # Matched on name and arity only. Anything finer would be overload resolution
+  # against a signature that by construction has no overloads to resolve
+  # against: an abstract def is the one shape the ancestor demands.
+  private def self.abstract_ancestor_def(owner : Type, a_def : Def) : Def?
+    ancestors = owner.responds_to?(:ancestors) ? owner.ancestors : nil
+    return nil unless ancestors
+
+    ancestors.each do |ancestor|
+      defs = ancestor.as?(ModuleType).try &.defs
+      next unless defs
+      defs[a_def.name]?.try &.each do |item|
+        other = item.def
+        next unless other.abstract?
+        next unless other.args.size == a_def.args.size
+        next if other.args.any? { |arg| arg.restriction.nil? }
+        return other
+      end
+    end
+    nil
+  end
+
+  # This def, with the types its ancestor wrote where the shard wrote none.
+  #
+  # A copy, because the tree belongs to the program being read and the rest of
+  # this tool has to keep seeing what the shard actually wrote.
+  private def self.with_ancestor_types(owner : Type, a_def : Def) : Def
+    return a_def unless a_def.args.any? { |arg| arg.restriction.nil? }
+    other = abstract_ancestor_def(owner, a_def)
+    return a_def unless other
+
+    copy = a_def.clone
+    copy.location = a_def.location
+    copy.args.each_with_index do |arg, index|
+      arg.restriction = other.args[index].restriction.try(&.clone) if arg.restriction.nil?
+    end
+    copy
+  end
+
+  private def self.classify_bind(owner : Type, given : Def) : BindMethod
+    a_def = with_ancestor_types(owner, given)
+
     verdict =
       if a_def.args.any? { |arg| arg.restriction.nil? }
         BindVerdict::NeedsHuman
