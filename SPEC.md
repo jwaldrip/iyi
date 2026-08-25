@@ -6492,14 +6492,31 @@ Named honestly, so nobody mistakes this draft for complete.
     > > be two ways to build the same type.
     > >
     > > **What a consumer driving the router waits on now is a *private*
-    > > method.** `add_route`'s body calls `add_to_radix_tree`, which
-    > > `RouteHandler` keeps to itself — and a body that travels calls the
-    > > methods beside it. iyi's own side has carried those since the beginning
-    > > (`carried_functions`, "a name nobody may reach is still a name the
-    > > consumer has to typecheck a call against"); a boundary written by
-    > > `tool bind` carries none. Rendering one as `private def` inside the type
-    > > is what the shape asks for: reachable from the body that travels with
-    > > it, and from nowhere else. That is the next thing.
+    > > method, and it is three things rather than one.** `add_route`'s body
+    > > calls `add_to_radix_tree`, which `RouteHandler` keeps to itself — and a
+    > > body that travels calls the methods beside it. iyi's own side has
+    > > carried those since the beginning (`carried_functions`, "a name nobody
+    > > may reach is still a name the consumer has to typecheck a call
+    > > against"); a boundary written by `tool bind` carries none.
+    > >
+    > > Tried, and each step named the next. A private method travels as
+    > > `private def`, which is what it was — reachable from the body beside it
+    > > and from nowhere else — and the keep file must not call one, because
+    > > Crystal refuses that from outside the type. It needs **no verdict**: R-2
+    > > asks its question of a surface a consumer writes against, and this is
+    > > not one. Its parameters travel **as written**, restrictions and all,
+    > > because `private def add_to_radix_tree(method, path, route)` has none
+    > > and `?` is not a type. And its **body** must travel, since a declaration
+    > > without one is a promise nothing keeps.
+    > >
+    > > That is where it stopped: the body reaches `@routes`, and
+    > > `RouteHandler` crossed as a *handle* — a reference type carried without
+    > > its fields, because one of them names a type the consumer could not
+    > > write. A body that travels needs the fields the shard's own compiler
+    > > had. So the three are one question: **what a travelling body is allowed
+    > > to see.** It is the same question `carried_functions` answers on the iyi
+    > > side, asked of a shard, and it wants an answer before more of the DSL
+    > > can cross.
     > >
     > > **And `exception_page` filling with 0 units is not a bug.**
     > > `ExceptionPage` is an `abstract class` with no subclass in its own
