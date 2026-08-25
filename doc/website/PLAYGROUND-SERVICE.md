@@ -92,7 +92,19 @@ visitor asks for anything.
 from. The page prints it beside a run, because a result whose compiler is
 anonymous is a result nobody can reproduce. `sandbox` is a sentence in the
 service's own words, rendered verbatim in the provenance rail, in the same slot
-where an engine's `notes` already go.
+where an engine's `notes` already go. The page never writes that sentence for
+the service, and never carries a copy of it: if the field is absent, the page
+says the service did not state its containment rather than offering a
+reassurance nobody measured.
+
+The containment the service is building, in its own summary, is to block
+`execve` outright in the compile child with a seccomp filter, which is reachable
+because `--cross-compile` makes the compiler print the link command instead of
+running it, so the front end and the code generator need no subprocess at all.
+That kills the shell reaching macro methods at their root rather than by name,
+which is stronger than an allowlist a new macro can outgrow. `read_file`,
+`read_file?` and `env` are not `execve`, so they are held by the read only
+filesystem and the empty environment instead.
 
 ### `POST /v1/compile`
 
@@ -184,23 +196,48 @@ depends on it.
 3. **`sha256` is of the exact bytes in `wasm_base64`.** The engine recomputes
    it and refuses on a mismatch, which catches a truncating proxy and keeps the
    digest rule the page already states.
-4. **`ok` is about the requested stage, not about the transport.** A program the
-   compiler rejected is `200` with `ok: false`. The service failing is a non
-   2xx. The page has to tell "your program is broken" from "we are broken",
-   because those are different sentences and only one of them is the visitor's
-   problem.
+4. **The body is the discriminator, and the status is for caches and proxies.**
+   Agreed with the service rather than asserted at it, and the service's
+   version is better than the one this document first carried. There are four
+   outcomes and the page reads them off the body:
+
+   | Body | Meaning | Status |
+   |---|---|---|
+   | `ok: true`, `module` present, `diagnostics` may hold warnings | the compiler accepted the program | 200 |
+   | `ok: false`, `diagnostics` non-empty, no `module` | the compiler ran and refused the program | 200 |
+   | `ok: false`, `error.code: "timeout"`, `diagnostics` empty | the compiler ran and was killed | 200 |
+   | `error` with any other code | the request or the service | 400, 413, 429, 500 |
+
+   A timeout is `200` because its cause is the program, so it belongs on the
+   page where "your program is broken" goes rather than where "we are broken"
+   goes. `500` is the only status that means the service is broken, and a
+   transport failure with no body at all is the other. Those two are the states
+   the page reports as the service's fault; nothing else is.
 
 ### Errors
 
-Non 2xx, always this shape:
+Always this shape, whatever the status:
 
 ```json
 { "error": { "code": "too_large", "message": "source is 91 KB, the limit is 64 KB", "limit_bytes": 65536 } }
 ```
 
-Codes: `too_large` (413), `unsupported_want` (400), `bad_request` (400),
-`rate_limited` (429, with `retry_after_seconds`), `timeout` (504),
-`internal` (500). Anything else the engine treats as unreachable.
+Codes: `too_large` (413, for the byte ceiling and for the file count),
+`unsupported_want` (400), `bad_request` (400), `rate_limited` (429, with
+`Retry-After`), `timeout` (200, per the table above), `internal` (500).
+Anything else, and any response the engine cannot parse, is treated as
+unreachable.
+
+`want` support is discovered rather than assumed: the service ships `run` and
+`format` for certain, and an unshipped want answers `400 unsupported_want`. The
+engine treats that refusal as first class for every non `run` want and names
+the want in the event, so the service can ship the others later with no engine
+change.
+
+`client` is a build identifier for the service's log. The service accepts it
+and ignores it, and rate limiting keys on the peer address only, never on a
+field the caller supplies, so nothing the engine sends can widen its own
+budget.
 
 ### CORS
 
