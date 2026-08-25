@@ -6537,13 +6537,30 @@ Named honestly, so nobody mistakes this draft for complete.
     > > `Node(T).new` which had none because a generic's `new` never travels and
     > > its `initialize` was not carried in its place.
     > >
-    > > It stopped at `Node(T).new("", placeholder: true)`: the `initialize`
-    > > that reached the far side had **no parameters at all**, and the chain
-    > > gate went from green to `no parameter named 'placeholder'`. So the whole
-    > > of it was taken back rather than half-landed. What it establishes is
-    > > that the question is one question and the pieces of the answer are
-    > > known — what remains is a `params` that carries defaults and named
-    > > arguments, which is where it starts again.
+    > > It stopped at `Node(T).new("", placeholder: true)`, and the whole of it
+    > > was taken back rather than half-landed. Started again from there, the
+    > > *generic* half of the question turned out to be separable and is built.
+    > >
+    > > **A generic can be built from its boundary now.** Its `new` is never
+    > > carried — synthesised per instantiation, the consumer makes its own —
+    > > and its `initialize` was not carried in `new`'s place. Three things were
+    > > in the way and each is the same shape as something already here. A
+    > > **default** did not travel, so a call that names one parameter and skips
+    > > another met a declaration that had neither. A **type parameter** was
+    > > recognised only as a whole restriction, so `T` passed and `(T | Nil)`
+    > > did not and `Radix::Node(T)#initialize` never crossed. And a **private
+    > > method a travelling body calls** had no declaration — `initialize` calls
+    > > `compute_priority` — so a generic's private methods travel as
+    > > `private def` with their bodies, which is what every one of a generic's
+    > > methods already is.
+    > >
+    > > A *plain* type's private methods still do not travel, and that is the
+    > > line: its bodies do not either, so a declaration would be a name with
+    > > nothing under it. Which is why `add_route` — a plain type's
+    > > block-taking method, whose body does travel — still waits on
+    > > `add_to_radix_tree`. The rule wants to be "a private method travels when
+    > > something that travels calls it", and that is a call graph rather than a
+    > > flag.
     > >
     > > Passing it opened one more, and it was a rewrite rather than a lookup.
     > > A boundary rewrites references to another boundary's types so the

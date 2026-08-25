@@ -191,8 +191,17 @@ module Shard
   # for the declared `to_s<IO+>` found nothing.
   class Holder(T)
     @value : T
+    @tag : String
 
-    def initialize(@value : T)
+    # A default, and it travels. A generic's `new` is synthesised per
+    # instantiation and never carried, so its `initialize` is what a consumer
+    # builds one with — and a call that leaves an argument out meets a
+    # declaration that has to know it could.
+    def initialize(@value : T, @tag : String = "plain")
+    end
+
+    def tag : String
+      @tag
     end
 
     def value : T
@@ -290,6 +299,10 @@ class Report < Shard::Sheet
   end
 end
 
+held = Shard::Holder(Int32).new(9)
+puts held.value
+puts held.tag
+puts Shard::Holder(String).new("s", "named").tag
 puts Report.new.render
 Shard.note("kept").write(STDOUT)
 puts ""
