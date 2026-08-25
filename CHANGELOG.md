@@ -4,6 +4,26 @@
 
 ### Added
 
+- **A generic type can be built from its boundary.** Its `new` is never carried
+  — it is synthesised per instantiation and the consumer makes its own — and
+  its `initialize` was not carried in `new`'s place, so a consumer could read a
+  `Holder(Int32)` somebody handed it and never make one.
+
+  Three things were in the way. A **default** did not travel, so
+  `Node(T).new("", placeholder: true)` named a parameter the declaration did not
+  have; parameters carry theirs now, written back as
+  `tag : String = "none"`. A **type parameter** was recognised only when it was
+  the whole restriction, so `T` passed and `(T | Nil)` did not, and
+  `Radix::Node(T)#initialize` never crossed at all — the question is asked of
+  each name in the type now. And a **private method a travelling body calls**
+  had no declaration: `Node(T)#initialize` calls `compute_priority`, which
+  `Node` keeps to itself. A generic's private methods travel as `private def`
+  with their bodies, which is what they already were — every one of a generic's
+  methods is compiled by the consumer.
+
+  A plain type's private methods do not travel, and that is deliberate: its
+  bodies do not either, so a declaration would be a name with nothing under it.
+
 - **A name a shard declares itself is not somebody else's.** A boundary rewrites
   references to another boundary's types so the consumer reads them the way it
   will see them — and the map is keyed on the simple name, so `radix` declaring

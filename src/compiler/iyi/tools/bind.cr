@@ -62,7 +62,11 @@ module Iyi
     block : Bool,
     untyped : Array(String),
     location : String,
-    params : Array({String, String}),
+    # Name, restriction, and the default as written — `{"tag", "String",
+    # "\"none\""}`. The default travels because a caller may leave the argument
+    # out: `Node(T).new("", placeholder: true)` names one parameter and skips
+    # another, and a declaration without the defaults is a different method.
+    params : Array({String, String, String}),
     returns : String?,
     receiver : String,
     # The block parameter as written, `&block : Context -> B`, or empty.
@@ -84,6 +88,8 @@ module Iyi
     # What instantiation answered, when that differs from what was written —
     # and what travels, because the symbol is named after it.
     produced : String?,
+    # Whether the type keeps the method to itself.
+    private_def : Bool = false,
     # Whether the method's own *body* is what answers it.
     #
     # A block whose output is written `_` means "whatever the block returns",
@@ -125,7 +131,7 @@ module Iyi
     # Every type this signature names, so the emitter can ask whether they can
     # all be named on the other side.
     def signature_types : Array(String)
-      types = params.map { |(_, restriction)| restriction }
+      types = params.map { |(_, restriction, _)| restriction }
       if declared = answer
         types << declared
       end
@@ -151,7 +157,7 @@ module Iyi
     # them; the return from `answer`, which is what the source wrote only where
     # that is also what a caller is handed.
     def declaration : String
-      args = params.map { |(name, restriction)| "#{name} : #{restriction}" }.join(", ")
+      args = params.map { |(name, restriction, _)| "#{name} : #{restriction}" }.join(", ")
       signature = args.empty? ? name : "#{name}(#{args})"
       "pub def #{signature} : #{answer || "Nil"}"
     end
@@ -491,6 +497,7 @@ module Iyi
       next unless module_root? program, root
       next unless owners.includes?(method.owner)
       next unless seen.add?(method.name)
+      next if method.private_def
       next unless method.verdict.ready? || method.inferred
       next if method.uncompilable
       next unless method.storable
@@ -507,7 +514,7 @@ module Iyi
         # shard produced a declaration the consumer called by a name nothing
         # emitted. Crystal's own library is written the second way throughout.
         receiver: method.owner == "#{root}:Module" && method.receiver.empty? ? "self" : method.receiver,
-        parameters: method.params.map { |(name, restriction)| "#{name} : #{restriction}" },
+        parameters: method.params.map { |(name, restriction, default)| bind_parameter(name, restriction, default) },
         block_parameter: method.written_block,
         return_type: method.body_answers ? "" : method.answer.not_nil!,
         free_variables: [] of String,
@@ -1195,7 +1202,12 @@ module Iyi
     # method is the *requirement*, which travels in the declaration.
     return counter if signature.required
 
-    declared = signature.parameters.map { |parameter| parameter.split(" : ").last }
+    # The type only. A parameter is written `tag : String = "none"` now that
+    # defaults travel, and `uninitialized String = "none"` is not a thing —
+    # `unexpected token: "="`, from a file nobody wrote.
+    declared = signature.parameters.map do |parameter|
+      parameter.split(" = ").first.split(" : ").last
+    end
     shapes = declared.map { |type| [type] + union_members(type) }
 
     combinations = shapes.reduce([[] of String]) do |carried, options|
@@ -1402,6 +1414,12 @@ module Iyi
         # travels with it and the consumer compiles both. Naming it in this file
         # is `protected method 'initialize' called`, which is Crystal saying the
         # same thing: `new` is how you build one.
+        next if signature.name == "initialize"
+
+        # Not `initialize`: Crystal refuses that call from outside the type —
+        # `protected method 'initialize' called` — and `new` is how you build
+        # one. A generic is not kept here at all, so its `initialize` is nobody's
+        # to call from this file.
         next if signature.name == "initialize"
 
         target = signature.receiver.empty? ? receiver : qualified
@@ -1840,27 +1858,36 @@ module Iyi
     { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
       by_owner[owner]?.try &.each do |method|
         next if method.name == "new"
-        next unless method.verdict.ready? || method.inferred
+        # A generic's `new` is never carried — it is synthesised per
+        # instantiation and the consumer makes its own — so its `initialize` is
+        # what a consumer builds one with. It answers nothing to infer.
+        next unless method.verdict.ready? || method.inferred ||
+                    method.name == "initialize" || method.private_def
         next if method.uncompilable
         next unless method.callable?
         # A type variable is nameable inside the type that binds it, which is
-        # the whole point of carrying the parameters beside the methods.
+        # the whole point of carrying the parameters beside the methods — and
+        # the question is asked of each *name* in the type rather than of the
+        # whole string. `T` passed and `(T | Nil)` did not, so
+        # `Radix::Node(T)#initialize` never crossed and a consumer had no way to
+        # build one.
         next unless method.signature_types.all? do |written|
-                      nameable?(written, root) || parameters.any? { |bound| written == bound }
+                      nameable?(written, root, parameters)
                     end
         next unless body = method.body
 
         signature = IyiMod::Signature.new(
           name: method.name,
           receiver: on_metaclass && method.receiver.empty? ? "self" : method.receiver,
-          parameters: method.params.map { |(argument, restriction)| "#{argument} : #{restriction}" },
+          parameters: method.params.map { |(argument, restriction, default)| bind_parameter(argument, restriction, default) },
           block_parameter: method.written_block,
           # Empty where the body is what answers: there is no single return type
           # to write for a block that returns `_`, and the consumer compiles the
-          # body and reads its own.
-          return_type: method.body_answers ? "" : method.answer.not_nil!,
+          # body and reads its own. An `initialize` answers nothing either.
+          return_type: method.answer || "",
           free_variables: [] of String,
           required: false,
+          visibility: method.private_def ? "private" : "",
         )
         signatures << signature
         @@mono_bodies[IyiMod.mono_body_key(name, signature)] = body
@@ -2002,6 +2029,15 @@ module Iyi
     abstract_owner = type.responds_to?(:abstract?) && type.abstract?
     { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
       by_owner[owner]?.try &.each do |method|
+        # A plain type carries no private method: its bodies do not travel, so
+        # a declaration would be a name with nothing under it.
+        next if method.private_def
+
+        # A plain type's `initialize` travels only where its `new` could not —
+        # that is, where it takes a block. Otherwise `new` is declared beside it,
+        # and two ways to build one type is one too many.
+        next if method.name == "initialize" && method.written_block.empty?
+
         next unless method.verdict.ready? || method.inferred || method.body_answers
         # A method the compiler refused to instantiate does not travel. The keep
         # file names what a boundary declares, so one that does not typecheck
@@ -2042,7 +2078,7 @@ module Iyi
           # its own, so a class method would arrive on the far side as an
           # instance method with the right name and the wrong reach.
           receiver: on_metaclass && method.receiver.empty? ? "self" : method.receiver,
-          parameters: method.params.map { |(argument, restriction)| "#{argument} : #{restriction}" },
+          parameters: method.params.map { |(argument, restriction, default)| bind_parameter(argument, restriction, default) },
           block_parameter: method.written_block,
           return_type: method.body_answers ? "" : method.answer.not_nil!,
           free_variables: [] of String,
@@ -2103,6 +2139,20 @@ module Iyi
     class_vars
   end
 
+  # One parameter, as the declaration writes it.
+  #
+  # The default is written back because leaving it out changes the method: a
+  # caller may pass fewer arguments than there are parameters, or name one and
+  # skip another, and a declaration missing the defaults refuses both.
+  private def self.bind_parameter(name : String, restriction : String, default : String) : String
+    # `?` is what an unresolved restriction is recorded as, and it is not a type
+    # and not syntax. A method that reaches a declaration with one is a method
+    # the consumer compiles from its body — a generic's, a private one's — and
+    # writing the name alone is what the shard wrote.
+    written = restriction == "?" ? name : "#{name} : #{restriction}"
+    default.empty? ? written : "#{written} = #{default}"
+  end
+
   # The foreign types one signature waits on.
   private def self.foreign_names(method : BindMethod, root : String) : Set(String)
     names = Set(String).new
@@ -2141,10 +2191,14 @@ module Iyi
   # Proc(HTTP::Server::Context, Exception, String))` begins with a type the
   # prelude has and is made almost entirely of types it does not, and reading
   # only the head counted it as writable — the measurement flattering itself.
-  private def self.nameable?(name : String, root : String) : Bool
+  # *bound* is the type parameters of the generic this name is written inside,
+  # which are names it may use and nobody else may.
+  private def self.nameable?(name : String, root : String,
+                             bound : Array(String)? = nil) : Bool
     Rx.scan(name, BIND_TYPE_NAME).all? do |match|
       part = match[0].not_nil!
       next true if part == "class" # `Exception.class` is read as its own name
+      next true if bound && bound.includes?(part)
       # `&handler : Context -> _` names one type and one *absence* of one. The
       # scan above reads `_` as a name because a name may start with one, and
       # answering "no program can write that" dropped every method whose block
@@ -2193,9 +2247,16 @@ module Iyi
         # needs in order to make its *own* `new` crosses instead, and only in
         # that case: declaring `initialize` beside a `new` that also travels
         # would be two ways to build the same type.
-        block_initialize = a_def.name == "initialize" &&
-                           (a_def.block_arg || a_def.block_arity)
-        next unless a_def.visibility.public? || block_initialize
+        # `initialize` is not public — Crystal reaches it through `new` — and
+        # whether it travels is the collectors' question, not this one. A
+        # generic's `new` is never carried, so its `initialize` always is; a
+        # plain type's travels only where its `new` could not.
+        # And the ones a type keeps to itself, which a *generic's* travelling
+        # bodies call: `Node(T)#initialize` calls `compute_priority`. Whether
+        # they travel is the collectors' question — only the generic path takes
+        # them, because only there is every body the consumer's to compile.
+        next unless a_def.visibility.public? || a_def.name == "initialize" ||
+                    a_def.visibility.private?
         # A method with no location is the compiler's own — `allocate` exists
         # on every type and nobody wrote it. A boundary carries what a shard's
         # author wrote, and `new` comes back through `initialize`.
@@ -2265,6 +2326,7 @@ module Iyi
       body: a_def.location.try { |at| owner.program.iyi_def_bodies["#{at}##{a_def.name}"]? } ||
             a_def.body.to_s,
       abstract_def: a_def.abstract?,
+      private_def: a_def.visibility.private?,
       uncompilable: uncompilable,
       body_answers: refused == "block returns `_`" && !a_def.abstract? &&
                     !a_def.body.nil? && !a_def.body.is_a?(Nop),
@@ -2274,7 +2336,10 @@ module Iyi
       # does. Asking it of the arguments alone was half the question.
       storable: a_def.args.all? { |arg| storable_restriction?(owner, arg.restriction) } &&
                 (a_def.return_type.nil? || storable_restriction?(owner, a_def.return_type)),
-      params: a_def.args.map { |arg| {arg.name, resolve_restriction(owner, arg.restriction) || "?"} },
+      params: a_def.args.map do |arg|
+        {arg.name, resolve_restriction(owner, arg.restriction) || "?",
+         arg.default_value.try(&.to_s) || ""}
+      end,
       returns: written,
       checked: checked,
       produced: produced,

@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 28_u32
+  FORMAT_VERSION = 29_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -281,7 +281,16 @@ module Iyi::IyiMod
     block_parameter : String,
     return_type : String,
     free_variables : Array(String),
-    required : Bool
+    required : Bool,
+    # iyi: `"private"` for a method the type keeps to itself, empty otherwise.
+    #
+    # A generic's methods are compiled by the consumer, from the bodies that
+    # travel with them — and a body calls the methods beside it.
+    # `Radix::Node(T)#initialize` calls `compute_priority`, which `Node` keeps
+    # private, so the consumer had a declaration it could not compile. Written
+    # `private def` the name is reachable from the bodies it travels with and
+    # from nowhere else, which is what it was in the shard.
+    visibility : String = ""
 
   # A type the module declares: `pub struct`, `pub class`, `pub trait` — and,
   # since the object code started travelling, the ones it does not export.
@@ -1579,6 +1588,7 @@ module Iyi::IyiMod
                                       body : String? = nil) : Nil
     io << indent
     io << "pub " if exported
+    io << "private " if signature.visibility == "private"
     io << render_signature(signature) << '\n'
     # An `abstract def` ends at its signature. Anything else needs the `end`
     # its absent body would have carried.
@@ -2064,6 +2074,7 @@ module Iyi::IyiMod
       write_string io, signature.return_type
       write_strings io, signature.free_variables
       io.write_byte(signature.required ? 1_u8 : 0_u8)
+      write_string io, signature.visibility
     end
   end
 
@@ -2076,8 +2087,9 @@ module Iyi::IyiMod
       return_type = read_string(io)
       free_variables = read_strings(io)
       required = io.read_byte == 1_u8
+      visibility = read_string(io)
       Signature.new(name, receiver, parameters, block_parameter, return_type,
-        free_variables, required)
+        free_variables, required, visibility)
     end
   end
 
