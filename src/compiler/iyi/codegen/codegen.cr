@@ -481,6 +481,14 @@ module Iyi
     # one of the library's runs where that library says. What is missing is
     # only ever the global, and the function that reaches it.
     private def iyi_define_class_var(class_var : MetaTypeVar, lazy : Bool) : Nil
+      # A thread-local one is not reached through its global but through a
+      # `noinline` function that hands back the address, and that function is
+      # the main module's. Defined whichever way the variable is read: the
+      # accessor around it is the unit's own copy either way.
+      if class_var.thread_local?
+        declare_thread_local_fun class_var_global_name(class_var), class_var.type, class_var
+      end
+
       initializer = class_var.initializer
 
       if lazy && initializer && !class_var.uninitialized?
@@ -1427,6 +1435,26 @@ module Iyi
       false
     end
 
+    # iyi: whether reading a variable as *node_type* widens rather than narrows.
+    #
+    # `implements?` alone is not the question and answering it that way broke
+    # the compiler's own build: a virtual type implements its base, so
+    # `Iyi::Def+` held in a slot and read as `Iyi::Def` looked like a widening
+    # and is the opposite. What separates the two is *shape* — a union or a
+    # virtual type is the wider thing, and widening is reading a concrete slot
+    # as one of those.
+    private def iyi_widening_read?(node_type, var_type) : Bool
+      return false if node_type == var_type
+      return false if iyi_many_typed?(var_type)
+      return false unless iyi_many_typed?(node_type)
+
+      var_type.implements?(node_type)
+    end
+
+    private def iyi_many_typed?(type) : Bool
+      type.is_a?(UnionType) || type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
+    end
+
     def check_assign_to_special_var_in_block(target, value)
       if (block_context = context.block_context?) && target.special_var?
         var = block_context.vars[target.name]
@@ -1473,20 +1501,38 @@ module Iyi
     end
 
     def get_thread_local(name, type, real_var)
-      # If it's thread local, we use a NoInline function to access it
-      # because of http://lists.llvm.org/pipermail/llvm-dev/2016-February/094736.html
-      #
-      # So, we basically make a function like this (assuming the global is a i32):
-      #
-      # define void @"*$foo"(i32**) noinline {
-      #   store i32* @"$foo", i32** %0
-      #   ret void
-      # }
-      #
-      # And then in the caller we alloca an i32*, pass it, and then load the pointer,
-      # which is the same as the global, but through a non-inlined function.
-      #
-      # Making a function that just returns the pointer doesn't work: LLVM inlines it.
+      thread_local_fun = check_main_fun("*#{name}", declare_thread_local_fun(name, type, real_var))
+      pointer_type = llvm_type(type).pointer
+      indirection_ptr = alloca pointer_type
+      call thread_local_fun, indirection_ptr
+      load pointer_type, indirection_ptr
+    end
+
+    # The main-module function a thread-local global is reached through.
+    #
+    # If it's thread local, we use a NoInline function to access it
+    # because of http://lists.llvm.org/pipermail/llvm-dev/2016-February/094736.html
+    #
+    # So, we basically make a function like this (assuming the global is a i32):
+    #
+    # define void @"*$foo"(i32**) noinline {
+    #   store i32* @"$foo", i32** %0
+    #   ret void
+    # }
+    #
+    # And then in the caller we alloca an i32*, pass it, and then load the pointer,
+    # which is the same as the global, but through a non-inlined function.
+    #
+    # Making a function that just returns the pointer doesn't work: LLVM inlines it.
+    #
+    # iyi: separated from the call above so that a consumer can *define* it
+    # without making one (SPEC.md IV.2). A unit that reads a thread-local class
+    # variable calls this function, and the function lives in the main module —
+    # which does not travel. `Regex::PCRE2::@@current_jit_stack` is the case:
+    # the accessor around it was copied into the unit, the global was defined by
+    # `ClassVars`, and the link still ended on
+    # `undefined symbol: *Regex::PCRE2::current_jit_stack`.
+    def declare_thread_local_fun(name, type, real_var) : LLVMTypedFunction
       fun_name = "*#{name}"
       thread_local_fun = typed_fun?(@main_mod, fun_name)
       unless thread_local_fun
@@ -1499,11 +1545,7 @@ module Iyi
         end
         thread_local_fun.func.add_attribute LLVM::Attribute::NoInline
       end
-      thread_local_fun = check_main_fun(fun_name, thread_local_fun)
-      pointer_type = llvm_type(type).pointer
-      indirection_ptr = alloca pointer_type
-      call thread_local_fun, indirection_ptr
-      load pointer_type, indirection_ptr
+      thread_local_fun
     end
 
     def visit(node : TypeDeclaration)
@@ -1563,7 +1605,25 @@ module Iyi
 
         # Special variables always have an extra pointer
         already_loaded = (node.special_var? ? false : var.already_loaded)
-        @last = downcast var.pointer, node.type, var.type, already_loaded, extern: false
+
+        # iyi: the slot can be *narrower* than the read, which is a shape only a
+        # boundary makes. A call to a method read from a `.iyimod` is keyed on
+        # the parameter as declared and the argument widened to it, so an `IO`
+        # parameter is read as `IO+`; inside a dispatch arm the same variable's
+        # slot holds the arm's concrete type. Widening is `upcast` — `downcast`
+        # is for the other direction and says
+        # `BUG: trying to downcast IO+ <- IO::Memory` when handed this one.
+        #
+        # The same correction the call arguments already carry, one level in.
+        # Nothing that links today changes: `downcast` *aborts* on a widening,
+        # so every build this branch is reached by is one that did not compile.
+        @last =
+          if iyi_widening_read?(node.type, var.type)
+            value = already_loaded ? var.pointer : to_lhs(var.pointer, var.type)
+            upcast value, node.type, var.type
+          else
+            downcast var.pointer, node.type, var.type, already_loaded, extern: false
+          end
       elsif node.name == "self"
         if node.type.metaclass?
           @last = type_id(node.type)

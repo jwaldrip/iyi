@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 24_u32
+  FORMAT_VERSION = 29_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -74,16 +74,28 @@ module Iyi::IyiMod
     # `Owner::@@name`. `Constants` asked of a global — see IV.2.
     ClassVars = 13
 
+    # iyi: the types this module's object code asks `~match<T>` about.
+    # `TypeIds` asked of a match — see IV.1g.
+    MatchTypes = 14
+
+    # iyi: the symbols this module's object code defines. What a consumer has
+    # to compile for itself is everything else — see IV.1g.
+    Symbols = 15
+
     # iyi: the pointer maps of the types this module owns, one `TypeLayout`
     # per type, keyed in the file by the type's name. Same reason as
     # `TypeIds` for keying by name rather than by the number: two programs
     # number their types differently, and the numbering is the consuming
     # program's (IV.1g). What an entry carries is GC_DESIGN.md Stage 1.
     #
-    # 14 rather than 12: this landed as 12 here while `Regexes` took 12
-    # upstream, and a section number is on-disk format, so the one that had
-    # not shipped in a release moved.
-    Layouts = 14
+    # 64, and deliberately nowhere near the others. This section has moved
+    # twice, 12 to 14 to here, because upstream allocates the next free number
+    # for each new section it ships and this fork was sitting on it both times.
+    # A section number is on-disk format, so losing that race costs a format
+    # bump and a migration for everyone. Sitting at 64 leaves upstream fifty
+    # numbers of room, which is more than the format has spent in its whole
+    # life, so the next merge is about content rather than about arithmetic.
+    Layouts = 64
   end
 
   # A regex literal's constant: the name its object code reads, and what a
@@ -369,7 +381,21 @@ module Iyi::IyiMod
     # `members` is: it renders differently and means differently. A field is
     # allocated per instance and has no value here; a class variable is
     # allocated once and its value is half of what has to arrive.
-    class_vars : Array({String, String, String}) = [] of {String, String, String}
+    class_vars : Array({String, String, String}) = [] of {String, String, String},
+    # iyi: what this class inherits from, empty when it inherits from the root
+    # its kind implies.
+    #
+    # The edge and not decoration. A subclass's `fields` are its *own* — the
+    # inherited ones come with the superclass — so a class that lost its `<`
+    # arrived missing both the fields and the methods above it: the consumer
+    # said `undefined method 'tag' for Shard::Derived`.
+    #
+    # And a type id is assigned by walking that same tree, so a consumer with a
+    # missing edge does not merely lose a method: it *numbers the tree
+    # differently*, and a match against a virtual type — which compares an id
+    # against the range its subclasses occupy — would answer wrongly and link
+    # cleanly. That is why the edge travels rather than the ranges.
+    superclass : String = ""
 
   # How a body is found again on the far side.
   #
@@ -444,13 +470,24 @@ module Iyi::IyiMod
     functions : Array(Signature),
     types : Array(TypeDecl),
     impls : Array(ImplRecord),
-    carried_functions : Array(Signature) = [] of Signature do
+    carried_functions : Array(Signature) = [] of Signature,
+    # iyi: the module's own class variables, the ones owned by the module
+    # rather than by a type inside it. Same triple as `TypeDecl#class_vars`
+    # and there for the same reason — a class variable is a global, and the
+    # global lives in a main module that does not travel.
+    #
+    # Its own field because there is nowhere else for it: a module is not a
+    # `TypeDecl`. `module Backtracer; class_getter(configuration)` is the case
+    # — `Backtracer::configuration` was undefined at the end of a build that
+    # had every one of the shard's *types* and their class variables.
+    class_vars : Array({String, String, String}) = [] of {String, String, String} do
     def self.empty
       new([] of Signature, [] of TypeDecl, [] of ImplRecord)
     end
 
     def empty?
-      functions.empty? && types.empty? && impls.empty? && carried_functions.empty?
+      functions.empty? && types.empty? && impls.empty? && carried_functions.empty? &&
+        class_vars.empty?
     end
   end
 
@@ -718,6 +755,43 @@ module Iyi::IyiMod
     # Settable alongside `object_code`, and for the same reason.
     property class_vars : Array(ClassVarRef)
 
+    # The types this module's object code asks `~match<T>` about, by name.
+    #
+    # `type_ids` asked of a match. A match against a union or a virtual type is
+    # a comparison against a range of the program's own type ids, so the
+    # function belongs to the program and cannot be carried as code: a copy
+    # compiled by the producer would compare the consumer's ids against the
+    # producer's numbers and answer wrongly with no symptom. The name travels
+    # and the consumer builds the function with its own numbering.
+    #
+    # A virtual one the consumer could have found for itself, by taking the
+    # virtual form of every class it numbers. A **union** it could not:
+    # `(Char | Iyi::Keyword | String | Nil)` is a type the producer's code
+    # formed, and no walk over the consumer's program arrives at it.
+    #
+    # Settable alongside `object_code`, and for the same reason.
+    property match_types : Array(String)
+
+    # The symbols this module's object code defines.
+    #
+    # A consumer compiles what an artifact does not define, and this is the
+    # only thing that answers which those are. An artifact defines **more than
+    # it declares** — its own units call methods Crystal owns, so
+    # `Kemal::RouteHandler`'s unit calls `FilterHandler#next=` and `next=` is
+    # `HTTP::Handler`'s — and **less than its types suggest**, because a method
+    # like `Reference::new` is instantiated per receiver and exists only where
+    # something reached it.
+    #
+    # Three rules were tried before this and each was wrong on one side.
+    # Assuming the artifact has whatever its types could answer left
+    # `Kemal::FilterHandler@Reference::new` undefined; assuming the reverse made
+    # it a duplicate symbol; compiling a private copy in the consumer put the
+    # definition where `_main` could not see it. A list is not a rule and does
+    # not have a wrong side.
+    #
+    # Settable alongside `object_code`, and for the same reason.
+    property symbols : Array(String)
+
     # Whether this module was compiled against Crystal's standard library
     # rather than iyi's prelude — `--crystal`.
     #
@@ -729,6 +803,44 @@ module Iyi::IyiMod
     # happen to agree and be wrong about the rest. Checked on import, beside
     # the version, the target and the flags (IV.5).
     property crystal_library : Bool
+
+    # Whether the step that puts object code in this artifact ran to the end.
+    #
+    # `crystal tool bind` writes the declarations and a second build fills them,
+    # and that second build compiles a *keep file* naming every method a
+    # consumer might call. A shard can hold code its own compilation never
+    # types — `openssl_ext` has a `LibCrypto` call whose argument is a pointer
+    # too deep — and asking for everything is what finds it. The build dies, and
+    # what is left on disk is an artifact with every declaration and no machine
+    # code at all.
+    #
+    # Indistinguishable, without this, from one that legitimately has none: an
+    # `abstract class` with no subclass in its own shard carries no object code
+    # and is complete. So the fill step says it finished, and a consumer of an
+    # unfinished boundary is refused rather than handed a hundred undefined
+    # symbols with no cause named.
+    #
+    # True by default, and that is not a convenience: only the two-step path
+    # can leave a boundary half-written, so only the step that starts it says
+    # so. An artifact anybody else builds — a spec's, a `--no-codegen` build's —
+    # is as finished as it was ever going to be.
+    property filled : Bool
+
+    # Whether this artifact's root is a *class* rather than a module.
+    #
+    # It decides one thing and it is structural: a module's declarations are
+    # wrapped in a `module <path>` header, and for a class root that header
+    # camelcases to the class's own name — so the class was declared *inside* a
+    # module of the same name and every type under it gained a level.
+    # `Widget::Part` became `Widget::Widget::Part`, and a consumer told to
+    # number `Widget::Part` could not name it.
+    #
+    # A class root needs no header, because the class is the namespace. iyi's
+    # parser wraps a file in its module only when a header is there, so leaving
+    # it out puts the declarations where they belong — and a `ClassType` is a
+    # `ModuleType`, so everything that looks a module unit up by name still
+    # finds it.
+    property class_root : Bool
 
     # Under `--crystal`, the library files this module required, in the order
     # it required them.
@@ -763,7 +875,9 @@ module Iyi::IyiMod
                    @type_ids = [] of String, @hashes = Hashes.empty,
                    @constants = [] of String, @macro_bodies = [] of String,
                    @requires = [] of String, @crystal_library = false,
+                   @class_root = false, @filled = true,
                    @regexes = [] of RegexConst, @class_vars = [] of ClassVarRef,
+                   @match_types = [] of String, @symbols = [] of String,
                    @layouts = [] of {String, TypeLayout})
     end
   end
@@ -833,6 +947,14 @@ module Iyi::IyiMod
 
     unless artifact.class_vars.empty?
       sections << {Section::ClassVars, encode_class_vars(artifact)}
+    end
+
+    unless artifact.match_types.empty?
+      sections << {Section::MatchTypes, encode_match_types(artifact)}
+    end
+
+    unless artifact.symbols.empty?
+      sections << {Section::Symbols, encode_symbols(artifact)}
     end
 
     # Last, and omitted when there is nothing in it. A consumer reading
@@ -979,6 +1101,8 @@ module Iyi::IyiMod
       constants = [] of String
       regexes = [] of RegexConst
       class_vars = [] of ClassVarRef
+      match_types = [] of String
+      symbols = [] of String
       requires = [] of String
       hashes = Hashes.empty
       layouts = [] of {String, TypeLayout}
@@ -1009,6 +1133,8 @@ module Iyi::IyiMod
         when Section::Constants   then constants = decode_constants(payload)
         when Section::Regexes     then regexes = decode_regexes(payload)
         when Section::ClassVars   then class_vars = decode_class_vars(payload)
+        when Section::MatchTypes  then match_types = decode_match_types(payload)
+        when Section::Symbols     then symbols = decode_symbols(payload)
         when Section::Requires    then requires = decode_requires(payload)
         when Section::Hashes      then hashes = decode_hashes(payload)
         when Section::Layouts     then layouts = decode_layouts(payload)
@@ -1026,7 +1152,8 @@ module Iyi::IyiMod
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
         object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
         hashes, constants, macro_bodies, requires, header[:crystal_library],
-        regexes, class_vars, layouts)
+        header[:class_root], header[:filled], regexes, class_vars, match_types,
+        symbols, layouts)
     end
   rescue ex : Error
     raise ex
@@ -1096,6 +1223,9 @@ module Iyi::IyiMod
       io.puts "exports       (none)"
     else
       io.puts "exports"
+      exports.class_vars.each do |(name, type, value)|
+        io.puts "  #{name} : #{type}#{value.empty? ? "" : " = #{value}"}"
+      end
       exports.functions.each { |signature| io.puts "  #{render_signature(signature)}" }
 
       # Named for what they are, because the dump renders an exported def and
@@ -1156,6 +1286,17 @@ module Iyi::IyiMod
 
     # With the pattern, because the name is a digest: a reader looking at
     # `$Regex:5f2b…` in the list above has no way to tell which literal it is.
+    io.puts "object code   never filled: the fill step did not finish" unless artifact.filled
+
+    symbols = artifact.symbols
+    io.puts "symbols       #{symbols.size} defined by this module's units" unless symbols.empty?
+
+    match_types = artifact.match_types
+    unless match_types.empty?
+      io.puts "match types"
+      match_types.each { |name| io.puts "  #{name}" }
+    end
+
     class_vars = artifact.class_vars
     unless class_vars.empty?
       io.puts "class variables"
@@ -1209,7 +1350,12 @@ module Iyi::IyiMod
   # never reached `Exports`, and R-2b needs it to stay unreachable rather than
   # merely unmentioned.
   def self.declarations(artifact : Artifact, io : IO) : Nil
-    io << "module " << artifact.module_name << '\n'
+    # A class root writes no header, and the class below is the namespace. With
+    # one, iyi wraps the whole file in a module of the header's name — which
+    # for a class root is the class's own name — so `Widget` arrived as
+    # `Widget::Widget` and `Widget::Part` was a name the consumer could not
+    # reach. See `Artifact#class_root`.
+    io << "module " << artifact.module_name << '\n' unless artifact.class_root
 
     # The module's own imports, restated. A consumer needs them loaded before
     # these declarations mean anything — a signature here can name a type from
@@ -1247,6 +1393,18 @@ module Iyi::IyiMod
       io << '\n' << source << '\n'
     end
 
+    # Before the functions, because one of them reads it: `Backtracer.configure`
+    # yields `configuration`, and the accessor around a lazy `class_getter` is
+    # a method like any other.
+    unless exports.class_vars.empty?
+      io << '\n'
+      exports.class_vars.each do |(name, type, value)|
+        io << name << " : " << type
+        io << " = " << value unless value.empty?
+        io << '\n'
+      end
+    end
+
     exports.functions.each do |signature|
       io << '\n'
       # A module's own `pub def` that takes a block ships its body, because the
@@ -1266,7 +1424,7 @@ module Iyi::IyiMod
         body: bodies[mono_body_key(artifact.module_name, signature)]?
     end
 
-    exports.types.each do |declaration|
+    inheritance_order(exports.types).each do |declaration|
       io << '\n'
       render_type_declaration io, declaration, bodies
     end
@@ -1291,6 +1449,45 @@ module Iyi::IyiMod
     unless artifact.initialiser.empty?
       io << '\n' << artifact.initialiser << '\n'
     end
+  end
+
+  # The declarations reordered so a superclass is written before what inherits
+  # from it.
+  #
+  # `class Derived < Base` does not resolve if `Base` is below it, and the order
+  # these arrive in is the order the producer's walk found them — alphabetical
+  # for one root, which puts `Apple < Fruit` the wrong way round as often as
+  # the right one.
+  #
+  # Only siblings, which is the whole of what an order can fix: a superclass in
+  # another namespace is a name the consumer already has, or one the boundary
+  # declined to carry and left empty. Stable, so two identical builds write the
+  # same file (IV.3).
+  #
+  # Recursive, because a nested list has the same question. A cycle cannot
+  # happen in a type graph, and a name that matches nothing here simply keeps
+  # its place.
+  private def self.inheritance_order(types : Array(TypeDecl)) : Array(TypeDecl)
+    return types if types.all? &.superclass.empty?
+
+    by_name = types.to_h { |declaration| {declaration.name, declaration} }
+    ordered = [] of TypeDecl
+    placed = Set(String).new
+
+    place = uninitialized TypeDecl -> Nil
+    place = ->(declaration : TypeDecl) do
+      return if placed.includes?(declaration.name)
+      placed << declaration.name
+
+      parent = by_name[declaration.superclass]?
+      place.call(parent) if parent && parent.name != declaration.name
+
+      ordered << declaration
+      nil
+    end
+
+    types.each { |declaration| place.call declaration }
+    ordered
   end
 
   # One `def`'s header, as the artifact carries it.
@@ -1550,7 +1747,9 @@ module Iyi::IyiMod
     # a field would have a type where a value belongs.
     declaration.members.each { |(name, value)| io << inner << name << " = " << value << '\n' }
 
-    declaration.types.each { |nested| render_type_declaration io, nested, bodies, inner }
+    inheritance_order(declaration.types).each do |nested|
+      render_type_declaration io, nested, bodies, inner
+    end
 
     declaration.methods.each do |signature|
       render_declaration io, signature, indent: inner,
@@ -1574,6 +1773,10 @@ module Iyi::IyiMod
         parameters.join(io, ", ")
         io << ')'
       end
+
+      # What it inherits from, which is not what it implements: `<` is a class's
+      # superclass and `:` is a trait list, and the two are different edges.
+      io << " < " << declaration.superclass unless declaration.superclass.empty?
 
       supertraits = declaration.supertraits
       unless supertraits.empty?
@@ -1665,6 +1868,8 @@ module Iyi::IyiMod
     artifact.flags.each { |flag| write_string io, flag }
     io.write_byte(artifact.has_initialiser ? 1_u8 : 0_u8)
     io.write_byte(artifact.crystal_library ? 1_u8 : 0_u8)
+    io.write_byte(artifact.class_root ? 1_u8 : 0_u8)
+    io.write_byte(artifact.filled ? 1_u8 : 0_u8)
     io.to_slice
   end
 
@@ -1677,9 +1882,12 @@ module Iyi::IyiMod
     flags = Array(String).new(io.read_bytes(UInt32, FORMAT)) { read_string(io) }
     has_initialiser = io.read_byte == 1_u8
     crystal_library = io.read_byte == 1_u8
+    class_root = io.read_byte == 1_u8
+    filled = io.read_byte == 1_u8
     {module_name: module_name, source_path: source_path,
      compiler_version: compiler_version, target_triple: target_triple, flags: flags,
-     has_initialiser: has_initialiser, crystal_library: crystal_library}
+     has_initialiser: has_initialiser, crystal_library: crystal_library,
+     class_root: class_root, filled: filled}
   end
 
   private def self.encode_requires(artifact : Artifact) : Bytes
@@ -1770,6 +1978,26 @@ module Iyi::IyiMod
   end
 
   private def self.decode_constants(payload : Bytes) : Array(String)
+    read_strings(IO::Memory.new(payload))
+  end
+
+  private def self.encode_symbols(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    write_strings io, artifact.symbols
+    io.to_slice
+  end
+
+  private def self.decode_symbols(payload : Bytes) : Array(String)
+    read_strings(IO::Memory.new(payload))
+  end
+
+  private def self.encode_match_types(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    write_strings io, artifact.match_types
+    io.to_slice
+  end
+
+  private def self.decode_match_types(payload : Bytes) : Array(String)
     read_strings(IO::Memory.new(payload))
   end
 
@@ -1896,6 +2124,8 @@ module Iyi::IyiMod
 
     write_signatures io, artifact.exports.carried_functions
 
+    write_triples io, artifact.exports.class_vars
+
     io.to_slice
   end
 
@@ -1915,6 +2145,7 @@ module Iyi::IyiMod
       write_pairs io, declaration.fields
       write_pairs io, declaration.members
       write_triples io, declaration.class_vars
+      write_string io, declaration.superclass
       write_strings io, declaration.macros
       write_signatures io, declaration.methods
       write_type_declarations io, declaration.types
@@ -1933,10 +2164,12 @@ module Iyi::IyiMod
       fields = read_pairs(io)
       members = read_pairs(io)
       class_vars = read_triples(io)
+      superclass = read_string(io)
       macros = read_strings(io)
       methods = read_signatures(io)
       TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
-        visibility, read_type_declarations(io), value, macros, members, class_vars)
+        visibility, read_type_declarations(io), value, macros, members, class_vars,
+        superclass)
     end
   end
 
@@ -1984,7 +2217,7 @@ module Iyi::IyiMod
         free_variable_bounds, assoc_types, read_signatures(io))
     end
 
-    Exports.new(functions, types, impls, read_signatures(io))
+    Exports.new(functions, types, impls, read_signatures(io), read_triples(io))
   end
 
   private def self.write_strings(io : IO, values : Array(String)) : Nil

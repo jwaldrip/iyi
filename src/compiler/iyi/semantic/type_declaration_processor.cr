@@ -700,6 +700,16 @@ struct Iyi::TypeDeclarationProcessor
   private def check_nilable_instance_vars
     @nilable_instance_vars.each do |owner, vars|
       vars.each do |name, info|
+        # iyi: a type read from a `.iyimod` has no `initialize` here to assign
+        # its fields in — the module keeps its own, and what travels is the
+        # declaration. The build that wrote the artifact checked the real one
+        # (SPEC.md IV.1g). `nilable_instance_var?` says the same thing for the
+        # branch below it; this covers the one where the field's type does not
+        # include `Nil`, which is where a bound shard's `@context` landed the
+        # moment its class arrived with a superclass to inherit an `initialize`
+        # from.
+        next if owner.is_a?(Type) && owner.iyi_from_artifact?
+
         ivar = owner.lookup_instance_var?(name)
         if ivar
           if ivar.type.includes_type?(@program.nil)
