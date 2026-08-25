@@ -937,6 +937,52 @@ jobs:
           grep -q 'File is not available on wasm32-wasi' theft.txt
           echo "sandbox: the theft died named and empty-handed"
 
+  # `begin`/`rescue` on wasm32, run rather than reasoned about. `raise` on this
+  # target used to print the exception and call `LibC.exit(1)`, so a rescue
+  # never ran; the compiler now emits wasm exception-handling instructions and
+  # the runtime throws one, and this is the check that says so.
+  #
+  # The engine is node's `node:wasi`, a JavaScript WASI implementation on V8,
+  # rather than a native runtime, because the point of the work is a compiler
+  # that runs in a browser and V8 is the engine a browser has.
+  #
+  # `WASM_EXCEPTIONS_REQUIRE=1` because the script skips with status 0 when the
+  # toolchain is absent, which is right on a laptop and wrong here: a job that
+  # skips silently is a green check covering nothing. With it set, a missing
+  # wasi-sdk or node fails the job instead.
+  wasm-exceptions:
+    needs: build
+    runs-on: ubuntu-24.04
+    container:
+      image: crystallang/crystal:1.21.0-build
+    name: "`rescue` on wasm32-wasi"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: crystal
+          path: .build
+      - run: chmod +x .build/crystal
+
+      # A recent V8: the compiler emits the standardised exception-handling
+      # proposal (`try_table`/`throw_ref`), which engines shipped later than the
+      # `try`/`catch` encoding it replaces.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+
+      - name: Install wasi-sdk
+        run: |
+          curl -sSL -o /tmp/wasi-sdk.tar.gz \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz
+          mkdir -p /opt/wasi-sdk
+          tar -xzf /tmp/wasi-sdk.tar.gz -C /opt/wasi-sdk --strip-components=1
+
+      - name: The same program, natively and on wasm32-wasi
+        run: WASI_SDK=/opt/wasi-sdk WASM_EXCEPTIONS_REQUIRE=1 bash bench/wasm_exceptions.sh
+
   binary:
     needs: build
     runs-on: ubuntu-24.04

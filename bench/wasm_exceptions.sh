@@ -24,35 +24,43 @@
 # reason any of this exists is a compiler that runs in a browser.
 #
 # Needs: a built compiler (`make crystal`), a wasi-sdk sysroot for the link, and
-# node. Set WASI_SDK to point at the sdk; it defaults to /tmp/wasi-sdk, which is
-# where CI unpacks it. Skips with status 0 when the toolchain is absent, because
-# a machine without wasi-sdk cannot answer the question either way; exits
-# non-zero when the answer is no.
+# node. Set WASI_SDK to point at the sdk; it defaults to /tmp/wasi-sdk.
+#
+# On a laptop without wasi-sdk this skips with status 0, because a machine that
+# cannot build the module cannot answer the question either way. **In CI that
+# skip is a green check covering nothing**, so CI sets
+# `WASM_EXCEPTIONS_REQUIRE=1` and every skip below becomes a failure. Exits
+# non-zero whenever the answer is no.
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 CRYSTAL="${CRYSTAL_BIN:-$REPO/.build/crystal}"
 WASI_SDK="${WASI_SDK:-/tmp/wasi-sdk}"
 SYSROOT="$WASI_SDK/share/wasi-sysroot"
+REQUIRE="${WASM_EXCEPTIONS_REQUIRE:-}"
 WORK="$(mktemp -d)"
 
-for needed in "$CRYSTAL" "$WASI_SDK/bin/wasm-ld" "$SYSROOT/lib/wasm32-wasi/crt1.o"; do
-  if [ ! -e "$needed" ]; then
-    echo "skipped: $needed is not here (set WASI_SDK, or run make crystal)"
-    exit 0
+# Absent toolchain: a skip where a person is asking, a failure where a check is
+# claiming to have run.
+missing() {
+  if [ -n "$REQUIRE" ]; then
+    echo "FAILED: $1, and WASM_EXCEPTIONS_REQUIRE is set, so this check has to run"
+    exit 1
   fi
+  echo "skipped: $1"
+  exit 0
+}
+
+for needed in "$CRYSTAL" "$WASI_SDK/bin/wasm-ld" "$SYSROOT/lib/wasm32-wasi/crt1.o"; do
+  [ -e "$needed" ] || missing "$needed is not here (set WASI_SDK, or run make crystal)"
 done
 
-if ! command -v node >/dev/null 2>&1; then
-  echo "skipped: no node to run the module in"
-  exit 0
-fi
+command -v node >/dev/null 2>&1 || missing "no node to run the module in"
 
 BUILTINS="$(ls "$WASI_SDK"/lib/clang/*/lib/wasi/libclang_rt.builtins-wasm32.a 2>/dev/null | head -1)"
-if [ -z "$BUILTINS" ]; then
-  echo "skipped: no wasm32 compiler-rt builtins in $WASI_SDK"
-  exit 0
-fi
+[ -n "$BUILTINS" ] || missing "no wasm32 compiler-rt builtins in $WASI_SDK"
+
+echo "engine: node $(node --version), V8 $(node -p 'process.versions.v8')"
 
 cat > "$WORK/exc.cr" <<'PROGRAM'
 puts "before"
