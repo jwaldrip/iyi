@@ -275,6 +275,21 @@ jobs:
           fi
           bash bench/shard_serves.sh
 
+      # The same application, through four boundaries instead of from source.
+      # `bind_chain.sh` above adds a route by calling the router; this one
+      # writes `get "/" do … end` and answers a request, which is what a kemal
+      # user does. Everything between those two is the DSL crossing, `Kemal.run`
+      # crossing with its body, the handler chain running in kemal's own order,
+      # and what the shard added to `HTTP::Server::Context` — a class the
+      # library owns — arriving with it. Each of those failed quietly once, and
+      # a gate that stopped at "it compiles" was green through all of them.
+      - name: A kemal application, served through four boundaries
+        run: |
+          if ! command -v curl >/dev/null; then
+            apt-get update -qq && apt-get install -y -qq curl
+          fi
+          bash bench/kemal_serves.sh
+
       # A library arriving with a feature is a decision, and this is where it
       # gets noticed. Seven undefined symbols in any iyi program (SPEC.md III.9),
       # and a new one fails here rather than on somebody's machine.

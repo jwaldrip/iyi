@@ -4,11 +4,20 @@
 
 ### Added
 
-- **A real kemal application serves HTTP through four boundaries.** `GET
-  /bound` answers `hello from a boundary`, `GET /missing` answers 404, and
-  kemal logs `200 GET /bound` — the request walking its whole handler chain,
-  the router matching, the DSL's own `get` writing the route. That was the
-  measure this part existed to reach.
+- **A real kemal application serves HTTP through four boundaries**, and
+  `bench/kemal_serves.sh` is the gate that says so. `GET /` answers `hello
+  from a boundary`, `GET /echo/:word` reads a URL parameter, `GET /missing`
+  answers 404, and the two arms — one built from source, one from artifacts —
+  answer identically. That was the measure this part existed to reach.
+
+  It is a gate rather than a note because every failure on the way here was a
+  *quiet* one: a consumer that linked and then read a field nobody had
+  allocated, a `class.to_s` that answered the wrong type for seven handlers in
+  a row, a `new` that never ran an `initialize`. A gate that stopped at "it
+  compiles" was green through all of them, which is why this one asks for
+  pages. The 404 is deliberate: it is kemal's own `setup_404`, which
+  `Kemal.run` reaches through a private module function whose body travels, so
+  it says the unhappy path crossed too.
 
   What it took was the one question Part V item 12 had left open: **a shard
   that adds to a type it does not own.** Kemal reopens
