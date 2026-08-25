@@ -120,7 +120,18 @@ const ticks = Array.from({ length: total }, (_, i) => i + 1);
       <p class="runs-line">
         {
           run.href ? (
-            <a class="runs-link" href={run.href}>Run it in the playground</a>
+            <Fragment>
+              <a class="runs-link" href={run.href}>
+                Open it in the playground
+              </a>
+              <span class="runs-none">
+                {" "}where you can change it and run what you changed, and{" "}
+                <a href={`${base.replace(/\/*$/, "/")}playground/evidence/`}>
+                  the recording behind it
+                </a>{" "}
+                says which bytes ran and what checked them.
+              </span>
+            </Fragment>
           ) : (
             <span class="runs-none">
               The wasm record does not carry this program, so the playground
