@@ -78,12 +78,23 @@ export function activeEngine(): PlaygroundEngine {
 /* ===========================================================================
  * ENGINE REGISTRATION.
  *
- * The engine below runs precompiled wasm32-wasi modules of the curated samples
- * against a WASI preview1 host written in the page. It claims `run` and
- * `diagnostics` and nothing else, so the shell renders build, emit .iyimod,
- * mod dump and format disabled with the missing capability named under each,
- * which is the honest interface rather than a reduced one by accident.
+ * The engine below compiles what a visitor types by sending it to a compile
+ * service, and runs the wasm32-wasi module that comes back in this page,
+ * against the WASI preview1 host every recorded sample already runs under. It
+ * claims compile, run and diagnostics.
+ *
+ * It degrades rather than breaking, and the degradation is a property of the
+ * engine rather than of the page. A curated sample the visitor has not edited
+ * runs from its recorded module with the manifest's digest behind it, which is
+ * what keeps this page working when the service is down or when a build was
+ * given no service at all. Anything else needs the service, and when the
+ * service is not there the engine says so in one refusal naming the endpoint
+ * rather than inventing output or spinning forever.
+ *
+ * `engines/wasi.ts` is still here and still exercised: this engine delegates
+ * the recorded path to the same `executeWasm` it uses, and the two agree about
+ * what running means because there is one implementation of it.
  * ========================================================================= */
 
-import { wasiEngine } from "./engines/wasi";
-registerEngine(wasiEngine);
+import { remoteEngine } from "./engines/remote";
+registerEngine(remoteEngine);

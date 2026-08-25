@@ -40,22 +40,35 @@ const site = resolve(here, "..");
 const repo = resolve(site, "..");
 const out = resolve(site, "records", "highlight.json");
 
-// The words that are iyi's and not Crystal's. `module` is in the list because
-// iyi's `module app/greeter` is a compilation-unit header and Crystal's
-// `module Foo` is a namespace, which is the single largest difference between
-// the two languages hiding behind one shared spelling.
-const RULE_WORDS = [
-  "module",
-  "import",
-  "using",
-  "pub",
-  "trait",
-  "impl",
-  "forall",
-  "derive",
-  "type",
-  "abstract",
-];
+// The words that are iyi's and not Crystal's, read from the one place that
+// holds them. `site/src/lib/rule-words.json` is imported by the browser's
+// renderer and read here by the recorder, so the recorded listings and the
+// live editor emphasise the same set by construction rather than by two lists
+// agreeing today and drifting later. That file's `why` field owns the
+// explanation, including the reason `module` is in the list; it is not
+// restated here, because a copy of a reason goes stale the same way a copy of
+// a list does.
+const ruleWords = JSON.parse(
+  readFileSync(resolve(site, "src", "lib", "rule-words.json"), "utf8"),
+);
+
+const RULE_WORDS = ruleWords.words;
+
+if (!Array.isArray(RULE_WORDS) || RULE_WORDS.length === 0) {
+  throw new Error(
+    `site/src/lib/rule-words.json has no "words" array, so this recorder ` +
+      `cannot know which spans carry iyi's own keywords. That file is the one ` +
+      `list; the browser's renderer reads it too.`,
+  );
+}
+
+if (typeof ruleWords.why !== "string" || ruleWords.why.trim() === "") {
+  throw new Error(
+    `site/src/lib/rule-words.json has no "why", and that field is where the ` +
+      `reason for this list lives. A list of ten words with no account of ` +
+      `why they are the ten is the shape that gets edited by guess.`,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Toolchain

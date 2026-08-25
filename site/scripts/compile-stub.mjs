@@ -62,6 +62,10 @@ const HEALTH = {
   ok: true,
   compiler: COMPILER,
   limits: { max_source_bytes: 65536, max_files: 8, compile_timeout_ms: 15000 },
+  // Discovery, so the page offers only what the other end answers. `lex-silent`
+  // drops lex from this array, which is how the page's plain ink fallback gets
+  // exercised without pretending the service is down.
+  wants: ["run", "format", "lex"],
   sandbox:
     "this is a stub and it compiles nothing, so there is nothing to contain",
 };
@@ -71,6 +75,32 @@ const HEALTH = {
 // compiler would never print.
 const recorded = JSON.parse(
   readFileSync(resolve(here, "..", "records", "diagnostics.json"), "utf8"),
+);
+
+// Same principle for lexing. A stub cannot lex, so it serves the recorded
+// output of the compiler's own highlighter over exactly the files it was
+// recorded from. The page strips the spans and refuses to paint unless the
+// recovered text is byte identical to what it sent, so a synthetic stream
+// would fail that check and prove nothing about the live path. A recording
+// passes it for a real reason.
+const highlight = JSON.parse(
+  readFileSync(resolve(here, "..", "records", "highlight.json"), "utf8"),
+);
+
+/** The characters a recorded listing's markup encodes. */
+function recoveredText(html) {
+  return html
+    .replace(/<[^>]+>/g, "")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&amp;", "&");
+}
+
+/** Recorded listings by the text they encode, so a submission can be matched. */
+const listingsByText = new Map(
+  Object.values(highlight.files ?? {}).map((html) => [recoveredText(html), html]),
 );
 
 function diagnosticFrom(entry) {
@@ -141,7 +171,62 @@ const server = createServer((req, res) => {
       req.socket.destroy();
       return;
     }
-    send(res, 200, HEALTH);
+    /* `lex-silent` is a service that simply does not offer lexing. The page
+     * must then never ask, and must fall back to plain ink without saying
+     * anything to the visitor, which is a different case from a service that
+     * offers lex and then refuses one request. */
+    const wants =
+      mode === "lex-silent"
+        ? HEALTH.wants.filter((want) => want !== "lex")
+        : HEALTH.wants;
+    send(res, 200, { ...HEALTH, wants });
+    return;
+  }
+
+  if (req.url.startsWith("/v1/lex")) {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+    });
+    req.on("end", () => {
+      let request;
+      try {
+        request = JSON.parse(raw);
+      } catch {
+        send(res, 400, {
+          error: { code: "bad_request", message: "body is not json" },
+        });
+        return;
+      }
+
+      const text = request.files?.[0]?.text ?? "";
+
+      /* `lex-lies` returns markup that does not encode the submitted text.
+       * There is exactly one honest response to that on the page, which is to
+       * refuse to paint and fall back to plain ink, because painting one
+       * program's tokens over another program's characters is the silently
+       * wrong listing this whole pipeline exists to prevent. */
+      if (mode === "lex-lies") {
+        send(res, 200, {
+          ok: true,
+          html: '<span class="k">module</span> <span class="m">somethingelse</span>\n',
+        });
+        return;
+      }
+
+      const listing = listingsByText.get(text);
+      if (listing === undefined) {
+        send(res, 200, {
+          ok: false,
+          error: {
+            code: "unsupported_want",
+            message: "this stub has no lexer, only recordings",
+          },
+        });
+        return;
+      }
+      send(res, 200, { ok: true, html: listing });
+    });
     return;
   }
 

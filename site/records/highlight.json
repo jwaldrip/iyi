@@ -1,10 +1,10 @@
 {
   "recorded": {
     "compiler": "iyi 0.3.0-dev (built on Crystal 1.22.0-dev [af509de9e] (2026-08-23))",
-    "commit": "84955d25284176b8d664a8f822520b6575b4dd15",
+    "commit": "6a1110eb73c7ef0575641567560cd0c9791e4224",
     "machine": "Darwin 25.5.0 arm64, Apple M5 Max",
     "command": "npm run record:highlight",
-    "when": "2026-08-25T13:19:21.760Z"
+    "when": "2026-08-25T13:37:05.796Z"
   },
   "files": {
     "samples/iyi/app/formal.iyi": "<span class=\"c\"># A second module, exporting a `title` of its own. See `../modules.iyi`.</span>\n<span class=\"k tok-rule\">module</span> app<span class=\"o\">/</span>formal\n\n<span class=\"k tok-rule\">pub</span> <span class=\"k\">def</span> <span class=\"m\">title</span> : <span class=\"t\">String</span>\n  <span class=\"s\">&quot;esteemed colleague&quot;</span>\n<span class=\"k\">end</span>\n\n<span class=\"k tok-rule\">pub</span> <span class=\"k\">def</span> <span class=\"m\">address</span>(name : <span class=\"t\">String</span>) : <span class=\"t\">String</span>\n  <span class=\"s\">&quot;Good day, </span><span class=\"i\">#{</span>name<span class=\"i\">}</span><span class=\"s\">.&quot;</span>\n<span class=\"k\">end</span>\n",

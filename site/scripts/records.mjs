@@ -360,62 +360,10 @@ for (const name of wasmFiles) {
   writeFileSync(join(publicWasm, name), readFileSync(join(records, "wasm", name)));
 }
 
-// ---------------------------------------------------------------------------
-// src/generated/source-digests.json
-// ---------------------------------------------------------------------------
-
-// The playground's engine posts typed source to a compile service, except when
-// the source in the editor is byte for byte one of the curated samples: then it
-// runs the module recorded beside the manifest instead, digest checked, which is
-// what keeps the page working when the service is down. Deciding that in the
-// browser needs the sha256 of each curated sample's source and nothing else.
-//
-// It cannot come from site/records/highlight.json, even though that record does
-// hold the recorded text. The engine ships to every visitor of a playground
-// page, and the highlight record is a quarter of a megabyte of listings that
-// belong to the build. So the build hashes the sources here and writes a file
-// that is thirteen hex strings, well under a kilobyte in the client bundle. Same
-// reasoning as the note at the top of src/playground/samples.ts, applied to a
-// second consumer.
-//
-// This runs AFTER the gate above on purpose. The highlight check just proved
-// that the recorded markup encodes the file that is in the tree now, so the
-// bytes being hashed here are the bytes that were recorded. Hashing before the
-// gate would produce a derived record from a record that failed, and the next
-// build would read it as though it had been checked.
-//
-// The output lands in src/generated/, which is gitignored and rewritten by every
-// build. A committed copy would be a second place for these to disagree, and the
-// disagreement would show up as a curated sample quietly going to the service.
-const generated = resolve(site, "src", "generated");
-const sources = {};
-for (const sample of manifest.samples) {
-  sources[sample.path] = createHash("sha256")
-    .update(readFileSync(resolve(repo, sample.path)))
-    .digest("hex");
-}
-mkdirSync(generated, { recursive: true });
-writeFileSync(
-  join(generated, "source-digests.json"),
-  `${JSON.stringify(
-    {
-      generated: {
-        by: "site/scripts/records.mjs",
-        commit: manifest.recorded.commit,
-      },
-      sources,
-    },
-    null,
-    2,
-  )}\n`,
-  "utf8",
-);
-
 const cases = diagnostics.cases.length;
 const listings = Object.keys(highlight.files).length;
-const digests = Object.keys(sources).length;
 console.log(
   `records: ${wasmFiles.length} wasm modules verified and published, ` +
-    `${cases} diagnostics, ${listings} listings, ${digests} source digests ` +
-    `written, recorded at ${manifest.recorded.commit.slice(0, 9)}`,
+    `${cases} diagnostics, ${listings} listings, recorded at ` +
+    `${manifest.recorded.commit.slice(0, 9)}`,
 );
