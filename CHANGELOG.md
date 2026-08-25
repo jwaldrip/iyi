@@ -4,6 +4,38 @@
 
 ### Added
 
+- **The collector sweeps, so the memory comes back.** GC_DESIGN.md Stage 6, and
+  with it the collector works end to end behind `-Dgc_iyi`: allocate, mark,
+  sweep, and the chunk is handed out again. One walk over every carved chunk. A
+  white object is unreachable, so its chunk goes back on its class's free list;
+  a black one survives and is repainted white for the next cycle, which is why
+  sweep needs no second pass. Large objects walk their own list, with `next`
+  read before the node is released, because releasing it unmaps the memory the
+  link lives in. A chunk already on a free list is skipped rather than freed
+  twice, since that would hand one chunk to two callers.
+
+  The check that matters cannot be faked by a counter: 300 objects nothing
+  references, collect, 300 more allocations, and **299 of them come back from
+  addresses the sweep reclaimed**. A rooted object keeps all 64 of its bytes
+  through a collection, comes out white, and its chunk is not handed out again
+  across 400 further allocations. Twenty cycles of 200 allocations leave five
+  arenas mapped rather than a growing heap.
+
+  `bench/sweep_exercise.sh` proves both directions, as permanent steps: a sweep
+  that reclaims nothing exits 1 at "nothing was reclaimed, so no address came
+  back", and a sweep that frees regardless of colour exits 1 on the live
+  survivor. A collector's test that cannot see both is not testing a collector.
+
+  Finalizers and weak references are not built, and not for lack of time.
+  Nothing in this language defines a finalizer: there is no `def finalize`
+  anywhere in `src/iyi` or `samples/iyi`, so a finalizer queue would be a
+  mechanism no program could put an entry in, which is the shape III.4.8
+  refused for a concurrency marker. Weak references are registration based and
+  the standard library's `WeakRef` is on the `--crystal` side, so there is no
+  table here to walk and null out. Both wait on the language having the
+  feature. Statistics are the honest subset, counted as the walk goes rather
+  than sampled: chunks swept, chunks kept, bytes freed, collections run.
+
 - **The collector marks, behind `-Dgc_iyi`.** GC_DESIGN.md Stage 5. Roots go
   gray through Stage 3's walker, a queue in its own mapping drains, each
   object's payload is scanned to the bound its size header carries, and what is
@@ -758,7 +790,7 @@
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 3,543-line library and nothing else. Every other
+  written against iyi's own 3,648-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
