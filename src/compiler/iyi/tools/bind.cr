@@ -3046,7 +3046,7 @@ module Iyi
       # travel. The third is `&` — or a bare `yield` — which names no block
       # parameter at all, and which is how Crystal's own libraries are written
       # far more often than the annotated form.
-      body_answers: setter_body?(a_def) ||
+      body_answers: setter_body?(a_def) || delegating_overload?(a_def) ||
                     (refused == "block returns `_`" ||
                      refused == "block is not annotated" ||
                      refused == "yields without a block parameter") && !a_def.abstract? &&
@@ -3076,6 +3076,38 @@ module Iyi
         argument.restriction ? "&#{argument}" : "&#{argument.name}"
       end || (a_def.block_arity ? "&" : ""),
     )
+  end
+
+  # Whether this overload's whole job is to call another of the same name.
+  #
+  # `Kemal.run` is written four times. Two take a block and cross because a
+  # block's shape is the body's to say; the other two are
+  # `def self.run(args = ARGV, trap_signal : Bool = true)`, whose body is
+  # `run(nil, args: args, trap_signal: trap_signal)` — they fill in a default
+  # and delegate. R-2 refuses them for `args`, and R-2's own reason does not
+  # apply: a consumer typechecks a call *through* a travelling body, exactly as
+  # the shard's own callers do, and this body is one line naming a method that
+  # is already crossing.
+  #
+  # So `Kemal.run` is what a kemal program writes, rather than `Kemal.run { }`.
+  #
+  # Narrow on purpose. "An untyped parameter is no reason to refuse a method
+  # whose body travels" is the general form of this, and it is a much larger
+  # claim: it would send a body for every method a shard left untyped, each one
+  # a piece of source the consumer has to compile and each one able to name
+  # something that did not cross. This is the shape that shows up in a library's
+  # own API — the overload that exists to be convenient — and widening it is a
+  # measurement nobody has made yet.
+  private def self.delegating_overload?(a_def : Def) : Bool
+    return false if a_def.block_arg || a_def.block_arity
+    return false if a_def.splat_index || a_def.double_splat
+    return false unless a_def.args.any? { |arg| arg.restriction.nil? }
+
+    body = a_def.body
+    body = body.expressions.first? if body.is_a?(Expressions) && body.expressions.size == 1
+    return false unless body.is_a?(Call)
+    return false unless body.obj.nil?
+    body.name == a_def.name
   end
 
   # Whether this is a setter whose answer is the value it was handed.

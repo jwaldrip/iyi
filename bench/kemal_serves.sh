@@ -121,9 +121,10 @@ bind_one kemal Kemal
 # to a class the library owns, and a boundary carries none of the library's
 # types.
 #
-# `Kemal.run` takes a block here because the blockless overload writes no type
-# on `args` and takes no block, so its body is not what answers and it does not
-# cross. Kemal's own blockless `run` calls this one with an empty block.
+# `Kemal.run` is written with no block, which is how kemal's README writes it —
+# the overload that takes none has an untyped `args` and delegates, so it
+# crosses as its body (SPEC.md Part V item 12). Written `Kemal.run { }` this
+# line would pass without saying that.
 app() {
   cat <<IYI
 module main
@@ -139,9 +140,7 @@ get "/echo/:word" do |env|
 end
 
 Kemal.config_instance.port = $2
-Kemal.run do |config|
-  puts "listening"
-end
+Kemal.run
 IYI
 }
 

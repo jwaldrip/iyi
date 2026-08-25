@@ -4,6 +4,23 @@
 
 ### Added
 
+- **`Kemal.run` — with no block, the way kemal's README writes it.** The
+  overload that takes none is `def self.run(args = ARGV, trap_signal : Bool =
+  true)`, whose whole body is `run(nil, args: args, trap_signal: trap_signal)`:
+  it fills in a default and delegates. R-2 refused it for `args`, and R-2's own
+  reason does not apply — a consumer typechecks a call *through* a travelling
+  body, exactly as the shard's own callers do, and this body is one line naming
+  a method that is already crossing.
+
+  Narrow on purpose. "An untyped parameter is no reason to refuse a method
+  whose body travels" is the general form, and it is a much larger claim: it
+  would send a body for every method a shard left untyped, each one source the
+  consumer has to compile and each one able to name something that did not
+  cross. A delegating overload is the shape that shows up in a library's own
+  API — the one that exists to be convenient — and widening it is a measurement
+  nobody has made yet. `bench/kemal_serves.sh` writes `Kemal.run`, so the gate
+  says which of the two this is.
+
 - **A real kemal application serves HTTP through four boundaries**, and
   `bench/kemal_serves.sh` is the gate that says so. `GET /` answers `hello
   from a boundary`, `GET /echo/:word` reads a URL parameter, `GET /missing`

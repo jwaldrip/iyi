@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 92,940 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 92,972 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,505 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -7263,11 +7263,30 @@ Named honestly, so nobody mistakes this draft for complete.
     added. And **that default is written with its names resolved**, like every
     other text here, because it is read where the shard is not.
 
-    **The measure.** A kemal application built against four boundaries serves
-    HTTP: `GET /bound` answers `hello from a boundary`, `GET /missing` answers
-    404, and kemal logs `200 GET /bound`. The request walks its whole handler
-    chain, the router matches, and the route was written with the DSL's own
-    `get`.
+    **A delegating overload travels as its body.** `Kemal.run` is written four
+    times; the two that take no block are `def self.run(args = ARGV,
+    trap_signal : Bool = true)`, whose whole body fills in a default and calls
+    the four-argument one. R-2 refuses them for `args`, and R-2's reason does
+    not apply: a consumer typechecks a call *through* a travelling body, as the
+    shard's own callers do. Narrow on purpose — the general form, "an untyped
+    parameter is no reason to refuse a method whose body travels", would send a
+    body for every method a shard left untyped, and that is a measurement
+    nobody has made.
+
+    **The measure, and it is a gate.** `bench/kemal_serves.sh` binds the four
+    boundaries, writes the application the way kemal's README writes one —
+    `get "/" do … end`, `Kemal.run` — and asks it for pages: a static route, one
+    that reads a URL parameter, and one nobody wrote. Both arms answer `hello
+    from a boundary`, `iyi`, `404`, and the gate compares them rather than
+    trusting either.
+
+    It asks for pages because every failure on the way here was a *quiet* one:
+    a consumer that linked and then read a field nobody had allocated, a
+    `class.to_s` that answered the wrong type for seven handlers in a row, a
+    `new` that never ran an `initialize`. A gate that stopped at "it compiles"
+    was green through all of them. The 404 is the deliberate half: it is
+    kemal's own `setup_404`, which `Kemal.run` reaches through a private module
+    function whose body travels.
 
 13. ~~**Dependencies and discovery.**~~ **Specified in III.7**: path identity,
     minimal version selection, a manifest and a sums file, source as the primary
