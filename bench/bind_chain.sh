@@ -64,8 +64,17 @@ mkdir mods
 # `kemal` adds an edge in each direction (SPEC.md Part V item 12).
 bind_one() {
   shard="$1"; root="$2"
-  if ! "$CRYSTAL" tool bind -e "$root" --emit-bind mods "lib/$shard/src/$shard.cr" \
-        > "bind-$shard.log" 2>&1; then
+  # Without `--use-iyimod mods` a boundary cannot see the ones bound before it,
+  # so `Radix::Tree` is a name `Kemal` cannot write and `RouteHandler` crosses
+  # as a *handle*, without the fields a travelling body needs. The report names
+  # both the type and the field that did it, and this line counts them.
+  #
+  # Passing it is what a shard's author should do and what this gate cannot yet:
+  # with the fields carried, `Kemal::LRUCache::Node(K, V)` resolves to
+  # `Radix::Node(T)` and the consumer stops on `wrong number of type vars`.
+  # SPEC.md Part V item 12 has it.
+  if ! "$CRYSTAL" tool bind -e "$root" --emit-bind mods \
+        "lib/$shard/src/$shard.cr" > "bind-$shard.log" 2>&1; then
     echo "binding $shard failed"
     tail -10 "bind-$shard.log"
     echo "workdir $WORK"
@@ -79,7 +88,8 @@ bind_one() {
     exit 1
   fi
   units=$("$IYI" mod dump "mods/$shard.iyimod" 2>/dev/null | sed -n '/^object code/,$p' | grep -c ' bytes')
-  printf '  %-16s %s units\n' "$shard" "$units"
+  handles=$(sed -n '/crossed as handles/,/^$/p' "bind-$shard.log" | grep -c '^    ' || true)
+  printf '  %-16s %s units, %s types without their fields\n' "$shard" "$units" "$handles"
 }
 
 echo "bound, in dependency order:"
