@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "generate": "node scripts/facts.mjs && node scripts/reference.mjs && node scripts/samples.mjs && node scripts/records.mjs && node scripts/no-transcription.mjs",
+    "generate": "node scripts/facts.mjs && node scripts/reference.mjs && node scripts/samples.mjs && node scripts/records.mjs && node scripts/no-transcription.mjs && node scripts/blocker.mjs",
     "record:wasm": "node scripts/record-wasm.mjs",
     "record:diagnostics": "node scripts/record-diagnostics.mjs",
     "record:highlight": "node scripts/record-highlight.mjs",
