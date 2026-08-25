@@ -4,6 +4,15 @@
 
 ### Added
 
+- **A method whose body travels may have an unannotated block.** R-2 refuses an
+  exported signature without a block annotation because a consumer typechecking
+  a call needs the shape — and a method whose machine code is the caller's hands
+  the consumer its *body* instead, which is the shape. `Kemal.run` is written
+  `def self.run(…, &)`, and the whole of running a kemal app is behind it. The
+  bare `&` is written back as it was, and such a method's parameters travel as
+  the source wrote them for the same reason: what a consumer compiles it from is
+  the body, not the symbol.
+
 - **A route is added to kemal's router through four boundaries.** That call is
   the DSL's own foundation, and it needed a chain of things to cross:
   `add_route` takes a block, so its machine code is the caller's and its body is
