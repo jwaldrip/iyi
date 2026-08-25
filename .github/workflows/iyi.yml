@@ -946,10 +946,9 @@ jobs:
   # rather than a native runtime, because the point of the work is a compiler
   # that runs in a browser and V8 is the engine a browser has.
   #
-  # `WASM_EXCEPTIONS_REQUIRE=1` because the script skips with status 0 when the
-  # toolchain is absent, which is right on a laptop and wrong here: a job that
-  # skips silently is a green check covering nothing. With it set, a missing
-  # wasi-sdk or node fails the job instead.
+  # The script exits non-zero when the toolchain is absent rather than skipping,
+  # so this job needs no environment variable to be honest: a missing wasi-sdk
+  # or node fails it. Exit 0 means `rescue` worked.
   wasm-exceptions:
     needs: build
     runs-on: ubuntu-24.04
@@ -981,7 +980,30 @@ jobs:
           tar -xzf /tmp/wasi-sdk.tar.gz -C /opt/wasi-sdk --strip-components=1
 
       - name: The same program, natively and on wasm32-wasi
-        run: WASI_SDK=/opt/wasi-sdk WASM_EXCEPTIONS_REQUIRE=1 bash bench/wasm_exceptions.sh
+        run: WASI_SDK=/opt/wasi-sdk bash bench/wasm_exceptions.sh
+
+      # The committed record the website reads, rewritten from this run. The
+      # Pages build has no compiler and no sysroot, so it can never make this
+      # file and must not pretend to; if a change to the harness or the compiler
+      # would alter it, that shows up here as a diff rather than as a stale
+      # record on a page.
+      - name: The committed record still says what a fresh run says
+        run: |
+          WASI_SDK=/opt/wasi-sdk \
+            WASM_EXCEPTIONS_RECORD=/tmp/fresh.json bash bench/wasm_exceptions.sh > /dev/null
+          node -e '
+            const fs = require("fs");
+            const drop = (o) => { const c = structuredClone(o); delete c.recorded; delete c.engine; return c; };
+            const a = drop(JSON.parse(fs.readFileSync("site/records/wasm-exceptions.json", "utf8")));
+            const b = drop(JSON.parse(fs.readFileSync("/tmp/fresh.json", "utf8")));
+            if (JSON.stringify(a) !== JSON.stringify(b)) {
+              console.error("site/records/wasm-exceptions.json disagrees with a fresh run.");
+              console.error("committed:", JSON.stringify(a, null, 2));
+              console.error("fresh:    ", JSON.stringify(b, null, 2));
+              process.exit(1);
+            }
+            console.log("the committed record matches this run");
+          '
 
   binary:
     needs: build
