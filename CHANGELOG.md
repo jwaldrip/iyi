@@ -4,6 +4,45 @@
 
 ### Added
 
+- **The collector marks, behind `-Dgc_iyi`.** GC_DESIGN.md Stage 5. Roots go
+  gray through Stage 3's walker, a queue in its own mapping drains, each
+  object's payload is scanned to the bound its size header carries, and what is
+  still white when the queue empties is unreachable. The object header is real:
+  with `P` the pointer a program holds, `P-24` is the size that `realloc`'s
+  contract reads, `P-16` the `type_id`, `P-8` the mark word, and `P` the user
+  data. Colour is bits 0 and 1, so a fresh chunk is white without anyone
+  writing anything, and every write preserves the flag and reserved bits the
+  header promises to a forwarding pointer later.
+
+  The layout table is emitted into the binary and the mark loop does not read
+  it, which is deliberate. Nothing writes an object's `type_id` yet: `malloc`
+  is handed a size and cannot know the type, so that store belongs at the
+  allocation site in codegen and is the next step. Reading a table keyed by an
+  id that is always zero would be a lookup no test could reach. So marking is
+  conservative, which is what Boehm does in production and which errs in the
+  safe direction: a false positive retains a dead object, only a false negative
+  frees a live one.
+
+  `bench/mark_exercise.sh` proves it rather than reporting it: 400 live objects
+  all black with garbage beside them, a three-node cycle and a self-loop that
+  terminate, an interior root that marks the object it points into, and a
+  20,000-object chain fully marked, which is the queue growing and the proof
+  the walk is not the call stack. Both failure proofs are permanent steps:
+  removing the black shading exits 1 with an object left gray, and removing the
+  pointer walk exits 1 with the chain's tail left white.
+
+  Three bugs were found by running it. The colour mask, because neither `~` nor
+  `>>` is defined on `UInt64` here and the literal 2^64-4 produced colour 3,
+  which is not a colour. The idempotence check, which was wrong rather than the
+  code: after one pass everything live is black and only white objects are
+  enqueued, so a second pass finding nothing is the invariant working. And the
+  harness itself, which wrote 20,000 entries into an 8,192-slot mapping and
+  crashed; a test that corrupts memory while testing a collector is worse than
+  no test, so its ledger bounds itself and raises.
+
+  Nothing sweeps yet. This stage decides what is garbage and Stage 6 reclaims
+  it, so `-Dgc_boehm` is still the only way to get memory back.
+
 - **A heap that can hand memory back, behind `-Dgc_iyi`.** GC_DESIGN.md Stage 2:
   size classes to 16 KiB over 16 MiB mmap arenas, per-class free lists, and
   large objects in a mapping of their own released with `munmap`. Two properties
@@ -719,7 +758,7 @@
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 3,339-line library and nothing else. Every other
+  written against iyi's own 3,543-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
@@ -911,6 +950,19 @@
   byte 0, `(?<=(?:a|$))` searched from 0 reports byte 0, the same pattern
   anchored at 0 reports nothing, and the ungrouped `(?<=a|$)` is right, so the
   trigger is the wrapping group rather than the branch lengths.
+
+### Found
+
+- **`UInt32` is barely usable in iyi's own prelude, and its `==` is wrong.**
+  `x = 99_u32; x == 99_u32` answers **false**. There is also no `<`, no `>`, no
+  `to_i64` and no `to_u64` on `UInt32`. Found while checking the collector's
+  header, where the `type_id` is a `u32`: the memory was provably correct, since
+  the containing 64-bit word read back as 99, while a `UInt32` comparison
+  against the literal said otherwise, which sent two checks chasing a defect
+  that was not there. The collector reads that field as part of its 64-bit word
+  and is unaffected, and the exercises now do the same and say why. This
+  predates the collector work and wants a fix of its own rather than a
+  correction buried in a GC stage.
 
 ### Fixed
 

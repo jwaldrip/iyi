@@ -474,11 +474,35 @@ require "./file"
     # O(1) list operations, and pure doubling is what keeps the per-class
     # table to one page; the waste against the request is under half in the
     # worst case, the standing trade for never splitting or coalescing. The
-    # class is the payload: a chunk is the class plus the eight bytes under
-    # the user pointer, which carry the requested size exactly as the bump
-    # allocator's do, so `realloc` still learns how much to copy from the one
-    # place that knows, and every user pointer stays 8-aligned. A request
-    # over 1 MiB is large and gets a mapping of its own.
+    # class is the payload: a chunk is the class plus the twenty-four bytes
+    # under the user pointer, and every user pointer stays 8-aligned. A
+    # request over 1 MiB is large and gets a mapping of its own.
+    #
+    # Those twenty-four bytes are the object header, and GC_DESIGN.md's Stage
+    # 5 is where they became real. With `P` the pointer the program holds:
+    #
+    #     P-24   size       u64   the requested size, `realloc`'s contract
+    #     P-16   type_id    u32   index into the program's layout table
+    #     P-12   pad        u32
+    #     P-8    mark_word  u64   colour, flags, reserved; zero is white
+    #     P      user data
+    #
+    # The eight-byte size is Stage 2's, moved down rather than changed: it is
+    # still the only place that knows how much to copy when `realloc` crosses
+    # a class, and it is still read from under the pointer. The sixteen bytes
+    # above it are `Iyi::Collector::ObjectHeader` laid out exactly as
+    # `src/compiler/iyi/object_header.cr` defines it, because the compiler
+    # emits the type id into that word and this file reads it back.
+    #
+    # `malloc` cannot write the type id: it is handed a size and nothing
+    # else. Codegen writes it at the allocation site, right after the call
+    # returns, for every object allocated as an instance of a type. Every
+    # other allocation — a `Pointer(T).malloc` buffer, a closure's
+    # environment — keeps the zero the allocator leaves there, and zero is
+    # the sentinel for "no layout": the mark loop word-scans such an object
+    # conservatively instead of trusting a map it does not have. Zero is safe
+    # to spend that way because the compiler's numbering gives it to `Nil`
+    # alone, which is never allocated and never has a layout.
     #
     # One arena is one contiguous 16 MiB mmap region holding chunks of a
     # single class. Sixteen rather than thirty-two because address space is
@@ -495,8 +519,8 @@ require "./file"
     # Allocation pops the class's free list; with the list empty it carves
     # the next fresh chunk from the class's fill arena, and with the arena
     # spent it maps another and links it in. Free reads the class back out of
-    # the eight bytes under the pointer and pushes the chunk onto that
-    # class's list. Neither walks the arena list: the list exists to be
+    # the size the header carries and pushes the chunk onto that class's
+    # list. Neither walks the arena list: the list exists to be
     # traversed, not to serve the hot path.
     #
     # The clearing contract is the stage's correctness point, because reuse
@@ -519,16 +543,27 @@ require "./file"
     # those bytes, so their initial value is no one's contract, and a reused
     # chunk may come back dirty on that path on purpose.
     #
-    # `realloc` keeps the eight-byte contract: within one class, growing or
+    # The header's own two words are the exception, and they are cleared on
+    # every reuse whichever path asked. They are not the caller's bytes, they
+    # are the collector's: a stale type id names the layout of whoever held
+    # the chunk last, which is a map read over an object that does not have
+    # that shape, and a stale mark word hands out an object that is already
+    # black and will never be scanned again. Both are false negatives, which
+    # is the one class of error this collector cannot tolerate, so the clear
+    # is unconditional there.
+    #
+    # `realloc` keeps the size-header contract: within one class, growing or
     # shrinking, it returns the same chunk with the header rewritten; across
     # classes it allocates, copies the smaller of the two requested sizes,
     # and frees the old chunk. A null pointer still means allocate, through
     # the clearing path, which is what `GC_realloc`'s null means.
     #
     # Large objects, over the top class, get one mmap region each and a node
-    # on a separate list: the list's next pointer, the mapped length and the
-    # requested size in the twenty-four bytes under the user pointer, with
-    # the requested size in the usual eight so `realloc` reads one layout.
+    # on a separate list: the list's next pointer and the mapped length in
+    # the sixteen bytes under the object header, so the forty bytes below a
+    # large object's user pointer are next, mapped, then the same
+    # size/type_id/mark_word header a class chunk carries. `realloc` and
+    # `free` therefore read one layout for both.
     # Free unlinks the node and releases the mapping with `munmap`, checked
     # the way `__iyi_mmap` is checked, because a release that failed quietly
     # would leak the mapping with the node that named it already gone.
@@ -640,6 +675,19 @@ require "./file"
       DIR_LEN = 4096_u64
       FILL = 17
 
+      # The object header, named once. `HEADER` is what sits between a chunk's
+      # head and the pointer the program holds: the eight-byte size plus the
+      # sixteen-byte `ObjectHeader`. `OFF_TYPE` and `OFF_MARK` are the type id
+      # and the mark word, as offsets from the chunk head, which is the same
+      # thing as P-16 and P-8 read from the other end. `LARGE_USER` is the
+      # distance from a large object's node to its user pointer: the node's
+      # next and mapped words, then the same header.
+      HEADER = 24_u64
+      OFF_SIZE = 0_u64
+      OFF_TYPE = 8_u64
+      OFF_MARK = 16_u64
+      LARGE_USER = 40_u64
+
       OFF_NEXT = 0_u64
       OFF_MAP = 8_u64
       OFF_CHUNK = 16_u64
@@ -684,11 +732,11 @@ require "./file"
       end
 
       def self.alloc(size : UInt64) : Void*
-        Pointer(Void).new(take(size, true) + 8)
+        Pointer(Void).new(take(size, true) + HEADER)
       end
 
       def self.alloc_atomic(size : UInt64) : Void*
-        Pointer(Void).new(take(size, false) + 8)
+        Pointer(Void).new(take(size, false) + HEADER)
       end
 
       def self.take(size : UInt64, clear : Bool) : UInt64
@@ -698,8 +746,13 @@ require "./file"
         head = table[index]
         if head != 0
           table[index] = read64(head)
-          clear_block(head + 8, payload(index)) if clear
-          write64(head, size)
+          # The type id and the mark word go first, on both paths: they are
+          # the collector's words rather than the caller's, and a stale one
+          # is a live object the mark loop misses.
+          write64(head + OFF_TYPE, 0_u64)
+          write64(head + OFF_MARK, 0_u64)
+          clear_block(head + HEADER, payload(index)) if clear
+          write64(head + OFF_SIZE, size)
           return head
         end
         carve(table, size, index)
@@ -714,13 +767,13 @@ require "./file"
         cursor = read64(arena + OFF_CURSOR)
         write64(arena + OFF_CURSOR, cursor + read64(arena + OFF_CHUNK))
         write64(arena + OFF_LEFT, read64(arena + OFF_LEFT) - 1)
-        write64(cursor, size)
+        write64(cursor + OFF_SIZE, size)
         cursor
       end
 
       def self.map_arena(index : Int32) : UInt64
         base = __iyi_mmap(MAP).address
-        chunk = payload(index) + 8
+        chunk = payload(index) + HEADER
         write64(base + OFF_NEXT, @@arenas)
         write64(base + OFF_MAP, MAP)
         write64(base + OFF_CHUNK, chunk)
@@ -731,18 +784,18 @@ require "./file"
       end
 
       def self.take_large(size : UInt64) : UInt64
-        mapped = size + 24
+        mapped = size + LARGE_USER
         base = __iyi_mmap(mapped).address
-        write64(base, @@large)
-        write64(base + 8, mapped)
-        write64(base + 16, size)
+        write64(base + OFF_NEXT, @@large)
+        write64(base + OFF_MAP, mapped)
+        write64(base + 16 + OFF_SIZE, size)
         @@large = base
         base + 16
       end
 
       def self.free(pointer : Void*) : Nil
         return if pointer.address == 0
-        head = pointer.address - 8
+        head = pointer.address - HEADER
         size = read64(head)
         if size <= TOP
           index = class_index(size)
@@ -774,14 +827,17 @@ require "./file"
       end
 
       # Same-chunk growth within a class, allocate-and-copy across one,
-      # because the old size rides in the eight bytes under the pointer,
-      # which is the only place that knows it.
+      # because the old size rides under the object header, which is the only
+      # place that knows it. The new chunk's type id stays zero, which is
+      # right: a reallocated buffer is raw memory whose old map, if it had
+      # one, described a different number of bytes, and zero means the mark
+      # loop word-scans it conservatively instead.
       def self.realloc(pointer : Void*, size : UInt64) : Void*
         return alloc(size) if pointer.address == 0
-        head = pointer.address - 8
+        head = pointer.address - HEADER
         old_size = read64(head)
         if old_size <= TOP && size <= TOP && class_index(old_size) == class_index(size)
-          write64(head, size)
+          write64(head + OFF_SIZE, size)
           return pointer
         end
         new_pointer = alloc(size)
@@ -831,7 +887,7 @@ require "./file"
         address = pointer.address
         node = @@large
         while node != 0
-          if address >= node + 24 && address < node + read64(node + 8)
+          if address >= node + LARGE_USER && address < node + read64(node + OFF_MAP)
             return node
           end
           node = read64(node)
@@ -1317,15 +1373,15 @@ require "./file"
           head = first + (word - first).unsafe_div(chunk) * chunk
           return 0_u64 if head >= IyiHeap.arena_cursor(arena)
           return 0_u64 if free_listed?(head, chunk)
-          return head + 8
+          return head + IyiHeap::HEADER
         end
         node = IyiHeap.containing_large(candidate)
-        return node + 24 if node != 0
+        return node + IyiHeap::LARGE_USER if node != 0
         0_u64
       end
 
       def self.free_listed?(head : UInt64, chunk : UInt64) : Bool
-        node = IyiHeap.directory[IyiHeap.class_index(chunk - 8)]
+        node = IyiHeap.directory[IyiHeap.class_index(chunk - IyiHeap::HEADER)]
         while node != 0
           return true if node == head
           node = IyiHeap.read64(node)
@@ -1375,6 +1431,154 @@ require "./file"
         each_register_root(visit)
         each_stack_root(visit)
         each_global_root(visit)
+      end
+    end
+
+    # iyi: GC_DESIGN.md Stage 5, the mark phase. Roots go gray, the queue
+    # drains, and what is still white when it stops is unreachable. Nothing
+    # sweeps yet: this stage decides what is garbage, Stage 6 reclaims it.
+    #
+    # Colour lives in bits 0 and 1 of the mark word at `base - 8`, matching
+    # `Iyi::Collector::ObjectHeader` in the compiler: 0 white, 1 gray, 2 black,
+    # and a fresh chunk is zero, so a newly allocated object is white without
+    # anyone writing anything. The bits above are left alone on every write,
+    # because they are the flag and reserved bits the header promises to a
+    # forwarding pointer later.
+    #
+    # **Conservative, on purpose, for now.** Every object is word-scanned
+    # between its user pointer and its size, rather than by the pointer
+    # offsets its `TypeLayout` names. The table those offsets live in IS
+    # emitted into the binary (`__iyi_gc_layouts`, `codegen/gc_layouts.cr`),
+    # and this loop does not read it, because nothing writes an object's
+    # `type_id` yet: `malloc` is handed a size and cannot know the type, so
+    # the store belongs at the allocation site in codegen and that is the next
+    # step. Reading a table keyed by an id that is always zero would be a
+    # lookup no test could reach, so it is not written until the id is real.
+    # Conservative marking is not a placeholder either way: it is what Boehm
+    # does in production, and it is safe in the direction that matters, since
+    # a false positive retains a dead object and only a false negative frees a
+    # live one.
+    #
+    # Plain loads and stores rather than compare-and-swap, for the same reason
+    # the fiber registry is absent: one thread. `ObjectHeader`'s CAS helpers
+    # exist and are tested for when Stage 7 has threads to contend, and with a
+    # single mutator a CAS and a load-store pair decide the same thing.
+    class IyiMark
+      WHITE = 0_u64
+      GRAY  = 1_u64
+      BLACK = 2_u64
+      COLOUR = 3_u64
+
+      # The queue is its own mapping, never the heap being marked. A mark
+      # phase that allocated from that heap could carve a chunk, or hand back
+      # one it is about to decide the liveness of, which is a collector
+      # reasoning about memory it is mutating. It starts at one page of words
+      # and doubles into a fresh mapping when it fills; the old mapping is
+      # released, because a mark phase that leaked its own queue every cycle
+      # would outgrow the heap it was collecting.
+      @@queue : UInt64 = 0_u64
+      @@queue_words : UInt64 = 0_u64
+      @@queue_len : UInt64 = 0_u64
+
+      def self.colour(base : UInt64) : UInt64
+        IyiHeap.read64(base - 8_u64) & COLOUR
+      end
+
+      # Set the colour and leave every other bit of the word as it was, because
+      # those are the flag and reserved bits the header promises to a forwarding
+      # pointer later.
+      #
+      # `word - (word & COLOUR)` is how the low two bits get cleared, and the
+      # shape is dictated by what this prelude actually defines on `UInt64`.
+      # Neither `~` nor `>>` is there, and the literal 2^64-4 as a mask invited
+      # a question about whether a literal that large round-trips exactly, which
+      # is not a question worth carrying in the one line that decides an
+      # object's colour. Subtracting the low bits from the word needs only `&`
+      # and `-`, both of which this file already relies on everywhere.
+      def self.recolour(base : UInt64, colour : UInt64) : Nil
+        word = IyiHeap.read64(base - 8_u64)
+        IyiHeap.write64(base - 8_u64, (word - (word & COLOUR)) | colour)
+      end
+
+      def self.queue_reserve : Nil
+        return if @@queue_len < @@queue_words
+        words = @@queue_words == 0 ? 512_u64 : @@queue_words * 2_u64
+        fresh = __iyi_mmap(words * 8_u64).address
+        IyiRoots.fatal("iyi: the mark queue could not grow\n") if fresh == 0
+        moved = 0_u64
+        while moved < @@queue_len
+          IyiHeap.write64(fresh + moved * 8_u64, IyiHeap.read64(@@queue + moved * 8_u64))
+          moved = moved + 1_u64
+        end
+        __iyi_munmap(@@queue, @@queue_words * 8_u64) if @@queue != 0
+        @@queue = fresh
+        @@queue_words = words
+      end
+
+      # Gray it and enqueue it, once. A base that is already gray or black has
+      # been claimed, and enqueuing it again would scan it twice and, on a
+      # cycle, never stop.
+      def self.shade(base : UInt64) : Nil
+        return if base == 0
+        return if colour(base) != WHITE
+        recolour(base, GRAY)
+        queue_reserve
+        IyiHeap.write64(@@queue + @@queue_len * 8_u64, base)
+        @@queue_len = @@queue_len + 1_u64
+      end
+
+      # Scan one object's payload and blacken it. The bound is the size the
+      # header carries, which is the requested size rather than the chunk's:
+      # the bytes past the request belong to the caller only through a later
+      # realloc, and scanning them would read whatever the last owner left.
+      def self.scan(base : UInt64) : Nil
+        size = IyiHeap.read64(base - IyiHeap::HEADER)
+        cursor = base
+        limit = base + size
+        while cursor + 8_u64 <= limit
+          shade(IyiRoots.base_of(IyiHeap.read64(cursor)))
+          cursor = cursor + 8_u64
+        end
+        recolour(base, BLACK)
+      end
+
+      # One mark phase. Returns how many objects came out black, which is the
+      # live count the exercise checks and the number Stage 6 will sweep
+      # against.
+      def self.mark : UInt64
+        @@queue_len = 0_u64
+        IyiRoots.each_root(->(base : UInt64) { shade(base) })
+        black = 0_u64
+        while @@queue_len > 0_u64
+          @@queue_len = @@queue_len - 1_u64
+          base = IyiHeap.read64(@@queue + @@queue_len * 8_u64)
+          scan(base)
+          black = black + 1_u64
+        end
+        black
+      end
+
+      # Put every live object back to white, so a second phase starts from
+      # where the first one did. Stage 6 does this as it sweeps, one walk
+      # instead of two; until then the exercise needs a way to run the phase
+      # more than once.
+      def self.unmark : Nil
+        arena = IyiHeap.first_arena
+        while arena != 0
+          chunk = IyiHeap.arena_chunk(arena)
+          cursor = arena + IyiHeap::HEAD
+          stop = IyiHeap.arena_cursor(arena)
+          while cursor < stop
+            recolour(cursor + IyiHeap::HEADER, WHITE)
+            cursor = cursor + chunk
+          end
+          arena = IyiHeap.arena_next(arena)
+        end
+        node = IyiHeap.first_large
+        while node != 0
+          recolour(node + IyiHeap::LARGE_USER, WHITE)
+          node = IyiHeap.large_next(node)
+        end
       end
     end
   {% elsif flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
