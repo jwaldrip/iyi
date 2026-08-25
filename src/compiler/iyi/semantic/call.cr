@@ -548,7 +548,16 @@ class Iyi::Call
         # writes none, and its result is not what the caller reads anyway. This
         # is the whole of what the artifact buys the front end: the call is
         # checked against the signature and the module's body is never seen.
-        if match.def.iyi_from_artifact?
+        # Unless an expansion was built, in which case this is not the header
+        # any more. A call that leaves out a default argument gets a wrapper
+        # whose body evaluates the default and forwards the whole list to the
+        # symbol — real code, this program's own, and it has to be visited like
+        # any other. Skipping it left `url = {} of String => String` untyped,
+        # which `CleanupTransformer` replaces with a raise: `ParamParser.new(
+        # request)` compiled, linked, and died on `can't execute` the first time
+        # a request reached it. The header itself still has a `Nop` body, which
+        # is what tells the two apart.
+        if match.def.iyi_from_artifact? && typed_def.body.is_a?(Nop)
           # Assigned rather than defaulted, and this is not a tidy-up. `type?`
           # answers `@type || freeze_type`, so a def whose return annotation
           # has been resolved *reads* as typed while `@type` is still nil —

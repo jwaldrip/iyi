@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 92,517 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 92,657 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,505 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -7191,12 +7191,60 @@ Named honestly, so nobody mistakes this draft for complete.
     from itself, so two identical names are two types, and
     `Kemal::ExceptionPage` extends the `exception_page` shard's own root.
 
-    **Where it stands.** `Kemal.run` compiles, links and runs across four
-    boundaries. It stops at run time, in `HTTP::Server.new(config.handlers)`:
-    the array reports `size 8` and `empty? false`, `first` and `last` answer the
-    same object, and `handlers[0]` is out of bounds. That is virtual dispatch
-    landing on the wrong method for `Array(HTTP::Handler)+` — a numbering
-    question, which is `TypeIds`' subject (IV.1g) and not this one's.
+    **Where it stood.** `Kemal.run` compiled, linked and ran across four
+    boundaries, and stopped at run time in
+    `HTTP::Server.new(config.handlers)`: the array reported `size 8` and
+    `empty? false`, `first` and `last` answered the same object, and
+    `handlers[0]` was out of bounds. That was read as virtual dispatch landing
+    on the wrong method for `Array(HTTP::Handler)+`, a numbering question.
+
+    **That reading was wrong, and the measurement that corrected it is the
+    useful part.** Asked to hold one handler in a variable of the module's type,
+    the consumer said `type must be HTTP::Handler, not Kemal::InitHandler`. The
+    ids were fine; the *edge* was missing. `TypeDecl` carried `superclass` and
+    nothing for `include`, so a class that mixed a module in stopped being the
+    module's type on the way out — and where nothing asked directly, a virtual
+    call went to whichever subtype the consumer did know. `class.to_s`
+    answering `HTTP::CompressHandler` for seven handlers in a row is what
+    dispatch against a tree missing its branches looks like.
+
+    So an `include` travels, by `superclass`'s own argument one word further,
+    and it brought the next rule with it: **an abstract `def` is a written
+    signature, and the method answering it may lean on that.** `HTTP::Handler`
+    writes `abstract def call(context : HTTP::Server::Context)`; kemal's
+    handlers write `def call(context) : Nil`, which R-2 refuses for having no
+    type to write down. R-2 says the answer already, for iyi's own impls: the
+    trait wrote the types down, and a consumer types the call from the trait
+    rather than from the implementation. A Crystal module's abstract method is
+    the same sentence.
+
+    **A header has no body, and two places forgot it.** `ParamParser`'s
+    `new` takes `url : Hash(String, String) = {} of String => String`, and a
+    call that omits it gets a wrapper: evaluate the default here, forward the
+    whole list to the symbol. `expand_default_arguments` instead *retained the
+    body* — which it does whenever an argument has both a default and a
+    restriction — and a header's body is `Nop`, so the wrapper computed the
+    default, returned it, and allocated nothing. The wrapper's body was then
+    never typed either, because the fast path for an artifact def keys on the
+    matched def, which is still the header. An untyped node becomes a `raise`
+    in `CleanupTransformer`, so the program compiled, linked, and died on
+    `can't execute` the first time a request reached it. A header's body is
+    `Nop` and a wrapper's is not; that is the whole of the distinction.
+
+    **Where it stands now.** `Kemal.run` runs across four boundaries, kemal
+    binds its port and logs `Kemal is ready to lead`, and a request walks the
+    entire handler chain in kemal's own order — `InitHandler`,
+    `RequestLogHandler`, `HeadRequestHandler`, `ExceptionHandler`,
+    `FilterHandler`, `WebSocketHandler`, `RouteHandler`.
+
+    What stops it is item 12's own open question rather than anything above:
+    **a shard that adds to a type it does not own.** Kemal reopens
+    `HTTP::Server::Context` and gives it `@params`, and a boundary deliberately
+    carries none of the library's types — a consumer under `--crystal` replays
+    the requires and has the library's version, which is what keeps a reopened
+    namespace from being declared twice. So the consumer's `Context` has no
+    such field and the artifact's compiled code reads one. R-3 has no form for
+    this, and inventing one is a decision rather than a collector.
 
 13. ~~**Dependencies and discovery.**~~ **Specified in III.7**: path identity,
     minimal version selection, a manifest and a sums file, source as the primary
