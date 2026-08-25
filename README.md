@@ -94,7 +94,7 @@ that prints each one is named beside it.
 
 **Where it loses**, said here rather than left to be found: a full build of a
 6,912-line program from scratch is 0.24 s against `go build`'s 0.09 s. The
-current compiler reports `0.2.0-dev`. iyi's own prelude has no IO beyond
+current compiler reports `0.3.0-dev`. iyi's own prelude has no IO beyond
 `puts` and no concurrency; `--crystal` supplies Crystal's standard library,
 IO, `require` and the ecosystem. Neither mode supplies a package manager.
 
@@ -733,7 +733,7 @@ An artifact is readable:
 ```console
 $ iyi mod dump mods/kemal/router.iyimod | head -20
 module        kemal/router
-compiler      0.2.0-dev+...
+compiler      0.3.0-dev+...
 ...
 exports
   pub struct Context
@@ -808,7 +808,7 @@ swept through it, Kemal among them. There is still no package manager: point
 R-1 for the required shard, which is compiled from source rather than read as
 declarations.
 
-**Is the syntax stable?** No. The current compiler reports `0.2.0-dev`, and
+**Is the syntax stable?** No. The current compiler reports `0.3.0-dev`, and
 the parts of SPEC.md marked PROPOSED are exactly the parts that will move.
 
 **Which targets are checked?** CI cross-compiles and audits the emitted object
