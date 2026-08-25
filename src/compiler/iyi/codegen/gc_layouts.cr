@@ -61,7 +61,13 @@ class Iyi::CodeGenVisitor
     end
     words.concat offset_words
 
-    initializer = @main_llvm_typer.llvm_context.int64.const_array(words.map { |word| int64(word.to_i64) })
+    # `@main_llvm_context` rather than the typer's: the typer has no context
+    # accessor, and codegen already keeps the main module's context in that
+    # ivar for exactly this reason (a global built in `@llvm_context` and
+    # linked into `@main_mod` is two distinct types to LLVM even when the
+    # dumped IR is identical, which the note beside `main_llvm_context_size_t`
+    # records the hard way).
+    initializer = @main_llvm_context.int64.const_array(words.map { |word| int64(word.to_i64) })
     table = @main_mod.globals.add(initializer.type, "#{GC_LAYOUTS_NAME}:table")
     table.linkage = LLVM::Linkage::Internal if @single_module
     table.global_constant = true
