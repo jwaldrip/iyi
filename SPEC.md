@@ -6525,6 +6525,26 @@ Named honestly, so nobody mistakes this draft for complete.
     > > type and the field that did it now, because a count says three and a
     > > name says which three.
     > >
+    > > **Carrying more of what a travelling body sees was tried and taken
+    > > back.** With the fields in place the rest of it follows: a private
+    > > method travels as `private def`, with no verdict — R-2 asks its question
+    > > of a surface a consumer writes against and this is not one — with its
+    > > parameters as the source wrote them and its own body, and a generic's
+    > > methods travel the same way, since the consumer compiles them and reads
+    > > their answer for itself. Each step worked and named the next: the
+    > > private body, then `Radix::Tree#add` which had no declaration because a
+    > > generic's methods were dropped for want of an inferred return, then
+    > > `Node(T).new` which had none because a generic's `new` never travels and
+    > > its `initialize` was not carried in its place.
+    > >
+    > > It stopped at `Node(T).new("", placeholder: true)`: the `initialize`
+    > > that reached the far side had **no parameters at all**, and the chain
+    > > gate went from green to `no parameter named 'placeholder'`. So the whole
+    > > of it was taken back rather than half-landed. What it establishes is
+    > > that the question is one question and the pieces of the answer are
+    > > known — what remains is a `params` that carries defaults and named
+    > > arguments, which is where it starts again.
+    > >
     > > Passing it opened one more, and it was a rewrite rather than a lookup.
     > > A boundary rewrites references to another boundary's types so the
     > > consumer reads them as it will see them, and the map is keyed on the
