@@ -186,6 +186,13 @@ class Iyi::CodeGenVisitor
     owner = class_var.owner
     case owner
     when VirtualType
+      # iyi: nothing is recorded here, and SPEC.md IV.2 says why. A read
+      # through a virtual owner goes through a main-module function that
+      # dispatches on the receiver's type id, and the main module never
+      # travels — so a consumer owes a function it is never told about. No
+      # measurement has reached it: the one that looked like it turned out to
+      # be a hash keyed on a name, and a rule with nothing behind it is worse
+      # than a gap that is written down.
       return read_virtual_class_var_ptr(class_var, owner)
     when VirtualMetaclassType
       return read_virtual_metaclass_class_var_ptr(class_var, owner)
@@ -233,11 +240,22 @@ class Iyi::CodeGenVisitor
     return if @program.iyi_exported_owners.empty?
     return if @llvm_mod == @main_mod
 
-    unit = (@program.iyi_unit_class_vars[@llvm_mod.name] ||= {} of MetaTypeVar => Bool)
+    unit = (@program.iyi_unit_class_vars[@llvm_mod.name] ||= {} of String => Bool)
+    name = iyi_class_var_key(class_var)
 
     # `||=` rather than `=`: one unit may reach the same variable both ways,
     # and the lazy reference is the one with a symbol behind it.
-    unit[class_var] = lazy || unit[class_var]? || false
+    unit[name] = lazy || unit[name]? || false
+  end
+
+  # iyi: which unit reads a class variable through a virtual owner (SPEC.md
+  # IV.2). The third of the three ways `IyiMod::ClassVarRef` records.
+  # `Owner::@@name`, which is what tells one class variable from another.
+  #
+  # The owner devirtualised, because `ASN1::BER+` is how a virtual type prints
+  # and the name a consumer looks a variable up by is the class's.
+  private def iyi_class_var_key(class_var : MetaTypeVar) : String
+    "#{class_var.owner.devirtualize}::#{class_var.name}"
   end
 
   def get_class_var_global(class_var)

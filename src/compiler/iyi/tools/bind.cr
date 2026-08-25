@@ -226,6 +226,8 @@ module Iyi
     @@bound_module = {} of String => String
     @@bound_used = Set(String).new
     @@bound = bound_dir ? bound_names(program, bound_dir, io) : Set(String).new
+    @@library_names = Set(String).new
+    @@self_shadowed = Set(String).new
 
     methods = [] of BindMethod
     collect_bind program.types?, root, methods
@@ -608,6 +610,22 @@ module Iyi
     # And what the shard added to types it does not own.
     reopened = reopened_types program, root
 
+    # Which are names the consumer can write, and the reason this is here
+    # rather than further down. `nameable?` asks whether an iyi program can
+    # name a type, and answers from the prelude, the shard's own root and the
+    # boundaries beside it — three sources, and this is a fourth. `openssl_ext`
+    # declares `struct EvpPKey` inside `lib LibCrypto`, Crystal's own
+    # `lib_crypto.cr` does not, and `OpenSSL::PKey::PKey`'s `@pkey` field names
+    # it. Counted as unnameable, the class crossed as a *handle* — no fields,
+    # and `new` dropped with them, which is what keeps a handle honest — and
+    # the consumer could not build a key: `expected argument #1 to
+    # 'OpenSSL::PKey::RSA.new' to be IO, Int32 or String, not Bool`.
+    reopened.each do |declaration|
+      names = Set(String).new
+      collect_known declaration, "", names
+      names.each { |name| @@crystal_types << name.lchop("::") }
+    end
+
     # The copy the consumer reads. The one above is the keep file's, and it is
     # written in the shard's own names: `Kemal::Router` is `Router` on the far
     # side and `Router` in a file compiled against the shard is nothing at all.
@@ -728,6 +746,11 @@ module Iyi
         {name, map_names(type), map_names(value)}
       end
     end
+
+    # Last, once every name is written the way the consumer will read it: a
+    # declaration inside a type refers to that type absolutely.
+    # Last, once every name is written the way the consumer will read it.
+    carried_types = carried_types.map { |declaration| qualify_self_references declaration, @@self_shadowed }
 
     artifact = IyiMod::Artifact.new(
       module_name: iyi_module_name(root),
@@ -1017,6 +1040,23 @@ module Iyi
   # and calls through it, and never makes one.
   @@handle_types = [] of String
 
+  # The names under the shard's namespace that belong to the *library*, not to
+  # the shard.
+  #
+  # A shard that reopens `OpenSSL` shares the namespace with Crystal's own
+  # `OpenSSL`, so a name starting `OpenSSL::` is not necessarily one this
+  # artifact carries — and it does not have to be, because a consumer under
+  # `--crystal` replays the requires and has it. `prune_dangling` asks whether
+  # everything a declaration names travelled, and without this it read
+  # `OpenSSL::BIO` as a dangling name: `GETS_BIO`'s `@bridge_bio` field was
+  # dropped, and dropping every field of a class drops its `new` with them, so
+  # a consumer could not build the type openssl_ext reads a PEM through.
+  @@library_names = Set(String).new
+
+  # The types that hold a constant of their own name, by simple name. See
+  # `qualify_self_references`.
+  @@self_shadowed = Set(String).new
+
   # The namespaces skipped whole, with whatever they hold.
   @@nested_namespaces = [] of String
 
@@ -1081,6 +1121,17 @@ module Iyi
     end
   end
 
+  # Whether this name is the library's rather than this artifact's to declare.
+  #
+  # A prefix match as well as an exact one: a library namespace is skipped
+  # whole, so `OpenSSL::SSL` is what was recorded and `OpenSSL::SSL::Context`
+  # is what a field names. Everything under a name the library owns is the
+  # library's too.
+  private def self.library_name?(name : String) : Bool
+    return true if @@library_names.includes?(name)
+    @@library_names.any? { |known| name.starts_with?("#{known}::") }
+  end
+
   private def self.prune_declaration(declaration : IyiMod::TypeDecl, prefix : String,
                                      known : Set(String), root : String) : IyiMod::TypeDecl?
     resolvable = ->(text : String) do
@@ -1088,6 +1139,7 @@ module Iyi
         part = match[0].not_nil!
         next true if part == "class"
         next true unless part == root || part.starts_with?("#{root}::")
+        next true if library_name?(part)
         known.includes?(part)
       end
     end
@@ -1165,7 +1217,10 @@ module Iyi
       # declaring one a second time is `superclass mismatch for class
       # OpenSSL::SSL::Error`, an artifact and a `require` disagreeing about the
       # same name.
-      next if library_type?(type, library)
+      if library_type?(type, library)
+        @@library_names << type.to_s
+        next
+      end
 
       declaration = declaration_for name, type, by_owner, root
       declarations << declaration if declaration
@@ -1256,6 +1311,8 @@ module Iyi
       @@nested_namespaces << name
       return nil
     end
+
+    @@self_shadowed << name if type.types?.try(&.[]?(name)).is_a?(Const)
 
     begin
       signatures = collect_signatures(type, name, by_owner, root)
@@ -1385,9 +1442,16 @@ module Iyi
     # and the parameter's own name is what stands where the type would —
     # `uninitialized args`, from a file nobody wrote, which takes the whole
     # artifact down at fill time.
-    return counter if signature.parameters.any? do |parameter|
-                        !parameter.includes?(" : ") && parameter != "*"
-                      end
+    return counter if signature.parameters.any? { |parameter| !parameter.includes?(" : ") }
+
+    # Nor is a splat, for the reason directly above and one more.
+    #
+    # `*args` and `**options` are a family rather than a signature: what a
+    # caller passes is a tuple made at the call site and the tuple is in the
+    # symbol, so there is no single one to keep alive — the body travels
+    # instead. A bare `*` is not even a parameter, it marks what follows as
+    # named-only, and it reached this file as a type: `a52 = uninitialized *`.
+    return counter if signature.parameters.any? &.starts_with?('*')
 
     # The type only. A parameter is written `tag : String = "none"` now that
     # defaults travel, and `uninitialized String = "none"` is not a thing —
@@ -1395,6 +1459,18 @@ module Iyi
     declared = signature.parameters.map do |parameter|
       parameter.split(" = ").first.split(" : ").last
     end
+    # Nor a parameter whose type holds an `_`.
+    #
+    # `_` is the *absence* of a type rather than a type: `OptionParser -> _` is
+    # a proc whose output is whatever the proc returns, and it is written that
+    # way because nobody wrote it. `uninitialized` of one is `can't use
+    # underscore as generic type argument`, and the answer is the block guard's
+    # answer — a signature nobody can name a value of is a signature whose body
+    # travels, and there is no symbol here to keep alive.
+    return counter if declared.any? do |type|
+                        Rx.scan(type, BIND_TYPE_NAME).any? { |match| match[0] == "_" }
+                      end
+
     shapes = declared.map { |type| [type] + union_members(type) }
 
     combinations = shapes.reduce([[] of String]) do |carried, options|
@@ -1598,6 +1674,28 @@ module Iyi
       receiver = "t#{counter}"
       counter += 1
       io << "  " << receiver << " = uninitialized " << qualified << "\n"
+
+      # And the class side, through a *value* of the metaclass rather than
+      # through the class's name.
+      #
+      # The name is the concrete metaclass and a value of it is the virtual
+      # one, and which of the two a call has is in the symbol: `BinData::
+      # VerificationException.to_s(io)` emits `*BinData::VerificationException::
+      # to_s<IO+>` where a consumer holding the class asks for `*BinData::
+      # VerificationException+@BinData::VerificationException::to_s<IO+>`. A
+      # consumer holds it virtually because that is what holding a class in a
+      # variable is — `io << exception.class`, through `Exception+.class` — and
+      # `iyi_artifact_self_type` writes the virtual form for exactly that
+      # reason. So this file has to emit the form that is asked for.
+      #
+      # `uninitialized T.class` is how a value of a metaclass is named. For a
+      # class nothing inherits from the two forms are the same type and this
+      # reads as a no-op, which is why it took a shard with an exception
+      # hierarchy to find it.
+      metaclass = "c#{counter}"
+      counter += 1
+      io << "  " << metaclass << " = uninitialized " << qualified << ".class\n"
+
       declaration.methods.each do |signature|
         # `initialize` is not called here. It is in the declarations only where
         # `new` could not travel — a block-taking one — and then its body
@@ -1617,7 +1715,23 @@ module Iyi
         # travelling body calls it is what emitted it.
         next if signature.visibility == "private"
 
-        target = signature.receiver.empty? ? receiver : qualified
+        # `new` through the class's *name*, and everything else on the class
+        # side through the metaclass value.
+        #
+        # A virtual metaclass dispatches `new` to every subclass, and a
+        # subclass builds itself its own way: `Shard::Derived#initialize` takes
+        # two arguments where its base takes one, and `bench/bind_roundtrip.sh`
+        # said `wrong number of arguments (given 1, expected 2)`. A consumer
+        # calling `new` names the class it wants, so the symbol it asks for is
+        # the one this spelling emits.
+        target =
+          if signature.receiver.empty?
+            receiver
+          elsif signature.name == "new"
+            qualified
+          else
+            metaclass
+          end
         counter = keep_call(io, target, signature, counter)
       end
     end
@@ -2223,7 +2337,10 @@ module Iyi
         # constant it cannot rebuild is better left undefined than defined wrong.
         answer = type.value.type?.try(&.devirtualize.to_s)
         next if answer && !nameable?(answer, root)
-        lines << "#{prefix}#{name} = #{type.value}"
+        written = type.iyi_value_source
+        # A constant with none is one nobody wrote — see `Const#iyi_value_source`
+        # — and the node is the best answer left.
+        lines << "#{prefix}#{name} = #{written.empty? ? type.value.to_s : written}"
       when NamedType
         next if type.is_a?(GenericType)
         next if type.private?
@@ -2269,9 +2386,17 @@ module Iyi
         # takes the whole fill build with it — every declaration on disk and no
         # machine code anywhere.
         next if method.uncompilable
-        next unless method.storable
+        # `storable` and the names below ask what a method *called by symbol*
+        # needs, and one whose body travels is not called by symbol — the
+        # consumer compiles it. The module-function collector has read them
+        # this way since `Kemal.run` crossed; this one still read them as
+        # unconditional, so `OpenSSL::PKey::RSA.new(encoded : String,
+        # passphrase = nil)` was dropped for `passphrase` and a consumer got
+        # the one overload that was left: `expected argument #1 to
+        # 'OpenSSL::PKey::RSA.new' to be Int32, not String`.
+        next unless method.storable || method.body_answers
         next unless method.callable?
-        next unless method.signature_types.all? { |t| nameable?(t, root) }
+        next unless method.body_answers || method.signature_types.all? { |t| nameable?(t, root) }
 
         # A block-taking method's machine code is the caller's, and IV.1g is
         # explicit that this is a question about a `def` rather than about a
@@ -2298,7 +2423,11 @@ module Iyi
         # receiver — and that is not source anybody can parse back. The
         # consumer makes its own from the `initialize` beside this, which is
         # what `new` has always done here.
-        next if carries_body && method.name == "new"
+        # A *synthesised* one, which is what an empty receiver says: the
+        # compiler makes it from `initialize` and gives it no receiver of its
+        # own. One a shard wrote itself is a method like any other, and
+        # `openssl_ext` writes three.
+        next if carries_body && method.name == "new" && method.receiver.empty?
         body = method.body
         next if carries_body && (body.nil? || body.empty?)
 
@@ -2351,20 +2480,40 @@ module Iyi
   private def self.fallback_initialize(type : Type, name : String, by_owner,
                                        carried : Array(IyiMod::Signature)) : Array(IyiMod::Signature)
     added = [] of IyiMod::Signature
-    return added if carried.any? { |signature| signature.name == "new" }
-    return added if carried.any? { |signature| signature.name == "initialize" }
+
+    # By *shape*, not by the name alone.
+    #
+    # "Only where `new` is absent" was the rule, and it held while the only
+    # `new` was the one the compiler makes: one `initialize`, one `new`, and
+    # having either meant having both. A shard writes its own. `openssl_ext`
+    # writes two `def self.new` on `OpenSSL::PKey::PKey` and two `initialize`
+    # beside them, and the `new` made from `initialize(is_private : Bool)` is a
+    # fourth overload nobody wrote — refused here, because an abstract class
+    # cannot be allocated and asking what it answers gets `no type`. The name
+    # test saw two `new`s and concluded the type was covered; `RSA.new(priv)`,
+    # in a body that travels, met three overloads that take a String, an IO and
+    # an Int32.
+    #
+    # What "declaring both is two ways to build one type" was protecting
+    # against is a `new` and an `initialize` of the *same parameters*, which is
+    # what this asks instead.
+    covered = carried.select { |signature| signature.name == "new" || signature.name == "initialize" }
+      .map { |signature| signature.parameters.join(", ") }
+      .to_set
 
     by_owner[type.to_s]?.try &.each do |method|
       next unless method.name == "initialize"
       next if method.uncompilable
       body = method.body
       next if body.nil? || body.empty?
-      next unless added.empty?
+
+      parameters = method.params.map { |(argument, restriction, default)| bind_parameter(argument, restriction, default) }
+      next unless covered.add?(parameters.join(", "))
 
       signature = IyiMod::Signature.new(
         name: "initialize",
         receiver: "",
-        parameters: method.params.map { |(argument, restriction, default)| bind_parameter(argument, restriction, default) },
+        parameters: parameters,
         block_parameter: method.written_block,
         return_type: "",
         free_variables: [] of String,
@@ -2419,6 +2568,14 @@ module Iyi
 
     # The bodies already going over, which is where the search starts.
     reach = carried.compact_map { |signature| @@mono_bodies[IyiMod.mono_body_key(name, signature)]? }
+    # And a constant's value, which is a travelling body like any other: it
+    # crosses as the source that makes it, the consumer runs that source, and
+    # Crystal runs it with the constant's own type as the scope. So a name it
+    # calls is a name the consumer has to have. `openssl_ext` writes
+    # `GETS_BIO = begin ... io_for(bio) ... end` inside `OpenSSL::GETS_BIO`,
+    # and `io_for` is `private def self.`; the consumer said `undefined method
+    # 'io_for' for OpenSSL::GETS_BIO.class`.
+    reach.concat own_constant_sources(type)
     return added if reach.empty?
 
     taken = Set(String).new
@@ -2454,6 +2611,63 @@ module Iyi
     end
 
     added
+  end
+
+  # The source of the constants this type holds itself.
+  #
+  # Its own only, and not the compiler's: a `$Regex:0` is a name nobody wrote
+  # and its body is not this shard's to answer for. What this is for is the
+  # search above, so it errs the same way — a value that never travels costs a
+  # declaration nobody reads, and one that does and cannot call what it calls
+  # stops the consumer.
+  private def self.own_constant_sources(type : Type) : Array(String)
+    sources = [] of String
+    return sources unless type.is_a?(NamedType)
+
+    type.types?.try &.each do |name, inner|
+      next unless inner.is_a?(Const)
+      next if name.starts_with?('$')
+      written = inner.iyi_value_source
+      sources << (written.empty? ? inner.value.to_s : written)
+    end
+    sources
+  end
+
+  # A `new` whose return type is the class it makes, where the shard has put
+  # something else of that name inside it.
+  #
+  # `openssl_ext` writes `GETS_BIO = ...` inside `class OpenSSL::GETS_BIO`, so
+  # inside that class the name `GETS_BIO` is the constant: Crystal's lookup
+  # reads the type's own scope first and finds it there. The shard never trips
+  # over this because it never writes the name — Crystal infers what `new`
+  # returns. This file has to write it, R-2 asks for it, and what it wrote as
+  # the answer read as the constant: `OpenSSL::GETS_BIO::GETS_BIO is not a
+  # type, it is a constant`.
+  #
+  # `self` is the spelling that has no such problem, and on a metaclass it is
+  # exactly what `new` answers. Absolute spelling is not available: `::` leaves
+  # the module wrapper entirely — that is what `lib ::LibCrypto` uses it for —
+  # and the wrapper's own name is not one a type path can start with.
+  #
+  # `new` only, and only where the whole return type is the name. A `def
+  # self.make : Foo` that a subclass inherits answers `Foo` where `self` would
+  # answer the subclass, and an `Array(Foo)` has no `self` to write. Both are
+  # real and neither has been measured; a rule that covers what was measured is
+  # the one worth having.
+  private def self.qualify_self_references(declaration : IyiMod::TypeDecl,
+                                           shadowed : Set(String)) : IyiMod::TypeDecl
+    name = declaration.name
+    nested = declaration.types.map { |inner| qualify_self_references inner, shadowed }
+    return declaration.copy_with(types: nested) unless shadowed.includes?(name)
+
+    declaration.copy_with(
+      methods: declaration.methods.map do |signature|
+        next signature unless signature.name == "new" && signature.receiver == "self"
+        next signature unless signature.return_type == name
+        signature.copy_with(return_type: "self")
+      end,
+      types: nested,
+    )
   end
 
   # *text* with every whole-word *name* replaced by *replacement*.
@@ -2760,11 +2974,19 @@ module Iyi
     return nil unless files.any? &.starts_with?(directory)
 
     nested = [] of IyiMod::TypeDecl
+    constants = [] of {String, String}
     type.types?.try &.each do |simple, member|
       next unless member.is_a?(NamedType)
       next unless written_in(member.locations.try(&.first?)).try &.starts_with?(directory)
 
       case member
+      when Const
+        # A `lib` holds constants too, and a body that travels reads them:
+        # `LibCrypto.evp_pkey_assign(pkey, LibCrypto::EVP_PKEY_RSA, …)` is in
+        # `openssl_ext`'s `RSA.new`. `6` where the shard wrote `6` — see
+        # `Const#iyi_value_source` for why the node is not that by now.
+        written = member.iyi_value_source
+        constants << {simple, written.empty? ? member.value.to_s : written}
       when TypeDefType
         nested << IyiMod::TypeDecl.new(
           name: simple, kind: "type",
@@ -2772,6 +2994,26 @@ module Iyi
           supertraits: [] of String, fields: [] of {String, String},
           methods: [] of IyiMod::Signature, visibility: "",
           value: member.typedef.to_s,
+        )
+      when EnumType
+        # A `lib` takes an `enum` too, and a `fun` beside it takes one as a
+        # parameter: `EC_POINT_point2oct(… form : PointConversionForm …)`. Not
+        # `pub` and not `private` either, like everything else in here: a `lib`
+        # is not a surface, and neither word is one its body takes.
+        nested << enum_declaration(simple, member, true).copy_with(visibility: "")
+      when AliasType
+        # A `lib` takes both spellings and they are different things: `type` is
+        # a distinct type with the same layout, `alias` is another name for the
+        # same one. `openssl_ext` writes `alias PasswordCallback = (LibC::Char*,
+        # LibC::Int, LibC::Int, Void*) -> LibC::Int` and calls it by name from a
+        # body that travels, so a consumer without it said `undefined constant
+        # LibCrypto::PasswordCallback`.
+        nested << IyiMod::TypeDecl.new(
+          name: simple, kind: "alias",
+          type_parameters: [] of String, assoc_types: [] of String,
+          supertraits: [] of String, fields: [] of {String, String},
+          methods: [] of IyiMod::Signature, visibility: "",
+          value: member.aliased_type.to_s,
         )
       else
         fields = [] of {String, String}
@@ -2792,7 +3034,8 @@ module Iyi
       end
     end
 
-    return nil if nested.empty?
+    funs = collect_funs(type, directory)
+    return nil if nested.empty? && funs.empty? && constants.empty?
 
     IyiMod::TypeDecl.new(
       name: "::#{type}",
@@ -2806,7 +3049,66 @@ module Iyi
       # is the library's besides. It is here so the types can be named.
       visibility: "",
       types: nested,
+      funs: funs,
+      members: constants,
     )
+  end
+
+  # The `fun`s a shard added to a `lib`, as the lines that declare them.
+  #
+  # Written out rather than translated: see `IyiMod::TypeDecl#funs` for why
+  # they travel and why they travel as text. The restrictions are the shard's
+  # own words, which is right — they are rendered back inside `lib
+  # ::LibCrypto`, where `Bio*` means what it meant where it was written.
+  private def self.collect_funs(type : NamedType, directory : String) : Array(String)
+    funs = [] of String
+    return funs unless type.responds_to?(:defs)
+
+    type.defs.try &.each_value do |overloads|
+      overloads.each do |entry|
+        a_def = entry.def
+        next unless a_def.is_a?(External)
+        # An external *variable* — libc's `$errno` — is not a `fun` and does
+        # not render as one.
+        next if a_def.external_var?
+        next unless written_in(a_def.location).try &.starts_with?(directory)
+
+        funs << render_fun(a_def)
+      end
+    end
+
+    funs.sort!
+    funs
+  end
+
+  # `fun bn_new = BN_new : Bignum*`, as Crystal writes one.
+  #
+  # The Crystal name is dropped where it is the C name already, which is what
+  # the shard wrote and the only spelling with nothing redundant in it.
+  private def self.render_fun(a_def : External) : String
+    String.build do |io|
+      io << "fun " << a_def.name
+      io << " = " << a_def.real_name unless a_def.name == a_def.real_name
+
+      unless a_def.args.empty? && !a_def.varargs?
+        io << '('
+        a_def.args.join(io, ", ") do |argument, inner|
+          # The restriction where the node still has one, and the type it
+          # resolved to where it does not. An `External`'s args come out of
+          # semantic typed and, for some of them, stripped: `fun asn1_dup =
+          # ASN1_dup(i2d : Void*, ...)` reached this with three empty
+          # restrictions and rendered `(i2d : , ...)`.
+          written = argument.restriction || argument.type?
+          inner << argument.name << " : " << written
+        end
+        io << ", ..." if a_def.varargs?
+        io << ')'
+      end
+
+      if return_type = a_def.return_type
+        io << " : " << return_type
+      end
+    end
   end
 
   # One library type, with only what the shard put in it.
@@ -3132,6 +3434,7 @@ module Iyi
       # parameter at all, and which is how Crystal's own libraries are written
       # far more often than the annotated form.
       body_answers: setter_body?(a_def) || delegating_overload?(a_def) ||
+                    caller_shaped?(a_def) ||
                     (refused == "block returns `_`" ||
                      refused == "block is not annotated" ||
                      refused == "yields without a block parameter") && !a_def.abstract? &&
@@ -3142,10 +3445,7 @@ module Iyi
       # does. Asking it of the arguments alone was half the question.
       storable: a_def.args.all? { |arg| storable_restriction?(owner, arg.restriction) } &&
                 (a_def.return_type.nil? || storable_restriction?(owner, a_def.return_type)),
-      params: a_def.args.map do |arg|
-        {arg.name, resolve_restriction(owner, arg.restriction) || "?",
-         arg.default_value.try(&.to_s) || ""}
-      end,
+      params: bind_params(owner, a_def),
       returns: written,
       checked: checked,
       produced: produced,
@@ -3161,6 +3461,58 @@ module Iyi
         argument.restriction ? "&#{argument}" : "&#{argument.name}"
       end || (a_def.block_arity ? "&" : ""),
     )
+  end
+
+  # Whether what this method *is* depends on the caller, so that its body is
+  # the only honest declaration of it.
+  #
+  # The same question a block asks, asked of the arguments. A parameter with no
+  # type, a splat, a double splat: each of them says the shard did not write one
+  # signature, it wrote a family, and Crystal compiles a member of that family
+  # per call site with the call site's types in the symbol. So there is no one
+  # symbol in the artifact for a consumer to link against, and a declaration
+  # without the body is a promise nothing can keep — which is what
+  # `bench/bind_roundtrip.sh` has said about blocks since blocks first crossed.
+  #
+  # `JWT.encode(payload, key : String, algorithm : Algorithm, **header_keys) :
+  # String` is the method this is about: the whole of making a token is behind
+  # it, `payload` is whatever the caller has, and `**header_keys` is whatever
+  # else they thought to name. R-2 refused it and the report asked a human to
+  # annotate `payload` — but there is no annotation to write. The type is the
+  # caller's.
+  #
+  # A body that is not there cannot travel, and an abstract def has none by
+  # definition.
+  private def self.caller_shaped?(a_def : Def) : Bool
+    return false if a_def.abstract?
+    body = a_def.body
+    return false if body.nil? || body.is_a?(Nop)
+
+    a_def.args.any? { |arg| arg.restriction.nil? } ||
+      !a_def.splat_index.nil? || !a_def.double_splat.nil?
+  end
+
+  # The parameters as the source wrote them, stars and all.
+  #
+  # `*args` and `**options` are not in `Def#args` the way they read: the splat
+  # is an ordinary entry the index points at, and the double splat is beside
+  # the list rather than in it. Written back without their stars they are two
+  # plain parameters, which is a different method — it takes a different set of
+  # calls, and `JWT.encode(payload, key, algorithm)` with `**header_keys`
+  # flattened away refuses the call the README makes.
+  private def self.bind_params(owner : Type, a_def : Def) : Array({String, String, String})
+    params = a_def.args.map_with_index do |arg, index|
+      name = index == a_def.splat_index ? "*#{arg.name}" : arg.name
+      {name, resolve_restriction(owner, arg.restriction) || "?",
+       arg.default_value.try(&.to_s) || ""}
+    end
+
+    if double_splat = a_def.double_splat
+      params << {"**#{double_splat.name}",
+                 resolve_restriction(owner, double_splat.restriction) || "?", ""}
+    end
+
+    params
   end
 
   # Whether this overload's whole job is to call another of the same name.

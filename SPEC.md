@@ -777,9 +777,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 93,062 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 93,494 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
-| Specs | 21,146 lines | 8,505 for iyi |
+| Specs | 21,146 lines | 8,515 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |
@@ -6374,6 +6374,11 @@ Named honestly, so nobody mistakes this draft for complete.
     > > different source. R-3 says iyi has no open classes, so there is no form
     > > for it to arrive in, and that is the wall `jwt` stands at.
     > >
+    > > That wall has since been crossed — `Reopened` is the form, `jwt` signs
+    > > and verifies a token through four boundaries, and `bench/jwt_signs.sh`
+    > > holds it. The reading above is left as it was because the *shape* it
+    > > names is the shape the answer took.
+    > >
     > > **What it does not do any more is fail quietly.** The artifact left on
     > > disk has every declaration and no machine code, which read as a boundary
     > > promising a hundred methods and defining none — and it is
@@ -7309,9 +7314,116 @@ Named honestly, so nobody mistakes this draft for complete.
     nowhere else to put them, and wrong for a class that is already carrying
     them.
 
-    `jwt` stops one step further on: `ASN1::BER`'s own `@@bit_fields` crosses
-    without the initialiser its superclass's macro gives it, and a non-nilable
-    class variable must have one.
+    **`jwt` works, and `bench/jwt_signs.sh` holds it.** A program that imports
+    `j_w_t` encodes a token, decodes it
+    back and reads the header out of it, through four boundaries —
+    `openssl_ext`, `bindata`, `bindata/asn1`, `jwt` — and answers what the same
+    program answers from source. The gate builds both arms and compares them
+    rather than trusting either, which matters more here than it does for
+    kemal: a token is a signature over bytes, so a boundary that dropped a
+    field or numbered a type differently does not crash, it signs something
+    else. That is the second real shard to cross, and it
+    is a different kind of shard from kemal: it is C-linked, it is written on
+    macros that write classes, and it has an exception hierarchy. Eleven
+    findings came out of it and each is measured below.
+
+    **A body is what a method is, where the caller decides what the method is.**
+    That was already the rule for a block whose type nobody wrote; the same
+    question, asked of the arguments, is a parameter with no restriction, a
+    splat, or a double splat. `JWT.encode(payload, key : String, algorithm :
+    Algorithm, **header_keys) : String` is the whole of making a token, and R-2
+    refused it and asked a human to annotate `payload` — but there is no
+    annotation to write. The type is the caller's. Crystal compiles a member of
+    that family per call site with the call site's types in the symbol, so
+    there is no single symbol in the artifact to link against, and the body is
+    the only honest declaration. The keep file learned the other half of the
+    same rule: a signature with a splat, or a parameter whose type holds an
+    `_`, is one there is no value to make and no symbol to keep alive.
+
+    Two collectors had drifted apart, and the type side was the one behind. The
+    module-function collector had read `storable` and "can this name be
+    written" as questions about a method *called by symbol* since `Kemal.run`
+    crossed; the type collector still read them as unconditional, so
+    `OpenSSL::PKey::RSA.new(encoded : String, passphrase = nil)` was dropped
+    over `passphrase` and a consumer got the one overload left: `expected
+    argument #1 to 'OpenSSL::PKey::RSA.new' to be Int32, not String`. And a
+    body-carrying `new` does not travel *because it is synthesised* — an empty
+    receiver is what says so — where `openssl_ext` writes three of its own.
+
+    **`initialize` travels where the `new` made from it did not, and "did not"
+    is a question about a shape.** "Only where `new` is absent" held while the
+    only `new` was the compiler's: one `initialize`, one `new`, and having
+    either meant having both. `openssl_ext` writes two `def self.new` on
+    `OpenSSL::PKey::PKey` and two `initialize` beside them, and the `new` made
+    from `initialize(is_private : Bool)` is a fourth overload nobody wrote —
+    refused, because an abstract class cannot be allocated. The name test saw
+    two `new`s and called the type covered.
+
+    **A constant's value is code, and code has a scope.** Two findings, one
+    each side of it. The value travels as source, and the source it carries can
+    call what R-2 held back: `openssl_ext` writes `GETS_BIO = begin … io_for(bio)
+    … end` inside `class OpenSSL::GETS_BIO` and `io_for` is `private def self.`.
+    The private-callee search already existed for travelling bodies — a
+    constant's initialiser is one, and seeding it with them is the whole fix.
+    And the value has to be the value as *written*: `CleanupTransformer`
+    replaces an array literal with what it expands to, so `bindata`'s
+    `KLASS_NAME = [ASN1::BER::ExtendedIdentifier]` reached the format as five
+    statements over three temporaries and the consumer said `undefined local
+    variable or method '__temp_829'`. That is the same correction a class
+    variable's initialiser already carries, one field over.
+
+    **What a shard adds to a `lib` is more than its types, and the correction
+    is the earlier finding's own reason turned around.** A `fun` is a C symbol
+    and the linker resolves it — true of the object code an artifact carries,
+    false of the bodies it carries, because a body the consumer compiles makes
+    the call itself. `openssl_ext`'s `PKey.read` travels and said `undefined
+    fun 'pem_read_bio_rsa_private_key' for LibCrypto`. A `lib`'s `enum`s and
+    constants came with the same measurement, each found by the next failure.
+    And the names in `Reopened` are names the consumer can write: counted as
+    unnameable, `OpenSSL::PKey::PKey` crossed as a *handle* — no fields, and no
+    `new`, which is what keeps a handle honest — over an `@pkey` field naming
+    the `LibCrypto::EvpPKey` the shard itself declares.
+
+    **A class variable is identified by its owner and its name, and the
+    bookkeeping was keyed on neither.** `MetaTypeVar` is a `Var`, and a `Var`'s
+    equality is `def_equals_and_hash name` — its name, with nothing of its
+    owner in it. A class variable declared on a superclass is copied onto every
+    subclass that reads one, so `bindata`'s `@@bit_fields` is six variables and
+    was one hash key: the unit `ASN1::BER` reads four of them and the last
+    write took the entry. The consumer was told about one, made one read
+    function, and the link ended on `~ASN1::BER::bit_fields:read`. That copy is
+    also where the initialiser was being lost — `lookup_class_var?` carries the
+    type, the thread-local flag and the initialiser node onto the copy, and iyi
+    had added a field to the declaration that the copy did not carry.
+
+    **And a gap that measurement closed rather than opened.** A third way of
+    reading a class variable is visible in the code and has nothing behind it:
+    where the owner is a virtual type the read goes through a main-module
+    function that dispatches on the receiver's type id, `iyi_record_unit_class_var`
+    is not on that path, and the main module never travels — so a consumer
+    would owe a function it was never told about. That reading is what the
+    symbol above looked like, and it was wrong; the cause was a hash keyed on a
+    name. The machinery for it was written and then taken back out, because
+    nothing has reached it and a rule with no measurement behind it is worse
+    than a gap somebody wrote down. This is the gap, written down.
+
+    **A class is held virtually, and the keep file was naming it.** `BinData::
+    VerificationException.to_s(io)` emits `*BinData::VerificationException::
+    to_s<IO+>`; a consumer that holds the class — `io << exception.class`,
+    through `Exception+.class` — asks for `*BinData::VerificationException+@…`.
+    The name is the concrete metaclass and a value of it is the virtual one, so
+    the keep file calls the class side through `uninitialized T.class`. Not
+    `new`: a virtual metaclass dispatches it to every subclass and a subclass
+    builds itself its own way.
+
+    **And a name resolves in its own scope first.** `openssl_ext` writes a
+    constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type
+    R-2 asks this file to write for its `new` — a type Crystal infers and the
+    shard never spells — read as the constant. `self` is the spelling with no
+    such problem, and on a metaclass it is exactly what `new` answers. There is
+    no absolute spelling to reach for: `::` leaves the module wrapper entirely,
+    which is what `lib ::LibCrypto` uses it for, and the wrapper's own name is
+    not one a type path can start with.
 
     Two smaller facts came out of the same measurement, and both read as
     compiler bugs without being one. A shard is not always one boundary:

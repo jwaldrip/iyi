@@ -132,6 +132,10 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # library already has must not assign it twice, and naming the one that
     # caught it is the finding.
     (r"CRYSTAL_BIO", "a constant a shard defines, named for the other language"),
+    # The GitHub organisation two of the shards these gates pin are published
+    # under. A dependency's coordinates are not prose and there is no other
+    # spelling of them: `crystal-community/jwt` is where `shards install` looks.
+    (r"github: crystal-community/", "a shard's own coordinates"),
     (
         r"Crystal's (own|library|licence|license|compiler|semantics|stdlib|"
         r"standard|prelude|codegen|cache|interpreter|fibers|ecosystem|list|"
