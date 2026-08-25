@@ -121,6 +121,28 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r"crystal-lang\.org", "upstream's site"),
     (r"github\.com/crystal-lang", "upstream's repository"),
     (r"[Cc]opyright.*Crystal", "copyright"),
+    # Upstream Crystal's bytecode interpreter, which is a real path in a real
+    # other language's tree and is exactly what the passage is about: it says
+    # that thing is absent here, and quotes the `ls` that proves it.
+    (
+        r"src/compiler/crystal/interpreter",
+        "upstream Crystal's bytecode interpreter, named to say it is not here",
+    ),
+    # `Crystal::CACHE_DIR` is the constant's actual name in the namespace every
+    # analysed program gets, defined by `define_crystal_string_constant`. The
+    # comment is about that constant, so renaming it in prose would name
+    # something that does not exist.
+    (
+        r"`Crystal::CACHE_DIR`",
+        "the constant's real name in the analysed program's namespace",
+    ),
+    # Quoted output. `program_name` is "crystal" in the `crystal` binary
+    # (src/compiler/iyi/program_name.cr), so this is what the message said, and
+    # a comment that quotes a message has to quote it.
+    (
+        r"crystal needs a cache directory",
+        "quoted output from the binary that calls itself crystal",
+    ),
     # Three arrivals from upstream's tarball work. `crystal/syntax_highlighter`
     # is a real path inside Crystal's standard library, and the reason the
     # tarball has to ship `compiler/`: the highlighter requires

@@ -39,7 +39,7 @@ lib LibLLVMExt
   # `ext/llvm_ext.cc` for what happens without it.
   {% unless LibLLVM::IS_LT_180 %}
     fun create_target_machine_wasm_eh = LLVMExtCreateTargetMachineWasmEH(t : LibLLVM::TargetRef, triple : Char*, cpu : Char*, features : Char*,
-                                                                        level : LLVM::CodeGenOptLevel, reloc : LLVM::RelocMode,
-                                                                        code_model : LLVM::CodeModel, legacy_eh : LibLLVM::Bool) : LibLLVM::TargetMachineRef
+                                                                         level : LLVM::CodeGenOptLevel, reloc : LLVM::RelocMode,
+                                                                         code_model : LLVM::CodeModel, legacy_eh : LibLLVM::Bool) : LibLLVM::TargetMachineRef
   {% end %}
 end
