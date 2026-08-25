@@ -631,6 +631,14 @@ module Iyi
       io.puts "  a reference is a pointer, so a consumer that never allocates"
       io.puts "  one does not need to know what is inside it. `new` is not"
       io.puts "  exported for these, which is what keeps that true."
+      # Named, because which ones matters: a body that travels and touches a
+      # field of one cannot be compiled by the consumer, and the failure comes
+      # out as `can't infer the type of instance variable` in a file nobody
+      # wrote. A count says three; a name says which three.
+      @@handle_types.to_a.sort.each do |name|
+        because = @@handle_reasons[name]?
+        io.puts "    #{name}#{because ? " — #{because.join(", ")}" : ""}"
+      end
     end
 
     unless module_root? program, root
@@ -1092,8 +1100,16 @@ module Iyi
       # standard library cannot cross as a declaration at all — it can only
       # cross as a handle the consumer never allocates, which is a decision
       # somebody has to make per type rather than a gap a tool can close.
-      foreign_fields = fields.map { |(_, type_name)| type_name }
-        .reject { |type_name| nameable?(type_name, root) }
+      # The *name* that fails rather than the whole field type: a field is
+      # `Kemal::LRUCache(String, Radix::Result(Kemal::Route))` and the argument
+      # is about one name inside it.
+      foreign_fields = fields.flat_map do |(_, type_name)|
+        Rx.scan(type_name, BIND_TYPE_NAME).compact_map do |match|
+          part = match[0].not_nil!
+          next if part == "class" || part == "_"
+          nameable_name?(part, root) ? nil : part
+        end
+      end
 
       # A reference type is a pointer to the consumer, so it can cross without
       # its fields as long as the consumer never allocates one: it holds what
@@ -1110,6 +1126,10 @@ module Iyi
         fields = [] of {String, String}
         signatures.reject! { |signature| signature.name == "new" }
         @@handle_types << name
+        # With the name that made it one. A type crossing without its fields is
+        # a decision somebody may want to argue with, and "which field" is the
+        # whole of the argument.
+        @@handle_reasons[name] = foreign_fields.uniq.first(3)
       end
 
       nested = [] of IyiMod::TypeDecl
@@ -1180,6 +1200,9 @@ module Iyi
     end
     counter
   end
+
+  # Which field name made each handle type one. See `@@handle_types`.
+  @@handle_reasons = {} of String => Array(String)
 
   # The signatures whose shapes outran the cap, reported beside the artifact.
   @@capped = [] of String
