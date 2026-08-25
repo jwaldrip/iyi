@@ -9,6 +9,7 @@
 # an executable.
 
 require "json"
+require "./program_name"
 require "./command/*"
 require "./tools/*"
 
@@ -30,13 +31,8 @@ class Iyi::Command
     SOFTWARE_ERROR = 1
   end
 
-  # iyi: what this binary is called when it tells somebody how to call it.
-  #
-  # The same compiler ships under two names, and a person running `iyi mod`
-  # was told "Usage: crystal mod" — the name of a program they had not
-  # installed. `src/compiler/iyi.cr` sets this; nothing else does, so `crystal`
-  # says `crystal`.
-  class_property program_name : String = "crystal"
+  # `program_name` is declared in `iyi/program_name.cr`, because the front end
+  # reads it and does not have this file.
 
   USAGE = <<-USAGE
     Usage: crystal [command] [switches] [program file] [--] [arguments]
