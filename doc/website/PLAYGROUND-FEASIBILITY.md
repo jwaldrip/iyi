@@ -1005,3 +1005,45 @@ which no amount of wasm work answers.
 What this report can say, and the distinction matters for the site: **the
 browser can now type-check a visitor's iyi. It cannot run it, and nothing in the
 tree can, and the reason is not the browser.**
+
+### The bundle, measured after the change
+
+Section 7's release figures were taken before any of this landed, so they no
+longer describe what a site would ship. Taken again, on this commit.
+
+Machine: macOS 25.5.0 arm64, Apple M5 Max. Compiler: this branch, built against
+Homebrew LLVM 22.1.8. Built with `--release --no-debug -Dwithout_llvm
+-Dwithout_openssl -Dwithout_zlib -Dwithout_iconv`, cross-compiled for
+wasm32-wasi, linked with wasi-sdk 24's `wasm-ld` against `crt1.o` and `libc`,
+then `llvm-strip`ped. Compressed with `gzip -9` and with brotli at quality 9
+through node's `zlib`.
+
+| | bytes | |
+|---|---|---|
+| `cfr.linked.wasm` | 12,300,878 | linked, unstripped |
+| `cfr.stripped.wasm` | 11,242,622 | **what a site serves**, 10.7 MB |
+| `cfr.gz` | 2,242,095 | gzip -9, 2.1 MB |
+| `cfr.br` | 1,250,131 | brotli -9, 1.19 MB |
+
+And the stripped release module still does the thing:
+
+```
+$ node --no-warnings runfront.mjs cfr.stripped.wasm bad.iyi
+In bad.iyi:11:6
+
+ 11 | puts announce(42)
+           ^-------
+Error: Int32 does not implement Samples::Bad::Greet, required by `T` in `announce`
+```
+
+Against section 7's pre-change numbers, which were 10,691,128 raw, 2,128,573
+gzipped and 1,215,513 brotli, this is 551,494 bytes larger raw, 113,522 larger
+gzipped and 34,618 larger brotli: **2.8% more over the wire in brotli**. That is
+what wasm exception handling and the six blocker fixes cost, and it is worth
+stating rather than reusing the older figure, because the older figure describes
+a module that could not `rescue`.
+
+The prelude source ships alongside, which `README.md` puts at 100 KB, served
+through the shim's in-memory filesystem. So a tier-one bundle is about 1.2 MB
+brotli plus 100 KB of text, and it carries no LLVM: the module's imports are
+`wasi_snapshot_preview1` functions and nothing else.
