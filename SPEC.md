@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 92,657 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 92,940 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,505 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -7237,14 +7237,37 @@ Named honestly, so nobody mistakes this draft for complete.
     `RequestLogHandler`, `HeadRequestHandler`, `ExceptionHandler`,
     `FilterHandler`, `WebSocketHandler`, `RouteHandler`.
 
-    What stops it is item 12's own open question rather than anything above:
-    **a shard that adds to a type it does not own.** Kemal reopens
-    `HTTP::Server::Context` and gives it `@params`, and a boundary deliberately
-    carries none of the library's types — a consumer under `--crystal` replays
-    the requires and has the library's version, which is what keeps a reopened
-    namespace from being declared twice. So the consumer's `Context` has no
-    such field and the artifact's compiled code reads one. R-3 has no form for
-    this, and inventing one is a decision rather than a collector.
+    **A shard that adds to a type it does not own**, which is the last thing
+    this item had left open. Kemal reopens `HTTP::Server::Context` and gives it
+    `@params` and eighteen methods; a boundary carries none of the library's
+    types on purpose, because the consumer replays the requires and has them,
+    and declaring one twice is how a build stops on `superclass mismatch`. So
+    the addition had nowhere to go: `undefined method 'params'` where the
+    consumer's own code asked, and a field the consumer never allocated where
+    the shard's compiled code did.
+
+    The answer is the rule already used one level up, asked of a type's members
+    instead of a namespace's types: **what the shard wrote travels, and what
+    the library wrote stays**, decided by where each member is written.
+    `Reopened` (IV.1g) carries it, rendered `class ::HTTP::Server::Context`,
+    and with bodies — these methods are compiled into the *library's* unit,
+    which a boundary does not carry, for the same reason a top-level `def`'s
+    body travels.
+
+    Three smaller rules came with it. **A member written by a macro belongs to
+    the file that wrote the macro**: `macro finished` declares three of
+    `Context`'s fields and their location is the expansion, so asked naively
+    they were nobody's — and `Location#expanded_location` is that walk, which
+    also brought `get` and `post` across. **A field travels with its default**,
+    because the library's own `initialize` knows nothing about one the shard
+    added. And **that default is written with its names resolved**, like every
+    other text here, because it is read where the shard is not.
+
+    **The measure.** A kemal application built against four boundaries serves
+    HTTP: `GET /bound` answers `hello from a boundary`, `GET /missing` answers
+    404, and kemal logs `200 GET /bound`. The request walks its whole handler
+    chain, the router matches, and the route was written with the DSL's own
+    `get`.
 
 13. ~~**Dependencies and discovery.**~~ **Specified in III.7**: path identity,
     minimal version selection, a manifest and a sums file, source as the primary

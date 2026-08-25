@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 31_u32
+  FORMAT_VERSION = 32_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -98,6 +98,23 @@ module Iyi::IyiMod
     # property of the declaration — the reader has to put these somewhere the
     # module's own header does not reach.
     TopLevel = 16
+
+    # iyi: under `--crystal`, what the shard added to a type it does not own.
+    #
+    # Kemal reopens `HTTP::Server::Context` — the *library's* class — and gives
+    # it `@params` and the methods that read it. A boundary carries none of the
+    # library's types on purpose: the consumer replays the requires and has
+    # them, and declaring one a second time is how a build stops on `superclass
+    # mismatch`. So the addition had nowhere to go, and a consumer said
+    # `undefined method 'params' for HTTP::Server::Context` while the shard's
+    # own compiled code read a field that consumer had never allocated.
+    #
+    # What travels is what the shard *added*, decided by where each member is
+    # written — the same test that decides whether a reopened *namespace* is
+    # the library's. Written back as `class ::HTTP::Server::Context`, with
+    # bodies: these methods belong to a unit the boundary does not carry, being
+    # the library's type rather than the shard's.
+    Reopened = 17
   end
 
   # A regex literal's constant: the name its object code reads, and what a
@@ -777,6 +794,16 @@ module Iyi::IyiMod
     # a type name starts with a capital, so nothing else can key against it.
     property top_level : Array(Signature)
 
+    # iyi: what the shard added to types it does not own. See
+    # `Section::Reopened`.
+    #
+    # Each `name` is written `::Absolute::Path`, because that is what it is: a
+    # type of the *library's*, reopened. Carrying it is not the same as
+    # carrying the type — `types` deliberately holds none of the library's, so
+    # that a consumer replaying the requires is not told about `HTTP::Server`
+    # twice — and this says only what the shard put there.
+    property reopened : Array(TypeDecl)
+
     # Whether this module was compiled against Crystal's standard library
     # rather than iyi's prelude — `--crystal`.
     #
@@ -863,7 +890,8 @@ module Iyi::IyiMod
                    @class_root = false, @filled = true,
                    @regexes = [] of RegexConst, @class_vars = [] of ClassVarRef,
                    @match_types = [] of String, @symbols = [] of String,
-                   @top_level = [] of Signature)
+                   @top_level = [] of Signature,
+                   @reopened = [] of TypeDecl)
     end
   end
 
@@ -937,6 +965,10 @@ module Iyi::IyiMod
 
     unless artifact.symbols.empty?
       sections << {Section::Symbols, encode_symbols(artifact)}
+    end
+
+    unless artifact.reopened.empty?
+      sections << {Section::Reopened, encode_reopened(artifact)}
     end
 
     unless artifact.top_level.empty?
@@ -1089,6 +1121,7 @@ module Iyi::IyiMod
       match_types = [] of String
       symbols = [] of String
       top_level = [] of Signature
+      reopened = [] of TypeDecl
       requires = [] of String
       hashes = Hashes.empty
 
@@ -1121,6 +1154,7 @@ module Iyi::IyiMod
         when Section::MatchTypes  then match_types = decode_match_types(payload)
         when Section::Symbols     then symbols = decode_symbols(payload)
         when Section::TopLevel    then top_level = decode_top_level(payload)
+        when Section::Reopened    then reopened = decode_reopened(payload)
         when Section::Requires    then requires = decode_requires(payload)
         when Section::Hashes      then hashes = decode_hashes(payload)
         else
@@ -1138,7 +1172,7 @@ module Iyi::IyiMod
         object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
         hashes, constants, macro_bodies, requires, header[:crystal_library],
         header[:class_root], header[:filled], regexes, class_vars, match_types, symbols,
-        top_level)
+        top_level, reopened)
     end
   rescue ex : Error
     raise ex
@@ -1264,6 +1298,14 @@ module Iyi::IyiMod
 
     symbols = artifact.symbols
     io.puts "symbols       #{symbols.size} defined by this module's units" unless symbols.empty?
+
+    unless artifact.reopened.empty?
+      io.puts "reopened"
+      artifact.reopened.each do |declaration|
+        io.puts "  #{declaration.name} (#{declaration.fields.size} fields, " \
+                "#{declaration.methods.size} methods)"
+      end
+    end
 
     unless artifact.top_level.empty?
       io.puts "top-level defs"
@@ -1439,6 +1481,18 @@ module Iyi::IyiMod
           body: bodies[mono_body_key(container, signature)]?
       end
       io << "end\n"
+    end
+
+    # What the shard added to types it does not own, reopened.
+    #
+    # After everything the shard declares, because an addition names them —
+    # `HTTP::Server::Context` gets a `Kemal::ParamParser`. Inside the module
+    # text all the same, because each name is written `::Absolute` and reopens
+    # the library's own wherever this file is read. See `TypeDecl` and
+    # `Section::Reopened`.
+    artifact.reopened.each do |declaration|
+      io << '\n'
+      render_type_declaration io, declaration, bodies
     end
 
     # Last, so that everything it can name is already declared. Inside the
@@ -2013,6 +2067,16 @@ module Iyi::IyiMod
 
   private def self.decode_constants(payload : Bytes) : Array(String)
     read_strings(IO::Memory.new(payload))
+  end
+
+  private def self.encode_reopened(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    write_type_declarations io, artifact.reopened
+    io.to_slice
+  end
+
+  private def self.decode_reopened(payload : Bytes) : Array(TypeDecl)
+    read_type_declarations(IO::Memory.new(payload))
   end
 
   private def self.encode_top_level(artifact : Artifact) : Bytes

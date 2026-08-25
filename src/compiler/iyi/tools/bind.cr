@@ -605,6 +605,9 @@ module Iyi
       @@mono_bodies[IyiMod.mono_body_key(IyiMod::TOP_LEVEL_CONTAINER, signature)] = body
     end
 
+    # And what the shard added to types it does not own.
+    reopened = reopened_types program, root
+
     # The copy the consumer reads. The one above is the keep file's, and it is
     # written in the shard's own names: `Kemal::Router` is `Router` on the far
     # side and `Router` in a file compiled against the shard is nothing at all.
@@ -708,6 +711,7 @@ module Iyi
       top_exported = top_exported.map do |signature|
         rekey_body IyiMod::TOP_LEVEL_CONTAINER, signature, map_names(signature)
       end
+      reopened = reopened.map { |declaration| map_names_declaration declaration }
       carried_types = carried_types.map { |declaration| map_names_declaration declaration }
       root_class_vars = root_class_vars.map do |(name, type, value)|
         {name, map_names(type), map_names(value)}
@@ -756,6 +760,7 @@ module Iyi
       # it the artifact is one of its own only moved the refusal later.
       crystal_library: true,
       top_level: top_exported,
+      reopened: reopened,
     )
 
     path = File.join(dir, "#{iyi_module_name(root).gsub('/', '-')}.iyimod")
@@ -2440,6 +2445,28 @@ module Iyi
     added
   end
 
+  # *text* with every whole-word *name* replaced by *replacement*.
+  #
+  # Whole-word, for the reason `calls?` is: `StoreTypes` inside `MyStoreTypes`
+  # is a different name and rewriting it would invent one.
+  private def self.replace_word(text : String, name : String, replacement : String) : String
+    return text unless text.includes?(name)
+
+    String.build do |io|
+      index = 0
+      while (found = text.index(name, index))
+        before = found == 0 ? nil : text[found - 1]
+        after = found + name.size >= text.size ? nil : text[found + name.size]
+        word = (before.nil? || !(before.alphanumeric? || before == '_' || before == ':')) &&
+               (after.nil? || !(after.alphanumeric? || after == '_' || after == ':'))
+        io << text[index...found]
+        io << (word ? replacement : name)
+        index = found + name.size
+      end
+      io << text[index..]
+    end
+  end
+
   # Whether *body* names *method* as a word rather than as part of one.
   private def self.calls?(body : String, method : String) : Bool
     return false unless body.includes?(method)
@@ -2630,6 +2657,199 @@ module Iyi
     end
   end
 
+  # The file a member was *written* in, following a macro back to its source.
+  #
+  # A `macro finished` block declares `@cached_route_lookup` inside kemal's own
+  # `ext/context.cr`, and the location of what it declares is a `VirtualFile` —
+  # the expansion — rather than that file. Asked naively, the shard's own
+  # members look like nobody's: the ivar did not travel, and the consumer was
+  # left to infer it from the bodies, which is `inferred to be Nil, but Nil
+  # alone provides no information`. The same is true of every `def` a macro
+  # writes, which for kemal is `get`, `post` and the rest of the DSL.
+  #
+  # `Location#expanded_location` is the walk, and it already exists for this.
+  private def self.written_in(location : Location?) : String?
+    return nil unless location
+    location.expanded_location.try(&.filename).as?(String)
+  end
+
+  # What the shard added to types it does not own.
+  #
+  # A boundary carries none of the library's types on purpose — the consumer
+  # replays the requires and has them, and declaring one a second time is how a
+  # build stops on `superclass mismatch` — so an addition to one had nowhere to
+  # go. Kemal reopens `HTTP::Server::Context` and gives it `@params` and the
+  # methods that read it: the consumer said `undefined method 'params'`, and
+  # the shard's own compiled code read a field the consumer never allocated,
+  # which is a segfault several handlers into a request.
+  #
+  # What crosses is what the shard *wrote*, decided by where each member is —
+  # the same test `library_type?` makes of a type, asked of its members. The
+  # library's own stay behind, because the consumer has them.
+  #
+  # With bodies. These methods are compiled into the *library's* unit, not the
+  # shard's, and a boundary carries the shard's; so there is no symbol to call
+  # and the consumer compiles them, exactly as it does a top-level `def`.
+  private def self.reopened_types(program : Program, root : String) : Array(IyiMod::TypeDecl)
+    declarations = [] of IyiMod::TypeDecl
+    source = program.filename
+    return declarations unless source.is_a?(String)
+    directory = File.dirname(source)
+    return declarations if directory.empty?
+
+    library = library_root(program)
+    return declarations unless library
+
+    collect_reopened program.types?, directory, library, root, declarations
+    declarations
+  end
+
+  private def self.collect_reopened(types : Hash(String, Type)?, directory : String,
+                                    library : String, root : String,
+                                    declarations : Array(IyiMod::TypeDecl)) : Nil
+    return unless types
+
+    types.each_value do |type|
+      next unless type.is_a?(NamedType)
+      name = type.to_s
+
+      # The shard's own types travel as themselves; this is about everyone
+      # else's. `root` is the shard's namespace and the prelude's builtins are
+      # nobody's to reopen.
+      unless name == root || name.starts_with?("#{root}::")
+        declaration = reopened_declaration type, directory, library, root
+        declarations << declaration if declaration
+      end
+
+      collect_reopened type.types?, directory, library, root, declarations
+    end
+  end
+
+  # One library type, with only what the shard put in it.
+  private def self.reopened_declaration(type : NamedType, directory : String,
+                                        library : String,
+                                        root : String) : IyiMod::TypeDecl?
+    return nil unless type.is_a?(ClassType) || type.is_a?(ModuleType)
+    return nil if type.is_a?(GenericType)
+
+    # An enum, a `lib`, a `struct` inside one: each is a kind of type this
+    # cannot reopen and none of them answers `instance_vars` — asking
+    # `Number::RoundingMode` raised `BUG: doesn't implement instance_vars`,
+    # which is the compiler saying the question was wrong rather than the
+    # answer missing.
+    return nil if type.is_a?(EnumType) || type.is_a?(LibType)
+    return nil if type.is_a?(TypeDefType)
+
+    # Written in both places, which is what a reopening *is*.
+    #
+    # `library_type?` asks whether *every* location is the library's, because
+    # it is deciding whether a type travels at all and a type both of them
+    # touch counts as the shard's. This is the other half of that sentence: the
+    # library declared it, the shard added to it, and what the shard added is
+    # what has nowhere else to go.
+    return nil unless type.responds_to?(:locations)
+    locations = type.locations
+    return nil unless locations
+    files = locations.compact_map { |location| location.filename.as?(String) }
+    return nil unless files.any? &.starts_with?(library)
+    return nil unless files.any? &.starts_with?(directory)
+
+    # A field the shard wrote `@store = {} of String => StoreTypes` has a
+    # *default*, and the library's own `initialize` knows nothing about it: the
+    # consumer said `this 'initialize' doesn't explicitly initialize instance
+    # variable '@store'`. The default has to arrive with the field, and
+    # `class_vars` is the triple that renders `name : type = value` — which for
+    # a name beginning `@` is an instance variable declaration with a default,
+    # exactly what the shard wrote.
+    # The aliases the shard wrote inside this type, resolved.
+    #
+    # A default is stored as the text somebody typed, and kemal's is `{} of
+    # String => StoreTypes` — where `StoreTypes` is an alias it declares inside
+    # `Context` through the same `macro finished`. The consumer has no such
+    # name and said `undefined constant StoreTypes`. Every other text in this
+    # file is written with its names resolved for exactly this reason: it is
+    # read where the shard was not.
+    aliases = {} of String => String
+    type.types?.try &.each do |simple, nested|
+      next unless nested.is_a?(AliasType)
+      next unless written_in(nested.locations.try(&.first?)).try &.starts_with?(directory)
+      aliases[simple] = nested.aliased_type.devirtualize.to_s
+    end
+
+    defaults = {} of String => String
+    if type.responds_to?(:instance_vars_initializers)
+      type.instance_vars_initializers.try &.each do |initializer|
+        written = initializer.value.to_s
+        aliases.each { |simple, resolved| written = replace_word written, simple, resolved }
+        defaults[initializer.name] = written
+      end
+    end
+
+    fields = [] of {String, String}
+    defaulted = [] of {String, String, String}
+    if type.is_a?(InstanceVarContainer)
+      type.instance_vars.each do |field, variable|
+        filename = written_in variable.location
+        next unless filename && filename.starts_with?(directory)
+        # No filter on the name. A field's type may be another boundary's —
+        # `Radix::Result` is — and what makes that writable is the mapping
+        # below, not this loop. Dropping one here left the consumer to infer it
+        # from the bodies instead, which is `@cached_route_lookup was inferred
+        # to be Nil, but Nil alone provides no information`: a field that does
+        # not travel is worse than one that travels needing a name, because the
+        # second says so.
+        written = variable.type?.try(&.devirtualize.to_s) || "?"
+        if value = defaults[field]?
+          defaulted << {field, written, value}
+        else
+          fields << {field, written}
+        end
+      end
+    end
+
+    methods = [] of IyiMod::Signature
+    each_bind_def(type) do |a_def|
+      filename = written_in a_def.location
+      next unless filename && filename.starts_with?(directory)
+
+      method = classify_bind(type, a_def)
+      next if method.uncompilable
+      next if method.abstract_def
+      body = method.body
+      next if body.nil? || body.empty?
+
+      signature = IyiMod::Signature.new(
+        name: method.name,
+        receiver: method.receiver,
+        parameters: method.params.map { |(argument, restriction, default)| bind_parameter(argument, restriction, default) },
+        block_parameter: method.written_block,
+        # Empty always: the body is here, and it is what a call is typed from.
+        # A written return would be the shard's word about a body the consumer
+        # is compiling for itself, which is rule 1's own question.
+        return_type: "",
+        free_variables: [] of String,
+        required: false,
+      )
+      methods << signature
+      @@mono_bodies[IyiMod.mono_body_key("::#{type}", signature)] = body
+    end
+
+    return nil if fields.empty? && defaulted.empty? && methods.empty?
+
+    IyiMod::TypeDecl.new(
+      # `::`, because this is the library's type and not a name relative to
+      # anything this artifact declares.
+      name: "::#{type}",
+      kind: type.is_a?(ModuleType) && !type.is_a?(ClassType) ? "module" : "class",
+      type_parameters: [] of String,
+      assoc_types: [] of String,
+      supertraits: [] of String,
+      fields: fields,
+      methods: methods,
+      class_vars: defaulted,
+    )
+  end
+
   # The shard's own top-level `def`s.
   #
   # Not under `root`, which is why the walk above cannot find them: they are on
@@ -2649,9 +2869,8 @@ module Iyi
     return if directory.empty?
 
     each_bind_def(program) do |a_def|
-      filename = a_def.location.try &.filename
-      next unless filename.is_a?(String)
-      next unless filename.starts_with?(directory)
+      filename = written_in a_def.location
+      next unless filename && filename.starts_with?(directory)
       methods << classify_bind(program, a_def)
     end
   end
