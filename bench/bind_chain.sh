@@ -94,10 +94,17 @@ bind_one radix Radix
 bind_one exception_page ExceptionPage
 bind_one kemal Kemal
 
-# What the consumer touches is what a boundary can hand out today: kemal's DSL
-# is a top-level `def` outside `Kemal`, so a boundary rooted at `Kemal` cannot
-# carry it, and that is a question about what a root *is* rather than about
-# what crosses one.
+# The consumer adds a *route*, which is the DSL's own foundation:
+# `Kemal::RouteHandler#add_route` takes a block, so its machine code is the
+# caller's and its body is compiled here — and that body calls
+# `add_to_radix_tree`, which kemal keeps private, which calls
+# `Radix::Tree#add`, whose body calls a private overload of itself, which calls
+# `Node#add` and a protected `sort!`. Every one of those crosses, or none of it
+# works.
+#
+# `get "/" do …` itself is still a top-level `def` outside `Kemal`, so a
+# boundary rooted at `Kemal` cannot carry it — that is a question about what a
+# root *is* rather than about what crosses one.
 cat > "$WORK/app_source.iyi" <<'IYI'
 module main
 
@@ -110,6 +117,10 @@ puts config.port
 puts config.env
 puts config.host_binding
 puts Kemal::RouteHandler::INSTANCE.class.to_s
+Kemal::RouteHandler::INSTANCE.add_route("GET", "/bound") do |env|
+  "hello from a boundary"
+end
+puts "route added"
 IYI
 
 cat > "$WORK/app_artifact.iyi" <<'IYI'
@@ -124,6 +135,10 @@ puts config.port
 puts config.env
 puts config.host_binding
 puts Kemal.routehandler_instance.class.to_s
+Kemal.routehandler_instance.add_route("GET", "/bound") do |env|
+  "hello from a boundary"
+end
+puts "route added"
 IYI
 
 status=0
