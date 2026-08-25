@@ -147,6 +147,12 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # greeting it prints carries that name. The hero quotes the run, and the
     # word is data the program printed rather than a language being renamed.
     (r"Hello, crystal!", "a line a sample prints, quoted from a real run"),
+    # A probe written in Crystal, quoted by doc/website/PLAYGROUND-FEASIBILITY.md
+    # as the one line that reproduces the wasm32-wasi link defect: a Crystal
+    # prelude program collides with wasi-libc's `crt1-command.o` over `_start`,
+    # which iyi's own prelude deliberately does not define. The program is
+    # Crystal's, and so is the string it prints.
+    (r'puts "hi from crystal"', "a Crystal probe program's own source line"),
     (
         r"Crystal's (own|library|licence|license|compiler|semantics|stdlib|"
         r"standard|prelude|codegen|cache|interpreter|fibers|ecosystem|list|"
