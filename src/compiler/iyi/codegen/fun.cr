@@ -74,8 +74,6 @@ class Iyi::CodeGenVisitor
     check_mod_fun self_type_mod, mangled_name, func
   end
 
-
-
   # iyi: the receiver a def read from a `.iyimod` is keyed on (SPEC.md IV.1g).
   #
   # The type that *defines* the method, not the one it was called through. A
