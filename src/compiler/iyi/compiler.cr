@@ -631,6 +631,7 @@ module Iyi
       artifact.class_vars = collect_iyi_unit_class_vars(program, names)
       artifact.match_types = collect_iyi_match_types(program, names)
       artifact.symbols = collect_iyi_symbols(program, names)
+      artifact.libs = collect_iyi_libs(program, names)
       # Reached only if the keep file compiled, which is the whole of what this
       # says. A boundary whose fill died leaves every declaration on disk and no
       # machine code, and that is not the same thing as having none.
@@ -707,6 +708,7 @@ module Iyi
         artifact.class_vars = collect_iyi_unit_class_vars(program, unit_names)
         artifact.match_types = collect_iyi_match_types(program, unit_names)
         artifact.symbols = collect_iyi_symbols(program, unit_names)
+        artifact.libs = collect_iyi_libs(program, unit_names)
         artifact.filled = true
         IyiMod.write artifact, path
       end
@@ -922,6 +924,24 @@ module Iyi
       names = Set(String).new
       unit_names.each do |unit_name|
         program.iyi_unit_symbols[unit_name]?.try &.each { |symbol| names << symbol }
+      end
+      names.to_a.sort!
+    end
+
+    # iyi: the `lib`s the module's object code calls into, by name, for `Libs`
+    # (SPEC.md IV.1g).
+    #
+    # `Requires` says what the consumer has to have compiled and this says what
+    # it has to have linked against. The consumer cannot work the second out
+    # from the first: it has the `lib` and its `@[Link]` from the replayed
+    # require, and drops the flag anyway, because a flag is collected from the
+    # libs *this* build marked used and the call is in an object file it did
+    # not compile.
+    private def collect_iyi_libs(program : Program,
+                                 unit_names : Array(String)) : Array(String)
+      names = Set(String).new
+      unit_names.each do |unit_name|
+        program.iyi_unit_libs[unit_name]?.try &.each { |name| names << name }
       end
       names.to_a.sort!
     end

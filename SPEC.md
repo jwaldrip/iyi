@@ -777,9 +777,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 93,494 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 93,615 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
-| Specs | 21,146 lines | 8,515 for iyi |
+| Specs | 21,146 lines | 8,538 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |
@@ -6343,6 +6343,10 @@ Named honestly, so nobody mistakes this draft for complete.
     > > merging what *two* users of a shared module put in it, so no single
     > > method instantiation sees the error. That one is still open.
     > >
+    > > It is no longer open, and it did not close the way this expected. `YAML`
+    > > binds and fills; what was left was a link flag, and `Libs` is the
+    > > section that carries it. `bench/yaml_reads.sh` holds it.
+    > >
     > > **And a shard that reopens a library namespace carries only what it
     > > added.** `openssl_ext` is `OpenSSL`, and a `--crystal` consumer replays
     > > `require "openssl"` and gets Crystal's — so the declarations met the
@@ -7415,6 +7419,37 @@ Named honestly, so nobody mistakes this draft for complete.
     the keep file calls the class side through `uninitialized T.class`. Not
     `new`: a virtual metaclass dispatches it to every subclass and a subclass
     builds itself its own way.
+
+    **`yaml` crosses too, and what stood in its way was one link flag.** The
+    reading recorded above — that its `@anchors` is typed by merging what two
+    users of a shared module put in it, so no single method instantiation sees
+    the error — was true of an older tree and is no longer what happens: `YAML`
+    binds, fills into ten units, and a consumer parses a document with an
+    anchor and a merge key in it. What was left was `undefined symbol:
+    yaml_parser_parse`.
+
+    **Which C libraries a boundary's object code needs is part of what has to
+    travel, and it is not `Requires`.** `Requires` says what the consumer has
+    to have *compiled*; this says what it has to have *linked against*, and the
+    consumer cannot derive the second from the first. It replays `require
+    "yaml"`, so it has `lib LibYAML` and the `@[Link("yaml")]` on it — and
+    `link_annotations` collects a flag only from a `LibType` that is `used?`,
+    which is a question about *this* build's own code. The call is in the
+    artifact's `YAML::PullParser` unit, an object file the consumer reads
+    rather than compiles, so nothing marked it and `-lyaml` never reached the
+    link line.
+
+    `Libs` (section 18) carries the names and nothing else. Everything a link
+    line needs — `pkg_config`, `ldflags`, `framework`, static — is already on
+    the consumer's own copy of the annotation, and carrying a second copy would
+    be a second answer to a question that has one. What was missing is only
+    that somebody used it. Recorded where a unit *declares* a `fun`, because
+    that is exactly the condition: a unit that names a C symbol is a unit whose
+    object file refers to it.
+
+    `bench/yaml_reads.sh` holds it, and it holds the name rather than the
+    count — the point of the section is *which* library, and a gate that
+    counted would pass on the wrong one.
 
     **And a name resolves in its own scope first.** `openssl_ext` writes a
     constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type

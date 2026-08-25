@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 33_u32
+  FORMAT_VERSION = 34_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -115,6 +115,22 @@ module Iyi::IyiMod
     # bodies: these methods belong to a unit the boundary does not carry, being
     # the library's type rather than the shard's.
     Reopened = 17
+
+    # iyi: the `lib`s this module's object code calls into, by name.
+    #
+    # `Requires` says what the consumer has to have *compiled*; this says what
+    # it has to have *linked against*, and the two are not the same list. A
+    # consumer that replays `require "yaml"` has `lib LibYAML` and its
+    # `@[Link("yaml")]` — and still does not pass `-lyaml`, because the flag is
+    # collected from the libs this build marked `used?` and the call to
+    # `yaml_parser_parse` is in the artifact's own `YAML::PullParser` unit.
+    # `undefined symbol: yaml_parser_parse` was the whole of what stood between
+    # `yaml` and a boundary.
+    #
+    # Names, not annotations. Everything a link line needs — `pkg_config`,
+    # `ldflags`, `framework`, static — is already on the consumer's own copy of
+    # the annotation. What was missing is only that somebody used it.
+    Libs = 18
   end
 
   # A regex literal's constant: the name its object code reads, and what a
@@ -810,6 +826,12 @@ module Iyi::IyiMod
     # Settable alongside `object_code`, and for the same reason.
     property symbols : Array(String)
 
+    # iyi: the `lib`s this module's object code calls into. See `Section::Libs`.
+    #
+    # Settable alongside `object_code`, and for the same reason: it is a fact
+    # about the units, and the units do not exist until codegen has run.
+    property libs : Array(String)
+
     # iyi: the shard's own top-level `def`s. See `Section::TopLevel`.
     #
     # Their bodies are in `mono_bodies`, keyed on `TOP_LEVEL_CONTAINER` — a
@@ -914,7 +936,7 @@ module Iyi::IyiMod
                    @regexes = [] of RegexConst, @class_vars = [] of ClassVarRef,
                    @match_types = [] of String, @symbols = [] of String,
                    @top_level = [] of Signature,
-                   @reopened = [] of TypeDecl)
+                   @reopened = [] of TypeDecl, @libs = [] of String)
     end
   end
 
@@ -988,6 +1010,10 @@ module Iyi::IyiMod
 
     unless artifact.symbols.empty?
       sections << {Section::Symbols, encode_symbols(artifact)}
+    end
+
+    unless artifact.libs.empty?
+      sections << {Section::Libs, encode_libs(artifact)}
     end
 
     unless artifact.reopened.empty?
@@ -1143,6 +1169,7 @@ module Iyi::IyiMod
       class_vars = [] of ClassVarRef
       match_types = [] of String
       symbols = [] of String
+      libs = [] of String
       top_level = [] of Signature
       reopened = [] of TypeDecl
       requires = [] of String
@@ -1176,6 +1203,7 @@ module Iyi::IyiMod
         when Section::ClassVars   then class_vars = decode_class_vars(payload)
         when Section::MatchTypes  then match_types = decode_match_types(payload)
         when Section::Symbols     then symbols = decode_symbols(payload)
+        when Section::Libs        then libs = decode_libs(payload)
         when Section::TopLevel    then top_level = decode_top_level(payload)
         when Section::Reopened    then reopened = decode_reopened(payload)
         when Section::Requires    then requires = decode_requires(payload)
@@ -1195,7 +1223,7 @@ module Iyi::IyiMod
         object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
         hashes, constants, macro_bodies, requires, header[:crystal_library],
         header[:class_root], header[:filled], regexes, class_vars, match_types, symbols,
-        top_level, reopened)
+        top_level, reopened, libs)
     end
   rescue ex : Error
     raise ex
@@ -1321,6 +1349,12 @@ module Iyi::IyiMod
 
     symbols = artifact.symbols
     io.puts "symbols       #{symbols.size} defined by this module's units" unless symbols.empty?
+
+    libs = artifact.libs
+    unless libs.empty?
+      io.puts "libs"
+      libs.each { |name| io.puts "  #{name}" }
+    end
 
     unless artifact.reopened.empty?
       io.puts "reopened"
@@ -2118,6 +2152,16 @@ module Iyi::IyiMod
 
   private def self.decode_top_level(payload : Bytes) : Array(Signature)
     read_signatures(IO::Memory.new(payload))
+  end
+
+  private def self.encode_libs(artifact : Artifact) : Bytes
+    io = IO::Memory.new
+    write_strings io, artifact.libs
+    io.to_slice
+  end
+
+  private def self.decode_libs(payload : Bytes) : Array(String)
+    read_strings(IO::Memory.new(payload))
   end
 
   private def self.encode_symbols(artifact : Artifact) : Bytes

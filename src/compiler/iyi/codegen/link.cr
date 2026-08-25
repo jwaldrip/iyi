@@ -300,7 +300,15 @@ module Iyi
 
     private def add_link_annotations(types, annotations)
       types.try &.each_value do |type|
-        if type.is_a?(LibType) && type.used? && (link_annotations = type.link_annotations)
+        # iyi: or used by an artifact this program links (SPEC.md IV.1g,
+        # `Libs`). `used?` is a question about this build's own code, and the
+        # call to `yaml_parser_parse` is in `YAML::PullParser`'s unit — an
+        # object file the consumer reads rather than compiles. It has the
+        # `lib` and its `@[Link("yaml")]` from a replayed `require "yaml"`;
+        # what it did not have was anybody marking it.
+        if type.is_a?(LibType) &&
+           (type.used? || iyi_artifact_libs.includes?(type.to_s)) &&
+           (link_annotations = type.link_annotations)
           annotations.concat link_annotations
         end
 

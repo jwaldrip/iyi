@@ -2255,6 +2255,29 @@ describe Iyi::IyiMod do
   # was one key — the last write took the entry and the link ended on
   # `~ASN1::BER::bit_fields:read`.
   #
+  # `Requires` says what a consumer has to have compiled and this says what it
+  # has to have linked against, and the consumer cannot derive one from the
+  # other: it replays `require "yaml"`, so it *has* `lib LibYAML` and its
+  # `@[Link("yaml")]`, and drops the flag anyway — a flag is collected from the
+  # libs that build marked `used?`, and the call to `yaml_parser_parse` is in
+  # an object file it reads rather than compiles.
+  it "round-trips the libs a module's object code calls into" do
+    with_temporary_file do |path|
+      artifact = Iyi::IyiMod::Artifact.new(
+        module_name: "y_a_m_l",
+        source_path: "/src/probe.cr",
+        compiler_version: "1.22.0-dev+abc1234",
+        target_triple: "x86_64-pc-linux-gnu",
+        flags: ["bits64"],
+        imports: [] of Iyi::IyiMod::ImportEdge,
+      )
+      artifact.libs = ["LibC", "LibYAML"]
+      Iyi::IyiMod.write artifact, path
+
+      Iyi::IyiMod.read(path).libs.should eq ["LibC", "LibYAML"]
+    end
+  end
+
   it "round-trips how a unit refers to a class variable" do
     with_temporary_file do |path|
       artifact = Iyi::IyiMod::Artifact.new(

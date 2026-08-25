@@ -562,6 +562,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       parsed_nodes = parser.parse
       parsed_nodes = @program.normalize(parsed_nodes, inside_exp: false)
       @program.iyi_artifact_symbols.concat artifact.symbols
+      @program.iyi_artifact_libs.concat artifact.libs
       artifact.class_vars.each do |ref|
         # `||=` on the flag: two artifacts may name the same class variable of
         # the library, and the lazy reference is the one with a symbol behind
