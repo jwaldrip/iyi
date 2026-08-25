@@ -1,7 +1,26 @@
 # iyi Garbage Collector Design
 
-**Status:** Stages 1, 2, 3 and 5 built. Stage 4 is mostly vacuous and Stage 6
-onward is design.
+**Status:** Stages 1, 2, 3, 5 and 6 built, so the collector works end to end
+behind `-Dgc_iyi`: allocate, mark, sweep, and the memory is handed out again.
+Stage 4 is mostly vacuous, Stages 7 to 9 wait on a scheduler, and Stage 10 is
+design.
+
+Stage 6: the sweep. One walk over every carved chunk, a white object's chunk
+goes back on its class's free list, a black one survives and is repainted white
+for the next cycle. Large objects walk their own list with `next` read before
+the node is released. The proof is reuse rather than a counter: 300 objects
+nothing references, collect, 300 more allocations, and 299 of them come back
+from addresses the sweep reclaimed. A rooted object keeps every byte, comes out
+white, and its chunk is not handed out again.
+
+Finalizers and weak references are not built, and not for lack of time.
+Nothing in this language defines a finalizer, there is no `def finalize`
+anywhere in `src/iyi` or `samples/iyi`, so a finalizer queue would be a
+mechanism no program could put an entry in. Weak references are registration
+based and the standard library's `WeakRef` is on the `--crystal` side, so there
+is no table here to walk and null out. Both wait on the language having the
+feature. Statistics are the honest subset, counted as the walk goes: chunks
+swept, chunks kept, bytes freed, collections run.
 
 Stage 5: the mark phase. Roots go gray through Stage 3's walker, a queue in its
 own mapping drains, each object's payload is scanned to the bound its size
