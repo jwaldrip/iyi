@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import subprocess
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -119,10 +120,29 @@ def main() -> int:
                 if path:
                     seen.setdefault(path, []).append((rel_doc, n))
 
+    def ignored(path: str) -> bool:
+        """Is this path declared build output?
+
+        A citation can name something the build writes rather than something
+        the tree carries, and `site/src/generated/facts.json` is the case that
+        found this: it exists on a machine that has built the site and nowhere
+        else, so checking for the file passed locally and failed in CI. A
+        `.gitignore` entry is a committed, reviewed declaration that a path is
+        output, so that is what the citation is resolved against instead.
+        """
+        return (
+            subprocess.run(
+                ["git", "-c", "safe.directory=*", "check-ignore", "-q", path],
+                cwd=REPO,
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+
     def resolves(path: str) -> bool:
         if "*" in path:
             return any(REPO.glob(path))
-        return (REPO / path).exists()
+        return (REPO / path).exists() or ignored(path)
 
     missing = {p: w for p, w in seen.items() if not resolves(p)}
 
