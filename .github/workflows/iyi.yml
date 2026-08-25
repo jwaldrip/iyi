@@ -905,13 +905,34 @@ jobs:
           name: cross-objects
           path: cross
 
+      # iyi: wasmtime used to arrive as `curl -sSL https://wasmtime.dev/install.sh | bash`,
+      # and this job went red on it: `curl: (35) Recv failure: Connection reset
+      # by peer`, then exit 127 three steps later when the binary was used. Two
+      # defects in one line. The pipeline's status is `bash`'s, so a failed
+      # fetch is a success, which is the same shape as a check that exits 0
+      # when it could not check anything. And an install script fetched at run
+      # time is a moving target for a job whose whole point is that the same
+      # bytes come out.
+      #
+      # So: a pinned release, unpacked where this job looks for it, and both
+      # binaries asserted before anything uses them.
       - name: Install wasi-sdk and wasmtime
         run: |
-          curl -sSL -o /tmp/wasi-sdk.tar.gz \
+          set -o pipefail
+          curl -fsSL -o /tmp/wasi-sdk.tar.gz \
             https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz
           sudo mkdir -p /opt/wasi-sdk
           sudo tar -xzf /tmp/wasi-sdk.tar.gz -C /opt/wasi-sdk --strip-components=1
-          curl -sSL https://wasmtime.dev/install.sh | bash
+
+          curl -fsSL -o /tmp/wasmtime.tar.xz \
+            https://github.com/bytecodealliance/wasmtime/releases/download/v27.0.0/wasmtime-v27.0.0-x86_64-linux.tar.xz
+          mkdir -p "$HOME/.wasmtime/bin"
+          tar -xJf /tmp/wasmtime.tar.xz -C "$HOME/.wasmtime/bin" --strip-components=1 \
+            wasmtime-v27.0.0-x86_64-linux/wasmtime
+
+          test -x /opt/wasi-sdk/bin/wasm-ld
+          test -x "$HOME/.wasmtime/bin/wasmtime"
+          "$HOME/.wasmtime/bin/wasmtime" --version
 
       - name: What the module imports
         run: /opt/wasi-sdk/bin/llvm-nm --undefined-only cross/hello-wasi.wasm
