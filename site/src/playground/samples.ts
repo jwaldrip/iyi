@@ -27,8 +27,8 @@
  * manifest is thirteen small entries and is genuinely needed at run time, to
  * check a module's digest before instantiating it. The highlight record is a
  * quarter of a megabyte of listings and belongs to the build. Importing it here
- * once put all of it in the playground's client bundle, measured at 296 KB of
- * JavaScript for a page whose other island is 529 bytes. A site arguing that a
+ * once put all of it in the playground's client bundle, an order of magnitude
+ * more JavaScript than the page's other island. A site arguing that a
  * program should link only what it uses does not get to ship that, so recorded
  * source text is read from `src/lib/highlight.ts` by the build only.
  */
