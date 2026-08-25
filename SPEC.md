@@ -7288,6 +7288,27 @@ Named honestly, so nobody mistakes this draft for complete.
     kemal's own `setup_404`, which `Kemal.run` reaches through a private module
     function whose body travels.
 
+    **`jwt`, measured.** All four boundaries bind and fill — `openssl_ext`,
+    `bindata`, `bindata/asn1`, `jwt` — and a consumer that signs and verifies a
+    token stops on `"open_s_s_l" numbers `Pointer(LibCrypto::Bignum)``.
+    `openssl_ext` reopens `lib LibCrypto` and adds C structs and `fun`s to it,
+    which is this item's remaining open question reached rather than argued.
+
+    It is the sibling of `Reopened` and not the same size. A class's members are
+    declarations the artifact has shapes for; a `lib`'s are C ones — a struct
+    whose fields are `LibC::Int` and pointers to other structs in the same
+    `lib`, and `fun`s with C signatures — and nothing here has a shape for that
+    yet. Deciding it is a piece of design, not a collector.
+
+    Two smaller facts came out of the same measurement, and both read as
+    compiler bugs without being one. A shard is not always one boundary:
+    `bindata` defines `BinData` *and* `ASN1`, the second in a file `jwt`
+    requires separately, so `-e` names a root rather than a shard. And binding
+    into a directory that already holds a *later* boundary gives the earlier one
+    an import edge back to it — the dependency order in `bench/bind_chain.sh` is
+    load-bearing, and a stale directory made three measurements here name the
+    wrong type.
+
 13. ~~**Dependencies and discovery.**~~ **Specified in III.7**: path identity,
     minimal version selection, a manifest and a sums file, source as the primary
     form and the artifact as a signed cache keyed on the four-tuple the format

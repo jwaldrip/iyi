@@ -4,6 +4,29 @@
 
 ### Added
 
+- **`jwt` measured, and what stops it named exactly.** All four boundaries bind
+  and fill — `openssl_ext`, `bindata`, `bindata/asn1` and `jwt` — and a
+  consumer that signs and verifies a token stops on `"open_s_s_l" numbers
+  \`Pointer(LibCrypto::Bignum)\`, and this build cannot name it`. That is Part V
+  item 12's own open question, reached: `openssl_ext` reopens `lib LibCrypto`
+  and adds C structs and `fun`s to it.
+
+  It is the sibling of the `Reopened` work and not the same size. A class's
+  members are declarations the artifact already has shapes for; a `lib`'s are C
+  ones — a struct whose fields are `LibC::Int` and pointers to other structs in
+  the same `lib`, and `fun`s with C signatures — and `TypeDecl` has no shape
+  for any of it. Left as its own piece rather than half-carried.
+
+  Two things came out of measuring it. `bindata` defines **two** top-level
+  namespaces, `BinData` and `ASN1`, and the second lives in its own file that
+  `jwt` requires separately — so a shard is not always one boundary, and
+  `-e` names a root rather than a shard. And binding into a directory that
+  already holds a *later* boundary gives the earlier one an import edge to it:
+  the order in `bench/bind_chain.sh` is load-bearing, and a stale `mods` from a
+  previous run made three measurements here say `ASN1::BER` when the answer was
+  `LibCrypto::Bignum`. Both are the kind of thing that reads as a compiler bug
+  and is not.
+
 - **`Kemal.run` — with no block, the way kemal's README writes it.** The
   overload that takes none is `def self.run(args = ARGV, trap_signal : Bool =
   true)`, whose whole body is `run(nil, args: args, trap_signal: trap_signal)`:
