@@ -6525,12 +6525,16 @@ Named honestly, so nobody mistakes this draft for complete.
     > > type and the field that did it now, because a count says three and a
     > > name says which three.
     > >
-    > > Passing it also opens the next failure, which is why the gate does not
-    > > yet: with the fields carried, `Kemal::LRUCache::Node(K, V)` resolves to
-    > > `Radix::Node(T)` — a name inside kemal's own generic reaching a bound
-    > > boundary's top-level one — and the consumer stops on `wrong number of
-    > > type vars`. That is the nested-name question again, one level further
-    > > in, and it is what the DSL waits on.
+    > > Passing it opened one more, and it was a rewrite rather than a lookup.
+    > > A boundary rewrites references to another boundary's types so the
+    > > consumer reads them as it will see them, and the map is keyed on the
+    > > *simple* name — so `radix` declaring a top-level `Node` made every bare
+    > > `Node` in `Kemal` into `Radix::Node`, `Kemal::LRUCache::Node` included,
+    > > and the consumer stopped on `wrong number of type vars for
+    > > Radix::Node(T) (given 2, expected 1)`. A bare name in a shard's own
+    > > source means its own, so the shard's names come out of the map. The gate
+    > > binds the way a shard's author should now, and the counts beside it are
+    > > **0 types without their fields** all the way down.
     > >
     > > **And `exception_page` filling with 0 units is not a bug.**
     > > `ExceptionPage` is an `abstract class` with no subclass in its own
