@@ -45,7 +45,12 @@ import {
   diagnosticsProvenance,
 } from "../../playground/diagnostics";
 import { diagnosticHtml } from "../../playground/render";
-import { highlightProvenance } from "../../lib/highlight";
+import {
+  highlightProvenance,
+  highlightedLines,
+  recordedText,
+} from "../../lib/highlight";
+import { inkLines } from "../../lib/tokens";
 
 const engine = activeEngine();
 const caps = engine.capabilities();
@@ -80,6 +85,66 @@ if (supports("diagnostics")) {
         "got wrong.",
     );
   }
+}
+
+/* GATE 4 AND GATE 5, and they are here rather than beside `tokens.ts` because
+ * this is where the build already exercises the records and where a gate runs
+ * on every CI build with no tooling that is not already installed.
+ *
+ * What they guard is the one defect the live colouring can have. The editor
+ * asks the compile service for a token stream while somebody types, and the
+ * stream arrives as markup rather than as a promise. If it were painted without
+ * checking, a stream describing a different program would produce a listing
+ * that is entirely plausible and entirely wrong, with every keyword in a place
+ * no compiler put it. So `inkLines` recovers the text out of the stream and
+ * refuses unless it is byte identical to the characters it was given.
+ *
+ * GATE 4: the live path and the recorded path agree. Every recorded listing is
+ * turned back into what a live lexer would actually send, by putting each
+ * `k tok-rule` span back to the bare `k` span the compiler's highlighter emits,
+ * and `inkLines` must then reproduce the recording exactly. That is a direct
+ * check that a program's colouring does not depend on which side of the wire it
+ * came from, which is the whole reason the reflow was moved out of the record.
+ *
+ * GATE 5: it refuses a stream that lies. One character of the recovered text is
+ * changed and `inkLines` must throw. A check that cannot fail is not a check,
+ * and this one is the reason the editor is allowed to paint at all. */
+const RECORDED_EMPHASIS = / class="k tok-rule"/g;
+let liveLinesChecked = 0;
+for (const sample of curatedSamples) {
+  const recording = highlightedLines(sample.path).join("\n");
+  const asSent = recording.replace(RECORDED_EMPHASIS, ' class="k"');
+  const live = inkLines(asSent, sample.path, recordedText(sample.path)).join("\n");
+  if (live !== recording) {
+    throw new Error(
+      `evidence: colouring ${sample.path} from a live token stream does not ` +
+        `reproduce its recorded colouring, so the same program would be ` +
+        `emphasised differently depending on whether the tokens came off the ` +
+        `record or off the wire. The two paths share one renderer precisely so ` +
+        `that cannot happen, and this is the check that says it has.`,
+    );
+  }
+  liveLinesChecked += recording.split("\n").length;
+}
+
+const liar = curatedSamples[0];
+let refusedALiar = false;
+try {
+  inkLines(
+    highlightedLines(liar.path).join("\n").replace(RECORDED_EMPHASIS, ' class="k"'),
+    liar.path,
+    `${recordedText(liar.path)}x`,
+  );
+} catch {
+  refusedALiar = true;
+}
+if (!refusedALiar) {
+  throw new Error(
+    "evidence: inkLines painted a token stream that does not encode the text " +
+      "it was given. That check is the only thing standing between the editor " +
+      "and a listing whose every keyword is in a place no compiler put it, so " +
+      "a build where it does not fire is a build that must not ship.",
+  );
 }
 
 /* The counts this page states about itself. Structural numbers: they are

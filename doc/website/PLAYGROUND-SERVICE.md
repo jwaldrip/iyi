@@ -84,9 +84,17 @@ visitor asks for anything.
     "max_files": 8,
     "compile_timeout_ms": 15000
   },
+  "wants": ["run", "format", "lex"],
   "sandbox": "each compile runs in a disposable container with no network egress and a 15 s cpu cap"
 }
 ```
+
+`wants` is discovery, and the page reads it rather than finding out on a click.
+A want that is not in the array is a control the page renders disabled with the
+missing capability named under it, which is the reduced interface the engine
+contract already describes. **An absent `wants` array means `run` and nothing
+else**, because the conservative reading is the only safe one: a page must not
+offer a control the service will answer `400` to.
 
 `compiler.commit` is the repository commit the service's compiler was built
 from. The page prints it beside a run, because a result whose compiler is
@@ -213,6 +221,70 @@ depends on it.
    goes. `500` is the only status that means the service is broken, and a
    transport failure with no body at all is the other. Those two are the states
    the page reports as the service's fault; nothing else is.
+
+### `POST /v1/lex`
+
+The addition that closes the colouring gap, and the reason the page can drop
+its plain ink fallback whenever a service offers it. Same envelope as
+`/v1/compile`, so the service reuses its own request parser and the page reuses
+its own request builder.
+
+```json
+{
+  "files": [{ "path": "main.iyi", "text": "module main\n\nputs \"hello\"\n" }],
+  "entry": "main.iyi",
+  "client": "iyi-site 0108c8caf"
+}
+```
+
+Answer, `200`:
+
+```json
+{ "ok": true, "html": "<span class=\"k\">module</span> main\n" }
+```
+
+`html` is the output of the compiler's own highlighter,
+`Crystal::SyntaxHighlighter::HTML`, over the submitted text. That is the same
+producer that writes `site/records/highlight.json`, which is what makes live
+colouring the same grammar rather than a second one: the recorded path and the
+live path then run through one renderer in the page and cannot disagree about
+what a token is.
+
+A service that would rather not build markup may answer with a flat token
+stream instead, in document order, `cls` empty for text the lexer did not
+classify. The page folds it into the same string, so both shapes land on one
+renderer.
+
+```json
+{ "ok": true, "tokens": [{ "cls": "k", "text": "module" }, { "cls": "", "text": " main\n" }] }
+```
+
+Four rules, and the first is the one that matters.
+
+1. **The markup must encode the submitted text exactly.** The page strips the
+   spans, unescapes the entities, and refuses to paint unless what it recovers
+   is byte identical to what it sent. So the service must not trim, must not
+   normalise line endings, and must not drop a trailing newline. This is the
+   same check `site/scripts/records.mjs` already makes against the recorded
+   listings, and it exists because painting one program's tokens over another
+   program's characters is a silently wrong listing, which is the defect this
+   whole pipeline is built to prevent.
+2. **No nested spans.** The page reflows a flat token stream line by line and
+   throws on a span inside a span rather than dropping the outer class. The
+   recorded listings are flat; the live stream has to be too.
+3. **The rule word emphasis is the site's, not the service's.** The service
+   classes `module`, `pub`, `trait` and the rest exactly as it classes `if` and
+   `while`. The page adds `tok-rule` afterwards from
+   `site/src/lib/rule-words.json`, which is the one list both the recorder and
+   the browser read. Two passes, and the split is why the emphasis cannot
+   invent a token the compiler did not see.
+4. **Lexing is best effort and silent when it fails.** No service, no `lex` in
+   `wants`, a refusal, a transport failure or an unparseable body all mean the
+   same thing to the page: plain ink, and nothing said to the visitor. A
+   console line every time a keystroke outran a network round trip would be
+   noise about the page rather than information about the program. The page
+   debounces, and drops a stale answer for text that has since changed, so the
+   service needs no cancellation, no request ids and no ordering guarantee.
 
 ### Errors
 
