@@ -474,11 +474,35 @@ require "./file"
     # O(1) list operations, and pure doubling is what keeps the per-class
     # table to one page; the waste against the request is under half in the
     # worst case, the standing trade for never splitting or coalescing. The
-    # class is the payload: a chunk is the class plus the eight bytes under
-    # the user pointer, which carry the requested size exactly as the bump
-    # allocator's do, so `realloc` still learns how much to copy from the one
-    # place that knows, and every user pointer stays 8-aligned. A request
-    # over 1 MiB is large and gets a mapping of its own.
+    # class is the payload: a chunk is the class plus the twenty-four bytes
+    # under the user pointer, and every user pointer stays 8-aligned. A
+    # request over 1 MiB is large and gets a mapping of its own.
+    #
+    # Those twenty-four bytes are the object header, and GC_DESIGN.md's Stage
+    # 5 is where they became real. With `P` the pointer the program holds:
+    #
+    #     P-24   size       u64   the requested size, `realloc`'s contract
+    #     P-16   type_id    u32   index into the program's layout table
+    #     P-12   pad        u32
+    #     P-8    mark_word  u64   colour, flags, reserved; zero is white
+    #     P      user data
+    #
+    # The eight-byte size is Stage 2's, moved down rather than changed: it is
+    # still the only place that knows how much to copy when `realloc` crosses
+    # a class, and it is still read from under the pointer. The sixteen bytes
+    # above it are `Iyi::Collector::ObjectHeader` laid out exactly as
+    # `src/compiler/iyi/object_header.cr` defines it, because the compiler
+    # emits the type id into that word and this file reads it back.
+    #
+    # `malloc` cannot write the type id: it is handed a size and nothing
+    # else. Codegen writes it at the allocation site, right after the call
+    # returns, for every object allocated as an instance of a type. Every
+    # other allocation — a `Pointer(T).malloc` buffer, a closure's
+    # environment — keeps the zero the allocator leaves there, and zero is
+    # the sentinel for "no layout": the mark loop word-scans such an object
+    # conservatively instead of trusting a map it does not have. Zero is safe
+    # to spend that way because the compiler's numbering gives it to `Nil`
+    # alone, which is never allocated and never has a layout.
     #
     # One arena is one contiguous 16 MiB mmap region holding chunks of a
     # single class. Sixteen rather than thirty-two because address space is
@@ -495,8 +519,8 @@ require "./file"
     # Allocation pops the class's free list; with the list empty it carves
     # the next fresh chunk from the class's fill arena, and with the arena
     # spent it maps another and links it in. Free reads the class back out of
-    # the eight bytes under the pointer and pushes the chunk onto that
-    # class's list. Neither walks the arena list: the list exists to be
+    # the size the header carries and pushes the chunk onto that class's
+    # list. Neither walks the arena list: the list exists to be
     # traversed, not to serve the hot path.
     #
     # The clearing contract is the stage's correctness point, because reuse
@@ -519,16 +543,27 @@ require "./file"
     # those bytes, so their initial value is no one's contract, and a reused
     # chunk may come back dirty on that path on purpose.
     #
-    # `realloc` keeps the eight-byte contract: within one class, growing or
+    # The header's own two words are the exception, and they are cleared on
+    # every reuse whichever path asked. They are not the caller's bytes, they
+    # are the collector's: a stale type id names the layout of whoever held
+    # the chunk last, which is a map read over an object that does not have
+    # that shape, and a stale mark word hands out an object that is already
+    # black and will never be scanned again. Both are false negatives, which
+    # is the one class of error this collector cannot tolerate, so the clear
+    # is unconditional there.
+    #
+    # `realloc` keeps the size-header contract: within one class, growing or
     # shrinking, it returns the same chunk with the header rewritten; across
     # classes it allocates, copies the smaller of the two requested sizes,
     # and frees the old chunk. A null pointer still means allocate, through
     # the clearing path, which is what `GC_realloc`'s null means.
     #
     # Large objects, over the top class, get one mmap region each and a node
-    # on a separate list: the list's next pointer, the mapped length and the
-    # requested size in the twenty-four bytes under the user pointer, with
-    # the requested size in the usual eight so `realloc` reads one layout.
+    # on a separate list: the list's next pointer and the mapped length in
+    # the sixteen bytes under the object header, so the forty bytes below a
+    # large object's user pointer are next, mapped, then the same
+    # size/type_id/mark_word header a class chunk carries. `realloc` and
+    # `free` therefore read one layout for both.
     # Free unlinks the node and releases the mapping with `munmap`, checked
     # the way `__iyi_mmap` is checked, because a release that failed quietly
     # would leak the mapping with the node that named it already gone.
@@ -640,6 +675,19 @@ require "./file"
       DIR_LEN = 4096_u64
       FILL = 17
 
+      # The object header, named once. `HEADER` is what sits between a chunk's
+      # head and the pointer the program holds: the eight-byte size plus the
+      # sixteen-byte `ObjectHeader`. `OFF_TYPE` and `OFF_MARK` are the type id
+      # and the mark word, as offsets from the chunk head, which is the same
+      # thing as P-16 and P-8 read from the other end. `LARGE_USER` is the
+      # distance from a large object's node to its user pointer: the node's
+      # next and mapped words, then the same header.
+      HEADER = 24_u64
+      OFF_SIZE = 0_u64
+      OFF_TYPE = 8_u64
+      OFF_MARK = 16_u64
+      LARGE_USER = 40_u64
+
       OFF_NEXT = 0_u64
       OFF_MAP = 8_u64
       OFF_CHUNK = 16_u64
@@ -684,11 +732,11 @@ require "./file"
       end
 
       def self.alloc(size : UInt64) : Void*
-        Pointer(Void).new(take(size, true) + 8)
+        Pointer(Void).new(take(size, true) + HEADER)
       end
 
       def self.alloc_atomic(size : UInt64) : Void*
-        Pointer(Void).new(take(size, false) + 8)
+        Pointer(Void).new(take(size, false) + HEADER)
       end
 
       def self.take(size : UInt64, clear : Bool) : UInt64
@@ -698,8 +746,13 @@ require "./file"
         head = table[index]
         if head != 0
           table[index] = read64(head)
-          clear_block(head + 8, payload(index)) if clear
-          write64(head, size)
+          # The type id and the mark word go first, on both paths: they are
+          # the collector's words rather than the caller's, and a stale one
+          # is a live object the mark loop misses.
+          write64(head + OFF_TYPE, 0_u64)
+          write64(head + OFF_MARK, 0_u64)
+          clear_block(head + HEADER, payload(index)) if clear
+          write64(head + OFF_SIZE, size)
           return head
         end
         carve(table, size, index)
@@ -714,13 +767,13 @@ require "./file"
         cursor = read64(arena + OFF_CURSOR)
         write64(arena + OFF_CURSOR, cursor + read64(arena + OFF_CHUNK))
         write64(arena + OFF_LEFT, read64(arena + OFF_LEFT) - 1)
-        write64(cursor, size)
+        write64(cursor + OFF_SIZE, size)
         cursor
       end
 
       def self.map_arena(index : Int32) : UInt64
         base = __iyi_mmap(MAP).address
-        chunk = payload(index) + 8
+        chunk = payload(index) + HEADER
         write64(base + OFF_NEXT, @@arenas)
         write64(base + OFF_MAP, MAP)
         write64(base + OFF_CHUNK, chunk)
@@ -731,18 +784,18 @@ require "./file"
       end
 
       def self.take_large(size : UInt64) : UInt64
-        mapped = size + 24
+        mapped = size + LARGE_USER
         base = __iyi_mmap(mapped).address
-        write64(base, @@large)
-        write64(base + 8, mapped)
-        write64(base + 16, size)
+        write64(base + OFF_NEXT, @@large)
+        write64(base + OFF_MAP, mapped)
+        write64(base + 16 + OFF_SIZE, size)
         @@large = base
         base + 16
       end
 
       def self.free(pointer : Void*) : Nil
         return if pointer.address == 0
-        head = pointer.address - 8
+        head = pointer.address - HEADER
         size = read64(head)
         if size <= TOP
           index = class_index(size)
@@ -774,14 +827,17 @@ require "./file"
       end
 
       # Same-chunk growth within a class, allocate-and-copy across one,
-      # because the old size rides in the eight bytes under the pointer,
-      # which is the only place that knows it.
+      # because the old size rides under the object header, which is the only
+      # place that knows it. The new chunk's type id stays zero, which is
+      # right: a reallocated buffer is raw memory whose old map, if it had
+      # one, described a different number of bytes, and zero means the mark
+      # loop word-scans it conservatively instead.
       def self.realloc(pointer : Void*, size : UInt64) : Void*
         return alloc(size) if pointer.address == 0
-        head = pointer.address - 8
+        head = pointer.address - HEADER
         old_size = read64(head)
         if old_size <= TOP && size <= TOP && class_index(old_size) == class_index(size)
-          write64(head, size)
+          write64(head + OFF_SIZE, size)
           return pointer
         end
         new_pointer = alloc(size)
@@ -831,7 +887,7 @@ require "./file"
         address = pointer.address
         node = @@large
         while node != 0
-          if address >= node + 24 && address < node + read64(node + 8)
+          if address >= node + LARGE_USER && address < node + read64(node + OFF_MAP)
             return node
           end
           node = read64(node)
@@ -1317,15 +1373,15 @@ require "./file"
           head = first + (word - first).unsafe_div(chunk) * chunk
           return 0_u64 if head >= IyiHeap.arena_cursor(arena)
           return 0_u64 if free_listed?(head, chunk)
-          return head + 8
+          return head + IyiHeap::HEADER
         end
         node = IyiHeap.containing_large(candidate)
-        return node + 24 if node != 0
+        return node + IyiHeap::LARGE_USER if node != 0
         0_u64
       end
 
       def self.free_listed?(head : UInt64, chunk : UInt64) : Bool
-        node = IyiHeap.directory[IyiHeap.class_index(chunk - 8)]
+        node = IyiHeap.directory[IyiHeap.class_index(chunk - IyiHeap::HEADER)]
         while node != 0
           return true if node == head
           node = IyiHeap.read64(node)
