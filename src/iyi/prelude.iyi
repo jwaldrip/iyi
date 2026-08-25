@@ -1496,6 +1496,14 @@ require "./file"
       @@queue_words : UInt64 = 0_u64
       @@queue_len : UInt64 = 0_u64
 
+      # What the last sweep reclaimed and kept, and how many collections have
+      # run. Literal initializers, so codegen folds them to a static zero the
+      # way every other piece of state in this file does.
+      @@swept : UInt64 = 0_u64
+      @@kept : UInt64 = 0_u64
+      @@bytes_freed : UInt64 = 0_u64
+      @@collections : UInt64 = 0_u64
+
       def self.colour(base : UInt64) : UInt64
         IyiHeap.read64(base - 8_u64) & COLOUR
       end
@@ -1595,6 +1603,103 @@ require "./file"
           recolour(node + IyiHeap::LARGE_USER, WHITE)
           node = IyiHeap.large_next(node)
         end
+      end
+
+      # iyi: GC_DESIGN.md Stage 6, the sweep. Stage 5 decided what is garbage;
+      # this is where the memory comes back. One walk over every chunk that has
+      # been carved: a white object is unreachable, so its chunk goes on its
+      # class's free list, and a black one survives and is repainted white for
+      # the next cycle. Repainting as it goes is why sweep does not need a
+      # second pass, and why `unmark` above is only the exercise's tool.
+      #
+      # A chunk already on a free list is skipped rather than freed again. It is
+      # white, because nothing marked it and nothing owns it, and freeing it
+      # twice would put one chunk on the list twice, which is the same memory
+      # handed to two callers. `free_listed?` is that check, and it is why this
+      # loop cannot simply trust the colour.
+      #
+      # A large object's `next` is read before the node is released, because
+      # releasing it unmaps the memory the link lives in.
+      #
+      # What is not here, and why. **Finalizers**: nothing in this language
+      # defines one. There is no `def finalize` anywhere in `src/iyi` or
+      # `samples/iyi`, so a finalizer queue would be a mechanism no program
+      # could put an entry in, which is the shape SPEC.md III.4.8 refused for a
+      # concurrency marker and the shape this collector has refused twice
+      # already. **Weak references**: the same answer. They are registration
+      # based and the standard library's `WeakRef` lives on the `--crystal`
+      # side, so there is no table here to walk and null out. Both wait on the
+      # language having the feature rather than on the collector.
+      def self.sweep : Nil
+        @@swept = 0_u64
+        @@kept = 0_u64
+        @@bytes_freed = 0_u64
+
+        arena = IyiHeap.first_arena
+        while arena != 0
+          chunk = IyiHeap.arena_chunk(arena)
+          cursor = arena + IyiHeap::HEAD
+          stop = IyiHeap.arena_cursor(arena)
+          while cursor < stop
+            base = cursor + IyiHeap::HEADER
+            unless IyiRoots.free_listed?(cursor, chunk)
+              if colour(base) == WHITE
+                @@bytes_freed = @@bytes_freed + IyiHeap.read64(cursor + IyiHeap::OFF_SIZE)
+                @@swept = @@swept + 1_u64
+                IyiHeap.free(Pointer(Void).new(base))
+              else
+                recolour(base, WHITE)
+                @@kept = @@kept + 1_u64
+              end
+            end
+            cursor = cursor + chunk
+          end
+          arena = IyiHeap.arena_next(arena)
+        end
+
+        node = IyiHeap.first_large
+        while node != 0
+          following = IyiHeap.large_next(node)
+          base = node + IyiHeap::LARGE_USER
+          if colour(base) == WHITE
+            @@bytes_freed = @@bytes_freed + IyiHeap.read64(node + 16_u64 + IyiHeap::OFF_SIZE)
+            @@swept = @@swept + 1_u64
+            IyiHeap.free(Pointer(Void).new(base))
+          else
+            recolour(base, WHITE)
+            @@kept = @@kept + 1_u64
+          end
+          node = following
+        end
+
+        @@collections = @@collections + 1_u64
+      end
+
+      # One collection: decide, then reclaim.
+      def self.collect : Nil
+        mark
+        sweep
+      end
+
+      # What the last sweep did. GC_DESIGN.md Stage 6 asks for statistics and
+      # this is the honest subset: counted as the walk went rather than sampled
+      # afterwards. Pause time and a cumulative allocation total want a clock
+      # and a hook in the hot path, and neither is worth adding before there is
+      # something that reads them.
+      def self.swept : UInt64
+        @@swept
+      end
+
+      def self.kept : UInt64
+        @@kept
+      end
+
+      def self.bytes_freed : UInt64
+        @@bytes_freed
+      end
+
+      def self.collections : UInt64
+        @@collections
       end
     end
   {% elsif flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
