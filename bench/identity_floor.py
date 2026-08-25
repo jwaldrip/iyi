@@ -127,6 +127,12 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r"CRYSTAL_DAEMON_(BIN|SOCKET)", "the other command surface's own daemon"),
     (r"Crystal (caches|runs|takes)", "a sentence about the other language"),
     (r"Crystal::EventLoop", "a class inside Crystal's standard library"),
+    # A probe written in Crystal, quoted by doc/website/PLAYGROUND-FEASIBILITY.md
+    # as the one line that reproduces the wasm32-wasi link defect: a Crystal
+    # prelude program collides with wasi-libc's `crt1-command.o` over `_start`,
+    # which iyi's own prelude deliberately does not define. The program is
+    # Crystal's, and so is the string it prints.
+    (r'puts "hi from crystal"', "a Crystal probe program's own source line"),
     (
         r"Crystal's (own|library|licence|license|compiler|semantics|stdlib|"
         r"standard|prelude|codegen|cache|interpreter|fibers|ecosystem|list|"
