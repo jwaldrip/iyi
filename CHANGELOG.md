@@ -4,6 +4,28 @@
 
 ### Added
 
+- **A private method a travelling body calls travels with it.** A plain type's
+  methods are machine code in the artifact, so a consumer needs no declaration
+  for what they call — except where a *body* travels, and a block-taking
+  method's does, because its machine code is the caller's.
+  `Kemal::RouteHandler#add_route` calls `add_to_radix_tree`, which the shard
+  keeps to itself, and the consumer compiling that body said `undefined
+  method`.
+
+  Which ones is a call graph, and the bodies are text: a private method travels
+  if its name stands in one of them as a word, and then what *its* body calls
+  travels too, to a fixed point. Reaching too far costs a declaration nobody
+  uses; reaching too short is the error above, so it errs long. It travels as
+  `private def` — reachable from the bodies beside it and from nowhere else,
+  which is what it was — and the keep file does not name one: its parameters
+  travel as the source wrote them, so there is not always a type to say
+  `uninitialized` of.
+
+  A generic's methods all cross now for the same reason: every one of them is
+  compiled by the consumer, so what one *returns* is the consumer's to infer.
+  Requiring an answer had dropped `Radix::Tree(T)#add`, and a consumer holding a
+  `@routes` had nothing to call on it.
+
 - **A generic type can be built from its boundary.** Its `new` is never carried
   — it is synthesised per instantiation and the consumer makes its own — and
   its `initialize` was not carried in `new`'s place, so a consumer could read a

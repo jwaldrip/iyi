@@ -6554,13 +6554,24 @@ Named honestly, so nobody mistakes this draft for complete.
     > > `private def` with their bodies, which is what every one of a generic's
     > > methods already is.
     > >
-    > > A *plain* type's private methods still do not travel, and that is the
-    > > line: its bodies do not either, so a declaration would be a name with
-    > > nothing under it. Which is why `add_route` — a plain type's
-    > > block-taking method, whose body does travel — still waits on
-    > > `add_to_radix_tree`. The rule wants to be "a private method travels when
-    > > something that travels calls it", and that is a call graph rather than a
-    > > flag.
+    > > A *plain* type's private methods travel only where something that
+    > > travels calls them, which is the rule that shape asks for — and the
+    > > bodies are text, so the call graph is a word search. A private method
+    > > travels if its name stands in a travelling body as a word, and then what
+    > > *its* body calls travels too, to a fixed point. Reaching too far costs a
+    > > declaration nobody uses; reaching too short is `undefined method`, so it
+    > > errs long. `add_to_radix_tree` crosses now.
+    > >
+    > > **What the router waits on now is a symbol rather than a name.** The
+    > > consumer compiles `Tree#add`, whose body calls the private three-argument
+    > > `add` beside it, and *declares* that one instead of compiling it —
+    > > `Symbols` says the artifact has it. It does, in a sense that does not
+    > > link: a block-taking method is emitted private to the unit that called
+    > > it, and what the closure copies in beside it is emitted the same way. A
+    > > symbol emitted with internal linkage is not one a consumer can be told
+    > > about, and telling it is what `undefined symbol:
+    > > *Radix::Tree(Kemal::Route)@Radix::Tree(T)#add<…>` is. That is the next
+    > > thing, and it is one line of the recording rule rather than a rule.
     > >
     > > Passing it opened one more, and it was a rewrite rather than a lookup.
     > > A boundary rewrites references to another boundary's types so the
