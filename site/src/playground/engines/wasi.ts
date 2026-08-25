@@ -23,14 +23,20 @@
  * `compile` capability it does not have. It never edits, ignores, or pretends
  * to have used what the visitor typed.
  *
- * WHY IT CANNOT CHECK WHAT YOU TYPE, which is a stronger statement than "not
- * yet". The compiler reports an error by raising, and `raise` on `wasm32` does
- * not unwind, so a compiler compiled to this target cannot hand a diagnostic
- * back to its caller: it can only die. The investigation is written up on
- * branch `docs/playground-feasibility` at
- * `doc/website/PLAYGROUND-FEASIBILITY.md`. That is why `diagnostics` below are
- * sourced from a recording of the real compiler rather than computed here, and
- * why the page says so in a sentence rather than in a footnote.
+ * WHY IT CANNOT CHECK WHAT YOU TYPE. Because it is not a compiler and never
+ * calls one: it fetches a module somebody else compiled and runs it. That is
+ * the whole reason, and it is a property of this engine rather than of the
+ * target. `engines/remote.ts` is the one that compiles, by sending source to a
+ * service, and it exists because a page has no linker rather than because of
+ * anything to do with how errors are reported.
+ *
+ * An earlier version of this comment gave a different reason, that a compiler
+ * built for `wasm32` could not report a diagnostic at all. That was true when
+ * it was written and is not now: the exception wall is cleared, `rescue` works
+ * on `wasm32`, and section 11 of `doc/website/PLAYGROUND-FEASIBILITY.md` has
+ * the measurement. Left recorded rather than quietly deleted, because a
+ * comment that was load bearing and stopped being true is worth one sentence
+ * of history.
  *
  * WHY THAT COSTS NOTHING WHEN IT IS FIXED. Diagnostics leave this engine as
  * `diagnostic` events on the same stream as everything else, so the pane that
@@ -67,7 +73,7 @@ const MAX_SOURCE_BYTES = 64 * 1024;
 const NOTES: string[] = [
   "this engine runs precompiled modules and does not compile: there is no iyi compiler in this page, so the text in the editor is never the program that runs",
   `each module was compiled and linked on ${wasmProvenance.machine} by ${wasmProvenance.compiler} at commit ${wasmProvenance.commit.slice(0, 12)}, and its sha256 is checked against site/records/wasm/manifest.json before it is instantiated`,
-  "diagnostics are recorded, not live: the compiler reports errors by raising, and raise on wasm32 does not unwind, so a compiler on this target cannot return a diagnostic to its caller (doc/website/PLAYGROUND-FEASIBILITY.md)",
+  "diagnostics here are recorded, not live: this engine runs modules the compiler already produced and never compiles anything, so the only compiler output it can show is output that was captured when they were produced (doc/website/PLAYGROUND-SERVICE.md)",
   "stdout arrives in the exact chunks fd_write produced, in that order, but after _start returns: suspending a wasm call needs Atomics.wait on a SharedArrayBuffer, and GitHub Pages cannot send the headers that would make this document cross-origin isolated",
   "there is no stdin: reads from fd 0 succeed and report end of file, which is what a program sees when it is run with its input redirected from nothing",
   "there is no filesystem: no directory is preopened, so every path call fails the way it would under a real host with no capabilities granted",

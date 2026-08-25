@@ -362,13 +362,17 @@ is beaten outright.
 
 ### Where iyi loses
 
-No community, no package manager, and the lessons are recordings rather than a
-live compiler. Gleam ships its whole compiler as wasm and checks what you type;
-iyi cannot, because `raise` on wasm32 prints and exits instead of unwinding,
-and iyi reports diagnostics by raising. That is measured, not assumed:
-`doc/website/PLAYGROUND-FEASIBILITY.md` names the six blockers cleared and the
-one that stands. The site says this on the playground page in one line rather
-than letting a visitor discover it by typing.
+No community and no package manager. Gleam ships its whole compiler as wasm and
+compiles what you type in the page; iyi sends it to a compile service instead,
+because a browser has no linker and producing a program from a module needs
+one. The gap narrowed while this site was being built: work on
+`wasm/compiler-in-browser` cleared the wasm exception wall, so a type checker in
+the page is reachable in a way it was not, while executing a visitor's program
+there still is not, because the only interpreter that needs no LLVM runs iyi's
+macro language and refuses every sample program at its module header. That
+branch carries the measurements and this document gains their citations when it
+lands. The playground page says which half is which in one line rather than
+letting a visitor find out by typing.
 
 ### The structural moves this study produced
 

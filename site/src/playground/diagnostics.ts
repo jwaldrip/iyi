@@ -1,12 +1,21 @@
 /**
  * Recorded compiler diagnostics, turned into engine events.
  *
- * WHY THESE ARE RECORDED. The playground cannot check what a visitor types,
- * and the reason is structural rather than unfinished work: iyi's compiler
- * reports an error by raising, and `raise` on `wasm32` does not unwind, so a
- * compiler compiled to this target cannot hand a diagnostic back to whatever
- * called it. It can only die. The investigation is on branch
- * `docs/playground-feasibility` at `doc/website/PLAYGROUND-FEASIBILITY.md`.
+ * WHY THESE ARE RECORDED. They are not a substitute for a checker that could
+ * not exist. They are the evidence page's material: real programs that are
+ * really wrong, and the real compiler's refusal of each one, kept beside the
+ * rule it enforces.
+ *
+ * The reason a page cannot compile for itself is the linker. Producing a
+ * program from a module shells out to a linker driver, and a page has no
+ * subprocesses, so the compile happens on a service and the module runs here.
+ * That is `doc/website/PLAYGROUND-SERVICE.md`.
+ *
+ * The older reason, that the compiler could not report a diagnostic from wasm
+ * at all, no longer holds: the exception wall is cleared and `rescue` works on
+ * `wasm32`, which is section 11 of
+ * `doc/website/PLAYGROUND-FEASIBILITY.md`. A checker in the page is reachable
+ * now, and when one lands it feeds this same event path.
  *
  * WHAT IS HERE INSTEAD. `site/records/break/*.iyi` are real programs that are
  * really wrong, committed to this repository. The recorder runs the real

@@ -37,24 +37,35 @@ One finding from that work outlives it and is repeated below, because it is
 about the language rather than about the service: compiling untrusted iyi is
 code execution.
 
-## The blocker, measured
+## Why a service, and not the browser
 
-On `wasm32`, `raise` prints and exits instead of unwinding. iyi's compiler
-reports every error by raising. So a compiler compiled for a browser cannot hand
-a diagnostic back to whatever called it; it can only die. The investigation is
-`doc/website/PLAYGROUND-FEASIBILITY.md`, which names six blockers cleared and
-this one standing.
+A browser has no iyi compiler and no linker, and that is the whole of it.
+Running a program a visitor typed means producing a module and then producing a
+program out of it, and the second step shells out to a linker driver
+(`src/compiler/iyi/compiler.cr`, the `wasm32` branch, which names the driver
+rather than `wasm-ld` because a wasi program is more than the module). There
+are no subprocesses in a page, so the link cannot happen there. That reason is
+independent of anything the compiler's exception handling does, and it is why
+this architecture compiles on a service and runs in the tab.
 
-Clearing it is language work, not page work, and it is under way. The sequence
-that work is following:
+**Two measurements arriving on another branch, named here rather than quoted.**
+Work on `wasm/compiler-in-browser` has cleared the wasm exception wall, so
+`rescue` works on `wasm32` and a front end in the page can report a diagnostic
+rather than dying. The same work measured the only interpreter that needs no
+LLVM and no linker, and found that it runs iyi's macro language rather than the
+language: it refuses every program in `samples/iyi/`, each one on its module
+header. Neither the falsifier nor its record is in this tree yet, so neither is
+cited here as a path and neither number is repeated: this document states them
+as the reason the split below did not move, and gains their citations when that
+branch lands. `site/scripts/blocker.mjs` is the gate that will demand the
+update, because it fails the build the moment the record says the wall is down
+while the prose still says it stands.
 
-1. Clear the exception wall on `wasm32`, so a raise can be caught.
-2. The front end: parse and type-check in the page.
-3. Determine whether the AST interpreter can execute real programs with no LLVM
-   and no linker, which is the difference between a playground that reports
-   errors and one that also runs what it accepted.
-
-Nothing in the page should be built to assume more than stage 1 has landed.
+What that changes is one half and not the other. Type checking in the page
+becomes reachable; executing a visitor's program does not, because the linker
+reason above is untouched by it. Those were one question and they are now two,
+which is why this document rests on the linker rather than on the way errors
+are reported.
 
 ## Compiling untrusted iyi is code execution, and that does not go away
 
