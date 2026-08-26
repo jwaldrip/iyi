@@ -7,6 +7,11 @@ same as any Crystal project.
 
 It builds two ways, and the point of the sample is that both answer the same.
 
+The commands below are written from a checkout. This sample ships in the
+tarball too, and the first half works there with the paths adjusted; the second
+does not, because `crystal tool bind` is part of the compiler's own checkout
+and the tarball carries `iyi` alone.
+
 ## From source
 
 kemal is compiled beside the program, which is what `--crystal` means: iyi's

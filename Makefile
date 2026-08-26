@@ -356,6 +356,15 @@ iyi-tarball: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN) check_iyi_is_release
 	$(INSTALL) -m 644 SPEC.md "$(O)/iyi-package/share/iyi/SPEC.md"
 	cp -R -p samples/iyi "$(O)/iyi-package/share/iyi/samples"
 	cp -R -p samples/crystal "$(O)/iyi-package/share/iyi/samples/crystal"
+# A sample that depends on a shard leaves what it builds beside it, and the
+# copy above takes whatever is on disk. `samples/crystal/kemal` had 82 MB of
+# `mods/`, a fetched `lib/` and a linked binary sitting in it after one run —
+# none of it the sample, all of it in the tarball. Pruned by what it is rather
+# than by name, so the next sample of that shape is covered too.
+	find "$(O)/iyi-package/share/iyi/samples" \
+	     \( -name lib -o -name mods \) -type d -prune -exec rm -rf {} +
+	find "$(O)/iyi-package/share/iyi/samples" -type f -perm -u+x -delete
+	find "$(O)/iyi-package/share/iyi/samples" -type d -empty -delete
 	tar -czf "$(O)/$(IYI_PACKAGE).tar.gz" -C "$(O)/iyi-package" .
 	@echo "wrote $(O)/$(IYI_PACKAGE).tar.gz"
 
