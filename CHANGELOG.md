@@ -4,6 +4,38 @@
 
 ### Added
 
+- **Eleven of the library's namespaces cross, and each is a gate.** `JSON`,
+  `URI` and `Log` were already there; `Path` and `Time` joined with the
+  constant finding below, and `Base64`, `UUID`, `INI`, `CSV`, `Colorize` and
+  `XML` found nothing at all. That last part is worth having: a gate that holds
+  only the cases that once broke says nothing about the ones that never did,
+  and "never did" stops being true the moment somebody changes how a boundary
+  is written. Eleven namespaces, bound and consumed, in two minutes.
+
+- **A module's own instance method travels as a body.** It is compiled once per
+  including type, which is the fourth thing IV.1g says has no single symbol to
+  key on — and the producer emits one only for the including types its own code
+  instantiated. `db` has them because `db`'s code closes all three of its
+  `Disposable`s; `module Gen` with a `def next_pair` and a `class Fixed` that
+  includes it has none, and the link ended on
+  `*Gen::Fixed@Gen#next_pair:Tuple(UInt32, UInt32)`.
+
+  The keep file learned the other half. These are declared as the module's, and
+  an iyi module header is `extend self`, so a consumer reads them on the module
+  *and* on whatever includes it — which is what an including type needs and is
+  not a claim about the shard. `module Random` writes `def new_seed` without
+  `self.`, and `Random` answers to no such name; called in the keep file, which
+  is compiled against the shard's own source, it stopped the fill build on
+  `undefined method 'new_seed' for Random:Module`.
+
+- **A module used as a value has no name a declaration can write.**
+  `Random::Secure` is `module Secure; extend self; include Random; end`, and
+  `Random#split` answers `(Random::PCG32 | Random::Secure:Module)`. The
+  nameability scan read `Secure` and `Module` as two names, found both
+  nameable, and wrote it down; the consumer's parser stopped on `expecting
+  token ')', not 'Module'`. One colon, not two — `Foo::Module` is a type
+  somebody could declare.
+
 - **`Path` and `Time` cross, and a constant has two spellings.** A constant
   read before it is initialised is reached through `~NAME:const_read`, a
   function in the main module that runs the initialiser once; one initialised
