@@ -94,7 +94,7 @@ that prints each one is named beside it.
 
 **Where it loses**, said here rather than left to be found: a full build of a
 6,912-line program from scratch is 0.24 s against `go build`'s 0.09 s. The
-current compiler reports `0.3.0-dev`. iyi's own prelude has no IO beyond
+current compiler reports `0.3.0`. iyi's own prelude has no IO beyond
 `puts` and no concurrency; `--crystal` supplies Crystal's standard library,
 IO, `require` and the ecosystem. Neither mode supplies a package manager.
 
@@ -335,11 +335,11 @@ pair for yours. The line counts beside them are `wc -l` and do not move, and
 
 ## Getting it
 
-The released tarball is 0.2.0. A build from current source reports
-`0.3.0-dev`.
+The released tarball is 0.3.0, and a build from current source reports the
+same.
 
 ```console
-$ tar -xzf iyi-0.2.0-linux-x86_64.tar.gz -C ~/.local
+$ tar -xzf iyi-0.3.0-linux-x86_64.tar.gz -C ~/.local
 $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 
@@ -733,7 +733,7 @@ An artifact is readable:
 ```console
 $ iyi mod dump mods/kemal/router.iyimod | head -20
 module        kemal/router
-compiler      0.3.0-dev+...
+compiler      0.3.0
 ...
 exports
   pub struct Context
@@ -808,8 +808,9 @@ swept through it, Kemal among them. There is still no package manager: point
 R-1 for the required shard, which is compiled from source rather than read as
 declarations.
 
-**Is the syntax stable?** No. The current compiler reports `0.3.0-dev`, and
-the parts of SPEC.md marked PROPOSED are exactly the parts that will move.
+**Is the syntax stable?** No. 0.3.0 is a release of a language that is still
+moving, and the parts of SPEC.md marked PROPOSED are exactly the parts that
+will move.
 
 **Which targets are checked?** CI cross-compiles and audits the emitted object
 for seven triples: Linux x86_64 and aarch64, macOS x86_64 and aarch64, Windows
@@ -820,8 +821,7 @@ that the test suite runs on every target.
 **Who is this for right now?** Somebody who wants to check the claim, read the
 design, or argue with a number. `--crystal` moved the other line: a program
 that requires shards is buildable today, and what should keep you away is the
-language rather than the library — master is 0.3.0-dev, and the parts of
-SPEC.md
+language rather than the library — master is 0.3.0, and the parts of SPEC.md
 marked PROPOSED are the parts that will move under you.
 
 ## What is not here
@@ -894,8 +894,10 @@ marked PROPOSED are the parts that will move under you.
 - **Artifacts are identified by released version, target and flag set.** Builds
   of the same released version read each other's `.iyimod` files only on the
   same target under the same flags; anything else is rejected and rebuilt,
-  never migrated. The current `0.3.0-dev` is not a released version, keeps the
-  build commit in its identity, and interoperates only with itself.
+  never migrated. A `-dev` build is not a released version: it keeps the build
+  commit in its identity and interoperates only with itself. 0.3.0 is
+  released, so its artifacts carry the version alone and any 0.3.0 build on
+  the same target and flags reads them.
 - **A derive reads upwards, and an artifact carries more than the rule says.**
   `derive <macro>` in a class or struct body runs once, in the module that
   declares the type, and what it generates travels in that module's artifact.
@@ -934,7 +936,7 @@ iyi's compiler is built on the Crystal compiler and carries Crystal's licence
 and copyright: Apache 2.0, Copyright 2012-2026 Manas Technology Solutions. See
 [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md). Everything here that is not
 Crystal's is a change to Crystal's source. `iyi --version` reports
-`iyi 0.3.0-dev (built on Crystal 1.22.0-dev)`: the language first, then what it
+`iyi 0.3.0 (built on Crystal 1.22.0-dev)`: the language first, then what it
 is built on. The compatibility binary in the same checkout still reports itself
 as `Crystal 1.22.0-dev`, because that is what it is. This paragraph is a licence
 obligation and an accurate one; the language above it is iyi's own.
