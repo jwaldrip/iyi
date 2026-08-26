@@ -777,9 +777,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 94,010 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 94,175 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
-| Specs | 21,146 lines | 8,556 for iyi |
+| Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |
@@ -7573,15 +7573,65 @@ Named honestly, so nobody mistakes this draft for complete.
     is the consumer's to infer. Refusing it outright was the first attempt and
     it dropped `NullIO#read`, which an abstract `IO` requires.
 
-    **What `sqlite3` waits on now is `previous_def`.** `db` writes a macro that
-    *redefines* `around_query_or_exec` with a body calling the definition it
-    replaced, and only the last of the two definitions travels: `MonoBodies` is
-    keyed on a signature and two definitions of one signature are one key. The
-    body arrives naming something the declarations do not have — `there is no
-    previous definition of 'around_query_or_exec'`. Carrying both would need an
-    ordinal in the key and a reader that renders them in order, which is a
-    piece of work rather than a line, and nothing else measured has asked for
-    it yet.
+    **`previous_def` travels, and the ordinal that carries it found a
+    duplicate that had been there all along.** A redefinition does not sit
+    beside the definition it replaces — `add_def` puts the old one on
+    `previous` and the hash holds one — so the chain is walked and each link
+    gets its own `MonoBodies` key, numbered in the order they were written.
+    Both sides count the same way, which is what makes a position a name, and
+    the sorts that order a type's methods had to become stable for the count to
+    mean anything.
+
+    What that exposed: `Kemal::CLI` had carried **two** `def initialize(args)`
+    since `fallback_initialize` learned to match by shape, and nobody could
+    tell, because both declarations read the same key and rendered the same
+    body. Numbered, the second found nothing and rendered empty — and an empty
+    `initialize` is the one Crystal keeps. `initialize` is *protected* in
+    Crystal, so the visibility test in the private-callee search let it past
+    whatever its name, and that search asked "has this crossed?" by name where
+    it had to ask by signature. A redundancy for weeks, a fault the moment
+    positions started mattering.
+
+    **A method that answers an ancestor's `abstract def` travels whatever its
+    visibility.** `db` writes `protected abstract def perform_exec(args :
+    Enumerable) : ExecResult` and `Statement#exec`'s body — which travels —
+    calls it, so every driver's implementation has to be there for that body to
+    compile. The search that finds a travelling body's private callees cannot
+    find this one: the body is in *db's* artifact and the implementation is in
+    the driver's, two boundaries that never read each other's text. The
+    requirement is the thing they share.
+
+    **A parameter's external name is part of the method.** `def query_one(query,
+    *args_, as type : Class)` is written `as: String` at the call site, and a
+    declaration naming only the internal `type` is a different method: `no
+    overload matches … with types String, Int32, as: String.class`, three
+    overloads listed and every one of them naming it `type`.
+
+    **And `forall` is another way of saying the caller decides.** `def
+    read(type : T.class) : T forall T` is one method per `T`, compiled at the
+    call site with the call site's type in the symbol — the same shape a splat
+    has, and the same answer: the body is what travels. The `forall` clause was
+    never carried at all, so the free variable also failed the test that asks
+    whether every name in a signature is one the far side can write, and inside
+    a generic the two kinds of bound name — the type's parameters and the
+    method's free variables — had to be asked together.
+
+    Two smaller ones came out of the same run. The private-callee search keyed
+    its pool on parameter *names*: `sqlite3` writes ten `private def
+    bind_arg(index, value : …)`, one per bindable type, and every one of them
+    has the same two names — so nine were dropped. And a *synthesised* `new`
+    must never travel from that search either, for the reason it never travels
+    from the other: its body is `_ = allocate`, and `_` is not a name anybody
+    reads back.
+
+    **What `sqlite3` waits on now is a generic's instantiated methods across a
+    boundary.** The whole stack typechecks; the link ends on
+    `*DB::SessionMethods::UnpreparedQuery(DB::Connection+, DB::Statement+)@DB::
+    SessionMethods::UnpreparedQuery(Session, Stmt)#build<String>`, which is the
+    consumer asking for an instantiation keyed on the *generic* rather than
+    compiling one of its own. `iyi_artifact_self_type` exempts a generic for
+    exactly this reason and the exemption is not reaching a generic nested
+    inside a generic module.
 
     **And a name resolves in its own scope first.** `openssl_ext` writes a
     constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type

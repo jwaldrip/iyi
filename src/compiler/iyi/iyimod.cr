@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 36_u32
+  FORMAT_VERSION = 37_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -494,13 +494,43 @@ module Iyi::IyiMod
   # and the second body took it. The consumer read `Log#info` as
   # `Top.info(exception: exception)`, which is `Log#info` calling itself, and
   # said `recursive block expansion: blocks that yield are always inlined`.
-  def self.mono_body_key(container : String, signature : Signature) : String
+  # *ordinal* is which of several identical signatures this is, counting from
+  # zero in the order they were written.
+  #
+  # One container may hold two definitions of one signature, and Crystal has a
+  # word for reaching the earlier one: `previous_def`. `db` writes a macro that
+  # redefines `around_query_or_exec` with a body calling the definition it
+  # replaced, and keyed on the signature alone the second body took the first's
+  # place — so the consumer read one definition whose body named a previous one
+  # it did not have: `there is no previous definition of
+  # 'around_query_or_exec'`.
+  #
+  # Written only when it is not zero, so the ordinary key — the only key, for
+  # every container that redefines nothing — reads as it did.
+  def self.mono_body_key(container : String, signature : Signature,
+                         ordinal : Int32 = 0) : String
     String.build do |io|
       io << container << '#'
       io << signature.receiver << '.' unless signature.receiver.empty?
       io << signature.name
       io << '(' << signature.parameters.join(", ") << ')'
       io << signature.block_parameter
+      io << '#' << ordinal if ordinal > 0
+    end
+  end
+
+  # The ordinal of each signature in *methods*, parallel to it.
+  #
+  # Both sides count the same way — the producer as it writes the bodies and
+  # the reader as it renders the declarations — because that is what makes a
+  # position a name. See `mono_body_key`.
+  def self.mono_body_ordinals(methods : Array(Signature)) : Array(Int32)
+    seen = Hash(String, Int32).new(0)
+    methods.map do |signature|
+      key = mono_body_key("", signature)
+      ordinal = seen[key]
+      seen[key] = ordinal + 1
+      ordinal
     end
   end
 
@@ -1952,9 +1982,10 @@ module Iyi::IyiMod
     # A `lib`'s own, written as the shard wrote them. See `TypeDecl#funs`.
     declaration.funs.each { |source| io << inner << source << '\n' }
 
-    declaration.methods.each do |signature|
+    ordinals = mono_body_ordinals(declaration.methods)
+    declaration.methods.each_with_index do |signature, index|
       render_declaration io, signature, indent: inner,
-        body: bodies[mono_body_key(here, signature)]?
+        body: bodies[mono_body_key(here, signature, ordinals[index])]?
     end
     io << indent << "end\n"
   end

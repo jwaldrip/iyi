@@ -2261,6 +2261,25 @@ describe Iyi::IyiMod do
   # `@[Link("yaml")]`, and drops the flag anyway — a flag is collected from the
   # libs that build marked `used?`, and the call to `yaml_parser_parse` is in
   # an object file it reads rather than compiles.
+  # A redefinition and the definition it replaced are two bodies under one
+  # signature, and `previous_def` is how the second reaches the first. `db`
+  # writes a macro that redefines `around_query_or_exec` that way, and keyed on
+  # the signature alone the second body took the first's place.
+  it "tells a redefinition's body from the one it replaced" do
+    signature = Iyi::IyiMod::Signature.new(
+      name: "around_query_or_exec", receiver: "", parameters: ["args : Enumerable"],
+      block_parameter: "&", return_type: "",
+      free_variables: [] of String, required: false,
+    )
+
+    first = Iyi::IyiMod.mono_body_key("DB::Statement", signature, 0)
+    second = Iyi::IyiMod.mono_body_key("DB::Statement", signature, 1)
+    first.should_not eq second
+
+    # And both sides count the same way, which is what makes a position a name.
+    Iyi::IyiMod.mono_body_ordinals([signature, signature]).should eq [0, 1]
+  end
+
   # An instance method and a class method of the same name and parameters are
   # two methods, and the key that finds a body again was missing the only thing
   # that tells them apart. `Log` has a `{% for %}` loop writing `def info(*,
