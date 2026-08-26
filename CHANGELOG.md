@@ -1,6 +1,43 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-08-26
+
+**A shard crosses a boundary.** 0.2.0 swept nine shards through `--crystal` and
+served HTTP from source; how many of the rest worked was not something it
+measured. This release measures it, and the thing being measured changed:
+`crystal tool bind` turns a shard into a `.iyimod` — declarations and object
+code — and a program is built against that rather than against the shard's
+source. R-1 the whole way down, for code nobody wrote in iyi.
+
+Three shards cross, and twelve of Crystal's own namespaces, each under a gate
+that runs the program and compares its answers with the same program built
+from source:
+
+| | |
+|---|---|
+| kemal 1.12.0 | routes, URL and query parameters, the handler chain, `Kemal.run` — through four boundaries, with backtracer, radix and exception_page under it |
+| jwt 1.6.1 | a token signed and read back, through four boundaries, over openssl_ext, bindata and bindata/asn1 |
+| sqlite3 0.21.0 + db | a table created, rows bound and inserted, a result set read with typed columns — two boundaries, and the first pair where one shard declares what the other must answer |
+| twelve of Crystal's own namespaces | `JSON`, `URI`, `Log`, `Path`, `Time`, `Base64`, `UUID`, `INI`, `CSV`, `Colorize`, `XML`, `Random` |
+
+A hundred and nineteen findings came out of it and each is written down below,
+measured rather than reasoned about. The ones that changed a rule: a body that travels
+is compiled twice and the two are not the same function; an `abstract def` is a
+requirement and not a header; a constant has two spellings and which one a
+build picks is a fact about that build; and a module is a mixin on the other
+side of a `--crystal` boundary, which iyi's own module header had been
+assuming otherwise.
+
+What does *not* cross is worth as much as what does. A shard whose surface
+needs a human to write it down is refused with the list, not guessed at:
+`crystal tool bind` prints what it could write, what a machine could write, and
+what nobody can — and the last of those is a number this release moved rather
+than eliminated.
+
+`.iyimod` goes from format 19 to 40. A 0.2.0 artifact is rejected and rebuilt,
+never migrated, which is the rule below doing its job. Artifacts written by
+this release are read by every other build of it on the same target and under
+the same flags.
 
 ### Added
 
