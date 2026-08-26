@@ -207,6 +207,25 @@ module Iyi
   # The namespace being bound, for `global_name`. Reset per run.
   @@root : String = ""
 
+  # Bodies that name a method without being seen to call it. Reset per run.
+  #
+  # `responds_to?(:name)` is the one call the private-callee search cannot
+  # follow, because the receiver is whatever the caller passed. `db` writes
+  # `Pool(T)#checkout` — a generic, so its body travels — and it ends
+  # `res.responds_to?(:before_checkout) && res.before_checkout`.
+  # `Connection#before_checkout` is `protected`, so it crosses only if
+  # something is seen to call it, and nothing is: `Pool` is not `Connection`'s
+  # ancestor and `T` binds to it nowhere a search can read. The hook stayed
+  # behind, `responds_to?` answered false in the consumer, `auto_release` was
+  # never set, and no connection ever went back to the pool —
+  # `DB.open("sqlite3::memory:")` got a fresh database per statement and lost
+  # its table between them.
+  #
+  # Every body that says `responds_to?` is searched for every type, which errs
+  # long the way the rest of this search does: `calls?` matches a name that is
+  # actually there, and a body naming nothing of this type's costs a scan.
+  @@duck_bodies : Array(String)? = nil
+
   # Whether this method is anybody's but the library's. See `BindMethod#written`.
   #
   # The test is where it is *not* written rather than where it is, and the
@@ -292,6 +311,7 @@ module Iyi
 
     @@library = library_root(program) || ""
     @@root = root
+    @@duck_bodies = nil
     @@builtin = program.builtin_type_names
     @@crystal_types = crystal_library_types program
     @@bound_prefix = {} of String => String
@@ -3045,6 +3065,10 @@ module Iyi
       end
     end
 
+    # And the bodies that name a method they cannot be seen to call. See
+    # `@@duck_bodies`.
+    reach.concat duck_bodies(by_owner)
+
     return added if reach.empty?
 
     # By *signature*, not by name, which is the same correction the module
@@ -3185,6 +3209,23 @@ module Iyi
   end
 
   # Whether *body* names *method* as a word rather than as part of one.
+  # Every body in the shard that says `responds_to?`. See `@@duck_bodies`.
+  private def self.duck_bodies(by_owner) : Array(String)
+    found = @@duck_bodies
+    return found if found
+
+    found = [] of String
+    by_owner.each_value do |methods|
+      methods.each do |method|
+        body = method.body
+        next unless body && body.includes?("responds_to?")
+        found << body
+      end
+    end
+    @@duck_bodies = found
+    found
+  end
+
   private def self.calls?(body : String, method : String) : Bool
     return false unless body.includes?(method)
 

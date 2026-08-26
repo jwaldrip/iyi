@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 94,682 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 94,723 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -7930,18 +7930,21 @@ Named honestly, so nobody mistakes this draft for complete.
     return type is a restriction a travelling body keeps** — dropping it
     wherever the body answers made `sqlite3` refuse its own override.
 
-    One thing `sqlite3` does not do yet, measured rather than guessed.
-    `DB.open("sqlite3::memory:")` loses its table between statements:
-    `Pool#checkout` calls `before_checkout` through `responds_to?`,
-    `Connection#before_checkout` is `protected`, and a protected method reached
-    from a travelling body *through a type parameter* is one the private-callee
-    search cannot find. The hook is absent from the declarations,
-    `responds_to?` answers false, `auto_release` is never set, and the
-    connection never returns to the pool. Every statement gets a fresh
-    connection — which a file-backed database does not notice and `:memory:`
-    does. The search knows how to follow a body to the private methods it
-    names; it does not know how to follow one to a method named on a type
-    nobody has bound yet.
+    **A name inside `responds_to?` is a call, and it is the one call the
+    private-callee search cannot follow.** That search reads a travelling body
+    and finds the private methods it names; `responds_to?(:name)` names one on
+    a receiver that is whatever the caller passed. `db` writes
+    `Pool(T)#checkout` — generic, so its body travels — ending
+    `res.responds_to?(:before_checkout) && res.before_checkout`, and
+    `Connection#before_checkout` is `protected`. `Pool` is not `Connection`'s
+    ancestor and `T` binds to it nowhere a search can read, so the hook stayed
+    behind: `responds_to?` answered false in the consumer, `auto_release` was
+    never set, and no connection went back to the pool. Every statement got a
+    fresh connection, which a file-backed database does not notice and
+    `:memory:` does — it loses its table between statements. Every body that
+    says `responds_to?` is now searched for every type, which errs long the way
+    the rest of that search does: `calls?` matches a name that is actually
+    there, and a body naming nothing of the type's costs a scan.
 
 13. ~~**Dependencies and discovery.**~~ **Specified in III.7**: path identity,
     minimal version selection, a manifest and a sums file, source as the primary

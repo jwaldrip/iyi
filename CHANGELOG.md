@@ -60,14 +60,19 @@
   segment along: `undefined constant Log::Metadata::Value`, read inside a
   module that has a `Log` of its own.
 
-  Two things `sqlite3` does not do yet, both measured. `DB.open("sqlite3::memory:")`
-  loses its table between statements: `Pool#checkout` calls `before_checkout`
-  through `responds_to?`, `Connection#before_checkout` is `protected`, and a
-  protected method reached from a travelling body *through a type parameter* is
-  one the private-callee search cannot find — so the hook is absent from the
-  declarations, `responds_to?` answers false, `auto_release` is never set and
-  the connection never returns to the pool. Every statement gets a new
-  connection, which a file-backed database does not notice and `:memory:` does.
+  **A name inside `responds_to?` is a call, and it is the one call the search
+  cannot follow.** The private-callee search reads a travelling body and finds
+  the private methods it names; `responds_to?(:name)` names one on a receiver
+  that is whatever the caller passed. `db` writes `Pool(T)#checkout` — generic,
+  so its body travels — ending `res.responds_to?(:before_checkout) &&
+  res.before_checkout`, and `Connection#before_checkout` is `protected`. `Pool`
+  is not `Connection`'s ancestor and `T` binds to it nowhere a search can read,
+  so the hook stayed behind: `responds_to?` answered false in the consumer,
+  `auto_release` was never set, and no connection went back to the pool. Every
+  statement got a fresh connection — which a file-backed database does not
+  notice and `:memory:` does, losing its table between statements. Every body
+  that says `responds_to?` is now searched for every type, which errs long the
+  way the rest of that search does.
 
 - **`jwt` works.** A program that imports `j_w_t` encodes a token, decodes it
   back and reads the header out of it, through four boundaries —
