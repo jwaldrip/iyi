@@ -35,3 +35,16 @@
 # Python bytecode from bench helpers
 __pycache__/
 *.pyc
+
+# What a sample that depends on a shard produces. `shard.yml` and `shard.lock`
+# are the sample; `lib/` is what `shards install` fetches, `mods/` is what
+# `crystal tool bind` writes, and the rest is a build. Ignored rather than
+# committed because `bench/identity_floor.py` reads every file that is tracked
+# *or* untracked-and-not-ignored, and a shard's own source is not iyi's to
+# answer for.
+/samples/crystal/kemal/lib/
+/samples/crystal/kemal/mods/
+/samples/crystal/kemal/app
+/samples/crystal/kemal/app_artifact
+/samples/crystal/kemal/app_artifact.iyi
+/samples/crystal/kemal/*.log

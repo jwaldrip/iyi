@@ -4,6 +4,15 @@
 
 ### Added
 
+- **A kemal application in `samples/crystal/kemal`.** Routes, URL and query
+  parameters, a JSON endpoint that reads a POST body, and a 404 handler. The
+  shard is not vendored: `shard.yml` pins kemal 1.12.0 and `shards install`
+  fetches it, the same as any Crystal project. It builds from source and again
+  across four `.iyimod` boundaries, and the two answer byte-identically — one
+  line differs between them, `require "kemal"` against `import kemal`.
+  `bench/kemal_serves.sh` is this program with a gate around it; this is the
+  same thing written to be read.
+
 - **`sqlite3` runs a query.** A program that imports `s_q_lite3` opens a
   database, creates a table, inserts two rows with bound parameters, reads a
   scalar back, iterates a result set with typed `read(String)` and

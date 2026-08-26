@@ -1,0 +1,75 @@
+# A kemal application, written the way kemal's own README writes one, in iyi.
+#
+# The shard is not vendored here: `shard.yml` pins it and `shards install`
+# fetches it, the same as any Crystal project. What this file shows is that
+# nothing about the program changes because iyi is the compiler — `get`,
+# `env.params`, `error 404` and `Kemal.run` are kemal's, unmodified.
+#
+#     cd samples/crystal/kemal
+#     shards install
+#     export CRYSTAL_PATH="$PWD/lib:$PWD/../../../src"
+#     export IYI_PATH="$PWD/lib:$PWD/../../../share/iyi/src:$PWD/../../../share/iyi/crystal:$PWD/../../../src"
+#     ../../../bin/iyi run --crystal app.iyi
+#
+# Then `curl localhost:3000/hello/dunya`. See README.md in this directory for
+# the second half: the same program built against `.iyimod` artifacts, which
+# is the boundary this compiler exists for, and which answers identically.
+#
+# Everything below is load-bearing for that second build, and each part failed
+# separately on the way to it (SPEC.md Part V item 12): `get` is a top-level
+# `def` a macro loop writes and its block returns `_`, so both travel as text;
+# `env.params` is a field kemal adds to `HTTP::Server::Context`, a class the
+# *library* owns; `error 404` registers a handler in kemal's own chain order;
+# and `Kemal.run` is written with no block, the overload whose `args` is
+# untyped, so it crosses as its body.
+module main
+
+require "kemal"
+
+# In-memory, so the sample needs nothing running but itself.
+NOTES = [] of String
+
+get "/" do |env|
+  env.response.content_type = "text/html"
+  <<-HTML
+  <!doctype html>
+  <title>iyi + kemal</title>
+  <h1>iyi + kemal</h1>
+  <p>A Crystal shard, compiled by iyi.</p>
+  <ul>
+    <li><a href="/hello/dunya">/hello/:name</a> — a URL parameter</li>
+    <li><a href="/search?q=iyi">/search?q=</a> — a query parameter</li>
+    <li><a href="/notes">/notes</a> — JSON out, and POST JSON in</li>
+  </ul>
+  HTML
+end
+
+get "/hello/:name" do |env|
+  "merhaba, #{env.params.url["name"]}"
+end
+
+get "/search" do |env|
+  "aranan: #{env.params.query["q"]? || ""}"
+end
+
+get "/notes" do |env|
+  env.response.content_type = "application/json"
+  NOTES.to_json
+end
+
+post "/notes" do |env|
+  text = env.params.json["text"]?.to_s
+  NOTES << text
+  env.response.status_code = 201
+  "eklendi: #{text}"
+end
+
+error 404 do |env|
+  env.response.content_type = "text/plain"
+  "burada bir sey yok"
+end
+
+# `PORT=8080 ./app` to move it. `Kemal.config` is a module function returning a
+# constant the shard holds, and it crosses a boundary as itself.
+Kemal.config.port = (ENV["PORT"]? || "3000").to_i
+Kemal.run
