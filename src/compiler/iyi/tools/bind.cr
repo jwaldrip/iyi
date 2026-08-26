@@ -204,6 +204,9 @@ module Iyi
   # Where Crystal's own library lives, for `shard_wrote?`. Reset per run.
   @@library = ""
 
+  # The namespace being bound, for `global_name`. Reset per run.
+  @@root : String = ""
+
   # Whether this method is anybody's but the library's. See `BindMethod#written`.
   #
   # The test is where it is *not* written rather than where it is, and the
@@ -288,6 +291,7 @@ module Iyi
     program.iyi_instantiation_limit = INSTANTIATION_LIMIT
 
     @@library = library_root(program) || ""
+    @@root = root
     @@builtin = program.builtin_type_names
     @@crystal_types = crystal_library_types program
     @@bound_prefix = {} of String => String
@@ -590,7 +594,7 @@ module Iyi
         receiver: method.owner == "#{root}:Module" && method.receiver.empty? ? "self" : method.receiver,
         parameters: method.params.map { |(name, restriction, default)| bind_parameter(name, restriction, default) },
         block_parameter: method.written_block,
-        return_type: method.body_answers ? "" : (method.answer || ""),
+        return_type: method.body_answers ? (method.returns || "") : (method.answer || ""),
         free_variables: method.free_vars,
         required: false,
       )
@@ -650,7 +654,7 @@ module Iyi
         receiver: "",
         parameters: method.params.map { |(name, restriction, default)| bind_parameter(name, restriction, default) },
         block_parameter: method.written_block,
-        return_type: method.body_answers ? "" : (method.answer || ""),
+        return_type: method.body_answers ? (method.returns || "") : (method.answer || ""),
         free_variables: method.free_vars,
         required: false,
       )
@@ -2302,9 +2306,20 @@ module Iyi
   # `module Kemal` finds the constant: *`Kemal::Log` is not a type, it's a
   # constant*. Only a top-level name can be shadowed this way, and only a name
   # of Crystal's — the shard's own are reached through the root on purpose.
+  #
+  # The *head* of a path, not only a bare name, and that took `db` to find. It
+  # writes `def self.arg_to_log(arg) : ::Log::Metadata::Value` — with the `::`,
+  # because a shard's author meets this too — and a declaration resolving that
+  # to `Log::Metadata::Value` put the same shadowing one segment along:
+  # `undefined constant Log::Metadata::Value`, read inside a module that has a
+  # `Log` of its own. What can be shadowed is the first name in the path, so
+  # that is the one asked about.
   private def self.global_name(name : String, root : String) : String
-    return name if name.includes?("::") || name.starts_with?("::")
-    return name unless @@crystal_types.includes?(name)
+    return name if name.starts_with?("::")
+
+    head = name.partition("::")[0]
+    return name if head == root || head.empty?
+    return name unless @@crystal_types.includes?(head)
     "::#{name}"
   end
 
@@ -2434,7 +2449,22 @@ module Iyi
         next unless method.signature_types.all? do |written|
                       nameable?(written, root, bound)
                     end
-        next unless body = method.body
+        # An `abstract def` is a *requirement*, and it has no body by
+        # definition — `method.body` is the empty string for one, which is
+        # truthy, so it came through here as a concrete method with an empty
+        # body. That is not the same thing at all: an empty method answers
+        # `nil`, and `db` writes `abstract def fetch_or_build_prepared_statement`
+        # on `SessionMethods` for its drivers to implement. The consumer read
+        # the requirement as an implementation, called it, and got a statement
+        # that was never built — `Invalid memory access` in
+        # `SQLite3::Statement#perform_exec`, one dispatch further on.
+        #
+        # It travels all the same, because a requirement is what a consumer
+        # subclassing or including the type has to meet. `required` is how the
+        # format says so.
+        body = method.body
+        next if body.nil?
+        next if body.empty? && !method.abstract_def
 
         signature = IyiMod::Signature.new(
           name: method.name,
@@ -2446,12 +2476,12 @@ module Iyi
           # body and reads its own. An `initialize` answers nothing either.
           return_type: method.answer || "",
           free_variables: method.free_vars,
-          required: false,
+          required: method.abstract_def,
           visibility: method.private_def ? "private" : "",
         )
         ordinal = signatures.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) }
         signatures << signature
-        @@mono_bodies[IyiMod.mono_body_key(container, signature, ordinal)] = body
+        @@mono_bodies[IyiMod.mono_body_key(container, signature, ordinal)] = body unless method.abstract_def
       end
     end
 
@@ -2777,7 +2807,12 @@ module Iyi
           receiver: on_metaclass && method.receiver.empty? ? "self" : method.receiver,
           parameters: method.params.map { |(argument, restriction, default)| bind_parameter(argument, restriction, default) },
           block_parameter: method.written_block,
-          return_type: method.body_answers ? "" : method.answer.not_nil!,
+          # Empty where the body is what answers — and *not* empty where the
+          # shard wrote a return type anyway, or inherited one from a
+          # requirement. A body that travels is compiled by the consumer, so a
+          # written return acts as the restriction it is: Crystal narrows it to
+          # what the body produced, exactly as it does for the shard.
+          return_type: method.body_answers ? (method.returns || "") : method.answer.not_nil!,
           free_variables: method.free_vars,
           required: method.abstract_def,
         )
@@ -3908,7 +3943,8 @@ module Iyi
   # A copy, because the tree belongs to the program being read and the rest of
   # this tool has to keep seeing what the shard actually wrote.
   private def self.with_ancestor_types(owner : Type, a_def : Def) : Def
-    return a_def unless a_def.args.any? { |arg| arg.restriction.nil? }
+    missing = a_def.args.any? { |arg| arg.restriction.nil? } || a_def.return_type.nil?
+    return a_def unless missing
     other = abstract_ancestor_def(owner, a_def)
     return a_def unless other
 
@@ -3917,6 +3953,15 @@ module Iyi
     copy.args.each_with_index do |arg, index|
       arg.restriction = other.args[index].restriction.try(&.clone) if arg.restriction.nil?
     end
+
+    # And the return, for the reason the parameters take: the requirement
+    # already wrote the type down, and an override is held to it.
+    # `db` writes `abstract def build_unprepared_statement(query) : Stmt` and
+    # `sqlite3` writes `def build_unprepared_statement(query)`, so a
+    # declaration without the return said less than the language requires:
+    # `this method overrides … which has an explicit return type of Stmt.
+    # Please add an explicit return type to this method as well`.
+    copy.return_type = other.return_type.try(&.clone) if copy.return_type.nil?
     copy
   end
 
@@ -3937,6 +3982,9 @@ module Iyi
     checked = BindCheck::NotWritten
     produced = nil
     written = resolve_restriction(owner, a_def.return_type)
+    # The same restriction, unqualified, for the comparison below. See
+    # `resolve_restriction`.
+    plain = resolve_restriction(owner, a_def.return_type, qualify: false)
 
     uncompilable = false
     if verdict.needs_return?
@@ -3971,7 +4019,7 @@ module Iyi
           BindCheck::Dispatched
         elsif produced.nil?
           BindCheck::Unchecked
-        elsif produced == written
+        elsif produced == plain
           BindCheck::Agrees
         else
           BindCheck::Disagrees
@@ -4232,7 +4280,13 @@ module Iyi
     "#{inputs.join(", ")} -> #{output}".strip
   end
 
-  private def self.resolve_restriction(owner : Type, node : ASTNode?) : String?
+  # *qualify* writes a shadowable name absolutely. Off where the answer is
+  # about to be *compared* with an inferred one: an inferred type prints
+  # `String` and a qualified restriction prints `::String`, and held against
+  # each other those read as a disagreement — `Narrow#exact`, which writes
+  # exactly what it answers, was reported as crossing on its answer instead.
+  private def self.resolve_restriction(owner : Type, node : ASTNode?,
+                                       qualify = true) : String?
     return nil unless node
     written = node.to_s
     return written if written == "_"
@@ -4250,7 +4304,10 @@ module Iyi
     # `undefined constant T`. What the shard wrote is what a reader can read.
     return written if type.is_a?(GenericType)
 
-    type.devirtualize.to_s
+    # Written `::Log` where a bare `Log` would find the shard's own. See
+    # `global_name`.
+    resolved = type.devirtualize.to_s
+    qualify ? global_name(resolved, @@root) : resolved
   rescue
     node.to_s
   end
@@ -4310,7 +4367,10 @@ module Iyi
         # this tool read as "the method does not compile" and dropped
         # `Database#initialize`, the one thing a consumer builds a `Database`
         # with.
-        written = resolve_restriction(owner, output) || output.to_s
+        # Unqualified, because `global: true` is what makes this absolute and
+        # the two together are one `::` too many: `::Int32` split on `::`
+        # leaves an empty first segment, and the path printed `::::Int32`.
+        written = resolve_restriction(owner, output, qualify: false) || output.to_s
         UninitializedVar.new(Var.new("__bind_block_result"), Path.new(written.split("::"), global: true))
       end
 

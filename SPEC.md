@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 94,585 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 94,682 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3903,6 +3903,52 @@ a consumer parses. IV.1's table asks for serialised typed IR, which is faster
 and is a second grammar to keep correct; text is the choice `Exports` already
 made, for the reason IV.1f gives, and IR can replace it without changing what
 travels.
+
+**A travelling body is compiled twice, and the two are not the same
+function.** The producer compiles it too — its own code calls it — but the
+producer compiles it against *declarations*, and where the body calls an
+`abstract def` the producer's world may hold nothing that answers it. `db`
+alone has no driver, so what `db`'s artifact carries for
+`Connection#fetch_or_build_prepared_statement` is a function whose `else`
+branch returns its own argument. The consumer compiles the same body against
+`SQLite3::Connection` and gets the right one.
+
+Both wore the same name. The consumer's copy is private to the unit that holds
+it and the producer's is global, so every call the consumer wrote bound to the
+producer's: `DB.open` handed back a statement whose `crystal_type_id` was 1,
+and `.class` on it hit the trap at the end of a dispatch nothing matched. What
+that reads like from the outside is `Invalid memory access` in
+`SQLite3::Statement#perform_exec`, three frames past the cause.
+
+The consumer's copy carries a suffix, so a name that means two different things
+is two symbols. The producer's stays global rather than being hidden: `db`'s
+own object code calls it by name, and so does `sqlite3`'s — `Statement#do_close`
+calls `super` into `db`'s — and hiding it broke the link instead. Two copies of
+a body is the price of a boundary that lets each side compile what it can see.
+
+**An `abstract def` is a requirement, and a requirement is not a header.** Two
+readings of the same shape went wrong in opposite directions, and both were
+`db`.
+
+Writing it out, `Def#body` for an abstract def is the empty string, which is
+truthy: the generic collector read the requirement as a concrete method with an
+empty body — one that answers `nil` — and wrote it down as an implementation.
+`required` is the field that says otherwise and it was not being set there.
+
+Reading it back, a declaration from an artifact has a `Nop` body and is typed
+from its return annotation; that is what makes a boundary cheap, and an
+`abstract def` looks exactly like one. It is the opposite: no code answers
+*it*. Taking the header path typed the call and emitted none, and the caller
+read whatever the stack held.
+
+**A written return type is a restriction, and a travelling body keeps it.** A
+body that travels is read for what it returns, so three places wrote the return
+as empty wherever the body answers. That is true and it is not a reason to drop
+what the shard wrote. Crystal narrows a written return to what the body
+produced, exactly as it does for the shard, and dropping it made `sqlite3`
+refuse its own override: *this method overrides ... which has an explicit
+return type of Stmt*. A requirement's return type is inherited by whatever
+answers it, for the same reason its parameter types are.
 
 **An impl is the third case, and it is the one that fixes the rule.** An impl
 defines methods *on its target*, so they are emitted into the target's unit,
@@ -7855,6 +7901,47 @@ Named honestly, so nobody mistakes this draft for complete.
     an import edge back to it — the dependency order in `bench/bind_chain.sh` is
     load-bearing, and a stale directory made three measurements here name the
     wrong type.
+
+    **`sqlite3` runs a query, and `bench/sqlite3_queries.sh` holds it.** A
+    program that imports `s_q_lite3` opens a database, creates a table, inserts
+    two rows with bound parameters, reads a scalar back, iterates a result set
+    with typed `read(String)` and `read(Int32)` and counts the rows — through
+    two boundaries, and answers what the same program answers from source. The
+    third real shard, and the first whose boundary is a *pair*: `db` declares
+    what a driver must answer and never sees one, `sqlite3` answers it and
+    never sees `db`'s source. Every `abstract def` between them is a place
+    where the producer compiled a body against nothing at all.
+
+    That is the finding, and IV.1g now carries it: **a travelling body is
+    compiled twice and the two are not the same function.**
+    `Connection#fetch_or_build_prepared_statement` calls an abstract
+    `build_prepared_statement`, so `db`'s own copy — global, in its artifact —
+    returns its own argument, and the consumer's correct copy is private to its
+    unit. Every call the consumer wrote bound to the producer's, and `DB.open`
+    handed back a statement whose `crystal_type_id` was 1. The consumer's copy
+    now carries a suffix. Hiding the producer's instead was tried and broke the
+    link: `sqlite3`'s `Statement#do_close` calls `super` into `db`'s.
+
+    Three smaller rules came with it, all about the same shape read two ways.
+    An `abstract def` is a *requirement*: `Def#body` is the empty string for
+    one, which is truthy, so the generic collector wrote it down as a method
+    that answers `nil`; and read back, a requirement's `Nop` body looks exactly
+    like a header's, so the call was typed and never emitted. And **a written
+    return type is a restriction a travelling body keeps** — dropping it
+    wherever the body answers made `sqlite3` refuse its own override.
+
+    One thing `sqlite3` does not do yet, measured rather than guessed.
+    `DB.open("sqlite3::memory:")` loses its table between statements:
+    `Pool#checkout` calls `before_checkout` through `responds_to?`,
+    `Connection#before_checkout` is `protected`, and a protected method reached
+    from a travelling body *through a type parameter* is one the private-callee
+    search cannot find. The hook is absent from the declarations,
+    `responds_to?` answers false, `auto_release` is never set, and the
+    connection never returns to the pool. Every statement gets a fresh
+    connection — which a file-backed database does not notice and `:memory:`
+    does. The search knows how to follow a body to the private methods it
+    names; it does not know how to follow one to a method named on a type
+    nobody has bound yet.
 
 13. ~~**Dependencies and discovery.**~~ **Specified in III.7**: path identity,
     minimal version selection, a manifest and a sums file, source as the primary
