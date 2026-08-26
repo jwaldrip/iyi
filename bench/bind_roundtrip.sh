@@ -146,6 +146,18 @@ module Shard
     end
   end
 
+  # A second subclass, so that a method answering either of them answers the
+  # base's *virtual* type rather than one concrete class. See `pick`.
+  class Other < Base
+    def initialize(tag : String)
+      super(tag)
+    end
+
+    def describe : String
+      "other:" + @tag
+    end
+  end
+
   class Derived < Base
     @extra : Int32
 
@@ -161,6 +173,21 @@ module Shard
     # `tag` comes from the base's unit and this one does not.
     def describe : String
       "derived:" + @tag + ":" + @extra.to_s
+    end
+
+    # A body that names this shard's own constants the way the shard wrote them
+    # — absolutely — and it has to be on a *type*, which is the path that was
+    # broken. The declarations are read inside a module whose root has been
+    # stripped, so `Shard::TAG` there is the module's *public* name and R-2
+    # answers for it: `Shard does not export Shard::TAG`. A module function's
+    # body already took this rewrite; a type's did not, and the first version
+    # of this check put the method on the module and passed either way.
+    #
+    # It takes a block for a second reason: that is what makes the body travel
+    # at all. A method whose machine code is in the artifact never has its text
+    # read by anybody.
+    def tagged(&)
+      yield Shard::TAG + ":" + Shard::Inner::DEPTH.to_s
     end
   end
 
@@ -233,6 +260,8 @@ module Shard
   # of the classes. A module is also a type — the object code numbers one — and
   # a consumer that cannot name it cannot number it.
   module Inner
+    DEPTH = 2
+
     class Deep
       @tag : String
 
@@ -257,6 +286,37 @@ module Shard
   def made : Int32
     @@made
   end
+
+  TAG = "shard"
+
+  # A method whose answer is *two* subclasses, and the shape that made this
+  # section necessary.
+  #
+  # Nobody wrote a return type, so the boundary infers one, and what the body
+  # answers is `Base+` — the merge of two subclasses. A declaration cannot name
+  # a virtual type (`Base+` is how one prints, not a name anybody writes), so
+  # it crosses as `: Base`. An ordinary `def` types its call `Base+` because
+  # the *body* widens it; a header has no body, so the call came out typed
+  # `Base` exactly and `is_a?(Derived)` answered **false**.
+  #
+  # A method that *writes* `: Base` does not find this: Crystal resolves a
+  # written restriction on an abstract class to `Base+` on its own. It takes an
+  # inferred one, and the first version of this check wrote the restriction and
+  # passed either way.
+  def pick(flag : Bool)
+    if flag
+      Derived.new("picked", 1)
+    else
+      Other.new("picked")
+    end
+  end
+
+  # And held in a collection, because the wrong reading also decides what a
+  # generic is instantiated with.
+  def collect(flag : Bool)
+    [pick(flag)]
+  end
+
 end
 CR
 
@@ -288,6 +348,20 @@ puts Shard.made
 puts Shard::Inner.deep("nested").tag
 d = Shard.derived("hello", 42)
 puts d.tag
+
+# The abstract-return shapes. `is_a?` and `class` are the two questions a wrong
+# reading answers wrongly while everything else about the program looks right.
+made = Shard.pick(true)
+puts made.class
+puts made.is_a?(Shard::Derived)
+puts made.describe
+held = Shard.collect(false)
+puts held[0].class
+puts held[0].is_a?(Shard::Other)
+puts held[0].describe
+
+# And the body that names the shard's own constants absolutely.
+d.tagged { |text| puts text }
 puts d.extra
 puts d.describe
 class Report < Shard::Sheet

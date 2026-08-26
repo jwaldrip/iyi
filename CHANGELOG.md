@@ -280,6 +280,13 @@
   `SQLite3::TIME_ZONE`. One exception: a top-level `def` is rendered outside
   the module, so its body keeps the absolute name.
 
+  Both now have a gate in `bench/bind_roundtrip.sh`, and each took two tries: a
+  *written* return restriction on an abstract class is widened by Crystal
+  anyway, so the check needs an **inferred** one; and a module function's body
+  already took the rewrite, so the check needs a *type's*. A gate that passes
+  before the fix proves nothing, and both of these did until they were run
+  against the broken compiler.
+
   **And a name resolves in its own scope first.** `openssl_ext` writes a
   constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type R-2
   asks for on its `new` read as the constant. `self` is the spelling with no

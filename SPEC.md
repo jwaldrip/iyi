@@ -7817,6 +7817,27 @@ Named honestly, so nobody mistakes this draft for complete.
     a name in its body has to stay the one the module is known by from out
     there. `Kemal::Utils` rather than `Utils`, which is nothing at that level.
 
+    **Both of those now have a gate, and writing it took two tries apiece.**
+    `bench/bind_roundtrip.sh` exists for exactly this — III.6 rule 1's "a call
+    that returns something of another type" — and the shard it binds grew two
+    shapes.
+
+    The first version of the return check wrote `def factory(tag : String) :
+    Base` and passed either way: Crystal resolves a *written* restriction on an
+    abstract class to `Base+` on its own, so nothing was inferred and nothing
+    was devirtualised. It takes a method with **no** return annotation whose
+    body answers two subclasses — then the answer is `Base+`, the declaration
+    can only say `Base`, and the header reads it as the exact class. Without
+    the fix the gate now ends on `undefined symbol: *Shard::Base#describe`.
+
+    The first version of the body check put the method on the *module* and
+    passed either way, because a module function's body already took the
+    rewrite; a type's did not. On a type, and taking a block so that the body
+    travels at all, it ends on `Shard does not export Shard::TAG`.
+
+    A gate that passes before the fix is a gate that proves nothing, and both
+    of these did until they were checked against the broken compiler.
+
     **And a name resolves in its own scope first.** `openssl_ext` writes a
     constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type
     R-2 asks this file to write for its `new` — a type Crystal infers and the
