@@ -226,12 +226,39 @@
   because a C function takes the integer and Crystal converts an enum at a
   `fun` call without being asked.
 
-  Three symbols left, and they are one problem in two shapes: a method on a
-  type the consumer has and never compiles. Neither artifact claims them,
-  neither def is from an artifact, and `codegen_fun` is never entered for them
-  — yet the prelude's own `exception.class.name` over `Exception+` emits the
-  reference, because codegen builds that dispatch table by walking the class
-  tree. SPEC.md Part V item 12 records what has been ruled out.
+  **A boundary carries what the shard wrote, and it was carrying Crystal's
+  library too** — `Class#name` crossed as a header, which is a promise of a
+  symbol per subclass that only the types with units behind them could keep.
+  The test is where a method is *not* written: inherited from Crystal it stays
+  behind, inherited from another shard it travels.
+
+  **A module's methods are the fourth thing whose body has to travel**,
+  alongside a generic's, a block-taker's and an abstract class's, and for the
+  same reason: instantiated per *including* type, and the includer may be in
+  another boundary. **An empty body is a body** — `protected def do_close; end`
+  is a hook, and reading it as nothing to carry sent `super()` past every
+  ancestor to `Object`.
+
+  **A shard's top level is more than its constants.** `DB.register_driver
+  "sqlite3", SQLite3::Driver` is one statement and the thing that shard exists
+  to do; only constants were crossing.
+
+  **A field's default travels, and it travels in the field's place** (format
+  v39). Only the type was crossing, so a consumer allocated `@total = [] of T`
+  null. The first attempt put the defaults where the class variables go, and
+  that was wrong for a reason worth keeping: a field's position in the list is
+  its position in the layout, and the module's object code was compiled against
+  it.
+
+  **And a default is the third thing to need the value as it was written** — a
+  regex literal is replaced by the constant the compiler cached it in.
+  Constants and class variables already did this; instance variables now do
+  too. A fourth thing cannot travel at all: a body that reads `$~`, which is
+  scoped to the method that matched.
+
+  `sqlite3` compiles, links, runs, opens the database and builds its pool. What
+  it does not do yet is answer: `SQLite3::Statement#perform_exec` reads from a
+  null receiver — a statement that was never built.
 
   **And a name resolves in its own scope first.** `openssl_ext` writes a
   constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type R-2

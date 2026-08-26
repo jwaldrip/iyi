@@ -126,6 +126,19 @@ module Iyi
     # the implementation is in the driver's, two boundaries that never see each
     # other's text. The requirement is the thing they do share.
     answers_abstract : Bool = false,
+    # The file the shard's author wrote this method in, or empty where that is
+    # nobody's file.
+    #
+    # A boundary carries what a shard *wrote*. `Class#name` is
+    # `{{ @type.name.stringify }}` in Crystal's own `class.cr`, one
+    # instantiation per type, and a shard's classes inherit it like everything
+    # else — so it was crossing as a *header*, which is a promise of a symbol
+    # per subclass that only the types with units behind them could keep. A
+    # consumer forming `DB::PoolResourceLost(DB::Connection+)` got the header
+    # and nothing to link: `undefined symbol:
+    # *DB::PoolResourceLost(DB::Connection+)::name:String`. It has its own
+    # `class.cr` and makes its own, which is what every other program does.
+    written : String = "",
     # The names `forall` introduces, which are the method's own.
     #
     # They were never carried, so a method with one lost it twice over: the
@@ -186,6 +199,26 @@ module Iyi
       signature = args.empty? ? name : "#{name}(#{args})"
       "pub def #{signature} : #{answer || "Nil"}"
     end
+  end
+
+  # Where Crystal's own library lives, for `shard_wrote?`. Reset per run.
+  @@library = ""
+
+  # Whether this method is anybody's but the library's. See `BindMethod#written`.
+  #
+  # The test is where it is *not* written rather than where it is, and the
+  # difference is another boundary. A method a shard inherits from Crystal's
+  # own library —
+  # `Class#name`, `Reference#hash` — is one the consumer has its own copy of
+  # and makes for itself. A method it inherits from another *shard* is not:
+  # `sqlite3`'s `ResultSet` gets `close` from `db`'s `Disposable` module, the
+  # consumer has that only as a header, and `db`'s artifact cannot define it
+  # because a module's method is compiled per including type and
+  # `SQLite3::ResultSet` is not one of db's.
+  private def self.shard_wrote?(method : BindMethod) : Bool
+    return true if @@library.empty?
+    return true if method.written.empty?
+    !method.written.starts_with?(@@library)
   end
 
   # The types an iyi program already has, so a signature naming one of them
@@ -254,6 +287,7 @@ module Iyi
     # instantiation recurses forever, and the frames it repeats are five deep.
     program.iyi_instantiation_limit = INSTANTIATION_LIMIT
 
+    @@library = library_root(program) || ""
     @@builtin = program.builtin_type_names
     @@crystal_types = crystal_library_types program
     @@bound_prefix = {} of String => String
@@ -801,7 +835,7 @@ module Iyi
       # inside the module — so `TABLE = [...]` under `module store` is
       # `Store::TABLE`, in the namespace the shard wrote it in, built by the
       # consumer's own program at the time III.5 says.
-      initialiser: constant_source(program, root),
+      initialiser: initialiser_source(program, root),
       source_path: program.filename || "",
       compiler_version: IyiMod.compiler_version,
       target_triple: program.codegen_target.to_s,
@@ -1179,11 +1213,11 @@ module Iyi
       end
     end
 
-    fields = declaration.fields.select { |(_, type_name)| resolvable.call(type_name) }
+    fields = declaration.fields.select { |(_, type_name, _)| resolvable.call(type_name) }
     if fields.size != declaration.fields.size
       # A struct is its fields, so one that cannot carry them cannot travel.
       return nil unless declaration.kind == "class"
-      fields = [] of {String, String}
+      fields = [] of {String, String, String}
     end
 
     # A class variable whose type this boundary drops is one the consumer
@@ -1341,7 +1375,7 @@ module Iyi
         type_parameters: [] of String,
         assoc_types: [] of String,
         supertraits: [] of String,
-        fields: [] of {String, String},
+        fields: [] of {String, String, String},
         methods: collect_signatures(type, container, by_owner, root).sort_by(&.name),
         visibility: "",
         types: nested,
@@ -1359,16 +1393,7 @@ module Iyi
     begin
       signatures = collect_signatures(type, container, by_owner, root)
 
-      fields = [] of {String, String}
-      if type.is_a?(InstanceVarContainer)
-        type.instance_vars.each do |field, variable|
-          # Devirtualised, for the reason `infer_return` gives: `IO+` is how a
-          # virtual type prints and it is a fact about this build's dispatch
-          # rather than a name anybody can write. A field declared `IO+` is a
-          # field nobody can read back.
-          fields << {field, variable.type?.try(&.devirtualize.to_s) || "?"}
-        end
-      end
+      fields = split_fields(type)
 
       # A field is not optional the way a method is. A consumer allocates the
       # type, and allocating needs its size, so a type whose fields name the
@@ -1378,7 +1403,7 @@ module Iyi
       # The *name* that fails rather than the whole field type: a field is
       # `Kemal::LRUCache(String, Radix::Result(Kemal::Route))` and the argument
       # is about one name inside it.
-      foreign_fields = fields.flat_map do |(_, type_name)|
+      foreign_fields = fields.flat_map do |(_, type_name, _)|
         Rx.scan(type_name, BIND_TYPE_NAME).compact_map do |match|
           part = match[0].not_nil!
           next if part == "class" || part == "_"
@@ -1398,7 +1423,7 @@ module Iyi
           return nil
         end
 
-        fields = [] of {String, String}
+        fields = [] of {String, String, String}
         signatures.reject! { |signature| signature.name == "new" }
         @@handle_types << name
         # With the name that made it one. A type crossing without its fields is
@@ -1429,11 +1454,49 @@ module Iyi
           .sort_by { |(signature, index)| {signature.name, index} }.map(&.[0]),
         visibility: private_type ? "private" : "pub",
         types: nested,
+        # The defaulted fields go here, for the reason `split_fields` gives:
+        # this is the triple that renders `name : type = value`.
         class_vars: declared_class_vars(type),
         superclass: superclass_name(type, root),
         includes: included_modules(type, root),
       )
     end
+  end
+
+  # A type's fields, split into the ones with a default and the ones without.
+  #
+  # A field the shard wrote `@total = [] of T` has a *default*, and the
+  # declaration was carrying only its type — so a consumer allocated it null
+  # and the first `@total.each` read through it: `Invalid memory access` inside
+  # `DB::Pool(DB::Connection+)`'s own initialisation. `reopened_declaration`
+  # has carried defaults since kemal's `@store` needed one; the shard's *own*
+  # types never did.
+  #
+  # In place, because a field's position in this list is its position in the
+  # type's layout and the module's own object code was compiled against that
+  # layout. Carried at the end instead — which is where `class_vars` renders —
+  # `DB::Pool(T)`'s `@factory` changed offset and db's own `Database#initialize`
+  # wrote a proc where the consumer read an array.
+  private def self.split_fields(type : Type) : Array({String, String, String})
+    fields = [] of {String, String, String}
+    return fields unless type.is_a?(InstanceVarContainer)
+
+    defaults = {} of String => String
+    if type.responds_to?(:instance_vars_initializers)
+      type.instance_vars_initializers.try &.each do |initializer|
+        defaults[initializer.name] = initializer.written
+      end
+    end
+
+    type.instance_vars.each do |field, variable|
+      # Devirtualised, for the reason `infer_return` gives: `IO+` is how a
+      # virtual type prints and it is a fact about this build's dispatch
+      # rather than a name anybody can write.
+      written = variable.type?.try(&.devirtualize.to_s) || "?"
+      fields << {field, written, defaults[field]? || ""}
+    end
+
+    fields
   end
 
   # A type's class variables, or none where the library declares them itself.
@@ -2023,7 +2086,7 @@ module Iyi
                                           path : String = declaration.name) : IyiMod::TypeDecl
     # `copy_with`, for the reason `prune_declaration` gives.
     declaration.copy_with(
-      fields: declaration.fields.map { |(name, type)| {name, strip_root(type, root)} },
+      fields: declaration.fields.map { |(name, type, value)| {name, strip_root(type, root), strip_root(value, root)} },
       # `map_with_index` over the ordinals, because two definitions of one
       # signature are two bodies and each has to move to its own new key. The
       # pruner does not need the same care: it filters on the signature's text,
@@ -2114,7 +2177,7 @@ module Iyi
     # reopened `lib` carried, so `sqlite3`'s consumer said `undefined fun
     # 'value_text' for LibSQLite3` about a lib whose types had all arrived.
     declaration.copy_with(
-      fields: declaration.fields.map { |(name, type)| {name, map_names(type)} },
+      fields: declaration.fields.map { |(name, type, value)| {name, map_names(type), map_names(value)} },
       methods: begin
         ordinals = IyiMod.mono_body_ordinals(declaration.methods)
         declaration.methods.map_with_index do |signature, index|
@@ -2355,12 +2418,7 @@ module Iyi
     # `Array(Radix::Node(...))` and never calls a `Node` method — and naming is
     # what a declaration is for. Dropping the empty ones is what left `Kemal`
     # waiting on a type whose methods it had no use for.
-    fields = [] of {String, String}
-    if type.is_a?(InstanceVarContainer)
-      type.instance_vars.each do |field, variable|
-        fields << {field, variable.type?.try(&.devirtualize.to_s) || "?"}
-      end
-    end
+    fields = split_fields(type)
 
     nested = [] of IyiMod::TypeDecl
     collect_declarations type, by_owner, root, nested, container
@@ -2414,7 +2472,7 @@ module Iyi
       type_parameters: [] of String,
       assoc_types: [] of String,
       supertraits: [] of String,
-      fields: [] of {String, String},
+      fields: [] of {String, String, String},
       methods: [] of IyiMod::Signature,
       visibility: private_type ? "private" : "pub",
       types: [] of IyiMod::TypeDecl,
@@ -2438,6 +2496,100 @@ module Iyi
   # That was left out once on the assumption it did not, which was a guess and
   # wrong: Crystal takes a qualified assignment wherever the namespace exists,
   # and the declarations above this text are what make it exist.
+  # The shard's own top-level code: its constants, and the statements beside
+  # them.
+  #
+  # A constant was the whole of this, and a shard's top level is more than
+  # constants. `sqlite3` writes `DB::register_driver "sqlite3",
+  # SQLite3::Driver` at the top level of `driver.cr` — one statement, and the
+  # thing the entire shard exists to do. Without it a consumer linked, ran, and
+  # said `no driver was registered for the schema "sqlite3", did you maybe
+  # forget to require the database driver?` — which is exactly what had
+  # happened, one boundary over.
+  #
+  # Read back from the shard's own files rather than from the tree, because the
+  # tree is not where it is any more: by the time a boundary is written these
+  # statements have been typed, expanded and folded into the program's `_main`,
+  # and what has to cross is what the shard *wrote*. The same argument
+  # `Const#iyi_value_source` makes, one level up.
+  #
+  # In require order, which is the order they ran in. `Program#requires` is
+  # insertion-ordered and holds the resolved path of everything this build
+  # read, so the shard's own files are the ones under its directory.
+  private def self.initialiser_source(program : Program, root : String) : String
+    parts = [] of String
+    constants = constant_source(program, root)
+    parts << constants unless constants.empty?
+
+    source = program.filename
+    if source.is_a?(String)
+      directory = File.dirname(source)
+      unless directory.empty?
+        program.requires.each do |path|
+          next unless path.starts_with?(directory)
+          statements = top_level_statements(program, path)
+          parts << statements unless statements.empty?
+        end
+      end
+    end
+
+    parts.join('\n')
+  end
+
+  # The statements one of the shard's files writes outside every declaration.
+  #
+  # A declaration is not one of these — a class, a module, a `def`, a `lib`, an
+  # `enum`, an `alias`, a macro, an `annotation` — and neither is a `require`,
+  # which `Requires` already carries, nor a constant, which `constant_source`
+  # does. What is left is code, and code is what has to run.
+  private def self.top_level_statements(program : Program, path : String) : String
+    source = File.read(path)
+    parser = program.new_parser(source)
+    parser.filename = path
+    nodes = parser.parse
+
+    lines = [] of String
+    flat_expressions(nodes).each do |node|
+      case node
+      when Require, ClassDef, ModuleDef, Def, Macro, LibDef, EnumDef,
+           Alias, AnnotationDef, Include, Extend, TypeDeclaration, Nop
+        # A declaration, or a require. Somebody else carries it.
+      when MacroExpression, MacroFor, MacroIf
+        # A macro at the top level writes declarations, and the declarations it
+        # wrote have already travelled — `Exports` has them, one entry per
+        # method the loop produced. Carried here as well it would run a second
+        # time on the far side, where the names it reads are the shard's own
+        # and private: kemal writes `{% for method in HTTP_METHODS %}` and a
+        # consumer said `undefined constant HTTP_METHODS`.
+      when Assign
+        # `TABLE = [...]` is a constant and `constant_source` has it; anything
+        # else assigned at the top level is a local nobody outside can read.
+      else
+        lines << node.to_s
+      end
+    end
+    lines.join('\n')
+  rescue
+    ""
+  end
+
+  # One `Expressions` tree as a flat list. Collected rather than yielded: a
+  # recursive method that yields is inlined at every level, and the compiler
+  # says so — `recursive block expansion`.
+  private def self.flat_expressions(node : ASTNode) : Array(ASTNode)
+    found = [] of ASTNode
+    pending = [node]
+    until pending.empty?
+      current = pending.shift
+      if current.is_a?(Expressions)
+        current.expressions.reverse_each { |inner| pending.unshift inner }
+      else
+        found << current
+      end
+    end
+    found
+  end
+
   private def self.constant_source(program : Program, root : String) : String
     root_type = program.types?.try &.[]?(root)
     return "" unless root_type.is_a?(NamedType)
@@ -2500,9 +2652,21 @@ module Iyi
     # that is not a bug — there is no machine code, because nothing in that
     # shard subclasses it — so a consumer that writes `class Report < Sheet`
     # asked for `*Sheet+@Sheet#render` and nobody had made one.
-    abstract_owner = type.responds_to?(:abstract?) && type.abstract?
+    #
+    # A *module*'s methods are the fourth, and the same sentence says it: they
+    # are instantiated per *including* type, and the includer may be in another
+    # boundary altogether. `db` writes `module Disposable` with a `close` in
+    # it; `sqlite3`'s `ResultSet` includes it through `DB::ResultSet`, and
+    # neither artifact can define `*SQLite3::ResultSet@DB::Disposable#close` —
+    # db's build has no such type, and sqlite3's has the method only as a
+    # header. Nobody could compile it, so nobody did.
+    abstract_owner = (type.responds_to?(:abstract?) && type.abstract?) ||
+                     (type.responds_to?(:module?) && type.module? && !type.metaclass?)
     { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
       by_owner[owner]?.try &.each do |method|
+        # What the shard wrote, and nothing else. See `BindMethod#written`.
+        next unless shard_wrote?(method)
+
         # A private one is decided below, once it is known which bodies travel
         # and what they call.
         next if method.private_def
@@ -2722,6 +2886,12 @@ module Iyi
     pool = [] of BindMethod
     { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
       by_owner[owner]?.try &.each do |method|
+        # The library's own is never this boundary's to carry, here as much as
+        # in the main loop. Without the test a method dropped there came back
+        # in through this door and came back `private`: the consumer said
+        # `private method 'name' called for BinData::WriteError.class` about
+        # `Class#name`, which its own prelude defines and makes public.
+        next unless shard_wrote?(method)
         next unless method.private_def || !crossed.includes?(method.name)
         # `uncompilable` is not asked here, and asking it was wrong. It says
         # this tool could not *instantiate* the method to read its answer, and
@@ -2737,8 +2907,13 @@ module Iyi
         # A consumer said `undefined method 'perform_exec_and_release' for
         # SQLite3::Statement`.
         next if method.abstract_def
+        # An *empty* body is a body. `db` writes `protected def do_close; end`
+        # on `DB::Statement` — a hook for subclasses to override, doing nothing
+        # itself — and `sqlite3`'s `Statement#do_close` calls `super()`. Read as
+        # "nothing to carry" it never crossed, so `super` walked past every
+        # ancestor to `Object`: `undefined method 'do_close' for Object`.
         body = method.body
-        next if body.nil? || body.empty?
+        next if body.nil?
         # A *synthesised* `new` never travels — an empty receiver on the
         # metaclass is what says it is one — and the reason is the same one
         # `collect_signatures` gives: its body is the compiler's, `_ =
@@ -3257,7 +3432,7 @@ module Iyi
         nested << IyiMod::TypeDecl.new(
           name: simple, kind: "type",
           type_parameters: [] of String, assoc_types: [] of String,
-          supertraits: [] of String, fields: [] of {String, String},
+          supertraits: [] of String, fields: [] of {String, String, String},
           methods: [] of IyiMod::Signature, visibility: "",
           value: member.typedef.to_s,
         )
@@ -3277,17 +3452,17 @@ module Iyi
         nested << IyiMod::TypeDecl.new(
           name: simple, kind: "alias",
           type_parameters: [] of String, assoc_types: [] of String,
-          supertraits: [] of String, fields: [] of {String, String},
+          supertraits: [] of String, fields: [] of {String, String, String},
           methods: [] of IyiMod::Signature, visibility: "",
           value: member.aliased_type.to_s,
         )
       else
-        fields = [] of {String, String}
+        fields = [] of {String, String, String}
         if member.is_a?(InstanceVarContainer)
           member.instance_vars.each do |field, variable|
             # `@` off: a `lib` struct writes its fields as plain names, which is
             # what the shard wrote and what the far side has to parse back.
-            fields << {field.lchop('@'), variable.type?.try(&.devirtualize.to_s) || "?"}
+            fields << {field.lchop('@'), variable.type?.try(&.devirtualize.to_s) || "?", ""}
           end
         end
         next if fields.empty?
@@ -3316,7 +3491,7 @@ module Iyi
       type_parameters: [] of String,
       assoc_types: [] of String,
       supertraits: [] of String,
-      fields: [] of {String, String},
+      fields: [] of {String, String, String},
       methods: [] of IyiMod::Signature,
       # No `pub`: a `lib` is not a thing a consumer writes against, and this one
       # is the library's besides. It is here so the types can be named.
@@ -3507,13 +3682,13 @@ module Iyi
     defaults = {} of String => String
     if type.responds_to?(:instance_vars_initializers)
       type.instance_vars_initializers.try &.each do |initializer|
-        written = initializer.value.to_s
+        written = initializer.written
         aliases.each { |simple, resolved| written = replace_word written, simple, resolved }
         defaults[initializer.name] = written
       end
     end
 
-    fields = [] of {String, String}
+    fields = [] of {String, String, String}
     defaulted = [] of {String, String, String}
     if type.is_a?(InstanceVarContainer)
       type.instance_vars.each do |field, variable|
@@ -3527,11 +3702,9 @@ module Iyi
         # not travel is worse than one that travels needing a name, because the
         # second says so.
         written = variable.type?.try(&.devirtualize.to_s) || "?"
-        if value = defaults[field]?
-          defaulted << {field, written, value}
-        else
-          fields << {field, written}
-        end
+        # In place, for the reason `IyiMod::TypeDecl#fields` gives: a field's
+        # position in the list is its position in the layout.
+        fields << {field, written, defaults[field]? || ""}
       end
     end
 
@@ -3784,6 +3957,7 @@ module Iyi
       abstract_def: a_def.abstract?,
       answers_abstract: !a_def.abstract? && !abstract_ancestor_def(owner, a_def).nil?,
       free_vars: a_def.free_vars || [] of String,
+      written: written_in(a_def.location) || "",
       # Protected counts as private here: both are names a travelling body may
       # call and a consumer may not write, and `protected def sort!` is one
       # `Radix::Node(T)#add` calls.
@@ -3860,6 +4034,19 @@ module Iyi
     return false if a_def.abstract?
     body = a_def.body
     return false if body.nil? || body.is_a?(Nop)
+
+    # A body that reads `$~` cannot travel, so a method that needs its body to
+    # cross cannot cross at all. `$~` is the match the *last regex in this
+    # method* set — scoped to the method, written by the compiler, and not a
+    # name anybody declares: iyi's parser refuses it outright, `$global_variables
+    # are not supported`. `backtracer` writes `def parse?(line : String,
+    # **options)` and reads `$~["method"]` inside it, and the double splat is
+    # what makes the body the only honest declaration of the method.
+    #
+    # Refused rather than mangled, and the report says which method: a
+    # declaration nobody can parse is worse than one that is not there.
+    written = body.to_s
+    return false if written.includes?("$~") || written.includes?("$?")
 
     # A free variable says it too, in the plainest words the language has:
     # `def read(type : T.class) : T forall T` is one method per `T`, compiled

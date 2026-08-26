@@ -1263,7 +1263,21 @@ module Iyi
       property value : ASTNode
       getter meta_vars : MetaVars
 
+      # iyi: the value as it was *written*, for `IyiMod::TypeDecl#fields`
+      # (SPEC.md IV.2).
+      #
+      # The third thing to need this, after a constant's initialiser and a
+      # class variable's, and for the third time the same reason: a default has
+      # to run on the far side of an artifact, so it travels as source — and
+      # the node above stops being that source. A regex literal is replaced by
+      # the constant the compiler cached it in, so `backtracer`'s
+      # `@app_dirs_pattern : Regex = /…/` reached the format as `$Regex:99c9…`,
+      # a name iyi's parser refuses outright: `$global_variables are not
+      # supported`.
+      getter written : String
+
       def initialize(@name, @value, @meta_vars)
+        @written = @value.to_s
       end
     end
 

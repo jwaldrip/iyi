@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 94,264 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 94,503 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -7685,37 +7685,93 @@ Named honestly, so nobody mistakes this draft for complete.
     being asked — a caller inside the module goes on writing
     `SQLite3::Flag::ReadWrite`. Three symbols left.
 
-    They are a generic instance's compiler-synthesised class methods —
-    `DB::PoolResourceLost(DB::Connection+)::name` and `::to_s` — and
-    `DB::Disposable#close` with the module itself as the receiver, and they are
-    one problem in two shapes: **a method on a type the consumer has and never
-    compiles.**
+    **A boundary carries what the shard wrote, and it was carrying Crystal's
+    library too.** `Class#name` is `{{ @type.name.stringify }}` in Crystal's
+    own `class.cr`, one instantiation per type, and a shard's classes inherit
+    it like everything else — so it crossed as a *header*, which is a promise
+    of a symbol per subclass that only the types with units behind them could
+    keep. A consumer forming `DB::PoolResourceLost(DB::Connection+)` got the
+    header and nothing to link. It has its own `class.cr` and makes its own,
+    which is what every other program does.
 
-    What is known about it, each measured rather than reasoned. The artifact
-    does not claim these symbols, so `compiled_elsewhere` is false. Their defs
-    are not from the artifact, so `iyi_from_artifact?` is false. `codegen_fun`
-    is never entered for them — not for these and not for *any* `::name` in the
-    consumer's build — yet the reference exists, emitted by the prelude's own
-    `exception.class.name` over `Exception+`, whose dispatch table codegen
-    builds by walking the class tree. So the table names a method nobody
-    instantiated.
+    The test is where a method is *not* written rather than where it is, and
+    the difference is another boundary: a method inherited from Crystal stays
+    behind, one inherited from another *shard* travels. And it has to be asked
+    in both places a declaration can come from — asked only of the main walk,
+    the method came back through the private-callee search and came back
+    `private`.
 
-    `PoolResourceLost(DB::Connection+)` is a generic instance this build makes
-    only to *number* it: `TypeIds` names it, `lookup_type` creates it, and
-    nothing else in the program would ever form it. The natural reading is that
-    it joins the tree after the virtual call over that tree was typed — but
-    `add_subclass` notifies its ancestors' observers when it is created, and
-    notifying them a second time from the import changes nothing. Measured.
+    **A module's methods are the fourth thing whose body has to travel.** The
+    sentence that covers a generic's and an abstract class's covers these too:
+    they are instantiated per *including* type, and the includer may be in
+    another boundary altogether. `db` writes `module Disposable` with a `close`
+    in it and `sqlite3`'s `ResultSet` includes it, and neither artifact could
+    define `*SQLite3::ResultSet@DB::Disposable#close` — db's build has no such
+    type, sqlite3's has the method only as a header. The same argument fixes
+    the consumer's side of it: `iyi_artifact_self_type` keys a method on its
+    defining owner because a boundary has one symbol per method, and a module
+    is the exception for the same reason a generic is.
 
-    Two other readings were measured and are wrong: instantiating a generic
-    does not lose iyi's marks on a `Def` (`clone_without_location` carries
-    both), and the symbols are not being claimed by either artifact.
+    **And an empty body is a body.** `db` writes `protected def do_close; end`
+    — a hook for subclasses, doing nothing itself — and the private-callee
+    search read that as nothing to carry. `sqlite3`'s `do_close` calls
+    `super()`, which then walked past every ancestor to `Object`.
 
-    What is left to decide is whose job it is. A generic instance has no unit
-    in an artifact by design — its methods are the consumer's to compile — so
-    the answer is on the consumer's side, and the shape of it is the keep
-    file's shape one level over: *naming* a method is what makes its symbol,
-    and nothing names these.
+    **A shard's top level is more than its constants.** `sqlite3` writes
+    `DB.register_driver "sqlite3", SQLite3::Driver` at the top level of
+    `driver.cr` — one statement, and the thing the whole shard exists to do.
+    Only constants were crossing, so a consumer linked, ran, and said `no
+    driver was registered for the schema "sqlite3", did you maybe forget to
+    require the database driver?` — which is exactly what had happened, one
+    boundary over. They are read back from the shard's own files in require
+    order, because by the time a boundary is written they have been typed,
+    expanded and folded into `_main`, and what has to cross is what the shard
+    *wrote*. Not a macro, though: a macro at the top level writes declarations,
+    the declarations have already travelled, and running it again on the far
+    side reads names that are the shard's own and private.
+
+    Two readings were measured and are wrong, and both are written down so
+    nobody spends the afternoon on them again: instantiating a generic does not
+    lose iyi's marks on a `Def` (`clone_without_location` carries both), and
+    notifying a numbered type's ancestors a second time when it is created
+    changes nothing.
+
+    **A field's default travels, and it travels in the field's place.** `db`
+    writes `@total = [] of T` on `DB::Pool(T)`; only the type was crossing, so
+    a consumer allocated it null and the first `@total.each` read through it.
+    `reopened_declaration` had carried defaults since kemal's `@store` needed
+    one and the shard's *own* types never did.
+
+    The first attempt put them where the class variables go — the same
+    `name : type = value` line — and that was wrong for a reason worth keeping:
+    **a field's position in the list is its position in the layout**, and the
+    module's own object code was compiled against that layout. The defaulted
+    fields all moved to the end, `@factory` changed offset, and db's own
+    `Database#initialize` wrote a proc where the consumer read an array. So a
+    field is a triple now — name, type, default — and the default is written
+    where the field is.
+
+    **And a default is the third thing to need the value as it was *written*.**
+    A regex literal is replaced by the constant the compiler cached it in, so
+    `backtracer`'s `@app_dirs_pattern : Regex = /…/` reached the format as
+    `$Regex:99c9…` — a name iyi's parser refuses outright. Constants and class
+    variables already recorded their written source; instance variables now do
+    too. The same correction, three times, on the three kinds of value that
+    have to run on the far side.
+
+    A fourth thing cannot travel at all: a body that reads `$~`. It is the
+    match the last regex in *that method* set — scoped, compiler-written, and
+    not a name anybody declares. `backtracer` writes `def parse?(line : String,
+    **options)` and reads `$~["method"]` in it, and the double splat is what
+    makes the body the only honest declaration of the method — so the method
+    does not cross, and the report says which one.
+
+    **`sqlite3` compiles, links, runs, opens the database and builds its
+    pool.** What it does not do yet is answer: `SQLite3::Statement#perform_exec`
+    reads at offset `0x20` from a null receiver — a statement that was never
+    built. That is the last measured state, and it is a different kind of
+    question from every one above it: not a name, not a symbol, not a layout,
+    but an object that should have been constructed and was not.
 
     **And a name resolves in its own scope first.** `openssl_ext` writes a
     constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type

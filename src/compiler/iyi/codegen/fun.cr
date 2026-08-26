@@ -61,6 +61,9 @@ class Iyi::CodeGenVisitor
     # home stays private: two modules each carrying a copy is the collision
     # IV.1g's internal linkage exists to prevent, and a home that defines the
     # symbol itself answers every other reference already.
+    if ENV["IYI_TDF"]? && mangled_name.includes?(ENV["IYI_TDF"].to_s)
+      STDERR.puts "TDF #{mangled_name} host=#{!iyi_closure_host(self_type).nil?} typemod=#{type_module(self_type).mod.name}"
+    end
     if host = iyi_closure_host(self_type)
       internal = host.mod != type_module(self_type).mod
       func = typed_fun?(host.mod, mangled_name) ||
@@ -104,6 +107,14 @@ class Iyi::CodeGenVisitor
     # for a symbol that means something else.
     return self_type unless defining.instance_type.iyi_from_artifact?
     return self_type if defining.is_a?(GenericType) || defining.is_a?(GenericInstanceType)
+
+    # A *module*'s method is the same exception one word over, and for the same
+    # reason: it is compiled once per *including* type, so there is no single
+    # symbol to key on. `db` writes `module Disposable` with a `close` in it,
+    # and its artifact defines `*DB::Connection+@DB::Disposable#close`,
+    # `*DB::Statement+@…` and `*DB::ResultSet+@…` — one apiece. Keyed on the
+    # module the consumer asked for `*DB::Disposable#close`, which is nobody's.
+    return self_type if defining.instance_type.module?
 
     # Both sides of the type: a `def self.` is matched on the metaclass, and the
     # defining owner is recorded on the same side.
@@ -262,6 +273,9 @@ class Iyi::CodeGenVisitor
       # units call `FilterHandler#next=` and `HTTP::Handler` is Crystal's — and
       # it defines less than its types suggest, because `Reference::new` is
       # instantiated per type and only where something reached it.
+      if ENV["IYI_SYM"]? && mangled_name.includes?(ENV["IYI_SYM"].to_s)
+        STDERR.puts "SYM #{mangled_name} needs=#{needs_body} art=#{target_def.iyi_from_artifact?} elsewhere=#{compiled_elsewhere} internal=#{iyi_internal} mod=#{@llvm_mod.name}"
+      end
       if needs_body && !iyi_internal && !@program.iyi_exported_owners.empty? && @llvm_mod != @main_mod
         (@program.iyi_unit_symbols[@llvm_mod.name] ||= Set(String).new) << mangled_name
       end
