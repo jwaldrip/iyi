@@ -114,7 +114,29 @@ module Iyi
     # with no subclass has no type, and codegen said so as a compiler bug
     # rather than as an error anybody could act on. What crosses is the
     # *requirement*, which is what a consumer subclassing the type has to meet.
-    abstract_def : Bool = false do
+    abstract_def : Bool = false,
+    # Whether this method answers an `abstract def` an ancestor wrote.
+    #
+    # A method that does is one somebody else's body calls, whatever its
+    # visibility: `db` writes `protected abstract def perform_exec(args :
+    # Enumerable) : ExecResult` and `Statement#exec`'s body — which travels —
+    # calls it, so every driver's implementation has to be declared for that
+    # body to compile against. The search that finds a travelling body's
+    # private callees cannot find this one: the body is in *db's* artifact and
+    # the implementation is in the driver's, two boundaries that never see each
+    # other's text. The requirement is the thing they do share.
+    answers_abstract : Bool = false,
+    # The names `forall` introduces, which are the method's own.
+    #
+    # They were never carried, so a method with one lost it twice over: the
+    # `forall` clause did not travel, and the free variable failed the test
+    # that asks whether every name in a signature is one the far side can
+    # write. `db` writes `def query_one(query, *args_, args : Array? = nil,
+    # &block : ResultSet -> U) : U forall U` — the block-taking overload the
+    # whole query API is built on — and a consumer's own body called it and met
+    # only the three that take a type: `'DB::Database#query_one' is not
+    # expected to be invoked with a block`.
+    free_vars : Array(String) = [] of String do
     # What this method answers, which is not always what the shard wrote.
     #
     # The instantiated answer wins where the two disagree, and the linker is
@@ -130,6 +152,9 @@ module Iyi
 
     # Every type this signature names, so the emitter can ask whether they can
     # all be named on the other side.
+    # The names this signature may use that nobody declares: the free variables
+    # `forall` introduces, and — inside a generic — its type parameters, which
+    # the callers add.
     def signature_types : Array(String)
       types = params.map { |(_, restriction, _)| restriction }
       if declared = answer
@@ -517,7 +542,7 @@ module Iyi
       # restriction on `args` and the whole of running an app is behind it.
       next unless method.storable || method.body_answers
       next unless method.callable?
-      next unless method.body_answers || method.signature_types.all? { |t| nameable?(t, root) }
+      next unless method.body_answers || method.signature_types.all? { |t| nameable?(t, root, method.free_vars) }
 
       signature = IyiMod::Signature.new(
         name: method.name,
@@ -532,7 +557,7 @@ module Iyi
         parameters: method.params.map { |(name, restriction, default)| bind_parameter(name, restriction, default) },
         block_parameter: method.written_block,
         return_type: method.body_answers ? "" : (method.answer || ""),
-        free_variables: [] of String,
+        free_variables: method.free_vars,
         required: false,
       )
       # One declaration per *signature*, which is what tells two methods apart.
@@ -584,7 +609,7 @@ module Iyi
       next if method.uncompilable
       next unless method.storable || method.body_answers
       next unless method.callable?
-      next unless method.body_answers || method.signature_types.all? { |t| nameable?(t, root) }
+      next unless method.body_answers || method.signature_types.all? { |t| nameable?(t, root, method.free_vars) }
 
       signature = IyiMod::Signature.new(
         name: method.name,
@@ -592,7 +617,7 @@ module Iyi
         parameters: method.params.map { |(name, restriction, default)| bind_parameter(name, restriction, default) },
         block_parameter: method.written_block,
         return_type: method.body_answers ? "" : (method.answer || ""),
-        free_variables: [] of String,
+        free_variables: method.free_vars,
         required: false,
       )
       # With its body, always, and that is what a top level *is*.
@@ -1404,7 +1429,11 @@ module Iyi
         assoc_types: [] of String,
         supertraits: [] of String,
         fields: fields,
-        methods: signatures.sort_by(&.name),
+        # Stable, because two definitions of one signature are ordered and
+        # `previous_def` is what reads that order. `sort_by` alone is not: ties
+        # come out in whatever order the sort left them.
+        methods: signatures.map_with_index { |signature, index| {signature, index} }
+          .sort_by { |(signature, index)| {signature.name, index} }.map(&.[0]),
         visibility: private_type ? "private" : "pub",
         types: nested,
         class_vars: declared_class_vars(type),
@@ -1488,6 +1517,11 @@ module Iyi
     # `uninitialized args`, from a file nobody wrote, which takes the whole
     # artifact down at fill time.
     return counter if signature.parameters.any? { |parameter| !parameter.includes?(" : ") }
+
+    # Nor a signature with a free variable, for the reason a splat is not: a
+    # `forall` is one method per binding, and `uninitialized T` is not a value
+    # — `T` is a name the method introduces and nothing else has.
+    return counter unless signature.free_variables.empty?
 
     # Nor is a splat, for the reason directly above and one more.
     #
@@ -1975,8 +2009,15 @@ module Iyi
     # `copy_with`, for the reason `prune_declaration` gives.
     declaration.copy_with(
       fields: declaration.fields.map { |(name, type)| {name, strip_root(type, root)} },
-      methods: declaration.methods.map do |signature|
-        rekey_body path, signature, strip_root(signature, root)
+      # `map_with_index` over the ordinals, because two definitions of one
+      # signature are two bodies and each has to move to its own new key. The
+      # pruner does not need the same care: it filters on the signature's text,
+      # and two identical signatures are kept or dropped together.
+      methods: begin
+        ordinals = IyiMod.mono_body_ordinals(declaration.methods)
+        declaration.methods.map_with_index do |signature, index|
+          rekey_body path, signature, strip_root(signature, root), ordinals[index]
+        end
       end,
       # Deeper for what is inside it, because a name is read from where it is
       # written. `OpenSSL::PKey::PKeyError` stripped of the root is
@@ -2011,9 +2052,10 @@ module Iyi
   # the consumer reads it as a method somebody else compiled, and the link ends
   # on `undefined symbol: *Radix::Tree(Kemal::Route)@Radix::Tree(T)#add<…>`.
   private def self.rekey_body(container : String, before : IyiMod::Signature,
-                              after : IyiMod::Signature) : IyiMod::Signature
-    old_key = IyiMod.mono_body_key(container, before)
-    new_key = IyiMod.mono_body_key(container, after)
+                              after : IyiMod::Signature,
+                              ordinal : Int32 = 0) : IyiMod::Signature
+    old_key = IyiMod.mono_body_key(container, before, ordinal)
+    new_key = IyiMod.mono_body_key(container, after, ordinal)
     return after if old_key == new_key
 
     if body = @@mono_bodies.delete(old_key)
@@ -2058,8 +2100,11 @@ module Iyi
     # 'value_text' for LibSQLite3` about a lib whose types had all arrived.
     declaration.copy_with(
       fields: declaration.fields.map { |(name, type)| {name, map_names(type)} },
-      methods: declaration.methods.map do |signature|
-        rekey_body path, signature, map_names(signature)
+      methods: begin
+        ordinals = IyiMod.mono_body_ordinals(declaration.methods)
+        declaration.methods.map_with_index do |signature, index|
+          rekey_body path, signature, map_names(signature), ordinals[index]
+        end
       end,
       types: declaration.types.map { |nested| map_names_declaration nested, "#{path}::#{nested.name}" },
       value: map_names(declaration.value),
@@ -2261,8 +2306,13 @@ module Iyi
         # whole string. `T` passed and `(T | Nil)` did not, so
         # `Radix::Node(T)#initialize` never crossed and a consumer had no way to
         # build one.
+        # The generic's parameters *and* the method's own free variables. Both
+        # are names nobody declares and both are the method's to use:
+        # `QueryMethods(Stmt)` binds `Stmt` and `query_one(… &block : ResultSet
+        # -> U) : U forall U` binds `U`.
+        bound = parameters + method.free_vars
         next unless method.signature_types.all? do |written|
-                      nameable?(written, root, parameters)
+                      nameable?(written, root, bound)
                     end
         next unless body = method.body
 
@@ -2275,12 +2325,13 @@ module Iyi
           # to write for a block that returns `_`, and the consumer compiles the
           # body and reads its own. An `initialize` answers nothing either.
           return_type: method.answer || "",
-          free_variables: [] of String,
+          free_variables: method.free_vars,
           required: false,
           visibility: method.private_def ? "private" : "",
         )
+        ordinal = signatures.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) }
         signatures << signature
-        @@mono_bodies[IyiMod.mono_body_key(container, signature)] = body
+        @@mono_bodies[IyiMod.mono_body_key(container, signature, ordinal)] = body
       end
     end
 
@@ -2306,7 +2357,9 @@ module Iyi
       assoc_types: [] of String,
       supertraits: [] of String,
       fields: fields,
-      methods: signatures.sort_by(&.name),
+      # Stable, for the reason the other sort of these gives.
+      methods: signatures.map_with_index { |signature, index| {signature, index} }
+        .sort_by { |(signature, index)| {signature.name, index} }.map(&.[0]),
       # A module takes neither word, which is the same rule the non-generic
       # ones take: `pub` marks a def, a class, a struct, a trait or an enum,
       # and what a namespace owes is that the things inside it can be named.
@@ -2460,7 +2513,7 @@ module Iyi
         # 'OpenSSL::PKey::RSA.new' to be Int32, not String`.
         next unless method.storable || method.body_answers
         next unless method.callable?
-        next unless method.body_answers || method.signature_types.all? { |t| nameable?(t, root) }
+        next unless method.body_answers || method.signature_types.all? { |t| nameable?(t, root, method.free_vars) }
 
         # A block-taking method's machine code is the caller's, and IV.1g is
         # explicit that this is a question about a `def` rather than about a
@@ -2504,12 +2557,16 @@ module Iyi
           parameters: method.params.map { |(argument, restriction, default)| bind_parameter(argument, restriction, default) },
           block_parameter: method.written_block,
           return_type: method.body_answers ? "" : method.answer.not_nil!,
-          free_variables: [] of String,
+          free_variables: method.free_vars,
           required: method.abstract_def,
         )
+        # The ordinal is the count of identical signatures already written,
+        # which is what tells a redefinition from the definition it replaced.
+        # See `IyiMod.mono_body_key`.
+        ordinal = signatures.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) }
         signatures << signature
         if carries_body && body
-          @@mono_bodies[IyiMod.mono_body_key(name, signature)] = body
+          @@mono_bodies[IyiMod.mono_body_key(name, signature, ordinal)] = body
         end
       end
     end
@@ -2580,7 +2637,7 @@ module Iyi
         parameters: parameters,
         block_parameter: method.written_block,
         return_type: "",
-        free_variables: [] of String,
+        free_variables: method.free_vars,
         required: false,
       )
       added << signature
@@ -2617,6 +2674,36 @@ module Iyi
     # the same position as one the shard keeps to itself.
     crossed = carried.map(&.name).to_set
 
+    # And what crossed already by *signature*, which is a different question
+    # and the one that stops a method crossing twice. `initialize` is protected
+    # in Crystal, so the visibility test above lets it past whatever its name —
+    # and `fallback_initialize` has already carried it, with its body.
+    # `Kemal::CLI` ended up with two `def initialize(args)`: the first the
+    # body, the second empty, and the second is the one Crystal's own rule
+    # keeps. The link ended on `undefined symbol:
+    # *Kemal::CLI#initialize<Array(String)>`.
+    #
+    # Invisible until `MonoBodies` learned ordinals — before that both
+    # declarations read the same key and rendered the same body, so the
+    # duplicate was a redundancy rather than a fault.
+    key = ->(method : BindMethod) do
+      # The parameters as they are *written*, not their names. `sqlite3` writes
+      # ten `private def bind_arg(index, value : …)`, one per type it can bind,
+      # and every one of them has the same two parameter names — so keyed on
+      # names they were one method and nine were dropped: `expected argument #2
+      # to 'SQLite3::Statement#bind_arg' to be Nil, not (Int32 | String)`, with
+      # one overload listed.
+      written = method.params.map do |(argument, restriction, default)|
+        bind_parameter(argument, restriction, default)
+      end
+      "#{method.receiver}##{method.name}(#{written.join(", ")})#{method.written_block}"
+    end
+
+    already = carried.map do |signature|
+      "#{signature.receiver}##{signature.name}" \
+      "(#{signature.parameters.join(", ")})#{signature.block_parameter}"
+    end.to_set
+
     pool = [] of BindMethod
     { {type.to_s, false}, {type.metaclass.to_s, true} }.each do |(owner, on_metaclass)|
       by_owner[owner]?.try &.each do |method|
@@ -2637,6 +2724,18 @@ module Iyi
         next if method.abstract_def
         body = method.body
         next if body.nil? || body.empty?
+        # A *synthesised* `new` never travels — an empty receiver on the
+        # metaclass is what says it is one — and the reason is the same one
+        # `collect_signatures` gives: its body is the compiler's, `_ =
+        # allocate` and `_.initialize(…)`, and `_` is not a name anybody can
+        # read back. Carried here it was `can't read from _`.
+        next if on_metaclass && method.receiver.empty? && method.name == "new"
+
+        # The receiver the far side will read, which is what `already` is keyed
+        # on: a `def self.` is matched on the metaclass and carries no receiver
+        # of its own.
+        method = method.copy_with(receiver: "self") if on_metaclass && method.receiver.empty?
+        next if already.includes?(key.call(method))
         pool << method
       end
     end
@@ -2652,6 +2751,9 @@ module Iyi
     # and `io_for` is `private def self.`; the consumer said `undefined method
     # 'io_for' for OpenSSL::GETS_BIO.class`.
     reach.concat own_constant_sources(type)
+    # A method answering an ancestor's requirement is wanted whether or not
+    # anything here travels, so the search below has to run.
+    reach << "" if pool.any?(&.answers_abstract)
 
     # And the bodies its *ancestors* hand it, because a body that travels is
     # compiled per subclass. `db` writes `private abstract def build_statement`
@@ -2685,15 +2787,11 @@ module Iyi
     # the second was dropped — and the first's body calls the second.
     # `expected argument #1 to 'DB.build_database' to be String, not URI`,
     # with one overload listed.
-    key = ->(method : BindMethod) do
-      "#{method.receiver}##{method.name}" \
-      "(#{method.params.map(&.[0]).join(", ")})#{method.written_block}"
-    end
 
     taken = Set(String).new
     until pool.empty?
       wanted = pool.select do |method|
-        reach.any? { |body| calls?(body, method.name) }
+        method.answers_abstract || reach.any? { |body| calls?(body, method.name) }
       end
       break if wanted.empty?
 
@@ -2720,7 +2818,7 @@ module Iyi
           # consumer could falsify: `method DB.build_driver must return
           # NoReturn but it is returning SQLite3::Driver`.
           return_type: method.answer == "NoReturn" ? "" : (method.answer || ""),
-          free_variables: [] of String,
+          free_variables: method.free_vars,
           required: false,
           # Not `pub`, whatever the shard said. These are here for a travelling
           # body to typecheck against, and a name the consumer could write is a
@@ -3410,7 +3508,7 @@ module Iyi
         # A written return would be the shard's word about a body the consumer
         # is compiling for itself, which is rule 1's own question.
         return_type: "",
-        free_variables: [] of String,
+        free_variables: method.free_vars,
         required: false,
       )
       methods << signature
@@ -3464,31 +3562,49 @@ module Iyi
 
     defs.each_value do |list|
       list.each do |item|
-        a_def = item.def
-        # `initialize` is not public — Crystal's own rule reaches it through
-        # `new` — and
-        # that is fine while `new` travels. It does not when it takes a block:
-        # a synthesised `new`'s body is the compiler's, with a temporary for a
-        # receiver, and no consumer can parse that back. So the one a consumer
-        # needs in order to make its *own* `new` crosses instead, and only in
-        # that case: declaring `initialize` beside a `new` that also travels
-        # would be two ways to build the same type.
-        # `initialize` is not public — Crystal's own rule reaches it through
-        # `new` — and
-        # whether it travels is the collectors' question, not this one. A
-        # generic's `new` is never carried, so its `initialize` always is; a
-        # plain type's travels only where its `new` could not.
-        # And the ones a type keeps to itself, which a *generic's* travelling
-        # bodies call: `Node(T)#initialize` calls `compute_priority`. Whether
-        # they travel is the collectors' question — only the generic path takes
-        # them, because only there is every body the consumer's to compile.
-        next unless a_def.visibility.public? || a_def.name == "initialize" ||
-                    a_def.visibility.private? || a_def.visibility.protected?
-        # A method with no location is the compiler's own — `allocate` exists
-        # on every type and nobody wrote it. A boundary carries what a shard's
-        # author wrote, and `new` comes back through `initialize`.
-        next unless a_def.location
-        yield a_def
+        # The definitions this one *replaced*, oldest first.
+        #
+        # A redefinition does not sit beside the definition it replaces:
+        # `add_def` puts the old one on `previous` and the hash holds one.
+        # Crystal has a word for reaching it — `previous_def` — and `db` uses
+        # it: `def_around_query_or_exec` is a macro that redefines
+        # `around_query_or_exec` with a body calling what it replaced. Carrying
+        # only the last is a body naming something the declarations do not
+        # have, and a consumer said `there is no previous definition of
+        # 'around_query_or_exec'`. `MonoBodies` keys them apart by ordinal.
+        chain = [item.def] of Def
+        walk = item.def.previous
+        while walk
+          chain.unshift walk.def
+          walk = walk.def.previous
+        end
+
+        chain.each do |a_def|
+          # `initialize` is not public — Crystal's own rule reaches it through
+          # `new` — and
+          # that is fine while `new` travels. It does not when it takes a block:
+          # a synthesised `new`'s body is the compiler's, with a temporary for a
+          # receiver, and no consumer can parse that back. So the one a consumer
+          # needs in order to make its *own* `new` crosses instead, and only in
+          # that case: declaring `initialize` beside a `new` that also travels
+          # would be two ways to build the same type.
+          # `initialize` is not public — Crystal's own rule reaches it through
+          # `new` — and
+          # whether it travels is the collectors' question, not this one. A
+          # generic's `new` is never carried, so its `initialize` always is; a
+          # plain type's travels only where its `new` could not.
+          # And the ones a type keeps to itself, which a *generic's* travelling
+          # bodies call: `Node(T)#initialize` calls `compute_priority`. Whether
+          # they travel is the collectors' question — only the generic path takes
+          # them, because only there is every body the consumer's to compile.
+          next unless a_def.visibility.public? || a_def.name == "initialize" ||
+                      a_def.visibility.private? || a_def.visibility.protected?
+          # A method with no location is the compiler's own — `allocate` exists
+          # on every type and nobody wrote it. A boundary carries what a shard's
+          # author wrote, and `new` comes back through `initialize`.
+          next unless a_def.location
+          yield a_def
+        end
       end
     end
   end
@@ -3619,6 +3735,8 @@ module Iyi
       body: a_def.location.try { |at| owner.program.iyi_def_bodies[Program.iyi_def_body_key(at, a_def.name)]? } ||
             a_def.body.to_s,
       abstract_def: a_def.abstract?,
+      answers_abstract: !a_def.abstract? && !abstract_ancestor_def(owner, a_def).nil?,
+      free_vars: a_def.free_vars || [] of String,
       # Protected counts as private here: both are names a travelling body may
       # call and a consumer may not write, and `protected def sort!` is one
       # `Radix::Node(T)#add` calls.
@@ -3696,6 +3814,14 @@ module Iyi
     body = a_def.body
     return false if body.nil? || body.is_a?(Nop)
 
+    # A free variable says it too, in the plainest words the language has:
+    # `def read(type : T.class) : T forall T` is one method per `T`, compiled
+    # at the call site with the call site's type in the symbol. `db`'s
+    # `ResultSet#read` is written that way and `query_one`'s body calls it, so
+    # a consumer that had the declaration and not the body could not infer what
+    # the block returns.
+    return true if a_def.free_vars.try { |free| !free.empty? }
+
     a_def.args.any? { |arg| arg.restriction.nil? } ||
       !a_def.splat_index.nil? || !a_def.double_splat.nil?
   end
@@ -3710,7 +3836,15 @@ module Iyi
   # flattened away refuses the call the README makes.
   private def self.bind_params(owner : Type, a_def : Def) : Array({String, String, String})
     params = a_def.args.map_with_index do |arg, index|
-      name = index == a_def.splat_index ? "*#{arg.name}" : arg.name
+      # The external name in front of the internal one where they differ. A
+      # parameter may be called one thing by the caller and another inside the
+      # method — `def query_one(query, *args_, as type : Class)` is written
+      # `as: String` at the call site — and writing only the internal name is a
+      # different method: `no overload matches 'DB::Database#query_one' with
+      # types String, Int32, as: String.class`, with three overloads listed and
+      # every one of them naming the parameter `type`.
+      written = arg.external_name == arg.name ? arg.name : "#{arg.external_name} #{arg.name}"
+      name = index == a_def.splat_index ? "*#{written}" : written
       {name, resolve_restriction(owner, arg.restriction) || "?",
        arg.default_value.try(&.to_s) || ""}
     end

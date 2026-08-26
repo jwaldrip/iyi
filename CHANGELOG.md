@@ -170,9 +170,35 @@
   `NoReturn` only because this build registered no driver, and its body
   travels.
 
-  **What `sqlite3` waits on now is `previous_def`**: `MonoBodies` is keyed on a
-  signature, `db` redefines `around_query_or_exec` with a body calling the
-  definition it replaced, and two definitions of one signature are one key.
+  **`previous_def` travels** (format v37). A redefinition does not sit beside
+  the definition it replaces — `add_def` puts the old one on `previous` — so
+  the chain is walked and each link gets its own `MonoBodies` key, numbered in
+  the order they were written. The sorts that order a type's methods had to
+  become stable for the count to mean anything.
+
+  That numbering exposed a duplicate that had been there for weeks:
+  `Kemal::CLI` carried **two** `def initialize(args)`, and nobody could tell,
+  because both read the same key and rendered the same body. Numbered, the
+  second rendered empty — and an empty `initialize` is the one Crystal's own
+  rule keeps. `initialize` is protected, so the private-callee search let it
+  past, and that search asked "has this crossed?" by name where it had to ask
+  by signature.
+
+  **A method that answers an ancestor's `abstract def` travels whatever its
+  visibility** — the body is in one boundary's artifact and the implementation
+  in another's, and the requirement is the only thing they share. **A
+  parameter's external name is part of the method** (`as type : Class` is
+  written `as:` at the call site). **And `forall` is another way of saying the
+  caller decides**: one method per binding, so the body travels, and the
+  `forall` clause itself was never carried at all.
+
+  Two smaller ones: the private-callee search keyed its pool on parameter
+  *names*, so `sqlite3`'s ten `bind_arg` overloads were one; and a synthesised
+  `new` must never travel from that search either.
+
+  **What `sqlite3` waits on now is a generic's instantiated methods across a
+  boundary** — the stack typechecks and the link asks for an instantiation
+  keyed on the generic rather than compiling its own.
 
   **And a name resolves in its own scope first.** `openssl_ext` writes a
   constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type R-2
