@@ -178,6 +178,18 @@ n = doc.first_element_child.try(&.first_element_child)
 puts n.try(&.content)
 puts n.try(&.[]("id"))'
 
+# And the one that took a change to the format. `Random` is a *mixin* module
+# with `abstract def next_u` for its includers to answer, and iyi's own module
+# header is `extend self` — read under one, the module went into its own
+# metaclass and the metaclass answered nothing: `abstract def Random#next_u()
+# must be implemented by Random:Module`, on a program whose only line was
+# `import random`. Plain Crystal refuses `extend self` beside an `abstract def`
+# for the same reason. A boundary now carries whether the module wrote
+# `extend self` rather than the header assuming it.
+check Random random random 'r = Random.new(42)
+puts r.rand(100)
+puts r.next_bool.class'
+
 if [ "$status" -eq 0 ]; then
   echo "every boundary answers what its source does"
 fi

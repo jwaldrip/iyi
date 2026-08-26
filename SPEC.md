@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 94,861 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 94,939 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3903,6 +3903,34 @@ a consumer parses. IV.1's table asks for serialised typed IR, which is faster
 and is a second grammar to keep correct; text is the choice `Exports` already
 made, for the reason IV.1f gives, and IR can replace it without changing what
 travels.
+
+**A module is a mixin on the other side of a `--crystal` boundary.** iyi's
+module header desugars to `extend self`, because in iyi a module is a
+compilation unit and not a mixin: its functions belong to the module itself.
+A boundary's declarations are read under that header, and a `--crystal`
+boundary reopens a module of the *other* language — where a module is a mixin,
+and says which is which in its own words: a module function is written `def
+self.`, an instance method is not.
+
+Extending it anyway put the module into its own metaclass. `module Random` has
+`abstract def next_u` for its includers to answer, and its metaclass answers
+nothing: `abstract def Random#next_u() must be implemented by Random:Module`,
+on a program whose only line was `import random`. Plain Crystal refuses
+`extend self` beside an `abstract def` for the same reason, so this was never
+a question about boundaries — it was iyi's header meaning one thing and the
+module meaning another.
+
+So the header supplies it no longer and the artifact carries it, which is where
+it belongs: whether a module extends itself is a fact about the module. Two
+things had been leaning on the header without saying so. The constant accessors
+`tool bind` synthesises are module functions and nothing else said which side
+of the type they were on — written plain they became instance methods and the
+link ended on `*Kemal::config_instance:Kemal::Config`; they are `def self.` now
+on both sides. And the `extend self` line has to be written *after* the
+requires, because the parser lifts a leading run of `import` and `require` out
+of the module and stops at the first line that is neither — above them, every
+require stayed inside the module, which is the fault `parse_module_header`'s
+own comment describes.
 
 **A module's own instance method travels as a body.** IV.1g lists a module's
 methods among the ones with no single symbol to key on, because each is

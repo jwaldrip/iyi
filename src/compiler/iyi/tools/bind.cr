@@ -894,6 +894,7 @@ module Iyi
       # class is the namespace, and a header of its own name would put it one
       # level inside itself.
       class_root: !module_root?(program, root),
+      module_extends_self: extends_self?(program, root),
       # False until the *second* build puts object code in it. This is the one
       # path that can leave a boundary half-written: the declarations are on
       # disk before anything has been compiled against them.
@@ -1114,7 +1115,15 @@ module Iyi
         accessors << {
           IyiMod::Signature.new(
             name: accessor,
-            receiver: "",
+            # A module function, and written as one. These are synthesised
+            # here rather than read off the shard — a constant is storage and a
+            # declaration can name a type but not a global somebody else's
+            # object file holds — so nothing else says which side of the type
+            # they are on. Written without it they were instance methods of the
+            # module the moment the header stopped extending itself, and
+            # `Kemal.config_instance` was `undefined method ... for
+            # Kemal:Module`.
+            receiver: "self",
             parameters: [] of String,
             block_parameter: "",
             return_type: answer,
@@ -1837,13 +1846,15 @@ module Iyi
         io << "# One function per constant the shard hands its objects out\n"
         io << "# through. A constant is storage; a function crosses.\n"
         io << "#\n"
-        io << "# `extend self` rather than `def self.`, because that is what an\n"
-        io << "# iyi module header desugars to and the two have to agree on the\n"
-        io << "# symbol: one writes `Kemal@Kemal::x`, the other `Kemal::x`.\n"
+        io << "# `def self.`, because that is how the declaration is written and\n"
+        io << "# the two have to agree on the symbol: one spelling is\n"
+        io << "# `Kemal@Kemal::x`, the other `Kemal::x`. It was `extend self`\n"
+        io << "# here while an iyi module header supplied one on the far side;\n"
+        io << "# now the header supplies it only where the shard wrote it, so\n"
+        io << "# these say for themselves which side of the type they are on.\n"
         io << "module " << root << "\n"
-        io << "  extend self\n\n"
         accessors.each do |(signature, constant)|
-          io << "  def " << signature.name << " : " << signature.return_type << "\n"
+          io << "  def self." << signature.name << " : " << signature.return_type << "\n"
           io << "    " << constant << "\n"
           io << "  end\n"
         end

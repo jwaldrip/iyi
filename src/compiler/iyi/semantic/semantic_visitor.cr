@@ -554,6 +554,11 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     source = String.build { |io| IyiMod.declarations(artifact, io) }
     parser = @program.new_parser(source)
     parser.filename = artifact_path
+    # Declarations say for themselves whether the module extends itself, so
+    # the header must not decide it here — a `--crystal` boundary reopens a
+    # module of the other language, where a module is a mixin. See the parser's
+    # module header and `Artifact#module_extends_self`.
+    parser.iyi_module_extends_written = true
     # The path is where these declarations came from and not a file anyone can
     # read them out of, so the text goes where an error will look for it.
     Iyi.register_iyi_declarations artifact_path, source

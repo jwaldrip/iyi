@@ -562,6 +562,12 @@ module Iyi
           initialiser: program.iyi_module_initialiser_source[filename]? || "",
           requires: program.iyi_module_requires[filename]? || [] of String,
           crystal_library: !program.iyi_prelude?,
+          # Always, for a module of iyi's own: the header it was written under
+          # desugars to `extend self`, and a consumer reading these
+          # declarations back has to get the same module. The field is what
+          # says so now — the header a consumer reads them under supplies
+          # nothing. See `Artifact#module_extends_self`.
+          module_extends_self: true,
         )
 
         # Here rather than in `write_iyimods`, so that they are taken from the
