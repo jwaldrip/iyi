@@ -7769,9 +7769,21 @@ Named honestly, so nobody mistakes this draft for complete.
     **`sqlite3` compiles, links, runs, opens the database and builds its
     pool.** What it does not do yet is answer: `SQLite3::Statement#perform_exec`
     reads at offset `0x20` from a null receiver — a statement that was never
-    built. That is the last measured state, and it is a different kind of
-    question from every one above it: not a name, not a symbol, not a layout,
-    but an object that should have been constructed and was not.
+    built. That is a different kind of question from every one above it: not a
+    name, not a symbol, not a layout, but an object that should have been
+    constructed and was not.
+
+    Narrowing it turned up a second thing, which is a rule rather than a
+    mystery. **A declaration devirtualises its return type and the symbol does
+    not.** `DB::Database#checkout` answers `DB::Connection+`; the declaration
+    writes `Connection`, because `Foo+` is how a virtual type prints and not a
+    name anybody can write — and a consumer that calls the method *directly*
+    then asks for `*DB::Database#checkout:DB::Connection`, which nobody
+    emitted. It does not show through a travelling body, where the consumer
+    compiles the call itself, and it did not show at all until a probe called
+    `db.checkout` by hand. Two rules that were each right on their own: a
+    declaration may not name a virtual type, and a symbol is made of the type
+    the method actually answers.
 
     **And a name resolves in its own scope first.** `openssl_ext` writes a
     constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type

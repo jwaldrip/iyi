@@ -260,6 +260,13 @@
   it does not do yet is answer: `SQLite3::Statement#perform_exec` reads from a
   null receiver — a statement that was never built.
 
+  Narrowing that turned up a rule rather than a mystery: **a declaration
+  devirtualises its return type and the symbol does not.** A consumer calling
+  `db.checkout` directly asks for `*DB::Database#checkout:DB::Connection` where
+  the producer emitted `…:DB::Connection+`. It does not show through a
+  travelling body, where the consumer compiles the call itself. Two rules that
+  were each right on their own.
+
   **And a name resolves in its own scope first.** `openssl_ext` writes a
   constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type R-2
   asks for on its `new` read as the constant. `self` is the spelling with no
