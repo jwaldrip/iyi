@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 38_u32
+  FORMAT_VERSION = 39_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -401,7 +401,17 @@ module Iyi::IyiMod
     type_parameters : Array(String),
     assoc_types : Array(String),
     supertraits : Array(String),
-    fields : Array({String, String}),
+    # iyi: `{"@items", "Array(T)", ""}` — the name, the type, and the default
+    # the shard wrote, empty where it wrote none.
+    #
+    # The default has to be *here* rather than beside the fields, because a
+    # field's place in this list is its place in the type's layout, and the
+    # module's own object code was compiled against that layout. Carried in
+    # `class_vars` — which renders the same `name : type = value` line — the
+    # defaulted fields all moved to the end, `DB::Pool(T)`'s `@factory` changed
+    # offset, and db's own `Database#initialize` wrote a proc where the
+    # consumer read an array.
+    fields : Array({String, String, String}),
     methods : Array(Signature),
     visibility : String = "pub",
     types : Array(TypeDecl) = [] of TypeDecl,
@@ -1921,7 +1931,7 @@ module Iyi::IyiMod
     inner = indent + "  "
     declaration.macros.each { |source| io.puts "#{inner}#{source.lines.first? || ""}" }
     declaration.assoc_types.each { |name| io.puts "#{inner}type #{name}" }
-    declaration.fields.each { |(name, type)| io.puts "#{inner}#{name} : #{type}" }
+    declaration.fields.each { |(name, type, _)| io.puts "#{inner}#{name} : #{type}" }
     declaration.class_vars.each do |(name, type, value)|
       io.puts "#{inner}#{name} : #{type}#{value.empty? ? "" : " = #{value}"}"
     end
@@ -1974,7 +1984,11 @@ module Iyi::IyiMod
     # Before the methods, where they are written and where a reader looks for
     # them. They are also what a `def initialize` with no body leaves
     # unassigned, which is why they arrive declared rather than inferred.
-    declaration.fields.each { |(name, type)| io << inner << name << " : " << type << '\n' }
+    declaration.fields.each do |(name, type, value)|
+      io << inner << name << " : " << type
+      io << " = " << value unless value.empty?
+      io << '\n'
+    end
 
     # A class variable is a global, and this line is what makes the consumer
     # define one. Written as a declaration with its value rather than as a bare
@@ -2409,7 +2423,7 @@ module Iyi::IyiMod
       write_strings io, declaration.type_parameters
       write_strings io, declaration.assoc_types
       write_strings io, declaration.supertraits
-      write_pairs io, declaration.fields
+      write_triples io, declaration.fields
       write_pairs io, declaration.members
       write_triples io, declaration.class_vars
       write_string io, declaration.superclass
@@ -2431,7 +2445,7 @@ module Iyi::IyiMod
       parameters = read_strings(io)
       assoc_types = read_strings(io)
       supertraits = read_strings(io)
-      fields = read_pairs(io)
+      fields = read_triples(io)
       members = read_pairs(io)
       class_vars = read_triples(io)
       superclass = read_string(io)

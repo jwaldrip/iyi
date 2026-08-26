@@ -1194,7 +1194,7 @@ module Iyi
               type_parameters: [] of String,
               assoc_types: [] of String,
               supertraits: [] of String,
-              fields: [] of {String, String},
+              fields: [] of {String, String, String},
               methods: [] of IyiMod::Signature,
               visibility: declared.private? ? "private" : "",
               types: [] of IyiMod::TypeDecl,
@@ -1393,15 +1393,25 @@ module Iyi
     # hash's order being an accident, and this one is not — `instance_vars` is
     # insertion-ordered and the insertions are the declarations, in the order
     # the module's author wrote them.
-    private def collect_iyi_fields(type : Type) : Array({String, String})
-      fields = [] of {String, String}
+    private def collect_iyi_fields(type : Type) : Array({String, String, String})
+      fields = [] of {String, String, String}
       return fields unless type.responds_to?(:instance_vars)
+
+      # The default the module wrote, where it wrote one. In place beside the
+      # field rather than after the others, because a field's position in this
+      # list is its position in the layout. See `IyiMod::TypeDecl#fields`.
+      defaults = {} of String => String
+      if type.responds_to?(:instance_vars_initializers)
+        type.instance_vars_initializers.try &.each do |initializer|
+          defaults[initializer.name] = initializer.written
+        end
+      end
 
       type.instance_vars.each do |name, variable|
         # A variable whose type never resolved is a rule broken elsewhere, and
         # recorded as `?` rather than guessed at — the same convention an
         # unannotated signature takes, and equally visible in `mod dump`.
-        fields << {name, variable.type?.try(&.to_s) || "?"}
+        fields << {name, variable.type?.try(&.to_s) || "?", defaults[name]? || ""}
       end
       fields
     end

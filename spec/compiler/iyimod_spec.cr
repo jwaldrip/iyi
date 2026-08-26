@@ -48,7 +48,7 @@ private def type_declaration(name : String,
                              type_parameters = [] of String,
                              assoc_types = [] of String,
                              supertraits = [] of String,
-                             fields = [] of {String, String},
+                             fields = [] of {String, String, String},
                              methods = [] of Iyi::IyiMod::Signature)
   Iyi::IyiMod::TypeDecl.new(name, kind, type_parameters, assoc_types,
     supertraits, fields, methods)
@@ -725,7 +725,7 @@ describe Iyi::IyiMod do
       artifact = Iyi::IyiMod.read(File.join("mods", "app", "box.iyimod"))
       secret = artifact.exports.types.find! { |declaration| declaration.name == "Secret" }
       secret.visibility.should eq "private"
-      secret.fields.should eq [{"@n", "Int32"}]
+      secret.fields.should eq [{"@n", "Int32", ""}]
       # Headers, and only headers. The consumer cannot reach them and the
       # module's own object code already defines them — but a body that
       # travels calls them, and a call it cannot typecheck is refused before
@@ -951,7 +951,7 @@ describe Iyi::IyiMod do
 
       # Declaration order, because it is the layout the consumer's copy of
       # `add` writes `@entries` at and the module's own `run` reads it from.
-      box.fields.map { |(name, _)| name }.should eq ["@label", "@entries"]
+      box.fields.map { |(name, _, _)| name }.should eq ["@label", "@entries"]
 
       # The alias travels because a declaration that travels names it: the
       # carried record's `step : Step` is the text this module was written
@@ -2458,14 +2458,14 @@ describe Iyi::IyiMod do
       # field's offset is its position in this list, and a consumer compiling a
       # body of this module's has to reach the same field the module's own
       # object code does.
-      declaration.fields.should eq [{"@item", "T"}, {"@count", "Int32"}]
+      declaration.fields.should eq [{"@item", "T", ""}, {"@count", "Int32", ""}]
     end
   end
 
   it "renders a type's fields into the declarations a consumer reads" do
     declaration = type_declaration("List", "generic struct",
       type_parameters: ["T"],
-      fields: [{"@items", "Array(T)"}],
+      fields: [{"@items", "Array(T)", ""}],
       methods: [signature("size", return_type: "Int32")])
 
     io = IO::Memory.new
