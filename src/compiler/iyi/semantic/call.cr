@@ -594,7 +594,20 @@ class Iyi::Call
         # request)` compiled, linked, and died on `can't execute` the first time
         # a request reached it. The header itself still has a `Nop` body, which
         # is what tells the two apart.
-        if match.def.iyi_from_artifact? && typed_def.body.is_a?(Nop)
+        #
+        # An `abstract def` is the one artifact def with a `Nop` body that is
+        # not a header. It names a requirement, and the code that answers it
+        # lives on a subclass; taking the header path here typed the call from
+        # the requirement's return annotation and emitted no call at all, so
+        # the caller read whatever the stack held. `db` is where that showed:
+        # `Connection#fetch_or_build_prepared_statement` has a body that
+        # travels, and inside it `build_prepared_statement(query)` matched the
+        # requirement rather than `SQLite3::Connection`'s answer to it. The
+        # statement came back with `crystal_type_id` 1 and `.class` on it hit
+        # the trap at the end of a dispatch nothing matched. The same call
+        # written by the consumer, on the same receiver, worked.
+        if match.def.iyi_from_artifact? && typed_def.body.is_a?(Nop) &&
+           !match.def.abstract?
           # Assigned rather than defaulted, and this is not a tidy-up. `type?`
           # answers `@type || freeze_type`, so a def whose return annotation
           # has been resolved *reads* as typed while `@type` is still nil —

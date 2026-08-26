@@ -4,6 +4,71 @@
 
 ### Added
 
+- **`sqlite3` runs a query.** A program that imports `s_q_lite3` opens a
+  database, creates a table, inserts two rows with bound parameters, reads a
+  scalar back, iterates a result set with typed `read(String)` and
+  `read(Int32)`, and counts the rows — through two boundaries, `db` and
+  `sqlite3`, and answers what the same program answers from source. The third
+  real shard to cross, and the first whose boundary is *two* shards deep: the
+  driver implements what the pool declares, and neither one ever sees the
+  other's source.
+
+  **A body that travels is compiled twice, and the two are not the same
+  function.** The producer compiles it against declarations. Where such a body
+  calls an `abstract def`, the producer's world may hold nothing that answers
+  it — `db` alone has no driver — and what `db`'s artifact carries for
+  `Connection#fetch_or_build_prepared_statement` is a function whose `else`
+  branch returns its own argument. The consumer compiles the same body against
+  `SQLite3::Connection` and gets the right one. Both wore the same name; the
+  consumer's copy is private to its unit and the producer's is global, so every
+  call the consumer wrote bound to the producer's. `DB.open` handed back a
+  statement whose `crystal_type_id` was 1, and `.class` on it hit the trap at
+  the end of a dispatch nothing matched — `Invalid memory access` in
+  `SQLite3::Statement#perform_exec`, three frames further on than the cause.
+  The consumer's copy now carries a suffix, so a name that means two different
+  things is two symbols. The producer's stays global: its own object code calls
+  it, and so does `sqlite3`'s — `Statement#do_close` calls `super` — and hiding
+  it broke the link instead.
+
+  **An `abstract def` is a requirement, not a method with an empty body.**
+  `Def#body` is the empty string for one, which is truthy, so a requirement
+  came through the generic path as a concrete method that answers `nil`. The
+  format has said `required` since abstract classes crossed; the generic path
+  was not saying it. Read back as an implementation, `db`'s
+  `SessionMethods#fetch_or_build_prepared_statement` was the null statement.
+
+  **A requirement with a `Nop` body is not a header.** A declaration read from
+  an artifact has an empty body and is typed from its return annotation, which
+  is what makes a boundary cheap. An `abstract def` looks exactly like one and
+  is the opposite: no code answers *it*, the code that answers lives on a
+  subclass. Taking the header path there typed the call and emitted none, and
+  the caller read whatever the stack held.
+
+  **A written return type is a restriction, and a travelling body keeps it.**
+  Three places wrote the return as empty wherever the body answers, on the
+  reasoning that a body that travels is read for what it returns. That is true
+  and it is not a reason to drop what the shard wrote: Crystal narrows a
+  written return to what the body produced, exactly as it does for the shard,
+  and *dropping* it made `sqlite3` refuse its own override — `this method
+  overrides ... which has an explicit return type of Stmt`. A requirement's
+  return type is inherited by the implementation for the same reason its
+  parameter types are.
+
+  **The head of a path can be shadowed, not just a bare name.** `db` writes
+  `::Log::Metadata::Value` — with the `::`, because a shard's author meets this
+  too — and resolving it to `Log::Metadata::Value` put the shadowing one
+  segment along: `undefined constant Log::Metadata::Value`, read inside a
+  module that has a `Log` of its own.
+
+  Two things `sqlite3` does not do yet, both measured. `DB.open("sqlite3::memory:")`
+  loses its table between statements: `Pool#checkout` calls `before_checkout`
+  through `responds_to?`, `Connection#before_checkout` is `protected`, and a
+  protected method reached from a travelling body *through a type parameter* is
+  one the private-callee search cannot find — so the hook is absent from the
+  declarations, `responds_to?` answers false, `auto_release` is never set and
+  the connection never returns to the pool. Every statement gets a new
+  connection, which a file-backed database does not notice and `:memory:` does.
+
 - **`jwt` works.** A program that imports `j_w_t` encodes a token, decodes it
   back and reads the header out of it, through four boundaries —
   `openssl_ext`, `bindata`, `bindata/asn1`, `jwt` — and answers what the same

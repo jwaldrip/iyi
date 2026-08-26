@@ -59,6 +59,30 @@ module Iyi
           str << ':'
           iyi_mangled_return(return_type).llvm_name(str)
         end
+
+        # iyi: a body that travels is compiled twice, and the two are not the
+        # same function (SPEC.md IV.1g).
+        #
+        # The producer compiles it against declarations. Where the body calls
+        # an `abstract def`, the producer's world may hold nothing that
+        # answers it: `DB::Connection#fetch_or_build_prepared_statement` calls
+        # `build_prepared_statement`, and in `db`'s own build no driver is
+        # loaded, so what `db`'s artifact carries is a function whose `else`
+        # branch returns its own argument. The consumer compiles the same body
+        # against `SQLite3::Connection` and gets the right one.
+        #
+        # Both wore this name. The consumer's copy is private to the unit that
+        # holds it, the producer's is global, so every call the consumer wrote
+        # bound to the producer's — `DB.open` handed back a statement whose
+        # `crystal_type_id` was 1, and `.class` on it hit the trap at the end
+        # of a dispatch nothing matched.
+        #
+        # A suffix, rather than hiding the producer's: `db`'s own object code
+        # calls that symbol by name, and so does `sqlite3`'s — `Statement#
+        # do_close` calls `super`. Both keep reaching it. What changes is that
+        # the consumer's copy is a different name, and the consumer's calls
+        # reach the copy compiled where they stand.
+        str << "~iyi" if iyi_body_travelled?
       end
 
       Iyi.safe_mangling(program, name)
