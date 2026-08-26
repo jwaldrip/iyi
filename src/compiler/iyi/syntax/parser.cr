@@ -14,6 +14,12 @@ module Iyi
     record Unclosed, name : String, location : Location
 
     property visibility : Visibility?
+
+    # iyi: whether the source being parsed writes `extend self` for itself
+    # where it wants one, so the module header must not supply it. Set when
+    # parsing a `.iyimod`'s declarations, which carry the fact. See the header
+    # handling below.
+    property? iyi_module_extends_written = false
     property def_nest : Int32
     property fun_nest : Int32
     property type_nest : Int32
@@ -163,8 +169,22 @@ module Iyi
       # (`App::Greeter.polite`) rather than being an instance method of it.
       # In iyi a module is a compilation unit, not a mixin, so its functions
       # belong to the module itself.
-      extend_self = Extend.new(Self.new).at(header)
-      body = [extend_self] of ASTNode + rest
+      #
+      # Except where the source writes its own, which a `.iyimod`'s declarations
+      # do. Those may be of a module of the *other* language, where a module is
+      # a mixin: `module Random` has `abstract def next_u` for its includers to
+      # answer, and extending it anyway put it into its own metaclass, which
+      # answers nothing — `abstract def Random#next_u() must be implemented by
+      # Random:Module`, on a program whose only line was `import random`. Plain
+      # Crystal refuses `extend self` beside an `abstract def` for the same
+      # reason. A module of iyi's own carries the fact the same way and writes
+      # the line; see `Artifact#module_extends_self`.
+      body =
+        if iyi_module_extends_written?
+          rest
+        else
+          [Extend.new(Self.new).at(header)] of ASTNode + rest
+        end
 
       module_def = ModuleDef.new(path, Expressions.from(body))
       module_def.iyi_unit = true

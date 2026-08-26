@@ -4,6 +4,32 @@
 
 ### Added
 
+- **A module is a mixin on the other side of a `--crystal` boundary, and the
+  format now says so.** iyi's module header desugars to `extend self`: in iyi a
+  module is a compilation unit, not a mixin, so its functions belong to the
+  module itself. A boundary's declarations are read under that header, and a
+  `--crystal` boundary reopens a module of the *other* language — where a
+  module is a mixin, a module function is written `def self.` and an instance
+  method is not. Extending it anyway put the module into its own metaclass, and
+  `module Random`, which has `abstract def next_u` for its includers to answer,
+  then had a metaclass that answered nothing: `abstract def Random#next_u()
+  must be implemented by Random:Module`, on a program whose only line was
+  `import random`. Plain Crystal refuses `extend self` beside an `abstract def`
+  for the same reason.
+
+  So the header supplies it no longer, and the artifact carries it — which is
+  the honest place for it, because whether a module extends itself is a fact
+  about the module. `Random` crosses; `module Shard; extend self` still has its
+  functions on the module on both sides. Two things had been leaning on the
+  header without saying so, and both said `undefined` the moment it stopped:
+  the constant accessors `tool bind` synthesises are module functions and are
+  written `def self.` now on both sides of the boundary, and the `extend self`
+  line has to come *after* the requires the header lifts out, or every one of
+  them stays inside the module.
+
+  `.iyimod` goes to format 40. A 0.2.0 artifact was already rejected; a 39 one
+  is too.
+
 - **Eleven of the library's namespaces cross, and each is a gate.** `JSON`,
   `URI` and `Log` were already there; `Path` and `Time` joined with the
   constant finding below, and `Base64`, `UUID`, `INI`, `CSV`, `Colorize` and

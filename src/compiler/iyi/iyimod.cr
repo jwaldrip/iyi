@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 39_u32
+  FORMAT_VERSION = 40_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -964,6 +964,27 @@ module Iyi::IyiMod
     # finds it.
     property class_root : Bool
 
+    # Whether the module this artifact is of writes `extend self`.
+    #
+    # A `--crystal` boundary reopens a module of the other language, where a
+    # module is a mixin: a module function is written `def self.` and an
+    # instance method is not, and the header says nothing. iyi's own header
+    # *is* `extend self`, so a boundary read under it put the module into its
+    # own metaclass — `module Random` has `abstract def next_u` for its
+    # includers to answer, and its metaclass answered nothing: `abstract def
+    # Random#next_u() must be implemented by Random:Module`, on a program whose
+    # only line was `import random`.
+    #
+    # So the header no longer supplies it and this carries it instead, which is
+    # the honest place for it: whether a module extends itself is a fact about
+    # the module. `module Shard; extend self; def make(...)` is a module
+    # function on both sides of the boundary because of this line.
+    #
+    # True by default, because an artifact written by anything but `tool bind`
+    # is a module of iyi's own and iyi's module header is `extend self`. Only
+    # `tool bind` has a shard to ask, and it asks.
+    property module_extends_self : Bool
+
     # Under `--crystal`, the library files this module required, in the order
     # it required them.
     #
@@ -998,6 +1019,7 @@ module Iyi::IyiMod
                    @constants = [] of String, @macro_bodies = [] of String,
                    @requires = [] of String, @crystal_library = false,
                    @class_root = false, @filled = true,
+                   @module_extends_self = true,
                    @regexes = [] of RegexConst, @class_vars = [] of ClassVarRef,
                    @match_types = [] of String, @symbols = [] of String,
                    @top_level = [] of Signature,
@@ -1287,7 +1309,8 @@ module Iyi::IyiMod
         header[:target_triple], header[:flags], imports[:imports], imports[:usings], exports,
         object_code, header[:has_initialiser], mono_bodies, initialiser, type_ids,
         hashes, constants, macro_bodies, requires, header[:crystal_library],
-        header[:class_root], header[:filled], regexes, class_vars, match_types, symbols,
+        header[:class_root], header[:filled], header[:module_extends_self],
+        regexes, class_vars, match_types, symbols,
         top_level, reopened, libs)
     end
   rescue ex : Error
@@ -1342,6 +1365,7 @@ module Iyi::IyiMod
     end
 
     io.puts "library       #{artifact.crystal_library ? "Crystal's standard library (--crystal)" : "iyi's prelude"}"
+    io.puts "extend self   #{artifact.module_extends_self}" if artifact.module_extends_self
 
     unless artifact.requires.empty?
       io.puts "requires"
@@ -1552,6 +1576,15 @@ module Iyi::IyiMod
       io << '\n'
       artifact.usings.each { |directive| io << "using " << directive << '\n' }
     end
+
+    # Where the module has it, and *after* the directives above: the parser
+    # lifts a leading run of `import` and `require` out of the module the
+    # header desugars to, and stops at the first line that is neither. Written
+    # above them, this line left every `require` inside the module — which is
+    # the fault its own comment in `parse_module_header` describes, `require
+    # "json"` under `module web` making json's `class String` mean
+    # `Web::String`. See `Artifact#module_extends_self`.
+    io << "\nextend self\n" if artifact.module_extends_self && !artifact.class_root
 
     exports = artifact.exports
     bodies = artifact.mono_bodies
@@ -2155,6 +2188,7 @@ module Iyi::IyiMod
     io.write_byte(artifact.crystal_library ? 1_u8 : 0_u8)
     io.write_byte(artifact.class_root ? 1_u8 : 0_u8)
     io.write_byte(artifact.filled ? 1_u8 : 0_u8)
+    io.write_byte(artifact.module_extends_self ? 1_u8 : 0_u8)
     io.to_slice
   end
 
@@ -2169,10 +2203,12 @@ module Iyi::IyiMod
     crystal_library = io.read_byte == 1_u8
     class_root = io.read_byte == 1_u8
     filled = io.read_byte == 1_u8
+    module_extends_self = io.read_byte == 1_u8
     {module_name: module_name, source_path: source_path,
      compiler_version: compiler_version, target_triple: target_triple, flags: flags,
      has_initialiser: has_initialiser, crystal_library: crystal_library,
-     class_root: class_root, filled: filled}
+     class_root: class_root, filled: filled,
+     module_extends_self: module_extends_self}
   end
 
   private def self.encode_requires(artifact : Artifact) : Bytes
