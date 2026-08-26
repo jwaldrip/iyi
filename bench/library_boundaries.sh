@@ -16,6 +16,10 @@
 # not the one the artifact carried. And `MonoBodies` was keyed without the side
 # of the type, so `Log.info`'s body took `Log#info`'s key.
 #
+# `Path` and `Time` arrived later and found one thing between them: a constant
+# has two spellings, and which one a build picks is a fact about that build's
+# order rather than about the constant. See the comment above them.
+#
 #     bash bench/library_boundaries.sh
 #
 # Needs `make`. Nothing here reaches the network: what it binds is in this
@@ -109,6 +113,32 @@ Log.setup(:info, backend)
 Log.for("x").info { "hello" }
 Log.for("x").debug { "not this one" }
 puts io.to_s.strip'
+
+# Two the boundary could not carry until it learned that a constant has two
+# spellings. `Path` reads `Iterator::Stop::INSTANCE` from its `PartIterator`
+# unit and `Time` reads `Time::Span::ZERO`; both are reached through
+# `~NAME:const_read`, a function the producer emitted because *its* units read
+# them before initialising them, and which the consumer had no reason to write
+# — it initialises them from its own program, in its own order, and emits a
+# plain global. `undefined symbol`, in a program whose own source names no
+# iterator.
+#
+# `Time` is also the case that says an enum and a struct with arithmetic on it
+# cross: `day_of_week` is an enum read back by name, and `total_hours` is a
+# `Time::Span` divided out. The clock is never asked — every value here is
+# written down — because a gate that compares two runs cannot compare two
+# readings of `Time.utc`.
+check Path path path 'p = Path.posix("/a/b/c.txt")
+puts p.basename
+puts p.extension
+puts p.parent
+puts (p / "d").to_s'
+
+check Time time time 't = Time.utc(2026, 8, 26, 13, 5, 0)
+puts t.to_s("%Y-%m-%d %H:%M:%S")
+puts (t + 3.days).day
+puts (t - Time.utc(2026, 8, 20)).total_hours
+puts t.day_of_week'
 
 if [ "$status" -eq 0 ]; then
   echo "every boundary answers what its source does"

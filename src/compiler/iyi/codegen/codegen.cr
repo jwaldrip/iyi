@@ -658,6 +658,7 @@ module Iyi
       unless @program.iyi_artifact_objects.empty?
         iyi_define_all_type_ids
         iyi_define_all_match_funs
+        iyi_define_all_artifact_const_reads
       end
 
       env_dump = ENV["DUMP"]?
