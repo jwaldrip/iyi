@@ -655,11 +655,7 @@ module Iyi
     # and `new` dropped with them, which is what keeps a handle honest — and
     # the consumer could not build a key: `expected argument #1 to
     # 'OpenSSL::PKey::RSA.new' to be IO, Int32 or String, not Bool`.
-    # And the `lib`s the shard owns outright, which are nameable for the same
-    # reason and are declared inside the module rather than beside it.
-    owned = owned_libs(program)
-
-    (reopened + owned).each do |declaration|
+    reopened.each do |declaration|
       names = Set(String).new
       collect_known declaration, "", names
       names.each { |name| @@crystal_types << name.lchop("::") }
@@ -688,9 +684,6 @@ module Iyi
       end
 
     types = type_declarations program, methods, root
-    # Beside the shard's own types, because that is what they are. See
-    # `owned_libs`.
-    types.concat owned
 
     # A constant crosses as a function, and that function gets an iyi module
     # function's symbol from `extend self` — which only a module takes. So a
@@ -1614,8 +1607,28 @@ module Iyi
       io << "  " << name << " = uninitialized " << type << "\n"
       name
     end
-    # An empty target is a top-level `def`, which has no receiver at all.
-    io << "  " << target
+    # Each call in its own `begin`, and that is not decoration.
+    #
+    # A statement whose type is `NoReturn` ends the block it is in:
+    # `CleanupTransformer` stops collecting at one, so *every call after it* is
+    # discarded. A keep file is one long list of calls, and a shard has methods
+    # that only raise — `DB::Database#checkout` on an `uninitialized` receiver
+    # is one — so a single such method silently took the rest of the file with
+    # it. `db` was carrying two symbols for `DB::Database` where this file
+    # names eight, and the two it had came from db's own code rather than from
+    # here.
+    #
+    # It went unseen because a shard usually reaches its own methods somewhere:
+    # `Kemal::Config#host_binding` has a symbol because kemal's startup message
+    # reads it, not because this file asked for it. What this file adds is
+    # everything a shard does *not* call itself, which is most of what a
+    # consumer calls.
+    #
+    # `rescue` rather than an ordering trick, because which methods raise is
+    # not knowable from a signature — and the file is never run, so what it
+    # rescues is nothing.
+    io << "  begin\n    "
+    io << target
     io << '.' unless target.empty?
     io << signature.name
     io << "(" << args.join(", ") << ")" unless args.empty?
@@ -1645,6 +1658,8 @@ module Iyi
       end
       io << " }"
     end
+
+    io << "\n  rescue\n  end"
 
     io << "\n"
     counter
@@ -3168,36 +3183,6 @@ module Iyi
     declarations
   end
 
-  # The `lib`s the shard owns outright, which belong *inside* its module.
-  #
-  # `sqlite3` writes `lib LibSQLite3` beside `module SQLite3`, and its funs
-  # take the shard's own types: `fun open_v2 = sqlite3_open_v2(… flags :
-  # SQLite3::Flag …)`. Rendered outside the module — where a reopened lib goes,
-  # because a reopened one *is* the library's — that name is the top level's
-  # and there is nothing there: `undefined constant SQLite3::Flag`. Inside, it
-  # is the boundary's own, and the root-stripping every other declaration takes
-  # rewrites it to the name it has in there.
-  #
-  # Top level only. A lib nested inside the root is already under it and comes
-  # through the ordinary walk.
-  private def self.owned_libs(program : Program) : Array(IyiMod::TypeDecl)
-    declarations = [] of IyiMod::TypeDecl
-    source = program.filename
-    return declarations unless source.is_a?(String)
-    directory = File.dirname(source)
-    return declarations if directory.empty?
-
-    library = library_root(program)
-    return declarations unless library
-
-    program.types?.try &.each_value do |type|
-      next unless type.is_a?(LibType)
-      declaration = reopened_lib type, directory, library, true
-      declarations << declaration if declaration
-    end
-    declarations
-  end
-
   private def self.collect_reopened(types : Hash(String, Type)?, directory : String,
                                     library : String, root : String,
                                     declarations : Array(IyiMod::TypeDecl)) : Nil
@@ -3234,16 +3219,13 @@ module Iyi
   # needs is to be able to *name* the types, because naming is what numbering
   # is made of.
   private def self.reopened_lib(type : NamedType, directory : String,
-                                library : String, owned : Bool) : IyiMod::TypeDecl?
+                                library : String) : IyiMod::TypeDecl?
     return nil unless type.responds_to?(:locations)
     locations = type.locations
     return nil unless locations
     files = locations.compact_map { |location| location.filename.as?(String) }
     return nil unless files.any? &.starts_with?(directory)
-    # One list or the other, never both: a lib the shard shares with the
-    # library is reopened outside the module, and one it owns is declared
-    # inside it.
-    return nil if owned != !files.any?(&.starts_with?(library))
+    owned = !files.any?(&.starts_with?(library))
 
     # The library's half is not required, and requiring it was the bug. A
     # `lib` the shard wrote *entirely* is still a top-level name a boundary
@@ -3318,16 +3300,18 @@ module Iyi
       end
     end
 
-    funs = collect_funs(type, directory)
+    funs = collect_funs(type, directory, type)
     return nil if nested.empty? && funs.empty? && constants.empty?
 
     IyiMod::TypeDecl.new(
-      # `::` for a lib the *library* also declares, because that one is
-      # rendered outside the module and means the real `LibCrypto`. A lib the
-      # shard owns outright is declared inside the module like every other type
-      # of the shard's, and takes its plain name — `::LibSQLite3` at the top
-      # level would be a second, empty lib beside the one the module has.
-      name: owned ? type.to_s : "::#{type}",
+      # `::` either way, and the *same name the producer used*, because that is
+      # what a symbol is made of. A `lib` the shard owns was declared inside
+      # the module for a while — which let its funs name the shard's own types
+      # and put the lib inside the shard's namespace, so the producer emitted
+      # `*SQLite3::Connection#to_unsafe:LibSQLite3::SQLite3` and the consumer
+      # asked for `…:SQLite3::LibSQLite3::SQLite3`. The same method, two names.
+      # A lib needs both things and the name is the one that cannot move.
+      name: "::#{type}",
       kind: "lib",
       type_parameters: [] of String,
       assoc_types: [] of String,
@@ -3340,7 +3324,42 @@ module Iyi
       types: nested,
       funs: funs,
       members: constants,
+      # Only for a lib the shard owns. One the library also declares arrives
+      # annotated on the consumer's side from its own `require`, and a second
+      # copy would ask the linker for the same library twice.
+      annotations: owned ? link_annotations(type) : [] of String,
     )
+  end
+
+  # A `lib`'s `@[Link]` annotations, written back as source.
+  #
+  # Rebuilt from what the compiler parsed rather than kept as text, because the
+  # text is not kept: `LinkAnnotation` is what a `lib` carries. `pkg_config`
+  # defaults to the library's name, so it is written only where it says
+  # something the name does not.
+  private def self.link_annotations(type : Type) : Array(String)
+    return [] of String unless type.responds_to?(:link_annotations)
+
+    # `written`, not `annotation`: the second is a keyword, and a statement
+    # starting with it is read as a declaration — `can't define annotation
+    # inside def`, from the parser rather than from anything about this code.
+    (type.link_annotations || [] of LinkAnnotation).map do |written|
+      parts = [] of String
+      if name = written.lib
+        parts << name.inspect
+        pkg = written.pkg_config
+        parts << "pkg_config: #{pkg.inspect}" if pkg && pkg != name
+      elsif pkg = written.pkg_config
+        parts << "pkg_config: #{pkg.inspect}"
+      end
+      written.ldflags.try { |flags| parts << "ldflags: #{flags.inspect}" }
+      written.framework.try { |framework| parts << "framework: #{framework.inspect}" }
+      written.wasm_import_module.try { |module_name| parts << "wasm_import_module: #{module_name.inspect}" }
+      written.dll.try { |dll| parts << "dll: #{dll.inspect}" }
+      parts << "static: true" if written.static?
+
+      "@[Link(#{parts.join(", ")})]"
+    end
   end
 
   # The `fun`s a shard added to a `lib`, as the lines that declare them.
@@ -3349,7 +3368,8 @@ module Iyi
   # they travel and why they travel as text. The restrictions are the shard's
   # own words, which is right — they are rendered back inside `lib
   # ::LibCrypto`, where `Bio*` means what it meant where it was written.
-  private def self.collect_funs(type : NamedType, directory : String) : Array(String)
+  private def self.collect_funs(type : NamedType, directory : String,
+                                owner : NamedType? = nil) : Array(String)
     funs = [] of String
     return funs unless type.responds_to?(:defs)
 
@@ -3362,7 +3382,7 @@ module Iyi
         next if a_def.external_var?
         next unless written_in(a_def.location).try &.starts_with?(directory)
 
-        funs << render_fun(a_def)
+        funs << render_fun(a_def, owner)
       end
     end
 
@@ -3374,7 +3394,7 @@ module Iyi
   #
   # The Crystal name is dropped where it is the C name already, which is what
   # the shard wrote and the only spelling with nothing redundant in it.
-  private def self.render_fun(a_def : External) : String
+  private def self.render_fun(a_def : External, owner : NamedType? = nil) : String
     String.build do |io|
       io << "fun " << a_def.name
       io << " = " << a_def.real_name unless a_def.name == a_def.real_name
@@ -3393,16 +3413,43 @@ module Iyi
           # of them — and a name is not what a C call needs. Written with the
           # colon anyway it is `unexpected token: ":"`.
           inner << argument.name << " : " unless argument.name.empty?
-          inner << written
+          inner << fun_type(written.to_s, argument.type?, owner)
         end
         io << ", ..." if a_def.varargs?
         io << ')'
       end
 
       if return_type = a_def.return_type
-        io << " : " << return_type
+        io << " : " << fun_type(return_type.to_s, a_def.type?, owner)
       end
     end
+  end
+
+  # One type in a `fun` signature, written so the top level can read it.
+  #
+  # A shard-owned `lib` is declared where the shard declared it — outside the
+  # artifact's module, because its name is what the producer's symbols are made
+  # of — and out there the shard's own namespace does not exist. `sqlite3`
+  # writes `fun open_v2 = sqlite3_open_v2(… flags : SQLite3::Flag …)`, and a
+  # top-level `lib` naming that is `undefined constant SQLite3::Flag`.
+  #
+  # An enum is the case that arises and it costs nothing to answer: what a C
+  # function takes is the integer, and Crystal's own rule converts an enum to
+  # its base type at a `fun` call without being asked — so a caller inside the
+  # module goes on writing `SQLite3::Flag::ReadWrite`. Anything else the top
+  # level cannot name
+  # is left as written — if that ever happens it should say so at the far side
+  # rather than be guessed at here.
+  private def self.fun_type(written : String, type : Type?, owner : NamedType?) : String
+    return written unless owner
+    return written unless type
+
+    inside = type.instance_type
+    return written unless inside.is_a?(EnumType)
+    # The lib's own enums are declared with it and resolve beside it.
+    return written if inside.to_s.starts_with?("#{owner}::")
+
+    inside.base_type.to_s
   end
 
   # One library type, with only what the shard put in it.
@@ -3417,7 +3464,7 @@ module Iyi
     # `Number::RoundingMode` raised `BUG: doesn't implement instance_vars`,
     # which is the compiler saying the question was wrong rather than the
     # answer missing.
-    return reopened_lib type, directory, library, false if type.is_a?(LibType)
+    return reopened_lib type, directory, library if type.is_a?(LibType)
     return nil if type.is_a?(EnumType)
     return nil if type.is_a?(TypeDefType)
 

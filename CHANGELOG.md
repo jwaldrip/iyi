@@ -202,11 +202,32 @@
   artifact could claim a symbol it did not carry. `mod dump` now names the
   symbols rather than counting them.
 
-  **`sqlite3` typechecks whole and stops at the link**, on forty symbols of
-  three kinds: a shard-owned `lib`'s `@[Link]` annotation, which does not
-  travel because `Libs` carries names on an argument that holds only for a lib
-  the library also declares; and two generic instantiations whose bodies are in
-  the declarations and which the consumer does not compile.
+  **A `TypeDecl` carries its annotations** (format v38), and with them every C
+  symbol `sqlite3` needs resolves. `Libs` carries *names* on the argument that
+  everything a link line needs is already on the consumer's own copy of
+  `@[Link]` — true of a `lib` the library declares, false of one only the
+  shard has, where the consumer's copy is the only copy and it arrived bare.
+
+  **A keep file stopped at the first method that only raises**, and every call
+  after it was discarded: `CleanupTransformer` stops collecting an
+  `Expressions` at a statement of type `NoReturn`, which is right for a program
+  and ruinous for a file that is one long list of calls. Every keep file this
+  tool has written has been truncated that way at some line, and it went unseen
+  because a shard usually reaches its own methods somewhere. Each call goes in
+  its own `begin`/`rescue` now, and `sqlite3`'s undefined symbols went from
+  forty to five.
+
+  **A `lib`'s name is the half that cannot move.** Moving a shard-owned one
+  inside the artifact's module fixed name resolution and broke symbol identity
+  — the same method mangled two ways, because every symbol whose signature
+  names one of the lib's types is built from the lib's name. It goes back to
+  the top level, and the funs bend instead: a parameter written
+  `SQLite3::Flag` is written as the enum's base type, which costs nothing
+  because a C function takes the integer and Crystal converts an enum at a
+  `fun` call without being asked.
+
+  Three symbols left: a generic instance's compiler-synthesised `name` and
+  `to_s`, and `DB::Disposable#close` with the module as the receiver.
 
   **And a name resolves in its own scope first.** `openssl_ext` writes a
   constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type R-2

@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 94,197 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 94,264 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -7638,25 +7638,60 @@ Named honestly, so nobody mistakes this draft for complete.
     three kinds**, and one of the three is a finding this file already has half
     of.
 
-    A `lib` the shard owns is declared *inside* its module, which is what lets
-    its funs name the shard's own types — and that changes its name. `Libs`
-    carries names on the argument that everything a link line needs is already
-    on the consumer's own copy of the `@[Link]` annotation, and that argument
-    is true of a lib the *library* declares and false of one only the shard
-    has: there is no other copy. The consumer's `lib LibSQLite3` arrives from
-    the artifact with no annotation on it, so nothing asks for `-lsqlite3` and
-    the link ends on `sqlite3_value_text`. The correction is to carry the
-    annotation for a shard-owned lib, which is a format change and a rule this
-    entry got half right.
+    **`Libs` carries names on an argument that holds for half the cases.** The
+    argument is that everything a link line needs is already on the consumer's
+    own copy of the `@[Link]` annotation — true of a `lib` the *library*
+    declares, and false of one only the shard has, where there is no other
+    copy. And a shard-owned lib is declared *inside* the artifact's module,
+    which is what lets its funs name the shard's own types and also means the
+    consumer's copy is the only copy. It arrived bare: nothing asked for
+    `-lsqlite3`, and the link ended on `sqlite3_value_text`. So a `TypeDecl`
+    carries its annotations as source now, and every C symbol resolves.
 
-    The other two are generics: `*DB::PoolResourceLost(DB::Connection+)::name`
-    and `*DB::SessionMethods::UnpreparedQuery(DB::Connection+,
-    DB::Statement+)@…#build<String>` — instantiations whose bodies are in the
-    declarations, whose symbols the artifact does not claim, and which the
-    consumer still does not compile. `needs_body` is answering `false`; the
-    first guess was that instantiating a generic clones the def and loses
-    iyi's marks, and that was measured and wrong — `Def#clone_without_location`
-    carries both of them.
+    **A keep file stops at the first method that only raises, and every call
+    after it is discarded.** `CleanupTransformer` stops collecting an
+    `Expressions` at a statement whose type is `NoReturn` — which is right for
+    a program and ruinous for a file that is one long list of calls.
+    `DB::Database#checkout` on an `uninitialized` receiver raises, and it is
+    the *first* call in that type's block, so the seven after it never reached
+    codegen and their symbols never existed. Every keep file this tool has ever
+    written has been truncated this way at some line or other, and it went
+    unseen because a shard usually reaches its own methods somewhere:
+    `Kemal::Config#host_binding` has a symbol because kemal's startup message
+    reads it, not because the keep file asked. What a keep file adds is
+    precisely what a shard does *not* call itself, which is most of what a
+    consumer calls.
+
+    Each call goes in its own `begin`/`rescue` now. Not an ordering trick,
+    because which methods raise is not knowable from a signature — and the file
+    is never run, so what it rescues is nothing. `sqlite3`'s undefined symbols
+    went from forty to five.
+
+    **A `lib`'s name is the half that cannot move**, and moving a shard-owned
+    one inside the artifact's module — done a few paragraphs above, for a good
+    reason — moved it. The producer emits
+    `*SQLite3::Connection#to_unsafe:LibSQLite3::SQLite3` and the consumer asked
+    for `…:SQLite3::LibSQLite3::SQLite3`: the same method, two names, because
+    the lib had gone into the shard's namespace and every symbol whose
+    signature names one of its types mangles from that name. A lib needs both
+    things — its funs must be able to name the shard's own types, and its own
+    name must be the one the object code was compiled with — and only the
+    second is a constraint.
+
+    So it goes back beside a reopened one, at the top level, and the funs are
+    what bend: a parameter written `SQLite3::Flag` is written as the enum's
+    base type instead. That costs nothing, because what a C function takes is
+    the integer and Crystal's own rule converts an enum at a `fun` call without
+    being asked — a caller inside the module goes on writing
+    `SQLite3::Flag::ReadWrite`. Three symbols left.
+
+    They are a generic instance's compiler-synthesised class methods —
+    `DB::PoolResourceLost(DB::Connection+)::name` and `::to_s` — and
+    `DB::Disposable#close` with the module itself as the receiver. `name` and
+    `to_s` have no source body to travel and no symbol in the artifact, which
+    should leave them to the consumer, and the first guess at why it does not
+    was measured and wrong: instantiating a generic does not lose iyi's marks
+    on a `Def` — `clone_without_location` carries both.
 
     **And a name resolves in its own scope first.** `openssl_ext` writes a
     constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type
