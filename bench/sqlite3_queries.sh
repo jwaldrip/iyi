@@ -86,16 +86,16 @@ echo "bound, in dependency order:"
 bind_one db      DB      lib/db/src/db.cr
 bind_one sqlite3 SQLite3 lib/sqlite3/src/sqlite3.cr
 
-# A file rather than `:memory:`, and that is a measurement rather than a
-# convenience. `Pool#checkout` calls `before_checkout` through `responds_to?`;
-# `Connection#before_checkout` is `protected`, and a protected method reached
-# from a travelling body *through a type parameter* is one the private-callee
-# search cannot find — so it is absent from the declarations, `responds_to?`
-# answers false, `auto_release` is never set and the connection never returns
-# to the pool. Every statement gets a fresh connection, which a file does not
-# notice and `:memory:` does: the table is gone by the next statement. When
-# that is fixed this line becomes `sqlite3::memory:` and the gate still holds.
-program='DB.open("sqlite3://./gate.db") do |db|
+# `:memory:`, which is the strictest form this can take and the form
+# `sqlite3`'s own README uses. Each connection to `:memory:` is its own
+# database, so every statement here has to land on the *same* one — the pool
+# has to get its connection back. That took `Pool#checkout`'s
+# `res.responds_to?(:before_checkout)` finding a hook that is `protected` and
+# reached through a type parameter, which the private-callee search could not
+# see: without it `auto_release` is never set, nothing returns to the pool, and
+# the table is gone by the next statement. A file-backed database does not
+# notice any of that, which is exactly why this one is not file-backed.
+program='DB.open("sqlite3::memory:") do |db|
   db.exec("create table contacts (name text, age integer)")
   db.exec("insert into contacts values (?, ?)", "John", 30)
   db.exec("insert into contacts values (?, ?)", "Sarah", 33)
@@ -133,12 +133,7 @@ if ! "$IYI" build --crystal --use-iyimod mods -o app_artifact app_artifact.iyi \
   exit 1
 fi
 
-# A fresh database per arm, because the program creates its table and a second
-# run over the same file fails on the create rather than on anything this gate
-# is about.
-rm -f gate.db
 ./app_source > answers-source.txt 2>&1 || status=1
-rm -f gate.db
 ./app_artifact > answers-artifact.txt 2>&1 || status=1
 
 if diff -q answers-source.txt answers-artifact.txt > /dev/null; then
