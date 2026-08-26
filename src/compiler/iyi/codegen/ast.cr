@@ -57,11 +57,33 @@ module Iyi
         end
         if return_type = @type
           str << ':'
-          return_type.llvm_name(str)
+          iyi_mangled_return(return_type).llvm_name(str)
         end
       end
 
       Iyi.safe_mangling(program, name)
+    end
+
+    # iyi: the return type a symbol is made of, for a def read from a `.iyimod`
+    # (SPEC.md IV.1g).
+    #
+    # A declaration may not name a virtual type — `Foo+` is how one *prints*
+    # and not a name anybody can write, which is why `infer_return`
+    # devirtualises before writing it down. A symbol is made of the type the
+    # method actually answers, and that is the virtual one:
+    # `DB::Database#checkout` answers `DB::Connection+`, its declaration says
+    # `Connection`, and a consumer calling it directly asked for
+    # `*DB::Database#checkout:DB::Connection` — which nobody emitted. It never
+    # showed through a travelling body, where the consumer compiles the call
+    # and the symbol is its own.
+    #
+    # Two rules that were each right on their own, and this is where they meet.
+    # A no-op for a class nothing inherits from, whose virtual type is itself.
+    private def iyi_mangled_return(type : Iyi::Type) : Iyi::Type
+      return type unless iyi_from_artifact?
+      return type if iyi_body_travelled?
+      return type unless type.responds_to?(:virtual_type)
+      type.virtual_type
     end
 
     def varargs?

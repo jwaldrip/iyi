@@ -603,7 +603,25 @@ class Iyi::Call
           # without its return type on the end, which the artifact's own object
           # file does not define. It failed at link, in a build nothing else
           # could reach; a build that had linked would have been worse.
-          typed_def.type = typed_def.freeze_type || program.nil
+          #
+          # And *virtual*, for the reason `iyi_artifact_arg_types` gives one
+          # method over: a declaration cannot name a virtual type — `Foo+` is
+          # how one prints, not a name anybody writes — so a return that is
+          # really `DB::Connection+` is written `Connection`. Read back
+          # literally it is the exact class, and for an abstract one that is
+          # nothing a value can be: `db.checkout` came out typed
+          # `DB::Connection`, every generic downstream was instantiated with it
+          # instead of `DB::Connection+`, and a `SQLite3::Connection` stored in
+          # an `Array(DB::Connection)` read back as its own base — `.class`
+          # answered `DB::Connection` and `is_a?(SQLite3::Connection)` answered
+          # false.
+          #
+          # A leaf class is its own virtual type, so this is the identity
+          # everywhere else, and it is what the ordinary path does anyway: a
+          # body returning a subclass types the call as the virtual type
+          # already.
+          answered = typed_def.freeze_type || program.nil
+          typed_def.type = answered.responds_to?(:virtual_type) ? answered.virtual_type : answered
           typed_defs << typed_def
           next
         end

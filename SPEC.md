@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 94,503 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 94,585 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -7773,17 +7773,49 @@ Named honestly, so nobody mistakes this draft for complete.
     name, not a symbol, not a layout, but an object that should have been
     constructed and was not.
 
-    Narrowing it turned up a second thing, which is a rule rather than a
-    mystery. **A declaration devirtualises its return type and the symbol does
-    not.** `DB::Database#checkout` answers `DB::Connection+`; the declaration
-    writes `Connection`, because `Foo+` is how a virtual type prints and not a
-    name anybody can write — and a consumer that calls the method *directly*
-    then asks for `*DB::Database#checkout:DB::Connection`, which nobody
-    emitted. It does not show through a travelling body, where the consumer
-    compiles the call itself, and it did not show at all until a probe called
-    `db.checkout` by hand. Two rules that were each right on their own: a
-    declaration may not name a virtual type, and a symbol is made of the type
-    the method actually answers.
+    **A declaration cannot name a virtual type, and everything downstream was
+    reading that as the exact one.** `DB::Database#checkout` answers
+    `DB::Connection+`; the declaration writes `Connection`, because `Foo+` is
+    how a virtual type prints and not a name anybody can write. Two things then
+    went wrong, and the second is the one that mattered.
+
+    The symbol is made of the type the method *actually* answers, so a consumer
+    calling `db.checkout` directly asked for
+    `*DB::Database#checkout:DB::Connection` and nobody had emitted one. That
+    never showed through a travelling body, where the consumer compiles the
+    call itself, and it did not show at all until a probe called `db.checkout`
+    by hand.
+
+    And a header's return type was read *literally*. An ordinary `def f :
+    Connection` over an abstract class types its call `Connection+` — the body
+    is what widens it — but a header has no body, so the call came out typed
+    `DB::Connection` exactly. Every generic below it was then instantiated with
+    the wrong argument, and a `SQLite3::Connection` stored in an
+    `Array(DB::Connection)` read back as its own base: `.class` answered
+    `DB::Connection` and `is_a?(SQLite3::Connection)` answered **false**. A
+    program that linked and computed the wrong answer, which is the one failure
+    this design is most afraid of. Both halves take the same correction, and
+    `iyi_artifact_arg_types` had been making it for the *arguments* since kemal.
+
+    **A shard's own `alias` does not travel, and a body names one.** `db`
+    writes `alias Any = Union(…)` from a macro over the types a driver can
+    bind, and `Statement#exec`'s body says `Slice(Any).empty`. An alias is a
+    name for a type rather than a type, so it is not a `ModuleType` and the
+    walk dropped it at the door. It travels with the type it resolved to, for
+    the reason a field's type does: `Union({{*TYPES}})` is a macro nobody can
+    run again.
+
+    **And a body's text takes the same rewrite its signature does.** A body is
+    the module's own code and names things the way the module wrote them —
+    `SQLite3::TIME_ZONE`, absolute — while the declarations are read inside a
+    module whose root has been stripped. That path is then the module's
+    *public* name and R-2 answers for it: `SQLite3 does not export
+    SQLite3::TIME_ZONE`. Stripped, it is what the shard's own file means.
+
+    One exception, and it is the exception that proves the rule: a *top-level*
+    `def` is rendered outside the module — that is what makes it top-level — so
+    a name in its body has to stay the one the module is known by from out
+    there. `Kemal::Utils` rather than `Utils`, which is nothing at that level.
 
     **And a name resolves in its own scope first.** `openssl_ext` writes a
     constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type

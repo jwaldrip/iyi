@@ -771,13 +771,18 @@ module Iyi
 
     if module_root? program, root
       exported = exported.map do |signature|
-        rekey_body iyi_module_name(root), signature, strip_root(signature, root)
+        rekey_body(iyi_module_name(root), signature, strip_root(signature, root)) { |body| strip_root body, root }
       end
       carried_functions = carried_functions.map do |signature|
-        rekey_body iyi_module_name(root), signature, strip_root(signature, root)
+        rekey_body(iyi_module_name(root), signature, strip_root(signature, root)) { |body| strip_root body, root }
       end
       top_exported = top_exported.map do |signature|
-        rekey_body IyiMod::TOP_LEVEL_CONTAINER, signature, strip_root(signature, root)
+        # The *signature* is stripped and the body is not, and that is the one
+        # place the two differ. A top-level `def` is rendered outside the
+        # module — that is what makes it top-level — so a name inside its body
+        # has to be the one the module is known by from out there:
+        # `Kemal::Utils` rather than `Utils`, which is nothing at that level.
+        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, strip_root(signature, root)) { |body| body }
       end
       carried_types = carried_types.map { |declaration| strip_root_declaration declaration, root }
       root_class_vars = root_class_vars.map do |(name, type, value)|
@@ -801,13 +806,13 @@ module Iyi
     # consumer will see it.
     unless @@bound_prefix.empty?
       exported = exported.map do |signature|
-        rekey_body iyi_module_name(root), signature, map_names(signature)
+        rekey_body(iyi_module_name(root), signature, map_names(signature)) { |body| map_names body }
       end
       carried_functions = carried_functions.map do |signature|
-        rekey_body iyi_module_name(root), signature, map_names(signature)
+        rekey_body(iyi_module_name(root), signature, map_names(signature)) { |body| map_names body }
       end
       top_exported = top_exported.map do |signature|
-        rekey_body IyiMod::TOP_LEVEL_CONTAINER, signature, map_names(signature)
+        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, map_names(signature)) { |body| map_names body }
       end
       reopened = reopened.map { |declaration| map_names_declaration declaration }
       carried_types = carried_types.map { |declaration| map_names_declaration declaration }
@@ -1304,6 +1309,34 @@ module Iyi
   private def self.declaration_for(name : String, type : Type, by_owner,
                                    root : String,
                                    container : String = name) : IyiMod::TypeDecl?
+    # An `alias` is a name for a type rather than a type, so it is not a
+    # `ModuleType` and the test below drops it. It has to travel all the same:
+    # a name is exactly what a body uses. `db` writes `alias Any =
+    # Union(…)` — from a macro, over the list of types a driver can bind — and
+    # `Statement#exec`'s body, which travels, says `Slice(Any).empty`. A
+    # consumer said `undefined constant Any`.
+    #
+    # The right-hand side is what the alias *resolved to* rather than the text
+    # it was written as, for the reason a field's type is: this file is read
+    # where the shard was not, and `Union({{*TYPES}})` is a macro nobody can
+    # run again.
+    if type.is_a?(AliasType)
+      return IyiMod::TypeDecl.new(
+        name: name,
+        kind: "alias",
+        type_parameters: [] of String,
+        assoc_types: [] of String,
+        supertraits: [] of String,
+        fields: [] of {String, String, String},
+        methods: [] of IyiMod::Signature,
+        # No `pub`: iyi's `pub` takes a def, a class, a struct, a trait and an
+        # enum. An alias arrives declared and unmarked, which is what it is
+        # when the module is read from source.
+        visibility: "",
+        value: type.aliased_type.devirtualize.to_s,
+      )
+    end
+
     # A constant lives in the same table as a type — `Kemal::VERSION` is in
     # here — and asking one for its instance variables is how this found out.
     return nil unless type.is_a?(ModuleType)
@@ -2094,7 +2127,9 @@ module Iyi
       methods: begin
         ordinals = IyiMod.mono_body_ordinals(declaration.methods)
         declaration.methods.map_with_index do |signature, index|
-          rekey_body path, signature, strip_root(signature, root), ordinals[index]
+          rekey_body(path, signature, strip_root(signature, root), ordinals[index]) do |body|
+            strip_root body, root
+          end
         end
       end,
       # Deeper for what is inside it, because a name is read from where it is
@@ -2131,13 +2166,20 @@ module Iyi
   # on `undefined symbol: *Radix::Tree(Kemal::Route)@Radix::Tree(T)#add<…>`.
   private def self.rekey_body(container : String, before : IyiMod::Signature,
                               after : IyiMod::Signature,
-                              ordinal : Int32 = 0) : IyiMod::Signature
+                              ordinal : Int32 = 0,
+                              & : String -> String) : IyiMod::Signature
     old_key = IyiMod.mono_body_key(container, before, ordinal)
     new_key = IyiMod.mono_body_key(container, after, ordinal)
-    return after if old_key == new_key
 
+    # The body's *text* takes the same rewrite its signature does, and it was
+    # not taking it. A body is the module's own code and names things the way
+    # the module wrote them — `SQLite3::TIME_ZONE`, absolute — and the
+    # declarations are read inside a module where the root has been stripped,
+    # so that path is the module's *public* name and R-2 answers for it:
+    # `SQLite3 does not export SQLite3::TIME_ZONE`. Stripped, it is
+    # `TIME_ZONE`, which is what the shard's own file means by it.
     if body = @@mono_bodies.delete(old_key)
-      @@mono_bodies[new_key] = body
+      @@mono_bodies[new_key] = yield body
     end
     after
   end
@@ -2181,7 +2223,7 @@ module Iyi
       methods: begin
         ordinals = IyiMod.mono_body_ordinals(declaration.methods)
         declaration.methods.map_with_index do |signature, index|
-          rekey_body path, signature, map_names(signature), ordinals[index]
+          rekey_body(path, signature, map_names(signature), ordinals[index]) { |body| map_names body }
         end
       end,
       types: declaration.types.map { |nested| map_names_declaration nested, "#{path}::#{nested.name}" },
