@@ -1,0 +1,7 @@
+name: kemal_sample
+version: 0.1.0
+
+dependencies:
+  kemal:
+    github: kemalcr/kemal
+    version: 1.12.0
