@@ -313,7 +313,14 @@ jobs:
       # than a build that fails, which is why this runs a real query.
       - name: A SQLite query, through a driver behind an abstract boundary
         run: |
-          if ! ldconfig -p 2>/dev/null | grep -q libsqlite3; then
+          # The *dev* package, and the test has to ask for that rather than for
+          # the library. `ldconfig -p` lists the runtime `libsqlite3.so.0`,
+          # which this image already has; what `-lsqlite3` needs is the
+          # `libsqlite3.so` symlink beside it, and only the dev package
+          # installs that. Asking the first question answered "already there",
+          # the install was skipped, and the link ended on `unable to find
+          # library -lsqlite3` — with ld.lld saying which package was missing.
+          if ! find /usr/lib /usr/lib64 -name libsqlite3.so -print -quit 2>/dev/null | grep -q .; then
             apt-get update -qq && apt-get install -y -qq libsqlite3-dev
           fi
           bash bench/sqlite3_queries.sh
