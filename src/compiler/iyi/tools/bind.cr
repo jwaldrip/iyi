@@ -578,7 +578,24 @@ module Iyi
     # a Crystal library writes by hand for the same reason — defines its
     # functions on the module and reaches them through the metaclass, so the
     # owner recorded here is one or the other depending on which side wrote it.
-    owners = {root, "#{root}:Module"}
+    # And the bare name only where the module *extends itself*, which is the
+    # question the comment above assumed the answer to. `module Random` writes
+    # `def new_seed` without `self.` — an instance method its includers get,
+    # and not a name `Random` answers to. Read as a module function it produced
+    # `Random.new_seed` in the keep file, and the fill build stopped on
+    # `undefined method 'new_seed' for Random:Module`. A module that does write
+    # `extend self` puts its own methods on the metaclass too, and that is what
+    # this asks: whether the metaclass has the module among its ancestors.
+    #
+    # An instance method that stays behind here is not lost — it is the
+    # module's, and it travels as its `TypeDecl`'s, which is where an including
+    # type reads it from.
+    owners =
+      if extends_self? program, root
+        {root, "#{root}:Module"}
+      else
+        {"#{root}:Module"}
+      end
     signatures = [] of IyiMod::Signature
     seen = Set(String).new
 
@@ -1849,6 +1866,17 @@ module Iyi
   end
 
   # Whether the root is a module, which decides what of its own can travel.
+  # Whether this module writes `extend self`, so that its own methods answer on
+  # the module as well as on whatever includes it. See `write_artifact`.
+  private def self.extends_self?(program : Program, root : String) : Bool
+    type = program.types?.try &.[]?(root)
+    return false unless type
+    instance = type.instance_type
+    metaclass = instance.metaclass
+    return false unless metaclass.responds_to?(:ancestors)
+    metaclass.ancestors.includes?(instance)
+  end
+
   private def self.module_root?(program : Program, root : String) : Bool
     type = program.types?.try &.[]?(root)
     return false unless type

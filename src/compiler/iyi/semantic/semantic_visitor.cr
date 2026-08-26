@@ -760,7 +760,27 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
 
     location = Location.new(artifact_path, 1, 1)
     artifact.constants.each do |name|
-      nodes.expressions << Path.new(name.split("::"), global: true).at(location)
+      # `pointerof`, not a plain read, and the difference is which of two
+      # spellings the constant gets. A constant read before it is initialised
+      # is reached through `~NAME:const_read`, a function in the main module
+      # that runs the initialiser once; one initialised before anything read it
+      # is a plain global, and `initialize_const` chooses between them on
+      # `const.read?` at the moment initialisation is emitted.
+      #
+      # The producer's units read these, so the producer emitted the function
+      # form. The consumer initialises them from its own program and nothing
+      # had read them yet, so it emitted the global — and the artifact's object
+      # code asked for a function nobody wrote: `undefined symbol:
+      # ~Iterator::Stop::INSTANCE:const_read`, referenced from `Path`'s
+      # `PartIterator` unit, on a program whose own source names no iterator.
+      #
+      # `pointerof` is how a program says "somebody holds the storage", which
+      # is exactly what an object file this build did not compile is doing, and
+      # `needs_init_flag?` answers it without asking about order. The global is
+      # still defined, so a unit referring to that instead still links; this
+      # only adds the spelling that was missing.
+      read = Path.new(name.split("::"), global: true).at(location)
+      nodes.expressions << PointerOf.new(read).at(location)
     end
   end
 
