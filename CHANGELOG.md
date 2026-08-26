@@ -260,12 +260,25 @@
   it does not do yet is answer: `SQLite3::Statement#perform_exec` reads from a
   null receiver — a statement that was never built.
 
-  Narrowing that turned up a rule rather than a mystery: **a declaration
-  devirtualises its return type and the symbol does not.** A consumer calling
-  `db.checkout` directly asks for `*DB::Database#checkout:DB::Connection` where
-  the producer emitted `…:DB::Connection+`. It does not show through a
-  travelling body, where the consumer compiles the call itself. Two rules that
-  were each right on their own.
+  **A declaration cannot name a virtual type, and everything downstream was
+  reading that as the exact one.** The symbol is made of the type the method
+  actually answers, so a consumer calling `db.checkout` directly asked for
+  `*DB::Database#checkout:DB::Connection` and nobody had emitted one. And a
+  header's return type was read literally — an ordinary `def f : Connection`
+  over an abstract class types its call `Connection+`, but a header has no body
+  to widen it. Every generic below was instantiated with the wrong argument,
+  and a `SQLite3::Connection` in an `Array(DB::Connection)` read back as its
+  own base: `is_a?(SQLite3::Connection)` answered **false**. A program that
+  linked and computed the wrong answer.
+
+  **A shard's own `alias` does not travel, and a body names one** — an alias is
+  a name for a type rather than a type, so the walk dropped it at the door.
+
+  **And a body's text takes the same rewrite its signature does.** A body names
+  things the way the module wrote them, absolute, and the declarations are read
+  inside a module whose root has been stripped — so R-2 answered for
+  `SQLite3::TIME_ZONE`. One exception: a top-level `def` is rendered outside
+  the module, so its body keeps the absolute name.
 
   **And a name resolves in its own scope first.** `openssl_ext` writes a
   constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type R-2
