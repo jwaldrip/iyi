@@ -335,12 +335,16 @@ jobs:
       - name: A YAML document, through a boundary built from the library
         run: bash bench/yaml_reads.sh
 
-      # And three more of the library's own namespaces, because what a boundary
+      # And twelve of the library's own namespaces, because what a boundary
       # breaks on depends on what the namespace holds. `Log` is the one that
-      # found things: global state written by macros — a private constant, a
+      # found the most: global state written by macros — a private constant, a
       # class variable with a live initialiser, and two `{% for %}` loops that
-      # write a method of the same name on both sides of the class.
-      - name: Three library namespaces, bound and consumed
+      # write a method of the same name on both sides of the class. `Path` and
+      # `Time` found that a constant has two spellings and a boundary has to
+      # carry both; `Random` found that a module is a mixin on the other side
+      # of one. The other six found nothing, which is why they are here: a gate
+      # that holds only what once broke says nothing about what never did.
+      - name: Twelve library namespaces, bound and consumed
         run: bash bench/library_boundaries.sh
 
       # A library arriving with a feature is a decision, and this is where it
