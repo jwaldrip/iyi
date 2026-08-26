@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 94,824 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 94,861 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3903,6 +3903,35 @@ a consumer parses. IV.1's table asks for serialised typed IR, which is faster
 and is a second grammar to keep correct; text is the choice `Exports` already
 made, for the reason IV.1f gives, and IR can replace it without changing what
 travels.
+
+**A module's own instance method travels as a body.** IV.1g lists a module's
+methods among the ones with no single symbol to key on, because each is
+compiled once per *including* type. The producer emits one only for the
+including types its own code instantiated: `db` has
+`*DB::Connection+@DB::Disposable#close` and two more because `db`'s code
+closes all three of its `Disposable`s, and a module whose includers the shard
+never uses has none. `module Gen` with a `def next_pair` and a `class Fixed`
+that includes it linked on nothing —
+`*Gen::Fixed@Gen#next_pair:Tuple(UInt32, UInt32)`, undefined.
+
+The keep file is the other half of the same fact. These methods are declared
+as the module's, and an iyi module header is `extend self`, so a consumer reads
+them on the module *and* on whatever includes it. That is what an including
+type needs and it is not a claim about the shard: `module Random` writes `def
+new_seed` without `self.`, and `Random` answers to no such name. Called in the
+keep file — which is compiled against the shard's own source — it stopped the
+fill build on `undefined method 'new_seed' for Random:Module`. So the keep call
+is skipped where the module does not extend itself, and nothing is lost by
+skipping it, because there was no symbol to keep alive.
+
+**A module used as a value has no name a declaration can write.**
+`Random::Secure` is `module Secure; extend self; include Random; end` — a
+module that is also a value — and `Random#split` answers `(Random::PCG32 |
+Random::Secure:Module)`. The nameability scan reads a printed type as a list of
+names, found `Secure` and `Module` and called both nameable, and wrote the
+whole thing down; the consumer's parser stopped on `expecting token ')', not
+'Module'`. The test is for one colon and not two, because `Foo::Module` is a
+type somebody could declare.
 
 **A constant has two spellings, and which one a build picks is a fact about
 that build.** A constant read before it is initialised is reached through

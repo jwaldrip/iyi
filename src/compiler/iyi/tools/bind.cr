@@ -578,24 +578,7 @@ module Iyi
     # a Crystal library writes by hand for the same reason — defines its
     # functions on the module and reaches them through the metaclass, so the
     # owner recorded here is one or the other depending on which side wrote it.
-    # And the bare name only where the module *extends itself*, which is the
-    # question the comment above assumed the answer to. `module Random` writes
-    # `def new_seed` without `self.` — an instance method its includers get,
-    # and not a name `Random` answers to. Read as a module function it produced
-    # `Random.new_seed` in the keep file, and the fill build stopped on
-    # `undefined method 'new_seed' for Random:Module`. A module that does write
-    # `extend self` puts its own methods on the metaclass too, and that is what
-    # this asks: whether the metaclass has the module among its ancestors.
-    #
-    # An instance method that stays behind here is not lost — it is the
-    # module's, and it travels as its `TypeDecl`'s, which is where an including
-    # type reads it from.
-    owners =
-      if extends_self? program, root
-        {root, "#{root}:Module"}
-      else
-        {"#{root}:Module"}
-      end
+    owners = {root, "#{root}:Module"}
     signatures = [] of IyiMod::Signature
     seen = Set(String).new
 
@@ -661,7 +644,25 @@ module Iyi
       # had compiled: `Kemal.run` arrived as a name and the link ended on it.
       # Every other travelling body in this file goes over the same way; this
       # is the one place that had a collector and no `MonoBodies` line.
-      if method.body_answers && (body = method.body) && !body.empty?
+      #
+      # And a module's own *instance* method travels for a second reason, the
+      # one IV.1g gives for a module: it is compiled once per including type,
+      # so there is no single symbol for the producer to emit. `module Gen`
+      # writes `def next_pair` and `class Fixed` includes it; what a consumer
+      # calling `Fixed#next_pair` wants is
+      # `*Gen::Fixed@Gen#next_pair:Tuple(UInt32, UInt32)`, and the producer
+      # emits that only for the including types *its own code* instantiated.
+      # `db` has them because `db`'s code calls `close` on all three of its
+      # `Disposable`s; a module whose includers the shard never uses has none,
+      # and the link ended on the name.
+      #
+      # Only where the module does not `extend self`, which is the same
+      # distinction the keep file takes: a module that does answers to these
+      # itself, so the producer emits `*Gen@Gen#next_pair` and the keep file
+      # keeps it alive.
+      travels = method.body_answers ||
+                (signature.receiver.empty? && !extends_self?(program, root))
+      if travels && (body = method.body) && !body.empty?
         @@mono_bodies[IyiMod.mono_body_key(iyi_module_name(root), signature)] = body
       end
     end
@@ -1851,7 +1852,22 @@ module Iyi
 
       io << "fun __bind_keep : Nil\n"
       counter = 0
+      # A module's own instance methods are declared here as the module's, and
+      # an iyi module header is `extend self`, so a consumer reads them on the
+      # module *and* on whatever includes it. That is what an including type
+      # needs and it is not a claim about the shard: `module Random` writes
+      # `def new_seed` without `self.`, and `Random` answers to no such name.
+      # Called in the keep file — which is compiled against the shard's own
+      # source — it stopped the fill build on `undefined method 'new_seed' for
+      # Random:Module`.
+      #
+      # So the call is skipped where the module does not extend itself. Nothing
+      # is lost by skipping it: a module's method is compiled once per
+      # including type, so there is no single symbol for the producer to emit
+      # and the body travels instead (IV.1g, and `iyi_artifact_self_type`).
+      extended = extends_self? program, root
       signatures.each do |signature|
+        next if !extended && signature.receiver.empty?
         counter = keep_call(io, root, signature, counter)
       end
       accessors.each do |(signature, _)|
@@ -3419,6 +3435,17 @@ module Iyi
   # which are names it may use and nobody else may.
   private def self.nameable?(name : String, root : String,
                              bound : Array(String)? = nil) : Bool
+    # A module used as a *value* prints `Random::Secure:Module`, and there is
+    # no source that spells it. `Random::Secure` is `module Secure; extend
+    # self; include Random; end` and `Random#split` answers `(Random::PCG32 |
+    # Random::Secure:Module)`; written into a declaration it stopped the
+    # consumer's parser on `expecting token ')', not 'Module'`. The scan below
+    # let it past because it reads `Secure` and `Module` as two names and both
+    # are nameable on their own.
+    #
+    # One colon, not two: `Foo::Module` is a type somebody could declare.
+    return false if module_valued?(name)
+
     Rx.scan(name, BIND_TYPE_NAME).all? do |match|
       part = match[0].not_nil!
       next true if part == "class" # `Exception.class` is read as its own name
@@ -3431,6 +3458,16 @@ module Iyi
       next true if part == "_"
       nameable_name?(part, root)
     end
+  end
+
+  # Whether this printed type holds a module used as a value. See `nameable?`.
+  private def self.module_valued?(name : String) : Bool
+    index = 0
+    while (found = name.index(":Module", index))
+      return true if found == 0 || name[found - 1] != ':'
+      index = found + 1
+    end
+    false
   end
 
   private def self.nameable_name?(name : String, root : String) : Bool

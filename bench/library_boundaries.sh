@@ -20,6 +20,11 @@
 # has two spellings, and which one a build picks is a fact about that build's
 # order rather than about the constant. See the comment above them.
 #
+# The six after them found nothing, and that is worth having too: a gate that
+# only holds the cases that once broke says nothing about the ones that never
+# did, and "never did" is a claim that stops being true the moment somebody
+# changes how a boundary is written.
+#
 #     bash bench/library_boundaries.sh
 #
 # Needs `make`. Nothing here reaches the network: what it binds is in this
@@ -139,6 +144,39 @@ puts t.to_s("%Y-%m-%d %H:%M:%S")
 puts (t + 3.days).day
 puts (t - Time.utc(2026, 8, 20)).total_hours
 puts t.day_of_week'
+
+# Six more, each cheap and each asking a different small question: `Base64` is
+# module functions over `IO`, `UUID` is a struct wrapping a `StaticArray` and
+# an enum read back by name, `INI` returns a hash of hashes, `CSV` is a parser
+# and a builder that takes a block, `Colorize` is macro-written methods on
+# `Object` — a type the *library* owns — and `XML` calls libxml2, so its
+# boundary has to carry a `@[Link]` flag the consumer never wrote.
+check Base64 base64 base64 'e = Base64.strict_encode("iyi, encoded")
+puts e
+puts String.new(Base64.decode(e))'
+
+check UUID uuid u_u_i_d 'u = UUID.new("c0ffee00-dead-beef-cafe-000000000001")
+puts u.to_s
+puts u.variant
+puts UUID.new(StaticArray(UInt8, 16).new(0_u8)).to_s'
+
+check INI ini i_n_i 'h = INI.parse("[a]\nx = 1\ny = 2\n")
+puts h["a"]["x"]
+puts h["a"].size'
+
+check CSV csv c_s_v 'rows = CSV.parse("a,b\n1,2\n")
+puts rows.size
+puts rows[1][1]
+puts CSV.build { |b| b.row "x", "y" }.strip'
+
+check Colorize colorize colorize 'puts "x".colorize(:red).to_s.inspect
+puts Colorize.enabled?'
+
+check XML xml x_m_l 'doc = XML.parse("<a><b id=\"1\">t</b></a>")
+puts doc.root.try(&.name)
+n = doc.first_element_child.try(&.first_element_child)
+puts n.try(&.content)
+puts n.try(&.[]("id"))'
 
 if [ "$status" -eq 0 ]; then
   echo "every boundary answers what its source does"
