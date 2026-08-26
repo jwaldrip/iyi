@@ -270,6 +270,51 @@ class Iyi::CodeGenVisitor
     call func
   end
 
+  # iyi: the `~NAME:const_read` an artifact's object code calls (SPEC.md IV.1g).
+  #
+  # A constant has two spellings and `initialize_const` picks one on
+  # `const.read?`: read before it is initialised, it is reached through a
+  # function in the main module that runs the initialiser once; initialised
+  # first, it is a plain global. Which one a build picks is a fact about *that
+  # build's* order, and an artifact's units were compiled in another one — the
+  # producer's read them from its units and emitted the function, the consumer
+  # initialises them from its own program and emitted the global.
+  #
+  # So the function is defined here whether or not this program needs it. The
+  # global is defined either way, so a unit referring to that instead still
+  # links; this only adds back the spelling the consumer had no reason to
+  # write. `Path` is where it showed: its `PartIterator` unit reads
+  # `Iterator::Stop::INSTANCE`, and a consumer whose own source names no
+  # iterator ended on `undefined symbol: ~Iterator::Stop::INSTANCE:const_read`.
+  #
+  # From the reads appended when the artifact was imported, because those are
+  # the nodes whose `target_const` the front end has already resolved — a name
+  # is not enough to find a constant with.
+  def iyi_define_all_artifact_const_reads : Nil
+    @program.iyi_artifact_constant_reads.each do |node|
+      const = node.target_const
+      next unless const
+
+      name = "~#{const.llvm_name}:const_read"
+      next if typed_fun?(@main_mod, name)
+
+      # Initialising only where this build's own answer says to. A constant
+      # this program initialised eagerly is already initialised by the time
+      # anything calls this, and `initialize_const` on one of those emits an
+      # unconditional call to its initialiser — so a function written that way
+      # would run it again on every read. Where the flag *is* wanted this is
+      # the ordinary path, `run_once` and all.
+      in_main do
+        define_main_function(name, ([] of LLVM::Type),
+          llvm_type(const.value.type).pointer) do |func|
+          set_internal_fun_debug_location(func, name, const.locations.try &.first?)
+          global = const.needs_init_flag? ? initialize_const(const) : declare_const(const)
+          ret global
+        end
+      end
+    end
+  end
+
   def create_read_const_function(fun_name, const)
     in_main do
       define_main_function(fun_name, ([] of LLVM::Type), llvm_type(const.value.type).pointer) do |func|

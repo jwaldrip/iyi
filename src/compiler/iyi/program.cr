@@ -391,6 +391,11 @@ module Iyi
     # under the name that travelled and built from the type resolved here.
     getter iyi_artifact_match_types = {} of String => Type
 
+    # iyi: the reads appended for an artifact's `Constants`, kept so codegen
+    # can define the `~NAME:const_read` its object code calls (SPEC.md IV.1g).
+    # See `read_iyi_artifact_constants`.
+    getter iyi_artifact_constant_reads = [] of Path
+
     # iyi: the class variables an imported artifact's object code refers to, as
     # `Owner::@@name` (SPEC.md IV.2).
     #

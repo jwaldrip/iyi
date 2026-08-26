@@ -760,27 +760,29 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
 
     location = Location.new(artifact_path, 1, 1)
     artifact.constants.each do |name|
-      # `pointerof`, not a plain read, and the difference is which of two
-      # spellings the constant gets. A constant read before it is initialised
-      # is reached through `~NAME:const_read`, a function in the main module
-      # that runs the initialiser once; one initialised before anything read it
-      # is a plain global, and `initialize_const` chooses between them on
-      # `const.read?` at the moment initialisation is emitted.
+      # And remembered, because reading it here is not the whole of what the
+      # artifact needs. A constant read before it is initialised is reached
+      # through `~NAME:const_read`, a function in the main module that runs the
+      # initialiser once; one initialised before anything read it is a plain
+      # global. `initialize_const` chooses between them on `const.read?` at the
+      # moment initialisation is emitted, and the two builds do not agree: the
+      # producer's units read these, so it emitted the function; the consumer
+      # initialises them from its own program in its own order and emitted the
+      # global. The artifact's object code then asked for a function nobody
+      # wrote — `undefined symbol: ~Iterator::Stop::INSTANCE:const_read`,
+      # referenced from `Path`'s `PartIterator` unit, in a program whose own
+      # source names no iterator.
       #
-      # The producer's units read these, so the producer emitted the function
-      # form. The consumer initialises them from its own program and nothing
-      # had read them yet, so it emitted the global — and the artifact's object
-      # code asked for a function nobody wrote: `undefined symbol:
-      # ~Iterator::Stop::INSTANCE:const_read`, referenced from `Path`'s
-      # `PartIterator` unit, on a program whose own source names no iterator.
-      #
-      # `pointerof` is how a program says "somebody holds the storage", which
-      # is exactly what an object file this build did not compile is doing, and
-      # `needs_init_flag?` answers it without asking about order. The global is
-      # still defined, so a unit referring to that instead still links; this
-      # only adds the spelling that was missing.
+      # Codegen defines the missing spelling from these nodes, once their
+      # `target_const` is resolved. Forcing the flag from here instead — a
+      # `pointerof`, which is what `needs_init_flag?` already answers to — was
+      # tried and is wrong twice over: it initialises nothing, so `kemal/dsl`'s
+      # `APP` came back empty with its routes unregistered, and where the read
+      # was kept beside it the changed order closed `STDERR` under
+      # `bench/bind_chain.sh`.
       read = Path.new(name.split("::"), global: true).at(location)
-      nodes.expressions << PointerOf.new(read).at(location)
+      nodes.expressions << read
+      @program.iyi_artifact_constant_reads << read
     end
   end
 

@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 94,723 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 94,824 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3903,6 +3903,48 @@ a consumer parses. IV.1's table asks for serialised typed IR, which is faster
 and is a second grammar to keep correct; text is the choice `Exports` already
 made, for the reason IV.1f gives, and IR can replace it without changing what
 travels.
+
+**A constant has two spellings, and which one a build picks is a fact about
+that build.** A constant read before it is initialised is reached through
+`~NAME:const_read`, a function in the main module that runs the initialiser
+once; one initialised before anything read it is a plain global.
+`initialize_const` chooses on `const.read?` at the moment initialisation is
+emitted, so the answer depends on the order that build happened to take.
+
+Across a boundary the two builds do not agree. The producer's units read these
+constants, so it emitted the function; the consumer initialises them from its
+own program, in its own order, and emits the global. The artifact's object code
+then calls a function nobody wrote — `undefined symbol:
+~Iterator::Stop::INSTANCE:const_read`, referenced from `Path`'s `PartIterator`
+unit, in a program whose own source names no iterator. `Time::Span::ZERO` is
+the same thing one namespace over.
+
+So the consumer defines the missing spelling for every name in `Constants`,
+beside the type ids and the match funs it already defines for the same reason:
+each is a name an artifact's object code calls that only the consumer can
+build. The global is defined either way, so a unit referring to that instead
+still links, and the function initialises only where this build's own answer
+says to — one already initialised eagerly would otherwise re-run its
+initialiser on every read.
+
+Forcing the flag from the front end instead is wrong twice over, and both are
+written down because both were measured. A `pointerof` is what
+`needs_init_flag?` already answers to, but it initialises nothing — read that
+way, `kemal/dsl`'s `APP` arrived with its routes unregistered. Kept beside a
+real read, the changed initialisation order closed `STDERR` before
+`bench/bind_chain.sh`'s program had written to it.
+
+**A module's instance method is not a module function.** A module written
+`extend self` puts its own methods on its metaclass as well, which is what
+lets `Kemal.run` be a module function and what an iyi module header desugars
+to. A module that does not write it does no such thing: `module Random` writes
+`def new_seed` without `self.` — an instance method its includers get, and not
+a name `Random` answers to. Collected as a module function it produced
+`Random.new_seed` in the keep file, and the fill build stopped on `undefined
+method 'new_seed' for Random:Module`. The question is asked of the metaclass,
+which either has the module among its ancestors or does not; an instance
+method that stays behind is not lost, because it travels as the module's
+`TypeDecl`'s.
 
 **A travelling body is compiled twice, and the two are not the same
 function.** The producer compiles it too — its own code calls it — but the

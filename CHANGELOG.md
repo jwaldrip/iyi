@@ -4,6 +4,39 @@
 
 ### Added
 
+- **`Path` and `Time` cross, and a constant has two spellings.** A constant
+  read before it is initialised is reached through `~NAME:const_read`, a
+  function in the main module that runs the initialiser once; one initialised
+  before anything read it is a plain global. `initialize_const` picks between
+  them on `const.read?` at the moment initialisation is emitted — which is a
+  fact about *that build's* order and not about the constant. The producer's
+  units read these and it emitted the function; the consumer initialises them
+  from its own program and emitted the global, so the artifact's object code
+  asked for a function nobody wrote: `undefined symbol:
+  ~Iterator::Stop::INSTANCE:const_read`, referenced from `Path`'s
+  `PartIterator` unit, in a program whose own source names no iterator.
+  `Time::Span::ZERO` is the same thing one namespace over. The consumer now
+  defines the missing spelling for every name in an artifact's `Constants`,
+  beside the type ids and the match funs it already defines for the same
+  reason. The global is defined either way, so a unit referring to that instead
+  still links.
+
+  Forcing the flag from the front end instead — a `pointerof`, which is what
+  `needs_init_flag?` already answers to — is wrong twice over, and both ways
+  are recorded because both were measured: it initialises nothing, so
+  `kemal/dsl`'s `APP` came back with its routes unregistered, and with a read
+  kept beside it the changed order closed `STDERR` under `bench/bind_chain.sh`.
+
+- **A module's instance method is not a module function.** `owners` took the
+  module's own name unconditionally, on the reasoning that a module written
+  `extend self` defines its functions there. A module that does *not* write it
+  does no such thing: `module Random` writes `def new_seed` without `self.`,
+  which is an instance method its includers get and not a name `Random` answers
+  to. Read as a module function it produced `Random.new_seed` in the keep file
+  and the fill build stopped on `undefined method 'new_seed' for
+  Random:Module`. The bare name is taken now only where the module's metaclass
+  has the module among its ancestors, which is what `extend self` does.
+
 - **A kemal application in `samples/crystal/kemal`.** Routes, URL and query
   parameters, a JSON endpoint that reads a POST body, and a 404 handler. The
   shard is not vendored: `shard.yml` pins kemal 1.12.0 and `shards install`
