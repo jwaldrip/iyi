@@ -7687,11 +7687,35 @@ Named honestly, so nobody mistakes this draft for complete.
 
     They are a generic instance's compiler-synthesised class methods —
     `DB::PoolResourceLost(DB::Connection+)::name` and `::to_s` — and
-    `DB::Disposable#close` with the module itself as the receiver. `name` and
-    `to_s` have no source body to travel and no symbol in the artifact, which
-    should leave them to the consumer, and the first guess at why it does not
-    was measured and wrong: instantiating a generic does not lose iyi's marks
-    on a `Def` — `clone_without_location` carries both.
+    `DB::Disposable#close` with the module itself as the receiver, and they are
+    one problem in two shapes: **a method on a type the consumer has and never
+    compiles.**
+
+    What is known about it, each measured rather than reasoned. The artifact
+    does not claim these symbols, so `compiled_elsewhere` is false. Their defs
+    are not from the artifact, so `iyi_from_artifact?` is false. `codegen_fun`
+    is never entered for them — not for these and not for *any* `::name` in the
+    consumer's build — yet the reference exists, emitted by the prelude's own
+    `exception.class.name` over `Exception+`, whose dispatch table codegen
+    builds by walking the class tree. So the table names a method nobody
+    instantiated.
+
+    `PoolResourceLost(DB::Connection+)` is a generic instance this build makes
+    only to *number* it: `TypeIds` names it, `lookup_type` creates it, and
+    nothing else in the program would ever form it. The natural reading is that
+    it joins the tree after the virtual call over that tree was typed — but
+    `add_subclass` notifies its ancestors' observers when it is created, and
+    notifying them a second time from the import changes nothing. Measured.
+
+    Two other readings were measured and are wrong: instantiating a generic
+    does not lose iyi's marks on a `Def` (`clone_without_location` carries
+    both), and the symbols are not being claimed by either artifact.
+
+    What is left to decide is whose job it is. A generic instance has no unit
+    in an artifact by design — its methods are the consumer's to compile — so
+    the answer is on the consumer's side, and the shape of it is the keep
+    file's shape one level over: *naming* a method is what makes its symbol,
+    and nothing names these.
 
     **And a name resolves in its own scope first.** `openssl_ext` writes a
     constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type

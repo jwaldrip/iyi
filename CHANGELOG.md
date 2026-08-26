@@ -226,8 +226,12 @@
   because a C function takes the integer and Crystal converts an enum at a
   `fun` call without being asked.
 
-  Three symbols left: a generic instance's compiler-synthesised `name` and
-  `to_s`, and `DB::Disposable#close` with the module as the receiver.
+  Three symbols left, and they are one problem in two shapes: a method on a
+  type the consumer has and never compiles. Neither artifact claims them,
+  neither def is from an artifact, and `codegen_fun` is never entered for them
+  — yet the prelude's own `exception.class.name` over `Exception+` emits the
+  reference, because codegen builds that dispatch table by walking the class
+  tree. SPEC.md Part V item 12 records what has been ruled out.
 
   **And a name resolves in its own scope first.** `openssl_ext` writes a
   constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type R-2
