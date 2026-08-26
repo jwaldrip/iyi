@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 37_u32
+  FORMAT_VERSION = 38_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -477,7 +477,21 @@ module Iyi::IyiMod
     # itself, so the consumer needs the declaration to make it with.
     # `openssl_ext`'s `PKey.read` travels, and it said `undefined fun
     # 'pem_read_bio_rsa_private_key' for LibCrypto`.
-    funs : Array(String) = [] of String
+    funs : Array(String) = [] of String,
+    # iyi: the annotations written above this declaration, as source text.
+    #
+    # One of them, and the reason it has to travel is the correction to
+    # `Libs`. That section carries *names* on the argument that everything a
+    # link line needs is already on the consumer's own copy of `@[Link]` — true
+    # of a `lib` the library declares, and false of one only the shard has,
+    # where there is no other copy. `sqlite3` writes `@[Link("sqlite3")] lib
+    # LibSQLite3`, the consumer's copy of that lib arrived bare, nothing asked
+    # for `-lsqlite3`, and the link ended on `sqlite3_value_text`.
+    #
+    # Text, like `macros` and `funs` beside it: an annotation is source a
+    # reader parses back, and translating it through a record would be a second
+    # spelling of something that already has one.
+    annotations : Array(String) = [] of String
 
   # How a body is found again on the far side.
   #
@@ -1932,6 +1946,10 @@ module Iyi::IyiMod
   def self.render_type_declaration(io : IO, declaration : TypeDecl,
                                    bodies : Hash(String, String), indent = "",
                                    path = "") : Nil
+    # Above the declaration, which is where they were written and the only
+    # place they mean anything. See `TypeDecl#annotations`.
+    declaration.annotations.each { |source| io << indent << source << '\n' }
+
     io << indent
     io << declaration.visibility << ' ' unless declaration.visibility.empty?
     io << render_type_header(declaration) << '\n'
@@ -2398,6 +2416,7 @@ module Iyi::IyiMod
       write_strings io, declaration.includes
       write_strings io, declaration.macros
       write_strings io, declaration.funs
+      write_strings io, declaration.annotations
       write_signatures io, declaration.methods
       write_type_declarations io, declaration.types
     end
@@ -2419,10 +2438,11 @@ module Iyi::IyiMod
       includes = read_strings(io)
       macros = read_strings(io)
       funs = read_strings(io)
+      annotations = read_strings(io)
       methods = read_signatures(io)
       TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
         visibility, read_type_declarations(io), value, macros, members, class_vars,
-        superclass, includes, funs)
+        superclass, includes, funs, annotations)
     end
   end
 
