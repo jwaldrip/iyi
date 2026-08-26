@@ -302,6 +302,22 @@ jobs:
       - name: A signed JWT, through four boundaries
         run: bash bench/jwt_signs.sh
 
+      # And a *pair* of shards, which is a third kind again. `db` declares what
+      # a driver must answer and never sees one; `sqlite3` answers it and never
+      # sees `db`'s source. Every `abstract def` in between is a place where
+      # the producer compiled a body against nothing at all — `db`'s
+      # `Connection#fetch_or_build_prepared_statement` calls an abstract
+      # `build_prepared_statement`, and the copy in `db`'s artifact returns its
+      # own argument. Linked over the consumer's copy it handed back a
+      # statement whose `crystal_type_id` was 1. Rows read back wrong rather
+      # than a build that fails, which is why this runs a real query.
+      - name: A SQLite query, through a driver behind an abstract boundary
+        run: |
+          if ! ldconfig -p 2>/dev/null | grep -q libsqlite3; then
+            apt-get update -qq && apt-get install -y -qq libsqlite3-dev
+          fi
+          bash bench/sqlite3_queries.sh
+
       # And a boundary built from the standard library itself, which is not a
       # shard and asks a question no shard asked: `YAML` calls libyaml, and
       # which C libraries a boundary's object code needs was a question the

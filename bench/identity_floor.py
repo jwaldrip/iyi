@@ -136,6 +136,9 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # under. A dependency's coordinates are not prose and there is no other
     # spelling of them: `crystal-community/jwt` is where `shards install` looks.
     (r"github: crystal-community/", "a shard's own coordinates"),
+    # And the driver's, for the same reason: `crystal-lang/crystal-sqlite3` is
+    # where `shards install` looks and there is no other spelling of it.
+    (r"github: crystal-lang/", "a shard's own coordinates"),
     (
         r"Crystal's (own|library|licence|license|compiler|semantics|stdlib|"
         r"standard|prelude|codegen|cache|interpreter|fibers|ecosystem|list|"
