@@ -196,9 +196,17 @@
   *names*, so `sqlite3`'s ten `bind_arg` overloads were one; and a synthesised
   `new` must never travel from that search either.
 
-  **What `sqlite3` waits on now is a generic's instantiated methods across a
-  boundary** — the stack typechecks and the link asks for an instantiation
-  keyed on the generic rather than compiling its own.
+  **A list of what a module defines is only worth having if it is the list of
+  what it has.** `Symbols` was collected for every name in `unit_names` while
+  the object code was collected only for those with a file behind them, so an
+  artifact could claim a symbol it did not carry. `mod dump` now names the
+  symbols rather than counting them.
+
+  **`sqlite3` typechecks whole and stops at the link**, on forty symbols of
+  three kinds: a shard-owned `lib`'s `@[Link]` annotation, which does not
+  travel because `Libs` carries names on an argument that holds only for a lib
+  the library also declares; and two generic instantiations whose bodies are in
+  the declarations and which the consumer does not compile.
 
   **And a name resolves in its own scope first.** `openssl_ext` writes a
   constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type R-2

@@ -777,7 +777,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 94,175 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 94,197 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 2,404-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -7624,14 +7624,39 @@ Named honestly, so nobody mistakes this draft for complete.
     from the other: its body is `_ = allocate`, and `_` is not a name anybody
     reads back.
 
-    **What `sqlite3` waits on now is a generic's instantiated methods across a
-    boundary.** The whole stack typechecks; the link ends on
-    `*DB::SessionMethods::UnpreparedQuery(DB::Connection+, DB::Statement+)@DB::
-    SessionMethods::UnpreparedQuery(Session, Stmt)#build<String>`, which is the
-    consumer asking for an instantiation keyed on the *generic* rather than
-    compiling one of its own. `iyi_artifact_self_type` exempts a generic for
-    exactly this reason and the exemption is not reaching a generic nested
-    inside a generic module.
+    **A list of what a module defines is only worth having if it is the list of
+    what it has.** `collect_iyi_object_code` drops a unit name with no
+    compilation unit behind it or no file on disk, and every other collector
+    was still answering for the whole of `unit_names` — so an artifact could
+    *claim* a symbol it did not carry, and a consumer reading that claim
+    skipped compiling one of its own. `Symbols` is now collected from the units
+    whose object code actually travelled, and `mod dump` names them rather than
+    counting them: a count says a claim was made, and what is asked at the end
+    of a failed link is *which*.
+
+    **`sqlite3` typechecks whole and stops at the link, on forty symbols of
+    three kinds**, and one of the three is a finding this file already has half
+    of.
+
+    A `lib` the shard owns is declared *inside* its module, which is what lets
+    its funs name the shard's own types — and that changes its name. `Libs`
+    carries names on the argument that everything a link line needs is already
+    on the consumer's own copy of the `@[Link]` annotation, and that argument
+    is true of a lib the *library* declares and false of one only the shard
+    has: there is no other copy. The consumer's `lib LibSQLite3` arrives from
+    the artifact with no annotation on it, so nothing asks for `-lsqlite3` and
+    the link ends on `sqlite3_value_text`. The correction is to carry the
+    annotation for a shard-owned lib, which is a format change and a rule this
+    entry got half right.
+
+    The other two are generics: `*DB::PoolResourceLost(DB::Connection+)::name`
+    and `*DB::SessionMethods::UnpreparedQuery(DB::Connection+,
+    DB::Statement+)@…#build<String>` — instantiations whose bodies are in the
+    declarations, whose symbols the artifact does not claim, and which the
+    consumer still does not compile. `needs_body` is answering `false`; the
+    first guess was that instantiating a generic clones the def and loses
+    iyi's marks, and that was measured and wrong — `Def#clone_without_location`
+    carries both of them.
 
     **And a name resolves in its own scope first.** `openssl_ext` writes a
     constant `GETS_BIO` inside `class OpenSSL::GETS_BIO`, so the return type
