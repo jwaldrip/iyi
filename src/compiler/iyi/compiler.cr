@@ -702,12 +702,27 @@ module Iyi
       prepared.each do |(path, artifact)|
         unit_names = iyi_unit_names(program, artifact.module_name)
         artifact.object_code = collect_iyi_object_code(unit_names, units_by_name)
+
+        # The units whose object code actually travelled, which is not the same
+        # list. `collect_iyi_object_code` drops a name with no compilation unit
+        # behind it or no file on disk, and everything else here was still
+        # answering for the whole of `unit_names` — so an artifact could
+        # *claim* a symbol it did not carry. `db` claims
+        # `*DB::SessionMethods::UnpreparedQuery(DB::Connection+,
+        # DB::Statement+)@…#build<String>`, a generic's instantiation whose
+        # object file is nobody's, and a consumer reading that claim skipped
+        # compiling one of its own: `undefined symbol`, about a method whose
+        # body was in the declarations all along.
+        #
+        # A list of what a module defines is only worth having if it is the
+        # list of what it *has*.
+        carried = artifact.object_code.map(&.name)
         artifact.type_ids = collect_iyi_type_ids(program, unit_names)
         artifact.constants = collect_iyi_constants(program, unit_names)
         artifact.regexes = collect_iyi_regexes(program, artifact.constants)
         artifact.class_vars = collect_iyi_unit_class_vars(program, unit_names)
         artifact.match_types = collect_iyi_match_types(program, unit_names)
-        artifact.symbols = collect_iyi_symbols(program, unit_names)
+        artifact.symbols = collect_iyi_symbols(program, carried)
         artifact.libs = collect_iyi_libs(program, unit_names)
         artifact.filled = true
         IyiMod.write artifact, path

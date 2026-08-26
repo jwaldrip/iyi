@@ -1389,7 +1389,14 @@ module Iyi::IyiMod
     io.puts "object code   never filled: the fill step did not finish" unless artifact.filled
 
     symbols = artifact.symbols
-    io.puts "symbols       #{symbols.size} defined by this module's units" unless symbols.empty?
+    unless symbols.empty?
+      # Named, not counted. A count says a claim was made and this says *what*
+      # was claimed, which is the question asked whenever a symbol is undefined
+      # at the end of a link — and an opaque cache format is one nobody can
+      # debug.
+      io.puts "symbols       #{symbols.size} defined by this module's units"
+      symbols.each { |symbol| io.puts "  #{symbol}" }
+    end
 
     libs = artifact.libs
     unless libs.empty?
