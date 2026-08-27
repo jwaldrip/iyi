@@ -122,6 +122,11 @@ module Iyi
     # (SPEC.md IV.1). Set by `--emit-iyimod`.
     property emit_iyimod : String? = nil
 
+    # iyi: a prepared requirement table (III.7), for a caller that resolved
+    # the manifest itself — `iyi mod context` compiles dependencies with the
+    # *user's* table, from entries that have no manifest of their own.
+    property iyi_mod_table : Array({String, String})? = nil
+
     # iyi: a namespace whose methods this build must define rather than inline.
     #
     # `--emit-iyimod` already says this about iyi modules, and the reason is the
@@ -269,8 +274,14 @@ module Iyi
       # The manifest too, for the same reason as `--use-iyimod` above: the
       # analysis was made without this build's directory, and a table it
       # never computed is not one it can be said to have decided against.
-      if filename = program.filename
-        program.iyi_mod_table = Mod::Installer.table_for(File.dirname(filename))
+      if table = @iyi_mod_table
+        program.iyi_mod_table = table
+      elsif filename = program.filename
+        begin
+          program.iyi_mod_table = Mod::Installer.table_for(File.dirname(filename))
+        rescue ex : Mod::ModError
+          raise Error.new(ex.message)
+        end
       end
       program.warnings = @warnings
       program.color = color?
@@ -373,7 +384,7 @@ module Iyi
 
     # Re-applied by the adopt path above. `new_program` is what would otherwise
     # have set them, and adoption skips it.
-    APPLIED_ON_ADOPT = %w(use_iyimod no_codegen emit_iyimod warnings color stdout show_error_trace)
+    APPLIED_ON_ADOPT = %w(use_iyimod no_codegen emit_iyimod warnings color stdout show_error_trace iyi_mod_table)
 
     # Neither, and two of these are judgements rather than facts. `mcpu`,
     # `mattr` and `mcmodel` reach the target machine and the target machine
@@ -713,6 +724,15 @@ module Iyi
       units_by_name = units.try &.to_h { |unit| {unit.original_name, unit} }
 
       prepared.each do |(path, artifact)|
+        # iyi: a package's artifact is III.7 step 5's story — signatures,
+        # signing, the registry — and is not written here, because the one
+        # this loop would write is hollow: the exports collector keys on the
+        # in-package type name and a canonical dotted path reaches nothing.
+        # A dotted name is the discriminator IV.6 #6 guarantees: a local
+        # module cannot carry one. Skipped loudly enough — an artifact that
+        # is absent is a rebuild; one that lies is a debugging session.
+        next if artifact.module_name.includes?('.')
+
         unit_names = iyi_unit_names(program, artifact.module_name)
         artifact.object_code = collect_iyi_object_code(unit_names, units_by_name)
 
@@ -1707,12 +1727,19 @@ module Iyi
       program.iyi_module_dir = @use_iyimod
       program.iyi_wants_object_code = !@no_codegen
       program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
-      # iyi: the manifest, if the entry file's directory has one (III.7).
-      # Resolved here — once, before anything imports — so a failure names
-      # the manifest rather than surfacing as a missing module three
-      # imports deep.
-      if filename = program.filename
-        program.iyi_mod_table = Mod::Installer.table_for(File.dirname(filename))
+      # iyi: the manifest, if the entry file's directory has one (III.7) —
+      # or the table a tool prepared, which wins because the tool resolved
+      # the *user's* manifest and the entry may be a dependency with none.
+      # A manifest failure is a build error with the manifest's name in it,
+      # not a compiler bug banner.
+      if table = @iyi_mod_table
+        program.iyi_mod_table = table
+      elsif filename = program.filename
+        begin
+          program.iyi_mod_table = Mod::Installer.table_for(File.dirname(filename))
+        rescue ex : Mod::ModError
+          raise Error.new(ex.message)
+        end
       end
       program
     end

@@ -192,7 +192,15 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     # A package module registers under its canonical path — the requirement's
     # prefix plus the in-package path — so the file is one module however it
     # was reached, and two packages' `util`s are two modules.
-    canonical = package ? "#{package[1]}/#{package[2]}" : path
+    canonical =
+      if package
+        prefix, inner = package[1], package[2]
+        # The bare prefix *is* the root module's name; only a sub-module
+        # appends its in-package path.
+        prefix.ends_with?("/#{inner}") ? prefix : "#{prefix}/#{inner}"
+      else
+        path
+      end
     @program.record_require(canonical, relative_to)
 
     check_import_cycle(node, filename)
