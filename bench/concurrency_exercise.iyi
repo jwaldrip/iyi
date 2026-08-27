@@ -335,4 +335,61 @@ end
 fail("close did not fail the parked sender: #{closed_send}") unless closed_send == "refused"
 puts "close failed a parked sender with ChannelClosed"
 
+# ── 14. `select` takes the arm that is ready ────────────────────────────
+left = Channel(Int32).new
+right = Channel(String).new
+picked = ""
+group do |g|
+  g.spawn do
+    sleep(20)
+    right.send("hello")
+    0
+  end
+  g.spawn do
+    select
+    when n = left.receive
+      picked = "left"
+    when s = right.receive
+      picked = s.is_a?(String) ? "right:#{s}" : "right:?"
+    end
+    0
+  end
+end
+fail("select: expected right:hello, got #{picked}") unless picked == "right:hello"
+puts "select took the arm that became ready"
+
+# ── 15. A select's send arm can win while parked ────────────────────────
+narrow = Channel(Int32).new
+sent_arm = ""
+group do |g|
+  g.spawn do
+    select
+    when narrow.send(31)
+      sent_arm = "sent"
+    when n = Channel(Int32).new(1).receive
+      sent_arm = "impossible"
+    end
+    0
+  end
+  g.spawn do
+    sleep(20)
+    value = narrow.receive
+    value.is_a?(Int32) ? value : -1
+  end
+end
+fail("select: the parked send arm saw #{sent_arm}") unless sent_arm == "sent"
+puts "a select's send arm won while parked"
+
+# ── 16. `select` with an `else` does not park ───────────────────────────
+idle = Channel(Int32).new
+took_else = ""
+select
+when n = idle.receive
+  took_else = "arm"
+else
+  took_else = "else"
+end
+fail("select else: got #{took_else}") unless took_else == "else"
+puts "select with nothing ready took its else"
+
 puts "concurrency exercise: every property held"
