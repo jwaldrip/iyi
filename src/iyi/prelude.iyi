@@ -1062,7 +1062,21 @@ def read_input : String
       buffer = buffer.realloc(capacity)
     end
 
-    count = __iyi_read(0, (buffer + filled).as(Void*), capacity - filled.to_u64)
+    count = 0_i64
+    # On Linux the read parks the fiber rather than the thread: III.4.8
+    # named this exact call as the one that had to stop being a direct
+    # blocking syscall once a poller existed. A fiber reading stdin no
+    # longer stalls its siblings; a program with no other fiber blocks in
+    # `epoll_pwait` instead of `read`, which is the same wait. `Cancelled`
+    # ends the read the way EOF does — a cancelled task wants out, and
+    # what was read so far is still the honest answer.
+    {% if flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+      outcome = iyi_read(0, (buffer + filled).as(Void*), capacity - filled.to_u64)
+      break unless outcome.is_a?(Int64)
+      count = outcome
+    {% else %}
+      count = __iyi_read(0, (buffer + filled).as(Void*), capacity - filled.to_u64)
+    {% end %}
     break if count <= 0_i64
     filled = filled + count
   end
