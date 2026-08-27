@@ -133,25 +133,25 @@ end
 # `{% if %}` dies at its `{% end %}`: a macro expansion is re-parsed, and
 # only declarations cross back out of one.
 {% if flag?(:x86_64) %}
-  IYI_SYS_MMAP          = 9_i64
-  IYI_SYS_MPROTECT      = 10_i64
+  IYI_SYS_MMAP          =   9_i64
+  IYI_SYS_MPROTECT      =  10_i64
   IYI_SYS_CLOCK_GETTIME = 228_i64
   IYI_SYS_EPOLL_CTL     = 233_i64
   IYI_SYS_EPOLL_PWAIT   = 281_i64
   IYI_SYS_EPOLL_CREATE1 = 291_i64
   # The kernel packs epoll_event on x86_64: data sits at +4 of a 12-byte
   # struct. Everywhere else it is aligned: +8 of 16.
-  IYI_EPOLL_DATA_OFFSET = 4_u64
+  IYI_EPOLL_DATA_OFFSET =  4_u64
   IYI_EPOLL_EVENT_BYTES = 12_i64
 {% else %}
   IYI_SYS_MMAP          = 222_i64
   IYI_SYS_MPROTECT      = 226_i64
   IYI_SYS_CLOCK_GETTIME = 113_i64
-  IYI_SYS_EPOLL_CTL     = 21_i64
-  IYI_SYS_EPOLL_PWAIT   = 22_i64
-  IYI_SYS_EPOLL_CREATE1 = 20_i64
-  IYI_EPOLL_DATA_OFFSET = 8_u64
-  IYI_EPOLL_EVENT_BYTES = 16_i64
+  IYI_SYS_EPOLL_CTL     =  21_i64
+  IYI_SYS_EPOLL_PWAIT   =  22_i64
+  IYI_SYS_EPOLL_CREATE1 =  20_i64
+  IYI_EPOLL_DATA_OFFSET =   8_u64
+  IYI_EPOLL_EVENT_BYTES =  16_i64
 {% end %}
 fun __iyi_conc_syscall3(number : Int64, a : Int64, b : Int64, c : Int64) : Int64
   result = uninitialized Int64
