@@ -144,6 +144,12 @@ module Iyi
     # source, or nil (SPEC.md IV.1). Set by `--use-iyimod`.
     property iyi_module_dir : String? = nil
 
+    # iyi: the manifest's answer — `{module path prefix, checkout dir}`,
+    # longest prefix first, filled from `iyi.mod` by `Mod::Installer` before
+    # semantic runs (SPEC.md III.7). Empty when the program has no manifest,
+    # which is every program until it writes one.
+    property iyi_mod_table = [] of {String, String}
+
     # iyi: whether this build is writing artifacts as well as reading them
     # (SPEC.md IV.3). Set by the compiler from `--emit-iyimod`.
     #

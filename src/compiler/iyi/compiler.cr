@@ -3,6 +3,7 @@ require "file_utils"
 require "colorize"
 require "crystal/digest/md5"
 require "./optimization_mode"
+require "./mod/installer"
 {% if flag?(:msvc) %}
   require "./loader"
 {% end %}
@@ -265,6 +266,12 @@ module Iyi
       program.iyi_module_dir = @use_iyimod
       program.iyi_wants_object_code = !@no_codegen
       program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
+      # The manifest too, for the same reason as `--use-iyimod` above: the
+      # analysis was made without this build's directory, and a table it
+      # never computed is not one it can be said to have decided against.
+      if filename = program.filename
+        program.iyi_mod_table = Mod::Installer.table_for(File.dirname(filename))
+      end
       program.warnings = @warnings
       program.color = color?
       program.stdout = stdout
@@ -1700,6 +1707,13 @@ module Iyi
       program.iyi_module_dir = @use_iyimod
       program.iyi_wants_object_code = !@no_codegen
       program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
+      # iyi: the manifest, if the entry file's directory has one (III.7).
+      # Resolved here — once, before anything imports — so a failure names
+      # the manifest rather than surfacing as a missing module three
+      # imports deep.
+      if filename = program.filename
+        program.iyi_mod_table = Mod::Installer.table_for(File.dirname(filename))
+      end
       program
     end
 
