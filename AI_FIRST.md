@@ -72,8 +72,15 @@ demands:
   same hour caught item 3's first draft linking PCRE2 into the compiler:
   `bench/dependency_floor.sh` refused it by name, which is §5's culture
   already paying for itself.
+- **4** — `iyi test` (the commit this update rides with): every
+  `*_test.iyi` under a path, one process per test, four verdicts told
+  apart — pass, fail with the test's own evidence, does-not-build, and
+  hung-killed-at-deadline, because a harness that can hang is not a
+  harness. `--json` is the machine contract. No framework: exit 0 is the
+  whole protocol, which is the same one every gate in `bench/` runs on.
 
-All four are gated in `bench/packages_resolve.sh`.
+All five are gated: 1, 2, 3 and 6 in `bench/packages_resolve.sh`, 4 in
+`bench/test_verb.sh`.
 
 Free advertising, no work: `iyi mod diff --exit-code` already answers the
 agent question "did I break the API"; document it as a harness contract.

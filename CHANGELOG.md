@@ -76,6 +76,15 @@
   a tie is not a win, so the README stays silent, which is the gate doing
   its job on its own author.
 
+  `iyi test` closes the loop — the verify verb with no framework
+  (AI_FIRST.md §2 #4). A test is a plain iyi program named `*_test.iyi`:
+  exit 0 passes, anything else fails and prints its own evidence, which is
+  the protocol every gate in `bench/` already runs on. One process per
+  test, four verdicts told apart — pass, fail, does-not-build, and
+  hung-killed-at-deadline (60 s default, `--timeout`), because a harness
+  that can hang is not a harness. `--json` reports the run as data.
+  `bench/test_verb.sh` gates all four verdicts.
+
 - **Concurrency exists, in exactly the order III.4.8 said it must.** A
   scheduler, then cancellable blocking primitives, then `group` and
   `Channel` — never the cheap slices: no `Share` marker gating nothing, no
