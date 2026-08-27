@@ -252,6 +252,12 @@ jobs:
       - name: The context pack pays for itself
         run: python3 bench/context_pack.py
 
+      # AI_FIRST.md §2 #4: `iyi test`, the verify loop with no framework. A
+      # test is a plain program with an exit code; the gate's four steps are
+      # the four verdicts a runner must tell apart.
+      - name: The test verb tells its four verdicts apart
+        run: bash bench/test_verb.sh
+
       # The same question asked of the other kind of artifact: one whose object
       # code is a shard's and whose declarations `tool bind` wrote. III.6 rule 1
       # names an undefined symbol and a call returning another type, and

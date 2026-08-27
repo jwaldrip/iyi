@@ -35,6 +35,7 @@ module Iyi
         run                      build and run a program (default)
         mod                      inspect a .iyimod module artifact
         repl                     a session: one line in, its value out
+        test                     run every *_test.iyi: exit 0 passes, anything else fails
         daemon                   hold the prelude analysed between builds
         env                      print environment information
         clear_cache              clear the compiler cache
@@ -63,7 +64,7 @@ module Iyi
   VERSION = Iyi::Config.iyi_version
 
   # The ones that are this compiler doing this compiler's job.
-  DELEGATED = %w(build run mod repl env clear_cache tool daemon)
+  DELEGATED = %w(build run mod repl env clear_cache tool daemon test)
 
   # The ones that belong to Crystal and are still in the binary underneath.
   # Named rather than swallowed, because "unknown command" would be a lie.

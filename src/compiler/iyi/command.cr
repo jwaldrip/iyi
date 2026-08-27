@@ -50,6 +50,7 @@ class Iyi::Command
         mod                      inspect a .iyimod module artifact
         run (default)            build and run program
         spec                     build and run specs (in spec directory)
+        test                     run every *_test.iyi: exit 0 passes, anything else fails
         tool                     run a tool
         help, --help, -h         show this help
         version, --version, -v   show version
@@ -134,6 +135,10 @@ class Iyi::Command
     when "spec/".starts_with?(command)
       options.shift
       spec
+    when command == "test"
+      # Exact, like `repl`: `t` stays `tool`'s.
+      options.shift
+      test
     when "tool".starts_with?(command)
       options.shift
       tool
