@@ -416,4 +416,127 @@ describe "Compiler" do
       end
     end
   end
+
+  # iyi: the concurrency runtime — SPEC.md III.4, Linux only. The bench gate
+  # (`bench/concurrency_exercise.sh`) is the full property list; what earns a
+  # place *here* is what `make compiler_spec` should catch without bash: the
+  # runtime compiles, interleaves, cancels, selects, and adds no undefined
+  # symbol. Skipped where the runtime does not exist, by the same platform
+  # test the prelude gates the `require` on.
+  {% if flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+    describe "concurrency" do
+      it "interleaves a group's tasks through a channel and joins" do
+        with_tempdir("iyi-conc-pingpong") do
+          File.write "ping.iyi", <<-'IYI'
+            ping = Channel(Int32).new(1)
+            pong = Channel(Int32).new(1)
+            order = ""
+            group do |g|
+              g.spawn do
+                round = 0
+                while round < 2
+                  ping.receive
+                  order = order + "a"
+                  pong.send(1)
+                  round = round + 1
+                end
+                0
+              end
+              g.spawn do
+                round = 0
+                while round < 2
+                  order = order + "b"
+                  ping.send(1)
+                  pong.receive
+                  round = round + 1
+                end
+                0
+              end
+            end
+            puts order
+            IYI
+          source = Iyi::Compiler::Source.new(
+            File.expand_path("ping.iyi"), File.read("ping.iyi"))
+          iyi_compiler.compile(source, File.expand_path("ping"))
+
+          Process.capture(File.expand_path("ping")).should eq("baba\n")
+        end
+      end
+
+      it "cancels a blocked sibling when a task fails, and select picks the ready arm" do
+        with_tempdir("iyi-conc-cancel-select") do
+          File.write "cs.iyi", <<-'IYI'
+            pub struct Boom
+              def initialize
+              end
+            end
+
+            impl Error for Boom
+              def message : String
+                "boom"
+              end
+            end
+
+            saw = ""
+            group do |g|
+              g.spawn do
+                slept = sleep(10000)
+                saw = slept.is_a?(Cancelled) ? "cancelled" : "slept"
+                slept
+              end
+              g.spawn do
+                sleep(10)
+                Boom.new
+              end
+            end
+            puts saw
+
+            ready = Channel(Int32).new(1)
+            ready.send(5)
+            other = Channel(Int32).new(1)
+            select
+            when a = other.receive
+              puts "wrong arm"
+            when b = ready.receive
+              puts b.is_a?(Int32) ? b * 2 : -1
+            end
+            IYI
+          source = Iyi::Compiler::Source.new(
+            File.expand_path("cs.iyi"), File.read("cs.iyi"))
+          iyi_compiler.compile(source, File.expand_path("cs"))
+
+          Process.capture(File.expand_path("cs")).should eq("cancelled\n10\n")
+        end
+      end
+
+      it "adds no undefined symbol for the runtime" do
+        pending! "nm is unavailable" unless nm_available?
+        with_tempdir("iyi-conc-floor") do
+          File.write "floor.iyi", <<-'IYI'
+            done = Channel(Int32).new
+            group do |g|
+              g.spawn do
+                done.send(1)
+                0
+              end
+              g.spawn do
+                value = done.receive
+                0
+              end
+            end
+            puts "ok"
+            IYI
+          Iyi::Command.run ["build"].concat(program_flags_options)
+            .concat(["floor.iyi", "-o", File.expand_path("floor")])
+
+          # The C runtime template's five, and nothing of the runtime's own:
+          # the scheduler, the poller and the switch are raw syscalls and asm.
+          symbols = undefined_symbols(File.expand_path("floor"))
+          template = ["ITM_deregisterTMCloneTable", "ITM_registerTMCloneTable",
+                      "_cxa_finalize", "_gmon_start__", "_libc_start_main"]
+          (symbols - template).should be_empty
+        end
+      end
+    end
+  {% end %}
 end
