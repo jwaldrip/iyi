@@ -788,7 +788,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 95,099 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 95,524 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -2781,7 +2781,7 @@ shards for free: a shard's own dependencies are compiled into it or the binding
 does not link. And no answer at all for a shard whose interface *is* macros,
 which is a large fraction of the ones worth wanting.
 
-### III.7 Packages, and discoverability: **PROPOSED**
+### III.7 Packages, and discoverability: **step 1 BUILT — `iyi.mod`, MVS, a git fetcher; the registry half still PROPOSED**
 
 Shards is the part of Crystal a person meets second and it is the part that
 decides whether they stay. This section is longer than it wants to be because
@@ -2913,6 +2913,42 @@ then artifacts are a local cache and the registry serves source.
 
 Artifact distribution is deliberately last. It is the differentiator and it is
 worth nothing until there is something to install.
+
+**Step 1 is built, and three decisions came out of building it.** `iyi.mod`
+beside the entry file is the opt-in: `module <path>` and `require <path>
+v1.2.3`, nothing else. The resolver is MVS as written above, a worklist
+whose per-path answer only climbs (`src/compiler/iyi/mod/`); the fetcher is
+`git clone --depth 1 --branch v<version>` from `https://<path>.git`, into
+the compiler's cache, immutable once its manifest is readable —
+`IYI_MOD_MIRROR=<dir>` redirects every fetch to bare repositories under a
+directory, which is how `bench/packages_resolve.sh` runs the whole story
+offline: MVS observably raising a version, the second build reading the
+cache with the mirror deleted, and two refusals by name.
+
+The decisions:
+
+1. **A package prefix never becomes a type name.** IV.6 #6's grammar exists
+   so a path and a type determine each other, and `github.com` determines
+   nothing — so the *import* grammar admits `.` and `-` inside a segment
+   and the strict rule stands everywhere else. A requirement's prefix is
+   identity for the resolver; the in-package path, under the old grammar,
+   is what maps to `Liba::…`, and `using example.com/user/liba/colors`
+   reaches `Colors` — the same name the package's own files use.
+2. **A package's short imports resolve in its own checkout, or fail.** Not
+   passed along to the program's roots: a dependency reaching the
+   consumer's modules through a name collision is the accident isolation
+   exists to prevent. The file registers under its canonical path — prefix
+   plus in-package path — so it is one module however it was reached.
+3. **A dotted import with no covering requirement is refused as what it
+   is**, naming `iyi.mod` and the `require` line to write, because "can't
+   find `github.com/user/lib.iyi`" would be technically true and useless.
+
+What step 1 does not do, said here: no `iyi.sum` yet (step 2 — nothing
+checks that what arrived twice is the same thing), packages compile from
+source every build (their `.iyimod` story is step 5's, with signatures),
+and two packages whose in-package modules share a name collide in the type
+namespace — the general import-alias question, which `using`'s selective
+form already softens and a later section has to settle.
 
 ### III.8 Tooling: **PROPOSED**
 

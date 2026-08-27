@@ -4,6 +4,33 @@
 
 ### Added
 
+- **Dependencies exist — SPEC.md III.7 step 1, and only step 1.** An
+  `iyi.mod` beside the entry file is the opt-in: `module <path>` and
+  `require <path> v1.2.3`, nothing else. Resolution is minimal version
+  selection — the highest of the minimums anything asked for, a worklist
+  and no solver — and the fetcher is `git clone --depth 1` at the tag the
+  version spells, into the compiler's cache, immutable once fetched.
+  `IYI_MOD_MIRROR` redirects fetches to bare repositories under a
+  directory, which is how `bench/packages_resolve.sh` proves the story
+  without a network: the app asks for liba v1.0.0, its other dependency
+  asks for v1.1.0, and the program must print v1.1.0 and never v1.0.0;
+  then the mirror is deleted and the second build must still succeed.
+
+  Identity is the import path and the path is a URL, so the import grammar
+  admits `.` and `-` inside a segment — in `import` and `using` only,
+  because IV.6 #6's strict rule exists so a path and a type name determine
+  each other, and `github.com` determines nothing. A requirement's prefix
+  never becomes a type: the in-package path does, `using
+  example.com/user/liba/colors` reaches `Colors`, and a package's own
+  short imports resolve in its own checkout or fail — never passed along
+  to the program's roots. A dotted import with no covering requirement is
+  refused naming `iyi.mod` and the `require` line to write.
+
+  Not built, and said so in III.7's margin: `iyi.sum` (step 2 — nothing
+  yet checks that what arrived twice is the same thing), packages compile
+  from source every build, and two packages whose in-package modules share
+  a name collide in the type namespace.
+
 - **Concurrency exists, in exactly the order III.4.8 said it must.** A
   scheduler, then cancellable blocking primitives, then `group` and
   `Channel` — never the cheap slices: no `Share` marker gating nothing, no

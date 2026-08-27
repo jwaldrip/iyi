@@ -98,7 +98,10 @@ current compiler reports `0.3.0`. iyi's own prelude has no IO beyond
 `puts`, and its concurrency — a cooperative scheduler, `group`/`spawn`,
 `Channel`, cancellable `sleep` and reads (SPEC.md III.4) — is Linux-only;
 `--crystal` supplies Crystal's standard library, IO, `require` and the
-ecosystem. Neither mode supplies a package manager.
+ecosystem. Dependencies exist but are young: an `iyi.mod` beside the entry
+file names requirements, resolution is minimal version selection over git
+tags (SPEC.md III.7), and there is no registry, no `iyi.sum` and no
+artifact distribution yet; `--crystal` still leans on shards.
 
 ## The program that makes the argument
 
