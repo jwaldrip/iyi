@@ -288,7 +288,7 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     # `samples/calc` resolve `Calc` to the module doing the `using`, and then
     # say the module was not imported — a true-looking sentence about the wrong
     # thing. Found by `samples/iyi/calc`, which is called that.
-    path = Path.new(node.path.map(&.camelcase), global: true).at(node)
+    path = Path.new(iyi_using_segments(node.path), global: true).at(node)
 
     # iyi: `using` reaches a module this file has imported, and the error for
     # forgetting the import used to be "undefined constant App::Greeter" —
@@ -359,6 +359,27 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     current_type.add_using_module(used_type, node.names)
 
     false
+  end
+
+  # iyi: the segments `using` turns into a type name. A package path names
+  # its module by the *in-package* half (III.7): the requirement's prefix is
+  # identity for the resolver and never a type, so it is stripped before the
+  # camelcase mapping — `using example.com/user/liba/colors` reaches
+  # `Colors`, the same name the package's own files reach it by.
+  private def iyi_using_segments(segments : Array(String)) : Array(String)
+    written = segments.join('/')
+    @program.iyi_mod_table.each do |(prefix, _)|
+      inner =
+        if written == prefix
+          prefix.rpartition('/')[2]
+        elsif written.starts_with?("#{prefix}/")
+          written[(prefix.size + 1)..]
+        else
+          next
+        end
+      return inner.split('/').map(&.camelcase)
+    end
+    segments.map(&.camelcase)
   end
 
   # iyi: `trait Greet ... end`

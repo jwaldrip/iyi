@@ -161,13 +161,25 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     location = node.location
     relative_to = location.try &.original_filename
 
+    # iyi: a package import (SPEC.md III.7). The manifest's prefix table is
+    # asked first — longest prefix first, so `/v2` is a different module —
+    # and a hit resolves inside that requirement's checkout. A dotted path
+    # that no requirement covers is refused as what it is, because "can't
+    # find `github.com/user/lib.iyi`" would be technically true and useless.
+    package = resolve_package(path)
+    if package.nil? && path.includes?('.')
+      node.raise "no requirement covers '#{path}'. A dotted path is a " \
+                 "package (SPEC.md III.7); the file beside the entry file " \
+                 "that declares one is `iyi.mod`, as `require #{path[0, path.rindex('/') || path.size]} v1.2.3`"
+    end
+
     # iyi: the artifact, if there is one (SPEC.md IV.1). This is R-1's contract
     # arriving: a module that has a `.iyimod` is compiled against it, and its
     # source is not opened — not read, not parsed, not analysed. The source
     # need not even be there.
-    artifact_path = iyi_artifact_path(node, path)
+    artifact_path = package ? nil : iyi_artifact_path(node, path)
 
-    filename = artifact_path || resolve_import(path)
+    filename = artifact_path || package.try(&.first) || resolve_import(path)
     unless filename
       # iyi: say where it looked. A module's path *is* its file's path (IV.6),
       # and somebody meeting that rule for the first time is owed the mapping
@@ -177,7 +189,11 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
                  "directory of the file being built and then from `IYI_PATH`"
     end
 
-    @program.record_require(path, relative_to)
+    # A package module registers under its canonical path — the requirement's
+    # prefix plus the in-package path — so the file is one module however it
+    # was reached, and two packages' `util`s are two modules.
+    canonical = package ? "#{package[1]}/#{package[2]}" : path
+    @program.record_require(canonical, relative_to)
 
     check_import_cycle(node, filename)
 
@@ -191,7 +207,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     if artifact_path
       @program.iyi_artifact_modules[artifact_path] ||= path
     else
-      @program.iyi_module_paths[filename] ||= path
+      @program.iyi_module_paths[filename] ||= canonical
     end
 
     # One edge of the import DAG. Recorded even when the module is already
@@ -205,6 +221,17 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       @program.iyi_module_inits <<
         if artifact_path
           import_artifact(node, artifact_path)
+        elsif package
+          # Inside the package, short imports resolve against its checkout
+          # and nothing else: a dependency cannot quietly reach the
+          # program's own modules, or the same name would mean two things
+          # in two builds.
+          @iyi_package_stack << {package[1], package[3]}
+          begin
+            import_file(node, filename)
+          ensure
+            @iyi_package_stack.pop
+          end
         else
           import_file(node, filename)
         end
@@ -214,6 +241,50 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     node.expanded = expanded
     node.bind_to expanded
     false
+  end
+
+  # iyi: the manifest's answer for *path* — `{filename, prefix, inner,
+  # checkout}` — or nil when no requirement covers it (SPEC.md III.7).
+  #
+  # Two kinds of hit. A path with a requirement's prefix resolves inside
+  # that requirement's checkout, the prefix stripped: the in-package path
+  # is the one IV.6's grammar and the type mapping apply to, and the
+  # prefix never becomes a type name. And a *short* path written inside a
+  # package resolves against that package's own checkout only — found or
+  # refused, never passed along to the program's roots, because a
+  # dependency reaching the consumer's modules by name collision is the
+  # accident isolation exists to prevent. Importing a package's bare
+  # prefix means its root module, the file named after the last segment.
+  private def resolve_package(path : String) : {String, String, String, String}?
+    if (current = @iyi_package_stack.last?) && !path.includes?('.')
+      prefix, checkout = current
+      candidate = File.join(checkout, "#{path}.iyi")
+      return {candidate, prefix, path, checkout} if File.file?(candidate)
+      raise_at_import "package '#{prefix}' has no module '#{path}': " \
+                      "`#{path}.iyi` is not in its checkout at #{checkout}"
+    end
+
+    @program.iyi_mod_table.each do |(prefix, checkout)|
+      inner =
+        if path == prefix
+          prefix.rpartition('/')[2]
+        elsif path.starts_with?("#{prefix}/")
+          path[(prefix.size + 1)..]
+        else
+          next
+        end
+      candidate = File.join(checkout, "#{inner}.iyi")
+      return {candidate, prefix, inner, checkout} if File.file?(candidate)
+      raise_at_import "requirement '#{prefix}' has no module '#{inner}': " \
+                      "`#{inner}.iyi` is not in its checkout at #{checkout}"
+    end
+    nil
+  end
+
+  @iyi_package_stack = [] of {String, String}
+
+  private def raise_at_import(message : String) : NoReturn
+    raise Error.new(message)
   end
 
   # Resolves `a/b` to a file.
