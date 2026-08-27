@@ -526,9 +526,12 @@ class IyiScheduler
     event = Pointer(UInt8).malloc(16_u64)
     event.as(Pointer(UInt64)).value = 1_u64
     Pointer(UInt64).new(event.address + IYI_EPOLL_DATA_OFFSET).value = fd.to_u64
-    if __iyi_conc_syscall6(IYI_SYS_EPOLL_CTL, epfd, 1_i64, fd.to_i64, event.address.to_i64, 0_i64, 0_i64) < 0
-      raise "epoll_ctl add failed"
-    end
+    added = __iyi_conc_syscall6(IYI_SYS_EPOLL_CTL, epfd, 1_i64, fd.to_i64, event.address.to_i64, 0_i64, 0_i64)
+    # -EPERM is epoll saying the fd is a regular file. A file never blocks
+    # a read, which is exactly "readable now": answer it instead of dying,
+    # or a program whose stdin is `< file` panics on its first wait.
+    return nil if added == -1_i64
+    raise "epoll_ctl add failed" if added < 0
 
     fiber.wait_fd = fd
     fiber.state = 3
