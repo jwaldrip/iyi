@@ -392,4 +392,56 @@ end
 fail("select else: got #{took_else}") unless took_else == "else"
 puts "select with nothing ready took its else"
 
+# ── 17. The typed group — III.4.9 ────────────────────────────────────────
+#
+# Two direct spawns make the group a value: the tuple of what they
+# answered, or the first error member, with `!` propagating it out of the
+# enclosing def through III.1.2's ordinary machinery.
+def fetch_pair(fail_second : Bool) : Tuple(Int32, Int32) | TaskFailed | Cancelled
+  group do |g|
+    x = g.spawn do
+      slept = sleep(10)
+      slept.is_a?(Cancelled) ? slept : 21
+    end
+    y = g.spawn do
+      slept = sleep(fail_second ? 20 : 10)
+      slept.is_a?(Cancelled) ? slept : (fail_second ? TaskFailed.new : 2)
+    end
+  end!
+end
+
+pair = fetch_pair(false)
+case pair
+in Tuple(Int32, Int32) then fail("typed group: got #{it[0]}, #{it[1]}") unless it[0] == 21 && it[1] == 2
+in TaskFailed          then fail("typed group: failed on the success path")
+in Cancelled           then fail("typed group: cancelled on the success path")
+end
+puts "a typed group answered its tuple"
+
+started = __iyi_monotonic_ns
+broken = fetch_pair(true)
+fail("typed group: the failure did not leave as the error") unless broken.is_a?(TaskFailed)
+puts "a typed group's first failure left as the error"
+
+# ── 18. A dynamic group keeps the general form ───────────────────────────
+#
+# A spawn in a loop has no arity, so the group stays `Nil` and handles
+# answer through `task.value` — the expansion refusing quietly is the
+# method call standing as written.
+drainer = Channel(Int32).new(3)
+shape = group do |g|
+  index = 0
+  while index < 3
+    spawn_send(g, drainer, index)
+    index = index + 1
+  end
+end
+fail("a loop-spawning group grew a type") unless shape.is_a?(Nil)
+round = 0
+while round < 3
+  drainer.receive
+  round = round + 1
+end
+puts "a dynamic group kept the general form"
+
 puts "concurrency exercise: every property held"
