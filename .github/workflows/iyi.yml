@@ -508,6 +508,16 @@ jobs:
               ../samples/iyi/hello.iyi > hello-wasi.link )
           cat cross/hello-wasi.link
 
+          # The concurrency runtime's other instruction set. The x86-64 arm of
+          # its asm runs in this workflow's own gate; nothing runs the aarch64
+          # arm — the switch, the syscall shims, the frame `prepare_stack`
+          # lays out — until the emulation job below does. musl rides along:
+          # same instructions, the other libc, linked natively.
+          ./bin/iyi build --cross-compile --target x86_64-linux-musl \
+            -o cross/conc-musl bench/concurrency_exercise.iyi
+          ./bin/iyi build --cross-compile --target aarch64-linux-gnu \
+            -o cross/conc-aarch64 bench/concurrency_exercise.iyi
+
           # The Windows probe: the two shapes whose output has been seen wrong,
           # a case conversion and a number rendered into a string, and nothing
           # else. Small enough that a wrong answer names the path.
@@ -546,9 +556,12 @@ jobs:
           docker run --rm -v "$PWD/cross:/w" -w /w alpine:3.20 sh -c '
             apk add --no-cache build-base gc-dev > /dev/null &&
             cc hello-musl.o -o hello-musl -lgc -lpthread &&
-            ./hello-musl > got.txt
+            ./hello-musl > got.txt &&
+            cc conc-musl.o -o conc-musl &&
+            ./conc-musl > conc.txt
           '
           diff cross/expected.txt cross/got.txt && echo "musl: same output"
+          grep -q "every property held" cross/conc.txt && echo "musl: III.4 held"
 
       - name: aarch64, under emulation
         run: |
@@ -557,9 +570,12 @@ jobs:
               apt-get update > /dev/null 2>&1 &&
               apt-get install -y --no-install-recommends gcc libgc-dev > /dev/null 2>&1 &&
               gcc hello-aarch64.o -o hello-aarch64 -lgc -lpthread &&
-              ./hello-aarch64 > got.txt
+              ./hello-aarch64 > got.txt &&
+              gcc conc-aarch64.o -o conc-aarch64 &&
+              timeout 120 ./conc-aarch64 > conc.txt
             '
           diff cross/expected.txt cross/got.txt && echo "aarch64: same output"
+          grep -q "every property held" cross/conc.txt && echo "aarch64: III.4 held"
 
   # Windows is not a run target and nothing here is a gate. Three things happen
   # when you run the same Windows binary twenty times: it prints the right
