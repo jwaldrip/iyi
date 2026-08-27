@@ -48,6 +48,30 @@ command that reproduces it.
 | 7 | **Panics** (III.1.4) | Generated code that crashes should kill the *task*, not the process; `group` is already the boundary. Honest cost: unwinding, which the prelude's "nothing here unwinds" saving has to buy back | large |
 | 8 | **The sandbox story** | Already true, just unwritten: zero-dependency static binaries plus the wasm32 target are the cheapest container for running untrusted generated code. A SPEC section and a wasmtime gate | small (mostly prose) |
 
+**Built since this table was written**, naming the commits its status rule
+demands:
+
+- **1, the JSON half** — `iyi mod dump --json` (`649113a75`): exact
+  signatures with their `rendered` spelling, types with fields, impls,
+  the interface hash they are keyed by. The `Docs` section (doc comments
+  in the artifact) is **not** built; the row stays open by that much.
+- **2** — `iyi mod context FILE.iyi [--json]` (`649113a75`): every
+  import's surface, no bodies, each import compiled *alone* — R-1 worn as
+  a tool — so a half-broken tree still grounds.
+- **3** — `iyi build -f json` was inherited and already worked, measured
+  rather than assumed; what was added is the `spec` field (`c2e6529f2`),
+  the SPEC sections an error cites, as data. `suggested_edit` is not
+  built: errors do not carry structured edits, and inventing them would
+  be prose wearing a schema.
+- **6** — `iyi.sum` (`8d8b266fd`): tree-hashed checkouts, tool-written,
+  tamper-refusing, and one rule it taught — a checkout is read-only,
+  because the verifier caught its own footprint within the hour. The
+  same hour caught item 3's first draft linking PCRE2 into the compiler:
+  `bench/dependency_floor.sh` refused it by name, which is §5's culture
+  already paying for itself.
+
+All four are gated in `bench/packages_resolve.sh`.
+
 Free advertising, no work: `iyi mod diff --exit-code` already answers the
 agent question "did I break the API"; document it as a harness contract.
 
