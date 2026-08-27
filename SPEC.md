@@ -2383,13 +2383,83 @@ variadic def whose macro walks the arm tuple's arity, over any mix of
 receive and send arms, with `else` served by `non_blocking_select` (the
 ceiling that stood in its way was remeasured instead of raised — the
 paragraph under "The ceiling was not a guess" says how);
-`group do ... end!` typing its own return
-union (III.4.1's final shape) is compiler work, and today a task's union
+`group do ... end!` typing its own return union (III.4.1's final shape) is
+designed in III.4.9 and unbuilt — today a task's union
 comes out through `task.value`; a fiber blocked *joining* is the one park
 cancellation does not reach, which a failing group papers over by
 cancelling every child; and the other platforms get nothing rather than an
 imitation — wasm32 cannot switch stacks, and darwin's arm waits for a
 kqueue poller nobody has measured yet.
+
+#### III.4.9 The typed group, `group do ... end!`: **PROPOSED**
+
+III.4.1's example types its group — `Tuple(String, String) | IOError` — and
+the runtime does not: today a task's union comes out through `task.value`,
+one handle at a time, and the group expression is `Nil`. This section is the
+design for closing that gap, written before the code because every piece of
+III.4 that went well went in that order.
+
+**The recommendation is an expansion, not type machinery — the same move
+`select` was.** `select` compiles to calls the library already answers and a
+`case` the language already checks; the typed group compiles to joins the
+runtime already does and `is_a?` narrowing the language already has. From:
+
+```
+group do |g|
+  x = g.spawn { read(a) }
+  y = g.spawn { read(b) }
+end!
+```
+
+to (hygienic names throughout):
+
+```
+%g = IyiGroup.new
+%t1 = %g.spawn { read(a) }
+%t2 = %g.spawn { read(b) }
+%g.join
+%v1 = %t1.value
+if %v1.is_a?(::Error)
+  %v1
+else
+  %v2 = %t2.value
+  if %v2.is_a?(::Error)
+    %v2
+  else
+    {%v1, %v2}
+  end
+end
+```
+
+and `!` then applies to that expression's type — `Tuple(String, String) |
+IOError | Cancelled` — through the machinery III.1.2 already built. Nothing
+new is typed: the tuple's elements are non-error by the same narrowing `!`
+itself expands to, the error side is the union of what the branches answer,
+and the first failing task has already cancelled its siblings by the time
+`join` returns, so the extraction order cannot deadlock on a loser.
+
+**What qualifies.** The expansion applies when every `g.spawn` in the block
+is a direct statement of the block — assigned or bare, not inside an `if`, a
+`while` or a nested block — because a tuple has an arity and a loop does
+not. A group whose spawn count is dynamic keeps today's shape: the group is
+`Nil`, handles answer through `task.value`, and that is not a diminished
+mode but the general one. The syntactic test is decidable at expansion time
+and refusing the marginal cases loudly (`a typed group needs its spawns
+written out; this one is inside a while`) is cheaper than a rule nobody can
+state.
+
+**What it costs, named before it is paid.** A bare `g.spawn { }` whose value
+nobody reads still contributes a tuple slot, because leaving it out would
+make arity depend on use; `_ =` is the explicit discard. A nested group
+types itself independently, inner first, which the expansion gets for free
+by being bottom-up. And the `defer`red join stays: the expansion joins
+early to read values, the deferred join then finds `@live` at zero and
+costs one comparison — the leak guarantee is not traded for the type.
+
+Unbuilt, and gated the way everything above was: the expansion lands with
+its own exercise properties (a typed group's tuple, its first-error union,
+`!` off the group, the refusal message for a spawn in a loop) before the
+section's status changes.
 
 ### III.5 Module initialisation: **PROPOSED; rules 1, 2 and 4 BUILT**
 
