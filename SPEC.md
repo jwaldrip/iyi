@@ -62,7 +62,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 3,641 lines, ceiling 3,734 |
+| iyi's own prelude | 3,644 lines, ceiling 3,734 |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -87,7 +87,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 3,641 lines
+> "No standard library worth the name" is still true of iyi's own 3,644 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -269,7 +269,7 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 3,641 lines,
+**3. A deliberately tiny prelude, written in iyi. Done: 3,644 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
 one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
@@ -788,8 +788,8 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 94,939 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 3,641-line own prelude + 777 in samples |
+| Compiler | 24,984 lines, **written in Crystal** | 95,099 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -2069,7 +2069,7 @@ hook, and the prelude's own definition of it is untouched. Compile-time
 `responds_to?` works unchanged, which the error message is entitled to claim
 because it is tested.
 
-### III.4 Concurrency: **BUILT on Linux in III.4.8's order — scheduler, cancellable primitives, `group`, `Channel` (rendezvous), `select`; `Share` and the typed group return still open**
+### III.4 Concurrency: **BUILT on Linux in III.4.8's order — scheduler, cancellable primitives, `group`, `Channel` (rendezvous), `select`, the typed group (III.4.9); `Share` still open**
 
 This is the section where the design either beats Go or does not, so it is worth
 being blunt about where Go actually loses. Not goroutines: they are cheap, the
@@ -2383,15 +2383,15 @@ variadic def whose macro walks the arm tuple's arity, over any mix of
 receive and send arms, with `else` served by `non_blocking_select` (the
 ceiling that stood in its way was remeasured instead of raised — the
 paragraph under "The ceiling was not a guess" says how);
-`group do ... end!` typing its own return union (III.4.1's final shape) is
-designed in III.4.9 and unbuilt — today a task's union
+`group do ... end!` types its own return now (III.4.9, the section says
+what the build corrected) — a *dynamic* group's union still
 comes out through `task.value`; a fiber blocked *joining* is the one park
 cancellation does not reach, which a failing group papers over by
 cancelling every child; and the other platforms get nothing rather than an
 imitation — wasm32 cannot switch stacks, and darwin's arm waits for a
 kqueue poller nobody has measured yet.
 
-#### III.4.9 The typed group, `group do ... end!`: **PROPOSED**
+#### III.4.9 The typed group, `group do ... end!`: **BUILT, with one correction the build forced**
 
 III.4.1's example types its group — `Tuple(String, String) | IOError` — and
 the runtime does not: today a task's union comes out through `task.value`,
@@ -2411,42 +2411,52 @@ group do |g|
 end!
 ```
 
-to (hygienic names throughout):
+to the same block with the extraction appended (hygienic names throughout):
 
 ```
-%g = IyiGroup.new
-%t1 = %g.spawn { read(a) }
-%t2 = %g.spawn { read(b) }
-%g.join
-%v1 = %t1.value
-if %v1.is_a?(::Error)
-  %v1
-else
-  %v2 = %t2.value
-  if %v2.is_a?(::Error)
-    %v2
+group do |g|
+  x = g.spawn { read(a) }
+  y = g.spawn { read(b) }
+  g.join
+  %v1 = x.value
+  if %v1.is_a?(::Error)
+    %v1
   else
-    {%v1, %v2}
+    %v2 = y.value
+    if %v2.is_a?(::Error)
+      %v2
+    else
+      {%v1, %v2}
+    end
   end
 end
 ```
 
-and `!` then applies to that expression's type — `Tuple(String, String) |
+**The correction: the block stays a block.** The first build inlined the
+block's statements into the caller, and the gate's own `task.value`
+property broke it: a name the block used collided with a name a *later*
+closure captured, and a closured variable does not narrow, so an `is_a?`
+that had always worked stopped. Appending to the block instead keeps every
+name scoped where the author put it; what changed to allow it is one line
+of the runtime — `group` answers what its block answers (`& : IyiGroup ->
+U) : U forall U`), so the appended extraction *is* the group's value.
+
+`!` then applies to that expression's type — `Tuple(String, String) |
 IOError | Cancelled` — through the machinery III.1.2 already built. Nothing
 new is typed: the tuple's elements are non-error by the same narrowing `!`
 itself expands to, the error side is the union of what the branches answer,
 and the first failing task has already cancelled its siblings by the time
 `join` returns, so the extraction order cannot deadlock on a loser.
 
-**What qualifies.** The expansion applies when every `g.spawn` in the block
-is a direct statement of the block — assigned or bare, not inside an `if`, a
-`while` or a nested block — because a tuple has an arity and a loop does
-not. A group whose spawn count is dynamic keeps today's shape: the group is
-`Nil`, handles answer through `task.value`, and that is not a diminished
-mode but the general one. The syntactic test is decidable at expansion time
-and refusing the marginal cases loudly (`a typed group needs its spawns
-written out; this one is inside a while`) is cheaper than a rule nobody can
-state.
+**What qualifies.** The expansion applies when the block's parameter is
+used as the receiver of direct `spawn` statements — assigned or bare, not
+inside an `if`, a `while` or a nested block — and nowhere else, because a
+tuple has an arity and a loop does not. A group whose spawn count is
+dynamic keeps the general shape: the group is its block's last expression,
+handles answer through `task.value`, and that is not a diminished mode but
+the general one. The marginal cases fall back to it quietly; a `!`
+demanding the typed form of a group that cannot have one is refused by
+`!`'s own degenerate-union check, which names the type it found.
 
 **What it costs, named before it is paid.** A bare `g.spawn { }` whose value
 nobody reads still contributes a tuple slot, because leaving it out would
@@ -2465,10 +2475,16 @@ file only — which makes `group` a reserved name in iyi, the cost that
 the method call anyway, so the name is load-bearing with or without a
 parse node of its own.
 
-Unbuilt, and gated the way everything above was: the expansion lands with
-its own exercise properties (a typed group's tuple, its first-error union,
-`!` off the group, the refusal message for a spawn in a loop) before the
-section's status changes.
+Two facts the build wrote down. `end!` did not lex: the lexer's keyword
+check counted an attached `!` as an identifier's tail, so `end` came back
+an identifier and the block never closed — III.1.7's "`!` is not part of a
+name" now applies to a keyword's name too. And the parser marks the call
+(`Call#iyi_group?`, the `IsA#error_construct` precedent) for the
+normalizer to expand, because a bare `group do` carries an empty argument
+list some paths and no list on others, and the flag is the fact rather
+than the shape. Gated in `bench/concurrency_exercise.sh`: the tuple, the
+first-error union through `!`, and a loop-spawning group asserted to keep
+the general form.
 
 ### III.5 Module initialisation: **PROPOSED; rules 1, 2 and 4 BUILT**
 
@@ -7273,7 +7289,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 3,641-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 3,644-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler
