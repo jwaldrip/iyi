@@ -879,6 +879,11 @@ module Iyi
     property? expansion = false
     property? args_in_brackets = false
     property? has_parentheses = false
+    # iyi: a bare `group do ... end` in a `.iyi` file, recognised by name
+    # the way `.or` and `.or_panic` are (SPEC.md III.1.3, III.4.9), so the
+    # normalizer can expand the typed form without guessing from the name
+    # of a call a Crystal file is free to mean differently.
+    property? iyi_group = false
 
     def initialize(@obj : ASTNode?, @name : String, @args : Array(ASTNode) = [] of ASTNode, @block = nil, @block_arg = nil, @named_args = nil, @global : Bool = false)
       if block = @block
@@ -929,6 +934,7 @@ module Iyi
       clone.has_parentheses = has_parentheses?
       clone.name_size = name_size
       clone.expansion = expansion?
+      clone.iyi_group = iyi_group?
       clone
     end
 

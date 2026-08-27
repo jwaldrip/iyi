@@ -5340,6 +5340,11 @@ module Iyi
           call = Call.new(name, (args || [] of ASTNode), block, block_arg, named_args, global)
           call.name_location = name_location
           call.has_parentheses = has_parentheses
+          # iyi: `group do ... end` is compiler-known (SPEC.md III.4.9) —
+          # the typed expansion needs to know this is *the* group, not a
+          # method sharing the name; recognising it here is what makes
+          # `group` a reserved name in an iyi file, and only there.
+          call.iyi_group = true if iyi? && name == "group" && block && !global && (args.nil? || args.empty?)
           call
         else
           if args
