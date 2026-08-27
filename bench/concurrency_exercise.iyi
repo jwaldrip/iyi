@@ -219,4 +219,120 @@ leaves_early(flag)
 fail("a `return` out of the group block left its task running") unless flag.value == 1
 puts "an early return still joined the group"
 
+# ── 9. A rendezvous send parks until its value is taken ─────────────────
+#
+# `Channel(T).new` with no capacity: the sender cannot leave `send` until
+# a receiver takes the value, and the order string is the witness — "s1"
+# can only follow "r". A buffered channel would print "s0,s1,r".
+meet = Channel(Int32).new
+meet_order = ""
+group do |g|
+  g.spawn do
+    meet_order = meet_order + "s0,"
+    meet.send(11)
+    meet_order = meet_order + "s1"
+    0
+  end
+  g.spawn do
+    sleep(20)
+    meet_order = meet_order + "r,"
+    value = meet.receive
+    value.is_a?(Int32) ? value : -1
+  end
+end
+fail("rendezvous: expected s0,r,s1 — got #{meet_order}") unless meet_order == "s0,r,s1"
+puts "a rendezvous send parked until its value was taken"
+
+# ── 10. And the other way round: a parked receiver completes the send ───
+meet2 = Channel(Int32).new
+got2 = 0
+group do |g|
+  g.spawn do
+    value = meet2.receive
+    got2 = value.is_a?(Int32) ? value : -1
+    0
+  end
+  g.spawn do
+    sleep(20)
+    meet2.send(23)
+    0
+  end
+end
+fail("rendezvous: the parked receiver got #{got2}") unless got2 == 23
+puts "a parked receiver completed a rendezvous send"
+
+# ── 11. Parked sends complete in the order they parked ──────────────────
+#
+# The def is load-bearing: a `while` body is one scope, so a closure made
+# in it would capture one shared variable; a parameter is a fresh binding.
+def spawn_send(g : IyiGroup, fifo : Channel(Int32), n : Int32) : Nil
+  g.spawn do
+    fifo.send(n)
+    0
+  end
+  nil
+end
+
+fifo = Channel(Int32).new
+drained = ""
+group do |g|
+  index = 1
+  while index <= 3
+    spawn_send(g, fifo, index)
+    index = index + 1
+  end
+  g.spawn do
+    sleep(20)
+    round = 0
+    while round < 3
+      value = fifo.receive
+      drained = drained + (value.is_a?(Int32) ? value.to_s : "?")
+      round = round + 1
+    end
+    0
+  end
+end
+fail("rendezvous FIFO: expected 123, got #{drained}") unless drained == "123"
+puts "parked sends completed in park order"
+
+# ── 12. Cancellation reaches a parked sender; its value dies undelivered ─
+lonely = Channel(Int32).new
+sender_saw = ""
+group do |g|
+  g.spawn do
+    outcome = lonely.send(99)
+    sender_saw = outcome.is_a?(Cancelled) ? "cancelled" : "sent"
+    outcome
+  end
+  g.spawn do
+    sleep(20)
+    TaskFailed.new
+  end
+end
+fail("a parked sender was not cancelled: #{sender_saw}") unless sender_saw == "cancelled"
+# Had the cancelled send's value leaked into the buffer, this receive
+# would answer 99; a closed empty channel answers ChannelClosed.
+lonely.close
+received_late = lonely.receive
+fail("a cancelled send's value was delivered anyway") if received_late.is_a?(Int32)
+puts "a cancelled rendezvous send died undelivered"
+
+# ── 13. Closing fails a parked sender, loudly ───────────────────────────
+doomed = Channel(Int32).new
+closed_send = ""
+group do |g|
+  g.spawn do
+    outcome = doomed.send(7)
+    closed_send = outcome.is_a?(ChannelClosed) ? "refused" : "other"
+    0
+  end
+  g.spawn do
+    sleep(20)
+    doomed.close
+    0
+  end
+end
+fail("close did not fail the parked sender: #{closed_send}") unless closed_send == "refused"
+puts "close failed a parked sender with ChannelClosed"
+
 puts "concurrency exercise: every property held"
