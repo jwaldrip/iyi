@@ -10,7 +10,7 @@
 #
 # **What is in here is decided by what a sample calls.** A method enters
 # because an existing program needs it, never because it belongs in a standard
-# library. The ceiling is 3,551 lines — the size of Crystal's own 0.1.0 core,
+# library. The ceiling is 3,734 lines — Crystal's own 0.1.0 core with its concurrency,
 # measured in the same language family and for the same purpose.
 #
 # `primitives.iyi` under it is the list of machine operations iyi admits —
@@ -1007,6 +1007,25 @@ def raise(message : String) : NoReturn
   print message
   print "\n"
   __iyi_exit(1)
+end
+
+# What a failed `.as` names. `.as` reaches an iyi program through one door
+# only — `select`'s expansion casts the winning arm's value — and a failed
+# cast there is a compiler bug, so this is a panic wearing the constant's
+# name, not an exception type.
+class TypeCastError
+  @message : String
+
+  def initialize(@message : String)
+  end
+
+  def message : String
+    @message
+  end
+end
+
+def raise(error : TypeCastError) : NoReturn
+  raise error.message
 end
 
 def print(text : String) : Nil

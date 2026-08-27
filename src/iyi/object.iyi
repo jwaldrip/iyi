@@ -41,6 +41,13 @@ class Object
   def !=(other) : Bool
     !(self == other)
   end
+
+  # Case equality: what a `case`'s `when` asks of each arm. Equality,
+  # unless a type answers with something stronger — `Symbol` below, and
+  # the whole of `select`, whose expansion is a `case` over an index.
+  def ===(other) : Bool
+    self == other
+  end
 end
 
 struct Nil
