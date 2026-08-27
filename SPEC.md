@@ -2924,7 +2924,7 @@ Measured against that, iyi has `build`, `run`, `mod`, `env`, `clear_cache` and
 `tool`. What follows is what is missing, in the order the missing pieces should
 be built, with the reason each is where it is.
 
-#### 1. The formatter, which is first because it is nearly free
+#### 1. The formatter, which is first because it is nearly free: **BUILT since; measured now**
 
 `iyi tool format` refuses an `.iyi` file and exits non-zero. That is honest and
 it is also the sharpest thing on this list: `gofmt` is load bearing in Go's
@@ -2945,6 +2945,14 @@ directory containing both `.cr` and `.iyi` files, because today's non-zero exit
 means no repository can put `iyi tool format` in CI at all. And CI's existing
 `tool format --check src spec` covers Crystal source only, so nothing formats
 `src/iyi` or `samples/iyi`, which is where the language's own examples live.
+
+**Since built, and the claim above no longer reproduces.** `iyi tool format
+--check` on a file carrying every iyi node — a module header, `impl`,
+`defer`, `!` — exits zero, formats idempotently, and CI's `Formatted` step
+has covered `src spec samples` for as long as the concurrency work has been
+landing: it is the step that caught this repository's own unformatted
+syscall table. The nine visit methods exist; what this section asked for
+is what the tree does.
 
 #### 2. A language server, and why iyi can have a good one
 
