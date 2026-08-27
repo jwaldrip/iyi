@@ -146,6 +146,37 @@ printf 'def f : Int32\n  3\nend\nf!\n' > refs.iyi
 "$IYI" build -f json refs.iyi -o refs > refs.log 2>&1
 grep -q '"spec":\["III.1"\]' refs.log || { echo "no spec reference in the json error:"; cat refs.log; exit 1; }
 
+# ── 8. Docs travel, and a doc edit moves no hash ──────────────────────────
+#
+# The `Docs` half of III.7's asset: the doc comment above a `pub` rides the
+# artifact, `mod context` and `--json` serve it — and IV.3's doctrine holds:
+# a doc is surface for a reader, not for the type checker, so editing one
+# must not move the interface hash a dependent's validity hangs on.
+step "a doc comment reaches the context pack"
+mkdir -p docs
+printf 'module docd\n\n# Answers the one question.\npub def answer : Int32\n  42\nend\n' > docs/docd.iyi
+printf 'import docd\nusing docd::{answer}\nputs answer\n' > docs/main.iyi
+(cd docs && "$IYI" mod context --json main.iyi) > docs.json 2>&1 || { cat docs.json; exit 1; }
+grep -q '"doc": "Answers the one question."' docs.json || { echo "the doc did not travel:"; cat docs.json; exit 1; }
+
+step "a doc-only edit leaves the interface hash alone"
+hash_before=$(grep -o '"interface_hash": "[a-f0-9]*"' docs.json | head -1)
+sed -i 's/# Answers the one question./# Answers the only question./' docs/docd.iyi
+(cd docs && "$IYI" mod context --json main.iyi) > docs2.json 2>&1 || { cat docs2.json; exit 1; }
+hash_after=$(grep -o '"interface_hash": "[a-f0-9]*"' docs2.json | head -1)
+if [ "$hash_before" != "$hash_after" ]; then
+  echo "a doc edit moved the interface hash: $hash_before -> $hash_after"
+  exit 1
+fi
+grep -q '"doc": "Answers the only question."' docs2.json || { echo "the edited doc did not travel"; exit 1; }
+sed -i 's/pub def answer : Int32/pub def answer : Int64/' docs/docd.iyi
+(cd docs && "$IYI" mod context --json main.iyi) > docs3.json 2>&1 || { cat docs3.json; exit 1; }
+hash_signature=$(grep -o '"interface_hash": "[a-f0-9]*"' docs3.json | head -1)
+if [ "$hash_before" = "$hash_signature" ]; then
+  echo "a signature edit did not move the interface hash, so the hash checks nothing"
+  exit 1
+fi
+
 echo "workdir $WORK"
 echo "packages gate: every step held"
 exit 0

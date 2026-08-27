@@ -53,6 +53,17 @@
   `bench/dependency_floor.sh` refused the PCRE2 it linked, by name,
   within the hour. `bench/packages_resolve.sh` gates all three.
 
+  The artifact carries docs now — the one gap III.7 named in its asset.
+  `Signature` and `TypeDecl` gained a `doc` field (format v41): the
+  comment above a `pub` rides into the artifact, comes back as the
+  comment it was in `mod dump --declarations`, and as `"doc"` beside the
+  signature in `--json` and `mod context`. Two facts the build wrote
+  down: the comment rides the `pub` token, so `parse_pub` captures it or
+  `parse_def` never sees it; and a doc is surface for a reader, not the
+  type checker, so the interface hash is computed with docs blanked — the
+  gate asserts a doc-only edit moves no hash and a signature edit still
+  does.
+
 - **Concurrency exists, in exactly the order III.4.8 said it must.** A
   scheduler, then cancellable blocking primitives, then `group` and
   `Channel` — never the cheap slices: no `Share` marker gating nothing, no

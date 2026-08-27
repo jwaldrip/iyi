@@ -788,7 +788,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 96,061 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 96,096 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -2803,11 +2803,16 @@ returns a module's `Exports` as data is a better answer to that than any amount
 of documentation, it needs no new mechanism, and it falls out of a rule that is
 already built for another reason.
 
-**One gap, and it is small.** The artifact carries no doc comments: there is no
-`doc` field on `Signature` or `TypeDecl` and nothing in `IyiMod.declarations`
-renders one. So a `Docs` section is the enabling change for both this and for
-`iyi doc` (III.8). It is additive, it is text, and it is what the format already
-does with everything else.
+**One gap, and it is small — closed since.** The artifact used to carry no
+doc comments; now `Signature` and `TypeDecl` each carry a `doc` field
+(format v41), `IyiMod.declarations` renders it as the comment it was, and
+`mod dump --json` and `mod context` serve it as data. Two facts the build
+wrote down: the comment rides the `pub` token, so `parse_pub` has to
+capture it or it is gone by the time `parse_def` looks; and a doc is
+surface for a reader, not the type checker, so the interface hash (IV.3)
+is computed with docs blanked — the gate asserts that a doc-only edit
+moves nothing and a signature edit still does. What remains of the old
+gap is `iyi doc` itself (III.8), a renderer over data that now exists.
 
 #### Identity, resolution, integrity
 

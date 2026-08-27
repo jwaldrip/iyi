@@ -51,10 +51,13 @@ command that reproduces it.
 **Built since this table was written**, naming the commits its status rule
 demands:
 
-- **1, the JSON half** — `iyi mod dump --json` (`649113a75`): exact
-  signatures with their `rendered` spelling, types with fields, impls,
-  the interface hash they are keyed by. The `Docs` section (doc comments
-  in the artifact) is **not** built; the row stays open by that much.
+- **1, whole** — `iyi mod dump --json` (`649113a75`): exact signatures
+  with their `rendered` spelling, types with fields, impls, the interface
+  hash they are keyed by. The `Docs` half followed (the commit below this
+  file's update): `Signature` and `TypeDecl` carry the doc comment,
+  format v41, rendered in declarations and served as `"doc"` in JSON —
+  and blanked out of the interface hash, so a doc edit rebuilds nobody,
+  which the gate asserts both ways.
 - **2** — `iyi mod context FILE.iyi [--json]` (`649113a75`): every
   import's surface, no bodies, each import compiled *alone* — R-1 worn as
   a tool — so a half-broken tree still grounds.
