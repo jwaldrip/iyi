@@ -24,8 +24,14 @@
   answers `Cancelled`, an ordinary error member, so `!` drains a cancelled
   task through its remaining waits — III.1.2 doing III.4.2's plumbing.
   `sleep`, `wait_readable` and `iyi_read` are the cancellable primitives;
-  `Channel(T)` is buffered, drains before it refuses, and `close` wakes
-  every parked fiber with `ChannelClosed`.
+  `Channel(T).new` is a rendezvous, as Crystal's is — a parked sender
+  carries its value in its queue node's box and an emptied box is the
+  delivery receipt — `.new(n)` buffers `n` sends first, a closed channel
+  drains before it refuses, and `close` wakes every parked fiber: a
+  receiver with `ChannelClosed`, a sender with its box still full. A park
+  is named by a nonce, so a queue node a cancellation left behind is
+  skipped by arithmetic rather than unlinked by hand — the same protocol
+  `select`'s expansion will lean on.
 
   `bench/concurrency_exercise.sh` gates it, plain and `--release`, with two
   failure proofs: a deadlocked program must exit 1 naming the deadlock
@@ -33,14 +39,17 @@
   a misordered copy must fail. The anti-sequential properties are asserted,
   not printed: a channel ping-pong whose letters must alternate, two 150 ms
   sleeps that must overlap, a 10 s sleep that must end in tens of
-  milliseconds when a sibling fails.
+  milliseconds when a sibling fails, a rendezvous send that cannot print
+  its second half before its receiver moves, and three parked senders
+  drained in the order they parked.
 
   Not built, and said so in III.4's margin: `Share` (one thread cannot
-  race, so it would refuse nothing testable), `select` and the unbuffered
-  channel (one protocol, together), the typed `group do ... end!` return
+  race, so it would refuse nothing testable), `select` (its protocol is
+  answered; the library half waits on the prelude's line ceiling having
+  room for it), the typed `group do ... end!` return
   (compiler work), and every platform that is not Linux — wasm32 cannot
   switch stacks, and an imitation is the thing III.4.8 refused to ship.
-  The prelude stands at 3,459 of its 3,551-line ceiling.
+  The prelude stands at 3,443 of its 3,551-line ceiling.
 
 ## 0.3.0 — 2026-08-26
 
@@ -1544,7 +1553,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 3,459-line library and nothing else. Every other
+  written against iyi's own 3,443-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
