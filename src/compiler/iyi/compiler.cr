@@ -271,6 +271,10 @@ module Iyi
       program.iyi_module_dir = @use_iyimod
       program.iyi_wants_object_code = !@no_codegen
       program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
+      # An emitting build parses docs whatever the adopted analysis wanted:
+      # the artifact's `Docs` travel per module, and modules are parsed per
+      # build — the prelude's own docs are nobody's surface.
+      program.wants_doc = true unless @emit_iyimod.nil?
       # The manifest too, for the same reason as `--use-iyimod` above: the
       # analysis was made without this build's directory, and a table it
       # never computed is not one it can be said to have decided against.
@@ -1184,6 +1188,7 @@ module Iyi
         visibility: "pub",
         types: iyi_carried_types(program, filename, type),
         macros: iyi_macros_on(type),
+        doc: type.doc || "",
       )
     end
 
@@ -1717,7 +1722,7 @@ module Iyi
       program.flags << "debug" unless debug.none?
       program.flags << "static" if static?
       program.flags.concat @flags
-      program.wants_doc = wants_doc?
+      program.wants_doc = wants_doc? || !@emit_iyimod.nil?
       program.color = color?
       program.stdout = stdout
       program.show_error_trace = show_error_trace?
@@ -1766,7 +1771,7 @@ module Iyi
     private def parse(program, source : Source)
       parser = program.new_parser(source.code)
       parser.filename = source.filename
-      parser.wants_doc = wants_doc?
+      parser.wants_doc = program.wants_doc?
       parser.parse
     rescue ex : InvalidByteSequenceError
       stderr.print colorize("Error: ").red.bold

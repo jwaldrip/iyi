@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 40_u32
+  FORMAT_VERSION = 41_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -246,7 +246,7 @@ module Iyi::IyiMod
   # and every dependent stays valid.
   def self.hashes_for(artifact : Artifact, source : String) : Hashes
     interface = IO::Memory.new
-    interface.write encode_exports(artifact)
+    interface.write encode_exports(artifact, docs: false)
     write_strings interface, artifact.usings
     # The edges by name, because which modules resolve a signature's names is
     # part of what that signature means — not their hashes, which are what a
@@ -340,7 +340,13 @@ module Iyi::IyiMod
     # private, so the consumer had a declaration it could not compile. Written
     # `private def` the name is reachable from the bodies it travels with and
     # from nowhere else, which is what it was in the shard.
-    visibility : String = ""
+    visibility : String = "",
+    # iyi: the doc comment above the `def`, verbatim — III.7's `Docs`
+    # answer, carried beside the signature it explains so the two cannot
+    # drift. Empty when the author wrote none; a consumer of `--json` or
+    # `mod context` renders it, and a model reading the surface gets the
+    # intent line with the shape.
+    doc : String = ""
 
   # A type the module declares: `pub struct`, `pub class`, `pub trait` — and,
   # since the object code started travelling, the ones it does not export.
@@ -501,7 +507,10 @@ module Iyi::IyiMod
     # Text, like `macros` and `funs` beside it: an annotation is source a
     # reader parses back, and translating it through a record would be a second
     # spelling of something that already has one.
-    annotations : Array(String) = [] of String
+    annotations : Array(String) = [] of String,
+    # iyi: the doc comment above the declaration, verbatim — see
+    # `Signature#doc`.
+    doc : String = ""
 
   # How a body is found again on the far side.
   #
@@ -1780,6 +1789,7 @@ module Iyi::IyiMod
       return_type: a_def.return_type.try(&.to_s) || "",
       free_variables: a_def.free_vars || [] of String,
       required: a_def.abstract?,
+      doc: a_def.doc || "",
     )
   end
 
@@ -1934,6 +1944,10 @@ module Iyi::IyiMod
   private def self.render_declaration(io : IO, signature : Signature,
                                       exported = false, indent = "",
                                       body : String? = nil) : Nil
+    # The doc comment, where it was written: above the declaration, as
+    # comment lines a consumer's parser reattaches. Surface for a reader —
+    # a model most of all — and absent from the interface hash on purpose.
+    signature.doc.each_line { |line| io << indent << "# " << line << '\n' } unless signature.doc.empty?
     io << indent
     io << "pub " if exported
     io << "private " if signature.visibility == "private"
@@ -1989,6 +2003,7 @@ module Iyi::IyiMod
   def self.render_type_declaration(io : IO, declaration : TypeDecl,
                                    bodies : Hash(String, String), indent = "",
                                    path = "") : Nil
+    declaration.doc.each_line { |line| io << indent << "# " << line << '\n' } unless declaration.doc.empty?
     # Above the declaration, which is where they were written and the only
     # place they mean anything. See `TypeDecl#annotations`.
     declaration.annotations.each { |source| io << indent << source << '\n' }
@@ -2421,11 +2436,14 @@ module Iyi::IyiMod
     end
   end
 
-  private def self.encode_exports(artifact : Artifact) : Bytes
+  # *docs* is false on the interface-hash path (IV.3): a doc comment is
+  # surface for a reader, not for the type checker, so editing one must
+  # not move the hash a dependent's validity hangs on.
+  private def self.encode_exports(artifact : Artifact, docs : Bool = true) : Bytes
     io = IO::Memory.new
-    write_signatures io, artifact.exports.functions
+    write_signatures io, artifact.exports.functions, docs
 
-    write_type_declarations io, artifact.exports.types
+    write_type_declarations io, artifact.exports.types, docs
 
     impls = artifact.exports.impls
     io.write_bytes impls.size.to_u32, FORMAT
@@ -2436,10 +2454,10 @@ module Iyi::IyiMod
       write_strings io, record.free_variables
       write_pairs io, record.free_variable_bounds
       write_pairs io, record.assoc_types
-      write_signatures io, record.methods
+      write_signatures io, record.methods, docs
     end
 
-    write_signatures io, artifact.exports.carried_functions
+    write_signatures io, artifact.exports.carried_functions, docs
 
     write_triples io, artifact.exports.class_vars
 
@@ -2449,7 +2467,7 @@ module Iyi::IyiMod
   # Recursive, because a type's declarations are types: the nesting a module
   # wrote is the nesting a consumer has to read back, and iyi cannot reopen a
   # container to add one afterwards.
-  private def self.write_type_declarations(io : IO, types : Array(TypeDecl)) : Nil
+  private def self.write_type_declarations(io : IO, types : Array(TypeDecl), docs : Bool = true) : Nil
     io.write_bytes types.size.to_u32, FORMAT
     types.each do |declaration|
       write_string io, declaration.name
@@ -2467,8 +2485,9 @@ module Iyi::IyiMod
       write_strings io, declaration.macros
       write_strings io, declaration.funs
       write_strings io, declaration.annotations
-      write_signatures io, declaration.methods
-      write_type_declarations io, declaration.types
+      write_string io, (docs ? declaration.doc : "")
+      write_signatures io, declaration.methods, docs
+      write_type_declarations io, declaration.types, docs
     end
   end
 
@@ -2489,14 +2508,15 @@ module Iyi::IyiMod
       macros = read_strings(io)
       funs = read_strings(io)
       annotations = read_strings(io)
+      doc = read_string(io)
       methods = read_signatures(io)
       TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
         visibility, read_type_declarations(io), value, macros, members, class_vars,
-        superclass, includes, funs, annotations)
+        superclass, includes, funs, annotations, doc)
     end
   end
 
-  private def self.write_signatures(io : IO, signatures : Array(Signature)) : Nil
+  private def self.write_signatures(io : IO, signatures : Array(Signature), docs : Bool = true) : Nil
     io.write_bytes signatures.size.to_u32, FORMAT
     signatures.each do |signature|
       write_string io, signature.name
@@ -2506,6 +2526,7 @@ module Iyi::IyiMod
       write_string io, signature.return_type
       write_strings io, signature.free_variables
       io.write_byte(signature.required ? 1_u8 : 0_u8)
+      write_string io, (docs ? signature.doc : "")
       write_string io, signature.visibility
     end
   end
@@ -2519,9 +2540,10 @@ module Iyi::IyiMod
       return_type = read_string(io)
       free_variables = read_strings(io)
       required = io.read_byte == 1_u8
+      doc = read_string(io)
       visibility = read_string(io)
       Signature.new(name, receiver, parameters, block_parameter, return_type,
-        free_variables, required, visibility)
+        free_variables, required, visibility, doc)
     end
   end
 

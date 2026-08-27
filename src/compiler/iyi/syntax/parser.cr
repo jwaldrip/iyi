@@ -2252,6 +2252,11 @@ module Iyi
     # appear in the module's `.iyimod` and must carry full type signatures.
     def parse_pub
       pub_location = @token.location
+      # The doc comment rides the `pub` token; captured here or it is gone
+      # by the time `parse_def` looks — the artifact's `Docs` (III.7) is
+      # exactly the exported surface, so `pub` is the one reader that must
+      # not drop it.
+      doc = @token.doc
       next_token_skip_space
 
       # iyi: `pub LIMIT = 42`. A constant is a CONST token rather than an
@@ -2328,6 +2333,7 @@ module Iyi
         end
 
       node.at(pub_location)
+      node.doc ||= doc
       node
     end
 

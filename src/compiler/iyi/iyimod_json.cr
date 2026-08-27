@@ -57,6 +57,7 @@ module Iyi::IyiMod
       end
       json.field "required", true if signature.required
       json.field "visibility", signature.visibility unless signature.visibility.empty?
+      json.field "doc", signature.doc unless signature.doc.empty?
       json.field "rendered", IyiMod.render_signature(signature)
     end
   end
@@ -65,6 +66,7 @@ module Iyi::IyiMod
     json.object do
       json.field "name", declaration.name
       json.field "kind", declaration.kind
+      json.field "doc", declaration.doc unless declaration.doc.empty?
       json.field "visibility", declaration.visibility
       unless declaration.type_parameters.empty?
         json.field "type_parameters" { json.array { declaration.type_parameters.each { |p| json.string p } } }
