@@ -858,8 +858,11 @@ end
 
 # III.4.1: concurrency is introduced by a scope, never by a call. The
 # join is deferred, so no exit leaves a task running — not a `return`,
-# not an error leaving through `!`.
-def group(& : IyiGroup -> Nil) : Nil
+# not an error leaving through `!`. The group answers what its block
+# answers, which is how the typed form (III.4.9) gets a value out: the
+# expansion appends the extraction to the block, and the block stays a
+# block, so nothing a task assigned leaks into the enclosing scope.
+def group(& : IyiGroup -> U) : U forall U
   g = IyiGroup.new
   defer g.join
   yield g
