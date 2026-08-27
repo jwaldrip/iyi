@@ -1,0 +1,1045 @@
+# iyi's concurrency runtime — SPEC.md III.4, built in the order III.4.8
+# settled: a scheduler, cancellable blocking primitives, then `group` and
+# `Channel`. Nothing here is a thread: one kernel thread runs every fiber,
+# and what makes that concurrency rather than sequence is the poller — a
+# fiber that would block parks itself and the scheduler runs another, so two
+# tasks' waits overlap even though their instructions never do.
+#
+# The public surface, and it is deliberately all of it:
+#
+#   group do |g|              # III.4.1: concurrency is introduced by a scope
+#     t = g.spawn { work() }  # a task; no bare spawn exists
+#   end                       # the block cannot be left until every task is done
+#   t.value                   # joins, then answers what the block returned
+#   sleep(ms)                 # Nil | Cancelled
+#   wait_readable(fd)         # Nil | Cancelled — the poller, made visible
+#   iyi_read(fd, buf, n)      # Int64 | Cancelled — a read that parks, not blocks
+#   Channel(T).new(capacity)  # send/receive park; close wakes everyone
+#
+# Cancellation (III.4.2) belongs to the group: the first task whose value is
+# an error member cancels its siblings. A cancelled fiber is not torn down —
+# nothing here unwinds — it is *woken*, and every blocking primitive answers
+# `Cancelled` from then on. A task written with `!` therefore drains out of
+# its own accord, which is III.1.2 doing cancellation's plumbing for free.
+#
+# What is deliberately absent, so nobody reads silence as an accident:
+# `select` (III.4.6) waits for a second primitive to need it; `Share`
+# (III.4.4) gates nothing until a second thread exists, because one thread
+# interleaves at parks only and cannot race; panics at task boundaries
+# (III.1.4) wait on this file's task boundary being judged right first; and
+# the typed `group do ... end!` return (III.4.1's final shape) is compiler
+# work this runtime has to exist before anyone can build.
+#
+# Linux only, and raw syscalls only: the dependency floor (III.9) named
+# pthreads as the cost that must not be paid, and a fiber is exactly the
+# thing that makes it unnecessary. The other platforms lose nothing they
+# had: a program that names `group` on wasm32 fails to compile, which is
+# honest — III.4.8 refused shipping a spelling without the feature.
+
+# ── The switch ─────────────────────────────────────────────────────────
+#
+# A suspended context is one word: its stack pointer. Everything else the
+# fiber will need is on the stack that pointer names, put there by the
+# push half of the swap. Caller-saved registers are not saved and do not
+# need to be: this is a call, and the convention already says a caller
+# keeps nothing live in them across one.
+#
+# `@[Naked]` because the prologue of an ordinary function would move the
+# very stack pointer being saved; `@[NoInline]` because an optimised build
+# otherwise inlines the body and the push/ret discipline corrupts the
+# caller — measured, not feared: the release build faulted until it said so.
+@[NoInline]
+@[Naked]
+fun __iyi_ctx_swap(current : Pointer(UInt64), target : Pointer(UInt64)) : Nil
+  {% if flag?(:x86_64) %}
+    asm("pushq %rdi
+         pushq %rbx
+         pushq %rbp
+         pushq %r12
+         pushq %r13
+         pushq %r14
+         pushq %r15
+         movq %rsp, (%rdi)
+         movq (%rsi), %rsp
+         popq %r15
+         popq %r14
+         popq %r13
+         popq %r12
+         popq %rbp
+         popq %rbx
+         popq %rdi
+         retq" :::: "volatile")
+  {% else %}
+    asm("stp x19, x20, [sp, #-160]!
+         stp x21, x22, [sp, #16]
+         stp x23, x24, [sp, #32]
+         stp x25, x26, [sp, #48]
+         stp x27, x28, [sp, #64]
+         stp x29, x30, [sp, #80]
+         stp d8, d9, [sp, #96]
+         stp d10, d11, [sp, #112]
+         stp d12, d13, [sp, #128]
+         stp d14, d15, [sp, #144]
+         mov x2, sp
+         str x2, [x0]
+         ldr x2, [x1]
+         mov sp, x2
+         ldp x21, x22, [sp, #16]
+         ldp x23, x24, [sp, #32]
+         ldp x25, x26, [sp, #48]
+         ldp x27, x28, [sp, #64]
+         ldp x29, x30, [sp, #80]
+         ldp d8, d9, [sp, #96]
+         ldp d10, d11, [sp, #112]
+         ldp d12, d13, [sp, #128]
+         ldp d14, d15, [sp, #144]
+         ldp x19, x20, [sp], #160
+         ret" :::: "volatile")
+  {% end %}
+end
+
+# Where a fresh fiber's first resume lands. No argument crosses the swap:
+# the fiber to run is `IyiScheduler.current`, set by the switch that got
+# here, so the two targets never have to agree on which register survives.
+fun __iyi_fiber_main : Nil
+  IyiScheduler.run_spawned_fiber
+end
+
+# The trampoline's address, taken by asm because a proc literal of a `fun`
+# is not a thing an iyi file can write.
+@[NoInline]
+@[Naked]
+fun __iyi_fiber_entry_address : UInt64
+  {% if flag?(:x86_64) %}
+    asm("leaq __iyi_fiber_main(%rip), %rax
+         retq" :::: "volatile")
+  {% else %}
+    asm("adrp x0, __iyi_fiber_main
+         add x0, x0, :lo12:__iyi_fiber_main
+         ret" :::: "volatile")
+  {% end %}
+  0_u64
+end
+
+# ── The poller's syscalls ──────────────────────────────────────────────
+#
+# Raw, like every other syscall in this prelude, and for the same III.9
+# reason. The numbers are the two targets' own; `epoll_pwait` rather than
+# `epoll_wait` because aarch64 only has the former, and with a null sigmask
+# they are the same call.
+#
+# The numbers live in top-level constants because a local born inside a
+# `{% if %}` dies at its `{% end %}`: a macro expansion is re-parsed, and
+# only declarations cross back out of one.
+{% if flag?(:x86_64) %}
+  IYI_SYS_MMAP          = 9_i64
+  IYI_SYS_MPROTECT      = 10_i64
+  IYI_SYS_CLOCK_GETTIME = 228_i64
+  IYI_SYS_EPOLL_CTL     = 233_i64
+  IYI_SYS_EPOLL_PWAIT   = 281_i64
+  IYI_SYS_EPOLL_CREATE1 = 291_i64
+  # The kernel packs epoll_event on x86_64: data sits at +4 of a 12-byte
+  # struct. Everywhere else it is aligned: +8 of 16.
+  IYI_EPOLL_DATA_OFFSET = 4_u64
+  IYI_EPOLL_EVENT_BYTES = 12_i64
+{% else %}
+  IYI_SYS_MMAP          = 222_i64
+  IYI_SYS_MPROTECT      = 226_i64
+  IYI_SYS_CLOCK_GETTIME = 113_i64
+  IYI_SYS_EPOLL_CTL     = 21_i64
+  IYI_SYS_EPOLL_PWAIT   = 22_i64
+  IYI_SYS_EPOLL_CREATE1 = 20_i64
+  IYI_EPOLL_DATA_OFFSET = 8_u64
+  IYI_EPOLL_EVENT_BYTES = 16_i64
+{% end %}
+fun __iyi_conc_syscall3(number : Int64, a : Int64, b : Int64, c : Int64) : Int64
+  result = uninitialized Int64
+  {% if flag?(:x86_64) %}
+    asm("syscall" : "={rax}"(result)
+                  : "{rax}"(number), "{rdi}"(a), "{rsi}"(b), "{rdx}"(c)
+                  : "rcx", "r11", "memory"
+                  : "volatile")
+  {% else %}
+    asm("svc #0" : "={x0}"(result)
+                 : "{x8}"(number), "{x0}"(a), "{x1}"(b), "{x2}"(c)
+                 : "memory"
+                 : "volatile")
+  {% end %}
+  result
+end
+
+fun __iyi_conc_syscall6(number : Int64, a : Int64, b : Int64, c : Int64, d : Int64, e : Int64, f : Int64) : Int64
+  result = uninitialized Int64
+  {% if flag?(:x86_64) %}
+    asm("syscall" : "={rax}"(result)
+                  : "{rax}"(number), "{rdi}"(a), "{rsi}"(b), "{rdx}"(c), "{r10}"(d), "{r8}"(e), "{r9}"(f)
+                  : "rcx", "r11", "memory"
+                  : "volatile")
+  {% else %}
+    asm("svc #0" : "={x0}"(result)
+                 : "{x8}"(number), "{x0}"(a), "{x1}"(b), "{x2}"(c), "{x3}"(d), "{x4}"(e), "{x5}"(f)
+                 : "memory"
+                 : "volatile")
+  {% end %}
+  result
+end
+
+# CLOCK_MONOTONIC, in nanoseconds. The sleep queue's clock; never the wall.
+def __iyi_monotonic_ns : Int64
+  spec = Pointer(UInt64).malloc(2_u64)
+  result = __iyi_conc_syscall3(IYI_SYS_CLOCK_GETTIME, 1_i64, spec.address.to_i64, 0_i64)
+  raise "clock_gettime failed" if result < 0
+  spec[0].to_i64 * 1000000000_i64 + spec[1].to_i64
+end
+
+# ── The error members cancellation and closing answer with ─────────────
+#
+# Ordinary error members (III.1.1): a blocking primitive that cannot give
+# a value gives one of these, `!` propagates it, `case` handles it. That a
+# *cancelled* wait is an error value rather than an unwound stack is the
+# design's whole answer to III.4.2 until panics (III.1.4) exist.
+pub struct Cancelled
+  def initialize
+  end
+end
+
+impl Error for Cancelled
+  def message : String
+    "cancelled"
+  end
+end
+
+pub struct ChannelClosed
+  def initialize
+  end
+end
+
+impl Error for ChannelClosed
+  def message : String
+    "channel closed"
+  end
+end
+
+# ── A fiber ────────────────────────────────────────────────────────────
+#
+# Not user-facing (III.4.6): a raw spawn is the leak III.4.1 exists to
+# make unrepresentable. `IyiTask` and `group` are the only doors.
+class IyiFiber
+  # States. An Int32 rather than an enum, which the prelude does not have.
+  #
+  #   0 running    the one fiber whose instructions are executing
+  #   1 runnable   in the run queue
+  #   2 sleeping   in the sleep list, by deadline
+  #   3 waiting io in the io list, registered with the poller
+  #   4 waiting ch parked in a channel's waiter queue
+  #   5 joining    parked on another fiber's completion
+  #   6 done       never scheduled again; its stack is never reused
+  @state : Int32
+  @cancelled : Bool
+
+  # The saved stack pointer, meaningful only while suspended.
+  @sp : UInt64
+
+  # The spawned body. The main fiber has none.
+  @proc : Proc(Nil)?
+
+  # Intrusive links. A fiber waits on at most one thing at a time, so one
+  # link per queue kind is enough, and none of them allocate on the wait
+  # path except the channel's typed-queue node.
+  @next_run : IyiFiber?
+  @next_sleep : IyiFiber?
+  @next_io : IyiFiber?
+  @next_child : IyiFiber?
+  @waiter : IyiWaiter?
+  @joiner : IyiFiber?
+
+  @deadline : Int64
+  @wait_fd : Int32
+
+  # 256 KiB of stack and one guard page under it, so running off the end
+  # is a fault at a page the collector will never own rather than a quiet
+  # corruption of a neighbour's chunk.
+  STACK_BYTES = 262144_u64
+  PAGE        =   4096_u64
+
+  def initialize
+    @state = 1
+    @cancelled = false
+    @sp = 0_u64
+    @proc = nil
+    @next_run = nil
+    @next_sleep = nil
+    @next_io = nil
+    @next_child = nil
+    @waiter = nil
+    @joiner = nil
+    @deadline = 0_i64
+    @wait_fd = -1
+  end
+
+  # The running program's own context: no stack to build, the kernel gave
+  # it one, and the first switch away fills in @sp.
+  def self.main : IyiFiber
+    fiber = IyiFiber.new
+    fiber.set_state(0)
+    fiber
+  end
+
+  def self.spawned(&block : -> Nil) : IyiFiber
+    fiber = IyiFiber.new
+    fiber.set_proc(block)
+    fiber.prepare_stack
+    fiber
+  end
+
+  def prepare_stack : Nil
+    # The runtime's own mapping (PROT_READ|PROT_WRITE = 3,
+    # MAP_PRIVATE|MAP_ANONYMOUS = 0x22), so a fiber stack exists under
+    # every allocator, Boehm included, and a guard page (PROT_NONE) under
+    # it, so running off the end is a fault rather than a quiet neighbour.
+    mapped = __iyi_conc_syscall6(IYI_SYS_MMAP, 0_i64, STACK_BYTES.to_i64, 3_i64, 34_i64, -1_i64, 0_i64)
+    raise "fiber stack mmap failed" if mapped < 0 && mapped >= -4095
+    base = mapped.to_u64
+    __iyi_conc_syscall3(IYI_SYS_MPROTECT, base.to_i64, PAGE.to_i64, 0_i64)
+    top = base + STACK_BYTES
+    {% if flag?(:x86_64) %}
+      # The first resume pops seven zeroed callee-saved slots and returns
+      # into the trampoline. The entry slot is placed so the trampoline
+      # begins with rsp ≡ 8 (mod 16), which is what the ABI promises a
+      # function a `call` has just reached.
+      entry_sp = top - 8_u64
+      ret_slot = entry_sp - 8_u64
+      Pointer(UInt64).new(ret_slot).value = __iyi_fiber_entry_address
+      saved = ret_slot - 56_u64
+      index = 0_i64
+      while index < 7_i64
+        (Pointer(UInt64).new(saved) + index).value = 0_u64
+        index = index + 1
+      end
+      @sp = saved
+    {% else %}
+      # aarch64 keeps sp 16-aligned always; the restored x30 carries the
+      # entry, and the twenty slots mirror the swap's frame exactly.
+      saved = top - 160_u64
+      index = 0_i64
+      while index < 20_i64
+        (Pointer(UInt64).new(saved) + index).value = 0_u64
+        index = index + 1
+      end
+      Pointer(UInt64).new(saved + 88_u64).value = __iyi_fiber_entry_address
+      @sp = saved
+    {% end %}
+  end
+
+  def sp_slot : Pointer(UInt64)
+    pointerof(@sp)
+  end
+
+  def state : Int32
+    @state
+  end
+
+  def set_state(value : Int32) : Nil
+    @state = value
+  end
+
+  def cancelled? : Bool
+    @cancelled
+  end
+
+  def mark_cancelled : Nil
+    @cancelled = true
+  end
+
+  def proc : Proc(Nil)?
+    @proc
+  end
+
+  def set_proc(value : Proc(Nil)) : Nil
+    @proc = value
+  end
+
+  def next_run : IyiFiber?
+    @next_run
+  end
+
+  def set_next_run(value : IyiFiber?) : Nil
+    @next_run = value
+  end
+
+  def next_sleep : IyiFiber?
+    @next_sleep
+  end
+
+  def set_next_sleep(value : IyiFiber?) : Nil
+    @next_sleep = value
+  end
+
+  def next_io : IyiFiber?
+    @next_io
+  end
+
+  def set_next_io(value : IyiFiber?) : Nil
+    @next_io = value
+  end
+
+  def next_child : IyiFiber?
+    @next_child
+  end
+
+  def set_next_child(value : IyiFiber?) : Nil
+    @next_child = value
+  end
+
+  def waiter : IyiWaiter?
+    @waiter
+  end
+
+  def set_waiter(value : IyiWaiter?) : Nil
+    @waiter = value
+  end
+
+  def joiner : IyiFiber?
+    @joiner
+  end
+
+  def set_joiner(value : IyiFiber?) : Nil
+    @joiner = value
+  end
+
+  def deadline : Int64
+    @deadline
+  end
+
+  def set_deadline(value : Int64) : Nil
+    @deadline = value
+  end
+
+  def wait_fd : Int32
+    @wait_fd
+  end
+
+  def set_wait_fd(value : Int32) : Nil
+    @wait_fd = value
+  end
+end
+
+# A channel's queue node. The node rather than the fiber carries the
+# membership, so cancellation can leave a dead entry behind (`@active =
+# false`) instead of surgically unlinking a fiber from a queue the
+# scheduler cannot see the type of; the channel skips dead entries when
+# it wakes.
+class IyiWaiter
+  @fiber : IyiFiber
+  @next : IyiWaiter?
+  @active : Bool
+
+  def initialize(@fiber : IyiFiber)
+    @next = nil
+    @active = true
+  end
+
+  def fiber : IyiFiber
+    @fiber
+  end
+
+  def next_waiter : IyiWaiter?
+    @next
+  end
+
+  def set_next(value : IyiWaiter?) : Nil
+    @next = value
+  end
+
+  def active? : Bool
+    @active
+  end
+
+  def deactivate : Nil
+    @active = false
+  end
+end
+
+# ── The scheduler ──────────────────────────────────────────────────────
+#
+# One run queue, one sleep list, one io list, one epoll fd; every field a
+# class variable with a literal initializer, which is the only global
+# state the language grants (the allocator's own comment says why), and
+# zero meaning "not created yet" throughout.
+class IyiScheduler
+  @@current : IyiFiber?
+  @@run_head : IyiFiber?
+  @@run_tail : IyiFiber?
+  @@sleep_head : IyiFiber?
+  @@io_head : IyiFiber?
+  @@epfd : Int64 = 0_i64
+  @@events : UInt64 = 0_u64
+
+  # How many ready events one poll asks for; the per-event stride is the
+  # top-level IYI_EPOLL_EVENT_BYTES — the kernel packs the struct on
+  # x86_64 and pads it elsewhere.
+  EVENTS = 16_i64
+
+  def self.current : IyiFiber
+    fiber = @@current
+    return fiber if fiber.is_a?(IyiFiber)
+    main = IyiFiber.main
+    @@current = main
+    main
+  end
+
+  def self.enqueue(fiber : IyiFiber) : Nil
+    fiber.set_state(1)
+    fiber.set_next_run(nil)
+    tail = @@run_tail
+    if tail.is_a?(IyiFiber)
+      tail.set_next_run(fiber)
+    else
+      @@run_head = fiber
+    end
+    @@run_tail = fiber
+  end
+
+  def self.dequeue : IyiFiber?
+    head = @@run_head
+    return nil unless head.is_a?(IyiFiber)
+    @@run_head = head.next_run
+    @@run_tail = nil if @@run_head.is_a?(Nil)
+    head.set_next_run(nil)
+    head
+  end
+
+  # Park the calling fiber (its state and queue membership are already
+  # set) and run something else. Returns when this fiber is switched back
+  # in — possibly without a switch at all, when the wait ended before
+  # anything else got to run.
+  def self.reschedule : Nil
+    while true
+      fiber = dequeue
+      if fiber.is_a?(IyiFiber)
+        switch_to(fiber)
+        return
+      end
+      wait_for_events
+    end
+  end
+
+  def self.switch_to(fiber : IyiFiber) : Nil
+    previous = current
+    fiber.set_state(0)
+    return if fiber.sp_slot.address == previous.sp_slot.address
+    @@current = fiber
+    __iyi_ctx_swap(previous.sp_slot, fiber.sp_slot)
+  end
+
+  # The trampoline lands here on a fresh fiber's first resume.
+  def self.run_spawned_fiber : Nil
+    fiber = current
+    body = fiber.proc
+    body.call unless body.is_a?(Nil)
+    fiber.set_state(6)
+    joiner = fiber.joiner
+    if joiner.is_a?(IyiFiber)
+      fiber.set_joiner(nil)
+      enqueue(joiner)
+    end
+    # Never returns: a done fiber is never enqueued, so the switch away
+    # is the last instruction of this stack's life.
+    reschedule
+    raise "a done fiber was scheduled"
+  end
+
+  # ── Blocking, and what unblocks it ───────────────────────────────────
+
+  def self.sleep_current(ms : Int32) : Nil | Cancelled
+    fiber = current
+    return Cancelled.new if fiber.cancelled?
+    return nil if ms <= 0
+    fiber.set_deadline(__iyi_monotonic_ns + ms.to_i64 * 1000000_i64)
+    fiber.set_state(2)
+    sleep_insert(fiber)
+    reschedule
+    return Cancelled.new if fiber.cancelled?
+    nil
+  end
+
+  def self.wait_readable_current(fd : Int32) : Nil | Cancelled
+    fiber = current
+    return Cancelled.new if fiber.cancelled?
+
+    # One waiter per fd: the poller keys the wakeup by fd, so a second
+    # fiber on the same fd would take the first one's event. Refused
+    # loudly rather than raced quietly.
+    scan = @@io_head
+    while scan.is_a?(IyiFiber)
+      raise "two fibers waiting on one fd" if scan.wait_fd == fd
+      scan = scan.next_io
+    end
+
+    # EPOLL_CTL_ADD = 1, EPOLLIN = 1, data = the fd itself.
+    event = Pointer(UInt8).malloc(16_u64)
+    event.as(Pointer(UInt64)).value = 1_u64
+    Pointer(UInt64).new(event.address + IYI_EPOLL_DATA_OFFSET).value = fd.to_u64
+    if __iyi_conc_syscall6(IYI_SYS_EPOLL_CTL, epfd, 1_i64, fd.to_i64, event.address.to_i64, 0_i64, 0_i64) < 0
+      raise "epoll_ctl add failed"
+    end
+
+    fiber.set_wait_fd(fd)
+    fiber.set_state(3)
+    fiber.set_next_io(@@io_head)
+    @@io_head = fiber
+    reschedule
+    return Cancelled.new if fiber.cancelled?
+    nil
+  end
+
+  def self.join(fiber : IyiFiber) : Nil
+    while fiber.state != 6
+      raise "task already has a joiner" if fiber.joiner.is_a?(IyiFiber)
+      me = current
+      fiber.set_joiner(me)
+      me.set_state(5)
+      reschedule
+    end
+  end
+
+  # III.4.2: cancellation reaches a *blocked* fiber. Whatever the fiber is
+  # parked on, it is unparked here and its next (or current) blocking
+  # primitive answers `Cancelled`.
+  def self.cancel(fiber : IyiFiber) : Nil
+    return if fiber.state == 6
+    return if fiber.cancelled?
+    fiber.mark_cancelled
+    if fiber.state == 2
+      sleep_remove(fiber)
+      enqueue(fiber)
+    elsif fiber.state == 3
+      io_remove(fiber)
+      enqueue(fiber)
+    elsif fiber.state == 4
+      waiter = fiber.waiter
+      waiter.deactivate if waiter.is_a?(IyiWaiter)
+      fiber.set_waiter(nil)
+      enqueue(fiber)
+    end
+    # Running or runnable: the flag is enough. Joining (state 5) is left
+    # to wake when its target finishes, which a failing group guarantees
+    # by cancelling every child.
+  end
+
+  # ── The poller ───────────────────────────────────────────────────────
+
+  def self.wait_for_events : Nil
+    sleep_head = @@sleep_head
+    if @@io_head.is_a?(Nil) && sleep_head.is_a?(Nil)
+      raise "deadlock: every fiber is blocked and nothing can wake one"
+    end
+
+    timeout = -1_i64
+    if sleep_head.is_a?(IyiFiber)
+      now = __iyi_monotonic_ns
+      gap = sleep_head.deadline - now
+      gap = 0_i64 if gap < 0
+      timeout = (gap + 999999_i64) // 1000000_i64
+    end
+
+    count = __iyi_conc_syscall6(IYI_SYS_EPOLL_PWAIT, epfd, events_buffer.to_i64, EVENTS, timeout, 0_i64, 8_i64)
+    # -EINTR (-4) is a wakeup with no news; anything else negative is real.
+    raise "epoll_pwait failed" if count < 0 && count != -4_i64
+
+    index = 0_i64
+    while index < count
+      entry = events_buffer + (index * IYI_EPOLL_EVENT_BYTES).to_u64
+      fd = Pointer(UInt64).new(entry + IYI_EPOLL_DATA_OFFSET).value.to_i64
+      wake_io(fd.to_i32)
+      index = index + 1
+    end
+
+    wake_expired_sleepers
+  end
+
+  def self.wake_io(fd : Int32) : Nil
+    fiber = io_take(fd)
+    return unless fiber.is_a?(IyiFiber)
+    enqueue(fiber)
+  end
+
+  def self.wake_expired_sleepers : Nil
+    now = __iyi_monotonic_ns
+    while true
+      head = @@sleep_head
+      return unless head.is_a?(IyiFiber)
+      return if head.deadline > now
+      @@sleep_head = head.next_sleep
+      head.set_next_sleep(nil)
+      enqueue(head)
+    end
+  end
+
+  # ── Lists ────────────────────────────────────────────────────────────
+
+  def self.sleep_insert(fiber : IyiFiber) : Nil
+    head = @@sleep_head
+    if head.is_a?(Nil) || head.deadline > fiber.deadline
+      fiber.set_next_sleep(head)
+      @@sleep_head = fiber
+      return
+    end
+    cursor = head
+    while true
+      after = cursor.next_sleep
+      if after.is_a?(Nil) || after.deadline > fiber.deadline
+        fiber.set_next_sleep(after)
+        cursor.set_next_sleep(fiber)
+        return
+      end
+      cursor = after
+    end
+  end
+
+  def self.sleep_remove(fiber : IyiFiber) : Nil
+    head = @@sleep_head
+    return unless head.is_a?(IyiFiber)
+    if head.sp_slot.address == fiber.sp_slot.address
+      @@sleep_head = head.next_sleep
+      fiber.set_next_sleep(nil)
+      return
+    end
+    cursor = head
+    while true
+      after = cursor.next_sleep
+      return unless after.is_a?(IyiFiber)
+      if after.sp_slot.address == fiber.sp_slot.address
+        cursor.set_next_sleep(after.next_sleep)
+        fiber.set_next_sleep(nil)
+        return
+      end
+      cursor = after
+    end
+  end
+
+  def self.io_take(fd : Int32) : IyiFiber?
+    head = @@io_head
+    return nil unless head.is_a?(IyiFiber)
+    if head.wait_fd == fd
+      @@io_head = head.next_io
+      io_forget(head)
+      return head
+    end
+    cursor = head
+    while true
+      after = cursor.next_io
+      return nil unless after.is_a?(IyiFiber)
+      if after.wait_fd == fd
+        cursor.set_next_io(after.next_io)
+        io_forget(after)
+        return after
+      end
+      cursor = after
+    end
+  end
+
+  def self.io_remove(fiber : IyiFiber) : Nil
+    io_take(fiber.wait_fd)
+  end
+
+  # EPOLL_CTL_DEL = 2. Deregistered on every exit from the io list — wake
+  # and cancel both — so a level-triggered fd cannot wake a fiber that no
+  # longer exists to want it.
+  def self.io_forget(fiber : IyiFiber) : Nil
+    __iyi_conc_syscall6(IYI_SYS_EPOLL_CTL, epfd, 2_i64, fiber.wait_fd.to_i64, 0_i64, 0_i64, 0_i64)
+    fiber.set_next_io(nil)
+    fiber.set_wait_fd(-1)
+  end
+
+  # ── The epoll fd, lazily ─────────────────────────────────────────────
+
+  def self.epfd : Int64
+    fd = @@epfd
+    return fd if fd > 0
+    fd = __iyi_conc_syscall3(IYI_SYS_EPOLL_CREATE1, 0_i64, 0_i64, 0_i64)
+    raise "epoll_create1 failed" if fd < 0
+    @@epfd = fd
+    fd
+  end
+
+  def self.events_buffer : UInt64
+    buffer = @@events
+    return buffer if buffer > 0
+    buffer = Pointer(UInt8).malloc((EVENTS * IYI_EPOLL_EVENT_BYTES).to_u64).address
+    @@events = buffer
+    buffer
+  end
+end
+
+# ── The public primitives ──────────────────────────────────────────────
+
+# Park for *ms* milliseconds. `Cancelled` when the group said stop —
+# immediately if it already had, which is what lets `!` drain a cancelled
+# task through every later wait it would have done.
+def sleep(ms : Int32) : Nil | Cancelled
+  IyiScheduler.sleep_current(ms)
+end
+
+# Park until *fd* has bytes to read. The poller, made visible: what
+# `__iyi_read` does directly today, a program with other fibers live does
+# through this, and III.10's IO floor will route through it wholesale.
+def wait_readable(fd : Int32) : Nil | Cancelled
+  IyiScheduler.wait_readable_current(fd)
+end
+
+# A read that parks the fiber instead of the thread. The propagation is
+# the runtime's own dogfood: a cancelled wait leaves as a value.
+def iyi_read(fd : Int32, buffer : Void*, count : UInt64) : Int64 | Cancelled
+  wait_readable(fd)!
+  __iyi_read(fd, buffer, count)
+end
+
+# ── Tasks and groups — III.4.1 ─────────────────────────────────────────
+
+# What `g.spawn` answers. `value` joins, then repeats what the task's
+# block returned — the whole union, error members included, so `case`
+# handles a task's failure exactly the way III.4.3 says (the group has
+# already applied its policy by then; reading the value is optional).
+class IyiTask(T)
+  @fiber : IyiFiber
+  @box : Array(T)
+
+  def initialize(@fiber : IyiFiber)
+    @box = Array(T).new(1)
+  end
+
+  def fiber : IyiFiber
+    @fiber
+  end
+
+  def finish(value : T) : Nil
+    @box << value
+  end
+
+  def done? : Bool
+    @fiber.state == 6
+  end
+
+  def value : T
+    IyiScheduler.join(@fiber)
+    @box.first
+  end
+end
+
+class IyiGroup
+  @live : Int32
+  @failed : Bool
+  @first_child : IyiFiber?
+  @joiner : IyiFiber?
+
+  def initialize
+    @live = 0
+    @failed = false
+    @first_child = nil
+    @joiner = nil
+  end
+
+  # Start a task. The block is compiled once and carried as a proc; its
+  # return value is the task's, and a return value that is an error
+  # member is a failure the group acts on (III.4.3): first failure
+  # cancels the siblings, `errgroup`'s policy with the library deleted.
+  def spawn(&block : -> T) : IyiTask(T) forall T
+    fiber = IyiFiber.new
+    task = IyiTask(T).new(fiber)
+    runner = self
+    install(fiber) do
+      value = block.call
+      task.finish(value)
+      runner.child_finished(value.is_a?(::Error) && !fiber.cancelled?)
+    end
+    fiber.prepare_stack
+    fiber.set_next_child(@first_child)
+    @first_child = fiber
+    @live = @live + 1
+    IyiScheduler.enqueue(fiber)
+    task
+  end
+
+  # The one place a task body becomes a stored proc. A captured block is
+  # the language's own closure; a proc literal is not a thing an iyi file
+  # writes.
+  private def install(fiber : IyiFiber, &body : -> Nil) : Nil
+    fiber.set_proc(body)
+  end
+
+  # :nodoc: — the runtime's own callback, on the task's stack.
+  def child_finished(failed : Bool) : Nil
+    @live = @live - 1
+    if failed && !@failed
+      @failed = true
+      cancel_children
+    end
+    if @live == 0
+      joiner = @joiner
+      if joiner.is_a?(IyiFiber)
+        @joiner = nil
+        IyiScheduler.enqueue(joiner)
+      end
+    end
+  end
+
+  # :nodoc: — `group`'s deferred half. The scope cannot be left until
+  # every task has finished, and `defer` is what guarantees "cannot":
+  # a `return` out of the block still runs this.
+  def join : Nil
+    while @live > 0
+      me = IyiScheduler.current
+      @joiner = me
+      me.set_state(5)
+      IyiScheduler.reschedule
+    end
+  end
+
+  # Cancel every task still live. The group's own tool; a failing child
+  # reaches it through the policy above.
+  def cancel_children : Nil
+    child = @first_child
+    while child.is_a?(IyiFiber)
+      IyiScheduler.cancel(child)
+      child = child.next_child
+    end
+  end
+end
+
+# III.4.1: concurrency is introduced by a scope, never by a call. The
+# join is deferred, so no exit leaves a task running — not a `return`,
+# not an error leaving through `!`.
+def group(& : IyiGroup -> Nil) : Nil
+  g = IyiGroup.new
+  defer g.join
+  yield g
+end
+
+# ── Channel — III.4.6 ──────────────────────────────────────────────────
+#
+# Buffered, capacity ≥ 1. The unbuffered rendezvous is a second protocol
+# (a sender must sleep until its *particular* value is taken), and it
+# arrives with `select` rather than half-built here. `T : Share` is not
+# enforced yet for the reason the file header gives: one thread cannot
+# race, and a marker that gates nothing cannot be tested for gating.
+class Channel(T)
+  @items : Array(T)
+  @capacity : Int32
+  @closed : Bool
+  @recv_head : IyiWaiter?
+  @recv_tail : IyiWaiter?
+  @send_head : IyiWaiter?
+  @send_tail : IyiWaiter?
+
+  def initialize(capacity : Int32)
+    raise "a channel's capacity is at least 1" if capacity < 1
+    @items = Array(T).new(capacity)
+    @capacity = capacity
+    @closed = false
+    @recv_head = nil
+    @recv_tail = nil
+    @send_head = nil
+    @send_tail = nil
+  end
+
+  def send(value : T) : Nil | ChannelClosed | Cancelled
+    fiber = IyiScheduler.current
+    while true
+      return Cancelled.new if fiber.cancelled?
+      return ChannelClosed.new if @closed
+      if @items.size < @capacity
+        @items << value
+        wake_receiver
+        return nil
+      end
+      park_sender(fiber)
+    end
+  end
+
+  # A closed channel drains before it refuses: what was sent is answered,
+  # then `ChannelClosed`.
+  def receive : T | ChannelClosed | Cancelled
+    fiber = IyiScheduler.current
+    while true
+      return Cancelled.new if fiber.cancelled?
+      unless @items.empty?
+        value = @items.shift
+        wake_sender
+        return value
+      end
+      return ChannelClosed.new if @closed
+      park_receiver(fiber)
+    end
+  end
+
+  def close : Nil
+    @closed = true
+    while wake_receiver
+    end
+    while wake_sender
+    end
+  end
+
+  def closed? : Bool
+    @closed
+  end
+
+  private def park_receiver(fiber : IyiFiber) : Nil
+    waiter = IyiWaiter.new(fiber)
+    fiber.set_waiter(waiter)
+    tail = @recv_tail
+    if tail.is_a?(IyiWaiter)
+      tail.set_next(waiter)
+    else
+      @recv_head = waiter
+    end
+    @recv_tail = waiter
+    fiber.set_state(4)
+    IyiScheduler.reschedule
+    fiber.set_waiter(nil)
+  end
+
+  private def park_sender(fiber : IyiFiber) : Nil
+    waiter = IyiWaiter.new(fiber)
+    fiber.set_waiter(waiter)
+    tail = @send_tail
+    if tail.is_a?(IyiWaiter)
+      tail.set_next(waiter)
+    else
+      @send_head = waiter
+    end
+    @send_tail = waiter
+    fiber.set_state(4)
+    IyiScheduler.reschedule
+    fiber.set_waiter(nil)
+  end
+
+  # True when a fiber was woken; false when the queue held only dead
+  # entries, which is what a cancelled waiter leaves behind.
+  private def wake_receiver : Bool
+    while true
+      head = @recv_head
+      return false unless head.is_a?(IyiWaiter)
+      @recv_head = head.next_waiter
+      @recv_tail = nil if @recv_head.is_a?(Nil)
+      next unless head.active?
+      head.deactivate
+      IyiScheduler.enqueue(head.fiber)
+      return true
+    end
+  end
+
+  private def wake_sender : Bool
+    while true
+      head = @send_head
+      return false unless head.is_a?(IyiWaiter)
+      @send_head = head.next_waiter
+      @send_tail = nil if @send_head.is_a?(Nil)
+      next unless head.active?
+      head.deactivate
+      IyiScheduler.enqueue(head.fiber)
+      return true
+    end
+  end
+end
