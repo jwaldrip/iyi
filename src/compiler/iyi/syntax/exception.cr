@@ -1,6 +1,53 @@
 require "../exception"
 
 module Iyi
+  # iyi: the SPEC sections an error message cites, pulled out of the prose
+  # so a machine consumer of `-f json` gets them as data. Nil when the
+  # message cites nothing, so the field is absent rather than empty.
+  #
+  # A hand-rolled walk rather than a `Regex`, and not out of taste: a
+  # regex literal here links PCRE2 into the compiler, and
+  # `bench/dependency_floor.sh` forbids that library by name — it caught
+  # the first version of this method within the hour.
+  def self.iyi_spec_references(message : String) : Array(String)?
+    refs = [] of String
+    reader = Char::Reader.new(message)
+    marker = "SPEC.md"
+
+    while (start = message.byte_index(marker, reader.pos))
+      reader.pos = start + marker.size
+      # An optional `,` or `:`, then optional spaces, then the section.
+      reader.next_char if reader.current_char.in?(',', ':')
+      while reader.current_char == ' '
+        reader.next_char
+      end
+
+      section = String.build do |io|
+        # Groups of roman numerals or digits, joined by dots.
+        while reader.current_char.in?('I', 'V', 'X') || reader.current_char.ascii_number?
+          io << reader.current_char
+          reader.next_char
+          if reader.current_char == '.' && (reader.peek_next_char.ascii_number? || reader.peek_next_char.in?('I', 'V', 'X'))
+            io << '.'
+            reader.next_char
+          end
+        end
+        # A trailing subsection letter: `IV.1d`.
+        if reader.current_char.ascii_lowercase? && !reader.peek_next_char.ascii_letter?
+          io << reader.current_char
+          reader.next_char
+        end
+      end
+
+      refs << section unless section.empty?
+    end
+
+    refs.uniq!
+    refs.empty? ? nil : refs
+  end
+end
+
+module Iyi
   class SyntaxException < CodeError
     include ErrorFormat
 
@@ -24,6 +71,13 @@ module Iyi
         json.field "column", @column_number
         json.field "size", @size
         json.field "message", @message
+        if (message = @message) && (refs = Iyi.iyi_spec_references(message))
+          json.field "spec" do
+            json.array do
+              refs.each { |ref| json.string ref }
+            end
+          end
+        end
       end
     end
 

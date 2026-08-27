@@ -66,6 +66,17 @@ module Iyi
         json.field "column", @column_number
         json.field "size", @size
         json.field "message", @message
+        # iyi: the SPEC sections the message cites, as data (AI_FIRST.md §2
+        # item 3). The house style writes "see SPEC.md III.1" into the
+        # prose; a machine acting on the error gets the reference without
+        # parsing prose it did not write.
+        if (message = @message) && (refs = Iyi.iyi_spec_references(message))
+          json.field "spec" do
+            json.array do
+              refs.each { |ref| json.string ref }
+            end
+          end
+        end
       end
       if inner = @inner
         inner.to_json_single(json)
