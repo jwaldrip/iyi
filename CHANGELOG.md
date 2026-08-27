@@ -23,7 +23,12 @@
   *blocked* fiber (III.4.2) and arrives as a value: a woken primitive
   answers `Cancelled`, an ordinary error member, so `!` drains a cancelled
   task through its remaining waits — III.1.2 doing III.4.2's plumbing.
-  `sleep`, `wait_readable` and `iyi_read` are the cancellable primitives;
+  `sleep`, `wait_readable` and `iyi_read` are the cancellable primitives,
+  and `read_input` goes through them on Linux — III.4.8 named that exact
+  call as the one that had to stop being a direct blocking syscall, so a
+  fiber reading stdin now parks instead of stalling its siblings, and a
+  regular-file stdin (`< file`), which epoll refuses with EPERM, is
+  answered "readable now" rather than died on;
   `Channel(T).new` is a rendezvous, as Crystal's is — a parked sender
   carries its value in its queue node's box and an emptied box is the
   delivery receipt — `.new(n)` buffers `n` sends first, a closed channel
@@ -59,7 +64,7 @@
   race, so it would refuse nothing testable), the typed
   `group do ... end!` return (compiler work), and every platform that is
   not Linux — wasm32 cannot switch stacks, and an imitation is the thing
-  III.4.8 refused to ship. The prelude stands at 3,624 lines against a
+  III.4.8 refused to ship. The prelude stands at 3,641 lines against a
   ceiling of 3,734 — remeasured, not raised: the ceiling is Crystal
   0.1.0's core, that core shipped concurrency (`thread.cr`, `fiber/`, 183
   lines), and the original list had left it out because iyi then had
@@ -1568,7 +1573,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 3,624-line library and nothing else. Every other
+  written against iyi's own 3,641-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
