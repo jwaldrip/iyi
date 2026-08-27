@@ -123,3 +123,23 @@ that can refuse it. The measurement, to live in `bench/`:
 
 Until that script exists and passes, nothing in this file is quoted
 anywhere as fact.
+
+**The script exists, and its first verdict is a partial refusal —
+recorded here because that is the point of writing the gate first.**
+`bench/context_pack.py` is the command. The token arm is hermetic and
+runs in CI: the pack must stay under 70% of the raw closure it replaces
+and must carry no body — today it measures 55% on the kemal target and
+43% on calc, and the line that forced the pack into shape is worth
+keeping: the first pack was the *compile-against* text and came in at
+96% of raw, because travelling bodies (R-4) are most of a macro-heavy
+module; grounding a caller is a different document, and `mod context`
+now renders that one.
+
+The rounds arm ran once, against a real model (`--agent 'claude -p'`,
+Claude Code 2.1.245): pack-grounded 2 rounds and 6,637 prompt bytes,
+raw-grounded 2 rounds and 10,281. **The pack won tokens by 35% and tied
+rounds 2–2, and a tie is not a win**, so by this section's own letter the
+claim stays off the README. What would settle it is repetition — one
+trial per arm decides nothing about a nondeterministic loop — and a task
+hard enough that grounding quality can shorten it; both are runnable by
+anyone with the one command above.

@@ -1790,6 +1790,7 @@ module Iyi::IyiMod
       free_variables: a_def.free_vars || [] of String,
       required: a_def.abstract?,
       doc: a_def.doc || "",
+      visibility: a_def.visibility.private? ? "private" : "",
     )
   end
 
@@ -2077,9 +2078,44 @@ module Iyi::IyiMod
     io << indent << "end\n"
   end
 
-  # A type's declaration line — `struct List(T)`, `trait Ord : Eq`.
+  # iyi: the *caller's* view of a module — AI_FIRST.md §2 #2's text form.
   #
-  # The kind loses its `generic ` prefix, which is how a `Iyi::Type`
+  # `declarations` above is the compile-against text and carries everything
+  # a consumer's build needs, travelling bodies included (R-4); grounding a
+  # reader needs less and pays per byte, so this renders only what a caller
+  # can name: exported functions and types, their methods, their docs, the
+  # impls — no bodies, no fields, no macros, no carried private types. The
+  # measurement that forced the split is `bench/context_pack.py`: on the
+  # kemal sample the compile-against text was within 4% of the sources it
+  # replaces, because the bodies *are* most of a macro-heavy module.
+  def self.surface(artifact : Artifact, io : IO) : Nil
+    io << "module " << artifact.module_name << '\n'
+
+    artifact.exports.functions.each do |signature|
+      io << '\n'
+      signature.doc.each_line { |line| io << "# " << line << '\n' } unless signature.doc.empty?
+      io << "pub " << render_signature(signature) << '\n'
+    end
+
+    artifact.exports.types.each do |declaration|
+      next unless declaration.visibility == "pub"
+      io << '\n'
+      declaration.doc.each_line { |line| io << "# " << line << '\n' } unless declaration.doc.empty?
+      io << "pub " << render_type_header(declaration) << '\n'
+      declaration.methods.each do |method|
+        next if method.visibility == "private"
+        method.doc.each_line { |line| io << "  # " << line << '\n' } unless method.doc.empty?
+        io << "  " << render_signature(method) << '\n'
+      end
+      io << "end\n"
+    end
+
+    artifact.exports.impls.each do |record|
+      io << "impl " << record.trait_name << " for " << record.type_name << '\n'
+    end
+  end
+
+  # How a type declaration's first line is written back. The kind already
   # describes itself and not how anybody declares one: what makes `List`
   # generic is the `(T)` this line already carries.
   def self.render_type_header(declaration : TypeDecl) : String

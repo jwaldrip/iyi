@@ -246,6 +246,12 @@ jobs:
       - name: Packages resolve by minimal version selection
         run: bash bench/packages_resolve.sh
 
+      # AI_FIRST.md §5's token arm: the context pack must be smaller than
+      # the sources it replaces, and must carry no body. The rounds arm
+      # needs a model and runs by hand: --agent 'claude -p'.
+      - name: The context pack pays for itself
+        run: python3 bench/context_pack.py
+
       # The same question asked of the other kind of artifact: one whose object
       # code is a shard's and whose declarations `tool bind` wrote. III.6 rule 1
       # names an undefined symbol and a call returning another type, and

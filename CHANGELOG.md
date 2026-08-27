@@ -64,6 +64,18 @@
   gate asserts a doc-only edit moves no hash and a signature edit still
   does.
 
+  And the claim got its gate before it got quoted: `bench/context_pack.py`
+  is AI_FIRST.md §5, both arms. The token arm is hermetic and in CI — the
+  pack must stay under 70% of the raw sources it replaces (measured: 55%
+  and 43%) and carry no body, which forced a correction worth the gate's
+  existence: the first pack was the compile-against text at 96% of raw,
+  because travelling bodies are most of a macro-heavy module, so
+  `mod context` now renders the *caller's* document (`IyiMod.surface`) and
+  `mod dump --declarations` keeps the compiler's. The rounds arm ran once
+  against a real model: the pack won tokens by 35% and tied rounds 2–2 —
+  a tie is not a win, so the README stays silent, which is the gate doing
+  its job on its own author.
+
 - **Concurrency exists, in exactly the order III.4.8 said it must.** A
   scheduler, then cancellable blocking primitives, then `group` and
   `Channel` — never the cheap slices: no `Share` marker gating nothing, no

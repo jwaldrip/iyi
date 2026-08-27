@@ -54,7 +54,7 @@ class Iyi::Command
       end
 
       if as_json
-        JSON.build(STDOUT, indent: 2) do |json|
+        JSON.build(STDOUT) do |json|
           json.object do
             json.field "file", filename
             json.field "imports" do
@@ -81,7 +81,7 @@ class Iyi::Command
         blocks.each do |(written, artifact, failure)|
           puts "── import #{written} ──"
           if artifact
-            IyiMod.declarations artifact, STDOUT
+            IyiMod.surface artifact, STDOUT
           else
             puts "  (#{failure})"
           end

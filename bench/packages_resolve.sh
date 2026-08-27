@@ -138,7 +138,7 @@ grep -q 'hello from liba' context.txt && { echo "a body leaked into the pack"; e
 step "mod context --json carries hashes and rendered signatures"
 (cd app && "$IYI" mod context --json main.iyi) > context.json 2>&1 || { cat context.json; exit 1; }
 grep -q '"interface_hash"' context.json || { echo "no interface hash:"; head -20 context.json; exit 1; }
-grep -q '"rendered": "def doubled : String"' context.json || { echo "no rendered signature:"; head -40 context.json; exit 1; }
+grep -Eq '"rendered": ?"def doubled : String' context.json || { echo "no rendered signature:"; head -40 context.json; exit 1; }
 
 # ── 7. Errors as data: `-f json` carries the SPEC sections it cites ──────
 step "a json error cites its SPEC sections as data"
@@ -157,21 +157,21 @@ mkdir -p docs
 printf 'module docd\n\n# Answers the one question.\npub def answer : Int32\n  42\nend\n' > docs/docd.iyi
 printf 'import docd\nusing docd::{answer}\nputs answer\n' > docs/main.iyi
 (cd docs && "$IYI" mod context --json main.iyi) > docs.json 2>&1 || { cat docs.json; exit 1; }
-grep -q '"doc": "Answers the one question."' docs.json || { echo "the doc did not travel:"; cat docs.json; exit 1; }
+grep -Eq '"doc": ?"Answers the one question."' docs.json || { echo "the doc did not travel:"; cat docs.json; exit 1; }
 
 step "a doc-only edit leaves the interface hash alone"
-hash_before=$(grep -o '"interface_hash": "[a-f0-9]*"' docs.json | head -1)
+hash_before=$(grep -oE '"interface_hash": ?"[a-f0-9]*"' docs.json | head -1)
 sed -i 's/# Answers the one question./# Answers the only question./' docs/docd.iyi
 (cd docs && "$IYI" mod context --json main.iyi) > docs2.json 2>&1 || { cat docs2.json; exit 1; }
-hash_after=$(grep -o '"interface_hash": "[a-f0-9]*"' docs2.json | head -1)
+hash_after=$(grep -oE '"interface_hash": ?"[a-f0-9]*"' docs2.json | head -1)
 if [ "$hash_before" != "$hash_after" ]; then
   echo "a doc edit moved the interface hash: $hash_before -> $hash_after"
   exit 1
 fi
-grep -q '"doc": "Answers the only question."' docs2.json || { echo "the edited doc did not travel"; exit 1; }
+grep -Eq '"doc": ?"Answers the only question."' docs2.json || { echo "the edited doc did not travel"; exit 1; }
 sed -i 's/pub def answer : Int32/pub def answer : Int64/' docs/docd.iyi
 (cd docs && "$IYI" mod context --json main.iyi) > docs3.json 2>&1 || { cat docs3.json; exit 1; }
-hash_signature=$(grep -o '"interface_hash": "[a-f0-9]*"' docs3.json | head -1)
+hash_signature=$(grep -oE '"interface_hash": ?"[a-f0-9]*"' docs3.json | head -1)
 if [ "$hash_before" = "$hash_signature" ]; then
   echo "a signature edit did not move the interface hash, so the hash checks nothing"
   exit 1
