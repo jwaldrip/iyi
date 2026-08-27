@@ -15,6 +15,8 @@
 #   wait_readable(fd)         # Nil | Cancelled — the poller, made visible
 #   iyi_read(fd, buf, n)      # Int64 | Cancelled — a read that parks, not blocks
 #   Channel(T).new            # a rendezvous; .new(n) buffers n sends first
+#   select / when / else      # over any mix of arms; the expansion's
+#                             # library half is at the bottom of this file
 #
 # Cancellation (III.4.2) belongs to the group: the first task whose value is
 # an error member cancels its siblings. A cancelled fiber is not torn down —
@@ -23,8 +25,6 @@
 # its own accord, which is III.1.2 doing cancellation's plumbing for free.
 #
 # What is deliberately absent, so nobody reads silence as an accident:
-# `select` (III.4.6) has its protocol answered below and waits on the
-# prelude's line ceiling having room for its expansion's library half;
 # `Share` (III.4.4) gates nothing until a second thread exists, because one
 # thread interleaves at parks only and cannot race; panics at task boundaries
 # (III.1.4) wait on this file's task boundary being judged right first; and
@@ -421,6 +421,17 @@ class IyiScheduler
     main = IyiFiber.main
     @@current = main
     main
+  end
+
+  # A channel park: the nonce that distinguishes this suspension from
+  # every earlier one, so a queue node a cancellation left behind is
+  # skipped by arithmetic rather than unlinked by hand. `select` parks
+  # once and stamps every arm's node with the one nonce.
+  def self.park(fiber : IyiFiber) : UInt64
+    nonce = fiber.park_nonce + 1
+    fiber.park_nonce = nonce
+    fiber.state = 4
+    nonce
   end
 
   def self.enqueue(fiber : IyiFiber) : Nil
@@ -862,9 +873,8 @@ end
 #
 # `T : Share` is not enforced yet for the reason the file header gives:
 # one thread cannot race, and a marker that gates nothing cannot be
-# tested for gating. `select`'s expansion is already answered by this
-# protocol — a node per arm, one nonce, losers stale by arithmetic — and
-# waits only on the prelude's line ceiling having room for it.
+# tested for gating. `select` is answered by this protocol — a node per
+# arm, one nonce, losers stale by arithmetic — at the bottom of the class.
 class Channel(T)
   @items : Array(T)
   @capacity : Int32
@@ -892,32 +902,12 @@ class Channel(T)
   def send(value : T) : Nil | ChannelClosed | Cancelled
     fiber = IyiScheduler.current
     return Cancelled.new if fiber.cancelled
-    return ChannelClosed.new if @closed
-
-    # A parked receiver is a completed rendezvous: the value goes through
-    # the buffer for the one instant the receiver needs to be scheduled,
-    # and the send is done — its taking is no longer contingent.
-    if wake_receiver
-      @items << value
-      return nil
-    end
-
-    if @items.size < @capacity
-      @items << value
-      return nil
-    end
+    return put_now(value) if send_ready?
 
     # Park carrying the value. The wake tells one of three stories, and
     # the box is the witness for the one that matters: emptied means
     # delivered, whatever else has happened since.
-    node = IyiSendNode(T).new(fiber, park(fiber), value)
-    tail = @send_tail
-    if tail.is_a?(IyiSendNode(T))
-      tail.next_node = node
-    else
-      @send_head = node
-    end
-    @send_tail = node
+    node = park_send_node(fiber, IyiScheduler.park(fiber), value)
     IyiScheduler.reschedule
     return nil if node.delivered?
     return Cancelled.new if fiber.cancelled
@@ -929,32 +919,8 @@ class Channel(T)
     fiber = IyiScheduler.current
     while true
       return Cancelled.new if fiber.cancelled
-
-      unless @items.empty?
-        value = @items.shift
-        # The buffer has room now; the oldest parked sender's value moves
-        # in, so parked sends complete in the order they parked.
-        refill = take_sender
-        if refill.is_a?(IyiSendNode(T))
-          @items << refill.take
-          IyiScheduler.enqueue(refill.fiber)
-        end
-        return value
-      end
-
-      # Rendezvous: no buffer to go through, the parked sender's box is
-      # the source. Not after close — a close fails pending sends.
-      unless @closed
-        node = take_sender
-        if node.is_a?(IyiSendNode(T))
-          value = node.take
-          IyiScheduler.enqueue(node.fiber)
-          return value
-        end
-      end
-
-      return ChannelClosed.new if @closed
-      park_receiver(fiber)
+      return take_now if receive_ready?
+      park_receive_node(fiber, IyiScheduler.park(fiber))
       IyiScheduler.reschedule
     end
   end
@@ -977,18 +943,74 @@ class Channel(T)
     @closed
   end
 
-  # A park: the nonce that makes this suspension distinguishable from
-  # every earlier one, so a node left behind by cancellation is skipped
-  # by arithmetic rather than unlinked by hand.
-  private def park(fiber : IyiFiber) : UInt64
-    nonce = fiber.park_nonce + 1
-    fiber.park_nonce = nonce
-    fiber.state = 4
-    nonce
+  # ── The halves `select` shares with the calls above ────────────────
+  #
+  # `ready?` promises the `_now` half will not park. One fiber runs
+  # between the check and the act, so the promise cannot be invalidated
+  # in the gap — cooperative scheduling is the lock.
+
+  def receive_ready? : Bool
+    @closed || !@items.empty? || sender_waiting?
   end
 
-  private def park_receiver(fiber : IyiFiber) : Nil
-    waiter = IyiWaiter.new(fiber, park(fiber))
+  # Assumes `receive_ready?`: the buffer, then a parked sender's box,
+  # then the refusal.
+  def take_now : T | ChannelClosed
+    unless @items.empty?
+      value = @items.shift
+      # The buffer has room now; the oldest parked sender's value moves
+      # in, so parked sends complete in the order they parked.
+      refill = take_sender
+      if refill.is_a?(IyiSendNode(T))
+        @items << refill.take
+        IyiScheduler.enqueue(refill.fiber)
+      end
+      return value
+    end
+    unless @closed
+      node = take_sender
+      if node.is_a?(IyiSendNode(T))
+        value = node.take
+        IyiScheduler.enqueue(node.fiber)
+        return value
+      end
+    end
+    return ChannelClosed.new if @closed
+    raise "take_now on an empty open channel"
+  end
+
+  def send_ready? : Bool
+    @closed || @items.size < @capacity || receiver_waiting?
+  end
+
+  # Assumes `send_ready?`. A parked receiver is a completed rendezvous:
+  # the value goes through the buffer for the one instant the receiver
+  # needs to be scheduled, and the send is no longer contingent.
+  def put_now(value : T) : Nil | ChannelClosed
+    return ChannelClosed.new if @closed
+    if wake_receiver
+      @items << value
+      return nil
+    end
+    if @items.size < @capacity
+      @items << value
+      return nil
+    end
+    raise "put_now on a full channel"
+  end
+
+  def receive_select_action : IyiReceiveSelect(T)
+    IyiReceiveSelect(T).new(self)
+  end
+
+  def send_select_action(value : T) : IyiSendSelect(T)
+    IyiSendSelect(T).new(self, value)
+  end
+
+  # `select`'s arms park through these with one shared nonce; a plain
+  # call parks with a fresh nonce of its own.
+  def park_receive_node(fiber : IyiFiber, nonce : UInt64) : Nil
+    waiter = IyiWaiter.new(fiber, nonce)
     tail = @recv_tail
     if tail.is_a?(IyiWaiter)
       tail.next_node = waiter
@@ -996,6 +1018,39 @@ class Channel(T)
       @recv_head = waiter
     end
     @recv_tail = waiter
+  end
+
+  def park_send_node(fiber : IyiFiber, nonce : UInt64, value : T) : IyiSendNode(T)
+    node = IyiSendNode(T).new(fiber, nonce, value)
+    tail = @send_tail
+    if tail.is_a?(IyiSendNode(T))
+      tail.next_node = node
+    else
+      @send_head = node
+    end
+    @send_tail = node
+    node
+  end
+
+  # Peeks that prune: a stale head is consumed, never counted.
+  private def receiver_waiting? : Bool
+    while true
+      head = @recv_head
+      return false unless head.is_a?(IyiWaiter)
+      return true if head.current?
+      @recv_head = head.next_node
+      @recv_tail = nil if @recv_head.is_a?(Nil)
+    end
+  end
+
+  private def sender_waiting? : Bool
+    while true
+      head = @send_head
+      return false unless head.is_a?(IyiSendNode(T))
+      return true if head.current?
+      @send_head = head.next_node
+      @send_tail = nil if @send_head.is_a?(Nil)
+    end
   end
 
   # True when a parked receiver was woken; stale nodes — parks their
@@ -1025,5 +1080,105 @@ class Channel(T)
       next unless head.current?
       return head
     end
+  end
+
+  # ── select — III.4.6, the library half of the expansion ────────────
+  #
+  # A `select` compiles to `%i, %v = ::Channel.select({arm, arm})` and a
+  # case over the index; `non_blocking_select` when an `else` arm
+  # exists. One def serves every arity, because a tuple's size is a
+  # compile-time fact a macro walks. On a cancelled task the first arm
+  # answers `Cancelled`, exactly as that arm's own primitive would have.
+  def self.select(actions : U) forall U
+    fiber = IyiScheduler.current
+    while true
+      return {0, Cancelled.new} if fiber.cancelled
+      {% for i in 0...U.size %}
+        if actions[{{ i }}].ready?
+          return { {{ i }}, actions[{{ i }}].execute }
+        end
+      {% end %}
+      # Nothing ready: one park, every arm's node carrying its nonce.
+      # A send arm can win *while parked* — a receiver empties its box
+      # directly — and that is checked before the next round of parks.
+      nonce = IyiScheduler.park(fiber)
+      {% for i in 0...U.size %}
+        actions[{{ i }}].park(fiber, nonce)
+      {% end %}
+      IyiScheduler.reschedule
+      {% for i in 0...U.size %}
+        if actions[{{ i }}].won_while_parked?
+          return { {{ i }}, nil }
+        end
+      {% end %}
+    end
+  end
+
+  # No arm ready answers -1, which the expansion's case meets with the
+  # program's own `else`.
+  def self.non_blocking_select(actions : U) forall U
+    fiber = IyiScheduler.current
+    return {0, Cancelled.new} if fiber.cancelled
+    {% for i in 0...U.size %}
+      if actions[{{ i }}].ready?
+        return { {{ i }}, actions[{{ i }}].execute }
+      end
+    {% end %}
+    {-1, nil}
+  end
+end
+
+# The two arm shapes `select`'s expansion asks a channel for. Classes,
+# because a select holds one across a park and reads what happened to
+# it; a struct in a tuple is a copy nobody else can write to.
+class IyiReceiveSelect(T)
+  @channel : Channel(T)
+
+  def initialize(@channel : Channel(T))
+  end
+
+  def ready? : Bool
+    @channel.receive_ready?
+  end
+
+  def execute : T | ChannelClosed
+    @channel.take_now
+  end
+
+  def park(fiber : IyiFiber, nonce : UInt64) : Nil
+    @channel.park_receive_node(fiber, nonce)
+  end
+
+  # A parked receive wins by waking: the value is in the channel when
+  # the select looks again.
+  def won_while_parked? : Bool
+    false
+  end
+end
+
+class IyiSendSelect(T)
+  @channel : Channel(T)
+  @value : T
+  @node : IyiSendNode(T)?
+
+  def initialize(@channel : Channel(T), @value : T)
+    @node = nil
+  end
+
+  def ready? : Bool
+    @channel.send_ready?
+  end
+
+  def execute : Nil | ChannelClosed
+    @channel.put_now(@value)
+  end
+
+  def park(fiber : IyiFiber, nonce : UInt64) : Nil
+    @node = @channel.park_send_node(fiber, nonce, @value)
+  end
+
+  def won_while_parked? : Bool
+    node = @node
+    node.is_a?(IyiSendNode(T)) && node.delivered?
   end
 end
