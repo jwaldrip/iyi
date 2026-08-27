@@ -14,6 +14,9 @@ class Iyi::Command
     when "diff"
       options.shift
       mod_diff
+    when "context"
+      options.shift
+      mod_context
     when nil, "--help", "-h"
       puts mod_usage
       exit
@@ -27,6 +30,11 @@ class Iyi::Command
     Usage: #{Command.program_name} mod [subcommand]
 
     Subcommand:
+        context FILE.iyi         print what a change to this module is allowed
+                                 to know: the exact exported surface of every
+                                 module it imports, and nothing's body. This is
+                                 the grounding a model needs (AI_FIRST.md §2);
+                                 `--json` makes it data
         diff OLD NEW             say whether a change reaches this module's
                                  consumers, and what changed if it does.
                                  `--exit-code` exits 1 when it does
@@ -34,6 +42,9 @@ class Iyi::Command
         dump --declarations FILE print the iyi declarations a consumer compiles
                                  against, which is what `import` reads instead
                                  of the module's source
+        dump --json FILE         print the module's exported surface as JSON:
+                                 exact signatures, types, fields, impls, and
+                                 the interface hash they are keyed by
 
     A .iyimod is a module's compiled interface: what another module reads
     instead of this one's source (SPEC.md Part IV). Produced by
@@ -47,9 +58,13 @@ class Iyi::Command
     # second exists so that a diagnostic pointing into a `.iyimod` can be
     # looked at — the text it names is the text this prints.
     declarations = false
+    as_json = false
     if options.first? == "--declarations"
       options.shift
       declarations = true
+    elsif options.first? == "--json"
+      options.shift
+      as_json = true
     end
 
     filename = options.shift?
@@ -66,9 +81,12 @@ class Iyi::Command
       # front-end reader and seeks past the section — but a dump that silently
       # left out the largest thing in the file would be the opposite of what
       # this command is for.
-      artifact = IyiMod.read(filename, want_object_code: !declarations)
+      artifact = IyiMod.read(filename, want_object_code: !(declarations || as_json))
       if declarations
         IyiMod.declarations artifact, STDOUT
+      elsif as_json
+        JSON.build(STDOUT, indent: 2) { |json| IyiMod.api_json(artifact, json) }
+        STDOUT.puts
       else
         IyiMod.dump artifact, STDOUT
       end

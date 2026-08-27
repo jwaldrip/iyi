@@ -1,0 +1,193 @@
+# iyi: `iyi mod context FILE.iyi` — the context pack (AI_FIRST.md §2 #2).
+#
+# The minimal text a model needs before editing one module: the exact
+# exported surface of every module the file imports, and nothing's body.
+# R-2 makes that a *defined set* — the interface is what `pub` wrote — and
+# R-1 makes it cheap to produce: every import is compiled alone, front end
+# only, against nothing but its own imports' declarations. The file itself
+# is never compiled, because the caller is presumed to be mid-edit; a pack
+# you can only get from a program that already builds would ground nothing.
+#
+# Output is one block per import, in import order: a header naming the path
+# as the file wrote it, then the same declaration text `import` itself
+# reads (`mod dump --declarations`). `--json` emits the same surfaces as
+# data, each with its interface hash — the cache key: unchanged hash,
+# unchanged everything.
+#
+# An import that fails to resolve or compile degrades to a block that says
+# so; the pack for the others still prints, because a half-broken tree is
+# the normal state of a tree being edited.
+require "file_utils"
+require "../mod/installer"
+
+class Iyi::Command
+  private def mod_context
+    as_json = false
+    if options.first? == "--json"
+      options.shift
+      as_json = true
+    end
+
+    filename = options.shift?
+    unless filename && filename.ends_with?(".iyi")
+      abort! "expected a .iyi file", :USAGE_ERROR
+    end
+    unless File.file?(filename)
+      abort! "no such file: #{filename}", :USAGE_ERROR
+    end
+    filename = File.expand_path(filename)
+    entry_dir = File.dirname(filename)
+
+    imports = mod_context_imports(filename)
+    table =
+      begin
+        Mod::Installer.table_for(entry_dir)
+      rescue ex : Mod::ModError
+        abort! ex.message.to_s, :USAGE_ERROR
+      end
+
+    emit_dir = File.tempname("iyi-context", nil)
+    Dir.mkdir_p(emit_dir)
+    begin
+      blocks = imports.map do |written|
+        mod_context_block(written, entry_dir, table, emit_dir)
+      end
+
+      if as_json
+        JSON.build(STDOUT, indent: 2) do |json|
+          json.object do
+            json.field "file", filename
+            json.field "imports" do
+              json.array do
+                blocks.each do |(written, artifact, failure)|
+                  json.object do
+                    json.field "import", written
+                    if artifact
+                      json.field "api" { IyiMod.api_json(artifact, json) }
+                    else
+                      json.field "error", failure
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+        STDOUT.puts
+      else
+        if blocks.empty?
+          puts "#{filename} imports nothing; its context is the prelude."
+        end
+        blocks.each do |(written, artifact, failure)|
+          puts "── import #{written} ──"
+          if artifact
+            IyiMod.declarations artifact, STDOUT
+          else
+            puts "  (#{failure})"
+          end
+          puts
+        end
+      end
+    ensure
+      FileUtils.rm_rf(emit_dir)
+    end
+  end
+
+  # The file's imports, in order, by parsing — never by compiling. A file
+  # being edited has to be parseable to be grounded, and no more.
+  private def mod_context_imports(filename : String) : Array(String)
+    parser = Parser.new(File.read(filename))
+    parser.filename = filename
+    nodes = parser.parse
+    imports = [] of String
+    mod_context_collect(nodes, imports)
+    imports.uniq!
+  rescue ex : CodeError
+    abort! "cannot parse #{filename}: #{ex.message}", :USAGE_ERROR
+  end
+
+  private def mod_context_collect(node : ASTNode, into : Array(String)) : Nil
+    case node
+    when ImportDecl
+      into << node.path.join('/')
+    when Expressions
+      node.expressions.each { |child| mod_context_collect(child, into) }
+    when ModuleDef
+      mod_context_collect(node.body, into)
+    else
+      # Anything else cannot hold a top-level import.
+    end
+  end
+
+  # One import's surface: resolve the path the way a build would, compile
+  # that module alone with the front end, and read back the artifact it
+  # emitted. `{written, artifact or nil, failure or ""}`.
+  #
+  # The compile is of a synthetic one-line entry that *imports* the module,
+  # because artifacts are written for what a build imports, not for what it
+  # is. The module's root travels as `IYI_PATH` and the import is the
+  # in-package path, so a package's surface is produced without a manifest
+  # — which is the point: the module compiles alone (R-1), and this is that
+  # fact worn as a tool.
+  private def mod_context_block(written : String, entry_dir : String, table : Array({String, String}), emit_dir : String) : {String, IyiMod::Artifact?, String}
+    source_path, expected_name = mod_context_resolve(written, entry_dir, table)
+    unless source_path
+      return {written, nil, "does not resolve: no file and no requirement covers it"}
+    end
+    module_root = source_path.chomp("#{expected_name}.iyi").chomp("/")
+
+    entry = File.join(emit_dir, "context_entry.iyi")
+    File.write(entry, "import #{expected_name}\n")
+
+    compiler = Compiler.new
+    compiler.prelude = "iyi/prelude"
+    compiler.no_codegen = true
+    compiler.iyi_mod_table = table
+    compiler.emit_iyimod = emit_dir
+    compiler.stdout = IO::Memory.new
+    compiler.stderr = IO::Memory.new
+    previous_path = ENV["IYI_PATH"]?
+    begin
+      ENV["IYI_PATH"] = ([module_root] + (previous_path ? [previous_path] : IyiPath.default_paths)).join(':')
+      compiler.compile(
+        Compiler::Source.new(entry, File.read(entry)),
+        File.join(emit_dir, "unused"))
+    rescue ex : Iyi::Error | Iyi::CodeError
+      return {written, nil, "does not compile alone: #{ex.message.to_s.lines.first?}"}
+    ensure
+      previous_path ? (ENV["IYI_PATH"] = previous_path) : ENV.delete("IYI_PATH")
+    end
+
+    Dir.glob(File.join(emit_dir, "**", "*.iyimod")) do |candidate|
+      begin
+        artifact = IyiMod.read(candidate)
+        return {written, artifact, ""} if artifact.module_name == expected_name
+      rescue IyiMod::Error
+        next
+      end
+    end
+    {written, nil, "compiled, but no artifact carries module '#{expected_name}'"}
+  end
+
+  # The same resolution order the build uses: the requirement table by
+  # longest prefix, then the entry file's directory. The name an artifact
+  # carries is the in-package path for a package, the written path
+  # otherwise.
+  private def mod_context_resolve(written : String, entry_dir : String, table : Array({String, String})) : {String?, String}
+    table.each do |(prefix, checkout)|
+      inner =
+        if written == prefix
+          prefix.rpartition('/')[2]
+        elsif written.starts_with?("#{prefix}/")
+          written[(prefix.size + 1)..]
+        else
+          next
+        end
+      candidate = File.join(checkout, "#{inner}.iyi")
+      return {File.file?(candidate) ? candidate : nil, inner}
+    end
+
+    candidate = File.join(entry_dir, "#{written}.iyi")
+    {File.file?(candidate) ? candidate : nil, written}
+  end
+end
