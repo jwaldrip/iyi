@@ -4,7 +4,7 @@
 
 ### Added
 
-- **Dependencies exist — SPEC.md III.7 step 1, and only step 1.** An
+- **Dependencies exist — SPEC.md III.7 steps 1 and 2.** An
   `iyi.mod` beside the entry file is the opt-in: `module <path>` and
   `require <path> v1.2.3`, nothing else. Resolution is minimal version
   selection — the highest of the minimums anything asked for, a worklist
@@ -26,10 +26,32 @@
   to the program's roots. A dotted import with no covering requirement is
   refused naming `iyi.mod` and the `require` line to write.
 
-  Not built, and said so in III.7's margin: `iyi.sum` (step 2 — nothing
-  yet checks that what arrived twice is the same thing), packages compile
-  from source every build, and two packages whose in-package modules share
+  `iyi.sum` guards what arrives: one line per requirement, a tree hash of
+  its checkout, written by the tool and defended by it — a matching entry
+  is silence, a tampered one is a refusal naming both hashes, and the gate
+  proves both. Building it taught a rule: a checkout is read-only, because
+  the first version let a build whose entry sat inside the module cache
+  write a sum into the checkout, and the verifier caught its own footprint
+  within the hour.
+
+  Not built, and said so in III.7's margin: packages compile
+  from source every build (their artifact story is step 5's, with
+  signatures), and two packages whose in-package modules share
   a name collide in the type namespace.
+
+- **The AI-first surface, AI_FIRST.md §3's cut.** Three tools, all riding
+  machinery the rules already paid for. `iyi mod dump --json` prints a
+  module's exported surface as data — exact signatures with their
+  `rendered` spelling, types with fields, impls, and the interface hash
+  they are keyed by. `iyi mod context FILE.iyi` prints what an edit to
+  that file is allowed to know: the surface of every module it imports and
+  nothing's body, each import compiled *alone* (R-1 worn as a tool), so a
+  half-broken tree still grounds; `--json` makes the pack data. And
+  `iyi build -f json` — inherited, measured working — now carries a
+  `spec` field: the SPEC sections the message cites, as data, extracted
+  by a hand-rolled walk because the first version used a `Regex` and
+  `bench/dependency_floor.sh` refused the PCRE2 it linked, by name,
+  within the hour. `bench/packages_resolve.sh` gates all three.
 
 - **Concurrency exists, in exactly the order III.4.8 said it must.** A
   scheduler, then cancellable blocking primitives, then `group` and

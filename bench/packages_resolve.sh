@@ -112,6 +112,40 @@ if [ $? -eq 0 ] || ! grep -q 'v9.9.9' wrong.log; then
   exit 1
 fi
 
+# ── 5. iyi.sum: fact, written by the tool, defended by it ────────────────
+step "iyi.sum is written, and a tampered entry is a refusal"
+grep -q 'example.test/user/liba v1.1.0 s1:' app/iyi.sum || { echo "no sum entry for liba:"; cat app/iyi.sum; exit 1; }
+grep -q 'example.test/user/libb v1.0.0 s1:' app/iyi.sum || { echo "no sum entry for libb:"; cat app/iyi.sum; exit 1; }
+cp app/iyi.sum app/iyi.sum.good
+sed -i 's/s1:....../s1:dead00/' app/iyi.sum
+rm -f app/app
+(cd app && "$IYI" build main.iyi -o app) > tamper.log 2>&1
+if [ $? -eq 0 ] || ! grep -q 'is not what it was' tamper.log; then
+  echo "a tampered sum was accepted:"
+  tail -6 tamper.log
+  exit 1
+fi
+mv app/iyi.sum.good app/iyi.sum
+
+# ── 6. The context pack: surfaces, no bodies ──────────────────────────────
+step "mod context prints every import's exact surface"
+(cd app && "$IYI" mod context main.iyi) > context.txt 2>&1 || { cat context.txt; exit 1; }
+grep -q 'pub def greeting : String' context.txt || { echo "liba's surface is missing:"; cat context.txt; exit 1; }
+grep -q 'pub def favourite : String' context.txt || { echo "colors' surface is missing:"; cat context.txt; exit 1; }
+grep -q 'pub def doubled : String' context.txt || { echo "libb's surface is missing:"; cat context.txt; exit 1; }
+grep -q 'hello from liba' context.txt && { echo "a body leaked into the pack"; exit 1; }
+
+step "mod context --json carries hashes and rendered signatures"
+(cd app && "$IYI" mod context --json main.iyi) > context.json 2>&1 || { cat context.json; exit 1; }
+grep -q '"interface_hash"' context.json || { echo "no interface hash:"; head -20 context.json; exit 1; }
+grep -q '"rendered": "def doubled : String"' context.json || { echo "no rendered signature:"; head -40 context.json; exit 1; }
+
+# ── 7. Errors as data: `-f json` carries the SPEC sections it cites ──────
+step "a json error cites its SPEC sections as data"
+printf 'def f : Int32\n  3\nend\nf!\n' > refs.iyi
+"$IYI" build -f json refs.iyi -o refs > refs.log 2>&1
+grep -q '"spec":\["III.1"\]' refs.log || { echo "no spec reference in the json error:"; cat refs.log; exit 1; }
+
 echo "workdir $WORK"
 echo "packages gate: every step held"
 exit 0

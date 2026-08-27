@@ -788,7 +788,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 95,524 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 96,061 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -2781,7 +2781,7 @@ shards for free: a shard's own dependencies are compiled into it or the binding
 does not link. And no answer at all for a shard whose interface *is* macros,
 which is a large fraction of the ones worth wanting.
 
-### III.7 Packages, and discoverability: **step 1 BUILT — `iyi.mod`, MVS, a git fetcher; the registry half still PROPOSED**
+### III.7 Packages, and discoverability: **steps 1 and 2 BUILT — `iyi.mod`, MVS, a git fetcher, `iyi.sum`; the registry half still PROPOSED**
 
 Shards is the part of Crystal a person meets second and it is the part that
 decides whether they stay. This section is longer than it wants to be because
@@ -2943,8 +2943,19 @@ The decisions:
    is**, naming `iyi.mod` and the `require` line to write, because "can't
    find `github.com/user/lib.iyi`" would be technically true and useless.
 
-What step 1 does not do, said here: no `iyi.sum` yet (step 2 — nothing
-checks that what arrived twice is the same thing), packages compile from
+**Step 2 followed, and taught one rule.** `iyi.sum` is the fact half of the
+split above: one line per requirement the build used, a tree hash of its
+checkout (`s1:` — SHA-1, spelled so nobody mistakes it for a signature,
+which III.7 reserves for distribution). A matching entry is silence, a
+mismatch is a refusal naming both hashes, a missing entry is appended —
+the tool records facts, it does not ask a person to transcribe hashes. The
+rule the build taught: **a checkout is read-only.** The first version let
+a build whose entry sat inside the module cache write a sum *into the
+checkout*, which changed the tree a user's sum pinned — the verifier
+caught its own footprint within the hour, and the guard it forced is that
+nothing under the cache's `mod/` is ever written to again.
+
+What steps 1 and 2 do not do, said here: packages compile from
 source every build (their `.iyimod` story is step 5's, with signatures),
 and two packages whose in-package modules share a name collide in the type
 namespace — the general import-alias question, which `using`'s selective
