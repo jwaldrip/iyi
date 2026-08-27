@@ -1183,7 +1183,10 @@ module Iyi
     end
 
     def check_ident_or_keyword(keyword : Keyword, start)
-      if ident_part_or_end?(peek_next_char)
+      # iyi: `!` is not part of a name (SPEC.md III.1.7), and that includes
+      # the name being a keyword's: `end!` is the keyword and then the
+      # propagation operator, or `group do ... end!` cannot close its block.
+      if ident_part_or_end?(peek_next_char) && !(@iyi && peek_next_char == '!')
         scan_ident(start)
       else
         next_char :IDENT
