@@ -1,0 +1,222 @@
+# Exercises the concurrency runtime: SPEC.md III.4, built in III.4.8's order.
+#
+# Every check here is a property III.4 states, asserted rather than printed:
+# a wrong answer is exit 1 with the property named. The one property a
+# program cannot assert about itself — that a deadlocked program dies loudly
+# instead of hanging — is bench/concurrency_exercise.sh's failure proof.
+#
+# The timing thresholds are structural, not benchmarks: 2 x 150 ms of
+# sleeping finishing under 260 ms cannot happen sequentially, and a task
+# blocked for 10 s finishing under 5 s cannot happen unless cancellation
+# reached it while blocked. Generous margins, because the aarch64 arm of CI
+# runs under emulation.
+
+def fail(message : String) : Nil
+  puts "FAIL: #{message}"
+  __iyi_exit(1)
+end
+
+def elapsed_ms(since : Int64) : Int64
+  (__iyi_monotonic_ns - since) // 1000000_i64
+end
+
+# pipe2, for the poller check. The exercise's own binding, the way every
+# probe of a syscall the prelude does not carry yet gets one.
+{% if flag?(:x86_64) %}
+  EX_SYS_PIPE2 = 293_i64
+{% else %}
+  EX_SYS_PIPE2 = 59_i64
+{% end %}
+
+def make_pipe : Pointer(Int32)
+  fds = Pointer(UInt8).malloc(8_u64).as(Pointer(Int32))
+  result = __iyi_conc_syscall3(EX_SYS_PIPE2, fds.address.to_i64, 0_i64, 0_i64)
+  fail("pipe2 failed") if result < 0
+  fds
+end
+
+pub struct TaskFailed
+  def initialize
+  end
+end
+
+impl Error for TaskFailed
+  def message : String
+    "the failing task's error"
+  end
+end
+
+# ── 1. Interleaving is real, and deterministic ──────────────────────────
+#
+# Two tasks ping-pong through two channels. A `group` that ran its tasks
+# one after another — the imitation III.4.8 refused to ship — cannot
+# produce this order: each letter needs the other task to have moved.
+ping = Channel(Int32).new(1)
+pong = Channel(Int32).new(1)
+order = ""
+
+group do |g|
+  g.spawn do
+    round = 0
+    while round < 3
+      ping.receive
+      order = order + "a"
+      pong.send(1)
+      round = round + 1
+    end
+    0
+  end
+  g.spawn do
+    round = 0
+    while round < 3
+      order = order + "b"
+      ping.send(1)
+      pong.receive
+      round = round + 1
+    end
+    0
+  end
+end
+
+fail("interleaving: expected bababa, got #{order}") unless order == "bababa"
+puts "interleaved: #{order}"
+
+# ── 2. Waits overlap: the anti-sequential clock ─────────────────────────
+started = __iyi_monotonic_ns
+group do |g|
+  g.spawn do
+    sleep(150)
+  end
+  g.spawn do
+    sleep(150)
+  end
+end
+overlap = elapsed_ms(started)
+fail("overlap: 2 x 150 ms took #{overlap} ms, which is sequential") if overlap >= 260
+puts "two 150 ms sleeps in #{overlap} ms"
+
+# ── 3. The first failing task cancels a *blocked* sibling — III.4.2/3 ───
+started = __iyi_monotonic_ns
+victim_saw = ""
+group do |g|
+  victim = g.spawn do
+    slept = sleep(10000)
+    victim_saw = slept.is_a?(Cancelled) ? "cancelled" : "slept"
+    slept
+  end
+  g.spawn do
+    sleep(20)
+    TaskFailed.new
+  end
+end
+cancelled_after = elapsed_ms(started)
+fail("cancellation never reached the sleeping task") unless victim_saw == "cancelled"
+fail("cancellation took #{cancelled_after} ms against a 10 s sleep") if cancelled_after >= 5000
+puts "a failing task cancelled a sibling blocked in sleep, in #{cancelled_after} ms"
+
+# ── 4. `!` drains a cancelled task through its later waits ──────────────
+def two_naps : Nil | Cancelled
+  sleep(10000)!
+  sleep(10000)!
+  nil
+end
+
+started = __iyi_monotonic_ns
+drained = ""
+group do |g|
+  g.spawn do
+    outcome = two_naps
+    drained = outcome.is_a?(Cancelled) ? "propagated" : "finished"
+    outcome
+  end
+  g.spawn do
+    sleep(20)
+    TaskFailed.new
+  end
+end
+fail("`!` did not propagate Cancelled out of the task body") unless drained == "propagated"
+fail("draining a cancelled task took #{elapsed_ms(started)} ms") if elapsed_ms(started) >= 5000
+puts "a cancelled task drained through `!`"
+
+# ── 5. The poller: a read parks the fiber, the thread keeps working ─────
+fds = make_pipe
+read_fd = fds[0]
+write_fd = fds[1]
+io_order = ""
+
+group do |g|
+  g.spawn do
+    io_order = io_order + "parked,"
+    buffer = Pointer(UInt8).malloc(1_u64)
+    got = iyi_read(read_fd, buffer.as(Void*), 1_u64)
+    case got
+    in Int64
+      io_order = io_order + "read:#{buffer.value.to_i64}"
+    in Cancelled
+      io_order = io_order + "cancelled"
+    end
+    0
+  end
+  g.spawn do
+    sleep(40)
+    io_order = io_order + "wrote,"
+    byte = Pointer(UInt8).malloc(1_u64)
+    byte.value = 7_u8
+    __iyi_write(write_fd, byte.as(Void*), 1_u64)
+    0
+  end
+end
+
+fail("poller: expected parked,wrote,read:7 — got #{io_order}") unless io_order == "parked,wrote,read:7"
+puts "a read parked in the poller and a sleeping writer woke it"
+
+# ── 6. A closed channel drains, then refuses, and wakes the parked ──────
+late = Channel(Int32).new(1)
+closed_saw = ""
+group do |g|
+  g.spawn do
+    value = late.receive
+    closed_saw = value.is_a?(ChannelClosed) ? "closed" : "value"
+    0
+  end
+  g.spawn do
+    sleep(20)
+    late.close
+    0
+  end
+end
+fail("close did not wake the parked receiver with ChannelClosed") unless closed_saw == "closed"
+puts "close woke a parked receiver with ChannelClosed"
+
+# ── 7. `task.value` joins and answers what the block returned ───────────
+doubled = 0
+group do |g|
+  t = g.spawn do
+    sleep(10)
+    21
+  end
+  value = t.value
+  doubled = value.is_a?(Int32) ? value * 2 : -1
+end
+fail("task.value answered #{doubled // 2}") unless doubled == 42
+puts "task.value joined and answered"
+
+# ── 8. The join is deferred: an early return cannot leak a task ─────────
+def leaves_early(finished : Pointer(Int32)) : Nil
+  group do |g|
+    g.spawn do
+      sleep(30)
+      finished.value = 1
+      0
+    end
+    return
+  end
+end
+
+flag = Pointer(Int32).malloc(4_u64)
+flag.value = 0
+leaves_early(flag)
+fail("a `return` out of the group block left its task running") unless flag.value == 1
+puts "an early return still joined the group"
+
+puts "concurrency exercise: every property held"

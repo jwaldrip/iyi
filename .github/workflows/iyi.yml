@@ -233,6 +233,13 @@ jobs:
       - name: Build the samples again with their modules' source deleted
         run: bash bench/samples_roundtrip.sh
 
+      # III.4, built in III.4.8's order: a scheduler, cancellable blocking
+      # primitives, then `group` and `Channel`. Two arms because the context
+      # switch is naked asm and the optimiser is what corrupted it once; two
+      # failure proofs because a gate that cannot fail is not a gate.
+      - name: The concurrency runtime holds III.4's properties
+        run: bash bench/concurrency_exercise.sh
+
       # The same question asked of the other kind of artifact: one whose object
       # code is a shard's and whose declarations `tool bind` wrote. III.6 rule 1
       # names an undefined symbol and a call returning another type, and
