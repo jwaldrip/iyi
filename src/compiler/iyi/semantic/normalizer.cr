@@ -126,7 +126,153 @@ module Iyi
       ExceptionHandler.new(Nop.new, ensure: node.exp.transform(self)).at(node)
     end
 
+    # iyi: the typed group — SPEC.md III.4.9.
+    #
+    # From:
+    #
+    #     group do |g|
+    #       x = g.spawn { read(a) }
+    #       y = g.spawn { read(b) }
+    #     end
+    #
+    # To:
+    #
+    #     group do |g|
+    #       x = g.spawn { read(a) }
+    #       y = g.spawn { read(b) }
+    #       g.join
+    #       %v1 = x.value
+    #       if %v1.is_a?(::Error)
+    #         %v1
+    #       else
+    #         %v2 = y.value
+    #         if %v2.is_a?(::Error)
+    #           %v2
+    #         else
+    #           {%v1, %v2}
+    #         end
+    #       end
+    #     end
+    #
+    # The block stays a block, which is the hygiene: a name a task's body
+    # uses stays scoped to it, instead of being inlined into the caller
+    # where a later closure over the same name would freeze its type. The
+    # group method answers what its block answers, so the appended
+    # extraction *is* the group's value, and `!` applies through III.1.2's
+    # ordinary machinery: the tuple's elements are non-error by the same
+    # `is_a?(::Error)` narrowing `!` expands to, and the error side is the
+    # union of what the branches answer. The method's deferred join stays
+    # — a `return` between two spawns still joins — and finds nothing live
+    # after the appended one, which costs a comparison.
+    #
+    # What qualifies is what the section says: the block's parameter is used
+    # as the receiver of direct `spawn` statements and *nowhere else*. A
+    # spawn in a loop, an `if`, or a `g` that escapes falls back quietly to
+    # the general form, whose group is its block's last expression and whose
+    # handles answer through `task.value`; a `!` demanding the typed form of
+    # a group that cannot have one is refused by `!`'s own degenerate-union
+    # check, which names the type it found.
+    private def expand_iyi_group(node : Call) : ASTNode?
+      block = node.block
+      return nil unless block
+      group_param = block.args.first?
+      return nil unless group_param
+
+      body = block.body
+      statements = body.is_a?(Expressions) ? body.expressions.dup : [body] of ASTNode
+
+      handles = [] of ASTNode
+      rewritten = [] of ASTNode
+
+      statements.each do |statement|
+        spawn_call = iyi_direct_spawn(statement, group_param.name)
+        if spawn_call.is_a?(Call)
+          if statement.is_a?(Assign) && !statement.target.is_a?(Underscore)
+            handles << statement.target
+            rewritten << statement
+          else
+            handle = Var.new(program.new_temp_var_name).at(statement)
+            handles << handle
+            rewritten << Assign.new(handle.clone, spawn_call).at(statement)
+          end
+        else
+          # Any other use of the group parameter anywhere in the statement
+          # disqualifies: the tuple's arity has to be a fact of the text.
+          return nil if iyi_uses_var?(statement, group_param.name)
+          rewritten << statement
+        end
+      end
+      return nil if handles.empty?
+
+      rewritten << Call.new(Var.new(group_param.name).at(node), "join").at(node)
+
+      values = [] of ASTNode
+      handles.each do |handle|
+        value = Var.new(program.new_temp_var_name).at(node)
+        values << value
+        rewritten << Assign.new(value.clone, Call.new(handle.clone, "value").at(node)).at(node)
+      end
+
+      extraction = TupleLiteral.new(values.map(&.clone)).at(node).as(ASTNode)
+      values.reverse_each do |value|
+        is_error = IsA.new(value.clone, Path.global("Error").at(node)).at(node)
+        extraction = If.new(is_error, value.clone, extraction).at(node)
+      end
+      rewritten << extraction
+
+      block.body = Expressions.new(rewritten).at(node)
+      # The same call node, rewritten; the flag comes off so the transform
+      # this returns into normalizes the new body instead of reasking.
+      node.iyi_group = false
+      node
+    end
+
+    # The statement's own spawn, when the statement is exactly a direct one:
+    # `g.spawn { }` bare, or assigned to a variable or an underscore.
+    private def iyi_direct_spawn(statement : ASTNode, group_name : String) : Call?
+      target = statement.is_a?(Assign) ? statement.value : statement
+      return nil unless target.is_a?(Call)
+      return nil unless target.name == "spawn" && target.block
+      receiver = target.obj
+      return nil unless receiver.is_a?(Var) && receiver.name == group_name
+      # The spawn's own block must not smuggle the group out either.
+      spawn_block = target.block
+      return nil if spawn_block && iyi_uses_var?(spawn_block, group_name)
+      target
+    end
+
+    private def iyi_uses_var?(node : ASTNode, name : String) : Bool
+      scan = IyiVarScan.new(name)
+      node.accept(scan)
+      scan.found?
+    end
+
+    # :nodoc:
+    class IyiVarScan < Visitor
+      getter? found = false
+
+      def initialize(@name : String)
+      end
+
+      def visit(node : Var)
+        @found = true if node.name == @name
+        true
+      end
+
+      def visit(node : ASTNode)
+        true
+      end
+    end
+
     def transform(node : Call)
+      # iyi: the typed group (III.4.9). The parser marked the call; whether
+      # the *typed* form applies is this file's question, and a `nil` answer
+      # is the method call standing as written.
+      if node.iyi_group?
+        expanded = expand_iyi_group(node)
+        return expanded.transform(self) if expanded
+      end
+
       # Copy enclosing def's parameters to super/previous_def without parenthesis
       case node
       when .super?, .previous_def?
