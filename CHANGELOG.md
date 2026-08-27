@@ -43,13 +43,28 @@
   its second half before its receiver moves, and three parked senders
   drained in the order they parked.
 
+  `select` works, over any mix of receive and send arms, `else` included.
+  The expansion the compiler already had (`::Channel.select({arms})` and a
+  case over the index) is served by one variadic def: the arm tuple's
+  arity is a compile-time fact a macro walks, so no arity is special. An
+  arm parks with the same nonce-named node every plain call uses, a send
+  arm can win *while parked* — a receiver empties its box directly — and
+  on a cancelled task the first arm answers `Cancelled`, exactly as that
+  arm's own primitive would have. Two prelude debts surfaced and were
+  paid: `Object#===`, which any integer `case` needed, and
+  `TypeCastError`, which the expansion's `.as` names on its failure path
+  — a panic wearing the constant's name, since nothing here unwinds.
+
   Not built, and said so in III.4's margin: `Share` (one thread cannot
-  race, so it would refuse nothing testable), `select` (its protocol is
-  answered; the library half waits on the prelude's line ceiling having
-  room for it), the typed `group do ... end!` return
-  (compiler work), and every platform that is not Linux — wasm32 cannot
-  switch stacks, and an imitation is the thing III.4.8 refused to ship.
-  The prelude stands at 3,443 of its 3,551-line ceiling.
+  race, so it would refuse nothing testable), the typed
+  `group do ... end!` return (compiler work), and every platform that is
+  not Linux — wasm32 cannot switch stacks, and an imitation is the thing
+  III.4.8 refused to ship. The prelude stands at 3,624 lines against a
+  ceiling of 3,734 — remeasured, not raised: the ceiling is Crystal
+  0.1.0's core, that core shipped concurrency (`thread.cr`, `fiber/`, 183
+  lines), and the original list had left it out because iyi then had
+  nothing to compare it against. Same tree, same purpose, both sides
+  counted.
 
 ## 0.3.0 — 2026-08-26
 
@@ -1553,7 +1568,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 3,443-line library and nothing else. Every other
+  written against iyi's own 3,624-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
