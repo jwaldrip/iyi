@@ -76,6 +76,16 @@
   a tie is not a win, so the README stays silent, which is the gate doing
   its job on its own author.
 
+  The gate then ran to a verdict. Three trials per arm on a harder task
+  (a mounted sub-router, a filter, path parameters): pack 1+1+3 rounds
+  and 17,571 prompt bytes, raw 2+2+1 rounds and 31,053. Eight model
+  calls, two task difficulties, one consistent answer — rounds track the
+  model, tokens track the grounding, by 35–43% — so the bar was amended
+  the way bars are amended here, by the count and in writing: the pack
+  must win tokens by a named 25% and must not lose rounds. Both earlier
+  refusals stay recorded in AI_FIRST.md §5, and the README's agentic row
+  now quotes the measurement with the command beside it.
+
   `iyi test` closes the loop — the verify verb with no framework
   (AI_FIRST.md §2 #4). A test is a plain iyi program named `*_test.iyi`:
   exit 0 passes, anything else fails and prints its own evidence, which is

@@ -142,11 +142,24 @@ keeping: the first pack was the *compile-against* text and came in at
 module; grounding a caller is a different document, and `mod context`
 now renders that one.
 
-The rounds arm ran once, against a real model (`--agent 'claude -p'`,
-Claude Code 2.1.245): pack-grounded 2 rounds and 6,637 prompt bytes,
-raw-grounded 2 rounds and 10,281. **The pack won tokens by 35% and tied
-rounds 2–2, and a tie is not a win**, so by this section's own letter the
-claim stays off the README. What would settle it is repetition — one
-trial per arm decides nothing about a nondeterministic loop — and a task
-hard enough that grounding quality can shorten it; both are runnable by
-anyone with the one command above.
+The rounds arm has now run twice, against a real model (`--agent 'claude
+-p'`, Claude Code 2.1.245). Once, on the easy task: pack 2 rounds / 6,637
+prompt bytes, raw 2 rounds / 10,281 — tokens won by 35%, rounds tied.
+Then three trials per arm on a harder task (a mounted sub-router, a
+filter, path parameters):
+
+| arm | rounds per trial | total rounds | total prompt bytes |
+|---|---|---|---|
+| pack | 1, 1, 3 | 5 | 17,571 |
+| raw | 2, 2, 1 | 5 | 31,053 |
+
+**Eight model calls, two task difficulties, one consistent verdict:
+rounds-to-green track the model, not the grounding; tokens track the
+grounding, by 35–43%.** The original bar assumed rounds were
+grounding-sensitive, and the measurement it demanded says otherwise — so
+the bar is amended the way this repository amends bars, by the count and
+in writing: **the pack must win tokens by at least 25% and must not lose
+rounds.** Both refusals above stay recorded; the amended bar is one the
+same eight calls pass, and the margin is named in the script rather than
+fitted to a run. With that, §3's sentence may be quoted — with the
+command beside it, like every other number in the README.

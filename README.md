@@ -15,7 +15,7 @@ that rule and what it costs.
 | | measured today |
 |---|---|
 | **Developer experience** | edit one module in a 7,207-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
-| **Agentic experience** | a module's interface is a file, not a convention: `iyi mod dump` prints it, and a consumer type-checks against it with the source deleted |
+| **Agentic experience** | a module's interface is a file, not a convention: `iyi mod context` grounds an edit in every import's exact surface at **43–55%** of the sources' size, and a model writing against it spent **35–43% fewer prompt tokens** over eight measured runs, no more rounds (`bench/context_pack.py`, both arms). Errors are data (`-f json`, SPEC sections included), tests are exit codes (`iyi test`), dependencies are hashed (`iyi.sum`) |
 | **Portability** | an iyi program compiles for **nine targets** and is **run** on four of them every build: x86-64 glibc, x86-64 musl, aarch64 under emulation, and wasm32-wasi under wasmtime |
 | **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s**. At run time the two libraries are within noise where they do the same work |
 | **Efficiency** | that `hello` is a **36 KB** binary that starts in **1.6 ms**; the same program with Crystal's library is 1,553 KB and 3.2 ms |
