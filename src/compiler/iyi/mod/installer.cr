@@ -8,6 +8,7 @@
 #
 # No manifest, no table, no behaviour change: the manifest is the opt-in.
 require "./resolver"
+require "./sum"
 require "./fetcher"
 
 module Iyi::Mod
@@ -23,6 +24,13 @@ module Iyi::Mod
       root = ModFile.parse(File.read(manifest_path), manifest_path)
       selections = Resolver.resolve(root) do |path, version|
         Fetcher.manifest(path, version)
+      end
+
+      # Fact against policy, before anything is compiled: every selection's
+      # checkout is hashed against `iyi.sum`, a mismatch is a refusal, and a
+      # missing entry is recorded — the tool writes facts down (III.7 step 2).
+      Sum.check(entry_dir, selections) do |selection|
+        Fetcher.checkout(selection.path, selection.version)
       end
 
       table = selections.map do |selection|
