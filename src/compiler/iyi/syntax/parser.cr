@@ -2150,15 +2150,60 @@ module Iyi
       header
     end
 
-    # iyi: `import std/json`
+    # iyi: `import std/json`, and `import github.com/user/lib/http` (SPEC.md
+    # III.7): a package path's host-shaped segments carry `.` and `-`, which
+    # IV.6 #6's grammar refuses because those segments never become a type
+    # name — the in-package path does that, and it is checked where the
+    # package's own files load. The relaxed spelling is import-only; a
+    # module header stays under the strict grammar.
     def parse_import
       location = @token.location
       next_token_skip_space
-      path = parse_module_path
+      path = parse_import_path
       node = ImportDecl.new(path)
       node.at(location)
       node.end_location = token_end_location
       node
+    end
+
+    # Like `parse_module_path`, with dotted and hyphened segments admitted.
+    # A `.` or `-` extends the current segment only when it is attached on
+    # both sides — `github.com`, `crystal-lang` — so `a . b` stays the
+    # method call it reads as. The strict segment check is applied to any
+    # segment that stayed plain, so `import App/Thing` is refused exactly
+    # as before.
+    private def parse_import_path : Array(String)
+      segments = [] of String
+      segments << parse_import_path_segment
+
+      while @token.type.op_slash?
+        suppress_regex
+        next_token
+        segments << parse_import_path_segment
+      end
+
+      @wants_regex = true
+      skip_space
+      segments
+    end
+
+    private def parse_import_path_segment : String
+      check Token::Kind::IDENT
+      segment = String.build do |io|
+        io << @token.value
+        while (current_char == '.' || current_char == '-') &&
+              peek_next_char.ascii_lowercase?
+          io << current_char
+          next_char
+          next_token
+          check Token::Kind::IDENT
+          io << @token.value
+        end
+      end
+      check_module_path_segment(segment) unless segment.includes?('.') || segment.includes?('-')
+      suppress_regex
+      next_token
+      segment
     end
 
     # iyi: `using app/greeter`, `using app/greeter::{polite, Greet}` (SPEC.md II.3)
@@ -2173,7 +2218,7 @@ module Iyi
     def parse_using
       location = @token.location
       next_token_skip_space
-      path = parse_module_path
+      path = parse_import_path
       names = parse_using_names if @token.type.op_colon_colon?
 
       node = UsingDecl.new(path, names)
