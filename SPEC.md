@@ -2456,6 +2456,15 @@ by being bottom-up. And the `defer`red join stays: the expansion joins
 early to read values, the deferred join then finds `@live` at zero and
 costs one comparison — the leak guarantee is not traded for the type.
 
+**Where the compiler hooks, decided by precedent.** `group` is a prelude
+method today, and the expansion recognises it the way `.or` and
+`.or_panic` are recognised (III.1.3): at the call site, by name, in an iyi
+file only — which makes `group` a reserved name in iyi, the cost that
+"compiler-known" always charges. The alternative was a keyword like
+`defer`, and it buys nothing here: the dynamic case must keep lowering to
+the method call anyway, so the name is load-bearing with or without a
+parse node of its own.
+
 Unbuilt, and gated the way everything above was: the expansion lands with
 its own exercise properties (a typed group's tuple, its first-error union,
 `!` off the group, the refusal message for a spawn in a loop) before the
