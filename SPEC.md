@@ -2058,7 +2058,7 @@ hook, and the prelude's own definition of it is untouched. Compile-time
 `responds_to?` works unchanged, which the error message is entitled to claim
 because it is tested.
 
-### III.4 Concurrency: **PROPOSED; III.4.4's gate cleared by the count in III.4.7**
+### III.4 Concurrency: **BUILT on Linux in III.4.8's order — scheduler, cancellable primitives, `group`, `Channel`; `Share`, `select` and the typed group return still open**
 
 This is the section where the design either beats Go or does not, so it is worth
 being blunt about where Go actually loses. Not goroutines: they are cheap, the
@@ -2285,7 +2285,7 @@ spawns nothing. For the samples it can: the three failures are `Nums`, `Words`
 and the Kemal router's route table, and the router is precisely the thing a
 server would share across tasks.
 
-#### III.4.8 What to build first, and what not to build: **SETTLED: nothing before a scheduler**
+#### III.4.8 What to build first, and what not to build: **SETTLED: nothing before a scheduler; BUILT in that order**
 
 III.4 is specified and unbuilt, and the question this section had left open is
 not whether to build it but which piece first. Asked properly, the answer is
@@ -2334,6 +2334,44 @@ The dependency floor (III.9) is the other cost to name in advance: a program's
 Linux object has zero undefined symbols today because the prelude issues raw
 syscalls. A poller is more syscalls, which is fine, but a scheduler that reached
 for pthreads would put libc back on the link line and take III.9 with it.
+
+**Built, in exactly that order, and measured where it can lie.** The runtime
+is `src/iyi/concurrency.iyi`: a one-word context (the saved stack pointer,
+everything else lives on the stack it names), a naked two-instruction-set
+switch that `@[NoInline]` had to protect from the optimiser before the
+release build stopped faulting, 256 KiB fiber stacks over the runtime's own
+`mmap` with a guard page under each, a run queue, a deadline-sorted sleep
+list, and an `epoll` the scheduler drains whenever nothing is runnable — raw
+syscalls throughout, so the floor above holds: the gate counts the exercise
+binary's undefined symbols and the runtime is allowed to add none, and the
+aarch64 object still has zero.
+
+`bench/concurrency_exercise.sh` is the gate, and its first property is the
+one slice 2 was rejected over: two tasks ping-pong through channels and the
+letters must alternate, which a sequential `group` cannot produce; the gate
+then proves that assert can fail by running a misordered copy and requiring
+exit 1. The III.4.2 claim is asserted as time: a task blocked in a 10 s
+sleep leaves in tens of milliseconds when a sibling fails, or the exercise
+fails. Cancellation is delivered as a value — a woken primitive answers
+`Cancelled`, an ordinary error member, so `!` drains a cancelled task
+through its remaining waits, which is III.1.2 doing III.4.2's plumbing. The
+join is `defer`'s lowering applied to a task set, as III.4.1 predicted: a
+`return` out of the block still joins, and the gate holds a deadlocked
+program to a diagnosis (`deadlock: every fiber is blocked`) rather than a
+hang.
+
+What is *not* built, said here rather than left to be found: `Share` gates
+nothing yet, and deliberately — one thread interleaves only at parks and
+cannot race, so the marker would refuse nothing testable until a second
+thread exists (the shape this document has refused three times now);
+`select` and the unbuffered rendezvous channel arrive together, since both
+are the same second protocol; `group do ... end!` typing its own return
+union (III.4.1's final shape) is compiler work, and today a task's union
+comes out through `task.value`; a fiber blocked *joining* is the one park
+cancellation does not reach, which a failing group papers over by
+cancelling every child; and the other platforms get nothing rather than an
+imitation — wasm32 cannot switch stacks, and darwin's arm waits for a
+kqueue poller nobody has measured yet.
 
 ### III.5 Module initialisation: **PROPOSED; rules 1, 2 and 4 BUILT**
 

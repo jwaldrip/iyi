@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Concurrency exists, in exactly the order III.4.8 said it must.** A
+  scheduler, then cancellable blocking primitives, then `group` and
+  `Channel` — never the cheap slices: no `Share` marker gating nothing, no
+  sequential `group` wearing concurrency's spelling. `src/iyi/concurrency.iyi`
+  is the runtime: a one-word context (the saved stack pointer), a naked
+  context switch for x86-64 and aarch64 that `@[NoInline]` had to protect
+  before the release build stopped faulting, 256 KiB fiber stacks with a
+  guard page each, a run queue, a deadline-sorted sleep list, and an `epoll`
+  drained whenever nothing is runnable. Raw syscalls throughout, so the
+  dependency floor (III.9) holds: the gate allows the runtime zero new
+  undefined symbols, and the aarch64 object still has none.
+
+  The surface is III.4.1's: `group do |g| ... end` with no bare spawn, the
+  join deferred so no exit — not a `return`, not an error through `!` —
+  leaves a task running; `g.spawn { }` answering a task whose `value` joins;
+  the first failing task cancelling its siblings. Cancellation reaches a
+  *blocked* fiber (III.4.2) and arrives as a value: a woken primitive
+  answers `Cancelled`, an ordinary error member, so `!` drains a cancelled
+  task through its remaining waits — III.1.2 doing III.4.2's plumbing.
+  `sleep`, `wait_readable` and `iyi_read` are the cancellable primitives;
+  `Channel(T)` is buffered, drains before it refuses, and `close` wakes
+  every parked fiber with `ChannelClosed`.
+
+  `bench/concurrency_exercise.sh` gates it, plain and `--release`, with two
+  failure proofs: a deadlocked program must exit 1 naming the deadlock
+  rather than hang, and the interleaving assert must itself be reachable —
+  a misordered copy must fail. The anti-sequential properties are asserted,
+  not printed: a channel ping-pong whose letters must alternate, two 150 ms
+  sleeps that must overlap, a 10 s sleep that must end in tens of
+  milliseconds when a sibling fails.
+
+  Not built, and said so in III.4's margin: `Share` (one thread cannot
+  race, so it would refuse nothing testable), `select` and the unbuffered
+  channel (one protocol, together), the typed `group do ... end!` return
+  (compiler work), and every platform that is not Linux — wasm32 cannot
+  switch stacks, and an imitation is the thing III.4.8 refused to ship.
+  The prelude stands at 3,459 of its 3,551-line ceiling.
+
 ## 0.3.0 — 2026-08-26
 
 **A shard crosses a boundary.** 0.2.0 swept nine shards through `--crystal` and

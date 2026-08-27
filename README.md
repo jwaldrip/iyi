@@ -95,8 +95,10 @@ that prints each one is named beside it.
 **Where it loses**, said here rather than left to be found: a full build of a
 6,912-line program from scratch is 0.24 s against `go build`'s 0.09 s. The
 current compiler reports `0.3.0`. iyi's own prelude has no IO beyond
-`puts` and no concurrency; `--crystal` supplies Crystal's standard library,
-IO, `require` and the ecosystem. Neither mode supplies a package manager.
+`puts`, and its concurrency — a cooperative scheduler, `group`/`spawn`,
+`Channel`, cancellable `sleep` and reads (SPEC.md III.4) — is Linux-only;
+`--crystal` supplies Crystal's standard library, IO, `require` and the
+ecosystem. Neither mode supplies a package manager.
 
 ## The program that makes the argument
 
