@@ -95,6 +95,17 @@
   that can hang is not a harness. `--json` reports the run as data.
   `bench/test_verb.sh` gates all four verdicts.
 
+  The sandbox story is written and measured — SPEC.md III.12. Built by
+  subtraction: zero undefined symbols natively, and on wasm32-wasi an
+  *absence* rather than a permission, because the prelude never grew a
+  `File` surface there. `bench/sandbox_story.sh` holds it to three steps:
+  an honest program computes through the boundary, a theft of
+  `/etc/passwd` dies non-zero with not one byte in its output under a
+  default wasmtime, and the refusal is the prelude's own sentence. And
+  `iyi doc` exists — III.8's verb, a renderer over the surface the
+  artifact already carries: functions, types, methods, docs; no bodies,
+  nothing private; from a `.iyimod` directly or a `.iyi` compiled alone.
+
 - **Concurrency exists, in exactly the order III.4.8 said it must.** A
   scheduler, then cancellable blocking primitives, then `group` and
   `Channel` — never the cheap slices: no `Share` marker gating nothing, no

@@ -177,6 +177,13 @@ if [ "$hash_before" = "$hash_signature" ]; then
   exit 1
 fi
 
+# ── 9. `iyi doc`: the surface, for a person this time ─────────────────────
+step "iyi doc prints the surface from source and from the artifact"
+"$IYI" doc docs/docd.iyi > doc.txt 2>&1 || { cat doc.txt; exit 1; }
+grep -q '# Answers the only question.' doc.txt || { echo "the doc comment is missing:"; cat doc.txt; exit 1; }
+grep -q 'pub def answer : Int64' doc.txt || { echo "the signature is missing:"; cat doc.txt; exit 1; }
+grep -q '42' doc.txt && { echo "a body leaked into the doc"; exit 1; }
+
 echo "workdir $WORK"
 echo "packages gate: every step held"
 exit 0

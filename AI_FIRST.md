@@ -78,9 +78,19 @@ demands:
   hung-killed-at-deadline, because a harness that can hang is not a
   harness. `--json` is the machine contract. No framework: exit 0 is the
   whole protocol, which is the same one every gate in `bench/` runs on.
+- **8** — the sandbox story (the commit this update rides with), SPEC.md
+  III.12: built by subtraction — zero undefined symbols natively, and on
+  wasm32 an *absence* rather than a permission, since the prelude never
+  grew a `File` surface there. `bench/sandbox_story.sh` measures it: an
+  honest program computes through the boundary, a theft of `/etc/passwd`
+  dies named and empty-handed under a default wasmtime. In CI beside the
+  cross-compile arm. `iyi doc` rode along — III.8's doc verb, a renderer
+  over the surface data items 1 and 2 already carry, for a `.iyimod` or a
+  `.iyi` compiled alone.
 
-All five are gated: 1, 2, 3 and 6 in `bench/packages_resolve.sh`, 4 in
-`bench/test_verb.sh`.
+All of them are gated: 1, 2, 3 and 6 in `bench/packages_resolve.sh` (which
+also asserts `iyi doc`), 4 in `bench/test_verb.sh`, 8 in
+`bench/sandbox_story.sh`.
 
 Free advertising, no work: `iyi mod diff --exit-code` already answers the
 agent question "did I break the API"; document it as a harness contract.
