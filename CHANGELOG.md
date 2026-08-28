@@ -17,8 +17,8 @@
   protocol because no other language wrote its interfaces down:
   `iyi/contextPack` serves the grounding pack over the wire and
   `iyi/surface` serves a module's rendered surface, dirty buffer
-  included. `bench/lsp_session.py` is the gate: one scripted session,
-  ten steps, in CI beside the other verbs.
+  included. `bench/lsp_session.py` is the gate: one scripted session, a
+  step per claim, in CI beside the other verbs.
 
 - **Editor buffers reach the compiler — `iyi_file_overrides`.** One hash
   of path → buffer, consulted in exactly the two places imports read
@@ -56,6 +56,36 @@
   it and the rename leaves a program that does not compile. `UsingDecl`
   carries per-name locations from the parser now, and the gate's step is
   one request, three edits, two files, both buffers clean after.
+
+- **The rest of the protocol — `iyi lsp` at gopls parity.** One session
+  now speaks the whole everyday surface. Incremental sync: range edits
+  applied in wire units, so a large buffer stops paying full-text tax on
+  every keystroke. Signature help while the call is half-typed — the
+  callee found by text, because there is no syntax yet; its overloads
+  off the typed graph, falling back to every def a call by that name
+  already resolved to, which is how a `using`-imported name answers.
+  Hover grown to carry the def's signature as written and the `#` doc
+  comment above it. Type definition, unwrapping virtual, metaclass,
+  generic-instance and union shells to the declaration sites. Document
+  highlight — references scoped to one buffer, the declaration marked
+  as the write. Prepare-rename, so the refusal arrives before the input
+  box opens. Folding — the outline for declarations, the text for
+  comment and import runs, all of it alive in a buffer that does not
+  parse. Workspace symbols — every `.iyi` under the root, subsequence
+  match, open buffers winning over the disk, no index. Formatting —
+  `Iyi.format` in process, one whole-document edit. Inlay hints — the
+  inferred type after a bare assignment, the parameter's name before a
+  positional literal, deduped across a generic's instantiations. The
+  compiler's own "Did you mean 'x'?" re-served as a quickfix whose edit
+  was computed when the error was. And semantic tokens from the lexer
+  alone — which, for a language no editor ships a grammar for, means
+  any LSP client colors `.iyi` correctly on day one. One named piece of
+  state where the design said none: the last compile is memoised by
+  (path, buffer, siblings) — the key is the whole input, so a hit
+  cannot differ from a recompile; it exists because one keystroke now
+  asks four questions of the same buffer. The gate grew a step per
+  claim: 26 steps, each of these sentences asserted in the present
+  tense.
 
 ## 0.4.0 — 2026-08-28
 

@@ -3098,6 +3098,38 @@ each taught something:
   files (declaration, call, `using` selection), both buffers clean
   after.
 
+**The rest of gopls' table followed, and the pattern held: compile,
+then visit — or don't compile at all.** One editing session now speaks
+the whole everyday protocol. Incremental sync applies range edits in
+wire units, so a large buffer stops paying full-text tax per keystroke.
+Signature help fires while the call is half-typed — the callee is found
+by text, because there is no syntax yet, and its overloads come off the
+typed graph, falling back to every def a call by that name already
+resolved to, which is how a `using`-imported name answers. Hover grew
+the def's signature as written and the `#` doc comment above it. Type
+definition unwraps virtual, metaclass, generic-instance and union
+shells to the declaration sites. Document highlight is references
+scoped to one buffer; prepare-rename is the same question asked first,
+so the refusal arrives before the input box opens. Folding takes
+declarations from the outline and comment/import runs from the text,
+so it survives a buffer that does not parse. Workspace symbols walk
+every `.iyi` under the root with subsequence match, open buffers
+winning over the disk — no index, because parsing a module costs
+microseconds and an index is a cache with an invalidation story.
+Formatting is `Iyi.format` in process, one whole-document edit. Inlay
+hints are the facts the typed graph holds and the source omits: the
+inferred type after a bare assignment, the parameter's name before a
+positional literal. The compiler's own "Did you mean 'x'?" is re-served
+as a quickfix whose edit was computed when the error was. And semantic
+tokens come from the lexer alone — which, for a language no editor
+ships a grammar for, means any LSP client colors `.iyi` correctly on
+day one, no client-side configuration at all. One named piece of state
+where this section promised none: the last compile is memoised by
+(path, buffer, siblings) — the key is the whole input, so a hit cannot
+differ from a recompile; it earns its line because one keystroke now
+asks four questions of the same buffer. The gate grew a step per
+claim: 26 steps, each of these sentences in the present tense.
+
 #### 3. The rest of the verbs, and which are design consequences
 
 | Go | iyi today | what it needs |
