@@ -788,7 +788,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 99,839 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 100,063 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3188,6 +3188,15 @@ hidden), and every `didChange` for one document already queued applies
 before the compile runs, so six keystrokes cost at most two compiles
 and the verdict is the text the person actually sees. The gate holds
 40 steps, the burst and the overtaking cancel both literal.
+
+**Two conveniences rounded the table off.** Document links make the
+import block clickable — `import calc/lexer` and the `using` line
+under it both target the file, resolved against the root the header
+names, by text, so a broken buffer still links. And type hierarchy
+walks both ways off the compiled type tree: supertypes are the named
+ancestors (an impl's trait included, because the impl became an
+`include`), subtypes are the implementors walk generalised past
+traits. The gate holds 43 steps.
 
 #### 3. The rest of the verbs, and which are design consequences
 

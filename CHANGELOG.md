@@ -137,6 +137,13 @@
   six keystrokes cost at most two compiles instead of six, and the
   verdict is the final text's. The gate holds 40 steps.
 
+- **Document links and type hierarchy.** The import block is clickable
+  — `import calc/lexer` and its `using` line both target the file,
+  resolved by text against the header-named root, alive in a broken
+  buffer. Type hierarchy walks the compiled type tree both ways:
+  supertypes include the traits an impl brought in, subtypes are the
+  implementors walk generalised past traits. The gate holds 43 steps.
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a
