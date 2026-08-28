@@ -19,6 +19,7 @@ require "../mod/installer"
 require "../tools/context"
 require "../tools/implementations"
 require "./references"
+require "./inlay"
 
 module Iyi::Lsp
   # One diagnostic, in iyi's own units; the server converts at the edge.
@@ -37,9 +38,29 @@ module Iyi::Lsp
     # goes mute while you type is a server you turn off.
     @last_good = {} of String => Compiler::Result
 
+    # The last compile, keyed by exactly what determines it: the path,
+    # the buffer, and the sibling buffers. One keystroke triggers
+    # diagnostics, then often hover, highlight, inlay hints — the same
+    # question compiled four times is the same answer computed once.
+    # This is not incremental state: the key *is* the whole input, so a
+    # hit can never differ from a recompile.
+    @memo_key : {String, UInt64, UInt64}?
+    @memo : {Compiler::Result?, Array(Diag)}?
+
     # Compile one buffer as its own entry, front end only. Returns the
     # typed result and no diagnostics, or nil and what went wrong.
     def check(path : String, text : String, overrides : Hash(String, String)) : {Compiler::Result?, Array(Diag)}
+      key = {path, text.hash, overrides.hash}
+      if @memo_key == key && (hit = @memo)
+        return hit
+      end
+      answer = compile(path, text, overrides)
+      @memo_key = key
+      @memo = answer
+      answer
+    end
+
+    private def compile(path : String, text : String, overrides : Hash(String, String)) : {Compiler::Result?, Array(Diag)}
       table =
         begin
           Mod::Installer.table_for(File.dirname(path))
@@ -130,6 +151,133 @@ module Iyi::Lsp
           items.concat methods_of(self_type, kind: 3) # Function
         end
         items
+      end
+    end
+
+    # One overload a signature-help answer offers: the label as the
+    # author wrote it, each parameter's own spelling (a substring of the
+    # label, which is how LSP highlights the active one), and the doc
+    # comment if the def carried one.
+    record Signature, label : String, params : Array(String), doc : String?
+
+    # Signature help: every overload of `name` callable at this cursor,
+    # on `receiver` if the call has one. The buffer mid-call almost never
+    # compiles — the `(` just landed — so this rides `result_for`'s last
+    # good result and resolves the callee by name through the scope the
+    # cursor sits in, the same order a call resolves: the receiver's
+    # type's defs, ancestors after, or bare, `self`'s then the module's.
+    def signatures_at(path : String, text : String, overrides : Hash(String, String), line : Int32, column : Int32, receiver : String?, name : String) : Array(Signature)
+      result = result_for(path, text, overrides)
+      return [] of Signature unless result
+
+      contexts = ContextVisitor.new(Location.new(path, line, column))
+        .process(result).contexts
+      scope = {} of String => Type
+      contexts.try &.each { |ctx| ctx.each { |key, type| scope[key] ||= type } }
+
+      defs = [] of Def
+      if receiver
+        if type = scope[receiver]?
+          collect_defs_named(type, name, defs, include_private: false)
+        elsif receiver[0]?.try(&.ascii_uppercase?) && (type = result.program.types[receiver]?)
+          # `Point.new(` — a call on the type itself answers from its
+          # metaclass, where `new` and the class methods live.
+          collect_defs_named(type.metaclass, name, defs, include_private: false)
+        end
+      else
+        if self_type = scope["self"]?
+          collect_defs_named(self_type, name, defs, include_private: true)
+        end
+        collect_defs_named(result.program, name, defs, include_private: true)
+      end
+
+      # The scope's def tables miss what `using` brought into the
+      # module; the typed graph does not. A call by this name that the
+      # last good compile already bound knows its overloads exactly.
+      if defs.empty?
+        defs = CallsNamedVisitor.new(path, name).process(result)
+      end
+
+      seen = Set({String, Int32, Int32}).new
+      signatures = [] of Signature
+      defs.each do |a_def|
+        location = a_def.location
+        next unless location
+        next unless seen.add?({location.filename.to_s, location.line_number, location.column_number})
+        signatures << Signature.new(
+          signature_of(a_def),
+          a_def.args.map(&.to_s),
+          a_def.doc)
+      end
+      signatures
+    end
+
+    # Inlay hints: the facts the typed graph holds for this span of the
+    # file — inferred types of bare assignments, names of positional
+    # literal arguments.
+    def inlay_hints_at(path : String, text : String, overrides : Hash(String, String), from_line : Int32, to_line : Int32) : Array(InlayVisitor::Hint)
+      result = result_for(path, text, overrides)
+      return [] of InlayVisitor::Hint unless result
+      InlayVisitor.new(path, from_line, to_line).process(result)
+    end
+
+    # Type definition: where the type of the name under the cursor is
+    # declared. The name's type comes from the scope; the declaration
+    # sites come off the type itself, unions fanning out to every member.
+    def type_locations_at(path : String, text : String, overrides : Hash(String, String), line : Int32, column : Int32, word : String?) : Array(Location)
+      return [] of Location unless word
+      result = result_for(path, text, overrides)
+      return [] of Location unless result
+
+      # A type name under the cursor answers with itself.
+      if word[0]?.try(&.ascii_uppercase?) && (type = result.program.types[word]?)
+        return locations_of(type)
+      end
+
+      contexts = ContextVisitor.new(Location.new(path, line, column))
+        .process(result).contexts
+      scope = {} of String => Type
+      contexts.try &.each { |ctx| ctx.each { |key, type| scope[key] ||= type } }
+      if type = scope[word]?
+        locations_of(type)
+      else
+        [] of Location
+      end
+    end
+
+    # A type's declaration sites, unwrapped the way a person reads the
+    # name: virtual and metaclass shells off, a generic instance back to
+    # the generic it instantiates, a union to all its members.
+    private def locations_of(type : Type) : Array(Location)
+      type = type.devirtualize
+      return locations_of(type.instance_type) if type.metaclass?
+      case type
+      when UnionType
+        type.union_types.flat_map { |member| locations_of(member) }
+      when GenericInstanceType
+        locations_of(type.generic_type)
+      else
+        (type.locations || [] of Location).select { |loc| loc.filename.is_a?(String) }
+      end
+    end
+
+    # Every overload of `name` on `type`, resolution order: the type,
+    # then its ancestors; a union offers what any member offers.
+    private def collect_defs_named(type : Type, name : String, into : Array(Def), include_private : Bool) : Nil
+      members =
+        if type.is_a?(UnionType)
+          type.union_types
+        else
+          [type] of Type
+        end
+      members.each do |member|
+        ([member] + member.ancestors).each do |owner|
+          owner.defs.try &.[name]?.try &.each do |item|
+            a_def = item.def
+            next if a_def.visibility.private? && !include_private
+            into << a_def
+          end
+        end
       end
     end
 
@@ -256,6 +404,41 @@ module Iyi::Lsp
       end
 
       Diag.new(anchor[1], anchor[2], anchor[3], message, Iyi.iyi_spec_references(message), related)
+    end
+  end
+
+  # Every def a call named `name` in `file` resolved to, off one typed
+  # result — the source signature help falls back to when the scope's
+  # tables cannot see a `using`-imported name.
+  class CallsNamedVisitor < Visitor
+    include TypedDefProcessor
+
+    getter defs = [] of Def
+    @target_location : Location
+
+    def initialize(@file : String, @name : String)
+      @target_location = Location.new(@file, 1, 1)
+    end
+
+    def process(result : Compiler::Result) : Array(Def)
+      process_result result
+      result.node.accept self
+      defs
+    end
+
+    def process_typed_def(typed_def : Def) : Nil
+      typed_def.accept self
+    end
+
+    def visit(node : Call)
+      if node.name == @name && node.location.try(&.filename) == @file
+        node.target_defs.try &.each { |target| @defs << target }
+      end
+      true
+    end
+
+    def visit(node)
+      true
     end
   end
 
