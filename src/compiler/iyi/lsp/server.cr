@@ -20,7 +20,9 @@
 #   textDocument/typeDefinition — where the name's *type* is declared
 #   textDocument/documentSymbol — the file's outline, from the parser
 #   textDocument/documentHighlight · foldingRange · workspace/symbol
-#   textDocument/completion · references · rename (with prepare)
+#   textDocument/completion     — the scope fuzzy-ranked, plus the
+#     workspace's exports, their `import`/`using` pair riding as edits
+#   textDocument/references · rename (with prepare) — workspace-wide
 #   textDocument/signatureHelp  — overloads while the call is half-typed
 #   textDocument/formatting     — the formatter, in process
 #   textDocument/inlayHint      — inferred types and parameter names
@@ -56,6 +58,7 @@ require "uri"
 require "./analysis"
 require "./outline"
 require "./tokens"
+require "./exports"
 require "../tools/formatter"
 
 module Iyi::Lsp
@@ -642,12 +645,54 @@ module Iyi::Lsp
         return respond_null(id) if receiver.empty?
       end
 
-      items = @analysis.completion_at(
+      scope_items = @analysis.completion_at(
         path, text, overrides_for(path), line0 + 1, anchor + 1, receiver)
-      items.select! { |(label, _, _)| label.starts_with?(prefix) } unless prefix.empty?
+
+      # {label, detail, kind, tier, from module, additional edits}.
+      # The tier leads sortText: prefix matches before fuzzy ones,
+      # the scope before the workspace, keywords in between.
+      rows = [] of {String, String, Int32, Char, String?, Array({Int32, Int32, Int32, String})?}
+      scope_items.each do |(label, detail, kind)|
+        if prefix.empty? || label.starts_with?(prefix)
+          rows << {label, detail, kind, kind == 6 ? '0' : '1', nil, nil}
+        elsif fuzzy_match?(prefix, label)
+          rows << {label, detail, kind, '4', nil, nil}
+        end
+      end
+
       if receiver.nil?
         KEYWORDS.each do |keyword|
-          items << {keyword, "keyword", 14} if prefix.empty? || keyword.starts_with?(prefix)
+          rows << {keyword, "keyword", 14, '2', nil, nil} if prefix.empty? || keyword.starts_with?(prefix)
+        end
+
+        # The workspace's exported defs, auto-import riding along: the
+        # item inserts the name, and the `import`/`using` pair a person
+        # (or a model) forgets arrives as additionalTextEdits. Parse
+        # only — R-2 wrote `pub` at the declaration, so the offer works
+        # in a buffer that has never compiled.
+        unless prefix.empty?
+          own = Exports.header_of(text)
+          seen = rows.map { |(label, _, _, _, _, _)| label }.to_set
+          count = 0
+          workspace_entries.each do |(entry_path, entry_text)|
+            break if count >= 100
+            next if entry_path == path
+            Exports.of(entry_text, entry_path).each do |item|
+              next if item.module_path == own
+              next if seen.includes?(item.name)
+              tier =
+                if item.name.starts_with?(prefix)
+                  '3'
+                elsif fuzzy_match?(prefix, item.name)
+                  '5'
+                end
+              next unless tier
+              rows << {item.name, item.detail, 3, tier, item.module_path,
+                       import_edits(text, item.module_path, item.name)}
+              seen << item.name
+              count += 1
+            end
+          end
         end
       end
 
@@ -656,19 +701,81 @@ module Iyi::Lsp
           json.field "isIncomplete", false
           json.field "items" do
             json.array do
-              items.each do |(label, detail, kind)|
+              rows.each do |(label, detail, kind, tier, from_module, edits)|
                 json.object do
                   json.field "label", label
                   json.field "kind", kind
                   json.field "detail", detail
-                  # Scope first, methods next, keywords last.
-                  json.field "sortText", "#{kind == 6 ? '0' : kind == 14 ? '2' : '1'}#{label}"
+                  json.field "sortText", "#{tier}#{label}"
+                  if from_module
+                    json.field "labelDetails" do
+                      json.object { json.field "description", from_module }
+                    end
+                    json.field "documentation", "from #{from_module}"
+                  end
+                  if edits && !edits.empty?
+                    json.field "additionalTextEdits" do
+                      json.array do
+                        edits.each do |(edit_line, edit_start, edit_end, new_text)|
+                          json.object do
+                            json.field "range" { range(json, edit_line, edit_start, edit_line, edit_end) }
+                            json.field "newText", new_text
+                          end
+                        end
+                      end
+                    end
+                  end
                 end
               end
             end
           end
         end
       end
+    end
+
+    # The edits that make `name` from `module_path` bare-callable in
+    # this buffer: extend the module's selective `using`, or write the
+    # `import`/`using` pair after the last import (or the header). Nil
+    # when the name is already reachable — no edit is the right edit.
+    private def import_edits(text : String, module_path : String, name : String) : Array({Int32, Int32, Int32, String})?
+      lines = text.lines
+      header_index : Int32? = nil
+      last_import : Int32? = nil
+      has_import = false
+      selective : {Int32, Array(String)}? = nil
+
+      lines.each_with_index do |line, index|
+        stripped = line.strip
+        if header_index.nil? && stripped.starts_with?("module ")
+          header_index = index
+        elsif stripped == "import #{module_path}"
+          has_import = true
+          last_import = index
+        elsif stripped.starts_with?("import ") || stripped.starts_with?("using ")
+          last_import = index
+          if stripped == "using #{module_path}"
+            return nil # everything exported is already in scope
+          elsif stripped.starts_with?("using #{module_path}::{") && stripped.ends_with?('}')
+            names = stripped.lchop("using #{module_path}::{").rchop.split(',').map(&.strip)
+            return nil if names.includes?(name)
+            selective = {index, names}
+          end
+        end
+      end
+
+      if pick = selective
+        index, names = pick
+        line = lines[index]
+        end_ch = Lsp.character_of(line, line.chars.size + 1)
+        return [{index, 0, end_ch, "using #{module_path}::{#{names.join(", ")}, #{name}}"}]
+      end
+
+      anchor = (last_import || header_index || -1) + 1
+      block = String.build do |io|
+        io << "import " << module_path << '\n' unless has_import
+        io << "using " << module_path << "::{" << name << "}\n"
+      end
+      [{anchor, 0, 0, block}]
     end
 
     private def name_char?(ch : Char?) : Bool
