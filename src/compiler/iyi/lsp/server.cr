@@ -307,6 +307,14 @@ module Iyi::Lsp
         on_pull_diagnostics(id.not_nil!, params.not_nil!)
       when "workspace/diagnostic"
         on_workspace_diagnostics(id.not_nil!)
+      when "textDocument/documentLink"
+        on_document_link(id.not_nil!, params.not_nil!)
+      when "textDocument/prepareTypeHierarchy"
+        on_prepare_type_hierarchy(id.not_nil!, params.not_nil!)
+      when "typeHierarchy/supertypes"
+        on_supertypes(id.not_nil!, params.not_nil!)
+      when "typeHierarchy/subtypes"
+        on_subtypes(id.not_nil!, params.not_nil!)
       when "iyi/contextPack"
         on_delegated(id.not_nil!, params.not_nil!, "mod", "context", "--json")
       when "iyi/surface"
@@ -350,6 +358,10 @@ module Iyi::Lsp
             json.field "hoverProvider", true
             json.field "definitionProvider", true
             json.field "typeDefinitionProvider", true
+            json.field "typeHierarchyProvider", true
+            json.field "documentLinkProvider" do
+              json.object { json.field "resolveProvider", false }
+            end
             json.field "documentSymbolProvider", true
             json.field "documentHighlightProvider", true
             json.field "referencesProvider", true
@@ -1808,6 +1820,131 @@ module Iyi::Lsp
         end
         if index > 0
           json.field "parent" { write_selection(json, chain, index - 1, lines) }
+        end
+      end
+    end
+
+    # ── Document links ───────────────────────────────────────────────────
+
+    # `import calc/lexer` names a file; the link makes it clickable.
+    # Text, not syntax — the header block is line-shaped by design
+    # (II.3 rule 4), so a broken buffer still links its imports.
+    private def on_document_link(id : JSON::Any, params : JSON::Any) : Nil
+      uri = params["textDocument"]["uri"].as_s
+      path = path_of(uri)
+      text = text_of(uri)
+
+      roots = [] of String
+      if (header = Exports.header_of(text)) && path.ends_with?("/#{header}.iyi")
+        derived = path[0, path.size - header.size - 5]
+        roots << (derived.empty? ? "/" : derived)
+      end
+      if root = @root
+        roots << root unless roots.includes?(root)
+      end
+      roots << File.dirname(path)
+
+      respond(id) do |json|
+        json.array do
+          text.lines.each_with_index do |line, index|
+            stripped = line.lstrip
+            keyword =
+              if stripped.starts_with?("import ")
+                "import "
+              elsif stripped.starts_with?("using ")
+                "using "
+              end
+            next unless keyword
+            mod = stripped.lchop(keyword).each_char
+              .take_while { |ch| ch.alphanumeric? || ch == '_' || ch == '/' }
+              .join
+            next if mod.empty?
+            target = roots.each do |candidate_root|
+              candidate = File.join(candidate_root, mod + ".iyi")
+              break candidate if File.file?(candidate) || @documents.has_key?(uri_of(candidate))
+            end
+            next unless target
+            start_col = line.size - stripped.size + keyword.size
+            start_ch = Lsp.character_of(line, start_col + 1)
+            end_ch = Lsp.character_of(line, start_col + mod.size + 1)
+            json.object do
+              json.field "range" { range(json, index, start_ch, index, end_ch) }
+              json.field "target", uri_of(target)
+            end
+          end
+        end
+      end
+    end
+
+    # ── Type hierarchy ───────────────────────────────────────────────────
+
+    # The item's `data` carries the type's short name and the document
+    # whose compile knows it, so supertypes and subtypes re-ask the same
+    # program the prepare answered from.
+    private def on_prepare_type_hierarchy(id : JSON::Any, params : JSON::Any) : Nil
+      uri = params["textDocument"]["uri"].as_s
+      path = path_of(uri)
+      text = text_of(uri)
+      line0 = params["position"]["line"].as_i
+      char = params["position"]["character"].as_i
+      line_text = text.lines[line0]? || ""
+      column = Lsp.column_of(line_text, char)
+
+      sites = @analysis.hierarchy_types_named(
+        path, text, overrides_for(path), word_at(line_text, column))
+      return respond_null(id) if sites.empty?
+
+      respond(id) do |json|
+        json.array do
+          sites.each { |site| type_hierarchy_item(json, site, path) }
+        end
+      end
+    end
+
+    private def type_hierarchy_item(json : JSON::Builder, site : Analysis::TypeSite, context : String) : Nil
+      filename = site.location.filename.to_s
+      target_line = read_line(filename, site.location.line_number)
+      ch = Lsp.character_of(target_line, site.location.column_number)
+      json.object do
+        json.field "name", site.name
+        json.field "kind", site.kind
+        json.field "uri", uri_of(filename)
+        json.field "range" { range(json, site.location.line_number - 1, ch, site.location.line_number - 1, ch) }
+        json.field "selectionRange" { range(json, site.location.line_number - 1, ch, site.location.line_number - 1, ch) }
+        json.field "data" do
+          json.object do
+            json.field "name", site.name
+            json.field "context", context
+          end
+        end
+      end
+    end
+
+    private def on_supertypes(id : JSON::Any, params : JSON::Any) : Nil
+      hierarchy_related(id, params) do |context, text, name|
+        @analysis.supertypes_of(context, text, overrides_for(context), name)
+      end
+    end
+
+    private def on_subtypes(id : JSON::Any, params : JSON::Any) : Nil
+      hierarchy_related(id, params) do |context, text, name|
+        @analysis.subtypes_of(context, text, overrides_for(context), name)
+      end
+    end
+
+    private def hierarchy_related(id : JSON::Any, params : JSON::Any, & : String, String, String -> Array(Analysis::TypeSite)) : Nil
+      data = params["item"]?.try(&.["data"]?)
+      name = data.try(&.["name"]?).try(&.as_s?)
+      context = data.try(&.["context"]?).try(&.as_s?)
+      return respond_null(id) unless name && context
+
+      text = @documents[uri_of(context)]? || (File.file?(context) ? File.read(context) : nil)
+      return respond_null(id) unless text
+
+      sites = yield context, text, name
+      respond(id) do |json|
+        json.array do
+          sites.each { |site| type_hierarchy_item(json, site, context) }
         end
       end
     end
