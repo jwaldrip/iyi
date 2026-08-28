@@ -754,9 +754,13 @@ module Iyi::Lsp
     end
 
     # Under R-1 a def's callers live in its *consumers'* compiles, so one
-    # program cannot answer "who calls this" — the session can: every open
-    # document is compiled as its own entry and the answers merge. The
-    # per-entry cost is the same 30–80 ms a keystroke already pays.
+    # program cannot answer "who calls this" — the workspace can: every
+    # open document and every `.iyi` under the root compiles as its own
+    # entry and the answers merge. A caller in a file nobody opened is
+    # still a caller, and a rename that missed it would leave a program
+    # that does not compile. Open buffers ride first, so unsaved edits
+    # win; the walk shares workspace/diagnostic's cap for the same
+    # reason — a question must not become a build farm.
     private def reference_sites(params : JSON::Any) : {Array({Location, Int32}), Array({Location, Int32})}
       uri = params["textDocument"]["uri"].as_s
       path = path_of(uri)
@@ -766,8 +770,8 @@ module Iyi::Lsp
       line_text = text.lines[line0]? || ""
       target = Location.new(path, line0 + 1, Lsp.column_of(line_text, char))
 
-      entries = @documents.map { |doc_uri, doc_text| {path_of(doc_uri), doc_text} }
-      entries << {path, text} unless @documents.has_key?(uri)
+      entries = workspace_entries
+      entries << {path, text} unless entries.any? { |(entry_path, _)| entry_path == path }
 
       references = [] of {Location, Int32}
       declarations = [] of {Location, Int32}
@@ -779,6 +783,24 @@ module Iyi::Lsp
       end
 
       {dedupe(references), dedupe(declarations)}
+    end
+
+    # The entry set a session-wide question compiles: open buffers
+    # first (they see unsaved edits), then the workspace's own `.iyi`
+    # files, capped like workspace/diagnostic. R-1 prices each entry at
+    # one small front-end compile, which is what makes "ask the whole
+    # workspace" an ordinary request rather than an index.
+    private def workspace_entries : Array({String, String})
+      entries = @documents.map { |doc_uri, doc_text| {path_of(doc_uri), doc_text} }
+      if root = @root
+        Dir.glob(File.join(root, "**", "*.iyi")) do |file|
+          next if file.includes?("/.") || file.includes?("/lib/")
+          next if @documents.has_key?(uri_of(file))
+          entries << {file, File.read(file)}
+          break if entries.size >= 200
+        end
+      end
+      entries
     end
 
     private def dedupe(sites : Array({Location, Int32})) : Array({Location, Int32})
@@ -1427,8 +1449,8 @@ module Iyi::Lsp
       key = hierarchy_key(params)
       return respond_null(id) unless key
 
-      entries = @documents.map { |doc_uri, doc_text| {path_of(doc_uri), doc_text} }
-      unless @documents.has_key?(uri_of(key[0]))
+      entries = workspace_entries
+      unless entries.any? { |(entry_path, _)| entry_path == key[0] }
         entries << {key[0], File.read(key[0])} if File.file?(key[0])
       end
 
