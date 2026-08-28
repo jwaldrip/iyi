@@ -788,7 +788,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 99,534 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 99,556 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3148,6 +3148,18 @@ editor holds a subscription, an agent asks a question, and R-1 is what
 makes the whole-project question affordable — one cheap compile per
 module, no shared state to invalidate, capped so a monorepo cannot
 turn one request into a build farm. The gate holds 32 steps.
+
+**Then the last gap the comparison with gopls still named was closed.**
+References, rename, and incoming calls answered from the session's
+*open* documents; a caller in a file nobody opened was invisible, and a
+rename that missed it shipped a program that does not compile. They
+answer from the workspace now: the same walk `workspace/diagnostic`
+does — open buffers first so unsaved edits win, then every `.iyi`
+under the root, the same cap — feeds the same per-entry compile-and-
+visit, so "who calls this" is asked of the whole project without an
+index appearing anywhere. The gate's steps are literal: a consumer
+written to disk and never opened is found by references, edited by
+rename, and named by incoming calls. The gate holds 35 steps.
 
 #### 3. The rest of the verbs, and which are design consequences
 

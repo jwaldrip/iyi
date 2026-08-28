@@ -105,6 +105,17 @@
   module, capped so a monorepo cannot turn a request into a build farm.
   The gate holds 32 steps.
 
+- **Workspace-wide references, rename, and incoming calls.** The one
+  gap the gopls comparison still named: these three answered from the
+  session's *open* documents, so a caller in a file nobody opened was
+  invisible — and a rename that missed it shipped a program that does
+  not compile. They now walk the workspace the way
+  `workspace/diagnostic` does: open buffers first so unsaved edits win,
+  then every `.iyi` under the root, same cap, one cheap R-1 compile per
+  entry, no index anywhere. The gate grew three literal steps — a
+  consumer written to disk and never opened is found by references,
+  edited by rename, and named by incoming calls — and holds 35.
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a
