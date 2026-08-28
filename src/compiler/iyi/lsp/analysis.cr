@@ -20,6 +20,7 @@ require "../tools/context"
 require "../tools/implementations"
 require "./references"
 require "./inlay"
+require "./hierarchy"
 
 module Iyi::Lsp
   # One diagnostic, in iyi's own units; the server converts at the edge.
@@ -242,6 +243,85 @@ module Iyi::Lsp
         locations_of(type)
       else
         [] of Location
+      end
+    end
+
+    # Call hierarchy's first question: which written def does the
+    # cursor name — the def whose name it sits on, or the resolved
+    # targets of the call it sits on. Deduped by source location.
+    def hierarchy_targets_at(path : String, text : String, overrides : Hash(String, String), line : Int32, column : Int32) : Array(HierarchySite)
+      result = result_for(path, text, overrides)
+      return [] of HierarchySite unless result
+
+      seen = Set({String, Int32, Int32}).new
+      sites = [] of HierarchySite
+      HierarchyTargetVisitor.new(Location.new(path, line, column)).process(result).each do |a_def|
+        site = Lsp.site_of(a_def)
+        next unless site
+        sites << site if seen.add?({site.filename, site.line, site.column})
+      end
+      sites
+    end
+
+    # One entry's incoming edges to the def `key` names. The server
+    # asks this once per open document and merges, references-style.
+    def incoming_calls_at(entry_path : String, entry_text : String, overrides : Hash(String, String), key : {String, Int32, Int32}) : IncomingCallsVisitor?
+      result = result_for(entry_path, entry_text, overrides)
+      return nil unless result
+      visitor = IncomingCallsVisitor.new(key, entry_path)
+      visitor.process(result)
+      visitor
+    end
+
+    # The outgoing edges of the def `key` names, from its own file's
+    # compile — the body lives here, so one compile is the whole answer.
+    def outgoing_calls_at(path : String, text : String, overrides : Hash(String, String), key : {String, Int32, Int32}) : OutgoingCallsVisitor?
+      result = result_for(path, text, overrides)
+      return nil unless result
+      visitor = OutgoingCallsVisitor.new(key, path)
+      visitor.process(result)
+      visitor
+    end
+
+    # Implementation: the types that implement the trait under the
+    # cursor. An impl became an `include` in the semantic pass, so the
+    # implementors are exactly the non-trait types whose ancestors carry
+    # the trait — found by walking the program's type tree, no registry.
+    def implementors_at(path : String, text : String, overrides : Hash(String, String), word : String?) : Array(Location)
+      return [] of Location unless word && word[0]?.try(&.ascii_uppercase?)
+      result = result_for(path, text, overrides)
+      return [] of Location unless result
+
+      traits = [] of Type
+      each_named_type(result.program) do |type|
+        traits << type if type.trait? && type.is_a?(NamedType) && type.name == word
+      end
+      return [] of Location if traits.empty?
+
+      seen = Set({String, Int32, Int32}).new
+      locations = [] of Location
+      each_named_type(result.program) do |type|
+        next if type.trait? || type.metaclass?
+        implements = type.ancestors.any? do |ancestor|
+          traits.any? do |wanted|
+            ancestor == wanted ||
+              (ancestor.is_a?(GenericInstanceType) && ancestor.generic_type == wanted)
+          end
+        end
+        next unless implements
+        type.locations.try &.each do |location|
+          next unless location.filename.is_a?(String)
+          key = {location.filename.to_s, location.line_number, location.column_number}
+          locations << location if seen.add?(key)
+        end
+      end
+      locations
+    end
+
+    private def each_named_type(type : Type, &block : Type ->) : Nil
+      type.types?.try &.each_value do |inner|
+        block.call inner
+        each_named_type(inner, &block)
       end
     end
 
