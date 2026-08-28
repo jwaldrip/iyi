@@ -13,6 +13,11 @@ question:
   5. definition        -> jumps into the sibling module, unsaved-buffer aware
   6. documentSymbol    -> the outline, nested
   7. iyi/contextPack   -> the import's surface as data, from the buffer
+
+Then the everyday half a person meets in the first hour: incremental
+range edits, the did-you-mean quickfix, signature help mid-call,
+document highlight, folding, workspace symbols, prepareRename,
+semantic tokens, inlay hints, type definition, and formatting.
 """
 
 import json
@@ -96,7 +101,18 @@ def main():
     caps = reply["result"]["capabilities"]
     step(1, "initialize", reply["result"]["serverInfo"]["name"] == "iyi"
          and caps["hoverProvider"] and caps["definitionProvider"]
-         and caps["documentSymbolProvider"],
+         and caps["documentSymbolProvider"]
+         and caps["textDocumentSync"]["change"] == 2
+         and caps["signatureHelpProvider"]
+         and caps["documentFormattingProvider"]
+         and caps["documentHighlightProvider"]
+         and caps["foldingRangeProvider"]
+         and caps["workspaceSymbolProvider"]
+         and caps["inlayHintProvider"]
+         and caps["typeDefinitionProvider"]
+         and caps["renameProvider"]["prepareProvider"]
+         and caps["codeActionProvider"]["codeActionKinds"] == ["quickfix"]
+         and caps["semanticTokensProvider"]["legend"]["tokenTypes"],
          f"server {reply['result']['serverInfo']['version']}")
     c.send("initialized", {}, wait=False)
 
@@ -329,10 +345,187 @@ def main():
          "def yell" in texts[greet_uri] and clean,
          f"{edit_count} edit(s) across {len(changes)} file(s)")
 
-    # 15. shutdown/exit: the server leaves when told, not before.
+    # 15. incremental didChange: a range edit in wire units, not a full
+    #     text — the server applies it, breaks, then a second range edit
+    #     heals it.
+    app_text = texts[app_uri]
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 10},
+            "contentChanges": [{
+                "range": {"start": {"line": 6, "character": 9},
+                          "end": {"line": 6, "character": 13}},
+                "text": "yel"}]}, wait=False)
+    diags = c.diagnostics(app_uri)["diagnostics"]
+    broke = len(diags) == 1 and diags[0]["range"]["start"]["line"] == 6
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 11},
+            "contentChanges": [{
+                "range": {"start": {"line": 6, "character": 9},
+                          "end": {"line": 6, "character": 12}},
+                "text": "yell"}]}, wait=False)
+    healed = c.diagnostics(app_uri)["diagnostics"] == []
+    step(15, "incremental sync: range edits apply", broke and healed,
+         "yell -> yel broke line 7, a range edit back healed it")
+
+    # 16. codeAction: the compiler's own "Did you mean", made clickable.
+    typo = app_text.replace("\n  loud\n", "\n  loud.upcas\n")
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 12},
+            "contentChanges": [{"text": typo}]}, wait=False)
+    diags = c.diagnostics(app_uri)["diagnostics"]
+    reply = c.send("textDocument/codeAction",
+                   {"textDocument": {"uri": app_uri},
+                    "range": diags[0]["range"] if diags else
+                    {"start": {"line": 7, "character": 0},
+                     "end": {"line": 7, "character": 0}},
+                    "context": {"diagnostics": diags}})
+    actions = reply["result"] or []
+    fix = next((a for a in actions
+                if a["title"] == "Change to 'upcase'"), None)
+    applied = ""
+    if fix:
+        lines = typo.split("\n")
+        for uri, edits in fix["edit"]["changes"].items():
+            for e in edits:
+                l = e["range"]["start"]["line"]
+                s = e["range"]["start"]["character"]
+                t = e["range"]["end"]["character"]
+                lines[l] = lines[l][:s] + e["newText"] + lines[l][t:]
+        applied = "\n".join(lines)
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 13},
+            "contentChanges": [{"text": applied or typo}]}, wait=False)
+    clean = c.diagnostics(app_uri)["diagnostics"] == []
+    step(16, "codeAction turns did-you-mean into a quickfix",
+         fix is not None and "loud.upcase" in applied and clean,
+         f"{len(actions)} action(s), quickfix applied and clean")
+
+    # 17. signatureHelp, asked right after the `(` lands — the buffer
+    #     has no syntax there; the overload comes off the typed graph.
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 14},
+            "contentChanges": [{"text": app_text}]}, wait=False)
+    c.diagnostics(app_uri)
+    reply = c.send("textDocument/signatureHelp",
+                   {"textDocument": {"uri": app_uri},
+                    "position": {"line": 6, "character": 14}})
+    result = reply["result"] or {}
+    sigs = result.get("signatures", [])
+    label = sigs[0]["label"] if sigs else ""
+    step(17, "signatureHelp names the overload mid-call",
+         label.startswith("yell(") and "String" in label and
+         result.get("activeParameter") == 0,
+         f"label {label!r}")
+
+    # 18. documentHighlight on the def: the declaration is the write,
+    #     the call is the read, both in this buffer alone.
+    reply = c.send("textDocument/documentHighlight",
+                   {"textDocument": {"uri": app_uri},
+                    "position": {"line": 5, "character": 5}})
+    highlights = reply["result"] or []
+    kinds = sorted(h["kind"] for h in highlights)
+    hl_lines = sorted(h["range"]["start"]["line"] for h in highlights)
+    step(18, "documentHighlight marks def and call",
+         kinds == [2, 3] and hl_lines == [5, 10],
+         f"{len(highlights)} range(s) at lines {hl_lines}")
+
+    # 19. foldingRange: the def folds off the outline, the import
+    #     header off the text.
+    reply = c.send("textDocument/foldingRange",
+                   {"textDocument": {"uri": app_uri}})
+    folds = reply["result"] or []
+    has_def = any(f["startLine"] == 5 and f["endLine"] == 8 for f in folds)
+    has_imports = any(f.get("kind") == "imports" and f["startLine"] == 2
+                      and f["endLine"] == 3 for f in folds)
+    step(19, "foldingRange folds the def and the import header",
+         has_def and has_imports, f"{len(folds)} fold(s)")
+
+    # 20. workspace/symbol: the open buffer wins over the disk — the
+    #     disk still says shout, the buffer says yell, yell is found.
+    reply = c.send("workspace/symbol", {"query": "yell"})
+    syms = reply["result"] or []
+    hit = next((s for s in syms if s["name"] == "yell"
+                and s["location"]["uri"].endswith("greet.iyi")), None)
+    step(20, "workspace/symbol finds the def across the project",
+         hit is not None, f"{len(syms)} symbol(s)")
+
+    # 21. prepareRename: the range and placeholder before the input box.
+    reply = c.send("textDocument/prepareRename",
+                   {"textDocument": {"uri": greet_uri},
+                    "position": {"line": 2, "character": 9}})
+    result = reply["result"] or {}
+    step(21, "prepareRename names the range and placeholder",
+         result.get("placeholder") == "yell" and
+         result["range"]["start"]["character"] == 8 and
+         result["range"]["end"]["character"] == 12,
+         f"placeholder {result.get('placeholder')!r}")
+
+    # 22. semanticTokens: the lexer colors the buffer — keyword, def
+    #     name, type, string — with no grammar installed anywhere.
+    reply = c.send("textDocument/semanticTokens/full",
+                   {"textDocument": {"uri": app_uri}})
+    data = (reply["result"] or {}).get("data", [])
+    decoded = []
+    line = 0
+    start = 0
+    for i in range(0, len(data), 5):
+        dl, ds, ln, tt, _ = data[i:i + 5]
+        line += dl
+        start = start + ds if dl == 0 else ds
+        decoded.append((line, start, ln, tt))
+    # legend: 0 keyword, 1 string, 4 type, 5 function
+    has_def_kw = (5, 0, 3, 0) in decoded
+    has_fn = (5, 4, 3, 5) in decoded
+    has_str = any(l == 6 and tt == 1 for (l, s, ln, tt) in decoded)
+    has_type = any(l == 5 and tt == 4 for (l, s, ln, tt) in decoded)
+    step(22, "semanticTokens color the buffer with no grammar",
+         has_def_kw and has_fn and has_str and has_type,
+         f"{len(decoded)} token(s)")
+
+    # 23. inlayHint: the inferred type after the assignment, the
+    #     parameter's name before the bare literal.
+    reply = c.send("textDocument/inlayHint",
+                   {"textDocument": {"uri": app_uri},
+                    "range": {"start": {"line": 0, "character": 0},
+                              "end": {"line": 11, "character": 0}}})
+    hints = reply["result"] or []
+    type_hint = next((h for h in hints if h["label"] == ": String"
+                      and h["position"]["line"] == 6), None)
+    param_hint = next((h for h in hints if h["label"] == "name:"), None)
+    step(23, "inlayHint shows inferred type and parameter name",
+         type_hint is not None and param_hint is not None and
+         param_hint["position"] == {"line": 6, "character": 14},
+         f"{len(hints)} hint(s): {[h['label'] for h in hints]}")
+
+    # 24. typeDefinition: from the local to where String is declared.
+    reply = c.send("textDocument/typeDefinition",
+                   {"textDocument": {"uri": app_uri},
+                    "position": {"line": 7, "character": 3}})
+    locs = reply["result"] or []
+    step(24, "typeDefinition jumps to the type's declaration",
+         len(locs) >= 1,
+         f"{len(locs)} location(s), first {locs and locs[0]['uri']}")
+
+    # 25. formatting: the formatter, in process, one whole-document edit.
+    sloppy = app_text.replace('yell("iyi")', 'yell(  "iyi" )')
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 15},
+            "contentChanges": [{"text": sloppy}]}, wait=False)
+    c.diagnostics(app_uri)
+    reply = c.send("textDocument/formatting",
+                   {"textDocument": {"uri": app_uri},
+                    "options": {"tabSize": 2, "insertSpaces": True}})
+    edits = reply["result"] or []
+    formatted = edits[0]["newText"] if edits else ""
+    step(25, "formatting is the formatter, in process",
+         len(edits) == 1 and 'yell("iyi")' in formatted and
+         formatted.count("\n") == sloppy.count("\n"),
+         "one whole-document edit, call tightened")
+
+    # 26. shutdown/exit: the server leaves when told, not before.
     c.send("shutdown", {})
     c.send("exit", {}, wait=False)
-    step(15, "shutdown then exit", c.proc.wait(timeout=10) == 0)
+    step(26, "shutdown then exit", c.proc.wait(timeout=10) == 0)
 
     print("lsp gate: every step held")
 
