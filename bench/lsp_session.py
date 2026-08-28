@@ -49,6 +49,18 @@ class Client:
             return self.wait_for(lambda m: m.get("id") == self.next_id)
         return None
 
+    def request_nowait(self, method, params):
+        """A request whose answer is read later — how a cancel gets to
+        overtake it."""
+        self.next_id += 1
+        message = {"jsonrpc": "2.0", "method": method, "params": params,
+                   "id": self.next_id}
+        body = json.dumps(message).encode()
+        self.proc.stdin.write(
+            b"Content-Length: %d\r\n\r\n%s" % (len(body), body))
+        self.proc.stdin.flush()
+        return self.next_id
+
     def read_message(self):
         length = None
         while True:
@@ -771,10 +783,48 @@ def main():
          f"{len(items)} item(s), upcase tier "
          f"{upcase and upcase['sortText'][0]!r}")
 
-    # 38. shutdown/exit: the server leaves when told, not before.
+    # 38. a queued request cancels before it compiles: the didChange
+    #     occupies the server, the request and its cancel queue behind,
+    #     and the sweep answers -32800 without doing the work.
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 19},
+            "contentChanges": [{"text": app_text}]}, wait=False)
+    rid = c.request_nowait("workspace/diagnostic", {})
+    c.send("$/cancelRequest", {"id": rid}, wait=False)
+    reply = c.wait_for(lambda m: m.get("id") == rid)
+    step(38, "a queued request cancels before the work",
+         reply.get("error", {}).get("code") == -32800,
+         f"answer: {reply.get('error', reply.get('result'))!r}")
+
+    # 39. a typing burst is one verdict: didChanges landing while the
+    #     server compiles coalesce, so six changes cost at most two
+    #     compiles and the verdict is the final text's.
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 20},
+            "contentChanges": [{"text": app_text + "# 0\n"}]}, wait=False)
+    for n in range(5):
+        text_n = app_text + f"# burst {n}\n" if n < 4 else app_text
+        c.send("textDocument/didChange",
+               {"textDocument": {"uri": app_uri, "version": 21 + n},
+                "contentChanges": [{"text": text_n}]}, wait=False)
+    probe = c.request_nowait("textDocument/documentSymbol",
+                             {"textDocument": {"uri": app_uri}})
+    published = 0
+    while True:
+        m = c.read_message()
+        if m.get("method") == "textDocument/publishDiagnostics":
+            published += 1
+            last = m["params"]["diagnostics"]
+        if m.get("id") == probe:
+            break
+    step(39, "a burst of six changes compiles at most twice",
+         1 <= published <= 2 and last == [],
+         f"{published} publish(es) for 6 didChanges, final verdict clean")
+
+    # 40. shutdown/exit: the server leaves when told, not before.
     c.send("shutdown", {})
     c.send("exit", {}, wait=False)
-    step(38, "shutdown then exit", c.proc.wait(timeout=10) == 0)
+    step(40, "shutdown then exit", c.proc.wait(timeout=10) == 0)
 
     print("lsp gate: every step held")
 
