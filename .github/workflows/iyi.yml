@@ -549,6 +549,19 @@ jobs:
           cat cross/strings-windows.link
           ls -l cross
 
+      # SPEC.md III.12: the sandbox, measured — in this job because it has
+      # the compiler and the repo; the toolchain installs per-run, which is
+      # the same price the wasi arm below already pays.
+      - name: The sandbox story holds
+        run: |
+          curl -sSL -o /tmp/wasi-sdk.tar.gz \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz
+          mkdir -p "$HOME/wasi-sdk"
+          tar -xzf /tmp/wasi-sdk.tar.gz -C "$HOME/wasi-sdk" --strip-components=1
+          curl -sSL https://wasmtime.dev/install.sh | bash
+          WASI_SDK="$HOME/wasi-sdk" WASMTIME="$HOME/.wasmtime/bin/wasmtime" \
+            bash bench/sandbox_story.sh
+
       - uses: actions/upload-artifact@v4
         with:
           name: cross-objects

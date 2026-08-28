@@ -788,7 +788,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 96,275 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 96,381 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3771,6 +3771,40 @@ to fire by adding to a sample the exact `@[Link("ffi")]` shape a naive revert
 would produce. It failed at three independent layers, reporting the gained
 symbol `ffi_prep_cif`, the gained library `libffi.8.dylib`, and the denylist
 hit, so an interpreter cannot quietly bring libffi with it.
+
+### III.12 The sandbox: **BUILT, by subtraction; measured by `bench/sandbox_story.sh`**
+
+Untrusted code needs a container, and generated code is the untrusted code
+of this decade: a model writes a program, something has to run it, and the
+something's blast radius is a design property of the language it runs.
+iyi's answer costs nothing because it is made of two subtractions this
+document already paid for elsewhere.
+
+The first is the dependency floor (III.9): an iyi program's Linux object
+has zero undefined symbols, so there is no libc surface for a payload to
+lean on. The second is the wasm32-wasi target, where the answer is
+stronger than a permission — it is an *absence*. The prelude's wasm32
+branch never grew a `File` surface: `path_open` needs a preopened
+directory fd, wasmtime preopens nothing by default, and rather than carry
+a capability negotiation the prelude refuses by name. A program that
+tries is a panic that says whose rule it hit:
+
+    iyi: panic: File is not available on wasm32-wasi: path_open needs a
+    preopened directory fd
+
+`bench/sandbox_story.sh` is the measurement, three steps: an honest
+program computes and prints through the boundary (`55`, exit 0); a theft
+of `/etc/passwd` exits non-zero with not one byte of the file in its
+output, under a default wasmtime; and the refusal is the prelude's own
+sentence rather than a trap code, because a sandbox whose denials cannot
+be read teaches nobody. Run in CI beside the wasi arm that already links
+and runs `hello` there.
+
+What this is not, said plainly: it is not an argument that native iyi
+binaries are sandboxes — a native binary has the kernel — and it is not a
+capability system. When the wasm32 arm grows real IO it will grow it
+through WASI's preopens, and this section is where that negotiation gets
+designed before it gets built.
 
 ---
 
