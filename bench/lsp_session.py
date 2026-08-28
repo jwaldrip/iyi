@@ -112,7 +112,11 @@ def main():
          and caps["typeDefinitionProvider"]
          and caps["renameProvider"]["prepareProvider"]
          and caps["codeActionProvider"]["codeActionKinds"] == ["quickfix"]
-         and caps["semanticTokensProvider"]["legend"]["tokenTypes"],
+         and caps["semanticTokensProvider"]["legend"]["tokenTypes"]
+         and caps["implementationProvider"]
+         and caps["callHierarchyProvider"]
+         and caps["selectionRangeProvider"]
+         and caps["diagnosticProvider"]["workspaceDiagnostics"],
          f"server {reply['result']['serverInfo']['version']}")
     c.send("initialized", {}, wait=False)
 
@@ -522,10 +526,125 @@ def main():
          formatted.count("\n") == sloppy.count("\n"),
          "one whole-document edit, call tightened")
 
-    # 26. shutdown/exit: the server leaves when told, not before.
+    # 26. a trait, its impl, and the call graph around them — one
+    #     fixture serves implementation, call hierarchy, and selection.
+    shapes_path = os.path.join(work, "shapes.iyi")
+    shapes_text = ("module shapes\n\n"
+                   "pub trait Paint\n  abstract def paint : String\nend\n\n"
+                   "pub struct Dot\nend\n\n"
+                   "impl Paint for Dot\n  def paint : String\n"
+                   '    "."\n  end\nend\n\n'
+                   "pub def render(thing : Dot) : String\n"
+                   "  thing.paint\nend\n\nputs render(Dot.new)\n")
+    with open(shapes_path, "w") as f:
+        f.write(shapes_text)
+    shapes_uri = "file://" + shapes_path
+    c.send("textDocument/didOpen",
+           {"textDocument": {"uri": shapes_uri, "languageId": "iyi",
+                             "version": 1, "text": shapes_text}}, wait=False)
+    diags = c.diagnostics(shapes_uri)["diagnostics"]
+    step(26, "the trait fixture compiles clean", diags == [],
+         "shapes.iyi: trait Paint, impl for Dot, render calls paint")
+
+    # 27. implementation: the trait name answers with its implementors.
+    reply = c.send("textDocument/implementation",
+                   {"textDocument": {"uri": shapes_uri},
+                    "position": {"line": 2, "character": 11}})
+    locs = reply["result"] or []
+    step(27, "implementation jumps from the trait to its impl types",
+         any(l["uri"].endswith("shapes.iyi") and
+             l["range"]["start"]["line"] == 6 for l in locs),
+         f"{len(locs)} implementor(s)")
+
+    # 28. call hierarchy: prepare on the call, incoming names the
+    #     enclosing def, outgoing from that def names the callee.
+    reply = c.send("textDocument/prepareCallHierarchy",
+                   {"textDocument": {"uri": shapes_uri},
+                    "position": {"line": 16, "character": 9}})
+    items = reply["result"] or []
+    paint_item = items[0] if items else None
+    incoming = []
+    if paint_item:
+        reply = c.send("callHierarchy/incomingCalls", {"item": paint_item})
+        incoming = reply["result"] or []
+    callers = sorted(e["from"]["name"] for e in incoming)
+    reply = c.send("textDocument/prepareCallHierarchy",
+                   {"textDocument": {"uri": shapes_uri},
+                    "position": {"line": 15, "character": 9}})
+    render_items = reply["result"] or []
+    outgoing = []
+    if render_items:
+        reply = c.send("callHierarchy/outgoingCalls",
+                       {"item": render_items[0]})
+        outgoing = reply["result"] or []
+    callees = sorted(e["to"]["name"] for e in outgoing)
+    step(28, "call hierarchy answers both directions",
+         paint_item is not None and paint_item["name"] == "paint" and
+         "render" in callers and "paint" in callees,
+         f"paint <- {callers}, render -> {callees}")
+
+    # 29. selectionRange: expand from inside the string literal, out
+    #     through the def, to the file — strictly nested.
+    reply = c.send("textDocument/selectionRange",
+                   {"textDocument": {"uri": shapes_uri},
+                    "positions": [{"line": 11, "character": 5}]})
+    chain = (reply["result"] or [None])[0] or {}
+    depth = 0
+    node = chain
+    nested = True
+    while node:
+        depth += 1
+        parent = node.get("parent")
+        if parent:
+            inner, outer = node["range"], parent["range"]
+            nested = nested and (
+                (outer["start"]["line"], outer["start"]["character"]) <=
+                (inner["start"]["line"], inner["start"]["character"]) and
+                (inner["end"]["line"], inner["end"]["character"]) <=
+                (outer["end"]["line"], outer["end"]["character"]))
+        node = parent
+    step(29, "selectionRange expands strictly outward",
+         depth >= 3 and nested and
+         chain.get("range", {}).get("start", {}).get("line") == 11,
+         f"{depth} nested range(s)")
+
+    # 30. pull diagnostics: the agent's shape — ask, don't subscribe.
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 16},
+            "contentChanges": [{"text": sloppy.replace("yell(", "yel(")}]},
+           wait=False)
+    c.diagnostics(app_uri)
+    reply = c.send("textDocument/diagnostic",
+                   {"textDocument": {"uri": app_uri}})
+    pulled = reply["result"]
+    broke = pulled["kind"] == "full" and len(pulled["items"]) == 1
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 17},
+            "contentChanges": [{"text": app_text}]}, wait=False)
+    c.diagnostics(app_uri)
+    reply = c.send("textDocument/diagnostic",
+                   {"textDocument": {"uri": app_uri}})
+    healed = reply["result"]["items"] == []
+    step(30, "pull diagnostics answer on request", broke and healed,
+         "broken pulled 1 item, fixed pulled none")
+
+    # 31. workspace diagnostics: the whole project's verdict in one
+    #     request — a file nobody opened is still judged, R-1 makes
+    #     every module its own cheap compile.
+    with open(os.path.join(work, "broken.iyi"), "w") as f:
+        f.write("module broken\n\ndef boom : String\n  1\nend\n\nputs boom\n")
+    reply = c.send("workspace/diagnostic", {})
+    items = reply["result"]["items"]
+    dirty = [i for i in items if i["items"]]
+    step(31, "workspace diagnostics judge the whole project",
+         len(dirty) == 1 and dirty[0]["uri"].endswith("broken.iyi") and
+         any(i["uri"].endswith("shapes.iyi") for i in items),
+         f"{len(items)} file(s) judged, {len(dirty)} dirty")
+
+    # 32. shutdown/exit: the server leaves when told, not before.
     c.send("shutdown", {})
     c.send("exit", {}, wait=False)
-    step(26, "shutdown then exit", c.proc.wait(timeout=10) == 0)
+    step(32, "shutdown then exit", c.proc.wait(timeout=10) == 0)
 
     print("lsp gate: every step held")
 
