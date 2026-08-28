@@ -116,6 +116,19 @@
   consumer written to disk and never opened is found by references,
   edited by rename, and named by incoming calls — and holds 35.
 
+- **Auto-import completion, fuzzy-ranked — R-2's dividend.** Bare
+  completion now offers the workspace's exported defs beside the
+  scope: `pub` is a parse-time fact, so one parse per module names its
+  callable surface and the offer works in a buffer that has never
+  compiled. Choosing an item inserts the name and the `import`/`using`
+  pair arrives as `additionalTextEdits` — a fresh selective `using`
+  when the module is unimported, the existing line extended
+  (`{token}` → `{token, glyph}`) when it is. Matching is fuzzy (`ucs`
+  finds `upcase`) and ranked honestly: scope prefix, keywords,
+  workspace exports, fuzzy — the tier leads `sortText`. The gate holds
+  38 steps, the new three literal: a never-compiled buffer completes
+  `tok`, applies the item, and the verdict is clean.
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a

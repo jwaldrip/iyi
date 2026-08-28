@@ -788,7 +788,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 99,556 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 99,745 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3160,6 +3160,20 @@ visit, so "who calls this" is asked of the whole project without an
 index appearing anywhere. The gate's steps are literal: a consumer
 written to disk and never opened is found by references, edited by
 rename, and named by incoming calls. The gate holds 35 steps.
+
+**Completion grew the half gopls is famous for, and R-2 paid for it.**
+Matching is fuzzy now — `ucs` finds `upcase` — but ranked honestly:
+prefix matches from the scope first, keywords after, fuzzy last, the
+tier leading `sortText` so a client that re-sorts still sees the same
+order. And bare completion offers the *workspace's* exports: `pub` is
+written at the declaration (R-2), so one parse of a module names its
+whole callable surface — no compile, no artifact, which is why the
+offer works in a buffer that has never compiled, the exact buffer a
+person mid-thought is holding. Choosing an item inserts the name and
+its `import`/`using` pair rides along as `additionalTextEdits`: a new
+selective `using` when the module is unimported, the existing line
+extended (`{token}` → `{token, glyph}`) when it is — the two lines a
+person, and more often a model, forgets. The gate holds 38 steps.
 
 #### 3. The rest of the verbs, and which are design consequences
 
