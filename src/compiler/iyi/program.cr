@@ -150,6 +150,13 @@ module Iyi
     # which is every program until it writes one.
     property iyi_mod_table = [] of {String, String}
 
+    # iyi: editor buffers, keyed by the absolute path the file would have —
+    # `iyi lsp` compiles what the person sees, saved or not. Consulted in
+    # exactly two places: `resolve_import` counts an overridden path as
+    # existing, and `import_file` reads the buffer instead of the disk.
+    # Empty everywhere else, so a build costs one hash lookup per import.
+    property iyi_file_overrides = {} of String => String
+
     # iyi: whether this build is writing artifacts as well as reading them
     # (SPEC.md IV.3). Set by the compiler from `--emit-iyimod`.
     #

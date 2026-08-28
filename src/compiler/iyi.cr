@@ -64,7 +64,7 @@ module Iyi
   # artifacts it writes and the file it arrived in cannot disagree.
   VERSION = Iyi::Config.iyi_version
 
-  DELEGATED = %w(build run mod repl env clear_cache tool daemon test doc)
+  DELEGATED = %w(build run mod repl env clear_cache tool daemon test doc lsp)
 
   # The ones that belong to Crystal and are still in the binary underneath.
   # Named rather than swallowed, because "unknown command" would be a lie.

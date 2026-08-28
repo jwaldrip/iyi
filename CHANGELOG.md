@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The language server — SPEC.md III.8 #2, built as `iyi lsp`.** Stdio,
+  LSP 3.17's earning subset, and no semantic state at all: every change
+  runs the real front end on the module under the cursor, which R-1 makes
+  a 50–70 ms question on the gate's fixture — so the server is never
+  stale, has no invalidation story, and gives no answer a build would
+  not. Diagnostics carry the message iyi would print with the SPEC
+  section it cites riding in `code` as data and a link in
+  `codeDescription`; hover answers from `ContextVisitor`, definition from
+  `ImplementationsVisitor`, and the outline comes from the parser alone,
+  so it survives a file that does not compile. Two methods go beyond the
+  protocol because no other language wrote its interfaces down:
+  `iyi/contextPack` serves the grounding pack over the wire and
+  `iyi/surface` serves a module's rendered surface, dirty buffer
+  included. `bench/lsp_session.py` is the gate: one scripted session,
+  ten steps, in CI beside the other verbs.
+
+- **Editor buffers reach the compiler — `iyi_file_overrides`.** One hash
+  of path → buffer, consulted in exactly the two places imports read
+  files: `resolve_import` counts an overridden path as existing, and
+  `import_file` reads the buffer instead of the disk. The gate's step
+  for it is literal: rename a def in an *unsaved* sibling, follow the
+  rename in the file that imports it, get a clean verdict while the disk
+  still spells the old name. A build that opens no editor pays one hash
+  lookup per import. The daemon's prelude-cache rule classified it
+  APPLIED_ON_ADOPT beside `iyi_mod_table` — the guard that demands the
+  classification caught this commit within the minute, which is what it
+  is for.
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a

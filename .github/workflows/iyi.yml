@@ -258,6 +258,15 @@ jobs:
       - name: The test verb tells its four verdicts apart
         run: bash bench/test_verb.sh
 
+      # SPEC.md III.8 #2: the language server. One scripted session is a
+      # person's first five minutes plus the agent's first question, and
+      # every capability the release claims is a step: diagnostics with
+      # SPEC sections as data, hover, definition, the outline, the
+      # context pack over the wire, and an unsaved sibling buffer seen
+      # through an import while the disk stays untouched.
+      - name: The language server holds its session
+        run: python3 bench/lsp_session.py
+
       # The same question asked of the other kind of artifact: one whose object
       # code is a shard's and whose declarations `tool bind` wrote. III.6 rule 1
       # names an undefined symbol and a call returning another type, and

@@ -15,7 +15,7 @@ that rule and what it costs.
 | | measured today |
 |---|---|
 | **Developer experience** | edit one module in a 7,207-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
-| **Agentic experience** | a module's interface is a file, not a convention: `iyi mod context` grounds an edit in every import's exact surface at **43–55%** of the sources' size, and a model writing against it spent **35–43% fewer prompt tokens** over eight measured runs, no more rounds (`bench/context_pack.py`, both arms). Errors are data (`-f json`, SPEC sections included), tests are exit codes (`iyi test`), dependencies are hashed (`iyi.sum`) |
+| **Agentic experience** | a module's interface is a file, not a convention: `iyi mod context` grounds an edit in every import's exact surface at **43–55%** of the sources' size, and a model writing against it spent **35–43% fewer prompt tokens** over eight measured runs, no more rounds (`bench/context_pack.py`, both arms). Errors are data (`-f json`, SPEC sections included), tests are exit codes (`iyi test`), dependencies are hashed (`iyi.sum`), and `iyi lsp` serves it all over one protocol — diagnostics in **50–70 ms** per keystroke, no resident state (`bench/lsp_session.py`) |
 | **Portability** | an iyi program compiles for **nine targets** and is **run** on four of them every build: x86-64 glibc, x86-64 musl, aarch64 under emulation, and wasm32-wasi under wasmtime |
 | **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s**. At run time the two libraries are within noise where they do the same work |
 | **Efficiency** | that `hello` is a **36 KB** binary that starts in **1.6 ms**; the same program with Crystal's library is 1,553 KB and 3.2 ms |
@@ -100,8 +100,9 @@ current compiler reports `0.4.0`. iyi's own prelude has no IO beyond
 `--crystal` supplies Crystal's standard library, IO, `require` and the
 ecosystem. Dependencies exist but are young: an `iyi.mod` beside the entry
 file names requirements, resolution is minimal version selection over git
-tags (SPEC.md III.7), and there is no registry, no `iyi.sum` and no
-artifact distribution yet; `--crystal` still leans on shards.
+tags and `iyi.sum` pins what arrived (SPEC.md III.7), but there is no
+registry and no artifact distribution yet; `--crystal` still leans on
+shards.
 
 ## The program that makes the argument
 
@@ -282,10 +283,12 @@ Rename a local and it says the interface is unchanged; add a parameter and it
 says what moved and who it reaches. `--exit-code` makes that a branch in a
 script. Nothing here is agent-specific: it is R-1's boundary, asked a question.
 
-What is not here is anything an agent could not have got from the rules: no
-protocol, no server, no special mode. If that turns out to be the wrong bet, it
-will be because the rules were not enough, and that is a thing to measure rather
-than to promise.
+What *is* here is deliberately unspecial: `iyi lsp` is a standard protocol
+over the same rules — hover, definition and diagnostics are the front end
+answering, and the two methods beyond LSP (`iyi/contextPack`,
+`iyi/surface`) return exactly what the CLI prints. No agent mode, no
+forked behaviour by consumer; if the rules turn out not to be enough,
+that is a thing to measure rather than to promise.
 
 **Portability — compiles for nine, runs on four.** An iyi program produces
 code for `x86_64-linux-gnu`, `x86_64-linux-musl`, `aarch64-linux-gnu`,
@@ -351,6 +354,25 @@ $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 The tarball is relocatable and carries both libraries: iyi's own 121 KB, and
 Crystal's standard library for `--crystal`. `bin/iyi` finds them beside itself,
 so there is nothing to configure and no `IYI_PATH` to set.
+
+### An editor, in one stanza
+
+`iyi lsp` speaks the Language Server Protocol over stdio; there is nothing
+to configure. Neovim 0.11+:
+
+```lua
+vim.filetype.add { extension = { iyi = "iyi" } }
+vim.lsp.config("iyi", { cmd = { "iyi", "lsp" }, filetypes = { "iyi" } })
+vim.lsp.enable("iyi")
+```
+
+Any LSP client works the same way: command `iyi lsp`, filetype `.iyi`.
+Diagnostics arrive on every keystroke from a real compile of the module
+alone — 50–70 ms on the gate's fixture — and an error that cites the spec
+carries the section as its diagnostic code. Two requests go beyond the
+protocol for harnesses: `iyi/contextPack` returns the file's grounding
+pack and `iyi/surface` a module's rendered surface, unsaved buffers
+included (`bench/lsp_session.py` is the whole contract, runnable).
 
 ### Your first module, and then the rule that matters
 

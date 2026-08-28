@@ -321,7 +321,9 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       candidates << File.join(entry, "#{path}.cr")
     end
 
-    candidates.find { |candidate| File.file?(candidate) }
+    candidates.find do |candidate|
+      @program.iyi_file_overrides.has_key?(candidate) || File.file?(candidate)
+    end
   end
 
   private def project_root : String?
@@ -990,7 +992,8 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
   end
 
   private def import_file(node : ImportDecl, filename : String)
-    parser = @program.new_parser(File.read(filename))
+    source = @program.iyi_file_overrides[filename]? || File.read(filename)
+    parser = @program.new_parser(source)
     parser.filename = filename
     parser.wants_doc = @program.wants_doc?
     @iyi_importing << filename

@@ -87,9 +87,21 @@ demands:
   cross-compile arm. `iyi doc` rode along — III.8's doc verb, a renderer
   over the surface data items 1 and 2 already carry, for a `.iyimod` or a
   `.iyi` compiled alone.
+- **5** — `iyi lsp` (the commit this update rides with): the menu's last
+  open row, and the prediction it corrects is recorded in III.8 #2. No
+  daemon, no resident `Program`: a module-local front-end compile answers
+  in 50–70 ms on the gate's fixture, so the server keeps no semantic
+  state at all and is never stale. One compiler hook paid for it —
+  `iyi_file_overrides`, editor buffers consulted before the disk in the
+  two places imports read files — so an unsaved sibling is seen through
+  an import while the disk stays untouched, which the gate asserts
+  literally. Diagnostics carry the SPEC section in `code` (item 3 over
+  the wire), and the agent endpoints ride the same session:
+  `iyi/contextPack` is item 2 as a request, `iyi/surface` is `iyi doc`.
 
 All of them are gated: 1, 2, 3 and 6 in `bench/packages_resolve.sh` (which
-also asserts `iyi doc`), 4 in `bench/test_verb.sh`, 8 in
+also asserts `iyi doc`), 4 in `bench/test_verb.sh`, 5 in
+`bench/lsp_session.py` (a ten-step scripted session), 8 in
 `bench/sandbox_story.sh`.
 
 Free advertising, no work: `iyi mod diff --exit-code` already answers the
@@ -108,14 +120,10 @@ together they are one sentence:
 
 Deferred, with reasons:
 
-- **5 (LSP)** is 0.5.0's spine — large, and half-designed in III.8 #2
-  already (the daemon's socket, framed protocol and pre-analysed prelude
-  state exist; what it lacks is a `Program` kept between requests).
 - **7 (panics)** belongs to the same wave as threads and the owned
   collector (`GC_DESIGN.md`), because unwinding, task boundaries and
-  stack ownership are one design conversation.
-- **4 (`iyi test`)** fits wherever it lands; it is cheap and closes the
-  agent loop, but it gates nothing the bench scripts do not already gate.
+  stack ownership are one design conversation. With 5 built, it is the
+  menu's only open row.
 
 ## 4. What not to build
 

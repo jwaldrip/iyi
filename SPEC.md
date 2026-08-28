@@ -788,7 +788,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 96,381 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 97,183 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3006,7 +3006,7 @@ landing: it is the step that caught this repository's own unformatted
 syscall table. The nine visit methods exist; what this section asked for
 is what the tree does.
 
-#### 2. A language server, and why iyi can have a good one
+#### 2. A language server, and why iyi can have a good one: **BUILT — `iyi lsp`, measured by `bench/lsp_session.py`**
 
 This is the item where the compilation model pays a dividend nobody designed it
 for.
@@ -3048,6 +3048,30 @@ unreachable: `iyi` does not list `daemon`, so 487 lines and its spec are
 maintained and unreachable under the name a person types. If it is not going to
 become this, it belongs in `CRYSTAL_ONLY` with `init` and `spec`, named rather
 than silently absent.
+
+**Built, and the dividend was larger than the prediction.** The paragraphs
+above assumed a server needs a resident `Program`; `iyi lsp` ships without
+one, because the measurement said so: a full front-end compile of a
+module-local unit answers in **50–70 ms on the gate's fixture, buffer to
+verdict**, which is inside an editor's latency budget with no incremental
+state, no invalidation story, and no answer a build would not give. The
+daemon stays withdrawn. What the server actually needed was one compiler
+hook, not a process: `iyi_file_overrides`, a hash of path → editor buffer
+consulted in exactly two places (`resolve_import` counts an overridden
+path as existing; `import_file` reads the buffer instead of the disk), so
+an import sees what the person sees, saved or not, and a build pays one
+hash lookup per import for the privilege.
+
+What it speaks: LSP 3.17's earning subset — diagnostics on every change
+(the message iyi would print, the SPEC section it cites riding in `code`
+as data), hover from `ContextVisitor`, definition from
+`ImplementationsVisitor`, the outline from the parser alone so it
+survives a file that does not compile. And two methods no other language
+can offer, because no other language wrote its interfaces down:
+`iyi/contextPack` serves the grounding pack over the wire, and
+`iyi/surface` serves a module's rendered surface, unsaved buffer
+included. The gate is one scripted session, ten steps, each a claim this
+section used to make in the future tense.
 
 #### 3. The rest of the verbs, and which are design consequences
 
