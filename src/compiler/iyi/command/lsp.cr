@@ -16,8 +16,12 @@ class Iyi::Command
         Speak the Language Server Protocol over stdin/stdout. Point an editor
         at it; there is nothing to configure.
 
-        Beyond LSP 3.17 (completion, references, rename, hover, definition,
-        document symbols, diagnostics),
+        Beyond LSP 3.17's earning subset — diagnostics on every change,
+        completion, signature help, hover with docs, definition and type
+        definition, references, document highlight, rename with prepare,
+        document and workspace symbols, folding, formatting, inlay hints,
+        "did you mean" quickfixes, and semantic tokens so any client
+        highlights iyi with no grammar installed —
         two methods serve agents: `iyi/contextPack` returns the grounding
         pack for a file (`mod context --json` over the wire), and
         `iyi/surface` returns a module's rendered surface (`doc`), unsaved
