@@ -821,10 +821,53 @@ def main():
          1 <= published <= 2 and last == [],
          f"{published} publish(es) for 6 didChanges, final verdict clean")
 
-    # 40. shutdown/exit: the server leaves when told, not before.
+    # 40. document links: the import block is clickable — `import
+    #     calc/lexer` and its `using` line both target lexer.iyi.
+    reply = c.send("textDocument/documentLink",
+                   {"textDocument": {"uri": parser_uri}})
+    links = reply["result"] or []
+    targets = {l["target"].rsplit("/", 1)[-1] for l in links}
+    link_lines = sorted(l["range"]["start"]["line"] for l in links)
+    step(40, "documentLink makes the import block clickable",
+         targets == {"lexer.iyi"} and link_lines == [2, 3],
+         f"{len(links)} link(s) at lines {link_lines}")
+
+    # 41. type hierarchy, upward: Dot's supertypes include the trait
+    #     its impl brought in.
+    reply = c.send("textDocument/prepareTypeHierarchy",
+                   {"textDocument": {"uri": shapes_uri},
+                    "position": {"line": 6, "character": 12}})
+    items = reply["result"] or []
+    dot = items[0] if items else None
+    supers = []
+    if dot:
+        reply = c.send("typeHierarchy/supertypes", {"item": dot})
+        supers = reply["result"] or []
+    super_names = sorted(s["name"] for s in supers)
+    step(41, "type hierarchy climbs from Dot to Paint",
+         dot is not None and dot["name"] == "Dot" and dot["kind"] == 23 and
+         "Paint" in super_names,
+         f"Dot <: {super_names}")
+
+    # 42. and downward: Paint's subtypes include Dot.
+    reply = c.send("textDocument/prepareTypeHierarchy",
+                   {"textDocument": {"uri": shapes_uri},
+                    "position": {"line": 2, "character": 11}})
+    items = reply["result"] or []
+    paint = items[0] if items else None
+    subs = []
+    if paint:
+        reply = c.send("typeHierarchy/subtypes", {"item": paint})
+        subs = reply["result"] or []
+    sub_names = sorted(s["name"] for s in subs)
+    step(42, "type hierarchy descends from Paint to Dot",
+         paint is not None and paint["kind"] == 11 and "Dot" in sub_names,
+         f"Paint :> {sub_names}")
+
+    # 43. shutdown/exit: the server leaves when told, not before.
     c.send("shutdown", {})
     c.send("exit", {}, wait=False)
-    step(40, "shutdown then exit", c.proc.wait(timeout=10) == 0)
+    step(43, "shutdown then exit", c.proc.wait(timeout=10) == 0)
 
     print("lsp gate: every step held")
 
