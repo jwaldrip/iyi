@@ -129,6 +129,14 @@
   38 steps, the new three literal: a never-compiled buffer completes
   `tok`, applies the item, and the verdict is clean.
 
+- **A queue under the one thread: cancels overtake, bursts coalesce.**
+  The reader rides its own fiber now, filling a queue while a compile
+  runs. A `$/cancelRequest` for queued work answers `-32800` without
+  doing the work (in-flight work stays uninterruptible — one thread's
+  honest limit, stated); a typing burst's didChanges apply together, so
+  six keystrokes cost at most two compiles instead of six, and the
+  verdict is the final text's. The gate holds 40 steps.
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a

@@ -788,7 +788,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 99,745 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 99,839 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3174,6 +3174,20 @@ its `import`/`using` pair rides along as `additionalTextEdits`: a new
 selective `using` when the module is unimported, the existing line
 extended (`{token}` → `{token, glyph}`) when it is — the two lines a
 person, and more often a model, forgets. The gate holds 38 steps.
+
+**The last structural complaint was the pipe itself, and the queue
+answered it.** The server is one thread on purpose — a compile is the
+unit of work and it is never wrong — but reading requests on that same
+thread meant a cancel could never overtake the work it cancelled and a
+typing burst queued one compile per keystroke. The reader rides its
+own fiber now, filling a queue while a compile runs, and the loop
+sweeps that queue before working: a `$/cancelRequest` for queued work
+answers `-32800` without compiling (in-flight work stays
+uninterruptible — the honest limit of one thread, stated rather than
+hidden), and every `didChange` for one document already queued applies
+before the compile runs, so six keystrokes cost at most two compiles
+and the verdict is the text the person actually sees. The gate holds
+40 steps, the burst and the overtaking cancel both literal.
 
 #### 3. The rest of the verbs, and which are design consequences
 
