@@ -42,7 +42,6 @@
   concurrency runtime included. Builds a person runs keep the entry-dir
   rule untouched.
 
-
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a
