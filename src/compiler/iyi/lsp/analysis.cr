@@ -318,6 +318,93 @@ module Iyi::Lsp
       locations
     end
 
+    # One type as a hierarchy node names it: the short name, where it
+    # is declared, and its LSP SymbolKind.
+    record TypeSite, name : String, location : Location, kind : Int32
+
+    # Type hierarchy's first question: the types the word under the
+    # cursor names.
+    def hierarchy_types_named(path : String, text : String, overrides : Hash(String, String), word : String?) : Array(TypeSite)
+      return [] of TypeSite unless word && word[0]?.try(&.ascii_uppercase?)
+      result = result_for(path, text, overrides)
+      return [] of TypeSite unless result
+      sites = [] of TypeSite
+      types_named(result, word).each { |type| add_site(type, sites) }
+      sites
+    end
+
+    # Supertypes: the named ancestors — the superclass chain and every
+    # trait the type (or its impls) brought in, in resolution order.
+    def supertypes_of(path : String, text : String, overrides : Hash(String, String), name : String) : Array(TypeSite)
+      result = result_for(path, text, overrides)
+      return [] of TypeSite unless result
+      sites = [] of TypeSite
+      types_named(result, name).each do |type|
+        type.ancestors.each do |ancestor|
+          if ancestor.is_a?(GenericInstanceType)
+            add_site(ancestor.generic_type.as(Type), sites)
+          else
+            add_site(ancestor, sites)
+          end
+        end
+      end
+      sites
+    end
+
+    # Subtypes: every type whose ancestors carry the named one — the
+    # implementors walk, generalised past traits to any supertype.
+    def subtypes_of(path : String, text : String, overrides : Hash(String, String), name : String) : Array(TypeSite)
+      result = result_for(path, text, overrides)
+      return [] of TypeSite unless result
+
+      wanted_types = types_named(result, name)
+      return [] of TypeSite if wanted_types.empty?
+
+      sites = [] of TypeSite
+      each_named_type(result.program) do |type|
+        next if type.metaclass?
+        below = type.ancestors.any? do |ancestor|
+          wanted_types.any? do |wanted|
+            ancestor == wanted ||
+              (ancestor.is_a?(GenericInstanceType) && ancestor.generic_type == wanted)
+          end
+        end
+        add_site(type, sites) if below
+      end
+      sites
+    end
+
+    private def types_named(result : Compiler::Result, name : String) : Array(Type)
+      found = [] of Type
+      each_named_type(result.program) do |type|
+        found << type if type.is_a?(NamedType) && type.name == name && !type.metaclass?
+      end
+      found
+    end
+
+    private def add_site(type : Type, into : Array(TypeSite)) : Nil
+      return unless type.is_a?(NamedType)
+      location = type.locations.try &.find { |candidate| candidate.filename.is_a?(String) }
+      return unless location
+      return if into.any? do |site|
+                  site.name == type.name &&
+                  site.location.filename == location.filename &&
+                  site.location.line_number == location.line_number
+                end
+      into << TypeSite.new(type.name, location, kind_of(type))
+    end
+
+    # LSP SymbolKind, from what the type is.
+    private def kind_of(type : Type) : Int32
+      case type
+      when .trait?    then 11 # Interface
+      when EnumType   then 10
+      when ClassType  then type.struct? ? 23 : 5
+      when ModuleType then 2
+      else                 5
+      end
+    end
+
     private def each_named_type(type : Type, &block : Type ->) : Nil
       type.types?.try &.each_value do |inner|
         block.call inner
