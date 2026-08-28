@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-08-28
+
+**The language runs concurrently, and a model can read it.** 0.3.0 carried a
+shard across a boundary; this release gives iyi the two organs a language
+needs to be *used* — and one it needs to be used by the tools of this
+decade. Concurrency arrived in exactly the order III.4.8 refused to
+shortcut: a scheduler, cancellable blocking primitives, then `group`,
+a rendezvous `Channel`, `select` and the typed `group do ... end!` — run,
+not just built, on x86-64 glibc, on musl, and on aarch64 under emulation,
+with the deadline-and-cancellation claims asserted as wall-clock facts.
+Dependencies arrived as III.7's first two steps: `iyi.mod` and minimal
+version selection, a git fetcher, and `iyi.sum` noticing when what arrived
+is not what arrived last time — proven offline, against a mirror the gate
+builds and then deletes.
+
+And the AI-first surface stopped being a plan: a module's exported API as
+data (`mod dump --json`), the grounding pack an edit needs (`mod context`),
+errors that cite their SPEC sections as fields (`-f json`), a test verb
+with no framework under it (`iyi test`), docs riding the artifact, and a
+sandbox story measured rather than told. The claim got its gate before the
+README got its sentence: eight model runs, two task difficulties, 35–43%
+fewer prompt tokens on the pack, and both refusals the gate issued on the
+way are still written down in AI_FIRST.md §5.
+
+`.iyimod` goes from format 40 to 41 (`Docs`, and private methods marked).
+A 0.3.0 artifact is rejected and rebuilt, never migrated. Released
+artifacts carry the version alone, so any 0.4.0 build on the same target
+and flags reads them.
 
 ### Added
 
