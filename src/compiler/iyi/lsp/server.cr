@@ -28,6 +28,11 @@
 #     made clickable
 #   textDocument/semanticTokens — highlighting from the lexer, so any
 #     client colors iyi with no grammar installed
+#   textDocument/implementation — from a trait to its implementors
+#   textDocument/prepareCallHierarchy · incomingCalls · outgoingCalls
+#   textDocument/selectionRange — expand-selection off the parse tree
+#   textDocument/diagnostic · workspace/diagnostic — the pull shape:
+#     one buffer, or the whole project's verdict, on request
 #
 # And two methods no other server has, because no other language wrote
 # its interfaces down (AI_FIRST.md §2):
@@ -191,6 +196,20 @@ module Iyi::Lsp
         on_inlay_hint(id.not_nil!, params.not_nil!)
       when "textDocument/codeAction"
         on_code_action(id.not_nil!, params.not_nil!)
+      when "textDocument/implementation"
+        on_implementation(id.not_nil!, params.not_nil!)
+      when "textDocument/prepareCallHierarchy"
+        on_prepare_call_hierarchy(id.not_nil!, params.not_nil!)
+      when "callHierarchy/incomingCalls"
+        on_incoming_calls(id.not_nil!, params.not_nil!)
+      when "callHierarchy/outgoingCalls"
+        on_outgoing_calls(id.not_nil!, params.not_nil!)
+      when "textDocument/selectionRange"
+        on_selection_range(id.not_nil!, params.not_nil!)
+      when "textDocument/diagnostic"
+        on_pull_diagnostics(id.not_nil!, params.not_nil!)
+      when "workspace/diagnostic"
+        on_workspace_diagnostics(id.not_nil!)
       when "iyi/contextPack"
         on_delegated(id.not_nil!, params.not_nil!, "mod", "context", "--json")
       when "iyi/surface"
@@ -241,6 +260,15 @@ module Iyi::Lsp
             json.field "foldingRangeProvider", true
             json.field "workspaceSymbolProvider", true
             json.field "inlayHintProvider", true
+            json.field "implementationProvider", true
+            json.field "callHierarchyProvider", true
+            json.field "selectionRangeProvider", true
+            json.field "diagnosticProvider" do
+              json.object do
+                json.field "interFileDependencies", true
+                json.field "workspaceDiagnostics", true
+              end
+            end
             json.field "renameProvider" do
               json.object { json.field "prepareProvider", true }
             end
@@ -290,7 +318,11 @@ module Iyi::Lsp
 
     # ── Diagnostics ──────────────────────────────────────────────────────
 
-    private def publish_diagnostics(uri : String) : Nil
+    # One document's verdict as rows: {line0, start_ch, end_ch, diag}.
+    # Push and pull share this — and codeAction reads the stored copy
+    # back, because a quickfix is a diagnostic whose message already
+    # names the fix.
+    private def diagnostic_rows(uri : String) : Array({Int32, Int32, Int32, Diag})
       path = path_of(uri)
       text = text_of(uri)
       lines = text.lines
@@ -303,43 +335,111 @@ module Iyi::Lsp
         {diag.line - 1, start_ch, end_ch, diag}
       end
 
-      # codeAction reads these back: a quickfix is a diagnostic whose
-      # message already names the fix.
       @published[uri] = rows.map { |(line0, start_ch, end_ch, diag)| {line0, start_ch, end_ch, diag.message} }
+      rows
+    end
 
+    private def write_diagnostic(json : JSON::Builder, line0 : Int32, start_ch : Int32, end_ch : Int32, diag : Diag) : Nil
+      json.object do
+        json.field "range" { range(json, line0, start_ch, line0, end_ch) }
+        json.field "severity", 1
+        json.field "source", "iyi"
+        json.field "message", diag.message
+        if refs = diag.spec
+          json.field "code", "SPEC #{refs.first}"
+          json.field "codeDescription" do
+            json.object do
+              json.field "href", "https://github.com/sdogruyol/iyi/blob/master/SPEC.md"
+            end
+          end
+        end
+        unless diag.related.empty?
+          json.field "relatedInformation" do
+            json.array do
+              diag.related.each do |(file, line, col, msg)|
+                json.object do
+                  json.field "location" do
+                    json.object do
+                      json.field "uri", uri_of(file)
+                      json.field "range" { range(json, line - 1, col > 0 ? col - 1 : 0, line - 1, col > 0 ? col - 1 : 0) }
+                    end
+                  end
+                  json.field "message", msg
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+    private def publish_diagnostics(uri : String) : Nil
+      rows = diagnostic_rows(uri)
       notify("textDocument/publishDiagnostics") do |json|
         json.object do
           json.field "uri", uri
           json.field "diagnostics" do
             json.array do
               rows.each do |(line0, start_ch, end_ch, diag)|
+                write_diagnostic(json, line0, start_ch, end_ch, diag)
+              end
+            end
+          end
+        end
+      end
+    end
+
+    # ── Pull diagnostics: the agent's shape of the same verdict ─────────
+
+    # `textDocument/diagnostic` — one buffer, on request. Agents poll;
+    # they do not sit on a subscription. Same compile, same rows.
+    private def on_pull_diagnostics(id : JSON::Any, params : JSON::Any) : Nil
+      uri = params["textDocument"]["uri"].as_s
+      rows = diagnostic_rows(uri)
+      respond(id) do |json|
+        json.object do
+          json.field "kind", "full"
+          json.field "items" do
+            json.array do
+              rows.each do |(line0, start_ch, end_ch, diag)|
+                write_diagnostic(json, line0, start_ch, end_ch, diag)
+              end
+            end
+          end
+        end
+      end
+    end
+
+    # `workspace/diagnostic` — the whole project's verdict in one
+    # request, open buffers winning over the disk. R-1 is why this is
+    # affordable: each file is its own compile, tens of milliseconds,
+    # no shared state to invalidate. Capped so a monorepo cannot turn
+    # one request into a build farm.
+    private def on_workspace_diagnostics(id : JSON::Any) : Nil
+      uris = @documents.keys.dup
+      if root = @root
+        Dir.glob(File.join(root, "**", "*.iyi")) do |file|
+          next if file.includes?("/.") || file.includes?("/lib/")
+          uri = uri_of(file)
+          uris << uri unless uris.includes?(uri)
+          break if uris.size >= 200
+        end
+      end
+
+      respond(id) do |json|
+        json.object do
+          json.field "items" do
+            json.array do
+              uris.each do |uri|
+                next unless @documents.has_key?(uri) || File.file?(path_of(uri))
+                rows = diagnostic_rows(uri)
                 json.object do
-                  json.field "range" { range(json, line0, start_ch, line0, end_ch) }
-                  json.field "severity", 1
-                  json.field "source", "iyi"
-                  json.field "message", diag.message
-                  if refs = diag.spec
-                    json.field "code", "SPEC #{refs.first}"
-                    json.field "codeDescription" do
-                      json.object do
-                        json.field "href", "https://github.com/sdogruyol/iyi/blob/master/SPEC.md"
-                      end
-                    end
-                  end
-                  unless diag.related.empty?
-                    json.field "relatedInformation" do
-                      json.array do
-                        diag.related.each do |(file, line, col, msg)|
-                          json.object do
-                            json.field "location" do
-                              json.object do
-                                json.field "uri", uri_of(file)
-                                json.field "range" { range(json, line - 1, col > 0 ? col - 1 : 0, line - 1, col > 0 ? col - 1 : 0) }
-                              end
-                            end
-                            json.field "message", msg
-                          end
-                        end
+                  json.field "uri", uri
+                  json.field "kind", "full"
+                  json.field "items" do
+                    json.array do
+                      rows.each do |(line0, start_ch, end_ch, diag)|
+                        write_diagnostic(json, line0, start_ch, end_ch, diag)
                       end
                     end
                   end
@@ -1215,6 +1315,265 @@ module Iyi::Lsp
               end
             end
           end
+        end
+      end
+    end
+
+    # ── Implementation ───────────────────────────────────────────────────
+
+    # The trait under the cursor answers with the types that implement
+    # it. An impl became an `include` in the semantic pass, so the walk
+    # asks the type tree, not a registry.
+    private def on_implementation(id : JSON::Any, params : JSON::Any) : Nil
+      uri = params["textDocument"]["uri"].as_s
+      path = path_of(uri)
+      text = text_of(uri)
+      line0 = params["position"]["line"].as_i
+      char = params["position"]["character"].as_i
+      line_text = text.lines[line0]? || ""
+      column = Lsp.column_of(line_text, char)
+
+      locations = @analysis.implementors_at(
+        path, text, overrides_for(path), word_at(line_text, column))
+      return respond_null(id) if locations.empty?
+
+      respond(id) do |json|
+        json.array do
+          locations.each do |location|
+            filename = location.filename
+            next unless filename.is_a?(String)
+            target_line = read_line(filename, location.line_number)
+            ch = Lsp.character_of(target_line, location.column_number)
+            json.object do
+              json.field "uri", uri_of(filename)
+              json.field "range" { range(json, location.line_number - 1, ch, location.line_number - 1, ch) }
+            end
+          end
+        end
+      end
+    end
+
+    # ── Call hierarchy ───────────────────────────────────────────────────
+
+    # The item's `data` carries the def's source key {file, line,
+    # column} — the location every compile of the same source
+    # reproduces — so incoming and outgoing never re-derive the target
+    # from wire positions.
+    private def on_prepare_call_hierarchy(id : JSON::Any, params : JSON::Any) : Nil
+      uri = params["textDocument"]["uri"].as_s
+      path = path_of(uri)
+      text = text_of(uri)
+      line0 = params["position"]["line"].as_i
+      char = params["position"]["character"].as_i
+      line_text = text.lines[line0]? || ""
+      column = Lsp.column_of(line_text, char)
+
+      sites = @analysis.hierarchy_targets_at(path, text, overrides_for(path), line0 + 1, column)
+      return respond_null(id) if sites.empty?
+
+      respond(id) do |json|
+        json.array do
+          sites.each { |site| hierarchy_item(json, site) }
+        end
+      end
+    end
+
+    private def hierarchy_item(json : JSON::Builder, site : HierarchySite) : Nil
+      name_line = read_line(site.filename, site.name_line)
+      sel_start = Lsp.character_of(name_line, site.name_column)
+      sel_end = Lsp.character_of(name_line, site.name_column + site.name_size)
+      end_line = read_line(site.filename, site.end_line)
+      json.object do
+        json.field "name", site.name
+        json.field "kind", 6 # Method
+        json.field "uri", uri_of(site.filename)
+        json.field "range" { range(json, site.line - 1, 0, site.end_line - 1, Lsp.character_of(end_line, end_line.size + 1)) }
+        json.field "selectionRange" { range(json, site.name_line - 1, sel_start, site.name_line - 1, sel_end) }
+        json.field "data" do
+          json.object do
+            json.field "file", site.filename
+            json.field "line", site.line
+            json.field "column", site.column
+          end
+        end
+      end
+    end
+
+    private def hierarchy_key(params : JSON::Any) : {String, Int32, Int32}?
+      data = params["item"]?.try(&.["data"]?)
+      return nil unless data
+      file = data["file"]?.try(&.as_s?)
+      line = data["line"]?.try(&.as_i?)
+      column = data["column"]?.try(&.as_i?)
+      return nil unless file && line && column
+      {file, line, column}
+    end
+
+    # Incoming: under R-1 a def's callers live in its consumers'
+    # compiles, so every open document answers and the edges merge —
+    # the references rule, one level up.
+    private def on_incoming_calls(id : JSON::Any, params : JSON::Any) : Nil
+      key = hierarchy_key(params)
+      return respond_null(id) unless key
+
+      entries = @documents.map { |doc_uri, doc_text| {path_of(doc_uri), doc_text} }
+      unless @documents.has_key?(uri_of(key[0]))
+        entries << {key[0], File.read(key[0])} if File.file?(key[0])
+      end
+
+      merged = {} of {String, Int32, Int32} => {HierarchySite?, Array(CallSite)}
+      entries.each do |(entry_path, entry_text)|
+        visitor = @analysis.incoming_calls_at(entry_path, entry_text, overrides_for(entry_path), key)
+        next unless visitor
+        visitor.calls.each do |group, (site, calls)|
+          entry = merged[group] ||= {site, [] of CallSite}
+          entry[1].concat calls
+        end
+      end
+      return respond_null(id) if merged.empty?
+
+      respond(id) do |json|
+        json.array do
+          merged.each do |_, (site, calls)|
+            calls.uniq!
+            json.object do
+              json.field "from" do
+                if site
+                  hierarchy_item(json, site)
+                else
+                  # The file's main expressions call too; the file is
+                  # the caller.
+                  file = calls.first[0]
+                  json.object do
+                    json.field "name", File.basename(file)
+                    json.field "kind", 2 # Module
+                    json.field "uri", uri_of(file)
+                    json.field "range" { range(json, calls.first[1] - 1, 0, calls.first[1] - 1, 0) }
+                    json.field "selectionRange" { range(json, calls.first[1] - 1, 0, calls.first[1] - 1, 0) }
+                  end
+                end
+              end
+              json.field "fromRanges" { call_ranges(json, calls) }
+            end
+          end
+        end
+      end
+    end
+
+    # Outgoing: the body lives in the def's own file, so one compile is
+    # the whole answer.
+    private def on_outgoing_calls(id : JSON::Any, params : JSON::Any) : Nil
+      key = hierarchy_key(params)
+      return respond_null(id) unless key
+
+      file = key[0]
+      text = @documents[uri_of(file)]? || (File.file?(file) ? File.read(file) : nil)
+      return respond_null(id) unless text
+
+      visitor = @analysis.outgoing_calls_at(file, text, overrides_for(file), key)
+      return respond_null(id) unless visitor && !visitor.calls.empty?
+
+      respond(id) do |json|
+        json.array do
+          visitor.calls.each do |_, (site, calls)|
+            calls.uniq!
+            json.object do
+              json.field "to" { hierarchy_item(json, site) }
+              json.field "fromRanges" { call_ranges(json, calls) }
+            end
+          end
+        end
+      end
+    end
+
+    private def call_ranges(json : JSON::Builder, calls : Array(CallSite)) : Nil
+      json.array do
+        calls.each do |(file, line, column, size)|
+          target_line = read_line(file, line)
+          start_ch = Lsp.character_of(target_line, column)
+          end_ch = Lsp.character_of(target_line, column + size)
+          range(json, line - 1, start_ch, line - 1, end_ch)
+        end
+      end
+    end
+
+    # ── Selection range ──────────────────────────────────────────────────
+
+    # Expand-selection off the parse tree alone: every node whose span
+    # holds the position, innermost out. Syntax, not semantics — the
+    # buffer mid-edit still answers.
+    private def on_selection_range(id : JSON::Any, params : JSON::Any) : Nil
+      uri = params["textDocument"]["uri"].as_s
+      path = path_of(uri)
+      text = text_of(uri)
+      lines = text.lines
+
+      parsed =
+        begin
+          parser = Parser.new(text)
+          parser.filename = path
+          parser.parse
+        rescue CodeError
+          return respond_null(id)
+        end
+
+      respond(id) do |json|
+        json.array do
+          params["positions"].as_a.each do |position|
+            line0 = position["line"].as_i
+            char = position["character"].as_i
+            line_text = lines[line0]? || ""
+            column = Lsp.column_of(line_text, char)
+
+            collector = SpanCollector.new(Location.new(path, line0 + 1, column))
+            parsed.accept collector
+            chain = nest_spans(collector.spans)
+
+            if chain.empty?
+              json.object do
+                json.field "range" { range(json, line0, char, line0, char) }
+              end
+            else
+              write_selection(json, chain, chain.size - 1, lines)
+            end
+          end
+        end
+      end
+    end
+
+    # Outermost-first spans → the strictly nested chain the protocol
+    # wants. Sorting by (start asc, end desc) puts a container before
+    # its contents; anything that breaks nesting is dropped.
+    private def nest_spans(spans : Array({Location, Location})) : Array({Location, Location})
+      spans.sort! do |a, b|
+        cmp = (a[0] <=> b[0]) || 0
+        cmp.zero? ? ((b[1] <=> a[1]) || 0) : cmp
+      end
+      chain = [] of {Location, Location}
+      spans.each do |span|
+        if last = chain.last?
+          next if span[0] == last[0] && span[1] == last[1]
+          next unless last[0] <= span[0] && span[1] <= last[1]
+        end
+        chain << span
+      end
+      chain
+    end
+
+    # chain[index] innermost-out via recursion: the object is the
+    # innermost range, its `parent` the next span outward.
+    private def write_selection(json : JSON::Builder, chain : Array({Location, Location}), index : Int32, lines : Array(String)) : Nil
+      start_loc, end_loc = chain[index]
+      start_line = lines[start_loc.line_number - 1]? || ""
+      end_line = lines[end_loc.line_number - 1]? || ""
+      json.object do
+        json.field "range" do
+          range(json,
+            start_loc.line_number - 1, Lsp.character_of(start_line, start_loc.column_number),
+            end_loc.line_number - 1, Lsp.character_of(end_line, end_loc.column_number + 1))
+        end
+        if index > 0
+          json.field "parent" { write_selection(json, chain, index - 1, lines) }
         end
       end
     end
