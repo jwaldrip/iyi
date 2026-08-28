@@ -1268,7 +1268,18 @@ module Iyi::Lsp
     # The compiler's own suggestion, made clickable: a diagnostic whose
     # message says "Did you mean 'x'?" becomes a quickfix performing the
     # change. No new analysis — the fix was computed when the error was.
-    SUGGESTION = /Did you mean '([^']+)'\?/
+    # Found by a plain scan, not a regex: a Regex literal would link
+    # PCRE2 into the compiler, and the dependency floor (SPEC.md III.9)
+    # forbids exactly that.
+    private def suggestion_in(message : String) : String?
+      marker = "Did you mean '"
+      start = message.index(marker)
+      return nil unless start
+      from = start + marker.size
+      close = message.index("'?", from)
+      return nil unless close && close > from
+      message[from...close]
+    end
 
     private def on_code_action(id : JSON::Any, params : JSON::Any) : Nil
       uri = params["textDocument"]["uri"].as_s
@@ -1277,8 +1288,8 @@ module Iyi::Lsp
 
       actions = (@published[uri]? || [] of {Int32, Int32, Int32, String}).compact_map do |(line0, start_ch, end_ch, message)|
         next unless line0 >= from && line0 <= to && end_ch > start_ch
-        next unless match = SUGGESTION.match(message)
-        {line0, start_ch, end_ch, message, match[1]}
+        next unless suggestion = suggestion_in(message)
+        {line0, start_ch, end_ch, message, suggestion}
       end
 
       respond(id) do |json|
@@ -1631,7 +1642,6 @@ module Iyi::Lsp
       end
       params["rootPath"]?.try(&.as_s?)
     end
-
 
     # ── The agent endpoints: the CLI's own verbs over the wire ───────────
 
