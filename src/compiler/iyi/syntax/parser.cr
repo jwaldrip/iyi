@@ -2219,25 +2219,29 @@ module Iyi
       location = @token.location
       next_token_skip_space
       path = parse_import_path
-      names = parse_using_names if @token.type.op_colon_colon?
+      if @token.type.op_colon_colon?
+        names, name_locations = parse_using_names
+      end
 
-      node = UsingDecl.new(path, names)
+      node = UsingDecl.new(path, names, name_locations)
       node.at(location)
       node.end_location = token_end_location
       node
     end
 
-    private def parse_using_names : Array(String)
+    private def parse_using_names : {Array(String), Array(Location)}
       next_token
       check Token::Kind::OP_LCURLY
 
       names = [] of String
+      name_locations = [] of Location
       next_token_skip_space_or_newline
       loop do
         unless @token.type.ident? || @token.type.const?
           raise "expected a name to bring into scope", @token.line_number, @token.column_number
         end
         names << @token.value.to_s
+        name_locations << @token.location
         next_token_skip_space_or_newline
         break unless @token.type.op_comma?
         next_token_skip_space_or_newline
@@ -2245,7 +2249,7 @@ module Iyi
       check Token::Kind::OP_RCURLY
 
       next_token_skip_space
-      names
+      {names, name_locations}
     end
 
     # iyi: `pub` marks a declaration as exported (R-2). Exported declarations

@@ -242,10 +242,97 @@ def main():
     step(10, "nested module resolves from its header's root", diags == [],
          "calc/parser.iyi imports calc/lexer, opened alone, clean")
 
-    # 11. shutdown/exit: the server leaves when told, not before.
+    # 11. completion after a dot: the buffer stops compiling the moment
+    #     the dot lands, which is exactly when completion fires — so the
+    #     answer comes from the last result that held together.
+    holler_app = hovered.replace("shout", "holler")
+    dotted = holler_app.replace("\n  loud\n", "\n  loud.up\n")
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 6},
+            "contentChanges": [{"text": dotted}]}, wait=False)
+    c.diagnostics(app_uri)
+    reply = c.send("textDocument/completion",
+                   {"textDocument": {"uri": app_uri},
+                    "position": {"line": 7, "character": 9}})
+    items = reply["result"]["items"]
+    labels = [i["label"] for i in items]
+    upcase = next((i for i in items if i["label"] == "upcase"), None)
+    step(11, "completion after a dot lists the receiver's methods",
+         upcase is not None and all(l.startswith("up") for l in labels),
+         f"{len(labels)} item(s) for 'loud.up', "
+         f"upcase detail {upcase and upcase['detail']!r}")
+
+    # 12. bare completion: the scope's own names, typed.
+    bare = holler_app.replace("\n  loud\n", "\n  lo\n")
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 7},
+            "contentChanges": [{"text": bare}]}, wait=False)
+    c.diagnostics(app_uri)
+    reply = c.send("textDocument/completion",
+                   {"textDocument": {"uri": app_uri},
+                    "position": {"line": 7, "character": 4}})
+    items = reply["result"]["items"]
+    loud = next((i for i in items if i["label"] == "loud"), None)
+    step(12, "bare completion offers the scope, typed",
+         loud is not None and loud["kind"] == 6 and
+         loud["detail"] == "String",
+         f"loud : {loud and loud['detail']}")
+
+    # 13. references, asked at the *def*: under R-1 the callers live in
+    #     the consumers' compiles, so the session answers from every open
+    #     document — the call in app.iyi, the `using` selection that
+    #     brings the name in (the gate's own find: miss it and a rename
+    #     leaves a program that does not compile), and the declaration.
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 8},
+            "contentChanges": [{"text": holler_app}]}, wait=False)
+    c.diagnostics(app_uri)
+    reply = c.send("textDocument/references",
+                   {"textDocument": {"uri": greet_uri},
+                    "position": {"line": 2, "character": 9},
+                    "context": {"includeDeclaration": True}})
+    locs = reply["result"] or []
+    names = sorted({l["uri"].rsplit("/", 1)[-1] for l in locs})
+    app_lines = sorted(l["range"]["start"]["line"] for l in locs
+                       if l["uri"].endswith("app.iyi"))
+    step(13, "references cross the module boundary, using line included",
+         names == ["app.iyi", "greet.iyi"] and len(locs) == 3 and
+         app_lines == [3, 6],
+         f"{len(locs)} site(s): call, using selection, declaration")
+
+    # 14. rename off the typed graph: one request, two files edited —
+    #     then both buffers change to the edit and the verdicts are clean.
+    reply = c.send("textDocument/rename",
+                   {"textDocument": {"uri": greet_uri},
+                    "position": {"line": 2, "character": 9},
+                    "newName": "yell"})
+    changes = reply["result"]["changes"]
+    edit_count = sum(len(e) for e in changes.values())
+    texts = {app_uri: holler_app,
+             greet_uri: greet_text.replace("shout", "holler")}
+    for uri, edits in changes.items():
+        lines = texts[uri].split("\n")
+        for e in sorted(edits, key=lambda e: -e["range"]["start"]["character"]):
+            l = e["range"]["start"]["line"]
+            s, t = e["range"]["start"]["character"], e["range"]["end"]["character"]
+            lines[l] = lines[l][:s] + e["newText"] + lines[l][t:]
+        texts[uri] = "\n".join(lines)
+    clean = True
+    for version, uri in ((3, greet_uri), (9, app_uri)):
+        c.send("textDocument/didChange",
+               {"textDocument": {"uri": uri, "version": version},
+                "contentChanges": [{"text": texts[uri]}]}, wait=False)
+        clean = clean and c.diagnostics(uri)["diagnostics"] == []
+    step(14, "rename edits both files, using line too, both stay clean",
+         len(changes) == 2 and edit_count == 3 and
+         "using greet::{yell}" in texts[app_uri] and
+         "def yell" in texts[greet_uri] and clean,
+         f"{edit_count} edit(s) across {len(changes)} file(s)")
+
+    # 15. shutdown/exit: the server leaves when told, not before.
     c.send("shutdown", {})
     c.send("exit", {}, wait=False)
-    step(11, "shutdown then exit", c.proc.wait(timeout=10) == 0)
+    step(15, "shutdown then exit", c.proc.wait(timeout=10) == 0)
 
     print("lsp gate: every step held")
 

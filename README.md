@@ -284,7 +284,7 @@ says what moved and who it reaches. `--exit-code` makes that a branch in a
 script. Nothing here is agent-specific: it is R-1's boundary, asked a question.
 
 What *is* here is deliberately unspecial: `iyi lsp` is a standard protocol
-over the same rules — hover, definition and diagnostics are the front end
+over the same rules — completion, references, rename, hover and diagnostics are the front end
 answering, and the two methods beyond LSP (`iyi/contextPack`,
 `iyi/surface`) return exactly what the CLI prints. No agent mode, no
 forked behaviour by consumer; if the rules turn out not to be enough,
@@ -368,11 +368,15 @@ vim.lsp.enable("iyi")
 
 Any LSP client works the same way: command `iyi lsp`, filetype `.iyi`.
 Diagnostics arrive on every keystroke from a real compile of the module
-alone — 50–70 ms on the gate's fixture — and an error that cites the spec
-carries the section as its diagnostic code. Two requests go beyond the
-protocol for harnesses: `iyi/contextPack` returns the file's grounding
-pack and `iyi/surface` a module's rendered surface, unsaved buffers
-included (`bench/lsp_session.py` is the whole contract, runnable).
+alone — 28–81 ms across this repository's own modules — and an error
+that cites the spec carries the section as its diagnostic code.
+Completion lists a receiver's methods with their written signatures;
+references and rename ride the typed graph, so an overload that shares a
+name but not a resolution stays put, and a rename reaches the `using`
+line that selects the old name. Two requests go beyond the protocol for
+harnesses: `iyi/contextPack` returns the file's grounding pack and
+`iyi/surface` a module's rendered surface, unsaved buffers included
+(`bench/lsp_session.py` is the whole contract, runnable).
 
 ### Your first module, and then the rule that matters
 

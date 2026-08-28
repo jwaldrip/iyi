@@ -788,7 +788,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 97,223 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 97,665 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3070,8 +3070,33 @@ survives a file that does not compile. And two methods no other language
 can offer, because no other language wrote its interfaces down:
 `iyi/contextPack` serves the grounding pack over the wire, and
 `iyi/surface` serves a module's rendered surface, unsaved buffer
-included. The gate is one scripted session, ten steps, each a claim this
+included. The gate is one scripted session, each step a claim this
 section used to make in the future tense.
+
+**The everyday half followed: completion, references, rename.** All
+three are the same skeleton — compile, then visit the typed result — and
+each taught something:
+
+- **Completion** answers from the last result that held together,
+  because the buffer stops compiling the moment the dot lands, which is
+  exactly when completion fires. With a receiver it lists the type's
+  methods, ancestors in resolution order, signatures as the author wrote
+  them; bare, it offers the scope with its types. No index: the typed
+  graph is rebuilt in the same 30–80 ms a keystroke already pays.
+- **References** cannot come from one program, and that is R-1 speaking:
+  a def's callers live in its *consumers'* compiles. The session answers
+  instead — every open document compiles as its own entry and the
+  answers merge. A reference is a call whose `target_defs` resolved to
+  the def under the cursor, so an overload that shares the name but not
+  the resolution stays out — the difference between a language server
+  and a text search.
+- **Rename** is references written back, and its gate found the rule
+  worth recording: a `using` line that selects the renamed name is a
+  reference too — miss it and the rename leaves a program that does not
+  compile. `UsingDecl` now carries per-name locations from the parser,
+  and the gate's step is literal: one request, three edits across two
+  files (declaration, call, `using` selection), both buffers clean
+  after.
 
 #### 3. The rest of the verbs, and which are design consequences
 

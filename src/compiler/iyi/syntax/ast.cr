@@ -2360,12 +2360,15 @@ module Iyi
     property path : Array(String)
     # nil means "everything exported"; otherwise the selected names.
     property names : Array(String)?
+    # Where each selected name sits, parallel to `names` — a `using` line
+    # is a reference to the defs it selects, and rename has to reach it.
+    property name_locations : Array(Location)?
 
-    def initialize(@path, @names = nil)
+    def initialize(@path, @names = nil, @name_locations = nil)
     end
 
     def clone_without_location
-      UsingDecl.new(@path.dup, @names.dup)
+      UsingDecl.new(@path.dup, @names.dup, @name_locations.dup)
     end
 
     def_equals_and_hash @path, @names

@@ -141,6 +141,12 @@ module Iyi::Lsp
         on_definition(id.not_nil!, params.not_nil!)
       when "textDocument/documentSymbol"
         on_document_symbol(id.not_nil!, params.not_nil!)
+      when "textDocument/completion"
+        on_completion(id.not_nil!, params.not_nil!)
+      when "textDocument/references"
+        on_references(id.not_nil!, params.not_nil!)
+      when "textDocument/rename"
+        on_rename(id.not_nil!, params.not_nil!)
       when "iyi/contextPack"
         on_delegated(id.not_nil!, params.not_nil!, "mod", "context", "--json")
       when "iyi/surface"
@@ -184,6 +190,13 @@ module Iyi::Lsp
             json.field "hoverProvider", true
             json.field "definitionProvider", true
             json.field "documentSymbolProvider", true
+            json.field "referencesProvider", true
+            json.field "renameProvider", true
+            json.field "completionProvider" do
+              json.object do
+                json.field "triggerCharacters" { json.array { json.string "." } }
+              end
+            end
           end
         end
         json.field "serverInfo" do
@@ -366,6 +379,197 @@ module Iyi::Lsp
     private def read_line(filename : String, line : Int32) : String
       text = @documents[uri_of(filename)]? || (File.file?(filename) ? File.read(filename) : "")
       text.lines[line - 1]? || ""
+    end
+
+    # ── Completion ───────────────────────────────────────────────────────
+
+    KEYWORDS = %w(def end if elsif else unless while case when import using
+      pub module trait impl struct class enum return begin rescue ensure
+      true false nil self group spawn defer select)
+
+    private def on_completion(id : JSON::Any, params : JSON::Any) : Nil
+      uri = params["textDocument"]["uri"].as_s
+      path = path_of(uri)
+      text = text_of(uri)
+      line0 = params["position"]["line"].as_i
+      char = params["position"]["character"].as_i
+      line_text = text.lines[line0]? || ""
+
+      # Everything below is in codepoints; the wire's UTF-16 enters and
+      # leaves through the two converters only.
+      cursor = Lsp.column_of(line_text, char) - 1
+      chars = line_text.chars
+
+      prefix_start = cursor
+      while prefix_start > 0 && name_char?(chars[prefix_start - 1]?)
+        prefix_start -= 1
+      end
+      prefix = chars[prefix_start...cursor].join
+
+      receiver = nil
+      anchor = prefix_start
+      if prefix_start > 0 && chars[prefix_start - 1]? == '.'
+        receiver_start = prefix_start - 1
+        while receiver_start > 0 && (name_char?(chars[receiver_start - 1]?) || chars[receiver_start - 1]? == '@')
+          receiver_start -= 1
+        end
+        receiver = chars[receiver_start...(prefix_start - 1)].join
+        anchor = receiver_start
+        return respond_null(id) if receiver.empty?
+      end
+
+      items = @analysis.completion_at(
+        path, text, overrides_for(path), line0 + 1, anchor + 1, receiver)
+      items.select! { |(label, _, _)| label.starts_with?(prefix) } unless prefix.empty?
+      if receiver.nil?
+        KEYWORDS.each do |keyword|
+          items << {keyword, "keyword", 14} if prefix.empty? || keyword.starts_with?(prefix)
+        end
+      end
+
+      respond(id) do |json|
+        json.object do
+          json.field "isIncomplete", false
+          json.field "items" do
+            json.array do
+              items.each do |(label, detail, kind)|
+                json.object do
+                  json.field "label", label
+                  json.field "kind", kind
+                  json.field "detail", detail
+                  # Scope first, methods next, keywords last.
+                  json.field "sortText", "#{kind == 6 ? '0' : kind == 14 ? '2' : '1'}#{label}"
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+    private def name_char?(ch : Char?) : Bool
+      return false unless ch
+      ch.alphanumeric? || ch == '_'
+    end
+
+    # ── References and rename ────────────────────────────────────────────
+
+    private def on_references(id : JSON::Any, params : JSON::Any) : Nil
+      references, declarations = reference_sites(params)
+      if references.empty? && declarations.empty?
+        return respond_null(id)
+      end
+
+      include_declaration = params["context"]?.try(&.["includeDeclaration"]?).try(&.as_bool?) || false
+      sites = references.dup
+      sites.concat declarations if include_declaration
+
+      respond(id) do |json|
+        json.array do
+          sites.each do |(location, size)|
+            filename = location.filename
+            next unless filename.is_a?(String)
+            target_line = read_line(filename, location.line_number)
+            start_ch = Lsp.character_of(target_line, location.column_number)
+            end_ch = Lsp.character_of(target_line, location.column_number + size)
+            json.object do
+              json.field "uri", uri_of(filename)
+              json.field "range" { range(json, location.line_number - 1, start_ch, location.line_number - 1, end_ch) }
+            end
+          end
+        end
+      end
+    end
+
+    # Rename rides the same typed graph as references: only the edges the
+    # front end bound move, so an overload that shares the name but not
+    # the resolution keeps it. What the graph does not know it refuses to
+    # touch — by name, not silently.
+    private def on_rename(id : JSON::Any, params : JSON::Any) : Nil
+      new_name = params["newName"].as_s
+      unless valid_name?(new_name)
+        raise "'#{new_name}' is not an iyi method name"
+      end
+
+      references, declarations = reference_sites(params)
+      if references.empty? && declarations.empty?
+        raise "nothing renameable under the cursor: rename serves defs and their calls, off the typed graph"
+      end
+
+      by_file = {} of String => Array({Int32, Int32, Int32})
+      (declarations + references).each do |(location, size)|
+        filename = location.filename
+        next unless filename.is_a?(String)
+        target_line = read_line(filename, location.line_number)
+        start_ch = Lsp.character_of(target_line, location.column_number)
+        end_ch = Lsp.character_of(target_line, location.column_number + size)
+        (by_file[filename] ||= [] of {Int32, Int32, Int32}) << {location.line_number - 1, start_ch, end_ch}
+      end
+      by_file.each_value(&.uniq!)
+
+      respond(id) do |json|
+        json.object do
+          json.field "changes" do
+            json.object do
+              by_file.each do |filename, edits|
+                json.field uri_of(filename) do
+                  json.array do
+                    edits.each do |(line0, start_ch, end_ch)|
+                      json.object do
+                        json.field "range" { range(json, line0, start_ch, line0, end_ch) }
+                        json.field "newText", new_name
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+    # Under R-1 a def's callers live in its *consumers'* compiles, so one
+    # program cannot answer "who calls this" — the session can: every open
+    # document is compiled as its own entry and the answers merge. The
+    # per-entry cost is the same 30–80 ms a keystroke already pays.
+    private def reference_sites(params : JSON::Any) : {Array({Location, Int32}), Array({Location, Int32})}
+      uri = params["textDocument"]["uri"].as_s
+      path = path_of(uri)
+      text = text_of(uri)
+      line0 = params["position"]["line"].as_i
+      char = params["position"]["character"].as_i
+      line_text = text.lines[line0]? || ""
+      target = Location.new(path, line0 + 1, Lsp.column_of(line_text, char))
+
+      entries = @documents.map { |doc_uri, doc_text| {path_of(doc_uri), doc_text} }
+      entries << {path, text} unless @documents.has_key?(uri)
+
+      references = [] of {Location, Int32}
+      declarations = [] of {Location, Int32}
+      entries.each do |(entry_path, entry_text)|
+        visitor = @analysis.references_at(entry_path, entry_text, overrides_for(entry_path), target)
+        next unless visitor
+        references.concat visitor.references
+        declarations.concat visitor.declarations
+      end
+
+      {dedupe(references), dedupe(declarations)}
+    end
+
+    private def dedupe(sites : Array({Location, Int32})) : Array({Location, Int32})
+      seen = Set({String, Int32, Int32}).new
+      sites.select do |(location, _)|
+        seen.add?({location.filename.to_s, location.line_number, location.column_number})
+      end
+    end
+
+    private def valid_name?(name : String) : Bool
+      return false if name.empty?
+      return false unless name[0].ascii_letter? || name[0] == '_'
+      body = name.ends_with?('?') || name.ends_with?('!') ? name.rchop : name
+      return false if body.empty?
+      body.each_char.all? { |ch| ch.alphanumeric? || ch == '_' }
     end
 
     # ── Document symbols ─────────────────────────────────────────────────

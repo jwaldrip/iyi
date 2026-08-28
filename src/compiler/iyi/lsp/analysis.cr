@@ -18,6 +18,7 @@ require "../compiler"
 require "../mod/installer"
 require "../tools/context"
 require "../tools/implementations"
+require "./references"
 
 module Iyi::Lsp
   # One diagnostic, in iyi's own units; the server converts at the edge.
@@ -84,6 +85,100 @@ module Iyi::Lsp
       result = result_for(path, text, overrides)
       return nil unless result
       ImplementationsVisitor.new(Location.new(path, line, column)).process(result)
+    end
+
+    # One entry's contribution to a references answer. The target names
+    # the cursor's file and position; the entry is whichever open
+    # document's program we are searching — under R-1 a def's callers
+    # live in the *consumers'* compiles, so the server asks this once per
+    # open document and merges.
+    def references_at(entry_path : String, entry_text : String, overrides : Hash(String, String), target : Location) : ReferencesVisitor?
+      result = result_for(entry_path, entry_text, overrides)
+      return nil unless result
+      visitor = ReferencesVisitor.new(target)
+      visitor.process(result) ? visitor : nil
+    end
+
+    # Completion: the names the typed graph offers at this cursor. With a
+    # receiver, its type's methods, ancestors included; bare, the scope's
+    # variables plus `self`'s methods. Items are {label, detail, kind} in
+    # LSP's own kind numbers. The buffer mid-word rarely compiles, which
+    # is why `result_for` falling back to the last good result is not a
+    # convenience here but the feature: completion is a question about
+    # the program as it last held together.
+    def completion_at(path : String, text : String, overrides : Hash(String, String), line : Int32, column : Int32, receiver : String?) : Array({String, String, Int32})
+      result = result_for(path, text, overrides)
+      return [] of {String, String, Int32} unless result
+
+      contexts = ContextVisitor.new(Location.new(path, line, column))
+        .process(result).contexts
+      return [] of {String, String, Int32} unless contexts
+
+      scope = {} of String => Type
+      contexts.each { |ctx| ctx.each { |name, type| scope[name] ||= type } }
+
+      if receiver
+        type = scope[receiver]?
+        return [] of {String, String, Int32} unless type
+        methods_of(type, kind: 2) # Method
+      else
+        items = scope.compact_map do |name, type|
+          next if name.includes?(' ') || name.includes?('(')            # call keys
+          {name, PrettyTypeNameJsonConverter.pretty_type_name(type), 6} # Variable
+        end
+        if self_type = scope["self"]?
+          items.concat methods_of(self_type, kind: 3) # Function
+        end
+        items
+      end
+    end
+
+    # One entry per name, nearest ancestor wins — the same order a call
+    # resolves in. `initialize` is `new`'s business and compiler-internal
+    # names are nobody's.
+    private def methods_of(type : Type, kind : Int32) : Array({String, String, Int32})
+      members =
+        if type.is_a?(UnionType)
+          type.union_types
+        else
+          [type] of Type
+        end
+
+      seen = {} of String => String
+      members.each do |member|
+        ([member] + member.ancestors).each do |owner|
+          owner.defs.try &.each do |name, entries|
+            next if name == "initialize" || name.starts_with?("__")
+            next if seen.has_key?(name)
+            item = entries.first?
+            next unless item
+            a_def = item.def
+            next if a_def.visibility.private?
+            seen[name] = signature_of(a_def)
+          end
+        end
+      end
+      seen.map { |name, detail| {name, detail, kind} }
+    end
+
+    # The signature as the author wrote it: arguments with their
+    # restrictions, the return type if stated. Bodies stay home.
+    private def signature_of(a_def : Def) : String
+      String.build do |io|
+        io << a_def.name
+        unless a_def.args.empty?
+          io << '('
+          a_def.args.each_with_index do |arg, index|
+            io << ", " unless index.zero?
+            arg.to_s(io)
+          end
+          io << ')'
+        end
+        if return_type = a_def.return_type
+          io << " : "
+          return_type.to_s(io)
+        end
+      end
     end
 
     # IV.6 read backwards: a module's path is its file's path, so a file

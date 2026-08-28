@@ -42,6 +42,21 @@
   concurrency runtime included. Builds a person runs keep the entry-dir
   rule untouched.
 
+- **Completion, references, rename — the everyday half of `iyi lsp`.**
+  The same skeleton three more times: compile, then visit the typed
+  result. Completion answers from the last result that held together —
+  the buffer stops compiling the moment the dot lands, which is exactly
+  when completion fires — and lists the receiver's methods with
+  signatures as written, or the scope with its types. References merge
+  the compiles of every open document, because under R-1 a def's callers
+  live in its consumers' programs; a reference is a resolved edge, so an
+  overload sharing the name but not the resolution stays out. Rename is
+  references written back, and its gate found the rule worth keeping: a
+  `using` line that selects the renamed name is a reference too — miss
+  it and the rename leaves a program that does not compile. `UsingDecl`
+  carries per-name locations from the parser now, and the gate's step is
+  one request, three edits, two files, both buffers clean after.
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a

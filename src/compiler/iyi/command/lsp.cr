@@ -16,7 +16,8 @@ class Iyi::Command
         Speak the Language Server Protocol over stdin/stdout. Point an editor
         at it; there is nothing to configure.
 
-        Beyond LSP 3.17 (hover, definition, document symbols, diagnostics),
+        Beyond LSP 3.17 (completion, references, rename, hover, definition,
+        document symbols, diagnostics),
         two methods serve agents: `iyi/contextPack` returns the grounding
         pack for a file (`mod context --json` over the wire), and
         `iyi/surface` returns a module's rendered surface (`doc`), unsaved
