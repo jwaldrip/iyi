@@ -549,23 +549,17 @@ jobs:
           cat cross/strings-windows.link
           ls -l cross
 
-      # SPEC.md III.12: the sandbox, measured — in this job because it has
-      # the compiler and the repo; the toolchain installs per-run, which is
-      # the same price the wasi arm below already pays.
-      - name: The sandbox story holds
+      # SPEC.md III.12's programs, built here where the compiler is; the
+      # three assertions run in the wasi job below, where the toolchain
+      # already works — this container's glibc is too old for wasmtime.
+      - name: Build the sandbox story's two programs
         run: |
-          # The container is the compiler's build image, not a runner: it
-          # ships no curl, and the wasmtime installer unpacks a .tar.xz.
-          apt-get update > /dev/null 2>&1 && \
-            apt-get install -y --no-install-recommends curl ca-certificates xz-utils > /dev/null 2>&1
-          curl -sSL -o /tmp/wasi-sdk.tar.gz \
-            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz
-          mkdir -p "$HOME/wasi-sdk"
-          tar -xzf /tmp/wasi-sdk.tar.gz -C "$HOME/wasi-sdk" --strip-components=1
-          curl -sSL https://wasmtime.dev/install.sh | bash
-          "$HOME/.wasmtime/bin/wasmtime" --version
-          WASI_SDK="$HOME/wasi-sdk" WASMTIME="$HOME/.wasmtime/bin/wasmtime" \
-            bash bench/sandbox_story.sh
+          printf 'total = 0\nindex = 1\nwhile index <= 10\n  total = total + index\n  index = index + 1\nend\nputs total\n' > cross/honest.iyi
+          printf 'secret = File.read("/etc/passwd")\nputs secret\n' > cross/theft.iyi
+          ( cd cross && ../bin/iyi build --cross-compile --target wasm32-wasi \
+              -o honest honest.iyi > honest.link )
+          ( cd cross && ../bin/iyi build --cross-compile --target wasm32-wasi \
+              -o theft theft.iyi > theft.link )
 
       - uses: actions/upload-artifact@v4
         with:
@@ -726,6 +720,25 @@ jobs:
           "$HOME/.wasmtime/bin/wasmtime" cross/hello-wasi > got.txt
           cat got.txt
           cmp cross/expected.txt got.txt && echo "wasm32-wasi: same output"
+
+      # SPEC.md III.12, the sandbox story: an honest program computes
+      # through the boundary; a theft of /etc/passwd dies named and
+      # empty-handed under a default wasmtime, which preopens nothing; and
+      # the refusal is the prelude's own sentence. The full local form is
+      # `bench/sandbox_story.sh`; these are its three assertions, run here
+      # because this is where the toolchain lives.
+      - name: The sandbox story holds
+        run: |
+          export PATH="/opt/wasi-sdk/bin:$PATH"
+          ( cd cross && eval "$(cat honest.link)" && eval "$(cat theft.link)" )
+          "$HOME/.wasmtime/bin/wasmtime" cross/honest > honest.txt
+          grep -qx '55' honest.txt
+          if "$HOME/.wasmtime/bin/wasmtime" cross/theft > theft.txt 2>&1; then
+            echo "the theft exited 0:"; cat theft.txt; exit 1
+          fi
+          ! grep -q 'root:' theft.txt
+          grep -q 'File is not available on wasm32-wasi' theft.txt
+          echo "sandbox: the theft died named and empty-handed"
 
   binary:
     needs: build
