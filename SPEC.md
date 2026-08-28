@@ -3128,7 +3128,26 @@ where this section promised none: the last compile is memoised by
 (path, buffer, siblings) — the key is the whole input, so a hit cannot
 differ from a recompile; it earns its line because one keystroke now
 asks four questions of the same buffer. The gate grew a step per
-claim: 26 steps, each of these sentences in the present tense.
+claim, each of these sentences in the present tense.
+
+**And the halves gopls keeps for last, plus the shape agents actually
+consume.** Implementation jumps from a trait to its implementors — an
+impl became an `include` in the semantic pass, so the answer is a walk
+of the type tree, not a registry. Call hierarchy makes the written def
+the node — a generic's instantiations collapse back to the line the
+person wrote — with incoming edges merged across the session's open
+documents (the references rule, one level up) and outgoing edges read
+from the def's own compile, the item's `data` carrying the def's
+source key so neither direction re-derives it from wire positions.
+Selection range expands off the parse tree alone, so it works mid-edit.
+And diagnostics grew their pull shape: `textDocument/diagnostic`
+answers one buffer on request, `workspace/diagnostic` judges the whole
+project in one — open buffers winning over the disk, a file nobody
+opened still judged. That pair is the AI-first face of the server: an
+editor holds a subscription, an agent asks a question, and R-1 is what
+makes the whole-project question affordable — one cheap compile per
+module, no shared state to invalidate, capped so a monorepo cannot
+turn one request into a build farm. The gate holds 32 steps.
 
 #### 3. The rest of the verbs, and which are design consequences
 

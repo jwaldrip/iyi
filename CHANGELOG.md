@@ -84,8 +84,26 @@
   (path, buffer, siblings) — the key is the whole input, so a hit
   cannot differ from a recompile; it exists because one keystroke now
   asks four questions of the same buffer. The gate grew a step per
-  claim: 26 steps, each of these sentences asserted in the present
-  tense.
+  claim, each of these sentences asserted in the present tense.
+
+- **The call graph and the pull shape — `iyi lsp`, third wave.**
+  `textDocument/implementation` jumps from a trait to its implementors:
+  an impl became an `include` in the semantic pass, so the answer is a
+  walk of the type tree, not a registry. Call hierarchy makes the
+  written def the node — a generic's instantiations collapse back to
+  the line the person wrote — incoming edges merged across the
+  session's open documents the way references are, outgoing edges read
+  from the def's own compile, and the item's `data` carrying the def's
+  source key so neither direction re-derives it from wire positions.
+  `textDocument/selectionRange` expands off the parse tree alone, alive
+  mid-edit. And diagnostics grew their pull shape — the AI-first face
+  of the server: `textDocument/diagnostic` answers one buffer on
+  request, `workspace/diagnostic` judges the whole project in one, open
+  buffers winning over the disk, a file nobody opened still judged. An
+  editor holds a subscription; an agent asks a question. R-1 is what
+  makes the whole-project question affordable — one cheap compile per
+  module, capped so a monorepo cannot turn a request into a build farm.
+  The gate holds 32 steps.
 
 ## 0.4.0 — 2026-08-28
 
