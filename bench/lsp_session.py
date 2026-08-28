@@ -247,7 +247,7 @@ def main():
     os.makedirs(calc)
     with open(os.path.join(calc, "lexer.iyi"), "w") as f:
         f.write("module calc/lexer\n\npub def token : String\n"
-                '  "NUM"\nend\n')
+                '  "NUM"\nend\n\npub def glyph : String\n  "+"\nend\n')
     parser_path = os.path.join(calc, "parser.iyi")
     parser_text = ("module calc/parser\n\nimport calc/lexer\n"
                    "using calc/lexer::{token}\n\n"
@@ -690,10 +690,91 @@ def main():
          "first" in callers and "show" in callers,
          f"token <- {callers}")
 
-    # 35. shutdown/exit: the server leaves when told, not before.
+    # 35. auto-import completion: a fresh buffer that has never
+    #     compiled types `tok`; the workspace's exports answer anyway
+    #     (R-2 made `pub` a parse-time fact), and the item carries the
+    #     `import`/`using` pair as additionalTextEdits.
+    scratch_path = os.path.join(work, "scratch.iyi")
+    scratch_text = ("module scratch\n\ndef go : String\n  tok\nend\n\n"
+                    "puts go\n")
+    scratch_uri = "file://" + scratch_path
+    with open(scratch_path, "w") as f:
+        f.write(scratch_text)
+    c.send("textDocument/didOpen",
+           {"textDocument": {"uri": scratch_uri, "languageId": "iyi",
+                             "version": 1, "text": scratch_text}}, wait=False)
+    c.diagnostics(scratch_uri)
+    reply = c.send("textDocument/completion",
+                   {"textDocument": {"uri": scratch_uri},
+                    "position": {"line": 3, "character": 5}})
+    items = reply["result"]["items"]
+    token_item = next((i for i in items if i["label"] == "token"), None)
+    edited = scratch_text
+    if token_item:
+        lines = edited.split("\n")
+        lines[3] = "  token"
+        for e in sorted(token_item.get("additionalTextEdits", []),
+                        key=lambda e: -e["range"]["start"]["line"]):
+            l = e["range"]["start"]["line"]
+            s = e["range"]["start"]["character"]
+            t = e["range"]["end"]["character"]
+            if s == t == 0 and e["newText"].endswith("\n"):
+                lines[l:l] = e["newText"].split("\n")[:-1]
+            else:
+                lines[l] = lines[l][:s] + e["newText"] + lines[l][t:]
+        edited = "\n".join(lines)
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": scratch_uri, "version": 2},
+            "contentChanges": [{"text": edited}]}, wait=False)
+    clean = c.diagnostics(scratch_uri)["diagnostics"] == []
+    step(35, "completion auto-imports across the workspace",
+         token_item is not None and
+         token_item["labelDetails"]["description"] == "calc/lexer" and
+         "import calc/lexer" in edited and
+         "using calc/lexer::{token}" in edited and clean,
+         "never-compiled buffer, item wrote the import/using pair")
+
+    # 36. the selective `using` grows instead of doubling: the buffer
+    #     already selects {token}; completing glyph extends that line.
+    broken2 = edited.replace("\nputs go\n", "\nputs go\nputs gly\n")
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": scratch_uri, "version": 3},
+            "contentChanges": [{"text": broken2}]}, wait=False)
+    c.diagnostics(scratch_uri)
+    last_line = broken2.count("\n") - 1
+    reply = c.send("textDocument/completion",
+                   {"textDocument": {"uri": scratch_uri},
+                    "position": {"line": last_line, "character": 8}})
+    items = reply["result"]["items"]
+    glyph_item = next((i for i in items if i["label"] == "glyph"), None)
+    extends = (glyph_item or {}).get("additionalTextEdits", [])
+    new_using = extends[0]["newText"] if extends else ""
+    step(36, "completion extends the selective using line",
+         glyph_item is not None and len(extends) == 1 and
+         new_using == "using calc/lexer::{token, glyph}",
+         f"edit: {new_using!r}")
+
+    # 37. fuzzy ranks below prefix but still answers: `ucs` finds
+    #     upcase on the receiver, tiered after any prefix match.
+    fuzzy_text = app_text.replace("\n  loud\n", "\n  loud.ucs\n")
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": app_uri, "version": 18},
+            "contentChanges": [{"text": fuzzy_text}]}, wait=False)
+    c.diagnostics(app_uri)
+    reply = c.send("textDocument/completion",
+                   {"textDocument": {"uri": app_uri},
+                    "position": {"line": 7, "character": 10}})
+    items = reply["result"]["items"]
+    upcase = next((i for i in items if i["label"] == "upcase"), None)
+    step(37, "fuzzy completion finds upcase from ucs",
+         upcase is not None and upcase["sortText"].startswith("4"),
+         f"{len(items)} item(s), upcase tier "
+         f"{upcase and upcase['sortText'][0]!r}")
+
+    # 38. shutdown/exit: the server leaves when told, not before.
     c.send("shutdown", {})
     c.send("exit", {}, wait=False)
-    step(35, "shutdown then exit", c.proc.wait(timeout=10) == 0)
+    step(38, "shutdown then exit", c.proc.wait(timeout=10) == 0)
 
     print("lsp gate: every step held")
 
