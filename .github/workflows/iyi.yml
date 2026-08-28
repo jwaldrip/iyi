@@ -554,11 +554,16 @@ jobs:
       # the same price the wasi arm below already pays.
       - name: The sandbox story holds
         run: |
+          # The container is the compiler's build image, not a runner: the
+          # wasmtime installer unpacks a .tar.xz, so xz has to be asked for.
+          apt-get update > /dev/null 2>&1 && \
+            apt-get install -y --no-install-recommends xz-utils > /dev/null 2>&1
           curl -sSL -o /tmp/wasi-sdk.tar.gz \
             https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz
           mkdir -p "$HOME/wasi-sdk"
           tar -xzf /tmp/wasi-sdk.tar.gz -C "$HOME/wasi-sdk" --strip-components=1
           curl -sSL https://wasmtime.dev/install.sh | bash
+          "$HOME/.wasmtime/bin/wasmtime" --version
           WASI_SDK="$HOME/wasi-sdk" WASMTIME="$HOME/.wasmtime/bin/wasmtime" \
             bash bench/sandbox_story.sh
 
