@@ -70,16 +70,99 @@ module Iyi::Lsp
     @root : String?
     @running = true
     @analysis = Analysis.new
+    # Messages the reader fiber has queued while a compile ran, and the
+    # ids the client cancelled. One thread does the work; the queue is
+    # what lets a cancel overtake the work it cancels.
+    @inbox = Deque(JSON::Any).new
+    @cancelled = Set(String).new
+    @eof = false
 
     def initialize(@input : IO = STDIN, @output : IO = STDOUT)
     end
 
+    # The reader rides its own fiber, so the queue fills while a compile
+    # runs. That buys the two behaviours a synchronous server cannot
+    # otherwise have: a `$/cancelRequest` for *queued* work is seen
+    # before the work starts (in-flight work stays uninterruptible —
+    # the honest limit of one thread), and a typing burst coalesces
+    # into one compile instead of queueing one per keystroke.
     def run : Nil
+      messages = Channel(JSON::Any?).new(64)
+      spawn do
+        loop do
+          message = read_message
+          messages.send message
+          break unless message
+        end
+      end
+
       while @running
-        message = read_message
-        break unless message
+        drain(messages)
+        sweep_cancels
+        unless message = @inbox.shift?
+          break if @eof
+          next
+        end
+        if (id = message["id"]?) && @cancelled.delete(id.to_json)
+          respond_cancelled(id)
+          next
+        end
         handle(message)
       end
+    end
+
+    # Block for the first message only; take the rest without waiting.
+    private def drain(messages : Channel(JSON::Any?)) : Nil
+      if @inbox.empty? && !@eof
+        if message = messages.receive
+          @inbox << message
+        else
+          @eof = true
+        end
+      end
+      loop do
+        select
+        when message = messages.receive
+          if message
+            @inbox << message
+          else
+            @eof = true
+          end
+        else
+          break
+        end
+      end
+    end
+
+    # A cancel's position in the queue is irrelevant — it names its
+    # target by id — so register them all before touching real work.
+    # The set is bounded: a cancel that arrived too late names an id
+    # that was already answered, and its key would otherwise live
+    # forever.
+    private def sweep_cancels : Nil
+      @inbox.reject! do |queued|
+        next false unless queued["method"]?.try(&.as_s?) == "$/cancelRequest"
+        if cancel_id = queued["params"]?.try(&.["id"]?)
+          @cancelled << cancel_id.to_json
+        end
+        true
+      end
+      @cancelled.clear if @cancelled.size > 256
+    end
+
+    private def respond_cancelled(id : JSON::Any) : Nil
+      send(JSON.build do |json|
+        json.object do
+          json.field "jsonrpc", "2.0"
+          json.field "id" { id.to_json(json) }
+          json.field "error" do
+            json.object do
+              json.field "code", -32800
+              json.field "message", "the client cancelled the request"
+            end
+          end
+        end
+      end)
     end
 
     # ── Transport: Content-Length framed JSON-RPC over stdio ────────────
@@ -158,6 +241,17 @@ module Iyi::Lsp
         text = @documents[uri]? || ""
         params.not_nil!["contentChanges"].as_a.each do |change|
           text = apply_change(text, change)
+        end
+        # A typing burst is one verdict: every didChange for this
+        # document already queued applies now, and the compile runs
+        # once, on what the person actually sees.
+        while (queued = @inbox.first?) &&
+              queued["method"]?.try(&.as_s?) == "textDocument/didChange" &&
+              queued["params"]["textDocument"]["uri"].as_s == uri
+          @inbox.shift
+          queued["params"]["contentChanges"].as_a.each do |change|
+            text = apply_change(text, change)
+          end
         end
         @documents[uri] = text
         publish_diagnostics(uri)
