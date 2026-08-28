@@ -31,6 +31,17 @@
   APPLIED_ON_ADOPT beside `iyi_mod_table` — the guard that demands the
   classification caught this commit within the minute, which is what it
   is for.
+- **A nested module opened alone finds its root — `iyi_project_root`.**
+  The comparison that asked "does this compete with gopls" found the gap
+  within five files: a build's project root is the entry file's
+  directory, so opening `<root>/calc/parser.iyi` in an editor broke its
+  own `import calc/lexer`. The server now derives the root from the
+  file's header — IV.6 read backwards: a path that ends with its
+  header's path names the root above both — and every module in this
+  repository opens clean, 28–81 ms to a verdict, the 1,190-line
+  concurrency runtime included. Builds a person runs keep the entry-dir
+  rule untouched.
+
 
 ## 0.4.0 — 2026-08-28
 

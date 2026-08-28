@@ -131,6 +131,9 @@ module Iyi
     # see Program#iyi_file_overrides.
     property iyi_file_overrides = {} of String => String
 
+    # iyi: the project root for `iyi lsp` — see Program#iyi_project_root.
+    property iyi_project_root : String? = nil
+
     # iyi: a namespace whose methods this build must define rather than inline.
     #
     # `--emit-iyimod` already says this about iyi modules, and the reason is the
@@ -293,6 +296,7 @@ module Iyi
       end
       program.warnings = @warnings
       program.iyi_file_overrides = @iyi_file_overrides
+      program.iyi_project_root = @iyi_project_root
       program.color = color?
       program.stdout = stdout
       program.show_error_trace = show_error_trace?
@@ -393,7 +397,7 @@ module Iyi
 
     # Re-applied by the adopt path above. `new_program` is what would otherwise
     # have set them, and adoption skips it.
-    APPLIED_ON_ADOPT = %w(use_iyimod no_codegen emit_iyimod warnings color stdout show_error_trace iyi_mod_table iyi_file_overrides)
+    APPLIED_ON_ADOPT = %w(use_iyimod no_codegen emit_iyimod warnings color stdout show_error_trace iyi_mod_table iyi_file_overrides iyi_project_root)
 
     # Neither, and two of these are judgements rather than facts. `mcpu`,
     # `mattr` and `mcmodel` reach the target machine and the target machine
@@ -1734,6 +1738,7 @@ module Iyi
       program.progress_tracker = @progress_tracker
       program.warnings = @warnings
       program.iyi_file_overrides = @iyi_file_overrides
+      program.iyi_project_root = @iyi_project_root
       program.optimization_mode = @optimization_mode
       program.iyi_module_dir = @use_iyimod
       program.iyi_wants_object_code = !@no_codegen

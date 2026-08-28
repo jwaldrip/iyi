@@ -53,6 +53,7 @@ module Iyi::Lsp
       compiler.iyi_mod_table = table
       compiler.iyi_file_overrides = overrides
       compiler.stdout = IO::Memory.new
+      compiler.iyi_project_root = project_root_of(path, text)
       compiler.stderr = IO::Memory.new
 
       result = compiler.compile(
@@ -83,6 +84,29 @@ module Iyi::Lsp
       result = result_for(path, text, overrides)
       return nil unless result
       ImplementationsVisitor.new(Location.new(path, line, column)).process(result)
+    end
+
+    # IV.6 read backwards: a module's path is its file's path, so a file
+    # whose path ends with its own header's path names the project root
+    # above both — and opening `<root>/calc/parser.iyi` resolves its
+    # `import calc/lexer` the way a build from `<root>` would. A file
+    # whose header and path disagree, or that has no header, keeps the
+    # entry-dir rule.
+    private def project_root_of(path : String, text : String) : String?
+      header = nil
+      text.each_line do |line|
+        line = line.strip
+        next if line.empty? || line.starts_with?('#')
+        header = line
+        break
+      end
+      return nil unless header && header.starts_with?("module ")
+      module_path = header.lchop("module ").strip
+      return nil if module_path.empty? || module_path.includes?(' ')
+      suffix = "/#{module_path}.iyi"
+      return nil unless path.ends_with?(suffix)
+      root = path[0, path.size - suffix.size]
+      root.empty? ? "/" : root
     end
 
     # ── CodeError → Diag ─────────────────────────────────────────────────

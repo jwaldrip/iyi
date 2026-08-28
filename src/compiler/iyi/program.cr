@@ -157,6 +157,14 @@ module Iyi
     # Empty everywhere else, so a build costs one hash lookup per import.
     property iyi_file_overrides = {} of String => String
 
+    # iyi: the project root, when a tool knows better than "the entry
+    # file's directory". `iyi lsp` derives it from the file's own module
+    # header — IV.6 read backwards: a file whose path ends with its
+    # header's path names the root above both — so opening a nested
+    # module resolves its imports the way a build from the root would.
+    # Nil for every build a person runs; the entry-dir rule stands.
+    property iyi_project_root : String? = nil
+
     # iyi: whether this build is writing artifacts as well as reading them
     # (SPEC.md IV.3). Set by the compiler from `--emit-iyimod`.
     #

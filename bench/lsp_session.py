@@ -218,10 +218,34 @@ def main():
          diags == [] and disk_still,
          "buffer renamed shout->holler, disk untouched, verdict clean")
 
-    # 10. shutdown/exit: the server leaves when told, not before.
+    # 10. a nested module opened on its own: `parser.iyi` lives under
+    #     calc/, its header says so, and its import names the sibling
+    #     from the root. The root is derived from the header (IV.6 read
+    #     backwards), so the verdict is clean — the way a build from the
+    #     root would see it, without one.
+    calc = os.path.join(work, "calc")
+    os.makedirs(calc)
+    with open(os.path.join(calc, "lexer.iyi"), "w") as f:
+        f.write("module calc/lexer\n\npub def token : String\n"
+                '  "NUM"\nend\n')
+    parser_path = os.path.join(calc, "parser.iyi")
+    parser_text = ("module calc/parser\n\nimport calc/lexer\n"
+                   "using calc/lexer::{token}\n\n"
+                   "pub def first : String\n  token\nend\n\nputs first\n")
+    with open(parser_path, "w") as f:
+        f.write(parser_text)
+    parser_uri = "file://" + parser_path
+    c.send("textDocument/didOpen",
+           {"textDocument": {"uri": parser_uri, "languageId": "iyi",
+                             "version": 1, "text": parser_text}}, wait=False)
+    diags = c.diagnostics(parser_uri)["diagnostics"]
+    step(10, "nested module resolves from its header's root", diags == [],
+         "calc/parser.iyi imports calc/lexer, opened alone, clean")
+
+    # 11. shutdown/exit: the server leaves when told, not before.
     c.send("shutdown", {})
     c.send("exit", {}, wait=False)
-    step(10, "shutdown then exit", c.proc.wait(timeout=10) == 0)
+    step(11, "shutdown then exit", c.proc.wait(timeout=10) == 0)
 
     print("lsp gate: every step held")
 

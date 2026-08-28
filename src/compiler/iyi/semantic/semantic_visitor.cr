@@ -327,6 +327,9 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
   end
 
   private def project_root : String?
+    if root = @program.iyi_project_root
+      return root
+    end
     filename = @program.filename
     filename ? File.dirname(filename) : nil
   end
