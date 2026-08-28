@@ -43,6 +43,7 @@ class Iyi::Command
 
     Command:
         init                     generate a new project
+        doc                      print a module's exported surface, docs included
         build                    build an executable
         clear_cache              clear the compiler cache
         env                      print Crystal environment information
@@ -135,6 +136,10 @@ class Iyi::Command
     when "spec/".starts_with?(command)
       options.shift
       spec
+    when command == "doc"
+      # Exact: `d` would be ambiguous with `daemon` and `deps`.
+      options.shift
+      doc
     when command == "test"
       # Exact, like `repl`: `t` stays `tool`'s.
       options.shift

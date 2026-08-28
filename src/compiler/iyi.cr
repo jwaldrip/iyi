@@ -34,6 +34,7 @@ module Iyi
         build                    build an executable
         run                      build and run a program (default)
         mod                      inspect a .iyimod module artifact
+        doc                      print a module's exported surface, docs included
         repl                     a session: one line in, its value out
         test                     run every *_test.iyi: exit 0 passes, anything else fails
         daemon                   hold the prelude analysed between builds
@@ -63,8 +64,7 @@ module Iyi
   # artifacts it writes and the file it arrived in cannot disagree.
   VERSION = Iyi::Config.iyi_version
 
-  # The ones that are this compiler doing this compiler's job.
-  DELEGATED = %w(build run mod repl env clear_cache tool daemon test)
+  DELEGATED = %w(build run mod repl env clear_cache tool daemon test doc)
 
   # The ones that belong to Crystal and are still in the binary underneath.
   # Named rather than swallowed, because "unknown command" would be a lie.
