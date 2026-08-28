@@ -641,10 +641,59 @@ def main():
          any(i["uri"].endswith("shapes.iyi") for i in items),
          f"{len(items)} file(s) judged, {len(dirty)} dirty")
 
-    # 32. shutdown/exit: the server leaves when told, not before.
+    # 32. references reach a file nobody opened: printer.iyi calls
+    #     `token` from the disk, and the workspace walk finds it beside
+    #     the open buffer's call — the gap gopls' index covers, closed
+    #     without one.
+    printer_path = os.path.join(calc, "printer.iyi")
+    printer_text = ("module calc/printer\n\nimport calc/lexer\n"
+                    "using calc/lexer::{token}\n\n"
+                    "pub def show : String\n  token\nend\n\nputs show\n")
+    with open(printer_path, "w") as f:
+        f.write(printer_text)
+    lexer_uri = "file://" + os.path.join(calc, "lexer.iyi")
+    reply = c.send("textDocument/references",
+                   {"textDocument": {"uri": lexer_uri},
+                    "position": {"line": 2, "character": 9},
+                    "context": {"includeDeclaration": False}})
+    locs = reply["result"] or []
+    files = sorted({l["uri"].rsplit("/", 1)[-1] for l in locs})
+    step(32, "references reach files nobody opened",
+         "printer.iyi" in files and "parser.iyi" in files,
+         f"{len(locs)} site(s) across {files}")
+
+    # 33. rename follows: one request edits the declaration, the open
+    #     consumer, and the consumer on disk — miss the last and the
+    #     rename ships a program that does not compile.
+    reply = c.send("textDocument/rename",
+                   {"textDocument": {"uri": lexer_uri},
+                    "position": {"line": 2, "character": 9},
+                    "newName": "lex"})
+    changes = reply["result"]["changes"]
+    changed = sorted(u.rsplit("/", 1)[-1] for u in changes)
+    step(33, "rename edits the unopened consumer too",
+         changed == ["lexer.iyi", "parser.iyi", "printer.iyi"],
+         f"{sum(len(e) for e in changes.values())} edit(s) across {changed}")
+
+    # 34. incoming calls cross the same boundary: the def in lexer.iyi
+    #     is called by defs in both consumers, one of them never opened.
+    reply = c.send("textDocument/prepareCallHierarchy",
+                   {"textDocument": {"uri": lexer_uri},
+                    "position": {"line": 2, "character": 9}})
+    items = reply["result"] or []
+    incoming = []
+    if items:
+        reply = c.send("callHierarchy/incomingCalls", {"item": items[0]})
+        incoming = reply["result"] or []
+    callers = sorted(e["from"]["name"] for e in incoming)
+    step(34, "incoming calls name the unopened caller",
+         "first" in callers and "show" in callers,
+         f"token <- {callers}")
+
+    # 35. shutdown/exit: the server leaves when told, not before.
     c.send("shutdown", {})
     c.send("exit", {}, wait=False)
-    step(32, "shutdown then exit", c.proc.wait(timeout=10) == 0)
+    step(35, "shutdown then exit", c.proc.wait(timeout=10) == 0)
 
     print("lsp gate: every step held")
 
