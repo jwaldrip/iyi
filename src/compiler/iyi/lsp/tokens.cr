@@ -14,7 +14,7 @@ module Iyi::Lsp
     # The legend, in the order the wire indexes it. Standard LSP names,
     # so every client theme already has colors for them.
     TYPES = %w(keyword string number comment type function variable
-      property operator regexp macro enumMember)
+      property operator regexp macro enumMember parameter)
 
     KEYWORD     =  0
     STRING      =  1
@@ -28,6 +28,7 @@ module Iyi::Lsp
     REGEXP      =  9
     MACRO       = 10
     ENUM_MEMBER = 11
+    PARAMETER   = 12
 
     # One colored span, single-line, in iyi's units: 1-based line,
     # 1-based codepoint column. The server converts to UTF-16 deltas.
@@ -90,7 +91,7 @@ module Iyi::Lsp
           when .string_array_start?, .symbol_array_start?
             scan_string_array token
           else
-            classify token, last_is_def
+            classify token, last_is_def, after_dot: last_type.try(&.op_period?) || false
           end
 
           if token.type.newline? && !heredocs.empty?
@@ -99,7 +100,7 @@ module Iyi::Lsp
               unless index == heredocs.size - 1
                 between = @lexer.next_token
                 break if between.type.eof?
-                classify between, last_is_def
+                classify between, last_is_def, after_dot: false
               end
             end
             heredocs.clear
@@ -184,7 +185,7 @@ module Iyi::Lsp
         end
       end
 
-      private def classify(token : Token, last_is_def : Bool) : Nil
+      private def classify(token : Token, last_is_def : Bool, after_dot : Bool = false) : Nil
         case token.type
         when .newline?, .space?
           # Layout is the client's business.
@@ -212,8 +213,20 @@ module Iyi::Lsp
             when Keyword
               emit token, KEYWORD
             else
-              # A bare name: variable or call, and the lexer cannot say
-              # which. Leaving it plain beats guessing wrong.
+              # A bare name. The lexer cannot resolve it, but the next
+              # character can classify it the way every reader already
+              # does: `name(` calls, `.name` calls, `name:` labels an
+              # argument, and what remains reads as a variable.
+              next_char = @lexer.current_char
+              if next_char == '('
+                emit token, FUNCTION
+              elsif next_char == ':' && @lexer.peek_next_char != ':'
+                emit token, PARAMETER
+              elsif after_dot
+                emit token, FUNCTION
+              else
+                emit token, VARIABLE
+              end
             end
           end
         when .op_lparen?, .op_rparen?, .op_lsquare?, .op_rsquare?, .op_lcurly?, .op_at_lsquare?,
