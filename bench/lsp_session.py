@@ -22,6 +22,7 @@ semantic tokens, inlay hints, type definition, and formatting.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -939,10 +940,40 @@ def main():
          f"{len(delta.get('edits', []))} edit(s) over "
          f"{len(first['data'])} ints")
 
-    # 46. shutdown/exit: the server leaves when told, not before.
+    # 46. the binary is rebuilt under the running session, and the
+    #     session holds: `make iyi` unlinks the executable, which makes
+    #     Process.executable_path nil on Linux — the first Cursor
+    #     screenshot's "$ORIGIN" failure. The server pinned its origin
+    #     at startup, so a fresh compile still finds the library.
+    binary = os.environ.get("IYI_BINARY", ".build/iyi")
+    if os.path.exists(binary):
+        backup = binary + ".gate-backup"
+        shutil.copy2(binary, backup)
+        # A didChange to app invalidates every sibling's overrides, so
+        # the next question about greet is a fresh compile, not a memo.
+        c.send("textDocument/didChange",
+               {"textDocument": {"uri": app_uri, "version": 26},
+                "contentChanges": [{"text": app_text + "# gone\n"}]},
+               wait=False)
+        c.diagnostics(app_uri)
+        os.remove(binary)
+        try:
+            reply = c.send("textDocument/diagnostic",
+                           {"textDocument": {"uri": greet_uri}})
+        finally:
+            shutil.move(backup, binary)
+        held = (reply.get("result") or {}).get("kind") == "full"
+        step(46, "a rebuilt binary does not lobotomise the session",
+             held and "error" not in reply,
+             "compiled with the executable unlinked; $ORIGIN was pinned")
+    else:
+        step(46, "a rebuilt binary does not lobotomise the session", True,
+             f"skipped: {binary} not present under this runner")
+
+    # 47. shutdown/exit: the server leaves when told, not before.
     c.send("shutdown", {})
     c.send("exit", {}, wait=False)
-    step(46, "shutdown then exit", c.proc.wait(timeout=10) == 0)
+    step(47, "shutdown then exit", c.proc.wait(timeout=10) == 0)
 
     print("lsp gate: every step held")
 
