@@ -53,6 +53,7 @@ class Iyi::Command
         run (default)            build and run program
         spec                     build and run specs (in spec directory)
         test                     run every *_test.iyi: exit 0 passes, anything else fails
+        vet                      report unreachable code; findings are the exit code
         tool                     run a tool
         help, --help, -h         show this help
         version, --version, -v   show version
@@ -145,6 +146,10 @@ class Iyi::Command
       # Exact, like `repl`: `t` stays `tool`'s.
       options.shift
       test
+    when command == "vet"
+      # Exact, like `test`: `v` stays `version`'s.
+      options.shift
+      vet
     when command == "lsp"
       # Exact: a server is not something to reach by accident from `l`.
       options.shift
@@ -301,6 +306,26 @@ class Iyi::Command
 
   private def init
     Init.run(options)
+  end
+
+  # iyi: `iyi vet` — SPEC.md III.8 #3's row, closed the way the table
+  # said: "a verb, not new analysis". The analysis is `tool
+  # unreachable`; the verb is go vet's contract — findings are the exit
+  # code, so CI can hold the line with no flag to remember.
+  private def vet
+    if options.first?.in?("--help", "-h")
+      puts <<-USAGE
+        Usage: #{Command.program_name} vet [switches] [program file]
+
+        Report methods nothing can reach, and exit 1 when there are any.
+        The analysis is `#{Command.program_name} tool unreachable`; this verb adds
+        go vet's contract: findings are the exit code. All of that tool's
+        switches (`-f json`, `--tallies`, ...) pass through.
+        USAGE
+      exit
+    end
+    options.unshift "--check"
+    unreachable
   end
 
   private def build

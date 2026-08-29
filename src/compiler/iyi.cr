@@ -37,6 +37,7 @@ module Iyi
         doc                      print a module's exported surface, docs included
         repl                     a session: one line in, its value out
         test                     run every *_test.iyi: exit 0 passes, anything else fails
+        vet                      report unreachable code; findings are the exit code
         daemon                   hold the prelude analysed between builds
         env                      print environment information
         clear_cache              clear the compiler cache
@@ -64,7 +65,7 @@ module Iyi
   # artifacts it writes and the file it arrived in cannot disagree.
   VERSION = Iyi::Config.iyi_version
 
-  DELEGATED = %w(build run mod repl env clear_cache tool daemon test doc lsp)
+  DELEGATED = %w(build run mod repl env clear_cache tool daemon test doc lsp vet)
 
   # The ones that belong to Crystal and are still in the binary underneath.
   # Named rather than swallowed, because "unknown command" would be a lie.
