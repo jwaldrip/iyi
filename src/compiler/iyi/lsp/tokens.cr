@@ -256,10 +256,20 @@ module Iyi::Lsp
         end
       end
 
+      # The lexer reuses one Token and does not clear `raw` between
+      # kinds, so an ident can carry the previous number's bytes. Read
+      # `raw` only for the kinds `wants_raw` actually writes — the
+      # SyntaxHighlighter's own discipline; everything else spells
+      # itself exactly through `to_s`.
       private def text_of(token : Token) : String
-        raw = token.raw
-        return raw unless raw.empty?
         case token.type
+        when .number?, .char?, .symbol?, .delimiter_start?, .delimiter_end?,
+             .string?, .string_array_start?, .symbol_array_start?,
+             .string_array_end?, .interpolation_start?,
+             .macro_literal?, .macro_expression_start?, .macro_control_start?,
+             .macro_var?, .macro_end?
+          raw = token.raw
+          raw.empty? ? token.to_s : raw
         when .comment?, .space?
           token.value.to_s
         else
