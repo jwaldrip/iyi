@@ -240,6 +240,11 @@ jobs:
       - name: The concurrency runtime holds III.4's properties
         run: bash bench/concurrency_exercise.sh
 
+      # III.1.4: a panic kills the task, not the process — defers run
+      # by registry, the boundary re-raises once, `.or_panic` is real.
+      - name: A panic dies at its boundary, cleanly
+        run: bash bench/panics.sh
+
       # III.7 step 1: iyi.mod, minimal version selection, a git fetcher —
       # run entirely against a local mirror of bare repositories, so the
       # network is not a dependency of the gate.
