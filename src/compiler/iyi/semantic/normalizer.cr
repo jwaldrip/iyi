@@ -83,23 +83,26 @@ module Iyi
     # To:
     #
     #     a
+    #     __iyi_defer_push(-> { x })
     #     begin
     #       b
     #     ensure
-    #       x
+    #       __iyi_defer_pop_run
     #     end
     #
-    # `ensure` already runs on a normal exit, on a `return` through it, and on
-    # an unwind — which is the whole of what III.1.4 asks for, because `!`
-    # expands to a `return` (III.1.2) and a panic is currently a raise. So this
-    # needs no new machinery at all; it needs the *shape* changed, because
-    # `begin`/`ensure` makes you wrap everything after the acquisition while
-    # `defer` names the cleanup at the acquisition.
+    # The cleanup is written once, as a proc the runtime holds. Every
+    # ordinary exit — falling off the end, a `return`, `!` expanding to
+    # a `return` (III.1.2) — reaches the `ensure`, which pops the proc
+    # and runs it. A panic reaches none of them: `raise` never unwinds
+    # (there is no unwinder to link, by design), so the panic path in
+    # the prelude walks the same registry and runs what was never
+    # popped. One list, two readers, and `defer`'s promise holds on
+    # every exit including the one that is a bug.
     #
-    # **LIFO falls out of the nesting.** A second `defer` is expanded inside the
-    # first one's body, so its `ensure` is the inner one and runs first — the
-    # reverse of acquisition order, which is the only order that can be right
-    # when a later resource was built from an earlier one.
+    # **LIFO falls out of the nesting** twice over: a second `defer`
+    # expands inside the first one's body, so its push is later and its
+    # pop earlier — and the registry is a stack, so the panic path
+    # agrees.
     #
     # **The scope is the block, not the function.** This is a deliberate
     # departure from Go, and it is the shape of the lowering rather than an
@@ -112,9 +115,14 @@ module Iyi
 
       deferred = exps[index].as(Defer)
       rest = apply_defers(exps[(index + 1)..])
-      handler = ExceptionHandler.new(rest, ensure: deferred.exp).at(deferred)
+
+      proc_literal = ProcLiteral.new(Def.new("->", [] of Arg, deferred.exp)).at(deferred)
+      push = Call.global("__iyi_defer_push", proc_literal).at(deferred)
+      pop = Call.new(nil, "__iyi_defer_pop_run", global: true).at(deferred)
+      handler = ExceptionHandler.new(rest, ensure: pop).at(deferred)
 
       head = exps[0...index]
+      head << push
       head << handler
       head
     end
@@ -457,9 +465,10 @@ module Iyi
     # The default is evaluated only when there is an error to recover from,
     # which is what a reader of `||` would expect.
     #
-    # `::raise` is a stand-in: panics (III.1.4) are not built yet, so the
-    # "unwrap of this design" currently unwinds as a Crystal exception. When
-    # panics land, this is the one line that changes.
+    # `::raise` *is* the panic: III.1.4 is built, so the unwrap of this
+    # design dies at the task boundary carrying the error's `message`.
+    # The line the earlier revision promised would change changed by
+    # not needing to.
     def transform(node : Recover)
       exp = node.exp.transform(self)
       temp_var = program.new_temp_var
