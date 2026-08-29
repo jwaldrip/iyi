@@ -1586,6 +1586,9 @@ module Iyi::Lsp
               json.field "label", hint.label
               json.field "kind", hint.kind
               json.field "paddingRight", true if hint.kind == InlayVisitor::KIND_PARAMETER
+              # `total : Int32`, the way the formatter writes it — not
+              # `total: Int32`, which reads as different syntax.
+              json.field "paddingLeft", true if hint.kind == InlayVisitor::KIND_TYPE
             end
           end
         end

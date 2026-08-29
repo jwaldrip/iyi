@@ -34,34 +34,47 @@ module Iyi::Lsp
       @target_location = Location.new(@file, @from_line, 1)
     end
 
+    # Var names already hinted in the def being walked: only a
+    # variable's *first* assignment is its declaration, and the
+    # declaration is the one place a type hint informs rather than
+    # nags.
+    @scope_vars = Set(String).new
+
     def process(result : Compiler::Result) : Array(Hint)
       process_result result
+      @scope_vars.clear
       result.node.accept self
       hints.sort_by! { |hint| {hint.line, hint.column} }
       hints
     end
 
     def process_typed_def(typed_def : Def) : Nil
+      @scope_vars.clear
       typed_def.accept self
     end
 
     def visit(node : Assign)
       target = node.target
-      if target.is_a?(Var) &&
-         (location = target.location) &&
-         wanted?(location) &&
-         (type = target.type?)
-        add location.line_number,
-          location.column_number + target.name.size,
-          ": #{PrettyTypeNameJsonConverter.pretty_type_name(type)}",
-          KIND_TYPE
+      if target.is_a?(Var) && (location = target.location)
+        first = @scope_vars.add?(target.name)
+        # A literal's type is on the screen already; hinting `x = 0`
+        # with `: Int32` is noise wearing information's clothes.
+        if first && !literal?(node.value) && wanted?(location) && (type = target.type?)
+          add location.line_number,
+            location.column_number + target.name.size,
+            ": #{PrettyTypeNameJsonConverter.pretty_type_name(type)}",
+            KIND_TYPE
+        end
       end
       true
     end
 
     def visit(node : Call)
       defs = node.target_defs
-      if defs && defs.size == 1 && !node.expansion?
+      # Parentheses are the gate: `f(3)` earns a parameter name,
+      # `a % b` and a paren-less `puts x` read as prose already —
+      # an operator wearing `other:` was this rule's discovery.
+      if defs && defs.size == 1 && !node.expansion? && node.has_parentheses?
         params = defs.first.args
         node.args.each_with_index do |arg, index|
           break if index >= params.size
