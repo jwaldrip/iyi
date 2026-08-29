@@ -1251,7 +1251,8 @@ describe Iyi::IyiMod do
       # the consumer emits them once either way.
       artifact.class_vars.map(&.name).select(&.starts_with?("App::")).should eq [
         "App::Counter::Tally::@@cache",
-        "App::Counter::Tally::@@seen"]
+        "App::Counter::Tally::@@seen",
+      ]
       artifact.class_vars.map(&.name).any?(&.starts_with?("IyiScheduler::")).should be_true
 
       # None of them lazy, and that is a fact about the prelude rather than
