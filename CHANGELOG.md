@@ -165,6 +165,17 @@
   tokens), with the one-stanza configs for Neovim, Helix, and Sublime
   beside it.
 
+- **The first screenshot taught two lessons.** Semantic tokens now
+  classify bare names the way a reader does — `name(` and `.name`
+  call, `name:` labels an argument, the rest is a variable — so a
+  buffer stops being a sea of plain foreground; the legend grew
+  `parameter` for named arguments. And inlay hints learned restraint:
+  parameter names only inside parentheses (an operator wearing
+  `other:` was the discovery), type hints only on a variable's first
+  assignment and never for a bare literal, padded to the `total :
+  Int32` the formatter writes. The gate asserts the variable and the
+  call by exact position.
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a
