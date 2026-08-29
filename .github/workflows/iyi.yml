@@ -267,6 +267,11 @@ jobs:
       - name: The language server holds its session
         run: python3 bench/lsp_session.py
 
+      # And the speed half of the same claim: percentiles per verb over
+      # the sample corpus, a p95 over budget names its verb and fails.
+      - name: The language server answers inside the budget
+        run: python3 bench/lsp_latency.py
+
       # The same question asked of the other kind of artifact: one whose object
       # code is a shard's and whose declarations `tool bind` wrote. III.6 rule 1
       # names an undefined symbol and a call returning another type, and
