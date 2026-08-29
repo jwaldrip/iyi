@@ -128,6 +128,7 @@ def main():
          and caps["renameProvider"]["prepareProvider"]
          and caps["codeActionProvider"]["codeActionKinds"] == [
              "quickfix", "source.organizeImports"]
+         and caps["workspace"]["fileOperations"]["willRename"]["filters"]
          and caps["implementationProvider"]
          and caps["callHierarchyProvider"]
          and caps["selectionRangeProvider"]
@@ -1011,10 +1012,49 @@ def main():
          and tidied.count("import calc/lexer") == 1,
          "two imports, three usings -> one of each, sorted, still clean")
 
-    # 48. shutdown/exit: the server leaves when told, not before.
+    # 48. willRenameFiles: moving the file is renaming the module
+    #     (IV.6), so one request rewrites the header and every
+    #     consumer's import/using — buffers and never-opened disk files
+    #     alike — and the moved module still compiles.
+    lexer_path = os.path.join(calc, "lexer.iyi")
+    scanner_path = os.path.join(calc, "scanner.iyi")
+    reply = c.send("workspace/willRenameFiles",
+                   {"files": [{"oldUri": "file://" + lexer_path,
+                               "newUri": "file://" + scanner_path}]})
+    changes = (reply["result"] or {}).get("changes", {})
+    touched = sorted(u.rsplit("/", 1)[-1] for u in changes)
+
+    def apply(text, edits):
+        lines = text.split("\n")
+        for e in sorted(edits, key=lambda e: (-e["range"]["start"]["line"],
+                                              -e["range"]["start"]["character"])):
+            l = e["range"]["start"]["line"]
+            s, t = e["range"]["start"]["character"], e["range"]["end"]["character"]
+            lines[l] = lines[l][:s] + e["newText"] + lines[l][t:]
+        return "\n".join(lines)
+
+    with open(lexer_path) as f:
+        lexer_text = f.read()
+    moved = apply(lexer_text, changes.get("file://" + lexer_path, []))
+    with open(scanner_path, "w") as f:
+        f.write(moved)
+    os.remove(lexer_path)
+    parser_moved = apply(parser_text, changes.get(parser_uri, []))
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": parser_uri, "version": 2},
+            "contentChanges": [{"text": parser_moved}]}, wait=False)
+    clean = c.diagnostics(parser_uri)["diagnostics"] == []
+    step(48, "willRenameFiles moves the module with the file",
+         touched == ["lexer.iyi", "parser.iyi", "printer.iyi",
+                     "scratch.iyi", "tidy.iyi"] and
+         "module calc/scanner" in moved and
+         "import calc/scanner" in parser_moved and clean,
+         f"{sum(len(e) for e in changes.values())} edit(s) across {touched}")
+
+    # 49. shutdown/exit: the server leaves when told, not before.
     c.send("shutdown", {})
     c.send("exit", {}, wait=False)
-    step(48, "shutdown then exit", c.proc.wait(timeout=10) == 0)
+    step(49, "shutdown then exit", c.proc.wait(timeout=10) == 0)
 
     print("lsp gate: every step held")
 
