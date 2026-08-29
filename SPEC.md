@@ -3212,6 +3212,17 @@ calls the command and reads what the program printed, which closes
 the loop `iyi/contextPack` opened: ground, edit, run, all without
 leaving the protocol. The gate holds 46 steps.
 
+**And the speed is measured, not asserted.** `bench/lsp_latency.py`
+opens the sample corpus — 26 modules: the calc language, the kemal
+port, app and std — in one session and times every verb: on the
+machine that wrote this, a keystroke's verdict lands in **36 ms p50 /
+55 ms p95**, hover in 1 ms (the memo: the keystroke already paid for
+the compile), completion in 12 ms p50, and workspace-wide references
+in ~1 s — 26 modules at one compile each, which is the architecture
+priced honestly rather than hidden in an index. The bench runs in CI
+beside the session gate with loose budgets, so the claim cannot
+quietly rot.
+
 #### 3. The rest of the verbs, and which are design consequences
 
 | Go | iyi today | what it needs |

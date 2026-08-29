@@ -154,6 +154,17 @@
   appended line moves five integers, and the splice reconstructs the
   full answer exactly, gate-checked. The gate holds 46 steps.
 
+- **The speed is measured, and the server ships to editors.**
+  `bench/lsp_latency.py` times every verb over the 26-module sample
+  corpus and fails CI when a p95 leaves its budget: a keystroke's
+  verdict lands in 36 ms p50 / 55 ms p95, hover in 1 ms off the memo,
+  completion in 12 ms p50, workspace-wide references in ~1 s — one
+  compile per module, the architecture priced rather than hidden.
+  And `editors/` makes the server installable: a three-file VS Code
+  extension (no grammar — highlighting is the server's semantic
+  tokens), with the one-stanza configs for Neovim, Helix, and Sublime
+  beside it.
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a

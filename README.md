@@ -366,10 +366,12 @@ vim.lsp.config("iyi", { cmd = { "iyi", "lsp" }, filetypes = { "iyi" } })
 vim.lsp.enable("iyi")
 ```
 
-Any LSP client works the same way: command `iyi lsp`, filetype `.iyi`.
-Diagnostics arrive on every keystroke from a real compile of the module
-alone — 28–81 ms across this repository's own modules — and an error
-that cites the spec carries the section as its diagnostic code.
+Any LSP client works the same way: command `iyi lsp`, filetype `.iyi`;
+`editors/` carries a VS Code extension and the one-stanza configs for
+Helix and Zed. Diagnostics arrive on every keystroke from a real
+compile of the module alone — 36 ms p50 / 55 ms p95 across the sample
+corpus, measured by `bench/lsp_latency.py` in CI — and an error that
+cites the spec carries the section as its diagnostic code.
 Completion lists a receiver's methods with their written signatures;
 references and rename ride the typed graph, so an overload that shares a
 name but not a resolution stays put, and a rename reaches the `using`
