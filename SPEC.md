@@ -813,6 +813,24 @@ in item 5 therefore starts with almost nothing to measure. Growing that corpus
 is a dependency of item 5, not a nicety, and it is bounded by item 3: a program
 can only be written once the prelude carries it.
 
+**The corpus grew, the benchmark ran, and it corrected the prediction it
+was built to confirm.** `bench/rebuild_speed.py` rebuilds an app over
+eight sample modules after an edit, arms alternating: from source, and
+from artifacts with `--use-iyimod`. The naive reading of R-1 says the
+artifact arm wins. It does not — ~1.0x on the sample corpus, ~0.85x on
+a 400-type semantic-heavy fixture — because the front end types
+lazily, so unused import surface is nearly free to compile, while the
+artifact arm pays decode and re-declaration for all it reads. The
+wall-time dividend R-1 delivers lives elsewhere, and each home already
+has its own gate: the language server's per-module verdict (36 ms p50,
+`bench/lsp_latency.py`), building with the library's *source deleted*
+(`bench/samples_roundtrip.sh`), and the interface hash that rebuilds
+nobody on a doc edit. What the benchmark now holds in CI is what the
+loop still owes: an edit-rebuild stays under two seconds on either
+arm, and the artifact read stays within 1.5x of the compile it
+replaces, so decode cost cannot quietly grow. Recorded rather than
+tuned until the fixture flattered.
+
 **And self-hosting was already behind it.** Crystal's compiler was written in
 Crystal before 0.1.0, at 24,984 lines against an 8,161-line library. That is
 the cheapest such a move is ever going to be, and the cost only rises. See

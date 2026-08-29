@@ -23,6 +23,16 @@
   (twenty million calls, release mode, with and without) and budgeted
   in CI so it cannot quietly grow.
 
+- **The rebuild benchmark ran, and corrected its own prediction.**
+  `bench/rebuild_speed.py`: an artifact rebuild does *not* beat a
+  source rebuild (~1.0x on the sample corpus, ~0.85x semantic-heavy) —
+  lazy typing makes unused import surface nearly free, while the read
+  pays decode for everything. R-1's wall-time dividend lives where it
+  was already gated: the LSP's 36 ms verdict, source-deleted builds,
+  the interface hash. CI now holds what the loop owes instead: under
+  two seconds per edit-rebuild on either arm, the read within 1.5x of
+  the compile it replaces. Recorded rather than tuned.
+
 ## 0.5.0 — 2026-08-29
 
 **The language got its editor, and a panic stopped being a process.**
