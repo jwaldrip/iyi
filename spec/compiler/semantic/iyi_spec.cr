@@ -2113,10 +2113,17 @@ describe "Semantic: iyi" do
 
     # iyi: `defer` (SPEC.md III.1.4). The shape of the expansion is specced in
     # `spec/compiler/normalize/defer_spec.cr`; what matters here is that it
-    # leaves the scope's type alone — the cleanup is an `ensure`, and an
-    # `ensure` contributes nothing to a value.
+    # leaves the scope's type alone — the cleanup is a registered proc plus
+    # an `ensure`, and neither contributes to a value. The harness has no
+    # prelude, so each fixture carries the runtime pair as typed no-ops.
     it "leaves the value of the scope alone" do
       assert_type(<<-CODE, filename: "x.iyi") { int32 }
+        def __iyi_defer_push(cleanup : -> Nil) : Nil
+        end
+
+        def __iyi_defer_pop_run : Nil
+        end
+
         module App
           module Res
             def self.close : Char
@@ -2136,6 +2143,12 @@ describe "Semantic: iyi" do
 
     it "keeps a defer in a method that propagates" do
       assert_type(<<-CODE, filename: "x.iyi") { union_of(int32, types["App"].types["Res"].types["IOError"]) }
+        def __iyi_defer_push(cleanup : -> Nil) : Nil
+        end
+
+        def __iyi_defer_pop_run : Nil
+        end
+
         module App
           module Res
             struct IOError

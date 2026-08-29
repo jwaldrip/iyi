@@ -1244,13 +1244,20 @@ describe Iyi::IyiMod do
       `./from-source`.chomp.should eq "hello:1\nagain:2"
 
       artifact = Iyi::IyiMod.read(File.join("mods", "app", "counter.iyimod"))
-      artifact.class_vars.map(&.name).should eq ["App::Counter::Tally::@@cache",
-                                                 "App::Counter::Tally::@@seen"]
+      # The module's own two, plus the scheduler's: `raise` reaches the
+      # panic path now (III.1.4), so every unit's object code refers to
+      # the runtime's globals — the same rule that carries
+      # `Unicode::@@upcase_ranges` for a shard that calls `upcase`, and
+      # the consumer emits them once either way.
+      artifact.class_vars.map(&.name).select(&.starts_with?("App::")).should eq [
+        "App::Counter::Tally::@@cache",
+        "App::Counter::Tally::@@seen"]
+      artifact.class_vars.map(&.name).any?(&.starts_with?("IyiScheduler::")).should be_true
 
       # None of them lazy, and that is a fact about the prelude rather than
       # about these two: iyi's has no `__crystal_once`, so a unit under it
       # never reads a class variable through an init flag.
-      artifact.class_vars.map(&.lazy).should eq [false, false]
+      artifact.class_vars.map(&.lazy).uniq.should eq [false]
 
       tally = artifact.exports.types.find { |type| type.name == "Tally" }.should_not be_nil
       tally.class_vars.should eq [{"@@cache", "(String | Nil)", ""},
