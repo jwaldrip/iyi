@@ -186,6 +186,13 @@
   Int32` the formatter writes. The gate asserts the variable and the
   call by exact position.
 
+- **Whole words, sworn to.** The screenshots' second find: the lexer
+  reuses one Token and leaves `raw` dirty between kinds, so an ident
+  could inherit the previous number's *length* — every editor showed
+  `t`otal, one letter colored. `raw` is now read only for the kinds
+  `wants_raw` writes, and `bench/lsp_token_boundaries.py` sweeps all
+  8,000+ sample tokens in CI refusing any that colors part of a word.
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a
