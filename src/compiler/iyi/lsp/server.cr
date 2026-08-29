@@ -76,6 +76,11 @@ module Iyi::Lsp
     @inbox = Deque(JSON::Any).new
     @cancelled = Set(String).new
     @eof = false
+    # Whether the client renders snippets, said at initialize.
+    @snippets = false
+    # The last semantic-token stream per document, for delta answers.
+    @token_result = 0
+    @token_data = {} of String => {String, Array(Int32)}
 
     def initialize(@input : IO = STDIN, @output : IO = STDOUT)
     end
@@ -223,6 +228,7 @@ module Iyi::Lsp
       case method
       when "initialize"
         @root = root_of(params)
+        @snippets = params.try(&.dig?("capabilities", "textDocument", "completion", "completionItem", "snippetSupport")).try(&.as_bool?) == true
         respond(id.not_nil!) { |json| capabilities(json) }
       when "initialized"
         # A notification; nothing to say back.
@@ -289,6 +295,12 @@ module Iyi::Lsp
         on_workspace_symbol(id.not_nil!, params.not_nil!)
       when "textDocument/semanticTokens/full"
         on_semantic_tokens(id.not_nil!, params.not_nil!)
+      when "textDocument/semanticTokens/full/delta"
+        on_semantic_tokens_delta(id.not_nil!, params.not_nil!)
+      when "textDocument/codeLens"
+        on_code_lens(id.not_nil!, params.not_nil!)
+      when "workspace/executeCommand"
+        on_execute_command(id.not_nil!, params.not_nil!)
       when "textDocument/inlayHint"
         on_inlay_hint(id.not_nil!, params.not_nil!)
       when "textDocument/codeAction"
@@ -411,7 +423,17 @@ module Iyi::Lsp
                     json.field "tokenModifiers" { json.array { } }
                   end
                 end
-                json.field "full", true
+                json.field "full" do
+                  json.object { json.field "delta", true }
+                end
+              end
+            end
+            json.field "codeLensProvider" do
+              json.object { json.field "resolveProvider", false }
+            end
+            json.field "executeCommandProvider" do
+              json.object do
+                json.field "commands" { json.array { json.string "iyi.run" } }
               end
             end
           end
@@ -813,6 +835,13 @@ module Iyi::Lsp
                   json.field "kind", kind
                   json.field "detail", detail
                   json.field "sortText", "#{tier}#{label}"
+                  # A callable with parameters lands as a snippet when
+                  # the client said it renders them: the cursor stops
+                  # inside the parentheses it was going to type anyway.
+                  if @snippets && kind.in?(2, 3) && detail.includes?('(')
+                    json.field "insertText", "#{label}($1)"
+                    json.field "insertTextFormat", 2
+                  end
                   if from_module
                     json.field "labelDetails" do
                       json.object { json.field "description", from_module }
@@ -1429,40 +1458,105 @@ module Iyi::Lsp
 
     private def on_semantic_tokens(id : JSON::Any, params : JSON::Any) : Nil
       uri = params["textDocument"]["uri"].as_s
-      text = text_of(uri)
-      lines = text.lines
-      toks = Tokens.scan(text)
-      toks.sort_by! { |tok| {tok.line, tok.column} }
-
+      data = semantic_token_data(text_of(uri))
+      result_id = remember_tokens(uri, data)
       respond(id) do |json|
         json.object do
-          json.field "data" do
+          json.field "resultId", result_id
+          json.field "data" { json.array { data.each { |n| json.number n } } }
+        end
+      end
+    end
+
+    # Delta: the splice between the last answer and this one — a
+    # one-line edit moves five integers, not the whole file's stream.
+    # An unknown previousResultId falls back to a full answer, which is
+    # always correct.
+    private def on_semantic_tokens_delta(id : JSON::Any, params : JSON::Any) : Nil
+      uri = params["textDocument"]["uri"].as_s
+      previous_id = params["previousResultId"]?.try(&.as_s?)
+      data = semantic_token_data(text_of(uri))
+
+      previous = @token_data[uri]?
+      unless previous && previous[0] == previous_id
+        result_id = remember_tokens(uri, data)
+        return respond(id) do |json|
+          json.object do
+            json.field "resultId", result_id
+            json.field "data" { json.array { data.each { |n| json.number n } } }
+          end
+        end
+      end
+
+      old = previous[1]
+      prefix = 0
+      while prefix < old.size && prefix < data.size && old[prefix] == data[prefix]
+        prefix += 1
+      end
+      suffix = 0
+      while suffix < old.size - prefix && suffix < data.size - prefix &&
+            old[old.size - 1 - suffix] == data[data.size - 1 - suffix]
+        suffix += 1
+      end
+
+      result_id = remember_tokens(uri, data)
+      respond(id) do |json|
+        json.object do
+          json.field "resultId", result_id
+          json.field "edits" do
             json.array do
-              prev_line = 0
-              prev_start = 0
-              emitted = false
-              toks.each do |tok|
-                line0 = tok.line - 1
-                next if line0 < 0
-                line_text = lines[line0]? || ""
-                start_ch = Lsp.character_of(line_text, tok.column)
-                length = Lsp.character_of(line_text, tok.column + tok.size) - start_ch
-                next if length <= 0
-                next if emitted && (line0 < prev_line || (line0 == prev_line && start_ch <= prev_start))
-                delta_line = line0 - prev_line
-                json.number delta_line
-                json.number delta_line.zero? && emitted ? start_ch - prev_start : start_ch
-                json.number length
-                json.number tok.type
-                json.number 0
-                prev_line = line0
-                prev_start = start_ch
-                emitted = true
+              unless old.size == data.size && prefix == old.size
+                json.object do
+                  json.field "start", prefix
+                  json.field "deleteCount", old.size - prefix - suffix
+                  json.field "data" do
+                    json.array do
+                      (prefix...(data.size - suffix)).each { |index| json.number data[index] }
+                    end
+                  end
+                end
               end
             end
           end
         end
       end
+    end
+
+    private def remember_tokens(uri : String, data : Array(Int32)) : String
+      @token_result += 1
+      result_id = @token_result.to_s
+      @token_data[uri] = {result_id, data}
+      result_id
+    end
+
+    private def semantic_token_data(text : String) : Array(Int32)
+      lines = text.lines
+      toks = Tokens.scan(text)
+      toks.sort_by! { |tok| {tok.line, tok.column} }
+
+      data = [] of Int32
+      prev_line = 0
+      prev_start = 0
+      emitted = false
+      toks.each do |tok|
+        line0 = tok.line - 1
+        next if line0 < 0
+        line_text = lines[line0]? || ""
+        start_ch = Lsp.character_of(line_text, tok.column)
+        length = Lsp.character_of(line_text, tok.column + tok.size) - start_ch
+        next if length <= 0
+        next if emitted && (line0 < prev_line || (line0 == prev_line && start_ch <= prev_start))
+        delta_line = line0 - prev_line
+        data << delta_line
+        data << (delta_line.zero? && emitted ? start_ch - prev_start : start_ch)
+        data << length
+        data << tok.type
+        data << 0
+        prev_line = line0
+        prev_start = start_ch
+        emitted = true
+      end
+      data
     end
 
     # ── Inlay hints ──────────────────────────────────────────────────────
@@ -2003,6 +2097,80 @@ module Iyi::Lsp
       params["rootPath"]?.try(&.as_s?)
     end
 
+    # ── Code lens and its command ────────────────────────────────────────
+
+    # One lens, on the file's first top-level statement: a module whose
+    # body *does* something is runnable, and the lens says so. The
+    # command runs the released verb — `iyi run` — against the buffer,
+    # dirty state included, and returns what it printed.
+    private def on_code_lens(id : JSON::Any, params : JSON::Any) : Nil
+      uri = params["textDocument"]["uri"].as_s
+      text = text_of(uri)
+      line = runnable_line(text, path_of(uri))
+      return respond(id) { |json| json.array { } } unless line
+
+      respond(id) do |json|
+        json.array do
+          json.object do
+            json.field "range" { range(json, line - 1, 0, line - 1, 0) }
+            json.field "command" do
+              json.object do
+                json.field "title", "▶ run"
+                json.field "command", "iyi.run"
+                json.field "arguments" do
+                  json.array { json.string uri }
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+    # The 1-based line of the first top-level statement that is not a
+    # declaration — the line a person means by "the program".
+    private def runnable_line(text : String, path : String) : Int32?
+      parser = Parser.new(text)
+      parser.filename = path
+      first_statement(parser.parse)
+    rescue CodeError
+      nil
+    end
+
+    private def first_statement(node : ASTNode) : Int32?
+      case node
+      when Expressions
+        node.expressions.each do |child|
+          if found = first_statement(child)
+            return found
+          end
+        end
+        nil
+      when ModuleDef
+        first_statement(node.body)
+      when ClassDef, TraitDef, EnumDef, LibDef, ImplDef, Def, Macro,
+           UsingDecl, ImportDecl, Require, VisibilityModifier, Nop,
+           Extend, Include, Alias, AnnotationDef, ModuleHeader
+        nil
+      when Assign
+        node.target.is_a?(Path) ? nil : node.location.try(&.line_number)
+      else
+        node.location.try(&.line_number)
+      end
+    end
+
+    private def on_execute_command(id : JSON::Any, params : JSON::Any) : Nil
+      command = params["command"].as_s
+      case command
+      when "iyi.run"
+        uri = params["arguments"]?.try(&.[0]?).try(&.as_s?)
+        raise "iyi.run takes the document uri" unless uri
+        run_verb(id, uri, "run")
+      else
+        raise "unknown command '#{command}'"
+      end
+    end
+
     # ── The agent endpoints: the CLI's own verbs over the wire ───────────
 
     # `iyi/contextPack` and `iyi/surface` run the released verbs against
@@ -2011,7 +2179,13 @@ module Iyi::Lsp
     # materialised beside the file first, so the pack grounds what the
     # editor sees, not what the disk last saw.
     private def on_delegated(id : JSON::Any, params : JSON::Any, *verb : String) : Nil
-      uri = params["textDocument"]["uri"].as_s
+      run_verb(id, params["textDocument"]["uri"].as_s, *verb)
+    end
+
+    # One released verb against one document, bounded: `iyi.run`
+    # executes the person's own program, and a program that never
+    # returns must not take the session with it.
+    private def run_verb(id : JSON::Any, uri : String, *verb : String) : Nil
       path = path_of(uri)
 
       scratch = nil
@@ -2023,10 +2197,22 @@ module Iyi::Lsp
 
       output = IO::Memory.new
       error = IO::Memory.new
-      status = Process.run(
+      process = Process.new(
         Process.executable_path.not_nil!,
         verb.to_a + [path],
         output: output, error: error)
+
+      done = Channel(Process::Status).new(1)
+      spawn { done.send process.wait }
+      status = nil
+      select
+      when finished = done.receive
+        status = finished
+      when timeout(30.seconds)
+        process.terminate rescue nil
+        error << "\nkilled after 30s: the verb did not return"
+        status = done.receive
+      end
 
       respond(id) do |json|
         json.object do

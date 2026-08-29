@@ -18,12 +18,14 @@ class Iyi::Command
 
         Beyond LSP 3.17's earning subset — diagnostics pushed on every
         change and pulled on request (one file or the whole workspace),
-        completion, signature help, hover with docs, definition, type
-        definition, implementation, call hierarchy, references, document
-        highlight, rename with prepare, document and workspace symbols,
-        selection ranges, folding, formatting, inlay hints, "did you
-        mean" quickfixes, and semantic tokens so any client highlights
-        iyi with no grammar installed —
+        completion with auto-import and snippets, signature help, hover
+        with docs, definition, type definition, implementation, call and
+        type hierarchy, references, document highlight, rename with
+        prepare, document and workspace symbols, selection ranges,
+        folding, formatting, inlay hints, document links, "did you mean"
+        quickfixes, a code lens that runs the module, and semantic
+        tokens (with deltas) so any client highlights iyi with no
+        grammar installed —
         two methods serve agents: `iyi/contextPack` returns the grounding
         pack for a file (`mod context --json` over the wire), and
         `iyi/surface` returns a module's rendered surface (`doc`), unsaved
