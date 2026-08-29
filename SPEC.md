@@ -62,7 +62,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 3,825 lines, ceiling 3,734 |
+| iyi's own prelude | 3,828 lines, ceiling 3,734 |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -87,7 +87,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 3,825 lines
+> "No standard library worth the name" is still true of iyi's own 3,828 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -269,7 +269,7 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 3,825 lines,
+**3. A deliberately tiny prelude, written in iyi. Done: 3,828 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
 one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
@@ -790,8 +790,8 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 100,576 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 3,825-line own prelude + 777 in samples |
+| Compiler | 24,984 lines, **written in Crystal** | 100,602 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 3,828-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,596 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -1809,11 +1809,17 @@ language already had:
   the previous revision offered anywhere, since a panic used to skip
   every `defer` on its way out.
 
-One honest residue: the overflow and cast traps (`__crystal_raise_*`)
-are `fun`s, and a `fun` body cannot reach the scheduler's state, so an
-arithmetic overflow still exits the process directly. Recorded rather
-than hidden; routing them through the registry is a codegen question,
-not a design one.
+The residue the first cut recorded — overflow trapping straight to a
+process exit because a `fun` cannot reach scheduler state — closed the
+cheap way: `__crystal_raise_overflow` steps into the ordinary panic
+def, and an overflow in a task now dies at the task boundary like any
+other bug. The gate's step overflows inside a `g.spawn` and reads the
+boundary's report. And the registry's price is measured rather than
+carried: `bench/defer_cost.sh` builds the same twenty-million-call
+loop with and without a `defer` in the callee, release mode, and the
+difference prices one defer at **~16 ns** on the machine that wrote
+this — a node and a closure under iyi's own allocator, budgeted in CI
+so it cannot quietly grow.
 
 Because errors are values returned early, `begin`/`ensure` no longer covers
 cleanup properly. Replace it with `defer`, which runs on normal return, on `!`
@@ -3314,7 +3320,7 @@ quietly rot.
 | `go build` | `iyi build` | nothing |
 | `go run` | `iyi run` | nothing |
 | `gofmt` | refuses `.iyi` | nine visit methods (above) |
-| `go vet` | `tool unreachable`, `tool flags` | a verb, not new analysis |
+| `go vet` | **`iyi vet`, built** | the verb the row asked for: `tool unreachable`'s analysis, go vet's contract — findings are the exit code |
 | `go doc` | nothing; the generator was deleted (V.11's reasoning) | the `Docs` section from III.7, then a renderer over artifacts |
 | `go test` | `spec` redirects to Crystal | a runner, and it is not small: it needs a stdlib with assertions and a process model |
 | `go get`, `go mod` | nothing | III.7 |
@@ -7641,7 +7647,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 3,825-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 3,828-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler

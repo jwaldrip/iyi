@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`iyi vet` — III.8 #3's row, closed as written.** "A verb, not new
+  analysis": the analysis is `tool unreachable`, the verb is go vet's
+  contract — findings are the exit code, switches pass through.
+
+### Fixed
+
+- **An overflow in a task dies at the task boundary.** III.1.4's one
+  recorded residue: `__crystal_raise_overflow` trapped straight to a
+  process exit. It steps into the ordinary panic def now, so a task's
+  overflow runs its defers, cancels its siblings, and re-raises at the
+  boundary like any other bug — gated in `bench/panics.sh`.
+
+### Measured
+
+- **A `defer` costs ~16 ns.** The registry's price — one node, one
+  closure under iyi's own allocator — measured by `bench/defer_cost.sh`
+  (twenty million calls, release mode, with and without) and budgeted
+  in CI so it cannot quietly grow.
+
 ## 0.5.0 — 2026-08-29
 
 **The language got its editor, and a panic stopped being a process.**
@@ -469,7 +492,7 @@ and flags reads them.
   Not built, and said so in III.4's margin: `Share` (one thread cannot
   race, so it would refuse nothing testable), and every platform that is
   not Linux — wasm32 cannot switch stacks, and an imitation is the thing
-  III.4.8 refused to ship. The prelude stands at 3,825 lines against a
+  III.4.8 refused to ship. The prelude stands at 3,828 lines against a
   ceiling of 3,734 — remeasured, not raised: the ceiling is Crystal
   0.1.0's core, that core shipped concurrency (`thread.cr`, `fiber/`, 183
   lines), and the original list had left it out because iyi then had
@@ -1978,7 +2001,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 3,825-line library and nothing else. Every other
+  written against iyi's own 3,828-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
