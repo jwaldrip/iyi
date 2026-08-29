@@ -250,6 +250,11 @@ jobs:
       - name: A defer costs nanoseconds, and stays priced
         run: bash bench/defer_cost.sh
 
+      # The rebuild loop, held: cheap on both arms, and the artifact
+      # read inside its band — the corrected prediction is in SPEC.md.
+      - name: The edit-rebuild loop stays cheap
+        run: python3 bench/rebuild_speed.py
+
       # III.7 step 1: iyi.mod, minimal version selection, a git fetcher —
       # run entirely against a local mirror of bare repositories, so the
       # network is not a dependency of the gate.
