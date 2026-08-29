@@ -82,7 +82,15 @@ module Iyi::Lsp
     @token_result = 0
     @token_data = {} of String => {String, Array(Int32)}
 
+    # Captured at startup, before a rebuild can unlink the binary out
+    # from under a running session: `$ORIGIN` is pinned for the
+    # compiler's own library path, and the executable's path is kept
+    # for the verbs the server re-runs as itself.
+    @self_exe : String?
+
     def initialize(@input : IO = STDIN, @output : IO = STDOUT)
+      IyiPath.origin
+      @self_exe = Process.executable_path
     end
 
     # The reader rides its own fiber, so the queue fills while a compile
@@ -2201,7 +2209,7 @@ module Iyi::Lsp
       output = IO::Memory.new
       error = IO::Memory.new
       process = Process.new(
-        Process.executable_path.not_nil!,
+        @self_exe || raise("the server's own binary is gone — rebuilt under a running session? restart the client"),
         verb.to_a + [path],
         output: output, error: error)
 

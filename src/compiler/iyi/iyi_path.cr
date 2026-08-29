@@ -62,11 +62,27 @@ module Iyi
       end
     end
 
-    def self.expand_paths(paths)
-      origin = nil
-      if executable_path = Process.executable_path
-        origin = File.dirname(executable_path)
+    # Resolved once and pinned: a language server outlives rebuilds of
+    # its own binary, and on Linux a rebuilt (unlinked) executable makes
+    # `Process.executable_path` return nil for the rest of the process —
+    # which turned every later compile in a running session into
+    # "Missing executable path to expand $ORIGIN path". Where the binary
+    # started is where its library lives; that answer cannot change
+    # mid-process, so it is computed exactly once.
+    @@origin_resolved = false
+    @@origin : String?
+
+    def self.origin : String?
+      unless @@origin_resolved
+        if executable_path = Process.executable_path
+          @@origin = File.dirname(executable_path)
+        end
+        @@origin_resolved = true
       end
+      @@origin
+    end
+
+    def self.expand_paths(paths)
       expand_paths(paths, origin)
     end
 
