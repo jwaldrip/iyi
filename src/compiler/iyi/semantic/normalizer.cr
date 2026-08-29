@@ -115,15 +115,23 @@ module Iyi
 
       deferred = exps[index].as(Defer)
       rest = apply_defers(exps[(index + 1)..])
-
-      proc_literal = ProcLiteral.new(Def.new("->", [] of Arg, deferred.exp)).at(deferred)
-      push = Call.global("__iyi_defer_push", proc_literal).at(deferred)
-      pop = Call.new(nil, "__iyi_defer_pop_run", global: true).at(deferred)
-      handler = ExceptionHandler.new(rest, ensure: pop).at(deferred)
-
       head = exps[0...index]
-      head << push
-      head << handler
+
+      if program.iyi_prelude?
+        # The trailing `nil` pins the proc to `-> Nil`: a proc literal
+        # does not coerce its return the way a block restriction does,
+        # and a cleanup's value is nobody's.
+        cleanup_body = Expressions.new([deferred.exp, NilLiteral.new.at(deferred)] of ASTNode).at(deferred)
+        proc_literal = ProcLiteral.new(Def.new("->", [] of Arg, cleanup_body)).at(deferred)
+        push = Call.global("__iyi_defer_push", proc_literal).at(deferred)
+        pop = Call.new(nil, "__iyi_defer_pop_run", global: true).at(deferred)
+        head << push
+        head << ExceptionHandler.new(rest, ensure: pop).at(deferred)
+      else
+        # Crystal's prelude has a real unwinder, so the classic shape —
+        # the cleanup inline in the `ensure` — already runs on a panic.
+        head << ExceptionHandler.new(rest, ensure: deferred.exp).at(deferred)
+      end
       head
     end
 
