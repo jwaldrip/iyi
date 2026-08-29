@@ -87,6 +87,13 @@ demands:
   cross-compile arm. `iyi doc` rode along — III.8's doc verb, a renderer
   over the surface data items 1 and 2 already carry, for a `.iyimod` or a
   `.iyi` compiled alone.
+- **7** — panics (the commit this update rides with): the unwind owns no
+  unwinder. `defer` registers its cleanup on a per-task list the panic
+  path walks, so the "nothing here unwinds" saving was never paid back —
+  no landing pads, no libgcc, the dependency floor unmoved. A panicking
+  task drains its defers, its group cancels the siblings and re-raises
+  once in the owner; main exits 1 after its own drain; `.or_panic` is a
+  real panic now. `bench/panics.sh` is the gate, six steps, in CI.
 - **5** — `iyi lsp` (the commit this update rides with): the menu's last
   open row, and the prediction it corrects is recorded in III.8 #2. No
   daemon, no resident `Program`: a module-local front-end compile answers

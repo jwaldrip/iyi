@@ -62,7 +62,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 3,644 lines, ceiling 3,734 |
+| iyi's own prelude | 3,825 lines, ceiling 3,734 |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -87,7 +87,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 3,644 lines
+> "No standard library worth the name" is still true of iyi's own 3,825 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -269,7 +269,7 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 3,644 lines,
+**3. A deliberately tiny prelude, written in iyi. Done: 3,825 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
 one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
@@ -341,9 +341,11 @@ Three decisions made it that small, and each is a thing 0.1.0 does not have
 rather than a trick. **There is no `IO`**: `puts` writes to fd 1 and `to_s`
 returns a `String`, which removes buffering, encodings and the class hierarchy
 under them. The largest single saving against Crystal's core. **`raise` is a
-panic** (III.1.4): it prints and exits, so there is no unwinder, no personality
-function and no exception hierarchy, and the three `__crystal_*` symbols that a
-program with an `ensure` in it must link are stubs that say they cannot be
+panic** (III.1.4): it unwinds by registry rather than by frame — `defer`
+registers its cleanup on the way in, the panic path walks the list — so
+there is still no unwinder, no personality function and no exception
+hierarchy, and the three `__crystal_*` symbols that a program with an
+`ensure` in it must link remain stubs that say they cannot be
 reached. **Strings are ASCII** wherever a method has to look inside one,
 `upcase`, `starts_with?`, though `size` decodes UTF-8 properly, because a
 sample counts the characters of a word with an accent in it.
@@ -788,8 +790,8 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 100,559 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
+| Compiler | 24,984 lines, **written in Crystal** | 100,568 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 3,825-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -1764,17 +1766,54 @@ Three things the build settled:
   "compiler-known" costs: they are recognised at the call site by name, so an
   iyi program cannot define or call a method of either name. Only iyi: a
   Crystal file's `.or` is an ordinary call and is untouched.
-- **`or_panic` currently raises.** Panics (III.1.4) are not built, so the
-  `unwrap` of this design unwinds as a Crystal exception carrying the error's
-  `message`. One line changes when panics land.
+- **`or_panic` panics.** III.1.4 is built: the `::raise` it lowers to *is*
+  the panic — it dies at the task boundary carrying the error's
+  `message`, and the line the previous revision promised would change
+  changed by not needing to.
 
-#### III.1.4 Panics, and cleanup: **`defer` BUILT; panics still PROPOSED**
+#### III.1.4 Panics, and cleanup: **BUILT — measured by `bench/panics.sh`**
 
 Panics are for bugs, not control flow: index out of range, division by zero,
 a violated invariant. They unwind and are catchable **only at task boundaries**,
-so a panicking fiber cannot die silently. **Not built**: the task boundary is
-part of III.1.4 that Part V.5 has to specify first, and until then `.or_panic`
-raises (III.1.3).
+so a panicking fiber cannot die silently.
+
+**Built, and the unwind owns no unwinder.** The question Part V.5 held —
+what exactly the task boundary does — is answered by the group the
+language already had:
+
+- **A panic prints once, at the site of the bug**, then unwinds by
+  registry: `defer` pushes its cleanup on the way in (the normalizer
+  emits `__iyi_defer_push(-> { x })` and pops on every ordinary exit),
+  so the panic path walks the current task's list innermost-first
+  instead of walking frames. No landing pads, no personality function,
+  no libgcc — the dependency floor does not move, which is what III.10's
+  "own the walk" row turns out to cost: nothing, because III.1 left
+  only panics to unwind and a list is a walk you can own outright.
+- **A panicking task dies alone.** Its defers run, its group is told on
+  the child's own stack, the siblings are cancelled — the same policy a
+  returned error triggers (III.4.3) — and the fiber is never scheduled
+  again. `NoReturn` stays true, which `.or_panic`'s result type depends
+  on (III.1.3).
+- **The boundary catches by re-raising in the owner, exactly once.**
+  The group's join finds the flag and re-panics as `a task panicked:
+  <message>`; the deferred second join finds it cleared; an owner
+  already on its own panic path gets no re-raise, because a second
+  report into a running unwind is noise wearing news. Reading a
+  panicked task's `value` re-raises too — a panicked task has no value
+  to answer with. A nested failure climbs group by group, each boundary
+  prefixing its own report, until a boundary-less fiber — main — runs
+  its own defers and exits 1.
+- **Elsewhere there are no tasks**, so on targets without the
+  concurrency runtime the registry is one global stack and a panic is a
+  clean exit that ran the pending cleanups first — which is more than
+  the previous revision offered anywhere, since a panic used to skip
+  every `defer` on its way out.
+
+One honest residue: the overflow and cast traps (`__crystal_raise_*`)
+are `fun`s, and a `fun` body cannot reach the scheduler's state, so an
+arithmetic overflow still exits the process directly. Recorded rather
+than hidden; routing them through the registry is a codegen question,
+not a design one.
 
 Because errors are values returned early, `begin`/`ensure` no longer covers
 cleanup properly. Replace it with `defer`, which runs on normal return, on `!`
@@ -1788,31 +1827,36 @@ pub def with_file(path : String) : String | IOError
 end
 ```
 
-**Built, and it needed no new machinery: only a new shape.** `defer x` expands
-to wrapping the rest of its scope:
+**Built, and panics gave it its final shape.** `defer x` expands to a
+registered cleanup around the rest of its scope:
 
 ```
 a                       a
-defer x        ⟶        begin
-b                         b
+defer x        ⟶        __iyi_defer_push(-> { x })
+b                       begin
+                          b
                         ensure
-                          x
+                          __iyi_defer_pop_run
                         end
 ```
 
-`ensure` already runs on a normal exit, on a `return` through it, and on an
-unwind, which is the whole of what this section asks for: `!` expands to a
-`return` (III.1.2), and a panic is a raise today. So nothing was added to the
-runtime. What changed is where the cleanup is *written*: `begin`/`ensure` makes
-you wrap everything after the acquisition, and `defer` names the cleanup at the
-acquisition, which is the entire ergonomic point.
+The cleanup is written once, as a proc the runtime holds on the current
+task. Every ordinary exit reaches the `ensure` — falling off the end, a
+`return`, `!` expanding to a `return` (III.1.2) — which pops the proc
+and runs it. A panic reaches none of them, and does not need to: the
+panic path walks the same registry and runs whatever was never popped.
+One list, two readers, and the promise holds on every exit including
+the one that is a bug. What changed against `begin`/`ensure` is still
+where the cleanup is *written*: at the acquisition, which is the entire
+ergonomic point.
 
 Two questions Part V.8 left open, both answered by Go's answers:
 
-- **Ordering is LIFO**, and it is not a rule. A second `defer` expands inside
-  the first one's body, so its `ensure` is the inner one and runs first. That
-  is the only order that can be right when a later resource was built from an
-  earlier one.
+- **Ordering is LIFO**, and it is not a rule. A second `defer` expands
+  inside the first one's body, so its push is later, its pop earlier,
+  and the registry is a stack — the normal path and the panic path
+  agree without coordinating. That is the only order that can be right
+  when a later resource was built from an earlier one.
 - **A `defer` may not propagate with `!`** (Appendix B #7), rejected in the
   parser with an error that says why.
 
@@ -7597,7 +7641,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 3,644-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 3,825-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler

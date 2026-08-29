@@ -222,6 +222,21 @@
   nine edits across five files, and compiles the moved module clean.
   The gate holds 49 steps.
 
+- **Panics — SPEC.md III.1.4, built, and the unwind owns no unwinder.**
+  `defer` now registers its cleanup on a per-task list (`__iyi_defer_push`
+  around every deferred scope, popped on ordinary exits), so a panic
+  walks the list instead of walking frames: no landing pads, no
+  personality function, no libgcc — the dependency floor does not move.
+  A panicking task prints once at the site of the bug, drains its
+  defers innermost-first, tells its group and dies alone; the group
+  cancels the siblings and its join re-raises `a task panicked: <msg>`
+  in the owner exactly once; reading a panicked task's `value`
+  re-raises too; a boundary-less panic — main's — exits 1 after its own
+  drain, cleanup a panic used to skip entirely. `.or_panic` is a real
+  panic now, by its lowering not changing at all. `bench/panics.sh` is
+  the gate: six steps, each a sentence of III.1.4 in the present tense,
+  in CI beside the concurrency exercise.
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a
@@ -426,7 +441,7 @@ and flags reads them.
   Not built, and said so in III.4's margin: `Share` (one thread cannot
   race, so it would refuse nothing testable), and every platform that is
   not Linux — wasm32 cannot switch stacks, and an imitation is the thing
-  III.4.8 refused to ship. The prelude stands at 3,644 lines against a
+  III.4.8 refused to ship. The prelude stands at 3,825 lines against a
   ceiling of 3,734 — remeasured, not raised: the ceiling is Crystal
   0.1.0's core, that core shipped concurrency (`thread.cr`, `fiber/`, 183
   lines), and the original list had left it out because iyi then had
@@ -1935,7 +1950,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 3,644-line library and nothing else. Every other
+  written against iyi's own 3,825-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
