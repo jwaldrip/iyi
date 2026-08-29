@@ -109,7 +109,9 @@ def main():
 
     # 1. initialize
     reply = c.send("initialize", {"rootUri": "file://" + work,
-                                  "capabilities": {}})
+                                  "capabilities": {"textDocument": {
+                                      "completion": {"completionItem": {
+                                          "snippetSupport": True}}}}})
     caps = reply["result"]["capabilities"]
     step(1, "initialize", reply["result"]["serverInfo"]["name"] == "iyi"
          and caps["hoverProvider"] and caps["definitionProvider"]
@@ -128,7 +130,12 @@ def main():
          and caps["implementationProvider"]
          and caps["callHierarchyProvider"]
          and caps["selectionRangeProvider"]
-         and caps["diagnosticProvider"]["workspaceDiagnostics"],
+         and caps["diagnosticProvider"]["workspaceDiagnostics"]
+         and caps["typeHierarchyProvider"]
+         and caps["documentLinkProvider"] is not None
+         and caps["codeLensProvider"] is not None
+         and caps["executeCommandProvider"]["commands"] == ["iyi.run"]
+         and caps["semanticTokensProvider"]["full"]["delta"],
          f"server {reply['result']['serverInfo']['version']}")
     c.send("initialized", {}, wait=False)
 
@@ -864,10 +871,75 @@ def main():
          paint is not None and paint["kind"] == 11 and "Dot" in sub_names,
          f"Paint :> {sub_names}")
 
-    # 43. shutdown/exit: the server leaves when told, not before.
+    # 43. code lens and its command: the runnable module carries one
+    #     lens, and executing it runs the program and returns what it
+    #     printed — the released verb, over the wire.
+    reply = c.send("textDocument/codeLens",
+                   {"textDocument": {"uri": shapes_uri}})
+    lenses = reply["result"] or []
+    lens = lenses[0] if lenses else None
+    ran = {}
+    if lens:
+        reply = c.send("workspace/executeCommand",
+                       {"command": lens["command"]["command"],
+                        "arguments": lens["command"]["arguments"]})
+        ran = reply["result"] or {}
+    step(43, "code lens runs the module over the wire",
+         lens is not None and lens["range"]["start"]["line"] == 19 and
+         ran.get("ok") and ran.get("output", "").strip() == ".",
+         f"lens at line {lens and lens['range']['start']['line'] + 1}, "
+         f"output {ran.get('output', '')!r}")
+
+    # 44. snippet completion: a callable with parameters lands with the
+    #     cursor inside its parentheses, because initialize said the
+    #     client renders snippets.
+    snippet_text = edited + "puts yel\n"
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": scratch_uri, "version": 5},
+            "contentChanges": [{"text": snippet_text}]}, wait=False)
+    c.diagnostics(scratch_uri)
+    reply = c.send("textDocument/completion",
+                   {"textDocument": {"uri": scratch_uri},
+                    "position": {"line": snippet_text.count("\n") - 1,
+                                 "character": 8}})
+    items = reply["result"]["items"]
+    yell_item = next((i for i in items if i["label"] == "yell"), None)
+    step(44, "completion snippets stop inside the parentheses",
+         yell_item is not None and
+         yell_item.get("insertText") == "yell($1)" and
+         yell_item.get("insertTextFormat") == 2,
+         f"insertText {yell_item and yell_item.get('insertText')!r}")
+
+    # 45. semantic tokens delta: one appended line moves a few
+    #     integers, not the file's whole stream, and the splice
+    #     reconstructs exactly what a full answer says.
+    reply = c.send("textDocument/semanticTokens/full",
+                   {"textDocument": {"uri": shapes_uri}})
+    first = reply["result"]
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": shapes_uri, "version": 2},
+            "contentChanges": [{"text": shapes_text + "# renk\n"}]},
+           wait=False)
+    c.diagnostics(shapes_uri)
+    reply = c.send("textDocument/semanticTokens/full/delta",
+                   {"textDocument": {"uri": shapes_uri},
+                    "previousResultId": first["resultId"]})
+    delta = reply["result"]
+    rebuilt = list(first["data"])
+    for e in delta.get("edits", []):
+        rebuilt[e["start"]:e["start"] + e["deleteCount"]] = e["data"]
+    reply = c.send("textDocument/semanticTokens/full",
+                   {"textDocument": {"uri": shapes_uri}})
+    fresh = reply["result"]["data"]
+    step(45, "semantic token deltas splice to the full answer",
+         "edits" in delta and "data" not in delta and rebuilt == fresh,
+         f"{len(delta.get('edits', []))} edit(s) over "
+         f"{len(first['data'])} ints")
+
+    # 46. shutdown/exit: the server leaves when told, not before.
     c.send("shutdown", {})
     c.send("exit", {}, wait=False)
-    step(43, "shutdown then exit", c.proc.wait(timeout=10) == 0)
+    step(46, "shutdown then exit", c.proc.wait(timeout=10) == 0)
 
     print("lsp gate: every step held")
 
