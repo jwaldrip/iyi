@@ -1,38 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Added
-
-- **`iyi vet` — III.8 #3's row, closed as written.** "A verb, not new
-  analysis": the analysis is `tool unreachable`, the verb is go vet's
-  contract — findings are the exit code, switches pass through.
-
-### Fixed
-
-- **An overflow in a task dies at the task boundary.** III.1.4's one
-  recorded residue: `__crystal_raise_overflow` trapped straight to a
-  process exit. It steps into the ordinary panic def now, so a task's
-  overflow runs its defers, cancels its siblings, and re-raises at the
-  boundary like any other bug — gated in `bench/panics.sh`.
-
-### Measured
-
-- **A `defer` costs ~16 ns.** The registry's price — one node, one
-  closure under iyi's own allocator — measured by `bench/defer_cost.sh`
-  (twenty million calls, release mode, with and without) and budgeted
-  in CI so it cannot quietly grow.
-
-- **The rebuild benchmark ran, and corrected its own prediction.**
-  `bench/rebuild_speed.py`: an artifact rebuild does *not* beat a
-  source rebuild (~1.0x on the sample corpus, ~0.85x semantic-heavy) —
-  lazy typing makes unused import surface nearly free, while the read
-  pays decode for everything. R-1's wall-time dividend lives where it
-  was already gated: the LSP's 36 ms verdict, source-deleted builds,
-  the interface hash. CI now holds what the loop owes instead: under
-  two seconds per edit-rebuild on either arm, the read within 1.5x of
-  the compile it replaces. Recorded rather than tuned.
-
 ## 0.5.0 — 2026-08-29
 
 **The language got its editor, and a panic stopped being a process.**
@@ -64,6 +31,10 @@ rebuilt, never migrated — which also retires object code whose panic
 was still a process exit.
 
 ### Added
+
+- **`iyi vet` — III.8 #3's row, closed as written.** "A verb, not new
+  analysis": the analysis is `tool unreachable`, the verb is go vet's
+  contract — findings are the exit code, switches pass through.
 
 - **The language server — SPEC.md III.8 #2, built as `iyi lsp`.** Stdio,
   LSP 3.17's earning subset, and no semantic state at all: every change
@@ -297,6 +268,31 @@ was still a process exit.
   panic now, by its lowering not changing at all. `bench/panics.sh` is
   the gate: six steps, each a sentence of III.1.4 in the present tense,
   in CI beside the concurrency exercise.
+
+### Fixed
+
+- **An overflow in a task dies at the task boundary.** III.1.4's one
+  recorded residue: `__crystal_raise_overflow` trapped straight to a
+  process exit. It steps into the ordinary panic def now, so a task's
+  overflow runs its defers, cancels its siblings, and re-raises at the
+  boundary like any other bug — gated in `bench/panics.sh`.
+
+### Measured
+
+- **A `defer` costs ~16 ns.** The registry's price — one node, one
+  closure under iyi's own allocator — measured by `bench/defer_cost.sh`
+  (twenty million calls, release mode, with and without) and budgeted
+  in CI so it cannot quietly grow.
+
+- **The rebuild benchmark ran, and corrected its own prediction.**
+  `bench/rebuild_speed.py`: an artifact rebuild does *not* beat a
+  source rebuild (~1.0x on the sample corpus, ~0.85x semantic-heavy) —
+  lazy typing makes unused import surface nearly free, while the read
+  pays decode for everything. R-1's wall-time dividend lives where it
+  was already gated: the LSP's 36 ms verdict, source-deleted builds,
+  the interface hash. CI now holds what the loop owes instead: under
+  two seconds per edit-rebuild on either arm, the read within 1.5x of
+  the compile it replaces. Recorded rather than tuned.
 
 ## 0.4.0 — 2026-08-28
 
