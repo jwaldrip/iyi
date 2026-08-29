@@ -272,6 +272,12 @@ jobs:
       - name: The language server answers inside the budget
         run: python3 bench/lsp_latency.py
 
+      # The first screenshots found partially colored words (a reused
+      # Token's dirty `raw`); this sweeps every sample's token stream
+      # and refuses a token that does not cover its whole word.
+      - name: The highlighting colors whole words
+        run: python3 bench/lsp_token_boundaries.py
+
       # The same question asked of the other kind of artifact: one whose object
       # code is a shard's and whose declarations `tool bind` wrote. III.6 rule 1
       # names an undefined symbol and a call returning another type, and

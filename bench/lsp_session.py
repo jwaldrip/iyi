@@ -501,12 +501,12 @@ def main():
     has_def_kw = (5, 0, 3, 0) in decoded
     has_fn = (5, 4, 3, 5) in decoded
     has_str = any(l == 6 and tt == 1 for (l, s, ln, tt) in decoded)
-    has_type = any(l == 5 and tt == 4 for (l, s, ln, tt) in decoded)
     has_var = (6, 2, 4, 6) in decoded       # `loud`, a variable
     has_call = (6, 9, 4, 5) in decoded      # `yell(`, a call
+    has_type_len = (5, 10, 6, 4) in decoded  # `String`, all six letters
     step(22, "semanticTokens color the buffer with no grammar",
-         has_def_kw and has_fn and has_str and has_type and
-         has_var and has_call,
+         has_def_kw and has_fn and has_str and
+         has_var and has_call and has_type_len,
          f"{len(decoded)} token(s)")
 
     # 23. inlayHint: the inferred type after the assignment, the
