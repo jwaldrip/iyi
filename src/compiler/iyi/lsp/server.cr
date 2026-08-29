@@ -315,6 +315,8 @@ module Iyi::Lsp
         on_formatting(id.not_nil!, params.not_nil!)
       when "textDocument/foldingRange"
         on_folding_range(id.not_nil!, params.not_nil!)
+      when "workspace/willRenameFiles"
+        on_will_rename_files(id.not_nil!, params.not_nil!)
       when "workspace/symbol"
         on_workspace_symbol(id.not_nil!, params.not_nil!)
       when "textDocument/semanticTokens/full"
@@ -423,6 +425,27 @@ module Iyi::Lsp
                   json.array do
                     json.string "quickfix"
                     json.string "source.organizeImports"
+                  end
+                end
+              end
+            end
+            json.field "workspace" do
+              json.object do
+                json.field "fileOperations" do
+                  json.object do
+                    json.field "willRename" do
+                      json.object do
+                        json.field "filters" do
+                          json.array do
+                            json.object do
+                              json.field "pattern" do
+                                json.object { json.field "glob", "**/*.iyi" }
+                              end
+                            end
+                          end
+                        end
+                      end
+                    end
                   end
                 end
               end
@@ -1800,6 +1823,96 @@ module Iyi::Lsp
     # underscores, slashes. A trailing comment fails the test on purpose.
     private def clean_module?(mod : String) : Bool
       !mod.empty? && mod.each_char.all? { |ch| ch.alphanumeric? || ch == '_' || ch == '/' }
+    end
+
+    # ── File renames ─────────────────────────────────────────────────────
+
+    # IV.6 read forward: a module's path is its file's path, so moving
+    # the file *is* renaming the module — the header line and every
+    # consumer's `import`/`using` move with it, in one WorkspaceEdit
+    # the client applies before the rename lands on disk. A file whose
+    # header and path disagree has no module identity to move, and is
+    # left alone by name.
+    private def on_will_rename_files(id : JSON::Any, params : JSON::Any) : Nil
+      edits = {} of String => Array({Int32, Int32, Int32, String})
+
+      params["files"].as_a.each do |file|
+        old_path = path_of(file["oldUri"].as_s)
+        new_path = path_of(file["newUri"].as_s)
+        next unless old_path.ends_with?(".iyi") && new_path.ends_with?(".iyi")
+
+        text = @documents[uri_of(old_path)]? || (File.file?(old_path) ? File.read(old_path) : nil)
+        next unless text
+        old_mod = Exports.header_of(text)
+        next unless old_mod
+        suffix = "/#{old_mod}.iyi"
+        next unless old_path.ends_with?(suffix)
+
+        root = old_path[0, old_path.size - suffix.size]
+        prefix = root.empty? ? "/" : root + "/"
+        next unless new_path.starts_with?(prefix)
+        new_mod = new_path[prefix.size..].rchop(".iyi")
+        next if new_mod.empty? || new_mod == old_mod || !clean_module?(new_mod)
+
+        (edits[uri_of(old_path)] ||= [] of {Int32, Int32, Int32, String})
+          .concat module_mention_edits(text, old_mod, new_mod)
+        workspace_entries.each do |(entry_path, entry_text)|
+          next if entry_path == old_path
+          mentions = module_mention_edits(entry_text, old_mod, new_mod)
+          next if mentions.empty?
+          (edits[uri_of(entry_path)] ||= [] of {Int32, Int32, Int32, String})
+            .concat mentions
+        end
+      end
+
+      return respond_null(id) if edits.empty?
+
+      respond(id) do |json|
+        json.object do
+          json.field "changes" do
+            json.object do
+              edits.each do |edit_uri, rows|
+                json.field edit_uri do
+                  json.array do
+                    rows.each do |(line0, start_ch, end_ch, new_text)|
+                      json.object do
+                        json.field "range" { range(json, line0, start_ch, line0, end_ch) }
+                        json.field "newText", new_text
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+    # Every line that names `old_mod` as a module — the `module` header,
+    # an `import`, a `using` (selective or full) — with the exact span
+    # of the path, so the rename touches nothing else on the line.
+    private def module_mention_edits(text : String, old_mod : String, new_mod : String) : Array({Int32, Int32, Int32, String})
+      edits = [] of {Int32, Int32, Int32, String}
+      text.lines.each_with_index do |line, index|
+        stripped = line.lstrip
+        keyword =
+          if stripped.starts_with?("module ")
+            "module "
+          elsif stripped.starts_with?("import ")
+            "import "
+          elsif stripped.starts_with?("using ")
+            "using "
+          end
+        next unless keyword
+        rest = stripped.lchop(keyword)
+        next unless rest == old_mod || rest.starts_with?("#{old_mod}::")
+        start_col = line.size - stripped.size + keyword.size
+        start_ch = Lsp.character_of(line, start_col + 1)
+        end_ch = Lsp.character_of(line, start_col + old_mod.size + 1)
+        edits << {index, start_ch, end_ch, new_mod}
+      end
+      edits
     end
 
     # ── Implementation ───────────────────────────────────────────────────
