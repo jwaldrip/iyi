@@ -144,6 +144,16 @@
   supertypes include the traits an impl brought in, subtypes are the
   implementors walk generalised past traits. The gate holds 43 steps.
 
+- **Code lens that runs, snippets, token deltas.** A runnable module
+  carries one lens on its first statement; `workspace/executeCommand`
+  executes `iyi.run` — the released verb against the buffer, dirty
+  state included, bounded at 30 s — and returns what it printed, so an
+  agent can ground, edit, and run without leaving the protocol.
+  Completion items with parameters land as snippets when initialize
+  said the client renders them. Semantic tokens answer deltas: one
+  appended line moves five integers, and the splice reconstructs the
+  full answer exactly, gate-checked. The gate holds 46 steps.
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a
