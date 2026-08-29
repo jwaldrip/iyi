@@ -214,6 +214,14 @@
   transport forgives both; only true EOF ends a session. The gate
   holds 48 steps.
 
+- **`workspace/willRenameFiles` — moving a file renames the module.**
+  IV.6 makes the answer deterministic: one WorkspaceEdit rewrites the
+  moved file's header and the exact `import`/`using` spans in every
+  consumer, open buffers and never-opened disk files alike, before the
+  rename lands. The gate moves lexer.iyi to scanner.iyi, applies the
+  nine edits across five files, and compiles the moved module clean.
+  The gate holds 49 steps.
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a

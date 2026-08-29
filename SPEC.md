@@ -788,7 +788,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 100,446 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 100,559 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3240,6 +3240,17 @@ names sorted, a full `using` absorbing them — and an organizer that
 meets anything it does not understand, a comment between imports
 above all, offers nothing rather than eating it. The gate holds 48
 steps, the soak ten more beside it in CI.
+
+**Moving a file is renaming a module, and the server now says so.**
+IV.6 read forward: a module's path is its file's path, so
+`workspace/willRenameFiles` answers a file move with one WorkspaceEdit
+— the header line in the moved file, and the exact `import`/`using`
+spans in every consumer, open buffers and never-opened disk files
+alike, applied by the client before the rename lands. A file whose
+header and path already disagree has no module identity to move and
+is left alone by name. The gate's step is the whole story: lexer.iyi
+becomes scanner.iyi, nine edits land across five files, and the moved
+module compiles clean. The gate holds 49 steps.
 
 **And the speed is measured, not asserted.** `bench/lsp_latency.py`
 opens the sample corpus — 26 modules: the calc language, the kemal
