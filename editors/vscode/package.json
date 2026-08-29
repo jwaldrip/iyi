@@ -1,0 +1,49 @@
+{
+  "name": "iyi",
+  "displayName": "iyi",
+  "description": "iyi language support: diagnostics, completion with auto-import, hover, rename, and everything else `iyi lsp` speaks. Highlighting comes from the server's semantic tokens, so there is no grammar here to fall out of date.",
+  "version": "0.1.0",
+  "publisher": "iyi-lang",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sdogruyol/iyi"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:iyi"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "iyi",
+        "aliases": [
+          "iyi"
+        ],
+        "extensions": [
+          ".iyi"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "iyi",
+      "properties": {
+        "iyi.serverPath": {
+          "type": "string",
+          "default": "iyi",
+          "description": "Path to the `iyi` binary. The server is `iyi lsp`; there is nothing else to configure."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  }
+}

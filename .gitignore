@@ -36,6 +36,10 @@
 __pycache__/
 *.pyc
 
+# The VS Code extension's build products; the source is three files.
+/editors/vscode/node_modules/
+/editors/vscode/*.vsix
+
 # What a sample that depends on a shard produces. `shard.yml` and `shard.lock`
 # are the sample; `lib/` is what `shards install` fetches, `mods/` is what
 # `crystal tool bind` writes, and the rest is a build. Ignored rather than
