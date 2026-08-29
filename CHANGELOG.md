@@ -201,6 +201,19 @@
   drift — and the server's semantic tokens override it on arrival, so
   the fast path is instant and the truth stays with the compiler.**
 
+- **Organize imports, and a transport that does not flinch.** The
+  code actions grew `source.organizeImports`: the header block
+  canonicalised — imports sorted and deduped, one module's `using`
+  selections merged with their names sorted, a full `using` absorbing
+  them — and it offers nothing when the block holds anything it does
+  not understand, a comment above all. Writing `bench/lsp_soak.py`
+  (garbage frames, non-JSON and non-UTF-8 bodies, malformed params, a
+  1,500-def module — a hover must answer after each, in CI) found two
+  real deaths: a stray blank line read as EOF ended the session, and a
+  non-JSON body killed the reader fiber and hung the pipe. The
+  transport forgives both; only true EOF ends a session. The gate
+  holds 48 steps.
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a

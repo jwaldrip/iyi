@@ -788,7 +788,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 100,314 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 100,446 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3223,6 +3223,23 @@ resolved once and pinned, the server captures its own path at startup
 for the verbs it re-runs as itself, and the gate's step is literal —
 the executable is deleted under the running session, a fresh compile
 still answers, and the binary is put back. The gate holds 47 steps.
+
+**Then the sentence about the next keystroke got its own gate, and
+writing it hardened the transport.** `bench/lsp_soak.py` abuses the
+wire — stray blank lines, headers that do not parse, bodies that are
+not JSON or not UTF-8, requests missing their params, positions past
+the file's end, edits to documents never opened, a 1,500-def module —
+and demands the same hover after every blow. Two of those found real
+deaths: a stray newline used to end the session (the reader took a
+blank line with no header as EOF) and a non-JSON body killed the
+reader fiber and hung the pipe. The transport forgives both now, and
+only true EOF ends a session. Beside it, `source.organizeImports`
+joined the code actions: the header block canonicalised — imports
+sorted and deduped, one module's `using` selections merged and their
+names sorted, a full `using` absorbing them — and an organizer that
+meets anything it does not understand, a comment between imports
+above all, offers nothing rather than eating it. The gate holds 48
+steps, the soak ten more beside it in CI.
 
 **And the speed is measured, not asserted.** `bench/lsp_latency.py`
 opens the sample corpus — 26 modules: the calc language, the kemal
