@@ -165,6 +165,16 @@
   tokens), with the one-stanza configs for Neovim, Helix, and Sublime
   beside it.
 
+- **A rebuilt binary no longer lobotomises a running session.** The
+  first live editor session found it: `make iyi` unlinks the
+  executable, `Process.executable_path` goes nil on Linux, and every
+  later compile failed with "Missing executable path to expand $ORIGIN
+  path" — invisible to a gate that starts a fresh server per run.
+  `$ORIGIN` is resolved once and pinned, the server captures its own
+  path at startup, and the gate now deletes the executable under the
+  running session and watches a fresh compile answer anyway. The gate
+  holds 47 steps.
+
 - **The first screenshot taught two lessons.** Semantic tokens now
   classify bare names the way a reader does — `name(` and `.name`
   call, `name:` labels an argument, the rest is a variable — so a

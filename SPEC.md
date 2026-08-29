@@ -788,7 +788,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 100,280 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 100,304 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 3,644-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,575 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3211,6 +3211,18 @@ cannot take the session with it. An editor shows the lens; an agent
 calls the command and reads what the program printed, which closes
 the loop `iyi/contextPack` opened: ground, edit, run, all without
 leaving the protocol. The gate holds 46 steps.
+
+**The first live session found the bug the gate could not.** Rebuild
+`iyi` while an editor holds a session and, on Linux, the unlinked
+binary makes `Process.executable_path` nil for the rest of the
+process — so every later compile died with "Missing executable path
+to expand $ORIGIN path", a failure a gate that starts a fresh server
+per run can never see. Where the binary started is where its library
+lives, and that answer cannot change mid-process: `$ORIGIN` is now
+resolved once and pinned, the server captures its own path at startup
+for the verbs it re-runs as itself, and the gate's step is literal —
+the executable is deleted under the running session, a fresh compile
+still answers, and the binary is put back. The gate holds 47 steps.
 
 **And the speed is measured, not asserted.** `bench/lsp_latency.py`
 opens the sample corpus — 26 modules: the calc language, the kemal

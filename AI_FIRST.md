@@ -101,7 +101,7 @@ demands:
 
 All of them are gated: 1, 2, 3 and 6 in `bench/packages_resolve.sh` (which
 also asserts `iyi doc`), 4 in `bench/test_verb.sh`, 5 in
-`bench/lsp_session.py` (a 46-step scripted session), 8 in
+`bench/lsp_session.py` (a 47-step scripted session), 8 in
 `bench/sandbox_story.sh`.
 
 Free advertising, no work: `iyi mod diff --exit-code` already answers the
