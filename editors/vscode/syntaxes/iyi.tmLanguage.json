@@ -1,0 +1,64 @@
+{
+  "$comment": "First paint only. The truth is the server's semantic tokens, which override these scopes the moment they arrive; this grammar exists because a TextMate pass is synchronous with the first frame and a language server is not. It deliberately covers only what cannot drift: comments, strings, numbers, keywords, capitalized types, def names.",
+  "name": "iyi",
+  "scopeName": "source.iyi",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#definition" },
+    { "include": "#keyword" },
+    { "include": "#type" },
+    { "include": "#symbol" },
+    { "include": "#ivar" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.number-sign.iyi",
+      "match": "#(?!\\{).*$"
+    },
+    "string": {
+      "name": "string.quoted.double.iyi",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.iyi", "match": "\\\\." },
+        {
+          "name": "meta.embedded.interpolation.iyi",
+          "begin": "#\\{",
+          "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.iyi" } },
+          "end": "\\}",
+          "endCaptures": { "0": { "name": "punctuation.section.embedded.end.iyi" } },
+          "patterns": [ { "include": "$self" } ]
+        }
+      ]
+    },
+    "number": {
+      "name": "constant.numeric.iyi",
+      "match": "\\b\\d[\\d_]*(\\.\\d[\\d_]*)?([eE][+-]?\\d+)?(_?[iuf]\\d+)?\\b"
+    },
+    "definition": {
+      "match": "\\b(def)\\s+([a-z_][A-Za-z0-9_]*[?!]?)",
+      "captures": {
+        "1": { "name": "keyword.control.iyi" },
+        "2": { "name": "entity.name.function.iyi" }
+      }
+    },
+    "keyword": {
+      "name": "keyword.control.iyi",
+      "match": "\\b(module|import|using|pub|def|end|if|elsif|else|unless|while|until|case|when|in|then|do|begin|rescue|ensure|return|break|next|yield|struct|class|trait|impl|for|forall|enum|lib|macro|abstract|getter|setter|property|type|alias|extend|include|require|group|spawn|defer|select|of|as|is_a\\?|responds_to\\?|sizeof|typeof|true|false|nil|self|super|not)\\b"
+    },
+    "type": {
+      "name": "entity.name.type.iyi",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+    },
+    "symbol": {
+      "name": "constant.other.symbol.iyi",
+      "match": ":[a-zA-Z_][A-Za-z0-9_]*[?!]?"
+    },
+    "ivar": {
+      "name": "variable.other.readwrite.instance.iyi",
+      "match": "@{1,2}[a-z_][A-Za-z0-9_]*"
+    }
+  }
+}

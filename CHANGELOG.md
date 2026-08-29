@@ -193,6 +193,14 @@
   `wants_raw` writes, and `bench/lsp_token_boundaries.py` sweeps all
   8,000+ sample tokens in CI refusing any that colors part of a word.
 
+- **First paint. Crystal colored instantly and iyi a second later,
+  because a TextMate pass is synchronous with the first frame and a
+  language server round-trip is not. The VS Code extension now carries
+  a deliberately minimal grammar — comments, strings, numbers,
+  keywords, types, def names; the parts of a language that do not
+  drift — and the server's semantic tokens override it on arrival, so
+  the fast path is instant and the truth stays with the compiler.**
+
 ## 0.4.0 — 2026-08-28
 
 **The language runs concurrently, and a model can read it.** 0.3.0 carried a

@@ -5,7 +5,12 @@ nothing to configure: point a client at the command and every capability
 arrives through the protocol — diagnostics on each keystroke from a real
 compile, completion that writes the `import`/`using` pair for you,
 hover with docs, rename that follows `using` lines, and highlighting as
-semantic tokens, so no editor needs a grammar file for `.iyi`.
+semantic tokens, so no editor *needs* a grammar file for `.iyi`. The VS
+Code extension still carries a deliberately minimal one: a TextMate
+pass is synchronous with the first frame and a language server is not,
+so the grammar paints instantly and the server's tokens — the truth —
+override it the moment they arrive. It covers only what cannot drift:
+comments, strings, numbers, keywords, capitalized types, def names.
 
 The one prerequisite everywhere: `iyi` on your `PATH` (or spell the
 absolute path where the config names the command).

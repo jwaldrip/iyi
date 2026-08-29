@@ -1,8 +1,8 @@
 {
   "name": "iyi",
   "displayName": "iyi",
-  "description": "iyi language support: diagnostics, completion with auto-import, hover, rename, and everything else `iyi lsp` speaks. Highlighting comes from the server's semantic tokens, so there is no grammar here to fall out of date.",
-  "version": "0.1.0",
+  "description": "iyi language support: diagnostics, completion with auto-import, hover, rename, and everything else `iyi lsp` speaks. A deliberately minimal TextMate grammar paints the first frame; the server's semantic tokens are the truth and override it the moment they arrive.",
+  "version": "0.1.1",
   "publisher": "iyi-lang",
   "license": "Apache-2.0",
   "repository": {
@@ -32,6 +32,18 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "grammars": [
+      {
+        "language": "iyi",
+        "scopeName": "source.iyi",
+        "path": "./syntaxes/iyi.tmLanguage.json"
+      }
+    ],
+    "configurationDefaults": {
+      "[iyi]": {
+        "editor.semanticHighlighting.enabled": true
+      }
+    },
     "configuration": {
       "title": "iyi",
       "properties": {
