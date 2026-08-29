@@ -180,19 +180,35 @@ module Iyi::Lsp
 
     # ── Transport: Content-Length framed JSON-RPC over stdio ────────────
 
+    # The server's whole value is being there on the next keystroke, so
+    # the transport forgives what it can: a stray blank line is not a
+    # frame, a header that does not parse is skipped, a body that is
+    # not JSON is dropped and the stream continues. Only true EOF — or
+    # a length too absurd to read — ends the session.
     private def read_message : JSON::Any?
-      length = nil
-      while line = @input.gets(chomp: false)
-        line = line.chomp
-        break if line.empty?
-        if line.starts_with?("Content-Length:")
-          length = line.split(':')[1].strip.to_i
+      loop do
+        length = nil
+        while line = @input.gets(chomp: false)
+          line = line.chomp
+          break if line.empty? && length
+          next if line.empty?
+          if line.starts_with?("Content-Length:")
+            length = line.split(':')[1]?.try(&.strip.to_i?)
+          end
         end
+        return nil unless length
+        return nil if length < 0 || length > 64 * 1024 * 1024
+        body = Bytes.new(length)
+        @input.read_fully(body)
+        parsed =
+          begin
+            JSON.parse(String.new(body))
+          rescue
+            nil
+          end
+        return parsed if parsed
+        # Not JSON: the frame is dropped, the session is not.
       end
-      return nil unless length
-      body = Bytes.new(length)
-      @input.read_fully(body)
-      JSON.parse(String.new(body))
     rescue IO::EOFError
       nil
     end
@@ -403,7 +419,12 @@ module Iyi::Lsp
             end
             json.field "codeActionProvider" do
               json.object do
-                json.field "codeActionKinds" { json.array { json.string "quickfix" } }
+                json.field "codeActionKinds" do
+                  json.array do
+                    json.string "quickfix"
+                    json.string "source.organizeImports"
+                  end
+                end
               end
             end
             json.field "completionProvider" do
@@ -1625,13 +1646,19 @@ module Iyi::Lsp
       uri = params["textDocument"]["uri"].as_s
       from = params["range"]["start"]["line"].as_i
       to = params["range"]["end"]["line"].as_i
+      only = params["context"]?.try(&.["only"]?).try(&.as_a?.try(&.compact_map(&.as_s?)))
 
       actions = (@published[uri]? || [] of {Int32, Int32, Int32, String}).compact_map do |(line0, start_ch, end_ch, message)|
+        next unless action_wanted?(only, "quickfix")
         next unless line0 >= from && line0 <= to && end_ch > start_ch
         next unless suggestion = suggestion_in(message)
         {line0, start_ch, end_ch, message, suggestion}
       end
 
+      organize =
+        if action_wanted?(only, "source.organizeImports")
+          organize_imports(text_of(uri))
+        end
       respond(id) do |json|
         json.array do
           actions.each do |(line0, start_ch, end_ch, message, suggestion)|
@@ -1666,8 +1693,113 @@ module Iyi::Lsp
               end
             end
           end
+          if organize
+            block_start, block_end, new_text = organize
+            end_line_text = text_of(uri).lines[block_end]? || ""
+            json.object do
+              json.field "title", "Organize imports"
+              json.field "kind", "source.organizeImports"
+              json.field "edit" do
+                json.object do
+                  json.field "changes" do
+                    json.object do
+                      json.field uri do
+                        json.array do
+                          json.object do
+                            json.field "range" do
+                              range(json, block_start, 0, block_end,
+                                Lsp.character_of(end_line_text, end_line_text.size + 1))
+                            end
+                            json.field "newText", new_text
+                          end
+                        end
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
         end
       end
+    end
+
+    # `only` honored the way the spec asks: a requested kind matches
+    # itself and anything beneath it.
+    private def action_wanted?(only : Array(String)?, kind : String) : Bool
+      return true unless only && !only.empty?
+      only.any? { |wanted| kind == wanted || kind.starts_with?("#{wanted}.") }
+    end
+
+    # The header block, canonicalised: imports sorted and deduped, then
+    # a blank line, then `using` lines sorted — selective selections of
+    # one module merged and their names sorted, a full `using` absorbing
+    # them. Anything in the block this function does not understand — a
+    # comment between imports, a trailing remark — makes it offer
+    # nothing: an organizer that might eat a comment is not an organizer.
+    private def organize_imports(text : String) : {Int32, Int32, String}?
+      lines = text.lines
+      first : Int32? = nil
+      last : Int32? = nil
+
+      imports = [] of String
+      full_usings = [] of String
+      selective = {} of String => Array(String)
+
+      lines.each_with_index do |line, index|
+        stripped = line.strip
+        if stripped.starts_with?("import ") || stripped.starts_with?("using ")
+          first ||= index
+          break if last && lines[(last + 1)...index].any? { |between| !between.strip.empty? }
+          last = index
+          if mod = stripped.lchop?("import ")
+            return nil unless clean_module?(mod)
+            imports << mod
+          elsif rest = stripped.lchop?("using ")
+            if brace = rest.index("::{")
+              mod = rest[0, brace]
+              names = rest[(brace + 3)..]
+              return nil unless names.ends_with?('}') && clean_module?(mod)
+              (selective[mod] ||= [] of String).concat names.rchop.split(',').map(&.strip)
+            else
+              return nil unless clean_module?(rest)
+              full_usings << rest
+            end
+          end
+        elsif first && !stripped.empty?
+          break
+        end
+      end
+      return nil unless first && last
+
+      organized = String.build do |io|
+        imports.uniq!.sort!
+        imports.each_with_index do |mod, index|
+          io << '\n' unless index.zero?
+          io << "import " << mod
+        end
+        modules = (full_usings + selective.keys).uniq!.sort!
+        io << '\n' << '\n' if !imports.empty? && !modules.empty?
+        modules.each_with_index do |mod, index|
+          io << '\n' unless index.zero?
+          if full_usings.includes?(mod)
+            io << "using " << mod
+          else
+            names = selective[mod].uniq!.sort!
+            io << "using " << mod << "::{" << names.join(", ") << '}'
+          end
+        end
+      end
+
+      current = lines[first..last].join('\n')
+      return nil if current == organized
+      {first, last, organized}
+    end
+
+    # A module path and nothing else on the line: letters, digits,
+    # underscores, slashes. A trailing comment fails the test on purpose.
+    private def clean_module?(mod : String) : Bool
+      !mod.empty? && mod.each_char.all? { |ch| ch.alphanumeric? || ch == '_' || ch == '/' }
     end
 
     # ── Implementation ───────────────────────────────────────────────────
