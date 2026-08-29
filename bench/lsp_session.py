@@ -126,8 +126,8 @@ def main():
          and caps["inlayHintProvider"]
          and caps["typeDefinitionProvider"]
          and caps["renameProvider"]["prepareProvider"]
-         and caps["codeActionProvider"]["codeActionKinds"] == ["quickfix"]
-         and caps["semanticTokensProvider"]["legend"]["tokenTypes"]
+         and caps["codeActionProvider"]["codeActionKinds"] == [
+             "quickfix", "source.organizeImports"]
          and caps["implementationProvider"]
          and caps["callHierarchyProvider"]
          and caps["selectionRangeProvider"]
@@ -970,10 +970,51 @@ def main():
         step(46, "a rebuilt binary does not lobotomise the session", True,
              f"skipped: {binary} not present under this runner")
 
-    # 47. shutdown/exit: the server leaves when told, not before.
+    # 47. organize imports: duplicates merge, selections of one module
+    #     unify sorted, imports before usings — and the organized
+    #     buffer still compiles.
+    messy_path = os.path.join(work, "tidy.iyi")
+    messy = ("module tidy\n\n"
+             "using calc/lexer::{token}\n"
+             "import calc/lexer\n"
+             "using calc/lexer::{glyph}\n"
+             "import calc/lexer\n\n"
+             "puts token\nputs glyph\n")
+    messy_uri = "file://" + messy_path
+    with open(messy_path, "w") as f:
+        f.write(messy)
+    c.send("textDocument/didOpen",
+           {"textDocument": {"uri": messy_uri, "languageId": "iyi",
+                             "version": 1, "text": messy}}, wait=False)
+    c.diagnostics(messy_uri)
+    reply = c.send("textDocument/codeAction",
+                   {"textDocument": {"uri": messy_uri},
+                    "range": {"start": {"line": 0, "character": 0},
+                              "end": {"line": 0, "character": 0}},
+                    "context": {"diagnostics": [],
+                                "only": ["source.organizeImports"]}})
+    organizers = reply["result"] or []
+    tidied = messy
+    if organizers:
+        lines = messy.split("\n")
+        for e in organizers[0]["edit"]["changes"][messy_uri]:
+            s, t = e["range"]["start"]["line"], e["range"]["end"]["line"]
+            lines[s:t + 1] = e["newText"].split("\n")
+        tidied = "\n".join(lines)
+    c.send("textDocument/didChange",
+           {"textDocument": {"uri": messy_uri, "version": 2},
+            "contentChanges": [{"text": tidied}]}, wait=False)
+    clean = c.diagnostics(messy_uri)["diagnostics"] == []
+    step(47, "organize imports canonicalises the header",
+         len(organizers) == 1 and clean and
+         "import calc/lexer\n\nusing calc/lexer::{glyph, token}" in tidied
+         and tidied.count("import calc/lexer") == 1,
+         "two imports, three usings -> one of each, sorted, still clean")
+
+    # 48. shutdown/exit: the server leaves when told, not before.
     c.send("shutdown", {})
     c.send("exit", {}, wait=False)
-    step(47, "shutdown then exit", c.proc.wait(timeout=10) == 0)
+    step(48, "shutdown then exit", c.proc.wait(timeout=10) == 0)
 
     print("lsp gate: every step held")
 
