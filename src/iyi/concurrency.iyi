@@ -26,10 +26,11 @@
 #
 # What is deliberately absent, so nobody reads silence as an accident:
 # `Share` (III.4.4) gates nothing until a second thread exists, because one
-# thread interleaves at parks only and cannot race; panics at task boundaries
-# (III.1.4) wait on this file's task boundary being judged right first; and
-# the typed `group do ... end!` return (III.4.1's final shape) is compiler
-# work this runtime has to exist before anyone can build.
+# thread interleaves at parks only and cannot race; and the typed
+# `group do ... end!` return (III.4.1's final shape) is compiler work this
+# runtime has to exist before anyone can build. Panics at task boundaries
+# (III.1.4) are built and live at the bottom of the scheduler: a panicking
+# task drains its defers, tells its group, and dies alone.
 #
 # Linux only, and raw syscalls only: the dependency floor (III.9) named
 # pthreads as the cost that must not be paid, and a fiber is exactly the
@@ -238,6 +239,17 @@ class IyiFiber
   property state : Int32
   property cancelled : Bool
 
+  # Panics — III.1.4. The registry `defer` pushes onto and the panic
+  # path drains; the flag and message a boundary reads after the join.
+  property defers : IyiDeferNode?
+  property panicked : Bool
+  property panic_message : String
+
+  # The group that spawned this fiber, so a panic can tell it directly:
+  # the trampoline's own notification lives after `block.call`, and a
+  # panicking block never returns there.
+  property group : IyiGroup?
+
   # The saved stack pointer, meaningful only while suspended.
   @sp : UInt64
 
@@ -274,6 +286,10 @@ class IyiFiber
   def initialize
     @state = 1
     @cancelled = false
+    @defers = nil
+    @panicked = false
+    @panic_message = ""
+    @group = nil
     @sp = 0_u64
     @proc = nil
     @next_run = nil
@@ -719,6 +735,67 @@ class IyiScheduler
     @@events = buffer
     buffer
   end
+
+  # ── Panics — III.1.4 ─────────────────────────────────────────────────
+
+  # The panic path: run the current fiber's pending defers innermost
+  # first, then die at the task boundary. A spawned task marks itself,
+  # tells its group, wakes its joiner and is never scheduled again; the
+  # main fiber has no boundary above it, so after its drain the process
+  # exits 1. Every registered cleanup on the path has run either way,
+  # which is the promise `defer` makes.
+  def self.panic_current(message : String) : NoReturn
+    fiber = current
+    # Marked before the drain: a boundary the drain itself reaches — a
+    # deferred `g.join`, above all — must see that its owner is already
+    # dying and keep quiet rather than re-raise into the unwind.
+    fiber.panicked = true
+    fiber.panic_message = message
+
+    while true
+      node = fiber.defers
+      break unless node.is_a?(IyiDeferNode)
+      fiber.defers = node.next_node
+      node.run
+    end
+
+    body = fiber.proc
+    if body.is_a?(Nil)
+      __iyi_exit(1)
+    end
+
+    g = fiber.group
+    g.child_panicked(message, fiber.cancelled) if g.is_a?(IyiGroup)
+
+    fiber.state = 6
+    joiner = fiber.joiner
+    if joiner.is_a?(IyiFiber)
+      fiber.joiner = nil
+      enqueue(joiner)
+    end
+    reschedule
+    __iyi_exit(1)
+  end
+end
+
+# `defer`'s runtime half on the concurrency targets: the registry is
+# the current fiber's, so interleaved tasks never share cleanups. The
+# normalizer emits the push on entry and the pop on every normal exit;
+# what is left on the list when a panic arrives is exactly what did not
+# get to clean up.
+def __iyi_defer_push(cleanup : Proc(Nil)) : Nil
+  fiber = IyiScheduler.current
+  node = IyiDeferNode.new(cleanup)
+  node.next_node = fiber.defers
+  fiber.defers = node
+end
+
+def __iyi_defer_pop_run : Nil
+  fiber = IyiScheduler.current
+  node = fiber.defers
+  return unless node.is_a?(IyiDeferNode)
+  fiber.defers = node.next_node
+  node.run
 end
 
 # ── The public primitives ──────────────────────────────────────────────
@@ -772,6 +849,9 @@ class IyiTask(T)
 
   def value : T
     IyiScheduler.join(@fiber)
+    # A panicked task has no value; the boundary re-raises instead of
+    # answering `first of an empty array` (III.1.4).
+    raise "a task panicked: " + @fiber.panic_message if @fiber.panicked
     @box.first
   end
 end
@@ -781,12 +861,19 @@ class IyiGroup
   @failed : Bool
   @first_child : IyiFiber?
   @joiner : IyiFiber?
+  # The first panic among the children: the message the join re-raises
+  # in the owner. Later panics lost the race; they already printed at
+  # their own sites.
+  @panicked : Bool
+  @panic_message : String
 
   def initialize
     @live = 0
     @failed = false
     @first_child = nil
     @joiner = nil
+    @panicked = false
+    @panic_message = ""
   end
 
   # Start a task. The block is compiled once and carried as a proc; its
@@ -805,6 +892,7 @@ class IyiGroup
     fiber.prepare_stack
     fiber.next_child = @first_child
     @first_child = fiber
+    fiber.group = self
     @live = @live + 1
     IyiScheduler.enqueue(fiber)
     task
@@ -833,6 +921,16 @@ class IyiGroup
     end
   end
 
+  # :nodoc: — a panicking child, on its own stack: the same accounting
+  # as a returned error, plus what the join will re-raise.
+  def child_panicked(message : String, cancelled : Bool) : Nil
+    unless @panicked
+      @panicked = true
+      @panic_message = message
+    end
+    child_finished(!cancelled)
+  end
+
   # :nodoc: — `group`'s deferred half. The scope cannot be left until
   # every task has finished, and `defer` is what guarantees "cannot":
   # a `return` out of the block still runs this.
@@ -842,6 +940,16 @@ class IyiGroup
       @joiner = me
       me.state = 5
       IyiScheduler.reschedule
+    end
+    # The task boundary is where a panic is caught (III.1.4), and
+    # "caught" means: re-raised in the owner, exactly once — the flag
+    # clears so the deferred second join (concurrency's own `defer
+    # g.join`) finds nothing. An owner already on its own panic path
+    # gets no re-raise: its unwind is running this join through the
+    # registry, and a second report would be noise wearing news.
+    if @panicked
+      @panicked = false
+      raise "a task panicked: " + @panic_message unless IyiScheduler.current.panicked
     end
   end
 

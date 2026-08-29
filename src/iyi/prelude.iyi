@@ -995,18 +995,91 @@ struct Pointer(T)
   end
 end
 
-# 0.1.0's `raise` is a panic — it prints and exits, and nothing catches it.
+# ── Panics — SPEC.md III.1.4, built ───────────────────────────────────
 #
-# SPEC.md III.1.4 says that is what the language wants, and the normalizer's
-# `.or_panic` says so too: it lowers to `::raise` with a comment that a panic
-# is the intent and a Crystal exception the stand-in. Nothing in the samples
-# rescues, so the unwinder, the personality function and the exception
-# hierarchy under Crystal's `raise` buy this release nothing.
+# A panic is for bugs, not control flow, and it unwinds without an
+# unwinder: `defer` registers its cleanup on the way in (the normalizer
+# emits `__iyi_defer_push`/`__iyi_defer_pop_run` around every deferred
+# scope), so the panic path *walks a list* instead of walking frames —
+# the whole Itanium machinery stays unlinked and the dependency floor
+# stays where it is.
+#
+# On the concurrency targets the registry lives on the current fiber and
+# a panicking task dies alone: its defers run, its group is told, its
+# siblings are cancelled, and the group's join re-panics in the owner —
+# a panicking fiber cannot die silently (III.1.4), and an uncaught panic
+# still reaches main and exits 1, after every defer on the path ran.
+# Elsewhere there are no tasks, so the registry is one global stack and
+# a panic is a clean exit that ran the pending cleanups first.
+
+# One registered cleanup. A class rather than a struct: the stack is an
+# intrusive linked list, and a node must be a reference to link.
+class IyiDeferNode
+  @proc : Proc(Nil)
+  property next_node : IyiDeferNode?
+
+  def initialize(@proc : Proc(Nil))
+    @next_node = nil
+  end
+
+  def run : Nil
+    @proc.call
+  end
+end
+
+{% unless flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+  # No fibers on this target, so one global stack is exact: a single
+  # thread of control pushes and pops in strict block-nesting order.
+  class IyiDefers
+    @@head : IyiDeferNode?
+
+    def self.push(node : IyiDeferNode) : Nil
+      node.next_node = @@head
+      @@head = node
+    end
+
+    def self.pop_run : Nil
+      node = @@head
+      return unless node.is_a?(IyiDeferNode)
+      @@head = node.next_node
+      node.run
+    end
+
+    def self.drain : Nil
+      while true
+        node = @@head
+        return unless node.is_a?(IyiDeferNode)
+        @@head = node.next_node
+        node.run
+      end
+    end
+  end
+
+  def __iyi_defer_push(cleanup : Proc(Nil)) : Nil
+    IyiDefers.push(IyiDeferNode.new(cleanup))
+  end
+
+  def __iyi_defer_pop_run : Nil
+    IyiDefers.pop_run
+  end
+{% end %}
+
+# `raise` is a panic. It prints once, at the point of the bug, then
+# unwinds by registry: pending defers run innermost-first, and on the
+# concurrency targets the current *task* dies rather than the process —
+# the group boundary re-raises in the owner, which is where III.1.4
+# says a panic is caught. `NoReturn` is a type-system fact `.or_panic`
+# depends on (III.1.3): the fiber never resumes.
 def raise(message : String) : NoReturn
   print "iyi: panic: "
   print message
   print "\n"
-  __iyi_exit(1)
+  {% if flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+    IyiScheduler.panic_current(message)
+  {% else %}
+    IyiDefers.drain
+    __iyi_exit(1)
+  {% end %}
 end
 
 # What a failed `.as` names. `.as` reaches an iyi program through one door
