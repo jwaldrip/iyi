@@ -1,6 +1,34 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-08-29
+
+**The language got its editor, and a panic stopped being a process.**
+0.4.0 made iyi concurrent and machine-readable; this release makes it a
+language you can *live in*. `iyi lsp` grew from a first session into a
+server that stands feature-for-feature beside gopls: pull diagnostics an
+agent asks for instead of subscribing to, completion that writes the
+`import`/`using` pair it knows you forgot, rename that reaches files
+nobody opened, a code lens that runs the module over the wire, semantic
+tokens so no editor needs a grammar for `.iyi` — and a three-file VS
+Code client in `editors/`, with one-stanza configs beside it. The server
+answers to five gates on every push: a 49-step scripted session, latency
+budgets per verb, an 8,000-token word-boundary sweep, a transport soak
+that hits it with garbage and demands a hover after each blow, and the
+doc-numbers sweep that keeps every stated figure honest.
+
+And panics landed the way III.1.4 always wanted them: a panic kills the
+task, not the process. `defer` registers its cleanup on a per-task list
+the panic path walks, so the promise holds with no unwinder, no landing
+pads, no libgcc — the dependency floor never moved. A panicking task
+drains its defers, its group cancels the siblings and re-raises once in
+the owner; main exits 1 after its own drain; `.or_panic` became a real
+panic by its lowering not changing at all. The AI_FIRST menu this cycle
+opened with closed 8-for-8, every row gated.
+
+`.iyimod` format is unchanged at 41. Released artifacts carry the
+version alone, so a 0.4.0 artifact is rejected by a 0.5.0 build and
+rebuilt, never migrated — which also retires object code whose panic
+was still a process exit.
 
 ### Added
 
