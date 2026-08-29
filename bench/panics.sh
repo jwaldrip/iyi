@@ -184,4 +184,29 @@ expected=$(printf 'body ran\nclose b\nclose a\n2\nclose b\nclose a\n1')
 $out"
 step "the no-panic path is unchanged: LIFO on fall-through and on return"
 
+# ── 7. an arithmetic overflow is a panic like any other: the trap
+#      routes through the registry, so a task's overflow dies at the
+#      task boundary instead of taking the process bare-handed ────────
+cat > "$work/overflow.iyi" <<'EOF'
+module overflow
+
+pub def blows : Int32
+  n = 2147483647
+  n + 1
+end
+
+group do |g|
+  g.spawn { blows }
+end
+puts "unreached"
+EOF
+run "$work/overflow.iyi"
+[ "$code" = 1 ] || fail "overflow exit was $code, wanted 1"
+echo "$out" | grep -q "iyi: panic: arithmetic overflow" || fail "overflow message missing:
+$out"
+echo "$out" | grep -q "a task panicked: arithmetic overflow" || fail "overflow boundary missing:
+$out"
+! echo "$out" | grep -q "unreached" || fail "overflow fell through"
+step "an overflow in a task dies at the task boundary"
+
 echo "panics gate: every step held"
