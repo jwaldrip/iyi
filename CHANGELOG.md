@@ -46,6 +46,23 @@ message. Nothing is packaged on a laptop again.
   gate's step is the sentence: a task panics, the reader prints
   `caught: task blew`, life goes on, exit 0.
 
+### Fixed
+
+- **Two LSP gate steps asserted timing, and the darwin runner said
+  so.** The cancellation and burst-coalescing steps sent their frames
+  one write at a time and passed on the machine that wrote them by
+  luck: a quicker runner answered the request before its cancel
+  arrived — the server's documented limit (in-flight work is
+  uninterruptible), not a bug in it. Both steps now write their frames
+  in *one* write, so "drained together" is a fact, and the burst step
+  asserts the stronger thing it always meant: six changes, exactly one
+  compile.
+- **A release asset that did not exist passed quietly.** Both tarball
+  uploads globbed under `.build/`, which `upload-artifact` v4 treats as
+  hidden and skips with a warning — so the first tagged run found
+  nothing to attach. Staged into `dist/` now, with
+  `if-no-files-found: error`.
+
 ## 0.5.0 — 2026-08-29
 
 **The language got its editor, and a panic stopped being a process.**

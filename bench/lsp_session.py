@@ -62,6 +62,40 @@ class Client:
         self.proc.stdin.flush()
         return self.next_id
 
+    def write_batch(self, frames):
+        """Several frames in one write, which is what makes the queue's
+        claims *facts* rather than races.
+
+        The server reads what is already in the pipe before it parks
+        again, so a batch written together is a batch that is drained
+        together — and then "a cancel overtakes queued work" and "a
+        burst coalesces" do not depend on how fast the machine is. Both
+        steps below used to send frame by frame and pass on this
+        laptop by luck; the darwin runner is quicker than the laptop
+        and answered the request before its cancel arrived, which is
+        the server's documented limit (in-flight work is
+        uninterruptible), not a bug it should be blamed for.
+
+        *frames* is a list of (method, params, wants_id); returns the
+        ids handed out, in order.
+        """
+        blob = b""
+        ids = []
+        for method, params, wants_id in frames:
+            message = {"jsonrpc": "2.0", "method": method, "params": params}
+            # A notification takes no id and must not consume one, or the
+            # caller's arithmetic for "the id this batch will hand out"
+            # is wrong and it waits for an answer nobody will send.
+            if wants_id:
+                self.next_id += 1
+                message["id"] = self.next_id
+                ids.append(self.next_id)
+            body = json.dumps(message).encode()
+            blob += b"Content-Length: %d\r\n\r\n%s" % (len(body), body)
+        self.proc.stdin.write(blob)
+        self.proc.stdin.flush()
+        return ids
+
     def read_message(self):
         length = None
         while True:
@@ -795,33 +829,38 @@ def main():
          f"{len(items)} item(s), upcase tier "
          f"{upcase and upcase['sortText'][0]!r}")
 
-    # 38. a queued request cancels before it compiles: the didChange
-    #     occupies the server, the request and its cancel queue behind,
-    #     and the sweep answers -32800 without doing the work.
-    c.send("textDocument/didChange",
-           {"textDocument": {"uri": app_uri, "version": 19},
-            "contentChanges": [{"text": app_text}]}, wait=False)
-    rid = c.request_nowait("workspace/diagnostic", {})
-    c.send("$/cancelRequest", {"id": rid}, wait=False)
+    # 38. a queued request cancels before it compiles. The three frames
+    #     go out in one write, so the server drains them together: the
+    #     didChange is the work, the request queues behind it, and the
+    #     sweep registers the cancel before the request is ever
+    #     dispatched. Written frame by frame this asserted timing, not
+    #     behaviour — and lost on a runner quicker than the laptop.
+    rid = c.next_id + 1
+    ids = c.write_batch([
+        ("textDocument/didChange",
+         {"textDocument": {"uri": app_uri, "version": 19},
+          "contentChanges": [{"text": app_text}]}, False),
+        ("workspace/diagnostic", {}, True),
+        ("$/cancelRequest", {"id": rid}, False),
+    ])
     reply = c.wait_for(lambda m: m.get("id") == rid)
     step(38, "a queued request cancels before the work",
-         reply.get("error", {}).get("code") == -32800,
+         ids == [rid] and reply.get("error", {}).get("code") == -32800,
          f"answer: {reply.get('error', reply.get('result'))!r}")
 
-    # 39. a typing burst is one verdict: didChanges landing while the
-    #     server compiles coalesce, so six changes cost at most two
-    #     compiles and the verdict is the final text's.
-    c.send("textDocument/didChange",
-           {"textDocument": {"uri": app_uri, "version": 20},
-            "contentChanges": [{"text": app_text + "# 0\n"}]}, wait=False)
-    for n in range(5):
-        text_n = app_text + f"# burst {n}\n" if n < 4 else app_text
-        c.send("textDocument/didChange",
-               {"textDocument": {"uri": app_uri, "version": 21 + n},
-                "contentChanges": [{"text": text_n}]}, wait=False)
-    probe = c.request_nowait("textDocument/documentSymbol",
-                             {"textDocument": {"uri": app_uri}})
+    # 39. a typing burst is one verdict: six didChanges drained
+    #     together coalesce into one compile, and the verdict is the
+    #     final text's. One write again, for the same reason.
+    burst = [("textDocument/didChange",
+              {"textDocument": {"uri": app_uri, "version": 20 + n},
+               "contentChanges": [{"text": app_text + f"# burst {n}\n"
+                                   if n < 5 else app_text}]}, False)
+             for n in range(6)]
+    burst.append(("textDocument/documentSymbol",
+                  {"textDocument": {"uri": app_uri}}, True))
+    probe = c.write_batch(burst)[0]
     published = 0
+    last = None
     while True:
         m = c.read_message()
         if m.get("method") == "textDocument/publishDiagnostics":
@@ -829,8 +868,8 @@ def main():
             last = m["params"]["diagnostics"]
         if m.get("id") == probe:
             break
-    step(39, "a burst of six changes compiles at most twice",
-         1 <= published <= 2 and last == [],
+    step(39, "a burst of six changes is one compile",
+         published == 1 and last == [],
          f"{published} publish(es) for 6 didChanges, final verdict clean")
 
     # 40. document links: the import block is clickable — `import
