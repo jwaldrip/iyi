@@ -62,7 +62,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 3,852 lines, ceiling 3,734 |
+| iyi's own prelude | 3,973 lines, ceiling 3,734 |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -87,7 +87,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 3,852 lines
+> "No standard library worth the name" is still true of iyi's own 3,973 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -269,7 +269,7 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 3,852 lines,
+**3. A deliberately tiny prelude, written in iyi. Done: 3,973 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
 one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
@@ -790,8 +790,8 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 100,602 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 3,852-line own prelude + 777 in samples |
+| Compiler | 24,984 lines, **written in Crystal** | 100,607 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 3,973-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,596 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -2427,9 +2427,11 @@ switch that `@[NoInline]` had to protect from the optimiser before the
 release build stopped faulting, 256 KiB fiber stacks over the runtime's own
 `mmap` with a guard page under each, a run queue, a deadline-sorted sleep
 list, and an `epoll` the scheduler drains whenever nothing is runnable — raw
-syscalls throughout, so the floor above holds: the gate counts the exercise
-binary's undefined symbols and the runtime is allowed to add none, and the
-aarch64 object still has zero.
+syscalls throughout on Linux, so the floor above holds: the gate counts the
+exercise binary's undefined symbols and the runtime is allowed to add none
+there, and the aarch64 object still has zero. What the same gate holds on
+darwin is the paragraph after the next one, because darwin's floor was never
+"zero symbols".
 
 `bench/concurrency_exercise.sh` is the gate, and its first property is the
 one slice 2 was rejected over: two tasks ping-pong through channels and the
@@ -2444,6 +2446,36 @@ join is `defer`'s lowering applied to a task set, as III.4.1 predicted: a
 `return` out of the block still joins, and the gate holds a deadlocked
 program to a diagnosis (`deadlock: every fiber is blocked`) rather than a
 hang.
+
+**darwin arm64 runs the same runtime, through libSystem — III.9's darwin
+rule applied to the poller.** The port changes who is called and nothing
+about what the calls mean: one kernel thread still runs every fiber, the
+context is still one word, the aarch64 switch is the same twenty-slot frame
+Linux swaps, cancellation is still a `Cancelled` value a woken primitive
+answers, and the defer registry and the panic path are the
+platform-independent code they always were — the port did not touch them,
+it opened their guards. What is different is the doorway: Linux's raw
+`mmap`/`mprotect`/`clock_gettime`/`epoll` syscalls are libSystem's `mmap`,
+`mprotect`, `clock_gettime_nsec_np` and `kqueue`/`kevent` on darwin,
+because Apple documents libSystem as the platform's only supported
+interface and raw syscalls as explicitly not a stable ABI — the same rule
+the prelude's `write` already follows there (III.9), and the same
+conclusion Go reached. The poller is a kqueue: one `EV_ADD` per waited fd
+where Linux does `EPOLL_CTL_ADD`, one `EV_DELETE` where it does
+`EPOLL_CTL_DEL`, and one honest asymmetry recorded rather than smoothed —
+each poller refuses a different kind of fd, epoll a regular file with
+`-EPERM`, kqueue the null device with `EINVAL` (measured on `/dev/null`,
+which took `samples/iyi/calc` down until it was), and both refusals get
+the same answer: a fd the poller cannot watch is one whose read never
+parks, so the wait returns "readable now" instead of dying. The floor
+(III.9) does not move, because darwin's floor was never a
+symbol count: it was libSystem and nothing else, and it still is — the
+undefined-symbol list grows by `kqueue`, `kevent`, `clock_gettime_nsec_np`
+and errno's `__error` in every program (the panic path runs through the
+scheduler), and by `mmap`/`mprotect` in one that spawns a task, all of it
+recorded in `bench/dependency_floor.sh` in the
+same commit that caused them, which is that script's own rule for how a
+dependency is taken on.
 
 What is *not* built, said here rather than left to be found: `Share` gates
 nothing yet, and deliberately — one thread interleaves only at parks and
@@ -2461,9 +2493,10 @@ paragraph under "The ceiling was not a guess" says how);
 what the build corrected) — a *dynamic* group's union still
 comes out through `task.value`; a fiber blocked *joining* is the one park
 cancellation does not reach, which a failing group papers over by
-cancelling every child; and the other platforms get nothing rather than an
-imitation — wasm32 cannot switch stacks, and darwin's arm waits for a
-kqueue poller nobody has measured yet.
+cancelling every child; and the platforms that cannot carry the model get
+nothing rather than an imitation — wasm32 cannot switch stacks, and win32
+is unwritten. darwin arm64 stopped being one of them: its kqueue poller is
+the paragraph above, and it holds the same gates in CI.
 
 #### III.4.9 The typed group, `group do ... end!`: **BUILT, with one correction the build forced**
 
@@ -3385,10 +3418,14 @@ Every undefined symbol in a linked own-prelude program, plain `iyi build`, read
 off the executable on darwin arm64:
 
 ```
-write  exit  memset  malloc  realloc      # libc
+write  exit  memset  malloc  realloc               # libc
+kqueue  kevent  clock_gettime_nsec_np  __error     # the poller (III.4.8)
 ```
 
-Five symbols, all of them libc, and the one shared library is the platform's
+Nine symbols, all of them libSystem — five the prelude always had, four the
+concurrency runtime's poller added when it reached darwin arm64 (III.4.8:
+the panic path runs through the scheduler, so every program carries the
+poller and its clock) — and the one shared library is the platform's
 libc. The list this section was written on was seven, four of them the
 allocator: `libgc.1.dylib` beside libc, carrying `GC_init`, `GC_malloc`,
 `GC_malloc_atomic` and `GC_realloc`. That library is gone from the default, and
@@ -3407,13 +3444,18 @@ the prelude issues the raw syscalls itself for `write`, `exit` and the
 allocator (`mmap`), and imports nothing. That is the strong form of the claim
 and it is measured rather than projected. On darwin the same audit defers to
 libSystem, because Apple supports it as the only interface and raw syscalls are
-not a stable ABI there.
+not a stable ABI there — and the concurrency runtime (III.4.8) follows the same
+rule: its poller is a kqueue and its stacks, clock and events go through
+libSystem's `mmap`, `mprotect`, `clock_gettime_nsec_np` and `kevent`, so on
+darwin the runtime's calls are undefined symbols in a program that reaches
+them — counted by the exercise gate and by `bench/dependency_floor.sh` —
+where the Linux object carries nothing.
 
 **At the executable layer**, the linked program carries what its link template
 adds. On Linux that is the C runtime's five undefined references,
 `__libc_start_main`, `__gmon_start__`, `__cxa_finalize` and the two weak
 `_ITM_` clone-table callbacks, left behind by `crt1.o`, `crti.o` and
-`crtbegin.o`. On darwin it is libSystem's five above.
+`crtbegin.o`. On darwin it is libSystem's nine above.
 Either way an own-prelude program's dependency list is the platform libc and
 nothing else.
 
@@ -7671,7 +7713,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 3,852-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 3,973-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler
@@ -8589,8 +8631,9 @@ Named honestly, so nobody mistakes this draft for complete.
     API, then a language server over it. R-1 is what makes that server cheap,
     and it is the one dividend of the compilation model nobody designed for.
 15. ~~**The dependency floor.**~~ **Measured in III.9, and everything on the
-    own-prelude floor is decided**: five undefined symbols in an own-prelude
-    program on macOS, all libc; on Linux an object that leaves none at all,
+    own-prelude floor is decided**: nine undefined symbols in an own-prelude
+    program on macOS, all libSystem — five libc staples and the concurrency
+    runtime's four (III.4.8); on Linux an object that leaves none at all,
     against an executable carrying only the five its link template adds. libgc
     left the default to buy that, so the own-prelude default allocates and never
     collects, a price kept on purpose and stated in Appendix B #23. The

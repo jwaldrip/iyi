@@ -3,10 +3,13 @@ name: iyi
 # The only workflow this fork runs.
 #
 # Crystal's own CI is a matrix of platforms, package managers, LLVM versions and
-# release jobs for a project that ships all of them. iyi is Linux x86-64, ships
-# one tarball, and has one claim to protect. What was here before spent minutes
-# on macOS, Windows, MinGW and wasm runs that nobody read and that no failure
-# here would have been acted on. CI that cannot fail for a reason somebody acts
+# release jobs for a project that ships all of them. iyi is Linux x86-64 plus a
+# native darwin arm64 job, ships one tarball, and has one claim to protect.
+# What was here before spent minutes on macOS, Windows, MinGW and wasm runs
+# that nobody read and that no failure here would have been acted on; the
+# darwin job below is not that — it runs the same gates a Linux push answers
+# for, natively, because darwin arm64 is a run target now (SPEC.md III.4.8).
+# CI that cannot fail for a reason somebody acts
 # on is not a test, it is weather.
 #
 # The compiler is built once and handed to the rest, because building it five
@@ -567,11 +570,12 @@ jobs:
               ../samples/iyi/hello.iyi > hello-wasi.link )
           cat cross/hello-wasi.link
 
-          # The concurrency runtime's other instruction set. The x86-64 arm of
-          # its asm runs in this workflow's own gate; nothing runs the aarch64
-          # arm — the switch, the syscall shims, the frame `prepare_stack`
-          # lays out — until the emulation job below does. musl rides along:
-          # same instructions, the other libc, linked natively.
+          # The concurrency runtime's other instruction set, under the other
+          # kernel: the x86-64 arm of its asm runs in this workflow's own
+          # gate, the darwin job runs aarch64 natively against kqueue, and
+          # nothing runs the *Linux* aarch64 arm — the raw syscall shims,
+          # the epoll numbers — until the emulation job below does. musl
+          # rides along: same instructions, the other libc, linked natively.
           ./bin/iyi build --cross-compile --target x86_64-linux-musl \
             -o cross/conc-musl bench/concurrency_exercise.iyi
           ./bin/iyi build --cross-compile --target aarch64-linux-gnu \
@@ -647,6 +651,54 @@ jobs:
             '
           diff cross/expected.txt cross/got.txt && echo "aarch64: same output"
           grep -q "every property held" cross/conc.txt && echo "aarch64: III.4 held"
+
+  # darwin arm64 is a run target now (SPEC.md III.4.8): the concurrency
+  # runtime's kqueue arm, the panic registry and every sample run natively on
+  # the machine most developers sit in front of. The compiler is built here
+  # rather than downloaded, because the artifact above is a Linux binary and
+  # this job's whole point is the other platform. The gates are the same
+  # four a Linux push answers for: samples, III.4's exercise, III.1.4's
+  # panics and III.9's floor — the darwin floor being "libSystem and nothing
+  # else", which bench/dependency_floor.sh holds as an exact symbol list.
+  darwin:
+    runs-on: macos-14
+    name: "An iyi program, run on darwin arm64"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # crystal to bootstrap, llvm for codegen, coreutils for the gates'
+      # `timeout`, pkgconf so `-Dgc_boehm` finds brew's bdw-gc (which
+      # arrives as crystal's own dependency).
+      - name: Install the bootstrap toolchain
+        run: |
+          brew install crystal llvm coreutils pkgconf
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Build `iyi`
+        run: make iyi
+        env:
+          LLVM_CONFIG: /opt/homebrew/opt/llvm/bin/llvm-config
+
+      - name: Samples
+        run: |
+          for sample in samples/iyi/*.iyi; do
+            echo "== $sample"
+            ./bin/iyi run "$sample" < /dev/null
+          done
+
+      - name: The concurrency gate (III.4)
+        run: bash bench/concurrency_exercise.sh
+
+      - name: The panics gate (III.1.4)
+        run: bash bench/panics.sh
+
+      - name: The dependency floor (III.9)
+        run: bash bench/dependency_floor.sh
+
+      - name: The language server session (III.8)
+        run: python3 bench/lsp_session.py
 
   # Windows is not a run target and nothing here is a gate. Three things happen
   # when you run the same Windows binary twenty times: it prints the right

@@ -32,11 +32,14 @@
 # (III.1.4) are built and live at the bottom of the scheduler: a panicking
 # task drains its defers, tells its group, and dies alone.
 #
-# Linux only, and raw syscalls only: the dependency floor (III.9) named
-# pthreads as the cost that must not be paid, and a fiber is exactly the
-# thing that makes it unnecessary. The other platforms lose nothing they
-# had: a program that names `group` on wasm32 fails to compile, which is
-# honest — III.4.8 refused shipping a spelling without the feature.
+# Linux and darwin arm64, through each platform's own doorway: raw
+# syscalls on Linux, libSystem on darwin, because Apple documents raw
+# syscalls as explicitly not a stable ABI there (SPEC.md III.9). Either
+# way the dependency floor named pthreads as the cost that must not be
+# paid, and a fiber is exactly the thing that makes it unnecessary. The
+# remaining platforms lose nothing they had: a program that names `group`
+# on wasm32 fails to compile, which is honest — III.4.8 refused shipping
+# a spelling without the feature.
 
 # ── The switch ─────────────────────────────────────────────────────────
 #
@@ -115,6 +118,12 @@ fun __iyi_fiber_entry_address : UInt64
   {% if flag?(:x86_64) %}
     asm("leaq __iyi_fiber_main(%rip), %rax
          retq" :::: "volatile")
+  {% elsif flag?(:darwin) %}
+    # Mach-O spells the relocation pair @PAGE/@PAGEOFF where ELF says
+    # :lo12:, and prefixes every C-level name with an underscore.
+    asm("adrp x0, ___iyi_fiber_main@PAGE
+         add x0, x0, ___iyi_fiber_main@PAGEOFF
+         ret" :::: "volatile")
   {% else %}
     asm("adrp x0, __iyi_fiber_main
          add x0, x0, :lo12:__iyi_fiber_main
@@ -125,15 +134,22 @@ end
 
 # ── The poller's syscalls ──────────────────────────────────────────────
 #
-# Raw, like every other syscall in this prelude, and for the same III.9
-# reason. The numbers are the two targets' own; `epoll_pwait` rather than
-# `epoll_wait` because aarch64 only has the former, and with a null sigmask
-# they are the same call.
+# On Linux they are raw, like every other syscall in this prelude, and
+# for the same III.9 reason. The numbers are the two targets' own;
+# `epoll_pwait` rather than `epoll_wait` because aarch64 only has the
+# former, and with a null sigmask they are the same call. On darwin the
+# same operations are libSystem calls — Apple's raw-syscall ABI is
+# explicitly not stable — and the poller is a kqueue, so the constants
+# there describe the 32-byte `kevent` struct rather than a syscall table.
 #
 # The numbers live in top-level constants because a local born inside a
 # `{% if %}` dies at its `{% end %}`: a macro expansion is re-parsed, and
 # only declarations cross back out of one.
-{% if flag?(:x86_64) %}
+{% if flag?(:darwin) %}
+  # A kevent's fd is its first field (`ident`), so the data offset is 0.
+  IYI_POLL_DATA_OFFSET =  0_u64
+  IYI_POLL_EVENT_BYTES = 32_i64
+{% elsif flag?(:x86_64) %}
   IYI_SYS_MMAP          =   9_i64
   IYI_SYS_MPROTECT      =  10_i64
   IYI_SYS_CLOCK_GETTIME = 228_i64
@@ -141,9 +157,9 @@ end
   IYI_SYS_EPOLL_PWAIT   = 281_i64
   IYI_SYS_EPOLL_CREATE1 = 291_i64
   # The kernel packs epoll_event on x86_64: data sits at +4 of a 12-byte
-  # struct. Everywhere else it is aligned: +8 of 16.
-  IYI_EPOLL_DATA_OFFSET =  4_u64
-  IYI_EPOLL_EVENT_BYTES = 12_i64
+  # struct. On aarch64 it is aligned: +8 of 16.
+  IYI_POLL_DATA_OFFSET =  4_u64
+  IYI_POLL_EVENT_BYTES = 12_i64
 {% else %}
   IYI_SYS_MMAP          = 222_i64
   IYI_SYS_MPROTECT      = 226_i64
@@ -151,47 +167,83 @@ end
   IYI_SYS_EPOLL_CTL     =  21_i64
   IYI_SYS_EPOLL_PWAIT   =  22_i64
   IYI_SYS_EPOLL_CREATE1 =  20_i64
-  IYI_EPOLL_DATA_OFFSET =   8_u64
-  IYI_EPOLL_EVENT_BYTES =  16_i64
+  IYI_POLL_DATA_OFFSET  =   8_u64
+  IYI_POLL_EVENT_BYTES  =  16_i64
 {% end %}
-fun __iyi_conc_syscall3(number : Int64, a : Int64, b : Int64, c : Int64) : Int64
-  result = uninitialized Int64
-  {% if flag?(:x86_64) %}
-    asm("syscall" : "={rax}"(result)
-                  : "{rax}"(number), "{rdi}"(a), "{rsi}"(b), "{rdx}"(c)
-                  : "rcx", "r11", "memory"
-                  : "volatile")
-  {% else %}
-    asm("svc #0" : "={x0}"(result)
-                 : "{x8}"(number), "{x0}"(a), "{x1}"(b), "{x2}"(c)
-                 : "memory"
-                 : "volatile")
-  {% end %}
-  result
-end
 
-fun __iyi_conc_syscall6(number : Int64, a : Int64, b : Int64, c : Int64, d : Int64, e : Int64, f : Int64) : Int64
-  result = uninitialized Int64
-  {% if flag?(:x86_64) %}
-    asm("syscall" : "={rax}"(result)
-                  : "{rax}"(number), "{rdi}"(a), "{rsi}"(b), "{rdx}"(c), "{r10}"(d), "{r8}"(e), "{r9}"(f)
-                  : "rcx", "r11", "memory"
-                  : "volatile")
-  {% else %}
-    asm("svc #0" : "={x0}"(result)
-                 : "{x8}"(number), "{x0}"(a), "{x1}"(b), "{x2}"(c), "{x3}"(d), "{x4}"(e), "{x5}"(f)
-                 : "memory"
-                 : "volatile")
-  {% end %}
-  result
-end
+{% if flag?(:darwin) %}
+  # libSystem, reopened for the five calls the runtime makes. `__error`
+  # is how darwin spells errno's address; the poller needs it to tell
+  # EINTR from a real failure, because a library call answers -1 where a
+  # raw syscall answers -errno.
+  lib LibC
+    fun mmap(addr : Void*, len : UInt64, prot : Int32, flags : Int32, fd : Int32, offset : Int64) : Void*
+    fun mprotect(addr : Void*, len : UInt64, prot : Int32) : Int32
+    fun kqueue : Int32
+    fun kevent(kq : Int32, changelist : Void*, nchanges : Int32, eventlist : Void*, nevents : Int32, timeout : Void*) : Int32
+    fun clock_gettime_nsec_np(clock_id : Int32) : UInt64
+    fun error_location = __error : Int32*
+  end
 
-# CLOCK_MONOTONIC, in nanoseconds. The sleep queue's clock; never the wall.
+  # One kevent change, packed by hand for the reason the epoll_event is:
+  # the prelude has no Int16 or UInt32 to declare the struct's middle
+  # fields with. Bytes 8..15 hold filter (-1 = EVFILT_READ), flags and
+  # fflags, which as one little-endian word are 0x1FFFF for EV_ADD and
+  # 0x2FFFF for EV_DELETE; `data` and `udata` are zeroed explicitly so
+  # no byte of the struct rides on what malloc left behind.
+  def __iyi_kevent_change(fd : Int32, word : UInt64) : Pointer(UInt8)
+    change = Pointer(UInt8).malloc(32_u64)
+    change.as(Pointer(UInt64)).value = fd.to_u64
+    Pointer(UInt64).new(change.address + 8_u64).value = word
+    Pointer(UInt64).new(change.address + 16_u64).value = 0_u64
+    Pointer(UInt64).new(change.address + 24_u64).value = 0_u64
+    change
+  end
+{% else %}
+  fun __iyi_conc_syscall3(number : Int64, a : Int64, b : Int64, c : Int64) : Int64
+    result = uninitialized Int64
+    {% if flag?(:x86_64) %}
+      asm("syscall" : "={rax}"(result)
+                    : "{rax}"(number), "{rdi}"(a), "{rsi}"(b), "{rdx}"(c)
+                    : "rcx", "r11", "memory"
+                    : "volatile")
+    {% else %}
+      asm("svc #0" : "={x0}"(result)
+                   : "{x8}"(number), "{x0}"(a), "{x1}"(b), "{x2}"(c)
+                   : "memory"
+                   : "volatile")
+    {% end %}
+    result
+  end
+
+  fun __iyi_conc_syscall6(number : Int64, a : Int64, b : Int64, c : Int64, d : Int64, e : Int64, f : Int64) : Int64
+    result = uninitialized Int64
+    {% if flag?(:x86_64) %}
+      asm("syscall" : "={rax}"(result)
+                    : "{rax}"(number), "{rdi}"(a), "{rsi}"(b), "{rdx}"(c), "{r10}"(d), "{r8}"(e), "{r9}"(f)
+                    : "rcx", "r11", "memory"
+                    : "volatile")
+    {% else %}
+      asm("svc #0" : "={x0}"(result)
+                   : "{x8}"(number), "{x0}"(a), "{x1}"(b), "{x2}"(c), "{x3}"(d), "{x4}"(e), "{x5}"(f)
+                   : "memory"
+                   : "volatile")
+    {% end %}
+    result
+  end
+{% end %}
+# CLOCK_MONOTONIC, in nanoseconds. The sleep queue's clock; never the
+# wall. darwin's libSystem has the one-call form, and 6 is its
+# CLOCK_MONOTONIC.
 def __iyi_monotonic_ns : Int64
-  spec = Pointer(UInt64).malloc(2_u64)
-  result = __iyi_conc_syscall3(IYI_SYS_CLOCK_GETTIME, 1_i64, spec.address.to_i64, 0_i64)
-  raise "clock_gettime failed" if result < 0
-  spec[0].to_i64 * 1000000000_i64 + spec[1].to_i64
+  {% if flag?(:darwin) %}
+    LibC.clock_gettime_nsec_np(6).to_i64
+  {% else %}
+    spec = Pointer(UInt64).malloc(2_u64)
+    result = __iyi_conc_syscall3(IYI_SYS_CLOCK_GETTIME, 1_i64, spec.address.to_i64, 0_i64)
+    raise "clock_gettime failed" if result < 0
+    spec[0].to_i64 * 1000000000_i64 + spec[1].to_i64
+  {% end %}
 end
 
 # ── The error members cancellation and closing answer with ─────────────
@@ -335,14 +387,28 @@ class IyiFiber
   end
 
   def prepare_stack : Nil
-    # The runtime's own mapping (PROT_READ|PROT_WRITE = 3,
-    # MAP_PRIVATE|MAP_ANONYMOUS = 0x22), so a fiber stack exists under
-    # every allocator, Boehm included, and a guard page (PROT_NONE) under
-    # it, so running off the end is a fault rather than a quiet neighbour.
-    mapped = __iyi_conc_syscall6(IYI_SYS_MMAP, 0_i64, STACK_BYTES.to_i64, 3_i64, 34_i64, -1_i64, 0_i64)
-    raise "fiber stack mmap failed" if mapped < 0 && mapped >= -4095
-    base = mapped.to_u64
-    __iyi_conc_syscall3(IYI_SYS_MPROTECT, base.to_i64, PAGE.to_i64, 0_i64)
+    # The runtime's own mapping (PROT_READ|PROT_WRITE = 3 on both
+    # platforms), so a fiber stack exists under every allocator, Boehm
+    # included, and a guard page (PROT_NONE) under it, so running off
+    # the end is a fault rather than a quiet neighbour.
+    # Declared before the branch, because a local born inside a
+    # `{% if %}` dies at its `{% end %}` — the file's own top-level
+    # constants comment says why.
+    base = 0_u64
+    {% if flag?(:darwin) %}
+      # libSystem's mmap: MAP_PRIVATE|MAP_ANON is 0x1002 here rather
+      # than Linux's 0x22, and failure is MAP_FAILED (every bit set)
+      # rather than -errno.
+      mapped = LibC.mmap(Pointer(Void).new(0_u64), STACK_BYTES, 3, 4098, -1, 0_i64)
+      raise "fiber stack mmap failed" if mapped.address &+ 1_u64 == 0_u64
+      base = mapped.address
+      LibC.mprotect(Pointer(Void).new(base), PAGE, 0)
+    {% else %}
+      mapped = __iyi_conc_syscall6(IYI_SYS_MMAP, 0_i64, STACK_BYTES.to_i64, 3_i64, 34_i64, -1_i64, 0_i64)
+      raise "fiber stack mmap failed" if mapped < 0 && mapped >= -4095
+      base = mapped.to_u64
+      __iyi_conc_syscall3(IYI_SYS_MPROTECT, base.to_i64, PAGE.to_i64, 0_i64)
+    {% end %}
     top = base + STACK_BYTES
     {% if flag?(:x86_64) %}
       # The first resume pops seven zeroed callee-saved slots and returns
@@ -437,7 +503,8 @@ end
 
 # ── The scheduler ──────────────────────────────────────────────────────
 #
-# One run queue, one sleep list, one io list, one epoll fd; every field a
+# One run queue, one sleep list, one io list, one poller fd (an epoll on
+# Linux, a kqueue on darwin); every field a
 # class variable with a literal initializer, which is the only global
 # state the language grants (the allocator's own comment says why), and
 # zero meaning "not created yet" throughout.
@@ -447,12 +514,12 @@ class IyiScheduler
   @@run_tail : IyiFiber?
   @@sleep_head : IyiFiber?
   @@io_head : IyiFiber?
-  @@epfd : Int64 = 0_i64
+  @@pollfd : Int64 = 0_i64
   @@events : UInt64 = 0_u64
 
   # How many ready events one poll asks for; the per-event stride is the
-  # top-level IYI_EPOLL_EVENT_BYTES — the kernel packs the struct on
-  # x86_64 and pads it elsewhere.
+  # top-level IYI_POLL_EVENT_BYTES — a 32-byte kevent on darwin, an
+  # epoll_event the kernel packs on x86_64 and pads on aarch64.
   EVENTS = 16_i64
 
   def self.current : IyiFiber
@@ -562,16 +629,30 @@ class IyiScheduler
       scan = scan.next_io
     end
 
-    # EPOLL_CTL_ADD = 1, EPOLLIN = 1, data = the fd itself.
-    event = Pointer(UInt8).malloc(16_u64)
-    event.as(Pointer(UInt64)).value = 1_u64
-    Pointer(UInt64).new(event.address + IYI_EPOLL_DATA_OFFSET).value = fd.to_u64
-    added = __iyi_conc_syscall6(IYI_SYS_EPOLL_CTL, epfd, 1_i64, fd.to_i64, event.address.to_i64, 0_i64, 0_i64)
-    # -EPERM is epoll saying the fd is a regular file. A file never blocks
-    # a read, which is exactly "readable now": answer it instead of dying,
-    # or a program whose stdin is `< file` panics on its first wait.
-    return nil if added == -1_i64
-    raise "epoll_ctl add failed" if added < 0
+    {% if flag?(:darwin) %}
+      # EV_ADD, keyed by the fd itself. kqueue accepts a regular file
+      # where epoll refuses one, but refuses the null device with EINVAL
+      # (22) — measured on /dev/null and /dev/zero — and a fd kqueue
+      # cannot watch is one whose read never parks. Same answer as
+      # epoll's -EPERM below: "readable now" instead of dying, or a
+      # program whose stdin is `< /dev/null` panics on its first wait.
+      change = __iyi_kevent_change(fd, 0x1FFFF_u64)
+      added = LibC.kevent(pollfd.to_i32, change.as(Void*), 1,
+        Pointer(Void).new(0_u64), 0, Pointer(Void).new(0_u64)).to_i64
+      return nil if added < 0 && LibC.error_location.value == 22
+      raise "kevent add failed" if added < 0
+    {% else %}
+      # EPOLL_CTL_ADD = 1, EPOLLIN = 1, data = the fd itself.
+      event = Pointer(UInt8).malloc(16_u64)
+      event.as(Pointer(UInt64)).value = 1_u64
+      Pointer(UInt64).new(event.address + IYI_POLL_DATA_OFFSET).value = fd.to_u64
+      added = __iyi_conc_syscall6(IYI_SYS_EPOLL_CTL, pollfd, 1_i64, fd.to_i64, event.address.to_i64, 0_i64, 0_i64)
+      # -EPERM is epoll saying the fd is a regular file. A file never blocks
+      # a read, which is exactly "readable now": answer it instead of dying,
+      # or a program whose stdin is `< file` panics on its first wait.
+      return nil if added == -1_i64
+      raise "epoll_ctl add failed" if added < 0
+    {% end %}
 
     fiber.wait_fd = fd
     fiber.state = 3
@@ -632,14 +713,35 @@ class IyiScheduler
       timeout = (gap + 999999_i64) // 1000000_i64
     end
 
-    count = __iyi_conc_syscall6(IYI_SYS_EPOLL_PWAIT, epfd, events_buffer.to_i64, EVENTS, timeout, 0_i64, 8_i64)
-    # -EINTR (-4) is a wakeup with no news; anything else negative is real.
-    raise "epoll_pwait failed" if count < 0 && count != -4_i64
+    count = 0_i64
+    {% if flag?(:darwin) %}
+      # kevent's timeout is a timespec pointer and null means forever:
+      # -1 becomes the null, anything else two 8-byte words. A -1 return
+      # with errno EINTR (4) is a wakeup with no news, the same story
+      # epoll's -EINTR tells below; anything else negative is real.
+      timeout_ptr = Pointer(Void).new(0_u64)
+      if timeout >= 0_i64
+        spec = Pointer(UInt64).malloc(2_u64)
+        spec[0] = (timeout // 1000_i64).to_u64
+        spec[1] = ((timeout % 1000_i64) * 1000000_i64).to_u64
+        timeout_ptr = spec.as(Void*)
+      end
+      count = LibC.kevent(pollfd.to_i32, Pointer(Void).new(0_u64), 0,
+        Pointer(Void).new(events_buffer), EVENTS.to_i32, timeout_ptr).to_i64
+      if count < 0
+        raise "kevent failed" if LibC.error_location.value != 4
+        count = 0_i64
+      end
+    {% else %}
+      count = __iyi_conc_syscall6(IYI_SYS_EPOLL_PWAIT, pollfd, events_buffer.to_i64, EVENTS, timeout, 0_i64, 8_i64)
+      # -EINTR (-4) is a wakeup with no news; anything else negative is real.
+      raise "epoll_pwait failed" if count < 0 && count != -4_i64
+    {% end %}
 
     index = 0_i64
     while index < count
-      entry = events_buffer + (index * IYI_EPOLL_EVENT_BYTES).to_u64
-      fd = Pointer(UInt64).new(entry + IYI_EPOLL_DATA_OFFSET).value.to_i64
+      entry = events_buffer + (index * IYI_POLL_EVENT_BYTES).to_u64
+      fd = Pointer(UInt64).new(entry + IYI_POLL_DATA_OFFSET).value.to_i64
       wake_io(fd.to_i32)
       index = index + 1
     end
@@ -732,30 +834,42 @@ class IyiScheduler
     io_take(fiber.wait_fd)
   end
 
-  # EPOLL_CTL_DEL = 2. Deregistered on every exit from the io list — wake
-  # and cancel both — so a level-triggered fd cannot wake a fiber that no
-  # longer exists to want it.
+  # Deregistered on every exit from the io list — wake and cancel both —
+  # so a level-triggered fd cannot wake a fiber that no longer exists to
+  # want it. EPOLL_CTL_DEL = 2 on Linux; EV_DELETE's packed word on
+  # darwin, where a fd already gone is kevent's problem and not ours.
   def self.io_forget(fiber : IyiFiber) : Nil
-    __iyi_conc_syscall6(IYI_SYS_EPOLL_CTL, epfd, 2_i64, fiber.wait_fd.to_i64, 0_i64, 0_i64, 0_i64)
+    {% if flag?(:darwin) %}
+      change = __iyi_kevent_change(fiber.wait_fd, 0x2FFFF_u64)
+      LibC.kevent(pollfd.to_i32, change.as(Void*), 1,
+        Pointer(Void).new(0_u64), 0, Pointer(Void).new(0_u64))
+    {% else %}
+      __iyi_conc_syscall6(IYI_SYS_EPOLL_CTL, pollfd, 2_i64, fiber.wait_fd.to_i64, 0_i64, 0_i64, 0_i64)
+    {% end %}
     fiber.next_io = nil
     fiber.wait_fd = -1
   end
 
-  # ── The epoll fd, lazily ─────────────────────────────────────────────
+  # ── The poller's fd, lazily ──────────────────────────────────────────
 
-  def self.epfd : Int64
-    fd = @@epfd
+  def self.pollfd : Int64
+    fd = @@pollfd
     return fd if fd > 0
-    fd = __iyi_conc_syscall3(IYI_SYS_EPOLL_CREATE1, 0_i64, 0_i64, 0_i64)
-    raise "epoll_create1 failed" if fd < 0
-    @@epfd = fd
+    {% if flag?(:darwin) %}
+      fd = LibC.kqueue.to_i64
+      raise "kqueue failed" if fd < 0
+    {% else %}
+      fd = __iyi_conc_syscall3(IYI_SYS_EPOLL_CREATE1, 0_i64, 0_i64, 0_i64)
+      raise "epoll_create1 failed" if fd < 0
+    {% end %}
+    @@pollfd = fd
     fd
   end
 
   def self.events_buffer : UInt64
     buffer = @@events
     return buffer if buffer > 0
-    buffer = Pointer(UInt8).malloc((EVENTS * IYI_EPOLL_EVENT_BYTES).to_u64).address
+    buffer = Pointer(UInt8).malloc((EVENTS * IYI_POLL_EVENT_BYTES).to_u64).address
     @@events = buffer
     buffer
   end

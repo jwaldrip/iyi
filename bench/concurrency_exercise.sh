@@ -11,8 +11,9 @@
 #      the release arm is not decoration: the context switch is naked asm,
 #      and the optimiser is the thing that corrupted it until @[NoInline]
 #      said not to.
-#   2. The binary keeps the dependency floor (III.9): the runtime is raw
-#      syscalls, so it must add zero undefined symbols.
+#   2. The binary keeps the dependency floor (III.9): on Linux the runtime
+#      is raw syscalls and must add zero undefined symbols; on darwin the
+#      floor is libSystem and nothing else, held as the exact symbol list.
 #   3. A deadlocked program — every fiber blocked, nothing to wake one —
 #      exits 1 with the deadlock named, rather than hanging.
 #   4. A group whose spelling would compile sequentially still interleaves:
@@ -58,19 +59,40 @@ fi
 grep -q 'every property held' answers-release.txt || { cat answers-release.txt; exit 1; }
 
 # ── 2. The dependency floor ───────────────────────────────────────────────
-# The five allowed names are the C runtime template's, not the prelude's —
-# bench/dependency_floor.sh spells out why. The runtime is raw syscalls, so
-# it may add nothing beyond them.
-step "dependency floor: the runtime adds no undefined symbol"
-added="$(nm -u exercise |
-  sed -e 's/^ *[wU] *//' -e 's/@.*$//' |
-  grep -v -E '^(_ITM_deregisterTMCloneTable|_ITM_registerTMCloneTable|__cxa_finalize|__gmon_start__|__libc_start_main)$' |
-  grep -cv '^\s*$')"
-if [ "$added" -ne 0 ]; then
-  echo "the runtime put $added undefined symbols back on the link line:"
-  nm -u exercise
-  exit 1
-fi
+# On Linux the five allowed names are the C runtime template's, not the
+# prelude's — bench/dependency_floor.sh spells out why — and the runtime is
+# raw syscalls, so it may add nothing beyond them. On darwin every call is
+# a libSystem symbol by design (III.9: raw syscalls are not a stable ABI
+# there), so the floor is the exact list below plus libSystem as the one
+# linked library; a new name is a dependency being taken on and belongs in
+# this list in the commit that causes it.
+step "dependency floor: the runtime stays on the platform's own doorway"
+case "$(uname -s)" in
+  Darwin)
+    allowed='___error|_clock_gettime_nsec_np|_exit|_kevent|_kqueue|_malloc|_memset|_mmap|_mprotect|_pipe|_read|_realloc|_write'
+    added="$(nm -u exercise | sed -e 's/^ *//' | awk '{ print $NF }' |
+      grep -E -cv "^($allowed)\$")"
+    extra_libs="$(otool -L exercise | sed -n '2,$p' | awk '{ print $1 }' |
+      grep -cv 'libSystem')"
+    if [ "$added" -ne 0 ] || [ "$extra_libs" -ne 0 ]; then
+      echo "the runtime moved the darwin floor:"
+      nm -u exercise
+      otool -L exercise
+      exit 1
+    fi
+    ;;
+  *)
+    added="$(nm -u exercise |
+      sed -e 's/^ *[wU] *//' -e 's/@.*$//' |
+      grep -v -E '^(_ITM_deregisterTMCloneTable|_ITM_registerTMCloneTable|__cxa_finalize|__gmon_start__|__libc_start_main)$' |
+      grep -cv '^\s*$')"
+    if [ "$added" -ne 0 ]; then
+      echo "the runtime put $added undefined symbols back on the link line:"
+      nm -u exercise
+      exit 1
+    fi
+    ;;
+esac
 
 # ── 3. Failure proof: a deadlock dies loudly ──────────────────────────────
 step "failure proof: deadlock is a diagnosis, not a hang"

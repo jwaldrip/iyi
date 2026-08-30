@@ -52,7 +52,15 @@ trap 'rm -rf "$WORK"' EXIT
 # unchanged and `files.iyi`'s x86_64-linux-gnu object is empty.
 # `unlink` joined with File.delete. Darwin binds libSystem again; Linux issues
 # `unlinkat`, so its undefined list and the files object remain empty.
-ALLOWED_SYMBOLS_DARWIN="chmod close exit malloc memset open read realloc unlink write"
+# `kqueue`, `kevent`, `clock_gettime_nsec_np` and `__error` joined when the
+# concurrency runtime (SPEC.md III.4.8) reached darwin arm64: the panic path
+# runs through the scheduler, so every darwin program carries the poller and
+# its clock, all of it libSystem for the same reason `write` is. Linux keeps
+# raw syscalls, so its list and the per-target objects are unchanged.
+# `mmap`/`mprotect` appear only in a program that spawns a task, and no
+# sample does; bench/concurrency_exercise.sh allows them for the exercise
+# binary, which spawns plenty.
+ALLOWED_SYMBOLS_DARWIN="__error chmod clock_gettime_nsec_np close exit kevent kqueue malloc memset open read realloc unlink write"
 ALLOWED_SYMBOLS_LINUX="ITM_deregisterTMCloneTable ITM_registerTMCloneTable _cxa_finalize _gmon_start__ _libc_start_main"
 
 # What a program may link. The platform libc only.

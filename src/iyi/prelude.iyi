@@ -30,9 +30,12 @@ require "./hash"
 # blocking primitives, `group`/`spawn` and `Channel`, in exactly III.4.8's
 # order. Required here rather than gated inside itself, because iyi-only
 # syntax (`!`, `defer`, `impl`) does not survive a macro expansion's
-# re-parse; the other platforms are given nothing rather than a sequential
-# imitation, which III.4.8 refused by name.
-{% if flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+# re-parse; the platforms that cannot carry the model are given nothing
+# rather than a sequential imitation, which III.4.8 refused by name.
+# darwin rides the aarch64 arm of the same runtime through libSystem —
+# its own branch below says why libSystem — and the Linux pair keeps its
+# raw syscalls.
+{% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
   require "./concurrency"
 {% end %}
 
@@ -437,7 +440,10 @@ require "./file"
 # so the module would buy nothing but a frame on every allocation of a build
 # that is not optimised.
 {% if flag?(:gc_boehm) %}
-  @[Link("gc")]
+  # `pkg_config: "bdw-gc"` is how Crystal's own `gc/boehm.cr` names the
+  # library, and it is what lets a homebrew-installed collector link on
+  # darwin, where `-lgc` alone has no search path that finds it.
+  @[Link("gc", pkg_config: "bdw-gc")]
   lib LibGC
     fun init = GC_init
     fun malloc = GC_malloc(size : UInt64) : Void*
@@ -1030,7 +1036,7 @@ class IyiDeferNode
   end
 end
 
-{% unless flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+{% unless (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
   # No fibers on this target, so one global stack is exact: a single
   # thread of control pushes and pops in strict block-nesting order.
   class IyiDefers
@@ -1077,7 +1083,7 @@ def raise(message : String) : NoReturn
   print "iyi: panic: "
   print message
   print "\n"
-  {% if flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+  {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
     IyiScheduler.panic_current(message)
   {% else %}
     IyiDefers.drain
@@ -1139,14 +1145,15 @@ def read_input : String
     end
 
     count = 0_i64
-    # On Linux the read parks the fiber rather than the thread: III.4.8
-    # named this exact call as the one that had to stop being a direct
-    # blocking syscall once a poller existed. A fiber reading stdin no
-    # longer stalls its siblings; a program with no other fiber blocks in
-    # `epoll_pwait` instead of `read`, which is the same wait. `Cancelled`
-    # ends the read the way EOF does — a cancelled task wants out, and
-    # what was read so far is still the honest answer.
-    {% if flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+    # On the concurrency targets the read parks the fiber rather than the
+    # thread: III.4.8 named this exact call as the one that had to stop
+    # being a direct blocking syscall once a poller existed. A fiber
+    # reading stdin no longer stalls its siblings; a program with no
+    # other fiber blocks in `epoll_pwait` (`kevent` on darwin) instead of
+    # `read`, which is the same wait. `Cancelled` ends the read the way
+    # EOF does — a cancelled task wants out, and what was read so far is
+    # still the honest answer.
+    {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
       outcome = iyi_read(0, (buffer + filled).as(Void*), capacity - filled.to_u64)
       break unless outcome.is_a?(Int64)
       count = outcome
