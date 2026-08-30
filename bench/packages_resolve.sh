@@ -38,7 +38,9 @@ printf 'module example.test/user/liba\n' > work/liba/iyi.mod
 printf 'module liba\n\npub def greeting : String\n  "hello from liba v1.0.0"\nend\n' > work/liba/liba.iyi
 printf 'module colors\n\npub def favourite : String\n  "green"\nend\n' > work/liba/colors.iyi
 git -C work/liba add -A && git -C work/liba commit -qm one && git -C work/liba tag v1.0.0
-sed -i 's/v1.0.0/v1.1.0/' work/liba/liba.iyi
+# `-i.bak` + rm: BSD sed demands the suffix GNU makes optional, and the bare
+# form silently mangled this edit on darwin — no tag, and the gate lied red.
+sed -i.bak 's/v1.0.0/v1.1.0/' work/liba/liba.iyi && rm -f work/liba/liba.iyi.bak
 git -C work/liba commit -qam two && git -C work/liba tag v1.1.0
 
 mkrepo work/libb
@@ -117,7 +119,7 @@ step "iyi.sum is written, and a tampered entry is a refusal"
 grep -q 'example.test/user/liba v1.1.0 s1:' app/iyi.sum || { echo "no sum entry for liba:"; cat app/iyi.sum; exit 1; }
 grep -q 'example.test/user/libb v1.0.0 s1:' app/iyi.sum || { echo "no sum entry for libb:"; cat app/iyi.sum; exit 1; }
 cp app/iyi.sum app/iyi.sum.good
-sed -i 's/s1:....../s1:dead00/' app/iyi.sum
+sed -i.bak 's/s1:....../s1:dead00/' app/iyi.sum && rm -f app/iyi.sum.bak
 rm -f app/app
 (cd app && "$IYI" build main.iyi -o app) > tamper.log 2>&1
 if [ $? -eq 0 ] || ! grep -q 'is not what it was' tamper.log; then
@@ -161,7 +163,7 @@ grep -Eq '"doc": ?"Answers the one question."' docs.json || { echo "the doc did 
 
 step "a doc-only edit leaves the interface hash alone"
 hash_before=$(grep -oE '"interface_hash": ?"[a-f0-9]*"' docs.json | head -1)
-sed -i 's/# Answers the one question./# Answers the only question./' docs/docd.iyi
+sed -i.bak 's/# Answers the one question./# Answers the only question./' docs/docd.iyi && rm -f docs/docd.iyi.bak
 (cd docs && "$IYI" mod context --json main.iyi) > docs2.json 2>&1 || { cat docs2.json; exit 1; }
 hash_after=$(grep -oE '"interface_hash": ?"[a-f0-9]*"' docs2.json | head -1)
 if [ "$hash_before" != "$hash_after" ]; then
@@ -169,7 +171,7 @@ if [ "$hash_before" != "$hash_after" ]; then
   exit 1
 fi
 grep -Eq '"doc": ?"Answers the only question."' docs2.json || { echo "the edited doc did not travel"; exit 1; }
-sed -i 's/pub def answer : Int32/pub def answer : Int64/' docs/docd.iyi
+sed -i.bak 's/pub def answer : Int32/pub def answer : Int64/' docs/docd.iyi && rm -f docs/docd.iyi.bak
 (cd docs && "$IYI" mod context --json main.iyi) > docs3.json 2>&1 || { cat docs3.json; exit 1; }
 hash_signature=$(grep -oE '"interface_hash": ?"[a-f0-9]*"' docs3.json | head -1)
 if [ "$hash_before" = "$hash_signature" ]; then

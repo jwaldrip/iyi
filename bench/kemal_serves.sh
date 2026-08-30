@@ -151,7 +151,9 @@ app "import kemal" "$PORT_ARTIFACT" > app_artifact.iyi
 # accessor in the artifact — a constant is storage, and a declaration can name
 # a type but not a global somebody else's object file holds (SPEC.md Part V
 # item 12). One line, and it is the only difference between the two files.
-sed -i 's/Kemal\.config_instance/Kemal.config/' app_source.iyi
+# `-i.bak` + rm rather than bare `-i`: GNU sed takes an optional suffix,
+# BSD sed demands one, and the bare form eats the script as the suffix.
+sed -i.bak 's/Kemal\.config_instance/Kemal.config/' app_source.iyi && rm -f app_source.iyi.bak
 
 status=0
 for arm in source artifact; do
