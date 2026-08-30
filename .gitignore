@@ -40,6 +40,9 @@ __pycache__/
 /editors/vscode/node_modules/
 /editors/vscode/*.vsix
 
+# Editor-local configuration: a serverPath is one machine's, not the tree's.
+/.vscode/
+
 # What a sample that depends on a shard produces. `shard.yml` and `shard.lock`
 # are the sample; `lib/` is what `shards install` fetches, `mods/` is what
 # `crystal tool bind` writes, and the rest is a build. Ignored rather than
