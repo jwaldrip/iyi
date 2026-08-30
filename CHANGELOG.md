@@ -62,6 +62,21 @@ message. Nothing is packaged on a laptop again.
   hidden and skips with a warning — so the first tagged run found
   nothing to attach. Staged into `dist/` now, with
   `if-no-files-found: error`.
+- **The tarball carries LLVM, and a bare image proves it.** Every
+  release before this one shipped a `bin/iyi` that could not start on a
+  machine without the exact libLLVM it was linked against — and no gate
+  saw it, because every proof of the tarball ran in the environment that
+  built it, where that library is present by construction. Moving the
+  packaging into CI is what exposed it: the artifact came from a
+  container with LLVM 20 and died on a laptop with LLVM 22. The package
+  now carries libLLVM in `lib/` and the binaries carry an
+  `$ORIGIN/../lib` rpath — escaped past the shell crystal runs its link
+  command through, which the first cut got wrong in the way that hides
+  the bug: an unescaped token bakes `/../lib`, which resolves to the
+  *system* library. And the missing gate exists now: CI unpacks the
+  tarball in a bare `ubuntu:24.04` with nothing but `gcc` and builds a
+  program there. The cost is honest — ~70 MB instead of ~26 — and a
+  release cannot ship without passing it.
 
 ## 0.5.0 — 2026-08-29
 

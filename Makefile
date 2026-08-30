@@ -129,6 +129,25 @@ IYI_DAEMON_BIN := iyi-daemon$(EXE)
 IYI_VERSION ?= $(shell cat src/IYI_VERSION)
 IYI_PACKAGE := iyi-$(IYI_VERSION)-$(shell uname -s | tr A-Z a-z)-$(shell uname -m)
 
+# iyi: "beside this binary", in the loader's own words — the token differs
+# per platform and nothing else about the rule does.
+#
+# The compiler needs one shared library at *runtime* that a fresh machine
+# has no reason to own: LLVM's. A tarball that does not carry it is a
+# tarball whose `bin/iyi` dies on `libLLVM.so.NN: cannot open shared object
+# file` — which every release before this one shipped, invisibly, because
+# the gate that unpacks the tarball ran on the machine that built it and
+# found the library it had just linked against. So the package carries
+# libLLVM in `lib/`, the binaries carry an rpath that finds it there, and
+# CI's clean room runs the whole thing in an image with nothing on it.
+# `\$$ORIGIN` and not `$$ORIGIN`: crystal runs its link command through a
+# shell, so an unescaped token is expanded there and the binary is left
+# asking for `/../lib` — which resolves to the *system* library and hides
+# the bug it was written to fix. Measured, not guessed: the first cut
+# shipped exactly that.
+ORIGIN_TOKEN := $(if $(filter Darwin,$(shell uname -s)),@loader_path,\$$ORIGIN)
+SELF_RPATH   := --link-flags='-Wl,-rpath,$(ORIGIN_TOKEN)/../lib'
+
 DESTDIR ?=
 PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
@@ -371,6 +390,32 @@ iyi-tarball: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN) check_iyi_is_release
 	     \( -name lib -o -name mods \) -type d -prune -exec rm -rf {} +
 	find "$(O)/iyi-package/share/iyi/samples" -type f -perm -u+x -delete
 	find "$(O)/iyi-package/share/iyi/samples" -type d -empty -delete
+# The one runtime library a fresh machine has no reason to own. Copied
+# dereferenced (`-L`), because what sits in an LLVM libdir is usually a
+# symlink chain and a tarball must carry the file. On darwin the binaries
+# still name the absolute path they linked against, so the reference is
+# rewritten to `@rpath` and the binary re-signed — an edited Mach-O with a
+# stale signature is killed on sight by arm64 macOS, which is a failure
+# that looks like nothing at all.
+	@mkdir -p "$(O)/iyi-package/lib"
+	@llvmdir=$$($(LLVM_CONFIG) --libdir); \
+	 found=0; \
+	 for lib in "$$llvmdir"/libLLVM.so.* "$$llvmdir"/libLLVM.dylib "$$llvmdir"/libLLVM-*.dylib; do \
+	   [ -f "$$lib" ] || continue; \
+	   cp -L "$$lib" "$(O)/iyi-package/lib/"; found=1; \
+	 done; \
+	 if [ "$$found" = 0 ]; then \
+	   echo "no libLLVM shared object under $$llvmdir — the tarball would need the host's"; \
+	   exit 1; \
+	 fi
+	@case "$$(uname -s)" in Darwin) \
+	   for bin in "$(O)/iyi-package/bin/iyi$(EXE)" "$(O)/iyi-package/bin/$(IYI_DAEMON_BIN)"; do \
+	     otool -L "$$bin" | awk '/libLLVM/ {print $$1}' | while read -r ref; do \
+	       install_name_tool -change "$$ref" "@rpath/$$(basename "$$ref")" "$$bin"; \
+	     done; \
+	     codesign --force --sign - "$$bin" >/dev/null 2>&1 || true; \
+	   done;; \
+	 esac
 	tar -czf "$(O)/$(IYI_PACKAGE).tar.gz" -C "$(O)/iyi-package" .
 	@echo "wrote $(O)/$(IYI_PACKAGE).tar.gz"
 
@@ -465,7 +510,7 @@ $(O)/iyi$(EXE): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
 	$(EXPORTS) $(EXPORTS_BUILD) IYI_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
-	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -o $@ src/compiler/iyi.cr
+	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(SELF_RPATH) -o $@ src/compiler/iyi.cr
 	@echo "built $@ — run it as ./bin/iyi"
 
 # iyi: the same compiler, single-threaded, which is what lets it fork.
@@ -478,7 +523,7 @@ $(O)/$(IYI_DAEMON_BIN): $(DEPS) $(SOURCES)
 	$(call check_llvm_config)
 	@mkdir -p $(O)
 	$(EXPORTS) $(EXPORTS_BUILD) IYI_CONFIG_PATH='$$ORIGIN/../share/iyi/src:$$ORIGIN/../share/iyi/crystal:$$ORIGIN/../src' \
-	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) -Dwithout_mt -o $@ src/compiler/iyi.cr
+	  ./bin/crystal build $(FLAGS) $(COMPILER_FLAGS) $(SELF_RPATH) -Dwithout_mt -o $@ src/compiler/iyi.cr
 	@echo "built $@ — \`iyi daemon start\` finds it beside iyi"
 
 # iyi: the front end on its own. Linking libLLVM costs 26 ms of load-time

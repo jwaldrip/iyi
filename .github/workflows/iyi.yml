@@ -1023,6 +1023,43 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The gate whose absence let every release before this one ship a
+  # `bin/iyi` that could not start. Every other proof of the tarball runs
+  # in the environment that built it — where the libLLVM it linked against
+  # is exactly the one it needs, so "unpack somewhere else and run" proved
+  # the library path and nothing about the loader. This unpacks it in a
+  # bare `ubuntu:24.04` with a C toolchain and nothing else: no LLVM, no
+  # Crystal, no iyi. If the package does not carry what the loader wants,
+  # this is where it says so.
+  #
+  # `gcc` is installed on purpose and it is the honest prerequisite: iyi
+  # links through `cc`, so a machine that cannot compile C cannot finish
+  # an iyi build. Everything else comes out of the tarball.
+  clean-room:
+    needs: binary
+    runs-on: ubuntu-24.04
+    name: "The tarball, on a machine with nothing on it"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: iyi-linux-x86_64
+          path: dist/
+
+      - name: Unpack it in a bare image and build a program there
+        run: |
+          mkdir -p room && tar -xzf dist/*.tar.gz -C room
+          printf 'module hi\n\nputs "hello from a machine with nothing on it"\n' \
+            > room/hi.iyi
+          docker run --rm -v "$PWD/room:/iyi" ubuntu:24.04 sh -c '
+            set -e
+            apt-get update -qq && apt-get install -y -qq gcc > /dev/null
+            /iyi/bin/iyi version
+            cd /tmp
+            /iyi/bin/iyi run /iyi/hi.iyi
+            /iyi/bin/iyi run /iyi/share/iyi/samples/hello.iyi
+            /iyi/bin/iyi vet /iyi/share/iyi/samples/hello.iyi
+          '
+
   # A release is a tag, and nothing else is manual: push `v*` and this
   # job collects the two tarballs the platform jobs built and *proved* —
   # unpacked somewhere else, samples run, daemon served — and attaches
@@ -1030,7 +1067,7 @@ jobs:
   # sentence a release opens with is written where the version is named.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [binary, darwin, iyi, compiler-specs, stdlib-specs, samples, targets, cross-run, wasi-run]
+    needs: [binary, darwin, clean-room, iyi, compiler-specs, stdlib-specs, samples, targets, cross-run, wasi-run]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
