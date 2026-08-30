@@ -306,7 +306,13 @@ install_iyi: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
 # otherwise from the outside is guessing. Crystal's own install copies all of
 # `src` for the same reason. `iyi/` stays out because it is already above.
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/iyi/crystal"
-	cp -R -p $(if $(deref_symlinks),-L,-P) src/*.cr src/*/ "$(DESTDIR)$(DATADIR)/iyi/crystal/"
+# `src/.` rather than `src/*/`: a glob's trailing slash means two different
+# things to the two cps — GNU copies the directory, BSD copies its *contents* —
+# so the darwin tarball shipped Crystal's library flattened into one directory
+# and `--crystal` could not find `crystal/system/time` out of it. `dir/.` is
+# the one spelling POSIX gives both cps the same meaning for; `iyi/` rides in
+# and is removed below, exactly as before.
+	cp -R -p $(if $(deref_symlinks),-L,-P) src/. "$(DESTDIR)$(DATADIR)/iyi/crystal/"
 	rm -rf "$(DESTDIR)$(DATADIR)/iyi/crystal/iyi"
 
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/licenses/iyi/"

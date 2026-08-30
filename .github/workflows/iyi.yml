@@ -4,7 +4,8 @@ name: iyi
 #
 # Crystal's own CI is a matrix of platforms, package managers, LLVM versions and
 # release jobs for a project that ships all of them. iyi is Linux x86-64 plus a
-# native darwin arm64 job, ships one tarball, and has one claim to protect.
+# native darwin arm64 job, ships a tarball for each, and has one claim to
+# protect.
 # What was here before spent minutes on macOS, Windows, MinGW and wasm runs
 # that nobody read and that no failure here would have been acted on; the
 # darwin job below is not that — it runs the same gates a Linux push answers
@@ -660,6 +661,11 @@ jobs:
   # four a Linux push answers for: samples, III.4's exercise, III.1.4's
   # panics and III.9's floor — the darwin floor being "libSystem and nothing
   # else", which bench/dependency_floor.sh holds as an exact symbol list.
+  # And darwin is a ship target too: the job packages the same relocatable
+  # tarball the Linux `binary` job does and proves it the same way, because
+  # the first darwin package shipped Crystal's library flattened into one
+  # directory (BSD cp's trailing-slash reading of `src/*/`) and only
+  # unpacking it somewhere else could have caught that.
   darwin:
     runs-on: macos-14
     name: "An iyi program, run on darwin arm64"
@@ -676,8 +682,12 @@ jobs:
           brew install crystal llvm coreutils pkgconf
           echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
 
-      - name: Build `iyi`
-        run: make iyi
+      # `iyi-tarball` builds `iyi` and its daemon in release mode, refuses an
+      # unoptimised binary (`check_iyi_is_release`), and packages them — one
+      # build pass, and every gate below runs against the compiler people
+      # would actually download.
+      - name: Build `iyi`, its daemon, and the tarball
+        run: make iyi-tarball
         env:
           LLVM_CONFIG: /opt/homebrew/opt/llvm/bin/llvm-config
 
@@ -699,6 +709,53 @@ jobs:
 
       - name: The language server session (III.8)
         run: python3 bench/lsp_session.py
+
+      # What a person who downloads it does: unpack it somewhere else and run
+      # programs — iyi's own prelude with its kqueue runtime, `--crystal` with
+      # Crystal's library, and the daemon serving builds. Nothing here may
+      # need this checkout, a IYI_PATH, or a Crystal on the machine.
+      - name: Unpack the tarball somewhere else and run from it
+        run: |
+          mkdir -p /tmp/unpacked
+          tar -xzf .build/iyi-*-darwin-*.tar.gz -C /tmp/unpacked
+          cd /tmp
+          env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run /tmp/unpacked/share/iyi/samples/hello.iyi
+          env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi version
+          printf 'order = ""\nch = Channel(Int32).new\ngroup do |g|\n  g.spawn do\n    value = ch.receive\n    order = order + (value.is_a?(Int32) ? value.to_s : "?")\n    0\n  end\n  g.spawn do\n    sleep(10)\n    order = order + "a"\n    ch.send(7)\n    0\n  end\nend\nputs order\n' > conc.iyi
+          test "$(env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run conc.iyi)" = "a7"
+          echo "the kqueue runtime runs out of the tarball"
+
+      - name: The other library, out of the tarball
+        run: |
+          env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run --crystal \
+            /tmp/unpacked/share/iyi/samples/crystal/stdlib.iyi
+
+      # The daemon, out of the same tarball, serving two builds from another
+      # directory — the shape everything broken about it was about (IV.1d),
+      # and on darwin also the binary whose `c/poll` was missing until the
+      # port supplied it.
+      - name: The daemon, out of the tarball
+        run: |
+          cd /tmp/unpacked
+          env -u CRYSTAL_PATH ./bin/iyi daemon start --socket /tmp/iyi.sock &
+          for _ in $(seq 1 120); do [ -S /tmp/iyi.sock ] && break; sleep 1; done
+          mkdir -p /tmp/app && cd /tmp/app
+          cp /tmp/unpacked/share/iyi/samples/hello.iyi .
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi daemon build \
+            --socket /tmp/iyi.sock -o served hello.iyi
+          ./served > served.txt
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi build -o normal hello.iyi
+          ./normal > normal.txt
+          diff normal.txt served.txt
+          env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi daemon build \
+            --socket /tmp/iyi.sock -o served2 hello.iyi
+          echo "the daemon served two builds from another directory"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iyi-darwin-arm64
+          path: .build/iyi-*-darwin-*.tar.gz
+          retention-days: 7
 
   # Windows is not a run target and nothing here is a gate. Three things happen
   # when you run the same Windows binary twenty times: it prints the right
