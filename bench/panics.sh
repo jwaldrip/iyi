@@ -111,7 +111,9 @@ $out"
 ! echo "$out" | grep -q "unreached" || fail "or_panic fell through"
 step ".or_panic is a real panic, caught at the boundary"
 
-# ── 4. reading a panicked task's value re-raises — once ────────────────
+# ── 4. reading a panicked task's value *catches* the panic: it arrives
+#      as the `Panicked` error value, the group continues, the program
+#      exits 0 — III.1.4's "catchable at task boundaries", literal ────
 cat > "$work/value.iyi" <<'EOF'
 module tval
 
@@ -120,18 +122,25 @@ pub def blows : Int32
   1
 end
 
+caught = ""
 group do |g|
   t = g.spawn { blows }
   v = t.value
-  puts v
+  caught = v.is_a?(Panicked) ? "caught: " + v.message : "missed"
 end
-puts "unreached"
+puts caught
+puts "life goes on"
 EOF
 run "$work/value.iyi"
-[ "$code" = 1 ] || fail "value exit was $code, wanted 1"
-[ "$(echo "$out" | grep -c 'task blew')" = 2 ] || fail "value re-raise count wrong:
+[ "$code" = 0 ] || fail "value exit was $code, wanted 0 (the panic was read):
 $out"
-step "a panicked task's value re-raises in the reader, exactly once"
+echo "$out" | grep -q "caught: task blew" || fail "the panic did not arrive as a value:
+$out"
+echo "$out" | grep -q "life goes on" || fail "the program did not continue:
+$out"
+! echo "$out" | grep -q "a task panicked" || fail "an observed panic was re-raised anyway:
+$out"
+step "a read panic is a value; the process outlives the bug"
 
 # ── 5. the panic crosses two boundaries: inner group's owner is a task
 #      of the outer group, and each boundary adds its own report ───────

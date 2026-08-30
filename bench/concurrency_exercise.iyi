@@ -397,7 +397,7 @@ puts "select with nothing ready took its else"
 # Two direct spawns make the group a value: the tuple of what they
 # answered, or the first error member, with `!` propagating it out of the
 # enclosing def through III.1.2's ordinary machinery.
-def fetch_pair(fail_second : Bool) : Tuple(Int32, Int32) | TaskFailed | Cancelled
+def fetch_pair(fail_second : Bool) : Tuple(Int32, Int32) | TaskFailed | Cancelled | Panicked
   group do |g|
     x = g.spawn do
       slept = sleep(10)
@@ -415,6 +415,7 @@ case pair
 in Tuple(Int32, Int32) then fail("typed group: got #{it[0]}, #{it[1]}") unless it[0] == 21 && it[1] == 2
 in TaskFailed          then fail("typed group: failed on the success path")
 in Cancelled           then fail("typed group: cancelled on the success path")
+in Panicked            then fail("typed group: panicked on the success path")
 end
 puts "a typed group answered its tuple"
 
