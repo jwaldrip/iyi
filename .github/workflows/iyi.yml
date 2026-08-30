@@ -994,3 +994,41 @@ jobs:
           # a directory that was not its own.
           env -u CRYSTAL_PATH /tmp/unpacked/bin/iyi daemon build \
             --socket /tmp/iyi.sock --crystal -o served app.iyi
+
+      # The tarball the gates above just proved is the artifact a release
+      # attaches — built once, here, never rebuilt on somebody's laptop.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iyi-linux-x86_64
+          path: .build/iyi-*-linux-*.tar.gz
+          retention-days: 7
+
+  # A release is a tag, and nothing else is manual: push `v*` and this
+  # job collects the two tarballs the platform jobs built and *proved* —
+  # unpacked somewhere else, samples run, daemon served — and attaches
+  # them. The notes come from the annotated tag's own message, so the
+  # sentence a release opens with is written where the version is named.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [binary, darwin, iyi, compiler-specs, stdlib-specs, samples, targets, cross-run, wasi-run]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: iyi-linux-x86_64
+          path: dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: iyi-darwin-arm64
+          path: dist/
+      - name: Create the release from the proven tarballs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          git tag -l --format='%(contents)' "$tag" > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md for ${tag#v}." > notes.md
+          gh release create "$tag" --title "iyi ${tag#v}" --notes-file notes.md dist/*.tar.gz

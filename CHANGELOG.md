@@ -15,6 +15,11 @@ is still re-raised at the join, exactly once.
 `.iyimod` format is unchanged at 41; a 0.5.0 artifact is rejected by a
 0.5.1 build and rebuilt, never migrated.
 
+And a release is a tag now: pushing `v*` has CI build and *prove* both
+tarballs — unpacked somewhere else, samples run, the daemon served —
+then attach them, with the notes read from the annotated tag's own
+message. Nothing is packaged on a laptop again.
+
 ### Added
 
 - **darwin arm64 is a run target and a ship target.** The concurrency
