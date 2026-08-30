@@ -199,7 +199,8 @@ end
 # Ordinary error members (III.1.1): a blocking primitive that cannot give
 # a value gives one of these, `!` propagates it, `case` handles it. That a
 # *cancelled* wait is an error value rather than an unwound stack is the
-# design's whole answer to III.4.2 until panics (III.1.4) exist.
+# design's whole answer to III.4.2 — and panics (III.1.4) landing did not
+# change it: cancellation is control flow, a panic is a bug.
 pub struct Cancelled
   def initialize
   end
@@ -208,6 +209,25 @@ end
 impl Error for Cancelled
   def message : String
     "cancelled"
+  end
+end
+
+# What a *caught* panic answers as — III.1.4's "catchable at task
+# boundaries", made literal: reading a panicked task's value delivers
+# this instead of a re-raise, and III.1.3's machinery (`case`, `!`,
+# `.or`) handles it like any other failure. A panic nobody reads still
+# re-raises at the join: observed bugs are values, unobserved bugs are
+# loud.
+pub struct Panicked
+  getter text : String
+
+  def initialize(@text : String)
+  end
+end
+
+impl Error for Panicked
+  def message : String
+    text
   end
 end
 
@@ -244,6 +264,9 @@ class IyiFiber
   property defers : IyiDeferNode?
   property panicked : Bool
   property panic_message : String
+  # Set when a handle read delivered the panic as a `Panicked` value:
+  # the join stops owing a re-raise for a bug somebody observed.
+  property panic_delivered : Bool
 
   # The group that spawned this fiber, so a panic can tell it directly:
   # the trampoline's own notification lives after `block.call`, and a
@@ -289,6 +312,7 @@ class IyiFiber
     @defers = nil
     @panicked = false
     @panic_message = ""
+    @panic_delivered = false
     @group = nil
     @sp = 0_u64
     @proc = nil
@@ -765,7 +789,7 @@ class IyiScheduler
     end
 
     g = fiber.group
-    g.child_panicked(message, fiber.cancelled) if g.is_a?(IyiGroup)
+    g.child_panicked(fiber.cancelled) if g.is_a?(IyiGroup)
 
     fiber.state = 6
     joiner = fiber.joiner
@@ -847,11 +871,16 @@ class IyiTask(T)
     @fiber.state == 6
   end
 
-  def value : T
+  def value : T | Panicked
     IyiScheduler.join(@fiber)
-    # A panicked task has no value; the boundary re-raises instead of
-    # answering `first of an empty array` (III.1.4).
-    raise "a task panicked: " + @fiber.panic_message if @fiber.panicked
+    # III.1.4, literal: reading the panicked task's value *catches* the
+    # panic — it arrives as the error value it became at the boundary,
+    # `case`/`!`/`.or` handle it like any failure, and the join stops
+    # owing a re-raise for it.
+    if @fiber.panicked
+      @fiber.panic_delivered = true
+      return Panicked.new(@fiber.panic_message)
+    end
     @box.first
   end
 end
@@ -861,19 +890,12 @@ class IyiGroup
   @failed : Bool
   @first_child : IyiFiber?
   @joiner : IyiFiber?
-  # The first panic among the children: the message the join re-raises
-  # in the owner. Later panics lost the race; they already printed at
-  # their own sites.
-  @panicked : Bool
-  @panic_message : String
 
   def initialize
     @live = 0
     @failed = false
     @first_child = nil
     @joiner = nil
-    @panicked = false
-    @panic_message = ""
   end
 
   # Start a task. The block is compiled once and carried as a proc; its
@@ -922,12 +944,9 @@ class IyiGroup
   end
 
   # :nodoc: — a panicking child, on its own stack: the same accounting
-  # as a returned error, plus what the join will re-raise.
-  def child_panicked(message : String, cancelled : Bool) : Nil
-    unless @panicked
-      @panicked = true
-      @panic_message = message
-    end
+  # as a returned error. What the join owes for it is read off the
+  # children themselves.
+  def child_panicked(cancelled : Bool) : Nil
     child_finished(!cancelled)
   end
 
@@ -941,15 +960,20 @@ class IyiGroup
       me.state = 5
       IyiScheduler.reschedule
     end
-    # The task boundary is where a panic is caught (III.1.4), and
-    # "caught" means: re-raised in the owner, exactly once — the flag
-    # clears so the deferred second join (concurrency's own `defer
-    # g.join`) finds nothing. An owner already on its own panic path
-    # gets no re-raise: its unwind is running this join through the
-    # registry, and a second report would be noise wearing news.
-    if @panicked
-      @panicked = false
-      raise "a task panicked: " + @panic_message unless IyiScheduler.current.panicked
+    # The boundary owes a re-raise for any panic *nobody read*: a bug
+    # observed through its handle already became a `Panicked` value
+    # there, and re-raising it too would report one bug twice. The
+    # child is marked delivered before the raise, so the deferred
+    # second join (concurrency's own `defer g.join`) finds nothing —
+    # and an owner already on its own panic path gets the mark without
+    # the noise.
+    child = @first_child
+    while child.is_a?(IyiFiber)
+      if child.panicked && !child.panic_delivered
+        child.panic_delivered = true
+        raise "a task panicked: " + child.panic_message unless IyiScheduler.current.panicked
+      end
+      child = child.next_child
     end
   end
 
