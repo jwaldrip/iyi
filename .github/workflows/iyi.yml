@@ -1029,7 +1029,7 @@ jobs:
   # is exactly the one it needs, so "unpack somewhere else and run" proved
   # the library path and nothing about the loader. This unpacks it in a
   # bare `ubuntu:24.04` with a C toolchain and nothing else: no LLVM, no
-  # Crystal, no iyi. If the package does not carry what the loader wants,
+  # no bootstrap compiler, no iyi. If the package lacks what the loader wants,
   # this is where it says so.
   #
   # `gcc` is installed on purpose and it is the honest prerequisite: iyi

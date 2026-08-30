@@ -140,13 +140,21 @@ IYI_PACKAGE := iyi-$(IYI_VERSION)-$(shell uname -s | tr A-Z a-z)-$(shell uname -
 # found the library it had just linked against. So the package carries
 # libLLVM in `lib/`, the binaries carry an rpath that finds it there, and
 # CI's clean room runs the whole thing in an image with nothing on it.
-# `\$$ORIGIN` and not `$$ORIGIN`: crystal runs its link command through a
+# `\$$ORIGIN` and not `$$ORIGIN`: the bootstrap compiler runs its link command through a
 # shell, so an unescaped token is expanded there and the binary is left
 # asking for `/../lib` — which resolves to the *system* library and hides
 # the bug it was written to fix. Measured, not guessed: the first cut
 # shipped exactly that.
+# A comma cannot be written inside a `$(if ...)` without this: make reads
+# it as an argument separator.
+comma := ,
 ORIGIN_TOKEN := $(if $(filter Darwin,$(shell uname -s)),@loader_path,\$$ORIGIN)
-SELF_RPATH   := --link-flags='-Wl,-rpath,$(ORIGIN_TOKEN)/../lib'
+# `--disable-new-dtags` earns its keep: the modern `DT_RUNPATH` applies
+# only to the object that declares it, so the binary found the bundled
+# libLLVM and libLLVM then went looking for *its* libedit in /usr/lib.
+# The old `DT_RPATH` is inherited by the whole chain, which is what a
+# self-contained package needs.
+SELF_RPATH   := --link-flags='-Wl,-rpath,$(ORIGIN_TOKEN)/../lib $(if $(filter Darwin,$(shell uname -s)),,-Wl$(comma)--disable-new-dtags)'
 
 DESTDIR ?=
 PREFIX  ?= /usr/local
@@ -390,32 +398,11 @@ iyi-tarball: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN) check_iyi_is_release
 	     \( -name lib -o -name mods \) -type d -prune -exec rm -rf {} +
 	find "$(O)/iyi-package/share/iyi/samples" -type f -perm -u+x -delete
 	find "$(O)/iyi-package/share/iyi/samples" -type d -empty -delete
-# The one runtime library a fresh machine has no reason to own. Copied
-# dereferenced (`-L`), because what sits in an LLVM libdir is usually a
-# symlink chain and a tarball must carry the file. On darwin the binaries
-# still name the absolute path they linked against, so the reference is
-# rewritten to `@rpath` and the binary re-signed — an edited Mach-O with a
-# stale signature is killed on sight by arm64 macOS, which is a failure
-# that looks like nothing at all.
-	@mkdir -p "$(O)/iyi-package/lib"
-	@llvmdir=$$($(LLVM_CONFIG) --libdir); \
-	 found=0; \
-	 for lib in "$$llvmdir"/libLLVM.so.* "$$llvmdir"/libLLVM.dylib "$$llvmdir"/libLLVM-*.dylib; do \
-	   [ -f "$$lib" ] || continue; \
-	   cp -L "$$lib" "$(O)/iyi-package/lib/"; found=1; \
-	 done; \
-	 if [ "$$found" = 0 ]; then \
-	   echo "no libLLVM shared object under $$llvmdir — the tarball would need the host's"; \
-	   exit 1; \
-	 fi
-	@case "$$(uname -s)" in Darwin) \
-	   for bin in "$(O)/iyi-package/bin/iyi$(EXE)" "$(O)/iyi-package/bin/$(IYI_DAEMON_BIN)"; do \
-	     otool -L "$$bin" | awk '/libLLVM/ {print $$1}' | while read -r ref; do \
-	       install_name_tool -change "$$ref" "@rpath/$$(basename "$$ref")" "$$bin"; \
-	     done; \
-	     codesign --force --sign - "$$bin" >/dev/null 2>&1 || true; \
-	   done;; \
-	 esac
+# What the binaries need at runtime and a fresh machine has no reason to
+# own — LLVM above all, and everything LLVM itself asks for. Not a
+# curated list: the script takes what the loader reports, and CI's clean
+# room (a bare image with nothing but a C toolchain) is what judges it.
+	bash scripts/bundle-runtime-libs.sh "$(O)/iyi-package"
 	tar -czf "$(O)/$(IYI_PACKAGE).tar.gz" -C "$(O)/iyi-package" .
 	@echo "wrote $(O)/$(IYI_PACKAGE).tar.gz"
 

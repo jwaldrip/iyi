@@ -70,12 +70,13 @@ message. Nothing is packaged on a laptop again.
   packaging into CI is what exposed it: the artifact came from a
   container with LLVM 20 and died on a laptop with LLVM 22. The package
   now carries libLLVM in `lib/` and the binaries carry an
-  `$ORIGIN/../lib` rpath — escaped past the shell crystal runs its link
+  `$ORIGIN/../lib` rpath — escaped past the shell the bootstrap compiler runs its link
   command through, which the first cut got wrong in the way that hides
   the bug: an unescaped token bakes `/../lib`, which resolves to the
   *system* library. And the missing gate exists now: CI unpacks the
   tarball in a bare `ubuntu:24.04` with nothing but `gcc` and builds a
-  program there. The cost is honest — ~70 MB instead of ~26 — and a
+  program there. The cost is honest — tens of megabytes instead of a
+  handful — and a
   release cannot ship without passing it.
 
 ## 0.5.0 — 2026-08-29

@@ -355,11 +355,11 @@ $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 The tarball is relocatable and carries both libraries: iyi's own 134 KB, and
 Crystal's standard library for `--crystal`. `bin/iyi` finds them beside itself,
 so there is nothing to configure and no `IYI_PATH` to set. It carries LLVM
-too — the one shared library the compiler needs at runtime — which is why
-it is ~70 MB rather than ~26: a download that cannot start is not a
-download. The one thing it does not bring is a C toolchain, because iyi
-links through `cc`; CI proves the rest in a bare image with nothing but
-`gcc` in it.
+and what LLVM itself needs, which is most of its size and the reason it is
+tens of megabytes rather than a handful: a download that cannot start is
+not a download. The one thing it does not bring is a C toolchain, because
+iyi links through `cc`; CI proves the rest by unpacking the tarball in a
+bare image with nothing but `gcc` in it and building a program there.
 
 ### An editor, in one stanza
 
