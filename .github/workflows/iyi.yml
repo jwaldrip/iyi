@@ -668,9 +668,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # crystal to bootstrap, llvm for codegen, coreutils for the gates'
-      # `timeout`, pkgconf so `-Dgc_boehm` finds brew's bdw-gc (which
-      # arrives as crystal's own dependency).
+      # Crystal's compiler to bootstrap, llvm for codegen, coreutils for
+      # the gates' `timeout`, pkgconf so `-Dgc_boehm` finds brew's bdw-gc
+      # (which already arrives beside Crystal's compiler).
       - name: Install the bootstrap toolchain
         run: |
           brew install crystal llvm coreutils pkgconf
