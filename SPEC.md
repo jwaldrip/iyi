@@ -62,7 +62,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 3,828 lines, ceiling 3,734 |
+| iyi's own prelude | 3,852 lines, ceiling 3,734 |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -87,7 +87,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 3,828 lines
+> "No standard library worth the name" is still true of iyi's own 3,852 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -269,7 +269,7 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 3,828 lines,
+**3. A deliberately tiny prelude, written in iyi. Done: 3,852 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
 one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
@@ -791,7 +791,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 100,602 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 3,828-line own prelude + 777 in samples |
+| Library | 8,161 lines (3,551 of it core) | 3,852-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,596 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -1812,15 +1812,21 @@ language already had:
   returned error triggers (III.4.3) — and the fiber is never scheduled
   again. `NoReturn` stays true, which `.or_panic`'s result type depends
   on (III.1.3).
-- **The boundary catches by re-raising in the owner, exactly once.**
-  The group's join finds the flag and re-panics as `a task panicked:
-  <message>`; the deferred second join finds it cleared; an owner
-  already on its own panic path gets no re-raise, because a second
-  report into a running unwind is noise wearing news. Reading a
-  panicked task's `value` re-raises too — a panicked task has no value
-  to answer with. A nested failure climbs group by group, each boundary
-  prefixing its own report, until a boundary-less fiber — main — runs
-  its own defers and exits 1.
+- **Observed bugs are values; unobserved bugs are loud.** Reading a
+  panicked task's handle *catches* the panic: `value` answers
+  `Panicked` — an ordinary `Error` implementor carrying the message —
+  so `case`, `!` and `.or` handle a caught panic with the machinery
+  III.1.3 already built, and the typed `group do ... end!` propagates
+  it like any other member of its error union. The read marks the
+  panic delivered, and the join then owes nothing for it: the process
+  outlives the bug, which is the sentence "catchable at task
+  boundaries" was always owed. A panic *nobody* reads is re-raised by
+  the join in the owner as `a task panicked: <message>`, exactly once
+  — marked delivered before the raise, so the deferred second join
+  finds nothing, and an owner already on its own panic path gets the
+  mark without the noise. A nested unread failure climbs group by
+  group, each boundary prefixing its report, until a boundary-less
+  fiber — main — runs its own defers and exits 1.
 - **Elsewhere there are no tasks**, so on targets without the
   concurrency runtime the registry is one global stack and a panic is a
   clean exit that ran the pending cleanups first — which is more than
@@ -3034,7 +3040,7 @@ and two packages whose in-package modules share a name collide in the type
 namespace — the general import-alias question, which `using`'s selective
 form already softens and a later section has to settle.
 
-### III.8 Tooling: **PROPOSED**
+### III.8 Tooling: **BUILT — the formatter, the language server, `iyi doc`, `iyi vet`**
 
 Go's developer experience is not one thing, it is a small set of verbs that
 always work: build, test, fmt, vet, doc, get. The verbs are unremarkable
@@ -7665,7 +7671,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 3,828-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 3,852-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler

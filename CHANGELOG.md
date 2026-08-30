@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Observed bugs are values; unobserved bugs are loud.** III.1.4's
+  "catchable at task boundaries", made literal: reading a panicked
+  task's handle catches the panic — `value` answers `Panicked`, an
+  ordinary `Error` implementor carrying the message, so `case`, `!`,
+  `.or` and the typed group's error union handle a caught panic with
+  machinery III.1.3 already built, and the process outlives the bug. A
+  panic nobody reads is still re-raised at the join, exactly once. The
+  gate's step is the sentence: a task panics, the reader prints
+  `caught: task blew`, life goes on, exit 0.
+
 ## 0.5.0 — 2026-08-29
 
 **The language got its editor, and a panic stopped being a process.**
@@ -498,7 +512,7 @@ and flags reads them.
   Not built, and said so in III.4's margin: `Share` (one thread cannot
   race, so it would refuse nothing testable), and every platform that is
   not Linux — wasm32 cannot switch stacks, and an imitation is the thing
-  III.4.8 refused to ship. The prelude stands at 3,828 lines against a
+  III.4.8 refused to ship. The prelude stands at 3,852 lines against a
   ceiling of 3,734 — remeasured, not raised: the ceiling is Crystal
   0.1.0's core, that core shipped concurrency (`thread.cr`, `fiber/`, 183
   lines), and the original list had left it out because iyi then had
@@ -2007,7 +2021,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 3,828-line library and nothing else. Every other
+  written against iyi's own 3,852-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
