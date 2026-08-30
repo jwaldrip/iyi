@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 — 2026-08-30
+
+**The language reached the machine most developers sit in front of, and
+a caught panic stopped costing the process.** darwin arm64 is a run
+target and a ship target: the same fibers, defer registry and panic
+path, calling libSystem where Linux issues raw syscalls — Apple's rule,
+not a compromise — with a native CI job holding the same gates and
+shipping its own relocatable tarball. And III.1.4's last sentence went
+literal: reading a panicked task's handle catches the panic as a
+`Panicked` value and the process outlives the bug; a panic nobody reads
+is still re-raised at the join, exactly once.
+
+`.iyimod` format is unchanged at 41; a 0.5.0 artifact is rejected by a
+0.5.1 build and rebuilt, never migrated.
 
 ### Added
 
