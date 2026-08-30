@@ -156,8 +156,13 @@ module Iyi
       flags << "-static" if static_build
 
       # Add IYI_LIBRARY_PATH locations, so the linker preferentially
-      # searches user-given library paths.
+      # searches user-given library paths. A directory that does not
+      # exist contributes nothing but darwin ld's "search path not
+      # found" warning — which lands in stderr the gates compare — so
+      # it is dropped on native links; a cross-compile keeps every
+      # path, because the host cannot see the target's directories.
       IyiLibraryPath.paths.each do |path|
+        next if !cross_compiling && !Dir.exists?(path)
         flags << quote_flag("-L#{path}", cross_compiling)
       end
 
