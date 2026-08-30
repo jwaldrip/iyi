@@ -769,10 +769,17 @@ jobs:
             --socket /tmp/iyi.sock -o served2 hello.iyi
           echo "the daemon served two builds from another directory"
 
+      # Staged out of `.build` for the reason the linux job's own copy
+      # records: a wildcard under a hidden directory uploads nothing,
+      # quietly. `error` makes the next one loud.
+      - name: Stage the tarball for the release job
+        run: mkdir -p dist && cp .build/iyi-*-darwin-*.tar.gz dist/
+
       - uses: actions/upload-artifact@v4
         with:
           name: iyi-darwin-arm64
-          path: .build/iyi-*-darwin-*.tar.gz
+          path: dist/
+          if-no-files-found: error
           retention-days: 7
 
   # Windows is not a run target and nothing here is a gate. Three things happen
@@ -997,10 +1004,23 @@ jobs:
 
       # The tarball the gates above just proved is the artifact a release
       # attaches — built once, here, never rebuilt on somebody's laptop.
+      #
+      # Staged out of `.build` first, and that is the whole bug this line
+      # exists for: upload-artifact v4 excludes hidden paths by default,
+      # so a *wildcard* under `.build/` matched nothing and the step said
+      # so in a warning and passed. `.build/crystal` kept working because
+      # a literal path makes its own directory the artifact root. So the
+      # copy is not decoration, and `error` is the rest of it: a release
+      # asset that silently does not exist is the failure mode worth
+      # spending a step on.
+      - name: Stage the tarball for the release job
+        run: mkdir -p dist && cp .build/iyi-*-linux-*.tar.gz dist/
+
       - uses: actions/upload-artifact@v4
         with:
           name: iyi-linux-x86_64
-          path: .build/iyi-*-linux-*.tar.gz
+          path: dist/
+          if-no-files-found: error
           retention-days: 7
 
   # A release is a tag, and nothing else is manual: push `v*` and this
