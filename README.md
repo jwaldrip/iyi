@@ -96,7 +96,8 @@ that prints each one is named beside it.
 6,912-line program from scratch is 0.24 s against `go build`'s 0.09 s. The
 current compiler reports `0.5.0`. iyi's own prelude has no IO beyond
 `puts`, and its concurrency — a cooperative scheduler, `group`/`spawn`,
-`Channel`, cancellable `sleep` and reads (SPEC.md III.4) — is Linux-only;
+`Channel`, cancellable `sleep` and reads (SPEC.md III.4) — runs on Linux
+(x86_64, aarch64) and macOS arm64 only;
 `--crystal` supplies Crystal's standard library, IO, `require` and the
 ecosystem. Dependencies exist but are young: an `iyi.mod` beside the entry
 file names requirements, resolution is minimal version selection over git
@@ -434,7 +435,9 @@ startup objects, and the executable carries their five undefined references
 `_ITM_` callbacks). That distinction is the whole of it, and CI is what taught
 it: a claim measured on an object is not a claim about the binary. `--static`
 is where "no libc" becomes literally true, below. On macOS the object asks
-`libSystem` for five symbols because that is Apple's only supported interface.
+`libSystem` for nine symbols — five libc staples and the concurrency
+runtime's poller (SPEC.md III.4.8) — because that is Apple's only supported
+interface.
 Crystal's published required-libraries list is thirteen long. An own-prelude
 program reaches none of them: no libgc, no libevent, no openssl, no zlib. The
 price is that its default allocator never collects; memory is taken and not
@@ -875,26 +878,30 @@ marked PROPOSED are the parts that will move under you.
   Crystal's does; out of range after that wrap still raises.
   `samples/iyi/formatting.iyi` is the rest of the small set: `to_s(base)`,
   `rjust` / `ljust`, and `*`.
-- **No concurrency of iyi's own.** SPEC.md III.4 specifies structured
-  concurrency, scope-owned cancellation and a `Share` marker, and none of it is
-  built. A program built `--crystal` has Crystal's fibers, which are the thing
-  III.4 was written to replace rather than an answer to it. III.4.8 records the
-  build order and one refusal worth knowing about: a `group` that ran its tasks
-  one after another would be cheap, would typecheck, would print the right
-  answer, and would teach everybody the wrong thing about what iyi does, so it
-  is not being built. The first honest piece is a scheduler and cancellable
-  blocking primitives, which is also the expensive one.
+- **`Share` gates nothing yet, and two platforms have no runtime.** SPEC.md
+  III.4's structured concurrency — `group`/`spawn`, `Channel`, `select`,
+  cancellation delivered as values, panics dying at task boundaries — is
+  built in iyi's own prelude and runs on Linux (x86_64, aarch64) and macOS
+  arm64 (epoll there, kqueue here; SPEC.md III.4.8). What is *not* here: the
+  `Share` marker gates nothing until a second thread exists, because one
+  thread interleaves at parks only and cannot race; and wasm32 and Windows
+  get no runtime rather than a sequential imitation — a `group` there fails
+  to compile, which III.4.8 chose by name over shipping a spelling without
+  the feature. A program built `--crystal` has Crystal's fibers, which are
+  the thing III.4 was written to replace rather than an answer to it.
 - **No package manager and no self-hosting.** `--crystal` gives a program
   Crystal's standard library; nothing gives it a package manager.
 - **No native test matrix across the supported targets.** CI type-checks the
   library for nine triples and audits the emitted objects of an iyi program for
   seven of them on four platforms: Linux x86_64 and aarch64, macOS x86_64 and
-  aarch64, Windows msvc and gnu, and wasm32-wasi. Four of those are also
+  aarch64, Windows msvc and gnu, and wasm32-wasi. Five of those are also
   *run*: `hello.iyi` is cross-compiled for `x86_64-linux-musl`,
   `aarch64-linux-gnu` and `wasm32-wasi`, linked with the target's own linker,
   and run natively in a container, under emulation, and under wasmtime, each
   checked against what the same program printed on the machine that compiled
-  it. `x86_64-windows-msvc` and `arm-linux-gnueabihf` are not among them.
+  it — and `aarch64-darwin` has its own native job, which builds the release
+  compiler, holds the same gates, and ships the darwin tarball.
+  `x86_64-windows-msvc` and `arm-linux-gnueabihf` are not among them.
   Nothing here claims that the test suite runs on any target but the one CI
   builds on.
 - **A Windows binary is broken at run time, three different ways.** This is the

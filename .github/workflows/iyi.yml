@@ -710,6 +710,24 @@ jobs:
       - name: The language server session (III.8)
         run: python3 bench/lsp_session.py
 
+      # The cheap deterministic gates the Linux push also answers — no
+      # perf budgets (a shared runner's clock is weather), no network.
+      # `packages_resolve` is here by lesson: its BSD-sed breakage was
+      # found by running it on a Mac, and only a Mac can keep it fixed.
+      - name: The packages story (III.7)
+        run: bash bench/packages_resolve.sh
+
+      - name: The test verb (III.8)
+        run: bash bench/test_verb.sh
+
+      - name: Samples, from artifacts (R-1)
+        run: bash bench/samples_roundtrip.sh
+
+      - name: Token boundaries and the transport soak (III.8)
+        run: |
+          python3 bench/lsp_token_boundaries.py
+          python3 bench/lsp_soak.py
+
       # What a person who downloads it does: unpack it somewhere else and run
       # programs — iyi's own prelude with its kqueue runtime, `--crystal` with
       # Crystal's library, and the daemon serving builds. Nothing here may

@@ -4,6 +4,20 @@
 
 ### Added
 
+- **darwin arm64 is a run target and a ship target.** The concurrency
+  runtime crossed its second platform: same fibers, same one-word
+  context, same defer registry and panic path — the port changed who is
+  called, libSystem's `mmap`, `kqueue`/`kevent` and
+  `clock_gettime_nsec_np` where Linux issues raw syscalls, which is
+  Apple's rule (III.9) rather than a compromise this design settled
+  for. kqueue refuses `/dev/null` where epoll refuses a regular file,
+  and both refusals answer "readable now". A native macos-14 job builds
+  the release binaries, holds the gates a Linux push answers for, and
+  ships `iyi-<version>-darwin-arm64.tar.gz` — proven by unpacking it
+  somewhere else and running iyi's own prelude, `--crystal` and the
+  daemon out of it, which is how the first darwin package was caught
+  shipping Crystal's library flattened by BSD cp.
+
 - **Observed bugs are values; unobserved bugs are loud.** III.1.4's
   "catchable at task boundaries", made literal: reading a panicked
   task's handle catches the panic — `value` answers `Panicked`, an
