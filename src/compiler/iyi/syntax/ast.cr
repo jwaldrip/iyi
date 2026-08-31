@@ -2347,14 +2347,22 @@ module Iyi
   class ImportDecl < ASTNode
     property path : Array(String)
 
+    # iyi: `pub import x` — the import is re-exported: whoever imports
+    # *this* module may reach `x` as if they had imported it themselves.
+    # The facade rule (SPEC.md R-1): a module's public surface may
+    # include its dependencies, but only by saying so.
+    property exported = false
+
     def initialize(@path)
     end
 
     def clone_without_location
-      ImportDecl.new(@path.dup)
+      decl = ImportDecl.new(@path.dup)
+      decl.exported = @exported
+      decl
     end
 
-    def_equals_and_hash @path
+    def_equals_and_hash @path, @exported
   end
 
   # iyi: `using kemal::dsl` / `using kemal::dsl::{get, post}`

@@ -34,7 +34,7 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 41_u32
+  FORMAT_VERSION = 42_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -209,7 +209,8 @@ module Iyi::IyiMod
   record ImportEdge,
     module_name : String,
     interface : String = "",
-    implementation : String = ""
+    implementation : String = "",
+    exported : Bool = false
 
   # A cache key rather than a signature, which is why MD5 is enough and why the
   # compiler's own vendored copy is the one to use: `.iyimod` decides what to
@@ -252,7 +253,10 @@ module Iyi::IyiMod
     # part of what that signature means — not their hashes, which are what a
     # *dependent* records about this module and would make this one move for a
     # change it does not see.
-    write_strings interface, artifact.import_names
+    # `pub` rides the name: re-exporting (or ceasing to re-export) an
+    # import changes what a consumer may reach through this module,
+    # which is interface in R-1's own sense.
+    write_strings interface, artifact.imports.map { |edge| edge.exported ? "pub #{edge.module_name}" : edge.module_name }
     # Beside the imports and for the reason they are there: a require is what
     # brings the types an exported signature names into existence, so changing
     # one changes what those signatures mean.
@@ -1566,7 +1570,11 @@ module Iyi::IyiMod
     # or source, at most once, cycle-checked.
     unless artifact.imports.empty?
       io << '\n'
-      artifact.import_names.each { |name| io << "import " << name << '\n' }
+      artifact.imports.each do |edge|
+        # The facade bit replays as written: the consumer's own semantic
+        # visit records the re-export exactly as it would from source.
+        io << (edge.exported ? "pub import " : "import ") << edge.module_name << '\n'
+      end
     end
 
     # And the other world's, restated for the same reason and one more: a
@@ -2282,6 +2290,10 @@ module Iyi::IyiMod
       write_string io, edge.module_name
       write_string io, edge.interface
       write_string io, edge.implementation
+      # v42: whether the import was written `pub import` — the facade
+      # bit. It travels so a consumer compiling against this artifact
+      # learns what the module hands on without the module's source.
+      io.write_byte(edge.exported ? 1_u8 : 0_u8)
     end
     write_strings io, artifact.usings
     io.to_slice
@@ -2294,7 +2306,7 @@ module Iyi::IyiMod
   private def self.decode_imports(payload : Bytes)
     io = IO::Memory.new(payload)
     edges = Array(ImportEdge).new(io.read_bytes(UInt32, FORMAT)) do
-      ImportEdge.new(read_string(io), read_string(io), read_string(io))
+      ImportEdge.new(read_string(io), read_string(io), read_string(io), io.read_byte == 1_u8)
     end
     {imports: edges, usings: read_strings(io)}
   end

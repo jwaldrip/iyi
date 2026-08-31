@@ -564,11 +564,12 @@ module Iyi
         # in *this* build hashes to is only known once its own artifact has been
         # described (IV.3).
         imports = program.iyi_module_imports[filename]?.try do |dependencies|
+          exported = program.iyi_exported_imports[filename]?
           dependencies.map do |dependency|
             name = program.iyi_module_paths[dependency]? ||
                    program.iyi_artifact_modules[dependency]? ||
                    dependency
-            IyiMod::ImportEdge.new(name)
+            IyiMod::ImportEdge.new(name, exported: !exported.nil? && exported.includes?(dependency))
           end
         end
 
@@ -623,7 +624,7 @@ module Iyi
         artifact.imports = artifact.imports.map do |edge|
           known = hashes[edge.module_name]?
           next edge unless known
-          IyiMod::ImportEdge.new(edge.module_name, known.interface, known.implementation)
+          IyiMod::ImportEdge.new(edge.module_name, known.interface, known.implementation, edge.exported)
         end
       end
 

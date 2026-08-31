@@ -4,6 +4,24 @@
 
 ### Added
 
+- **The import wall is per-file now, and `pub import` is the one door
+  through it.** Found while building the door: the wall did not exist.
+  `using x` checked *type existence*, which is program-wide — anyone's
+  import made a module everyone's, and a consumer could `using` a
+  module it never imported so long as some other file had pulled it in.
+  That is the phantom-dependency disease R-1 exists to refuse, and it
+  compiled here. Now `using` reaches exactly what the file imported,
+  plus what those imports hand on with `pub import`, transitively — the
+  facade form a mature library needs so its internal layout does not
+  leak into every consumer. The refusal teaches both fixes by name.
+  The facade bit travels in the artifact (`.iyimod` format v41 → v42:
+  one byte per import edge), replays as `pub import` in the
+  declarations a consumer compiles against, and moves the interface
+  hash — re-exporting, or ceasing to, changes what a consumer may
+  reach, which is interface in R-1's own sense. Qualified naming
+  (`Lib::Inner.shine()` without an import) still leaks through the
+  type graph; recorded here as the wall's known open half rather than
+  silently claimed.
 - **Generic bodies are checked against their bounds — R-2c's second
   half.** `def total(s : Sized)` was fully written and still
   caller-typed: a trait restriction makes the def generic, and

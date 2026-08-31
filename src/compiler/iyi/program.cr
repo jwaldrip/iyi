@@ -114,6 +114,12 @@ module Iyi
     # the edges, which is what makes every *other* order it allows computable.
     getter iyi_module_imports = {} of String => Array(String)
 
+    # iyi: the subset of the edges above that were written `pub import` —
+    # importing file => the files it re-exports. `using`'s reachability
+    # walk follows ordinary edges one step and these edges any depth: a
+    # facade may hand its dependencies on, a private import may not.
+    getter iyi_exported_imports = {} of String => Set(String)
+
     # iyi: the module path each imported file was named by, e.g.
     # `/…/app/greeter.iyi => "app/greeter"`. The edges above are keyed on
     # filenames because that is what load-once is keyed on; a `.iyimod` names

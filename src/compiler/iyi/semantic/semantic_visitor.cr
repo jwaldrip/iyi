@@ -222,6 +222,9 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     # loaded: the second importer adds no initialiser, but it does constrain
     # where that initialiser may be moved to (rule 2).
     (@program.iyi_module_imports[@iyi_importing.last] ||= [] of String) << filename
+    if node.exported
+      (@program.iyi_exported_imports[@iyi_importing.last] ||= Set(String).new) << filename
+    end
 
     # Load-once. A module imported by several others is compiled once, and so
     # is initialised once — the second importer adds no entry to the list.

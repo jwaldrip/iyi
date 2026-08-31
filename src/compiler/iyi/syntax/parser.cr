@@ -2283,6 +2283,12 @@ module Iyi
         case @token.value
         when Keyword::TRAIT
           parse_trait_def(exported: true)
+        when Keyword::IMPORT
+          # iyi: `pub import x` — the facade form. The import is
+          # re-exported: whoever imports this module reaches `x` too.
+          decl = parse_import
+          decl.exported = true if decl.is_a?(ImportDecl)
+          decl
         when Keyword::DEF
           a_def = parse_def
           a_def.exported = true

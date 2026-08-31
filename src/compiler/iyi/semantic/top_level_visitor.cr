@@ -321,6 +321,28 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
       node.raise "can't `using` #{used_type}, it's a #{used_type.type_desc}"
     end
 
+    # iyi: the wall, made per-file. Until here the check was
+    # type-existence, and type-existence is program-wide — anyone's
+    # import made a module everyone's, which is the phantom-dependency
+    # disease R-1 exists to refuse. A file reaches with `using` exactly
+    # what it imported, plus what those imports re-export with
+    # `pub import`, transitively: a facade may hand its dependencies
+    # on, a private import may not.
+    #
+    # Units only: a module defined inline in this same source was never
+    # imported by anyone and has no file to demand — the wall guards the
+    # import graph, not the page the author is writing on.
+    if used_type.iyi_unit?
+      from = @iyi_importing.last? || @program.filename.to_s
+      unless iyi_using_reachable?(from, written)
+        node.raise "`using #{written}` reaches a module this file did not " \
+                   "import — it is in the program only because some other " \
+                   "file imported it. Add `import #{written}` here, or have " \
+                   "a module this file imports re-export it with " \
+                   "`pub import #{written}` (SPEC.md R-1, R-2b)"
+      end
+    end
+
     # R-2b: `using` reaches a module's *exported* names. Reported here rather
     # than left to fail at the point of use, because the selective form names
     # what it wants and the author can be told which of those they cannot have.
@@ -380,6 +402,22 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
       return inner.split('/').map(&.camelcase)
     end
     segments.map(&.camelcase)
+  end
+
+  # Whether `written` is reachable from `from`'s own imports: every
+  # direct import, then onward only through `pub import` edges. The
+  # module path of an edge file is looked up both ways because a
+  # dependency may have arrived as source or as an artifact.
+  private def iyi_using_reachable?(from : String, written : String) : Bool
+    seen = Set(String).new
+    queue = (@program.iyi_module_imports[from]? || [] of String).dup
+    while file = queue.pop?
+      next unless seen.add?(file)
+      name = @program.iyi_module_paths[file]? || @program.iyi_artifact_modules[file]?
+      return true if name == written
+      @program.iyi_exported_imports[file]?.try &.each { |handed| queue << handed }
+    end
+    false
   end
 
   # iyi: `trait Greet ... end`

@@ -147,6 +147,28 @@ def main():
     ))
     step("and the honest generic body is clean",
          run("check", "bounded.iyi", cwd=work).returncode == 0, "")
+
+    # 4b''. the import wall is per-file, and `pub import` is the one
+    # door through it: a module in the program because *somebody else*
+    # imported it is not reachable by `using` — the phantom-dependency
+    # disease R-1 exists to refuse
+    os.makedirs(os.path.join(work, "lib"), exist_ok=True)
+    write("lib/inner.iyi", "module lib/inner\n\npub def shine() : Int32\n  7\nend\n")
+    write("lib/facade.iyi", (
+        "module lib/facade\nimport lib/inner\n\n"
+        "pub def front() : Int32\n  1\nend\n"
+    ))
+    write("phantom.iyi", "import lib/facade\nusing lib/inner\n\nputs shine()\n")
+    proc = run("check", "phantom.iyi", cwd=work)
+    step("a phantom dependency is refused by name",
+         proc.returncode == 1 and "pub import" in (proc.stdout + proc.stderr),
+         "the error teaches both fixes")
+    write("lib/facade.iyi", (
+        "module lib/facade\npub import lib/inner\n\n"
+        "pub def front() : Int32\n  1\nend\n"
+    ))
+    step("pub import is the door",
+         run("check", "phantom.iyi", cwd=work).returncode == 0, "")
     proc = run("fix", "--json", "uncalled.iyi", cwd=work)
     fixed = json.loads(proc.stdout)
     step("fix converges to check's verdict",
