@@ -10,6 +10,16 @@
 #     iyi test              # every *_test.iyi under the current directory
 #     iyi test dir file.iyi # these, recursing into directories
 #     iyi test --json       # the run as data, for a harness
+#     iyi test --affected FILE  # only tests whose imports reach FILE
+#
+# `--affected` is the edit loop's discount, and its rule is runtime truth,
+# not a heuristic: a test is affected exactly when the changed file is in
+# its transitive import closure — computed by parsing, never by compiling,
+# because R-1 makes the import list syntax. Note what the rule is *not*:
+# interface hashes. An edit that leaves a module's interface untouched
+# still changes what a consumer's test executes, so "the surface did not
+# move" exempts a consumer from *recompiling*, never from *re-running*.
+# The closure is the whole answer, and it is exact.
 #
 # Each test builds and runs alone: one file, one process, one verdict — a
 # crash, a panic and a deadlock are all failures that name their file. A
@@ -20,6 +30,7 @@ class Iyi::Command
     as_json = false
     timeout = 60.0
     paths = [] of String
+    affected = [] of String
 
     while option = options.shift?
       case option
@@ -29,6 +40,10 @@ class Iyi::Command
         value = options.shift?
         abort! "--timeout takes seconds", :USAGE_ERROR unless value
         timeout = value.to_f? || abort! "--timeout takes seconds, not '#{value}'", :USAGE_ERROR
+      when "--affected"
+        value = options.shift?
+        abort! "--affected takes a changed file", :USAGE_ERROR unless value
+        affected << value
       when "--help", "-h"
         puts test_usage
         exit
@@ -54,6 +69,33 @@ class Iyi::Command
       abort! "no *_test.iyi found. A test is a plain iyi program that exits non-zero to fail", :USAGE_ERROR
     end
 
+    skipped = 0
+    unless affected.empty?
+      # A changed file that no longer exists cannot be proven untouched by
+      # anything — a deleted import breaks whoever held it, and the closure
+      # below can no longer see that. Deletion turns the discount off.
+      if affected.all? { |changed| File.file?(changed) }
+        changed = affected.map { |changed| File.expand_path(changed) }
+        selected = files.select do |file|
+          closure = test_import_closure(file)
+          closure.nil? || changed.any? { |path| closure.includes?(path) }
+        end
+        skipped = files.size - selected.size
+        files = selected
+      end
+    end
+
+    if files.empty?
+      # An empty selection is a verdict, not an error: nothing that runs
+      # any changed file exists, so there is nothing to re-run.
+      if as_json
+        puts %({"tests": [], "passed": 0, "failed": 0, "skipped": #{skipped}})
+      else
+        puts "0 to run, #{skipped} skipped: no test's imports reach the change"
+      end
+      exit
+    end
+
     results = files.map { |file| run_one_test(file, timeout) }
     failed = results.count { |result| result[:status] != "pass" }
 
@@ -74,6 +116,7 @@ class Iyi::Command
           end
           json.field "passed", results.size - failed
           json.field "failed", failed
+          json.field "skipped", skipped
         end
       end
       STDOUT.puts
@@ -83,10 +126,50 @@ class Iyi::Command
         STDOUT << result[:file] << ": " << result[:status] << '\n'
         result[:output].each_line { |line| STDOUT << "  " << line << '\n' }
       end
-      puts "#{results.size - failed} passed, #{failed} failed" + (failed.zero? ? "" : " — a failing test prints above")
+      tail = skipped.zero? ? "" : ", #{skipped} skipped"
+      puts "#{results.size - failed} passed, #{failed} failed#{tail}" + (failed.zero? ? "" : " — a failing test prints above")
     end
 
     exit 1 unless failed.zero?
+  end
+
+  # The test's transitive import closure, as absolute paths, the test file
+  # included — computed the way `mod context` reads imports: by parsing,
+  # never compiling. Returns nil when the *test itself* does not parse:
+  # nothing about it can be proven, so the caller must select it and let
+  # its build say what is wrong. An imported file that does not parse is
+  # already in the closure by path, which is all selection needs.
+  private def test_import_closure(file : String) : Set(String)?
+    entry = File.expand_path(file)
+    entry_dir = File.dirname(entry)
+    table = Mod::Installer.table_for(entry_dir)
+    closure = Set(String).new
+    entry_imports = test_imports_of(entry)
+    return nil unless entry_imports
+    closure << entry
+    queue = entry_imports.compact_map do |written|
+      resolved, _name = mod_context_resolve(written, entry_dir, table)
+      resolved ? File.expand_path(resolved) : nil
+    end
+    while path = queue.pop?
+      next unless closure.add?(path)
+      (test_imports_of(path) || [] of String).each do |written|
+        resolved, _name = mod_context_resolve(written, entry_dir, table)
+        queue << File.expand_path(resolved) if resolved
+      end
+    end
+    closure
+  end
+
+  private def test_imports_of(path : String) : Array(String)?
+    parser = Parser.new(File.read(path))
+    parser.filename = path
+    nodes = parser.parse
+    imports = [] of String
+    mod_context_collect(nodes, imports)
+    imports.uniq!
+  rescue CodeError | IO::Error
+    nil
   end
 
   private def run_one_test(file : String, deadline : Float64) : {file: String, status: String, seconds: Float64, output: String}
@@ -127,11 +210,17 @@ class Iyi::Command
 
   private def test_usage
     <<-USAGE
-    Usage: #{Command.program_name} test [--json] [--timeout SECONDS] [paths]
+    Usage: #{Command.program_name} test [--json] [--timeout SECONDS] [--affected FILE]... [paths]
 
     Runs every `*_test.iyi` under the given paths (default: `.`). A test is
     a plain iyi program: exit 0 is a pass, anything else is a failure that
     prints its own evidence. `--json` reports the run as data.
+
+    `--affected FILE` (repeatable) runs only the tests whose transitive
+    import closure contains a named file — name every file you changed.
+    The closure is read by parsing, so selection costs milliseconds; a
+    deleted file turns the discount off, because nothing can prove the
+    tests that imported it unaffected.
     USAGE
   end
 end
