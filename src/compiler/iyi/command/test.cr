@@ -141,7 +141,11 @@ class Iyi::Command
   # already in the closure by path, which is all selection needs.
   private def test_import_closure(file : String) : Set(String)?
     entry = File.expand_path(file)
-    entry_dir = File.dirname(entry)
+    # IV.6 read backwards, the same rule the LSP applies: a file whose
+    # path ends with its own `module` header's path names the project
+    # root above both, and imports resolve from there — the way a build
+    # would. A header-less script keeps the entry-dir rule.
+    entry_dir = closure_root_of(entry) || File.dirname(entry)
     table = Mod::Installer.table_for(entry_dir)
     closure = Set(String).new
     entry_imports = test_imports_of(entry)
@@ -169,6 +173,25 @@ class Iyi::Command
     mod_context_collect(nodes, imports)
     imports.uniq!
   rescue CodeError | IO::Error
+    nil
+  end
+
+  private def closure_root_of(path : String) : String?
+    header = nil
+    File.read(path).each_line do |line|
+      line = line.strip
+      next if line.empty? || line.starts_with?('#')
+      header = line
+      break
+    end
+    return nil unless header && header.starts_with?("module ")
+    module_path = header.lchop("module ").strip
+    return nil if module_path.empty? || module_path.includes?(' ')
+    suffix = "/#{module_path}.iyi"
+    return nil unless path.ends_with?(suffix)
+    root = path[0, path.size - suffix.size]
+    root.empty? ? "/" : root
+  rescue IO::Error
     nil
   end
 

@@ -32,6 +32,7 @@ class Iyi::Command
     if options.first?.in?("--help", "-h")
       puts <<-USAGE
         Usage: #{Command.program_name} check [switches] [program file]
+               #{Command.program_name} check --affected CHANGED [--affected CHANGED]...
 
         Type-check the program and produce nothing: no codegen, no
         binary. Exit 0 means well-typed; errors print like a build's,
@@ -43,11 +44,29 @@ class Iyi::Command
         signature is typed even if nothing calls it — R-2's declared
         types stand in for the missing caller. `--shallow` gives the
         build's exact (lazy) answer instead.
+
+        `--affected CHANGED` (repeatable) checks the ripple instead of
+        one file: every .iyi under the current directory whose imports
+        reach a changed file is compiled alone, and every failure is
+        named.
         USAGE
       exit
     end
 
     deep = !options.delete("--shallow")
+
+    # `--affected CHANGED...`: the ripple check. `test --affected` answers
+    # "which tests re-run"; this answers the sibling question "does
+    # everyone who imports the change still compile" — every .iyi file
+    # whose parsed import closure reaches a changed file is compiled
+    # alone, probe included, and every failure is named. A deleted
+    # changed file fails its consumers here naturally, which is the loud
+    # answer this verb owes (test selection, which cannot afford to guess,
+    # turns its discount off instead).
+    if options.includes?("--affected")
+      return check_affected(deep)
+    end
+
     entry = options.find { |option| !option.starts_with?('-') && option.ends_with?(".iyi") }
 
     compile_no_codegen "check"
@@ -67,10 +86,104 @@ class Iyi::Command
     compiler = Compiler.new
     compiler.prelude = "iyi/prelude"
     compiler.no_codegen = true
+    compiler.iyi_project_root = closure_root_of(entry_path)
     compiler.iyi_mod_table = Mod::Installer.table_for(File.dirname(entry_path))
     compiler.compile(
       Compiler::Source.new(entry_path, File.read(entry_path) + probe),
       File.tempname("iyi-check", nil))
+  end
+
+  # Everyone the change can reach, each compiled alone. The universe is
+  # every .iyi file under the current directory; membership is the same
+  # parsed closure `test --affected` trusts. Failures are collected, not
+  # raised: the caller asked about the whole ripple, and stopping at the
+  # first consumer would answer a smaller question than the one asked.
+  private def check_affected(deep : Bool) : Nil
+    as_json = false
+    changed = [] of String
+    while option = options.shift?
+      case option
+      when "--affected"
+        value = options.shift?
+        abort! "--affected takes a changed file", :USAGE_ERROR unless value
+        changed << File.expand_path(value)
+      when "-f"
+        as_json = options.shift? == "json"
+      when "--json"
+        as_json = true
+      else
+        abort! "check --affected takes only changed files; unexpected '#{option}'", :USAGE_ERROR
+      end
+    end
+    abort! "check --affected: name at least one changed file", :USAGE_ERROR if changed.empty?
+
+    consumers = [] of String
+    Dir.glob("**/*.iyi") do |candidate|
+      closure = test_import_closure(candidate)
+      consumers << candidate if closure.nil? || changed.any? { |path| closure.includes?(path) }
+    end
+    consumers.sort!
+
+    failures = [] of {String, CodeError}
+    consumers.each do |consumer|
+      if error = check_one_alone(consumer, deep)
+        failures << {consumer, error}
+      end
+    end
+
+    if as_json
+      JSON.build(STDOUT) do |json|
+        json.object do
+          json.field "checked" do
+            json.array { consumers.each { |consumer| json.string consumer } }
+          end
+          json.field "failed" do
+            json.array do
+              failures.each do |(consumer, error)|
+                json.object do
+                  json.field "file", consumer
+                  json.field "errors" { json.raw error.to_json }
+                end
+              end
+            end
+          end
+        end
+      end
+      STDOUT.puts
+    else
+      failures.each do |(consumer, error)|
+        deepest = error.is_a?(TypeException) ? error.deepest_error_message.to_s : error.message.to_s
+        puts "#{consumer}: #{deepest.lines.first?}"
+      end
+      verdict = failures.empty? ? "all compile" : "#{failures.size} broke"
+      puts "#{consumers.size} consumer(s) checked, #{verdict}"
+    end
+
+    exit failures.empty? ? 0 : 1
+  end
+
+  # One consumer, compiled alone with the probe riding in the same pass —
+  # one compile per file is the affected loop's budget, and the combined
+  # pass gives the same verdict the two-pass single-file check gives.
+  private def check_one_alone(path : String, deep : Bool) : CodeError?
+    expanded = File.expand_path(path)
+    text = File.read(expanded)
+    if deep
+      text += check_probe_source(expanded, text) || ""
+    end
+    compiler = Compiler.new
+    compiler.prelude = "iyi/prelude"
+    compiler.no_codegen = true
+    compiler.stdout = IO::Memory.new
+    compiler.stderr = IO::Memory.new
+    compiler.iyi_project_root = closure_root_of(expanded)
+    compiler.iyi_mod_table = Mod::Installer.table_for(File.dirname(expanded))
+    compiler.compile(
+      Compiler::Source.new(expanded, text),
+      File.tempname("iyi-check", nil))
+    nil
+  rescue ex : CodeError
+    ex
   end
 
   # The probe block for every fully declared def in the file, or nil when

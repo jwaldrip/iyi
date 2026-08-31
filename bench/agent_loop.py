@@ -157,6 +157,31 @@ def main():
          report["tests"] == [] and report["skipped"] == 2,
          f"skipped {report['skipped']}")
 
+    # 5b. check --affected: the ripple — a surface break names exactly
+    # the consumer it reaches, and a clean tree answers "all compile"
+    write("consumer.iyi", (
+        "import calc/add\nusing calc/add::{add}\n\n"
+        "puts add(1, 1)\n"
+    ))
+    proc = run("check", "--affected", "calc/add.iyi", cwd=work)
+    step("a clean ripple compiles everyone",
+         proc.returncode == 0 and "all compile" in proc.stdout, proc.stdout.strip())
+    write("calc/add.iyi", (
+        "module calc/add\n\n"
+        "# Adds three integers now.\n"
+        "pub def add(a : Int32, b : Int32, c : Int32) : Int32\n  a + b + c\nend\n"
+    ))
+    proc = run("check", "--affected", "calc/add.iyi", cwd=work)
+    step("a surface break names its consumers",
+         proc.returncode == 1 and "broke" in proc.stdout, proc.stdout.splitlines()[-1])
+    write("calc/add.iyi", (
+        "module calc/add\n\n"
+        "# Adds two integers.\n"
+        "pub def add(a : Int32, b : Int32) : Int32\n  a + b\nend\n"
+    ))
+    step("and the repair closes it",
+         run("check", "--affected", "calc/add.iyi", cwd=work).returncode == 0, "")
+
     # 6. mcp: the same answers, over the wire
     server = subprocess.Popen([IYI, "mcp"], stdin=subprocess.PIPE,
                               stdout=subprocess.PIPE, text=True, cwd=work)
