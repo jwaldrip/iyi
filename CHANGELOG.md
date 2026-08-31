@@ -4,6 +4,24 @@
 
 ### Added
 
+- **Generic bodies are checked against their bounds — R-2c's second
+  half.** `def total(s : Sized)` was fully written and still
+  caller-typed: a trait restriction makes the def generic, and
+  duck-typed generics ship the library author's mistake to the
+  consumer. Now the bound is enough: the compiler synthesizes one
+  witness type per simple trait (`struct IyiDefTypeWitness_Sized` +
+  an impl whose stubs return `uninitialized` values), and types the
+  body against exactly the bound — `s.size() + s.length()` dies at the
+  definition with the witness named in the error, a return lie dies
+  the same way, and an honest body is clean. This is the half Rust
+  checks always and duck-typed generics never; here it costs one
+  synthetic type per trait per compile. Witnesses are declarations, so
+  they take one extra top-level visit before the main pass; `self` in
+  a requirement spells the witness. Out of reach and stated:
+  supertrait, generic and associated-type traits (`Enumerable` stays
+  caller-typed), and requirements the stub cannot write. Two keyword
+  collisions on the way in — `trait` and `import` are identifiers
+  nowhere in this fork, including the compiler's own source.
 - **Definition-site typing is the language's rule now — R-2c.** The
   `check` probe of the previous entry grew up and moved into the
   compiler: after the top-level pass, every fully declared def in user

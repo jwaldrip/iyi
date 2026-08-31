@@ -126,6 +126,27 @@ def main():
     proc = run("build", "--no-codegen", "uncalled.iyi", cwd=work)
     step("a plain build refuses it too - the rule is the language's",
          proc.returncode == 1, "")
+
+    # 4b'. the generic half: a trait bound is written, and a bound is
+    # enough — the body is typed against a synthesized witness, so a
+    # generic def calling anything outside its bound dies at the
+    # definition. duck-typed generics never check this.
+    write("bounded.iyi", (
+        "module app2\n\n"
+        "pub trait Sized\n  abstract def size() : Int32\nend\n\n"
+        "pub def total(s : Sized) : Int32\n  s.size() + s.length()\nend\n"
+    ))
+    proc = run("check", "bounded.iyi", cwd=work)
+    step("a generic body cannot leave its bound",
+         proc.returncode == 1 and "IyiDefTypeWitness_" in (proc.stdout + proc.stderr),
+         "typed against the trait's witness")
+    write("bounded.iyi", (
+        "module app2\n\n"
+        "pub trait Sized\n  abstract def size() : Int32\nend\n\n"
+        "pub def total(s : Sized) : Int32\n  s.size() * 2\nend\n"
+    ))
+    step("and the honest generic body is clean",
+         run("check", "bounded.iyi", cwd=work).returncode == 0, "")
     proc = run("fix", "--json", "uncalled.iyi", cwd=work)
     fixed = json.loads(proc.stdout)
     step("fix converges to check's verdict",
