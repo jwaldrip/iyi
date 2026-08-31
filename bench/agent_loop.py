@@ -169,6 +169,21 @@ def main():
     ))
     step("pub import is the door",
          run("check", "phantom.iyi", cwd=work).returncode == 0, "")
+    write("qualified.iyi", "import lib/facade\n\nputs Lib::Inner.shine()\n")
+    write("lib/facade.iyi", (
+        "module lib/facade\nimport lib/inner\n\n"
+        "pub def front() : Int32\n  1\nend\n"
+    ))
+    proc = run("check", "qualified.iyi", cwd=work)
+    step("the wall holds for qualified names too",
+         proc.returncode == 1 and "not imported here" in (proc.stdout + proc.stderr),
+         "Lib::Inner.shine() without an import")
+    write("lib/facade.iyi", (
+        "module lib/facade\npub import lib/inner\n\n"
+        "pub def front() : Int32\n  1\nend\n"
+    ))
+    step("and pub import opens both doors",
+         run("check", "qualified.iyi", cwd=work).returncode == 0, "")
     proc = run("fix", "--json", "uncalled.iyi", cwd=work)
     fixed = json.loads(proc.stdout)
     step("fix converges to check's verdict",

@@ -120,6 +120,72 @@ module Iyi
     # facade may hand its dependencies on, a private import may not.
     getter iyi_exported_imports = {} of String => Set(String)
 
+    # iyi: every file that arrived through an `import` edge, source or
+    # artifact — the set the qualified-name wall consults: a unit in no
+    # edge exists because the current source declared it, and a file
+    # always reaches what it wrote.
+    getter iyi_imported_files = Set(String).new
+
+    @iyi_reach_cache = {} of String => Set(String)
+
+    # The import wall for a qualified name (SPEC.md R-1): `resolved`
+    # lives in an imported unit ⇒ the file that wrote `node` must reach
+    # that unit — its own imports, then onward only through `pub import`
+    # edges. Anchored at the node, which is the line to fix.
+    def iyi_check_import_reach(node : ASTNode, resolved : Type) : Nil
+      base = resolved
+      base = base.generic_type if base.is_a?(GenericClassInstanceType)
+      unit = base
+      while unit
+        break if unit.is_a?(NamedType) && unit.iyi_unit?
+        unit =
+          if unit.is_a?(NamedType) && (namespace = unit.namespace) != unit
+            namespace
+          else
+            nil
+          end
+      end
+      return unless unit.is_a?(NamedType)
+
+      unit_file = unit.locations.try(&.first?).try(&.filename).as?(String)
+      return unless unit_file && iyi_imported_files.includes?(unit_file)
+
+      writer = node.location.try(&.filename).as?(String)
+      return unless writer
+      return if writer == unit_file
+      # Only writers this build read as files: the entry and everything
+      # imported (artifact declaration replays included — their path is
+      # an edge value). A mono body or initialiser replayed out of an
+      # artifact carries its *far machine's* source path; it was checked
+      # when its own module built, and refusing it here would sanction
+      # code nobody on this machine wrote.
+      return unless writer == filename || iyi_imported_files.includes?(writer)
+      return if iyi_reachable_files(writer).includes?(unit_file)
+
+      node.raise "`#{unit}` is not imported here — it is in the program " \
+                 "only because some other file imported it. Add an import " \
+                 "in this file, or have a module this file imports " \
+                 "re-export it with `pub import` (SPEC.md R-1)"
+    end
+
+    # The files reachable from `from`: every direct import, then onward
+    # only through `pub import` edges. Cached only once the top-level
+    # pass is complete — before that the edge lists are still growing
+    # and a cached answer would be a stale refusal.
+    private def iyi_reachable_files(from : String) : Set(String)
+      if top_level_semantic_complete? && (cached = @iyi_reach_cache[from]?)
+        return cached
+      end
+      reachable = Set(String).new
+      queue = (iyi_module_imports[from]? || [] of String).dup
+      while file = queue.pop?
+        next unless reachable.add?(file)
+        iyi_exported_imports[file]?.try &.each { |handed| queue << handed }
+      end
+      @iyi_reach_cache[from] = reachable if top_level_semantic_complete?
+      reachable
+    end
+
     # iyi: the module path each imported file was named by, e.g.
     # `/…/app/greeter.iyi => "app/greeter"`. The edges above are keyed on
     # filenames because that is what load-once is keyed on; a `.iyimod` names

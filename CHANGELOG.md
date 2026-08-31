@@ -4,6 +4,21 @@
 
 ### Added
 
+- **The wall closes on qualified names too.** `Lib::Inner.shine()`
+  without an import leaked through the type graph — the half the entry
+  below recorded as open. It closed at the one funnel every written
+  `Path` resolves through: an authoritative lookup that lands in an
+  imported unit now demands the writing file reach that unit, directly
+  or through `pub import`s, with the same refusal wording. Three fences
+  hold it honest: speculative lookups (overload matching trying
+  restrictions with `raise` off) keep their answer rather than gaining
+  a new way to fail; a unit in no import edge is the current source's
+  own and always reachable; and a writer this build never read as a
+  file — a mono body or initialiser replayed out of an artifact, which
+  carries its far machine's source path — is exempt, because it was
+  checked when its own module built. Reachability is memoized per file
+  once the top-level pass completes; latency and rebuild budgets are
+  unmoved.
 - **The import wall is per-file now, and `pub import` is the one door
   through it.** Found while building the door: the wall did not exist.
   `using x` checked *type existence*, which is program-wide — anyone's
@@ -18,10 +33,10 @@
   one byte per import edge), replays as `pub import` in the
   declarations a consumer compiles against, and moves the interface
   hash — re-exporting, or ceasing to, changes what a consumer may
-  reach, which is interface in R-1's own sense. Qualified naming
-  (`Lib::Inner.shine()` without an import) still leaks through the
-  type graph; recorded here as the wall's known open half rather than
-  silently claimed.
+  reach, which is interface in R-1's own sense. A first cut of this
+  entry recorded qualified naming (`Lib::Inner.shine()` without an
+  import) as the wall's known open half; it closed in the same wave —
+  see the entry above.
 - **Generic bodies are checked against their bounds — R-2c's second
   half.** `def total(s : Sized)` was fully written and still
   caller-typed: a trait restriction makes the def generic, and
