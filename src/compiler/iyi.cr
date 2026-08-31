@@ -41,6 +41,7 @@ module Iyi
         check                    type-check only; errors are the exit code, `-f json` makes them data
         fix                      apply the compiler's did-you-mean edits until the file is clean
         lsp                      serve the language over stdio (editors, agents)
+        mcp                      serve the compiler's verbs as MCP tools over stdio (agents)
         daemon                   hold the prelude analysed between builds
         env                      print environment information
         clear_cache              clear the compiler cache
@@ -68,7 +69,7 @@ module Iyi
   # artifacts it writes and the file it arrived in cannot disagree.
   VERSION = Iyi::Config.iyi_version
 
-  DELEGATED = %w(build run mod repl env clear_cache tool daemon test doc lsp vet check fix)
+  DELEGATED = %w(build run mod repl env clear_cache tool daemon test doc lsp vet check fix mcp)
 
   # The ones that belong to Crystal and are still in the binary underneath.
   # Named rather than swallowed, because "unknown command" would be a lie.

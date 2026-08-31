@@ -52,6 +52,7 @@ class Iyi::Command
         eval                     eval code from args or standard input
         mod                      inspect a .iyimod module artifact
         lsp                      serve the language over stdio (editors, agents)
+        mcp                      serve the compiler's verbs as MCP tools over stdio (agents)
         run (default)            build and run program
         spec                     build and run specs (in spec directory)
         test                     run every *_test.iyi: exit 0 passes, anything else fails
@@ -166,6 +167,10 @@ class Iyi::Command
       # Exact: a server is not something to reach by accident from `l`.
       options.shift
       lsp
+    when command == "mcp"
+      # Exact, beside `lsp`: a server is not something to reach by prefix.
+      options.shift
+      mcp
     when "tool".starts_with?(command)
       options.shift
       tool
