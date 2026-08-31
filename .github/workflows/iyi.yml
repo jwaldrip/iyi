@@ -1044,10 +1044,19 @@ jobs:
         with:
           name: iyi-linux-x86_64
           path: dist/
+      - uses: actions/checkout@v7
+
+      # The structural half, on the artifact rather than on a staging
+      # directory: does the tarball name a library it does not carry?
+      # Milliseconds, and it names the offender — where the docker run
+      # below only says "cannot open shared object file".
+      - name: The tarball names nothing it does not carry
+        run: |
+          mkdir -p room && tar -xzf dist/*.tar.gz -C room
+          bash scripts/bundle-runtime-libs.sh room --verify-only
 
       - name: Unpack it in a bare image and build a program there
         run: |
-          mkdir -p room && tar -xzf dist/*.tar.gz -C room
           printf 'module hi\n\nputs "hello from a machine with nothing on it"\n' \
             > room/hi.iyi
           docker run --rm -v "$PWD/room:/iyi" ubuntu:24.04 sh -c '

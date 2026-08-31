@@ -117,6 +117,11 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # highlighter, and Kemal requires the page. Naming it is the finding.
     (r"crystal/syntax_highlighter", "a path inside Crystal's standard library"),
     (r"Crystal::SyntaxHighlighter", "a class inside Crystal's standard library"),
+    # Upstream's packaging, cited because iyi took a rule from it: their
+    # build refuses a compiler that names a host library, and iyi's
+    # package refuses the same thing. A reader who cannot find the file
+    # cannot check the claim, so the filename travels.
+    (r"omnibus/config/software", "a path inside upstream's packaging repository"),
     # The artifact header records which library a module was built against, and
     # an import across the two is refused by name in both directions. The field
     # is called what it means (SPEC.md IV.5).

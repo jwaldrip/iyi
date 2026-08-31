@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **A package that names a library it does not carry is refused.** Taken
+  from Crystal's own release engineering, which fails its build when
+  `otool -L` on the finished compiler names anything under
+  `/usr/local/lib` or `/opt/homebrew`
+  (`distribution-scripts`, `omnibus/config/software/crystal.rb`). iyi
+  asks the same question at package time on both platforms, and it is
+  the only self-containment proof darwin can have from its own job —
+  that job runs on a machine which *has* brew's libraries, so "it ran"
+  proves nothing while "it names nothing outside itself" proves
+  everything. `scripts/bundle-runtime-libs.sh --verify-only` asks it of
+  a package somebody else built, and CI now asks it of the release
+  artifact before the clean room even starts: the structural answer
+  names the offending library, where a bare-image run only says
+  `cannot open shared object file`.
+
+### Learned
+
+- **Crystal solves this one layer lower, and iyi should follow.** Their
+  LLVM is built for the package rather than borrowed from the host:
+  `-DBUILD_SHARED_LIBS=OFF` with `TERMINFO`, `ZLIB`, `ZSTD`, `LIBXML2`,
+  `FFI` and `Z3_SOLVER` all `OFF`, `MinSizeRel`, and only the two
+  targets they ship. A statically linked LLVM with no optional
+  dependencies means the closure iyi now carries — libedit, libxml2,
+  libicu, libncursesw, libzstd — never comes into existence, and the
+  tarball loses most of its size. What iyi does today is correct and
+  proven; what it is not is small. Recorded with the flags, not
+  attempted in the same breath: building LLVM in CI is its own piece of
+  work with its own budget.
+
 ## 0.5.1 — 2026-08-30
 
 **The language reached the machine most developers sit in front of, and
