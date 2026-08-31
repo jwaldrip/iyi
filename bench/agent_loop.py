@@ -106,10 +106,30 @@ def main():
     proc = run("fix", "--json", "app.iyi", cwd=work)
     fixed = json.loads(proc.stdout)
     step("fix applies the compiler's own edit",
-         fixed["clean"] and [ (a["from"], a["to"]) for a in fixed["applied"] ] == [("shoutt", "shout")],
+         fixed["clean"] and [(a["from"], a["to"]) for a in fixed["applied"]] == [("shoutt", "shout")],
          f"applied {fixed['applied']}")
     proc = run("check", "app.iyi", cwd=work)
     step("check confirms clean", proc.returncode == 0, "")
+
+    # 4b. the blind spot, closed: an uncalled body is typed against its
+    # declared signature (R-2's dividend); --shallow gives the build's
+    # lazy answer; fix converges to check's verdict, not the build's
+    write("uncalled.iyi", (
+        "module app\n\n"
+        "pub def go() : Int32\n  shoutt(3)\nend\n\n"
+        "pub def shout(n : Int32) : Int32\n  n * 2\nend\n"
+    ))
+    proc = run("check", "uncalled.iyi", cwd=work)
+    step("check types the body nobody calls", proc.returncode == 1,
+         "R-2's declared types stand in for the caller")
+    proc = run("check", "--shallow", "uncalled.iyi", cwd=work)
+    step("--shallow is the build's lazy answer", proc.returncode == 0, "")
+    proc = run("fix", "--json", "uncalled.iyi", cwd=work)
+    fixed = json.loads(proc.stdout)
+    step("fix converges to check's verdict",
+         fixed["clean"] and [(a["from"], a["to"]) for a in fixed["applied"]] == [("shoutt", "shout")],
+         f"applied {fixed['applied']}")
+    step("and check agrees", run("check", "uncalled.iyi", cwd=work).returncode == 0, "")
 
     # 5. test --affected: the exact selection, both directions
     proc = run("test", "--json", "--affected", "calc/add.iyi", cwd=work)
