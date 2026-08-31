@@ -133,6 +133,13 @@ module Iyi
     # that unit — its own imports, then onward only through `pub import`
     # edges. Anchored at the node, which is the line to fix.
     def iyi_check_import_reach(node : ASTNode, resolved : Type) : Nil
+      # iyi's law, not Crystal's: a `--crystal` build consumes bound
+      # shards whose signatures name each other's types transitively —
+      # that world keeps Crystal's rules, which is the mode's whole
+      # contract. The CI bind chain (kemal over backtracer) is the case
+      # that taught it.
+      return unless iyi_prelude?
+
       base = resolved
       base = base.generic_type if base.is_a?(GenericClassInstanceType)
       unit = base
