@@ -1040,11 +1040,13 @@ jobs:
     runs-on: ubuntu-24.04
     name: "The tarball, on a machine with nothing on it"
     steps:
+      # Checkout first: it clears the workspace, so an artifact
+      # downloaded before it is an artifact deleted by it.
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           name: iyi-linux-x86_64
           path: dist/
-      - uses: actions/checkout@v7
 
       # The structural half, on the artifact rather than on a staging
       # directory: does the tarball name a library it does not carry?
