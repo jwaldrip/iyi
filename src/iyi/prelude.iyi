@@ -1173,6 +1173,77 @@ def puts(value) : Nil
   puts value.to_s
 end
 
+# The program's own name-plate: arguments and environment, read on
+# demand from what already exists — no captured state, no boot order to
+# get wrong. `ARGC_UNSAFE`/`ARGV_UNSAFE` are the compiler's predefined
+# constants, initialised from `main`'s own parameters before anything
+# else runs (codegen/const.cr); `environ` is the C runtime's exported
+# global. A first draft captured argv in class variables from `main` and
+# read zeros: `__crystal_main` runs the class-variable initialisers
+# *after* `main`'s prologue stored, wiping it — symbols do not have that
+# ordering problem.
+#
+# On wasm32 there is no environment to read and `env` answers nil for
+# every name: the sandbox story (SPEC.md III.12) is that the runtime
+# hands the program nothing, and an absent surface beats a permission.
+{% unless flag?(:wasm32) %}
+  lib LibIyiEnv
+    $environ : UInt8**
+  end
+{% end %}
+
+class Program
+  # The arguments after the program's own name, the way every shell
+  # hands them over.
+  def self.args : Array(String)
+    result = [] of String
+    index = 1
+    while index < ARGC_UNSAFE
+      result << string_from(ARGV_UNSAFE[index])
+      index = index + 1
+    end
+    result
+  end
+
+  # One variable, or nil. No map of everything: the asking program names
+  # what it wants, and a tool that dumps its whole environment into a
+  # structure was one `puts` away from leaking it.
+  def self.env(name : String) : String | Nil
+    {% if flag?(:wasm32) %}
+      nil
+    {% else %}
+      pointer = LibIyiEnv.environ
+      return nil if pointer.address == 0_u64
+
+      length = name.bytesize
+      bytes = name.to_unsafe
+      index = 0
+      while (entry = pointer[index]).address != 0_u64
+        offset = 0
+        while offset < length && entry[offset] == bytes[offset]
+          offset = offset + 1
+        end
+        # 61 is '=': the byte that ends the name in `NAME=value`.
+        if offset == length && entry[length] == 61_u8
+          return string_from(entry + (length + 1))
+        end
+        index = index + 1
+      end
+      nil
+    {% end %}
+  end
+
+  private def self.string_from(entry : UInt8*) : String
+    length = 0
+    while entry[length] != 0_u8
+      length = length + 1
+    end
+    String.new(length) do |target|
+      target.copy_from(entry, length)
+    end
+  end
+end
+
 lib LibCrystalMain
   @[Raises]
   fun __crystal_main(argc : Int32, argv : UInt8**)

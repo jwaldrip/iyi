@@ -135,6 +135,21 @@ LSP session):
 | 6 | `iyi run --sandbox FILE` | III.12 worn as a verb: wasm32-wasi + wasmtime with nothing preopened. Two fences — the wasm32 prelude has no `File`, and the runtime was handed nothing. A missing toolchain is named, never worked around |
 | 7 | `iyi mod context --budget N` | The pack cut by a defined ladder, never truncation: docs off from the last import backwards, then surfaces collapse to headers that name the module and the cost. Every import is always named |
 
+**Built after the table, same discipline** — the trust wave, all in
+`bench/agent_loop.py` (27 steps):
+
+- `check` now types every fully declared def *without* a caller — the
+  probe pass, R-2's declared types standing in for the missing caller —
+  and `--shallow` is the build's lazy answer. `fix` compiles with the
+  same probe: one verdict, two verbs.
+- `check --affected CHANGED` compiles every consumer of a change alone
+  and names what broke: `test --affected`'s sibling, for types.
+- The did-you-mean pool includes `using`-imported names, walked the way
+  the call's real lookup walks.
+- `Program.args` / `Program.env` in the own prelude: a pure-iyi tool
+  reads its args, its environment and the disk. On wasm32 `env` is nil
+  for every name — the absence is III.12's sandbox.
+
 Free advertising, no work: `iyi mod diff --exit-code` already answers the
 agent question "did I break the API"; document it as a harness contract.
 

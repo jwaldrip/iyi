@@ -182,6 +182,29 @@ def main():
     step("and the repair closes it",
          run("check", "--affected", "calc/add.iyi", cwd=work).returncode == 0, "")
 
+    # 5c. the loop is around a language that can do work now: a pure-iyi
+    # tool reads its args, its environment, and the disk — no --crystal
+    write("nameplate.iyi", (
+        "module nameplate\n\n"
+        "pub def run() : Nil\n"
+        "  args = Program.args\n"
+        "  puts \"args: #{args.size}\"\n"
+        "  home = Program.env(\"HOME\")\n"
+        "  puts \"HOME present: #{home.is_a?(String)}\"\n"
+        "  File.write(\"note.txt\", \"from a pure iyi tool\")\n"
+        "  puts File.read(\"note.txt\")\n"
+        "  File.delete(\"note.txt\")\n"
+        "end\n\n"
+        "run()\n"
+    ))
+    binary = os.path.join(work, "nameplate")
+    proc = run("build", "nameplate.iyi", "-o", binary, cwd=work)
+    step("the nameplate tool builds", proc.returncode == 0, proc.stderr.strip()[:80])
+    out = subprocess.run([binary, "a", "b", "c"], capture_output=True, text=True, cwd=work)
+    step("args, env and the disk answer",
+         out.stdout == "args: 3\nHOME present: true\nfrom a pure iyi tool\n",
+         repr(out.stdout))
+
     # 6. mcp: the same answers, over the wire
     server = subprocess.Popen([IYI, "mcp"], stdin=subprocess.PIPE,
                               stdout=subprocess.PIPE, text=True, cwd=work)

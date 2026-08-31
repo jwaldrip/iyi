@@ -4,6 +4,46 @@
 
 ### Added
 
+- **`check` types the body nobody calls — R-2's dividend, collected.**
+  Lazy typing (inherited from Crystal) meant a build said "clean" about
+  a def it never visited, and `check` repeated the lie. A fully written
+  signature is exactly enough to type the body without a caller, so
+  `check` runs a probe pass: for every def whose parameters and return
+  are all written, one synthetic call with `uninitialized` values of
+  the declared types, under `if false`. Crystal cannot offer this; here
+  it falls out of the rule that signatures are written down. What the
+  probe cannot reach is stated, not hidden (generic free vars, blocks,
+  unannotated parameters, generic and abstract types); `--shallow` is
+  the build's exact answer; `fix` compiles with the same probe, because
+  two tools answering differently is two tools lying to each other.
+  126 ms on the kemal-port sample, both passes included.
+- **`check --affected` — the ripple.** `test --affected` answers "which
+  tests re-run"; this answers the sibling question "does everyone who
+  imports the change still compile": every `.iyi` whose parsed import
+  closure reaches a changed file is compiled alone, probe included, and
+  every failure is named with its deepest message. The closure now
+  resolves from the header-derived project root (IV.6 read backwards,
+  the LSP's own rule), which `test --affected` inherits — a nested
+  module's consumers were invisible before.
+- **The suggestion pool includes `using`-imported names.** `addd` went
+  unsuggested while `add` sat one edit away in the file's own `using`
+  line: the Levenshtein walk never looked there. The new walk is the
+  same namespace climb the call's real lookup performs, seeded the same
+  way; selective `using` contributes its selection, bare `using` the
+  module's exported names. Flows into prose, `suggested_edit`, the LSP
+  quickfix and `fix` unchanged.
+- **`Program.args` and `Program.env` in the own prelude.** The loop is
+  now around a language that can do work: a pure-iyi tool reads its
+  arguments, its environment and the disk, no `--crystal`. Args ride
+  the compiler's own `ARGC_UNSAFE`/`ARGV_UNSAFE` (initialised before
+  anything runs); env reads libc's `environ` symbol lazily — a first
+  draft captured argv from `main` into class variables and read zeros,
+  because `__crystal_main` runs class-variable initialisers *after*
+  `main`'s prologue stored; symbols have no such ordering. On wasm32
+  `env` answers nil for every name: the absence *is* III.12's sandbox.
+  The stale "no IO beyond `puts`" sentence is restated in README and
+  SPEC where it stood. `bench/agent_loop.py` holds 27 steps.
+
 - **The agent's loop, one verb per step, and all of it gated.** The
   first AI-first menu made the compiler legible (surfaces as data,
   errors as data, a server); this wave makes the loop itself cheap:
@@ -650,7 +690,7 @@ and flags reads them.
   Not built, and said so in III.4's margin: `Share` (one thread cannot
   race, so it would refuse nothing testable), and every platform that is
   not Linux — wasm32 cannot switch stacks, and an imitation is the thing
-  III.4.8 refused to ship. The prelude stands at 3,973 lines against a
+  III.4.8 refused to ship. The prelude stands at 4,044 lines against a
   ceiling of 3,734 — remeasured, not raised: the ceiling is Crystal
   0.1.0's core, that core shipped concurrency (`thread.cr`, `fiber/`, 183
   lines), and the original list had left it out because iyi then had
@@ -2159,7 +2199,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 3,973-line library and nothing else. Every other
+  written against iyi's own 4,044-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
