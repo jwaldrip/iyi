@@ -57,6 +57,10 @@ module Iyi::Lsp
     end
 
     def visit(node : Call)
+      # Definition-site probes are calls too, and they resolve to the
+      # def under the cursor by construction. A person asking "who calls
+      # this" is not asking about the compiler's own probe.
+      return true if node.iyi_synthetic?
       if @collecting
         if (name_location = node.name_location) && node.target_defs.try &.any? { |d| key?(d.location) }
           @references << {name_location, node.name.size}

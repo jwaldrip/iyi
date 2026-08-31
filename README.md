@@ -229,6 +229,7 @@ anything.
 | **R-1** | A module is the unit of compilation. `import` forms a DAG. Compiling a module reads its dependencies' **declarations**, never their bodies. |
 | **R-2** | Everything a module exports (`pub`) writes down full parameter and return types. Unexported code infers as usual. |
 | **R-2b** | `using` brings exported names into unqualified scope. The consumer writes it, not the library. |
+| **R-2c** | A def whose parameters and return are all written is typed at its definition, caller or no caller. A build, `check` and the LSP cannot disagree about "clean". |
 | **R-3** | No open classes. `impl Trait for Type` lives in the module that declares the trait or the type. |
 
 R-1 is what a `.iyimod` file is: a module's declarations, the bodies a consumer

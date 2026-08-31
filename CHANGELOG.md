@@ -4,6 +4,26 @@
 
 ### Added
 
+- **Definition-site typing is the language's rule now — R-2c.** The
+  `check` probe of the previous entry grew up and moved into the
+  compiler: after the top-level pass, every fully declared def in user
+  code is typed against its own signature, in the same semantic run —
+  build, `check`, artifact emit and every LSP keystroke agree about
+  what "clean" means, and `--shallow` is gone because there is no
+  shallower truth to offer. The probes are built from *resolved* types
+  (a parse-time draft died twice: a trait restriction is invisible at
+  parse, and the top-level macro expander met a scope-less synthetic
+  call), anchored at the def they belong to, and marked so reference
+  answers never count the compiler's own calls. What stays caller-typed
+  is stated: trait-restricted, generic, block-taking, unannotated,
+  impl-carried (R-3 keeps those inside their trait context), non-`pub`
+  module functions (R-2's wall applies to probes too), and all `.cr`
+  sources — each of those probe fences was earned by a sample that
+  failed a draft, not designed in advance. First real catch: the
+  packages gate's own fixture — a signature edited to `Int64` over a
+  body still returning `Int32`, a dormant lie the lazy rule had shipped
+  for a release. LSP latency and the rebuild loop stay inside their
+  budgets.
 - **`check` types the body nobody calls — R-2's dividend, collected.**
   Lazy typing (inherited from Crystal) meant a build said "clean" about
   a def it never visited, and `check` repeated the lie. A fully written

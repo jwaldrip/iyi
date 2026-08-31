@@ -171,7 +171,12 @@ if [ "$hash_before" != "$hash_after" ]; then
   exit 1
 fi
 grep -Eq '"doc": ?"Answers the only question."' docs2.json || { echo "the edited doc did not travel"; exit 1; }
-sed -i.bak 's/pub def answer : Int32/pub def answer : Int64/' docs/docd.iyi && rm -f docs/docd.iyi.bak
+# The signature moves AND the body follows it: definition-site typing
+# now types `answer` without a caller, and the first version of this
+# edit — signature to Int64, body still the Int32 literal — was a
+# dormant type lie this gate carried for a release. The rule's first
+# catch was its own harness.
+sed -i.bak 's/pub def answer : Int32/pub def answer : Int64/; s/^  42$/  42_i64/' docs/docd.iyi && rm -f docs/docd.iyi.bak
 (cd docs && "$IYI" mod context --json main.iyi) > docs3.json 2>&1 || { cat docs3.json; exit 1; }
 hash_signature=$(grep -oE '"interface_hash": ?"[a-f0-9]*"' docs3.json | head -1)
 if [ "$hash_before" = "$hash_signature" ]; then

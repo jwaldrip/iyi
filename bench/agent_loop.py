@@ -111,9 +111,10 @@ def main():
     proc = run("check", "app.iyi", cwd=work)
     step("check confirms clean", proc.returncode == 0, "")
 
-    # 4b. the blind spot, closed: an uncalled body is typed against its
-    # declared signature (R-2's dividend); --shallow gives the build's
-    # lazy answer; fix converges to check's verdict, not the build's
+    # 4b. the blind spot, closed as a language rule: an uncalled body is
+    # typed against its declared signature (definition-site typing,
+    # R-2's dividend) — by check AND by a plain build; fix converges to
+    # the same verdict
     write("uncalled.iyi", (
         "module app\n\n"
         "pub def go() : Int32\n  shoutt(3)\nend\n\n"
@@ -122,8 +123,9 @@ def main():
     proc = run("check", "uncalled.iyi", cwd=work)
     step("check types the body nobody calls", proc.returncode == 1,
          "R-2's declared types stand in for the caller")
-    proc = run("check", "--shallow", "uncalled.iyi", cwd=work)
-    step("--shallow is the build's lazy answer", proc.returncode == 0, "")
+    proc = run("build", "--no-codegen", "uncalled.iyi", cwd=work)
+    step("a plain build refuses it too - the rule is the language's",
+         proc.returncode == 1, "")
     proc = run("fix", "--json", "uncalled.iyi", cwd=work)
     fixed = json.loads(proc.stdout)
     step("fix converges to check's verdict",

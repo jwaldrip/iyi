@@ -872,6 +872,11 @@ module Iyi
     property block_arg : ASTNode?
     property named_args : Array(NamedArgument)?
     property name_location : Location?
+    # iyi: true only on calls the compiler synthesized itself — the
+    # definition-site typing probes (semantic/definition_typing.cr).
+    # References and every other "who calls this" answer skip them: a
+    # person is never asking about the compiler's own probe.
+    property? iyi_synthetic = false
     @name_size = -1
     property doc : String?
     property visibility = Visibility::Public

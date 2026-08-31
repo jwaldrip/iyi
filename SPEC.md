@@ -36,6 +36,7 @@ The compilation model, stated only as far as Part II needs it.
 | R-1 | A module is the unit of compilation. `import` forms a DAG. Compiling a module reads only its dependencies' **export metadata**, never their bodies. |
 | R-2 | Everything a module exports (`pub`) carries full parameter and return types. Non-exported code infers. |
 | R-2b | `using` brings a module's exported names into unqualified scope, written by the consumer. |
+| R-2c | **Definition-site typing.** A def whose parameters and return are all written is typed at its definition, caller or no caller — R-2's declared types stand in for the missing call. Trait-restricted, generic, block-taking and unannotated defs keep Crystal's caller-typed rule, and so does every `.cr` source. *(Added with the agentic waves: a build, `check`, and the LSP may not disagree about what "clean" means, and lazy typing made them lie about bodies nobody had called yet. Mechanism: `semantic/definition_typing.cr`, synthetic probes from resolved signatures under `if false`, anchored at the def. Its first catch was this spec's own gate fixture — a signature edited to `Int64` over a body still returning `Int32`.)* |
 | R-3 | Open classes are gone. `impl Trait for Type` must live in the module defining the trait or the type. |
 | R-4 | Generic calls crossing a module boundary pass a dictionary keyed on GC shape. Within a module, monomorphisation. `@[Monomorphize]` forces specialisation across a boundary. |
 | R-5 | Macros are derive-scoped: they see the declaration they are attached to, and nothing global. |
@@ -790,7 +791,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 101,650 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 101,817 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 4,044-line own prelude + 777 in samples |
 | Specs | 21,146 lines | 8,596 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |

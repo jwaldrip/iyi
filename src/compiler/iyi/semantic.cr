@@ -20,6 +20,10 @@ class Iyi::Program
   # this program.
   def semantic(node : ASTNode, cleanup = true, main_visitor : MainVisitor = MainVisitor.new(self)) : ASTNode
     node, processor = top_level_semantic(node, main_visitor)
+    # iyi: definition-site typing (semantic/definition_typing.cr). After
+    # the top-level pass every name is a type, so the probes are built
+    # from *resolved* signatures and only the main pass ever sees them.
+    DefinitionTyping.append_probes(self, node)
     semantic_after_top_level(node, processor, cleanup: cleanup, main_visitor: main_visitor)
   end
 

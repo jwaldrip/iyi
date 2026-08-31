@@ -55,13 +55,10 @@ class Iyi::Command
     # generated, and a loop that long deserves a look rather than a run.
     32.times do
       text = File.read(path)
-      # The probe rides along (see check.cr): fix must converge to the
-      # same verdict `check` gives, uncalled bodies included — a fix
-      # that says clean where check says broken is two tools lying to
-      # each other. Probe-line diagnostics (past the file's end) carry
-      # no applicable edit and fall out as `remaining` below.
-      probe = check_probe_source(path, text) || ""
-      _, diags = analysis.check(path, text + probe, {} of String => String)
+      # Definition-site typing is the compiler's own rule now, so this
+      # plain compile already reaches uncalled bodies — fix and check
+      # cannot disagree about what clean means.
+      _, diags = analysis.check(path, text, {} of String => String)
       if diags.empty?
         remaining = nil
         break

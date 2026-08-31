@@ -1019,7 +1019,6 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     source = iyi_initialiser_source(parsed_nodes)
     @program.iyi_module_initialiser_source[filename] = source unless source.empty?
     @program.iyi_module_initialisers << filename if iyi_uncarried_initialiser?(parsed_nodes)
-
     FileNode.new(parsed_nodes, filename)
   end
 
