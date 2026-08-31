@@ -329,10 +329,12 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     # `pub import`, transitively: a facade may hand its dependencies
     # on, a private import may not.
     #
-    # Units only: a module defined inline in this same source was never
-    # imported by anyone and has no file to demand — the wall guards the
-    # import graph, not the page the author is writing on.
-    if used_type.iyi_unit?
+    # And only for modules somebody actually *imported*: a unit that
+    # appears in no import edge exists because this very source declared
+    # it — its own file, or a spec's inline fixture — and a file always
+    # reaches what it wrote.
+    if used_type.iyi_unit? &&
+       (@program.iyi_module_paths.has_value?(written) || @program.iyi_artifact_modules.has_value?(written))
       from = @iyi_importing.last? || @program.filename.to_s
       unless iyi_using_reachable?(from, written)
         node.raise "`using #{written}` reaches a module this file did not " \
