@@ -2088,23 +2088,29 @@ module Iyi::IyiMod
   # measurement that forced the split is `bench/context_pack.py`: on the
   # kemal sample the compile-against text was within 4% of the sources it
   # replaces, because the bodies *are* most of a macro-heavy module.
-  def self.surface(artifact : Artifact, io : IO) : Nil
+  def self.surface(artifact : Artifact, io : IO, docs : Bool = true) : Nil
     io << "module " << artifact.module_name << '\n'
 
     artifact.exports.functions.each do |signature|
       io << '\n'
-      signature.doc.each_line { |line| io << "# " << line << '\n' } unless signature.doc.empty?
+      if docs && !signature.doc.empty?
+        signature.doc.each_line { |line| io << "# " << line << '\n' }
+      end
       io << "pub " << render_signature(signature) << '\n'
     end
 
     artifact.exports.types.each do |declaration|
       next unless declaration.visibility == "pub"
       io << '\n'
-      declaration.doc.each_line { |line| io << "# " << line << '\n' } unless declaration.doc.empty?
+      if docs && !declaration.doc.empty?
+        declaration.doc.each_line { |line| io << "# " << line << '\n' }
+      end
       io << "pub " << render_type_header(declaration) << '\n'
       declaration.methods.each do |method|
         next if method.visibility == "private"
-        method.doc.each_line { |line| io << "  # " << line << '\n' } unless method.doc.empty?
+        if docs && !method.doc.empty?
+          method.doc.each_line { |line| io << "  # " << line << '\n' }
+        end
         io << "  " << render_signature(method) << '\n'
       end
       io << "end\n"

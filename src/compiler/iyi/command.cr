@@ -137,7 +137,14 @@ class Iyi::Command
       repl
     when command == "run"
       options.shift
-      run_command(single_file: false)
+      # `--sandbox` re-routes before the native pipeline parses anything:
+      # a sandbox that fell back to native on a flag typo would be a lie.
+      if options.includes?("--sandbox")
+        options.delete("--sandbox")
+        run_sandbox
+      else
+        run_command(single_file: false)
+      end
     when "spec/".starts_with?(command)
       options.shift
       spec

@@ -23,9 +23,23 @@ require "../mod/installer"
 class Iyi::Command
   private def mod_context
     as_json = false
-    if options.first? == "--json"
-      options.shift
-      as_json = true
+    budget = nil
+    while option = options.first?
+      case option
+      when "--json"
+        options.shift
+        as_json = true
+      when "--budget"
+        options.shift
+        value = options.shift?
+        budget = value.try(&.to_i?)
+        abort! "--budget takes a token count", :USAGE_ERROR unless budget && budget > 0
+      else
+        break
+      end
+    end
+    if as_json && budget
+      abort! "--budget shapes the text pack; --json is already data — slice it yourself", :USAGE_ERROR
     end
 
     filename = options.shift?
@@ -74,6 +88,8 @@ class Iyi::Command
           end
         end
         STDOUT.puts
+      elsif budget
+        mod_context_budgeted(blocks, budget)
       else
         if blocks.empty?
           puts "#{filename} imports nothing; its context is the prelude."
@@ -91,6 +107,59 @@ class Iyi::Command
     ensure
       FileUtils.rm_rf(emit_dir)
     end
+  end
+
+  # The pack, cut to a token budget by a defined ladder — never by
+  # truncation. A token is counted as four bytes of UTF-8: crude, stated,
+  # and the same on every machine, which is what a budget needs.
+  #
+  # Two passes, both from the *last* import backwards, because import
+  # order is the file's own statement of what matters most: first the
+  # docs come off (signatures survive — they are the contract, docs are
+  # the commentary), then whole surfaces collapse to a header that names
+  # the module and what eliding it cost. Every import is always named:
+  # a pack that silently dropped an import would ground a wrong edit.
+  private def mod_context_budgeted(blocks : Array({String, IyiMod::Artifact?, String}), budget : Int32) : Nil
+    if blocks.empty?
+      puts "(imports nothing; the context is the prelude)"
+      return
+    end
+
+    render = ->(block : {String, IyiMod::Artifact?, String}, docs : Bool) do
+      written, artifact, failure = block
+      String.build do |io|
+        io << "── import " << written << " ──\n"
+        if artifact
+          IyiMod.surface artifact, io, docs: docs
+        else
+          io << "  (" << failure << ")\n"
+        end
+        io << '\n'
+      end
+    end
+    tokens = ->(text : String) { (text.bytesize + 3) // 4 }
+
+    texts = blocks.map { |block| render.call(block, true) }
+    total = texts.sum { |text| tokens.call(text) }
+
+    (blocks.size - 1).downto(0) do |index|
+      break if total <= budget
+      lean = render.call(blocks[index], false)
+      total -= tokens.call(texts[index]) - tokens.call(lean)
+      texts[index] = lean
+    end
+
+    (blocks.size - 1).downto(0) do |index|
+      break if total <= budget
+      written = blocks[index][0]
+      cost = tokens.call(texts[index])
+      header = "── import #{written} ── (surface elided: ~#{cost} tokens; raise --budget to see it)\n\n"
+      total -= cost - tokens.call(header)
+      texts[index] = header
+    end
+
+    texts.each { |text| STDOUT << text }
+    puts "# pack: ~#{total} tokens of #{budget} budgeted"
   end
 
   # The file's imports, in order, by parsing — never by compiling. A file
