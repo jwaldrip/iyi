@@ -122,6 +122,10 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # package refuses the same thing. A reader who cannot find the file
     # cannot check the claim, so the filename travels.
     (r"omnibus/config/software", "a path inside upstream's packaging repository"),
+    # Provenance of a *rule*, not a naming slip: where the fork keeps an
+    # upstream semantic (lazy typing, in `iyi check`'s header) the honest
+    # comment says which language the rule came from.
+    (r"inherited from Crystal", "provenance of an inherited semantic"),
     # The artifact header records which library a module was built against, and
     # an import across the two is refused by name in both directions. The field
     # is called what it means (SPEC.md IV.5).

@@ -63,9 +63,14 @@ demands:
   a tool — so a half-broken tree still grounds.
 - **3** — `iyi build -f json` was inherited and already worked, measured
   rather than assumed; what was added is the `spec` field (`c2e6529f2`),
-  the SPEC sections an error cites, as data. `suggested_edit` is not
-  built: errors do not carry structured edits, and inventing them would
-  be prose wearing a schema.
+  the SPEC sections an error cites, as data. `suggested_edit` refused a
+  first draft here — "errors do not carry structured edits, and
+  inventing them would be prose wearing a schema" — and that refusal is
+  now closed the way it deserved: not by parsing prose back, but by
+  carrying the name the raise site already computed. `TypeException`
+  holds the did-you-mean as a field, `-f json` emits a self-contained
+  `suggested_edit` (file, line, column, size, replacement), and the LSP
+  quickfix reads the field instead of scanning its own messages.
 - **6** — `iyi.sum` (`8d8b266fd`): tree-hashed checkouts, tool-written,
   tamper-refusing, and one rule it taught — a checkout is read-only,
   because the verifier caught its own footprint within the hour. The
@@ -110,6 +115,25 @@ All of them are gated: 1, 2, 3 and 6 in `bench/packages_resolve.sh` (which
 also asserts `iyi doc`), 4 in `bench/test_verb.sh`, 5 in
 `bench/lsp_session.py` (a 49-step scripted session), 8 in
 `bench/sandbox_story.sh`.
+
+## §2b The second menu — the loop itself, one verb per step
+
+The first menu made the compiler *legible* to agents: surfaces as data,
+errors as data, a server. The second makes the agent's loop — ground →
+edit → check → fix → verify → run — one cheap, JSON-speaking verb per
+step, and then hands the whole set to every harness at once. All built,
+all gated by `bench/agent_loop.py` (17 asserted steps, in CI beside the
+LSP session):
+
+| # | Verb | What it closes |
+|---|------|----------------|
+| 1 | `iyi check [-f json]` | The front end's verdict alone: no codegen, no binary, exit code the answer. Checks exactly what a build checks — lazy typing means an uncalled body is not visited, and the verb says so rather than promising more |
+| 2 | `suggested_edit` in `-f json` errors | The did-you-mean as a self-contained edit: replace `size` codepoints at `line`:`column` with `replacement`. The participle rule (III.1.7a) and `and`→`&&` are edits too |
+| 3 | `iyi fix [--json] FILE` | Applies exactly those edits, one per round, recompiling between — the only ordering that is always right — until clean or the error carries no edit. `check` shows, `fix` performs |
+| 4 | `iyi test --affected FILE` | Runs only the tests whose transitive import closure reaches a changed file. The set is exact and parsed, never compiled. Restated on the way in: interface hashes are the *rebuild* truth, not the test truth — an implementation edit still changes what a consumer's test executes |
+| 5 | `iyi mcp` | The verbs as Model Context Protocol tools over stdio: check, fix, context, test. Deliberately a shell around this same binary — what an agent gets over MCP is byte-for-byte what a shell would have gotten |
+| 6 | `iyi run --sandbox FILE` | III.12 worn as a verb: wasm32-wasi + wasmtime with nothing preopened. Two fences — the wasm32 prelude has no `File`, and the runtime was handed nothing. A missing toolchain is named, never worked around |
+| 7 | `iyi mod context --budget N` | The pack cut by a defined ladder, never truncation: docs off from the last import backwards, then surfaces collapse to headers that name the module and the cost. Every import is always named |
 
 Free advertising, no work: `iyi mod diff --exit-code` already answers the
 agent question "did I break the API"; document it as a harness contract.

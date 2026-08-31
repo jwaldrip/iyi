@@ -15,7 +15,7 @@ that rule and what it costs.
 | | measured today |
 |---|---|
 | **Developer experience** | edit one module in a 7,207-line project and rebuild: **0.13 s**, against Crystal's 1.17 s and `go build`'s 0.16 s |
-| **Agentic experience** | a module's interface is a file, not a convention: `iyi mod context` grounds an edit in every import's exact surface at **43–55%** of the sources' size, and a model writing against it spent **35–43% fewer prompt tokens** over eight measured runs, no more rounds (`bench/context_pack.py`, both arms). Errors are data (`-f json`, SPEC sections included), tests are exit codes (`iyi test`), dependencies are hashed (`iyi.sum`), and `iyi lsp` serves it all over one protocol — diagnostics in **50–70 ms** per keystroke, no resident state (`bench/lsp_session.py`) |
+| **Agentic experience** | a module's interface is a file, not a convention: `iyi mod context` grounds an edit in every import's exact surface at **43–55%** of the sources' size (`--budget N` cuts it further by a stated ladder), and a model writing against it spent **35–43% fewer prompt tokens** over eight measured runs, no more rounds (`bench/context_pack.py`, both arms). The loop is one verb per step: `iyi check` is the verdict as data with `suggested_edit` spans, `iyi fix` applies them to convergence, `iyi test --affected` runs only what an edit can reach, `iyi run --sandbox` executes generated code against a runtime holding nothing, and `iyi mcp`/`iyi lsp` serve it all over the two protocols agents and editors speak (`bench/agent_loop.py`, `bench/lsp_session.py`) |
 | **Portability** | an iyi program compiles for **nine targets** and is **run** on four of them every build: x86-64 glibc, x86-64 musl, aarch64 under emulation, and wasm32-wasi under wasmtime |
 | **Performance** | native code through LLVM, and a front end that answers `hello` in **0.031 s**. At run time the two libraries are within noise where they do the same work |
 | **Efficiency** | that `hello` is a **36 KB** binary that starts in **1.6 ms**; the same program with Crystal's library is 1,553 KB and 3.2 ms |
@@ -287,7 +287,11 @@ script. Nothing here is agent-specific: it is R-1's boundary, asked a question.
 What *is* here is deliberately unspecial: `iyi lsp` is a standard protocol
 over the same rules — completion, references, rename, hover and diagnostics are the front end
 answering, and the two methods beyond LSP (`iyi/contextPack`,
-`iyi/surface`) return exactly what the CLI prints. No agent mode, no
+`iyi/surface`) return exactly what the CLI prints. `iyi mcp` is the same
+stance on the agent side: the compiler's verbs — `check`, `fix`,
+`context`, `test` — as Model Context Protocol tools, each one a shell
+around this same binary, so what a harness gets over the wire is
+byte-for-byte what a shell would have gotten. No agent mode, no
 forked behaviour by consumer; if the rules turn out not to be enough,
 that is a thing to measure rather than to promise.
 

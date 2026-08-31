@@ -8,10 +8,10 @@
 # `-f json` every error arrives as data, `suggested_edit` included.
 #
 # It checks exactly what a build checks — no more. A def nobody calls is
-# typed when somebody calls it (the lazy-typing rule inherited from
-# Crystal), so a clean `check` means "this program compiles", not "every
-# body in this file has been visited". Saying that plainly beats a verb
-# that quietly promises more than the compiler does.
+# typed when somebody calls it — the lazy typing inherited from Crystal —
+# so a clean `check` means "this program compiles", not "every body in
+# this file has been visited". Saying that plainly beats a verb that
+# quietly promises more than the compiler does.
 #
 # This is the same compile the language server runs on every keystroke
 # (SPEC.md III.8 #2): ~tens of milliseconds on a module-local unit. The

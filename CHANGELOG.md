@@ -4,6 +4,46 @@
 
 ### Added
 
+- **The agent's loop, one verb per step, and all of it gated.** The
+  first AI-first menu made the compiler legible (surfaces as data,
+  errors as data, a server); this wave makes the loop itself cheap:
+  - `iyi check [-f json]` — the front end's verdict alone: no codegen,
+    no binary, exit code the answer. Checks exactly what a build
+    checks, and its own comment says what lazy typing leaves unvisited.
+  - **`suggested_edit` in JSON errors** — the did-you-mean travels as
+    data from the raise site: file, line, column, size, replacement, a
+    self-contained edit. The refusal recorded in AI_FIRST ("inventing
+    edits would be prose wearing a schema") was against parsing prose
+    back, not against carrying the name already computed — so now it is
+    carried, the III.1.7a participle and `and`→`&&` included, and the
+    LSP quickfix reads the field instead of scanning its own messages.
+  - `iyi fix [--json]` — applies exactly those edits, one per round,
+    recompiling between, until clean or the error carries no edit.
+    `check` shows the edit; `fix` performs it; nothing is invented.
+  - `iyi test --affected FILE` — only the tests whose transitive import
+    closure reaches a change, parsed in milliseconds, exact. Restated
+    on the way in because the menu had it wrong: interface hashes are
+    the *rebuild* truth, not the test truth — an edit that moves no
+    surface still changes what a consumer's test executes. Conservative
+    at both unprovable edges: an unparseable test always runs, a
+    deleted changed file turns the discount off.
+  - `iyi mcp` — check, fix, context and test as Model Context Protocol
+    tools over stdio, one JSON-RPC message per line. Deliberately a
+    shell around this same binary: no second implementation, no drift.
+  - `iyi run --sandbox` — III.12 worn as a verb: cross-compile to
+    wasm32-wasi, link through wasi-sdk's clang standing as `cc`, run
+    under a wasmtime that preopens nothing. The theft dies at the
+    compile fence by name; a missing toolchain is named, never worked
+    around.
+  - `iyi mod context --budget N` — the grounding pack cut by a defined
+    ladder, never truncation: docs off from the last import backwards,
+    then surfaces collapse to headers that still name every import and
+    the cost of eliding them. A token is four bytes, crude and stated.
+    `--json` refuses the flag: JSON is already data.
+  `bench/agent_loop.py` is the gate — seventeen asserted steps through
+  ground → check → fix → affected tests → MCP → sandbox — in CI beside
+  the LSP session.
+
 - **A package that names a library it does not carry is refused.** Taken
   from Crystal's own release engineering, which fails its build when
   `otool -L` on the finished compiler names anything under
