@@ -676,11 +676,46 @@ class Iyi::Call
     nil
   end
 
+  # Every name the scope's `using` lines brought into unqualified reach,
+  # Levenshtein'd. A selective `using m::{add}` contributes its selection;
+  # a bare `using m` contributes the module's exported names. The walk is
+  # the same namespace climb the call's own lookup performs (call.cr's
+  # using walk), seeded the same way: `owner.instance_type`, because the
+  # owner of code in a module body is the metaclass and the directive was
+  # recorded on the module itself.
+  private def lookup_similar_using_name(owner, def_name : String) : String?
+    candidates = [] of String
+    scope_type = owner.instance_type
+    while scope_type
+      if used = scope_type.using_modules?
+        used.each do |using_module|
+          if names = using_module.names
+            candidates.concat(names)
+          elsif exported = using_module.type.as?(ModuleType).try(&.exported_names)
+            candidates.concat(exported)
+          end
+        end
+      end
+      break if scope_type == program
+      scope_type = scope_type.is_a?(NamedType) ? scope_type.namespace : nil
+    end
+    candidates.uniq!
+    candidates.delete(def_name)
+    return nil if candidates.empty?
+    Levenshtein.find(def_name, candidates)
+  end
+
   private def raise_undefined_method(owner, def_name, obj)
     check_macro_wrong_number_of_arguments(owner, def_name)
 
     owner_trace = obj.try &.find_owner_trace(owner.program, owner)
     similar_name = owner.lookup_similar_def_name(def_name, self.args.size, block)
+    # iyi: the name may have arrived through `using`, and those names live
+    # on the scope's using list rather than on the owner — the exact miss
+    # that made `addd` go unsuggested while `add` sat one edit away in
+    # the file's own `using` line. Receiverless calls only: a `using`
+    # name is by definition unqualified.
+    similar_name ||= lookup_similar_using_name(owner, def_name) unless obj
 
     # The name that the span under this error can be *replaced with* — set
     # only where that is literally true: the suggestion names a different

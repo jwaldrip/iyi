@@ -131,6 +131,19 @@ def main():
          f"applied {fixed['applied']}")
     step("and check agrees", run("check", "uncalled.iyi", cwd=work).returncode == 0, "")
 
+    # 4c. the suggestion pool includes `using`-imported names — the miss
+    # that motivated it: `addd` went unsuggested while `add` sat one
+    # edit away in the file's own using line
+    write("uses.iyi", (
+        "import calc/add\nusing calc/add::{add}\n\n"
+        "if addd(2, 2) != 4\n    puts \"broke\"\nend\n"
+    ))
+    proc = run("fix", "--json", "uses.iyi", cwd=work)
+    fixed = json.loads(proc.stdout)
+    step("a using-imported name is suggested and fixed",
+         fixed["clean"] and [(a["from"], a["to"]) for a in fixed["applied"]] == [("addd", "add")],
+         f"applied {fixed['applied']}")
+
     # 5. test --affected: the exact selection, both directions
     proc = run("test", "--json", "--affected", "calc/add.iyi", cwd=work)
     report = json.loads(proc.stdout)
