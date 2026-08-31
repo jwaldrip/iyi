@@ -36,7 +36,7 @@ class Iyi::Path
 
     similar_name = type.lookup_similar_path(self)
     if similar_name
-      self.raise("undefined constant #{self}\nDid you mean '#{similar_name}'?")
+      self.raise("undefined constant #{self}\nDid you mean '#{similar_name}'?", suggestion: similar_name.to_s)
     else
       self.raise("undefined constant #{self}")
     end
@@ -682,6 +682,13 @@ class Iyi::Call
     owner_trace = obj.try &.find_owner_trace(owner.program, owner)
     similar_name = owner.lookup_similar_def_name(def_name, self.args.size, block)
 
+    # The name that the span under this error can be *replaced with* — set
+    # only where that is literally true: the suggestion names a different
+    # def and the error's own span is the call's name. The ivar aside
+    # below reuses `similar_name` for a different token, so the edit is
+    # pinned here, not read at the end.
+    suggested_edit = nil
+
     error_msg = String.build do |msg|
       if obj
         could_be_local_variable = false
@@ -725,6 +732,7 @@ class Iyi::Call
           msg << "If you declared '#{def_name}' in a suffix if, declare it in a regular if for this to work. If the variable was declared in a macro it's not visible outside it."
         else
           msg << "Did you mean '#{similar_name}'?"
+          suggested_edit = similar_name
         end
       end
 
@@ -738,6 +746,9 @@ class Iyi::Call
       # `sort` to `sorted` is two edits — so the rule says it instead.
       if !similar_name && (participle = iyi_participle_for(def_name, owner))
         msg << '\n' << "'#{participle}' is what this library calls it: `!` cannot end a name here, so the copy takes the participle and the one that changes the receiver says so (SPEC.md III.1.7a)"
+        # The participle *is* the name to type here — as much an edit as
+        # a Levenshtein hit, and the reason the rule exists.
+        suggested_edit = participle
       end
 
       # iyi: the name is usually not missing, it is out of reach.
@@ -759,7 +770,7 @@ class Iyi::Call
         end
       end
     end
-    raise error_msg, owner_trace
+    raise error_msg, owner_trace, suggestion: suggested_edit
   end
 
   private def raise_matches_not_found_named_args(owner, def_name, defs, arg_types, named_args_types, inner_exception)

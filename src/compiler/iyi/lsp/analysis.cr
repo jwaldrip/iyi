@@ -30,7 +30,8 @@ module Iyi::Lsp
     size : Int32,
     message : String,
     spec : Array(String)?,
-    related : Array({String, Int32, Int32, String})
+    related : Array({String, Int32, Int32, String}),
+    suggestion : String? = nil
 
   class Analysis
     # The last result that type-checked, per document. Hover and
@@ -527,12 +528,13 @@ module Iyi::Lsp
     # with the deepest message, and the other located frames ride along as
     # related information.
     private def to_diag(ex : CodeError, path : String) : Diag
-      frames = [] of {String, Int32, Int32, Int32, String}
+      frames = [] of {String, Int32, Int32, Int32, String, String?}
       cur : CodeError? = ex
       while cur
         line = nil
         col = 0
         size = 0
+        suggestion = nil
         case cur
         when SyntaxException
           line = cur.line_number
@@ -542,16 +544,17 @@ module Iyi::Lsp
           line = cur.line_number
           col = cur.column_number
           size = cur.size
+          suggestion = cur.suggestion
         end
         if line && (msg = cur.message)
-          frames << {cur.true_filename, line, col, size, msg}
+          frames << {cur.true_filename, line, col, size, msg, suggestion}
         end
         cur = cur.is_a?(TypeException) ? cur.inner : nil
       end
 
       deepest_message = ex.is_a?(TypeException) ? ex.deepest_error_message.to_s : ex.message.to_s
 
-      anchor = frames.reverse.find { |(file, _, _, _, _)| file == path }
+      anchor = frames.reverse.find { |(file, _, _, _, _, _)| file == path }
       unless anchor
         # Nothing in this file carries a location: the cause lives in an
         # import. Land on line 1 and say where it really is.
@@ -565,12 +568,12 @@ module Iyi::Lsp
       message = anchor[4]
       message += "\n#{deepest_message}" unless deepest_message == message
 
-      related = frames.compact_map do |(file, line, col, _, msg)|
+      related = frames.compact_map do |(file, line, col, _, msg, _)|
         next if file == anchor[0] && line == anchor[1] && col == anchor[2]
         {file, line, col, msg}
       end
 
-      Diag.new(anchor[1], anchor[2], anchor[3], message, Iyi.iyi_spec_references(message), related)
+      Diag.new(anchor[1], anchor[2], anchor[3], message, Iyi.iyi_spec_references(message), related, anchor[5])
     end
   end
 

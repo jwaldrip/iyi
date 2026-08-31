@@ -46,6 +46,8 @@ class Iyi::Command
         doc                      print a module's exported surface, docs included
         build                    build an executable
         clear_cache              clear the compiler cache
+        check                    type-check only: no codegen, no binary; errors are the exit code
+        fix                      apply the compiler's did-you-mean edits until the file is clean
         env                      print Crystal environment information
         eval                     eval code from args or standard input
         mod                      inspect a .iyimod module artifact
@@ -150,6 +152,16 @@ class Iyi::Command
       # Exact, like `test`: `v` stays `version`'s.
       options.shift
       vet
+    when command == "check"
+      # Exact: `c` must not reach a verb by accident while `clear_cache`
+      # holds its full name.
+      options.shift
+      check
+    when command == "fix"
+      # Exact: a verb that writes to files is not something to reach by
+      # prefix.
+      options.shift
+      fix
     when command == "lsp"
       # Exact: a server is not something to reach by accident from `l`.
       options.shift

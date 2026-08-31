@@ -26,13 +26,24 @@ module Iyi
       warning
     end
 
-    def self.for_node(node, message, inner = nil)
+    # iyi: the did-you-mean, as data (AI_FIRST.md §2 item 3, closed).
+    # The Levenshtein helpers return a name; the raise sites fold it into
+    # prose *and* hand it here, so `-f json` can say exactly what to type
+    # where — the refusal that stood ("inventing edits would be prose
+    # wearing a schema") was against parsing our own prose back, not
+    # against carrying the name we already computed.
+    property suggestion : String?
+
+    def self.for_node(node, message, inner = nil, suggestion = nil)
       location = node.name_location || node.location
       if location
         ex = new message, location.line_number, location.column_number, location.filename, node.name_size, inner
+        ex.suggestion = suggestion
         wrap_macro_expression(ex, location)
       else
-        new message, nil, 0, nil, 0, inner
+        ex = new message, nil, 0, nil, 0, inner
+        ex.suggestion = suggestion
+        ex
       end
     end
 
@@ -74,6 +85,21 @@ module Iyi
           json.field "spec" do
             json.array do
               refs.each { |ref| json.string ref }
+            end
+          end
+        end
+        # The edit itself, self-contained: replace `size` codepoints at
+        # `line`:`column` (1-indexed) of `file` with `replacement`. Only
+        # when the span really delimits the offending token — a
+        # locationless error has no edit, and saying so beats guessing.
+        if (replacement = @suggestion) && @size > 0 && (line = @line_number)
+          json.field "suggested_edit" do
+            json.object do
+              json.field "file", true_filename
+              json.field "line", line
+              json.field "column", @column_number
+              json.field "size", @size
+              json.field "replacement", replacement
             end
           end
         end
@@ -348,7 +374,7 @@ module Iyi
         str << "\n\n"
         str << undefined_variable_message("class variable", node.name, owner.devirtualize)
       end
-      node.raise msg
+      node.raise msg, suggestion: similar_name
     end
 
     def undefined_instance_variable(node, owner, similar_name)
@@ -365,7 +391,7 @@ module Iyi
         str << "\n\n"
         str << undefined_variable_message("instance variable", node.name, owner.devirtualize)
       end
-      node.raise msg
+      node.raise msg, suggestion: similar_name
     end
 
     def undefined_variable_message(kind, example_name, owner)

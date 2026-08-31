@@ -65,8 +65,8 @@ module Iyi::Lsp
   class Server
     @documents = {} of String => String # uri => current text
     # The last published diagnostics, kept for codeAction to read back:
-    # {line0, start_ch, end_ch, message} per document.
-    @published = {} of String => Array({Int32, Int32, Int32, String})
+    # {line0, start_ch, end_ch, message, suggestion} per document.
+    @published = {} of String => Array({Int32, Int32, Int32, String, String?})
     @root : String?
     @running = true
     @analysis = Analysis.new
@@ -518,7 +518,7 @@ module Iyi::Lsp
         {diag.line - 1, start_ch, end_ch, diag}
       end
 
-      @published[uri] = rows.map { |(line0, start_ch, end_ch, diag)| {line0, start_ch, end_ch, diag.message} }
+      @published[uri] = rows.map { |(line0, start_ch, end_ch, diag)| {line0, start_ch, end_ch, diag.message, diag.suggestion} }
       rows
     end
 
@@ -1649,21 +1649,11 @@ module Iyi::Lsp
 
     # ── Code actions ─────────────────────────────────────────────────────
 
-    # The compiler's own suggestion, made clickable: a diagnostic whose
-    # message says "Did you mean 'x'?" becomes a quickfix performing the
-    # change. No new analysis — the fix was computed when the error was.
-    # Found by a plain scan, not a regex: a Regex literal would link
-    # PCRE2 into the compiler, and the dependency floor (SPEC.md III.9)
-    # forbids exactly that.
-    private def suggestion_in(message : String) : String?
-      marker = "Did you mean '"
-      start = message.index(marker)
-      return nil unless start
-      from = start + marker.size
-      close = message.index("'?", from)
-      return nil unless close && close > from
-      message[from...close]
-    end
+    # The compiler's own suggestion, made clickable: a diagnostic that
+    # carries `Diag#suggestion` — set at the raise site, next to the
+    # prose — becomes a quickfix performing the change. No new analysis,
+    # and no scanning our own message strings: the name travels as data
+    # from the exception to the edit.
 
     private def on_code_action(id : JSON::Any, params : JSON::Any) : Nil
       uri = params["textDocument"]["uri"].as_s
@@ -1671,10 +1661,10 @@ module Iyi::Lsp
       to = params["range"]["end"]["line"].as_i
       only = params["context"]?.try(&.["only"]?).try(&.as_a?.try(&.compact_map(&.as_s?)))
 
-      actions = (@published[uri]? || [] of {Int32, Int32, Int32, String}).compact_map do |(line0, start_ch, end_ch, message)|
+      actions = (@published[uri]? || [] of {Int32, Int32, Int32, String, String?}).compact_map do |(line0, start_ch, end_ch, message, suggestion)|
         next unless action_wanted?(only, "quickfix")
         next unless line0 >= from && line0 <= to && end_ch > start_ch
-        next unless suggestion = suggestion_in(message)
+        next unless suggestion
         {line0, start_ch, end_ch, message, suggestion}
       end
 
