@@ -105,10 +105,14 @@ if [ -f "$WORK/mark" ]; then
   echo "  symbols   ${syms:-(none)}"
   echo "  libraries ${libs:-(none)}"
   # The mark phase's own additions over Stage 3 should be nothing: the queue is
-  # mmap and munmap, both already bound for the arenas.
+  # mmap and munmap, both already bound for the arenas. The five loader-glue
+  # names are every dynamically linked binary's baseline on Linux, the same
+  # list `bench/arena_exercise.sh` allows: they come from crt/cc linkage, not
+  # from marking.
   extra="$(undefined_symbols "$WORK/mark" | grep -vxF -e clock_gettime -e exit -e mmap -e munmap -e write \
     -e pthread_self -e pthread_get_stackaddr_np -e _dyld_get_image_header -e _dyld_get_image_vmaddr_slide \
-    -e open -e openat -e close -e read -e unlink -e chmod || true)"
+    -e open -e openat -e close -e read -e unlink -e chmod \
+    -e ITM_deregisterTMCloneTable -e ITM_registerTMCloneTable -e _cxa_finalize -e _gmon_start__ -e _libc_start_main || true)"
   if [ -n "$extra" ]; then
     echo "  marking asks the machine for something new:"
     echo "$extra" | sed 's/^/    /'

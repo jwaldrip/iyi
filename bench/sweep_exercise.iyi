@@ -149,6 +149,13 @@
   Pointer(UInt8).new(big).value = 0x77_u8
   Pointer(UInt8).new(big + 2097151_u64).value = 0x88_u8
   IyiMark.collect
+  # Read the root back before touching the bytes: the read is the check that
+  # the global still holds the object, and it is also what keeps the store
+  # alive under optimisation — a global written and never read is a store the
+  # back end may legally drop, and a dropped store is a root that never
+  # existed. A collector cannot promise more than "reachable through memory";
+  # this line is what makes the object reachable through memory.
+  raise "sweep: the large root was lost" if Held.keep != big
   if Pointer(UInt8).new(big).value != 0x77_u8 || Pointer(UInt8).new(big + 2097151_u64).value != 0x88_u8
     raise "sweep: a rooted 2 MiB object lost its first or last byte"
   end
