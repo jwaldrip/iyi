@@ -203,18 +203,18 @@ describe Iyi::IyiMod do
       end
     end
   end
-  # The one a v21 artifact in a cache actually hits: the `Layouts` section
-  # bumped the format to v22, and the rule above applies to the version this
+  # The one a v42 artifact in a cache actually hits: the `Layouts` section
+  # bumped the format to v43, and the rule above applies to the version this
   # tree wrote yesterday exactly as to one it never wrote.
-  it "refuses a v21 artifact" do
+  it "refuses a v42 artifact" do
     with_temporary_file do |path|
       Iyi::IyiMod.write sample_artifact, path
       bytes = File.read(path).to_slice.dup
       # The version is the u32 right after the 8-byte magic.
-      Iyi::IyiMod::FORMAT.encode(21_u32, bytes[8, 4])
+      Iyi::IyiMod::FORMAT.encode(42_u32, bytes[8, 4])
       File.write path, bytes
 
-      expect_raises(Iyi::IyiMod::Error, /format v21/) do
+      expect_raises(Iyi::IyiMod::Error, /format v42/) do
         Iyi::IyiMod.read(path)
       end
     end

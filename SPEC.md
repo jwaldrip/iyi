@@ -1133,7 +1133,7 @@ optimisation the back end runs. `gcry` has measured that half and found it is
 not even an RSS win. So the prerequisite stands and the bill is a table, not an
 epic. See III.9.
 
-**The table is now written.** `.iyimod` format v22 carries a `Layouts` section:
+**The table is now written.** `.iyimod` format v43 carries a `Layouts` section:
 per type this module owns, its allocation size, its unrounded instance size, and
 the byte offsets of its pointer fields, taken from the target's own data layout
 rather than added up by hand. `Probe::Shapes::Pair`, three fields of `String`,
