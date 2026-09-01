@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-09-01
+
+**A file reaches exactly what it imports, and a mistake dies where it
+was written.** The import wall R-1 promised turned out not to exist —
+anyone's import made a module everyone's — and now it stands per-file,
+`pub import` the one door through it, closed for `using` and for
+qualified names alike; the refusal teaches both fixes by name. And
+typing moved home: every fully declared def in user code is checked
+against its own signature in the same semantic run, generic bodies
+against their bounds through synthesized witnesses — build, `check`,
+artifact emit and every LSP keystroke agree about what "clean" means,
+and `--shallow` is gone because there is no shallower truth to offer.
+
+The agent's loop is verbs now, all gated: `check` with `--affected`
+for the ripple, `fix`, `test --affected`, `mcp`, `run --sandbox`, and
+`mod context --budget`. `Program.args` and `Program.env` landed in the
+own prelude, so a pure-iyi tool reads its arguments, its environment
+and the disk.
+
+`.iyimod` format is v42 — the facade bit travels, one byte per import
+edge — so a 0.5.x artifact is rejected by a 0.6.0 build and rebuilt,
+never migrated.
 
 ### Added
 
