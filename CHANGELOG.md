@@ -138,6 +138,35 @@
   reading it as "do not retain" and collecting live buffers. Layouts are per
   instantiation, not per GC shape, because shape keying is R-4 and unbuilt.
 
+### Fixed
+
+- **`memset` strode eight elements where it meant eight bytes — in every
+  released compiler.** The prelude's own `memset` advanced its
+  `Pointer(UInt64)` by 8 — eight *elements*, 64 bytes — while its counter
+  recorded 8, so every runtime-sized clear wrote one word in eight far past
+  its count and left seven of eight bytes dirty. Invisible until now because
+  the bump allocator's overwrite landed in the untouched zero tail of its own
+  mapping; the arena gate's default arm found it by burning a full region —
+  2,000,000 allocations of 24 bytes segfault on 0.6.0 as released. The win32
+  copy carried the same stride, which is consistent with that target's open
+  diagnosis of binaries printing memory they were never given, and wasm32
+  carried it at width four. All three loops advance one element now; the
+  `-Dgc_iyi` branch's own memset already did.
+
+### Learned
+
+- **A parked fiber's stack is an unscanned root, and the optimiser is part
+  of the collector's contract.** Two findings from rebasing the collector
+  onto 0.6.0's tree. Root discovery was written when this language had no
+  fibers; 0.4.0 gave it a scheduler, so `each_root`'s walk — current stack,
+  spilled registers, globals — now has a named gap: an object reachable only
+  from a parked fiber's stack would be freed live. Latent, because only the
+  single-fiber exercises trigger collection; recorded in GC_DESIGN.md as
+  Stage 3's next task rather than a wait on threads. And the sweep gate's 2
+  MiB root sat in a global written and never read, which the optimised build
+  was within its rights to drop — the exercise now reads the root back after
+  collecting, the check that is also what keeps the store alive.
+
 ## 0.6.0 — 2026-09-01
 
 **A file reaches exactly what it imports, and a mistake dies where it

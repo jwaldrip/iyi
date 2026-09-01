@@ -1029,15 +1029,16 @@ require "./file"
     #    because a missing root range is a collector that frees live objects
     #    and an empty range looks exactly like a clean scan.
     #
-    # Fibers are Stage 3's fourth task and there is nothing to enumerate.
-    # This language has neither fibers nor threads: SPEC.md III.4 leaves
-    # structured concurrency unbuilt, and III.9 records why a scheduler is
-    # not a small step, since reaching for pthreads puts libc back on the
-    # link line and moves the dependency floor this fork measures. A registry
-    # of fibers that cannot exist would be a mechanism no test can exercise,
-    # which is the objection III.4.8 already made to a concurrency marker
-    # that gates no operation. When III.4 lands, a fiber's stack is a fourth
-    # range and `each_root` grows one call.
+    # Fibers are Stage 3's fourth task, and since 0.4.0 they exist: the
+    # concurrency runtime in `concurrency.iyi` parks fibers whose 256 KiB
+    # stacks this walk never reaches. **A parked fiber's stack is an
+    # unscanned root range**, so an object reachable only from one would be
+    # freed live if a collection ran while it was parked. That has no way to
+    # happen today — nothing triggers a collection except the exercises, and
+    # they are single-fiber — which is why this is a recorded gap rather
+    # than a bug: before anything calls `IyiMark.collect` from a program
+    # that spawns, `each_root` must grow a walk of the scheduler's registry,
+    # each parked fiber's [saved stack pointer, stack top] as a range.
     #
     # What is NOT here, for the same reason: nothing suspends a thread. Stage
     # 4's `SIGSTOP` on Linux and Mach `thread_suspend` on darwin stop threads
@@ -1438,8 +1439,10 @@ require "./file"
         scan_range(const_low, const_high, visit)
       end
 
-      # The whole root set, which is stack, registers and globals, and would
-      # be fiber stacks too if this language had fibers (SPEC.md III.4). The
+      # The current stack, registers and globals — NOT the whole root set:
+      # parked fiber stacks are missing, the recorded gap the block above
+      # states, and the reason nothing may trigger a collection from a
+      # program that spawns until the scheduler's registry is walked. The
       # spill happens first and before anything calls back into user code,
       # because the callback is user code and user code uses registers.
       def self.each_root(visit : Proc(UInt64, Nil)) : Nil
@@ -1475,10 +1478,11 @@ require "./file"
     # a false positive retains a dead object and only a false negative frees a
     # live one.
     #
-    # Plain loads and stores rather than compare-and-swap, for the same reason
-    # the fiber registry is absent: one thread. `ObjectHeader`'s CAS helpers
-    # exist and are tested for when Stage 7 has threads to contend, and with a
-    # single mutator a CAS and a load-store pair decide the same thing.
+    # Plain loads and stores rather than compare-and-swap: one mutator
+    # thread, and the scheduler's fibers yield only at suspension points,
+    # never inside the marker. `ObjectHeader`'s CAS helpers exist and are
+    # tested for when Stage 7 has threads to contend, and with a single
+    # mutator a CAS and a load-store pair decide the same thing.
     class IyiMark
       WHITE = 0_u64
       GRAY  = 1_u64

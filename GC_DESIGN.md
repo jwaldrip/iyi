@@ -59,35 +59,39 @@ first because its binaries currently print uninitialized memory and a new
 allocator there would confound that diagnosis, the second because it has no
 mmap and its watermark arena is a separate design.
 
-## What the staging above got wrong, found while building it
+## What the staging above got wrong, and what the rebase onto 0.6.0 corrected
 
-This plan was written assuming iyi has threads and fibers. It has neither. Grep
-the prelude: no `Fiber`, no `Thread`, no `spawn`, no `pthread`, no `Mutex`.
-SPEC.md III.4 leaves concurrency unbuilt, and III.9 records why a scheduler is
-not a free addition: one that reached for pthreads would put libc back on the
-link line and take the dependency floor with it.
+This plan was written assuming iyi has threads and fibers, and when the first
+three stages were built it had neither. That half inverted while the work was
+in flight: 0.4.0 shipped structured concurrency — a cooperative scheduler,
+`spawn`/`group`, `Channel`, 256 KiB mmap'd fiber stacks in
+`src/iyi/concurrency.iyi`. Threads are still absent, and III.9's reason
+stands.
 
-So four of the ten stages are not "later", they are blocked on something outside
-this document:
+What that does to the stages, restated against the tree as it is:
 
-* **Stage 3's fiber enumeration** has nothing to enumerate. The registry is not
-  built, because a registry of a type that cannot exist cannot be tested.
-* **Stage 4's thread suspension** has nothing to suspend. `SIGSTOP`, Mach
-  `thread_suspend` and `SuspendThread` are all machinery for a second thread.
-  What is real in Stage 4 with one thread is register capture, because a live
-  root can sit in a callee-saved register and never touch the stack, and a
-  collector that scans only the stack frees it. That part moved into Stage 3,
-  where it can be tested.
-* **Stages 7 and 8**, parallel marking and concurrent sweeping, are the reason
-  the owner chose to own a collector, and they cannot be built or measured with
-  one thread. They wait on III.4. The mark word is already CAS-safe and the
-  header already reserves its bits, so the wait costs a redesign of nothing.
+* **Stage 3's fiber enumeration is no longer blocked — it is missing.** The
+  root walk covers the current stack, the spilled registers and the globals,
+  and a *parked* fiber's stack is an unscanned root range: an object
+  reachable only from one would be freed live. Latent rather than active,
+  because nothing triggers a collection except the exercises and they are
+  single-fiber — but it is the next Stage 3 task, not a wait on III.4:
+  walk the scheduler's registry, each parked fiber's
+  [saved stack pointer, stack top] as a range.
+* **Stage 4's thread suspension** still has nothing to suspend: fibers yield
+  cooperatively at suspension points and never inside the marker, so a
+  single-threaded collection needs no stopping. Register capture, the part
+  that was real with one thread, moved into Stage 3 where it is tested.
+* **Stages 7 and 8**, parallel marking and concurrent sweeping, are the
+  reason the owner chose to own a collector, and they still wait on threads,
+  not on fibers. The mark word is already CAS-safe and the header already
+  reserves its bits, so the wait costs a redesign of nothing.
 * **Stage 9** is conditional on measuring Stage 7, so it inherits the same wait.
 
 This is worth stating plainly rather than leaving the plan to read as ten
-achievable steps: the collector can reach a working single-threaded
-mark-and-sweep, and the concurrency the decision was made for arrives after a
-scheduler does.
+achievable steps: the collector can reach a working single-fiber
+mark-and-sweep today, a fiber-aware one after Stage 3's registry walk, and
+the parallelism the decision was made for arrives after threads do.
 
 So the point of no return, Stage 5, is still ahead.
 
