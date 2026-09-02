@@ -103,6 +103,12 @@ lib LibLLVM
   fun get_vector_size = LLVMGetVectorSize(vector_ty : TypeRef) : UInt
 
   fun void_type_in_context = LLVMVoidTypeInContext(c : ContextRef) : TypeRef
+  fun token_type_in_context = LLVMTokenTypeInContext(c : ContextRef) : TypeRef
+
+  # iyi: module-level assembly, which is how a wasm module gets a definition of
+  # the `__cpp_exception` tag. Nothing in LLVM IR can declare a wasm tag, and an
+  # undefined one does not link.
+  fun append_module_inline_asm = LLVMAppendModuleInlineAsm(m : ModuleRef, asm_string : Char*, len : SizeT)
 
   fun type_of = LLVMTypeOf(val : ValueRef) : TypeRef
   fun get_value_kind = LLVMGetValueKind(val : ValueRef) : LLVM::Value::Kind

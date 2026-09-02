@@ -3,6 +3,15 @@
 lib LibIntrinsics
   fun debugtrap = "llvm.debugtrap"
 
+  {% if flag?(:wasm32) %}
+    # iyi: the wasm `throw` instruction. *tag* 0 is the tag LLVM calls
+    # `__cpp_exception`, whose single parameter is the pointer being thrown;
+    # `Iyi::CodeGenVisitor#configure_module` is what defines that tag in the
+    # module. This is the whole raise mechanism on wasm: there is no unwinder to
+    # call, the engine unwinds.
+    fun wasm_throw = "llvm.wasm.throw"(tag : Int32, obj : Void*) : NoReturn
+  {% end %}
+
   {% if flag?(:avr) %}
     {% if compare_versions(Crystal::LLVM_VERSION, "15.0.0") < 0 %}
       fun memcpy = "llvm.memcpy.p0i8.p0i8.i16"(dest : Void*, src : Void*, len : UInt16, is_volatile : Bool)

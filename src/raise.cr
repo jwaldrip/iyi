@@ -160,24 +160,45 @@ end
     __crystal_continue_unwind
   end
 {% elsif flag?(:wasm32) %}
+  # iyi: for `LibUnwind::Exception`, which is only the envelope here: the struct
+  # carries the exception object and its type id, and none of the `_Unwind_*`
+  # functions declared beside it are called on this target. Everywhere else the
+  # file arrives through `exception/call_stack/libunwind.cr`, and wasm32 uses
+  # `call_stack/null.cr` instead.
+  require "exception/lib_unwind"
+
   # :nodoc:
+  #
+  # iyi: never called on this target, and defined because `personality_name` is
+  # still this name. A wasm engine unwinds by itself and has nowhere to call a
+  # personality routine from mid-unwind, so codegen names
+  # `__gxx_wasm_personality_v0` on the function holding a `catchpad` purely to
+  # satisfy LLVM, and dispatches on the exception's type id in ordinary code
+  # after the pad. See `Iyi::CodeGenVisitor#visit(ExceptionHandler)`.
   fun __crystal_personality
     Crystal::System.print_error "EXITING: __crystal_personality called"
     LibC.exit(1)
   end
 
   # :nodoc:
+  #
+  # iyi: the whole of raising on wasm. There is no unwinder library to hand the
+  # exception to; the instruction that starts unwinding is `throw`, which takes
+  # a tag and that tag's parameter. Tag 0 is what LLVM calls `__cpp_exception`
+  # and its parameter is the pointer, so the `LibUnwind::Exception` envelope
+  # this target still builds travels as that pointer and comes back out of a
+  # `catchpad` through `llvm.wasm.get.exception`.
+  #
+  # What was here before printed "EXITING: __crystal_raise called" and exited,
+  # which is why `begin`/`rescue` did not work on this target at all.
   @[Raises]
-  fun __crystal_raise(ex : Void*) : NoReturn
-    Crystal::System.print_error "EXITING: __crystal_raise called"
-    LibC.exit(1)
+  fun __crystal_raise(unwind_ex : LibUnwind::Exception*) : NoReturn
+    LibIntrinsics.wasm_throw(0, unwind_ex.as(Void*))
   end
 
   # :nodoc:
-  fun __crystal_get_exception(ex : Void*) : UInt64
-    Crystal::System.print_error "EXITING: __crystal_get_exception called"
-    LibC.exit(1)
-    0u64
+  fun __crystal_get_exception(unwind_ex : LibUnwind::Exception*) : UInt64
+    unwind_ex.value.exception_object.address
   end
 {% else %}
   {% mingw = flag?(:win32) && flag?(:gnu) %}
@@ -237,28 +258,20 @@ end
   end
 {% end %}
 
-{% if flag?(:wasm32) %}
-  def raise(exception : Exception) : NoReturn
-    Crystal::System.print_error "EXITING: Attempting to raise:\n%s\n", exception.inspect_with_backtrace
-    LibIntrinsics.debugtrap
-    LibC.exit(1)
-  end
-{% else %}
-  # Raises the *exception*.
-  #
-  # This will set the exception's callstack if it hasn't been already.
-  # Re-raising a previously caught exception won't replace the callstack.
-  def raise(exception : Exception) : NoReturn
-    {% if flag?(:debug_raise) %}
-      STDERR.puts
-      STDERR.puts "Attempting to raise: "
-      exception.inspect_with_backtrace(STDERR)
-    {% end %}
+# Raises the *exception*.
+#
+# This will set the exception's callstack if it hasn't been already.
+# Re-raising a previously caught exception won't replace the callstack.
+def raise(exception : Exception) : NoReturn
+  {% if flag?(:debug_raise) %}
+    STDERR.puts
+    STDERR.puts "Attempting to raise: "
+    exception.inspect_with_backtrace(STDERR)
+  {% end %}
 
-    exception.callstack ||= Exception::CallStack.new
-    raise_without_backtrace(exception)
-  end
-{% end %}
+  exception.callstack ||= Exception::CallStack.new
+  raise_without_backtrace(exception)
+end
 
 # Raises an Exception with the *message*.
 def raise(message : String) : NoReturn

@@ -27,9 +27,16 @@ Two tiers, and they are independent.
 
 Tier two is done in the sense that matters: the artifacts build, link, load in
 V8, and print the same bytes as a native run, under a pure JavaScript WASI
-implementation. Tier one gets remarkably far and then hits one wall that is not
-a matter of effort ordering: **`raise` on wasm32 does not unwind, it prints and
-exits**, and iyi's semantic analysis uses exceptions as ordinary control flow.
+implementation. Tier one gets remarkably far and then hit one wall that was not
+a matter of effort ordering: **`raise` on wasm32 did not unwind, it printed and
+exited**, and iyi's semantic analysis uses exceptions as ordinary control flow.
+
+**That wall is down. Section 11 supersedes this paragraph and the section titled
+"The wall" below**: `rescue` works on wasm32, the front end runs as a wasm
+module and reports iyi's real diagnostics in V8, and the question that decides a
+playground has moved to whether a visitor's program can execute. Everything
+between here and section 11 is the record as it was measured before that, kept
+because the blockers it names are the reason the fix took the shape it did.
 
 ## How this was measured
 
@@ -597,7 +604,7 @@ A probe reading `STDIN.gets_to_end` and writing to `STDERR` printed
 browser type-checker needs, which means blocker 6 could be sidestepped for
 user source, though not for the prelude.
 
-### The wall: `raise` on wasm32 does not unwind
+### The wall: `raise` on wasm32 does not unwind (superseded by section 11)
 
 With blockers 1 through 6 cleared, the wasm front end reads the prelude and
 runs deep into type analysis. It then dies here:
@@ -803,3 +810,240 @@ links no LLVM" does not currently build. Given that the front end is the
 standing proof behind the fork's front-end timing claims, and given it is the
 foundation of the most valuable version of this website, that is the one to fix
 first.
+
+## 11. The wall is down, and it moved the question
+
+Sections 7 and 9 are now out of date in one direction and confirmed in another.
+Both updates are measurements.
+
+### `rescue` works on wasm32
+
+The item section 7 called "the only item on this list that is genuinely hard"
+is done. `bench/wasm_exceptions.sh` is the acceptance test this report asked
+for, gated in CI by the `wasm-exceptions` job:
+
+```
+$ bash bench/wasm_exceptions.sh
+engine: node v26.7.0, V8 14.6.202.34-node.28
+same output natively and on wasm32-wasi:
+  before
+  rescued: boom
+  after
+imports only wasi_snapshot_preview1
+```
+
+27 bytes each way, identical. The same program before the change, on the same
+machine, linked around the `_start` collision:
+
+```
+before
+EXITING: Attempting to raise:
+boom (Exception)
+RuntimeError: unreachable
+```
+
+The linked module asks the host for **seven `wasi_snapshot_preview1` functions
+and nothing else**. No `_Unwind_*`, no libc++abi, no libunwind, and no imported
+tag. The exception tag is defined inside the module, in module-level assembly,
+because nothing in LLVM IR can declare a wasm tag, wasm-ld does not synthesise
+one, and no library wasi-sdk ships defines it:
+
+```
+$ llvm-nm libc++abi.a libc++.a libc.a | grep -c __cpp_exception
+0
+```
+
+Blockers 3, 4, 5 and 6 are fixed rather than probed, including blocker 5, so
+the gate above links with no `-nostartfiles`. Section 10's items 1 to 4 are
+closed.
+
+### The interpreter runs the macro language, not the language
+
+Section 4 said the REPL "is a subset of the language rather than the language"
+and left it there. With the wall down that sentence is the whole remaining
+question: the front end gives a type checker in a browser, and a playground
+needs a visitor's program to **execute**. The macro AST interpreter
+(`src/compiler/iyi/macros/interpreter.cr`, 809 lines) is the only thing in the
+tree that can execute anything with no LLVM and no linker, so what it can run
+is what a playground can offer.
+
+Measured, not argued. A probe parses a whole file and hands the AST to
+`Iyi::MacroInterpreter#accept`, which is what a playground engine would do. All
+13 programs in `samples/iyi/`, unmodified:
+
+```
+basics       REFUSED: can't execute ModuleHeader in a macro
+calc         REFUSED: can't execute ModuleHeader in a macro
+collections  REFUSED: can't execute ModuleHeader in a macro
+derive       REFUSED: can't execute ModuleHeader in a macro
+errors       REFUSED: can't execute ModuleHeader in a macro
+files        REFUSED: can't execute ModuleHeader in a macro
+formatting   REFUSED: can't execute ModuleHeader in a macro
+generics     REFUSED: can't execute ModuleHeader in a macro
+hello        REFUSED: can't execute ModuleHeader in a macro
+immutable    REFUSED: can't execute ModuleHeader in a macro
+init_order   REFUSED: can't execute ModuleHeader in a macro
+modules      REFUSED: can't execute ModuleHeader in a macro
+webapp       REFUSED: can't execute ModuleHeader in a macro
+ran=0 refused=13
+```
+
+**Nought out of thirteen, and every one of them on line 1.** `module
+samples/hello` is R-1, the compilation-unit header every iyi file opens with,
+and the interpreter has no visit for it.
+
+Deleting the header and the `import` lines is a modification, so no sample runs
+as written, but it answers the more useful question of what stops it next:
+
+```
+basics       ran 19 of 30 output lines, then: undefined macro method 'ArrayLiteral#sorted'
+formatting   ran 3 lines, then: wrong argument for StringLiteral#[] (NumberLiteral): -1
+init_order   ran 1 line, then: undefined constant Boot::Registry
+calc         REFUSED: can't execute UsingDecl in a macro
+collections  REFUSED: can't execute UsingDecl in a macro
+derive       REFUSED: can't execute UsingDecl in a macro
+immutable    REFUSED: can't execute UsingDecl in a macro
+modules      REFUSED: can't execute UsingDecl in a macro
+webapp       REFUSED: can't execute UsingDecl in a macro
+generics     REFUSED: can't execute TraitDef in a macro
+hello        REFUSED: can't execute TraitDef in a macro
+errors       REFUSED: can't execute ClassDef in a macro
+files        REFUSED: undefined constant File
+ran=0 refused=13
+```
+
+Still nought. Three get partway and none finishes. The refusals are not a list
+of missing conveniences, they are the language's declaration forms: `module`,
+`using`, `trait`, `class`. `basics` gets furthest because most of it is integer
+arithmetic, `if`, `while` and `puts` over literals, which is what the macro
+language is for; it dies the moment it calls `Array#sort`, because
+`ArrayLiteral` is a compile-time node and `sorted` is not one of its methods.
+
+**The boundary, for a website to publish.** The interpreter evaluates iyi's
+*macro* language: literal arithmetic on integers and strings, `if`, `while`,
+array and hash literal methods, `puts`, and the compile-time reflection a macro
+body uses, all over AST nodes. It does not execute the language. It cannot read
+a module header, declare a trait, a class or a `using`, define a method and
+then call it, or reach the standard library, and it has no runtime values at
+all: an integer in it is a `NumberLiteral`, not an `Int32`. A visitor could
+type expressions and see them evaluated. A visitor could not type any program
+in `samples/iyi/`, or any program that begins the way iyi says a program
+begins.
+
+So a playground that runs the visitor's own code is not reachable through this
+interpreter as it stands, and the gap is not polish. What is reachable now that
+the wall is down is the front end in the browser: real parsing, real semantic
+analysis, real iyi diagnostics on what the visitor typed, with no server and no
+backend of any kind. That is a type checker, not a playground, and the
+difference is worth naming rather than blurring.
+
+### The other interpreter: Crystal's bytecode VM
+
+Before concluding that execution is impossible, the second candidate had to be
+checked, because it is a different thing from the macro evaluator: upstream
+Crystal ships `crystal i`, a real interpreter backed by a bytecode VM under
+`src/compiler/crystal/interpreter/`.
+
+**It is not in this tree, and it was deleted rather than compiled out.**
+
+```
+$ ls -d src/compiler/iyi/interpreter src/compiler/crystal/interpreter
+ls: cannot access 'src/compiler/iyi/interpreter': No such file or directory
+ls: cannot access 'src/compiler/crystal/interpreter': No such file or directory
+
+$ git log --oneline --all --diff-filter=D -- '*/interpreter/*' | head -1
+125febdca Remove the interpreter
+
+$ git show --stat 125febdca | tail -1
+ 151 files changed, 673 insertions(+), 21211 deletions(-)
+```
+
+And the reason it went is the same finding as section 11's, arrived at
+independently a week earlier. From `125febdca`'s own message:
+
+> it cannot run an iyi program: given samples/iyi/hello.iyi it stops on line 12
+> with "BUG: missing interpret for Crystal::ModuleHeader", which is R-1, the
+> first rule this language has.
+
+> An interpreter is a second implementation of the language's semantics, and
+> traits, impl, using, error unions, defer and the module header would each have
+> to exist twice or the second copy would quietly mean something else. The
+> language is not finished moving, so that price is not paid once.
+
+That is worth sitting with. **Both interpreters this fork has ever had fail on
+the same node.** The bytecode VM stopped at `BUG: missing interpret for
+Crystal::ModuleHeader`; the macro evaluator stops at `can't execute ModuleHeader
+in a macro`. R-1, the module header, the first line of every iyi file, defeats
+both, and for the same reason: neither implements iyi, one because it implements
+Crystal and one because it implements the macro language.
+
+On what it would need, the tree's own record is more precise than a guess.
+`SPEC.md` lines 3533 to 3543 settle the dependency question, and it is not the
+obstacle it looks like:
+
+> It is needed for one thing only: interpreted code calling out to C. An
+> interpreter that does not offer C calls needs no libffi, which is Elixir's
+> model.
+
+So libffi is not fatal in principle; it is the price of C interop, and a browser
+session has nothing to call out to. `bench/dependency_floor.sh` forbids libffi
+and is proven to fire, but that forbids the C-interop *path*, not interpretation.
+A bytecode VM needs no LLVM at run time by construction, and needs no linker and
+no subprocess, so nothing about wasm32-wasi rules one out now that unwinding
+works.
+
+**The verdict, stated as the evidence supports it and no further.** Reverting
+`125febdca` is not a path: it restores 11,377 lines that interpret Crystal and
+stop on line 12 of `hello.iyi`, and every iyi construct added since would have to
+be implemented in it. Writing an interpreter that runs iyi is a path, and it is
+the one the tree already chose in `SPEC.md` III.11, starting from the 781-line
+macro evaluator rather than the deleted VM. Neither of those is blocked by wasm
+or by a dependency. Both are a second implementation of a language the fork is
+still changing, which is the objection `125febdca` and V.11 both raised and
+which no amount of wasm work answers.
+
+What this report can say, and the distinction matters for the site: **the
+browser can now type-check a visitor's iyi. It cannot run it, and nothing in the
+tree can, and the reason is not the browser.**
+
+### The bundle, measured after the change
+
+Section 7's release figures were taken before any of this landed, so they no
+longer describe what a site would ship. Taken again, on this commit.
+
+Machine: macOS 25.5.0 arm64, Apple M5 Max. Compiler: this branch, built against
+Homebrew LLVM 22.1.8. Built with `--release --no-debug -Dwithout_llvm
+-Dwithout_openssl -Dwithout_zlib -Dwithout_iconv`, cross-compiled for
+wasm32-wasi, linked with wasi-sdk 24's `wasm-ld` against `crt1.o` and `libc`,
+then `llvm-strip`ped. Compressed with `gzip -9` and with brotli at quality 9
+through node's `zlib`.
+
+| | bytes | |
+|---|---|---|
+| `cfr.linked.wasm` | 12,300,878 | linked, unstripped |
+| `cfr.stripped.wasm` | 11,242,622 | **what a site serves**, 10.7 MB |
+| `cfr.gz` | 2,242,095 | gzip -9, 2.1 MB |
+| `cfr.br` | 1,250,131 | brotli -9, 1.19 MB |
+
+And the stripped release module still does the thing:
+
+```
+$ node --no-warnings runfront.mjs cfr.stripped.wasm bad.iyi
+In bad.iyi:11:6
+
+ 11 | puts announce(42)
+           ^-------
+Error: Int32 does not implement Samples::Bad::Greet, required by `T` in `announce`
+```
+
+Against section 7's pre-change numbers, which were 10,691,128 raw, 2,128,573
+gzipped and 1,215,513 brotli, this is 551,494 bytes larger raw, 113,522 larger
+gzipped and 34,618 larger brotli: **2.8% more over the wire in brotli**. That is
+what wasm exception handling and the six blocker fixes cost, and it is worth
+stating rather than reusing the older figure, because the older figure describes
+a module that could not `rescue`.
+
+The prelude source ships alongside, which `README.md` puts at 100 KB, served
+through the shim's in-memory filesystem. So a tier-one bundle is about 1.2 MB
+brotli plus 100 KB of text, and it carries no LLVM: the module's imports are
+`wasi_snapshot_preview1` functions and nothing else.

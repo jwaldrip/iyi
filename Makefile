@@ -171,12 +171,12 @@ else
   colorize = $(shell printf "\033[33m%s\033[0m\n" "$1" >&2)
 endif
 
+# iyi: `llvm_ext.o` is built for every supported LLVM again. It was dropped on
+# LLVM 18 and newer because upstream had adopted every C API it wrapped, and it
+# is back for one function upstream has not: `TargetOptions::ExceptionModel`,
+# which is the difference between a wasm build that can `rescue` and one whose
+# landing pads are silently deleted. See `src/llvm/ext/llvm_ext.cc`.
 DEPS = $(LLVM_EXT_OBJ)
-ifneq ($(LLVM_VERSION),)
-  ifeq ($(shell test $(firstword $(subst ., ,$(LLVM_VERSION))) -ge 18; echo $$?),0)
-    DEPS =
-  endif
-endif
 
 check_llvm_config = $(eval \
 	check_llvm_config := $(if $(LLVM_VERSION), \

@@ -24,6 +24,7 @@
 # first decides what it inherits from.
 require "./iyi/annotatable"
 require "./iyi/program"
+require "./iyi/program_name"
 require "./iyi/config"
 require "./iyi/iyi_path"
 require "./iyi/error"
@@ -34,6 +35,10 @@ require "./iyi/optimization_mode"
 require "./iyi/syntax/transformer"
 require "./iyi/progress_tracker"
 require "./iyi/semantic"
+# The macro methods compile patterns with the compiler's own engine, and
+# `semantic/suggestions.cr` and `syntax` reach for it too. `requires.cr` gets it
+# from the `./iyi/*` glob; a hand-written list has to name it.
+require "./iyi/rx"
 require "./iyi/macros/*"
 require "./iyi/syntax"
 require "./iyi/types"

@@ -62,7 +62,19 @@ class Iyi::CodeGenVisitor
 
     msvc = @program.has_flag?("msvc")
 
+    # iyi: wasm exception handling is funclet shaped, like Windows SEH and
+    # unlike Itanium: a `catchswitch` chooses a handler and a `catchpad` is the
+    # handler's entry, and calls inside one carry a `funclet` bundle. What it
+    # does not have is a personality function that runs: the engine unwinds, so
+    # nothing can call back into the program mid-unwind. `__gxx_wasm_personality_v0`
+    # is named because LLVM requires a personality on a function with a
+    # `catchpad`, and it is never called, because iyi's pad catches everything
+    # and dispatches on the type id itself, which is what it already does on
+    # every other target.
+    wasm = @program.has_flag?("wasm32")
+
     context.fun.personality_function = windows_personality_fun.func if msvc
+    context.fun.personality_function = wasm_personality_fun.func if wasm
 
     # This is the block which is entered when the body raises an exception
     rescue_block = new_block "rescue"
@@ -136,6 +148,46 @@ class Iyi::CodeGenVisitor
         # builder.printf("catchpad entered #{node.location}\n", catch_pad: @catch_pad)
 
         caught_exception = load exception_llvm_type, caught_exception_ptr
+        exception_type_id = type_id(caught_exception, exception_type)
+      elsif wasm
+        # A wasm `catchswitch`/`catchpad` pair, with one difference from SEH
+        # that decides the shape of everything below: the thrown pointer is not
+        # written to a slot the pad names, it is a value the engine hands back,
+        # and `llvm.wasm.get.exception` is the only way to ask for it and has to
+        # be asked inside the funclet.
+        #
+        # So the funclet does exactly that and leaves. Everything after the
+        # `catchret` is ordinary control flow: the type dispatch, the rescue
+        # bodies, the ensure and the re-raise are the same code the Itanium path
+        # runs, which is why this branch is short. Leaving early is also what
+        # makes a re-raise correct rather than efficient: a `throw` after
+        # `end_try` propagates to the enclosing handler, which is what re-raise
+        # means, and iyi carries the exception object itself so it needs nothing
+        # the funclet was holding.
+        catch_body = new_block "catch_body"
+        catch_switch = builder.catch_switch(@catch_pad || LLVM::Value.null, @rescue_block || LLVM::BasicBlock.null, 1)
+        builder.add_handler catch_switch, catch_body
+
+        unwind_ex_slot = alloca llvm_context.void_pointer, "unwind_ex"
+
+        position_at_end catch_body
+        catch_pad = @catch_pad = builder.catch_pad catch_switch, [llvm_context.void_pointer.null]
+        store call(wasm_get_exception_fun, [catch_pad]), unwind_ex_slot
+
+        catch_resume_block = new_block "catch_resume"
+        builder.build_catch_ret catch_pad, catch_resume_block
+        @catch_pad = old_catch_pad
+        position_at_end catch_resume_block
+
+        unwind_ex_obj = load llvm_context.void_pointer, unwind_ex_slot
+
+        exception_type = @program.exception.virtual_type
+        get_exception_fun = main_fun(GET_EXCEPTION_NAME)
+        get_exception_arg = pointer_cast(unwind_ex_obj, get_exception_fun.type.params_types.first)
+
+        set_current_debug_location node if @debug.line_numbers?
+        caught_exception_ptr = call get_exception_fun, [get_exception_arg]
+        caught_exception = int2ptr caught_exception_ptr, llvm_typer.type_id_pointer
         exception_type_id = type_id(caught_exception, exception_type)
       else
         # Unwind exception handling code - used on non-MSVC platforms (essentially the Itanium
@@ -257,6 +309,25 @@ class Iyi::CodeGenVisitor
           position_at_end rescue_ensure_body
 
           @catch_pad = builder.catch_pad catch_switch, [void_ptr_type_descriptor, int32(0), llvm_context.void_pointer.null]
+        elsif wasm
+          # Same shape as above: read the thrown pointer inside the funclet,
+          # leave, then run the ensure and re-raise in ordinary control flow.
+          rescue_ensure_body = new_block "rescue_ensure_body"
+          catch_switch = builder.catch_switch(old_catch_pad || LLVM::Value.null, @rescue_block || LLVM::BasicBlock.null, 1)
+          builder.add_handler catch_switch, rescue_ensure_body
+
+          rescue_ensure_slot = alloca llvm_context.void_pointer, "rescue_ensure_ex"
+
+          position_at_end rescue_ensure_body
+          catch_pad = @catch_pad = builder.catch_pad catch_switch, [llvm_context.void_pointer.null]
+          store call(wasm_get_exception_fun, [catch_pad]), rescue_ensure_slot
+
+          rescue_ensure_resume = new_block "rescue_ensure_resume"
+          builder.build_catch_ret catch_pad, rescue_ensure_resume
+          @catch_pad = old_catch_pad
+          position_at_end rescue_ensure_resume
+
+          unwind_ex_obj = load llvm_context.void_pointer, rescue_ensure_slot
         else
           lp_ret_type = llvm_typer.landing_pad_type
           lp = builder.landing_pad lp_ret_type, main_fun(personality_name).func, [] of LLVM::Value
@@ -326,6 +397,28 @@ class Iyi::CodeGenVisitor
   private def windows_personality_fun
     fetch_typed_fun(@llvm_mod, "__CxxFrameHandler3") do
       LLVM::Type.function([] of LLVM::Type, @llvm_context.int32, true)
+    end
+  end
+
+  # iyi: declared so LLVM accepts a `catchpad` in this function, and never
+  # called. A wasm engine does the unwinding itself and has nowhere to call a
+  # personality from, so LLVM only emits the call that would reach one when the
+  # pad asks for a selector (`llvm.wasm.get.ehselector`), and iyi's pad catches
+  # everything and dispatches on the type id instead. The measurable consequence
+  # is that a linked module's only undefined exception symbol is the
+  # `__cpp_exception` tag: no `_Unwind_CallPersonality`, no `__wasm_lpad_context`,
+  # no libc++abi, no libunwind.
+  private def wasm_personality_fun
+    fetch_typed_fun(@llvm_mod, "__gxx_wasm_personality_v0") do
+      LLVM::Type.function([] of LLVM::Type, @llvm_context.int32, true)
+    end
+  end
+
+  # iyi: the pointer `__crystal_raise` threw, asked for from inside the funclet
+  # that caught it.
+  private def wasm_get_exception_fun
+    fetch_typed_fun(@llvm_mod, "llvm.wasm.get.exception") do
+      LLVM::Type.function([@llvm_context.token], @llvm_context.void_pointer, false)
     end
   end
 end

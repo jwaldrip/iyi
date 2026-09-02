@@ -33,4 +33,13 @@ lib LibLLVMExt
                                                                                name : Char*) : LibLLVM::ValueRef
 
   fun set_target_machine_global_isel = LLVMExtSetTargetMachineGlobalISel(t : LibLLVM::TargetMachineRef, enable : LibLLVM::Bool)
+
+  # iyi: the exception model is the one `TargetOptions` field the C API does not
+  # expose, and wasm needs it set before the target machine is constructed. See
+  # `ext/llvm_ext.cc` for what happens without it.
+  {% unless LibLLVM::IS_LT_180 %}
+    fun create_target_machine_wasm_eh = LLVMExtCreateTargetMachineWasmEH(t : LibLLVM::TargetRef, triple : Char*, cpu : Char*, features : Char*,
+                                                                         level : LLVM::CodeGenOptLevel, reloc : LLVM::RelocMode,
+                                                                         code_model : LLVM::CodeModel, legacy_eh : LibLLVM::Bool) : LibLLVM::TargetMachineRef
+  {% end %}
 end

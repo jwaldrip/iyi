@@ -33,6 +33,12 @@ class LLVM::Module
     LibLLVM.set_module_data_layout(self, data)
   end
 
+  # iyi: appends module-level assembly, emitted ahead of the functions and
+  # assembled with them.
+  def append_inline_asm(asm_string : String) : Nil
+    LibLLVM.append_module_inline_asm(self, asm_string, asm_string.bytesize)
+  end
+
   def dump
     LibLLVM.dump_module(self)
   end

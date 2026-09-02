@@ -250,6 +250,18 @@ class Iyi::Codegen::Target
         end
       when "wasm32"
         LLVM.init_webassembly
+
+        # iyi: `exception-handling` is a wasm feature, and the instructions the
+        # backend needs to select `catchret`, `catchpad` and `throw` only exist
+        # when the subtarget has it on. Without it the exception model is set,
+        # the pads survive every pass, and instruction selection then fails with
+        #
+        #     LLVM ERROR: Cannot select: ch = catchret ...
+        #
+        # which is the same failure as a missing pattern, one stage later.
+        unless features.includes?("exception-handling")
+          features = features.empty? ? "+exception-handling" : "#{features},+exception-handling"
+        end
       else
         raise Target::Error.new("Unsupported architecture for target triple: #{self}")
       end
@@ -268,7 +280,19 @@ class Iyi::Codegen::Target
       end
 
       target = LLVM::Target.from_triple(self.to_s)
-      machine = target.create_target_machine(self.to_s, cpu: cpu, features: features, opt_level: opt_level, reloc: reloc, code_model: code_model).not_nil!
+      machine =
+        if @architecture == "wasm32"
+          # iyi: wasm needs its exception model chosen when the target machine
+          # is built, or `invoke` is lowered to a plain call and `rescue` stops
+          # existing. `src/llvm/ext/llvm_ext.cc` has the sequence.
+          #
+          # The standardised encoding (`try_table`/`throw_ref`) rather than the
+          # earlier `try`/`catch`, because that is the proposal engines ship now
+          # and V8 is retiring the other one.
+          target.create_wasm_eh_target_machine(self.to_s, cpu: cpu, features: features, opt_level: opt_level, reloc: reloc, code_model: code_model, legacy_eh: false)
+        else
+          target.create_target_machine(self.to_s, cpu: cpu, features: features, opt_level: opt_level, reloc: reloc, code_model: code_model).not_nil!
+        end
       # FIXME: We need to disable global isel until https://reviews.llvm.org/D80898 is released,
       # or we fixed generating values for 0 sized types.
       # When removing this, also remove it from the ABI specs and jit compiler.
