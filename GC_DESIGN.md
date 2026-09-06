@@ -765,6 +765,51 @@ the flags it holds for an arena's two halves from `smaps`, `nh` on
 the first and not the second - with what it gave reported from
 `AnonHugePages`, because what it gives is its own.
 
+**The last eight bytes: what the next round decides, measured first.**
+An object is a one-word header and its fields; Go's node is its
+fields. Taking the word out is the only way to Go's 16-byte node, and
+what it buys is the header's share of each program's chunks: binary
+trees' nodes are 16-byte objects in 24-byte chunks, a third of every
+chunk, and its 21 MB peak would read some 15; live churn's items are
+32 in 40, a fifth, 8 MB of 178; the probe's nodes 40 in 48, a sixth.
+What the word carries has to go somewhere. The five bits - two of
+colour, free, atomic, the epoch's parity - go to a byte per chunk at
+the arena's head, 700 KB for an arena of 24-byte chunks, 4% where the
+word is 33%; the mark's shade is a compare-and-set on that byte, and
+`free_listed?` and `uncarved?`, which already find the arena from the
+pointer, read the byte where they read the word. The type id, 32
+bits, is the decision, because it is what dynamic dispatch reads - the
+three loads of `type_id.cr` - and it has three homes:
+
+- *In the object, as now:* `P-4`, one load on a line the method body
+  is about to touch anyway.
+- *One per arena:* arenas per (class, type), the id at the arena's
+  head, one mask and one load; every type of a size class gets a
+  mapping of its own with its own partial pages, and the atomic and
+  untyped allocations of the class share one.
+- *A byte or a word per chunk in the arena's head:* the chunk's index
+  by a multiply-and-shift reciprocal of the chunk size held at the
+  arena's head, then a load; the chunks of a class share arenas as
+  they do now.
+
+Measured, one million 24-byte objects in 16 MB arenas visited in a
+shuffled order, the object's first field read in every arm so the
+line the method needs is loaded in all of them, one core: the header
+5.2 ns a dispatch, the arena's head 5.8, the side table 7.3 - the
+table is a second dependent line, and with the objects out of cache
+it is what a cache miss costs; at a hundred thousand objects, in
+cache, 0.65 against 0.83 and 1.02. So the side table is the layout
+that changes nothing about how arenas are shared and costs a dispatch
+a fifth in cache and half out of it; the arena's head is the cheaper
+dispatch and the one that multiplies mappings by types. Either moves
+the object layout every module was compiled against - `.iyimod` v45 -
+and the two gates that pin the header (`object_header_spec.cr`, the
+arena exercise's `header:` check). What the round has to find, before
+it chooses, is the number this note does not have: how many (class,
+type) pairs a real program allocates, which is what the arena-per-type
+home costs in mappings and partial pages, read off the compiler
+building itself.
+
 **Stage 8: the sweep beside the program, in slices.** Two
 measurements first, both on this tree's release builds. The barrier:
 a prelude with `__iyi_write_barrier_begin` renamed makes codegen emit
