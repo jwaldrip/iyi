@@ -299,7 +299,6 @@
   raise "interior pointer: byte 0 of the chunk did not resolve to itself" if IyiRoots.base_of(interior.address) != interior.address
   raise "interior pointer: byte 8 resolved to 0x#{hex(IyiRoots.base_of(interior.address + 8_u64))}, not 0x#{hex(interior.address)}" if IyiRoots.base_of(interior.address + 8_u64) != interior.address
   raise "interior pointer: byte 63 resolved to 0x#{hex(IyiRoots.base_of(interior.address + 63_u64))}, not 0x#{hex(interior.address)}" if IyiRoots.base_of(interior.address + 63_u64) != interior.address
-  raise "interior pointer: the header word under the chunk did not resolve to it" if IyiRoots.base_of(interior.address - 8_u64) != interior.address
   big = Pointer(UInt8).malloc(2097152_u64)
   raise "interior pointer: byte 1000 of a large object resolved to 0x#{hex(IyiRoots.base_of(big.address + 1000_u64))}, not 0x#{hex(big.address)}" if IyiRoots.base_of(big.address + 1000_u64) != big.address
   print "  interior pointer: bytes 0, 8 and 63 of a 64-byte chunk and byte 1000 of a 2 MiB one all resolve to the base\n"

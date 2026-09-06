@@ -498,7 +498,10 @@ its high half, stored by codegen as a u32 at `P-4`. A free chunk's link
 and its batch's chain ride in the payload, which is nobody's while it
 is free. (The object carried the id twice until 0.10.0, once here and
 once as an `i32` at its front, Crystal's layout; the section on one
-type id, below, is where the second copy went.) The size classes were
+type id, below, is where the second copy went. And since 0.11.0 the
+word is there only for a class something reads the id off, the
+collector's bits and the other classes' ids being tables at the
+arena's head: "The header round, built", below.) The size classes were
 powers of two, so a 24-byte object - two pointers behind its type id,
 the commonest shape a program has - took a 32-byte class and a 40-byte
 object a 64-byte one; they are
@@ -860,6 +863,80 @@ stayed in the word, is then the read that replaces the header's. What
 the round pays and buys, on the numbers here: the mark some 5% for the
 table's line, allocation a byte store for a word store, a third of
 every 16-byte chunk and a fifth of every 32-byte one back.
+
+**The header round, built.** An object is its fields. A class carries
+its type id in a word ahead of the object only when the program that
+links says so - `gc_layouts.cr`'s `iyi_headed?`: a virtual type over
+an ancestor was ever made, a reference union has it or an ancestor,
+the id does not fit sixteen bits, or it is `String`, the one class the
+prelude builds from bytes and stores the id under itself - and the
+answer is a byte per class, `Name:headed` beside `Name:type_id`,
+defined in the main module and referenced from a unit's object code
+the way the id is, so a module allocates right under a consumer that
+dispatches on a class it never did (`.iyimod` v45). Codegen allocates
+an instance through `__iyi_new(size, type_id, flags)`; untyped memory
+- `Pointer.malloc`'s - is headless whatever the class, and a 4096-byte
+buffer is a 4096-byte chunk where it was 5120. Past the top class an
+object is a mapping and headed, its bits in the word as before.
+
+What the word carried moved to the arena's head, in two tables, both
+indexed by the chunk's number on the grid (a multiply by the chunk
+size's reciprocal, held with the grid's origin in one word of the
+header's first line). The *entry*, three bytes a chunk: the
+allocator's flags - free, atomic, the epoch's parity, headed, untyped
+- and a headless object's sixteen-bit type id, because the mark reads
+both for every object and a tree's objects are anywhere. The *colour*,
+a byte a chunk in a table of its own, because the allocator writes the
+entry and the mark's helpers write the colour, and with the two in one
+byte the carve and the marker fought over a line twenty-one chunks
+wide for the whole of every concurrent mark. A chunk on the grid costs
+its bytes and four: 16-byte nodes are 20 where they were 24 and Go's
+are 16; a 40-byte node 44 where it was 48.
+
+What the round measured and turned back, in order. The grid
+arithmetic on the allocation's path: two words of the header two
+lines down were churn 50 ms to 63, packed into the first line changed
+nothing, and what did was taking the arithmetic off the path - a free
+chunk's second word is its grid index, written by whoever freed it,
+the carve keeps the entry of its cursor's chunk beside the cursor, and
+the type id goes into the entry with the stamp rather than by a second
+lookup. A walk of a batch for its pages at the refill, in place of the
+range the header word had stashed: churn 50 to 62, the pass over
+memory the allocation was about to touch; the range rides in the high
+sixteen bits of the batch head's two words now. The epoch's parity
+read before the refill rather than at the stamp: a refill's lock parks
+for a pause, whose sweep turns the epoch, and the thread exercise
+found its live lists freed. A free colour in the mark table so the
+mark's inner loop never reads the entry: no measurable gain, and a
+store on the mark line at every pop, turned back. Born-white objects,
+alive to the sweep by their parity, so the mutator never writes the
+mark table: every store of a fresh object into a fresh parent then
+grayed and pushed it and the helpers marked the whole of what the
+program built under the mark - binary trees 169 ms to 175, against
+151 before; allocate-black stays, one byte store on a line the next
+sixty-three allocations share. A barrier that pushed without
+graying, for the worker to gray at its pop: 175, the same reason. The
+barrier's compare-and-set without a read first: a failed one is a
+locked write of the line, and the barrier's usual object is black.
+
+The table, read as the ones above, the median of four:
+
+| program | iyi wall | RSS | pause max | paused | Boehm wall | RSS | paused | Go wall | RSS | pause max | paused |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| binary trees | 0.158 s | 19 MB | 0.32 ms | 5.3 ms | 0.217 s | 18 MB | 93 ms | 0.163 s | 15 MB | 0.35 ms | 1.9 ms |
+| live churn | 0.112 s | 199 MB | 0.05 ms | 0.3 ms | 0.186 s | 91 MB | 124 ms | 0.182 s | 127 MB | 0.04 ms | 0.2 ms |
+| churn | 0.045 s | 15 MB | 0.01 ms | 0.4 ms | 0.078 s | 15 MB | 40 ms | 0.066 s | 15 MB | 0.16 ms | 2.1 ms |
+
+Binary trees' resident set is Go's now, 25 MB to 19 against Go's 18,
+and the rest of the price is wall on eight cores: binary trees 0.150 s
+to 0.158, forty-one interleaved runs 141 to 152 ms at the minimum,
+live churn and churn inside their spread; on one core the three are
+where they were (binary trees 233 ms against 231, churn 48 against 48).
+The eight-core cost is the mark's: a shade is two table lines and the
+object's where it was the object's alone, and the helpers share those
+lines with the allocator stamping beside them. The probe reads 19 MB
+live in 40-byte chunks where it read 22 in 48, and its peak, the
+mark's floating garbage, where it was.
 
 **Stage 8: the sweep beside the program, in slices.** Two
 measurements first, both on this tree's release builds. The barrier:

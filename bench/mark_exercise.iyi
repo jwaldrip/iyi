@@ -371,7 +371,7 @@
   build_typed(64_u64)
   build_chain(32_u64)
   IyiMark.mark
-  first_id = IyiHeap.read64(Held.cycle - 8_u64).unsafe_shr(32_u64)
+  first_id = IyiMark.type_id_of(Held.cycle)
   raise "typed header: a class instance's type id is zero" if first_id == 0
   require_black(Held.cycle, "typed node")
   index = 0_u64

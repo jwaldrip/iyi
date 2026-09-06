@@ -156,19 +156,22 @@
     false
   end
 
-  # A holder born under the mark: allocate-black makes it black by
-  # construction, so nobody scans it and the move below lands in a black
-  # holder the moment it is made - the barrier is then the only thing
-  # that saves the payload, which is what the failure proof removes.
-  # Waiting for one of the pre-made holders to turn black instead proved
-  # nothing on some machines: when it turns black is the workers' order
-  # of business, and where the 200,000-cell chain came first the payload
+  # A holder born under the mark, and blackened here: an object born
+  # under a mark is white and alive by its epoch's parity (the mutator
+  # writes no mark byte), and a holder with nothing in it is what a scan
+  # leaves black, so the colour is put on it directly - the move below
+  # then lands in a black holder, and the barrier is the only thing that
+  # saves the payload, which is what the failure proof removes. Waiting
+  # for one of the pre-made holders to turn black instead proved nothing
+  # on some machines: when it turns black is the workers' order of
+  # business, and where the 200,000-cell chain came first the payload
   # was black already, found through the chain's tail, and the proof had
   # nothing to lose. The new holder goes into the rooted array so it is
   # a root's child; the array's store is its own barrier's business.
   def born_black_holder(round : Int32) : Holder
     holder = Holder.new
     Roots.holders[round % 64] = holder
+    IyiMark.recolour(holder.object_id.to_u64, IyiMark::BLACK) if IyiMark.marking?
     holder
   end
 
@@ -186,7 +189,7 @@
     payload = holder.payload
     fail("round #{round}: the holder's payload is nil") unless payload.is_a?(Payload)
     address = payload.object_id.to_u64
-    if IyiHeap.read64(address - 8_u64) & IyiHeap::FREE_FLAG != 0
+    if IyiMark.flags(address) & IyiHeap::FREE_FLAG != 0
       fail("round #{round}: the payload moved into a black holder under the mark was freed: the barrier lost it")
     end
     fail("round #{round}: the payload's seed is #{payload.seed.to_i64} rather than #{seed.to_i64}: its chunk was reused, the barrier lost it") if payload.seed != seed

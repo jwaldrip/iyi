@@ -138,14 +138,14 @@
   index = 0
   while index < IyiHeap::CLASSES
     while IyiHeap.sweep_left_of(index) != 0_u64
-      IyiMark.sweep_one(IyiHeap.payload(index) + IyiHeap::HEADER)
+      IyiMark.sweep_one(IyiHeap.chunk_of(index))
     end
     index = index + 1
   end
   idle_pages = 0_u64
   arena = IyiHeap.first_arena
   while arena != 0
-    idle_pages = idle_pages + IyiHeap.read64(arena + IyiHeap::OFF_IDLE) if IyiHeap.arena_chunk(arena) == 72_u64
+    idle_pages = idle_pages + IyiHeap.read64(arena + IyiHeap::OFF_IDLE) if IyiHeap.arena_chunk(arena) == 64_u64
     arena = IyiHeap.arena_next(arena)
   end
   raise "probe: the list lost nodes" if walk != (nodes * (nodes - 1_u64)).unsafe_div(2_u64)

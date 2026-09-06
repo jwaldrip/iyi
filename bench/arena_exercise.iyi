@@ -143,6 +143,8 @@ puts "realloc: same-class, cross-class and null all hold their bytes"
   IyiMark.auto = false
 
   # --- Size classes: a request lands in its class, and the class is the payload ---
+  # Untyped memory is headless: the chunk is the request's class, and a
+  # 4096-byte buffer is a 4096-byte chunk.
   requests = [1, 15, 16, 17, 40, 129, 4095, 4096, 5000]
   expected = [16, 16, 16, 24, 40, 160, 4096, 4096, 5120]
   index = 0
@@ -150,9 +152,12 @@ puts "realloc: same-class, cross-class and null all hold their bytes"
     block = IyiHeap.alloc(requests[index].to_u64)
     arena = IyiHeap.containing(block)
     raise "size classes: request #{requests[index]} is in no arena" if arena == 0
-    payload = IyiHeap.arena_chunk(arena) - IyiHeap::HEADER
+    payload = IyiHeap.arena_chunk(arena)
     if payload != expected[index].to_u64
       raise "size classes: request #{requests[index]} landed in class #{payload.to_i64}, expected #{expected[index]}"
+    end
+    if IyiHeap.size_of(block.address) != payload
+      raise "size classes: request #{requests[index]} reports #{IyiHeap.size_of(block.address).to_i64} bytes, its chunk is #{payload.to_i64}"
     end
     if block.address & 7 != 0
       raise "size classes: request #{requests[index]} is not 8-aligned"
@@ -169,7 +174,7 @@ puts "realloc: same-class, cross-class and null all hold their bytes"
   if IyiHeap.containing(middle) != arena
     raise "addressability: block middle resolved to a different arena"
   end
-  payload = IyiHeap.arena_chunk(arena) - IyiHeap::HEADER
+  payload = IyiHeap.arena_chunk(arena)
   if payload != 104_u64
     raise "addressability: block of 100 resolved to class #{payload.to_i64}, expected 104"
   end
@@ -180,29 +185,43 @@ puts "realloc: same-class, cross-class and null all hold their bytes"
   end
   puts "addressability: live block and its middle resolve to class 104, a stack word answers 0"
 
-  # --- Header: one word under the pointer, and it behaves. The size the
-  # realloc contract reads is the arena's; the type id is stored as a u32
-  # at P-4 the way codegen stores it and read back as the word's high half
-  # the way the collector reads it, so a header in the wrong place is
-  # caught rather than inherited. Read as words, not `UInt32`: `UInt32` in
-  # this prelude has no `<`, no `to_u64`, and an `==` that answers false
-  # even for `x = 99_u32; x == 99_u32`.
+  # --- Header: a word under a headed object and none under a headless
+  # one, and the bits in the chunk's byte either way. A headed instance
+  # (the class's `:headed` byte said so) carries its type id as a u32 at
+  # P-4, read back as the word's high half the way dispatch reads it; a
+  # headless one carries it in the arena's layout table and its chunk is
+  # its fields alone; untyped memory is headless with a slot of 0. The
+  # collector's bits - colour, free, atomic, the epoch's parity, headed -
+  # are the chunk's byte, never the word. Read as words, not `UInt32`:
+  # `UInt32` in this prelude has no `<`, no `to_u64`, and an `==` that
+  # answers false even for `x = 99_u32; x == 99_u32`.
+  headed_probe = IyiHeap.new_object(64_u64, 99_u64, true, false)
+  size_at = IyiHeap.size_of(headed_probe.address)
+  raise "header: the size of a headed 64-byte object is #{size_at.to_i64}, expected 64" if size_at != 64_u64
+  read_word = Pointer(UInt64).new(headed_probe.address - 8_u64).value
+  if read_word.unsafe_shr(32_u64) != 99_u64 || IyiMark.type_id_of(headed_probe.address) != 99_u64
+    raise "header: a headed object's type id did not round trip through the word at P-8"
+  end
+  if IyiMark.flags(headed_probe.address) != IyiMark.epoch_flag | IyiHeap::HEADED_FLAG
+    raise "header: a headed object's byte is #{IyiMark.flags(headed_probe.address).to_i64}, expected the epoch stamp and the headed bit"
+  end
+  arena = IyiHeap.containing(headed_probe)
+  raise "header: a headed 64-byte object is in the #{IyiHeap.arena_chunk(arena).to_i64} class, expected 72" if IyiHeap.arena_chunk(arena) != 72_u64
+  headless_probe = IyiHeap.new_object(64_u64, 77_u64, false, false)
+  raise "header: the size of a headless 64-byte object is #{IyiHeap.size_of(headless_probe.address).to_i64}, expected 64" if IyiHeap.size_of(headless_probe.address) != 64_u64
+  raise "header: a headless object's type id reads as #{IyiMark.type_id_of(headless_probe.address).to_i64}, expected 77" if IyiMark.type_id_of(headless_probe.address) != 77_u64
+  if IyiMark.flags(headless_probe.address) != IyiMark.epoch_flag
+    raise "header: a headless object's byte is #{IyiMark.flags(headless_probe.address).to_i64}, expected the epoch stamp alone"
+  end
+  arena = IyiHeap.containing(headless_probe)
+  raise "header: a headless 64-byte object is in the #{IyiHeap.arena_chunk(arena).to_i64} class, expected 64" if IyiHeap.arena_chunk(arena) != 64_u64
   header_probe = IyiHeap.alloc(64_u64)
-  size_at = IyiHeap.size_of(header_probe.address)
-  raise "header: the size under a 64-byte request is #{size_at.to_i64}, expected 64" if size_at != 64_u64
-  Pointer(UInt32).new(header_probe.address - 4_u64).value = 99_u32
-  read_word = Pointer(UInt64).new(header_probe.address - 8_u64).value
-  if read_word.unsafe_shr(32_u64) != 99_u64
-    raise "header: the type id at P-4 did not round trip through the word at P-8"
-  end
-  if read_word & 0xFFFFFFFF_u64 != IyiHeap::EPOCH_FLAG
-    raise "header: a fresh chunk's low half is #{(read_word & 0xFFFFFFFF_u64).to_i64}, expected the epoch stamp alone"
-  end
+  raise "header: untyped memory's type id reads as #{IyiMark.type_id_of(header_probe.address).to_i64}, expected 0" if IyiMark.type_id_of(header_probe.address) != 0_u64
   header_probe = header_probe.realloc(2000_u64)
   moved_size = IyiHeap.size_of(header_probe.address)
   raise "header: realloc to 2000 bytes answers a size of #{moved_size.to_i64}" if moved_size < 2000_u64
   raise "header: realloc to 2000 bytes answers a size of #{moved_size.to_i64}, past its class" if moved_size > 2048_u64
-  puts "header: one word at P-8, the type id its high half, the size the arena's; all live through a realloc"
+  puts "header: a word at P-8 under a headed object and none under a headless one, the bits in the chunk's byte; the size the arena's, live through a realloc"
 
   # --- Clearing: a dirty chunk comes back zeroed through the clearing entry ---
   dirty = IyiHeap.alloc(100_u64).as(Pointer(UInt8))
@@ -237,18 +256,16 @@ puts "realloc: same-class, cross-class and null all hold their bytes"
     end
     index = index + 1
   end
-  # And the header's own words: a reused chunk must come back with a fresh
-  # zero type id and mark word, whichever entry point handed it out, because
-  # a stale mark word is a live object the collector never scans.
-  # Read as the containing word for the same reason as the header check above:
-  # `UInt32` equality in this prelude answers false even against itself.
-  # Bit 4 is the allocator's own stamp, the epoch parity the lazy sweep
-  # reads (GC_DESIGN.md); everything else — colour, the free flag, the
-  # atomic flag, the type id in the high half — must be zero.
-  if Pointer(UInt64).new(words.address - 8_u64).value & (0_u64 &- 1_u64 - IyiHeap::EPOCH_FLAG) != 0_u64
-    raise "clearing: reused chunk carried a stale header word"
+  # And the chunk's byte: a reused chunk must come back with fresh bits,
+  # whichever entry point handed it out, because a stale colour is a
+  # live object the collector never scans. Bit 4 is the allocator's own
+  # stamp, the epoch parity the lazy sweep reads (GC_DESIGN.md);
+  # everything else - colour, the free flag, the atomic flag - must be
+  # zero, and untyped memory is headless.
+  if IyiMark.flags(words.address) != IyiMark.epoch_flag | IyiHeap::UNTYPED_FLAG
+    raise "clearing: reused chunk carried stale bits: #{IyiMark.flags(words.address).to_i64}"
   end
-  puts "clearing: a freed chunk of 0xAA bytes comes back zeroed, directly, through __crystal_malloc64, and in its header"
+  puts "clearing: a freed chunk of 0xAA bytes comes back zeroed, directly, through __crystal_malloc64, and in its byte"
 
   # --- No corruption under reuse: freed chunks serve new owners, survivors unchanged ---
   rblocks = [] of Pointer(UInt8)

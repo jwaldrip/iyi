@@ -807,7 +807,9 @@ require "./file"
       TOP = 1048576_u64
       # The arena's first four kilobytes are its header: the words below,
       # and a bit per page of the mapping saying whether the sweep handed
-      # it back. The page is the kernel's: darwin arm64's is 16 KB, and an
+      # it back; the chunks' byte and layout tables follow it (`META`),
+      # and the chunk grid begins on the page after them (`OFF_FIRST`).
+      # The page is the kernel's: darwin arm64's is 16 KB, and an
       # `madvise` of a four-kilobyte run there is refused.
       HEAD = 4096_u64
       {% if flag?(:darwin) %}
@@ -824,29 +826,47 @@ require "./file"
       CLASSES = 67
       FILL = 80
 
-      # The object header, named once: one word, `HEADER` bytes ahead of
-      # the pointer the program holds - the mark word, with the type id in
-      # its high half (`object_header.cr` says the bits). It was three words
-      # - a size, a type id, a mark word - and the size is the chunk's,
-      # which the arena knows, so a 16-byte object cost 40 bytes of heap
-      # where Go's costs 16 and Boehm's 16; it costs 24 now. `OFF_MARK` is
-      # the word's offset from the chunk head, which is P-8 read from the
-      # other end. A free chunk's link and its batch's chain ride in the
-      # payload, which is nobody's while it is free. `LARGE_USER` is the
-      # distance from a large object's node to its user pointer: the node's
-      # next and mapped words, then the header.
+      # An object is its fields, and a header word ahead of them only when
+      # something reads its type id from the object - a virtual type over
+      # an ancestor, a reference union it is a member of (GC_DESIGN.md,
+      # "The last eight bytes"). A *headed* chunk is `HEADER` bytes of
+      # word - the type id in its high half, `object_header.cr` says the
+      # bits, nothing in its low half - and then the object; a *headless*
+      # chunk is the object. Which a chunk is, is a bit in its byte
+      # (`HEADED_FLAG`), and the collector's bits are that byte, one per
+      # chunk in a table at the arena's head (`META`), never the word: the
+      # mark shades and blackens the byte, the sweep reads and restamps
+      # the byte, neither touches a live object's line. A headless object
+      # of a class the mark needs the layout of carries the class's type
+      # id in a second table, sixteen bits a chunk (`LAYOUTS`); an untyped
+      # one carries 0 there, and is word-scanned or, atomic, not opened.
+      # A 16-byte object costs 16 bytes of chunk, 1 of byte and 2 of
+      # layout, 19 where it cost 24 and the three-word header of old 40.
+      # A free chunk's link and its batch's chain ride in the chunk, which
+      # is nobody's while it is free. `LARGE_USER` is the distance from a
+      # large object's node to its user pointer: the node's next and
+      # mapped words, then a header, always - a large object has no arena
+      # and no byte, and keeps the collector's bits in its word.
       HEADER = 8_u64
       OFF_MARK = 0_u64
-      OFF_LINK = 8_u64
+      OFF_LINK = 0_u64
+      # A free chunk's second word: its index on the grid, written by
+      # whoever linked it - the sweep, `thread_warm`, `free` - so the pop
+      # stamps its entry and its colour by one load off the line it just
+      # read the link from, rather than the grid arithmetic (a multiply,
+      # and the arena's header) on every allocation: churn 66 ms to 55.
+      # A batch head on the centre keeps its batch's chain here instead
+      # (`BATCH_NEXT`), and the refill writes the index back when it
+      # takes the batch.
+      OFF_INDEX = 8_u64
       TYPE_SHIFT = 32_u64
-      # Bit 2 of the mark word: this chunk is on its class's free list. Set
-      # by `free`, cleared with the whole mark word when `take` hands the
-      # chunk back out, and what makes "is this chunk free?" one load
-      # instead of a walk of the class's list — the O(1) form the root
-      # walk's comment said Stage 6 could add when a profile asked. The
-      # trigger's steady state asked: a sweep over a heap with a long free
-      # list was quadratic, seconds per collection where the arithmetic
-      # says microseconds.
+      # Bit 2: this chunk is on a free list, or idle. Set by the sweep and
+      # by `free`, cleared when `take` hands the chunk back out, and what
+      # makes "is this chunk free?" one load instead of a walk of the
+      # class's list — the O(1) form the root walk's comment said Stage 6
+      # could add when a profile asked. The trigger's steady state asked:
+      # a sweep over a heap with a long free list was quadratic, seconds
+      # per collection where the arithmetic says microseconds.
       FREE_FLAG = 4_u64
       # Bit 3: this allocation is atomic — the caller promised it holds no
       # pointers, which is what `__crystal_malloc_atomic64` means on every
@@ -863,17 +883,49 @@ require "./file"
       # unmarked by it and is dead. A surviving object is restamped when the
       # sweep repaints it, so it is the current epoch's from then on.
       EPOCH_FLAG = 16_u64
+      # Bit 5: the chunk begins with a header word, the object after it.
+      HEADED_FLAG = 32_u64
+      # Bit 6: untyped memory - `Pointer.malloc`'s - with no id anywhere,
+      # word-scanned by the mark unless atomic. The bit rather than a
+      # zero in the layout slot because a slot is two stores on the
+      # allocation's path and the bit is in the byte it writes anyway.
+      UNTYPED_FLAG = 64_u64
       LARGE_USER = 24_u64
+      # The tables at the arena's head, after its header page: three
+      # bytes per chunk the mapping could hold (`META`, `META_ENTRY`) -
+      # the allocator's flags, then the sixteen-bit type id of a headless
+      # object - then a byte per chunk for the mark's colour
+      # (`OFF_MARKS`), then the chunk grid on the next page. The flags
+      # and the id are one entry because the mark reads both for every
+      # object it scans, and a tree's objects are anywhere: one line
+      # each, not two. The colour is a table of its own because the
+      # allocator writes the entry and the mark's helpers write the
+      # colour, and with the two in one byte the carve and the marker
+      # fought over a line twenty-one chunks wide for the whole of every
+      # concurrent mark (binary trees on eight cores, 152 ms to 172). A
+      # chunk's index is `(head - first) / chunk`, done as a multiply by the
+      # reciprocal of the chunk size in eights (`MAGIC_SHIFT`): the
+      # product fits a word and the quotient is exact for every class,
+      # where a divide is thirty cycles on every pop. The grid's origin
+      # and the reciprocal are one word of the header's first line
+      # (`OFF_GRID`: the origin's offset in the high 24 bits, the
+      # reciprocal below) - the line every pop and carve reads anyway;
+      # two words further down the page were two more lines on the
+      # allocation's path, measured at churn 50 ms to 63.
+      META = 4096_u64
+      META_ENTRY = 3_u64
+      MAGIC_SHIFT = 40_u64
+      GRID_SHIFT = 40_u64
 
       OFF_NEXT = 0_u64
       OFF_MAP = 8_u64
       OFF_CHUNK = 16_u64
       OFF_CURSOR = 24_u64
       OFF_LEFT = 32_u64
-      # The collection this arena was last swept for (`IyiMark.epoch`): an
-      # arena behind the current epoch still holds the last mark's colours
-      # and is sweep debt, paid by the allocator that needs its chunks.
-      OFF_EPOCH = 40_u64
+      OFF_GRID = 40_u64
+      # The mark table's address: a byte per chunk, `WHITE` or the
+      # mark's colour, after the entries.
+      OFF_MARKS = 64_u64
       # Objects the last mark blackened in this arena: zero means nothing
       # in it is reachable, and the pause that marked can hand the mapping
       # back with every thread stopped.
@@ -884,7 +936,6 @@ require "./file"
       # the sweep handed back and the carve took up again is a region too.
       # Chunks between the cursor and the region's end are not carved yet.
       OFF_HIGH = 56_u64
-      OFF_BUMP_END = 64_u64
       # Idle pages: whole pages of dead chunks on no list, counted, and a
       # bit each at `OFF_PAGES`. A chunk whose head is on such a page is
       # nobody's - not free-listed, not an object - until a run of the
@@ -916,7 +967,11 @@ require "./file"
       OFF_SWEEP_CURSOR = 104_u64
       SWEEP_DONE = 0xFFFFFFFFFFFFFFFF_u64
       # The epoch whose finished sweep of this arena has been counted out.
-      OFF_SWEEP_COUNTED = 112_u64
+      # The entry of the chunk at the bump cursor: set with the region,
+      # moved with the cursor, so the carve stamps by one load off the
+      # line it reads the cursor from (`OFF_INDEX` says why not the grid
+      # arithmetic).
+      OFF_CURSOR_BYTE = 112_u64
       OFF_WARM = 120_u64
       # A bit per page of the mapping, `MAP / PAGE / 8` bytes - 512 on a
       # 4 KB page - for idle, and the same again for cold.
@@ -932,6 +987,14 @@ require "./file"
       # where a list does not.
       OFF_LISTED = 1160_u64
       OFF_LISTED_PAGES = 1168_u64
+      OFF_SWEEP_COUNTED = 1688_u64
+      OFF_BUMP_END = 1696_u64
+      # The first chunk head, page-aligned past the tables; the layout
+      # table's address; the reciprocal of the chunk size in eights.
+      # The collection this arena was last swept for (`IyiMark.epoch`): an
+      # arena behind the current epoch still holds the last mark's colours
+      # and is sweep debt, paid by the allocator that needs its chunks.
+      OFF_EPOCH = 1152_u64
       # The frontier is carved a slab at a time, so that a run of pages
       # handed back below it is taken up before the slab after it: the
       # heap fills from its low addresses and the frontier stays cold. A
@@ -939,7 +1002,72 @@ require "./file"
       SLAB = 65536_u64
 
       def self.slab_for(chunk : UInt64) : UInt64
-        chunk + HEAD > SLAB ? chunk + HEAD : SLAB
+        chunk > SLAB ? chunk : SLAB
+      end
+
+      # The chunk grid's first head, past the header page and the tables.
+      def self.arena_first(arena : UInt64) : UInt64
+        arena + read64(arena + OFF_GRID).unsafe_shr(GRID_SHIFT)
+      end
+
+      # A chunk's index on the grid, by the arena's reciprocal: exact for
+      # `head - first` below the mapping's size and every class's chunk.
+      def self.chunk_index(arena : UInt64, address : UInt64) : UInt64
+        grid = read64(arena + OFF_GRID)
+        ((address - arena - grid.unsafe_shr(GRID_SHIFT)).unsafe_shr(3_u64) * (grid & (1_u64.unsafe_shl(GRID_SHIFT) - 1_u64))).unsafe_shr(MAGIC_SHIFT)
+      end
+
+      # The chunk head an address falls in.
+      def self.head_of(arena : UInt64, address : UInt64) : UInt64
+        arena_first(arena) + chunk_index(arena, address) * read64(arena + OFF_CHUNK)
+      end
+
+      # A chunk's entry byte, and its layout slot - the two bytes after
+      # it - from any address in it; and its colour byte.
+      def self.meta(arena : UInt64, address : UInt64) : UInt64
+        arena + META + chunk_index(arena, address) * META_ENTRY
+      end
+
+      def self.mark_byte(arena : UInt64, address : UInt64) : UInt64
+        read64(arena + OFF_MARKS) + chunk_index(arena, address)
+      end
+
+      def self.layout_slot(arena : UInt64, address : UInt64) : UInt64
+        meta(arena, address) + 1_u64
+      end
+
+      # An object's entry byte, or 0 for one no arena holds - a large
+      # object's bits are in its header word; and its colour byte.
+      def self.meta_of(base : UInt64) : UInt64
+        arena = arena_of(base)
+        return 0_u64 if arena == 0
+        meta(arena, base)
+      end
+
+      def self.mark_byte_of(base : UInt64) : UInt64
+        arena = arena_of(base)
+        return 0_u64 if arena == 0
+        mark_byte(arena, base)
+      end
+
+      def self.read8(address : UInt64) : UInt64
+        Pointer(UInt8).new(address).value.to_u64
+      end
+
+      def self.write8(address : UInt64, value : UInt64) : Nil
+        Pointer(UInt8).new(address).value = value.to_u8!
+      end
+
+      # Sixteen bits as two bytes: the prelude's integers stop at
+      # `UInt8` below the word (`primitives.iyi`), and a slot is written
+      # once and read by the mark.
+      def self.read16(address : UInt64) : UInt64
+        read8(address) | read8(address + 1_u64).unsafe_shl(8_u64)
+      end
+
+      def self.write16(address : UInt64, value : UInt64) : Nil
+        write8(address, value & 0xFF_u64)
+        write8(address + 1_u64, value.unsafe_shr(8_u64) & 0xFF_u64)
       end
 
       # ── Whose state is whose ──────────────────────────────────────────
@@ -1170,23 +1298,44 @@ require "./file"
         index + ((size - base + step - 1_u64).unsafe_div(step)).to_i64.to_i32 - 1
       end
 
-      def self.payload(index : Int32) : UInt64
+      # A class's chunk: sixteen bytes and eight-byte steps to 128, then
+      # four to each doubling. A headed object of `size` bytes takes the
+      # class of `size + HEADER`, a headless one the class of `size`.
+      def self.chunk_of(index : Int32) : UInt64
         return (index.to_i64 + 2_i64).to_u64 * 8_u64 if index < 15
         above = (index - 15).to_i64.to_u64
         base = 128_u64.unsafe_shl(above.unsafe_shr(2_u64))
         base + ((above & 3_u64) + 1_u64) * base.unsafe_shr(2_u64)
       end
 
-      def self.class_for(size : UInt64) : UInt64
-        payload(class_index(size))
-      end
-
+      # Untyped memory, `Pointer.malloc`'s and the like: headless and
+      # flagged untyped, so the mark word-scans it, or, atomic, never
+      # opens it. A 4096-byte buffer is a 4096-byte chunk. Past the top
+      # class it is a mapping and headed, the word its bits' home.
       def self.alloc(size : UInt64) : Void*
-        Pointer(Void).new(take(size, true) + HEADER)
+        Pointer(Void).new(take(size, true, UNTYPED_FLAG, 0_u64))
       end
 
       def self.alloc_atomic(size : UInt64) : Void*
-        Pointer(Void).new(take(size, false) + HEADER)
+        Pointer(Void).new(take(size, false, UNTYPED_FLAG | ATOMIC_FLAG, 0_u64))
+      end
+
+      # A class's instance: headed when the class's `:headed` byte says so
+      # - the program that links decides, `gc_layouts.cr` - and its type
+      # id stored under it then; headless otherwise, the id in the arena's
+      # layout table for the mark. Atomic when the class has no pointer
+      # field: not cleared here, codegen zeroes what it does not
+      # initialise, and never opened by the mark. Answers the object.
+      def self.new_object(size : UInt64, type_id : UInt64, headed : Bool, atomic : Bool) : Void*
+        # Past the top class the object is a mapping of its own, and
+        # headed whatever the class said: no arena, no table.
+        headed = true if size > TOP - HEADER
+        base = take(size, !atomic, (headed ? HEADED_FLAG : 0_u64) | (atomic ? ATOMIC_FLAG : 0_u64), type_id)
+        # A headless object's id went into its entry with the stamp
+        # (`take_inside`); a headed one's goes in the word's high half,
+        # the low half kept: a large object's bits live there.
+        write64(base - HEADER, (read64(base - HEADER) & 0xFFFFFFFF_u64) | type_id.unsafe_shl(TYPE_SHIFT)) if headed
+        Pointer(Void).new(base)
       end
 
       # The one funnel. The cache page's INSIDE word is set for the whole
@@ -1196,7 +1345,12 @@ require "./file"
       # slice: this cache's bytes since it last told the trigger, folded
       # into the centre's atomic count every SLICE bytes, so a thread's
       # allocations cost no shared write until then.
-      def self.take(size : UInt64, clear : Bool) : UInt64
+      # `bits` are the chunk's entry less its parity: headed, untyped,
+      # atomic (`clear` false is the same promise, worn the other way: the
+      # path that does not clear is the path that holds no pointers);
+      # `type_id` goes into the entry beside them for a headless typed
+      # object, and is the caller's to store for a headed one.
+      def self.take(size : UInt64, clear : Bool, bits : UInt64, type_id : UInt64) : UInt64
         table = cache
         # The arithmetic on the way in and out is wrapping: a counter on
         # a page cannot overflow, and a checked add is a branch each on
@@ -1218,14 +1372,14 @@ require "./file"
         else
           write64(table.address + CACHE_SLICE, slice)
         end
-        head = take_inside(table, size, clear)
+        base = take_inside(table, bits & HEADED_FLAG != 0 ? size &+ HEADER : size, clear, bits, type_id)
         # Born while a mark runs beside the program: gray, and on this
         # thread's barrier stack, so a worker scans it once its fields are
         # written — every write to them goes through the barrier — and
         # counts it alive in its arena.
-        IyiMark.born_during_mark(head + HEADER, size_of(head + HEADER)) if LibIyiGCTable.__iyi_marking != 0_u8
+        IyiMark.born_during_mark(base, size_of(base)) if LibIyiGCTable.__iyi_marking != 0_u8
         leave(table)
-        head
+        base
       end
 
       # Out of the allocator, or the barrier: the depth counter down, and
@@ -1253,29 +1407,44 @@ require "./file"
         leave(cache)
       end
 
-      def self.take_inside(table : Pointer(UInt64), size : UInt64, clear : Bool) : UInt64
-        return take_large(size, clear) if size > TOP
+      # `bytes` is the chunk asked for - the object and its header word
+      # when it has one. Answers the object: the chunk's head, or the word
+      # after it. A large object is always headed, its bits in that word.
+      def self.take_inside(table : Pointer(UInt64), bytes : UInt64, clear : Bool, bits : UInt64, type_id : UInt64) : UInt64
+        headed = bits & HEADED_FLAG != 0
+        # Past the top class: a mapping of its own, headed either way -
+        # no arena, no byte, no slot - and `size_of` reads the node.
+        return take_large(headed ? bytes - HEADER : bytes, clear) + HEADER if bytes > TOP
         # The small classes' index inline: `class_index` has a loop for
         # the large ones and is a call, and a call is what most
         # allocations would pay for a shift.
-        index = size <= 128_u64 ? (size <= 16_u64 ? 0 : ((size &+ 7_u64).unsafe_shr(3_u64).to_i64 &- 2_i64).to_i32) : class_index(size)
+        index = bytes <= 128_u64 ? (bytes <= 16_u64 ? 0 : ((bytes &+ 7_u64).unsafe_shr(3_u64).to_i64 &- 2_i64).to_i32) : class_index(bytes)
         head = table[index]
         head = refill(table, index) if head == 0
         if head != 0
-          table[index] = read64(head + OFF_LINK)
-          # The header word first, on both paths: it is the collector's
-          # word rather than the caller's, and a stale one is a live object
-          # the mark loop misses; the type id in its high half is zero
-          # until codegen stores one. `clear` is the atomic question worn
-          # the other way: the path that does not clear is exactly the
-          # path whose caller promised no pointers.
-          write64(head + OFF_MARK, (clear ? 0_u64 : ATOMIC_FLAG) | IyiMark.epoch_flag)
-          clear_block(head + HEADER, payload(index)) if clear
-          return head
+          table[index] = read64(head &+ OFF_LINK)
+          # The chunk's byte: this epoch's, white, atomic when the caller
+          # promised no pointers - `clear` is the atomic question worn the
+          # other way - and headed when it has a word. The epoch's parity
+          # is read here, after the refill: a refill takes the lock, and
+          # the lock's spin parks for a pause, whose sweep turns the
+          # epoch - a parity read before it stamped the chunk as the last
+          # epoch's, and the next sweep freed it under its owner. A list
+          # chunk is in an arena by construction, the mask names it. The
+          # clearing path clears the whole chunk, header word and all: a
+          # stale type id in the word is a layout the mark would trust;
+          # an atomic chunk is never opened, and its word is left until
+          # codegen stores.
+          arena = head & (0_u64 &- MAP)
+          slot = read64(head &+ OFF_INDEX)
+          byte = arena + META + slot * META_ENTRY
+          write8(byte, bits | IyiMark.epoch_flag)
+          write16(byte + 1_u64, type_id) if bits & (UNTYPED_FLAG | HEADED_FLAG) == 0
+          clear_block(head, chunk_of(index)) if clear
+          return headed ? head &+ HEADER : head
         end
-        head = carve(table, index, clear)
-        write64(head + OFF_MARK, ATOMIC_FLAG | IyiMark.epoch_flag) unless clear
-        head
+        head = carve(table, index, bits, type_id)
+        headed ? head &+ HEADER : head
       end
 
       # The cache's list for this class is empty: take the centre's top
@@ -1315,7 +1484,7 @@ require "./file"
             write64(arena + OFF_REGION_REOPENED, REGION_SLAB_STAY) if arena != 0 && read64(arena + OFF_LEFT) != 0
           end
           IyiMark.sweep_wanted(index) if IyiMark.helpers_sweeping?
-          chunk = payload(index) + HEADER
+          chunk = chunk_of(index)
           while centre[index] == 0 && sweep_left_of(index) != 0_u64
             answer = IyiMark.sweep_one(chunk)
             break if answer == 0_u64
@@ -1348,8 +1517,17 @@ require "./file"
         head = centre[index]
         # The batch's whole pages are being allocated from now: unlisted,
         # or the pause would turn them idle with objects on them.
-        unlist_batch(head) if head != 0
-        centre[index] = read64(head + BATCH_NEXT) if head != 0
+        if head != 0
+          # The batch's page range off its head's two words, then the
+          # words as the pop and the byte stamp want them.
+          arena = head & (0_u64 &- MAP)
+          link = read64(head + OFF_LINK)
+          chain = read64(head + BATCH_NEXT)
+          unlist_batch(arena, link.unsafe_shr(RANGE_SHIFT), chain.unsafe_shr(RANGE_SHIFT))
+          centre[index] = chain & LOW48
+          write64(head + OFF_LINK, link & LOW48)
+          write64(head + OFF_INDEX, chunk_index(arena, head))
+        end
         unlock
         table[index] = head
         head
@@ -1360,7 +1538,7 @@ require "./file"
       # and needs no claim on the arena. Answers the list's head, 0 for
       # none in reach.
       def self.thread_warm_of(index : Int32) : UInt64
-        chunk = payload(index) + HEADER
+        chunk = chunk_of(index)
         head = 0_u64
         lock
         candidate = @@arenas
@@ -1372,7 +1550,7 @@ require "./file"
         head
       end
 
-      def self.carve(table : Pointer(UInt64), index : Int32, clear : Bool) : UInt64
+      def self.carve(table : Pointer(UInt64), index : Int32, bits : UInt64, type_id : UInt64) : UInt64
         arena = table[FILL + index]
         if arena == 0 || read64(arena + OFF_LEFT) == 0 ||
            (read64(arena + OFF_REGION_REOPENED) == REGION_SLAB && read64(arena + OFF_IDLE) != read64(arena + OFF_WARM))
@@ -1384,12 +1562,18 @@ require "./file"
           table[FILL + index] = arena
         end
         cursor = read64(arena + OFF_CURSOR)
-        # The chunk's stamp before the cursor moves past it, and the cursor
+        # The chunk's byte before the cursor moves past it, and the cursor
         # as an ordered store: a lazy sweeper on another thread reads the
         # cursor and then the chunks below it, and a chunk it can see must
         # already wear this epoch's parity or it would read as last
-        # epoch's dead — freed under the thread about to hand it out.
-        write64(cursor + OFF_MARK, IyiMark.epoch_flag)
+        # epoch's dead — freed under the thread about to hand it out. The
+        # parity is read here, past `reopen_pages` and its lock (the
+        # refill's comment). The chunk's memory is the kernel's zero: a
+        # region is a frontier slab or a cold run, warm runs being lists.
+        byte = read64(arena + OFF_CURSOR_BYTE)
+        write8(byte, bits | IyiMark.epoch_flag)
+        write64(arena + OFF_CURSOR_BYTE, byte &+ META_ENTRY)
+        write16(byte + 1_u64, type_id) if bits & (UNTYPED_FLAG | HEADED_FLAG) == 0
         following = cursor &+ read64(arena + OFF_CHUNK)
         Pointer(Atomic(UInt64)).new(arena + OFF_CURSOR).value.set(following)
         write64(arena + OFF_LEFT, read64(arena + OFF_LEFT) &- 1_u64)
@@ -1477,7 +1661,7 @@ require "./file"
         Pointer(Atomic(UInt64)).new(arena + OFF_IDLE).value.add(pages)
         if warm
           Pointer(Atomic(UInt64)).new(arena + OFF_WARM).value.add(pages)
-          warm_word(class_index(read64(arena + OFF_CHUNK) - HEADER)).value.add(pages)
+          warm_word(class_index(read64(arena + OFF_CHUNK))).value.add(pages)
         end
       end
 
@@ -1488,7 +1672,7 @@ require "./file"
 
       def self.warm_sub(arena : UInt64, pages : UInt64) : Nil
         Pointer(Atomic(UInt64)).new(arena + OFF_WARM).value.sub(pages)
-        warm_word(class_index(read64(arena + OFF_CHUNK) - HEADER)).value.sub(pages)
+        warm_word(class_index(read64(arena + OFF_CHUNK))).value.sub(pages)
       end
 
       def self.page_listed?(arena : UInt64, address : UInt64) : Bool
@@ -1524,27 +1708,27 @@ require "./file"
         Pointer(Atomic(UInt64)).new(arena + OFF_LISTED).value.add((high - low).unsafe_shr(PAGE_SHIFT))
       end
 
-      # A batch's page range, stashed in its head's header word above the
-      # flags - the half an object keeps its type id in, nobody's while
-      # the chunk is free and rewritten when the head is handed out: the
-      # first and last page of the slice's linked chunks, sixteen bits
-      # each.
+      # A batch's page range, stashed in the high sixteen bits of its
+      # head's two words - the link and the chain are addresses, and an
+      # address has 48 - because a 16-byte chunk has no third word and a
+      # walk of the batch for its pages was a pass over memory the
+      # allocation is about to touch, measured at churn 50 ms to 62. The
+      # refill reads the range back and cleans both words.
+      LOW48 = 0xFFFFFFFFFFFF_u64
+      RANGE_SHIFT = 48_u64
+
       def self.stash_batch_range(head : UInt64, arena : UInt64, low : UInt64, high : UInt64) : Nil
         low_page = (low - arena).unsafe_shr(PAGE_SHIFT)
         high_page = (high - arena).unsafe_shr(PAGE_SHIFT)
-        word = read64(head + OFF_MARK) & 0xFFFFFFFF_u64
-        write64(head + OFF_MARK, word | low_page.unsafe_shl(32_u64) | high_page.unsafe_shl(48_u64))
+        write64(head + OFF_LINK, (read64(head + OFF_LINK) & LOW48) | low_page.unsafe_shl(RANGE_SHIFT))
+        write64(head + BATCH_NEXT, (read64(head + BATCH_NEXT) & LOW48) | high_page.unsafe_shl(RANGE_SHIFT))
       end
 
       # A batch taken by a cache, under the lock: its pages are being
       # allocated from and are nobody's whole pages any more - unlisted,
       # so the pause does not turn them idle with objects on them.
-      def self.unlist_batch(head : UInt64) : Nil
-        arena = arena_of(head)
-        return if arena == 0 || read64(arena + OFF_LISTED) == 0
-        word = read64(head + OFF_MARK)
-        page = word.unsafe_shr(32_u64) & 0xFFFF_u64
-        last = word.unsafe_shr(48_u64) & 0xFFFF_u64
+      def self.unlist_batch(arena : UInt64, page : UInt64, last : UInt64) : Nil
+        return if read64(arena + OFF_LISTED) == 0
         count = 0_u64
         while page <= last
           if page_listed?(arena, arena + page * PAGE)
@@ -1600,7 +1784,7 @@ require "./file"
 
       def self.reopen_pages(table : Pointer(UInt64), arena : UInt64, index : Int32) : UInt64
         owner = table.address
-        chunk = payload(index) + HEADER
+        chunk = chunk_of(index)
         lock
         chosen = 0_u64
         if arena != 0
@@ -1667,6 +1851,7 @@ require "./file"
         stop = top if stop > top
         count = (stop - high).unsafe_div(chunk)
         Pointer(Atomic(UInt64)).new(arena + OFF_CURSOR).value.set(high)
+        write64(arena + OFF_CURSOR_BYTE, meta(arena, high))
         write64(arena + OFF_BUMP_END, high + count * chunk)
         write64(arena + OFF_LEFT, count)
         write64(arena + OFF_REGION_REOPENED, REGION_SLAB)
@@ -1749,10 +1934,11 @@ require "./file"
         low = run[0]
         high = run[1]
         return false if high == 0
-        first = arena + HEAD
+        first = arena_first(arena)
         head = first + (low - first + chunk - 1_u64).unsafe_div(chunk) * chunk
         count = head < high ? (high - head + chunk - 1_u64).unsafe_div(chunk) : 0_u64
         Pointer(Atomic(UInt64)).new(arena + OFF_CURSOR).value.set(head)
+        write64(arena + OFF_CURSOR_BYTE, meta(arena, head))
         write64(arena + OFF_BUMP_END, high)
         write64(arena + OFF_LEFT, count)
         write64(arena + OFF_REGION_REOPENED, REGION_COLD)
@@ -1781,20 +1967,26 @@ require "./file"
         low = run[0]
         high = run[1]
         return 0_u64 if high == 0
-        first = arena + HEAD
+        first = arena_first(arena)
         cursor = first + (low - first + chunk - 1_u64).unsafe_div(chunk) * chunk
         return 0_u64 if cursor >= high
         stamp = FREE_FLAG | IyiMark.epoch_flag
         head = cursor
+        slot = chunk_index(arena, cursor)
+        byte = arena + META + slot * META_ENTRY
         following = cursor + chunk
         while following < high
-          write64(cursor + OFF_MARK, stamp)
+          write8(byte, stamp)
           write64(cursor + OFF_LINK, following)
+          write64(cursor + OFF_INDEX, slot)
           cursor = following
           following = cursor + chunk
+          byte = byte + META_ENTRY
+          slot = slot + 1_u64
         end
-        write64(cursor + OFF_MARK, stamp)
+        write8(byte, stamp)
         write64(cursor + OFF_LINK, 0_u64)
+        write64(cursor + OFF_INDEX, slot)
         head
       end
 
@@ -1929,14 +2121,26 @@ require "./file"
           __iyi_madvise_nohuge(base, HUGE_AT)
         {% end %}
         @@arenas_mapped = @@arenas_mapped &+ 1_u64
-        chunk = payload(index) + HEADER
+        chunk = chunk_of(index)
         write64(base + OFF_MAP, MAP)
         write64(base + OFF_CHUNK, chunk)
-        slab = slab_for(chunk)
-        write64(base + OFF_CURSOR, base + HEAD)
-        write64(base + OFF_LEFT, (slab - HEAD).unsafe_div(chunk))
-        write64(base + OFF_HIGH, base + HEAD)
-        write64(base + OFF_BUMP_END, base + slab)
+        # The tables: a byte and then sixteen bits for every chunk the
+        # mapping could hold past the header page, and the grid on the
+        # page after them.
+        magic = (1_u64.unsafe_shl(MAGIC_SHIFT) + chunk.unsafe_shr(3_u64) - 1_u64).unsafe_div(chunk.unsafe_shr(3_u64))
+        chunks = (MAP - HEAD).unsafe_div(chunk)
+        first_offset = (META + chunks * (META_ENTRY + 1_u64) + PAGE - 1_u64) & (0_u64 &- PAGE)
+        write64(base + OFF_GRID, first_offset.unsafe_shl(GRID_SHIFT) | magic)
+        write64(base + OFF_MARKS, base + META + chunks * META_ENTRY)
+        first = base + first_offset
+        stop = first + slab_for(chunk)
+        stop = base + MAP if stop > base + MAP
+        count = (stop - first).unsafe_div(chunk)
+        write64(base + OFF_CURSOR, first)
+        write64(base + OFF_CURSOR_BYTE, base + META)
+        write64(base + OFF_LEFT, count)
+        write64(base + OFF_HIGH, first)
+        write64(base + OFF_BUMP_END, first + count * chunk)
         write64(base + OFF_OWNER, owner)
         lock
         # Fresh chunks are white and nobody's: swept for the current epoch
@@ -1980,20 +2184,27 @@ require "./file"
       # through here; it has `free_batch`, to the centre.
       def self.free(pointer : Void*) : Nil
         return if pointer.address == 0
-        head = pointer.address - HEADER
-        arena = arena_of(head)
+        arena = arena_of(pointer.address)
         if arena != 0
-          index = class_index(read64(arena + OFF_CHUNK) - HEADER)
+          head = head_of(arena, pointer.address)
+          index = class_index(read64(arena + OFF_CHUNK))
           table = cache
           # Free, white, and this epoch's: on the cache's list until the
           # next pause drops it, and the sweep of its arena leaves a free
           # chunk of the current parity alone (`sweep_slice`).
-          write64(head + OFF_MARK, FREE_FLAG | IyiMark.epoch_flag)
+          # A free chunk's colour is white (`shade_word` refuses it by
+          # its entry): an object freed black under a mark would be
+          # black again when the chunk came back, and read as marked by
+          # the sweep after the next mark.
+          slot = chunk_index(arena, head)
+          write8(arena + META + slot * META_ENTRY, FREE_FLAG | IyiMark.epoch_flag)
+          write8(read64(arena + OFF_MARKS) + slot, IyiMark::WHITE)
           write64(head + OFF_LINK, table[index])
+          write64(head + OFF_INDEX, slot)
           table[index] = head
         else
           lock
-          free_large(head)
+          free_large(pointer.address - HEADER)
           unlock
         end
       end
@@ -2024,26 +2235,31 @@ require "./file"
       # arena or the large node instead.
       def self.size_of(base : UInt64) : UInt64
         arena = arena_of(base)
-        return read64(arena + OFF_CHUNK) - HEADER if arena != 0
+        if arena != 0
+          chunk = read64(arena + OFF_CHUNK)
+          return read8(meta(arena, base)) & HEADED_FLAG != 0 ? chunk - HEADER : chunk
+        end
         read64(base - LARGE_USER + OFF_MAP) - LARGE_USER
       end
 
       # An arena's worth of swept chunks, already flagged and linked head to
       # tail by the sweep, pushed onto the centre as one batch: the centre
       # keeps a class's chunks as a stack of batches, each one arena's
-      # sweep, chained through the first payload words of each batch's head
-      # (a free chunk's payload is nobody's; the cache overwrites them when
-      # it hands the head out). A refill takes one batch, which is how the
+      # sweep, chained through the second word of each batch's head - the
+      # first is its link, the second every other free chunk's byte
+      # address (`OFF_INDEX`), and a 16-byte chunk has no third. A refill
+      # takes one batch, which is how the
       # centre is shared rather than hoarded — the whole-list refill let
       # one of eight threads take every chunk and the other seven carve,
       # and the heap and every sweep grew with it. The sweep runs under
       # the collector's own take of the lock, with every other thread
       # stopped, so nothing here takes it again.
-      BATCH_NEXT = 16_u64
+      BATCH_NEXT = 8_u64
 
       def self.free_batch(index : Int32, head : UInt64) : Nil
         centre = central
-        write64(head + BATCH_NEXT, centre[index])
+        # The chain below the stashed range (`stash_batch_range`).
+        write64(head + BATCH_NEXT, (read64(head + BATCH_NEXT) & (0_u64 &- LOW48 &- 1_u64)) | centre[index])
         centre[index] = head
       end
 
@@ -2085,7 +2301,7 @@ require "./file"
         # letting its old arena go, this arena's address in a register.
         return false if read64(arena + OFF_SWEEPING) != 0 || read64(arena + OFF_OWNER) != 0
         chunk = read64(arena + OFF_CHUNK)
-        index = class_index(chunk - HEADER)
+        index = class_index(chunk)
         page = @@caches
         while page != 0
           return false if Pointer(UInt64).new(page)[FILL + index] == arena
@@ -2144,11 +2360,11 @@ require "./file"
       # how an `Array(Int32)` buffer got word-scanned at every doubling.
       def self.realloc(pointer : Void*, size : UInt64) : Void*
         return alloc(size) if pointer.address == 0
-        head = pointer.address - HEADER
         old_size = size_of(pointer.address)
-        atomic = read64(head + OFF_MARK) & ATOMIC_FLAG != 0
+        byte = meta_of(pointer.address)
+        atomic = (byte == 0 ? read64(pointer.address - HEADER) : read8(byte)) & ATOMIC_FLAG != 0
         return pointer if size <= old_size && (size > TOP) == (old_size > TOP)
-        new_pointer = Pointer(Void).new(take(size, !atomic) + HEADER)
+        new_pointer = Pointer(Void).new(take(size, !atomic, UNTYPED_FLAG | (atomic ? ATOMIC_FLAG : 0_u64), 0_u64))
         source = pointer.as(Pointer(UInt8))
         destination = new_pointer.as(Pointer(UInt8))
         limit = old_size < size ? old_size : size
@@ -2185,7 +2401,7 @@ require "./file"
         address = pointer.address
         arena = arena_of(address)
         return 0_u64 if arena == 0
-        return 0_u64 if address < arena + HEAD
+        return 0_u64 if address < arena_first(arena)
         arena
       end
 
@@ -2260,6 +2476,13 @@ require "./file"
 
     fun __crystal_malloc_atomic64(size : UInt64) : Void*
       IyiHeap.alloc_atomic(size)
+    end
+
+    # A class instance, `allocate_aggregate`'s call under the arena: the
+    # class's size and type id, and its flags - bit 0 headed, bit 1 atomic
+    # (`IyiHeap.new_object`).
+    fun __iyi_new(size : UInt64, type_id : UInt64, flags : UInt64) : Void*
+      IyiHeap.new_object(size, type_id, flags & 1_u64 != 0, flags & 2_u64 != 0)
     end
 
     fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
@@ -2740,27 +2963,25 @@ require "./file"
         candidate = Pointer(Void).new(word)
         arena = IyiHeap.containing(candidate)
         if arena != 0
-          first = arena + IyiHeap::HEAD
-          chunk = IyiHeap.arena_chunk(arena)
-          head = first + (word - first).unsafe_div(chunk) * chunk
+          head = IyiHeap.head_of(arena, word)
           return 0_u64 if IyiHeap.uncarved?(arena, head)
-          return 0_u64 if free_listed?(head, chunk)
-          return head + IyiHeap::HEADER
+          bits = IyiHeap.read8(IyiHeap.meta(arena, head))
+          return 0_u64 if bits & IyiHeap::FREE_FLAG != 0
+          return bits & IyiHeap::HEADED_FLAG != 0 ? head + IyiHeap::HEADER : head
         end
         node = IyiHeap.containing_large(candidate)
         return node + IyiHeap::LARGE_USER if node != 0
         0_u64
       end
 
-      # One load: `IyiHeap.free` set the flag when the chunk went on its
-      # list and `take` zeroes the mark word when it comes back off. The
-      # list walk this used to be was linear in the chunks freed for the
-      # class, which made the sweep over them quadratic once the trigger
-      # gave every steady-state heap a long free list. The `chunk`
-      # parameter stays: a caller that knows the stride names it, and the
-      # signature is the check's identity in the gates that break it.
-      def self.free_listed?(head : UInt64, chunk : UInt64) : Bool
-        IyiHeap.read64(head + IyiHeap::OFF_MARK) & IyiHeap::FREE_FLAG != 0
+      # One load of the chunk's byte: the sweep and `IyiHeap.free` set the
+      # flag when the chunk went on a list or idle, and `take` clears it
+      # when the chunk comes back out. The list walk this used to be was
+      # linear in the chunks freed for the class, which made the sweep
+      # over them quadratic once the trigger gave every steady-state heap
+      # a long free list.
+      def self.free_listed?(arena : UInt64, head : UInt64) : Bool
+        IyiHeap.read8(IyiHeap.meta(arena, head)) & IyiHeap::FREE_FLAG != 0
       end
 
       # Every 8-aligned word in [low, high), with the ones that validate
@@ -3125,13 +3346,33 @@ require "./file"
         {% end %}
       end
 
-      def self.colour(base : UInt64) : UInt64
-        IyiHeap.read64(base - 8_u64) & COLOUR
+      # An object's collector bits: the chunk's entry byte and its colour
+      # byte in its arena's tables, or a large object's header word
+      # (`IyiHeap::META`). Read and written through these, so the two
+      # homes are one question here.
+      def self.flags(base : UInt64) : UInt64
+        arena = IyiHeap.arena_of(base)
+        return IyiHeap.read64(base - 8_u64) & 0xFFFFFFFF_u64 if arena == 0
+        IyiHeap.read8(IyiHeap.meta(arena, base)) | IyiHeap.read8(IyiHeap.mark_byte(arena, base))
       end
 
-      # Set the colour and leave every other bit of the word as it was, because
-      # those are the flag and reserved bits the header promises to a forwarding
-      # pointer later.
+      def self.colour(base : UInt64) : UInt64
+        byte = IyiHeap.mark_byte_of(base)
+        byte == 0 ? IyiHeap.read64(base - 8_u64) & COLOUR : IyiHeap.read8(byte)
+      end
+
+      # An object's type id: under it when it is headed or large, in its
+      # arena's layout table when headless - 0 for untyped memory.
+      def self.type_id_of(base : UInt64) : UInt64
+        arena = IyiHeap.arena_of(base)
+        return IyiHeap.read64(base - 8_u64).unsafe_shr(IyiHeap::TYPE_SHIFT) if arena == 0
+        bits = IyiHeap.read8(IyiHeap.meta(arena, base))
+        return 0_u64 if bits & IyiHeap::UNTYPED_FLAG != 0
+        return IyiHeap.read64(base - 8_u64).unsafe_shr(IyiHeap::TYPE_SHIFT) if bits & IyiHeap::HEADED_FLAG != 0
+        IyiHeap.read16(IyiHeap.layout_slot(arena, base))
+      end
+
+      # Set the colour and leave every other bit as it was.
       #
       # `word - (word & COLOUR)` is how the low two bits get cleared, and the
       # shape is dictated by what this prelude actually defines on `UInt64`.
@@ -3141,8 +3382,35 @@ require "./file"
       # object's colour. Subtracting the low bits from the word needs only `&`
       # and `-`, both of which this file already relies on everywhere.
       def self.recolour(base : UInt64, colour : UInt64) : Nil
-        word = IyiHeap.read64(base - 8_u64)
-        IyiHeap.write64(base - 8_u64, (word - (word & COLOUR)) | colour)
+        byte = IyiHeap.mark_byte_of(base)
+        if byte == 0
+          word = IyiHeap.read64(base - 8_u64)
+          IyiHeap.write64(base - 8_u64, (word - (word & COLOUR)) | colour)
+        else
+          IyiHeap.write8(byte, colour)
+        end
+      end
+
+      # White to gray, atomically where another worker may be at the same
+      # object: true when this call was the one that grayed it. A byte's
+      # compare-and-set for a chunk, the word's for a large object.
+      def self.gray!(base : UInt64) : Bool
+        byte = IyiHeap.mark_byte_of(base)
+        if byte == 0
+          word_pointer = Pointer(Atomic(UInt64)).new(base - 8_u64)
+          word = word_pointer.value.get
+          while word & COLOUR == WHITE
+            return true if word_pointer.value.compare_and_set(word, word | GRAY)[1]
+            word = word_pointer.value.get
+          end
+          false
+        else
+          # A plain read first: the barrier's usual object is one born
+          # black under this mark, and a compare-and-set that fails is
+          # still a locked write of the line.
+          return false if IyiHeap.read8(byte) != WHITE
+          Pointer(Atomic(UInt8)).new(byte).value.compare_and_set(WHITE.to_u8!, GRAY.to_u8!)[1]
+        end
       end
 
       # The pool's page, made by the first collection before any helper
@@ -3341,26 +3609,25 @@ require "./file"
       # the barrier, so there is nothing for a worker to scan, and the
       # first cut, which grayed it onto the barrier stack, fed the pool a
       # batch per sixty-four allocations from every thread and the mark
-      # could not find the pool empty to end. Counted live in its arena
-      # here, as a scan would have: the scavenge reads that count.
+      # could not find the pool empty to end. Born white instead, alive
+      # to the sweep by its parity, was tried when the colour left the
+      # header: every store of a fresh object into a fresh parent then
+      # grayed and pushed it, and the helpers marked the whole of what
+      # the program built under the mark - binary trees on eight cores
+      # 169 ms to 175, against 151 for the tree before. The black byte
+      # is one store on the mark table's line for this run of chunks,
+      # which the next sixty-three allocations share. Counted live in
+      # its arena here, as a scan would have: the scavenge reads that
+      # count.
       def self.born_during_mark(base : UInt64, size : UInt64) : Nil
         w = worker
         IyiHeap.write64(w + W_BORN, IyiHeap.read64(w + W_BORN) + size)
-        word = IyiHeap.read64(base - 8_u64)
-        IyiHeap.write64(base - 8_u64, (word - (word & COLOUR)) | BLACK)
-        count_live(w, base)
+        recolour(base, BLACK)
+        count_live(w, IyiHeap.arena_of(base))
       end
 
       def self.mutator_shade(w : UInt64, base : UInt64) : Nil
-        word_pointer = Pointer(Atomic(UInt64)).new(base - 8_u64)
-        word = word_pointer.value.get
-        while word & COLOUR == WHITE
-          if word_pointer.value.compare_and_set(word, word | GRAY)[1]
-            mutator_push(w, base)
-            return
-          end
-          word = word_pointer.value.get
-        end
+        mutator_push(w, base) if gray!(base)
       end
 
       def self.mutator_push(w : UInt64, base : UInt64) : Nil
@@ -3489,20 +3756,58 @@ require "./file"
       # store; with helpers, one compare-and-swap on the colour bits so two
       # workers that reach an object from two parents agree on who queues
       # it. Everything above the colour rides along unchanged.
+      # A word that may point into the heap, shaded: `IyiRoots.base_of`
+      # and `shade` in one pass for the mark's inner loop, because the
+      # two apart resolved the arena and the chunk's index three times
+      # over per pointer, and the grid arithmetic is a multiply each.
+      # The chunk's byte is read once - free, or not white, and the
+      # word is done with - and grayed by a compare-and-swap where
+      # another worker may be at the same object.
+      def self.shade_word(w : UInt64, word : UInt64) : Nil
+        return if word == 0
+        arena = IyiHeap.arena_of(word)
+        if arena == 0
+          shade(w, IyiRoots.base_of(word))
+          return
+        end
+        grid = IyiHeap.read64(arena + IyiHeap::OFF_GRID)
+        first = arena + grid.unsafe_shr(IyiHeap::GRID_SHIFT)
+        return if word < first
+        index = ((word - first).unsafe_shr(3_u64) * (grid & (1_u64.unsafe_shl(IyiHeap::GRID_SHIFT) - 1_u64))).unsafe_shr(IyiHeap::MAGIC_SHIFT)
+        head = first + index * IyiHeap.read64(arena + IyiHeap::OFF_CHUNK)
+        return if IyiHeap.uncarved?(arena, head)
+        # The entry for free and headed, the colour byte for white: a
+        # free chunk's colour is white too, so the entry is the refusal
+        # (`IyiHeap.free`, `sweep_slice`).
+        bits = IyiHeap.read8(arena + IyiHeap::META + index * IyiHeap::META_ENTRY)
+        return if bits & IyiHeap::FREE_FLAG != 0
+        mark = IyiHeap.read64(arena + IyiHeap::OFF_MARKS) + index
+        return if IyiHeap.read8(mark) != WHITE
+        base = bits & IyiHeap::HEADED_FLAG != 0 ? head + IyiHeap::HEADER : head
+        if @@workers > 1_u64
+          push(w, base) if Pointer(Atomic(UInt8)).new(mark).value.compare_and_set(WHITE.to_u8!, GRAY.to_u8!)[1]
+        else
+          IyiHeap.write8(mark, GRAY)
+          push(w, base)
+        end
+      end
+
       def self.shade(w : UInt64, base : UInt64) : Nil
         return if base == 0
-        word = IyiHeap.read64(base - 8_u64)
-        return if word & COLOUR != WHITE
         if @@workers > 1_u64
-          word_pointer = Pointer(Atomic(UInt64)).new(base - 8_u64)
-          while !word_pointer.value.compare_and_set(word, word | GRAY)[1]
-            word = word_pointer.value.get
-            return if word & COLOUR != WHITE
-          end
+          push(w, base) if gray!(base)
         else
-          IyiHeap.write64(base - 8_u64, word | GRAY)
+          byte = IyiHeap.mark_byte_of(base)
+          if byte == 0
+            word = IyiHeap.read64(base - 8_u64)
+            return if word & COLOUR != WHITE
+            IyiHeap.write64(base - 8_u64, word | GRAY)
+          else
+            return if IyiHeap.read8(byte) != WHITE
+            IyiHeap.write8(byte, GRAY)
+          end
+          push(w, base)
         end
-        push(w, base)
       end
 
       # The root visitor's shade: onto the collecting thread's stack.
@@ -3568,44 +3873,66 @@ require "./file"
       # word-scans to the chunk's payload: the bytes past the request are
       # the allocator's zeros, or the last owner's, cleared at reuse.
       def self.scan(w : UInt64, base : UInt64) : Nil
-        word = IyiHeap.read64(base - 8_u64)
-        type_id = word.unsafe_shr(IyiHeap::TYPE_SHIFT)
-        entry = layout_entry(w, type_id)
-        if entry == 0
-          unless word & IyiHeap::ATOMIC_FLAG != 0
-            size = IyiHeap.size_of(base)
+        # The arena once, for the chunk's entry, its layout, the
+        # blackening and the live count; 0 for a large object, whose bits
+        # are its word's and whose type id is under it.
+        arena = IyiHeap.arena_of(base)
+        byte = arena == 0 ? 0_u64 : IyiHeap.meta(arena, base)
+        bits = byte == 0 ? IyiHeap.read64(base - 8_u64) : IyiHeap.read8(byte)
+        # Atomic first, before any id is trusted: an atomic chunk's word is
+        # whatever its last owner left, and the id in it is nobody's layout.
+        if bits & IyiHeap::ATOMIC_FLAG != 0
+          entry = 0_u64
+          size = 0_u64
+        else
+          # A headed object's id is under it; a headless one's is in the
+          # arena's layout table; untyped memory has none, and word-scans.
+          if bits & IyiHeap::UNTYPED_FLAG != 0
+            entry = 0_u64
+          else
+            type_id = bits & IyiHeap::HEADED_FLAG != 0 || byte == 0 ? IyiHeap.read64(base - 8_u64).unsafe_shr(IyiHeap::TYPE_SHIFT) : IyiHeap.read16(byte + 1_u64)
+            entry = layout_entry(w, type_id)
+          end
+          size = byte == 0 ? IyiHeap.size_of(base) : (bits & IyiHeap::HEADED_FLAG != 0 ? IyiHeap.arena_chunk(arena) - IyiHeap::HEADER : IyiHeap.arena_chunk(arena))
+          if entry == 0
             cursor = base
             limit = base + size
             while cursor + 8_u64 <= limit
-              shade(w, IyiRoots.base_of(IyiHeap.read64(cursor)))
+              shade_word(w, IyiHeap.read64(cursor))
               cursor = cursor + 8_u64
             end
           end
-        else
+        end
+        if entry != 0
           table = layouts_table
           offsets = table + 8_u64 + IyiHeap.read64(table) * ENTRY + IyiHeap.read64(entry + 32_u64) * 8_u64
           remaining = IyiHeap.read64(entry + 24_u64)
           index = 0_u64
           while index < remaining
             offset = IyiHeap.read64(offsets + index * 8_u64)
-            shade(w, IyiRoots.base_of(IyiHeap.read64(base + offset)))
+            shade_word(w, IyiHeap.read64(base + offset))
             index = index + 1_u64
           end
         end
         # Black, by a plain store: only the worker that grayed it holds it,
-        # and every other worker's write to this word is a compare-and-swap
+        # and every other worker's write to these bits is a compare-and-swap
         # that fails on anything but white.
-        word = IyiHeap.read64(base - 8_u64)
-        IyiHeap.write64(base - 8_u64, (word - (word & COLOUR)) | BLACK)
-        IyiHeap.write64(w + W_BYTES, IyiHeap.read64(w + W_BYTES) + IyiHeap.size_of(base))
-        count_live(w, base)
+        if byte == 0
+          word = IyiHeap.read64(base - 8_u64)
+          IyiHeap.write64(base - 8_u64, (word - (word & COLOUR)) | BLACK)
+          size = IyiHeap.size_of(base) if size == 0
+        else
+          IyiHeap.write8(IyiHeap.mark_byte(arena, base), BLACK)
+          size = (bits & IyiHeap::HEADED_FLAG != 0 ? IyiHeap.arena_chunk(arena) - IyiHeap::HEADER : IyiHeap.arena_chunk(arena)) if size == 0
+        end
+        IyiHeap.write64(w + W_BYTES, IyiHeap.read64(w + W_BYTES) + size)
+        count_live(w, arena)
       end
 
       # One more live object in its arena, folded per worker: consecutive
       # objects are mostly one arena's, so the shared add happens on the
       # arena change rather than per object.
-      def self.count_live(w : UInt64, base : UInt64) : Nil
-        arena = IyiHeap.arena_of(base)
+      def self.count_live(w : UInt64, arena : UInt64) : Nil
         return if arena == 0
         if arena != IyiHeap.read64(w + W_LIVE_ARENA)
           flush_live(w)
@@ -3981,10 +4308,10 @@ require "./file"
         arena = IyiHeap.first_arena
         while arena != 0
           chunk = IyiHeap.arena_chunk(arena)
-          cursor = arena + IyiHeap::HEAD
+          cursor = IyiHeap.arena_first(arena)
           stop = IyiHeap.arena_high(arena)
           while cursor < stop
-            recolour(cursor + IyiHeap::HEADER, WHITE) unless IyiHeap.uncarved_held?(arena, cursor)
+            IyiHeap.write8(IyiHeap.mark_byte(arena, cursor), WHITE) unless IyiHeap.uncarved_held?(arena, cursor)
             cursor = cursor + chunk
           end
           arena = IyiHeap.arena_next(arena)
@@ -4111,7 +4438,7 @@ require "./file"
         # from the old epoch is left to the new one's sweep, which finds
         # its chunks by their flag; handed over, the same chunk would be
         # on two lists.
-        IyiHeap.free_batch(IyiHeap.class_index(IyiHeap.arena_chunk(arena) - IyiHeap::HEADER), batch) if batch != 0 && @@epoch == epoch
+        IyiHeap.free_batch(IyiHeap.class_index(IyiHeap.arena_chunk(arena)), batch) if batch != 0 && @@epoch == epoch
         IyiRuntimeLock.unlock
         1_u64
       end
@@ -4167,7 +4494,7 @@ require "./file"
       # helper (2), an allocating thread (1) or a pause (0).
       def self.begin_arena(arena : UInt64, epoch : UInt64, who : Int32) : Nil
         IyiHeap.arena_epoch_set(arena, epoch)
-        IyiHeap.write64(arena + IyiHeap::OFF_SWEEP_CURSOR, arena + IyiHeap::HEAD)
+        IyiHeap.write64(arena + IyiHeap::OFF_SWEEP_CURSOR, IyiHeap.arena_first(arena))
         @@unswept = @@unswept - 1_u64 if @@unswept > 0_u64
         @@swept_by_helpers = @@swept_by_helpers + 1_u64 if who == 2
         @@swept_by_allocator = @@swept_by_allocator + 1_u64 if who == 1
@@ -4185,7 +4512,7 @@ require "./file"
         return if IyiHeap.read64(arena + IyiHeap::OFF_SWEEP_COUNTED) == epoch
         IyiHeap.write64(arena + IyiHeap::OFF_SWEEP_COUNTED, epoch)
         @@sweep_left = @@sweep_left - 1_u64 if @@sweep_left > 0_u64
-        IyiHeap.sweep_left_add(IyiHeap.class_index(IyiHeap.arena_chunk(arena) - IyiHeap::HEADER), -1_i64)
+        IyiHeap.sweep_left_add(IyiHeap.class_index(IyiHeap.arena_chunk(arena)), -1_i64)
       end
 
       # Under the lock: the walk claim let go, if it is still this walk's
@@ -4212,7 +4539,7 @@ require "./file"
         end
         return false if arena == 0
         begin_arena(arena, epoch, 0) if IyiHeap.arena_epoch(arena) != epoch
-        index = IyiHeap.class_index(IyiHeap.arena_chunk(arena) - IyiHeap::HEADER)
+        index = IyiHeap.class_index(IyiHeap.arena_chunk(arena))
         batch = sweep_slice(arena, IyiHeap::SWEEP_DONE)
         IyiHeap.free_batch(index, batch) if batch != 0
         arena_done(arena, epoch)
@@ -4239,7 +4566,7 @@ require "./file"
         IyiRuntimeLock.lock
         release_claim(arena, epoch)
         arena_done(arena, epoch)
-        IyiHeap.free_batch(IyiHeap.class_index(IyiHeap.arena_chunk(arena) - IyiHeap::HEADER), batch) if batch != 0
+        IyiHeap.free_batch(IyiHeap.class_index(IyiHeap.arena_chunk(arena)), batch) if batch != 0
         true
       end
 
@@ -4269,7 +4596,7 @@ require "./file"
           arena = 0_u64
           if pool_word(POOL_SWEEP).value.get != 0_u64
             wanted = pool_word(POOL_SWEEP_WANTED).value.get
-            arena = claim_slice(wanted == 0_u64 ? 0_u64 : IyiHeap.payload(wanted.to_i32 - 1) + IyiHeap::HEADER, true)
+            arena = claim_slice(wanted == 0_u64 ? 0_u64 : IyiHeap.chunk_of(wanted.to_i32 - 1), true)
             # Counted in under the lock that closes the round: closed, no
             # slice starts; open, a slice begun is counted before the
             # closer looks.
@@ -4303,7 +4630,7 @@ require "./file"
           IyiRuntimeLock.lock
           release_claim(arena, epoch)
           arena_done(arena, epoch)
-          IyiHeap.free_batch(IyiHeap.class_index(IyiHeap.arena_chunk(arena) - IyiHeap::HEADER), batch) if batch != 0 && @@epoch == epoch
+          IyiHeap.free_batch(IyiHeap.class_index(IyiHeap.arena_chunk(arena)), batch) if batch != 0 && @@epoch == epoch
           IyiRuntimeLock.unlock
           true
         end
@@ -4393,9 +4720,10 @@ require "./file"
       # chunks for the centre; the caller hands it over under the lock.
       def self.sweep_slice(arena : UInt64, span : UInt64) : UInt64
         chunk = IyiHeap.arena_chunk(arena)
-        first = arena + IyiHeap::HEAD
+        first = IyiHeap.arena_first(arena)
         batch_head = 0_u64
         cursor = IyiHeap.read64(arena + IyiHeap::OFF_SWEEP_CURSOR)
+        slice_low = cursor
         high = IyiHeap.arena_high(arena)
         if cursor >= high
           IyiHeap.write64(arena + IyiHeap::OFF_SWEEP_CURSOR, IyiHeap::SWEEP_DONE)
@@ -4418,7 +4746,11 @@ require "./file"
         # chunks are the batch's newest prefix.
         run_low = 0_u64
         run_batch = 0_u64
-        batch_low = 0_u64
+        # The chunk's entry, its colour and its index, each one past the
+        # last chunk's: the grid arithmetic once per jump, not per chunk.
+        byte = 0_u64
+        mark = 0_u64
+        slot = 0_u64
         while cursor < stop
           if cursor >= region_low && cursor < region_high
             # Uncarved: past the region in one step, the run closed.
@@ -4427,6 +4759,7 @@ require "./file"
               run_low = 0_u64
             end
             cursor = first + (region_high - first + chunk - 1_u64).unsafe_div(chunk) * chunk
+            byte = 0_u64
             next
           end
           if IyiHeap.page_idle?(arena, cursor)
@@ -4443,34 +4776,44 @@ require "./file"
             end
             age_idle(arena, page_low, page_end)
             cursor = first + (page_end - first + chunk - 1_u64).unsafe_div(chunk) * chunk
+            byte = 0_u64
             next
           end
-          word = IyiHeap.read64(cursor + IyiHeap::OFF_MARK)
-          if word & IyiHeap::EPOCH_FLAG != @@epoch_flag && (word & COLOUR == WHITE || word & IyiHeap::FREE_FLAG != 0)
+          # The chunk's entry and colour, not its line: a slice reads the
+          # tables and touches a live object's memory not at all.
+          if byte == 0
+            slot = IyiHeap.chunk_index(arena, cursor)
+            byte = arena + IyiHeap::META + slot * IyiHeap::META_ENTRY
+            mark = IyiHeap.read64(arena + IyiHeap::OFF_MARKS) + slot
+          end
+          word = IyiHeap.read8(byte)
+          colour = IyiHeap.read8(mark)
+          if word & IyiHeap::EPOCH_FLAG != @@epoch_flag && (colour == WHITE || word & IyiHeap::FREE_FLAG != 0)
             # Unmarked and allocated before the mark, or free already on
             # a list the pause dropped: dead, and the run's. A free chunk
             # of this epoch's parity is on a live list - a warm run the
             # refill threaded (`IyiHeap.thread_warm`), or a chunk the
             # program handed back this epoch - and is left where it is.
             if word & IyiHeap::FREE_FLAG == 0
-              @@bytes_freed = @@bytes_freed + chunk - IyiHeap::HEADER
+              @@bytes_freed = @@bytes_freed + (word & IyiHeap::HEADED_FLAG != 0 ? chunk - IyiHeap::HEADER : chunk)
               @@swept = @@swept + 1_u64
-              IyiHeap.write64(cursor + IyiHeap::OFF_MARK, word | IyiHeap::FREE_FLAG)
+              IyiHeap.write8(byte, word | IyiHeap::FREE_FLAG)
             end
             if run_low == 0
               run_low = cursor
               run_batch = batch_head
-              batch_low = cursor if batch_low == 0
             end
             IyiHeap.write64(cursor + IyiHeap::OFF_LINK, batch_head)
+            IyiHeap.write64(cursor + IyiHeap::OFF_INDEX, slot)
             batch_head = cursor
           else
-            if word & COLOUR != WHITE
+            if colour != WHITE
               # Marked: survives, white again and this epoch's. A white
               # chunk of this epoch's parity was allocated after the mark,
               # alive by construction, and is left as it is.
-              @@bytes_kept = @@bytes_kept + chunk - IyiHeap::HEADER
-              IyiHeap.write64(cursor + IyiHeap::OFF_MARK, (word - (word & COLOUR) - (word & IyiHeap::EPOCH_FLAG)) | @@epoch_flag)
+              @@bytes_kept = @@bytes_kept + (word & IyiHeap::HEADED_FLAG != 0 ? chunk - IyiHeap::HEADER : chunk)
+              IyiHeap.write8(byte, (word - (word & IyiHeap::EPOCH_FLAG)) | @@epoch_flag)
+              IyiHeap.write8(mark, WHITE)
               @@kept = @@kept + 1_u64
             end
             if run_low != 0
@@ -4479,6 +4822,9 @@ require "./file"
             end
           end
           cursor = cursor + chunk
+          byte = byte + IyiHeap::META_ENTRY
+          mark = mark + 1_u64
+          slot = slot + 1_u64
         end
         # The run in progress closes at the slice's end and the next slice
         # begins one of its own: a run cut back for a page release is the
@@ -4486,10 +4832,11 @@ require "./file"
         # cut. A run split at a slice's edge may keep a page it would
         # have released; the slices are sixteen pages, the edge one.
         batch_head = close_run(arena, chunk, run_low, cursor, batch_head, run_batch) if run_low != 0
-        # The batch's pages, for the refill that takes it to unlist
-        # (`IyiHeap.unlist_batch`): from the first chunk linked to where
-        # the slice ended, a range no wider than the slice.
-        IyiHeap.stash_batch_range(batch_head, arena, batch_low, cursor - chunk) if batch_head != 0
+        # The slice's pages, for the refill that takes the batch to
+        # unlist (`IyiHeap.unlist_batch`): the listed pages in them are
+        # this batch's, a page straddling two slices being in neither's
+        # run whole.
+        IyiHeap.stash_batch_range(batch_head, arena, slice_low, cursor - 1_u64) if batch_head != 0
         # Past the high water the arena is done: what is carved after
         # this wears the epoch's parity and is alive by construction.
         IyiHeap.write64(arena + IyiHeap::OFF_SWEEP_CURSOR, cursor >= high ? IyiHeap::SWEEP_DONE : cursor)
@@ -4513,7 +4860,7 @@ require "./file"
       # every slice's end, the page a slice ended in was neither run's:
       # one page in sixteen lost, and every warm run a slice long.
       def self.close_run(arena : UInt64, chunk : UInt64, low : UInt64, high : UInt64, batch_head : UInt64, batch_before : UInt64) : UInt64
-        first = arena + IyiHeap::HEAD
+        first = IyiHeap.arena_first(arena)
         page_low = (low + IyiHeap::PAGE - 1_u64) & (0_u64 &- IyiHeap::PAGE)
         continuing = low > first && (IyiHeap.page_idle?(arena, low - chunk) || IyiHeap.page_listed?(arena, low - chunk))
         page_low = low & (0_u64 &- IyiHeap::PAGE) if continuing
@@ -4546,10 +4893,13 @@ require "./file"
           head_cold = first + (cold_low - first + chunk - 1_u64).unsafe_div(chunk) * chunk
           batch_head = head_cold > low ? head_cold - chunk : batch_before
           cursor = first + (page_high - first + chunk - 1_u64).unsafe_div(chunk) * chunk
+          slot = IyiHeap.chunk_index(arena, cursor)
           while cursor < high
             IyiHeap.write64(cursor + IyiHeap::OFF_LINK, batch_head)
+            IyiHeap.write64(cursor + IyiHeap::OFF_INDEX, slot)
             batch_head = cursor
             cursor = cursor + chunk
+            slot = slot + 1_u64
           end
           IyiHeap.set_idle(arena, cold_low, page_high, true)
           IyiHeap.set_cold(arena, cold_low, page_high, true)
@@ -4600,7 +4950,7 @@ require "./file"
       def self.age_idle(arena : UInt64, low : UInt64, high : UInt64) : Nil
         return if IyiHeap.read64(arena + IyiHeap::OFF_WARM) == 0
         chunk = IyiHeap.arena_chunk(arena)
-        first = arena + IyiHeap::HEAD
+        first = IyiHeap.arena_first(arena)
         cold_low = 0_u64
         page = low
         page = page + IyiHeap::PAGE if (low - first).unsafe_mod(chunk) != 0
@@ -4711,7 +5061,7 @@ require "./file"
         arena = IyiHeap.first_arena
         while arena != 0
           debt = debt + 1_u64
-          IyiHeap.sweep_left_add(IyiHeap.class_index(IyiHeap.arena_chunk(arena) - IyiHeap::HEADER), 1_i64)
+          IyiHeap.sweep_left_add(IyiHeap.class_index(IyiHeap.arena_chunk(arena)), 1_i64)
           arena = IyiHeap.arena_next(arena)
         end
         @@unswept = debt

@@ -165,12 +165,12 @@ prove_fails() {
 # Never blacken. The queue drains and every object stays gray, which is the
 # shape of a mark phase that loses track of what it has already scanned.
 prove_fails "no black shading" noblack "should be black" \
-  '{ if ($0 ~ /IyiHeap\.write64\(base - 8_u64, \(word - \(word & COLOUR\)\) \| BLACK\)/) next; print }'
+  '{ if ($0 ~ /IyiHeap\.write8\(IyiHeap\.mark_byte\(arena, base\), BLACK\)/) next; print }'
 
 # Stop following pointers. Roots are marked and nothing they reach is, which is
 # the defect that frees a live object.
 prove_fails "no pointer follow" nofollow "should be black" \
-  '{ if ($0 ~ /shade\(w, IyiRoots\.base_of\(IyiHeap\.read64\(cursor\)\)\)/) { sub(/shade\(w, IyiRoots\.base_of\(IyiHeap\.read64\(cursor\)\)\)/, "shade(w, 0_u64)") } print }'
+  '{ if ($0 ~ /shade_word\(w, IyiHeap\.read64\(cursor\)\)/) { sub(/shade_word\(w, IyiHeap\.read64\(cursor\)\)/, "shade_word(w, 0_u64)") } print }'
 
 # Precision off: every lookup misses, so the marker word-scans typed objects
 # and follows the addresses their integer fields hold — the retention the

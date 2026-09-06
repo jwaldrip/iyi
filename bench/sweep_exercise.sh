@@ -113,7 +113,7 @@ prove_fails "sweep frees nothing" nofree "sweep:" \
 
 # The colour test stops mattering, so a live object goes on the free list.
 prove_fails "sweep frees the live" reckless "sweep:" \
-  '{ if ($0 ~ /^          if word & IyiHeap::EPOCH_FLAG != @@epoch_flag && \(word & COLOUR == WHITE \|\| word & IyiHeap::FREE_FLAG != 0\)$/) { print "          if true"; next } print }'
+  '{ if ($0 ~ /^          if word & IyiHeap::EPOCH_FLAG != @@epoch_flag && \(colour == WHITE \|\| word & IyiHeap::FREE_FLAG != 0\)$/) { print "          if word & IyiHeap::EPOCH_FLAG != @@epoch_flag"; next } print }'
 
 # The refill stops threading idle warm runs: the pages stay idle, the
 # class carves its frontier, and the warm check names how many were left.
@@ -124,7 +124,7 @@ prove_fails "warm pages never taken up" nowarm "warm:" \
 # still in it - a warm page holds what the dead left - so the clearing
 # entry point lies, and the check reads it.
 prove_fails "warm chunks not cleared" dirtywarm "warm:" \
-  '{ if ($0 ~ /^          clear_block\(head \+ HEADER, payload\(index\)\) if clear$/) { print "          # removed"; next } print }'
+  '{ if ($0 ~ /^          clear_block\(head, chunk_of\(index\)\) if clear$/) { print "          # removed"; next } print }'
 
 echo
 if [ "$status" -eq 0 ]; then

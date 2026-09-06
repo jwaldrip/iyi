@@ -97,11 +97,10 @@
       index = 0
       while index < @count
         address = Pointer(UInt64).new(@nodes)[index]
-        # Freed by the sweep: the flag it set, or a header word of zero,
-        # which is the page handed back to the kernel and read again - a
-        # live node's word carries its type id and is never zero.
-        word = IyiHeap.read64(address - 8_u64)
-        freed = freed + 1_i64 if word & IyiHeap::FREE_FLAG != 0 || word == 0_u64
+        # Freed by the sweep: the flag it set in the chunk's byte. A
+        # chunk on an idle page wears it too - the bits are the arena's
+        # table, not the page the kernel took back.
+        freed = freed + 1_i64 if IyiMark.flags(address) & IyiHeap::FREE_FLAG != 0
         index = index + 1
       end
       freed

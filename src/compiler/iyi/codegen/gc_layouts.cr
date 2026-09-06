@@ -149,18 +149,31 @@ class Iyi::CodeGenVisitor
     end
   end
 
-  # The header census, on `IYI_HEADER_CENSUS=1`: which of the classes this
-  # program lays out would need their type id at `P-4` and which would not
-  # (GC_DESIGN.md, "The last eight bytes"). A class needs it when something
-  # reads it, and what reads it is `object_type_id`: a virtual type over an
-  # ancestor of the class that was ever made, or a reference union - thin
-  # pointers dispatched by the object's own id - the class or an ancestor is
-  # a member of. A class in a mixed union rides under the union's own tag,
-  # and a nilable class is a null test. Printed to stderr, one line a class,
-  # then the count; a measurement rather than a mode, so a decision about
-  # the header can be made on programs rather than on the two shapes the
-  # race table has.
-  private def iyi_header_census(entries : Array({Type, IyiMod::TypeLayout})) : Nil
+  # Which classes carry their type id in the object, a word ahead of it
+  # at `P-4`, and which are their fields alone (GC_DESIGN.md, "The last
+  # eight bytes"). A class needs the word when something reads it, and
+  # what reads it is `object_type_id`: a virtual type over an ancestor of
+  # the class that was ever made, or a reference union - thin pointers
+  # dispatched by the object's own id - the class or an ancestor is a
+  # member of. A class in a mixed union rides under the union's own tag,
+  # and a nilable class is a null test. And a class whose id does not fit
+  # the arena's sixteen-bit layout slot, which the mark would read for a
+  # headless one. The answer is the *program's*: a module's object code
+  # allocates through a `:headed` byte the program that links defines
+  # (`iyi_define_all_type_ids`), the way it reads `:type_id`, because a
+  # class one module never dispatches on is in a union the next one makes.
+  # `String` is headed by rule: the prelude builds one from bytes
+  # (`string.iyi`, `String.new`) and stores the id under it itself, and
+  # the prelude cannot read the byte this decision becomes.
+  def iyi_headed?(type : Type) : Bool
+    return true if type == @program.string
+    headed = @iyi_headed ||= iyi_headed_types
+    headed.includes?(type) || @program.llvm_id.type_id(type) > UInt16::MAX
+  end
+
+  @iyi_headed : Set(Type)?
+
+  private def iyi_headed_types : Set(Type)
     headed = Set(Type).new
     @program.llvm_id.each_type do |type|
       next unless type.is_a?(ClassType) && type.virtual_type_made?
@@ -178,10 +191,16 @@ class Iyi::CodeGenVisitor
         member.all_subclasses.each { |sub| headed << sub }
       end
     end
+    headed
+  end
+
+  # The census, on `IYI_HEADER_CENSUS=1`: the decision above printed to
+  # stderr, one line a class, then the count.
+  private def iyi_header_census(entries : Array({Type, IyiMod::TypeLayout})) : Nil
     with_header = 0
     without = 0
     entries.each do |type, layout|
-      needs = headed.includes?(type)
+      needs = iyi_headed?(type)
       words = type.is_a?(InstanceVarContainer) ? type.all_instance_vars.size : 0
       STDERR.puts "header census: #{needs ? "headed  " : "headless"} #{type} (#{words} ivars, #{layout.scan_offsets.size} pointer fields)"
       needs ? (with_header += 1) : (without += 1)

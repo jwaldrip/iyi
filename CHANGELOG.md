@@ -41,9 +41,50 @@
   or a reference union the class is a member of. Binary trees 0 of 58,
   live churn 0 of 57, the web sample 0 of 76, the concurrency exercise 0
   of 108, calc 0 of 74; a program written to dispatch, 3 of 59.
-  GC_DESIGN.md's note on the last eight bytes says what that decides.
+  GC_DESIGN.md's note on the last eight bytes says what that decided,
+  and the census is the decision's print-out now (Changed, below).
 
 ### Changed
+
+- **An object is its fields; the header word is per class, and only
+  where something reads the type id off the object.** A class carries
+  its id in a word ahead of its instances when the program that links
+  says so (`gc_layouts.cr`, `iyi_headed?`): a virtual type over an
+  ancestor was ever made, a reference union has the class or an
+  ancestor, the id does not fit sixteen bits, or it is `String`, which
+  the prelude builds from bytes and stores the id under itself. The
+  answer is a byte per class, `Name:headed` beside `Name:type_id`,
+  defined in the main module and read by a unit's object code the way
+  the id is, so a module allocates right under a consumer that
+  dispatches on a class it never did; codegen allocates an instance
+  through `__iyi_new(size, type_id, flags)`. Untyped memory -
+  `Pointer.malloc`'s, `String`'s bytes aside - is headless whatever
+  the class: a 4096-byte buffer is a 4096-byte chunk where it was
+  5120. Past the top class an object is a mapping and headed. What the
+  word carried moved to two tables at the arena's head, indexed by the
+  chunk's number on the grid: an entry of three bytes - the
+  allocator's flags and a headless object's sixteen-bit type id, one
+  line for both because the mark reads both - and a colour byte of its
+  own, because the allocator writes the entry and the helpers write
+  the colour. A 16-byte node is 20 bytes of arena where it was 24 and
+  Go's is 16; the race table reads binary trees at 19 MB resident
+  against Go's 18 where it read 25. The price is the mark's on eight
+  cores - a shade is two table lines and the object's - binary trees
+  0.150 s to 0.158; on one core the three programs are where they were.
+  Measured and turned back on the way, with the numbers in
+  GC_DESIGN.md ("The header round, built"): the grid arithmetic on the
+  allocation path (a free chunk's second word is its grid index now,
+  the carve keeps its cursor's entry beside the cursor), a walk of a
+  batch for its pages (the range rides in the batch head's two words'
+  high bits), the epoch's parity read before a refill's lock (the
+  thread exercise found live lists freed), a free colour in the mark
+  table, born-white objects, a barrier that pushed without graying,
+  and a compare-and-set without a read first. The two gates that
+  pinned the header moved with it: the arena exercise's `header:` check
+  allocates a headed and a headless object through `IyiHeap.new_object`
+  and reads both back; `object_header.cr` says which objects keep the
+  word. `.iyimod` is v45: v44 object code stored an id under every
+  `__crystal_malloc64`, which under this prelude is the chunk before.
 
 - **Huge pages per arena, past its first four megabytes; and the heap's
   neighbours read from `smaps` and cut.** An arena's first four
@@ -4086,7 +4127,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 10,139-line library and nothing else. Every other
+  written against iyi's own 10,503-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

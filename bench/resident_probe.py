@@ -10,8 +10,11 @@ touched, and the sweep's page counters.
 With `--tree`, the other prelude is built beside this one (IYI_PATH) and
 the two binaries alternate, so a number is a min-of-N against its
 neighbour under the same load, not a run of one against a run of the
-other an hour apart. Cores: `--cores 0-3,10-13` by default, the fast
-ones on the machine the numbers were read on; pass your own.
+other an hour apart. `--other-source` builds the other tree from its
+own copy of the probe (`git show <rev>:bench/resident_probe.iyi`) when
+the allocator's names the probe reads differ between the trees. Cores:
+`--cores 0-3,10-13` by default, the fast ones on the machine the
+numbers were read on; pass your own.
 """
 
 import argparse
@@ -28,11 +31,11 @@ IYI = REPO / "bin" / "iyi"
 SOURCE = REPO / "bench" / "resident_probe.iyi"
 
 
-def build(output: pathlib.Path, tree: pathlib.Path | None) -> None:
+def build(output: pathlib.Path, tree: pathlib.Path | None, source: pathlib.Path = SOURCE) -> None:
     env = dict(os.environ)
     if tree is not None:
         env["IYI_PATH"] = f"{tree}:{REPO / 'src'}"
-    command = [str(IYI), "build", "--release", "-o", str(output), str(SOURCE)]
+    command = [str(IYI), "build", "--release", "-o", str(output), str(source)]
     result = subprocess.run(command, capture_output=True, text=True, env=env)
     if result.returncode != 0:
         raise SystemExit(f"build failed for {output.name}:\n{result.stderr[:1200]}")
@@ -80,6 +83,7 @@ def field(text: str, name: str) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tree", type=pathlib.Path, help="another prelude tree (its src/) to build beside this one")
+    parser.add_argument("--other-source", type=pathlib.Path, help="the probe source to build against --tree, when the tree's allocator API differs")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--cores", default="0-3,10-13")
     args = parser.parse_args()
@@ -92,7 +96,7 @@ def main() -> None:
         build(binaries["this"], None)
         if args.tree:
             binaries["other"] = work / "other"
-            build(binaries["other"], args.tree.resolve())
+            build(binaries["other"], args.tree.resolve(), (args.other_source or SOURCE).resolve())
         rows: dict[str, dict] = {label: {"wall": [], "rss": [], "touched": [], "text": ""} for label in binaries}
         for _ in range(args.runs):
             for label, binary in binaries.items():

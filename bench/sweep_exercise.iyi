@@ -121,7 +121,7 @@
   # below comes from the first batch's pages, the class's high water does
   # not move, and every chunk comes back cleared, because a warm page
   # still holds what the dead object left. The class is its own: 64-byte
-  # requests, 72-byte chunks, four thousand of them across some seventy
+  # requests, 64-byte chunks - untyped memory is headless - four thousand of them across some seventy
   # pages.
   Seen.forget
   retained_before = IyiHeap.pages_retained
@@ -144,7 +144,7 @@
   IyiMark.collect
   warm_index = IyiHeap.class_index(64_u64)
   while IyiHeap.sweep_left_of(warm_index) != 0_u64
-    IyiMark.sweep_one(72_u64)
+    IyiMark.sweep_one(64_u64)
   end
   retained = IyiHeap.pages_retained - retained_before
   raise "warm: #{count(IyiMark.swept)} chunks swept and no page of them kept warm" if retained == 0
@@ -153,14 +153,14 @@
   idle_warm = 0_u64
   arena = IyiHeap.first_arena
   while arena != 0
-    idle_warm = idle_warm + IyiHeap.read64(arena + IyiHeap::OFF_WARM) if IyiHeap.arena_chunk(arena) == 72_u64
+    idle_warm = idle_warm + IyiHeap.read64(arena + IyiHeap::OFF_WARM) if IyiHeap.arena_chunk(arena) == 64_u64
     arena = IyiHeap.arena_next(arena)
   end
   raise "warm: #{count(retained)} pages kept warm and none of them idle after a second pause, so the kept pages died with the lists" if idle_warm == 0
   high_before = 0_u64
   arena = IyiHeap.first_arena
   while arena != 0
-    high_before = high_before + IyiHeap.arena_high(arena) - arena if IyiHeap.arena_chunk(arena) == 72_u64
+    high_before = high_before + IyiHeap.arena_high(arena) - arena if IyiHeap.arena_chunk(arena) == 64_u64
     arena = IyiHeap.arena_next(arena)
   end
   reused = 0_u64
@@ -178,8 +178,8 @@
       end
       index = index + 1_u64
     end
-    if Pointer(UInt64).new(words.address - 8_u64).value & (0_u64 &- 1_u64 - IyiHeap::EPOCH_FLAG) != 0_u64
-      raise "warm: a chunk from a warm page carried a stale header word"
+    if IyiMark.flags(words.address) != IyiMark.epoch_flag | IyiHeap::UNTYPED_FLAG
+      raise "warm: a chunk from a warm page carried stale bits"
     end
     batch = batch + 1_u64
   end
@@ -188,7 +188,7 @@
   high_after = 0_u64
   arena = IyiHeap.first_arena
   while arena != 0
-    high_after = high_after + IyiHeap.arena_high(arena) - arena if IyiHeap.arena_chunk(arena) == 72_u64
+    high_after = high_after + IyiHeap.arena_high(arena) - arena if IyiHeap.arena_chunk(arena) == 64_u64
     arena = IyiHeap.arena_next(arena)
   end
   if high_after > high_before + 8_u64 * IyiHeap::PAGE

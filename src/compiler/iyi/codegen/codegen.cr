@@ -13,6 +13,7 @@ module Iyi
   RAISE_CAST_FAILED_NAME = "__crystal_raise_cast_failed"
   MALLOC_NAME            = "__crystal_malloc64"
   MALLOC_ATOMIC_NAME     = "__crystal_malloc_atomic64"
+  IYI_NEW_NAME           = "__iyi_new"
   REALLOC_NAME           = "__crystal_realloc64"
   GET_EXCEPTION_NAME     = "__crystal_get_exception"
   ONCE_INIT              = "__crystal_once_init"
@@ -280,6 +281,7 @@ module Iyi
 
     @malloc_fun : LLVMTypedFunction?
     @malloc_atomic_fun : LLVMTypedFunction?
+    @iyi_new_fun : LLVMTypedFunction?
     @realloc_fun : LLVMTypedFunction?
     @write_barrier_begin_fun : LLVMTypedFunction?
     @write_barrier_fun : LLVMTypedFunction?
@@ -2520,33 +2522,36 @@ module Iyi
       if type.passed_by_value?
         type_ptr = alloca struct_type
       else
-        if type.is_a?(InstanceVarContainer) && !type.struct? &&
-           type.all_instance_vars.each_value.any? &.type.has_inner_pointers?
-          type_ptr = malloc struct_type
-          # iyi: the collector's clearing entry hands the chunk back
-          # zeroed - the mark loop reads its words - so the memset below
-          # would zero it twice. The atomic entry clears nothing.
-          cleared = @program.iyi_gc_arena?
+        pointerful = type.is_a?(InstanceVarContainer) && !type.struct? &&
+                     type.all_instance_vars.each_value.any? &.type.has_inner_pointers?
+        if @program.iyi_gc_arena? && (new_fun = iyi_new_fun)
+          # iyi: under the arena a class instance is `__iyi_new`'s: the
+          # size, the type id, and whether the object carries the id in a
+          # word ahead of it or in its arena's table - the class's
+          # `:headed` byte, `gc_layouts.cr` - and whether it is atomic. The
+          # clearing entry hands the chunk back zeroed, so the memset
+          # below would zero it twice; the atomic one clears nothing.
+          flags = builder.zext iyi_headed_flag(type), llvm_context.int64
+          flags = builder.or flags, int64(2) unless pointerful
+          type_ptr = pointer_cast call(new_fun, [struct_type.size, builder.zext(type_id(type), llvm_context.int64), flags]), struct_type.pointer
+          cleared = pointerful
         else
-          type_ptr = malloc_atomic struct_type
+          type_ptr = pointerful ? malloc(struct_type) : malloc_atomic(struct_type)
           cleared = false
-        end
 
-        # iyi: the object header's `type_id` (GC_DESIGN.md Stage 5). The
-        # allocator cannot write it — `malloc` is handed a size and nothing
-        # else — so the store belongs here, right after the call returns,
-        # which is what the prelude's header comment promises. The high
-        # half of the header word at `P-8`, a u32 at `P-4` on the
-        # little-endian targets this reaches, per `object_header.cr`; the
-        # same id `gc_layouts.cr` keys the embedded table by and the one
-        # every dynamic dispatch reads. In every allocator mode of iyi's
-        # prelude: each mode's `__crystal_malloc64` leaves a word of its
-        # own under the pointer for it, so an object's layout is one thing
-        # wherever it was allocated and a module's object code links under
-        # any mode. The other layout stores it in front, below.
-        if @program.iyi_object_layout?
-          id_slot = gep llvm_context.int8, type_ptr, -4, "type_id"
-          store type_id(type), id_slot
+          # iyi: the object header's `type_id` (GC_DESIGN.md Stage 5),
+          # under every allocator that is not the arena: `malloc` is handed
+          # a size and nothing else, so the store belongs here, right after
+          # the call returns. The high half of the header word at `P-8`, a
+          # u32 at `P-4` on the little-endian targets this reaches, per
+          # `object_header.cr`; the same id `gc_layouts.cr` keys the
+          # embedded table by and the one every dynamic dispatch reads.
+          # Each mode's `__crystal_malloc64` leaves a word of its own under
+          # the pointer for it. The other layout stores it in front, below.
+          if @program.iyi_object_layout?
+            id_slot = gep llvm_context.int8, type_ptr, -4, "type_id"
+            store type_id(type), id_slot
+          end
         end
       end
 
@@ -2663,6 +2668,16 @@ module Iyi
       @malloc_atomic_fun ||= typed_fun?(@main_mod, MALLOC_ATOMIC_NAME)
       if malloc_fun = @malloc_atomic_fun
         check_main_fun MALLOC_ATOMIC_NAME, malloc_fun
+      else
+        nil
+      end
+    end
+
+    # iyi: the arena's class-instance entry (`allocate_aggregate`).
+    def iyi_new_fun
+      @iyi_new_fun ||= typed_fun?(@main_mod, IYI_NEW_NAME)
+      if new_fun = @iyi_new_fun
+        check_main_fun IYI_NEW_NAME, new_fun
       else
         nil
       end

@@ -34,7 +34,12 @@ module Iyi::IyiMod
 
   # Bumped when the layout of any section changes incompatibly. IV.5: a
   # `.iyimod` from another version is rejected and rebuilt, never migrated.
-  FORMAT_VERSION = 44_u32
+  # v45: the object code allocates class instances through `__iyi_new`
+  # with the class's `:headed` byte, and an object's fields begin at its
+  # pointer with nothing under them unless that byte says so; v44 code
+  # stored a type id under every `__crystal_malloc64`, which under the
+  # v45 prelude is the chunk before.
+  FORMAT_VERSION = 45_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 

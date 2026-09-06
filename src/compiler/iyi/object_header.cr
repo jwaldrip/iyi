@@ -1,20 +1,32 @@
 # iyi: the object header of the owned collector. GC_DESIGN.md, Stage 1 task 2.
 #
-# Every heap object will be laid out `[header][user_data]`, the header sitting
-# immediately ahead of the pointer the program holds. Nothing is allocated
-# that way yet; putting the header on live objects is Stage 2. What Stage 1
-# commits to is the layout and the mark word's concurrency contract, because
-# both are load bearing from here on: the layouts `.iyimod` carries are keyed
-# by the `type_id` stored here, and Stage 7's parallel marking stands or
-# falls on colour changes being atomic.
+# A heap object is laid out `[header][user_data]` when it has a header,
+# the header sitting immediately ahead of the pointer the program holds.
+# What Stage 1 committed to is the layout and the mark word's concurrency
+# contract, because both are load bearing from here on: the layouts
+# `.iyimod` carries are keyed by the `type_id` stored here, and Stage 7's
+# parallel marking stands or falls on colour changes being atomic.
 #
 # The header is one word, eight bytes ahead of the pointer the program
 # holds:
 #
 #     bits  0..1   colour: 00 white, 01 gray, 10 black
-#     bits  2..4   flags: the prelude's free, atomic and epoch bits
-#     bits  5..31  reserved
+#     bits  2..6   flags: the prelude's free, atomic, epoch, headed and
+#                  untyped bits
+#     bits  7..31  reserved
 #     bits 32..63  type_id  u32   index into the program's layout table
+#
+# Since 0.11.0 an object under the arena has this word only when
+# something reads its type id off the object - a virtual type over an
+# ancestor, a reference union it is in - or it is larger than the top
+# size class; the program that links decides, per class (`gc_layouts.cr`,
+# `iyi_headed?`), and codegen passes the decision to `__iyi_new`. Every
+# other object is its fields alone: its type id is in its arena's tables
+# beside the collector's bits, and only a large object's colour and
+# flags are in this word (GC_DESIGN.md, "The last eight bytes"). Under
+# every other allocator mode - the bump pointer, Boehm, the process
+# heap, wasm's linear memory - every object still has the word, and the
+# id at `P-4`.
 #
 # It was sixteen bytes - a type id word and a mark word - beside a size
 # word the allocator kept, twenty-four in all ahead of every object, and a

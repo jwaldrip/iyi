@@ -7,9 +7,14 @@
 class String
   # The two `Int32`s in front of the bytes: the byte count and the character
   # count. The type id is not in the object: it is the high half of the
-  # header word under it, at P-4, where every object carries it (GC_DESIGN.md
-  # Stage 5). Written by hand because that layout is codegen's, and a string
-  # built here has to be indistinguishable from one it emitted.
+  # header word under it, at P-4 (GC_DESIGN.md Stage 5). Written by hand
+  # because that layout is codegen's, and a string built here has to be
+  # indistinguishable from one it emitted. Under the arena a string is
+  # always headed - `gc_layouts.cr` says so for this one class, because
+  # this is the one object the prelude builds from bytes - and comes
+  # through the class-instance entry, atomic, with the id stored by it;
+  # under every other allocator the word is under `malloc`'s pointer and
+  # the id is stored here.
   HEADER_SIZE = 8
 
   # Allocates *bytesize* bytes, hands the buffer to the block to fill, and
@@ -17,15 +22,24 @@ class String
   # than asked for: a caller that knew it would have to be trusted, and every
   # caller here is copying bytes it did not decode.
   def self.new(bytesize : Int32, & : Pointer(UInt8) -> Nil) : String
-    memory = Pointer(UInt8).malloc((bytesize + HEADER_SIZE + 1).to_u64)
+    memory = String.memory(bytesize + HEADER_SIZE + 1)
     buffer = memory + HEADER_SIZE
     yield buffer
 
-    Pointer(Int32).new(memory.address - 4_u64).value = "".crystal_type_id
     header = memory.as(Pointer(Int32))
     header[0] = bytesize
     header[1] = character_count(buffer, bytesize)
     memory.as(String)
+  end
+
+  protected def self.memory(bytes : Int32) : Pointer(UInt8)
+    {% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin)) %}
+      IyiHeap.new_object(bytes.to_u64, "".crystal_type_id.to_u64, true, true).as(Pointer(UInt8))
+    {% else %}
+      memory = Pointer(UInt8).malloc(bytes.to_u64)
+      Pointer(Int32).new(memory.address - 4_u64).value = "".crystal_type_id
+      memory
+    {% end %}
   end
 
   # UTF-8 continuation bytes are `10xxxxxx`; every other byte starts a

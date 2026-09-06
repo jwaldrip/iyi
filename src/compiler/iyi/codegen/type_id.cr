@@ -118,7 +118,44 @@ class Iyi::CodeGenVisitor
       global.linkage = LLVM::Linkage::Internal if @single_module
       global.initializer = @main_llvm_context.int32.const_int(@program.llvm_id.type_id(type))
       global.global_constant = true
+      iyi_define_headed(type)
     end
+  end
+
+  # iyi: the class's `:headed` byte beside its `:type_id`, for the arena's
+  # `__iyi_new` (`gc_layouts.cr`, `iyi_headed?`): defined wherever the id
+  # is, in the main module, so a unit's object code that refers to both
+  # resolves both from the same program.
+  private def iyi_define_headed(type) : LLVM::Value?
+    return nil unless @program.iyi_gc_arena?
+    return nil unless type.is_a?(NonGenericClassType) || type.is_a?(GenericClassInstanceType)
+    name = "#{type.llvm_name}:headed"
+    if existing = @main_mod.globals[name]?
+      return existing
+    end
+    global = @main_mod.globals.add(@main_llvm_context.int8, name)
+    global.linkage = LLVM::Linkage::Internal if @single_module
+    global.initializer = @main_llvm_context.int8.const_int(iyi_headed?(type) ? 1 : 0)
+    global.global_constant = true
+    global
+  end
+
+  # iyi: the `:headed` byte of the class being allocated, loaded the way
+  # `type_id_impl` loads the id - a constant the optimiser folds in a
+  # single module, a reference the linker resolves from a unit.
+  def iyi_headed_flag(type) : LLVM::Value
+    global = iyi_define_headed(type).not_nil!
+    if @llvm_mod != @main_mod
+      name = "#{type.llvm_name}:headed"
+      unit_global = @llvm_mod.globals[name]?
+      unless unit_global
+        unit_global = @llvm_mod.globals.add(@llvm_context.int8, name)
+        unit_global.linkage = LLVM::Linkage::External
+        unit_global.global_constant = true
+      end
+      global = unit_global
+    end
+    load(@llvm_context.int8, global)
   end
 
   private def type_id_impl(type)
@@ -130,6 +167,7 @@ class Iyi::CodeGenVisitor
       global.linkage = LLVM::Linkage::Internal if @single_module
       global.initializer = @main_llvm_context.int32.const_int(@program.llvm_id.type_id(type))
       global.global_constant = true
+      iyi_define_headed(type)
     end
 
     if @llvm_mod != @main_mod
