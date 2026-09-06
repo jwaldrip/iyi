@@ -85,6 +85,7 @@ class Iyi::CodeGenVisitor
 
   def iyi_define_gc_layouts : Nil
     entries = collect_gc_layout_entries
+    iyi_header_census(entries) if ENV["IYI_HEADER_CENSUS"]?
 
     # The marker reads the layout table for every object it touches, and a
     # missing entry means a conservative word-scan, never a crash. Sorting by
@@ -146,6 +147,46 @@ class Iyi::CodeGenVisitor
     unless @single_module
       flag.linkage = LLVM::Linkage::External
     end
+  end
+
+  # The header census, on `IYI_HEADER_CENSUS=1`: which of the classes this
+  # program lays out would need their type id at `P-4` and which would not
+  # (GC_DESIGN.md, "The last eight bytes"). A class needs it when something
+  # reads it, and what reads it is `object_type_id`: a virtual type over an
+  # ancestor of the class that was ever made, or a reference union - thin
+  # pointers dispatched by the object's own id - the class or an ancestor is
+  # a member of. A class in a mixed union rides under the union's own tag,
+  # and a nilable class is a null test. Printed to stderr, one line a class,
+  # then the count; a measurement rather than a mode, so a decision about
+  # the header can be made on programs rather than on the two shapes the
+  # race table has.
+  private def iyi_header_census(entries : Array({Type, IyiMod::TypeLayout})) : Nil
+    headed = Set(Type).new
+    @program.llvm_id.each_type do |type|
+      next unless type.is_a?(ClassType) && type.virtual_type_made?
+      headed << type
+      type.all_subclasses.each { |sub| headed << sub }
+    end
+    # The unions the program made, from the program's own cache: the id
+    # table holds no union and no virtual type.
+    @program.unions.each_value do |union|
+      next unless union.is_a?(ReferenceUnionType) || union.is_a?(NilableReferenceUnionType)
+      union.union_types.each do |member|
+        member = member.remove_alias
+        next unless member.is_a?(ClassType)
+        headed << member
+        member.all_subclasses.each { |sub| headed << sub }
+      end
+    end
+    with_header = 0
+    without = 0
+    entries.each do |type, layout|
+      needs = headed.includes?(type)
+      words = type.is_a?(InstanceVarContainer) ? type.all_instance_vars.size : 0
+      STDERR.puts "header census: #{needs ? "headed  " : "headless"} #{type} (#{words} ivars, #{layout.scan_offsets.size} pointer fields)"
+      needs ? (with_header += 1) : (without += 1)
+    end
+    STDERR.puts "header census: #{with_header} classes need the type id in the object, #{without} do not, of #{entries.size} laid out"
   end
 
   # The same filter `collect_iyi_layouts` applies to a module's own types,

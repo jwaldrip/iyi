@@ -34,6 +34,15 @@
   next sweep - and the probe's own number moves by a third between runs
   with where the mark falls.
 
+- **`IYI_HEADER_CENSUS=1`: which classes need their type id in the
+  object.** A measurement rather than a mode, printed by codegen to
+  stderr one line a class: a class needs the id at `P-4` when something
+  reads it there, and what reads it is a virtual type over an ancestor
+  or a reference union the class is a member of. Binary trees 0 of 58,
+  live churn 0 of 57, the web sample 0 of 76, the concurrency exercise 0
+  of 108, calc 0 of 74; a program written to dispatch, 3 of 59.
+  GC_DESIGN.md's note on the last eight bytes says what that decides.
+
 ### Changed
 
 - **Huge pages per arena, past its first four megabytes; and the heap's

@@ -826,11 +826,40 @@ a fifth in cache and half out of it; the arena's head is the cheaper
 dispatch and the one that multiplies mappings by types. Either moves
 the object layout every module was compiled against - `.iyimod` v45 -
 and the two gates that pin the header (`object_header_spec.cr`, the
-arena exercise's `header:` check). What the round has to find, before
-it chooses, is the number this note does not have: how many (class,
-type) pairs a real program allocates, which is what the arena-per-type
-home costs in mappings and partial pages, read off the compiler
-building itself.
+arena exercise's `header:` check).
+
+The fourth home is the one the numbers point at: *nowhere, for the
+classes nothing reads it from.* What reads an object's type id is
+`object_type_id`, and it is reached from exactly two shapes of static
+type - a virtual type over an ancestor of the class, and a reference
+union the class or an ancestor is a member of; a class in a mixed union
+rides under the union's own tag, and a nilable class is a null test.
+The compiler can say which classes those are, and the census says it
+(`IYI_HEADER_CENSUS=1 iyi build`, one line a class on stderr,
+`gc_layouts.cr`): binary trees, 0 of 58 classes laid out need the id
+in the object; live churn 0 of 57; the probe 0 of 62; the web sample
+with its router 0 of 76; the concurrency exercise 0 of 108; calc's
+three modules 0 of 74. A program written to dispatch - two classes
+under a virtual type, two in a reference union - reads 3 of 59. So
+Go's 16 bytes are reachable for every object these programs allocate
+without touching how dispatch reads an id, because these programs do
+not dispatch; what stands in the way is not the language but separate
+compilation: the layout is in a module's object code, and a module
+that allocates a class cannot know that a consumer will put it under a
+virtual type. The shape that fits is a descriptor a class - size,
+whether it wears its id, its arena class - a weak global every module
+defines as "headed" and the final program's codegen defines strong
+with the census's answer, the allocation path reading it; the field
+offsets do not move either way, only the chunk's size and the id's
+store, so a module's code is right under both. A headerless object's
+five collector bits go to the byte table this cycle measured, and its
+layout for the mark to the arena's head, arenas per (class, layout)
+rather than per type - layouts per class being a handful - and the
+mark's arena lookup, which was the byte table's whole cost when the id
+stayed in the word, is then the read that replaces the header's. What
+the round pays and buys, on the numbers here: the mark some 5% for the
+table's line, allocation a byte store for a word store, a third of
+every 16-byte chunk and a fifth of every 32-byte one back.
 
 **Stage 8: the sweep beside the program, in slices.** Two
 measurements first, both on this tree's release builds. The barrier:

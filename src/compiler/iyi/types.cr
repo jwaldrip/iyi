@@ -350,6 +350,12 @@ module Iyi
       self
     end
 
+    # iyi: whether a virtual type over this type was ever made - the
+    # header census asks (`gc_layouts.cr`), and asking must not make one.
+    def virtual_type_made? : Bool
+      false
+    end
+
     def virtual_type!
       self
     end
@@ -1539,6 +1545,10 @@ module Iyi
       @virtual_type ||= VirtualType.new(program, self)
     end
 
+    def virtual_type_made? : Bool
+      !@virtual_type.nil?
+    end
+
     def class?
       true
     end
@@ -2450,6 +2460,10 @@ module Iyi
 
     def virtual_type!
       @virtual_type ||= VirtualType.new(program, self)
+    end
+
+    def virtual_type_made? : Bool
+      !@virtual_type.nil?
     end
 
     delegate depth, defs, superclass, macros, abstract?, struct?,
