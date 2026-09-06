@@ -443,7 +443,8 @@ threads reached it at once and counted ready on different pages; the
 collector makes it before the first helper exists. And a mark-worker's
 32 MiB stack, touched at one end, was given a transparent huge page at
 its first touch: 2 MB resident per worker for 4 KB used, 34 MB across
-sixteen, so the stacks refuse huge pages by `madvise`.
+sixteen, so the stacks refused huge pages by `madvise` - and begin at
+64 KB now and grow, the footprint section says.
 
 The budget is twice what survived, and what was allocated under the
 mark did not survive anything: born gray, so counted marked, but not
@@ -526,10 +527,13 @@ budget's worth of free pages resident - what the program will allocate
 before the next collection - and release what is free beyond it. And a
 16 MB arena touched at one end was given a transparent huge page, two
 megabytes resident for a class with ten objects in it, so the marker's
-stacks and the heap's first eight arenas refuse them by `madvise`;
-past 128 MB of arenas the two megabytes are a rounding of the heap and
-the page walk they save is what a large heap pays most - live churn,
-48 MB live, ran 17% faster on huge pages, and gets them.
+stacks and the heap's first eight arenas refused them by `madvise`;
+past 128 MB of arenas the two megabytes were taken as a rounding of the
+heap, since the page walk they save is what a large heap pays most -
+live churn, 48 MB live, ran 17% faster on huge pages. The rule is per
+arena now, and says so below (the resident set's second cycle): an
+arena's first four megabytes refuse huge pages and the rest is the
+kernel's default.
 
 Then what Go does about a mutator outrunning the mark, both halves.
 Objects born under the mark are born black: their fields are empty and
@@ -715,6 +719,51 @@ was, its resident set moving with where its last collection falls,
 this cycle set out to cut is the mark's floating garbage and the edges
 runs lose to it, and the next cycles' terms - the pool region and the
 workers' stacks - are the heap's neighbours, not the heap.
+
+**The heap's neighbours, read from `/proc/self/smaps`.** The second
+cycle began by reading every mapping's resident size at the end of
+binary trees and of the probe, rather than the terms the first cycle
+had been handed, and the terms were not what had been said. The
+marker's pool region, a 64 MB mapping bump-allocated and reset each
+mark, was 2 MB resident: its first touch was a transparent huge page,
+for 425 KB of batches in binary trees and 12 KB in the probe. The
+workers' stacks, 32 MB reserved each, were 40 KB resident across eight
+- a mark's deepest stack was thirty entries - but 272 MB of address
+space and overcommit. The arena directory, 16 MB committed a page at a
+time, was 2 MB resident for the same reason as the pool. And five
+arenas of binary trees' were exactly 2 MB resident each, 10 MB of a 33
+MB set: the ninth arena and after took huge pages, and the ninth arena
+is not the large one, the large one is.
+
+So: a batch taken from the pool is a batch's words free again, on a
+free list pushed without the lock and popped under it, and new words
+come from 64 KB pieces that refuse huge pages - the pool holds the most
+batches ever in it at once, 64 KB through eleven marks of a million
+nodes with fifteen helpers, and the 64 MB reservation and its "pool
+region is full" are gone. A worker's stack begins at 8,192 entries and
+doubles when a push or a taken batch needs more, the entries copied and
+the old mapping given back (`grow_stack`); the drains read the stack's
+address per pop, since a push inside a scan may have moved it. The
+directory refuses huge pages. And an arena's first `HUGE_AT` bytes,
+four megabytes, refuse them, with the rest of the mapping left to the
+kernel's default: a class of a few objects never touches the tail,
+and an arena carved past the line is large, its tail faulting in huge
+where THP is `always`, so the page walk a large heap pays is still
+saved. Asking for the tail outright with `MADV_HUGEPAGE` was built
+and measured out: under the common `defer+madvise` defrag setting an
+asked-for region is compacted for on the fault path, and a mutator
+stalled in a fault answers a stop late - live churn's longest pause
+read 4 to 10 ms in three runs of twelve where it reads 0.1 to 0.3 -
+where the default policy defers compaction and stalls nobody. Binary
+trees' resident set at its end fell from 33 MB to 16 on this machine,
+the race table's peak from 26 to 22-24, live churn's from 194-206 to
+173-186, and the resident-set probe's median from 123-140 to 100 on two
+cores; the parallel mark exercise gates the pool's size and the
+stack's growth by name, and the arena exercise reads the kernel's own
+books - resident pages from `statm` for twelve one-object arenas, and
+the flags it holds for an arena's two halves from `smaps`, `nh` on
+the first and not the second - with what it gave reported from
+`AnonHugePages`, because what it gives is its own.
 
 **Stage 8: the sweep beside the program, in slices.** Two
 measurements first, both on this tree's release builds. The barrier:

@@ -83,6 +83,30 @@
   fail("the helpers blackened nothing: the mark was one thread and the rest watched") if helped[1] == 0_i64
 
   puts "mark: #{alone[0] // 1000_i64} us alone, #{helped[0] // 1000_i64} us with helpers, which blackened #{helped[1]} of the last mark's nodes"
+
+  # The pool's memory is the most batches ever in it at once, not every
+  # batch a mark published: a batch taken is a batch's words free again.
+  # Eleven marks of a million nodes with fifteen helpers published tens
+  # of thousands of batches; the pool holds a handful of 64 KB pieces.
+  pool = IyiMark.pool_bytes
+  fail("pool: #{pool.to_i64} bytes mapped for batches after the marks, so taken batches are not being recycled") if pool > 1048576_u64
+  puts "pool: #{pool.to_i64} bytes mapped for the marks' batches"
+
+  # A worker's stack starts small and grows: a mark alone of one object
+  # holding 300,000 pointers pushes them all, and the stack of 8,192
+  # entries it began with doubles until they fit.
+  IyiMark.workers = 0_u64
+  wide = Array(Node?).new
+  index = 0
+  while index < 300000
+    wide << Node.new(nil, nil, index.to_i64)
+    index = index + 1
+  end
+  grown_before = IyiMark.stacks_grown
+  IyiMark.collect
+  fail("stack: a 300,000-wide object was marked alone and the stack never grew past its #{IyiMark::STACK_START.to_i64} entries") if IyiMark.stacks_grown == grown_before
+  fail("stack: the wide object lost a node under the mark") if wide.size != 300000 || wide[299999].as(Node).sum != 299999_i64
+  puts "stack: the mark of a 300,000-wide object grew a worker's stack #{(IyiMark.stacks_grown - grown_before).to_i64} times from #{IyiMark::STACK_START.to_i64} entries"
   puts "parallel mark: every property held"
 {% else %}
   puts "parallel mark: needs the collector and a thread target; nothing to exercise here"

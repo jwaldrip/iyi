@@ -349,6 +349,148 @@ puts "realloc: same-class, cross-class and null all hold their bytes"
     raise "large: still listed after free"
   end
   puts "large: 2 MiB over the top class round trips and unlists on free; bench/arena_large_probe.iyi proves the mapping is gone"
+
+  {% if flag?(:linux) %}
+    # --- Huge pages: an arena's first four megabytes refuse them, the rest
+    # is the kernel's default. A transparent huge page given to a 16 MB
+    # mapping's first touch is 2 MB resident for a class with one object
+    # in it; an arena carved past IyiHeap::HUGE_AT is large, and its tail
+    # faults in huge where THP is `always`, which is what a large heap's
+    # page walk is saved by. Read from the kernel's own books: resident
+    # pages in /proc/self/statm for twelve one-object arenas, and the flags
+    # the kernel holds for an arena's two halves in /proc/self/smaps - `nh`
+    # on the first, not on the second - which is the rule as the kernel
+    # has it, whatever huge pages it has to give today; what it gave is
+    # reported from AnonHugePages. Nothing to see where THP is `never`.
+    def number_after(text : String, key : String) : UInt64
+      bytes = text.to_unsafe
+      size = text.bytesize
+      want = key.to_unsafe
+      length = key.bytesize
+      at = 0
+      while at + length <= size
+        matched = 0
+        while matched < length && bytes[at + matched] == want[matched]
+          matched = matched + 1
+        end
+        break if matched == length
+        at = at + 1
+      end
+      raise "huge: #{key} not found" if at + length > size
+      at = at + length
+      while at < size && (bytes[at] == 32_u8 || bytes[at] == 9_u8)
+        at = at + 1
+      end
+      value = 0_u64
+      while at < size && bytes[at] >= 48_u8 && bytes[at] <= 57_u8
+        value = value * 10_u64 + (bytes[at] - 48_u8).to_u64
+        at = at + 1
+      end
+      value
+    end
+
+    def resident_kb : UInt64
+      # statm: size resident shared text lib data dt, in pages.
+      text = File.read("/proc/self/statm")
+      bytes = text.to_unsafe
+      at = 0
+      while bytes[at] != 32_u8
+        at = at + 1
+      end
+      number_after(text, " ") * 4_u64
+    end
+
+    def anon_huge_kb : UInt64
+      number_after(File.read("/proc/self/smaps_rollup"), "AnonHugePages:")
+    end
+
+    # The VmFlags line of the mapping holding `address`, from smaps: each
+    # mapping is a "low-high perms ..." line and a block of fields after
+    # it, VmFlags the last.
+    def vm_flags_at(address : UInt64) : String
+      text = File.read("/proc/self/smaps")
+      bytes = text.to_unsafe
+      size = text.bytesize
+      at = 0
+      inside = false
+      while at < size
+        stop = at
+        while stop < size && bytes[stop] != 10_u8
+          stop = stop + 1
+        end
+        line = text[at, stop - at]
+        if line.bytesize > 12 && bytes[at] >= 48_u8 && ((bytes[at] <= 57_u8) || (bytes[at] >= 97_u8 && bytes[at] <= 102_u8)) && !line.starts_with?("VmFlags")
+          # A range line: low-high in hex.
+          low = 0_u64
+          cursor = at
+          while bytes[cursor] != 45_u8
+            digit = bytes[cursor]
+            low = low * 16_u64 + (digit <= 57_u8 ? (digit - 48_u8).to_u64 : (digit - 87_u8).to_u64)
+            cursor = cursor + 1
+          end
+          cursor = cursor + 1
+          high = 0_u64
+          while bytes[cursor] != 32_u8
+            digit = bytes[cursor]
+            high = high * 16_u64 + (digit <= 57_u8 ? (digit - 48_u8).to_u64 : (digit - 87_u8).to_u64)
+            cursor = cursor + 1
+          end
+          inside = low <= address && address < high
+        elsif inside && line.starts_with?("VmFlags")
+          return line
+        end
+        at = stop + 1
+      end
+      raise "huge: no mapping in smaps holds #{address.to_i64.to_s(16)}"
+    end
+
+    thp = File.read("/sys/kernel/mm/transparent_hugepage/enabled")
+    if !thp.includes?("[never]")
+      # Twelve classes this program has not touched, one object each: twelve
+      # fresh arenas, a page or two resident apiece.
+      resident_before = resident_kb
+      size = 10240_u64
+      index = 0
+      while index < 12
+        Pointer(UInt8).malloc(size).value = 1_u8
+        size = size + 2048_u64
+        index = index + 1
+      end
+      grew = resident_kb - resident_before
+      if grew > 2048_u64
+        raise "huge: twelve arenas of one object each added #{grew.to_i64} KB resident, so small arenas are taking huge pages"
+      end
+      puts "huge: twelve one-object arenas added #{grew.to_i64} KB resident, none of it a huge page"
+    end
+    if thp.includes?("[never]")
+      puts "huge: transparent huge pages are `never` here, nothing to check"
+    else
+      # One class carved past HUGE_AT and four megabytes on: the arena's
+      # first four megabytes refuse huge pages (`nh` in its flags) and the
+      # rest does not, whatever the kernel found to give it.
+      huge_before = anon_huge_kb
+      kept = Array(Pointer(UInt8)).new
+      carved = 0_u64
+      while carved < IyiHeap::HUGE_AT + 4194304_u64
+        block = Pointer(UInt8).malloc(3000_u64)
+        block.value = 1_u8
+        kept << block
+        carved = carved + 3072_u64
+      end
+      grew = anon_huge_kb - huge_before
+      arena = IyiHeap.containing(kept[0].as(Void*))
+      raise "huge: the carved class is in no arena" if arena == 0
+      head_flags = vm_flags_at(arena)
+      tail_flags = vm_flags_at(arena + IyiHeap::HUGE_AT)
+      if !head_flags.includes?(" nh")
+        raise "huge: an arena's first #{IyiHeap::HUGE_AT.unsafe_shr(20_u64).to_i64} MB do not refuse huge pages (#{head_flags})"
+      end
+      if tail_flags.includes?(" nh")
+        raise "huge: an arena's tail past #{IyiHeap::HUGE_AT.unsafe_shr(20_u64).to_i64} MB refuses huge pages too (#{tail_flags}), so a large heap never gets them"
+      end
+      puts "huge: an arena carved #{carved.unsafe_shr(20_u64).to_i64} MB refuses huge pages on its first #{IyiHeap::HUGE_AT.unsafe_shr(20_u64).to_i64} MB and not past them, and #{grew.to_i64} KB of it faulted in huge (#{kept.size} blocks kept)"
+    end
+  {% end %}
 {% else %}
   puts "arena checks skipped: this build deselected the collector's allocator; a plain build runs them"
 {% end %}

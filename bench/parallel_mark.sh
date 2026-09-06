@@ -3,13 +3,19 @@
 #
 #     bash bench/parallel_mark.sh
 #
-# Three steps, the last a failure proof:
+# Five steps, the last three failure proofs:
 #   1. The program holds, release: a million-node tree survives five marks
-#      alone and five with helpers, and the helpers blackened nodes.
+#      alone and five with helpers, and the helpers blackened nodes; the
+#      pool holds a handful of pieces after them; a worker's stack grew to
+#      hold a 300,000-wide object marked alone.
 #   2. The two pause means, printed: alone against with helpers.
 #   3. Failure proof: the marker's donation of its stack's bottom removed
 #      from a copy of the prelude; the helpers wake and find nothing, and
 #      the program exits 1 saying so.
+#   4. Failure proof: a batch taken is never freed; the pool's pieces pile
+#      up past the bound, and the pool check says so.
+#   5. Failure proof: a stack that will not grow dies where it used to,
+#      by name, on the wide object.
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -34,22 +40,39 @@ fi
 grep -q 'every property held' answers.txt || { cat answers.txt; exit 1; }
 
 step "the mark, alone and with helpers ($(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu) cores here)"
-grep -E '^(tree|mark):' answers.txt | sed 's/^/  /'
+grep -E '^(tree|mark|pool|stack):' answers.txt | sed 's/^/  /'
 
-step "failure proof: a marker that never shares its stack is refused"
-mkdir -p patched/iyi
-cp "$REPO"/src/iyi/*.iyi patched/iyi/
-awk '{ sub(/since >= DONATE_EVERY/, "since >= STACK_WORDS"); print }' "$REPO/src/iyi/prelude.iyi" > patched/iyi/prelude.iyi
-cmp -s patched/iyi/prelude.iyi "$REPO/src/iyi/prelude.iyi" && { echo "the awk found nothing to change"; exit 1; }
-if ! IYI_PATH="$WORK/patched:$REPO/src" "$IYI" build --release "$REPO/bench/parallel_mark.iyi" -o nodonate > build-nodonate.log 2>&1; then
-  cat build-nodonate.log; exit 1
-fi
-timeout 300 ./nodonate > nodonate.txt 2>&1
-code=$?
-if [ "$code" -ne 1 ] || ! grep -q "blackened nothing" nodonate.txt; then
-  echo "the sharing check did not fire (exit $code):"; tail -3 nodonate.txt; exit 1
-fi
-printf '  exits 1 at "%s"\n' "$(grep -m1 'blackened nothing' nodonate.txt)"
+# $1 label, $2 awk program over the prelude, $3 the phrase the failing check
+# prints, $4 the exit code expected.
+prove_fails() {
+  local label="$1" script="$2" phrase="$3" want="$4" dir="patched-$RANDOM"
+  step "failure proof: $label"
+  mkdir -p "$dir/iyi"
+  cp "$REPO"/src/iyi/*.iyi "$dir/iyi/"
+  awk "$script" "$REPO/src/iyi/prelude.iyi" > "$dir/iyi/prelude.iyi"
+  cmp -s "$dir/iyi/prelude.iyi" "$REPO/src/iyi/prelude.iyi" && { echo "the awk found nothing to change"; exit 1; }
+  if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build --release "$REPO/bench/parallel_mark.iyi" -o "$dir/program" > "$dir/build.log" 2>&1; then
+    cat "$dir/build.log"; exit 1
+  fi
+  timeout 300 "./$dir/program" > "$dir/out.txt" 2>&1
+  local code=$?
+  if [ "$code" -ne "$want" ] || ! grep -q "$phrase" "$dir/out.txt"; then
+    echo "the check did not fire (exit $code, wanted $want at \"$phrase\"):"; tail -3 "$dir/out.txt"; exit 1
+  fi
+  printf '  exits %s at "%s"\n' "$code" "$(grep -m1 "$phrase" "$dir/out.txt")"
+}
+
+prove_fails "a marker that never shares its stack is refused" \
+  '{ sub(/since >= DONATE_EVERY/, "false \\&\\& since >= DONATE_EVERY"); print }' "blackened nothing" 1
+
+# A taken batch's words never go back: every batch published is a fresh
+# one, and eleven marks of a million nodes pile up pieces past the bound.
+prove_fails "a pool that never recycles a batch is refused" \
+  '{ if ($0 ~ /^        free_batch\(batch\)$/) { print "        # removed"; next } print }' "pool:" 1
+
+# The stack never grows: the fatal it used to be, on the wide object.
+prove_fails "a stack that will not grow dies by name" \
+  '{ if ($0 ~ /^        return IyiHeap\.read64\(w \+ W_STACK\) if need <= cap$/) { print "        IyiRoots.fatal(\"iyi: a mark worker'"'"'s stack overflowed\\n\") if need > cap"; print; next } print }' "stack overflowed" 1
 
 echo "workdir $WORK"
 echo "parallel mark: every step held"

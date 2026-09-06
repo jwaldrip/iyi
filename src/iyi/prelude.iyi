@@ -1017,7 +1017,7 @@ require "./file"
           # thread reaches the heap: two threads' first allocations would
           # otherwise each map a centre of their own.
           @@central = __iyi_mmap(DIR_LEN).address if @@central == 0
-          @@arena_dir = __iyi_mmap(DIR_SLOTS).address if @@arena_dir == 0
+          arena_dir
           write64(page + CACHE_NEXT, @@caches)
           @@caches = page
           unlock
@@ -1865,7 +1865,14 @@ require "./file"
       @@arena_dir : UInt64 = 0_u64
 
       def self.arena_dir : UInt64
-        @@arena_dir = __iyi_mmap(DIR_SLOTS).address if @@arena_dir == 0
+        if @@arena_dir == 0
+          @@arena_dir = __iyi_mmap(DIR_SLOTS).address
+          {% if flag?(:linux) %}
+            # A byte touched in it is a page committed, not a huge page:
+            # the directory was 2 MB resident of every program's set.
+            __iyi_madvise_nohuge(@@arena_dir, DIR_SLOTS)
+          {% end %}
+        end
         @@arena_dir
       end
 
@@ -1890,14 +1897,24 @@ require "./file"
         base
       end
 
-      # Arenas below this many - 128 MB - are refused transparent huge pages: a
-      # huge page given to an arena's first touch is two megabytes
-      # resident for a class with ten objects in it, and eight such
-      # arenas were 16 MB of binary trees' footprint. Past it the heap is
-      # large, the two megabytes are a rounding of it, and the page walk
-      # the huge pages save is what a large heap pays most: live churn,
-      # 48 MB live, ran 17% faster on them.
-      HUGE_FROM = 8_u64
+      # An arena's first HUGE_AT bytes refuse transparent huge pages and
+      # the rest of it is left to the kernel's default: a huge page given
+      # to an arena's first touch is two megabytes resident for a class
+      # with ten objects in it, and the rule before this one - refuse the
+      # first eight arenas, take them from the ninth - left binary trees
+      # with five arenas of a few objects each at 2 MB apiece, 10 MB of a
+      # 33 MB resident set, because the ninth arena is not the large one,
+      # the large one is. An arena carved past four megabytes is large,
+      # and its tail faults in huge where the kernel's THP is `always`,
+      # which is where the page walk a large heap pays is saved: live
+      # churn, 48 MB live, ran 17% faster on huge pages. Left to the
+      # default rather than asked for with MADV_HUGEPAGE, which was
+      # built and measured out: an asked-for region is compacted for on
+      # the fault path under the common `defer+madvise` defrag setting,
+      # and a mutator stalled in a fault answers a stop late - live
+      # churn's longest pause read 4 to 10 ms in three runs of twelve
+      # where it reads 0.1 to 0.35. Linux only; darwin has no such advice.
+      HUGE_AT = 4194304_u64
       @@arenas_mapped : UInt64 = 0_u64
 
       # Mappings made, in all: with `IyiMark.arenas_released` the churn
@@ -1909,7 +1926,7 @@ require "./file"
       def self.map_arena(index : Int32, owner : UInt64) : UInt64
         base = map_aligned
         {% if flag?(:linux) %}
-          __iyi_madvise_nohuge(base, MAP) if @@arenas_mapped < HUGE_FROM
+          __iyi_madvise_nohuge(base, HUGE_AT)
         {% end %}
         @@arenas_mapped = @@arenas_mapped &+ 1_u64
         chunk = payload(index) + HEADER
@@ -2922,13 +2939,25 @@ require "./file"
       # stack passes SPILL_AT moves a batch of BATCH entries to the pool
       # under the pool's own lock, a worker whose stack runs dry takes a
       # batch from it, and the mark is over when the pool is empty and no
-      # worker holds work. Batches come from a bump region the collection
-      # resets, so the pool never touches the heap and never leaks.
+      # worker holds work. A batch taken is a batch's words free again
+      # (`take_batch`, `free_batch`): batches come from a free list first
+      # and from a bump region in POOL_PIECE-byte pieces after it, so what
+      # the pool holds resident is the most batches ever in it at once,
+      # not every batch a mark ever published - 64 MB was reserved for
+      # those and the first touch of it was a transparent huge page, 2 MB
+      # resident for binary trees' 425 KB of batches and for the
+      # resident-set probe's 12 KB. The pieces refuse huge pages and are
+      # never given back: the free list is the pool's memory across
+      # marks, and it never touches the heap and never leaks.
+      # A worker's stack begins STACK_START entries long and doubles as a
+      # mark needs it (`grow_stack`): the 32 MB each was reserved with
+      # was address space and overcommit, 272 MB of it for eight
+      # workers, for a mark whose deepest stack was thirty entries.
       SPILL_AT = 512_u64
       BATCH = 128_u64
       BATCH_WORDS = 130_u64
-      STACK_WORDS = 4194304_u64
-      POOL_REGION = 67108864_u64
+      STACK_START = 8192_u64
+      POOL_PIECE = 65536_u64
 
       # A worker's state is one page, and one `@[ThreadLocal]` names the
       # thread's page: read once when a drain begins and passed down as
@@ -2939,6 +2968,7 @@ require "./file"
       #   +16  bytes this worker blackened
       #   +24  the arena its pending live count is for   +32  the count
       #   +40  the type id whose layout entry is cached   +48  the entry
+      #   +88  the stack's capacity in entries
       @[ThreadLocal]
       @@worker : UInt64 = 0_u64
       @@collector_worker : UInt64 = 0_u64
@@ -2952,13 +2982,13 @@ require "./file"
       W_BLACK = 56_u64
       W_SINCE = 64_u64
 
-      # The pool: a lock word, the batch list's head, the bump region and its
-      # cursor, the count of workers holding work, and the generation the
-      # helpers wake on — each on a line of its own in one mapping.
+      # The pool: a lock word, the batch list's head, the bump piece and
+      # its cursor and end, the free batches, the count of workers holding
+      # work, and the generation the helpers wake on — each on a line of
+      # its own in one mapping.
       @@pool : UInt64 = 0_u64
       POOL_LOCK = 0_u64
       POOL_HEAD = 64_u64
-      POOL_REGION_BASE = 128_u64
       POOL_CURSOR = 192_u64
       POOL_ACTIVE = 256_u64
       POOL_GENERATION = 320_u64
@@ -3001,6 +3031,13 @@ require "./file"
       # arithmetic overflow once in eighty runs on eight threads.
       POOL_MARK_PERMITS = 832_u64
       POOL_FINISH = 896_u64
+      # The free batches, pushed without the lock and popped under it
+      # (`free_batch`, `new_batch`); the end of the bump piece; and the
+      # pieces mapped, which is what the pool holds resident in units of
+      # POOL_PIECE - the exercises read it.
+      POOL_FREE = 960_u64
+      POOL_PIECE_END = 1024_u64
+      POOL_PIECES = 1088_u64
       NO_PERMIT = 0xFFFFFFFFFFFFFFFF_u64
 
       # A mark's permit, or NO_PERMIT: the slot is the order of taking,
@@ -3133,19 +3170,46 @@ require "./file"
         pool_word(POOL_LOCK).value.set(0_u64)
       end
 
-      # A batch's words, from the bump region; the region is reset when a
-      # mark begins, so a collection's batches are gone with it.
+      # A batch's words: off the free list, or from the bump piece, or
+      # from a fresh piece. Under the pool lock, the only popper; the
+      # pushers are lock-free (`free_batch`), so the pop is a
+      # compare-and-set too.
       def self.new_batch : UInt64
-        base = IyiHeap.read64(pool + POOL_REGION_BASE)
-        if base == 0
-          base = __iyi_mmap(POOL_REGION).address
-          IyiHeap.write64(pool + POOL_REGION_BASE, base)
-          IyiHeap.write64(pool + POOL_CURSOR, base)
+        free = pool_word(POOL_FREE)
+        while true
+          head = free.value.get
+          break if head == 0
+          return head if free.value.compare_and_set(head, IyiHeap.read64(head))[1]
         end
         cursor = IyiHeap.read64(pool + POOL_CURSOR)
-        IyiRoots.fatal("iyi: the marker's pool region is full\n") if cursor + BATCH_WORDS * 8_u64 > base + POOL_REGION
+        if cursor + BATCH_WORDS * 8_u64 > IyiHeap.read64(pool + POOL_PIECE_END)
+          cursor = __iyi_mmap(POOL_PIECE).address
+          {% if flag?(:linux) %}
+            __iyi_madvise_nohuge(cursor, POOL_PIECE)
+          {% end %}
+          IyiHeap.write64(pool + POOL_PIECE_END, cursor + POOL_PIECE)
+          IyiHeap.write64(pool + POOL_PIECES, IyiHeap.read64(pool + POOL_PIECES) + 1_u64)
+        end
         IyiHeap.write64(pool + POOL_CURSOR, cursor + BATCH_WORDS * 8_u64)
         cursor
+      end
+
+      # A batch's words back on the free list, from any thread, no lock:
+      # a push is one compare-and-set on the head, and the head is only
+      # ever popped under the lock, so no batch is popped and pushed
+      # again under a pusher's feet.
+      def self.free_batch(batch : UInt64) : Nil
+        free = pool_word(POOL_FREE)
+        while true
+          head = free.value.get
+          IyiHeap.write64(batch, head)
+          break if free.value.compare_and_set(head, batch)[1]
+        end
+      end
+
+      # Bytes the pool holds mapped for batches: the exercises read it.
+      def self.pool_bytes : UInt64
+        IyiHeap.read64(pool + POOL_PIECES) * POOL_PIECE
       end
 
       # This thread's worker page and stack, mapped on first use.
@@ -3156,17 +3220,15 @@ require "./file"
       # so counted marked, but not survivors of anything - the budget is
       # set from the marked bytes less these.
       W_BORN = 80_u64
+      W_CAP = 88_u64
       @@worker_pages : UInt64 = 0_u64
 
       def self.worker : UInt64
         w = @@worker
         if w == 0
           w = __iyi_mmap(4096_u64).address
-          stack = __iyi_mmap(STACK_WORDS * 8_u64).address
-          {% if flag?(:linux) %}
-            __iyi_madvise_nohuge(stack, STACK_WORDS * 8_u64)
-          {% end %}
-          IyiHeap.write64(w + W_STACK, stack)
+          IyiHeap.write64(w + W_STACK, __iyi_mmap(STACK_START * 8_u64).address)
+          IyiHeap.write64(w + W_CAP, STACK_START)
           pool_lock
           IyiHeap.write64(w + W_NEXT, @@worker_pages)
           @@worker_pages = w
@@ -3174,6 +3236,45 @@ require "./file"
           @@worker = w
         end
         w
+      end
+
+      # The stack made long enough for `need` entries: doubled until it
+      # is, the entries copied over, the old mapping given back. Rare - a
+      # mark of a tree keeps a stack as deep as the tree, and a stack of
+      # any depth spills past SPILL_AT with helpers - so a copy is what
+      # it costs, once per doubling. Answers the mapping.
+      def self.grow_stack(w : UInt64, need : UInt64) : UInt64
+        cap = IyiHeap.read64(w + W_CAP)
+        return IyiHeap.read64(w + W_STACK) if need <= cap
+        grown = cap
+        while grown < need
+          grown = grown * 2_u64
+        end
+        old = IyiHeap.read64(w + W_STACK)
+        stack = __iyi_mmap(grown * 8_u64).address
+        {% if flag?(:linux) %}
+          # A stack big enough to hold a huge page refuses one: touched at
+          # one end, it would be 2 MB resident for a few entries.
+          __iyi_madvise_nohuge(stack, grown * 8_u64) if grown * 8_u64 >= 2097152_u64
+        {% end %}
+        len = IyiHeap.read64(w + W_LEN)
+        index = 0_u64
+        while index < len
+          IyiHeap.write64(stack + index * 8_u64, IyiHeap.read64(old + index * 8_u64))
+          index = index + 1_u64
+        end
+        IyiHeap.write64(w + W_STACK, stack)
+        IyiHeap.write64(w + W_CAP, grown)
+        __iyi_munmap(old, cap * 8_u64)
+        @@stacks_grown = @@stacks_grown + 1_u64
+        stack
+      end
+
+      @@stacks_grown : UInt64 = 0_u64
+
+      # Times a worker's stack doubled, in all: the exercises read it.
+      def self.stacks_grown : UInt64
+        @@stacks_grown
       end
 
       # ── The write barrier's half ────────────────────────────────────────
@@ -3211,7 +3312,6 @@ require "./file"
         w = worker
         active = pool_word(POOL_ACTIVE)
         active.value.add(1_u64)
-        stack = IyiHeap.read64(w + W_STACK)
         scanned = 0_u64
         while scanned < ASSIST_OBJECTS
           # An assist runs inside the allocator, where a stop is deferred
@@ -3226,7 +3326,9 @@ require "./file"
           end
           len = len - 1_u64
           IyiHeap.write64(w + W_LEN, len)
-          scan(w, IyiHeap.read64(stack + len * 8_u64))
+          # The stack read each time: a push inside `scan` may have grown
+          # and moved it (`grow_stack`).
+          scan(w, IyiHeap.read64(IyiHeap.read64(w + W_STACK) + len * 8_u64))
           scanned = scanned + 1_u64
         end
         flush_mutator(w)
@@ -3263,7 +3365,7 @@ require "./file"
 
       def self.mutator_push(w : UInt64, base : UInt64) : Nil
         len = IyiHeap.read64(w + W_LEN)
-        IyiHeap.write64(IyiHeap.read64(w + W_STACK) + len * 8_u64, base)
+        IyiHeap.write64(grow_stack(w, len + 1_u64) + len * 8_u64, base)
         len = len + 1_u64
         IyiHeap.write64(w + W_LEN, len)
         flush_mutator(w) if len >= MUTATOR_BATCH
@@ -3312,8 +3414,7 @@ require "./file"
             IyiHeap.write64(w + W_SINCE, since)
           end
         end
-        IyiRoots.fatal("iyi: a mark worker's stack overflowed\n") if len >= STACK_WORDS
-        IyiHeap.write64(IyiHeap.read64(w + W_STACK) + len * 8_u64, base)
+        IyiHeap.write64(grow_stack(w, len + 1_u64) + len * 8_u64, base)
         IyiHeap.write64(w + W_LEN, len + 1_u64)
       end
 
@@ -3370,15 +3471,17 @@ require "./file"
         end
         IyiHeap.write64(pool + POOL_HEAD, IyiHeap.read64(batch))
         pool_unlock
-        stack = IyiHeap.read64(w + W_STACK)
         len = IyiHeap.read64(w + W_LEN)
         count = IyiHeap.read64(batch + 8_u64)
+        stack = grow_stack(w, len + count)
         index = 0_u64
         while index < count
           IyiHeap.write64(stack + (len + index) * 8_u64, IyiHeap.read64(batch + 16_u64 + index * 8_u64))
           index = index + 1_u64
         end
         IyiHeap.write64(w + W_LEN, len + count)
+        # The batch's words are free again: the entries are this stack's.
+        free_batch(batch)
         true
       end
 
@@ -3541,7 +3644,6 @@ require "./file"
           arena = IyiHeap.arena_next(arena)
         end
         IyiHeap.write64(pool + POOL_HEAD, 0_u64)
-        IyiHeap.write64(pool + POOL_CURSOR, IyiHeap.read64(pool + POOL_REGION_BASE))
         # Helpers by the work: one per MiB the last mark found live, up to
         # the number wanted — fifteen helpers on a three-MiB heap spent
         # the mark waking, contending for the pool and detecting the end
@@ -3596,14 +3698,15 @@ require "./file"
       # thread exercise on three.
       def self.drain(w : UInt64) : UInt64
         black = 0_u64
-        stack = IyiHeap.read64(w + W_STACK)
         active = pool_word(POOL_ACTIVE)
         active.value.add(1_u64)
         while true
           while (len = IyiHeap.read64(w + W_LEN)) > 0_u64
             len = len - 1_u64
             IyiHeap.write64(w + W_LEN, len)
-            scan(w, IyiHeap.read64(stack + len * 8_u64))
+            # The stack read each time: a push inside `scan` may have
+            # grown and moved it (`grow_stack`).
+            scan(w, IyiHeap.read64(IyiHeap.read64(w + W_STACK) + len * 8_u64))
             black = black + 1_u64
           end
           next if take_batch(w)
@@ -3629,7 +3732,6 @@ require "./file"
       # retreat's case, whatever it hangs off - a register, or a batch a
       # mutator published after the helpers found the pool empty.
       def self.drain_bounded(w : UInt64, limit : UInt64) : Bool
-        stack = IyiHeap.read64(w + W_STACK)
         scanned = 0_u64
         while true
           len = IyiHeap.read64(w + W_LEN)
@@ -3640,7 +3742,7 @@ require "./file"
           return false if scanned >= limit
           len = len - 1_u64
           IyiHeap.write64(w + W_LEN, len)
-          scan(w, IyiHeap.read64(stack + len * 8_u64))
+          scan(w, IyiHeap.read64(IyiHeap.read64(w + W_STACK) + len * 8_u64))
           scanned = scanned + 1_u64
         end
       end
@@ -4976,7 +5078,6 @@ require "./file"
             arena = IyiHeap.arena_next(arena)
           end
           IyiHeap.write64(pool + POOL_HEAD, 0_u64)
-          IyiHeap.write64(pool + POOL_CURSOR, IyiHeap.read64(pool + POOL_REGION_BASE))
           # The roots, and then the mark up to the bound on this thread
           # with the world still stopped: no barrier is needed for it,
           # nothing is running.

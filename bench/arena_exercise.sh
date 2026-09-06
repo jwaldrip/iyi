@@ -106,13 +106,13 @@ build_and_run "default, release" exercise-gc-release "$REPO/bench/arena_exercise
 # silently compiled the whole arena section out from reading as a pass.
 echo
 echo "== every arena check reported"
-for check in "size classes:" "addressability:" "clearing:" "reuse:" "traversal:" "large:"; do
+for check in "size classes:" "addressability:" "clearing:" "reuse:" "traversal:" "large:" "huge:"; do
   if ! grep -q "$check" "$WORK/exercise-gc.out" 2>/dev/null; then
     echo "  MISSING: $check"
     status=1
   fi
 done
-[ "$status" -eq 0 ] && echo "  size classes, addressability, clearing, reuse, traversal and large all reported"
+[ "$status" -eq 0 ] && echo "  size classes, addressability, clearing, reuse, traversal, large and huge all reported"
 
 echo
 echo "== a freed large object's mapping is gone"
@@ -141,6 +141,48 @@ else
       echo "  the probe exited $probe_exit, which is neither a fault nor a clean read"
       sed 's/^/    /' "$WORK/large-probe.out"
       status=1
+      ;;
+  esac
+fi
+
+# Huge pages, Linux: the check in the program reads the kernel's own
+# books - resident pages, and the flags it holds for an arena's two halves
+# - and each half of the rule is proven to fail by name in a copy of the
+# prelude: the refusal removed, and the refusal stretched over the whole
+# arena. Both are the kernel's flags, not its huge pages to give, so both
+# fail wherever THP is not `never`.
+if [ "$(uname -s)" = Linux ]; then
+  thp="$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)"
+  prove_huge_fails() {
+    local label="$1" dir="$2" phrase="$3" script="$4"
+    mkdir -p "$WORK/$dir/iyi"
+    cp -R "$REPO/src/iyi/." "$WORK/$dir/iyi/"
+    awk "$script" "$REPO/src/iyi/prelude.iyi" > "$WORK/$dir/iyi/prelude.iyi"
+    if cmp -s "$WORK/$dir/iyi/prelude.iyi" "$REPO/src/iyi/prelude.iyi"; then
+      echo "  $label: the awk found nothing to change"; status=1; return
+    fi
+    if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build -o "$WORK/$dir/program" "$REPO/bench/arena_exercise.iyi" >"$WORK/$dir/build.log" 2>&1; then
+      echo "  $label: the patched prelude did not build"; sed -n '1,12p' "$WORK/$dir/build.log"; status=1; return
+    fi
+    "$WORK/$dir/program" >"$WORK/$dir/out" 2>&1
+    local exit_code=$?
+    if [ "$exit_code" -eq 0 ]; then
+      echo "  $label: the exercise still passed, so it does not test this"; status=1; return
+    fi
+    if ! grep -q "$phrase" "$WORK/$dir/out"; then
+      echo "  $label: failed, but not at the expected check"; sed -n '$p' "$WORK/$dir/out"; status=1; return
+    fi
+    printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
+  }
+  echo
+  echo "== huge pages: the rule fails by name when either half is removed"
+  case "$thp" in
+    *"[never]"*) echo "  THP is never here: neither half has anything to show" ;;
+    *)
+      prove_huge_fails "small arenas take huge pages" hugesmall "panic: huge:" \
+        '{ if ($0 ~ /^          __iyi_madvise_nohuge\(base, HUGE_AT\)$/) { print "          # removed"; next } print }'
+      prove_huge_fails "a large arena is refused them too" hugenever "panic: huge:" \
+        '{ if ($0 ~ /^          __iyi_madvise_nohuge\(base, HUGE_AT\)$/) { print "          __iyi_madvise_nohuge(base, MAP)"; next } print }'
       ;;
   esac
 fi

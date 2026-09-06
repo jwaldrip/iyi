@@ -36,6 +36,36 @@
 
 ### Changed
 
+- **Huge pages per arena, past its first four megabytes; and the heap's
+  neighbours read from `smaps` and cut.** An arena's first four
+  megabytes (`IyiHeap::HUGE_AT`) refuse transparent huge pages and the
+  rest of it is the kernel's default; the rule was to refuse the first
+  eight arenas and let the ninth and after take them whole, and the
+  ninth arena is not the large one: binary trees carried five arenas of
+  a few objects each at exactly 2 MB resident, 10 MB of a 33 MB set.
+  Asking for the tail with `MADV_HUGEPAGE` was built and measured out -
+  compacted for on the fault path, a mutator answered a stop late, and
+  live churn's longest pause read 4 to 10 ms in three runs of twelve.
+  Read from `/proc/self/smaps` at the end of binary trees and of the
+  probe, three more terms that had been stated otherwise: the marker's
+  64 MB pool region was 2 MB resident (a huge page on its first touch,
+  for 425 KB of batches), the arena directory another 2 MB the same
+  way, and the workers' 32 MB stacks 40 KB resident across eight but
+  272 MB of address space. A batch taken from the pool is free again
+  (a lock-free free list; new words from 64 KB pieces that refuse huge
+  pages; the reservation and its "pool region is full" gone - 64 KB
+  through eleven marks of a million nodes with fifteen helpers); a
+  worker's stack begins at 8,192 entries and doubles as a mark needs
+  it; the directory refuses huge pages. Binary trees ends at 16 MB
+  resident where it ended at 33, and reads 22-24 MB peak on the race
+  table where it read 26-31, live churn 180-186 where it read 192-206,
+  the resident-set probe 100 MB median on two cores where it read 123 to 140.
+  `bench/parallel_mark.sh` gates the pool's size and the stack's growth
+  and fails each by name; `bench/arena_exercise.sh` reads `statm` for
+  twelve one-object arenas and the flags the kernel holds for an
+  arena's two halves in `smaps`, reports what `AnonHugePages` says it
+  gave, and removes and stretches the refusal in a copy of the prelude.
+
 - **The warm budget is counted in payload and split at the line.** A run
   of dead pages kept or released whole overshot the budget by the run,
   and a run is an arena when the arena is all dead: 13 MB warm for a 4
@@ -4035,7 +4065,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 10,038-line library and nothing else. Every other
+  written against iyi's own 10,139-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
