@@ -41,7 +41,7 @@ class Iyi::Path
 
     # iyi: Crystal's name for a thing the prelude spells otherwise, for
     # someone arriving with Crystal's spelling in their fingers.
-    if hint = Iyi::IYI_CRYSTAL_CONSTANT_HINTS[to_s]?
+    if hint = Iyi::IYI_ARRIVAL_CONSTANT_HINTS[to_s]?
       self.raise("undefined constant #{self}\n#{hint}")
     end
 
@@ -54,12 +54,12 @@ module Iyi
   # instead. Read where an undefined constant or a top-level call is
   # reported; a name here is one somebody arriving from Crystal writes
   # first, not a list of everything the prelude lacks.
-  IYI_CRYSTAL_CONSTANT_HINTS = {
+  IYI_ARRIVAL_CONSTANT_HINTS = {
     "ARGV" => "The arguments are `Program.args`: an `Array(String)` of what followed the program's name.",
     "ENV"  => "One variable at a time: `Program.env(\"NAME\")` answers a `String?`; there is no map of the whole environment.",
   }
 
-  IYI_CRYSTAL_CALL_HINTS = {
+  IYI_ARRIVAL_CALL_HINTS = {
     "p"       => "`puts value.inspect` is the spelling here; there is no `p`.",
     "pp"      => "`puts value.inspect` is the spelling here; there is no `pp`.",
     "require" => "iyi has no `require`: a module is reached with `import`, and `--crystal` gives a program Crystal's library.",
@@ -823,9 +823,9 @@ class Iyi::Call
       end
 
       # iyi: Crystal's spelling for something the prelude has under
-      # another name (`IYI_CRYSTAL_CALL_HINTS`).
-      if !obj && !similar_name && (crystal = Iyi::IYI_CRYSTAL_CALL_HINTS[def_name]?)
-        msg << '\n' << crystal
+      # another name (`IYI_ARRIVAL_CALL_HINTS`).
+      if !obj && !similar_name && (arrival = Iyi::IYI_ARRIVAL_CALL_HINTS[def_name]?)
+        msg << '\n' << arrival
       end
 
       # Check if it's an instance variable that was never assigned a value

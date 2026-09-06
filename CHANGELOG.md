@@ -47,8 +47,8 @@
 - **Crystal's spelling gets iyi's answer.** `ARGV` says the arguments
   are `Program.args`; `ENV` says `Program.env("NAME")` and that there
   is no map of the whole environment; `p` and `pp` say `puts
-  value.inspect`. The table is `IYI_CRYSTAL_CONSTANT_HINTS` and
-  `IYI_CRYSTAL_CALL_HINTS` in `call_error.cr`: names somebody arriving
+  value.inspect`. The table is `IYI_ARRIVAL_CONSTANT_HINTS` and
+  `IYI_ARRIVAL_CALL_HINTS` in `call_error.cr`: names somebody arriving
   from Crystal writes first, not a list of what the prelude lacks.
 
 - **A nilable receiver says what to do.** "undefined method '+' for
