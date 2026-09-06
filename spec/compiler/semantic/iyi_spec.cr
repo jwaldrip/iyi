@@ -249,6 +249,20 @@ describe "Semantic: iyi" do
     end
   end
 
+  describe "Crystal's spelling" do
+    it "names Program.args for ARGV" do
+      assert_error "ARGV", "The arguments are `Program.args`"
+    end
+
+    it "names Program.env for ENV" do
+      assert_error "ENV", "`Program.env(\"NAME\")`"
+    end
+
+    it "names puts value.inspect for p" do
+      assert_error "p 1", "`puts value.inspect` is the spelling here; there is no `p`."
+    end
+  end
+
   describe "using conflicts (SPEC.md II.3)" do
     it "reports an ambiguous function at the point of use" do
       assert_error <<-CODE, "'title' is ambiguous here"

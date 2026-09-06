@@ -37,10 +37,33 @@ class Iyi::Path
     similar_name = type.lookup_similar_path(self)
     if similar_name
       self.raise("undefined constant #{self}\nDid you mean '#{similar_name}'?", suggestion: similar_name.to_s)
-    else
-      self.raise("undefined constant #{self}")
     end
+
+    # iyi: Crystal's name for a thing the prelude spells otherwise, for
+    # someone arriving with Crystal's spelling in their fingers.
+    if hint = Iyi::IYI_CRYSTAL_CONSTANT_HINTS[to_s]?
+      self.raise("undefined constant #{self}\n#{hint}")
+    end
+
+    self.raise("undefined constant #{self}")
   end
+end
+
+module Iyi
+  # iyi: Crystal's spellings the prelude does not have, and what it has
+  # instead. Read where an undefined constant or a top-level call is
+  # reported; a name here is one somebody arriving from Crystal writes
+  # first, not a list of everything the prelude lacks.
+  IYI_CRYSTAL_CONSTANT_HINTS = {
+    "ARGV" => "The arguments are `Program.args`: an `Array(String)` of what followed the program's name.",
+    "ENV"  => "One variable at a time: `Program.env(\"NAME\")` answers a `String?`; there is no map of the whole environment.",
+  }
+
+  IYI_CRYSTAL_CALL_HINTS = {
+    "p"       => "`puts value.inspect` is the spelling here; there is no `p`.",
+    "pp"      => "`puts value.inspect` is the spelling here; there is no `pp`.",
+    "require" => "iyi has no `require`: a module is reached with `import`, and `--crystal` gives a program Crystal's library.",
+  }
 end
 
 class Iyi::Call
@@ -797,6 +820,12 @@ class Iyi::Call
       # iyi: the name is usually not missing, it is out of reach.
       if hint = iyi_out_of_reach_hint(def_name, obj)
         msg << '\n' << hint
+      end
+
+      # iyi: Crystal's spelling for something the prelude has under
+      # another name (`IYI_CRYSTAL_CALL_HINTS`).
+      if !obj && !similar_name && (crystal = Iyi::IYI_CRYSTAL_CALL_HINTS[def_name]?)
+        msg << '\n' << crystal
       end
 
       # Check if it's an instance variable that was never assigned a value
