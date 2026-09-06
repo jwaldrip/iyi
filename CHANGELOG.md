@@ -70,7 +70,9 @@
   Go's is 16; the race table reads binary trees at 19 MB resident
   against Go's 18 where it read 25. The price is the mark's on eight
   cores - a shade is two table lines and the object's - binary trees
-  0.150 s to 0.158; on one core the three programs are where they were.
+  4% at the minimum of forty-one interleaved runs once the words the
+  helpers read per shade left the lines the carve writes; on one core
+  the three programs are where they were.
   Measured and turned back on the way, with the numbers in
   GC_DESIGN.md ("The header round, built"): the grid arithmetic on the
   allocation path (a free chunk's second word is its grid index now,
@@ -4127,7 +4129,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 10,503-line library and nothing else. Every other
+  written against iyi's own 10,516-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
