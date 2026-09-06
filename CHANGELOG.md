@@ -54,7 +54,8 @@
   ancestor, the id does not fit sixteen bits, or it is `String`, which
   the prelude builds from bytes and stores the id under itself. The
   answer is a byte per class, `Name:headed` beside `Name:type_id`,
-  defined in the main module and read by a unit's object code the way
+  defined in the main module at the end of codegen (codegen makes
+  virtual types late) and read by a unit's object code the way
   the id is, so a module allocates right under a consumer that
   dispatches on a class it never did; codegen allocates an instance
   through `__iyi_new(size, type_id, flags)`. Untyped memory -
