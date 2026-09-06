@@ -44,6 +44,14 @@
   GC_DESIGN.md's note on the last eight bytes says what that decided,
   and the census is the decision's print-out now (Changed, below).
 
+- **A missing `end` names what it was to close.** "expecting
+  identifier 'end', not 'EOF'" at the last line of the file sent a
+  reader back through the whole file for the one unclosed construct;
+  the parser keeps the constructs still open - `def`, `if`, `unless`,
+  `while`, `until`, `class`, `struct`, `module`, `begin` - and says
+  "expecting 'end' to close the def that began at line 1, not the end
+  of the file".
+
 ### Changed
 
 - **An object is its fields; the header word is per class, and only

@@ -1653,8 +1653,10 @@ module Iyi
       begin_location = @token.location
       slash_is_regex!
       next_token_skip_statement_end
+      iyi_opened "begin", begin_location
       exps = parse_expressions
       node, end_location, found_handler = parse_exception_handler exps, begin_location: begin_location
+      iyi_closed
       if !found_handler && (!node.is_a?(Expressions) || !node.keyword.none?)
         node = Expressions.new([node])
       end
@@ -1797,6 +1799,7 @@ module Iyi
     end
 
     def parse_while_or_until(klass)
+      location = @token.location
       slash_is_regex!
       next_token_skip_space_or_newline
 
@@ -1805,11 +1808,13 @@ module Iyi
       slash_is_regex!
       skip_statement_end
 
+      iyi_opened(klass == While ? "while" : "until", location)
       body = parse_expressions
       skip_statement_end
 
       end_location = token_end_location
       check_ident :end
+      iyi_closed
       next_token_skip_space
 
       klass.new(cond, body).at_end(end_location)
@@ -1989,10 +1994,12 @@ module Iyi
       check(StatementEnd) if superclass || !found_space
       skip_statement_end
 
+      iyi_opened(is_struct ? "struct" : "class", name_location)
       body = push_visibility { parse_expressions }
 
       end_location = token_end_location
       check_ident :end
+      iyi_closed
       next_token_skip_space
 
       @type_nest -= 1
@@ -2604,10 +2611,12 @@ module Iyi
       check(StatementEnd) if type_vars || !found_space
       skip_statement_end
 
+      iyi_opened "module", name_location
       body = push_visibility { parse_expressions }
 
       end_location = token_end_location
       check_ident :end
+      iyi_closed
       next_token_skip_space
 
       @type_nest -= 1
@@ -4465,6 +4474,7 @@ module Iyi
     ] of Token::Kind
 
     def parse_def_helper(is_abstract = false)
+      def_location = @token.location
       @doc_enabled = false
       @def_nest += 1
 
@@ -4670,6 +4680,7 @@ module Iyi
           body = Expressions.from(extra_assigns).at(@token.location)
           next_token_skip_space
         else
+          iyi_opened "def", def_location
           body = parse_expressions
           if extra_assigns.size > 0
             exps = [] of ASTNode
@@ -4682,6 +4693,7 @@ module Iyi
             body = Expressions.from(exps).at(body)
           end
           body, end_location, _ = parse_exception_handler body, implicit: true
+          iyi_closed
         end
       end
 
@@ -5200,6 +5212,7 @@ module Iyi
     end
 
     def parse_if_after_condition(cond, location, check_end)
+      iyi_opened "if", location if check_end
       slash_is_regex!
       skip_statement_end
 
@@ -5223,6 +5236,7 @@ module Iyi
       end_location = token_end_location
       if check_end
         check_ident :end
+        iyi_closed
         next_token_skip_space
       end
 
@@ -5242,6 +5256,7 @@ module Iyi
     end
 
     def parse_unless_after_condition(cond, location)
+      iyi_opened "unless", location
       slash_is_regex!
       skip_statement_end
 
@@ -5256,6 +5271,7 @@ module Iyi
       end
 
       check_ident :end
+      iyi_closed
       end_location = token_end_location
       next_token_skip_space
 
@@ -7427,7 +7443,30 @@ module Iyi
     end
 
     def check_ident(value : Keyword)
-      raise "expecting identifier '#{value}', not '#{@token}'", @token unless @token.keyword?(value)
+      return if @token.keyword?(value)
+      # iyi: an `end` missing at the end of the file names what it was
+      # to close - the innermost construct still open - and where that
+      # began: "expecting identifier 'end', not 'EOF'" at the last line
+      # sent a reader back through the whole file to find the one
+      # unclosed `if`.
+      if value == Keyword::END && @token.type.eof? && (open = @iyi_open.last?)
+        raise "expecting 'end' to close the #{open[0]} that began at line #{open[1].try(&.line_number)}, not the end of the file", @token
+      end
+      raise "expecting identifier '#{value}', not '#{@token}'", @token
+    end
+
+    # iyi: the constructs still open, innermost last, for `check_ident`'s
+    # message on a missing `end`: pushed where a construct's body begins,
+    # popped once its `end` was seen. A failed parse abandons the stack
+    # with the parser.
+    @iyi_open = [] of {String, Location?}
+
+    def iyi_opened(what : String, location : Location?) : Nil
+      @iyi_open << {what, location}
+    end
+
+    def iyi_closed : Nil
+      @iyi_open.pop?
     end
 
     def check_ident

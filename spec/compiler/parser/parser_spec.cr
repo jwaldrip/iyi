@@ -409,6 +409,14 @@ module Iyi
     assert_syntax_error "def foo!=; end", %(unexpected token: "!=")
     assert_syntax_error "def foo?=(x); end", %(unexpected token: "?")
 
+    # iyi: an `end` missing at the end of the file names the innermost
+    # construct still open and the line it began on.
+    assert_syntax_error "def foo\n  1\n", "expecting 'end' to close the def that began at line 1", 3, 1
+    assert_syntax_error "def foo\n  if true\n    1\n  end\n", "expecting 'end' to close the def that began at line 1"
+    assert_syntax_error "class Foo\n  def bar\n    while true\n      1\n    end\n  end\n", "expecting 'end' to close the class that began at line 1"
+    assert_syntax_error "x = begin\n  1\n", "expecting 'end' to close the begin that began at line 1"
+    assert_syntax_error "unless false\n  1\n", "expecting 'end' to close the unless that began at line 1"
+
     # #5856
     assert_syntax_error "def foo=(a,b); end", "setter method 'foo=' cannot have more than one parameter"
     assert_syntax_error "def foo=(a = 1, b = 2); end", "setter method 'foo=' cannot have more than one parameter"
