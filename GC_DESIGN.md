@@ -942,7 +942,12 @@ read either (a carved bit in the entry, set with every stamp, and an
 uncarved chunk's entry is zero), binary trees reads 4% over the tree
 before at the minimum of forty-one, live churn 3% under. What is left
 is a shade being two table lines and the object's where it was the
-object's alone. The probe reads 19 MB
+object's alone. And the growth knob at Go's 100 rather than 200, read
+after the round on the same machine, eleven runs each: live churn 176
+MB median to 162 for 101 ms to 113, binary trees 16 to 13 for 138 to
+141 - live churn's set is the mark's floating garbage more than the
+budget, and the wall is the allocation path's, so 200 stays. The
+probe reads 19 MB
 live in 40-byte chunks where it read 22 in 48, and its peak, the
 mark's floating garbage, where it was.
 
