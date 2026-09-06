@@ -19,6 +19,18 @@ describe "levenshtein" do
   it { Levenshtein.distance("かんじ", "じんか").should eq(2) }
   it { Levenshtein.distance("", "かんじ").should eq(3) }
 
+  # iyi: the finder counts an adjacent transposition as one edit.
+  it { Levenshtein.osa_distance("count", "cuont").should eq(1) }
+  it { Levenshtein.osa_distance("abc", "cba").should eq(2) }
+  it { Levenshtein.osa_distance("ca", "abc").should eq(3) }
+  it { Levenshtein.osa_distance("hello", "hallo").should eq(1) }
+  it { Levenshtein.osa_distance("かんじ", "んかじ").should eq(1) }
+  it { Levenshtein.osa_distance("", "a").should eq(1) }
+
+  it "finds a transposition" do
+    Levenshtein.find("cuont", ["count", "cont", "mount"]).should eq("count")
+  end
+
   it "finds with finder" do
     finder = Levenshtein::Finder.new "hallo"
     finder.test "hay"

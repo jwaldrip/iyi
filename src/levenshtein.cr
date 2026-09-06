@@ -81,6 +81,38 @@ module Levenshtein
   #
   # finder.best_match # => "hall"
   # ```
+  # iyi: the optimal string alignment distance - Levenshtein with an
+  # adjacent transposition as one edit. `cuont` for `count` is two
+  # edits by the classic measure and one by this one, and the compiler's
+  # finder judges "did you mean" by a tolerance of a fifth of the name,
+  # which is one edit for a name under ten characters: the commonest
+  # typo was the one it never suggested. Two full rows kept rather than
+  # one, since the transposition looks two rows back.
+  def self.osa_distance(string1 : String, string2 : String) : Int32
+    return 0 if string1 == string2
+    a = string1.chars
+    b = string2.chars
+    return b.size if a.empty?
+    return a.size if b.empty?
+    width = b.size + 1
+    two_back = Array(Int32).new(width, 0)
+    previous = Array(Int32).new(width) { |j| j }
+    current = Array(Int32).new(width, 0)
+    a.each_with_index do |char1, i|
+      current[0] = i + 1
+      b.each_with_index do |char2, j|
+        cost = char1 == char2 ? 0 : 1
+        best = Math.min(Math.min(previous[j + 1] + 1, current[j] + 1), previous[j] + cost)
+        if i > 0 && j > 0 && char1 == b[j - 1] && a[i - 1] == char2
+          best = Math.min(best, two_back[j - 1] + 1)
+        end
+        current[j + 1] = best
+      end
+      two_back, previous, current = previous, current, two_back
+    end
+    previous[b.size]
+  end
+
   class Finder
     # :nodoc:
     record Entry,
@@ -94,7 +126,7 @@ module Levenshtein
     end
 
     def test(name : String, value : String = name)
-      distance = Levenshtein.distance(@target, name)
+      distance = Levenshtein.osa_distance(@target, name)
       if distance <= @tolerance
         if best_entry = @best_entry
           if distance < best_entry.distance

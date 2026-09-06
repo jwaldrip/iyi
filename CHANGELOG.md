@@ -44,6 +44,14 @@
   GC_DESIGN.md's note on the last eight bytes says what that decided,
   and the census is the decision's print-out now (Changed, below).
 
+- **"Did you mean" catches a transposition.** The finder behind the
+  suggestion measured plain Levenshtein distance with a tolerance of a
+  fifth of the name - one edit under ten characters - and `cuont` for
+  `count` is two edits by that measure, so the commonest typo was the
+  one never suggested. The finder counts an adjacent transposition as
+  one edit now (`Levenshtein.osa_distance`; `Levenshtein.distance` is
+  unchanged for programs that call it).
+
 - **A missing `end` names what it was to close.** "expecting
   identifier 'end', not 'EOF'" at the last line of the file sent a
   reader back through the whole file for the one unclosed construct;
