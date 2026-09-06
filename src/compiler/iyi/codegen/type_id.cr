@@ -118,33 +118,26 @@ class Iyi::CodeGenVisitor
       global.linkage = LLVM::Linkage::Internal if @single_module
       global.initializer = @main_llvm_context.int32.const_int(@program.llvm_id.type_id(type))
       global.global_constant = true
-      iyi_define_headed(type)
     end
   end
 
   # iyi: the class's `:headed` byte beside its `:type_id`, for the arena's
-  # `__iyi_new` (`gc_layouts.cr`, `iyi_headed?`): defined wherever the id
-  # is, in the main module, so a unit's object code that refers to both
-  # resolves both from the same program.
-  private def iyi_define_headed(type) : LLVM::Value?
-    return nil unless @program.iyi_gc_arena?
-    return nil unless type.is_a?(NonGenericClassType) || type.is_a?(GenericClassInstanceType)
+  # `__iyi_new` (`gc_layouts.cr`, `iyi_headed?`). Declared in the main
+  # module here, at the first allocation site, and given its value at the
+  # end of codegen (`iyi_define_headed_bytes`): the census reads which
+  # virtual types were made, and codegen makes some late - the match
+  # functions an artifact carries force one per class - so a value fixed
+  # at the first site could be the wrong one by the last.
+  private def iyi_headed_global(type) : LLVM::Value
     name = "#{type.llvm_name}:headed"
-    if existing = @main_mod.globals[name]?
-      return existing
-    end
-    global = @main_mod.globals.add(@main_llvm_context.int8, name)
-    global.linkage = LLVM::Linkage::Internal if @single_module
-    global.initializer = @main_llvm_context.int8.const_int(iyi_headed?(type) ? 1 : 0)
-    global.global_constant = true
-    global
+    @main_mod.globals[name]? || @main_mod.globals.add(@main_llvm_context.int8, name)
   end
 
   # iyi: the `:headed` byte of the class being allocated, loaded the way
   # `type_id_impl` loads the id - a constant the optimiser folds in a
   # single module, a reference the linker resolves from a unit.
   def iyi_headed_flag(type) : LLVM::Value
-    global = iyi_define_headed(type).not_nil!
+    global = iyi_headed_global(type)
     if @llvm_mod != @main_mod
       name = "#{type.llvm_name}:headed"
       unit_global = @llvm_mod.globals[name]?
@@ -167,7 +160,6 @@ class Iyi::CodeGenVisitor
       global.linkage = LLVM::Linkage::Internal if @single_module
       global.initializer = @main_llvm_context.int32.const_int(@program.llvm_id.type_id(type))
       global.global_constant = true
-      iyi_define_headed(type)
     end
 
     if @llvm_mod != @main_mod

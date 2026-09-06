@@ -85,6 +85,7 @@ class Iyi::CodeGenVisitor
 
   def iyi_define_gc_layouts : Nil
     entries = collect_gc_layout_entries
+    iyi_define_headed_bytes
     iyi_header_census(entries) if ENV["IYI_HEADER_CENSUS"]?
 
     # The marker reads the layout table for every object it touches, and a
@@ -172,6 +173,23 @@ class Iyi::CodeGenVisitor
   end
 
   @iyi_headed : Set(Type)?
+
+  # Every class's `:headed` byte, defined in the main module at the end
+  # of codegen - the census is complete then, and every allocation site
+  # has declared the byte it loads (`type_id.cr`, `iyi_headed_global`).
+  # Every numbered class rather than the ones this program allocated,
+  # for the reason `iyi_define_all_type_ids` defines every id: a unit's
+  # object code allocates what this build never sees.
+  private def iyi_define_headed_bytes : Nil
+    @program.llvm_id.each_type do |type|
+      next unless type.is_a?(NonGenericClassType) || type.is_a?(GenericClassInstanceType)
+      name = "#{type.llvm_name}:headed"
+      global = @main_mod.globals[name]? || @main_mod.globals.add(@main_llvm_context.int8, name)
+      global.linkage = LLVM::Linkage::Internal if @single_module
+      global.initializer = @main_llvm_context.int8.const_int(iyi_headed?(type) ? 1 : 0)
+      global.global_constant = true
+    end
+  end
 
   private def iyi_headed_types : Set(Type)
     headed = Set(Type).new
