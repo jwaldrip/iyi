@@ -88,6 +88,18 @@
 
 ### Learned
 
+- **The collector's bits in a byte table beside the objects, measured
+  out.** Built as the first step of the round that would take the header
+  word out: colour, free, atomic and the epoch's parity in a byte per
+  sixteen bytes of each arena, the mark shading and the sweep restamping
+  the byte rather than the object's line. The mark of a million-node tree
+  ran 14.1 ms to 15.7 alone and 6.3 to 7.2 with helpers, churn 40 ms to
+  48, binary trees and live churn 5% slower - the object's line is loaded
+  for its fields regardless, and the byte is a second dependent line and
+  an arena lookup on every shade, scan and pop. Reverted; the number is in
+  GC_DESIGN.md's note on the last eight bytes, where it now prices the
+  headerless layout too.
+
 - **What the resident-set probe did not find, and what was measured out.**
   The probe was built on the hypothesis that a budget's worth of pages
   kept warm was never taken up by the carve, and 151 MB touched against

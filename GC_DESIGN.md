@@ -773,13 +773,24 @@ trees' nodes are 16-byte objects in 24-byte chunks, a third of every
 chunk, and its 21 MB peak would read some 15; live churn's items are
 32 in 40, a fifth, 8 MB of 178; the probe's nodes 40 in 48, a sixth.
 What the word carries has to go somewhere. The five bits - two of
-colour, free, atomic, the epoch's parity - go to a byte per chunk at
-the arena's head, 700 KB for an arena of 24-byte chunks, 4% where the
-word is 33%; the mark's shade is a compare-and-set on that byte, and
-`free_listed?` and `uncarved?`, which already find the arena from the
-pointer, read the byte where they read the word. The type id, 32
-bits, is the decision, because it is what dynamic dispatch reads - the
-three loads of `type_id.cr` - and it has three homes:
+colour, free, atomic, the epoch's parity - would go to a byte per
+chunk at the arena's head, and that was built first, on its own, for
+everyone, with the type id left at `P-4`: a byte for every sixteen
+bytes of the mapping, a megabyte an arena resident where chunks are,
+the mark's shade a compare-and-set on the byte, the sweep reading and
+restamping the byte, `free_listed?` reading it, neither touching a
+live object's line. It was measured out. The mark of a million-node
+tree ran 14.1 ms to 15.7 alone and 6.3 to 7.2 with helpers, churn 40
+ms to 48, binary trees and live churn 5% slower: the object's line is
+loaded for its fields whatever the header holds, so dirtying it costs
+almost nothing, and the byte is a second dependent line and an arena
+lookup on every shade, every scan and every pop. (A byte per chunk by
+the arena's reciprocal, tried before the sixteenth, was worse: two
+loads and a multiply per pop, churn 54.) So the bits stay in the word,
+and any headerless layout pays that mark for the objects it takes the
+word from. The type id, 32 bits, is the decision, because it is what
+dynamic dispatch reads - the three loads of `type_id.cr` - and it has
+three homes:
 
 - *In the object, as now:* `P-4`, one load on a line the method body
   is about to touch anyway.
