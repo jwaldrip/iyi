@@ -553,40 +553,25 @@ require "./file"
     # CI is what retires it; wasm32 has no mmap, and its watermark arena
     # is a separate design.
     #
-    # Requests are rounded to size classes: 16, 32, 64 and doubling to 1 MiB,
-    # seventeen classes. A small fixed set is what keeps allocation and free
-    # O(1) list operations, and pure doubling is what keeps the per-class
-    # table to one page; the waste against the request is under half in the
-    # worst case, the standing trade for never splitting or coalescing. The
-    # class is the payload: a chunk is the class plus the twenty-four bytes
-    # under the user pointer, and every user pointer stays 8-aligned. A
-    # request over 1 MiB is large and gets a mapping of its own.
+    # Requests are rounded to size classes: eight-byte steps to 128, then
+    # four to each doubling up to 1 MiB, 67 classes. A small fixed set is
+    # what keeps allocation and free O(1) list operations; the waste
+    # against the request is eight bytes below 128 and a fifth above, the
+    # standing trade for never splitting or coalescing. A request over
+    # 1 MiB is large and gets a mapping of its own.
     #
-    # Those twenty-four bytes are the object header, and GC_DESIGN.md's Stage
-    # 5 is where they became real. With `P` the pointer the program holds:
-    #
-    #     P-24   size       u64   the requested size, `realloc`'s contract
-    #     P-16   type_id    u32   index into the program's layout table
-    #     P-12   pad        u32
-    #     P-8    mark_word  u64   colour, flags, reserved; zero is white
-    #     P      user data
-    #
-    # The eight-byte size is Stage 2's, moved down rather than changed: it is
-    # still the only place that knows how much to copy when `realloc` crosses
-    # a class, and it is still read from under the pointer. The sixteen bytes
-    # above it are `Iyi::Collector::ObjectHeader` laid out exactly as
-    # `src/compiler/iyi/object_header.cr` defines it, because the compiler
-    # emits the type id into that word and this file reads it back.
-    #
-    # `malloc` cannot write the type id: it is handed a size and nothing
-    # else. Codegen writes it at the allocation site, right after the call
-    # returns, for every object allocated as an instance of a type. Every
-    # other allocation — a `Pointer(T).malloc` buffer, a closure's
-    # environment — keeps the zero the allocator leaves there, and zero is
-    # the sentinel for "no layout": the mark loop word-scans such an object
-    # conservatively instead of trusting a map it does not have. Zero is safe
-    # to spend that way because the compiler's numbering gives it to `Nil`
-    # alone, which is never allocated and never has a layout.
+    # An object is its fields. A class whose type id something reads off
+    # the object - a virtual type over an ancestor, a reference union -
+    # carries the id in a word ahead of it, at `P-8`, its high half; the
+    # program that links decides which (`gc_layouts.cr`), and codegen
+    # allocates an instance through `__iyi_new` with the decision and
+    # the id. Every other object's id, and every object's collector bits,
+    # are tables at its arena's head (`IyiHeap`, "An object is its
+    # fields"); untyped memory - a `Pointer(T).malloc` buffer, a closure's
+    # environment - has no id and is word-scanned conservatively, or,
+    # atomic, never opened. A large object always has the word, its bits
+    # in the low half. The stages below were written against the header
+    # every object once had, and say so where it matters.
     #
     # One arena is one contiguous 16 MiB mmap region holding chunks of a
     # single class. Sixteen rather than thirty-two because address space is
@@ -3102,12 +3087,11 @@ require "./file"
     # drains, and what is still white when it stops is unreachable. Nothing
     # sweeps yet: this stage decides what is garbage, Stage 6 reclaims it.
     #
-    # Colour lives in bits 0 and 1 of the mark word at `base - 8`, matching
-    # `Iyi::Collector::ObjectHeader` in the compiler: 0 white, 1 gray, 2 black,
-    # and a fresh chunk is zero, so a newly allocated object is white without
-    # anyone writing anything. The bits above are left alone on every write,
-    # because they are the flag and reserved bits the header promises to a
-    # forwarding pointer later.
+    # Colour is a byte per chunk in the arena's mark table - 0 white, 1
+    # gray, 2 black, matching `Iyi::Collector::ObjectHeader` in the
+    # compiler - and bits 0 and 1 of the word at `base - 8` for a large
+    # object; a fresh chunk's byte is zero, so a newly allocated object is
+    # white without anyone writing anything (`IyiHeap::OFF_MARKS`).
     #
     # **Precise where the header says a type, conservative everywhere else.**
     # Codegen stores an object's `type_id` at `P-16` at the allocation site
