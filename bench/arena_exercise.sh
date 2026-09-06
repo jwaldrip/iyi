@@ -106,13 +106,14 @@ build_and_run "default, release" exercise-gc-release "$REPO/bench/arena_exercise
 # silently compiled the whole arena section out from reading as a pass.
 echo
 echo "== every arena check reported"
-for check in "size classes:" "addressability:" "clearing:" "reuse:" "traversal:" "large:" "huge:"; do
+# The huge-page check reads /proc, so it reports on Linux only.
+for check in "size classes:" "addressability:" "clearing:" "reuse:" "traversal:" "large:" $( [ "$(uname -s)" = Linux ] && echo "huge:" ); do
   if ! grep -q "$check" "$WORK/exercise-gc.out" 2>/dev/null; then
     echo "  MISSING: $check"
     status=1
   fi
 done
-[ "$status" -eq 0 ] && echo "  size classes, addressability, clearing, reuse, traversal, large and huge all reported"
+[ "$status" -eq 0 ] && echo "  size classes, addressability, clearing, reuse, traversal, large$( [ "$(uname -s)" = Linux ] && echo " and huge" ) all reported"
 
 echo
 echo "== a freed large object's mapping is gone"
