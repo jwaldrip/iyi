@@ -64,6 +64,12 @@ module Iyi
     "pp"      => "`puts value.inspect` is the spelling here; there is no `pp`.",
     "require" => "iyi has no `require`: a module is reached with `import`, and `--crystal` gives a program Crystal's library.",
   }
+
+  # A top-level call whose argument arrived in Crystal's unit: the type
+  # it arrived as, and what the call takes.
+  IYI_ARRIVAL_ARGUMENT_HINTS = {
+    "sleep" => {"Float64", "`sleep` takes milliseconds, an `Int32`: `sleep 100` is a tenth of a second."},
+  }
 end
 
 class Iyi::Call
@@ -407,6 +413,14 @@ class Iyi::Call
           str << "`impl #{wanted} for #{actual}` in the module that declares "
           str << "`#{wanted}` or in the one that declares `#{actual}` — R-3 "
           str << "allows those two and no others (SPEC.md IV.4)"
+        end
+
+        # iyi: a unit somebody arriving from Crystal has otherwise
+        # (`IYI_ARRIVAL_ARGUMENT_HINTS`).
+        if owner.is_a?(Program) && (hint = Iyi::IYI_ARRIVAL_ARGUMENT_HINTS[def_name]?) && actual_type.devirtualize.to_s == hint[0]
+          str.puts
+          str.puts
+          str << hint[1]
         end
       end
     end

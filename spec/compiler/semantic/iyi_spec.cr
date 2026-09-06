@@ -261,6 +261,15 @@ describe "Semantic: iyi" do
     it "names puts value.inspect for p" do
       assert_error "p 1", "`puts value.inspect` is the spelling here; there is no `p`."
     end
+
+    it "says sleep's unit when it is given seconds" do
+      assert_error <<-CODE, "`sleep` takes milliseconds, an `Int32`: `sleep 100` is a tenth of a second."
+        def sleep(ms : Int32)
+        end
+
+        sleep 0.1
+        CODE
+    end
   end
 
   describe "using conflicts (SPEC.md II.3)" do
