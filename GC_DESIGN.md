@@ -691,6 +691,17 @@ also what makes a hand-freed chunk safe from the sweep of its own
 epoch; and the sweep's own loop tests the parity first, two tests for
 a dead chunk where it was three.
 
+Two more levers on that garbage were tried in the second cycle and
+are not in the tree. A prefetch of a shaded object's line at its push:
+a million-node tree marked in 14.2 ms alone against 14.5 with it, the
+tree and the probe's list both allocated in the order they are
+walked, which the hardware prefetches already. And Go's pacer - the
+mark started early by what the last mark saw allocated beside it, so
+the heap peaks at the budget: the trigger already charges a mark's
+allocation to the next epoch (`allocated_word` starts the epoch at
+`born`), so starting early by the same amount charged it twice, the
+epochs shortened, and the probe read 138 MB median against 106.
+
 What the probe reads now, interleaved against the tree before, nine
 runs each, on two cores: peak RSS 103 to 150 MB against 103 to 153,
 the medians 121 and 132 on two sittings against 131 and 118 - inside
