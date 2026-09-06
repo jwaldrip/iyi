@@ -2774,9 +2774,10 @@ arena taken by the mark's helpers after every collection and by an
 allocating thread only for the slice it needs; the mark is parallel on
 helper threads and runs beside the program on a write barrier the
 compiler emits, a collection being two stops of tens of microseconds;
-the header is one word and the only place an object's type id lives,
-the classes eight bytes apart, and the sweep hands pages back to the
-kernel; a mutator outrunning the mark
+an object is its fields, a word ahead of it only for a class something
+reads the type id off (the collector's bits and the other ids are
+tables at the arena's head), the classes eight bytes apart, and the
+sweep hands pages back to the kernel; a mutator outrunning the mark
 allocates black and assists. The price today: 13 ns an allocation in a
 release build (`bench/arena_exercise.sh` asserts a ceiling on it now),
 29 ns with one thread under the thread exercise's collections, 104 with
