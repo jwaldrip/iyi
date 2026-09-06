@@ -758,6 +758,14 @@ class Iyi::Call
 
       if obj && obj.type != owner
         msg << colorize(" (compile-time type is #{obj.type})").yellow.bold
+        # iyi: a nilable receiver is the commonest shape this error takes,
+        # and the sentence above names the type without saying what to
+        # do; the two idioms are one line each.
+        if owner.is_a?(NilType)
+          receiver = obj.is_a?(Var) || obj.is_a?(InstanceVar) ? obj.to_s : "the receiver"
+          narrowed = obj.is_a?(Var) ? "if #{receiver}" : "if value = #{receiver}"
+          msg << '\n' << "#{receiver} can be nil here: narrow it first (`#{narrowed}`) or give the nil an answer (`#{receiver} || default`)"
+        end
       end
 
       if similar_name

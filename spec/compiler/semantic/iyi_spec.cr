@@ -202,6 +202,53 @@ describe "Semantic: iyi" do
     end
   end
 
+  describe "a nilable receiver" do
+    it "says the two idioms for a local" do
+      assert_error <<-CODE, "x can be nil here: narrow it first (`if x`) or give the nil an answer (`x || default`)"
+        class B
+          def size
+            1
+          end
+        end
+
+        def make(b : B) : B?
+          if b
+            nil
+          else
+            b
+          end
+        end
+
+        x = make(B.new)
+        x.size
+        CODE
+    end
+
+    it "says the narrowing form for an instance variable" do
+      assert_error <<-CODE, "@v can be nil here: narrow it first (`if value = @v`)"
+        class B
+          def size
+            1
+          end
+        end
+
+        class A
+          @v : B?
+
+          def initialize
+            @v = nil
+          end
+
+          def g
+            @v.size
+          end
+        end
+
+        A.new.g
+        CODE
+    end
+  end
+
   describe "using conflicts (SPEC.md II.3)" do
     it "reports an ambiguous function at the point of use" do
       assert_error <<-CODE, "'title' is ambiguous here"

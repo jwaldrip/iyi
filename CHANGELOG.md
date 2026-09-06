@@ -44,6 +44,12 @@
   GC_DESIGN.md's note on the last eight bytes says what that decided,
   and the census is the decision's print-out now (Changed, below).
 
+- **A nilable receiver says what to do.** "undefined method '+' for
+  Nil (compile-time type is (Int32 | Nil))" named the type and stopped;
+  it says now "x can be nil here: narrow it first (`if x`) or give the
+  nil an answer (`x || default`)" - the narrowing form `if value = @v`
+  for an instance variable.
+
 - **"Did you mean" catches a transposition.** The finder behind the
   suggestion measured plain Levenshtein distance with a tolerance of a
   fifth of the name - one edit under ten characters - and `cuont` for
