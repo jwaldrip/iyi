@@ -890,6 +890,12 @@ require "./file"
       # zero in the layout slot because a slot is two stores on the
       # allocation's path and the bit is in the byte it writes anyway.
       UNTYPED_FLAG = 64_u64
+      # Bit 7: the chunk was handed out at least once. Set with every
+      # stamp and never cleared, so an entry of zero is a chunk above the
+      # frontier - what the mark's inner loop refuses by the entry it
+      # reads anyway, rather than by the frontier and the idle bitmap,
+      # two words the carve writes beside (`shade_word`).
+      CARVED_FLAG = 128_u64
       LARGE_USER = 24_u64
       # The tables at the arena's head, after its header page: three
       # bytes per chunk the mapping could hold (`META`, `META_ENTRY`) -
@@ -918,18 +924,24 @@ require "./file"
       GRID_SHIFT = 40_u64
 
       OFF_NEXT = 0_u64
+      # At 8 in a large object's node too (`take_large`).
       OFF_MAP = 8_u64
-      OFF_CHUNK = 16_u64
       OFF_CURSOR = 24_u64
       OFF_LEFT = 32_u64
-      OFF_GRID = 40_u64
-      # The mark table's address: a byte per chunk, `WHITE` or the
-      # mark's colour, after the entries.
-      OFF_MARKS = 64_u64
       # Objects the last mark blackened in this arena: zero means nothing
       # in it is reachable, and the pause that marked can hand the mapping
       # back with every thread stopped.
       OFF_LIVE = 48_u64
+      # The words set when the arena is mapped and never written again -
+      # its chunk, the grid's origin and reciprocal, the mark table's
+      # address - on a line of their own: the mark's helpers read them
+      # for every pointer they shade, and beside the cursor the carve
+      # moves they were fetched again from the carving core's cache at
+      # every shade. `OFF_MARKS` is the mark table's address, a byte per
+      # chunk, `WHITE` or the mark's colour, after the entries.
+      OFF_CHUNK = 1736_u64
+      OFF_GRID = 1744_u64
+      OFF_MARKS = 1752_u64
       # The carve frontier: no chunk above it was ever handed out, and the
       # sweep walks up to it. The cursor bumps within a region that ends at
       # `OFF_BUMP_END` - the frontier's is the mapping's end; a run of pages
@@ -1373,11 +1385,11 @@ require "./file"
           write64(table.address + CACHE_SLICE, slice)
         end
         base = take_inside(table, bits & HEADED_FLAG != 0 ? size &+ HEADER : size, clear, bits, type_id)
-        # Born while a mark runs beside the program: gray, and on this
-        # thread's barrier stack, so a worker scans it once its fields are
-        # written — every write to them goes through the barrier — and
-        # counts it alive in its arena.
-        IyiMark.born_during_mark(base, size_of(base)) if LibIyiGCTable.__iyi_marking != 0_u8
+        # Born while a mark runs beside the program: black, and counted
+        # alive in its arena, by the bytes asked for - the chunk's waste
+        # is a second lookup of the entry on every allocation under a
+        # mark, for a budget that is a floor and a ratio.
+        IyiMark.born_during_mark(base, size) if LibIyiGCTable.__iyi_marking != 0_u8
         leave(table)
         base
       end
@@ -1438,7 +1450,7 @@ require "./file"
           arena = head & (0_u64 &- MAP)
           slot = read64(head &+ OFF_INDEX)
           byte = arena + META + slot * META_ENTRY
-          write8(byte, bits | IyiMark.epoch_flag)
+          write8(byte, bits | CARVED_FLAG | IyiMark.epoch_flag)
           write16(byte + 1_u64, type_id) if bits & (UNTYPED_FLAG | HEADED_FLAG) == 0
           clear_block(head, chunk_of(index)) if clear
           return headed ? head &+ HEADER : head
@@ -1571,7 +1583,7 @@ require "./file"
         # refill's comment). The chunk's memory is the kernel's zero: a
         # region is a frontier slab or a cold run, warm runs being lists.
         byte = read64(arena + OFF_CURSOR_BYTE)
-        write8(byte, bits | IyiMark.epoch_flag)
+        write8(byte, bits | CARVED_FLAG | IyiMark.epoch_flag)
         write64(arena + OFF_CURSOR_BYTE, byte &+ META_ENTRY)
         write16(byte + 1_u64, type_id) if bits & (UNTYPED_FLAG | HEADED_FLAG) == 0
         following = cursor &+ read64(arena + OFF_CHUNK)
@@ -1970,7 +1982,7 @@ require "./file"
         first = arena_first(arena)
         cursor = first + (low - first + chunk - 1_u64).unsafe_div(chunk) * chunk
         return 0_u64 if cursor >= high
-        stamp = FREE_FLAG | IyiMark.epoch_flag
+        stamp = CARVED_FLAG | FREE_FLAG | IyiMark.epoch_flag
         head = cursor
         slot = chunk_index(arena, cursor)
         byte = arena + META + slot * META_ENTRY
@@ -2197,7 +2209,7 @@ require "./file"
           # black again when the chunk came back, and read as marked by
           # the sweep after the next mark.
           slot = chunk_index(arena, head)
-          write8(arena + META + slot * META_ENTRY, FREE_FLAG | IyiMark.epoch_flag)
+          write8(arena + META + slot * META_ENTRY, CARVED_FLAG | FREE_FLAG | IyiMark.epoch_flag)
           write8(read64(arena + OFF_MARKS) + slot, IyiMark::WHITE)
           write64(head + OFF_LINK, table[index])
           write64(head + OFF_INDEX, slot)
@@ -3353,7 +3365,7 @@ require "./file"
       def self.flags(base : UInt64) : UInt64
         arena = IyiHeap.arena_of(base)
         return IyiHeap.read64(base - 8_u64) & 0xFFFFFFFF_u64 if arena == 0
-        IyiHeap.read8(IyiHeap.meta(arena, base)) | IyiHeap.read8(IyiHeap.mark_byte(arena, base))
+        (IyiHeap.read8(IyiHeap.meta(arena, base)) & (IyiHeap::CARVED_FLAG - 1_u64)) | IyiHeap.read8(IyiHeap.mark_byte(arena, base))
       end
 
       def self.colour(base : UInt64) : UInt64
@@ -3774,15 +3786,16 @@ require "./file"
         first = arena + grid.unsafe_shr(IyiHeap::GRID_SHIFT)
         return if word < first
         index = ((word - first).unsafe_shr(3_u64) * (grid & (1_u64.unsafe_shl(IyiHeap::GRID_SHIFT) - 1_u64))).unsafe_shr(IyiHeap::MAGIC_SHIFT)
-        head = first + index * IyiHeap.read64(arena + IyiHeap::OFF_CHUNK)
-        return if IyiHeap.uncarved?(arena, head)
-        # The entry for free and headed, the colour byte for white: a
+        # The entry for carved, free and headed, the colour byte for
+        # white. An uncarved chunk's entry is zero (`CARVED_FLAG`), a
         # free chunk's colour is white too, so the entry is the refusal
-        # (`IyiHeap.free`, `sweep_slice`).
+        # (`IyiHeap.free`, `sweep_slice`); neither the frontier nor the
+        # idle bitmap is read, both being the carve's to write.
         bits = IyiHeap.read8(arena + IyiHeap::META + index * IyiHeap::META_ENTRY)
-        return if bits & IyiHeap::FREE_FLAG != 0
+        return if bits & IyiHeap::CARVED_FLAG == 0 || bits & IyiHeap::FREE_FLAG != 0
         mark = IyiHeap.read64(arena + IyiHeap::OFF_MARKS) + index
         return if IyiHeap.read8(mark) != WHITE
+        head = first + index * IyiHeap.read64(arena + IyiHeap::OFF_CHUNK)
         base = bits & IyiHeap::HEADED_FLAG != 0 ? head + IyiHeap::HEADER : head
         if @@workers > 1_u64
           push(w, base) if Pointer(Atomic(UInt8)).new(mark).value.compare_and_set(WHITE.to_u8!, GRAY.to_u8!)[1]

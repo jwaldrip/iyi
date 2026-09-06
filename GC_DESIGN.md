@@ -932,9 +932,17 @@ and the rest of the price is wall on eight cores: binary trees 0.150 s
 to 0.158, forty-one interleaved runs 141 to 152 ms at the minimum,
 live churn and churn inside their spread; on one core the three are
 where they were (binary trees 233 ms against 231, churn 48 against 48).
-The eight-core cost is the mark's: a shade is two table lines and the
-object's where it was the object's alone, and the helpers share those
-lines with the allocator stamping beside them. The probe reads 19 MB
+The eight-core cost was the mark's, and half of it was false sharing
+in the arena's header: the chunk size, the grid word and the mark
+table's address, read by the helpers for every pointer shaded, sat on
+the two lines the carve writes its cursor and its cursor's entry to,
+and were fetched again from the carving core at every shade; on a
+line of their own, with the frontier and the idle bitmap no longer
+read either (a carved bit in the entry, set with every stamp, and an
+uncarved chunk's entry is zero), binary trees reads 4% over the tree
+before at the minimum of forty-one, live churn 3% under. What is left
+is a shade being two table lines and the object's where it was the
+object's alone. The probe reads 19 MB
 live in 40-byte chunks where it read 22 in 48, and its peak, the
 mark's floating garbage, where it was.
 
