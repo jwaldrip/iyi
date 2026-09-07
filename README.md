@@ -7,6 +7,17 @@
 **A language built for Developer & Agentic Experience, Portability, Performance,
 and Efficiency.** (*iyi* is Turkish for "good".)
 
+The easiest way to get it is one command, which installs the latest release
+into `~/.local`:
+
+```console
+$ curl -fsSL https://raw.githubusercontent.com/sdogruyol/iyi/master/install.sh | sh
+$ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
+```
+
+Linux x86-64 and macOS arm64; the tarball by hand, and building from source,
+are under [Getting it](#getting-it).
+
 Those four are one design decision seen from four sides. A module is the unit of
 compilation and it is compiled against its dependencies' **declarations**, never
 their bodies — so a build reads less, a program carries less, a tool can read an
@@ -372,7 +383,11 @@ pair for yours. The line counts beside them are `wc -l` and do not move, and
 ## Getting it
 
 The released tarball is 0.10.0, and a build from current source reports the
-same.
+same. The one-liner at the top runs [`install.sh`](install.sh): POSIX sh
+over `curl` and `tar`, it picks the tarball for `uname` (linux-x86_64 or
+darwin-arm64), follows GitHub's `releases/latest` redirect rather than the
+API, and refuses anything else. `IYI_PREFIX` moves the destination and
+`IYI_VERSION=0.10.0` pins a release. By hand it is the same two lines:
 
 ```console
 $ tar -xzf iyi-0.10.0-linux-x86_64.tar.gz -C ~/.local
