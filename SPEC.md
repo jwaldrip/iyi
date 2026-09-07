@@ -7821,8 +7821,11 @@ Named honestly, so nobody mistakes this draft for complete.
     holds: printing a command that links a module no host can start is the same
     defect the Windows command had.
 
-    Darwin is what remains unrun, and the excuse there is real — macOS runners
-    exist, so it is next rather than impossible.
+    Darwin was what remained unrun when this was written, the excuse being
+    that macOS runners exist. They do, and it is run: `aarch64-darwin` has
+    its own native job in the workflow (`darwin`, on `macos-14`), which
+    builds the release compiler, holds the same gates a Linux push answers
+    for, and ships the darwin tarball beside the Linux one.
 
 12b. **What the library costs at run time, and the flattering answer that was
     wrong.** The tagline says Performance, and until now every number under it

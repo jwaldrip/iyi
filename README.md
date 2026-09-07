@@ -310,22 +310,22 @@ byte-for-byte what a shell would have gotten. No agent mode, no
 forked behaviour by consumer; if the rules turn out not to be enough,
 that is a thing to measure rather than to promise.
 
-**Portability — compiles for nine, runs on four.** An iyi program produces
+**Portability — compiles for nine, runs on five.** An iyi program produces
 code for `x86_64-linux-gnu`, `x86_64-linux-musl`, `aarch64-linux-gnu`,
 `arm-linux-gnueabihf`, `x86_64-darwin`, `aarch64-darwin`, `x86_64-w64-mingw32`,
 `x86_64-windows-msvc` and `wasm32-wasi`, and CI type-checks the library for all
 nine every build.
 
-Four of them are *run*, also every build, and the check is that they print what
+Five of them are *run*, also every build, and the check is that they print what
 the same program printed on the machine that compiled them: x86-64 glibc
 natively, **x86-64 musl** in an Alpine container, **aarch64** under emulation,
-and **wasm32-wasi** under wasmtime. The object is cross-compiled here and
-linked there with the target's own toolchain, which is the command
-`--cross-compile` prints.
+**wasm32-wasi** under wasmtime, and **aarch64-darwin** natively on its own
+runner, which builds the release compiler, holds the same gates and ships the
+darwin tarball. The cross-compiled three are linked there with the target's
+own toolchain, which is the command `--cross-compile` prints.
 
-Darwin is still "the code generator has no objection", and needs a runner this
-workflow does not have. Windows is worse than that and gets its own entry
-below: it compiles, it links, and what it prints at run time cannot be trusted.
+Windows is worse than any of those and gets its own entry below: it compiles,
+it links, and what it prints at run time cannot be trusted.
 
 **Performance — Crystal's backend, and now one measurement of its own.**
 Native code through LLVM, the same GC. `python3 bench/runtime.py` runs the same
