@@ -30,6 +30,14 @@
   `Range#map`, `select` and `sum`, `Int32#even?` and `odd?`, a bare `puts`
   that ends a line of `print`s, and `Tuple#to_s`/`inspect` - `{1, "a"}` -
   where a tuple printed as its type name.
+- **The first program with a trait of its own.** `samples/iyi/shapes.iyi`,
+  and with it `Array#sum` over a block and `compact`, `String#to_i?`
+  (`to_i` is now the panicking spelling of it), `Float64#round(digits)`,
+  `**` on `Int32` and `Float64` by squaring, `<<`, `>>` and `abs` on the
+  integers, `loop`, and `puts a, b`. And a message: a bodiless `def` in a
+  trait followed by another `def` was "can't define def inside def", true
+  of the parse and false of the mistake; it now says the requirement is
+  spelled `abstract def`.
 - **`Hash` keeps insertion order.** Two dense arrays and an index over
   them, the compact layout, so `each` follows the order things went in and
   a word count prints its words in the order it met them. Measured
@@ -4285,7 +4293,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 11,623-line library and nothing else. Every other
+  written against iyi's own 11,745-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
