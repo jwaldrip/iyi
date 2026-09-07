@@ -23,6 +23,20 @@ struct Float64
     IyiFloatText.text(bits)
   end
 
+  # A whole power, by squaring: `2.0 ** 10`. A negative exponent is one
+  # over the positive one.
+  def **(exponent : Int32) : Float64
+    return 1.0 / (self ** -exponent) if exponent < 0
+    result = 1.0
+    base = self
+    while exponent > 0
+      result = result * base if exponent % 2 == 1
+      base = base * base
+      exponent = exponent // 2
+    end
+    result
+  end
+
   def abs : Float64
     self < 0.0 ? 0.0 - self : self
   end
@@ -45,6 +59,18 @@ struct Float64
   def round : Float64
     return self if self != self || abs >= 9007199254740992.0
     self < 0.0 ? 0.0 - (0.0 - self + 0.5).floor : (self + 0.5).floor
+  end
+
+  # To `digits` places: scaled up, rounded, scaled back. The scaling is a
+  # multiplication and a division by a power of ten, so `3.14159.round(2)`
+  # is the nearest double to 3.14, which prints as `3.14`. A tie goes away
+  # from zero, as in `round` above, and unlike the other library's
+  # `round(digits)`, which goes to even: `2.5.round(0)` is 3.0 here and one
+  # rule serves both spellings.
+  def round(digits : Int32) : Float64
+    return round if digits <= 0
+    scale = 10.0 ** digits
+    (self * scale).round / scale
   end
 end
 

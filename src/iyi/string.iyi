@@ -204,13 +204,20 @@ class String
   # does — the same name has to mean the same thing in both libraries
   # (SPEC.md III.1.7a), and a silent 0 for `"oops"` is the kind of answer that
   # is wrong twice.
+  # An optional sign and decimal digits, the whole string; a text that is
+  # not that is a mistake in `to_i` and a nil in `to_i?`, the pair `[]`
+  # and `[]?` are.
   def to_i : Int32
-    raise "not a number: #{inspect}" if empty?
+    to_i? || raise "not a number: #{inspect}"
+  end
+
+  def to_i? : Int32?
+    return nil if empty?
 
     index = 0
     sign = 1
     if self[0] == '-'
-      raise "not a number: #{inspect}" if @bytesize == 1
+      return nil if @bytesize == 1
       sign = -1
       index = 1
     end
@@ -218,7 +225,7 @@ class String
     value = 0
     while index < @bytesize
       digit = to_unsafe[index].to_i - 48
-      raise "not a number: #{inspect}" if digit < 0 || digit > 9
+      return nil if digit < 0 || digit > 9
       value = value * 10 + digit
       index = index + 1
     end

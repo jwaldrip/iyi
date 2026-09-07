@@ -6440,9 +6440,25 @@ def puts(text : String) : Nil
   print "\n"
 end
 
-# A bare `puts` ends the line a run of `print`s built.
+# A bare `puts` ends the line a run of `print`s built; `puts a, b` is one
+# line each.
 def puts : Nil
   print "\n"
+end
+
+def puts(first, second, *rest : *T) : Nil forall T
+  puts first
+  puts second
+  {% for i in 0...T.size %}
+    puts rest[{{i}}]
+  {% end %}
+end
+
+# Until a `break`.
+def loop(& : -> Nil) : Nil
+  while true
+    yield
+  end
 end
 
 # Everything on standard input, asked for by `samples/iyi/calc`: a program that

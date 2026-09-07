@@ -135,6 +135,19 @@ class Array(T)
     total
   end
 
+  # The sum of what the block answers for each element.
+  def sum(& : T -> U) : U forall U
+    raise "sum of an empty array" if empty?
+
+    total = yield @buffer[0]
+    index = 1
+    while index < @size
+      total = total + (yield @buffer[index])
+      index = index + 1
+    end
+    total
+  end
+
   def map(& : T -> U) : Array(U) forall U
     result = Array(U).new(@size)
     each { |value| result << yield value }
@@ -330,6 +343,25 @@ class Array(T)
     result = Array(T).new(@size)
     each { |value| result << value if yield value }
     result
+  end
+
+  # The elements that are not nil, in an array whose type says so: what a
+  # list of `to_i?` answers becomes once the failures are dropped.
+  def compact
+    result = [] of typeof(compact_element)
+    each do |value|
+      result << value unless value.nil?
+    end
+    result
+  end
+
+  # :nodoc:
+  # The element type without Nil, for `compact`'s array: never called,
+  # only typed.
+  private def compact_element
+    value = @buffer[0]
+    raise "" if value.nil?
+    value
   end
 
   def reject(& : T -> Bool) : Array(T)

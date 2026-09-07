@@ -27,6 +27,35 @@ struct Int32
     0 - self
   end
 
+  # Shifts, and the magnitude: what a bit of arithmetic past the four
+  # operators asks for first. A shift by the width or more answers zero,
+  # which the processor does not promise.
+  def <<(count : Int32) : Int32
+    count >= 32 || count < 0 ? 0 : unsafe_shl(count)
+  end
+
+  def >>(count : Int32) : Int32
+    count >= 32 || count < 0 ? (self < 0 ? -1 : 0) : unsafe_shr(count)
+  end
+
+  def abs : Int32
+    self < 0 ? -self : self
+  end
+
+  # A whole power, by squaring: `2 ** 10`. A negative exponent is a
+  # mistake for an integer, as division by zero is.
+  def **(exponent : Int32) : Int32
+    raise "negative exponent #{exponent}" if exponent < 0
+    result = 1
+    base = self
+    while exponent > 0
+      result = result * base if exponent % 2 == 1
+      base = base * base
+      exponent = exponent // 2
+    end
+    result
+  end
+
   def times(& : Int32 -> Nil) : Nil
     index = 0
     while index < self
@@ -70,6 +99,18 @@ struct Int64
 
   def - : Int64
     0_i64 - self
+  end
+
+  def <<(count : Int32) : Int64
+    count >= 64 || count < 0 ? 0_i64 : unsafe_shl(count.to_i64)
+  end
+
+  def >>(count : Int32) : Int64
+    count >= 64 || count < 0 ? (self < 0_i64 ? -1_i64 : 0_i64) : unsafe_shr(count.to_i64)
+  end
+
+  def abs : Int64
+    self < 0_i64 ? -self : self
   end
 
   # Digits are written from the end backwards, which is the only order the
