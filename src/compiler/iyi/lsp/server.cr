@@ -678,22 +678,22 @@ module Iyi::Lsp
     # though its files are not judged. A stat per file, no reads; the
     # hash is per process, which is exactly the life of a resultId.
     private def workspace_fingerprint : String
-      hasher = Crystal::Hasher.new
+      fold = 0_u64
       @documents.each do |uri, text|
-        hasher = uri.hash(hasher)
-        hasher = text.hash(hasher)
+        fold = fold &* 1099511628211_u64 &+ uri.hash
+        fold = fold &* 1099511628211_u64 &+ text.hash
       end
       if root = @root
         patterns = {"*.iyi", "iyi.mod", "iyi.sum"}.map { |name| File.join(root, "**", name) }
         Dir.glob(patterns) do |file|
           info = File.info?(file)
           next unless info
-          hasher = file.hash(hasher)
-          hasher = info.size.hash(hasher)
-          hasher = info.modification_time.hash(hasher)
+          fold = fold &* 1099511628211_u64 &+ file.hash
+          fold = fold &* 1099511628211_u64 &+ info.size.hash
+          fold = fold &* 1099511628211_u64 &+ info.modification_time.hash
         end
       end
-      hasher.result.to_s(36)
+      fold.to_s(36)
     end
 
     # ── Hover ────────────────────────────────────────────────────────────
