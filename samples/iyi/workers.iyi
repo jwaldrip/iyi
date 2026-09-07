@@ -1,0 +1,88 @@
+# The first program with tasks in it - SPEC.md III.4, as a person writes it.
+#
+#   ./bin/iyi run samples/iyi/workers.iyi
+#
+# Two shapes cover most of what a program wants from concurrency. A pool:
+# jobs go down one channel, workers answer up another, and the group's end
+# is the join. A pair: two things fetched at once, the group typed by what
+# they answer, so an error from either leaves as an ordinary member of the
+# union (III.4.3, III.4.9). Nothing here is a rule the other samples do not
+# state; it is the two programs a person writes first.
+module samples/workers
+
+# 1. A pool of three workers over six jobs.
+jobs = Channel(Int32).new(8)
+results = Channel(Int32).new(8)
+
+group do |g|
+  3.times do
+    g.spawn do
+      loop do
+        case jobs.receive
+        in Int32         then results.send(it * it)
+        in ChannelClosed then break # no more jobs: this worker is done
+        in Cancelled     then break
+        end
+      end
+      0
+    end
+  end
+
+  g.spawn do
+    (1..6).each { |n| jobs.send(n) }
+    jobs.close
+    0
+  end
+
+  total = 0
+  6.times do
+    case results.receive
+    in Int32         then total += it
+    in ChannelClosed then break
+    in Cancelled     then break
+    end
+  end
+  puts total # => 91, the squares of one to six
+end
+
+# The group's `end` waited for every worker: none outlives the scope that
+# started it (III.4.1).
+
+# 2. Two fetches at once, and the pair or the first error.
+struct Timeout
+  def initialize(@what : String)
+  end
+end
+
+impl Error for Timeout
+  def message : String
+    "#{@what} timed out"
+  end
+end
+
+def read(name : String) : String | Timeout
+  return Timeout.new(name) if name == "slow"
+  "<#{name}>"
+end
+
+# `end!` makes the group a value: the tuple of what the two tasks answered,
+# or the first error member. `Panicked` is there because a task that panics
+# answers it (III.1.4), and the signature says so.
+def both(a : String, b : String) : Tuple(String, String) | Timeout | Panicked
+  group do |g|
+    x = g.spawn { read(a) }
+    y = g.spawn { read(b) }
+  end!
+end
+
+case both("one", "two")
+in Tuple(String, String) then puts it # => {"<one>", "<two>"}
+in Timeout               then puts it.message
+in Panicked              then puts "panicked"
+end
+
+case both("one", "slow")
+in Tuple(String, String) then puts it
+in Timeout               then puts it.message # => slow timed out
+in Panicked              then puts "panicked"
+end
