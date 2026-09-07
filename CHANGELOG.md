@@ -24,6 +24,12 @@
   library counts - `"a,".split(',')` is two, `"".split(',')` is one -
   and `lines` drops the piece a final newline would open, so a program
   reads the same under both.
+- **The first program with a table in it.** `samples/iyi/grid.iyi`, and
+  the prelude grew `Array(T).new(n) { |i| }`, `Array#index(value)`,
+  `delete`, `reversed`, `uniq`, `zip` and `join` with nothing between,
+  `Range#map`, `select` and `sum`, `Int32#even?` and `odd?`, a bare `puts`
+  that ends a line of `print`s, and `Tuple#to_s`/`inspect` - `{1, "a"}` -
+  where a tuple printed as its type name.
 - **`Hash` keeps insertion order.** Two dense arrays and an index over
   them, the compact layout, so `each` follows the order things went in and
   a word count prints its words in the order it met them. Measured
@@ -4279,7 +4285,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 11,498-line library and nothing else. Every other
+  written against iyi's own 11,623-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
