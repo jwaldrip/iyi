@@ -43,6 +43,13 @@
   which module exports it, the `using lib/stack::{Stack}` that brings it
   in, and the qualified spelling - the answer a call already got - and
   a type declared without `pub` is reported as the module's own.
+- **The first program with tasks in it.** `samples/iyi/workers.iyi`: a
+  pool of three workers over a channel of jobs, and two fetches at once
+  as a typed group. III.4 had an exercise and no sample. Writing it found
+  the return-type report showing a partial union - "returning (Panicked |
+  Timeout)" for a group that also answers a tuple, the type bound when the
+  check fired - so the report now names the members outside the declared
+  type on their own, and says what `Panicked` is when it is one of them.
 - **`Hash` keeps insertion order.** Two dense arrays and an index over
   them, the compact layout, so `each` follows the order things went in and
   a word count prints its words in the order it met them. Measured

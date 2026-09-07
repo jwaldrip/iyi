@@ -790,16 +790,17 @@ a new way to be stuck.
 
 ## The samples
 
-Seventeen programs in [`samples/iyi`](samples/iyi), each documenting a part
+Eighteen programs in [`samples/iyi`](samples/iyi), each documenting a part
 of the design rather than showing off: `hello` (traits and `impl`), `modules`
 (`import` and `using` across files), `generics`, `errors`, `collections`,
 `immutable` (a shareable collection and the copy that makes it safe),
-`init_order`, `webapp`, `calc`, `derive`, `files` and `formatting`. And five
-that document nothing: `basics` is the seven programs a person writes in
-their first half hour, `inventory` the first one with a struct in it,
-`config` the first that reads text, `grid` the first with a table, `shapes`
-the first with a trait of its own, and they are there because the prelude
-grows only when a program in this repository needs something.
+`init_order`, `webapp`, `workers` (a pool and a typed pair of tasks),
+`calc`, `derive`, `files` and `formatting`. And five that document nothing:
+`basics` is the seven programs a person writes in their first half hour,
+`inventory` the first one with a struct in it, `config` the first that reads
+text, `grid` the first with a table, `shapes` the first with a trait of its
+own, and they are there because the prelude grows only when a program in
+this repository needs something.
 
 R-1 is checked rather than asserted. `bash bench/samples_roundtrip.sh` builds
 the five samples that import anything, deletes every imported module's source,
@@ -1003,7 +1004,7 @@ marked PROPOSED are the parts that will move under you.
 | | |
 |---|---|
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
-| [`samples/iyi`](samples/iyi) | seventeen programs: eleven documenting a part of it, five being a first hour, and `calc`, a language |
+| [`samples/iyi`](samples/iyi) | eighteen programs: twelve documenting a part of it, five being a first hour, and `calc`, a language |
 | [`samples/crystal/kemal`](samples/crystal/kemal) | a kemal application, from `shard.yml`: built from source and across four `.iyimod` boundaries |
 | [`src/iyi`](src/iyi) | iyi's own library, 11,745 lines. `--crystal` swaps it for Crystal's |
 | [`src/compiler/iyi/iyimod.cr`](src/compiler/iyi/iyimod.cr) | the artifact format |
