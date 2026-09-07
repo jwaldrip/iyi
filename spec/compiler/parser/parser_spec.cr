@@ -4455,6 +4455,14 @@ end").as(ClassDef)
         end
       end
 
+      # A bodiless `def` in a trait, with another `def` under it: the
+      # requirement wanted `abstract`, and the nested-def report says so.
+      it "explains a bodiless def in a trait" do
+        expect_raises(SyntaxException, "the `def` above it has no `end`") do
+          parse("trait Shape\n  def area : Float64\n  def name : String\nend", filename: "x.iyi")
+        end
+      end
+
       # A Crystal bang method called with a block: the `!` reads as a
       # propagation and the block has nothing to attach to. Said as the
       # naming rule rather than as the stray `{`.

@@ -1314,6 +1314,7 @@ module Iyi
             end
           when .def?
             check_type_declaration do
+              check_iyi_bodiless_trait_def
               check_not_inside_def("can't define def") do
                 parse_def
               end
@@ -4740,6 +4741,26 @@ module Iyi
         next_token_skip_space_or_newline
       end
       bounds
+    end
+
+    # iyi: `def area : Float64` with no body, inside a trait, and the next
+    # `def` under it.
+    #
+    # A requirement in a trait is spelled `abstract def` (SPEC.md II.6); a
+    # plain `def` opens a body, so the second `def` is read as nested and
+    # the report is "can't define def inside def", which is true of the
+    # parse and false of the mistake. Somebody arriving from a language
+    # whose interfaces list bare signatures writes this first.
+    private def check_iyi_bodiless_trait_def
+      return unless iyi? && @inside_trait_or_impl && @def_nest > 0
+
+      raise <<-MSG, @token
+        can't define def inside def: the `def` above it has no `end`
+
+        A method a trait requires of its implementers has no body and says
+        so - `abstract def name : Type` (SPEC.md II.6). A `def` with a body
+        ends with `end`.
+        MSG
     end
 
     # iyi: `def sort!` (SPEC.md III.1.7, decision A).
