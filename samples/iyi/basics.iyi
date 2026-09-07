@@ -60,3 +60,33 @@ counts = {} of String => Int32
 end
 puts counts["a"] # => 3
 puts counts.size # => 3
+puts counts      # => {"a" => 3, "b" => 1, "c" => 1}, in the order they went in
+
+# 7. The second half hour: the same count over real text, and the five most
+# frequent words in order. Splitting text into words is a walk over its
+# characters, a dictionary's pairs go into an array to be sorted, and the
+# sort takes a key rather than a comparison.
+text = "the cat sat on the mat; the mat sat under the cat. THE END"
+word = ""
+words = [] of String
+text.each_char do |c|
+  if c.alphanumeric?
+    word = word + c.to_s
+  elsif !word.empty?
+    words << word.downcase
+    word = ""
+  end
+end
+words << word.downcase unless word.empty?
+puts words.size # => 14
+
+frequency = {} of String => Int32
+words.each { |w| frequency[w] = (frequency[w]? || 0) + 1 }
+pairs = [] of Tuple(String, Int32)
+frequency.each { |w, n| pairs << {w, n} }
+pairs.sort_in_place_by { |pair| -pair[1] }
+pairs.first(3).each { |pair| puts "#{pair[0].ljust(5)} #{pair[1]}" }
+# => the   5
+# => cat   2
+# => sat   2
+puts pairs.sorted_by { |pair| pair[0] }.first(2).map { |pair| pair[0] } # => ["cat", "end"]

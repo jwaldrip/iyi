@@ -182,12 +182,52 @@ class Array(T)
     copy
   end
 
+  # Sorted on a key each element answers, ascending by `<`: the same pair
+  # as above, one name longer. The key is computed once per comparison
+  # rather than once per element, which is the cost of an insertion sort
+  # with no scratch array; the arrays this prelude sorts are short.
+  def sort_in_place_by(& : T -> U) : self forall U
+    index = 1
+    while index < @size
+      value = self[index]
+      key = yield value
+      slot = index - 1
+      while slot >= 0 && key < (yield self[slot])
+        self[slot + 1] = self[slot]
+        slot = slot - 1
+      end
+      self[slot + 1] = value
+      index = index + 1
+    end
+    self
+  end
+
+  def sorted_by(&block : T -> U) : Array(T) forall U
+    copy = dup
+    copy.sort_in_place_by(&block)
+    copy
+  end
+
   # `first` on an empty array is a mistake rather than a nil: the array knows
   # it is empty and so does whoever wrote the call. `last?` above answers the
   # other question, and is the one the trait defaults use.
   def first : T
     raise "first of an empty array" if empty?
     @buffer[0]
+  end
+
+  # The first `n`, or all of them when there are fewer: a prefix, not a
+  # question, so it never panics.
+  def first(n : Int32) : Array(T)
+    raise "negative count" if n < 0
+    count = n < @size ? n : @size
+    result = Array(T).new(count)
+    index = 0
+    while index < count
+      result << @buffer[index]
+      index = index + 1
+    end
+    result
   end
 
   def select(& : T -> Bool) : Array(T)
@@ -218,6 +258,16 @@ class Array(T)
   # back.
   def sorted : Array(T)
     sorted { |a, b| a < b ? -1 : (a == b ? 0 : 1) }
+  end
+
+  # `[1, 2, 3]`, the way it is written: an array printed is its elements
+  # inspected, so a string inside keeps its quotes and a nil says so.
+  def to_s : String
+    "[" + map { |value| value.inspect }.join(", ") + "]"
+  end
+
+  def inspect : String
+    to_s
   end
 
   def dup : Array(T)

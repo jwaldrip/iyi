@@ -97,6 +97,15 @@ class String
     to_unsafe[index].unsafe_chr
   end
 
+  # Every character in order, as `[]` reads them: one per byte.
+  def each_char(& : Char -> Nil) : Nil
+    index = 0
+    while index < @bytesize
+      yield to_unsafe[index].unsafe_chr
+      index = index + 1
+    end
+  end
+
   def []?(index : Int32) : Char?
     index = @bytesize + index if index < 0
     return nil if index < 0 || index >= @bytesize
@@ -331,6 +340,20 @@ class String
     true
   end
 
+  # Byte order, which for ASCII is dictionary order with the capitals first;
+  # a prefix sorts before what it prefixes. What `sorted` and `sorted_by`
+  # ask of a string.
+  def <(other : String) : Bool
+    index = 0
+    while index < bytesize && index < other.bytesize
+      a = to_unsafe[index]
+      b = other.to_unsafe[index]
+      return a < b if a != b
+      index = index + 1
+    end
+    bytesize < other.bytesize
+  end
+
   # Interpolation is a call the compiler writes: `"a#{b}"` reaches here as
   # `String.interpolation("a", b)` (`LiteralExpander#expand`). The overloads
   # are what let the common shapes avoid work — a single string is itself.
@@ -371,5 +394,24 @@ struct Char
 
   def inspect : String
     "'" + to_s + "'"
+  end
+
+  # The classes a word counter asks about, ASCII's: a letter is one of the
+  # fifty-two, a digit one of the ten, whitespace the space, tab and the
+  # line breaks.
+  def letter? : Bool
+    (self >= 'a' && self <= 'z') || (self >= 'A' && self <= 'Z')
+  end
+
+  def digit? : Bool
+    self >= '0' && self <= '9'
+  end
+
+  def alphanumeric? : Bool
+    letter? || digit?
+  end
+
+  def whitespace? : Bool
+    self == ' ' || self == '\t' || self == '\n' || self == '\r'
   end
 end
