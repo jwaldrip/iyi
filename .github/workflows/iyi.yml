@@ -1074,7 +1074,10 @@ jobs:
             https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz
           sudo mkdir -p /opt/wasi-sdk
           sudo tar -xzf /tmp/wasi-sdk.tar.gz -C /opt/wasi-sdk --strip-components=1
-          curl -sSL https://wasmtime.dev/install.sh | bash
+          # Pinned: the installer's "latest" lookup broke on a release
+          # candidate tag once (it read `{` as the version), and a runner
+          # that cannot fetch its runtime is a red job about nothing.
+          curl -sSL https://wasmtime.dev/install.sh | bash -s -- --version v48.0.1
 
       - name: What the module imports
         run: /opt/wasi-sdk/bin/llvm-nm --undefined-only cross/hello-wasi.wasm
