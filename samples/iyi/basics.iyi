@@ -53,6 +53,19 @@ puts greeting.downcase           # => hello, world
 puts greeting.includes?("World") # => true
 puts greeting.size               # => 12
 
+# A character is a byte here, and its code is a number to do arithmetic on:
+# the Caesar shift every second program is.
+shifted = ""
+greeting.each_char do |c|
+  if c.letter?
+    base = c >= 'a' ? 'a'.ord : 'A'.ord
+    shifted = shifted + ((c.ord - base + 3) % 26 + base).chr.to_s
+  else
+    shifted = shifted + c.to_s
+  end
+end
+puts shifted # => Khoor, Zruog
+
 # 6. Counting words, which is where a dictionary earns its place.
 counts = {} of String => Int32
 ["a", "b", "a", "c", "a"].each do |word|

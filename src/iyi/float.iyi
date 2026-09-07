@@ -31,8 +31,10 @@ struct Float64
     base = self
     while exponent > 0
       result = result * base if exponent % 2 == 1
-      base = base * base
       exponent = exponent // 2
+      # Not squared past the last use: `2 ** 30` fits and its base's
+      # next square does not.
+      base = base * base if exponent > 0
     end
     result
   end

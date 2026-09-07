@@ -50,6 +50,9 @@
   Timeout)" for a group that also answers a tuple, the type bound when the
   check fired - so the report now names the members outside the declared
   type on their own, and says what `Panicked` is when it is one of them.
+- **`Int32#chr`**, the other half of `Char#ord`, for the Caesar shift
+  `basics` now does; and `**` no longer squares its base past the last
+  use, which overflowed `2 ** 30` on the way to an answer that fits.
 - **`Hash` keeps insertion order.** Two dense arrays and an index over
   them, the compact layout, so `each` follows the order things went in and
   a word count prints its words in the order it met them. Measured
@@ -4305,7 +4308,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 11,745-line library and nothing else. Every other
+  written against iyi's own 11,755-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
