@@ -11,6 +11,7 @@
 #                                 # alone, front end only, and read back
 #     iyi doc String              # a type of the prelude: what a String
 #                                 # can do, the prelude's own comments
+#     iyi doc prelude             # the prelude's types, one line each
 #
 # No HTML, no site, no theme. The document is text because the consumers
 # are a terminal and a model, and III.7's registry index — `Exports`
@@ -36,6 +37,8 @@ class Iyi::Command
     when filename.ends_with?(".iyi")
       abort! "no such file: #{filename}", :USAGE_ERROR unless File.file?(filename)
       doc_from_source(File.expand_path(filename))
+    when filename == "prelude"
+      doc_prelude_index
     when prelude_type_name?(filename)
       doc_prelude_type(filename)
     else
@@ -51,6 +54,62 @@ class Iyi::Command
     name.each_char.all? { |char| char.ascii_alphanumeric? || char == '_' || char == ':' }
   end
 
+  # The prelude's types, one line each - the kind, the name, the first
+  # line of the comment - for the reader who does not know what to ask
+  # `iyi doc String` about. The runtime's own machinery (`Iyi*`, the
+  # `Lib*` bindings, the `__` names) is not the program's to call and is
+  # left out.
+  private def doc_prelude_index : Nil
+    program = doc_prelude_program
+    rows = [] of {String, String, String}
+    program.types.each do |name, type|
+      next if name.starts_with?("Iyi") || name.starts_with?("Lib") || name.starts_with?("__")
+      next if type.is_a?(LibType) || type.is_a?(AliasType)
+      next unless type.is_a?(ClassType) || type.is_a?(ModuleType) || type.is_a?(EnumType)
+      next if type.private?
+      # Declared or reopened by the prelude's own files: the compiler
+      # declares `Int128` and `Regex` for every program and the prelude
+      # says nothing about them, so they are not what a program has.
+      next unless type.locations.try &.any? { |location| in_prelude?(location) }
+      summary = type.doc.try(&.lines.first?) || ""
+      kind = type.type_desc.lchop("generic ")
+      shown = name
+      if type.is_a?(GenericType) && !type.type_vars.empty?
+        shown = "#{name}(#{type.type_vars.join(", ")})"
+      end
+      rows << {kind, shown, summary}
+    end
+    rows.sort_by! { |row| row[1] }
+    width = rows.max_of { |row| row[0].size + 1 + row[1].size }
+    rows.each do |kind, shown, summary|
+      head = "#{kind} #{shown}"
+      STDOUT << head
+      unless summary.empty?
+        STDOUT << " " * (width - head.size + 2) << "# " << summary
+      end
+      STDOUT << '\n'
+    end
+  end
+
+  private def in_prelude?(location : Location) : Bool
+    filename = location.filename
+    filename.is_a?(String) && (filename.includes?("/src/iyi/") || filename.starts_with?("src/iyi/"))
+  end
+
+  private def doc_prelude_program : Program
+    compiler = Compiler.new
+    compiler.prelude = "iyi/prelude"
+    compiler.no_codegen = true
+    compiler.wants_doc = true
+    compiler.stdout = IO::Memory.new
+    compiler.stderr = IO::Memory.new
+    begin
+      compiler.top_level_semantic(Compiler::Source.new("doc.iyi", "")).program
+    rescue ex : Iyi::Error | Iyi::CodeError
+      abort! "the prelude does not compile: #{ex.message.to_s.lines.first?}", :USAGE_ERROR
+    end
+  end
+
   # A type of the prelude, the way a person or a model asks "what can a
   # String do": the prelude alone through the front end, the type looked
   # up, its public methods written the way `surface` writes a module's -
@@ -58,19 +117,7 @@ class Iyi::Command
   # compiler itself puts on every type (`allocate`, the primitives) is
   # left out, as the artifact leaves it out.
   private def doc_prelude_type(name : String) : Nil
-    compiler = Compiler.new
-    compiler.prelude = "iyi/prelude"
-    compiler.no_codegen = true
-    compiler.wants_doc = true
-    compiler.stdout = IO::Memory.new
-    compiler.stderr = IO::Memory.new
-    result =
-      begin
-        compiler.top_level_semantic(Compiler::Source.new("doc.iyi", ""))
-      rescue ex : Iyi::Error | Iyi::CodeError
-        abort! "the prelude does not compile: #{ex.message.to_s.lines.first?}", :USAGE_ERROR
-      end
-    program = result.program
+    program = doc_prelude_program
     type = program.lookup_path(name.split("::"))
     unless type.is_a?(Type)
       abort! "the prelude has no type #{name}", :USAGE_ERROR
@@ -168,7 +215,7 @@ class Iyi::Command
     artifact (read directly, source not needed) or a `.iyi` module (compiled
     alone, front end only). TYPE is a type of the prelude - `String`,
     `Array`, `Hash`, `Program` - printed the same way: what it can do, with
-    the prelude's own comments.
+    the prelude's own comments; `prelude` lists them all, one line each.
     USAGE
   end
 end

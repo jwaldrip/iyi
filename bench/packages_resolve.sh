@@ -200,6 +200,10 @@ grep -q '  def size : Int32' prelude-doc.txt || { echo "size is missing"; exit 1
 grep -q 'allocate' prelude-doc.txt && { echo "the compiler's own method leaked into the doc"; exit 1; }
 "$IYI" doc Nope > nope.txt 2>&1 && { echo "an unknown type was documented"; exit 1; }
 grep -q 'the prelude has no type Nope' nope.txt || { echo "the unknown type was not named:"; cat nope.txt; exit 1; }
+"$IYI" doc prelude > index.txt 2>&1 || { cat index.txt; exit 1; }
+grep -q '^class String' index.txt || { echo "the index lacks String:"; cat index.txt; exit 1; }
+grep -q '^class Hash(K, V)' index.txt || { echo "the index lacks Hash(K, V):"; cat index.txt; exit 1; }
+grep -q 'Regex\|Int128\|IyiHeap' index.txt && { echo "the index lists what the prelude does not offer:"; cat index.txt; exit 1; }
 
 echo "workdir $WORK"
 echo "packages gate: every step held"

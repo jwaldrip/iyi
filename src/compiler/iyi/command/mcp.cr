@@ -138,7 +138,7 @@ class Iyi::Command
         "description": "What can be called: a module's exported surface (functions, types, methods, impls, with their doc comments, no bodies) from a .iyi file or a .iyimod artifact, or a type of the prelude by name - `String`, `Array`, `Hash`, `Float64`, `Program` - the same way. Text.",
         "inputSchema": {
           "type": "object",
-          "properties": {"target": {"type": "string", "description": "path to a .iyi module or .iyimod artifact, or a prelude type's name"}},
+          "properties": {"target": {"type": "string", "description": "path to a .iyi module or .iyimod artifact, a prelude type's name, or `prelude` for the list of them"}},
           "required": ["target"]
         }
       }
