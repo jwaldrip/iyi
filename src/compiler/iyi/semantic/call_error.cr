@@ -663,6 +663,21 @@ class Iyi::Call
   #
   # Nothing here fires for a Crystal program: `iyi_unit?` is false for every
   # Crystal module, so the search finds nobody and the message is unchanged.
+  # A type the prelude declares: one the compiler itself declares (String,
+  # Array, the numbers - no location of their own) or one whose first
+  # location is under `src/iyi/`. A class the program declares has its
+  # file.
+  private def iyi_prelude_type?(owner) : Bool
+    return false unless program.iyi_prelude?
+    type = owner.is_a?(MetaclassType) ? owner.instance_type : owner
+    type = type.generic_type if type.is_a?(GenericInstanceType)
+    return false unless type.is_a?(NamedType)
+    location = type.locations.try(&.first?)
+    return true unless location
+    filename = location.filename
+    filename.is_a?(String) && (filename.includes?("/src/iyi/") || filename.starts_with?("src/iyi/"))
+  end
+
   private def iyi_out_of_reach_hint(def_name : String, obj) : String?
     return nil if obj
 
@@ -851,6 +866,11 @@ class Iyi::Call
       end
       if obj && !similar_name && (arrival = Iyi::IYI_ARRIVAL_METHOD_HINTS[def_name]?)
         msg << '\n' << arrival if def_name != "/" || owner.is_a?(IntegerType)
+      elsif obj && !similar_name && !participle && iyi_prelude_type?(owner)
+        # iyi: a method Crystal's library has and this one does not, on a
+        # type the prelude declares, with nothing near it in spelling:
+        # the reader is looking at the library's size rule, not a typo.
+        msg << '\n' << "iyi's prelude has no `#{def_name}` on #{owner}: it is small by rule - a method enters when a program in the repository needs it (SPEC.md III.1) - and `iyi build --crystal` gives a program Crystal's library instead (README.md, \"The library a program has\")."
       end
 
       # Check if it's an instance variable that was never assigned a value

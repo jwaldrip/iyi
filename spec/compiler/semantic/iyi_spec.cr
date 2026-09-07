@@ -262,6 +262,24 @@ describe "Semantic: iyi" do
       assert_error "p 1", "`puts value.inspect` is the spelling here; there is no `p`."
     end
 
+    it "says the prelude's size rule for a method a prelude type lacks" do
+      assert_error <<-CODE, "iyi's prelude has no `split` on String: it is small by rule"
+        "a,b".split(",")
+        CODE
+    end
+
+    it "says nothing about the rule for a class the program declares" do
+      exception = expect_raises(Iyi::TypeException) do
+        semantic <<-CODE
+          class Foo
+          end
+
+          Foo.new.bar
+          CODE
+      end
+      exception.to_s.should_not contain("small by rule")
+    end
+
     it "says sleep's unit when it is given seconds" do
       assert_error <<-CODE, "`sleep` takes milliseconds, an `Int32`: `sleep 100` is a tenth of a second."
         def sleep(ms : Int32)

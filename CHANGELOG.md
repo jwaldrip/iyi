@@ -47,10 +47,16 @@
 - **Crystal's spelling gets iyi's answer.** `ARGV` says the arguments
   are `Program.args`; `ENV` says `Program.env("NAME")` and that there
   is no map of the whole environment; `p` and `pp` say `puts
-  value.inspect`; `sleep 0.1` says `sleep` takes milliseconds. The
-  tables are `IYI_ARRIVAL_*_HINTS` in `call_error.cr`: names somebody
-  arriving from Crystal writes first, not a list of what the prelude
-  lacks.
+  value.inspect`; `sleep 0.1` says `sleep` takes milliseconds; `x /
+  2` on integers says integer division is `//`; `not_nil!` says `!`
+  propagates an error here and how to narrow a nil. The tables are
+  `IYI_ARRIVAL_*_HINTS` in `call_error.cr`: names somebody arriving
+  from Crystal writes first, not a list of what the prelude lacks. And
+  a method a prelude type has not got, with nothing near it in
+  spelling - `"a,b".split(",")`, `[1].each_with_index` - says the
+  prelude is small by rule, that a method enters when a program in the
+  repository needs it, and that `--crystal` gives a program Crystal's
+  library; a class the program declares gets no such note.
 
 - **A nilable receiver says what to do.** "undefined method '+' for
   Nil (compile-time type is (Int32 | Nil))" named the type and stopped;
