@@ -513,33 +513,49 @@ puts "realloc: same-class, cross-class and null all hold their bytes"
 {% end %}
 
 # --- Speed: a long run of allocations, nanoseconds per allocation ---
+# The best of three passes, the way every number in this repository is
+# read: the gate below is a ratio against the bump pointer measured in
+# the same run, and one pass on a shared runner read 2.7x where the next
+# read 2.2 - a scheduler's tick landing in one loop and not the other.
 runs = 2000000
 sink = 0_u64
-start = monotonic_ns
-index = 0
-while index < runs
-  block = Pointer(UInt8).malloc(24_u64)
-  block[0] = 1_u8
-  sink = sink &+ block.address
-  index = index + 1
-end
-elapsed = monotonic_ns - start
-puts "speed: #{elapsed.unsafe_div(runs.to_u64).to_i64} ns per allocation over #{runs} (sink #{(sink & 1023).to_i64})"
-
-{% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin)) %}
-  # The pair loop: what an allocation costs when its chunk is freed each
-  # time, which is the shape a collecting heap's mutator actually takes.
+best = 0_u64
+pass = 0
+while pass < 3
   start = monotonic_ns
   index = 0
   while index < runs
     block = Pointer(UInt8).malloc(24_u64)
     block[0] = 1_u8
     sink = sink &+ block.address
-    IyiHeap.free(block.as(Void*))
     index = index + 1
   end
   elapsed = monotonic_ns - start
-  puts "speed: #{elapsed.unsafe_div(runs.to_u64).to_i64} ns per alloc+free pair over #{runs}"
+  best = elapsed if pass == 0 || elapsed < best
+  pass = pass + 1
+end
+puts "speed: #{best.unsafe_div(runs.to_u64).to_i64} ns per allocation over #{runs} (sink #{(sink & 1023).to_i64})"
+
+{% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin)) %}
+  # The pair loop: what an allocation costs when its chunk is freed each
+  # time, which is the shape a collecting heap's mutator actually takes.
+  best = 0_u64
+  pass = 0
+  while pass < 3
+    start = monotonic_ns
+    index = 0
+    while index < runs
+      block = Pointer(UInt8).malloc(24_u64)
+      block[0] = 1_u8
+      sink = sink &+ block.address
+      IyiHeap.free(block.as(Void*))
+      index = index + 1
+    end
+    elapsed = monotonic_ns - start
+    best = elapsed if pass == 0 || elapsed < best
+    pass = pass + 1
+  end
+  puts "speed: #{best.unsafe_div(runs.to_u64).to_i64} ns per alloc+free pair over #{runs}"
 {% end %}
 
 puts "arena allocator: every check passed"

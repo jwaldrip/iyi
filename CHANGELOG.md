@@ -94,6 +94,13 @@
   digits do not stop short, the notation's range moves, or the parser
   truncates.
 
+- **The arena exercise's speed numbers are the best of three passes.**
+  The gate is a ratio against the bump pointer measured in the same
+  run, and one pass on darwin's shared runner read 2.7x where the next
+  read 2.2 - a scheduler's tick in one loop and not the other; each
+  loop runs three times now and the least is the number, the way every
+  number in this repository is read.
+
 - **A missing `end` names what it was to close.** "expecting
   identifier 'end', not 'EOF'" at the last line of the file sent a
   reader back through the whole file for the one unclosed construct;
