@@ -35,6 +35,14 @@ struct Int32
     end
   end
 
+  def even? : Bool
+    self % 2 == 0
+  end
+
+  def odd? : Bool
+    self % 2 != 0
+  end
+
   def to_s : String
     to_i64.to_s
   end

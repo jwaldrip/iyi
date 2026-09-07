@@ -83,3 +83,23 @@ struct Bool
     self ? "true" : "false"
   end
 end
+
+# A tuple written the way it is written: `{1, "a"}`. The compiler lays a
+# tuple out and answers `[]`; what it looks like printed is the prelude's,
+# one element per position, each inspected.
+struct Tuple
+  def to_s : String
+    result = "{"
+    {% for i in 0...T.size %}
+      {% if i > 0 %}
+        result = result + ", "
+      {% end %}
+      result = result + self[{{i}}].inspect
+    {% end %}
+    result + "}"
+  end
+
+  def inspect : String
+    to_s
+  end
+end

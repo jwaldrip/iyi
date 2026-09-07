@@ -6440,6 +6440,11 @@ def puts(text : String) : Nil
   print "\n"
 end
 
+# A bare `puts` ends the line a run of `print`s built.
+def puts : Nil
+  print "\n"
+end
+
 # Everything on standard input, asked for by `samples/iyi/calc`: a program that
 # only runs the source built into it is a demonstration, and one that reads is
 # a tool.

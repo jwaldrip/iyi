@@ -7,9 +7,9 @@
 # for 'Range(B, E).new' (given 3, expected 0)" — a message about a constructor
 # nobody wrote, for the second loop anybody writes.
 #
-# What is here is what `samples/iyi/basics.iyi` calls and no more. There is no
-# `Enumerable` on it, no `step`, no reverse iteration: a range in this prelude
-# counts up by one and stops.
+# What is here is what `samples/iyi/basics.iyi` and `grid.iyi` call and no
+# more. There is no `Enumerable` on it, no `step`, no reverse iteration: a
+# range in this prelude counts up by one and stops.
 struct Range(B, E)
   getter begin : B
   getter end : E
@@ -47,5 +47,25 @@ struct Range(B, E)
     result = Array(B).new(size)
     each { |value| result << value }
     result
+  end
+
+  # The three a range is written for: a value per position, the positions
+  # that answer, and the total.
+  def map(& : B -> U) : Array(U) forall U
+    result = Array(U).new(size)
+    each { |value| result << yield value }
+    result
+  end
+
+  def select(& : B -> Bool) : Array(B)
+    result = [] of B
+    each { |value| result << value if yield value }
+    result
+  end
+
+  def sum : B
+    total = @begin - @begin
+    each { |value| total = total + value }
+    total
   end
 end

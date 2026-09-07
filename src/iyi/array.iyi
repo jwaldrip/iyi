@@ -24,6 +24,19 @@ class Array(T)
     @buffer = capacity == 0 ? Pointer(T).new(0_u64) : Pointer(T).malloc(capacity.to_u64)
   end
 
+  # `Array(T).new(n) { |i| ... }`: n elements, each the block's answer for
+  # its index - a row of a grid, a table of squares.
+  def self.new(size : Int32, & : Int32 -> T) : Array(T)
+    raise "negative size" if size < 0
+    array = Array(T).new(size)
+    index = 0
+    while index < size
+      array << yield index
+      index = index + 1
+    end
+    array
+  end
+
   # An array of *capacity* elements that are not written yet. The literal
   # expander fills them through `to_unsafe` immediately afterwards, which is
   # why this is allowed to hand out a size it has not stored anything at.
@@ -91,6 +104,11 @@ class Array(T)
   # `samples/iyi/std`, and every one of its methods that returns a sequence
   # returns one of these. So an `Array` is what a sample ends up holding, and
   # `join` is what it ends up calling.
+  # With nothing between: `["a", "b"].join` is `"ab"`.
+  def join : String
+    join("")
+  end
+
   def join(separator : String) : String
     result = ""
     first = true
@@ -323,6 +341,60 @@ class Array(T)
   def includes?(value : T) : Bool
     each { |element| return true if element == value }
     false
+  end
+
+  # Where a value first is, or nil.
+  def index(value : T) : Int32?
+    index = 0
+    while index < @size
+      return index if @buffer[index] == value
+      index = index + 1
+    end
+    nil
+  end
+
+  # Removes the first element equal to `value`, closing the gap; answers
+  # whether there was one.
+  def delete(value : T) : Bool
+    at = index(value)
+    return false unless at
+    while at < @size - 1
+      @buffer[at] = @buffer[at + 1]
+      at = at + 1
+    end
+    @size = @size - 1
+    true
+  end
+
+  # A copy in the other order.
+  def reversed : Array(T)
+    result = Array(T).new(@size)
+    index = @size
+    while index > 0
+      index = index - 1
+      result << @buffer[index]
+    end
+    result
+  end
+
+  # Each value once, in the order first met: quadratic, on the arrays a
+  # first program has.
+  def uniq : Array(T)
+    result = Array(T).new(@size)
+    each { |value| result << value unless result.includes?(value) }
+    result
+  end
+
+  # Pairs, element by element, as long as the shorter.
+  def zip(other : Array(U)) : Array(Tuple(T, U)) forall U
+    count = @size < other.size ? @size : other.size
+    result = Array(Tuple(T, U)).new(count)
+    index = 0
+    while index < count
+      result << {@buffer[index], other[index]}
+      index = index + 1
+    end
+    result
   end
 
   def reduce(initial : U, & : U, T -> U) : U forall U
