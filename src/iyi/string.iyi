@@ -264,6 +264,72 @@ class String
     byte_slice(1, bytesize - 1)
   end
 
+  def ends_with?(suffix : String) : Bool
+    return false if suffix.bytesize > bytesize
+    offset = bytesize - suffix.bytesize
+    index = 0
+    while index < suffix.bytesize
+      return false unless to_unsafe[offset + index] == suffix.to_unsafe[index]
+      index = index + 1
+    end
+    true
+  end
+
+  # Where a character first is, or nil: the question a parser asks before
+  # it cuts.
+  def index(char : Char) : Int32?
+    wanted = char.ord.to_u8
+    index = 0
+    while index < bytesize
+      return index if to_unsafe[index] == wanted
+      index = index + 1
+    end
+    nil
+  end
+
+  # Without the whitespace at either end.
+  def strip : String
+    first = 0
+    while first < bytesize && to_unsafe[first].unsafe_chr.whitespace?
+      first = first + 1
+    end
+    last = bytesize
+    while last > first && to_unsafe[last - 1].unsafe_chr.whitespace?
+      last = last - 1
+    end
+    byte_slice(first, last - first)
+  end
+
+  # The pieces between separators, empty ones included: `"a,,b".split(',')`
+  # is three, `"a,".split(',')` is two, and `"".split(',')` is one empty
+  # piece - the count the other library gives, so a program reads the same
+  # under both.
+  def split(separator : Char) : Array(String)
+    pieces = [] of String
+    wanted = separator.ord.to_u8
+    start = 0
+    index = 0
+    while index < bytesize
+      if to_unsafe[index] == wanted
+        pieces << byte_slice(start, index - start)
+        start = index + 1
+      end
+      index = index + 1
+    end
+    pieces << byte_slice(start, bytesize - start)
+    pieces
+  end
+
+  # The lines of a text, blank ones included; a final newline ends the last
+  # line rather than opening an empty one, which is what a file ending in a
+  # newline means.
+  def lines : Array(String)
+    return [] of String if bytesize == 0
+    pieces = split('\n')
+    pieces.pop if pieces.last.empty?
+    pieces
+  end
+
   private def byte_slice(start : Int32, count : Int32) : String
     String.new(count) do |buffer|
       buffer.copy_from(to_unsafe + start, count)

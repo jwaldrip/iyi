@@ -1,0 +1,61 @@
+# The first program that reads text - a `key = value` file, with the line
+# number in its error.
+#
+#   ./bin/iyi run samples/iyi/config.iyi
+#
+# Text comes apart into lines, a line into its two halves around a `=`, and
+# each half loses its whitespace; a line that does not parse is an error
+# value carrying where it was (SPEC.md III.1), not a printed message. Like
+# `basics` and `inventory`, this documents no rule: it is here because the
+# prelude grows only when a program in this repository needs something
+# (SPEC.md 0.1.0 item 3), and cutting text is what the third program does.
+module samples/config
+
+struct ParseError
+  property line : Int32
+  property message : String
+
+  def initialize(@line : Int32, @message : String)
+  end
+end
+
+impl Error for ParseError
+  def message : String
+    "line #{@line}: #{@message}"
+  end
+end
+
+def parse(text : String) : Hash(String, String) | ParseError
+  config = {} of String => String
+  text.lines.each_with_index do |raw, index|
+    line = raw.strip
+    next if line.empty? || line.starts_with?('#')
+    eq = line.index('=')
+    return ParseError.new(index + 1, "no '=' in #{line.inspect}") unless eq
+    key = line[0, eq].strip
+    return ParseError.new(index + 1, "empty key") if key.empty?
+    config[key] = line[eq + 1, line.size - eq - 1].strip
+  end
+  config
+end
+
+good = "# the service\nname = iyi\nport= 8080\n\nmode =fast\n"
+case parse(good)
+in Hash(String, String)
+  puts it                      # => {"name" => "iyi", "port" => "8080", "mode" => "fast"}
+  puts it["port"].to_i + 1     # => 8081
+  puts it.keys.join(", ")      # => name, port, mode
+in ParseError then puts "error: #{it.message}"
+end
+
+bad = "name = iyi\nbroken line\n"
+case parse(bad)
+in Hash(String, String) then puts "parsed"
+in ParseError           then puts "error: #{it.message}" # => error: line 2: no '=' in "broken line"
+end
+
+# The pieces a parser cuts, on their own.
+puts "a,,b".split(',')             # => ["a", "", "b"]
+puts "one\ntwo\n".lines            # => ["one", "two"]
+puts "  padded\t".strip.inspect    # => "padded"
+puts "config.iyi".ends_with?(".iyi") # => true

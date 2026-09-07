@@ -203,6 +203,13 @@ class Array(T)
     best
   end
 
+  # Removes and returns the last element. Empty is a mistake, as with `last`.
+  def pop : T
+    raise "pop of an empty array" if empty?
+    @size = @size - 1
+    @buffer[@size]
+  end
+
   # Removes and returns the first element, moving the rest down. Linear, which
   # is what an array without a head offset costs; `each_cons` in the trait is
   # the one caller and its window is `n` long.
