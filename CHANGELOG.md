@@ -217,6 +217,16 @@
 
 ### Changed
 
+- **The prelude's ceiling is stated about the library, and measured.**
+  SPEC.md read "11,765 lines, ceiling 3,734", a sentence contradicting
+  itself: the 3,734 was Crystal's 0.1.0 *library*, and iyi's prelude has
+  since taken on what that prelude got from libgc, pthreads and libc's
+  printf - the collector, the scheduler, the float text - which are most
+  of its lines. The figure held to the ceiling is now the library on its
+  own, 2,814 lines: everything under `src/iyi/` except `concurrency.iyi`,
+  `thread.iyi`, `float.iyi` and the block between two marks in
+  `prelude.iyi`, counted by `bench/doc_numbers.py` and gated like every
+  other number. The whole-prelude figure stays beside it.
 - **The website is its own repository.** `site/`, `doc/website/`,
   `bench/site_facts.py`, `bench/website_citations.py` and the site
   workflow moved to `sdogruyol/iyi-lang.sdogruyol.io` with their
@@ -4315,7 +4325,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 11,765-line library and nothing else. Every other
+  written against iyi's own 11,773-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

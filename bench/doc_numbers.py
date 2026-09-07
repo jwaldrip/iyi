@@ -112,6 +112,7 @@ def measured() -> dict[str, int]:
     """The numbers, measured the way the docs say they are measured."""
     return {
         "prelude": wc(sorted((REPO / "src/iyi").glob("*.iyi"))),
+        "prelude_library": prelude_library_lines(),
         "samples_std": wc(sorted((REPO / "samples/iyi/std").glob("*.iyi"))),
         "compiler": wc(sorted((REPO / "src/compiler").rglob("*.cr"))),
         "samples": len(sorted((REPO / "samples/iyi").glob("*.iyi"))),
@@ -125,6 +126,30 @@ def measured() -> dict[str, int]:
         "spec_iyi": iyi_spec_lines(),
         "targets": targets(),
     }
+
+
+def prelude_library_lines() -> int:
+    """The prelude's lines that do what Crystal's 0.1.0 core did, which is
+    the figure SPEC.md holds to the 3,734-line ceiling: everything under
+    `src/iyi/` except what that core got from outside its own count - the
+    allocator and collector (Boehm's libgc; the block between two marks in
+    prelude.iyi), the scheduler and kernel thread (pthreads and libevent,
+    beyond the 183 lines the ceiling already carries for fibers), and the
+    float printer and parser (libc's printf and strtod)."""
+    files = sorted((REPO / "src/iyi").glob("*.iyi"))
+    outside = {"concurrency.iyi", "thread.iyi", "float.iyi"}
+    total = 0
+    for path in files:
+        lines = path.read_text().splitlines()
+        if path.name in outside:
+            continue
+        if path.name == "prelude.iyi":
+            start = next(i for i, l in enumerate(lines) if l.startswith("# ── The memory layer"))
+            end = next(i for i, l in enumerate(lines) if l.startswith("# ── end of the memory layer"))
+            total += len(lines) - (end - start + 1)
+        else:
+            total += len(lines)
+    return total
 
 
 def targets() -> int:
@@ -156,6 +181,9 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     ("prelude", r"iyi's own library, ([\d,]+) lines", "README.md", 1),
     ("prelude", r"standard library instead of ([\d,]+)", "README.md", 1),
     ("prelude", r"iyi's own prelude \| ([\d,]+) lines", "SPEC.md", 1),
+    ("prelude_library", r"of which ([\d,]+) are the library held to the", "SPEC.md", 1),
+    ("prelude_library", r"of which the library is ([\d,]+)", "SPEC.md", 1),
+    ("prelude_library", r"the library:\n\*\*([\d,]+) lines\*\* of the", "SPEC.md", 1),
     ("prelude", r"still true of iyi's own ([\d,]+) lines", "SPEC.md", 1),
     ("prelude", r"Done: ([\d,]+) lines", "SPEC.md", 1),
     ("prelude", r"\| ([\d,]+)-line own prelude", "SPEC.md", 1),

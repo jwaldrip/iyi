@@ -469,6 +469,13 @@ end
 
 require "./file"
 
+# ── The memory layer ────────────────────────────────────────────────────
+#
+# From here to the matching mark below is what Crystal's 0.1.0 prelude got
+# from Boehm's libgc and never counted: the allocator and the collector.
+# `bench/doc_numbers.py` counts these lines out of the library figure the
+# SPEC holds to its ceiling, by these two marks.
+#
 # The allocator, selected rather than declared, because the selection has to be
 # a real seam a different allocator is swapped in at. The seam has carried
 # three defaults: Boehm (0.1.0), then nothing — allocate and never collect —
@@ -6253,6 +6260,7 @@ require "./file"
     result
   end
 {% end %}
+# ── end of the memory layer ─────────────────────────────────────────────
 
 # Codegen emits a call to this on every overflowing operation, so a program
 # cannot link without it. It aborts rather than raising: 0.1.0's `raise` is a
