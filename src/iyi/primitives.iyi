@@ -30,6 +30,8 @@ class Object
   end
 end
 
+# What every class instance is: a pointer to its fields, compared and
+# hashed by identity unless the class says otherwise.
 class Reference
   @[Primitive(:object_id)]
   def object_id : UInt64
@@ -42,6 +44,7 @@ class Class
   end
 end
 
+# `true` and `false`.
 struct Bool
   @[Primitive(:binary)]
   def ==(other : Bool) : Bool
@@ -52,6 +55,7 @@ struct Bool
   end
 end
 
+# One character - a byte, in this prelude, which reads its strings as ASCII.
 struct Char
   @[Primitive(:convert)]
   def ord : Int32
@@ -64,6 +68,7 @@ struct Char
   {% end %}
 end
 
+# A name that compares by identity: `:ok`, `:err`.
 struct Symbol
   @[Primitive(:binary)]
   def ==(other : Symbol) : Bool
@@ -82,6 +87,8 @@ struct Symbol
   end
 end
 
+# A raw address: `Pointer(T).malloc(n)` is `n` elements of untyped memory,
+# `[]` and `[]=` read and write them, nothing checks the bounds.
 struct Pointer(T)
   @[Primitive(:pointer_malloc)]
   def self.malloc(size : UInt64)

@@ -80,7 +80,10 @@
   header, then each public method's doc comment and signature, the way
   `IyiMod.surface` prints a module - `iyi doc String`, `Array`, `Hash`,
   `Float64`, `Program`; the compiler's own `allocate` and the primitives
-  left out, as the artifact leaves them out; `iyi doc prelude` lists
+  left out, as the artifact leaves them out. A type's doc comment is
+  the first it was given: Crystal let every reopening with a comment
+  replace it, and `Int32`, opened in three prelude files, was described
+  by the last one's note on division. `iyi doc prelude` lists
   the prelude's types one line each, for the reader who does not know
   what to ask about. `bench/packages_resolve.sh` checks both, and `iyi
   mcp` serves it as a fifth tool, `doc`, taking a module, an artifact
@@ -4223,7 +4226,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 11,215-line library and nothing else. Every other
+  written against iyi's own 11,229-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

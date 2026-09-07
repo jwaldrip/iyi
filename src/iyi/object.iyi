@@ -50,6 +50,7 @@ class Object
   end
 end
 
+# The absence of a value, and the only value of its type.
 struct Nil
   def to_s : String
     ""

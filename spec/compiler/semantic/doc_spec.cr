@@ -468,7 +468,10 @@ describe "Semantic: doc" do
       foo.locations.should_not(be_nil).size.should eq(2)
     end
 
-    it "overwrites doc for {{module_type}} when reopening" do
+    # iyi: the first doc stays. Crystal let a later reopening's comment
+    # replace it; a type the prelude opens in three files was then
+    # described by the last file's note, and `iyi doc` read that.
+    it "keeps the first doc for {{module_type}} when reopening" do
       result = semantic <<-CODE, wants_doc: true
         # Doc 1
         {{module_type}} Foo
@@ -484,7 +487,7 @@ describe "Semantic: doc" do
         CODE
       program = result.program
       foo = program.types["Foo"]
-      foo.doc.should eq("Doc 2")
+      foo.doc.should eq("Doc 1")
     end
   {% end %}
 

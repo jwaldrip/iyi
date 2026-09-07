@@ -4,6 +4,9 @@
 # comparisons and the conversions as `@[Primitive]`s the compiler emits
 # instructions for. What is left is the two operators Crystal writes in
 # `int.cr` rather than in the compiler, and turning a number into text.
+
+# A 32-bit signed integer, the literal `1`: `//` and `%` for integer
+# division and remainder, `times`, `to_s` in any base.
 struct Int32
   # The zero is checked here rather than left to the processor. `1 // 0` used
   # to reach `unsafe_div`, trap, and kill the program with "Process terminated
@@ -45,6 +48,7 @@ struct Int32
   end
 end
 
+# A 64-bit signed integer, the literal `1_i64`.
 struct Int64
   def //(other : Int64) : Int64
     raise "division by zero" if other == 0

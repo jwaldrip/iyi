@@ -2337,8 +2337,12 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     scope = lookup_type_def_scope(node, path)
     name = path.names.last
     type = scope.types[name]?
+    # iyi: the first doc comment a type was given stays its doc. Crystal
+    # let every reopening with a comment replace it, so a type the
+    # prelude opens in three files was described by the last file's note
+    # (`Int32` by float.iyi's line on division), and `iyi doc` read that.
     if type && node.doc
-      type.doc = node.doc
+      type.doc ||= node.doc
     end
     {scope, name, type}
   end

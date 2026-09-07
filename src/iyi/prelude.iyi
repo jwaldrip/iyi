@@ -6509,6 +6509,7 @@ end
   end
 {% end %}
 
+# The running program: its arguments and its environment, on demand.
 class Program
   # The arguments after the program's own name, the way every shell
   # hands them over.
