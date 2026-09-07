@@ -29,9 +29,9 @@ end
 # capacity that a double's largest scaled boundary stays under (2^1076
 # times 10^308 is under 2^2100; sixty-six limbs, eighty allocated).
 class IyiBig
-  LIMBS = 80
-  BASE = 4294967296_u64
-  MASK = 4294967295_u64
+  LIMBS =             80
+  BASE  = 4294967296_u64
+  MASK  = 4294967295_u64
 
   @limbs : Pointer(UInt64)
   @size : Int32
