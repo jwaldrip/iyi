@@ -72,6 +72,16 @@
   one edit now (`Levenshtein.osa_distance`; `Levenshtein.distance` is
   unchanged for programs that call it).
 
+- **`iyi doc String`: a type of the prelude, documented the way a
+  module is.** `iyi doc` took a module or an artifact; "what can a
+  String do" had no verb, and README.md's answer is prose. A type name
+  runs the prelude alone through the front end and prints the type's
+  header, then each public method's doc comment and signature, the way
+  `IyiMod.surface` prints a module - `iyi doc String`, `Array`, `Hash`,
+  `Float64`, `Program`; the compiler's own `allocate` and the primitives
+  left out, as the artifact leaves them out. `bench/packages_resolve.sh`
+  checks it.
+
 - **`Float64#to_s`.** `puts 0.75` printed "Float64" through
   `Object#to_s`, because no sample had asked for a float in writing; a
   program that computes an average and prints it asks. It prints the

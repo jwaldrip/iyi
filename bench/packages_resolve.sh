@@ -191,6 +191,16 @@ grep -q '# Answers the only question.' doc.txt || { echo "the doc comment is mis
 grep -q 'pub def answer : Int64' doc.txt || { echo "the signature is missing:"; cat doc.txt; exit 1; }
 grep -q '42' doc.txt && { echo "a body leaked into the doc"; exit 1; }
 
+# ── 10. `iyi doc String`: a type of the prelude, the same way ─────────────
+step "iyi doc prints a prelude type's surface"
+"$IYI" doc String > prelude-doc.txt 2>&1 || { cat prelude-doc.txt; exit 1; }
+grep -q '^class String' prelude-doc.txt || { echo "the type header is missing:"; head -5 prelude-doc.txt; exit 1; }
+grep -q '  def to_i : Int32' prelude-doc.txt || { echo "a method is missing:"; cat prelude-doc.txt; exit 1; }
+grep -q '  def size : Int32' prelude-doc.txt || { echo "size is missing"; exit 1; }
+grep -q 'allocate' prelude-doc.txt && { echo "the compiler's own method leaked into the doc"; exit 1; }
+"$IYI" doc Nope > nope.txt 2>&1 && { echo "an unknown type was documented"; exit 1; }
+grep -q 'the prelude has no type Nope' nope.txt || { echo "the unknown type was not named:"; cat nope.txt; exit 1; }
+
 echo "workdir $WORK"
 echo "packages gate: every step held"
 exit 0

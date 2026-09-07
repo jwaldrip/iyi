@@ -9,6 +9,8 @@
 #     iyi doc lib/thing.iyimod    # from an artifact, source not needed
 #     iyi doc src/thing.iyi       # from source: the module is compiled
 #                                 # alone, front end only, and read back
+#     iyi doc String              # a type of the prelude: what a String
+#                                 # can do, the prelude's own comments
 #
 # No HTML, no site, no theme. The document is text because the consumers
 # are a terminal and a model, and III.7's registry index — `Exports`
@@ -34,9 +36,70 @@ class Iyi::Command
     when filename.ends_with?(".iyi")
       abort! "no such file: #{filename}", :USAGE_ERROR unless File.file?(filename)
       doc_from_source(File.expand_path(filename))
+    when filename =~ /\A[A-Z][A-Za-z0-9_:]*\z/
+      doc_prelude_type(filename)
     else
-      abort! "expected a .iyi module or a .iyimod artifact", :USAGE_ERROR
+      abort! "expected a .iyi module, a .iyimod artifact, or a type of the prelude (`iyi doc String`)", :USAGE_ERROR
     end
+  end
+
+  # A type of the prelude, the way a person or a model asks "what can a
+  # String do": the prelude alone through the front end, the type looked
+  # up, its public methods written the way `surface` writes a module's -
+  # the header, each method's doc comment and signature, `end`. What the
+  # compiler itself puts on every type (`allocate`, the primitives) is
+  # left out, as the artifact leaves it out.
+  private def doc_prelude_type(name : String) : Nil
+    compiler = Compiler.new
+    compiler.prelude = "iyi/prelude"
+    compiler.no_codegen = true
+    compiler.wants_doc = true
+    compiler.stdout = IO::Memory.new
+    compiler.stderr = IO::Memory.new
+    result =
+      begin
+        compiler.top_level_semantic(Compiler::Source.new("doc.iyi", ""))
+      rescue ex : Iyi::Error | Iyi::CodeError
+        abort! "the prelude does not compile: #{ex.message.to_s.lines.first?}", :USAGE_ERROR
+      end
+    program = result.program
+    type = program.lookup_path(name.split("::"))
+    unless type.is_a?(Type)
+      abort! "the prelude has no type #{name}", :USAGE_ERROR
+    end
+
+    io = STDOUT
+    if doc = type.doc
+      doc.each_line { |line| io << "# " << line << '\n' }
+    end
+    io << type.type_desc.lchop("generic ") << ' ' << type
+    if type.is_a?(GenericType) && !type.type_vars.empty?
+      io << '(' << type.type_vars.join(", ") << ')'
+    end
+    if type.is_a?(ClassType) && (superclass = type.superclass) && superclass.to_s != "Reference" && superclass.to_s != "Struct" && superclass.to_s != "Object"
+      io << " < " << superclass
+    end
+    io << '\n'
+
+    signatures = [] of IyiMod::Signature
+    [type, type.metaclass].each do |side|
+      side.as?(ModuleType).try &.defs.try &.each_value do |items|
+        items.each do |item|
+          a_def = item.def
+          next if a_def.body.is_a?(Primitive)
+          next if a_def.visibility.private? || a_def.visibility.protected?
+          next if a_def.name == "allocate" || a_def.name == "initialize" || a_def.name.starts_with?("__")
+          signatures << IyiMod.signature(a_def, check_block: false)
+        end
+      end
+    end
+    signatures.sort_by! { |signature| {signature.receiver, signature.name} }
+    signatures.each do |signature|
+      io << '\n'
+      signature.doc.each_line { |line| io << "  # " << line << '\n' } unless signature.doc.empty?
+      io << "  " << IyiMod.render_signature(signature) << '\n'
+    end
+    io << "end\n"
   end
 
   # The module compiled alone — R-1's promise worn as a verb, the same way
@@ -90,12 +153,14 @@ class Iyi::Command
 
   private def doc_usage
     <<-USAGE
-    Usage: #{Command.program_name} doc FILE
+    Usage: #{Command.program_name} doc FILE | TYPE
 
     Prints a module's exported surface with its doc comments — functions,
     types, methods, impls; no bodies, nothing private. FILE is a `.iyimod`
     artifact (read directly, source not needed) or a `.iyi` module (compiled
-    alone, front end only).
+    alone, front end only). TYPE is a type of the prelude - `String`,
+    `Array`, `Hash`, `Program` - printed the same way: what it can do, with
+    the prelude's own comments.
     USAGE
   end
 end
