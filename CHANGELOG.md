@@ -55,8 +55,9 @@
   a method a prelude type has not got, with nothing near it in
   spelling - `"a,b".split(",")`, `[1].each_with_index` - says the
   prelude is small by rule, that a method enters when a program in the
-  repository needs it, and that `--crystal` gives a program Crystal's
-  library; a class the program declares gets no such note.
+  repository needs it, that `iyi doc String` lists what it has, and
+  that `--crystal` gives a program Crystal's library; a class the
+  program declares gets no such note.
 
 - **A nilable receiver says what to do.** "undefined method '+' for
   Nil (compile-time type is (Int32 | Nil))" named the type and stopped;

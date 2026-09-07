@@ -870,7 +870,8 @@ class Iyi::Call
         # iyi: a method Crystal's library has and this one does not, on a
         # type the prelude declares, with nothing near it in spelling:
         # the reader is looking at the library's size rule, not a typo.
-        msg << '\n' << "iyi's prelude has no `#{def_name}` on #{owner}: it is small by rule - a method enters when a program in the repository needs it (SPEC.md III.1) - and `iyi build --crystal` gives a program Crystal's library instead (README.md, \"The library a program has\")."
+        bare = owner.instance_type.to_s.split('(').first
+        msg << '\n' << "iyi's prelude has no `#{def_name}` on #{owner}: it is small by rule - a method enters when a program in the repository needs it (SPEC.md III.1). `iyi doc #{bare}` lists what it has; `iyi build --crystal` gives a program Crystal's library instead (README.md, \"The library a program has\")."
       end
 
       # Check if it's an instance variable that was never assigned a value
