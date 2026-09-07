@@ -696,8 +696,36 @@ def main():
     dirty = [i for i in items if i["items"]]
     step(31, "workspace diagnostics judge the whole project",
          len(dirty) == 1 and dirty[0]["uri"].endswith("broken.iyi") and
-         any(i["uri"].endswith("shapes.iyi") for i in items),
+         any(i["uri"].endswith("shapes.iyi") for i in items) and
+         all(i["kind"] == "full" and i["resultId"] for i in items),
          f"{len(items)} file(s) judged, {len(dirty)} dirty")
+
+    # 31b. and asked again with the ids it handed out — which VS Code
+    #      does two seconds after every answer, for as long as the
+    #      window is open — nothing is compiled: every item is
+    #      `unchanged`, and the answer takes no time. This is the
+    #      difference between an idle editor and a laptop fan.
+    previous = [{"uri": i["uri"], "value": i["resultId"]} for i in items]
+    started = time.monotonic()
+    reply = c.send("workspace/diagnostic", {"previousResultIds": previous})
+    elapsed = time.monotonic() - started
+    again = reply["result"]["items"]
+    step("31b", "the same workspace, pulled again, is unchanged and free",
+         len(again) == len(items) and
+         all(i["kind"] == "unchanged" and i["resultId"] for i in again) and
+         elapsed < 0.5,
+         f"{len(again)} unchanged in {elapsed * 1000:.0f} ms")
+
+    # 31c. one file on disk moves, and the next pull is full again, for
+    #      every file — an import's declarations are part of any verdict.
+    with open(os.path.join(work, "broken.iyi"), "w") as f:
+        f.write("module broken\n\ndef boom : String\n  \"1\"\nend\n\nputs boom\n")
+    reply = c.send("workspace/diagnostic", {"previousResultIds": previous})
+    healed = reply["result"]["items"]
+    step("31c", "a changed file makes the next pull full",
+         all(i["kind"] == "full" for i in healed) and
+         not any(i["items"] for i in healed),
+         f"{len(healed)} full, none dirty")
 
     # 32. references reach a file nobody opened: printer.iyi calls
     #     `token` from the disk, and the workspace walk finds it beside

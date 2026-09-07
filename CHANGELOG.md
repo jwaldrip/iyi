@@ -373,6 +373,25 @@
 
 ### Fixed
 
+- **`iyi lsp` idled at a gigabyte and a warm fan.** Two things, found
+  with two Cursor windows open and a battery draining. VS Code's client
+  pulls `workspace/diagnostic` two seconds after every answer, for as
+  long as the window lives; the server ignored the `previousResultIds`
+  the pull carries and compiled every `.iyi` under the root - up to two
+  hundred - on every one, so an editor doing nothing was a build every
+  two seconds. And every one of those compiles was kept: the last good
+  `Compiler::Result` per path, a whole typed program each, held for a
+  hover fallback on files nobody had open. Measured on this tree's
+  `samples/`: 1,026 MB resident and five CPU-seconds per pull, forever.
+  Now a pull answers with a `resultId` - a fingerprint of the open
+  buffers and every `.iyi`, `iyi.mod` and `iyi.sum` under the root by
+  size and mtime, a stat per file - and a pull that hands the same id
+  back gets `unchanged` for every file and no compile: 190 MB, and
+  0 ms after the first. The fallback is kept for open documents only,
+  at most the eight compiled most recently, and released on close.
+  `bench/lsp_session.py` steps 31b and 31c are the gate: the second
+  pull is unchanged and under half a second, a file touched on disk
+  makes the next one full again.
 - **The allocation gate was a number, and the number was one
   machine's.** 0.10.0's arena exercise asserted a 40 ns ceiling on a
   release allocation: 13 ns on a twenty-core Linux box, and 41 on

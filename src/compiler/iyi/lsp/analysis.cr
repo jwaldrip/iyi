@@ -34,11 +34,24 @@ module Iyi::Lsp
     suggestion : String? = nil
 
   class Analysis
-    # The last result that type-checked, per document. Hover and
+    # The last result that type-checked, per *open* document. Hover and
     # definition on a buffer that currently does not compile answer from
     # here — mid-edit is the editor's normal state, and a server that
     # goes mute while you type is a server you turn off.
+    #
+    # Open documents only, released on close, and at most `KEEP` of
+    # them — the ones compiled most recently: a `Compiler::Result` is a
+    # whole typed program, tens of megabytes, and the workspace walks
+    # (references, `workspace/diagnostic`) compile every file under the
+    # root. Keeping those too made the server's footprint the project's
+    # size times a program — a gigabyte on a medium tree — for a
+    # fallback nothing asks of a file nobody has open; and an editor
+    # with forty tabs is forty programs for a fallback that only matters
+    # in the tab being typed in. A document past the bound simply
+    # compiles again when it is next asked about.
     @last_good = {} of String => Compiler::Result
+    @open = Set(String).new
+    KEEP = 8
 
     # The last compile, keyed by exactly what determines it: the path,
     # the buffer, and the sibling buffers. One keystroke triggers
@@ -62,6 +75,18 @@ module Iyi::Lsp
       answer
     end
 
+    # The server's open set, which is what `@last_good` is allowed to
+    # hold. Closing releases the document's typed program.
+    def open(path : String) : Nil
+      @open << path
+    end
+
+    def close(path : String) : Nil
+      @open.delete(path)
+      @last_good.delete(path)
+      @memo = @memo_key = nil if @memo_key.try(&.[0]) == path
+    end
+
     private def compile(path : String, text : String, overrides : Hash(String, String)) : {Compiler::Result?, Array(Diag)}
       table =
         begin
@@ -83,7 +108,11 @@ module Iyi::Lsp
       result = compiler.compile(
         Compiler::Source.new(path, text),
         File.tempname("iyi-lsp", nil))
-      @last_good[path] = result
+      if @open.includes?(path)
+        @last_good.delete(path)
+        @last_good[path] = result
+        @last_good.shift if @last_good.size > KEEP
+      end
       {result, [] of Diag}
     rescue ex : CodeError
       {nil, [to_diag(ex, path)]}

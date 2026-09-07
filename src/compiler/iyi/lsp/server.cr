@@ -263,6 +263,7 @@ module Iyi::Lsp
       when "textDocument/didOpen"
         uri = params.not_nil!["textDocument"]["uri"].as_s
         @documents[uri] = params.not_nil!["textDocument"]["text"].as_s
+        @analysis.open(path_of(uri))
         publish_diagnostics(uri)
       when "textDocument/didChange"
         uri = params.not_nil!["textDocument"]["uri"].as_s
@@ -291,6 +292,7 @@ module Iyi::Lsp
         uri = params.not_nil!["textDocument"]["uri"].as_s
         @documents.delete(uri)
         @published.delete(uri)
+        @analysis.close(path_of(uri))
       when "textDocument/hover"
         on_hover(id.not_nil!, params.not_nil!)
       when "textDocument/definition"
@@ -344,7 +346,7 @@ module Iyi::Lsp
       when "textDocument/diagnostic"
         on_pull_diagnostics(id.not_nil!, params.not_nil!)
       when "workspace/diagnostic"
-        on_workspace_diagnostics(id.not_nil!)
+        on_workspace_diagnostics(id.not_nil!, params)
       when "textDocument/documentLink"
         on_document_link(id.not_nil!, params.not_nil!)
       when "textDocument/prepareTypeHierarchy"
@@ -573,19 +575,41 @@ module Iyi::Lsp
     end
 
     # ── Pull diagnostics: the agent's shape of the same verdict ─────────
+    #
+    # A pull carries a `resultId`, and the next pull hands it back: the
+    # same id means "nothing you judged this by has moved", and the
+    # answer is `unchanged` — no compile. The id is the workspace's
+    # fingerprint (below), one for every file, because under R-1 a
+    # file's verdict depends on its imports and nothing here resolves
+    # imports without compiling; so any change anywhere is a full
+    # answer for everything, and no change is free.
+    #
+    # Free is the whole point. VS Code's client pulls
+    # `workspace/diagnostic` two seconds after every answer, forever,
+    # for as long as the window is open; without an `unchanged` the
+    # server was compiling every file under the root — up to two
+    # hundred — every two seconds of an idle editor, and keeping every
+    # program it built. Two Cursor windows on a laptop: a gigabyte of
+    # resident memory and a fan, doing nothing.
 
     # `textDocument/diagnostic` — one buffer, on request. Agents poll;
     # they do not sit on a subscription. Same compile, same rows.
     private def on_pull_diagnostics(id : JSON::Any, params : JSON::Any) : Nil
       uri = params["textDocument"]["uri"].as_s
-      rows = diagnostic_rows(uri)
+      fingerprint = workspace_fingerprint
       respond(id) do |json|
         json.object do
-          json.field "kind", "full"
-          json.field "items" do
-            json.array do
-              rows.each do |(line0, start_ch, end_ch, diag)|
-                write_diagnostic(json, line0, start_ch, end_ch, diag)
+          json.field "resultId", fingerprint
+          if params["previousResultId"]?.try(&.as_s?) == fingerprint
+            json.field "kind", "unchanged"
+          else
+            rows = diagnostic_rows(uri)
+            json.field "kind", "full"
+            json.field "items" do
+              json.array do
+                rows.each do |(line0, start_ch, end_ch, diag)|
+                  write_diagnostic(json, line0, start_ch, end_ch, diag)
+                end
               end
             end
           end
@@ -598,7 +622,14 @@ module Iyi::Lsp
     # affordable: each file is its own compile, tens of milliseconds,
     # no shared state to invalidate. Capped so a monorepo cannot turn
     # one request into a build farm.
-    private def on_workspace_diagnostics(id : JSON::Any) : Nil
+    private def on_workspace_diagnostics(id : JSON::Any, params : JSON::Any?) : Nil
+      fingerprint = workspace_fingerprint
+      previous = Set(String).new
+      params.try(&.["previousResultIds"]?).try(&.as_a?).try &.each do |entry|
+        uri = entry["uri"]?.try(&.as_s?)
+        previous << uri if uri && entry["value"]?.try(&.as_s?) == fingerprint
+      end
+
       uris = @documents.keys.dup
       if root = @root
         Dir.glob(File.join(root, "**", "*.iyi")) do |file|
@@ -615,9 +646,15 @@ module Iyi::Lsp
             json.array do
               uris.each do |uri|
                 next unless @documents.has_key?(uri) || File.file?(path_of(uri))
-                rows = diagnostic_rows(uri)
                 json.object do
                   json.field "uri", uri
+                  json.field "version", nil
+                  json.field "resultId", fingerprint
+                  if previous.includes?(uri)
+                    json.field "kind", "unchanged"
+                    next
+                  end
+                  rows = diagnostic_rows(uri)
                   json.field "kind", "full"
                   json.field "items" do
                     json.array do
@@ -632,6 +669,31 @@ module Iyi::Lsp
           end
         end
       end
+    end
+
+    # Everything a verdict in this workspace can depend on, as one
+    # value: each open buffer's text, and every `.iyi`, `iyi.mod` and
+    # `iyi.sum` under the root by size and mtime — `lib/` included,
+    # since a dependency's declarations are part of the answer even
+    # though its files are not judged. A stat per file, no reads; the
+    # hash is per process, which is exactly the life of a resultId.
+    private def workspace_fingerprint : String
+      hasher = Crystal::Hasher.new
+      @documents.each do |uri, text|
+        hasher = uri.hash(hasher)
+        hasher = text.hash(hasher)
+      end
+      if root = @root
+        patterns = {"*.iyi", "iyi.mod", "iyi.sum"}.map { |name| File.join(root, "**", name) }
+        Dir.glob(patterns) do |file|
+          info = File.info?(file)
+          next unless info
+          hasher = file.hash(hasher)
+          hasher = info.size.hash(hasher)
+          hasher = info.modification_time.hash(hasher)
+        end
+      end
+      hasher.result.to_s(36)
     end
 
     # ── Hover ────────────────────────────────────────────────────────────
