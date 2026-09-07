@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# `Float64#to_s` (src/iyi/float.iyi): the shortest decimal that reads back
-# as the same double, in Crystal's notation. Runs bench/float_text.iyi
-# plain and optimised, then proves the check fails by name when the
-# printer is broken: the digit loop's stop condition removed (every value
-# prints seventeen digits, no longer the shortest), and the notation's
-# range widened (ten to the fifteenth prints in fixed form).
+# `Float64#to_s` and `String#to_f` (src/iyi/float.iyi): the shortest
+# decimal that reads back as the same double, in Crystal's notation, and
+# the correctly rounded double a decimal names. Runs bench/float_text.iyi
+# plain and optimised - forty printed cases, twenty parsed, twenty
+# thousand doubles printed and read back to their bits - then proves the
+# check fails by name when the printer is broken: the digit loop's stop
+# condition removed (every value prints seventeen digits, no longer the
+# shortest), the notation's range widened (ten to the fifteenth prints in
+# fixed form), and the parser's rounding made truncation.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -59,6 +62,8 @@ prove_fails "digits never stop short" longform "float text:" \
   '{ if ($0 ~ /^      if !low && !high$/) { print "      if count < 17"; next } print }'
 prove_fails "notation range widened" widerange "float text: 1.234567890123456e+15" \
   '{ if ($0 ~ /^    if k > -4 && k <= 15$/) { print "    if k > -4 && k <= 16"; next } print }'
+prove_fails "parser truncates" truncate "float text:" \
+  '{ if ($0 ~ /^    if half != 0_u64 && \(remainder \|\| \(q & 1_u64\) != 0_u64\)$/) { print "    if false"; next } print }'
 
 echo
 if [ "$status" -eq 0 ]; then

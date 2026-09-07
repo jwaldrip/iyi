@@ -59,4 +59,58 @@ check(huge - huge, "NaN")
 check(9007199254740992.0, "9.007199254740992e+15")
 check(0.5, "0.5")
 check(1024.0, "1024.0")
-puts "float text: every case printed as the shortest decimal that reads back"
+
+# `String#to_f` is the other direction, correctly rounded: the cases the
+# rounding is hardest on - the halves of the smallest subnormal, the top
+# of the format, a 30-digit integer, the literal that is not the double
+# it names - then every printed double read back to the same bits.
+def check_parse(text : String, expected : String) : Nil
+  actual = text.to_f.to_s
+  if actual != expected
+    puts "float text: #{text} read as #{actual}, expected #{expected}"
+    __iyi_exit(1)
+  end
+end
+
+check_parse("0.1", "0.1")
+check_parse("2.5e-3", "0.0025")
+check_parse("1E10", "10000000000.0")
+check_parse(".5", "0.5")
+check_parse("7.", "7.0")
+check_parse("-1.5", "-1.5")
+check_parse("0.30000000000000004", "0.30000000000000004")
+check_parse("9007199254740993", "9.007199254740992e+15")
+check_parse("123456789012345678901234567890", "1.2345678901234568e+29")
+check_parse("1.7976931348623157e308", "1.7976931348623157e+308")
+check_parse("1.7976931348623159e308", "Infinity")
+check_parse("1e400", "Infinity")
+check_parse("-1e400", "-Infinity")
+check_parse("5e-324", "5.0e-324")
+check_parse("2.5e-324", "5.0e-324")
+check_parse("2.4e-324", "0.0")
+check_parse("1e-400", "0.0")
+check_parse("Infinity", "Infinity")
+check_parse("-Infinity", "-Infinity")
+check_parse("NaN", "NaN")
+
+# Every double the generator produces - a xorshift over the bit
+# pattern, the not-a-numbers skipped - prints and reads back as the same
+# bits: the shortest that reads back, read back.
+state = 88172645463325252_u64
+index = 0
+while index < 20000
+  state = state ^ state.unsafe_shl(13_u64)
+  state = state ^ state.unsafe_shr(7_u64)
+  state = state ^ state.unsafe_shl(17_u64)
+  if (state.unsafe_shr(52_u64) & 2047_u64) != 2047_u64
+    value = IyiFloatText.from_bits(state)
+    again = IyiFloatText.bits_of(value.to_s.to_f)
+    if again != state
+      puts "float text: #{value} read back as #{IyiFloatText.from_bits(again)}"
+      __iyi_exit(1)
+    end
+  end
+  index = index + 1
+end
+
+puts "float text: every case printed as the shortest decimal that reads back, and 20000 doubles read back to their bits"

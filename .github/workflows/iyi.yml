@@ -255,8 +255,8 @@ jobs:
         run: bash bench/defer_cost.sh
 
       # `Float64#to_s` is the shortest decimal that reads back, in
-      # Crystal's notation, on the prelude's own bignum; two mutations
-      # fail by name.
+      # Crystal's notation, and `String#to_f` the correctly rounded
+      # double, on the prelude's own bignum; three mutations fail by name.
       - name: A float prints as the shortest decimal that reads back
         run: bash bench/float_text.sh
 

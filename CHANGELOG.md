@@ -75,9 +75,18 @@
   powers and no libc, since the prelude links nothing - in Crystal's
   notation: `1.0`, `0.1`, `123.456`, `0.0001`, `1.0e-5`, `1.0e+15`,
   `-0.0`, `Infinity`, `NaN`. Three thousand random doubles read back
-  and matched Python's `repr` digit for digit; `bench/float_text.sh`
-  pins forty cases and fails by name when the digits do not stop short
-  or the notation's range moves.
+  and matched Python's `repr` digit for digit. And `String#to_f`, the
+  other direction, correctly rounded on the same bignum - the quotient
+  taken to 54 bits with a sticky remainder, half to even, subnormals and
+  the format's ends included - so `"0.1".to_f` is the double `0.1` is
+  and what `to_s` wrote reads back to the same bits; 2,500 random
+  decimals matched Python's `float`. With them `Float64#abs`, `floor`,
+  `ceil` and `round` (half away from zero, Crystal's), and an integer
+  divided by a float is a float, as in Crystal. `bench/float_text.sh`
+  pins forty printed cases and twenty parsed, prints and reads back
+  twenty thousand doubles to their bits, and fails by name when the
+  digits do not stop short, the notation's range moves, or the parser
+  truncates.
 
 - **A missing `end` names what it was to close.** "expecting
   identifier 'end', not 'EOF'" at the last line of the file sent a
@@ -4173,7 +4182,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 10,923-line library and nothing else. Every other
+  written against iyi's own 11,191-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

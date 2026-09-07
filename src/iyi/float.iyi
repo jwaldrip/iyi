@@ -22,6 +22,56 @@ struct Float64
     bits = IyiFloatText.bits_of(self)
     IyiFloatText.text(bits)
   end
+
+  def abs : Float64
+    self < 0.0 ? 0.0 - self : self
+  end
+
+  # The integer below, above and nearest (half away from zero, Crystal's
+  # `round`), as a `Float64`. Past 2^53 every double is an integer already
+  # and is answered as it is; the conversion below is exact under it.
+  def floor : Float64
+    return self if self != self || abs >= 9007199254740992.0
+    truncated = to_i64.to_f64
+    truncated > self ? truncated - 1.0 : truncated
+  end
+
+  def ceil : Float64
+    return self if self != self || abs >= 9007199254740992.0
+    truncated = to_i64.to_f64
+    truncated < self ? truncated + 1.0 : truncated
+  end
+
+  def round : Float64
+    return self if self != self || abs >= 9007199254740992.0
+    self < 0.0 ? 0.0 - (0.0 - self + 0.5).floor : (self + 0.5).floor
+  end
+end
+
+# An integer divided by a float is a float, as in Crystal; the integer
+# division that stays an integer is `//`.
+struct Int32
+  def /(other : Float64) : Float64
+    to_f64 / other
+  end
+end
+
+struct Int64
+  def /(other : Float64) : Float64
+    to_f64 / other
+  end
+end
+
+class String
+  # The double nearest the decimal written here, correctly rounded: the
+  # digits and the exponent are read into the printer's bignum and the
+  # quotient taken to 54 bits with a sticky remainder, so what `to_s`
+  # wrote reads back as the same double, every time, and "0.1" is the
+  # double the literal `0.1` is. Accepts `-1.5`, `2.5e-3`, `1E10`, `.5`,
+  # `7.`, `Infinity`, `NaN`; raises "not a number" for anything else.
+  def to_f : Float64
+    IyiFloatText.parse(self)
+  end
 end
 
 # The bignum the printer needs and nothing more: unsigned, 32-bit limbs in
@@ -170,6 +220,79 @@ class IyiBig
     end
   end
 
+  def add_small(small : UInt64) : Nil
+    carry = small
+    index = 0
+    while carry != 0_u64
+      if index == @size
+        @limbs[index] = carry & MASK
+        carry = carry.unsafe_shr(32_u64)
+        @size = @size + 1
+      else
+        sum = @limbs[index] + carry
+        @limbs[index] = sum & MASK
+        carry = sum.unsafe_shr(32_u64)
+      end
+      index = index + 1
+    end
+  end
+
+  def bit_length : Int32
+    return 0 if @size == 0
+    top = @limbs[@size - 1]
+    bits = 0
+    while top != 0_u64
+      top = top.unsafe_shr(1_u64)
+      bits = bits + 1
+    end
+    (@size - 1) * 32 + bits
+  end
+
+  def low_bit : UInt64
+    @size == 0 ? 0_u64 : @limbs[0] & 1_u64
+  end
+
+  def shr1 : Nil
+    index = @size - 1
+    carry = 0_u64
+    while index >= 0
+      value = @limbs[index]
+      @limbs[index] = value.unsafe_shr(1_u64) | carry
+      carry = (value & 1_u64).unsafe_shl(31_u64)
+      index = index - 1
+    end
+    @size = @size - 1 if @size > 0 && @limbs[@size - 1] == 0_u64
+  end
+
+  # The low 64 bits.
+  def to_u64 : UInt64
+    low = @size > 0 ? @limbs[0] : 0_u64
+    high = @size > 1 ? @limbs[1] : 0_u64
+    low | high.unsafe_shl(32_u64)
+  end
+
+  # self / other into `quotient`, self reduced to the remainder; answers
+  # whether a remainder was left. Binary long division, a bit at a time:
+  # the quotients here are a few dozen bits.
+  def divide(other : IyiBig, quotient : IyiBig) : Bool
+    shift = bit_length - other.bit_length
+    return @size != 0 if shift < 0
+    divisor = other.copy
+    divisor.shl(shift)
+    bit = IyiBig.new(1_u64)
+    bit.shl(shift)
+    while shift >= 0
+      if compare(divisor) >= 0
+        sub(divisor)
+        quotient.add(bit)
+      end
+      divisor.shr1
+      bit.shr1
+      shift = shift - 1
+    end
+    @size != 0
+  end
+
   # -1, 0, 1 for self against other.
   def compare(other : IyiBig) : Int32
     return @size < other.size ? -1 : 1 if @size != other.size
@@ -207,6 +330,151 @@ module IyiFloatText
     holder = Pointer(Float64).malloc(1_u64)
     holder.value = value
     Pointer(UInt64).new(holder.address).value
+  end
+
+  def self.from_bits(bits : UInt64) : Float64
+    holder = Pointer(UInt64).malloc(1_u64)
+    holder.value = bits
+    Pointer(Float64).new(holder.address).value
+  end
+
+  def self.tail_is?(bytes : Pointer(UInt8), word : String) : Bool
+    index = 0
+    while index < word.bytesize
+      return false if bytes[index] != word.to_unsafe[index]
+      index = index + 1
+    end
+    true
+  end
+
+  def self.parse(text : String) : Float64
+    bytes = text.to_unsafe
+    size = text.bytesize
+    raise "not a number" if size == 0
+    at = 0
+    negative = false
+    if bytes[0] == 45_u8 || bytes[0] == 43_u8
+      negative = bytes[0] == 45_u8
+      at = 1
+    end
+    rest = size - at
+    if rest == 8 && tail_is?(bytes + at, "Infinity")
+      return from_bits(negative ? 18442240474082181120_u64 : 9218868437227405312_u64)
+    end
+    return from_bits(9221120237041090560_u64) if rest == 3 && tail_is?(bytes + at, "NaN")
+
+    # Every digit into the bignum, the point's position remembered; the
+    # exponent read after. Digits past the nineteenth are folded into the
+    # exponent - enough for the mantissa's 17 significant digits and a
+    # margin, the rest only moving the point.
+    mantissa = IyiBig.new(0_u64)
+    exponent = 0
+    digits = 0
+    seen_point = false
+    any = false
+    while at < size
+      byte = bytes[at]
+      if byte >= 48_u8 && byte <= 57_u8
+        any = true
+        if digits < 19
+          mantissa.mul_small(10_u64)
+          mantissa.add_small((byte - 48_u8).to_u64)
+          digits = digits + 1 if digits > 0 || byte != 48_u8
+          exponent = exponent - 1 if seen_point
+        else
+          exponent = exponent + 1 unless seen_point
+        end
+      elsif byte == 46_u8 && !seen_point
+        seen_point = true
+      elsif (byte == 101_u8 || byte == 69_u8) && any
+        at = at + 1
+        raise "not a number" if at >= size
+        exponent_negative = false
+        if bytes[at] == 45_u8 || bytes[at] == 43_u8
+          exponent_negative = bytes[at] == 45_u8
+          at = at + 1
+        end
+        raise "not a number" if at >= size
+        read = 0
+        while at < size
+          byte = bytes[at]
+          raise "not a number" if byte < 48_u8 || byte > 57_u8
+          read = read * 10 + (byte - 48_u8).to_i32 if read < 100000
+          at = at + 1
+        end
+        exponent = exponent + (exponent_negative ? 0 - read : read)
+        break
+      else
+        raise "not a number"
+      end
+      at = at + 1
+    end
+    raise "not a number" unless any
+    return from_bits(negative ? 9223372036854775808_u64 : 0_u64) if mantissa.size == 0
+    # Far outside the format either way.
+    return from_bits(negative ? 18442240474082181120_u64 : 9218868437227405312_u64) if exponent > 310
+    return from_bits(negative ? 9223372036854775808_u64 : 0_u64) if exponent < -345
+
+    # value = mantissa * 10^exponent as numerator / denominator.
+    numerator = mantissa
+    denominator = IyiBig.new(1_u64)
+    if exponent >= 0
+      numerator.mul_pow10(exponent)
+    else
+      denominator.mul_pow10(0 - exponent)
+    end
+    # The quotient to 54 bits (one past the significand for the rounding
+    # bit), the remainder's emptiness the sticky bit: shift the numerator
+    # up until the quotient has that many bits. `scale` is how far.
+    top = numerator.bit_length - denominator.bit_length
+    scale = 54 - top
+    if scale > 0
+      numerator.shl(scale)
+    elsif scale < 0
+      denominator.shl(0 - scale)
+    end
+    quotient = IyiBig.new(0_u64)
+    remainder = numerator.divide(denominator, quotient)
+    if quotient.bit_length > 54
+      # The estimate was a bit short of the shift: one more bit of
+      # quotient than asked, which the rounding below absorbs by dropping
+      # it into the sticky remainder.
+      extra = quotient.low_bit
+      quotient.shr1
+      scale = scale - 1
+      remainder = remainder || extra != 0_u64
+    end
+    # Binary exponent of the quotient's leading bit: value = q * 2^-scale.
+    binary_exponent = 53 - scale
+    q = quotient.to_u64
+    # Subnormal: fewer than 53 bits of significand fit; shift q right until
+    # its exponent is the format's floor, folding the dropped bits into
+    # the rounding.
+    if binary_exponent < -1022
+      drop = -1022 - binary_exponent
+      return from_bits(negative ? 9223372036854775808_u64 : 0_u64) if drop > 54
+      while drop > 0
+        remainder = remainder || (q & 1_u64) != 0_u64
+        q = q.unsafe_shr(1_u64)
+        drop = drop - 1
+      end
+      binary_exponent = -1022
+    end
+    # Round half to even on the 54th bit.
+    half = q & 1_u64
+    q = q.unsafe_shr(1_u64)
+    if half != 0_u64 && (remainder || (q & 1_u64) != 0_u64)
+      q = q + 1_u64
+    end
+    if q == 9007199254740992_u64
+      q = q.unsafe_shr(1_u64)
+      binary_exponent = binary_exponent + 1
+    end
+    return from_bits(negative ? 18442240474082181120_u64 : 9218868437227405312_u64) if binary_exponent > 1023
+    biased = q < 4503599627370496_u64 ? 0_u64 : (binary_exponent + 1023).to_u64
+    bits = biased.unsafe_shl(52_u64) | (q & 4503599627370495_u64)
+    bits = bits | 9223372036854775808_u64 if negative
+    from_bits(bits)
   end
 
   # The digits of `value`'s shortest round-tripping decimal, and where the
