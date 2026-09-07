@@ -12,6 +12,11 @@
   III.1.7a's pair one name longer), `Array#first(n)`, and `to_s`/`inspect`
   on `Array` and `Hash` that print them as they are written - `[1, "a",
   nil]`, `{"a" => 1}` - where a value used to print as its type name.
+- **The first program with a struct in it.** `samples/iyi/inventory.iyi`:
+  a record type, a list of them, and the questions a list gets asked. The
+  prelude grew what it took, on the same rule: `Array#each_with_index`,
+  `count`, `any?`, `all?`, `find?`, `max_by`, `min_by` and `last`, and
+  `Hash#keys` and `values`, in insertion order.
 - **`Hash` keeps insertion order.** Two dense arrays and an index over
   them, the compact layout, so `each` follows the order things went in and
   a word count prints its words in the order it met them. Measured
@@ -4267,7 +4272,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 11,341-line library and nothing else. Every other
+  written against iyi's own 11,425-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
