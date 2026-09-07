@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Panics — SPEC.md III.1.4, made literal. Each step is one sentence the
 # section now states in the present tense: a panic prints at the site of
-# the bug and unwinds by registry, pending defers run innermost-first, a
+# the bug - the message, then the program's file and line - and unwinds
+# by registry, pending defers run innermost-first, a
 # panicking task dies at its boundary while its group cancels the
 # siblings, the boundary re-raises in the owner exactly once, a panic
 # with no boundary above it exits 1 after its defers ran, and `.or_panic`
@@ -52,7 +53,7 @@ puts run_all
 EOF
 run "$work/task.iyi"
 [ "$code" = 1 ] || fail "task panic exit was $code, wanted 1"
-expected=$(printf 'iyi: panic: boom\ntask defer ran\niyi: panic: a task panicked: boom\nouter defer ran')
+expected=$(printf 'iyi: panic: boom\n  at %s\ntask defer ran\niyi: panic: a task panicked: boom\nouter defer ran' "$work/task.iyi:5")
 [ "$out" = "$expected" ] || fail "task panic output was:
 $out"
 step "a panicking task dies at its boundary, defers ran, sibling cancelled"
@@ -73,7 +74,7 @@ puts go
 EOF
 run "$work/main.iyi"
 [ "$code" = 1 ] || fail "main panic exit was $code, wanted 1"
-expected=$(printf 'iyi: panic: on main\nsecond defer\nfirst defer')
+expected=$(printf 'iyi: panic: on main\n  at %s\nsecond defer\nfirst defer' "$work/main.iyi:6")
 [ "$out" = "$expected" ] || fail "main panic output was:
 $out"
 step "an unbounded panic exits 1 after its defers, innermost first"

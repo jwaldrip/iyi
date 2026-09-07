@@ -6385,10 +6385,21 @@ end
 # the group boundary re-raises in the owner, which is where III.1.4
 # says a panic is caught. `NoReturn` is a type-system fact `.or_panic`
 # depends on (III.1.3): the fiber never resumes.
-def raise(message : String) : NoReturn
+def raise(message : String, file : String = __FILE__, line : Int32 = __LINE__) : NoReturn
   print "iyi: panic: "
   print message
   print "\n"
+  # The site, when it is the program's: the file and line the compiler
+  # filled in at the call. A panic the prelude raises - an index out of
+  # range, a division by zero - names the prelude's own line, which is
+  # not where the bug is, and prints none.
+  unless file.includes?("/src/iyi/") || file.starts_with?("src/iyi/")
+    print "  at "
+    print file
+    print ":"
+    print line.to_s
+    print "\n"
+  end
   {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
     IyiScheduler.panic_current(message)
   {% else %}

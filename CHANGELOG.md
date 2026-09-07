@@ -101,6 +101,13 @@
   loop runs three times now and the least is the number, the way every
   number in this repository is read.
 
+- **A panic names its site.** `iyi: panic: boom` is followed by
+  `  at /path/to/file.iyi:12` when the `raise` is in the program's own
+  code, the compiler filling the file and line in at the call; a panic
+  the prelude raises - an index out of range, a division by zero -
+  prints no prelude line, since that is not where the bug is. The first
+  line is what it was, so what greps for it still does.
+
 - **A missing `end` names what it was to close.** "expecting
   identifier 'end', not 'EOF'" at the last line of the file sent a
   reader back through the whole file for the one unclosed construct;
@@ -4195,7 +4202,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 11,191-line library and nothing else. Every other
+  written against iyi's own 11,202-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
