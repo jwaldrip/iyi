@@ -2628,6 +2628,21 @@ describe "Semantic: iyi" do
     end
   end
 
+  describe "a return type that does not admit what is returned" do
+    # The type reported is the one bound when the check fired, which can be
+    # a partial union, so the members outside the declared type are named
+    # on their own.
+    it "names the members outside the declared type" do
+      assert_error <<-CODE, "Nil is not in the declared type", filename: "x.iyi"
+        def f(x : Bool) : Int32 | String
+          x ? 1 : (x ? "a" : nil)
+        end
+
+        f(true)
+        CODE
+    end
+  end
+
   describe "the naming rule beside Crystal's library" do
     # III.1.7a: `!` cannot end a name, so the pair Crystal spells `sort` and
     # `sort!` is spelled `sorted` and `sort_in_place`. Somebody arriving from

@@ -160,7 +160,21 @@ module Iyi
           from.raise "#{self.kind.to_s.underscore} variable '#{self.name}' of #{self.owner} must be #{freeze_type}, not #{invalid_type}", inner, Iyi::FrozenTypeException
         end
       when Def
-        (self.return_type || self).raise "method #{self.short_reference} must return #{freeze_type} but it is returning #{invalid_type}", inner, Iyi::FrozenTypeException
+        # iyi: the type reported is the one bound when the check fired,
+        # which under incremental typing can be a partial union - a typed
+        # group's `Panicked | Timeout` before its tuple branch was typed -
+        # so the members that are not in the declared type are named on
+        # their own, and `Panicked` says where it comes from.
+        members = invalid_type.is_a?(UnionType) ? invalid_type.union_types : [invalid_type]
+        extra = members.reject { |member| freeze_type.includes_type?(member) }
+        message = "method #{self.short_reference} must return #{freeze_type} but it is returning #{invalid_type}"
+        unless extra.empty?
+          message += "\n#{extra.join(" and ")} #{extra.size == 1 ? "is" : "are"} not in the declared type"
+          if extra.any? { |member| member.to_s == "Panicked" }
+            message += ". `Panicked` is what a task answers when it panics (SPEC.md III.1.4): a def that returns a typed group lists it"
+          end
+        end
+        (self.return_type || self).raise message, inner, Iyi::FrozenTypeException
       when NamedType
         from.raise "type #{self.full_name} must be #{freeze_type}, not #{invalid_type}", inner, Iyi::FrozenTypeException
       else
