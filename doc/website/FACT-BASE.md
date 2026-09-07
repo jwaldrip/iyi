@@ -2,6 +2,17 @@
 
 This document contains facts about iyi drawn from the repository itself. Every claim is traceable to a source file or is explicitly labeled as inference.
 
+**Read the date on it.** This base was drawn from the 0.3.0-dev tree, and
+the sections below that quote a number or a status quote that tree's. Where
+a section has been brought current it says so; where it has not, the
+current facts are in README.md ("What it costs, measured"), GC_DESIGN.md
+(the footprint and race sections) and CHANGELOG.md, and
+`python3 bench/doc_numbers.py` is the check that the numbers those three
+state are the tree's. In particular: the version is `IYI_VERSION`'s, the
+prelude is over eleven thousand lines since it took on a collector and a
+scheduler (SPEC.md, "0.1.0", explains the ceiling's move), and the
+collector is iyi's own and the default, not a design.
+
 ---
 
 ## 1. What iyi Is (from the repository)
@@ -84,27 +95,36 @@ This was completed in PR #20 "feat/rx-pcre2-gaps" which closed pcre2 compatibili
 
 ### Garbage Collector
 
-**DESIGN, not yet shipped.** From GC_DESIGN.md, Status line:
+**Brought current at 0.11.0.** The collector is iyi's own and the default on
+Linux x86_64, Linux aarch64 and macOS (GC_DESIGN.md, "the default allocator
+on POSIX is the owned collector"); Boehm is opt-in (`-Dgc_boehm`), the bump
+pointer that never frees is `-Dgc_none`, and Windows and wasm32 keep their
+own allocators.
 
-> Status: Stages 1 and 2 built. Stages 3 onward are design.
+What is built, each with a gate under `bench/` that proves its checks can
+fail (GC_DESIGN.md, the stages, and the sections after Stage 4's):
 
-What is built:
-- **Stage 1:** Pointer maps in artifacts (`.iyimod` Layouts section), object headers with mark words, CAS-safe tri-color marking infrastructure.
-- **Stage 2:** Size-class arena allocator (`-Dgc_iyi`), mmap-backed arenas, free lists, large objects released via `munmap`. Platform support: Linux x86_64 and aarch64, macOS. Windows and wasm32 keep existing allocators.
+- A size-class arena of mmap-backed 16 MB mappings, a thread-local cache per
+  thread, pages handed back to the kernel by the sweep.
+- Precise marking for typed objects through pointer maps the compiler embeds
+  (`.iyimod` Layouts), conservative for stacks, registers and untyped
+  memory.
+- A parallel mark on helper threads that runs beside the program on a write
+  barrier the compiler emits; a collection is two stops of tens of
+  microseconds, the second bounded by a retreat.
+- A sweep that runs beside the program in slices; an allocation-pressure
+  trigger with a growth ratio (`IyiMark.growth`, 200 - Go's meaning).
+- An object is its fields: a class carries a header word only where
+  something reads its type id off the object (a virtual type, a reference
+  union), decided by the program that links; the collector's bits and the
+  other ids are tables at the arena's head. A 16-byte node costs 20 bytes of
+  arena; Go's costs 16.
 
-From CHANGELOG.md unreleased section:
-
-> Opt-in on purpose. The default on every target is unchanged, and switching it is a separate decision backed by measurement rather than something to slip in.
-
-What is NOT yet implemented:
-- No object is allocated with the GC header
-- Nothing marks live objects
-- Nothing collects dead objects
-- No collection actually runs
-
-From GC_DESIGN.md, Stage 2 section:
-
-> -Dgc_boehm is still the only way to get collection and every default path still allocates and never frees.
+Measured against Go and Boehm on three programs (`python3 bench/gc_race.py`,
+the table in GC_DESIGN.md, "The header round, built"): the wall time under
+both on all three; binary trees 19 MB resident against Go's 18; the total
+paused a fortieth to a tenth of Boehm's; the longest pause under Go's on
+churn and binary trees and level on the live items.
 
 ---
 
