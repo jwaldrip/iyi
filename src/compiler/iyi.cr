@@ -34,7 +34,7 @@ module Iyi
         build                    build an executable
         run                      build and run a program (default)
         mod                      inspect a .iyimod module artifact
-        doc                      print a module's exported surface, docs included
+        doc                      print a module's exported surface, or a prelude type's
         repl                     a session: one line in, its value out
         test                     run every *_test.iyi: exit 0 passes, anything else fails
         vet                      report unreachable code; findings are the exit code

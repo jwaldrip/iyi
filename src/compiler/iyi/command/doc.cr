@@ -36,11 +36,19 @@ class Iyi::Command
     when filename.ends_with?(".iyi")
       abort! "no such file: #{filename}", :USAGE_ERROR unless File.file?(filename)
       doc_from_source(File.expand_path(filename))
-    when filename =~ /\A[A-Z][A-Za-z0-9_:]*\z/
+    when prelude_type_name?(filename)
       doc_prelude_type(filename)
     else
       abort! "expected a .iyi module, a .iyimod artifact, or a type of the prelude (`iyi doc String`)", :USAGE_ERROR
     end
+  end
+
+  # `String`, `Array`, `Hash::Entry`: a capital, then letters, digits,
+  # underscores and `::`. Spelled out rather than a regex, which would put
+  # libpcre on the compiler's floor (SPEC.md III.9).
+  private def prelude_type_name?(name : String) : Bool
+    return false unless name[0]?.try(&.ascii_uppercase?)
+    name.each_char.all? { |char| char.ascii_alphanumeric? || char == '_' || char == ':' }
   end
 
   # A type of the prelude, the way a person or a model asks "what can a

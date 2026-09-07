@@ -43,7 +43,7 @@ class Iyi::Command
 
     Command:
         init                     generate a new project
-        doc                      print a module's exported surface, or a prelude type's, docs included
+        doc                      print a module's exported surface, docs included
         build                    build an executable
         clear_cache              clear the compiler cache
         check                    type-check only: no codegen, no binary; errors are the exit code
