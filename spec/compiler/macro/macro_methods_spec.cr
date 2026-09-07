@@ -673,6 +673,12 @@ module Iyi
         assert_macro %({{"1234".to_i}}), %(1234)
       end
 
+      # iyi: the REPL's line is a macro's, and it reads floats too.
+      it "executes to_f" do
+        assert_macro %({{"2.5e-3".to_f}}), %(0.0025)
+        assert_macro_error %({{"x".to_f}}), "StringLiteral#to_f: x is not a number"
+      end
+
       it "executes to_i(base)" do
         assert_macro %({{"1234".to_i(16)}}), %(4660)
       end

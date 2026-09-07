@@ -907,6 +907,16 @@ module Iyi
         else
           raise "StringLiteral#to_i: #{@value} is not an integer"
         end
+      when "to_f"
+        # iyi: the REPL evaluates a line the way a macro does, and a
+        # session that can say `"3".to_i` could not say `"0.5".to_f`.
+        interpret_check_args do
+          if value = @value.to_f64?
+            NumberLiteral.new(value.to_s, :f64)
+          else
+            raise "StringLiteral#to_f: #{@value} is not a number"
+          end
+        end
       when "to_utf16"
         interpret_check_args do
           slice = @value.to_utf16

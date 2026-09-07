@@ -132,6 +132,10 @@
   prints no prelude line, since that is not where the bug is. The first
   line is what it was, so what greps for it still does.
 
+- **`"0.5".to_f` in the REPL.** A session's line is evaluated the way a
+  macro is, and the macro interpreter had `StringLiteral#to_i` and no
+  `to_f`; it has both.
+
 - **A missing `end` names what it was to close.** "expecting
   identifier 'end', not 'EOF'" at the last line of the file sent a
   reader back through the whole file for the one unclosed construct;
