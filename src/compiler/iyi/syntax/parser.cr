@@ -792,6 +792,11 @@ module Iyi
           check_void_value atomic, location
           atomic = Propagate.new(atomic).at(location)
           next_token
+          if @token.type.space?
+            attached = false
+            next_token
+          end
+          check_iyi_bang_call atomic
         when .space?
           attached = false
           next_token
@@ -4750,9 +4755,30 @@ module Iyi
       raise <<-MSG, @token
         `!` can't be part of a name in iyi
 
-        Name the mutating form after the plain verb and the non-mutating form
-        after the participle — `sort` mutates, `sorted` returns a new value.
-        Postfix `!` propagates an error, and a name has none.
+        Name the form that changes its receiver so it says so and the copy
+        after the participle — `sort_in_place` mutates, `sorted` returns a new
+        value. Postfix `!` propagates an error, and a name has none.
+        MSG
+    end
+
+    # iyi: `items.sort_by! { |x| ... }` — the same mistake at a call site.
+    #
+    # By here the `!` has been read as a propagation, and what follows it is
+    # a block or an argument list, which a propagation cannot take: the
+    # author wrote a Crystal bang method. Said here, because the token that
+    # would otherwise be reported is the `{`, and "unexpected token" beside
+    # a call that reads correctly in the other language teaches nothing.
+    private def check_iyi_bang_call(atomic)
+      return unless atomic.is_a?(Propagate) && (call = atomic.exp).is_a?(Call)
+      return unless @token.type.op_lcurly? || @token.type.op_lparen? || @token.keyword?(:do)
+
+      raise <<-MSG, @token
+        `#{call.name}!` is not a method here: `!` propagates an error, and takes no block
+
+        `!` can't be part of a name in iyi (SPEC.md III.1.7a), so the pair
+        Crystal spells `#{call.name}` and `#{call.name}!` is spelled after the
+        participle for the copy and with `_in_place` for the one that changes
+        its receiver — `sorted`, `sort_in_place`, `sorted_by`, `sort_in_place_by`.
         MSG
     end
 

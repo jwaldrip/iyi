@@ -2648,6 +2648,23 @@ describe "Semantic: iyi" do
         CRYSTAL
     end
 
+    # The participle is on the verb, which is the first word: `sort_by` is
+    # `sorted_by`, `map_by` would be `mapped_by`. (`sort_by` itself is one
+    # Levenshtein reaches; the doubled consonant here is what it does not.)
+    it "inflects the first word of a compound name" do
+      assert_error <<-CRYSTAL, "'mapped_by' is what this library calls it"
+        module app/thing
+
+        struct Numbers
+          def mapped_by : Int32
+            1
+          end
+        end
+
+        Numbers.new.map_by
+        CRYSTAL
+    end
+
     it "stays quiet for a name nobody spelled that way" do
       assert_error <<-CRYSTAL, "undefined method 'frist'"
         module app/thing

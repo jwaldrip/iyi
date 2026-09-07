@@ -4455,6 +4455,17 @@ end").as(ClassDef)
         end
       end
 
+      # A Crystal bang method called with a block: the `!` reads as a
+      # propagation and the block has nothing to attach to. Said as the
+      # naming rule rather than as the stray `{`.
+      it "explains a bang method called with a block" do
+        {"a.sort_by! { |x| x }", "a.sort_by! do |x|\n  x\nend", "a.sort_by!() { |x| x }"}.each do |source|
+          expect_raises(SyntaxException, "`sort_by!` is not a method here") do
+            parse(source, filename: "x.iyi")
+          end
+        end
+      end
+
       # iyi: `expr!` — the propagation operator the name was freed for
       # (SPEC.md III.1.2). At a call site `!` is now the operator, which is the
       # whole reason it was taken out of names.

@@ -720,15 +720,22 @@ class Iyi::Call
     end
   end
 
-  # iyi: `sorted` for `sort`, `reversed` for `reverse` — the participle this
-  # library uses where Crystal uses the plain verb.
+  # iyi: `sorted` for `sort`, `reversed` for `reverse`, `sorted_by` for
+  # `sort_by` — the participle this library uses where Crystal's library
+  # uses the plain verb, inflected on the verb, the first word of the name.
   #
   # Asked of the type rather than of a list, so it answers for whatever the
   # library grows next and stays quiet for a name nobody spelled that way.
   private def iyi_participle_for(def_name : String, owner) : String?
     return nil if def_name.ends_with?('=') || def_name.ends_with?('?')
 
-    {"#{def_name}ed", "#{def_name}d"}.each do |candidate|
+    verb, sep, rest = def_name.partition('_')
+    return nil if verb.empty?
+    tail = sep + rest
+    # `sorted`, `reversed`, `mapped`: the three ways English spells the
+    # participle of a short verb.
+    last = verb[-1]
+    {"#{verb}ed#{tail}", "#{verb}d#{tail}", "#{verb}#{last}ed#{tail}"}.each do |candidate|
       next if candidate == def_name
       return candidate if owner.lookup_defs(candidate).any?(&.visibility.public?)
     end
