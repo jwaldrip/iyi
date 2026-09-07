@@ -359,7 +359,7 @@ generics crossing a boundary is specified and unmeasured.
 binary that starts in 1.6 ms; the same program compiled with Crystal's standard
 library is 1,553 KB and 3.2 ms. Nothing clever is happening: a program links what
 it uses, and iyi's own library is 11,202 lines rather than 8,161. The whole
-library is 450 KB on disk beside the binary.
+library is 451 KB on disk beside the binary.
 
 <sup>Sizes and start times are a plain `iyi build`, no flags, on macOS arm64
 with LLVM 22. They move with the platform and the LLVM, which is why they are
@@ -377,7 +377,7 @@ $ tar -xzf iyi-0.10.0-linux-x86_64.tar.gz -C ~/.local
 $ ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 
-The tarball is relocatable and carries both libraries: iyi's own 450 KB, and
+The tarball is relocatable and carries both libraries: iyi's own 451 KB, and
 Crystal's standard library for `--crystal`. `bin/iyi` finds them beside itself,
 so there is nothing to configure and no `IYI_PATH` to set. LLVM is inside the
 binary — a static minimal build from `scripts/build-static-llvm.sh`, the same
