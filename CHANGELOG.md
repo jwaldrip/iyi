@@ -1,6 +1,54 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 — 2026-09-07
+
+**The first half hour of programs, and the header word out of the object.**
+0.10.0 took the type id off the front of every object; this release takes
+the word behind it out too, wherever nothing reads it. A class carries its
+id ahead of its instances only when the program that links says something
+dispatches on it — a virtual type was made, a reference union holds it,
+the id does not fit sixteen bits — and everything else is its fields and
+nothing before them, with the allocator's flags and the colour in two
+tables at the arena's head. A 16-byte node is 20 bytes of arena where it
+was 24 and Go's is 16; binary trees reads 19 MB resident against Go's 18
+where it read 25. Around it, the collector's footprint was read from
+`smaps` rather than stated: an arena's first four megabytes refuse huge
+pages, the marker's pool is a free list rather than a 64 MB reservation,
+a worker's stack begins at 8,192 entries and doubles, the warm budget is
+counted in payload and split at the line. Binary trees ends at 16 MB
+resident where it ended at 33, runs 0.180 s to 0.150, churn 0.052 to
+0.044, and the wall time is under Go's and under Boehm's on all three
+programs. `.iyimod` is v45.
+
+The prelude grew by the rule the first half hour set — nothing arrives
+before a sample asks for it — and six samples asked: a struct, a file of
+`key = value` lines, a table, a trait, a pool of tasks, and the second
+half hour's word counter. What they took is what a person expects to
+find: `each_with_index`, `any?`, `find?`, `max_by`, `split`, `lines`,
+`strip`, `zip`, `uniq`, `Range#map`, `loop`, `assert`, a `Hash` that keeps
+insertion order and prints as it is written. `Float64#to_s` is the
+shortest decimal that reads back and `String#to_f` the correctly rounded
+double, on the prelude's own bignum. The ceiling the prelude is held to
+is stated about the library now — 2,814 of 11,773 lines, counted and
+gated — where the sentence before contradicted itself. And the compiler
+says more when it refuses: a type out of reach names its module and the
+`using` that brings it, a nilable receiver names the two idioms, a
+missing `end` names the construct it was to close, "did you mean" catches
+a transposition, and Crystal's spellings — `ARGV`, `ENV`, `p`, `pp` — get
+iyi's answer rather than "undefined". `iyi doc` prints a prelude type's
+surface, one line per def, and `iyi mcp` serves it.
+
+Two refusals stand in the record. `iyi lsp` idled at a gigabyte and a warm
+fan — VS Code pulls `workspace/diagnostic` every two seconds and the
+server compiled the whole root on every one, keeping every program it
+built; a pull answers `unchanged` by `resultId` now, and the kept programs
+are the open documents, eight at most. And the AI-first gate's rounds arm,
+run a third time before this release, lost rounds 5 to 3 on a `using`
+line the context pack does not carry; the README says so beside the
+number, and the pack carrying it is the next thing that arm asks for.
+The website is its own repository. Identity is the released version, as
+ever: a 0.10.0 artifact is rejected by a 0.11.0 build and rebuilt, never
+migrated.
 
 ### Added
 
