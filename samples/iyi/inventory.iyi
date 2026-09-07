@@ -1,0 +1,64 @@
+# The first program with a struct in it - what a person writes in the second
+# half hour, after `basics`.
+#
+#   ./bin/iyi run samples/iyi/inventory.iyi
+#
+# A record type, a list of them, and the questions a list gets asked: which
+# ones, how many, the largest, each with its number, and the same list by
+# name. Like `basics`, this documents no rule. It is here because the prelude
+# grows only when a program in this repository needs something (SPEC.md 0.1.0
+# item 3), and these are the calls the second program makes that the first
+# did not.
+module samples/inventory
+
+struct Item
+  property name : String
+  property price : Float64
+  property quantity : Int32
+
+  def initialize(@name : String, @price : Float64, @quantity : Int32)
+  end
+
+  def total : Float64
+    price * quantity
+  end
+end
+
+items = [
+  Item.new("apple", 0.5, 10),
+  Item.new("pear", 0.75, 4),
+  Item.new("melon", 3.0, 1),
+]
+
+# 1. A total, and a subset.
+grand = 0.0
+items.each { |item| grand += item.total }
+puts "total: #{grand}"                                        # => total: 11.0
+cheap = items.select { |item| item.price < 1.0 }
+puts "cheap: #{cheap.map(&.name).join(", ")}"                 # => cheap: apple, pear
+
+# 2. Questions with one answer.
+puts items.count { |item| item.quantity > 1 }                 # => 2
+puts items.any? { |item| item.price > 2.0 }                   # => true
+puts items.all? { |item| item.quantity > 0 }                  # => true
+puts items.max_by { |item| item.price }.name                  # => melon
+puts items.min_by { |item| item.total }.name                  # => pear, the first of equals
+if pear = items.find? { |item| item.name == "pear" }
+  puts pear.total                                             # => 3.0
+end
+puts items.find? { |item| item.name == "plum" }.inspect       # => nil
+
+# 3. A report, each line numbered.
+items.each_with_index do |item, index|
+  puts "#{index + 1}. #{item.name.ljust(6)} #{item.quantity.to_s.rjust(3)}  #{item.total}"
+end
+# => 1. apple   10  5.0
+# => 2. pear     4  3.0
+# => 3. melon    1  3.0
+
+# 4. The same items by name.
+by_name = {} of String => Item
+items.each { |item| by_name[item.name] = item }
+puts by_name.keys                                             # => ["apple", "pear", "melon"]
+puts by_name.values.map(&.quantity).sum                       # => 15
+puts by_name.keys.sorted.last                                 # => pear

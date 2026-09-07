@@ -79,6 +79,19 @@ class Hash(K, V)
     end
   end
 
+  # The keys, and the values, each in the order they went in.
+  def keys : Array(K)
+    result = Array(K).new(@size)
+    each { |key, value| result << key }
+    result
+  end
+
+  def values : Array(V)
+    result = Array(V).new(@size)
+    each { |key, value| result << value }
+    result
+  end
+
   # `{"a" => 1, "b" => 2}`, in insertion order, both sides inspected.
   def to_s : String
     parts = [] of String
