@@ -66,6 +66,19 @@
   one edit now (`Levenshtein.osa_distance`; `Levenshtein.distance` is
   unchanged for programs that call it).
 
+- **`Float64#to_s`.** `puts 0.75` printed "Float64" through
+  `Object#to_s`, because no sample had asked for a float in writing; a
+  program that computes an average and prints it asks. It prints the
+  shortest decimal that reads back as the same double - Steele & White's
+  free-format algorithm with Burger & Dybvig's scaling, on a small
+  unsigned bignum of 32-bit limbs (`src/iyi/float.iyi`), no table of
+  powers and no libc, since the prelude links nothing - in Crystal's
+  notation: `1.0`, `0.1`, `123.456`, `0.0001`, `1.0e-5`, `1.0e+15`,
+  `-0.0`, `Infinity`, `NaN`. Three thousand random doubles read back
+  and matched Python's `repr` digit for digit; `bench/float_text.sh`
+  pins forty cases and fails by name when the digits do not stop short
+  or the notation's range moves.
+
 - **A missing `end` names what it was to close.** "expecting
   identifier 'end', not 'EOF'" at the last line of the file sent a
   reader back through the whole file for the one unclosed construct;
@@ -4160,7 +4173,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 10,500-line library and nothing else. Every other
+  written against iyi's own 10,923-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

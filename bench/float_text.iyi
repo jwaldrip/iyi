@@ -1,0 +1,62 @@
+# `Float64#to_s` prints the shortest decimal that reads back as the same
+# double, in Crystal's notation (src/iyi/float.iyi). Every expectation
+# below was read off Python's `repr`, which is the same shortest digits,
+# and the notation's edges - the switch to exponent form below 0.0001 and
+# at ten to the fifteenth, the fraction that is always there, the signed
+# exponent - are pinned one case each. `bench/float_text.sh` drives it and
+# proves the check fails when the printer is broken.
+def check(value : Float64, expected : String) : Nil
+  actual = value.to_s
+  if actual != expected
+    puts "float text: #{expected} printed as #{actual}"
+    __iyi_exit(1)
+  end
+end
+
+check(0.0, "0.0")
+check(0.0 - 0.0 * 1.0, "0.0")
+check(1.0, "1.0")
+check(0.1, "0.1")
+check(0.75, "0.75")
+check(3.0, "3.0")
+check(123.456, "123.456")
+check(2.5, "2.5")
+check(100.0, "100.0")
+check(0.3, "0.3")
+check(0.1 + 0.2, "0.30000000000000004")
+check(1.0 / 3.0, "0.3333333333333333")
+check(2.0 / 3.0, "0.6666666666666666")
+check(4.35, "4.35")
+check(123456789.125, "123456789.125")
+check(299792458.0, "299792458.0")
+check(123456789012345.0, "123456789012345.0")
+check(1234567890123456.0, "1.234567890123456e+15")
+check(9.999999999999999e-1, "0.9999999999999999")
+# The notation's edges.
+check(0.0001, "0.0001")
+check(0.00001, "1.0e-5")
+check(1.0e15, "1.0e+15")
+check(1.0e16, "1.0e+16")
+check(1.0e21, "1.0e+21")
+check(1.5e-7, "1.5e-7")
+check(1.0e-10, "1.0e-10")
+check(1.0e100, "1.0e+100")
+check(6.02214076e23, "6.02214076e+23")
+# The ends of the format: the smallest subnormal, the largest finite, the
+# smallest normal - the boundaries the bignum exists for.
+check(5.0e-324, "5.0e-324")
+check(1.7976931348623157e308, "1.7976931348623157e+308")
+check(2.2250738585072014e-308, "2.2250738585072014e-308")
+# Signs, and the three that are not numbers.
+check(0.0 - 2.5, "-2.5")
+check(0.0 - 1.5e-7, "-1.5e-7")
+huge = 1.0e308 * 10.0
+check(huge, "Infinity")
+check(0.0 - huge, "-Infinity")
+check(huge - huge, "NaN")
+# A power of two at the bottom of its binade has a nearer neighbour below
+# than above; the printer's unequal gaps are what makes this shortest.
+check(9007199254740992.0, "9.007199254740992e+15")
+check(0.5, "0.5")
+check(1024.0, "1024.0")
+puts "float text: every case printed as the shortest decimal that reads back"

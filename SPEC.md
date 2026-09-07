@@ -63,7 +63,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 10,500 lines, ceiling 3,734 |
+| iyi's own prelude | 10,923 lines, ceiling 3,734 |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -88,7 +88,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 10,500 lines
+> "No standard library worth the name" is still true of iyi's own 10,923 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -270,7 +270,7 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 10,500 lines,
+**3. A deliberately tiny prelude, written in iyi. Done: 10,923 lines,
 primitives included.** Not a standard library: integers, booleans, a string,
 one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
@@ -351,7 +351,8 @@ reached. **Strings are ASCII** wherever a method has to look inside one,
 `upcase`, `starts_with?`, though `size` decodes UTF-8 properly, because a
 sample counts the characters of a word with an accent in it.
 
-What it is not: no `Float64#to_s`, no `Range`, no `Set`, no formatting, no
+What it is not (as of 0.1.0; `Float64#to_s` arrived in 0.11.0 and `Range`
+before it): no `Float64#to_s`, no `Range`, no `Set`, no formatting, no
 `Comparable`, no deletion from a `Hash`, and `sort` is an insertion sort
 because the samples sort five elements. Each of those is absent because no
 sample asked, which is the rule doing its job rather than a list of regrets.
@@ -791,8 +792,8 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 103,687 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 10,500-line own prelude + 778 in samples |
+| Compiler | 24,984 lines, **written in Crystal** | 103,698 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 10,923-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,431 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -6509,7 +6510,7 @@ Named honestly, so nobody mistakes this draft for complete.
 
     The ratio is not a property of the generator. It follows from declarations
     being 5% of a library's text, which is measured: Crystal's library is
-    195,833 lines and about 10,500 of them are a `def` or a type header.
+    195,833 lines and about 10,923 of them are a `def` or a type header.
 
     **What it would take, also measured.** `crystal tool bind` already writes a
     `.iyimod` for a Crystal namespace compiled under Crystal's library (item
@@ -7940,7 +7941,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 10,500-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 10,923-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler

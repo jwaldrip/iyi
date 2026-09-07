@@ -254,6 +254,12 @@ jobs:
       - name: A defer costs nanoseconds, and stays priced
         run: bash bench/defer_cost.sh
 
+      # `Float64#to_s` is the shortest decimal that reads back, in
+      # Crystal's notation, on the prelude's own bignum; two mutations
+      # fail by name.
+      - name: A float prints as the shortest decimal that reads back
+        run: bash bench/float_text.sh
+
       # The collector's own gates (GC_DESIGN.md Stages 2, 3, 5, 6 and the
       # allocation-pressure trigger). Each drives its exercise plain and
       # optimised, audits what the `-Dgc_iyi` binary asks the machine for,

@@ -65,6 +65,14 @@ module Iyi
     "require" => "iyi has no `require`: a module is reached with `import`, and `--crystal` gives a program Crystal's library.",
   }
 
+  # A method called on a receiver in Crystal's spelling, and
+  # what the prelude has instead; `/` only where the receiver is an
+  # integer.
+  IYI_ARRIVAL_METHOD_HINTS = {
+    "not_nil" => "There is no `not_nil!`: `!` propagates an error here (SPEC.md III.1.7a). Narrow the nil first (`if x`) or give it an answer (`x || default`).",
+    "/"       => "Integer division is `//` here (`7 // 2` is 3); `/` is the floats' and answers a `Float64` only for them.",
+  }
+
   # A top-level call whose argument arrived in Crystal's unit: the type
   # it arrived as, and what the call takes.
   IYI_ARRIVAL_ARGUMENT_HINTS = {
@@ -837,9 +845,12 @@ class Iyi::Call
       end
 
       # iyi: Crystal's spelling for something the prelude has under
-      # another name (`IYI_ARRIVAL_CALL_HINTS`).
+      # another name (`IYI_ARRIVAL_CALL_HINTS`, `IYI_ARRIVAL_METHOD_HINTS`).
       if !obj && !similar_name && (arrival = Iyi::IYI_ARRIVAL_CALL_HINTS[def_name]?)
         msg << '\n' << arrival
+      end
+      if obj && !similar_name && (arrival = Iyi::IYI_ARRIVAL_METHOD_HINTS[def_name]?)
+        msg << '\n' << arrival if def_name != "/" || owner.is_a?(IntegerType)
       end
 
       # Check if it's an instance variable that was never assigned a value

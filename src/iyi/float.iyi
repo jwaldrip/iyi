@@ -1,0 +1,422 @@
+# A `Float64` as text — SPEC.md, "0.1.0", item 3, the one it left out.
+#
+# `puts 0.75` printed "Float64" through `Object#to_s` for ten releases,
+# because no sample had asked for a float in writing. A program that
+# computes an average and prints it asks, and a reader who gets the type's
+# name back has been told nothing and warned of nothing. So: the shortest
+# decimal that reads back as the same double, which is what every language
+# with a float printer worth the name prints (Steele & White's free-format
+# algorithm with Burger & Dybvig's scaling, Dragon4's family), on a small
+# unsigned bignum of 32-bit limbs, because the boundaries between one
+# double and the next are exact rationals with up to eleven hundred bits
+# in them and no floating arithmetic can compare them. No table of powers,
+# no libc: the prelude links nothing, and `bench/dependency_floor.sh`
+# audits that.
+#
+# The notation is Crystal's: `1.0`, `0.1`, `123.456`, `0.0001`, then
+# `1.0e-5` below that and `1.0e+15` from ten to the fifteenth up (Crystal's
+# `Float::Printer`, point range -3 to 15), always a fractional part, `-0.0`,
+# `Infinity`, `-Infinity`, `NaN`.
+struct Float64
+  def to_s : String
+    bits = IyiFloatText.bits_of(self)
+    IyiFloatText.text(bits)
+  end
+end
+
+# The bignum the printer needs and nothing more: unsigned, 32-bit limbs in
+# 64-bit words so a limb product and a carry fit, little-endian, a fixed
+# capacity that a double's largest scaled boundary stays under (2^1076
+# times 10^308 is under 2^2100; sixty-six limbs, eighty allocated).
+class IyiBig
+  LIMBS = 80
+  BASE = 4294967296_u64
+  MASK = 4294967295_u64
+
+  @limbs : Pointer(UInt64)
+  @size : Int32
+
+  def initialize(value : UInt64)
+    @limbs = Pointer(UInt64).malloc(LIMBS.to_u64)
+    @size = 0
+    while value != 0_u64
+      @limbs[@size] = value & MASK
+      value = value.unsafe_shr(32_u64)
+      @size = @size + 1
+    end
+  end
+
+  def size : Int32
+    @size
+  end
+
+  def limb(index : Int32) : UInt64
+    @limbs[index]
+  end
+
+  def copy : IyiBig
+    other = IyiBig.new(0_u64)
+    index = 0
+    while index < @size
+      other.set_limb(index, @limbs[index])
+      index = index + 1
+    end
+    other.set_size(@size)
+    other
+  end
+
+  protected def set_limb(index : Int32, value : UInt64) : Nil
+    @limbs[index] = value
+  end
+
+  protected def set_size(size : Int32) : Nil
+    @size = size
+  end
+
+  # self * small, small under 2^32.
+  def mul_small(small : UInt64) : Nil
+    carry = 0_u64
+    index = 0
+    while index < @size
+      product = @limbs[index] * small + carry
+      @limbs[index] = product & MASK
+      carry = product.unsafe_shr(32_u64)
+      index = index + 1
+    end
+    if carry != 0_u64
+      @limbs[@size] = carry
+      @size = @size + 1
+    end
+  end
+
+  def mul_pow10(count : Int32) : Nil
+    while count > 0
+      mul_small(10_u64)
+      count = count - 1
+    end
+  end
+
+  # self * 2^bits.
+  def shl(bits : Int32) : Nil
+    return if @size == 0
+    words = bits // 32
+    rest = (bits % 32).to_u64
+    if rest != 0_u64
+      carry = 0_u64
+      index = 0
+      while index < @size
+        shifted = @limbs[index].unsafe_shl(rest) | carry
+        @limbs[index] = shifted & MASK
+        carry = shifted.unsafe_shr(32_u64)
+        index = index + 1
+      end
+      if carry != 0_u64
+        @limbs[@size] = carry
+        @size = @size + 1
+      end
+    end
+    if words > 0
+      index = @size - 1
+      while index >= 0
+        @limbs[index + words] = @limbs[index]
+        index = index - 1
+      end
+      index = 0
+      while index < words
+        @limbs[index] = 0_u64
+        index = index + 1
+      end
+      @size = @size + words
+    end
+  end
+
+  def add(other : IyiBig) : Nil
+    carry = 0_u64
+    index = 0
+    top = @size > other.size ? @size : other.size
+    while index < top
+      a = index < @size ? @limbs[index] : 0_u64
+      b = index < other.size ? other.limb(index) : 0_u64
+      sum = a + b + carry
+      @limbs[index] = sum & MASK
+      carry = sum.unsafe_shr(32_u64)
+      index = index + 1
+    end
+    @size = top
+    if carry != 0_u64
+      @limbs[@size] = carry
+      @size = @size + 1
+    end
+  end
+
+  # self - other, self not below other.
+  def sub(other : IyiBig) : Nil
+    borrow = 0_u64
+    index = 0
+    while index < @size
+      b = index < other.size ? other.limb(index) : 0_u64
+      a = @limbs[index]
+      if a >= b + borrow
+        @limbs[index] = a - b - borrow
+        borrow = 0_u64
+      else
+        @limbs[index] = a + BASE - b - borrow
+        borrow = 1_u64
+      end
+      index = index + 1
+    end
+    while @size > 0 && @limbs[@size - 1] == 0_u64
+      @size = @size - 1
+    end
+  end
+
+  # -1, 0, 1 for self against other.
+  def compare(other : IyiBig) : Int32
+    return @size < other.size ? -1 : 1 if @size != other.size
+    index = @size - 1
+    while index >= 0
+      a = @limbs[index]
+      b = other.limb(index)
+      return a < b ? -1 : 1 if a != b
+      index = index - 1
+    end
+    0
+  end
+
+  # The compare of self + addend against other, without a third number.
+  def compare_sum(addend : IyiBig, other : IyiBig) : Int32
+    sum = copy
+    sum.add(addend)
+    sum.compare(other)
+  end
+
+  # floor(self / other) for a quotient under ten, self reduced to the
+  # remainder: the digit loop's one division, by subtraction.
+  def divide_digit(other : IyiBig) : Int32
+    digit = 0
+    while compare(other) >= 0
+      sub(other)
+      digit = digit + 1
+    end
+    digit
+  end
+end
+
+module IyiFloatText
+  def self.bits_of(value : Float64) : UInt64
+    holder = Pointer(Float64).malloc(1_u64)
+    holder.value = value
+    Pointer(UInt64).new(holder.address).value
+  end
+
+  # The digits of `value`'s shortest round-tripping decimal, and where the
+  # point falls: value = 0.d1 d2 ... dn * 10^k.
+  def self.text(bits : UInt64) : String
+    negative = bits.unsafe_shr(63_u64) != 0_u64
+    exponent_bits = bits.unsafe_shr(52_u64) & 2047_u64
+    fraction = bits & 4503599627370495_u64
+    if exponent_bits == 2047_u64
+      return "NaN" if fraction != 0_u64
+      return negative ? "-Infinity" : "Infinity"
+    end
+    return negative ? "-0.0" : "0.0" if exponent_bits == 0_u64 && fraction == 0_u64
+
+    # value = f * 2^e, f the 53-bit significand (52 for a subnormal).
+    hidden = 4503599627370496_u64
+    f = exponent_bits == 0_u64 ? fraction : fraction | hidden
+    e = exponent_bits == 0_u64 ? -1074 : exponent_bits.to_i64.to_i32 - 1075
+
+    # r/s is the value, m+/s and m-/s the distances to the neighbours'
+    # midpoints; a significand at the bottom of its binade has a nearer
+    # neighbour below, so the gap above is twice the gap below.
+    unequal = fraction == 0_u64 && exponent_bits > 1_u64
+    r = IyiBig.new(f)
+    s = IyiBig.new(1_u64)
+    if e >= 0
+      r.shl(e + (unequal ? 2 : 1))
+      s.shl(unequal ? 2 : 1)
+      m_plus = IyiBig.new(1_u64)
+      m_plus.shl(unequal ? e + 1 : e)
+      m_minus = IyiBig.new(1_u64)
+      m_minus.shl(e)
+    else
+      r.shl(unequal ? 2 : 1)
+      s.shl(-e + (unequal ? 2 : 1))
+      m_plus = IyiBig.new(unequal ? 2_u64 : 1_u64)
+      m_minus = IyiBig.new(1_u64)
+    end
+
+    # An even significand owns its boundaries (round-half-even reads a
+    # midpoint back as the even neighbour), an odd one does not.
+    even = f & 1_u64 == 0_u64
+
+    # k, the decimal exponent, estimated from the binary one - log10(2) as
+    # 1233/4096, a shade under - and corrected below by the comparisons
+    # the digits will use anyway.
+    length = 0
+    probe = f
+    while probe != 0_u64
+      probe = probe.unsafe_shr(1_u64)
+      length = length + 1
+    end
+    k = ((e + length - 1) * 1233) // 4096
+    k = k - 1 if (e + length - 1) < 0 && ((e + length - 1) * 1233) % 4096 != 0
+    k = k + 1
+    if k >= 0
+      s.mul_pow10(k)
+    else
+      r.mul_pow10(-k)
+      m_plus.mul_pow10(-k)
+      m_minus.mul_pow10(-k)
+    end
+    # Too small an estimate: the value's high boundary reaches 10^k.
+    while (c = r.compare_sum(m_plus, s)) > 0 || (c == 0 && even)
+      s.mul_small(10_u64)
+      k = k + 1
+    end
+    # Too large: even ten times the high boundary stays under 10^k.
+    while true
+      r_ten = r.copy
+      r_ten.mul_small(10_u64)
+      m_ten = m_plus.copy
+      m_ten.mul_small(10_u64)
+      c = r_ten.compare_sum(m_ten, s)
+      break if c > 0 || (c == 0 && even)
+      r.mul_small(10_u64)
+      m_plus.mul_small(10_u64)
+      m_minus.mul_small(10_u64)
+      k = k - 1
+    end
+
+    digits = Pointer(UInt8).malloc(20_u64)
+    count = 0
+    while true
+      r.mul_small(10_u64)
+      m_plus.mul_small(10_u64)
+      m_minus.mul_small(10_u64)
+      digit = r.divide_digit(s)
+      low_c = r.compare(m_minus)
+      low = low_c < 0 || (low_c == 0 && even)
+      high_c = r.compare_sum(m_plus, s)
+      high = high_c > 0 || (high_c == 0 && even)
+      if !low && !high
+        digits[count] = digit.to_u8
+        count = count + 1
+        next
+      end
+      if low && high
+        # Both neighbours are as short: the nearer, and on a tie the even
+        # digit.
+        twice = r.copy
+        twice.shl(1)
+        c = twice.compare(s)
+        digit = digit + 1 if c > 0 || (c == 0 && digit % 2 == 1)
+      elsif high
+        digit = digit + 1
+      end
+      digits[count] = digit.to_u8
+      count = count + 1
+      break
+    end
+
+    format(negative, digits, count, k)
+  end
+
+  # Crystal's notation: fixed from 0.0001 to just under 10^15, a fractional
+  # part always, exponent form outside with a signed exponent.
+  def self.format(negative : Bool, digits : Pointer(UInt8), count : Int32, k : Int32) : String
+    if k > -4 && k <= 15
+      if k <= 0
+        # 0.000ddd
+        bytesize = 2 + (-k) + count
+        bytesize = bytesize + 1 if negative
+        String.new(bytesize) do |buffer|
+          at = 0
+          if negative
+            buffer[0] = 45_u8
+            at = 1
+          end
+          buffer[at] = 48_u8
+          buffer[at + 1] = 46_u8
+          at = at + 2
+          zeros = -k
+          while zeros > 0
+            buffer[at] = 48_u8
+            at = at + 1
+            zeros = zeros - 1
+          end
+          index = 0
+          while index < count
+            buffer[at + index] = 48_u8 + digits[index]
+            index = index + 1
+          end
+        end
+      else
+        # ddd.ddd, the integer part padded with zeros past the digits and
+        # the fraction "0" when there is none.
+        fraction = count > k ? count - k : 1
+        bytesize = k + 1 + fraction
+        bytesize = bytesize + 1 if negative
+        String.new(bytesize) do |buffer|
+          at = 0
+          if negative
+            buffer[0] = 45_u8
+            at = 1
+          end
+          index = 0
+          while index < k
+            buffer[at + index] = index < count ? 48_u8 + digits[index] : 48_u8
+            index = index + 1
+          end
+          buffer[at + k] = 46_u8
+          at = at + k + 1
+          if count > k
+            index = k
+            while index < count
+              buffer[at + index - k] = 48_u8 + digits[index]
+              index = index + 1
+            end
+          else
+            buffer[at] = 48_u8
+          end
+        end
+      end
+    else
+      # d.ddde+xx
+      exponent = k - 1
+      exponent_text = exponent.to_s
+      exponent_text = "+" + exponent_text if exponent >= 0
+      fraction = count > 1 ? count - 1 : 1
+      bytesize = 1 + 1 + fraction + 1 + exponent_text.bytesize
+      bytesize = bytesize + 1 if negative
+      String.new(bytesize) do |buffer|
+        at = 0
+        if negative
+          buffer[0] = 45_u8
+          at = 1
+        end
+        buffer[at] = 48_u8 + digits[0]
+        buffer[at + 1] = 46_u8
+        at = at + 2
+        if count > 1
+          index = 1
+          while index < count
+            buffer[at + index - 1] = 48_u8 + digits[index]
+            index = index + 1
+          end
+          at = at + count - 1
+        else
+          buffer[at] = 48_u8
+          at = at + 1
+        end
+        buffer[at] = 101_u8
+        at = at + 1
+        index = 0
+        while index < exponent_text.bytesize
+          buffer[at + index] = exponent_text.to_unsafe[index]
+          index = index + 1
+        end
+      end
+    end
+  end
+end
