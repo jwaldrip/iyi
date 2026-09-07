@@ -227,3 +227,28 @@ rounds.** Both refusals above stay recorded; the amended bar is one the
 same eight calls pass, and the margin is named in the script rather than
 fitted to a run. With that, §3's sentence may be quoted — with the
 command beside it, like every other number in the README.
+
+**The third run, before 0.11.0, is a refusal on rounds — recorded, not
+rerun until it passed.** Same task, same command, Claude Code 2.1.245,
+three trials per arm:
+
+| arm | rounds per trial | total rounds | total prompt bytes |
+|---|---|---|---|
+| pack | 2, 1, 2 | 5 | 18,021 |
+| raw | 1, 1, 1 | 3 | 28,521 |
+
+Tokens won by 37%, inside the 35–43% the first two runs put down. Rounds
+lost, 5 to 3, and the two lost rounds were read rather than averaged
+away. One is the pack's: the model wrote `import kemal/dsl` and called
+`before_all` bare, and the compiler refused it for the missing `using` —
+the raw sources carry their own `using` lines, so raw grounding shows
+the consumer's spelling by accident and the pack, which renders a
+module's surface and nothing about how a consumer names it, does not.
+The other is a prelude guess, `String#split("/")` where the prelude has
+`split(Char)`, and neither grounding carries the prelude, so both arms
+pay it. Fourteen model calls now: tokens track the grounding, by 35–43%,
+every time; rounds tied twice and lost once, to a line the pack could
+have carried. The bar stays as written and the run fails it; the README
+says so beside the number, and the pack carrying the `import`/`using`
+pair a consumer writes — what the language server's completion already
+attaches to every export — is the next thing this arm asks for.
