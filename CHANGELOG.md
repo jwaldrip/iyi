@@ -4,6 +4,29 @@
 
 ### Added
 
+- **The second half hour.** `samples/iyi/basics.iyi` counts the words of
+  a sentence and prints the three most frequent, and the prelude grew what
+  that took, on the rule the first half hour set: `String#each_char` and
+  `String#<`, `Char#letter?`, `digit?`, `alphanumeric?` and `whitespace?`,
+  `Array#sort_in_place_by` and `sorted_by` (a key rather than a comparison,
+  III.1.7a's pair one name longer), `Array#first(n)`, and `to_s`/`inspect`
+  on `Array` and `Hash` that print them as they are written - `[1, "a",
+  nil]`, `{"a" => 1}` - where a value used to print as its type name.
+- **`Hash` keeps insertion order.** Two dense arrays and an index over
+  them, the compact layout, so `each` follows the order things went in and
+  a word count prints its words in the order it met them. Measured
+  (`bench/runtime.py`, three readings on mains): the hash workload reads
+  0.10x of the other library where the old open-addressed table read
+  0.17x, and the README's table is re-read on the same runs - string
+  building at 1.8x with the collector off, where the last reading had
+  3.6x. Deletion is still not there; no sample asks.
+- **`items.sort_by! { ... }` says what it is.** The `!` read as a
+  propagation and the `{` was reported as a stray token; the parser now
+  names the call - `` `sort_by!` is not a method here `` - and the
+  spelling this library uses, before the block it cannot take. The
+  participle hint inflects the first word of a compound name
+  (`mapped_by` for `map_by`), and the `def sort!` message names
+  `sort_in_place` rather than the plain verb it once claimed mutates.
 - **The sweep's kept pages outlive the pause.** A budget's worth of
   whole dead pages is kept warm each epoch, and it was kept as chunks on
   the sweep's batch - a list, and a pause drops every list, so whatever
@@ -4244,7 +4267,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 11,229-line library and nothing else. Every other
+  written against iyi's own 11,341-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
