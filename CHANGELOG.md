@@ -80,7 +80,8 @@
   `IyiMod.surface` prints a module - `iyi doc String`, `Array`, `Hash`,
   `Float64`, `Program`; the compiler's own `allocate` and the primitives
   left out, as the artifact leaves them out. `bench/packages_resolve.sh`
-  checks it.
+  checks it, and `iyi mcp` serves it as a fifth tool, `doc`, taking a
+  module, an artifact or a prelude type's name (`bench/agent_loop.py`).
 
 - **`Float64#to_s`.** `puts 0.75` printed "Float64" through
   `Object#to_s`, because no sample had asked for a float in writing; a

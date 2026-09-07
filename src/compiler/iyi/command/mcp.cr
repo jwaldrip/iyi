@@ -90,7 +90,7 @@ class Iyi::Command
     end
   end
 
-  # The catalogue, verbatim JSON: four tools, each one existing verb.
+  # The catalogue, verbatim JSON: five tools, each one existing verb.
   # Schemas are the arguments those verbs already take — nothing here
   # exists only over the wire.
   MCP_TOOLS = <<-JSON
@@ -132,6 +132,15 @@ class Iyi::Command
             "affected": {"type": "array", "items": {"type": "string"}, "description": "files that changed; only tests that can reach them run"}
           }
         }
+      },
+      {
+        "name": "doc",
+        "description": "What can be called: a module's exported surface (functions, types, methods, impls, with their doc comments, no bodies) from a .iyi file or a .iyimod artifact, or a type of the prelude by name - `String`, `Array`, `Hash`, `Float64`, `Program` - the same way. Text.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {"target": {"type": "string", "description": "path to a .iyi module or .iyimod artifact, or a prelude type's name"}},
+          "required": ["target"]
+        }
       }
     ]
     JSON
@@ -161,6 +170,10 @@ class Iyi::Command
           built << path
         end
         built
+      when "doc"
+        target = arguments.try(&.dig?("target")).try(&.as_s?)
+        return mcp_tool_error(id, "doc needs a target: a .iyi module, a .iyimod artifact, or a prelude type's name") unless target
+        ["doc", target]
       else
         return mcp_tool_error(id, "unknown tool: #{name}")
       end

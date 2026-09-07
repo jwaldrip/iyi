@@ -286,7 +286,7 @@ def main():
     rpc("notifications/initialized")
     tools = [t["name"] for t in rpc("tools/list", None, 2)["result"]["tools"]]
     step("mcp lists the loop's tools",
-         tools == ["check", "fix", "context", "test"], f"{tools}")
+         tools == ["check", "fix", "context", "test", "doc"], f"{tools}")
     reply = rpc("tools/call", {"name": "check", "arguments": {"file": "app.iyi"}}, 3)
     step("mcp check answers [] on the clean file",
          json.loads(reply["result"]["content"][0]["text"]) == [], "")
@@ -295,6 +295,10 @@ def main():
     report = json.loads(reply["result"]["content"][0]["text"])
     step("mcp test honours affected",
          [t["file"] for t in report["tests"]] == ["./mul_test.iyi"], "")
+    reply = rpc("tools/call", {"name": "doc", "arguments": {"target": "String"}}, 5)
+    text = reply["result"]["content"][0]["text"]
+    step("mcp doc answers a prelude type's surface",
+         text.startswith("#") and "class String" in text and "  def to_i : Int32" in text, text[:80])
     rpc("exit")
     server.wait(timeout=10)
     step("mcp exits on exit", server.returncode == 0, "")

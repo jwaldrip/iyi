@@ -292,7 +292,7 @@ over the same rules — completion, references, rename, hover and diagnostics ar
 answering, and the two methods beyond LSP (`iyi/contextPack`,
 `iyi/surface`) return exactly what the CLI prints. `iyi mcp` is the same
 stance on the agent side: the compiler's verbs — `check`, `fix`,
-`context`, `test` — as Model Context Protocol tools, each one a shell
+`context`, `test`, `doc` — as Model Context Protocol tools, each one a shell
 around this same binary, so what a harness gets over the wire is
 byte-for-byte what a shell would have gotten. No agent mode, no
 forked behaviour by consumer; if the rules turn out not to be enough,
