@@ -33,20 +33,20 @@ items = [
 # 1. A total, and a subset.
 grand = 0.0
 items.each { |item| grand += item.total }
-puts "total: #{grand}"                                        # => total: 11.0
+puts "total: #{grand}" # => total: 11.0
 cheap = items.select { |item| item.price < 1.0 }
-puts "cheap: #{cheap.map(&.name).join(", ")}"                 # => cheap: apple, pear
+puts "cheap: #{cheap.map(&.name).join(", ")}" # => cheap: apple, pear
 
 # 2. Questions with one answer.
-puts items.count { |item| item.quantity > 1 }                 # => 2
-puts items.any? { |item| item.price > 2.0 }                   # => true
-puts items.all? { |item| item.quantity > 0 }                  # => true
-puts items.max_by { |item| item.price }.name                  # => melon
-puts items.min_by { |item| item.total }.name                  # => pear, the first of equals
+puts items.count { |item| item.quantity > 1 } # => 2
+puts items.any? { |item| item.price > 2.0 }   # => true
+puts items.all? { |item| item.quantity > 0 }  # => true
+puts items.max_by { |item| item.price }.name  # => melon
+puts items.min_by { |item| item.total }.name  # => pear, the first of equals
 if pear = items.find? { |item| item.name == "pear" }
-  puts pear.total                                             # => 3.0
+  puts pear.total # => 3.0
 end
-puts items.find? { |item| item.name == "plum" }.inspect       # => nil
+puts items.find? { |item| item.name == "plum" }.inspect # => nil
 
 # 3. A report, each line numbered.
 items.each_with_index do |item, index|
@@ -59,6 +59,6 @@ end
 # 4. The same items by name.
 by_name = {} of String => Item
 items.each { |item| by_name[item.name] = item }
-puts by_name.keys                                             # => ["apple", "pear", "melon"]
-puts by_name.values.map(&.quantity).sum                       # => 15
-puts by_name.keys.sorted.last                                 # => pear
+puts by_name.keys                       # => ["apple", "pear", "melon"]
+puts by_name.values.map(&.quantity).sum # => 15
+puts by_name.keys.sorted.last           # => pear

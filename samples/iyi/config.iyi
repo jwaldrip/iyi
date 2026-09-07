@@ -42,9 +42,9 @@ end
 good = "# the service\nname = iyi\nport= 8080\n\nmode =fast\n"
 case parse(good)
 in Hash(String, String)
-  puts it                      # => {"name" => "iyi", "port" => "8080", "mode" => "fast"}
-  puts it["port"].to_i + 1     # => 8081
-  puts it.keys.join(", ")      # => name, port, mode
+  puts it                  # => {"name" => "iyi", "port" => "8080", "mode" => "fast"}
+  puts it["port"].to_i + 1 # => 8081
+  puts it.keys.join(", ")  # => name, port, mode
 in ParseError then puts "error: #{it.message}"
 end
 
@@ -55,7 +55,7 @@ in ParseError           then puts "error: #{it.message}" # => error: line 2: no 
 end
 
 # The pieces a parser cuts, on their own.
-puts "a,,b".split(',')             # => ["a", "", "b"]
-puts "one\ntwo\n".lines            # => ["one", "two"]
-puts "  padded\t".strip.inspect    # => "padded"
+puts "a,,b".split(',')               # => ["a", "", "b"]
+puts "one\ntwo\n".lines              # => ["one", "two"]
+puts "  padded\t".strip.inspect      # => "padded"
 puts "config.iyi".ends_with?(".iyi") # => true
