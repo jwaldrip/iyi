@@ -91,8 +91,9 @@ class String
   # Out of range after that wrap still raises rather than returning nil: the
   # caller knows the length. `[]?` is the question that allows absence.
   def [](index : Int32) : Char
+    asked = index
     index = @bytesize + index if index < 0
-    raise "index out of range" if index < 0 || index >= @bytesize
+    raise "index #{asked} out of range for a string of #{@bytesize} bytes" if index < 0 || index >= @bytesize
     to_unsafe[index].unsafe_chr
   end
 
@@ -106,9 +107,10 @@ class String
   # form. *count* stays non-negative: a negative count is not a wrap, it is a
   # mistake, and it raises for that reason rather than being silently clamped.
   def [](start : Int32, count : Int32) : String
-    raise "negative count" if count < 0
+    raise "negative count #{count}" if count < 0
+    asked = start
     start = @bytesize + start if start < 0
-    raise "index out of range" if start < 0 || start > @bytesize
+    raise "start #{asked} out of range for a string of #{@bytesize} bytes" if start < 0 || start > @bytesize
 
     available = @bytesize - start
     taken = count < available ? count : available
@@ -177,6 +179,15 @@ class String
     self
   end
 
+  # Written down rather than printed: in double quotes, the way the
+  # literal is spelled, which is what `Object#inspect`'s comment promises
+  # and what makes `no such key "b"` read as a string and not a name.
+  # Nothing inside is escaped: the strings this prelude holds are the
+  # program's own, and a quote inside one is rare and reads as itself.
+  def inspect : String
+    "\"" + self + "\""
+  end
+
   # The number this string spells, asked for by `samples/iyi/calc`, which reads
   # a token's text and needs the integer behind it.
   #
@@ -185,12 +196,12 @@ class String
   # (SPEC.md III.1.7a), and a silent 0 for `"oops"` is the kind of answer that
   # is wrong twice.
   def to_i : Int32
-    raise "not a number" if empty?
+    raise "not a number: #{inspect}" if empty?
 
     index = 0
     sign = 1
     if self[0] == '-'
-      raise "not a number" if @bytesize == 1
+      raise "not a number: #{inspect}" if @bytesize == 1
       sign = -1
       index = 1
     end
@@ -198,7 +209,7 @@ class String
     value = 0
     while index < @bytesize
       digit = to_unsafe[index].to_i - 48
-      raise "not a number" if digit < 0 || digit > 9
+      raise "not a number: #{inspect}" if digit < 0 || digit > 9
       value = value * 10 + digit
       index = index + 1
     end

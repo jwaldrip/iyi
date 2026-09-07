@@ -350,7 +350,7 @@ module IyiFloatText
   def self.parse(text : String) : Float64
     bytes = text.to_unsafe
     size = text.bytesize
-    raise "not a number" if size == 0
+    raise "not a number: #{text.inspect}" if size == 0
     at = 0
     negative = false
     if bytes[0] == 45_u8 || bytes[0] == 43_u8
@@ -388,28 +388,28 @@ module IyiFloatText
         seen_point = true
       elsif (byte == 101_u8 || byte == 69_u8) && any
         at = at + 1
-        raise "not a number" if at >= size
+        raise "not a number: #{text.inspect}" if at >= size
         exponent_negative = false
         if bytes[at] == 45_u8 || bytes[at] == 43_u8
           exponent_negative = bytes[at] == 45_u8
           at = at + 1
         end
-        raise "not a number" if at >= size
+        raise "not a number: #{text.inspect}" if at >= size
         read = 0
         while at < size
           byte = bytes[at]
-          raise "not a number" if byte < 48_u8 || byte > 57_u8
+          raise "not a number: #{text.inspect}" if byte < 48_u8 || byte > 57_u8
           read = read * 10 + (byte - 48_u8).to_i32 if read < 100000
           at = at + 1
         end
         exponent = exponent + (exponent_negative ? 0 - read : read)
         break
       else
-        raise "not a number"
+        raise "not a number: #{text.inspect}"
       end
       at = at + 1
     end
-    raise "not a number" unless any
+    raise "not a number: #{text.inspect}" unless any
     return from_bits(negative ? 9223372036854775808_u64 : 0_u64) if mantissa.size == 0
     # Far outside the format either way.
     return from_bits(negative ? 18442240474082181120_u64 : 9218868437227405312_u64) if exponent > 310

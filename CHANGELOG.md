@@ -101,6 +101,13 @@
   loop runs three times now and the least is the number, the way every
   number in this repository is read.
 
+- **A panic names the value.** `index 5 out of range for 2 elements`,
+  `index 7 out of range for a string of 3 bytes`, `no such key "b"`,
+  `not a number: "12x"` - where it was `index out of range`, `no such
+  key`, `not a number`. And `String#inspect` is the string in double
+  quotes, the way the literal is spelled, which is what `Object#inspect`
+  promised and did not do.
+
 - **A panic names its site.** `iyi: panic: boom` is followed by
   `  at /path/to/file.iyi:12` when the `raise` is in the program's own
   code, the compiler filling the file and line in at the call; a panic
@@ -4202,7 +4209,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 11,202-line library and nothing else. Every other
+  written against iyi's own 11,215-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
