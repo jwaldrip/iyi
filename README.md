@@ -1,7 +1,8 @@
 # iyi
 
-[![iyi](https://github.com/jwaldrip/iyi/actions/workflows/iyi.yml/badge.svg)](https://github.com/jwaldrip/iyi/actions/workflows/iyi.yml)
+[![iyi](https://github.com/sdogruyol/iyi/actions/workflows/iyi.yml/badge.svg)](https://github.com/sdogruyol/iyi/actions/workflows/iyi.yml)
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
+[![site](https://img.shields.io/badge/site-iyi--lang.com-black.svg)](https://iyi-lang.com)
 
 **A language built for Developer & Agentic Experience, Portability, Performance,
 and Efficiency.** (*iyi* is Turkish for "good".)

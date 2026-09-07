@@ -230,7 +230,8 @@
 - **The website is its own repository.** `site/`, `doc/website/`,
   `bench/site_facts.py`, `bench/website_citations.py` and the site
   workflow moved to `sdogruyol/iyi-lang.sdogruyol.io` with their
-  history (`git subtree split`). The site still reads this tree - the
+  history (`git subtree split`), and the site is published from there at
+  https://iyi-lang.com. The site still reads this tree - the
   samples, README.md, SPEC.md, CHANGELOG.md, `bench/doc_numbers.py`'s
   measurements - through an `IYI_REPO` path (default: a sibling
   checkout named `iyi`), and its build checks out this repository to
