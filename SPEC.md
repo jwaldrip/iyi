@@ -2262,9 +2262,9 @@ marker is refused with the artifact as the reason. What it gates is the
 block `IyiThread.start` runs on another thread (III.4.11): every variable
 the block captures, and `self` when the block reaches an instance
 variable, must be `Share`, and the error names the variable, its type and
-the field that failed, one level at a time — `captures \`items :
-Array(Int32)\`, which is not Share: Array(Int32)'s field @size is assigned
-in \`unsafe_set_size\``. The channel's `T : Share` (III.4.6) waits for the
+the field that failed, one level at a time — ``captures `items :
+Array(Int32)`, which is not Share: Array(Int32)'s field @size is assigned
+in `unsafe_set_size` ``. The channel's `T : Share` (III.4.6) waits for the
 channel that crosses threads. Held by `spec/compiler/semantic/iyi_spec.cr`
 (eight shapes: immutable captures pass, a setter, an assignment outside
 `initialize`, a field one and two levels down, `@[Share]` trusted, a

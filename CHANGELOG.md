@@ -146,6 +146,20 @@
 
 ### Changed
 
+- **The website is its own repository.** `site/`, `doc/website/`,
+  `bench/site_facts.py`, `bench/website_citations.py` and the site
+  workflow moved to `sdogruyol/iyi-lang.sdogruyol.io` with their
+  history (`git subtree split`). The site still reads this tree - the
+  samples, README.md, SPEC.md, CHANGELOG.md, `bench/doc_numbers.py`'s
+  measurements - through an `IYI_REPO` path (default: a sibling
+  checkout named `iyi`), and its build checks out this repository to
+  do so. The citation gate went with the documents it gates; the
+  identity floor lost the allowances that existed only for the site's
+  files. Found on the way: four code spans in SPEC.md and CHANGELOG.md
+  escaped inner backticks with a backslash, which CommonMark does not
+  read inside a code span, so the site's prose gate saw words welded
+  across a stray `<code>`; they are double-backtick spans now.
+
 - **An object is its fields; the header word is per class, and only
   where something reads the type id off the object.** A class carries
   its id in a word ahead of its instances when the program that links
@@ -1100,8 +1114,8 @@ migrated.
   block captures, and `self` when the block reaches an instance
   variable, is asked, and the refusal names the variable, its type and
   the field that failed one level at a time —
-  `captures \`items : Array(Int32)\`, which is not Share: Array(Int32)'s
-  field @size is assigned in \`unsafe_set_size\``. Eight shapes in
+  ``captures `items : Array(Int32)`, which is not Share: Array(Int32)'s
+  field @size is assigned in `unsafe_set_size` ``. Eight shapes in
   `spec/compiler/semantic/iyi_spec.cr`, the artifact round trip in
   `spec/compiler/iyimod_spec.cr`, and `bench/thread_exercise.sh`'s new
   last step: a program capturing an `Array` that must not compile, and
@@ -3230,8 +3244,8 @@ the same flags.
 - **What a shard adds to a `lib` travels, and that was smaller than it
   looked.** `openssl_ext` reopens `lib LibCrypto` with a dozen C structs, two
   unions and a handful of `type` aliases, and a consumer stopped on
-  `"open_s_s_l" numbers \`Pointer(LibCrypto::Bignum)\`, and this build cannot
-  name it` — Part V item 12's own open question, reached.
+  ``"open_s_s_l" numbers `Pointer(LibCrypto::Bignum)`, and this build cannot
+  name it`` — Part V item 12's own open question, reached.
 
   **Types only, and the reason is the whole finding.** A `fun` is a C symbol:
   `BN_new` is resolved by the system linker against `-lcrypto`, not by anything
@@ -3355,7 +3369,7 @@ the same flags.
   keys on `match.def`, which is still the header, and skips the body visit. The
   default assignment therefore reached `CleanupTransformer` untyped, which
   replaces an untyped node with a `raise` — so the program compiled, linked,
-  and died on `can't execute \`url = {} of String => String\`` the first time a
+  and died on ``can't execute `url = {} of String => String` `` the first time a
   request reached it. A header's body is `Nop` and a wrapper's is not, which is
   what tells the two apart.
 
