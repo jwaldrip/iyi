@@ -5,7 +5,9 @@
 # non-zero, exactly the contract every gate in `bench/` already runs on,
 # because this repository's own culture is the framework. No DSL, no
 # matchers, no registry — a program that prints what failed and exits 1 is
-# a failing test, and one that exits 0 passed.
+# a failing test, and one that exits 0 passed. The prelude's `assert` is
+# that in one word: a false condition panics with the message and the
+# site, which is a program printing what failed and exiting 1.
 #
 #     iyi test              # every *_test.iyi under the current directory
 #     iyi test dir file.iyi # these, recursing into directories

@@ -53,6 +53,13 @@
 - **`Int32#chr`**, the other half of `Char#ord`, for the Caesar shift
   `basics` now does; and `**` no longer squares its base past the last
   use, which overflowed `2 ** 30` on the way to an answer that fits.
+- **`assert`.** `assert add(2, 2) == 4, "add broke"` is the one word a
+  `*_test.iyi` needs: a false condition panics with the message and the
+  caller's site, which is exactly the contract `iyi test` reads - a
+  program that prints what failed and exits 1 - and no framework under
+  it. `bench/agent_loop.py`'s own tests printed "add broke" and exited 0,
+  which is not a failing test; they assert now, and the gate checks that
+  a false assert fails and names its line.
 - **`Hash` keeps insertion order.** Two dense arrays and an index over
   them, the compact layout, so `each` follows the order things went in and
   a word count prints its words in the order it met them. Measured
@@ -4308,7 +4315,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 11,755-line library and nothing else. Every other
+  written against iyi's own 11,765-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

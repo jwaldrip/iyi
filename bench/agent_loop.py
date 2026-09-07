@@ -64,13 +64,15 @@ def main():
         "pub def go() : Int32\n  shoutt(3)\nend\n\n"
         "go()\n"
     ))
+    # A test asserts by exiting non-zero, and `assert` is the one word the
+    # prelude gives it: a false condition is a panic naming the site.
     write("add_test.iyi", (
         "import calc/add\nusing calc/add::{add}\n\n"
-        "if add(2, 2) != 4\n  puts \"add broke\"\nend\n"
+        "assert add(2, 2) == 4, \"add broke\"\n"
     ))
     write("mul_test.iyi", (
         "import calc/mul\nusing calc/mul::{mul}\n\n"
-        "if mul(2, 3) != 6\n  puts \"mul broke\"\nend\n"
+        "assert mul(2, 3) == 6, \"mul broke\"\n"
     ))
 
     # 1. ground: the context pack names every import, docs included
@@ -211,6 +213,21 @@ def main():
     step("an edit to add runs only add's test",
          files == ["./add_test.iyi"] and report["skipped"] == 1,
          f"ran {files}, skipped {report['skipped']}")
+    step("and the test passed by its assert", report["passed"] == 1, "")
+    # The other direction: a test that asserts something false fails, by
+    # exit code, with the site in what it printed.
+    write("broken_test.iyi", (
+        "import calc/add\nusing calc/add::{add}\n\n"
+        "assert add(2, 2) == 5, \"arithmetic\"\n"
+    ))
+    proc = run("test", "--json", "broken_test.iyi", cwd=work)
+    report = json.loads(proc.stdout)
+    step("a false assert fails its test and names the line",
+         proc.returncode != 0 and report["failed"] == 1
+         and "assertion failed: arithmetic" in report["tests"][0]["output"]
+         and "broken_test.iyi:4" in report["tests"][0]["output"],
+         report["tests"][0]["output"].strip())
+    os.remove(os.path.join(work, "broken_test.iyi"))
     proc = run("test", "--json", "--affected", "app.iyi", cwd=work)
     report = json.loads(proc.stdout)
     step("an edit nothing imports runs nothing",

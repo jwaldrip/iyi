@@ -6408,6 +6408,16 @@ def raise(message : String, file : String = __FILE__, line : Int32 = __LINE__) :
   {% end %}
 end
 
+# The one word a test needs, and no framework under it (`iyi test`): a
+# false condition is a panic naming the site, which is a program printing
+# what failed and exiting 1 - the contract every gate in `bench/` already
+# runs on. The message is the sentence a failure prints; without one, the
+# site is the sentence.
+def assert(condition : Bool, message : String = "", file : String = __FILE__, line : Int32 = __LINE__) : Nil
+  return if condition
+  raise(message.empty? ? "assertion failed" : "assertion failed: " + message, file, line)
+end
+
 # What a failed `.as` names. `.as` reaches an iyi program through one door
 # only — `select`'s expansion casts the winning arm's value — and a failed
 # cast there is a compiler bug, so this is a panic wearing the constant's
