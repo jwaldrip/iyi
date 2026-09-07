@@ -113,6 +113,28 @@ describe "Semantic: iyi import" do
       end
     end
 
+    it "says which module exports a type that is imported but not used" do
+      with_iyi_modules({
+        "main.iyi"    => "module app/main\n\nimport app/dep\n\nBox.new\n",
+        "app/dep.iyi" => "module app/dep\n\npub struct Box\nend\n",
+      }) do
+        expect_raises(Iyi::TypeException, /`Box` is exported by `app\/dep`.*`using app\/dep::\{Box\}`.*`App::Dep::Box`/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
+    it "says when the type is there and was not marked `pub`" do
+      with_iyi_modules({
+        "main.iyi"    => "module app/main\n\nimport app/dep\nusing app/dep\n\nBox.new\n",
+        "app/dep.iyi" => "module app/dep\n\nstruct Box\nend\n",
+      }) do
+        expect_raises(Iyi::TypeException, /declares `Box` and does not mark it `pub`/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+
     it "says when the name is there and was not marked `pub`" do
       with_iyi_modules({
         "main.iyi"    => "module app/main\n\nimport app/dep\nusing app/dep\n\nsecret\n",

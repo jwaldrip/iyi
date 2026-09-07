@@ -38,6 +38,11 @@
   trait followed by another `def` was "can't define def inside def", true
   of the parse and false of the mistake; it now says the requirement is
   spelled `abstract def`.
+- **A type out of reach is named.** `Stack(Int32).new` after `import
+  lib/stack` and no `using` was "undefined constant Stack"; it now says
+  which module exports it, the `using lib/stack::{Stack}` that brings it
+  in, and the qualified spelling - the answer a call already got - and
+  a type declared without `pub` is reported as the module's own.
 - **`Hash` keeps insertion order.** Two dense arrays and an index over
   them, the compact layout, so `each` follows the order things went in and
   a word count prints its words in the order it met them. Measured

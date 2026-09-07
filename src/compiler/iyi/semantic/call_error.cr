@@ -34,6 +34,14 @@ class Iyi::Path
       self.raise("private constant #{private_const} referenced")
     end
 
+    # iyi: the name is usually not missing, it is out of reach - a type a
+    # module this program loaded declares, and this file has not written
+    # `using` for (SPEC.md R-2b), or one its module never marked `pub`
+    # (R-2). The same two answers `iyi_out_of_reach_hint` gives a call.
+    if names.size == 1 && (hint = iyi_type_out_of_reach_hint(type.program, names.first))
+      self.raise("undefined constant #{self}\n#{hint}")
+    end
+
     similar_name = type.lookup_similar_path(self)
     if similar_name
       self.raise("undefined constant #{self}\nDid you mean '#{similar_name}'?", suggestion: similar_name.to_s)
@@ -46,6 +54,39 @@ class Iyi::Path
     end
 
     self.raise("undefined constant #{self}")
+  end
+
+  private def iyi_type_out_of_reach_hint(program, name : String) : String?
+    exporting = [] of ModuleType
+    hiding = [] of ModuleType
+    iyi_each_unit(program) do |mod|
+      next unless mod.types?.try &.has_key?(name)
+      (mod.exported_name?(name) ? exporting : hiding) << mod
+    end
+
+    unless exporting.empty?
+      written = exporting.map { |mod| mod.to_s.split("::").map(&.underscore).join('/') }
+      return "`#{name}` is exported by #{written.map { |path| "`#{path}`" }.join(" and ")}, " \
+             "and this file has not written `using`. Add `using #{written.first}::{#{name}}` " \
+             "to bring it in unqualified, or write it as `#{exporting.first}::#{name}` " \
+             "(SPEC.md R-2b)"
+    end
+
+    unless hiding.empty?
+      written = hiding.first.to_s.split("::").map(&.underscore).join('/')
+      return "`#{written}` declares `#{name}` and does not mark it `pub`, " \
+             "so it is the module's own and no other module can reach it " \
+             "(SPEC.md R-2)"
+    end
+
+    nil
+  end
+
+  private def iyi_each_unit(type, &block : ModuleType ->) : Nil
+    type.types?.try &.each_value do |nested|
+      block.call(nested) if nested.is_a?(ModuleType) && nested.iyi_unit?
+      iyi_each_unit(nested, &block)
+    end
   end
 end
 
