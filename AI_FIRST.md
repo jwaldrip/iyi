@@ -282,3 +282,33 @@ surface corrects. The bar stays as written and the run fails it. What
 would move it is not in the pack: a compiler that, refusing a one-character
 string where a `Char` is expected, suggests the `Char` — the same shape as
 "did you mean", and an edit `iyi fix` can apply without a round.
+
+**The fifth and sixth runs: the compiler says the `Char`, the loop
+applies it, and the arm passes — on a tie, the honest way.** The
+compiler now refuses a one-character string where a `Char` is wanted
+with the `Char` spelled out — `Did you mean '/'?` — and hands it over as
+a `suggested_edit` spanning the literal, quotes included, escapes
+written (`'\t'`, `'\''`); `iyi fix` applies it and `iyi check` is clean.
+Run five, with that in the compiler but not in the gate's loop, still
+lost rounds 6 to 4 at 31% fewer tokens: the model read the suggestion
+and spent a round retyping it, which is what a model does with prose.
+So the gate's loop was made the loop §2 describes: after a failed
+build, `iyi fix` runs before the model is asked again, on both arms,
+and a program fix converges is green on the round that wrote it — the
+harness prints what fix changed, so a win bought that way is a win
+somebody can read. Run six, under that loop:
+
+| arm | rounds per trial | total rounds | total prompt bytes |
+|---|---|---|---|
+| pack | 2, 1, 1 | 4 | 19,379 |
+| raw | 2, 1, 1 | 4 | 29,576 |
+
+Tokens won by 34%, rounds tied, the bar passed — and `iyi fix` fired in
+none of the six trials: the model wrote `split('/')` unprompted this
+time, which is the variance the earlier runs were reading as a verdict.
+What the fix step is proven on is a driven run, `--agent 'cat prog.iyi'`
+with the `split("/")` program: one round, `iyi fix applied: [('"/"',
+"'/'")]`, green. Twenty-six model calls now, and the sentence the README
+may quote is the one the runs support: tokens track the grounding, by
+31–43%; rounds track the model, and the loop with `fix` in it does not
+lose them.
