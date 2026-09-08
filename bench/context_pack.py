@@ -21,6 +21,7 @@ that is this script exiting 1.
 """
 
 import argparse
+import json
 import pathlib
 import subprocess
 import sys
@@ -201,6 +202,29 @@ def run_task(agent: str, grounding: str):
             )
             if build.returncode == 0:
                 return attempt, sent
+            # The loop AI_FIRST.md §2 describes has `iyi fix` in it: the
+            # compiler's own suggested edits are applied before a model
+            # is asked again, because an agent would run exactly that.
+            # Both arms get the step; a program fix converges is green
+            # on the round that wrote it, and what fix changed is printed
+            # so a win here is a win somebody can read.
+            fix = subprocess.run(
+                [str(IYI), "fix", "--json", "main.iyi"],
+                capture_output=True, text=True, cwd=workdir,
+            )
+            try:
+                fixed = json.loads(fix.stdout)
+            except json.JSONDecodeError:
+                fixed = {"clean": False, "applied": []}
+            if fixed.get("applied"):
+                print(f"  iyi fix applied: {[(a['from'], a['to']) for a in fixed['applied']]}")
+            if fixed.get("clean"):
+                return attempt, sent
+            answer = (workdir / "main.iyi").read_text()
+            build = subprocess.run(
+                [str(IYI), "build", "--no-codegen", "main.iyi", "-o", "out"],
+                capture_output=True, text=True, cwd=workdir,
+            )
             prompt = (
                 "The program you wrote does not compile. Fix it and answer with "
                 "the whole corrected file only.\n\nErrors:\n" + build.stderr +

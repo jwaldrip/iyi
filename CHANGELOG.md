@@ -28,6 +28,20 @@
   (`TypeException.for_node`'s `size`), where before it was the node's
   name and a literal has none. `bench/agent_loop.py` steps 9 and 10.
 
+### Changed
+
+- **The rounds arm runs `iyi fix` before it asks the model again.** The
+  loop AI_FIRST.md section 2 describes has `fix` in it and the gate's did
+  not: a compiler that says the `Char` bought nothing on a model that
+  reads prose and spends a round retyping it (run five, lost 6 to 4).
+  After a failed build, `bench/context_pack.py` applies the compiler's
+  own edits on both arms, a program fix converges is green on the round
+  that wrote it, and what fix changed is printed. Driven with
+  `--agent 'cat prog.iyi'` on the `split("/")` program: one round, the
+  `Char` applied, green. Run six, against the model: tokens by 34%,
+  rounds 4 to 4, the bar passed on a tie - and fix fired in none of its
+  trials, which AI_FIRST.md section 5 says plainly.
+
 ### Fixed
 
 - **A green round is a program that does what was asked.** An empty
