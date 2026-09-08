@@ -394,8 +394,13 @@ The released tarball is 0.11.0, and a build from current source reports the
 same. The one-liner at the top runs [`install.sh`](install.sh): POSIX sh
 over `curl` and `tar`, it picks the tarball for `uname` (linux-x86_64 or
 darwin-arm64), follows GitHub's `releases/latest` redirect rather than the
-API, and refuses anything else. `IYI_PREFIX` moves the destination and
-`IYI_VERSION=0.11.0` pins a release. By hand it is the same two lines:
+API, and refuses anything else. Before it unpacks, it checks the tarball
+against the `SHA256SUMS` the release publishes beside it and refuses a
+mismatch with nothing unpacked; releases before 0.12.0 published no sums,
+and it says so rather than passing over it. CI runs the script against
+the tarball each build proves, then against a sum with one digit wrong.
+`IYI_PREFIX` moves the destination and `IYI_VERSION=0.11.0` pins a
+release. By hand it is the same two lines:
 
 ```sh
 tar -xzf iyi-0.11.0-linux-x86_64.tar.gz -C ~/.local

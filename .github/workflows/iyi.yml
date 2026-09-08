@@ -1306,6 +1306,29 @@ jobs:
             /iyi/bin/iyi vet /iyi/share/iyi/samples/hello.iyi
           '
 
+      # The one-liner, on the tarball this run proved, before a release
+      # exists for it: IYI_RELEASE_URL points the installer at a
+      # directory holding the tarball and the SHA256SUMS the release job
+      # will write the same way. Then the same directory with one hex
+      # digit wrong, which has to be refused with nothing unpacked — an
+      # installer that verifies is only worth having if this step can
+      # fail.
+      - name: install.sh installs the tarball, and refuses a wrong checksum
+        run: |
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS)
+          tarball="$(basename dist/*.tar.gz)"
+          version="${tarball#iyi-}"; version="${version%-linux-x86_64.tar.gz}"
+          export IYI_RELEASE_URL="file://$PWD/dist" IYI_VERSION="$version"
+          IYI_PREFIX="$PWD/installed" sh install.sh
+          env -u IYI_PATH -u CRYSTAL_PATH ./installed/bin/iyi run ./installed/share/iyi/samples/hello.iyi
+
+          sed -i '1s/^0/X/; 1s/^[1-9a-f]/0/' dist/SHA256SUMS
+          if IYI_PREFIX="$PWD/tampered" sh install.sh 2>err; then
+            echo "a tarball that does not match SHA256SUMS was installed"; exit 1
+          fi
+          grep -q "does not match the release's SHA256SUMS" err
+          [ ! -e tampered/bin/iyi ]
+
   # A release is a tag, and nothing else is manual: push `v*` and this
   # job collects the two tarballs the platform jobs built and *proved* —
   # unpacked somewhere else, samples run, daemon served — and attaches
@@ -1327,6 +1350,9 @@ jobs:
         with:
           name: iyi-darwin-arm64
           path: dist/
+      # The checksums ride beside the tarballs, and install.sh refuses a
+      # tarball that does not match them: what comes out of one reaches
+      # the linker.
       - name: Create the release from the proven tarballs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1334,4 +1360,5 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           git tag -l --format='%(contents)' "$tag" > notes.md
           [ -s notes.md ] || echo "See CHANGELOG.md for ${tag#v}." > notes.md
-          gh release create "$tag" --title "iyi ${tag#v}" --notes-file notes.md dist/*.tar.gz
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS)
+          gh release create "$tag" --title "iyi ${tag#v}" --notes-file notes.md dist/*.tar.gz dist/SHA256SUMS

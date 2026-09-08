@@ -27,6 +27,16 @@
   editor's quickfix apply it. A raise can name its span now
   (`TypeException.for_node`'s `size`), where before it was the node's
   name and a literal has none. `bench/agent_loop.py` steps 9 and 10.
+- **The installer verifies what it unpacks.** A release ships
+  `SHA256SUMS` beside its tarballs, and `install.sh` checks the tarball
+  it downloaded against them before `tar` runs - what comes out of one
+  reaches the linker. A mismatch is refused with nothing unpacked and
+  the two sums named; a release from before this (0.11.0 and earlier)
+  publishes none, and the script says the install was not verified
+  rather than passing over it. `IYI_RELEASE_URL` points the script at
+  a directory instead of the release, which is how it is gated: the
+  clean-room job installs the tarball the run just proved through the
+  script, then flips a digit in the sums and requires a refusal.
 - **R-4, measured for the first time.** README read "what R-4 says
   about generics crossing a boundary is specified and unmeasured", and
   half of that was too kind: the dictionary is not built, and what
