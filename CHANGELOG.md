@@ -51,6 +51,21 @@
   `Char` applied, green. Run six, against the model: tokens by 34%,
   rounds 4 to 4, the bar passed on a tie - and fix fired in none of its
   trials, which AI_FIRST.md section 5 says plainly.
+- **The server's keystroke, measured again on the prelude it has now,
+  and the daemon's cache declined again on the number.** `bench/lsp_latency.py`
+  on the release compiler, 32 modules: a verdict in 44 ms p50 / 76 ms
+  p95 (the gate's fixture 37 ms), hover under 1 ms, completion 3 ms,
+  workspace references 1.7 s at one compile per module. SPEC.md III.8
+  read 36 / 55 from when the corpus was 26 modules and the prelude a
+  fraction of its 11,804 lines; `--stats` puts the growth where it is,
+  the top-level pass at 30 ms of a 48 ms front end. IV.1d's
+  `Preanalysed` is exactly that 30 ms and Appendix B #15 asks whether
+  the server should live on it: adoption mutates the held `Program`,
+  which is why the daemon forks per build, so an editor would need a
+  clone per request or an invalidation story for 44 ms to about 15
+  under a debounce it already applies. Not built; the section says so
+  with the number beside it. And the number not to mistake for it: an
+  unoptimised `make iyi` compiler answers the same keystroke in 250 ms.
 
 ### Fixed
 

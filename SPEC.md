@@ -3575,15 +3575,36 @@ becomes scanner.iyi, nine edits land across five files, and the moved
 module compiles clean. The gate holds 49 steps.
 
 **And the speed is measured, not asserted.** `bench/lsp_latency.py`
-opens the sample corpus — 26 modules: the calc language, the kemal
-port, app and std — in one session and times every verb: on the
-machine that wrote this, a keystroke's verdict lands in **36 ms p50 /
-55 ms p95**, hover in 1 ms (the memo: the keystroke already paid for
-the compile), completion in 12 ms p50, and workspace-wide references
-in ~1 s — 26 modules at one compile each, which is the architecture
-priced honestly rather than hidden in an index. The bench runs in CI
-beside the session gate with loose budgets, so the claim cannot
-quietly rot.
+opens the sample corpus — 32 modules: the calc language, the kemal
+port, app, std and the first hour — in one session and times every
+verb. On the machine that wrote this, with the release compiler and the
+11,804-line prelude, a keystroke's verdict lands in **44 ms p50 / 76 ms
+p95** (the gate's own fixture: 37 ms), hover in under 1 ms (the memo:
+the keystroke already paid for the compile), completion in 3 ms p50,
+and workspace-wide references in 1.7 s — 32 modules at one compile
+each, which is the architecture priced honestly rather than hidden in
+an index. When this paragraph was first written the same verdict read
+36 / 55 on 26 modules, and the prelude has grown several times over
+since for a fifth more latency: the top-level pass is what grew, and
+`--stats` on the release compiler reads it at 30 ms of a 48 ms front
+end. The bench runs in CI beside the session gate with loose budgets, so
+the claim cannot quietly rot. One number to not mistake for it: a
+compiler from a plain `make iyi` is unoptimised, and its verdict reads
+250 ms — that is the build, not the server, and `iyi version` says
+which one you have.
+
+**The daemon's cache, asked about once more and declined once more.**
+IV.1d's `Preanalysed` — the prelude's top-level pass done, held in
+memory — is exactly the 30 ms above, and Appendix B #15 asks whether
+the server should live on it. Read for it (compiler.cr,
+`compile_with_preanalysed_prelude`): adoption mutates the held
+`Program` and reuses its `TypeDeclarationProcessor`, which is why the
+daemon forks a child per build and why `IYI_WARM` adopts once and
+returns. Reusing it across an editor's thousand requests means a clone
+of a typed `Program` per request or an invalidation story for a shared
+one, and what it buys is 44 ms to about 15 under a debounce every editor
+already applies. Not built, on the number: the server stays a compile
+per question, and the daemon stays withdrawn.
 
 #### 3. The rest of the verbs, and which are design consequences
 
