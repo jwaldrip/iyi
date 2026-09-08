@@ -125,6 +125,23 @@ else
   tail -6 "$WORK/annotate.log"
 fi
 
+# `!` is III.1.7a's, so every Crystal bang has to be rewritten - and which
+# rewrite is right depends on whose method it is. The fixture plants both on
+# the same line shape: `@items.uniq!` is Crystal's in-place member, whose
+# copy has to go back where the mutation was, and `cart.tidy!` is the tree's
+# own, which lost its bang with its definition. Only the compiler can tell
+# them apart, which is why this runs beside `--annotate`.
+echo "== a bang is rewritten by whose method it is"
+holds "the tree's own def lost the bang"   "def tidy : Int32"          "$WORK/annotated/shop/models/cart_item.iyi"
+holds "and so did its call"                "cart.tidy"                 "$WORK/annotated/shop.iyi"
+holds "Crystal's mutation puts the copy back" "@items = @items.uniq"   "$WORK/annotated/shop/models/cart_item.iyi"
+holds "a bang accessor's reader raises"    'raise "note is not set"'   "$WORK/annotated/shop/models/cart_item.iyi"
+if survivor=$(grep -vE '^[[:space:]]*#' "$WORK/annotated"/*.iyi "$WORK/annotated"/shop/**/*.iyi 2>/dev/null | grep -m1 '[a-z_]!'); then
+  step fail "a name with a bang survived: $survivor"
+else
+  step ok "no name with a bang survived, which is III.1.7"
+fi
+
 # R-2 satisfied is what makes a migrated tree an iyi program rather than
 # the other language in another spelling: every export's types are written, so
 # modules can be read as declarations. `include JSON::Serializable`

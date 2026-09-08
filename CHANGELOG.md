@@ -34,7 +34,14 @@
   `private def` is not R-2's business, which refused every tree with a
   private helper in an exported class. `bench/migrate_gate.sh` annotates
   the fixture, emits a `.iyimod` per module and builds the program from
-  those, byte for byte. And when `--check` comes back clean the verb says
+  those, byte for byte. A Crystal bang is rewritten by whose method it
+  is, which needs the same reading: `def sort!` and its calls drop the
+  bang together (both spellings present, the mutating one becomes
+  `sort_in_place`), `getter!`/`property!` become `getter?`/`property?`
+  and a reader that raises, and `@items.uniq!` alone on a line - the
+  mutation whose copy nobody reads - puts the copy back on the `@ivar`.
+  A call nothing in any program made is named with its file, line and
+  the alternative rather than guessed at. And when `--check` comes back clean the verb says
   what to type next: the build command with the entry filled in, the
   per-module check an editor asks on every change, and `iyi bind`.
 - **`iyi migrate`: a Crystal project, written out as iyi modules.**

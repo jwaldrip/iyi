@@ -168,7 +168,24 @@ class Iyi::Command
 
     project_root = Dir.current
     inferred = annotate ? infer_types(units, notes) : nil
-    units.each { |unit| unit.render(by_source, by_namespace, exports, notes, project_root, inferred) }
+    # Every `def` this tree names with a bang, so a call to one is known
+    # to be the tree's own: `node.sort!` is a method here and loses the
+    # bang, where `array.sort!` is Crystal's and needs the copy assigned
+    # back. Gathered over the whole tree, because the call is rarely in
+    # the file that defines it.
+    tree_bangs = Set(String).new
+    units.each do |unit|
+      unit.lines.each do |line|
+        next unless (match = MigrateUnit::DEF_NAME.match(line))
+        name = match[1] || ""
+        tree_bangs << name.rchop if name.ends_with?('!')
+      end
+    end
+    tree_sources = Set(String).new
+    units.each { |unit| tree_sources << File.expand_path(unit.source) }
+    units.each do |unit|
+      unit.render(by_source, by_namespace, exports, notes, project_root, inferred, tree_bangs, tree_sources)
+    end
 
     # Everything under the tree that is not Crystal travels with it: a
     # view, a fixture, a JSON file the program reads. A *template* is
@@ -584,7 +601,16 @@ class Iyi::Command
     # and is not a constant path.
     PATH_CALL = Rx::Pattern.compile("^(::)?[A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)*\\.[a-z_][A-Za-z0-9_]*[?!]?")
     BANG      = Rx::Pattern.compile("\\.([a-z_]+)!")
-    EXPORTED  = Rx::Pattern.compile("^pub def[ \\t]+([A-Za-z0-9_?!]+)\\(([^)]*)\\)")
+    # `getter! x : T` and `property! x : T`: Crystal's accessor whose
+    # reader raises where nil, which is `not_nil!` written by a macro.
+    BANG_ACCESSOR      = Rx::Pattern.compile("^([ \\t]*)(getter|property)!\\s+([a-z_][A-Za-z0-9_]*)\\s*:\\s*(.+)$")
+    BANG_ACCESSOR_BARE = Rx::Pattern.compile("^[ \\t]*(getter|property)!\\s+(.+)$")
+    # A bang call that is the whole statement, on a name that can be
+    # assigned to: an identifier, an `@ivar`, or a dotted path of them.
+    BANG_STATEMENT = Rx::Pattern.compile("^([ \\t]*)(@?[a-z_][A-Za-z0-9_]*(?:\\.[a-z_][A-Za-z0-9_]*)*)\\.([a-z_][A-Za-z0-9_]*)!((?:\\(.*\\))?(?:\\s*(?:\\{.*\\}|do\\b.*))?)\\s*$")
+    # A def's own name, bang and all.
+    DEF_NAME = Rx::Pattern.compile("^\\s*(?:private\\s+|protected\\s+)?(?:abstract\\s+)?def\\s+(?:self\\.)?([A-Za-z_][A-Za-z0-9_]*[?!]?)")
+    EXPORTED = Rx::Pattern.compile("^pub def[ \\t]+([A-Za-z0-9_?!]+)\\(([^)]*)\\)")
 
     def initialize(@source, @relative, @namespace, @path, @exports, @includes,
                    @lines, @wrappers, @shard_requires, @sidecar)
@@ -926,15 +952,46 @@ class Iyi::Command
     end
 
     @by_namespace = {} of String => MigrateUnit
+    # Names this file defines in both spellings: the bang one is renamed
+    # rather than stripped, here and at its calls in this file.
+    @bang_renames = Set(String).new
+    # Every bang def in the tree - a call to one of these is a call to a
+    # method that lost its bang, not to Crystal's mutating member.
+    @tree_bangs = Set(String).new
+    # Every `.cr` the tree is migrating, so a resolved call can be told
+    # apart from one into Crystal's library.
+    @tree_sources = Set(String).new
 
     def render(by_source : Hash(String, MigrateUnit), by_namespace : Hash(String, MigrateUnit),
                exports : Hash(String, Export), notes : Notes, project_root : String,
-               inferred : ParamTypes? = nil) : Nil
+               inferred : ParamTypes? = nil, tree_bangs : Set(String) = Set(String).new,
+               tree_sources : Set(String) = Set(String).new) : Nil
       @by_namespace = by_namespace
+      @tree_bangs = tree_bangs
+      @tree_sources = tree_sources
       claimed = {} of String => String
       @exports.each { |name| claimed[name] = path }
       depth = wrappers * 2
       opened = 0
+
+      # A `def` named with a `!` cannot be written in a `.iyi` file at all
+      # (III.1.7), so the bang comes off the definition and off its calls -
+      # they agree because both drop it. Where the file wrote *both*
+      # spellings, which is Crystal's pair convention, dropping it would
+      # make one def silently replace the other, so the mutating one says
+      # what it does instead (III.1.7a's amendment) and its calls in this
+      # file follow.
+      plain_defs = Set(String).new
+      bang_defs = Set(String).new
+      lines.each do |line|
+        next unless (match = DEF_NAME.match(line))
+        name = match[1] || ""
+        name.ends_with?('!') ? bang_defs << name.rchop : plain_defs << name
+      end
+      @bang_renames = bang_defs & plain_defs
+      @bang_renames.each do |name|
+        notes.add "bang", "#{path}: `def #{name}!` became `def #{name}_in_place` - both spellings are here, and `!` is III.1.7a's"
+      end
 
       lines.each_with_index do |line, source_index|
         stripped = line.strip
@@ -998,7 +1055,29 @@ class Iyi::Command
           line = annotate_def(line, source_index, inferred, notes)
         end
         line = rewrite_paths(line, exports, claimed, notes)
-        line = rewrite_bangs(line, notes)
+        if (match = BANG_ACCESSOR.match(line))
+          # A bang accessor is `not_nil!` a macro wrote: the reader answers
+          # or raises. `!` is III.1.7a's, so the raise is written where a
+          # reader can see it, and `?` keeps the question the macro also
+          # answered - the same three entry points, one of them visible.
+          indent = match[1] || ""
+          kind = match[2] || ""
+          name = match[3] || ""
+          bare = (match[4] || "").strip
+          bare = bare[0, bare.size - 1].strip if bare.ends_with?('?')
+          while bare.ends_with?("| Nil") || bare.ends_with?("|Nil")
+            bare = bare[0, bare.rindex('|') || bare.size].strip
+          end
+          notes.add "bang", "#{path}: `#{kind}! #{name}` became `#{kind}? #{name}` and a reader that raises - `!` is III.1.7a's"
+          body << "#{indent}#{kind}? #{name} : #{bare} | Nil"
+          body << "#{indent}def #{name} : #{bare}"
+          body << "#{indent}  @#{name} || raise \"#{name} is not set\""
+          body << "#{indent}end"
+          next
+        elsif (match = BANG_ACCESSOR_BARE.match(line))
+          notes.add "bang", "#{path}: `#{(match[1] || "")}! #{(match[2] || "").strip}` needs its type written before the reader that raises can be - `!` is III.1.7a's"
+        end
+        line = rewrite_bangs(line, notes, source_index + 1, inferred)
         body << line
       end
 
@@ -1112,8 +1191,42 @@ class Iyi::Command
     # be written at all. `not_nil!` becomes the narrowing it stands for;
     # every other bang becomes the spelling without it, which is the copy
     # where Crystal's was the mutation — hence the note.
-    private def rewrite_bangs(line : String, notes : Notes) : String
+    private def rewrite_bangs(line : String, notes : Notes, source_line : Int32 = 0, inferred : ParamTypes? = nil) : String
       return line if line.strip.starts_with?('#')
+      if (match = DEF_NAME.match(line)) && (name = match[1] || "").ends_with?('!')
+        bare = name.rchop
+        renamed = @bang_renames.includes?(bare) ? bare + "_in_place" : bare
+        notes.add "bang", "#{path}: `def #{name}` became `def #{renamed}` - `!` can't be part of a name (III.1.7)" unless @bang_renames.includes?(bare)
+        return line.sub(name, renamed)
+      end
+      # A bang call that *is* the statement was there for the mutation and
+      # nothing reads the copy. Whose method it is decides the rewrite, and
+      # only the compiler knows: Crystal's mutating member needs the copy
+      # put back where the mutation would have landed, and one this tree
+      # defines lost its bang with its definition, so the call just drops
+      # it. Where nothing in the program called it there is no reading, and
+      # the line is named rather than guessed at quietly.
+      if (match = BANG_STATEMENT.match(line)) && !@bang_renames.includes?(match[3] || "") &&
+         !return_position?(source_line)
+        indent = match[1] || ""
+        target = match[2] || ""
+        verb = match[3] || ""
+        tail = match[4] || ""
+        reading = bang_reading(verb, source_line, inferred)
+        # An `@ivar` is the one receiver whose assignment cannot mean
+        # something else. A bare name here is either a local or this
+        # type's own getter, and `name = name.verb` on a getter declares a
+        # local that shadows it and quietly does nothing - so the line is
+        # named for a person instead of being rewritten into silence.
+        if reading == :foreign && target.starts_with?('@')
+          notes.add "bang", "#{path}: `#{target}.#{verb}!` became `#{target} = #{target}.#{verb}` - the copy goes back where the mutation was; another name for the same object does not see it"
+          return "#{indent}#{target} = #{target}.#{verb}#{tail}"
+        elsif reading != :own
+          why = reading == :foreign ? "it is the other language's, which mutated in place" : "nothing in the program calls it, so whose `#{verb}!` this is could not be read"
+          notes.add "bang", "#{source}:#{source_line}: `#{target}.#{verb}!` became `#{target}.#{verb}` and nothing reads the copy - #{why}; the line a person writes is `#{target} = #{target}.#{verb}#{tail}`, where `#{target}` is a name this file can assign"
+          return "#{indent}#{target}.#{verb}#{tail}"
+        end
+      end
       while (at = line.index(".not_nil!"))
         start = receiver_start(line, at)
         receiver = line[start...at]
@@ -1125,11 +1238,41 @@ class Iyi::Command
         after = line[(match.end(0))]?
         if after && (after == '=' || after == '~' || after.alphanumeric? || after == '_')
           match[0].not_nil!
+        elsif @bang_renames.includes?(name)
+          ".#{name}_in_place"
+        elsif bang_reading(name, source_line, inferred) == :own
+          notes.add "bang", "#{path}: `#{name}!` became `#{name}` - its definition here lost the bang too"
+          ".#{name}"
         else
-          notes.add "bang", "#{path}: `#{name}!` became `#{name}` — the other language's mutated in place, this answers a copy; check the callers"
+          notes.add "bang", "#{path}: `#{name}!` became `#{name}` - the other language's mutated in place, this answers a copy; check the callers"
           ".#{name}"
         end
       end
+    end
+
+    # Whether the next thing in the file is an `end`, which makes this
+    # line a body's last expression - what it answers is read, so it is
+    # not a statement whose copy nobody wanted.
+    private def return_position?(source_line : Int32) : Bool
+      index = source_line
+      while index < lines.size
+        stripped = lines[index].strip
+        return stripped.starts_with?("end") unless stripped.empty? || stripped.starts_with?('#')
+        index += 1
+      end
+      true
+    end
+
+    # Whose bang method the call on this line reaches: `:foreign` for
+    # Crystal's, `:own` for one this tree defines and rewrote, `:unknown`
+    # where nothing in the program called it, so there was nothing to read
+    # - a library with no program of its own is all `:unknown`.
+    private def bang_reading(verb : String, source_line : Int32, inferred : ParamTypes?) : Symbol
+      if inferred && (targets = inferred.bang_targets({source, source_line, verb}))
+        return targets.all? { |file| @tree_sources.includes?(file) } ? :own : :foreign
+      end
+      return :own if @bang_renames.includes?(verb)
+      @tree_bangs.includes?(verb) ? :unknown : :foreign
     end
 
     # Where the primary expression ending at `at` begins: identifiers,

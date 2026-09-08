@@ -926,6 +926,17 @@ module Iyi
     # module compiled on its own would instantiate every exported def at the
     # signature R-2 makes it write down, and it is exactly the command that
     # cannot precede the artifact it produces.
+    #
+    # The sharp edge of that, because it links rather than refusing: a
+    # parameter whose declared type is *wider* than the argument this build
+    # passed is compiled at the argument's type, and the consumer - which
+    # reads the declaration and widens the call to it, `iyi_artifact_arg_types`
+    # - asks the linker for a symbol nobody emitted. Eight lines reproduce it:
+    # `pub class Crate` with `property? note : String | Nil` in one module and
+    # `crate.note = "hi"` in another emits `Crate#note=<String>` and links
+    # against `Crate#note=<(String | Nil)>`. What the keep file does for
+    # `iyi bind` - name every declared signature so the fill build compiles
+    # it - is what this needs and does not have.
     private def collect_iyi_object_code(unit_names : Array(String),
                                         units_by_name : Hash(String, CompilationUnit)?) : Array(IyiMod::ObjectUnit)
       code = [] of IyiMod::ObjectUnit

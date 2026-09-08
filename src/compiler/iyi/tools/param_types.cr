@@ -34,6 +34,12 @@ module Iyi
     # `{filename, line} => the types callers were handed / bodies produced`
     @call_answers = {} of {String, Int32} => Set(String)
     @body_answers = {} of {String, Int32} => Set(String)
+    # `{filename, line, name} => where the bang def it calls was written.
+    # A `!` cannot be part of a name in iyi (III.1.7), so a migration has
+    # to rewrite these, and the rewrite depends on whose method it is: one
+    # the tree defines lost its bang too, where Crystal's mutating member
+    # needs the copy put back. Textually the two are the same call.
+    @bang_targets = {} of {String, Int32, String} => Set(String)
 
     @target_location = Location.new(nil, 0, 0)
 
@@ -54,6 +60,9 @@ module Iyi
           names.each { |name, types| (bucket[name] ||= Set(String).new).concat(types) }
         end
       {% end %}
+      other.@bang_targets.each do |key, files|
+        (@bang_targets[key] ||= Set(String).new).concat(files)
+      end
       {% for field in %w(call_answers body_answers) %}
         other.@{{field.id}}.each do |key, types|
           (@{{field.id}}[key] ||= Set(String).new).concat(types)
@@ -82,6 +91,13 @@ module Iyi
     # said otherwise.
     def answer(key : {String, Int32}) : Set(String)?
       @call_answers[key]? || @body_answers[key]?
+    end
+
+    # Where the bang method called at this position was written, or nil
+    # if the program has no such call - a macro wrote it, or nothing was
+    # instantiated.
+    def bang_targets(key : {String, Int32, String}) : Set(String)?
+      @bang_targets[key]?
     end
 
     def process_typed_def(typed_def : Def) : Nil
@@ -122,6 +138,13 @@ module Iyi
     private def record_call(node : Call) : Nil
       targets = node.target_defs
       return unless targets
+      if node.name.ends_with?('!') && (at = node.location) && (called_in = at.filename).is_a?(String)
+        bucket = (@bang_targets[{called_in, at.line_number, node.name.rchop}] ||= Set(String).new)
+        targets.each do |target|
+          written_in = target.location.try(&.filename)
+          bucket << (written_in.is_a?(String) ? written_in : "?")
+        end
+      end
       arguments = node.args
       targets.each do |target|
         location = target.location

@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 106,063 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 106,240 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,503 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3285,11 +3285,33 @@ travels for a travelling body to typecheck against, and asking it for types
 refused every tree with a `private def helper(x)` in an exported class
 (`iyimod.cr`).
 
+**`!` is III.1.7's, and which rewrite is right needs the compiler.** A name
+cannot carry a `!` in a `.iyi` file, so every Crystal bang has to become
+something, and there are four somethings. A `def sort!` loses the bang, and
+so does every call to it - they agree because both drop it, and where the
+file wrote *both* spellings the mutating one becomes `sort_in_place`
+(III.1.7a's amendment) rather than silently replacing the other. `getter! x`
+and `property! x` are `not_nil!` written by a macro: they become `getter? x`
+and a reader that raises, which is the same three entry points with the
+raise where a reader can see it. And `x.uniq!` alone on a line was there for
+the mutation, with nothing reading the copy - so on an `@ivar`, the one
+receiver whose assignment cannot mean something else, the copy goes back
+where the mutation was. Whose method it is decides between the last two, and
+only the compiler knows: `--annotate`'s reading records where each bang call
+resolved, so a method the tree defines is told from Crystal's. Where nothing
+in any program called it - a library with no program of its own - the line is
+named with its file and line and the alternative spelled out, rather than
+guessed at quietly.
+
 **What it does not do, said here rather than found later.** The 52 defs
 above are a person's to write; until they are, the application's own modules
 do not become artifacts, which is where R-1's edit loop lives. The fixture
 does: `bench/migrate_gate.sh` annotates it, emits a `.iyimod` per module and
-builds the program from those, byte for byte. And migration is not a
+builds the program from those, byte for byte. One thing a migrated tree can
+hit there is not migration's: an exported parameter whose declared type is
+wider than the argument the producing build passed is compiled at the
+argument's type, and the consumer asks the linker for the declared one
+(`collect_iyi_object_code` names the eight lines that reproduce it). And migration is not a
 speed-up by itself: on the application the whole program compiles in 4.71 s
 of front end as Crystal and 5.09 s as modules, while *one module* compiles
 in 3.15 s, because what remains is Crystal's library and 21 shards — which

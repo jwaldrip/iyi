@@ -11,6 +11,9 @@ cart.add(Shop::Models::Item.new("simit", 15))
 
 puts Shop.banner
 puts Shop::Names.title("cart")
+puts cart.note
+puts cart.note?.nil?
+puts cart.tidy!
 puts cart.total
 puts Shop::Counter.report(cart.total)
 puts cart.dearest.label

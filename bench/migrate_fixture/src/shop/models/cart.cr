@@ -3,13 +3,28 @@ require "./item"
 module Shop::Models
   class Cart
     getter items : Array(Item)
+    # `getter!` is `not_nil!` written by a macro: the reader raises where
+    # nil. `!` is III.1.7a's, so a migration writes the raise where a
+    # reader can see it and keeps the question the macro also answered.
+    getter! note : String | Nil
 
     def initialize
       @items = [] of Item
+      @note = "keep the receipt"
     end
 
     def add(item : Item) : Int32
       items << item
+      items.size
+    end
+
+    # `!` is III.1.7a's, and which rewrite a bang gets depends on whose
+    # method it is: `uniq!` is Crystal's in-place member and the copy has
+    # to go back where the mutation was, `tidy!` is this tree's own and
+    # loses its bang along with its definition. Textually they are the
+    # same call, so the compiler is asked (SPEC.md III.6).
+    def tidy! : Int32
+      @items.uniq!
       items.size
     end
 
