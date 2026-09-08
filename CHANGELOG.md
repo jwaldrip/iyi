@@ -34,7 +34,9 @@
   `private def` is not R-2's business, which refused every tree with a
   private helper in an exported class. `bench/migrate_gate.sh` annotates
   the fixture, emits a `.iyimod` per module and builds the program from
-  those, byte for byte.
+  those, byte for byte. And when `--check` comes back clean the verb says
+  what to type next: the build command with the entry filled in, the
+  per-module check an editor asks on every change, and `iyi bind`.
 - **`iyi migrate`: a Crystal project, written out as iyi modules.**
   `iyi migrate SRC --out DIR [--check]` reads a tree of `.cr` files and
   writes the iyi program it is: the namespace becomes the path (wrappers

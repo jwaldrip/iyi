@@ -67,7 +67,7 @@ class Iyi::Command
         verbose = true
       when "--help", "-h"
         puts <<-USAGE
-          Usage: #{Command.program_name} migrate SRC --out DIR [--check] [--verbose]
+          Usage: #{Command.program_name} migrate SRC --out DIR [--annotate] [--check] [--verbose]
 
           Write every .cr under SRC as an iyi module under DIR: the
           namespace as the path, the wrapper off, `pub` on the top level,
@@ -85,9 +85,12 @@ class Iyi::Command
                     print the first refusal of each
           --verbose every note, rather than the first few of each kind
 
-          The modules build with `--crystal`, which is the library the
-          tree was written against; `#{Command.program_name} bind` puts its
-          shards behind a boundary after that.
+          The modules build with `--crystal`, which is the library the tree
+          was written against; `#{Command.program_name} bind` puts its shards
+          behind a boundary after that. The whole of it, on a project:
+
+              #{Command.program_name} migrate src --out iyi --annotate --check
+              cd iyi && #{Command.program_name} build --crystal -o app <entry>.iyi
           USAGE
         exit
       else
@@ -360,6 +363,12 @@ class Iyi::Command
       broke.each { |(module_path, message)| puts "  #{module_path}: #{message}" }
       puts "#{clean.size} of #{written.size} modules compile; #{broke.size} carry what is listed above"
       exit 1 unless broke.empty?
+      entry = written.keys.find { |module_path| !module_path.includes?('/') && module_path != SHARDS_MODULE }
+      puts
+      puts "the tree is iyi's now. From #{out_dir}:"
+      puts "  #{Command.program_name} build --crystal -o app #{entry || "<entry>"}.iyi"
+      puts "  #{Command.program_name} check --crystal <one module>.iyi        # what an editor asks per change"
+      puts "  #{Command.program_name} bind                                     # the shards behind a boundary, next"
     else
       puts
       puts "next: #{Command.program_name} migrate #{src} --out #{out_dir} --check"
