@@ -4,6 +4,26 @@
 
 ### Added
 
+- **`iyi migrate`: a Crystal project, written out as iyi modules.**
+  `iyi migrate SRC --out DIR [--check]` reads a tree of `.cr` files and
+  writes the iyi program it is: the namespace becomes the path (wrappers
+  peeled one at a time, `DB` spelled `d_b`), every constant path the tree
+  declares is resolved the way Crystal resolves one — outwards through
+  `include`, inside string interpolation too — and rewritten to the bare
+  name its module exports under a `using` line, `require "./x"` becomes
+  `import`, one module owns the shard requires and every other imports it
+  (III.5 orders the effects), an import cycle becomes one module and is
+  named, a reopening of a type the tree does not own moves to a `.cr`
+  beside its module (the compiler is asked which names the library owns),
+  `not_nil!` becomes `(x || raise …)` and any other `foo!` its non-bang
+  spelling, and the templates a macro embeds travel with their constant
+  paths rewritten. `--check` compiles every module written and prints the
+  first refusal of each. On an 8,079-line, 99-file kemal application:
+  **99 files to 91 modules, all 91 compile**, the program builds and
+  answers what the Crystal build answers. `bench/migrate_gate.sh` holds
+  the whole path on a hermetic fixture that plants every case, artifacts
+  included, and runs in CI. SPEC.md III.6 has the rules, the numbers and
+  what it does not do.
 - **`iyi bind`: every shard under `lib/`, behind a boundary, in one
   command.** The boundary existed as two commands per shard run in
   dependency order by a person who knew the order and each shard's root

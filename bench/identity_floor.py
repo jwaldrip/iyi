@@ -135,6 +135,16 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # server named after the binary that was typed.
     (r"CRYSTAL_DAEMON_(BIN|SOCKET)", "the other command surface's own daemon"),
     (r"Crystal (caches|runs|takes)", "a sentence about the other language"),
+    # `iyi migrate` and `iyi bind` are about the other language by
+    # definition: a Crystal project, a Crystal file kept as Crystal, the
+    # tree's own output compared against what Crystal answered. Their
+    # gates say "Crystal" because that is the input.
+    (r"(a|the|as|ordinary|becomes|is|in|not|One|A) Crystal", "a sentence about the other language"),
+    (r"which is the lookup Crystal performs", "a sentence about the other language"),
+    (r"crystal_shards", "the module a migrated tree keeps its shard requires in"),
+    (r"crystal_shop|crystal\.(out|err)|CRYSTAL=|\$CRYSTAL\b", "the gate's own Crystal arm"),
+    (r"struct Int32", "the fixture's reopening of a library type"),
+    (r"stays Crystal", "where a reopening belongs (SPEC.md III.6)"),
     (r"Crystal::EventLoop", "a class inside Crystal's standard library"),
     # A constant `openssl_ext` defines inside its own `lib`, named for the
     # language whose `IO` it bridges. A boundary that reopens a namespace the

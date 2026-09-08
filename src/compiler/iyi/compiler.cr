@@ -234,7 +234,35 @@ module Iyi
     # Raises `InvalidByteSequenceError` if the source code is not
     # valid UTF-8.
     def compile(source : Source | Array(Source), output_filename : String) : Result
+      # iyi: IV.6 read backwards, for every build and not only the server's.
+      # A module's path is its file's path, so an entry whose header ends
+      # its own path names the project root above both, and `import a/b`
+      # from `<root>/x/y.iyi` resolves the way a build from the root would.
+      # A tool that knows better has set the root already; an entry whose
+      # header and path disagree, or that has none, keeps the entry-dir rule.
+      if @iyi_project_root.nil? && (entry = source.is_a?(Source) ? source : source.first?)
+        @iyi_project_root = Compiler.header_root_of(entry.filename, entry.code)
+      end
       compile_configure_program(source, output_filename) { }
+    end
+
+    # The root the entry's header names, or nil: `module calc/parser` in
+    # `/p/calc/parser.iyi` is `/p`.
+    def self.header_root_of(path : String, text : String) : String?
+      header = nil
+      text.each_line do |line|
+        line = line.strip
+        next if line.empty? || line.starts_with?('#')
+        header = line
+        break
+      end
+      return nil unless header && header.starts_with?("module ")
+      module_path = header.lchop("module ").strip
+      return nil if module_path.empty? || module_path.includes?(' ')
+      suffix = "/#{module_path}.iyi"
+      return nil unless path.ends_with?(suffix)
+      root = path[0, path.size - suffix.size]
+      root.empty? ? "/" : root
     end
 
     # Compiles against an already-analysed prelude. This is the same split the

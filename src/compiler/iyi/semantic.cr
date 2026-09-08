@@ -163,11 +163,20 @@ class Iyi::Program
 
     expressions = node.is_a?(Expressions) ? node.expressions : [node] of ASTNode
 
-    # The prelude reaches here as a `require` the compiler prepended, so the
-    # program's own code starts at the first node that is not one. When the
-    # prelude was analysed separately there is no such node and the block goes
-    # to the front, which is the same position.
-    index = expressions.index { |exp| !exp.is_a?(Require) } || expressions.size
+    # The program's own code starts after the entry's *header block*: the
+    # prelude require the compiler prepended, the `module` line, the
+    # `require`s and the `import`/`using` lines (II.3 rule 4 makes that
+    # block line-shaped). It used to be "the first node that is not a
+    # `Require`", which under an `.iyi` entry is the module header —
+    # so an entry's own `require "pg"` was spliced *after* the imported
+    # modules' initialisers, and a shard whose top-level code registers
+    # something ran after the module that used it. Crystal's semantics
+    # are that a `require` runs where it is written, and an entry writes
+    # its requires above everything.
+    index = expressions.index do |exp|
+      !(exp.is_a?(Require) || exp.is_a?(ModuleHeader) || exp.is_a?(ImportDecl) ||
+        exp.is_a?(UsingDecl) || exp.is_a?(Nop))
+    end || expressions.size
     expressions.insert(index, Expressions.from(inits))
 
     node.is_a?(Expressions) ? node : Expressions.new(expressions)

@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# `iyi migrate`, on a Crystal project written to plant every case the
+# rewrite has to answer (SPEC.md III.6).
+#
+#     bash bench/migrate_gate.sh
+#
+# `bench/migrate_fixture` is an ordinary Crystal project: a namespace over
+# several files, a constant reached across them, `include` of a namespace,
+# a module function called qualified, a two-file import cycle, a struct
+# with `JSON::Serializable`, a reopening of `Int32`, a `not_nil!`, a
+# `sort_by!`, and an ECR template embedded by a path from the project
+# root. It runs as Crystal and prints eight lines.
+#
+# The gate is that the migrated tree prints the same eight lines, that
+# every module compiles on its own, that each planted case is *named* in
+# the notes rather than silently mangled, and that the tree emits
+# artifacts — which is R-2 satisfied, and the thing a migration is for.
+#
+# Hermetic: the fixture depends on no shard, so this needs no network.
+set -u
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+IYI="$REPO/bin/iyi"
+CRYSTAL="$REPO/bin/crystal"
+FIXTURE="$REPO/bench/migrate_fixture"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+status=0
+step() {
+  if [ "$1" = "ok" ]; then
+    printf '  ok   %s\n' "$2"
+  else
+    printf '  FAIL %s\n' "$2"
+    status=1
+  fi
+}
+holds() { # holds <name> <needle> <file>
+  if grep -qF -- "$2" "$3"; then step ok "$1"; else step fail "$1 (no '$2')"; fi
+}
+
+echo "== the fixture, as Crystal"
+if ! (cd "$FIXTURE" && "$CRYSTAL" build -o "$WORK/crystal_shop" src/shop.cr > "$WORK/crystal.err" 2>&1 &&
+      cd "$FIXTURE" && "$WORK/crystal_shop" > "$WORK/crystal.out" 2>> "$WORK/crystal.err"); then
+  echo "the fixture does not run as Crystal, which is this gate's premise"
+  tail -5 "$WORK/crystal.err"
+  exit 1
+fi
+printf '  %s\n' "$(tr '\n' '|' < "$WORK/crystal.out")"
+
+echo "== iyi migrate"
+if ! (cd "$FIXTURE" && "$IYI" migrate src --out "$WORK/out" --verbose > "$WORK/migrate.log" 2>&1); then
+  echo "migrate failed"
+  tail -20 "$WORK/migrate.log"
+  exit 1
+fi
+
+# Each planted case is named. A migration that answers a case silently is
+# a migration nobody can check, which is the whole reason for the notes.
+holds "the import cycle is one module, and named"      "R-1 cannot separate" "$WORK/migrate.log"
+holds "the reopening of Int32 stays Crystal"           'struct Int32'        "$WORK/migrate.log"
+holds "not_nil! is rewritten and named"                'not_nil!'            "$WORK/migrate.log"
+holds "sort_by! is rewritten and named"                'sort_by!'            "$WORK/migrate.log"
+holds "include of a namespace becomes using"           'include Names'       "$WORK/migrate.log"
+holds "the embedded template travels"                  'report.html.ecr'     "$WORK/migrate.log"
+
+# The shape of the tree: the namespace is the path, the cycle is one file,
+# the reopening is a `.cr` beside its module, the shards are one module.
+for path in shop.iyi shop/names.iyi shop/config.iyi shop/counter.iyi \
+            shop/report.iyi shop/models/cart_item.iyi \
+            shop/counter_crystal.cr crystal_shards.iyi \
+            src/shop/views/report.html.ecr; do
+  if [ -f "$WORK/out/$path" ]; then step ok "wrote $path"; else step fail "no $path"; fi
+done
+if [ ! -f "$WORK/out/shop/models/cart.iyi" ]; then
+  step ok "the cycle's members are not separate modules"
+else
+  step fail "cart.iyi was written beside the merged module"
+fi
+
+echo "== every module compiles alone"
+if (cd "$FIXTURE" && "$IYI" migrate src --out "$WORK/checked" --check > "$WORK/check.log" 2>&1); then
+  step ok "$(tail -1 "$WORK/check.log")"
+else
+  step fail "modules refused: $(grep -c ':' "$WORK/check.log") lines"
+  tail -8 "$WORK/check.log"
+fi
+
+echo "== the migrated program answers what the Crystal one answered"
+if (cd "$WORK/out" && "$IYI" build --crystal -o "$WORK/iyi_shop" shop.iyi > "$WORK/iyi.err" 2>&1 &&
+    cd "$WORK/out" && "$WORK/iyi_shop" > "$WORK/iyi.out" 2>> "$WORK/iyi.err"); then
+  if diff -q "$WORK/crystal.out" "$WORK/iyi.out" > /dev/null; then
+    step ok "byte for byte, $(wc -l < "$WORK/iyi.out") lines"
+  else
+    step fail "the two differ"
+    diff "$WORK/crystal.out" "$WORK/iyi.out" | head -8
+  fi
+else
+  step fail "the migrated program does not run"
+  tail -8 "$WORK/iyi.err"
+fi
+
+# R-2 satisfied is what makes a migrated tree an iyi program rather than
+# the other language in another spelling: every export's types are written, so
+# modules can be read as declarations. `include JSON::Serializable`
+# generates a `new` and an `initialize` nobody can annotate, which is why
+# a macro's defs are exempt (iyimod.cr, `check_types_written`).
+echo "== the tree emits artifacts (R-2 holds)"
+if (cd "$WORK/out" && "$IYI" build --crystal --emit-iyimod mods -o "$WORK/probe" shop.iyi > "$WORK/emit.log" 2>&1); then
+  written=$(find "$WORK/out/mods" -name '*.iyimod' | wc -l)
+  if [ "$written" -ge 6 ]; then
+    step ok "$written .iyimod files"
+  else
+    step fail "only $written .iyimod files"
+  fi
+else
+  step fail "emitting artifacts refused"
+  grep -m1 -A3 "^Error" "$WORK/emit.log"
+fi
+
+echo "== the same program, built from those artifacts"
+if (cd "$WORK/out" && "$IYI" build --crystal --use-iyimod mods -o "$WORK/from_artifacts" shop.iyi > "$WORK/artifact.log" 2>&1) &&
+   (cd "$WORK/out" && "$WORK/from_artifacts" > "$WORK/artifact.out" 2>&1); then
+  if diff -q "$WORK/crystal.out" "$WORK/artifact.out" > /dev/null; then
+    step ok "byte for byte, with the modules read as declarations"
+  else
+    step fail "the artifact build answers differently"
+    diff "$WORK/crystal.out" "$WORK/artifact.out" | head -8
+  fi
+else
+  step fail "the artifact build failed"
+  grep -m1 -A3 "^Error" "$WORK/artifact.log"
+fi
+
+# The ordering rule a migrated tree depends on and nothing else tested: a
+# shard's top-level code — `pg` registering its driver — runs before the
+# initialiser of any module that uses it, which means the entry's own
+# `require` cannot be spliced after the imported modules' initialisers
+# (semantic.cr, `splice_iyi_module_initialisers`).
+echo "== a required file's top-level code runs before an import's initialiser"
+mkdir -p "$WORK/order"
+cat > "$WORK/order/registry.cr" <<'CR'
+module Registry
+  @@names = [] of String
+
+  def self.register(name : String) : Nil
+    @@names << name
+  end
+
+  def self.names : Array(String)
+    @@names
+  end
+end
+
+Registry.register("from the required file")
+CR
+cat > "$WORK/order/store.iyi" <<'IYI'
+module store
+
+require "./registry.cr"
+
+pub NAMES = Registry.names.dup
+IYI
+cat > "$WORK/order/main.iyi" <<'IYI'
+module main
+
+require "./registry.cr"
+
+import store
+using store::{NAMES}
+
+puts NAMES.join(", ")
+IYI
+if (cd "$WORK/order" && "$IYI" build --crystal -o "$WORK/order_main" main.iyi > "$WORK/order.log" 2>&1) &&
+   ("$WORK/order_main" > "$WORK/order.out" 2>&1) &&
+   grep -q "from the required file" "$WORK/order.out"; then
+  step ok "the register ran first"
+else
+  step fail "the module initialised before the file it required ran"
+  tail -4 "$WORK/order.out"
+fi
+
+echo
+if [ "$status" -eq 0 ]; then
+  echo "migrate gate: a Crystal project became iyi modules, and answers what it answered"
+else
+  echo "migrate gate: something above is not what it was"
+fi
+exit "$status"

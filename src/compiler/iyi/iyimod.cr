@@ -1968,7 +1968,28 @@ module Iyi::IyiMod
     # `DeclarationMarker`, on a def parsed back out of an artifact.
     return if a_def.iyi_body_travelled?
 
-    untyped = a_def.args.reject(&.restriction).map(&.name)
+    # Nor a def a *macro* wrote. R-2 asks the author for types so a
+    # consumer infers nothing, and the author of `include
+    # JSON::Serializable` never saw `def self.new(pull :
+    # ::JSON::PullParser)` — there is no line to annotate. The premise
+    # does not hold either: a macro travels in the artifact (R-5) and the
+    # consumer expands it again, so these declarations are regenerated on
+    # its side rather than read from a header. Refusing them refused every
+    # class in a migrated tree that serialises itself.
+    return if a_def.location.try(&.filename).is_a?(VirtualFile)
+
+    # The bare `*` that says "everything after me is named" is not a
+    # parameter and has nothing to annotate: it is one `Arg` with an
+    # empty name at the splat index. `include JSON::Serializable`
+    # generates `def initialize(*, __pull_for_json_serializable pull :
+    # ::JSON::PullParser)`, and counting the marker refused every class
+    # in a migrated tree that serialises itself.
+    untyped = [] of String
+    a_def.args.each_with_index do |arg, index|
+      next if arg.restriction
+      next if arg.name.empty? && index == a_def.splat_index
+      untyped << arg.name
+    end
     unless untyped.empty?
       a_def.raise <<-MSG
         `#{a_def.name}` is exported and does not say what #{untyped.size == 1 ? "`#{untyped.first}` is" : "#{untyped.map { |name| "`#{name}`" }.join(", ")} are"}

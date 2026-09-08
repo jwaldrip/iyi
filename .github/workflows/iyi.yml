@@ -280,6 +280,18 @@ jobs:
       - name: The edit-rebuild loop stays cheap
         run: python3 bench/rebuild_speed.py
 
+      # `iyi migrate`: a Crystal project written out as iyi modules, on a
+      # fixture that plants every case the rewrite has to answer — a
+      # namespace over several files, an `include` of one, a two-file
+      # import cycle, `JSON::Serializable`, a reopening of `Int32`, a
+      # `not_nil!`, an ECR template embedded by a project-relative path.
+      # The gate is that the migrated tree prints what the Crystal one
+      # printed, that every module compiles alone, that each planted case
+      # is named in the notes, and that the tree emits artifacts — which
+      # is R-2 satisfied and the thing a migration is for.
+      - name: A Crystal project becomes iyi modules, and answers the same
+        run: bash bench/migrate_gate.sh
+
       # R-4 as built, measured: bodies travel in the artifact and object
       # code stays; of what a consumer's front end reads, the share that
       # is bodies it compiles again is held under a line, and the two

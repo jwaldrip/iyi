@@ -49,6 +49,7 @@ class Iyi::Command
         check                    type-check only: no codegen, no binary; errors are the exit code
         fix                      apply the compiler's did-you-mean edits until the file is clean
         bind                     put every shard under lib/ behind a boundary, as .iyimod files
+        migrate                  write a Crystal tree as iyi modules, the namespace as the path
         env                      print Crystal environment information
         eval                     eval code from args or standard input
         mod                      inspect a .iyimod module artifact
@@ -176,6 +177,10 @@ class Iyi::Command
       # reach by prefix.
       options.shift
       bind
+    when command == "migrate"
+      # Exact: it writes a tree of files.
+      options.shift
+      migrate
     when command == "lsp"
       # Exact: a server is not something to reach by accident from `l`.
       options.shift

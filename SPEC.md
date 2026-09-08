@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 104,494 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 105,555 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,503 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3187,6 +3187,87 @@ is: header from path, wrapper off, `pub` on what other files reach,
 the export lacks one. The residue a person writes is the reopened foreign
 type and whatever the counts call R-3, which on this application is one
 file.
+
+**Built: `iyi migrate`.** The measurement above is what the verb was built
+on, and every rule in it was found by migrating that application rather than
+designed:
+
+1. **A Crystal namespace is an iyi path.** `module A::B` wrapping a file, or
+   `class A::B::C` at its top, places the file at `a/b/c` — segments spelled
+   the way `Iyi.iyi_module_name` spells them — and the wrapper comes off,
+   because the path *is* the namespace. Wrappers peel one at a time, so
+   `module Shop` around `module Counter` is `shop/counter` and neither line
+   stays in the file: a module left nested cannot be `pub`, and nothing
+   outside could reach into it.
+2. **A type's qualified name changes with it.** Every constant path the tree
+   declares is resolved the way Crystal resolves one — innermost namespace
+   outwards, through `include`, inside string interpolation as well as code —
+   and rewritten to the bare name its module exports, under a `using` line.
+   `Shop::Names.title(x)` keeps its qualified spelling, because a module
+   function called from inside a type's body does not resolve as a bare name
+   (R-2b names both spellings). Two modules offering one name: the second
+   stays qualified and the note says which. A name that would be shadowed by
+   an imported module's own namespace — `Report` inside `shop`, where
+   `shop/report` is a module — is qualified for the same reason.
+3. **What other files reach is `pub`**, and `def self.x` at a module's top
+   level becomes `def x`: an iyi module extends itself, so that is where its
+   module function lives. The `self.` spelling is reachable from source and
+   *not* through an artifact, which is where the difference shows.
+4. **`require "./x"` is `import`; `require "shard"` stays.** One module owns
+   the tree's shard requires and every other imports it, because a shard's
+   top-level code runs once and III.5 makes an import initialise before its
+   importer.
+5. **A cycle is one module.** R-1 refuses an import cycle and Crystal's
+   global namespace never had one to refuse, so each strongly connected set
+   is written as one module, members in require order, and named. The
+   application's nine `DB` models are one module; splitting them is work a
+   person does with the note in hand.
+6. **A reopening of a type the tree does not own stays Crystal.** The
+   compiler is asked once, by analysing a program that is nothing but the
+   prelude, which names the library already owns — so `struct Int32` and
+   `class Log::Metadata` are recognised whether they are written qualified or
+   not, and travel to a `.cr` file beside their module, `require`d from it,
+   where open classes are Crystal's rule.
+7. **`!` is III.1.7a's.** `x.not_nil!` becomes `(x || raise …)` with the
+   receiver's extent found by scanning left; any other `foo!` becomes `foo`,
+   and each site is named, because the copy and the mutation are not the same
+   program.
+8. **What a macro splices travels too.** A tree's non-Crystal files are
+   copied into the migrated tree, and an `.ecr` template — code, spliced by
+   whichever module renders it — has its constant paths rewritten inside its
+   `<% %>` regions, with the names it uses handed to every module that names a
+   template.
+
+`--check` compiles every module written and prints the first refusal of each;
+that is the list a person works through, and on the application it is empty.
+**99 files became 91 modules and all 91 compile**, the program builds and
+answers what the Crystal build answers on every route tried, and
+`bench/migrate_gate.sh` holds the whole of it on a fixture that plants each
+case above (in CI; hermetic, no shard).
+
+Two defects of the compiler's own were found by doing this and fixed, both
+about a `--crystal` program made of modules. A required file's top-level
+code — `pg` registering its driver — was spliced *after* the imported
+modules' initialisers whenever the entry required the same shard, because
+"the program's own code" was read as "the first node that is not a
+`Require`", which under an `.iyi` entry is the module header
+(`semantic.cr`). And R-2's export check counted the bare `*` of `def
+initialize(*, __pull_for_json_serializable pull : ...)` as an unannotated
+parameter and asked the author to annotate a def a macro wrote — so a macro's
+defs are exempt, which is R-5's own premise: the macro travels and the
+consumer expands it again (`iyimod.cr`).
+
+**What it does not do, said here rather than found later.** It does not write
+the types R-2 wants where Crystal never had them: the application's 177
+exported defs with untyped parameters are counted in a note, and
+`crystal tool bind -e <Root>` prints what the compiler inferred for 193 of
+them. Until those are written the tree's own modules cannot become artifacts,
+which is where R-1's edit loop lives — the fixture, whose exports are typed,
+does emit artifacts and builds from them. And migration is not a speed-up by
+itself: on the application the whole program compiles in 4.71 s of front end
+as Crystal and 5.09 s as modules, while *one module* compiles in 3.15 s,
+because what remains is Crystal's library and 21 shards — which is what `iyi
+bind` is for and what IV.1d's open item would take out.
 
 **Why this is cheaper to build than it looks.** The mechanism that records an
 inferred type as though it had been written already exists and is already load
