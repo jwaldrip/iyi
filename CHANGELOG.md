@@ -51,6 +51,16 @@
   built gives them and holds the bodies' share under 50%, a tripwire;
   it runs in CI beside the rebuild gate. SPEC.md III.9 carries the
   numbers where it said the rule had nothing behind it.
+- **The first program that remembers what it has seen.**
+  `samples/iyi/visited.iyi` walks a graph with a cycle in it, breadth
+  first, and ends only because it keeps a set of where it has been; the
+  prelude grew `Set(T)` for it - a `Hash` with nothing attached to the
+  answer, so insertion order and the index come for free - with `add`
+  answering whether the element was new, `includes?`, `delete`, `each`,
+  `to_a`, `-`, and `to_s` as `Set{"a", "b"}`; `Array#to_set` and
+  `Array#shift?` came with it, the queue's own verb. SPEC.md's 0.1.0
+  list said "no `Set`" because no sample asked; the seventh program of
+  the first hour asks.
 - **The first program that forgets.** `samples/iyi/sessions.iyi`: a
   table of who is signed in, which has to lose an entry when somebody
   signs out, and the prelude grew the one thing it took - `Hash#delete`,
@@ -4533,7 +4543,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 11,804-line library and nothing else. Every other
+  written against iyi's own 11,886-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

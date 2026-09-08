@@ -63,7 +63,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 11,804 lines, of which 2,845 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
+| iyi's own prelude | 11,886 lines, of which 2,927 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -88,7 +88,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 11,804 lines
+> "No standard library worth the name" is still true of iyi's own 11,886 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -270,8 +270,8 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 11,804 lines,
-primitives included, of which the library is 2,845.** Not a standard library:
+**3. A deliberately tiny prelude, written in iyi. Done: 11,886 lines,
+primitives included, of which the library is 2,927.** Not a standard library:
 integers, booleans, a string, one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
 existing sample needs it, never because it belongs there.
@@ -297,7 +297,7 @@ collector (GC_DESIGN.md, the block between two marks in `prelude.iyi`),
 the scheduler and the kernel thread (III.4, `concurrency.iyi` and
 `thread.iyi`), the shortest-round-trip float text (`float.iyi`) - and they
 are most of its lines. So the figure held to the ceiling is the library:
-**2,845 lines** of the 11,804, measured by `bench/doc_numbers.py` as
+**2,927 lines** of the 11,886, measured by `bench/doc_numbers.py` as
 everything under `src/iyi/` except those three, and under 3,734 with the
 samples that needed a first hour's worth of methods. The whole-prelude
 figure is stated beside it because a reader sees the whole file, and a
@@ -368,7 +368,7 @@ reached. **Strings are ASCII** wherever a method has to look inside one,
 sample counts the characters of a word with an accent in it.
 
 What it is not (as of 0.1.0; `Float64#to_s` arrived in 0.11.0, `Range`
-before it and `Hash#delete` after it): no `Float64#to_s`, no `Range`, no `Set`, no formatting, no
+before it, `Hash#delete` and `Set` after it): no `Float64#to_s`, no `Range`, no `Set`, no formatting, no
 `Comparable`, no deletion from a `Hash`, and `sort` is an insertion sort
 because the samples sort five elements. Each of those is absent because no
 sample asked, which is the rule doing its job rather than a list of regrets.
@@ -809,7 +809,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 104,256 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 11,804-line own prelude + 778 in samples |
+| Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,503 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -3587,7 +3587,7 @@ module compiles clean. The gate holds 49 steps.
 opens the sample corpus — 32 modules: the calc language, the kemal
 port, app, std and the first hour — in one session and times every
 verb. On the machine that wrote this, with the release compiler and the
-11,804-line prelude, a keystroke's verdict lands in **44 ms p50 / 76 ms
+11,886-line prelude, a keystroke's verdict lands in **44 ms p50 / 76 ms
 p95** (the gate's own fixture: 37 ms), hover in under 1 ms (the memo:
 the keystroke already paid for the compile), completion in 3 ms p50,
 and workspace-wide references in 70 ms p50 / 113 ms p95. References
@@ -6589,7 +6589,7 @@ Named honestly, so nobody mistakes this draft for complete.
 
     The ratio is not a property of the generator. It follows from declarations
     being 5% of a library's text, which is measured: Crystal's library is
-    195,833 lines and about 11,804 of them are a `def` or a type header.
+    195,833 lines and about 11,886 of them are a `def` or a type header.
 
     **What it would take, also measured.** `crystal tool bind` already writes a
     `.iyimod` for a Crystal namespace compiled under Crystal's library (item
@@ -8023,7 +8023,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 11,804-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 11,886-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler

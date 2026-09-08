@@ -26,6 +26,7 @@ require "./string"
 require "./array"
 require "./range"
 require "./hash"
+require "./set"
 # `Atomic(T)`, on every target: the instructions are LLVM's and lower to
 # plain loads and stores where a target has one thread (wasm32), so the
 # type costs nothing where nothing can race and needs no gate here.

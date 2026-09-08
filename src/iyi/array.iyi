@@ -257,6 +257,12 @@ class Array(T)
     value
   end
 
+  # The first element or nil, which is how a queue is drained: `while
+  # item = queue.shift?`.
+  def shift? : T?
+    empty? ? nil : shift
+  end
+
   # Insertion sort: the samples sort five elements, and a merge sort would be
   # three times the lines to be slower at that size.
   # Sorts this array, and `sorted` is the one that leaves it alone.
@@ -415,6 +421,13 @@ class Array(T)
     result = Array(T).new(@size)
     each { |value| result << value unless result.includes?(value) }
     result
+  end
+
+  # The same values as a `Set`, in the order first met.
+  def to_set : Set(T)
+    set = Set(T).new
+    each { |value| set.add(value) }
+    set
   end
 
   # Pairs, element by element, as long as the shorter.

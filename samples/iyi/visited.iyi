@@ -1,0 +1,62 @@
+# The first program that remembers what it has seen - a walk over a graph
+# with cycles in it, which ends only because it keeps a set of where it
+# has been.
+#
+#   ./bin/iyi run samples/iyi/visited.iyi
+#
+# A `Hash` answers "what is this key's value"; a walk asks a smaller
+# question, "have I been here", and asks it of every neighbour of every
+# node. `Set` is that question with nothing attached to the answer: `add`
+# says whether the element was new, which is the one bit a walk needs,
+# and the set prints in the order things went in, so the path reads back
+# as a path. Like the six programs before it, this documents no rule: it
+# is here because the prelude grows only when a program asks (SPEC.md
+# 0.1.0 item 3), and the seventh program asks for a set.
+module samples/visited
+
+# Who links to whom. `docs` links back to `home`, which is the cycle a
+# walk without memory would never leave.
+links = {
+  "home"    => ["docs", "blog"],
+  "docs"    => ["install", "home"],
+  "blog"    => ["docs", "about"],
+  "install" => [] of String,
+  "about"   => ["home"],
+  "orphan"  => ["home"],
+} of String => Array(String)
+
+# Everything reachable from `start`, breadth first, each page once.
+def reachable(links : Hash(String, Array(String)), start : String) : Set(String)
+  seen = Set(String).new
+  seen.add(start)
+  queue = [start]
+  while page = queue.shift?
+    (links[page]? || [] of String).each do |next_page|
+      queue << next_page if seen.add(next_page)
+    end
+  end
+  seen
+end
+
+from_home = reachable(links, "home")
+puts from_home                     # => Set{"home", "docs", "blog", "install", "about"}
+puts from_home.size                # => 5
+puts from_home.includes?("orphan") # => false
+puts reachable(links, "install")   # => Set{"install"}
+
+# The pages nobody reaches from home, which is the set difference.
+everything = Set(String).new
+links.each { |page, _| everything.add(page) }
+puts everything - from_home # => Set{"orphan"}
+
+# `add` answers whether the element was new: the second time is false.
+tags = Set(String).new
+puts tags.add("iyi")    # => true
+puts tags.add("iyi")    # => false
+puts tags.delete("iyi") # => true
+puts tags.empty?        # => true
+
+# And the everyday shape of the same question: a list with repeats,
+# read into a set and back out, first occurrence wins.
+words = "the cat and the dog and the bird".split(' ')
+puts words.to_set.to_a # => ["the", "cat", "and", "dog", "bird"]

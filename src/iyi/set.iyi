@@ -1,0 +1,68 @@
+# The one set — "have I seen this", with nothing attached to the answer.
+#
+# A `Hash` whose values are nothing: the same dense keys in insertion
+# order and the same index over them, so `add`, `includes?` and `delete`
+# cost what the hash's do and iteration reads back in the order things
+# went in. It is a wrapper rather than a copy of `hash.iyi` because the
+# index is the part worth getting right once. The sample that asked for
+# it (`samples/iyi/visited.iyi`) walks a graph with a cycle in it, and
+# `add` answering whether the element was new is the one bit that walk
+# needs.
+class Set(T)
+  @entries : Hash(T, Bool)
+
+  def initialize
+    @entries = {} of T => Bool
+  end
+
+  def size : Int32
+    @entries.size
+  end
+
+  def empty? : Bool
+    @entries.empty?
+  end
+
+  # True when the element was not there before.
+  def add(value : T) : Bool
+    return false if @entries.has_key?(value)
+    @entries[value] = true
+    true
+  end
+
+  def includes?(value : T) : Bool
+    @entries.has_key?(value)
+  end
+
+  # True when the element was there.
+  def delete(value : T) : Bool
+    !@entries.delete(value).nil?
+  end
+
+  # Every element, in the order it went in.
+  def each(& : T -> Nil) : Nil
+    @entries.each { |value, _| yield value }
+  end
+
+  def to_a : Array(T)
+    @entries.keys
+  end
+
+  # The elements of this set that are not in `other`, in this set's order.
+  def -(other : Set(T)) : Set(T)
+    result = Set(T).new
+    each { |value| result.add(value) unless other.includes?(value) }
+    result
+  end
+
+  # `Set{"a", "b"}`, in insertion order, elements inspected.
+  def to_s : String
+    parts = [] of String
+    each { |value| parts << value.inspect }
+    "Set{" + parts.join(", ") + "}"
+  end
+
+  def inspect : String
+    to_s
+  end
+end
