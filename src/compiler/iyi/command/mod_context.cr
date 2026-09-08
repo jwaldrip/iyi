@@ -97,6 +97,7 @@ class Iyi::Command
         blocks.each do |(written, artifact, failure)|
           puts "── import #{written} ──"
           if artifact
+            print mod_context_consumer_lines(written, artifact)
             IyiMod.surface artifact, STDOUT
           else
             puts "  (#{failure})"
@@ -130,6 +131,7 @@ class Iyi::Command
       String.build do |io|
         io << "── import " << written << " ──\n"
         if artifact
+          io << mod_context_consumer_lines(written, artifact)
           IyiMod.surface artifact, io, docs: docs
         else
           io << "  (" << failure << ")\n"
@@ -160,6 +162,32 @@ class Iyi::Command
 
     texts.each { |text| STDOUT << text }
     puts "# pack: ~#{total} tokens of #{budget} budgeted"
+  end
+
+  # The two lines a consumer writes to reach what the block shows, spelled
+  # out with every exported name in them. The surface says what a module
+  # offers and nothing about how a file names it; the raw sources a pack
+  # replaces carry their *own* `import`/`using` lines and so show the
+  # spelling by accident, and the rounds arm of `bench/context_pack.py`
+  # lost a round to exactly that — a model that wrote `import kemal/dsl`,
+  # called `before_all` bare, and was refused for the missing `using`
+  # (AI_FIRST.md §5, the third run). The language server's completion
+  # attaches the same pair to every export it offers.
+  private def mod_context_consumer_lines(written : String, artifact : IyiMod::Artifact) : String
+    names = artifact.exports.functions.map(&.name)
+    artifact.exports.types.each do |declaration|
+      names << declaration.name if declaration.visibility == "pub"
+    end
+    names.uniq!
+    String.build do |io|
+      io << "# A file that uses this writes, after its own `module` line:\n"
+      io << "#   import " << written << '\n'
+      unless names.empty?
+        io << "#   using " << written << "::{"
+        names.join(io, ", ")
+        io << "}   # or `using " << written << "` for every name\n"
+      end
+    end
   end
 
   # The file's imports, in order, by parsing — never by compiling. A file
