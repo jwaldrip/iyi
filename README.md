@@ -366,7 +366,15 @@ that runs in parallel on helper threads and beside the program on a write
 barrier the compiler emits, a sweep that runs beside the program too, in
 slices the helpers take after every collection, and hands pages back to
 the kernel. GC_DESIGN.md is the account. What R-4 says about
-generics crossing a boundary is specified and unmeasured.
+generics crossing a boundary — a dictionary keyed on GC shape — is
+specified and not built; what is built is the body travelling in the
+artifact and every consumer compiling it again, and that is measured:
+`python3 bench/generic_boundary.py` reads the sample corpus's artifacts
+by section, and 37% of what a consumer's front end reads is bodies it
+compiles again, three of eleven modules ship no object code at all,
+and a consumer of the all-generic one builds from artifacts at 1.04x
+its source time. That is the room R-4's dictionary has, held under a
+line so it cannot move unread.
 
 **Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 36 KB
 binary that starts in 1.6 ms; the same program compiled with Crystal's standard

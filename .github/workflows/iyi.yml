@@ -280,6 +280,14 @@ jobs:
       - name: The edit-rebuild loop stays cheap
         run: python3 bench/rebuild_speed.py
 
+      # R-4 as built, measured: bodies travel in the artifact and object
+      # code stays; of what a consumer's front end reads, the share that
+      # is bodies it compiles again is held under a line, and the two
+      # ends of the spectrum — a module that is all generics, one that
+      # has none — are pinned to the shape the rule gives them.
+      - name: Generics crossing a boundary cost what the SPEC says
+        run: python3 bench/generic_boundary.py
+
       # III.7 step 1: iyi.mod, minimal version selection, a git fetcher —
       # run entirely against a local mirror of bare repositories, so the
       # network is not a dependency of the gate.

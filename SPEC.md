@@ -3740,6 +3740,24 @@ work are the same work**, and that is the argument for doing the collector. The
 dependency count was never it, and the default build is the proof: libgc left
 without one, by not collecting, and the collector is owed anyway.
 
+**What stands in for R-4 today, measured.** Nothing passes a dictionary; a
+generic's body travels in the artifact (`MonoBodies`, IV.2) and every
+consumer compiles it again for the types it uses, so a module that is all
+generics ships no object code at all. `bench/generic_boundary.py` reads the
+sample corpus's eleven artifacts by section table: of the 35,340 bytes a
+consumer's front end reads — exports, mono bodies, macro bodies; the object
+code is the linker's — **37% is bodies it compiles again**, three modules
+(`std/list`, `std/enumerable`, `std/traits`) ship no object code, and
+`immutable.iyi`, a consumer of the all-generic `std/list`, builds its front
+end from artifacts at 1.04x its time from source, the same ~1.0x
+`bench/rebuild_speed.py` reads on the whole corpus. The gate pins the two
+ends — a module with no generic ships object code and no body, one that is
+all generics ships every body and none — and holds the share under 50%, a
+tripwire rather than a target. That 37% and the 1.04x are the room the
+dictionary has: what it would take out of a consumer's build, and what it
+would cost the boundary in a shape key per call. Neither is a reason to
+build it yet.
+
 #### Two kinds of precision, and II.5 only needs the cheap one
 
 II.5 says "R-4 requires a precise collector" and reads as one requirement. It is

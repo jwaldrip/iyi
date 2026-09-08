@@ -27,6 +27,20 @@
   editor's quickfix apply it. A raise can name its span now
   (`TypeException.for_node`'s `size`), where before it was the node's
   name and a literal has none. `bench/agent_loop.py` steps 9 and 10.
+- **R-4, measured for the first time.** README read "what R-4 says
+  about generics crossing a boundary is specified and unmeasured", and
+  half of that was too kind: the dictionary is not built, and what
+  stands in for it - a generic's body travelling in the artifact and
+  every consumer compiling it again - had no number. `bench/generic_boundary.py`
+  reads the sample corpus's eleven artifacts by section table: of the
+  35,340 bytes a consumer's front end reads, 37% is bodies it compiles
+  again; `std/list`, `std/enumerable` and `std/traits` ship no object
+  code at all; and `immutable.iyi`, a consumer of the all-generic
+  `std/list`, builds its front end from artifacts at 1.04x its time from
+  source. The gate pins both ends of the spectrum to the shape R-4 as
+  built gives them and holds the bodies' share under 50%, a tripwire;
+  it runs in CI beside the rebuild gate. SPEC.md III.9 carries the
+  numbers where it said the rule had nothing behind it.
 - **The first program that forgets.** `samples/iyi/sessions.iyi`: a
   table of who is signed in, which has to lose an entry when somebody
   signs out, and the prelude grew the one thing it took - `Hash#delete`,
