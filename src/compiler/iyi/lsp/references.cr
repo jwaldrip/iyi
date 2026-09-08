@@ -31,7 +31,10 @@ module Iyi::Lsp
 
     @target_keys = Set({String, Int32, Int32}).new
     @target_names = Set(String).new
-    @target_files = Set(String).new
+    # The files the adopted defs are declared in: under R-1 only a module
+    # that imports one of them, directly or through another, can refer to
+    # them, which is how the server picks which entries to compile.
+    getter target_files = Set(String).new
     @collecting = false
 
     def initialize(@target_location : Location)

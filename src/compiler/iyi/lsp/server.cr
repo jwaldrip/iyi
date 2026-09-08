@@ -1117,6 +1117,14 @@ module Iyi::Lsp
     # that does not compile. Open buffers ride first, so unsaved edits
     # win; the walk shares workspace/diagnostic's cap for the same
     # reason — a question must not become a build farm.
+    #
+    # And R-1 says which entries can answer at all: a module refers to a
+    # def only through the module that declares it, imported directly or
+    # through another import. So the cursor's own file compiles first and
+    # names the declaring files, and then only the entries whose import
+    # graph reaches one of them compile — the rest could not hold a
+    # reference, and are not asked. On a 32-module corpus that is the
+    # difference between 1.7 s and the importers' share of it.
     private def reference_sites(params : JSON::Any) : {Array({Location, Int32}), Array({Location, Int32})}
       uri = params["textDocument"]["uri"].as_s
       path = path_of(uri)
@@ -1126,12 +1134,17 @@ module Iyi::Lsp
       line_text = text.lines[line0]? || ""
       target = Location.new(path, line0 + 1, Lsp.column_of(line_text, char))
 
-      entries = workspace_entries
-      entries << {path, text} unless entries.any? { |(entry_path, _)| entry_path == path }
-
       references = [] of {Location, Int32}
       declarations = [] of {Location, Int32}
-      entries.each do |(entry_path, entry_text)|
+
+      first = @analysis.references_at(path, text, overrides_for(path), target)
+      return {references, declarations} unless first
+      references.concat first.references
+      declarations.concat first.declarations
+
+      entries = workspace_entries
+      entries_reaching(entries, first.target_files).each do |(entry_path, entry_text)|
+        next if entry_path == path
         visitor = @analysis.references_at(entry_path, entry_text, overrides_for(entry_path), target)
         next unless visitor
         references.concat visitor.references
@@ -1157,6 +1170,61 @@ module Iyi::Lsp
         end
       end
       entries
+    end
+
+    # The entries whose import graph reaches any of `files`: those files'
+    # own modules, everything that imports one of them, everything that
+    # imports one of those, to a fixpoint. Read from the header block as
+    # text, the way document links are, because the block is line-shaped
+    # by design (II.3 rule 4) and a buffer mid-edit still has one. An
+    # entry with no header is kept — it cannot be placed, so it is asked.
+    # A target outside the entries (the prelude, a dependency under
+    # `lib/`) is reachable from anywhere, and then every entry is asked.
+    private def entries_reaching(entries : Array({String, String}), files : Enumerable(String)) : Array({String, String})
+      headers = entries.map { |(_, entry_text)| Exports.header_of(entry_text) }
+      by_path = {} of String => Int32
+      entries.each_with_index { |(entry_path, _), index| by_path[entry_path] = index }
+
+      reached = Set(String).new
+      files.each do |file|
+        index = by_path[file]?
+        return entries unless index && (header = headers[index])
+        reached << header
+      end
+
+      imports = entries.map { |(_, entry_text)| imports_of(entry_text) }
+      loop do
+        grew = false
+        entries.each_index do |index|
+          header = headers[index]
+          next if header.nil? || reached.includes?(header)
+          if imports[index].any? { |imported| reached.includes?(imported) }
+            reached << header
+            grew = true
+          end
+        end
+        break unless grew
+      end
+
+      selected = [] of {String, String}
+      entries.each_with_index do |entry, index|
+        header = headers[index]
+        selected << entry if header.nil? || reached.includes?(header)
+      end
+      selected
+    end
+
+    private def imports_of(text : String) : Array(String)
+      imports = [] of String
+      text.each_line do |line|
+        stripped = line.lstrip
+        next unless stripped.starts_with?("import ")
+        mod = stripped.lchop("import ").each_char
+          .take_while { |ch| ch.alphanumeric? || ch == '_' || ch == '/' }
+          .join
+        imports << mod unless mod.empty?
+      end
+      imports
     end
 
     private def dedupe(sites : Array({Location, Int32})) : Array({Location, Int32})
@@ -2058,8 +2126,8 @@ module Iyi::Lsp
     end
 
     # Incoming: under R-1 a def's callers live in its consumers'
-    # compiles, so every open document answers and the edges merge —
-    # the references rule, one level up.
+    # compiles, so every entry whose imports reach the def's module
+    # answers and the edges merge — the references rule, one level up.
     private def on_incoming_calls(id : JSON::Any, params : JSON::Any) : Nil
       key = hierarchy_key(params)
       return respond_null(id) unless key
@@ -2070,7 +2138,7 @@ module Iyi::Lsp
       end
 
       merged = {} of {String, Int32, Int32} => {HierarchySite?, Array(CallSite)}
-      entries.each do |(entry_path, entry_text)|
+      entries_reaching(entries, {key[0]}).each do |(entry_path, entry_text)|
         visitor = @analysis.incoming_calls_at(entry_path, entry_text, overrides_for(entry_path), key)
         next unless visitor
         visitor.calls.each do |group, (site, calls)|

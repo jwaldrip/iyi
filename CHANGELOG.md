@@ -40,6 +40,20 @@
 
 ### Changed
 
+- **A workspace question compiles the entries that can answer it.**
+  References, rename and incoming calls compiled every open document
+  and every `.iyi` under the root, one front-end compile each, and the
+  section called that the architecture priced honestly. R-1 prices it
+  lower: a module refers to a def only through the module that declares
+  it, imported directly or through another import. The cursor's file
+  compiles first and names the declaring files; then only the entries
+  whose import graph reaches one of them compile, the header block read
+  as text (II.3 rule 4), an entry with no header asked anyway, a target
+  outside the workspace asking everybody. On the 32-module corpus with
+  the release compiler, references go 1.7 s to 70 ms p50 / 113 ms p95,
+  same answers; `bench/lsp_session.py` step 34b holds the case two
+  imports away, and `bench/lsp_latency.py`'s references budget is 3 s
+  where "ask everybody" reads 4.6 s unoptimised.
 - **The rounds arm runs `iyi fix` before it asks the model again.** The
   loop AI_FIRST.md section 2 describes has `fix` in it and the gate's did
   not: a compiler that says the `Char` bought nothing on a model that

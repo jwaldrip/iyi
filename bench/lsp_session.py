@@ -776,6 +776,41 @@ def main():
          "first" in callers and "show" in callers,
          f"token <- {callers}")
 
+    # 34b. which entries a workspace question compiles is R-1's answer,
+    #      not "all of them": a module can refer to a def only through
+    #      the module that declares it, imported directly or through
+    #      another import. `use.iyi` imports only `shape/make`, whose
+    #      `make` answers a `Box`, and calls `area` on it — a reference
+    #      two imports away from the declaration, and found. `lone.iyi`
+    #      imports nothing and declares an `area` of its own: it cannot
+    #      hold a reference, so it is not compiled — which this step
+    #      cannot see and `bench/lsp_latency.py`'s references budget
+    #      can — and its `area` is not in the answer.
+    shape = os.path.join(work, "shape")
+    os.makedirs(shape, exist_ok=True)
+    with open(os.path.join(shape, "base.iyi"), "w") as f:
+        f.write("module shape/base\n\npub struct Box\n  def initialize\n  end\n\n"
+                "  def area : Int32\n    4\n  end\nend\n")
+    with open(os.path.join(shape, "make.iyi"), "w") as f:
+        f.write("module shape/make\n\nimport shape/base\nusing shape/base::{Box}\n\n"
+                "pub def make : Box\n  Box.new\nend\n")
+    with open(os.path.join(work, "use.iyi"), "w") as f:
+        f.write("module use\n\nimport shape/make\nusing shape/make::{make}\n\n"
+                "puts make.area\n")
+    with open(os.path.join(work, "lone.iyi"), "w") as f:
+        f.write("module lone\n\nstruct Other\n  def area : Int32\n    1\n  end\nend\n\n"
+                "puts Other.new.area\n")
+    base_uri = "file://" + os.path.join(shape, "base.iyi")
+    reply = c.send("textDocument/references",
+                   {"textDocument": {"uri": base_uri},
+                    "position": {"line": 6, "character": 6},
+                    "context": {"includeDeclaration": False}})
+    locs = reply["result"] or []
+    files = sorted({l["uri"].rsplit("/", 1)[-1] for l in locs})
+    step("34b", "references reach through a transitive import",
+         files == ["use.iyi"],
+         f"{len(locs)} site(s) across {files}")
+
     # 35. auto-import completion: a fresh buffer that has never
     #     compiled types `tok`; the workspace's exports answer anyway
     #     (R-2 made `pub` a parse-time fact), and the item carries the

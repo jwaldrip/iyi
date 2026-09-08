@@ -28,7 +28,11 @@ BUDGETS = {
     "didChange": 2.0,
     "hover": 2.0,
     "completion": 2.0,
-    "references": 10.0,  # workspace-wide: one compile per module, by design
+    # Workspace-wide, one compile per entry whose imports reach the
+    # declaring module. Every entry compiled instead: 4.6 s on this
+    # corpus with an unoptimised compiler, which is what the budget is
+    # set under, so "ask everybody" cannot come back unnoticed.
+    "references": 3.0,
 }
 
 

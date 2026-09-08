@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 104,120 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 104,191 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,804-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,503 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3581,9 +3581,21 @@ verb. On the machine that wrote this, with the release compiler and the
 11,804-line prelude, a keystroke's verdict lands in **44 ms p50 / 76 ms
 p95** (the gate's own fixture: 37 ms), hover in under 1 ms (the memo:
 the keystroke already paid for the compile), completion in 3 ms p50,
-and workspace-wide references in 1.7 s — 32 modules at one compile
-each, which is the architecture priced honestly rather than hidden in
-an index. When this paragraph was first written the same verdict read
+and workspace-wide references in 70 ms p50 / 113 ms p95. References
+read 1.7 s a commit earlier — 32 modules at one compile each, "the
+architecture priced honestly rather than hidden in an index" — and the
+price was R-1's to cut, not an index's: a module can refer to a def
+only through the module that declares it, imported directly or through
+another import, so the cursor's file compiles first and names the
+declaring files, and only the entries whose import graph reaches one of
+them compile at all. The header block is read as text for it (II.3
+rule 4: line-shaped by design, so a buffer mid-edit still has one), an
+entry with no header is asked anyway, and a target outside the
+workspace — the prelude, a dependency — is reachable from anywhere and
+asks everybody. `bench/lsp_session.py` step 34b holds the transitive
+case: `use.iyi` imports only `shape/make`, whose `make` answers a
+`Box`, and its `make.area` is found from `Box#area`'s declaration two
+imports away. When this paragraph was first written the same verdict read
 36 / 55 on 26 modules, and the prelude has grown several times over
 since for a fifth more latency: the top-level pass is what grew, and
 `--stats` on the release compiler reads it at 30 ms of a 48 ms front
