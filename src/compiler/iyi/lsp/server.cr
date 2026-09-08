@@ -578,11 +578,13 @@ module Iyi::Lsp
     #
     # A pull carries a `resultId`, and the next pull hands it back: the
     # same id means "nothing you judged this by has moved", and the
-    # answer is `unchanged` — no compile. The id is the workspace's
-    # fingerprint (below), one for every file, because under R-1 a
-    # file's verdict depends on its imports and nothing here resolves
-    # imports without compiling; so any change anywhere is a full
-    # answer for everything, and no change is free.
+    # answer is `unchanged` — no compile. What a file's verdict is
+    # judged by is R-1's list: the file, and the modules its imports
+    # reach, directly or through another import. So the id is per file,
+    # folded over exactly that set (`result_ids`), and a keystroke in
+    # one module makes the next pull full for that module and its
+    # importers and `unchanged` for everything else — on a corpus of
+    # thirty modules, a compile or three where it was thirty.
     #
     # Free is the whole point. VS Code's client pulls
     # `workspace/diagnostic` two seconds after every answer, forever,
@@ -590,17 +592,19 @@ module Iyi::Lsp
     # server was compiling every file under the root — up to two
     # hundred — every two seconds of an idle editor, and keeping every
     # program it built. Two Cursor windows on a laptop: a gigabyte of
-    # resident memory and a fan, doing nothing.
+    # resident memory and a fan, doing nothing. And with one id for
+    # the whole workspace, an editor being typed in was the same build
+    # farm every two seconds; the per-file id is what ends that.
 
     # `textDocument/diagnostic` — one buffer, on request. Agents poll;
     # they do not sit on a subscription. Same compile, same rows.
     private def on_pull_diagnostics(id : JSON::Any, params : JSON::Any) : Nil
       uri = params["textDocument"]["uri"].as_s
-      fingerprint = workspace_fingerprint
+      result_id = result_ids[path_of(uri)]? || "0"
       respond(id) do |json|
         json.object do
-          json.field "resultId", fingerprint
-          if params["previousResultId"]?.try(&.as_s?) == fingerprint
+          json.field "resultId", result_id
+          if params["previousResultId"]?.try(&.as_s?) == result_id
             json.field "kind", "unchanged"
           else
             rows = diagnostic_rows(uri)
@@ -623,11 +627,12 @@ module Iyi::Lsp
     # no shared state to invalidate. Capped so a monorepo cannot turn
     # one request into a build farm.
     private def on_workspace_diagnostics(id : JSON::Any, params : JSON::Any?) : Nil
-      fingerprint = workspace_fingerprint
-      previous = Set(String).new
+      ids = result_ids
+      previous = {} of String => String
       params.try(&.["previousResultIds"]?).try(&.as_a?).try &.each do |entry|
         uri = entry["uri"]?.try(&.as_s?)
-        previous << uri if uri && entry["value"]?.try(&.as_s?) == fingerprint
+        value = entry["value"]?.try(&.as_s?)
+        previous[uri] = value if uri && value
       end
 
       uris = @documents.keys.dup
@@ -646,11 +651,12 @@ module Iyi::Lsp
             json.array do
               uris.each do |uri|
                 next unless @documents.has_key?(uri) || File.file?(path_of(uri))
+                result_id = ids[path_of(uri)]? || "0"
                 json.object do
                   json.field "uri", uri
                   json.field "version", nil
-                  json.field "resultId", fingerprint
-                  if previous.includes?(uri)
+                  json.field "resultId", result_id
+                  if previous[uri]? == result_id
                     json.field "kind", "unchanged"
                     next
                   end
@@ -671,29 +677,88 @@ module Iyi::Lsp
       end
     end
 
-    # Everything a verdict in this workspace can depend on, as one
-    # value: each open buffer's text, and every `.iyi`, `iyi.mod` and
-    # `iyi.sum` under the root by size and mtime — `lib/` included,
-    # since a dependency's declarations are part of the answer even
-    # though its files are not judged. A stat per file, no reads; the
-    # hash is per process, which is exactly the life of a resultId.
-    private def workspace_fingerprint : String
-      fold = 0_u64
+    # One workspace file as the pull sees it: what it is (an open
+    # buffer's text hash, or a disk file's size and mtime), what module
+    # it declares, and what it imports. The header block is read as
+    # text (II.3 rule 4) and cached by size and mtime for disk files, so
+    # a pull every two seconds is a stat per file and a read of the
+    # ones that moved.
+    record Node, stamp : UInt64, header : String?, imports : Array(String)
+    @header_cache = {} of String => {Int64, Time, String?, Array(String)}
+
+    # A resultId per file: a fold over the file's own stamp and the
+    # stamps of every module its imports reach, plus one stamp shared
+    # by all for what is outside the graph — `lib/`, `iyi.mod`,
+    # `iyi.sum` — since a dependency's declarations are part of every
+    # verdict and the graph does not resolve into them. The hash is per
+    # process, which is exactly the life of a resultId.
+    private def result_ids : Hash(String, String)
+      prime = 1099511628211_u64
+      nodes = {} of String => Node
       @documents.each do |uri, text|
-        fold = fold &* 1099511628211_u64 &+ uri.hash
-        fold = fold &* 1099511628211_u64 &+ text.hash
+        nodes[path_of(uri)] = Node.new(text.hash, Exports.header_of(text), imports_of(text))
       end
+
+      outside = 0_u64
       if root = @root
-        patterns = {"*.iyi", "iyi.mod", "iyi.sum"}.map { |name| File.join(root, "**", name) }
-        Dir.glob(patterns) do |file|
+        Dir.glob(File.join(root, "**", "*.iyi")) do |file|
+          next if file.includes?("/.")
           info = File.info?(file)
           next unless info
-          fold = fold &* 1099511628211_u64 &+ file.hash
-          fold = fold &* 1099511628211_u64 &+ info.size.hash
-          fold = fold &* 1099511628211_u64 &+ info.modification_time.hash
+          if file.includes?("/lib/")
+            outside = outside &* prime &+ file.hash &+ info.size.hash &+ info.modification_time.hash
+            next
+          end
+          next if nodes.has_key?(file)
+          header, imports = header_and_imports(file, info)
+          nodes[file] = Node.new(info.size.hash &* prime &+ info.modification_time.hash, header, imports)
+        end
+        Dir.glob(File.join(root, "**", "iyi.mod"), File.join(root, "**", "iyi.sum")) do |file|
+          info = File.info?(file)
+          next unless info
+          outside = outside &* prime &+ file.hash &+ info.size.hash &+ info.modification_time.hash
         end
       end
-      fold.to_s(36)
+
+      by_header = {} of String => String
+      nodes.each do |path, node|
+        if header = node.header
+          by_header[header] ||= path
+        end
+      end
+
+      ids = {} of String => String
+      seen = Set(String).new
+      stack = [] of String
+      nodes.each_key do |path|
+        seen.clear
+        seen << path
+        stack.clear
+        stack << path
+        fold = outside
+        while current = stack.pop?
+          node = nodes[current]
+          fold = fold &* prime &+ current.hash &* prime &+ node.stamp
+          node.imports.each do |imported|
+            if (target = by_header[imported]?) && seen.add?(target)
+              stack << target
+            end
+          end
+        end
+        ids[path] = fold.to_s(36)
+      end
+      ids
+    end
+
+    private def header_and_imports(file : String, info : File::Info) : {String?, Array(String)}
+      if (cached = @header_cache[file]?) && cached[0] == info.size && cached[1] == info.modification_time
+        return {cached[2], cached[3]}
+      end
+      text = File.read(file)
+      header = Exports.header_of(text)
+      imports = imports_of(text)
+      @header_cache[file] = {info.size, info.modification_time, header, imports}
+      {header, imports}
     end
 
     # ── Hover ────────────────────────────────────────────────────────────

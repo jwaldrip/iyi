@@ -64,6 +64,19 @@
 
 ### Changed
 
+- **A pull's `resultId` is per file, folded over what the file's verdict
+  depends on.** 0.11.0 gave `workspace/diagnostic` one id for the whole
+  workspace: any change anywhere was a full answer for every file, so an
+  editor being typed in was the build farm every two seconds that an
+  idle one had stopped being. The id is now a fold over the file's own
+  stamp - an open buffer's text, a disk file's size and mtime - and the
+  stamps of every module its imports reach, read off the header block
+  the way references now read it, plus one stamp all files share for
+  `lib/`, `iyi.mod` and `iyi.sum`. A keystroke in a leaf module is one
+  compile on the next pull and `unchanged` for the rest; one in
+  `calc/lexer.iyi` is three (lexer, parser, `calc`) where it was
+  thirty-two. `bench/lsp_session.py` 31c and 31d hold both: a changed
+  file alone, then a changed import and its importers.
 - **A workspace question compiles the entries that can answer it.**
   References, rename and incoming calls compiled every open document
   and every `.iyi` under the root, one front-end compile each, and the

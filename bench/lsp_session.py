@@ -716,16 +716,34 @@ def main():
          elapsed < 0.5,
          f"{len(again)} unchanged in {elapsed * 1000:.0f} ms")
 
-    # 31c. one file on disk moves, and the next pull is full again, for
-    #      every file — an import's declarations are part of any verdict.
+    # 31c. one file on disk moves, and the next pull is full for that
+    #      file and unchanged for every other: `broken.iyi` imports
+    #      nothing and nobody imports it, so its verdict is the only one
+    #      the change can reach.
     with open(os.path.join(work, "broken.iyi"), "w") as f:
         f.write("module broken\n\ndef boom : String\n  \"1\"\nend\n\nputs boom\n")
     reply = c.send("workspace/diagnostic", {"previousResultIds": previous})
     healed = reply["result"]["items"]
-    step("31c", "a changed file makes the next pull full",
-         all(i["kind"] == "full" for i in healed) and
-         not any(i["items"] for i in healed),
-         f"{len(healed)} full, none dirty")
+    full = sorted(i["uri"].rsplit("/", 1)[-1] for i in healed if i["kind"] == "full")
+    step("31c", "a changed file makes the next pull full for itself alone",
+         full == ["broken.iyi"] and
+         not any(i.get("items") for i in healed),
+         f"{full} full, {len(healed) - len(full)} unchanged, none dirty")
+
+    # 31d. a module somebody imports moves, and the pull is full for it
+    #      and its importers — `calc/lexer.iyi` on disk, `calc/parser.iyi`
+    #      an open buffer that imports it — and unchanged for the rest.
+    #      An import's declarations are part of a verdict; a stranger's
+    #      are not.
+    previous = [{"uri": i["uri"], "value": i["resultId"]} for i in healed]
+    with open(os.path.join(calc, "lexer.iyi"), "a") as f:
+        f.write("# touched\n")
+    reply = c.send("workspace/diagnostic", {"previousResultIds": previous})
+    touched = reply["result"]["items"]
+    full = sorted(i["uri"].rsplit("/", 1)[-1] for i in touched if i["kind"] == "full")
+    step("31d", "a changed import makes the pull full for its importers",
+         full == ["lexer.iyi", "parser.iyi"],
+         f"{full} full, {len(touched) - len(full)} unchanged")
 
     # 32. references reach a file nobody opened: printer.iyi calls
     #     `token` from the disk, and the workspace walk finds it beside
