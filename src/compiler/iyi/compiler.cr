@@ -134,6 +134,14 @@ module Iyi
     # iyi: the project root for `iyi lsp` — see Program#iyi_project_root.
     property iyi_project_root : String? = nil
 
+    # iyi: the root the entry file's own header names, if its path ends with
+    # it (IV.6 read backwards) — `module calc/parser` in
+    # `/p/calc/parser.iyi` is `/p`. Tried *after* the entry's directory, so
+    # building a nested module directly resolves its imports the way a build
+    # from the root would, and a file whose header happens to end its path
+    # does not change what a build that already worked resolves.
+    property iyi_header_root : String? = nil
+
     # iyi: a namespace whose methods this build must define rather than inline.
     #
     # `--emit-iyimod` already says this about iyi modules, and the reason is the
@@ -240,8 +248,8 @@ module Iyi
       # from `<root>/x/y.iyi` resolves the way a build from the root would.
       # A tool that knows better has set the root already; an entry whose
       # header and path disagree, or that has none, keeps the entry-dir rule.
-      if @iyi_project_root.nil? && (entry = source.is_a?(Source) ? source : source.first?)
-        @iyi_project_root = Compiler.header_root_of(entry.filename, entry.code)
+      if @iyi_header_root.nil? && (entry = source.is_a?(Source) ? source : source.first?)
+        @iyi_header_root = Compiler.header_root_of(entry.filename, entry.code)
       end
       compile_configure_program(source, output_filename) { }
     end
@@ -325,6 +333,7 @@ module Iyi
       program.warnings = @warnings
       program.iyi_file_overrides = @iyi_file_overrides
       program.iyi_project_root = @iyi_project_root
+      program.iyi_header_root = @iyi_header_root
       program.color = color?
       program.stdout = stdout
       program.show_error_trace = show_error_trace?
@@ -425,7 +434,7 @@ module Iyi
 
     # Re-applied by the adopt path above. `new_program` is what would otherwise
     # have set them, and adoption skips it.
-    APPLIED_ON_ADOPT = %w(use_iyimod no_codegen emit_iyimod warnings color stdout show_error_trace iyi_mod_table iyi_file_overrides iyi_project_root)
+    APPLIED_ON_ADOPT = %w(use_iyimod no_codegen emit_iyimod warnings color stdout show_error_trace iyi_mod_table iyi_file_overrides iyi_project_root iyi_header_root)
 
     # Neither, and two of these are judgements rather than facts. `mcpu`,
     # `mattr` and `mcmodel` reach the target machine and the target machine
@@ -1889,6 +1898,7 @@ module Iyi
       program.warnings = @warnings
       program.iyi_file_overrides = @iyi_file_overrides
       program.iyi_project_root = @iyi_project_root
+      program.iyi_header_root = @iyi_header_root
       program.optimization_mode = @optimization_mode
       program.iyi_module_dir = @use_iyimod
       program.iyi_wants_object_code = !@no_codegen

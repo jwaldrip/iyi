@@ -169,6 +169,15 @@ class Iyi::Command
 
   record Shard, name : String, entry : String, root : String?, dependencies : Array(String)
 
+  # Through `Iyi::Rx` rather than Crystal's `Regex`: pcre2 is on the list
+  # iyi means to need nothing from, and `bench/dependency_floor.sh` fails
+  # the build when a file here puts it back on the link line (SPEC.md
+  # III.10, Appendix B #17).
+  private SHARD_ROOT     = Rx::Pattern.compile("^(?:abstract[ \\t]+)?(?:module|class|struct)[ \\t]+([A-Z][A-Za-z0-9_]*)")
+  private SHARD_REQUIRE  = Rx::Pattern.compile("^require[ \\t]+\"(\\.[^\"]+)\"")
+  private MANIFEST_TOP   = Rx::Pattern.compile("^[^ \\t]")
+  private MANIFEST_ENTRY = Rx::Pattern.compile("^  ([A-Za-z0-9_]+):")
+
   # The shard's root namespace: the first top-level `module`, `class` or
   # `struct` its entry file declares, which is what `-e` selects. A shard
   # whose entry only requires its parts declares nothing there, and then
@@ -180,11 +189,11 @@ class Iyi::Command
       next unless seen.add?(file)
       next unless File.file?(file)
       File.each_line(file) do |line|
-        if match = line.match(/^(?:abstract\s+)?(?:module|class|struct)\s+([A-Z][A-Za-z0-9_]*)/)
+        if match = SHARD_ROOT.match(line)
           return match[1]
         end
-        if match = line.match(/^require\s+"(\.[^"]+)"/)
-          required = File.expand_path(match[1], File.dirname(file))
+        if match = SHARD_REQUIRE.match(line)
+          required = File.expand_path(match[1] || "", File.dirname(file))
           if required.ends_with?("/*") || required.ends_with?("/**")
             Dir.glob(File.join(required.rchop("*").rchop("*"), "**", "*.cr")).sort.each { |part| queue << part }
           else
@@ -207,13 +216,15 @@ class Iyi::Command
     names = [] of String
     in_dependencies = false
     File.each_line(manifest) do |line|
-      if line.match(/^\S/)
+      if MANIFEST_TOP.matches?(line)
         in_dependencies = line.starts_with?("dependencies:")
         next
       end
       next unless in_dependencies
-      if match = line.match(/^  ([A-Za-z0-9_]+):/)
-        names << match[1] if Dir.exists?(File.join(shards_available, match[1]))
+      if match = MANIFEST_ENTRY.match(line)
+        if (name = match[1]) && Dir.exists?(File.join(shards_available, name))
+          names << name
+        end
       end
     end
     names

@@ -244,6 +244,10 @@ module Iyi
     # Nil for every build a person runs; the entry-dir rule stands.
     property iyi_project_root : String? = nil
 
+    # iyi: the root the entry's own header names (IV.6 read backwards),
+    # tried after the entry's directory.
+    property iyi_header_root : String? = nil
+
     # iyi: whether this build is writing artifacts as well as reading them
     # (SPEC.md IV.3). Set by the compiler from `--emit-iyimod`.
     #

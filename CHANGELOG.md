@@ -4,6 +4,21 @@
 
 ### Added
 
+- **The header root is a fallback, not a replacement.** `iyi migrate
+  --check` compiles a nested module on its own, which needs IV.6 read
+  backwards: `module a/b` in `<root>/a/b.iyi` names `<root>`, and imports
+  resolve from there. Applied to every build it *replaced* the entry's own
+  directory, and the samples whose header path happens to end their file
+  path — `samples/modules.iyi` copied to a work directory — stopped
+  resolving their imports; `bench/arena_exercise.sh` said so by name. The
+  root the header names is now tried after the entry's directory, never
+  instead of it.
+- **`migrate` and `bind` match through the compiler's own engine.** Both
+  verbs were written with `Regex` literals, which put pcre2 back on the
+  link line and `bench/dependency_floor.sh` refused the build (SPEC.md
+  III.10, Appendix B #17). They use `Iyi::Rx` now, and the one check a
+  pattern would have been compiled per name and per line for — does this
+  line name this word on its own — is hand-written.
 - **`iyi migrate`: a Crystal project, written out as iyi modules.**
   `iyi migrate SRC --out DIR [--check]` reads a tree of `.cr` files and
   writes the iyi program it is: the namespace becomes the path (wrappers

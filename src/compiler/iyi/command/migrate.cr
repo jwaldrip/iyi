@@ -473,16 +473,23 @@ class Iyi::Command
     getter usings = {} of String => Set(String)
     getter body = [] of String
 
-    DECL    = /^(\s*)(?:(private|protected)\s+)?(?:abstract\s+)?(class|struct|module|enum|alias|annotation|lib)\s+([A-Z][\w:]*)/
-    DEF     = /^(\s*)(?:(private|protected)\s+)?(def|macro)\s+(?:self\.)?([\w?!=<>+\-*\/%\[\]]+)/
-    CONST   = /^(\s*)([A-Z]\w*)\s*=[^=]/
-    REQUIRE = /^\s*require\s+"([^"]+)"/
-    INCLUDE = /^(\s*)(?:include|extend)\s+(::)?([A-Z][\w:]*)\s*$/
-    PATH    = /(::)?[A-Z]\w*(?:::[A-Z]\w*)+/
+    # Through `Iyi::Rx`, the compiler's own engine, and not Crystal's
+    # `Regex`: pcre2 is on the list iyi means to need nothing from, and
+    # `bench/dependency_floor.sh` fails the build when a file here puts it
+    # back on the link line (SPEC.md III.10, Appendix B #17).
+    DECL    = Rx::Pattern.compile("^([ \\t]*)(?:(private|protected)[ \\t]+)?(?:abstract[ \\t]+)?(class|struct|module|enum|alias|annotation|lib)[ \\t]+([A-Z][A-Za-z0-9_:]*)")
+    DEF     = Rx::Pattern.compile("^([ \\t]*)(?:(private|protected)[ \\t]+)?(def|macro)[ \\t]+(?:self\\.)?([A-Za-z0-9_?!=<>+*/%\\[\\]-]+)")
+    CONST   = Rx::Pattern.compile("^([ \\t]*)([A-Z][A-Za-z0-9_]*)[ \\t]*=[^=]")
+    REQUIRE = Rx::Pattern.compile("^[ \\t]*require[ \\t]+\"([^\"]+)\"")
+    INCLUDE = Rx::Pattern.compile("^([ \\t]*)(?:include|extend)[ \\t]+(::)?([A-Z][A-Za-z0-9_:]*)[ \\t]*$")
+    MODULE  = Rx::Pattern.compile("^[ \\t]*module[ \\t]+([A-Z][A-Za-z0-9_:]*)[ \\t]*$")
+    PATH    = Rx::Pattern.compile("^(::)?[A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)+")
     # `Shop::Names.title(x)` and `Shop.banner`: a namespace and a method
-    # of it, which is how a Crystal module function is called and is not a
-    # constant path.
-    PATH_CALL = /(::)?[A-Z]\w*(?:::[A-Z]\w*)*\.[a-z_]\w*[?!]?/
+    # of it, which is how a module function is called in the other language
+    # and is not a constant path.
+    PATH_CALL = Rx::Pattern.compile("^(::)?[A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)*\\.[a-z_][A-Za-z0-9_]*[?!]?")
+    BANG      = Rx::Pattern.compile("\\.([a-z_]+)!")
+    EXPORTED  = Rx::Pattern.compile("^pub def[ \\t]+([A-Za-z0-9_?!]+)\\(([^)]*)\\)")
 
     def initialize(@source, @relative, @namespace, @path, @exports, @includes,
                    @lines, @wrappers, @shard_requires, @sidecar)
@@ -491,9 +498,9 @@ class Iyi::Command
     # Every root namespace a file declares unqualified: the tree's own.
     def self.collect_roots(file : String, into : Set(String)) : Nil
       File.each_line(file) do |line|
-        next unless (match = line.match(DECL)) && match[1].empty?
-        name = match[4]
-        into << name unless name.includes?("::")
+        next unless (match = DECL.match(line)) && (match[1] || "").empty?
+        name = match[4] || ""
+        into << name unless name.includes?("::") || name.empty?
       end
     end
 
@@ -513,8 +520,8 @@ class Iyi::Command
           inside = nil if line.strip == "end" && (line.size - line.lstrip.size) == indent
           next
         end
-        if (match = line.match(DECL)) && match[1].empty? &&
-           !tree_roots.includes?(match[4].split("::").first)
+        if (match = DECL.match(line)) && (match[1] || "").empty? &&
+           !tree_roots.includes?((match[4] || "").split("::").first)
           inside = 0
           sidecar << line
           notes.add "reopen", "#{relative}: `#{match[3]} #{match[4]}`"
@@ -538,8 +545,8 @@ class Iyi::Command
         # stays in the file. A module left nested cannot be `pub` —
         # nothing outside could reach into it — so peeling is what makes
         # the namespace addressable.
-        if (match = line.match(/^\s*module\s+([A-Z][\w:]*)\s*$/)) && closes_block?(lines, index, wrappers.size)
-          wrappers << match[1]
+        if (match = MODULE.match(line)) && closes_block?(lines, index, wrappers.size)
+          wrappers << (match[1] || "")
           index += 1
           next
         end
@@ -550,7 +557,7 @@ class Iyi::Command
       declared_name = nil
       lines[index..].each do |line|
         next if line.strip.empty? || line.strip.starts_with?('#')
-        if (match = line.match(DECL)) && match[1].empty?
+        if (match = DECL.match(line)) && (match[1] || "").empty?
           declared_name = match[4]
         end
         break
@@ -566,16 +573,16 @@ class Iyi::Command
       includes = [] of String
       lines[index..].each do |line|
         next unless (line.size - line.lstrip.size) == depth
-        if match = line.match(DECL)
-          next if match[2]? == "private"
-          exports << match[4].split("::").last
-        elsif match = line.match(DEF)
-          next if match[2]? == "private" || match[2]? == "protected"
-          exports << match[4]
-        elsif match = line.match(CONST)
-          exports << match[2]
-        elsif match = line.match(INCLUDE)
-          includes << match[3]
+        if match = DECL.match(line)
+          next if match[2] == "private"
+          exports << (match[4] || "").split("::").last
+        elsif match = DEF.match(line)
+          next if match[2] == "private" || match[2] == "protected"
+          exports << (match[4] || "")
+        elsif match = CONST.match(line)
+          exports << (match[2] || "")
+        elsif match = INCLUDE.match(line)
+          includes << (match[3] || "")
         end
       end
       exports.uniq!
@@ -593,7 +600,7 @@ class Iyi::Command
       path = stem if path.empty?
 
       shard_requires = lines.compact_map do |line|
-        (match = line.match(REQUIRE)) && !match[1].starts_with?('.') ? match[1] : nil
+        (match = REQUIRE.match(line)) && !(match[1] || "").starts_with?('.') ? match[1] : nil
       end.uniq
 
       new(file, relative, namespace, path, exports, includes, lines,
@@ -653,6 +660,22 @@ class Iyi::Command
       end
     end
 
+    # Whether `line` names `word` on its own: not part of a longer name, not
+    # after a `.`, `:` or `@`. Hand-written, because a pattern built from a
+    # name would be compiled per name and per line.
+    def self.names?(line : String, word : String) : Bool
+      from = 0
+      while (at = line.index(word, from))
+        from = at + word.size
+        before = at > 0 ? line[at - 1] : ' '
+        after = line[from]?
+        next if before.alphanumeric? || before == '_' || before == '.' || before == ':' || before == '@'
+        next if after && (after.alphanumeric? || after == '_')
+        return true
+      end
+      false
+    end
+
     # Whether this module's own namespace plus the exported name *is*
     # another module's namespace, in which case the bare name reaches the
     # module rather than what it exports.
@@ -681,14 +704,14 @@ class Iyi::Command
 
       lines.each do |line|
         stripped = line.strip
-        if match = line.match(REQUIRE)
-          target = match[1]
+        if match = REQUIRE.match(line)
+          target = match[1] || ""
           if target.starts_with?('.')
             resolve_require(target, by_source).each { |unit| imports << unit.path unless unit.path == path }
           end
           next # a shard require rides in the header
         end
-        if opened < wrappers && stripped.starts_with?("module ") && line.match(/^\s*module\s+[A-Z][\w:]*\s*$/)
+        if opened < wrappers && stripped.starts_with?("module ") && MODULE.matches?(line)
           opened += 1
           next
         end
@@ -700,31 +723,31 @@ class Iyi::Command
         # Rule: `include Logging` at the namespace's own level is Crystal's
         # way of saying "and these names are mine too"; here the names come
         # through `using`, which the rewrite below writes.
-        if (match = line.match(INCLUDE)) && match[1].empty?
-          if target = Command.resolve_namespace_for(match[3], self, by_namespace)
+        if (match = INCLUDE.match(line)) && (match[1] || "").empty?
+          if target = Command.resolve_namespace_for(match[3] || "", self, by_namespace)
             notes.add "include", "#{path}: `include #{match[3]}` is #{target.path}'s names; they arrive by `using`"
             next
           end
         end
 
-        if (match = line.match(DECL)) && match[1].empty? && match[4].includes?("::")
-          line = line.sub(match[4], match[4].split("::").last)
+        if (match = DECL.match(line)) && (match[1] || "").empty? && (match[4] || "").includes?("::")
+          line = line.sub(match[4].not_nil!, match[4].not_nil!.split("::").last)
         end
-        if (match = line.match(DECL)) && match[1].empty? && match[2]?.nil?
+        if (match = DECL.match(line)) && (match[1] || "").empty? && match[2].nil?
           if match[3] == "module"
             notes.add "nested", "#{path}: `module #{match[4]}` stays nested, and `pub` does not apply to a module — nothing outside can reach into it"
           else
             line = "pub " + line
           end
-        elsif (match = line.match(DEF)) && match[1].empty? && match[2]?.nil?
+        elsif (match = DEF.match(line)) && (match[1] || "").empty? && match[2].nil?
           # `def self.banner` at a module's top level is Crystal saying
           # "a module function"; an iyi module extends itself, so the
           # module function is the plain spelling and `def self.` would
           # put it on the metaclass — reachable from source and *not*
           # through an artifact, which is where the difference shows.
-          line = line.sub(/\bdef\s+self\./, "def ")
+          line = line.sub("def self.", "def ")
           line = "pub " + line
-        elsif (match = line.match(CONST)) && match[1].empty?
+        elsif (match = CONST.match(line)) && (match[1] || "").empty?
           line = "pub " + line
         end
 
@@ -753,7 +776,7 @@ class Iyi::Command
         next if (owner = claimed[bare]?) && owner != export.unit.path
         next unless body.any? do |line|
                       !line.strip.starts_with?('#') &&
-                      line.matches?(/(?<![\w:@.])#{Regex.escape(bare)}\b/)
+                      MigrateUnit.names?(line, bare)
                     end
         imports << export.unit.path
         (usings[export.unit.path] ||= Set(String).new) << bare
@@ -762,9 +785,12 @@ class Iyi::Command
       imports.delete(path)
 
       text = body.join('\n')
-      untyped = text.scan(/^pub def\s+([\w?!]+)\(([^)]*)\)/m).count do |match|
-        params = match[2]
-        !params.strip.empty? && params.split(',').any? { |param| !param.includes?(':') }
+      untyped = 0
+      body.each do |line|
+        next unless (match = EXPORTED.match(line)) && match.begin(0) == 0
+        params = match[2] || ""
+        next if params.strip.empty?
+        untyped += 1 if params.split(',').any? { |param| !param.includes?(':') }
       end
       notes.add "untyped", "#{path}: #{untyped} exported def#{untyped == 1 ? "" : "s"} whose parameters carry no type — R-2 wants them written; `crystal tool bind -e <Root>` prints what the compiler inferred" if untyped > 0
     end
@@ -794,7 +820,7 @@ class Iyi::Command
     # Every unit this file's relative requires name, in order.
     def required_units(by_source : Hash(String, MigrateUnit)) : Array(MigrateUnit)
       lines.compact_map do |line|
-        (match = line.match(REQUIRE)) && match[1].starts_with?('.') ? resolve_require(match[1], by_source) : nil
+        (match = REQUIRE.match(line)) && (match[1] || "").starts_with?('.') ? resolve_require(match[1] || "", by_source) : nil
       end.flatten
     end
 
@@ -822,10 +848,15 @@ class Iyi::Command
         line = line[0, start] + "(#{receiver} || raise \"nil where a value was expected\")" + line[(at + ".not_nil!".size)..]
         notes.add "bang", "#{path}: `not_nil!` became `(x || raise …)`"
       end
-      line.gsub(/\.([a-z_]+)!(?![=~\w])/) do |_, match|
-        name = match[1]
-        notes.add "bang", "#{path}: `#{name}!` became `#{name}` — Crystal's mutated in place, this answers a copy; check the callers"
-        ".#{name}"
+      Rx.gsub(line, BANG) do |match|
+        name = match[1].not_nil!
+        after = line[(match.end(0))]?
+        if after && (after == '=' || after == '~' || after.alphanumeric? || after == '_')
+          match[0].not_nil!
+        else
+          notes.add "bang", "#{path}: `#{name}!` became `#{name}` — the other language's mutated in place, this answers a copy; check the callers"
+          ".#{name}"
+        end
       end
     end
 
@@ -898,18 +929,19 @@ class Iyi::Command
             index += 1
             next
           end
-          match = PATH_CALL.match_at_byte_index(line, index)
-          match = nil unless match && match.begin(0) == index
-          unless match
-            match = PATH.match_at_byte_index(line, index)
-            match = nil unless match && match.begin(0) == index
-          end
+          # Anchored: both patterns start with `^`, so a match from this
+          # position is a match *at* it. `Rx` sweeps from a byte offset and
+          # `^` still means the start of the subject, so the slice is what
+          # is handed over.
+          rest = line[index..]
+          match = PATH_CALL.match(rest)
+          match = PATH.match(rest) unless match
           unless match
             io << char
             index += 1
             next
           end
-          token = match[0]
+          token = match[0].not_nil!
           io << rewrite_path(token, exports, claimed, notes)
           index += token.size
         end
