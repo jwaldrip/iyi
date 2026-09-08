@@ -48,6 +48,7 @@ class Iyi::Command
         clear_cache              clear the compiler cache
         check                    type-check only: no codegen, no binary; errors are the exit code
         fix                      apply the compiler's did-you-mean edits until the file is clean
+        bind                     put every shard under lib/ behind a boundary, as .iyimod files
         env                      print Crystal environment information
         eval                     eval code from args or standard input
         mod                      inspect a .iyimod module artifact
@@ -170,6 +171,11 @@ class Iyi::Command
       # prefix.
       options.shift
       fix
+    when command == "bind"
+      # Exact: it writes artifacts and runs builds; not something to
+      # reach by prefix.
+      options.shift
+      bind
     when command == "lsp"
       # Exact: a server is not something to reach by accident from `l`.
       options.shift
@@ -301,7 +307,7 @@ class Iyi::Command
       expand
     when "bind" == tool
       options.shift
-      bind
+      tool_bind
     when "hierarchy".starts_with?(tool)
       options.shift
       hierarchy
@@ -374,7 +380,7 @@ class Iyi::Command
   # is the same question — which types are this shard's — asked for a different
   # reason. Not `top_level`, because a signature's return type is only known
   # once the method has been instantiated, and that is the whole measurement.
-  private def bind
+  private def tool_bind
     config, result = compile_no_codegen "tool bind", hierarchy: true
     @progress_tracker.stage("Tool (bind)") do
       Iyi.print_bind result.program, config.hierarchy_exp, STDOUT,

@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 104,256 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 104,494 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,503 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -2950,7 +2950,7 @@ and so is the cycle refusal R-1 asserted and the compiler did not perform.
 Rule 5 is the one with a real cost and no measurement behind it yet, and it is
 the one to be suspicious of.
 
-### III.6 Crystal interoperation: **PROPOSED**
+### III.6 Crystal interoperation: **BUILT as an artifact — `iyi bind`; the `extern module` spelling below is not**
 
 The question, asked as "how does iyi use a shard without rebuilding it every
 build, the way Gleam uses an Elixir package?"
@@ -3094,6 +3094,55 @@ the whole of what was asked.
    `MonoBodies` cannot carry it, and what travels has to be code the producing
    build already emitted.
 4. **No macros cross.** R-5, unchanged.
+
+**What was built, and where the proposal's spelling went.** No `extern
+module` was ever parsed. The binding is the artifact itself: `tool bind
+--crystal -e Root --emit-bind DIR` reads a shard under Crystal's rules,
+instantiates every method whose return nobody wrote, checks the ones
+somebody did, and writes `DIR/<shard>.iyimod` — `Exports` the signatures,
+`crystal_library` set so an own-prelude program cannot import it — beside a
+keep file; a second build of that file with `--iyi-keep Root --emit-bind .`
+fills the object code in. `iyi bind` is the two steps for every shard under
+`lib/`, in the order the shards' own `shard.yml` files give, each bound
+against the artifacts before it, the root namespace read off each entry
+file; Kemal is four shards and one command, 35 s on the machine that wrote
+this, and the program that wrote `require "kemal"` writes `import kemal`
+and builds with `--crystal --use-iyimod mods` (`samples/crystal/kemal/`,
+gated by `bench/kemal_serves.sh`, whose two arms answer byte for byte).
+What the consumer never writes is a signature: R-2 at the boundary is the
+instantiated answer, which is what Appendix B #12's "checked for the second
+version" turned out to mean once rule 1 above had been measured. What the
+proposal's `pub struct Response` said by hand, the artifact's `TypeDecl`s
+carry from the shard's own declarations, opens excluded (rule 2).
+
+**What it is worth in build time, measured, and it is not speed.** The kemal
+sample on the release compiler, min of three: `require "kemal"` builds in
+2.03 s, `import kemal` from the artifacts in 1.88 s, and through the daemon
+1.95 against 1.80. Eight per cent. A `--crystal` build's time is Crystal's
+library analysed and the program's own code generated; the shard was a
+small share of that bill and the artifact removes the small share. What the
+boundary buys is R-1's claim, not a faster build: the shard compiled once,
+its source not on the machine, the edge hashed and version-locked, and no
+signature written by anybody. The build that would be faster is the one
+where the library itself arrives analysed (IV.1d's open item), and that is
+not this.
+
+**And on a real application, the boundary's own limits, counted.** A 8,079-line
+kemal application with 21 shards under `lib/`, 78,430 lines of them: `iyi
+bind` binds 12 of the 19 its manifest depends on, in 62 s, and names the
+seven it does not. One has no surface R-2 can write (`prop`, macros, rule
+4); two depend on it or on another that failed (`validator`,
+`quartz_mailer`, `jwt`); three fail in the fill build on defects the
+boundary has and this verb only reports — a private constant in a
+signature (`email`, `Log::ProcFormatter`), a method the keep file cannot
+see (`ed25519`), a block arity the keep file gets wrong (`gcry`) — and
+`pg`, which binds and fills, refuses at the consumer under IV.1g: its object
+code numbers `Array(PQ::Field)`, a type it never exports. So the shards this
+application actually requires — pg, validator, jwt, quartz_mailer, faker
+through email — do not cross today, and the application's own build reads
+9.8 s front end, of which the shards a probe measures are under a second.
+Those five are the boundary's next work, each with a log naming it; the
+verb is not.
 
 **Why this is cheaper to build than it looks.** The mechanism that records an
 inferred type as though it had been written already exists and is already load
@@ -9027,7 +9076,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 9 | ~~`Share` marker vs Erlang-style no sharing (III.4.4)~~ | **Decided: `Share`, on the count**: III.4.7 found the feared class empty and clean-sheet iyi code 77% shareable as written, 100% given a shareable immutable collection. That collection is now a stdlib obligation, not a nicety |
 | 10 | ~~**Is iyi ever meant to be self-hosted?**~~ | **Decided: no.** iyi's compiler is and remains a Crystal program. The language's claim is what it compiles, not what compiles it. See B.2 |
 | 11 | ~~**Keep Crystal's interpreter?**~~ | **Decided: no, and removed.** It was compiled out already, it cannot run an iyi program past the module header, and no commit of this fork had touched it in 153. An interpreter is a second implementation of the semantics, and the semantics are still moving. See V.11. **Reopened by III.11 and decided yes as #25: built on the macro interpreter, no C interop** |
-| 12 | **Is a Crystal binding checked or trusted? (III.6)** | trusted for the first version, checked for the second. Gleam trusts and says so, and the compiler already holds the inferred types the check would need, so this is an order-of-work call rather than a permanent one |
+| 12 | ~~**Is a Crystal binding checked or trusted? (III.6)**~~ | **Decided: checked, and nobody writes it.** The return type every binding carries is the instantiated answer, held against the written restriction where there is one (III.6 rule 1's count: URI 40 agree, 0 disagree, 27 unchecked); a person writes no signature at a boundary, `iyi bind` writes the artifact from the shard's own declarations. "Trusted for the first version" was the order of work, and the first version was measured out of it |
 | 13 | **Does the registry serve prebuilt artifacts? (III.7)** | yes, but last, and never as the only form. Source is primary and the artifact is a cache keyed on the four-tuple the format already enforces. It also cannot ship before a whole-artifact signature exists, since an artifact reaching the linker is code execution |
 | 14 | **A `Docs` section in the artifact? (III.7, III.8)** | yes. It is what makes `iyi doc` and the index possible without the deleted generator, and it is the one addition that serves two claims at once |
 | 15 | ~~**Does the daemon become the language server's process? (III.8)**~~ | **Decided: no, on the number.** The server is a front-end compile per question, 44 ms p50 on the release compiler with today's prelude, and the daemon's `Preanalysed` is the 30 ms of that which is the prelude's top-level pass — held in a `Program` that adoption mutates, which is why the daemon forks per build. A clone per request or an invalidation story, for 44 ms to about 15 under an editor's debounce: III.8 declines it with the measurement beside it. The daemon is reachable (`iyi daemon`, listed, gated out of the tarball) and serves the workload it was kept for, `--crystal` builds |

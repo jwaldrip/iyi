@@ -27,7 +27,6 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-CRYSTAL="$REPO/bin/crystal"
 IYI="$REPO/bin/iyi"
 WORK="$(mktemp -d)"
 
@@ -79,39 +78,28 @@ if ! shards install > install.log 2>&1; then
   exit 1
 fi
 
-# Absolute, because the fill build runs with `mods` as its working directory
-# and a relative `lib` would resolve under it.
+# One command: `iyi bind` reads lib/ as `shards install` left it, orders the
+# four shards by their own shard.yml dependencies, reads each root off its
+# entry file, and runs the bind and the fill as itself — the loop
+# `samples/crystal/kemal/README.md` used to write out by hand, and the reason
+# both halves of the order matter is in `bench/bind_chain.sh`.
+if ! "$IYI" bind > bind.log 2>&1; then
+  echo "iyi bind failed"
+  tail -12 bind.log
+  echo "workdir $WORK"
+  exit 1
+fi
+cat bind.log
+for shard in radix backtracer exception_page kemal; do
+  if [ ! -f "mods/$shard.iyimod" ]; then
+    echo "iyi bind wrote no mods/$shard.iyimod"
+    exit 1
+  fi
+done
+
+# Absolute, for the arms below, which build from this directory.
 export CRYSTAL_PATH="$WORK/lib:$REPO/src"
 export IYI_PATH="$WORK/lib:$REPO/share/iyi/src:$REPO/share/iyi/crystal:$REPO/src"
-
-mkdir mods
-
-# In dependency order, and each boundary built against the ones before it. See
-# `bench/bind_chain.sh`, which explains why both halves of that matter.
-bind_one() {
-  shard="$1"; root="$2"
-  if ! "$CRYSTAL" tool bind -e "$root" --emit-bind mods --use-iyimod mods \
-        "lib/$shard/src/$shard.cr" > "bind-$shard.log" 2>&1; then
-    echo "binding $shard failed"
-    tail -10 "bind-$shard.log"
-    echo "workdir $WORK"
-    exit 1
-  fi
-  if ! (cd mods && "$CRYSTAL" build --iyi-keep "$root" --emit-bind . \
-          -o "keep_$shard" "${shard}_keep.cr" > "fill-$shard.log" 2>&1); then
-    echo "filling $shard failed"
-    tail -10 "mods/fill-$shard.log"
-    echo "workdir $WORK"
-    exit 1
-  fi
-  echo "  bound $shard"
-}
-
-echo "bound, in dependency order:"
-bind_one backtracer Backtracer
-bind_one radix Radix
-bind_one exception_page ExceptionPage
-bind_one kemal Kemal
 
 # The application, written the way kemal's own README writes one. `get` is a
 # top-level `def` a macro loop writes, and the block returns `_` — so neither

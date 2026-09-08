@@ -4,6 +4,30 @@
 
 ### Added
 
+- **`iyi bind`: every shard under `lib/`, behind a boundary, in one
+  command.** The boundary existed as two commands per shard run in
+  dependency order by a person who knew the order and each shard's root
+  namespace - Kemal is four shards and eight commands, and the sample's
+  README wrote the loop out. The verb is the loop: it reads `lib/` as
+  `shards install` left it, orders the shards by their own `shard.yml`
+  dependencies, reads each root off its entry file, and runs `tool bind`
+  and the fill build as itself, each shard against the artifacts before
+  it, with the search paths made absolute because the fill build runs
+  inside `mods/`. `iyi bind` on the kemal sample: four `.iyimod`s in 35 s,
+  and the program that wrote `require "kemal"` writes `import kemal`.
+  `bench/kemal_serves.sh` runs the verb now, so the gate is the verb's;
+  the tarball's `iyi` does it too, against the Crystal library it
+  carries. A shard that fails is named and the rest go on - a surface
+  that is macros, a fill build that refuses, a dependency that did not
+  bind - and the exit code says whether everything asked for was bound;
+  a half-written artifact is removed so the next build fails at the
+  cause. SPEC.md III.6 says what was built where it said PROPOSED, and
+  Appendix B #12 is decided: checked, and nobody writes the signature.
+  And what it is worth in build time is written beside it: 8% on the
+  kemal sample (2.03 s to 1.88), because a `--crystal` build's bill is
+  Crystal's library and the program's own code, not the shard. On a
+  real 21-shard application it binds 12 of 19 and names the seven it
+  cannot, five of them defects of the boundary itself, each with a log.
 - **The context pack says how a consumer names what it shows.** Every
   block of `iyi mod context` opens with the two lines a file writes to
   reach the surface beneath - `import kemal/dsl`, then `using

@@ -877,7 +877,7 @@ move is one of the four rules:
 | `include`/`extend` a module into a class | `trait` and `impl Trait for Type`, in the trait's module or the type's | R-3's orphan rule, which is what makes coherence checkable without reading the program |
 | `abstract def` in a module | `abstract def` in a `trait`, and the trait is a type | II.6 |
 | everything is public unless `private` | everything is the module's own unless `pub`, and `pub` writes its types | R-2 |
-| shards, `shard.yml` | `--crystal` can `require` shards from `IYI_PATH` | no package manager; required source is compiled into the program |
+| shards, `shard.yml` | `--crystal` can `require` shards from `IYI_PATH`; `iyi bind` puts every shard under `lib/` behind a boundary, one `.iyimod` each, and a program `import`s it | no package manager; a required shard's source is compiled into the program, a bound one's object code is linked (SPEC.md III.6) |
 | macros | kept, and they travel in the artifact | |
 | `Nil`, union types, blocks, local inference | kept, unchanged | |
 

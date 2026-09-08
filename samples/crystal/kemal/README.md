@@ -8,9 +8,8 @@ same as any Crystal project.
 It builds two ways, and the point of the sample is that both answer the same.
 
 The commands below are written from a checkout. This sample ships in the
-tarball too, and the first half works there with the paths adjusted; the second
-does not, because `crystal tool bind` is part of the compiler's own checkout
-and the tarball carries `iyi` alone.
+tarball too, and both halves work there: `iyi bind` runs the boundary's two
+steps as the `iyi` binary, against the Crystal library the tarball carries.
 
 ## From source
 
@@ -49,24 +48,33 @@ against those. That is the boundary this compiler exists for: a module is
 compiled against its dependencies' *declarations*, never their bodies.
 
 Four boundaries, because kemal has three dependencies of its own, and in
-dependency order — each one is bound against the ones already written:
+dependency order — each one is bound against the ones already written. One
+command does the four:
 
 ```sh
-mkdir -p mods
-for pair in "backtracer Backtracer" "radix Radix" \
-            "exception_page ExceptionPage" "kemal Kemal"; do
-  set -- $pair
-  $REPO/bin/crystal tool bind -e "$2" --emit-bind mods --use-iyimod mods \
-      "lib/$1/src/$1.cr"
-  (cd mods && $REPO/bin/crystal build --iyi-keep "$2" --emit-bind . \
-      -o "keep_$1" "$1_keep.cr")
-done
+$REPO/bin/iyi bind
 ```
 
-`tool bind` writes the declarations; the second command fills in the object
-code. A getter whose body is one instance variable is inlined at every call
-site and emits no symbol, which is right for a whole program and wrong for
-code somebody else links against — `--iyi-keep` is what forces it out.
+```
+binding 4 shards into mods/, in dependency order:
+  radix (Radix) — mods/radix.iyimod
+  backtracer (Backtracer) — mods/backtracer.iyimod
+  exception_page (ExceptionPage) — mods/exception_page.iyimod
+  kemal (Kemal) — mods/kemal.iyimod
+```
+
+It reads `lib/` as `shards install` left it, orders the shards by their own
+`shard.yml` dependencies, reads each root namespace off its entry file, and
+runs two steps per shard as itself: `tool bind` writes the declarations,
+then a build of the keep file it wrote fills in the object code. A getter
+whose body is one instance variable is inlined at every call site and emits
+no symbol, which is right for a whole program and wrong for code somebody
+else links against — the fill build's `--iyi-keep` is what forces it out.
+By hand, that is the loop `bench/kemal_serves.sh` used to write out:
+`iyi tool bind --crystal -e Root --emit-bind mods --use-iyimod mods
+lib/x/src/x.cr`, then `iyi build --crystal --iyi-keep Root --emit-bind .
+x_keep.cr` inside `mods/`. A shard whose entry declares no top-level
+module is named in the output and left to that pair.
 
 Then the program, with its one line changed:
 
@@ -77,7 +85,8 @@ PORT=3001 ./app_artifact
 ```
 
 `require` reads source; `import` reads an artifact. That line is the whole
-difference, and the responses are byte-identical.
+difference, and the responses are byte-identical. `bench/kemal_serves.sh` is
+this file with a gate around it, `iyi bind` included.
 
 ## What this is standing on
 

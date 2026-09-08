@@ -9,8 +9,11 @@
 # in that position, which is the number that decides whether a boundary is
 # worth generating at all.
 #
-# It reads and counts; it writes no `.iyi` yet. Measuring first is the same
-# order every other part of this project was built in.
+# It reads and counts, and with `--emit-bind DIR` it writes the binding as a
+# `.iyimod` (`write_artifact`) plus the keep file a second build fills the
+# object code from; `iyi bind` runs both steps on every shard under `lib/`.
+# No `.iyi` text is written — the boundary is the artifact. Measuring first
+# is the same order every other part of this project was built in.
 #
 # **It lives in the compiler rather than beside it**, and the reason is worth
 # keeping: reading a shard means analysing the standard library it is written
