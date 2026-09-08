@@ -115,6 +115,9 @@ only, no fences.
 Grounding:
 """
 
+# What a green answer has to mention: the task's own literals.
+TASK_MARKS = ("before_all", '"/sum/:a/:b"', '"/v1"', '"/users"')
+
 
 def rounds_arm(agent: str, trials: int) -> list[str]:
     """Same task, same model, per arm `trials` times. §5's letter: the pack
@@ -179,6 +182,19 @@ def run_task(agent: str, grounding: str):
                 if len(inside) >= 2:
                     answer = "\n".join(lines[inside[0] + 1:inside[-1]]) + "\n"
             (workdir / "main.iyi").write_text(answer)
+            # Green is the build passing *on the program asked for*: an
+            # empty file compiles, and one raw trial was seen to answer
+            # nothing and score a one-round win for it. The marks are the
+            # task's own literals, so an answer that skipped a route is
+            # not green either.
+            missing = [mark for mark in TASK_MARKS if mark not in answer]
+            if missing:
+                prompt = (
+                    "The program you wrote does not do what was asked; it "
+                    f"never mentions {', '.join(missing)}. Answer with the "
+                    "whole corrected file only.\n\nYour program:\n" + answer
+                )
+                continue
             build = subprocess.run(
                 [str(IYI), "build", "--no-codegen", "main.iyi", "-o", "out"],
                 capture_output=True, text=True, cwd=workdir,
