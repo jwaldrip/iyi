@@ -163,6 +163,19 @@
 
 ### Learned
 
+- **What a migration from Crystal would need, measured before any
+  converter.** On an 8,079-line, 99-file kemal application: `tool bind`
+  on its own namespace reads 866 public methods, 496 with signatures
+  written, 193 a machine can write, 177 an upper bound for a human; the
+  new `bench/migrate_count.py` reads the shapes a file-per-module
+  language must act on - 204 undeclared instance variables the compiler
+  types, 69 `not_nil!` sites, one file reopening a foreign type (R-3).
+  One model converted by hand with five edits, none in a method body,
+  checks clean and is consumed across an `import`. The rule the exercise
+  found: a Crystal namespace is an iyi path and a type's qualified name
+  changes with it, a global and mechanical rewrite. SPEC.md III.6 has
+  the account; it is the measurement an `iyi migrate` verb would be
+  built on.
 - **The fourth rounds-arm run refuses by one, and the round is a
   body's.** Under the corrected gate, with the pack carrying the
   `import`/`using` pair: tokens won by 39%, rounds lost 6 to 5, and every

@@ -3144,6 +3144,50 @@ through email — do not cross today, and the application's own build reads
 Those five are the boundary's next work, each with a log naming it; the
 verb is not.
 
+**What a migration would need, measured on an application, before any
+`iyi migrate` is written.** The question a Crystal user asks next is not
+"can my shards cross" but "can my program become iyi modules", and the
+answer was measured on the same 8,079-line, 99-file kemal application
+before a converter existed, in the order this project measures things.
+Two readings. `crystal tool bind -e AcikTurkiye` on the application's own
+namespace, which is R-2 asked of the program rather than of a shard: 866
+public methods, **496 written, 193 a machine can write, 177 a human has
+to** — the last an upper bound, since only what a module exports needs a
+signature and every one of those 177 carries an untyped parameter the
+whole-program build does type at its calls; 68 more wait on `DB::ResultSet`
+and `PG::Geo::Point`, which is `pg` crossing. `bench/migrate_count.py` on
+the tree, for the shapes a file-per-module language has to do something
+about: 99 files, 379 defs, 73 top-level route calls, 26 relative and 21
+shard requires, 204 instance variables assigned without a declaration (the
+compiler knows every type), 69 `not_nil!` sites (`!` is III.1.7a's, so each
+becomes `x || raise`), 130 `rescue`/`raise` lines and 48 `include
+JSON::Serializable`/`DB::Serializable` — and both of those compile as they
+are under `--crystal`, tried on a probe. R-3, the rule that could not be
+mechanical: **one file**, `logging.cr` reopening `Log::Metadata`; the
+`AcikTurkiye::DB` namespace opened in 22 files is 22 modules, which is what
+it already was.
+
+Then one model converted by hand and consumed across an `import`, to see
+what the counts miss. `models/tag.cr` became `acik_turkiye/d_b/tag.iyi`
+with five edits, none to a method body: the header, spelled the way
+`iyi_module_name` spells a namespace (`DB` is `d_b`); the `module
+AcikTurkiye::DB … end` wrapper removed, because the path is the namespace;
+`pub` on the struct; `require "pg"` kept and `import acik_turkiye/d_b` with
+`using …::{SQL}` for the constant another file declares; and the consumer
+writing `Tag` under `using acik_turkiye/d_b/tag::{Tag}` where it wrote
+`AcikTurkiye::DB::Tag`. `iyi check --crystal` answers clean, `getter`,
+`include ::DB::Serializable`, `as: Tag` and an untyped `def update(name,
+description, sentiment)` untouched. The rule the exercise found, which no
+count would have: **a Crystal namespace is an iyi path, and a type's
+qualified name changes** — `A::B::C` in `c.cr` is module `a/b/c` exporting
+`C`, and every `A::B::C` a consumer writes becomes `C` under a `using`
+line. That rewrite is global and mechanical, and it is what a migrate verb
+is: header from path, wrapper off, `pub` on what other files reach,
+`import`/`using` from the references, signatures from the compiler where
+the export lacks one. The residue a person writes is the reopened foreign
+type and whatever the counts call R-3, which on this application is one
+file.
+
 **Why this is cheaper to build than it looks.** The mechanism that records an
 inferred type as though it had been written already exists and is already load
 bearing: `IyiMod.signature` renders a carried type's methods into the artifact,
