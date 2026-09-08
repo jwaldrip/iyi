@@ -113,6 +113,29 @@ def main():
     proc = run("check", "app.iyi", cwd=work)
     step("check confirms clean", proc.returncode == 0, "")
 
+    # 4a. the edit that spans a literal rather than a name: a
+    # one-character string where a Char is wanted is the guess every
+    # arrival makes about `split`, and the round the context pack's
+    # gate kept losing. The span is the literal, quotes included, and
+    # fix writes the Char with its escape.
+    write("chars.iyi", (
+        "module app\n\n"
+        "puts \"/a/b\".split(\"/\").size\n"
+        "puts \"a\\tb\".index(\"\\t\")\n"
+    ))
+    proc = run("check", "-f", "json", "chars.iyi", cwd=work)
+    errors = json.loads(proc.stderr)
+    edit = next((e["suggested_edit"] for e in errors if "suggested_edit" in e), None)
+    step("a one-character string where a Char is wanted carries the Char",
+         edit is not None and edit["replacement"] == "'/'" and edit["size"] == 3
+         and "Did you mean '/'" in errors[0]["message"],
+         f"edit {edit}")
+    proc = run("fix", "--json", "chars.iyi", cwd=work)
+    fixed = json.loads(proc.stdout)
+    step("fix writes the Chars, escapes included",
+         fixed["clean"] and [a["to"] for a in fixed["applied"]] == ["'/'", "'\\t'"],
+         f"applied {[a['to'] for a in fixed['applied']]}")
+
     # 4b. the blind spot, closed as a language rule: an uncalled body is
     # typed against its declared signature (definition-site typing,
     # R-2's dividend) — by check AND by a plain build; fix converges to

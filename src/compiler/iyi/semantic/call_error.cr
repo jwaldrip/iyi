@@ -423,7 +423,22 @@ class Iyi::Call
       end
     end
 
-    raise_no_overload_matches(arg || self, defs, arg_types, inner_exception) do |str|
+    # iyi: a one-character string where a `Char` is wanted is the guess
+    # every arrival from another language or a model makes about `split`,
+    # `index`, `chomp` — the prelude takes a `Char` and there is exactly
+    # one right spelling. Say it, and hand it over as an edit spanning the
+    # literal, so `iyi fix` and the editor's quickfix apply it without a
+    # round (AI_FIRST.md §5, the fourth run).
+    char_fix = nil
+    char_span = nil
+    if arg.is_a?(StringLiteral) && arg.value.size == 1 && expected_types.size == 1 && expected_types.first.is_a?(CharType)
+      char_fix = arg.value[0].inspect
+      if (from = arg.location) && (to = arg.end_location) && from.line_number == to.line_number
+        char_span = to.column_number - from.column_number + 1
+      end
+    end
+
+    raise_no_overload_matches(arg || self, defs, arg_types, inner_exception, suggestion: char_span ? char_fix : nil, size: char_span) do |str|
       argument_description =
         case index_or_name
         in Int32
@@ -449,6 +464,13 @@ class Iyi::Call
         str << "expected argument #{argument_description} to '#{full_name(owner, def_name)}' to be "
         to_sentence(str, expected_types, " or ")
         str << ", not #{actual_type.devirtualize}"
+
+        if char_fix
+          str.puts
+          str.puts
+          str << "Did you mean #{char_fix}? A one-character string is still a "
+          str << "`String`; `#{def_name}` takes a `Char`, written in single quotes"
+        end
 
         # iyi: a trait is not a class, so "not Dog" is the whole answer only if
         # the reader already knows that the way to satisfy it is an `impl`
@@ -486,7 +508,7 @@ class Iyi::Call
     end
   end
 
-  private def raise_no_overload_matches(node, defs, arg_types, inner_exception, &)
+  private def raise_no_overload_matches(node, defs, arg_types, inner_exception, suggestion : String? = nil, size : Int32? = nil, &)
     error_message = String.build do |str|
       yield str
 
@@ -496,7 +518,7 @@ class Iyi::Call
       append_matches(defs, arg_types, str)
     end
 
-    node.raise(error_message, inner_exception)
+    node.raise(error_message, inner_exception, suggestion: suggestion, size: size)
   end
 
   record WrongNumberOfArguments

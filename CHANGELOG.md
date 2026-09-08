@@ -16,6 +16,17 @@
   none wrote the `using` wrong. The pack is 59% of the kemal closure
   where it was 55%, and 52% of calc's where it was 43%, under the 70%
   line.
+- **A one-character string where a `Char` is wanted says the `Char`.**
+  `"/a/b".split("/")` was "expected argument #1 to 'String#split' to be
+  Char, not String" and a list of overloads - true, and the guess every
+  arrival from Crystal, Ruby or a model makes about `split`, `index`
+  and `chomp`. It now adds `Did you mean '/'? A one-character string is
+  still a String; split takes a Char, written in single quotes`, and
+  carries the `Char` as a `suggested_edit` spanning the literal, quotes
+  included and escapes written (`'\t'`, `'\''`), so `iyi fix` and the
+  editor's quickfix apply it. A raise can name its span now
+  (`TypeException.for_node`'s `size`), where before it was the node's
+  name and a literal has none. `bench/agent_loop.py` steps 9 and 10.
 
 ### Fixed
 

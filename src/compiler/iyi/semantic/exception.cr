@@ -34,10 +34,12 @@ module Iyi
     # against carrying the name we already computed.
     property suggestion : String?
 
-    def self.for_node(node, message, inner = nil, suggestion = nil)
+    # `size` overrides the node's own `name_size` — a literal has no name,
+    # and a suggestion that replaces one needs the literal's whole span.
+    def self.for_node(node, message, inner = nil, suggestion = nil, size : Int32? = nil)
       location = node.name_location || node.location
       if location
-        ex = new message, location.line_number, location.column_number, location.filename, node.name_size, inner
+        ex = new message, location.line_number, location.column_number, location.filename, size || node.name_size, inner
         ex.suggestion = suggestion
         wrap_macro_expression(ex, location)
       else

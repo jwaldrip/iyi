@@ -2,8 +2,8 @@ require "../syntax/ast"
 
 module Iyi
   class ASTNode
-    def raise(message, inner = nil, exception_type = Iyi::TypeException, suggestion : String? = nil)
-      ::raise exception_type.for_node(self, message, inner, suggestion)
+    def raise(message, inner = nil, exception_type = Iyi::TypeException, suggestion : String? = nil, size : Int32? = nil)
+      ::raise exception_type.for_node(self, message, inner, suggestion, size)
     end
 
     def simple_literal?
