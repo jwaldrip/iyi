@@ -3371,11 +3371,14 @@ consumer:** an editor session asks thousands of questions where a build asks one
 which is precisely the workload the pre-analysed state was for.
 
 Two honest notes against it. It forks a child per build, so the reuse is the
-transport and the prelude cache rather than the analysis. And it is currently
-unreachable: `iyi` does not list `daemon`, so 487 lines and its spec are
-maintained and unreachable under the name a person types. If it is not going to
-become this, it belongs in `CRYSTAL_ONLY` with `init` and `spec`, named rather
-than silently absent.
+transport and the prelude cache rather than the analysis. And when this was
+written it was unreachable: `iyi` did not list `daemon`, so its lines and
+its spec were maintained under a name a person could not type. That half
+was fixed rather than argued: `iyi daemon` is listed, IV.1d says what it is
+for (`--crystal`, the one prelude big enough to be worth holding), and the
+release gate starts one out of the tarball and builds through it. The other
+half — whether the server should live on it — is answered under "The
+daemon's cache, asked about once more" below, and the answer is a number.
 
 **Built, and the dividend was larger than the prediction.** The paragraphs
 above assumed a server needs a resident `Program`; `iyi lsp` ships without
@@ -9027,7 +9030,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | 12 | **Is a Crystal binding checked or trusted? (III.6)** | trusted for the first version, checked for the second. Gleam trusts and says so, and the compiler already holds the inferred types the check would need, so this is an order-of-work call rather than a permanent one |
 | 13 | **Does the registry serve prebuilt artifacts? (III.7)** | yes, but last, and never as the only form. Source is primary and the artifact is a cache keyed on the four-tuple the format already enforces. It also cannot ship before a whole-artifact signature exists, since an artifact reaching the linker is code execution |
 | 14 | **A `Docs` section in the artifact? (III.7, III.8)** | yes. It is what makes `iyi doc` and the index possible without the deleted generator, and it is the one addition that serves two claims at once |
-| 15 | **Does the daemon become the language server's process? (III.8)** | yes, or it goes in `CRYSTAL_ONLY`. It was measured against builds and withdrawn; an editor is the workload its pre-analysed state was actually for. What it must not stay is maintained and unreachable |
+| 15 | ~~**Does the daemon become the language server's process? (III.8)**~~ | **Decided: no, on the number.** The server is a front-end compile per question, 44 ms p50 on the release compiler with today's prelude, and the daemon's `Preanalysed` is the 30 ms of that which is the prelude's top-level pass — held in a `Program` that adoption mutates, which is why the daemon forks per build. A clone per request or an invalidation story, for 44 ms to about 15 under an editor's debounce: III.8 declines it with the measurement beside it. The daemon is reachable (`iyi daemon`, listed, gated out of the tarball) and serves the workload it was kept for, `--crystal` builds |
 | 16 | **Does III.4 use libevent or the native backends? (III.10)** | native, and it is not close. Crystal already wrote `epoll`, `kqueue`, `io_uring` and `iocp` backends and libevent is its default only on four platforms iyi does not target. Adopting it would put a C library under every concurrent iyi program to save work already done |
 | 17 | **Regex: PCRE semantics or RE2's? (III.10)** | RE2's, and that answer stands. Linear time, no construct whose cost can grow with the subject. A language selling "the compiler will not surprise you" should not ship a library that takes exponential time on ordinary input, and Go already took this trade. **What this row said the answer costs was wrong, and it is restated rather than quietly widened.** It read "no backreferences, no lookbehind", and was taken to mean the guarantee forbids lookaround, on the premise that lookaround needs a backtracker. It does not: a lookaround over a regular inner pattern is itself a regular property of a position, answered by a pre-pass costing one state set per character and nothing per position. All four forms are supported, nested to any depth, and lookbehind here is not length-limited the way pcre2's is, so the engine accepts patterns pcre2 rejects. RE2 omits lookaround because of its one-pass DFA design, not because linear time forbids it, and this row inherited the omission as if it were the price. What the guarantee actually costs is the constructs that are not regular: backreferences, recursion, subroutine calls and conditionals, refused because no simulation answers them and matching backreferences is NP-hard. Atomic groups and possessive quantifiers are refused for a separate reason worth keeping separate: they are controls for a backtracker, and there is none here to control. A capturing group inside an assertion is refused too, because the pre-pass never performs the sub-match that would set it (III.10) |
 | 18 | **TLS (III.10)** | none in 0.x; an OpenSSL binding as a package if something needs it sooner; own it eventually, TLS 1.3 only, and not before there is something to protect and somebody to audit it. What must not happen is OpenSSL becoming reachable from iyi's own prelude |

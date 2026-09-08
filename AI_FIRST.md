@@ -164,12 +164,13 @@ together they are one sentence:
 > **iyi is the first language a model can read, verify and trust:
 > interfaces are data, errors are instructions, dependencies are hashed.**
 
-Deferred, with reasons:
+Deferred at the time, with the reason, and since built:
 
-- **7 (panics)** belongs to the same wave as threads and the owned
+- **7 (panics)** belonged to the same wave as threads and the owned
   collector (`GC_DESIGN.md`), because unwinding, task boundaries and
-  stack ownership are one design conversation. With 5 built, it is the
-  menu's only open row.
+  stack ownership are one design conversation. That wave landed, and 7
+  with it — §2 above records how, and `bench/panics.sh` gates it. The
+  menu has no open row.
 
 ## 4. What not to build
 
