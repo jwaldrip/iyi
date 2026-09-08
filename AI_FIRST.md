@@ -199,9 +199,9 @@ anywhere as fact.
 recorded here because that is the point of writing the gate first.**
 `bench/context_pack.py` is the command. The token arm is hermetic and
 runs in CI: the pack must stay under 70% of the raw closure it replaces
-and must carry no body — today it measures 55% on the kemal target and
-43% on calc, and the line that forced the pack into shape is worth
-keeping: the first pack was the *compile-against* text and came in at
+and must carry no body — it measured 55% on the kemal target and 43%
+on calc when first written, 59% and 52% with the consumer lines, and
+the line that forced the pack into shape is worth keeping: the first pack was the *compile-against* text and came in at
 96% of raw, because travelling bodies (R-4) are most of a macro-heavy
 module; grounding a caller is a different document, and `mod context`
 now renders that one.
@@ -252,3 +252,33 @@ have carried. The bar stays as written and the run fails it; the README
 says so beside the number, and the pack carrying the `import`/`using`
 pair a consumer writes — what the language server's completion already
 attaches to every export — is the next thing this arm asks for.
+
+**The fourth run, after the pack carries the pair: still a refusal, by
+one round, and the round is a body's.** `iyi mod context` now opens
+every block with the two lines a consumer writes — `import kemal/dsl`,
+`using kemal/dsl::{after_all, app, before_all, …}` — and in six
+pack-grounded attempts read one by one, no model wrote the `using` wrong
+again. The gate was corrected on the way: an empty file compiles, and a
+raw trial had been seen to answer nothing and score a one-round win for
+it, so green now means the build passes on a program that mentions the
+task's own literals. Under that gate, same task, same model, three
+trials per arm:
+
+| arm | rounds per trial | total rounds | total prompt bytes |
+|---|---|---|---|
+| pack | 2, 1, 3 | 6 | 19,493 |
+| raw | 2, 2, 1 | 5 | 31,818 |
+
+Tokens won by 39%. Rounds lost, 6 to 5, and every pack-grounded round
+lost was the same line: `env.path.split("/")`, refused because the
+prelude's `split` takes a `Char`. The raw sources never call `split`
+either — what they carry is `chomp('/')` and `lchop('/')` inside a
+body, and a model that has read a single-quoted separator once writes
+`split('/')`. That is the cue the pack cannot carry: a body's incidental
+spelling of the prelude, which R-4 keeps out of a surface on purpose.
+Twenty model calls: tokens track the grounding, by 35–43%, in every run;
+rounds are the model's prior about the prelude, which no import's
+surface corrects. The bar stays as written and the run fails it. What
+would move it is not in the pack: a compiler that, refusing a one-character
+string where a `Char` is expected, suggests the `Char` — the same shape as
+"did you mean", and an edit `iyi fix` can apply without a round.

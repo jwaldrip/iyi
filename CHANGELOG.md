@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The context pack says how a consumer names what it shows.** Every
+  block of `iyi mod context` opens with the two lines a file writes to
+  reach the surface beneath - `import kemal/dsl`, then `using
+  kemal/dsl::{after_all, app, before_all, ...}` with every exported name
+  in it, or bare `using kemal/dsl` for all of them. The surface rendered
+  a module's offer and nothing about its spelling; the raw sources a
+  pack replaces carry their own `using` lines and so show it by
+  accident, and the rounds arm of `bench/context_pack.py` lost a round
+  to exactly that. Six pack-grounded attempts since, read one by one:
+  none wrote the `using` wrong. The pack is 59% of the kemal closure
+  where it was 55%, and 52% of calc's where it was 43%, under the 70%
+  line.
+
+### Fixed
+
+- **A green round is a program that does what was asked.** An empty
+  file compiles, and a raw-grounded trial of the rounds arm was seen to
+  answer nothing and score a one-round win for it. Green now means the
+  build passes on an answer that mentions the task's own literals; an
+  answer that does not is re-prompted with what it skipped, and counts
+  its round.
+
+### Learned
+
+- **The fourth rounds-arm run refuses by one, and the round is a
+  body's.** Under the corrected gate, with the pack carrying the
+  `import`/`using` pair: tokens won by 39%, rounds lost 6 to 5, and every
+  lost pack round was `split("/")` where the prelude's `split` takes a
+  `Char`. The raw sources never call `split`; they carry `chomp('/')`
+  inside a body, and a model that has read a single-quoted separator once
+  writes the `Char`. That is what a surface cannot carry (R-4), and
+  AI_FIRST.md section 5 says what could move it instead: a refusal of a
+  one-character string where a `Char` is expected that suggests the
+  `Char`, the shape of "did you mean", an edit `iyi fix` applies.
+
 ## 0.11.0 — 2026-09-07
 
 **The first half hour of programs, and the header word out of the object.**
