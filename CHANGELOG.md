@@ -19,6 +19,22 @@
   III.10, Appendix B #17). They use `Iyi::Rx` now, and the one check a
   pattern would have been compiled per name and per line for — does this
   line name this word on its own — is hand-written.
+- **`iyi migrate --annotate`: the types R-2 wants, read off the
+  program.** Crystal code does not write them and they are not missing —
+  the compiler bound them to compile the program. `--annotate` compiles
+  the tree once per entry (every file nothing requires) and writes them
+  in: a parameter from the instantiated def, where the binding happened,
+  and the answer from the call, because a boundary is about what a caller
+  is handed; a parameter two instantiations bound differently is written
+  as neither and reported as both. On the 99-file application it writes
+  **225** types and names the 52 it cannot, each with what is missing.
+  Two rules came with it: `pub` is what another module names, so a def or
+  constant nothing outside names stays the module's own (a *type* keeps
+  its `pub` — a shard's macro names the class that includes it), and a
+  `private def` is not R-2's business, which refused every tree with a
+  private helper in an exported class. `bench/migrate_gate.sh` annotates
+  the fixture, emits a `.iyimod` per module and builds the program from
+  those, byte for byte.
 - **`iyi migrate`: a Crystal project, written out as iyi modules.**
   `iyi migrate SRC --out DIR [--check]` reads a tree of `.cr` files and
   writes the iyi program it is: the namespace becomes the path (wrappers

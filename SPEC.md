@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 105,622 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 106,054 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,503 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3257,17 +3257,43 @@ parameter and asked the author to annotate a def a macro wrote — so a macro's
 defs are exempt, which is R-5's own premise: the macro travels and the
 consumer expands it again (`iyimod.cr`).
 
-**What it does not do, said here rather than found later.** It does not write
-the types R-2 wants where Crystal never had them: the application's 177
-exported defs with untyped parameters are counted in a note, and
-`crystal tool bind -e <Root>` prints what the compiler inferred for 193 of
-them. Until those are written the tree's own modules cannot become artifacts,
-which is where R-1's edit loop lives — the fixture, whose exports are typed,
-does emit artifacts and builds from them. And migration is not a speed-up by
-itself: on the application the whole program compiles in 4.71 s of front end
-as Crystal and 5.09 s as modules, while *one module* compiles in 3.15 s,
-because what remains is Crystal's library and 21 shards — which is what `iyi
-bind` is for and what IV.1d's open item would take out.
+**`--annotate`: the types R-2 wants, read off the program.** Crystal code
+does not write them — `def call(env)` is idiomatic — but they are not
+missing: the compiler bound them to compile the program. `iyi migrate
+--annotate` compiles the tree as Crystal once per *entry* (every file
+nothing requires: an app, a migration runner, a seeder) and reads them
+back, and which of two readings wins is the design (`tools/param_types.cr`):
+a **parameter** from the instantiated def, where the compiler bound it to
+compile the body — `initialize` is only reachable that way, since a call
+names `new` — and the **answer** from the call, because a boundary is about
+what a caller is handed, which is III.6 rule 1's own lesson one level out.
+A parameter two instantiations bound differently is written as neither and
+reported as both: a `pub def` cannot be two defs. On the application it
+writes **225** types, and the 52 it cannot are each named with what is
+missing and why — nothing in any of the programs calls them, so there was
+nothing to read.
+
+Two rules came out of pushing it that far. **`pub` is what another module
+names**: marking every top-level declaration made R-2 ask a signature of
+every one, including helpers nobody outside calls, so a def or constant no
+other module names stays the module's own — the rewrite knows exactly which
+names cross, having written every `using` line. A *type* keeps its `pub`
+regardless, because a macro in a shard names the class that includes it
+(`Kemal::Handler`'s `only` expands `{{@type}}`) and that reference is
+qualified. And **a `private def` is not R-2's business**: its signature
+travels for a travelling body to typecheck against, and asking it for types
+refused every tree with a `private def helper(x)` in an exported class
+(`iyimod.cr`).
+
+**What it does not do, said here rather than found later.** The 52 defs
+above are a person's to write; until they are, the application's own modules
+do not become artifacts, which is where R-1's edit loop lives. The fixture
+does: `bench/migrate_gate.sh` annotates it, emits a `.iyimod` per module and
+builds the program from those, byte for byte. And migration is not a
+speed-up by itself: on the application the whole program compiles in 4.71 s
+of front end as Crystal and 5.09 s as modules, while *one module* compiles
+in 3.15 s, because what remains is Crystal's library and 21 shards — which
+is what `iyi bind` is for and what IV.1d's open item would take out.
 
 **Why this is cheaper to build than it looks.** The mechanism that records an
 inferred type as though it had been written already exists and is already load

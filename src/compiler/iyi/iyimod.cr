@@ -1866,7 +1866,12 @@ module Iyi::IyiMod
   # without it — they are there for a body that travels to typecheck against,
   # not for anyone to call.
   def self.signature(a_def : Def, check_block : Bool = true) : Signature
-    if check_block
+    # A `private def` is not the module's surface: a consumer cannot call
+    # it, so R-2 has nothing to protect there. Its signature still travels,
+    # for a body that travels to typecheck against — the same reason a
+    # kept-to-itself type's methods do. Asking it for types refused every
+    # migrated tree with a `private def helper(x)` in an exported class.
+    if check_block && !a_def.visibility.private?
       check_block_annotated a_def
       check_types_written a_def
     end

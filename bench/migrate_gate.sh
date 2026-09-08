@@ -100,14 +100,39 @@ else
   tail -8 "$WORK/iyi.err"
 fi
 
+# `--annotate` is R-2 satisfied without a person guessing: the fixture's
+# `Cart#holds?(item)` carries no types, the program calls it once, and the
+# types the compiler bound are written into the declaration.
+echo "== --annotate writes the types the calls said"
+if (cd "$FIXTURE" && "$IYI" migrate src --out "$WORK/annotated" --annotate --verbose > "$WORK/annotate.log" 2>&1); then
+  holds "the parameter's type is named"  "item : ::Shop::Models::Item" "$WORK/annotate.log"
+  holds "the answer is named"            "holds?\` answers ::Bool"     "$WORK/annotate.log"
+  if grep -q "def holds?(item : Item) : ::Bool" "$WORK/annotated/shop/models/cart_item.iyi"; then
+    step ok "the declaration carries both, spelled for this module"
+  else
+    step fail "the declaration was not annotated: $(grep -m1 'def holds?' "$WORK/annotated/shop/models/cart_item.iyi")"
+  fi
+  if (cd "$WORK/annotated" && "$IYI" build --crystal -o "$WORK/annotated_shop" shop.iyi > "$WORK/annotated.log" 2>&1) &&
+     (cd "$WORK/annotated" && "$WORK/annotated_shop" > "$WORK/annotated.out" 2>&1) &&
+     diff -q "$WORK/crystal.out" "$WORK/annotated.out" > /dev/null; then
+    step ok "the annotated tree answers the same"
+  else
+    step fail "the annotated tree does not answer the same"
+    grep -m1 -A3 "^Error" "$WORK/annotated.log"
+  fi
+else
+  step fail "migrate --annotate failed"
+  tail -6 "$WORK/annotate.log"
+fi
+
 # R-2 satisfied is what makes a migrated tree an iyi program rather than
 # the other language in another spelling: every export's types are written, so
 # modules can be read as declarations. `include JSON::Serializable`
 # generates a `new` and an `initialize` nobody can annotate, which is why
 # a macro's defs are exempt (iyimod.cr, `check_types_written`).
 echo "== the tree emits artifacts (R-2 holds)"
-if (cd "$WORK/out" && "$IYI" build --crystal --emit-iyimod mods -o "$WORK/probe" shop.iyi > "$WORK/emit.log" 2>&1); then
-  written=$(find "$WORK/out/mods" -name '*.iyimod' | wc -l)
+if (cd "$WORK/annotated" && "$IYI" build --crystal --emit-iyimod mods -o "$WORK/probe" shop.iyi > "$WORK/emit.log" 2>&1); then
+  written=$(find "$WORK/annotated/mods" -name '*.iyimod' | wc -l)
   if [ "$written" -ge 6 ]; then
     step ok "$written .iyimod files"
   else
@@ -119,8 +144,8 @@ else
 fi
 
 echo "== the same program, built from those artifacts"
-if (cd "$WORK/out" && "$IYI" build --crystal --use-iyimod mods -o "$WORK/from_artifacts" shop.iyi > "$WORK/artifact.log" 2>&1) &&
-   (cd "$WORK/out" && "$WORK/from_artifacts" > "$WORK/artifact.out" 2>&1); then
+if (cd "$WORK/annotated" && "$IYI" build --crystal --use-iyimod mods -o "$WORK/from_artifacts" shop.iyi > "$WORK/artifact.log" 2>&1) &&
+   (cd "$WORK/annotated" && "$WORK/from_artifacts" > "$WORK/artifact.out" 2>&1); then
   if diff -q "$WORK/crystal.out" "$WORK/artifact.out" > /dev/null; then
     step ok "byte for byte, with the modules read as declarations"
   else

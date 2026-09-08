@@ -878,7 +878,7 @@ move is one of the four rules:
 | `abstract def` in a module | `abstract def` in a `trait`, and the trait is a type | II.6 |
 | everything is public unless `private` | everything is the module's own unless `pub`, and `pub` writes its types | R-2 |
 | shards, `shard.yml` | `--crystal` can `require` shards from `IYI_PATH`; `iyi bind` puts every shard under `lib/` behind a boundary, one `.iyimod` each, and a program `import`s it | no package manager; a required shard's source is compiled into the program, a bound one's object code is linked (SPEC.md III.6) |
-| a Crystal project you already have | `iyi migrate SRC --out DIR` writes it as iyi modules: the namespace becomes the path, qualified names become `using` lines, an import cycle becomes one module, a reopened foreign type stays Crystal beside its module | `--check` compiles every module written and names what is left; a 99-file application migrates to 91 modules that all compile (SPEC.md III.6) |
+| a Crystal project you already have | `iyi migrate SRC --out DIR --annotate` writes it as iyi modules: the namespace becomes the path, qualified names become `using` lines, an import cycle becomes one module, a reopened foreign type stays Crystal beside its module, and the types R-2 wants are read off the program the compiler already typed | `--check` compiles every module written and names what is left; a 99-file application migrates to 91 modules that all compile, with 225 types written and 52 named as a person's to write (SPEC.md III.6) |
 | macros | kept, and they travel in the artifact | |
 | `Nil`, union types, blocks, local inference | kept, unchanged | |
 

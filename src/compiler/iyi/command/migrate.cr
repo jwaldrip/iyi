@@ -48,6 +48,7 @@ class Iyi::Command
   private def migrate
     out_dir = nil
     check = false
+    annotate = false
     verbose = false
     src = nil
     while option = options.first?
@@ -58,6 +59,9 @@ class Iyi::Command
       when "--check"
         options.shift
         check = true
+      when "--annotate"
+        options.shift
+        annotate = true
       when "--verbose", "-v"
         options.shift
         verbose = true
@@ -73,6 +77,10 @@ class Iyi::Command
           type the tree does not own is kept as Crystal in a `.cr` file
           beside its module.
 
+          --annotate write the types R-2 wants where the Crystal never had
+                    them, read off the calls the compiler resolved: a
+                    parameter every call site passes one type gets it, one
+                    that is passed two is left and named
           --check   compile every module written (`check --crystal`) and
                     print the first refusal of each
           --verbose every note, rather than the first few of each kind
@@ -156,7 +164,8 @@ class Iyi::Command
     end
 
     project_root = Dir.current
-    units.each { |unit| unit.render(by_source, by_namespace, exports, notes, project_root) }
+    inferred = annotate ? infer_types(units, notes) : nil
+    units.each { |unit| unit.render(by_source, by_namespace, exports, notes, project_root, inferred) }
 
     # Everything under the tree that is not Crystal travels with it: a
     # view, a fixture, a JSON file the program reads. A *template* is
@@ -194,6 +203,37 @@ class Iyi::Command
         end
       end
     end
+
+    # `pub` is what *another* module names. Marking every top-level
+    # declaration was the first rule and it was too wide: R-2 then asks a
+    # signature of every one of them, including a class the tree
+    # instantiates nowhere and a helper nobody outside calls, and the
+    # types for those cannot be read off a program that never ran them.
+    # What the rewrite already knows is exactly which names cross, since
+    # it wrote every `using` line and every qualified spelling.
+    needed = {} of String => Set(String)
+    units.each do |unit|
+      unit.usings.each do |target, names|
+        (needed[target] ||= Set(String).new).concat(names)
+      end
+      unit.body.each do |line|
+        MigrateUnit.marks(line).each do |(target, name)|
+          (needed[target] ||= Set(String).new) << name unless name.empty?
+        end
+      end
+    end
+    kept_in = 0
+    units.each do |unit|
+      wanted = needed[unit.path]? || Set(String).new
+      unit.pub_sites.each do |(index, name)|
+        next if wanted.includes?(name)
+        line = unit.body[index]?
+        next unless line && line.starts_with?("pub ")
+        unit.body[index] = line.lchop("pub ")
+        kept_in += 1
+      end
+    end
+    notes.add "unexported", "#{kept_in} declarations no other module names stayed the module's own, so R-2 asks nothing of them" if kept_in > 0
 
     # A cycle is one unit of compilation whatever its files were.
     components = strongly_connected(units)
@@ -346,14 +386,16 @@ class Iyi::Command
     end
 
     HEADINGS = {
-      "cycle"   => "import cycles, written as one module each",
-      "reopen"  => "reopenings of types this tree does not own, kept as Crystal",
-      "collide" => "one name offered by two modules, the second left qualified",
-      "bang"    => "`!` is III.1.7a's: rewritten, and worth reading",
-      "include" => "`include` of a namespace, which is a `using` line here",
-      "nested"  => "modules left nested, which nothing outside can reach",
-      "untyped" => "exports whose types the compiler still has to be told",
-      "embed"   => "templates embedded at compile time, named from the project root",
+      "cycle"      => "import cycles, written as one module each",
+      "reopen"     => "reopenings of types this tree does not own, kept as Crystal",
+      "collide"    => "one name offered by two modules, the second left qualified",
+      "bang"       => "`!` is III.1.7a's: rewritten, and worth reading",
+      "include"    => "`include` of a namespace, which is a `using` line here",
+      "nested"     => "modules left nested, which nothing outside can reach",
+      "untyped"    => "exports whose types the compiler still has to be told",
+      "annotate"   => "types written from what the calls said (--annotate)",
+      "unexported" => "declarations no other module names, left unexported",
+      "embed"      => "templates embedded at compile time, named from the project root",
     }
 
     def print(verbose : Bool) : Nil
@@ -368,6 +410,46 @@ class Iyi::Command
         puts "  … and #{list.size - shown.size} more (--verbose)" if list.size > shown.size
       end
     end
+  end
+
+  # The types the tree's own calls say its untyped parameters are. The
+  # program is compiled once, as Crystal, from the file nothing requires —
+  # the entry — because that is the compile that resolves every call.
+  private def infer_types(units : Array(MigrateUnit), notes : Notes) : ParamTypes?
+    required = Set(String).new
+    by_source = units.to_h { |unit| {unit.source, unit} }
+    units.each { |unit| unit.required_units(by_source).each { |target| required << target.source } }
+    entries = units.reject { |unit| required.includes?(unit.source) }
+    if entries.empty?
+      notes.add "annotate", "every file is required by another, so there is no entry to compile: --annotate needs one"
+      return nil
+    end
+    # Every file nothing requires is a program of its own — the app, a
+    # migration runner, a seeder — and a def only one of them calls is
+    # typed only there. All of them are read, and the readings merged.
+    merged = nil
+    entries.each do |entry|
+      compiler = Compiler.new
+      compiler.no_codegen = true
+      compiler.stdout = IO::Memory.new
+      compiler.stderr = IO::Memory.new
+      begin
+        result = compiler.compile(
+          Compiler::Source.new(entry.source, File.read(entry.source)),
+          File.tempname("iyi-migrate-types", nil))
+      rescue ex : CodeError | Iyi::Error
+        notes.add "annotate", "#{entry.relative} does not compile as Crystal, so its calls said nothing: #{ex.message.to_s.lines.first?}"
+        next
+      end
+      types = Iyi.param_types(result)
+      if first = merged
+        first.merge!(types)
+      else
+        merged = types
+      end
+    end
+    notes.add "annotate", "read from #{entries.size} program#{entries.size == 1 ? "" : "s"}: #{entries.map(&.relative).join(", ")}"
+    merged
   end
 
   # A cycle's members in require order: what a member required comes
@@ -472,6 +554,10 @@ class Iyi::Command
     getter imports = Set(String).new
     getter usings = {} of String => Set(String)
     getter body = [] of String
+    # Where a `pub` was written and what it exports, so the driver can
+    # take it back off: what no other module names is not the module's
+    # surface, and R-2 asks a signature only of what is.
+    getter pub_sites = [] of {Int32, String}
 
     # Through `Iyi::Rx`, the compiler's own engine, and not Crystal's
     # `Regex`: pcre2 is on the list iyi means to need nothing from, and
@@ -636,6 +722,31 @@ class Iyi::Command
     # because it cannot occur in Crystal source.
     MARK = '\ue000'
 
+    # Every `MARK path MARK name MARK` in a line, as pairs.
+    def self.marks(text : String) : Array({String, String})
+      found = [] of {String, String}
+      return found unless text.includes?(MARK)
+      rest = text
+      while (at = rest.index(MARK))
+        rest = rest[(at + 1)..]
+        owner_end = rest.index(MARK) || break
+        owner = rest[0, owner_end]
+        rest = rest[(owner_end + 1)..]
+        name_end = rest.index(MARK) || break
+        name = rest[0, name_end]
+        rest = rest[(name_end + 1)..]
+        # An empty name is the namespace itself, and what the module has to
+        # export is then the method called on it: `Shop::Config.banner`
+        # rides as the namespace plus `.banner`.
+        if name.empty? && rest.starts_with?('.')
+          method = rest[1..].each_char.take_while { |char| char.alphanumeric? || char == '_' || char == '?' || char == '!' }.join
+          name = method
+        end
+        found << {owner, name}
+      end
+      found
+    end
+
     def self.resolve_marks(text : String, remap : Hash(String, String), module_path : String) : String
       return text unless text.includes?(MARK)
       String.build do |io|
@@ -657,6 +768,119 @@ class Iyi::Command
           end
         end
         io << rest
+      end
+    end
+
+    # One `def` line, with the types its calls said. The parameters are
+    # rewritten between the outermost parentheses; a parameter that was
+    # passed two types is left as the author wrote it and named, because a
+    # `pub def` cannot be two defs and choosing would be inventing a
+    # program.
+    private def annotate_def(line : String, source_index : Int32, inferred : ParamTypes, notes : Notes) : String
+      key = {source, source_index + 1}
+      seen = inferred.params(key)
+      answers = inferred.answer(key)
+      return line unless seen || answers
+
+      # The *parameter list*, matched: `def self.get_all : Array(City)?`
+      # has a paren and no parameters, and taking the last `)` in the line
+      # read its return type as one — which appended a second.
+      def_name = (DEF.match(line).try(&.[4])) || ""
+      span = MigrateUnit.param_span(line, def_name)
+      open_at = span.try(&.[0])
+      close_at = span.try(&.[1])
+      if open_at && close_at && seen
+        inside = line[(open_at + 1)...close_at]
+        parts = inside.split(',')
+        rewritten = parts.map do |part|
+          name = part.strip
+          next part if name.empty? || name.includes?(':') || name.starts_with?('&') || name.starts_with?('*')
+          bare = name.lchop('@').split(' ').last
+          types = seen[bare]? || seen[name]?
+          next part unless types
+          if types.size > 1
+            notes.add "annotate", "#{path}: `#{bare}` is passed #{types.to_a.sort.join(" and ")} — R-2 wants one, so it is left as written"
+            next part
+          end
+          spelling = MigrateUnit.absolute_type(types.first)
+          next part unless spelling
+          notes.add "annotate", "#{path}: `#{bare} : #{spelling}`, read off its calls"
+          "#{part.rstrip} : #{spelling}"
+        end
+        line = line[0, open_at + 1] + rewritten.join(",") + line[close_at..]
+      end
+
+      # The answer, where the def wrote none and every caller was handed
+      # one type. `initialize` answers what it is defined on, and a setter
+      # answers what it was handed, so neither wants one.
+      if answers && answers.size == 1 && !def_name.empty?
+        name = def_name
+        tail = line.rstrip
+        # Whether a return type is already written: what follows the
+        # parameter list, or the name when there is none.
+        after = MigrateUnit.param_span(tail, name)
+        rest =
+          if span_now = after
+            tail[(span_now[1] + 1)..]
+          elsif (name_at = tail.index(name))
+            tail[(name_at + name.size)..]
+          else
+            ":"
+          end
+        unless rest.includes?(':') || name == "initialize" || name.ends_with?('=')
+          answer = MigrateUnit.absolute_type(answers.first)
+          if answer
+            line = tail + " : " + answer
+            notes.add "annotate", "#{path}: `#{name}` answers #{answer}, read off its calls"
+          end
+        end
+      end
+      line
+    end
+
+    # Where a `def` line's parameter list opens and closes, matched, or
+    # nil when it has none: the `(` that follows the name, and its own `)`.
+    def self.param_span(line : String, name : String) : {Int32, Int32}?
+      return nil if name.empty?
+      at = line.index(name)
+      return nil unless at
+      index = at + name.size
+      while (char = line[index]?) && (char == ' ' || char == '\t')
+        index += 1
+      end
+      return nil unless line[index]? == '('
+      open_at = index
+      depth = 0
+      while (char = line[index]?)
+        depth += 1 if char == '('
+        if char == ')'
+          depth -= 1
+          return {open_at, index} if depth.zero?
+        end
+        index += 1
+      end
+      nil
+    end
+
+    # A type as the compiler prints it, spelled so a module cannot mistake
+    # it for one of its own: every path in it becomes absolute, because a
+    # tree that declares `AcikTurkiye::DB` would otherwise read the `db`
+    # shard's `DB::ExecResult` as its own. Nil when the compiler's spelling
+    # is not something a person could have written — a virtual type, an
+    # anonymous one — and then nothing is written.
+    def self.absolute_type(text : String) : String?
+      return nil if text.includes?('+') || text.includes?('#') || text.includes?("(anonymous")
+      String.build do |io|
+        index = 0
+        while index < text.size
+          char = text[index]
+          previous = index > 0 ? text[index - 1] : ' '
+          if char.ascii_uppercase? && !(previous.alphanumeric? || previous == '_' || previous == ':')
+            io << "::"
+          end
+          io << char
+          index += 1
+        end
       end
     end
 
@@ -695,14 +919,15 @@ class Iyi::Command
     @by_namespace = {} of String => MigrateUnit
 
     def render(by_source : Hash(String, MigrateUnit), by_namespace : Hash(String, MigrateUnit),
-               exports : Hash(String, Export), notes : Notes, project_root : String) : Nil
+               exports : Hash(String, Export), notes : Notes, project_root : String,
+               inferred : ParamTypes? = nil) : Nil
       @by_namespace = by_namespace
       claimed = {} of String => String
       @exports.each { |name| claimed[name] = path }
       depth = wrappers * 2
       opened = 0
 
-      lines.each do |line|
+      lines.each_with_index do |line, source_index|
         stripped = line.strip
         if match = REQUIRE.match(line)
           target = match[1] || ""
@@ -737,9 +962,17 @@ class Iyi::Command
           if match[3] == "module"
             notes.add "nested", "#{path}: `module #{match[4]}` stays nested, and `pub` does not apply to a module — nothing outside can reach into it"
           else
+            # A *type* keeps its `pub` whether the tree names it or not: a
+            # macro in a shard names the class that includes it —
+            # `Kemal::Handler`'s `only` expands `{{@type}}` — and that
+            # reference is qualified, so an unexported class is refused
+            # inside its own module. Defs and constants have no such
+            # reader, and those are the ones taken back below.
             line = "pub " + line
           end
         elsif (match = DEF.match(line)) && (match[1] || "").empty? && match[2].nil?
+          line = annotate_def(line, source_index, inferred, notes) if inferred
+          pub_sites << {body.size, match[4] || ""}
           # `def self.banner` at a module's top level is Crystal saying
           # "a module function"; an iyi module extends itself, so the
           # module function is the plain spelling and `def self.` would
@@ -748,9 +981,13 @@ class Iyi::Command
           line = line.sub("def self.", "def ")
           line = "pub " + line
         elsif (match = CONST.match(line)) && (match[1] || "").empty?
+          pub_sites << {body.size, match[2] || ""}
           line = "pub " + line
         end
 
+        if inferred && (match = DEF.match(line)) && !(match[1] || "").empty? && match[2].nil?
+          line = annotate_def(line, source_index, inferred, notes)
+        end
         line = rewrite_paths(line, exports, claimed, notes)
         line = rewrite_bangs(line, notes)
         body << line
@@ -785,14 +1022,40 @@ class Iyi::Command
       imports.delete(path)
 
       text = body.join('\n')
-      untyped = 0
+      # What R-2 still wants, named: an exported def whose parameters carry
+      # no type. `--annotate` writes the ones the program's own calls
+      # answered; what is left is a def nothing in this program calls, so
+      # there was nothing to read, and a person writes it or takes the
+      # declaration out of the module's surface.
+      # A `pub def` at the module's top level, and every public method of
+      # an exported type — R-2 asks both. `--annotate` writes what the
+      # program's own calls answered; what is left is a def nothing calls,
+      # so there was nothing to read.
+      exported_type = nil
       body.each do |line|
-        next unless (match = EXPORTED.match(line)) && match.begin(0) == 0
-        params = match[2] || ""
+        indent = line.size - line.lstrip.size
+        if indent.zero?
+          if line.starts_with?("pub class ") || line.starts_with?("pub struct ") ||
+             line.starts_with?("pub abstract class ") || line.starts_with?("pub abstract struct ")
+            exported_type = line.lstrip.split(' ')[2]?.try(&.split('(')[0])
+          elsif line.rstrip == "end"
+            exported_type = nil
+          end
+        end
+        surface = indent.zero? ? line.starts_with?("pub def ") : !exported_type.nil?
+        next unless surface
+        next unless (match = DEF.match(line)) && match[2].nil? && match[3] == "def"
+        span = MigrateUnit.param_span(line, match[4] || "")
+        next unless span
+        params = line[(span[0] + 1)...span[1]]
         next if params.strip.empty?
-        untyped += 1 if params.split(',').any? { |param| !param.includes?(':') }
+        bare = params.split(',').map(&.strip).select do |param|
+          !param.includes?(':') && !param.starts_with?('&') && !param.starts_with?('*') && !param.empty?
+        end
+        next if bare.empty?
+        where = exported_type && indent > 0 ? "#{exported_type}##{match[4]}" : "#{match[4]}"
+        notes.add "untyped", "#{path}: `#{where}` does not say what #{bare.map { |name| "`#{name.split(' ').first.split('=').first.strip}`" }.join(", ")} #{bare.size == 1 ? "is" : "are"} — nothing in the program calls it, so nothing could be read; write it, or take `pub` off what nothing outside names"
       end
-      notes.add "untyped", "#{path}: #{untyped} exported def#{untyped == 1 ? "" : "s"} whose parameters carry no type — R-2 wants them written; `crystal tool bind -e <Root>` prints what the compiler inferred" if untyped > 0
     end
 
     # A template is code inside `<% %>`; the rest is text a rewrite must
@@ -923,8 +1186,17 @@ class Iyi::Command
             next
           end
           previous = index > 0 ? line[index - 1] : ' '
-          if (in_string && interpolation.zero?) || !char.ascii_uppercase? ||
-             previous.alphanumeric? || previous == '_' || previous == ':'
+          # A path starts at an upper-case letter, or at the `::` of an
+          # absolute one — which is how a Crystal file writes
+          # `::DB::ExecResult` and how `--annotate` writes an inferred
+          # type, so both have to be resolved rather than stepped over.
+          absolute_here = char == ':' && line[index + 1]? == ':' &&
+                          (line[index + 2]?.try(&.ascii_uppercase?) || false) &&
+                          !(previous.alphanumeric? || previous == '_' || previous == ':')
+          starts_here = absolute_here ||
+                        (char.ascii_uppercase? &&
+                         !(previous.alphanumeric? || previous == '_' || previous == ':'))
+          unless starts_here && !(in_string && interpolation.zero?)
             io << char
             index += 1
             next

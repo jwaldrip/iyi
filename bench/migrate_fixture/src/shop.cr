@@ -16,4 +16,5 @@ puts Shop::Counter.report(cart.total)
 puts cart.dearest.label
 puts cart.cheapest_first.map(&.name).join(", ")
 puts cart.items.first.in?(cart)
+puts cart.holds?(Shop::Models::Item.new("kahve", 90))
 puts Shop::Report.new(cart).to_s.lines.size

@@ -22,6 +22,12 @@ module Shop::Models
       items.max_by?(&.price).not_nil!
     end
 
+    # Untyped, the way Crystal lets it be: `--annotate` writes what the
+    # calls said, and R-2 is satisfied without a person guessing.
+    def holds?(item)
+      items.any? { |held| held.name == item.name }
+    end
+
     def cheapest_first : Array(Item)
       items.sort_by!(&.price)
     end
