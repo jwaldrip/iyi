@@ -27,6 +27,16 @@
   editor's quickfix apply it. A raise can name its span now
   (`TypeException.for_node`'s `size`), where before it was the node's
   name and a literal has none. `bench/agent_loop.py` steps 9 and 10.
+- **The first program that forgets.** `samples/iyi/sessions.iyi`: a
+  table of who is signed in, which has to lose an entry when somebody
+  signs out, and the prelude grew the one thing it took - `Hash#delete`,
+  the value that was there or `nil`. The entries that remain keep their
+  order, so a person who signs out and back in goes to the end of the
+  table; the gap closes in the dense arrays and the index is built again
+  over what is left, once per deletion, rather than tombstones every
+  probe would step over from then on. `hash.iyi`'s header said "nothing
+  deletes, because no sample asks" since the day it arrived; this is the
+  sample asking.
 
 ### Changed
 
@@ -4457,7 +4467,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 11,773-line library and nothing else. Every other
+  written against iyi's own 11,804-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

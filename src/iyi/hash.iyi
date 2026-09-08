@@ -6,7 +6,10 @@
 # Python's dictionary and Crystal's `Hash` both settled on, because
 # iteration then follows the order things went in — the order a word count prints its words, and the
 # order a person expects — and because the index is one array of integers
-# rather than a copy of the keys. Nothing deletes, because no sample asks.
+# rather than a copy of the keys. Deletion closes the gap in the dense
+# arrays and rebuilds the index, which is the boring answer and the right
+# one for a table that forgets an entry now and then; the sample that asked
+# for it (`samples/iyi/sessions.iyi`) signs people out one at a time.
 #
 # Hashing is `key.hash`, defined per type in this prelude. It is deliberately
 # not iyi's `Hashable` trait: that trait lives in `samples/iyi/std`, and a
@@ -70,6 +73,25 @@ class Hash(K, V)
     @index[slot_for(key)] >= 0
   end
 
+  # The value the key had, or nil. The entries after it move down one, so
+  # the order of what remains is the order it went in, and the index is
+  # built again over what is left — the whole table, once per deletion,
+  # rather than tombstones in the index that every probe would have to
+  # step over from then on.
+  def delete(key : K) : V?
+    entry = @index[slot_for(key)]
+    return nil if entry < 0
+    value = @values[entry]
+    while entry + 1 < @size
+      @keys[entry] = @keys[entry + 1]
+      @values[entry] = @values[entry + 1]
+      entry = entry + 1
+    end
+    @size = @size - 1
+    rebuild_index
+    value
+  end
+
   # Every pair, in the order it went in.
   def each(& : K, V -> Nil) : Nil
     entry = 0
@@ -131,11 +153,20 @@ class Hash(K, V)
     @keys = Pointer(K).malloc(@capacity.to_u64)
     @values = Pointer(V).malloc(@capacity.to_u64)
     @index = Pointer(Int32).malloc((@capacity * 2).to_u64)
-    clear_index
     entry = 0
     while entry < @size
       @keys[entry] = old_keys[entry]
       @values[entry] = old_values[entry]
+      entry = entry + 1
+    end
+    rebuild_index
+  end
+
+  # The index over the dense arrays as they stand, from nothing.
+  private def rebuild_index : Nil
+    clear_index
+    entry = 0
+    while entry < @size
       @index[slot_for(@keys[entry])] = entry
       entry = entry + 1
     end

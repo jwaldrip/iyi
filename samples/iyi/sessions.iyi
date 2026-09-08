@@ -1,0 +1,73 @@
+# The first program that forgets - a table of who is signed in, which has
+# to lose an entry when somebody signs out.
+#
+#   ./bin/iyi run samples/iyi/sessions.iyi
+#
+# A `Hash` kept insertion order from the day it arrived and could not
+# delete, because no program in this repository needed to; the header of
+# `src/iyi/hash.iyi` said so in as many words. This program needs to.
+# `delete` answers the value that was there, or `nil`, and the entries
+# that remain keep their order - so a person who signs out and back in
+# goes to the end of the table, which is what a table of arrivals means.
+# Like `basics`, `inventory`, `config`, `grid` and `shapes`, this documents
+# no rule: it is here because the prelude grows only when a program asks
+# (SPEC.md 0.1.0 item 3), and forgetting is what the sixth program does.
+module samples/sessions
+
+struct Session
+  property user : String
+  property since : Int32 # the tick the session opened on
+
+  def initialize(@user : String, @since : Int32)
+  end
+end
+
+class Table
+  @open : Hash(String, Session)
+  @tick : Int32
+
+  def initialize
+    @open = {} of String => Session
+    @tick = 0
+  end
+
+  def sign_in(user : String) : Nil
+    @tick = @tick + 1
+    @open[user] = Session.new(user, @tick)
+  end
+
+  # The session that closed, or nil when nobody by that name was in.
+  def sign_out(user : String) : Session?
+    @open.delete(user)
+  end
+
+  def show : Nil
+    @open.each { |user, session| puts "  #{user} since tick #{session.since}" }
+    puts "  (#{@open.size} signed in)"
+  end
+end
+
+table = Table.new
+table.sign_in("ada")
+table.sign_in("linus")
+table.sign_in("grace")
+puts "three arrivals:"
+table.show # => ada, linus, grace; 3 signed in
+
+if gone = table.sign_out("linus")
+  puts "linus left, had been in since tick #{gone.since}" # => tick 2
+end
+table.show # => ada, grace; 2 signed in
+
+puts "nobody named bob: #{table.sign_out("bob").nil?}" # => true
+
+# Back in, and at the end: an entry that was deleted is a new arrival.
+table.sign_in("linus")
+puts "linus is back:"
+table.show # => ada, grace, linus; 3 signed in
+
+# Deleting everything and refilling, so the table's growth and its index
+# are exercised past the first page of entries.
+20.times { |i| table.sign_in("guest#{i}") }
+20.times { |i| table.sign_out("guest#{i}") }
+table.show # => ada, grace, linus; 3 signed in
