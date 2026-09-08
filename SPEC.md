@@ -1485,8 +1485,14 @@ by the impl block defining it. A `def show` written on the struct itself lives
 in the type's own module, which is exactly where R-3 would let an impl live, so
 accepting it opens no coherence hole.
 
-**Not yet built:** associated types (`type Elem`, II.6) are not parsed, and a
-trait cannot yet require another trait.
+**Built since this was written, and the sentence outlived it:** associated
+types (`type Elem` in a trait, `type Elem = T` in an impl, II.6) parse and
+check — `samples/iyi/std/enumerable.iyi` declares one and `std/list.iyi`
+answers it — and a trait requires another with `trait Ord : Eq`
+(`std/traits.iyi`'s `Num : Cmp`); `spec/compiler/semantic/iyi_spec.cr`'s
+"supertraits" and "associated types" hold both. What II.7's table still
+marks **not built** is the conditional impl, `impl Show for Box(T) forall T
+: Show`, which the compiler refuses by name.
 
 ### II.9 The Kemal port, compiled: **SETTLED**
 
