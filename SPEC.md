@@ -310,7 +310,7 @@ the rule allows, a program in this repository needs it, and together they are
 still more than the rule intended to permit.
 
 **The standard library is deliberately outside that count, and this is the
-answer this section left open.** `src/std/` is **29,466 lines across twenty-six
+answer this section left open.** `src/std/` is **29,520 lines across twenty-six
 modules**. It is opt-in via `import std/...`, it lives outside `src/iyi/` where
 `bench/doc_numbers.py` measures the ceiling, and a program that imports none of
 it pays for none of it. So the prelude rule keeps its meaning, "a method enters
@@ -340,6 +340,25 @@ over `udp.iyi`, which did not exist either. And `hpack.iyi`, `qpack.iyi` and
 which Crystal does not have at all, so they are written from the RFCs and
 checked against the worked examples in RFC 7541 appendix C, RFC 9204 appendix
 B and RFC 9000 appendix A rather than against themselves.
+
+**Each of those gates carries a failure proof, and two of the proofs were
+found to be proving nothing.** The pattern throughout this repository is to
+break the mechanism deliberately and require the check to catch it, which is
+what makes a green gate mean something. It has a silent failure mode. The
+AES-128-GCM tampered-tag proof patched a line range and the comparison it
+meant to remove had moved past the end of it; the QUIC varint proof matched
+`MAX_1BYTE = 63_u64` after the formatter had column-aligned the constant. A
+patch that matches nothing leaves the library intact, an intact library
+passes, and the driver reports that as the check being unable to fail. Both
+read as green for as long as nobody ran them together.
+
+The mechanism is guarded now rather than the two instances fixed: every
+driver that patches a source file compares the patched copy against the
+original and refuses to draw a conclusion when they are identical, across
+twenty-three sites in twenty-one scripts, and patches are anchored on text
+rather than on line numbers. The AES one is the reason this is recorded here
+rather than only in a commit: an AEAD that accepts a forged tag is worse than
+no AEAD, TLS and QUIC are built on it, and the exercise said it was covered.
 
 The ceiling was not a guess. Crystal's own 0.1.0 shipped 8,161 lines of
 library. Its core is **3,551 lines** of that: `object`, `nil`, `bool`, `char`,
@@ -846,7 +865,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 108,060 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 29,466 in std |
+| Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 29,520 in std |
 | Specs | 21,146 lines | 9,566 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |

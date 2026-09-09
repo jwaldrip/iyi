@@ -139,6 +139,16 @@ prove_fails "hmac key ipad corrupted" hmac_corrupt \
   "assertion failed: RFC 2202 HMAC-MD5 Case 1" "crypto.iyi" \
   's/k_ipad\[i\] = actual_key\[i\] \^ 0x36_u8/k_ipad[i] = actual_key[i]/'
 
+# 6. QUIC AES header protection mask taken from the wrong offset
+prove_fails "quic aes header mask offset broken" hp_aes \
+  "assertion failed: A.2 client Initial mask" "crypto.iyi" \
+  '/RFC 9001 section 5.4.3/,/^  end$/s/mask\[i\] = block\[i\]/mask[i] = block[i + 1]/'
+
+# 7. QUIC ChaCha20 header protection counter read big-endian
+prove_fails "quic chacha header counter endianness broken" hp_chacha \
+  "assertion failed: A.5 ChaCha20 short header mask" "crypto.iyi" \
+  '/RFC 9001 section 5.4.4/,/^  end$/s/unsafe_shl((8 \* i).to_u64)/unsafe_shl((24 - 8 * i).to_u64)/'
+
 echo
 if [ "$status" -eq 0 ]; then
   echo "Crypto standard library: MD5, SHA-1, SHA-256, SHA-384, SHA-512, streaming,"
