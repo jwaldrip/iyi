@@ -30,7 +30,10 @@ status=0
 run_case() {
   local label="$1" name="$2"
   shift 2
-  if ! "$IYI" build "$@" -o "$WORK/$name" "$REPO/bench/std_http1_exercise.iyi" \
+  # IYI_PATH is named here rather than inherited. Without it this build only
+  # resolves the module for someone whose shell already exports the path, so
+  # the gate passed for its author and was red for CI and for everyone else.
+  if ! IYI_PATH="$REPO/src" "$IYI" build "$@" -o "$WORK/$name" "$REPO/bench/std_http1_exercise.iyi" \
        >"$WORK/$name.build.log" 2>&1; then
     echo "$label: build failed"
     sed -n '1,12p' "$WORK/$name.build.log"
@@ -96,7 +99,10 @@ server.accept_one
 server.stop
 EOF
 
-  if ! "$IYI" build -o "$WORK/curl_server" "$WORK/curl_server.iyi" >"$WORK/curl_server.build.log" 2>&1; then
+  # IYI_PATH is named here rather than inherited. Without it this build only
+  # resolves the module for someone whose shell already exports the path, so
+  # the gate passed for its author and was red for CI and for everyone else.
+  if ! IYI_PATH="$REPO/src" "$IYI" build -o "$WORK/curl_server" "$WORK/curl_server.iyi" >"$WORK/curl_server.build.log" 2>&1; then
     echo "  curl test: server build failed"
     sed -n '1,12p' "$WORK/curl_server.build.log"
     status=1
