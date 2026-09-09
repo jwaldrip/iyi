@@ -2189,6 +2189,16 @@ module Iyi
       @rescue_block = nil
       @catch_pad = nil
 
+      # iyi: code emitted into `_main` is not part of any module's artifact,
+      # so its callees route to their own units (SPEC.md IV.1g). Leaving a
+      # closure host open across this switch copied a callee into a module's
+      # unit with internal linkage while the caller stayed in `_main`: a
+      # regex literal in a module put `~$Regex:<hash>:const_init` in `_main`
+      # and `*Regex::new<String, Regex::Options>:Regex` inside the module,
+      # and the link ended on an undefined symbol.
+      old_iyi_closure_host = @iyi_closure_host
+      @iyi_closure_host = nil
+
       clear_current_debug_location if @debug.line_numbers?
 
       block_value = yield
@@ -2205,6 +2215,7 @@ module Iyi
       @entry_block = old_entry_block
       @alloca_block = old_alloca_block
       @needs_value = old_needs_value
+      @iyi_closure_host = old_iyi_closure_host
       context.fun = old_fun
       context.fun_type = old_fun_type
       set_current_debug_location old_debug_location if @debug.line_numbers?

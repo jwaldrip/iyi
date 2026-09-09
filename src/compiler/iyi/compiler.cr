@@ -1314,6 +1314,45 @@ module Iyi
     # — that one keeps its body and arrives as machine code (IV.2, IV.1g).
     private def iyi_type_declaration(program : Program, filename : String,
                                      name : String, type : Type) : IyiMod::TypeDecl
+      # iyi: an annotation has no members at all - no fields, no methods, no
+      # layout and no id. What a consumer needs is the *name*, so that
+      # `@[Check::Checker]` in its own class resolves, and asking the walk
+      # below for an annotation's instance variables ended the build on
+      # "BUG: Shapes::Marked doesn't implement instance_vars".
+      # iyi: an exported `alias` has neither a layout nor an id either, and
+      # travels as what it resolved to - the same rule `iyi_carried_types`
+      # applies to one declared *under* an exported type, because a name
+      # that resolved where the module was read may not resolve here.
+      if type.is_a?(AliasType)
+        type.process_value
+        return IyiMod::TypeDecl.new(
+          name: name,
+          kind: type.type_desc,
+          type_parameters: [] of String,
+          assoc_types: [] of String,
+          supertraits: [] of String,
+          fields: [] of {String, String, String},
+          methods: [] of IyiMod::Signature,
+          visibility: "pub",
+          value: type.aliased_type?.try(&.to_s) || type.@value.to_s,
+          doc: type.doc || "",
+        )
+      end
+
+      if type.is_a?(AnnotationType)
+        return IyiMod::TypeDecl.new(
+          name: name,
+          kind: type.type_desc,
+          type_parameters: [] of String,
+          assoc_types: [] of String,
+          supertraits: [] of String,
+          fields: [] of {String, String, String},
+          methods: [] of IyiMod::Signature,
+          visibility: "pub",
+          doc: type.doc || "",
+        )
+      end
+
       travels = iyi_bodies_travel?(type)
       methods = [] of IyiMod::Signature
 
