@@ -640,7 +640,7 @@ pub class UdpSocket
   end
 
   def self.make_sockaddr(host : String, port : Int32) : Tuple(Pointer(UInt8), UInt32, Int32)
-    if host.includes?(':')
+    if host.includes?(":")
       v6_bytes = parse_ipv6(host)
       {make_sockaddr_in6(v6_bytes, port), 28_u32, AF_INET6}
     else
