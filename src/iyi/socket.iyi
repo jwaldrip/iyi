@@ -36,6 +36,12 @@ class IyiSocket
     @fd
   end
 
+  {% if @top_level.has_constant?("IyiIO") %}
+    def to_io : IyiIO
+      IyiIO.new(@fd)
+    end
+  {% end %}
+
   # --- Connection and Listening ---
 
   def self.connect(host : String, port : Int32) : IyiSocket
