@@ -93,24 +93,24 @@ pub struct VarInt
       if value > MAX_2BYTE
         raise "value #{value} does not fit in 2-byte varint"
       end
-      buf[0] = (0x40_u8 | ((value >> 8) & 0x3f_u64).to_u8)
+      buf[0] = (0x40_u8 | (value.unsafe_shr(8_u64) & 0x3f_u64).to_u8)
       buf[1] = (value & 0xff_u64).to_u8
     elsif length == 4
       if value > MAX_4BYTE
         raise "value #{value} does not fit in 4-byte varint"
       end
-      buf[0] = (0x80_u8 | ((value >> 24) & 0x3f_u64).to_u8)
-      buf[1] = ((value >> 16) & 0xff_u64).to_u8
-      buf[2] = ((value >> 8) & 0xff_u64).to_u8
+      buf[0] = (0x80_u8 | (value.unsafe_shr(24_u64) & 0x3f_u64).to_u8)
+      buf[1] = (value.unsafe_shr(16_u64) & 0xff_u64).to_u8
+      buf[2] = (value.unsafe_shr(8_u64) & 0xff_u64).to_u8
       buf[3] = (value & 0xff_u64).to_u8
     elsif length == 8
-      buf[0] = (0xc0_u8 | ((value >> 56) & 0x3f_u64).to_u8)
-      buf[1] = ((value >> 48) & 0xff_u64).to_u8
-      buf[2] = ((value >> 40) & 0xff_u64).to_u8
-      buf[3] = ((value >> 32) & 0xff_u64).to_u8
-      buf[4] = ((value >> 24) & 0xff_u64).to_u8
-      buf[5] = ((value >> 16) & 0xff_u64).to_u8
-      buf[6] = ((value >> 8) & 0xff_u64).to_u8
+      buf[0] = (0xc0_u8 | (value.unsafe_shr(56_u64) & 0x3f_u64).to_u8)
+      buf[1] = (value.unsafe_shr(48_u64) & 0xff_u64).to_u8
+      buf[2] = (value.unsafe_shr(40_u64) & 0xff_u64).to_u8
+      buf[3] = (value.unsafe_shr(32_u64) & 0xff_u64).to_u8
+      buf[4] = (value.unsafe_shr(24_u64) & 0xff_u64).to_u8
+      buf[5] = (value.unsafe_shr(16_u64) & 0xff_u64).to_u8
+      buf[6] = (value.unsafe_shr(8_u64) & 0xff_u64).to_u8
       buf[7] = (value & 0xff_u64).to_u8
     else
       raise "invalid varint encoding length: #{length} (must be 1, 2, 4, or 8)"
@@ -128,7 +128,7 @@ pub struct VarInt
     end
 
     b0 = bytes[offset]
-    prefix = (b0 >> 6) & 0x03_u8
+    prefix = (b0.to_i32 >> 6) & 0x03
 
     if prefix == 0_u8
       val = (b0 & 0x3f_u8).to_u64
@@ -137,7 +137,7 @@ pub struct VarInt
       if offset + 2 > bytes.size
         raise "varint truncated: 2-byte varint requires 2 bytes, but only #{bytes.size - offset} available"
       end
-      val = ((b0 & 0x3f_u8).to_u64 << 8) | bytes[offset + 1].to_u64
+      val = (b0 & 0x3f_u8).to_u64.unsafe_shl(8_u64) | bytes[offset + 1].to_u64
       if strict && val <= MAX_1BYTE
         raise "overlong varint encoding: value #{val} encoded in 2 bytes"
       end
@@ -146,9 +146,9 @@ pub struct VarInt
       if offset + 4 > bytes.size
         raise "varint truncated: 4-byte varint requires 4 bytes, but only #{bytes.size - offset} available"
       end
-      val = ((b0 & 0x3f_u8).to_u64 << 24) |
-            (bytes[offset + 1].to_u64 << 16) |
-            (bytes[offset + 2].to_u64 << 8) |
+      val = (b0 & 0x3f_u8).to_u64.unsafe_shl(24_u64) |
+            bytes[offset + 1].to_u64.unsafe_shl(16_u64) |
+            bytes[offset + 2].to_u64.unsafe_shl(8_u64) |
             bytes[offset + 3].to_u64
       if strict && val <= MAX_2BYTE
         raise "overlong varint encoding: value #{val} encoded in 4 bytes"
@@ -158,13 +158,13 @@ pub struct VarInt
       if offset + 8 > bytes.size
         raise "varint truncated: 8-byte varint requires 8 bytes, but only #{bytes.size - offset} available"
       end
-      val = ((b0 & 0x3f_u8).to_u64 << 56) |
-            (bytes[offset + 1].to_u64 << 48) |
-            (bytes[offset + 2].to_u64 << 40) |
-            (bytes[offset + 3].to_u64 << 32) |
-            (bytes[offset + 4].to_u64 << 24) |
-            (bytes[offset + 5].to_u64 << 16) |
-            (bytes[offset + 6].to_u64 << 8) |
+      val = (b0 & 0x3f_u8).to_u64.unsafe_shl(56_u64) |
+            bytes[offset + 1].to_u64.unsafe_shl(48_u64) |
+            bytes[offset + 2].to_u64.unsafe_shl(40_u64) |
+            bytes[offset + 3].to_u64.unsafe_shl(32_u64) |
+            bytes[offset + 4].to_u64.unsafe_shl(24_u64) |
+            bytes[offset + 5].to_u64.unsafe_shl(16_u64) |
+            bytes[offset + 6].to_u64.unsafe_shl(8_u64) |
             bytes[offset + 7].to_u64
       if strict && val <= MAX_4BYTE
         raise "overlong varint encoding: value #{val} encoded in 8 bytes"
@@ -414,7 +414,7 @@ end
 # 4. Extended CONNECT (RFC 8441 & RFC 9220)
 # =============================================================================
 
-pub module ExtendedConnect
+pub struct ExtendedConnect
   # Setting identifier enabling Extended CONNECT protocol negotiation.
   pub SETTINGS_ENABLE_CONNECT_PROTOCOL = 0x08_u64
 
@@ -450,7 +450,7 @@ end
 # 5. Capsule-Protocol Header (RFC 9297 Section 3.3)
 # =============================================================================
 
-pub module CapsuleProtocol
+pub struct CapsuleProtocol
   pub HEADER_NAME  = "Capsule-Protocol"
   pub HEADER_VALUE = "?1"
 
