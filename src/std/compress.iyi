@@ -1518,6 +1518,13 @@ end
 
 pub struct Gzip
   # Compresses *data* with RFC 1952 gzip wrapper (10-byte header, CRC-32 and ISIZE footer).
+  #
+  # Note on metadata: MTIME is set to 0 and FNAME is omitted deliberately.
+  # This provides deterministic, reproducible output for in-memory payloads
+  # and HTTP content-encoding without non-deterministic timestamps or
+  # filesystem path leaks. Decompressors expecting a filename see FLG bit 3
+  # cleared. Decompression (`Gzip.decompress`) handles all standard flags
+  # (FNAME, FCOMMENT, FEXTRA, FHCRC).
   def self.compress(data : Bytes, level : Int32 = 6) : Bytes
     crc = CRC32.checksum(data)
     isize = (data.size.to_u64) & 0xFFFFFFFF_u64
