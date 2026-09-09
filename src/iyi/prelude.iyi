@@ -6449,7 +6449,6 @@ def raise(error : TypeCastError) : NoReturn
   raise error.message
 end
 
-
 # Until a `break`.
 def loop(& : -> Nil) : Nil
   while true

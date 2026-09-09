@@ -8,12 +8,12 @@
 class File
   def self.open(path : String, mode : String = "r", buffer_size : Int32 = 4096) : IyiIO
     fd = if mode == "r"
-      __iyi_open_read(c_path(path))
-    elsif mode == "w"
-      __iyi_open_write(c_path(path))
-    else
-      raise "unsupported mode: #{mode}"
-    end
+           __iyi_open_read(c_path(path))
+         elsif mode == "w"
+           __iyi_open_write(c_path(path))
+         else
+           raise "unsupported mode: #{mode}"
+         end
     raise "cannot open #{path}" if fd < 0_i64
     IyiIO.new(fd, buffer_size, false)
   end
