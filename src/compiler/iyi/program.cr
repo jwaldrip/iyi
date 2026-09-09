@@ -595,12 +595,6 @@ module Iyi
     # it is keyed on `.iyi` files, and a shard has none.
     getter iyi_crystal_requires = {} of String => String
 
-    # iyi: the boundaries a `tool bind` run was given, by the top-level name
-    # each declares. The build that fills the artifact's object code needs them:
-    # a dependency can arrive through a *type id* rather than through a
-    # declaration, and only the type ids are known by then.
-    getter iyi_bind_boundaries = {} of String => String
-
     # iyi: the method bodies each file's module has to ship, by absolute
     # filename and then by `IyiMod.mono_body_key` (SPEC.md IV.2, `MonoBodies`).
     #

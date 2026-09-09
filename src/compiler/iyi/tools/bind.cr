@@ -2316,7 +2316,6 @@ module Iyi
         next unless bare.includes? declaration.name
         @@bound_prefix[declaration.name] = qualify.call(declaration.name)
         @@bound_module[declaration.name] = artifact.module_name
-        program.iyi_bind_boundaries[declaration.name] = artifact.module_name
       end
       io.puts "  %-24s %d types, %d this program can name" % [File.basename(path), found.size, kept.size]
     end
