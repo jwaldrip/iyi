@@ -845,7 +845,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 108,009 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 108,060 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 29,466 in std |
 | Specs | 21,146 lines | 9,566 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3302,7 +3302,7 @@ and no artifact, so `validator`, written on its macros, binds beside it.
 
 Written is not the same as usable, and the second number is the one that
 counts: a program that does nothing but `import <name>` builds, links and
-runs against **20 of the 22**. Getting there took fifteen defects, each
+runs against **21 of the 22**. Getting there took sixteen defects, each
 found by consuming an artifact rather than by writing one, and each is now
 a shape in `bench/bind_roundtrip.sh`'s fixture: a class variable's
 `@[ThreadLocal]` (a consumer that does not carry it writes to a different
@@ -3324,11 +3324,18 @@ somewhere. **What cannot compile cannot cross**: a method whose body does
 not typecheck when it is instantiated goes in `<artifact>.drop`, both
 builds run again without it, and the rest of the boundary is not hostage to
 it (`ed25519` loses two methods calling an `assert_rst_point` that shard
-never defined, and `jwt` binds behind it). **An import graph is a DAG**, and
-that is the one limit left: `PG` names `PQ::Field` in its signatures while
-`PQ` numbers `PG::Error` in its object code, and two boundaries cannot hold
-a cycle. Those two are the pair a program cannot import today; the artifacts
-are written and the refusal is IV.1g's, at the consumer, naming the type.
+never defined, and `jwt` binds behind it). And **a type id is a question
+about the program**, not about the import that raised it: `PG` names
+`PQ::Field` in its signatures while `PQ` numbers `PG::Error` in its object
+code, so whichever of the two a consumer reads first refers to a type the
+other has not declared yet — and no ordering of two boundaries fixes it,
+because the dependency runs both ways while an import graph is a DAG (R-1).
+The names an artifact's object code refers to are resolved once, after the
+top-level pass has read every import, and `import p_g` — which pulls `p_q`
+with it — builds. The one artifact of the 22 a program cannot import *alone*
+is `p_q`, and the refusal is right: the wire protocol's object code numbers
+`PG::Error`, so a program that wants it wants `PG` too, and IV.1g says so at
+the import that named it.
 
 **What a migration would need, measured on an application, before any
 `iyi migrate` is written.** The question a Crystal user asks next is not

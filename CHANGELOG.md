@@ -225,10 +225,10 @@
   real 21-shard application it binds 18 of 19 and writes 22 artifacts,
   because a shard with more than one namespace is more than one
   boundary; the one it does not bind is macros, which do not cross.
-- **A boundary a program can import: fifteen defects, found by consuming
+- **A boundary a program can import: sixteen defects, found by consuming
   one.** `iyi bind` wrote artifacts a reader could parse and a program
   could not use. A probe that does nothing but `import <name>` now
-  builds, links and runs against 20 of the 22 artifacts a real 21-shard
+  builds, links and runs against 21 of the 22 artifacts a real 21-shard
   application produces, where 11 of 18 did. Every one of the fifteen is
   a shape `bench/bind_roundtrip.sh` carries now, and the fixture fails
   without the fix that found it. A class variable's `@[ThreadLocal]`
@@ -261,6 +261,21 @@
   had been rewriting every `class Error < Exception` bound after it, and
   `jwt` came out importing eleven boundaries it names nothing from
   because the edge test was a substring match.
+- **A type id is a question about the program.** It was asked at the
+  import that raised it, which is a stricter order than the question:
+  `pg` declares `PG` and `PQ`, its wire protocol, and `PG` names
+  `PQ::Field` in its signatures while `PQ` numbers `PG::Error` in its
+  object code. Whichever of the two a consumer reads first refers to a
+  type the other has not declared yet, and no ordering of two boundaries
+  fixes it — the dependency runs both ways while an import graph is a
+  DAG (R-1). The names an artifact's object code refers to, ids and
+  match types both, are recorded at the import and resolved once, after
+  the top-level pass has read every one of them; the refusal, where a
+  name really is missing, still points at the import that named it and
+  now says which module to import. `import p_g` builds, and 21 of the 22
+  artifacts a real application produces are importable on their own.
+  `bench/bind_roundtrip.sh`'s two namespaces name each other now, so the
+  fixture fails without this.
 - **One boundary per namespace, and per part.** A boundary is rooted at
   one namespace and a shard need not have one: `pg` declares `PG` and
   `PQ`, its wire protocol, and `PG`'s signatures name `PQ::Field` while

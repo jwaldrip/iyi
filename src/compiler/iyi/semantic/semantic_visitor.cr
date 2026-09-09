@@ -762,39 +762,12 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
   private def number_iyi_artifact_types(node : ImportDecl, artifact : IyiMod::Artifact) : Nil
     return if artifact.object_code.empty?
 
+    # Recorded, not resolved: see `Program::IyiArtifactRef`. What a name means
+    # is settled once every import is in, and until then a boundary that names
+    # another's type is only early rather than wrong.
     artifact.type_ids.each do |name|
-      parser = @program.new_parser(name)
-      parser.next_token
-      type_node = parser.parse_bare_proc_type
-      parser.check :EOF
-      # Reaching what the module keeps to itself, which is what these names are
-      # made of: `Array(Router::RouteDefinition)` names a `private record` and
-      # the artifact carries it as one. R-2b is not weakened by that — the type
-      # arrives declared and unreachable, exactly as it is when the module is
-      # read from source, and this is the compiler restoring the module's own
-      # instantiation rather than anybody naming it.
-      # Kept, not just resolved. Creating a class puts it in the numbering,
-      # because ids are handed out by walking `Object`'s subclasses — but that
-      # walk does not reach an enum, which gets its id from the first code that
-      # asks. Nothing in this program asks for `Regex::MatchOptions`, so
-      # codegen numbers these itself (SPEC.md IV.1g).
-      @program.iyi_artifact_numbered_types << @program.lookup_type(type_node, include_private: true)
-    rescue CodeError
-      # A name this build cannot resolve. The module's own types travel with
-      # the artifact, unexported ones included, so what is left is an
-      # instantiation at somebody *else's* unexported type — reachable from
-      # neither module. Refused with both names rather than left to the linker,
-      # which would report the mangled symbol and no module at all.
-      node.raise <<-MESSAGE
-        "#{artifact.module_name}" numbers `#{name}`, and this build cannot name it
-
-        Its object code refers to that type's id, which is resolved from a
-        definition in this program — so this program has to have the type. This
-        module's own types travel with its artifact, so the one it cannot name
-        belongs to a module that does not export it (SPEC.md IV.1g).
-
-        Build the module from source, or export the type it names.
-        MESSAGE
+      @program.iyi_artifact_refs << Program::IyiArtifactRef.new(
+        artifact.module_name, name, node, match: false)
     end
   end
 
@@ -814,146 +787,9 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     return if artifact.object_code.empty?
 
     artifact.match_types.each do |name|
-      @program.iyi_artifact_match_types[name] = iyi_match_type_named(name)
-    rescue CodeError
-      # The same refusal a type id gets, for the same reason: the alternative
-      # is a mangled symbol at link time with no module named beside it.
-      node.raise <<-MESSAGE
-        "#{artifact.module_name}" matches against `#{name}`, and this build cannot name it
-
-        Its object code calls a function that compares a value's type id
-        against that type, and the comparison is built from this program's own
-        numbering — so this program has to have the type (SPEC.md IV.1g).
-
-        Build the module from source, or export the type it names.
-        MESSAGE
+      @program.iyi_artifact_refs << Program::IyiArtifactRef.new(
+        artifact.module_name, name, node, match: true)
     end
-  end
-
-  # iyi: one match type, from the name its symbol carries.
-  #
-  # The name is a *printed* type rather than source: `IPSocket+` is a virtual
-  # type, `Random::Secure:Module` is a module used as a value, and
-  # `(File::PReader | IO::FileDescriptor+ | OpenSSL::SSL::Socket+)` is a union
-  # of both kinds. None of the three is anything a program can write, which is
-  # why this reads the parts and asks the program for each: parsing the whole
-  # string refused every union whose members are not plain names, and refusing
-  # is how `faker` and `quartz` stopped - one with an error naming a type
-  # nobody can spell, the other with an undefined `~match<...>` at link time.
-  private def iyi_match_type_named(name : String) : Type
-    body = name.strip
-    body = body[1..-2].strip if iyi_wrapped_in_parens?(body)
-
-    members = iyi_split_union(body)
-    if members.size > 1
-      return @program.union_of(members.map { |member| iyi_match_type_named(member) }).not_nil!
-    end
-
-    metaclass = body.ends_with?(".class")
-    body = body.rchop(".class").strip if metaclass
-    # A module used as a value prints this way and is reached as the module's
-    # metaclass, which is what holds its class methods.
-    module_value = body.ends_with?(":Module")
-    body = body.rchop(":Module").strip if module_value
-    virtual = body.ends_with?('+')
-    body = body.rchop('+').strip if virtual
-
-    type = iyi_match_base_type(body)
-    type = type.virtual_type if virtual
-    type = type.metaclass if metaclass || module_value
-    type
-  end
-
-  # One printed type with no suffix left on it: a name, or a generic
-  # instantiated with types that may carry suffixes of their own.
-  #
-  # `DB::PoolResourceLost(DB::Connection+)` is the case that needs the second
-  # half: the argument is a virtual type, which no parser takes, so the head
-  # and the arguments are resolved apart and the generic is instantiated here.
-  private def iyi_match_base_type(body : String) : Type
-    if body.ends_with?(')') && (open = body.index('(')) && open > 0
-      head = body[0...open].strip
-      arguments = iyi_split_arguments(body[(open + 1)..-2])
-      unless arguments.empty?
-        generic = iyi_match_named_type(head)
-        if generic.is_a?(GenericType)
-          type_vars = arguments.map do |argument|
-            if argument.to_i?
-              NumberLiteral.new(argument).as(TypeVar)
-            else
-              iyi_match_type_named(argument).as(TypeVar)
-            end
-          end
-          return generic.instantiate(type_vars)
-        end
-      end
-    end
-
-    iyi_match_named_type body
-  end
-
-  private def iyi_match_named_type(body : String) : Type
-    parser = @program.new_parser(body)
-    parser.next_token
-    type_node = parser.parse_bare_proc_type
-    parser.check :EOF
-    @program.lookup_type(type_node, include_private: true)
-  end
-
-  # Whether one pair of parentheses encloses the whole of *text*, so `(A | B)`
-  # unwraps and `(A) | (B)` does not.
-  private def iyi_wrapped_in_parens?(text : String) : Bool
-    return false unless text.starts_with?('(') && text.ends_with?(')')
-    depth = 0
-    text.each_char_with_index do |char, index|
-      case char
-      when '(' then depth += 1
-      when ')'
-        depth -= 1
-        return index == text.size - 1 if depth.zero?
-      end
-    end
-    false
-  end
-
-  # `A, B(C, D), 16` as three, splitting only where the depth is zero.
-  private def iyi_split_arguments(text : String) : Array(String)
-    arguments = [] of String
-    depth = 0
-    from = 0
-    text.each_char_with_index do |char, index|
-      case char
-      when '(', '[', '{' then depth += 1
-      when ')', ']', '}' then depth -= 1
-      when ','
-        if depth.zero?
-          arguments << text[from...index].strip
-          from = index + 1
-        end
-      end
-    end
-    arguments << text[from..].strip
-    arguments.reject(&.empty?)
-  end
-
-  # `A | B+ | C(D | E)` as three, splitting only where the depth is zero.
-  private def iyi_split_union(text : String) : Array(String)
-    members = [] of String
-    depth = 0
-    from = 0
-    text.each_char_with_index do |char, index|
-      case char
-      when '(', '[', '{' then depth += 1
-      when ')', ']', '}' then depth -= 1
-      when '|'
-        if depth.zero?
-          members << text[from...index].strip
-          from = index + 1
-        end
-      end
-    end
-    members << text[from..].strip
-    members.reject(&.empty?)
   end
 
   # iyi: reads the constants the artifact's object code reads, on its behalf
