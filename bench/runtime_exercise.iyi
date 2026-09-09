@@ -82,6 +82,7 @@ impl Error for TaskFailed
 end
 
 # 1. Genuine task interleaving
+puts "step 1: interleaving"
 ping = Channel(Int32).new(1)
 pong = Channel(Int32).new(1)
 order = ""
@@ -113,6 +114,7 @@ fail("interleaving: expected bababa, got #{order}") unless order == "bababa"
 puts "interleaved: #{order}"
 
 # 2. Overlapping waits: anti-sequential clock
+puts "step 2: overlapping sleeps"
 started = __iyi_monotonic_ns
 group do |g|
   g.spawn do
@@ -127,6 +129,7 @@ fail("overlap: 2 x 150 ms took #{overlap} ms, which is sequential") if overlap >
 puts "two 150 ms sleeps in #{overlap} ms"
 
 # 3. Failing task cancels sibling blocked in sleep
+puts "step 3: sleep cancellation"
 started = __iyi_monotonic_ns
 victim_saw = ""
 group do |g|
@@ -146,6 +149,7 @@ fail("cancellation took #{cancelled_after} ms against a 10 s sleep") if cancelle
 puts "a failing task cancelled a sibling blocked in sleep, in #{cancelled_after} ms"
 
 # 4. Error unwrap `!` drains a cancelled task
+puts "step 4: drain through !"
 def two_naps : Nil | Cancelled
   sleep(10000)!
   sleep(10000)!
@@ -170,6 +174,7 @@ fail("draining a cancelled task took #{elapsed_ms(started)} ms") if elapsed_ms(s
 puts "a cancelled task drained through `!`"
 
 # 5. Poller: a read parks the fiber, and another fiber wakes it by writing
+puts "step 5: poller read/write"
 fds = make_pipe
 read_fd = fds[0]
 write_fd = fds[1]
@@ -202,6 +207,7 @@ fail("poller: expected parked,wrote,read:7 got #{io_order}") unless io_order == 
 puts "a read parked in the poller and a sleeping writer woke it"
 
 # 6. Cancellation reaching a task blocked in IO (CancelIoEx on Windows)
+puts "step 6: IO cancellation"
 io_pipe = make_pipe
 io_read_fd = io_pipe[0]
 io_victim_saw = ""
@@ -226,6 +232,7 @@ fail("cancellation of IO took #{io_cancelled_after} ms") if io_cancelled_after >
 puts "a failing task cancelled a sibling blocked in IO, in #{io_cancelled_after} ms"
 
 # 7. Channel close waking parked receivers with ChannelClosed
+puts "step 7: channel close"
 late = Channel(Int32).new(1)
 closed_saw = ""
 group do |g|
@@ -244,6 +251,7 @@ fail("close did not wake the parked receiver with ChannelClosed") unless closed_
 puts "close woke a parked receiver with ChannelClosed"
 
 # 8. task.value joins and answers what block returned
+puts "step 8: task.value"
 doubled = 0
 group do |g|
   t = g.spawn do
@@ -257,6 +265,7 @@ fail("task.value answered #{doubled // 2}") unless doubled == 42
 puts "task.value joined and answered"
 
 # 9. Deferred join on early return out of group block
+puts "step 9: deferred join"
 def leaves_early(finished : Pointer(Int32)) : Nil
   group do |g|
     g.spawn do
@@ -275,6 +284,7 @@ fail("a `return` out of the group block left its task running") unless flag.valu
 puts "an early return still joined the group"
 
 # 10. Rendezvous send parks until value is taken, receiver completes send
+puts "step 10: rendezvous"
 meet = Channel(Int32).new
 meet_order = ""
 group do |g|
@@ -312,6 +322,7 @@ fail("rendezvous: the parked receiver got #{got2}") unless got2 == 23
 puts "a parked receiver completed a rendezvous send"
 
 # 11. FIFO order of parked rendezvous sends
+puts "step 11: FIFO rendezvous"
 def spawn_send(g : IyiGroup, fifo : Channel(Int32), n : Int32) : Nil
   g.spawn do
     fifo.send(n)
@@ -343,6 +354,7 @@ fail("rendezvous FIFO: expected 123, got #{fifo_drained}") unless fifo_drained =
 puts "parked sends completed in park order"
 
 # 12. Cancelled rendezvous send dies undelivered
+puts "step 12: cancelled send"
 lonely = Channel(Int32).new
 sender_saw = ""
 group do |g|
@@ -363,6 +375,7 @@ fail("a cancelled send's value was delivered anyway") if received_late.is_a?(Int
 puts "a cancelled rendezvous send died undelivered"
 
 # 13. Channel close failing parked senders
+puts "step 13: closed send"
 doomed = Channel(Int32).new
 closed_send = ""
 group do |g|
@@ -381,6 +394,7 @@ fail("close did not fail the parked sender: #{closed_send}") unless closed_send 
 puts "close failed a parked sender with ChannelClosed"
 
 # 14. Select taking ready arm, parked send arm winning, select with else
+puts "step 14: select"
 left = Channel(Int32).new
 right = Channel(String).new
 picked = ""
@@ -436,6 +450,7 @@ fail("select else: got #{took_else}") unless took_else == "else"
 puts "select with nothing ready took its else"
 
 # 15. Typed group
+puts "step 15: typed group"
 def fetch_pair(fail_second : Bool) : Tuple(Int32, Int32) | TaskFailed | Cancelled | Panicked
   group do |g|
     x = g.spawn do
@@ -463,6 +478,7 @@ fail("typed group: the failure did not leave as the error") unless broken.is_a?(
 puts "a typed group's first failure left as the error"
 
 # 16. Dynamic group keeps general form
+puts "step 16: dynamic group"
 drainer = Channel(Int32).new(3)
 shape = group do |g|
   index = 0
