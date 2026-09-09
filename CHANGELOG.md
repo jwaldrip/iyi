@@ -90,7 +90,15 @@
   `def before_check( : ::Nil`). And a `module` whose file has trailing
   declarations under its `end` is peeled after all - `module Validator`
   with `alias Valid = Validator` beside it was left nested, and every
-  consumer's `using` refused. A `lib/` with a manifest beside it is `shards
+  consumer's `using` refused. The list of what R-2 still wants moved
+  after the `pub` pass and grew a return-type case: it used to name
+  declarations that then lost their `pub` - entries nobody could act on -
+  and left `zip_types is exported and does not say what it returns` to
+  arrive as a compiler refusal instead of a note. Each entry now names
+  the module that forces the export and *when* the question is asked:
+  the next compile for a module's own `pub def`, the artifact for a
+  public method of an exported type, which is how a tree compiles clean
+  with the list still long. A `lib/` with a manifest beside it is `shards
   install`'s, not the tree's: `migrate .` on the application read 889
   files, 756 of them somebody else's, and merged 359 into one module. It
   is skipped and counted, and pointing the verb at a project root says

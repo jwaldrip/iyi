@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 106,584 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 106,639 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,565 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3383,9 +3383,14 @@ with no manifest above it, is their code and is migrated. And pointing the
 verb at a project root says so: the library is its `src`, and everything
 else beside the manifest is a program of its own.
 
-**What it does not do, said here rather than found later.** The 53 defs
-above are a person's to write; until they are, the application's own modules
-do not become artifacts, which is where R-1's edit loop lives. The fixture
+**What it does not do, said here rather than found later.** The list of
+what R-2 still wants is a person's to write, and it says *when* each entry
+is asked, because the two moments differ: a module's own `pub def` is
+refused by the next compile, and a public method of an exported type is
+refused when the module becomes an artifact - which is how the application
+compiles 91 of 91 with 98 entries still on the list. Until they are
+written, its own modules do not become artifacts, which is where R-1's
+edit loop lives. The fixture
 does: `bench/migrate_gate.sh` annotates it, emits a `.iyimod` per module and
 builds the program from those, byte for byte. Two things a migrated tree can
 hit there are not migration's. An exported parameter whose declared type is

@@ -306,6 +306,21 @@ class Iyi::Command
     end
     notes.add "unexported", "#{kept_in} declarations no other module names stayed the module's own, so R-2 asks nothing of them" if kept_in > 0
 
+    # Which module asks R-2's question of which name, so the list below
+    # can say why a def has to carry types and not only that it must.
+    askers = {} of {String, String} => Set(String)
+    units.each do |unit|
+      unit.usings.each do |target, names|
+        names.each { |name| (askers[{target, name}] ||= Set(String).new) << unit.path }
+      end
+      unit.body.each do |line|
+        MigrateUnit.marks(line).each do |(target, name)|
+          (askers[{target, name}] ||= Set(String).new) << unit.path unless name.empty?
+        end
+      end
+    end
+    units.each { |unit| unit.note_untyped_surface(notes, askers) }
+
     # A cycle is one unit of compilation whatever its files were.
     components = strongly_connected(units)
     remap = {} of String => String
@@ -1251,17 +1266,22 @@ class Iyi::Command
         claimed[bare] = export.unit.path
       end
       imports.delete(path)
+    end
 
-      text = body.join('\n')
-      # What R-2 still wants, named: an exported def whose parameters carry
-      # no type. `--annotate` writes the ones the program's own calls
-      # answered; what is left is a def nothing in this program calls, so
-      # there was nothing to read, and a person writes it or takes the
-      # declaration out of the module's surface.
-      # A `pub def` at the module's top level, and every public method of
-      # an exported type — R-2 asks both. `--annotate` writes what the
-      # program's own calls answered; what is left is a def nothing calls,
-      # so there was nothing to read.
+    # What R-2 still wants, named before `--check` has to say it: an
+    # exported def with an untyped parameter, or with no return type.
+    # `--annotate` writes the ones the program's own calls answered; what
+    # is left is a def nothing in any of them calls, so there was nothing
+    # to read. A `pub def` at the module's top level and every public
+    # method of an exported type - R-2 asks both.
+    #
+    # Run after the `pub` pass rather than during the rewrite: a
+    # declaration no other module names loses its `pub` and R-2 asks it
+    # nothing, and naming it here anyway was a list with entries a person
+    # could not act on. The return type was missing from the list
+    # altogether, so `zip_types is exported and does not say what it
+    # returns` arrived as a compiler refusal instead of a note.
+    def note_untyped_surface(notes : Notes, askers : Hash({String, String}, Set(String))) : Nil
       exported_type = nil
       body.each do |line|
         indent = line.size - line.lstrip.size
@@ -1276,16 +1296,51 @@ class Iyi::Command
         surface = indent.zero? ? line.starts_with?("pub def ") : !exported_type.nil?
         next unless surface
         next unless (match = DEF.match(line)) && match[2].nil? && match[3] == "def"
-        span = MigrateUnit.param_span(line, match[4] || "")
-        next unless span
-        params = line[(span[0] + 1)...span[1]]
-        next if params.strip.empty?
-        bare = params.split(',').map(&.strip).select do |param|
-          !param.includes?(':') && !param.starts_with?('&') && !param.starts_with?('*') && !param.empty?
+        name = match[4] || ""
+        span = MigrateUnit.param_span(line, name)
+        where = exported_type && indent > 0 ? "#{exported_type}##{name}" : name
+        # Who asks, which is the first question a person has of this list:
+        # R-2 is asking because *that* module names this one.
+        asked_by = askers[{path, exported_type || name}]?
+        because = (asked_by.try(&.to_a.sort.first?)) || "another module"
+        # And *when* it is asked, because the two are different moments: a
+        # module's own `pub def` is refused by the next compile, and a
+        # public method of an exported type is refused when the module
+        # becomes an artifact - which is why a tree can compile clean with
+        # this list still long.
+        asked_when = indent.zero? ? "the next compile of this module refuses it" : "refused when this module becomes an artifact"
+
+        if span
+          bare = line[(span[0] + 1)...span[1]].split(',').map(&.strip).select do |part|
+            next false if part.empty? || part.includes?(':') || part.includes?("->")
+            next false if part.starts_with?('&') || part.starts_with?('*')
+            # A parameter's name, and not a piece of somebody's block type:
+            # `&block : Context, Exception -> _` splits on the comma, and
+            # `Exception` was reported as an untyped parameter. Crystal
+            # names parameters in lower case; a type is not one.
+            first = part[0]
+            first.ascii_lowercase? || first == '_' || first == '@'
+          end
+          unless bare.empty?
+            named = bare.map { |part| "`#{part.split(' ').first.split('=').first.strip}`" }.join(", ")
+            notes.add "untyped", "#{path}: `#{where}` does not say what #{named} #{bare.size == 1 ? "is" : "are"} - #{because} names it and nothing in the program calls it, so nothing could be read; #{asked_when}"
+          end
         end
-        next if bare.empty?
-        where = exported_type && indent > 0 ? "#{exported_type}##{match[4]}" : "#{match[4]}"
-        notes.add "untyped", "#{path}: `#{where}` does not say what #{bare.map { |name| "`#{name.split(' ').first.split('=').first.strip}`" }.join(", ")} #{bare.size == 1 ? "is" : "are"} — nothing in the program calls it, so nothing could be read; write it, or take `pub` off what nothing outside names"
+
+        # And the answer. `initialize` answers what it is defined on and a
+        # setter answers what it was handed, so neither is asked for one.
+        next if name == "initialize" || name.ends_with?('=')
+        tail = line.rstrip
+        rest =
+          if span
+            tail[(span[1] + 1)..]
+          elsif (at = tail.index(name))
+            tail[(at + name.size)..]
+          else
+            ":"
+          end
+        next if rest.includes?(':')
+        notes.add "untyped", "#{path}: `#{where}` does not say what it returns - #{because} names it and nothing in the program calls it, so nothing could be read; #{asked_when}"
       end
     end
 
