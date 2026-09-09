@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 106,886 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 107,055 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,565 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3438,6 +3438,39 @@ own kind. `crystal-db` is 4 of 6 with one mixin and one signature left,
 `shards` 3 of 5 with two signatures, `halite` 5 of 7 with two,
 `ameba` and `amber` need `shards install` before anything (their own
 `require`s do not resolve here), and Kemal's checkout is 11 of 12.
+
+**Where a template lands, and one file at a time.** A template's path is
+written from the directory the *original* program was built from -
+`ECR.embed("src/views/x.ecr")` resolves against the build's working
+directory - so the copy has to sit at that same path under the migrated
+tree. It was the migrating process's own cwd instead, so running the verb
+from anywhere but the project root put every asset under a directory the
+build does not look in: 91 modules compiled and the first template
+refused with `No such file or directory`. The root is the tree's now, not
+the caller's, and the gate migrates from `/` to hold it.
+
+And the verb takes **one file** as well as a tree: `iyi migrate src/x.cr`
+writes `src/x.iyi` beside it, under its own name, with the header path an
+importer writes (`module kemal/base_log_handler`, which is where the file
+already sits under the source root). It carries what the *tree* requires,
+because a module is a compilation unit and what one file uses another
+file required - `base_log_handler.cr` names `HTTP::Handler` and requires
+nothing. Its own relative requires stay `require`s, pointing at the `.cr`
+files, which are still the other language. Nothing else is touched: no
+manifest copy, no assets, no `lib` link.
+
+It only goes from the top, and says so. A `.iyi` module may require a
+`.cr` file and not the other way round (R-2 and R-3 are what an artifact
+is made of, and a `.cr` file provides neither), and a `require` that finds
+a `.iyi` gets a compilation unit and none of its names - so a file *a
+module already requires* is refused, with the whole-tree command as the
+answer. Crystal files that require it are a note rather than a refusal:
+they keep reading the `.cr`, which stays, and what they build and what a
+module builds are two programs over one source until they are migrated
+too. Measured on the application: `src/acikturkiye.cr` alone becomes a
+module, `iyi build --crystal src/acikturkiye.iyi` builds the program with
+the other 98 files still Crystal, and it answers the Crystal build byte
+for byte on every route tried.
 
 **What is not the tree's to migrate.** `shards install` writes every
 dependency's source into a `lib/` beside the manifest, and `iyi migrate .`

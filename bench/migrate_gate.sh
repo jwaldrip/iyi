@@ -274,6 +274,67 @@ fi
 # `shards install` writes other projects' source into a `lib/` beside the
 # manifest, and `iyi migrate .` read all of it: on an application that was
 # 756 files that were not its own, 359 of them merged into one module.
+# One file at a time, which is the other way to do this. It goes beside its
+# source under its own name (a run inside the directory put a second one
+# under it), it carries what the *tree* requires because a module is a
+# compilation unit, and it is refused where a module already requires the
+# file - that consumer would get a compilation unit and none of its names.
+echo "== one file at a time, from the top"
+rm -rf "$WORK/step"
+mkdir -p "$WORK/step/src/shop"
+printf 'name: step\nversion: 0.1.0\n' > "$WORK/step/shard.yml"
+printf 'require "json"\n\nmodule Shop\n  class Item\n    include JSON::Serializable\n    getter name : String\n\n    def initialize(@name)\n    end\n  end\nend\n' > "$WORK/step/src/shop/item.cr"
+printf 'require "./shop/item"\n\nputs Shop::Item.new("kahve").to_json\n' > "$WORK/step/src/shop.cr"
+(cd "$WORK/step" && "$CRYSTAL" run src/shop.cr 2>/dev/null | grep -v '^Using compiled compiler' > "$WORK/step_crystal.out")
+if (cd "$WORK/step" && "$IYI" migrate src/shop.cr --check > "$WORK/step.log" 2>&1); then
+  if [ -f "$WORK/step/src/shop.iyi" ]; then
+    step ok "the module is beside its source, under its own name"
+  else
+    step fail "the module went somewhere else: $(find "$WORK/step" -name '*.iyi' | head -1)"
+  fi
+  holds "its own requires stayed Crystal" 'require "./shop/item"' "$WORK/step/src/shop.iyi"
+  if (cd "$WORK/step" && "$IYI" run --crystal src/shop.iyi 2>/dev/null | grep -v '^Using compiled compiler' > "$WORK/step_iyi.out") &&
+     diff -q "$WORK/step_crystal.out" "$WORK/step_iyi.out" > /dev/null; then
+    step ok "and the program answers what it answered"
+  else
+    step fail "the program does not answer the same"
+    tail -3 "$WORK/step_iyi.out"
+  fi
+else
+  step fail "migrate of one file failed"
+  tail -5 "$WORK/step.log"
+fi
+if (cd "$WORK/step" && "$IYI" migrate src/shop/item.cr > "$WORK/step_refuse.log" 2>&1); then
+  step fail "a file a module already requires was converted anyway"
+else
+  holds "a file a module requires is refused, with why" "none of its names" "$WORK/step_refuse.log"
+fi
+
+# A template's path is written from the directory the *original* program
+# was built from - `ECR.embed("src/views/report.html.ecr")` resolves against
+# the build's working directory - so the copy has to sit at that same path
+# under the migrated tree. It used to be the process's own cwd: migrating
+# from anywhere but the project root put every asset under a directory the
+# build does not look in, and the first template refused with `No such file
+# or directory` in a program that had compiled.
+echo "== a template travels to the path the build looks in"
+if (cd / && "$IYI" migrate "$FIXTURE/src" --out "$WORK/elsewhere" > "$WORK/elsewhere.log" 2>&1); then
+  if [ -f "$WORK/elsewhere/src/shop/views/report.html.ecr" ]; then
+    step ok "the template is where the embed names it, from any cwd"
+  else
+    step fail "the template landed elsewhere: $(find "$WORK/elsewhere" -name '*.ecr' | head -1)"
+  fi
+  if (cd "$WORK/elsewhere" && "$IYI" build --crystal -o "$WORK/elsewhere_shop" shop.iyi > "$WORK/elsewhere_build.log" 2>&1); then
+    step ok "and the program builds from there"
+  else
+    step fail "the program does not build from another cwd"
+    grep -m1 -A3 "Error" "$WORK/elsewhere_build.log"
+  fi
+else
+  step fail "migrate from another cwd failed"
+  tail -5 "$WORK/elsewhere.log"
+fi
+
 echo "== a project root is not a source tree"
 if (cd "$FIXTURE" && "$IYI" migrate . --out "$WORK/whole" > "$WORK/whole.log" 2>&1); then
   holds "the library is what is migrated" "its library is what is migrated" "$WORK/whole.log"

@@ -104,14 +104,30 @@ class Iyi::Command
     end
 
     src ||= abort!("migrate: which tree? Usage: #{Command.program_name} migrate SRC --out DIR", :USAGE_ERROR)
+
+    # One file at a time, which is the other way to do this. A `.iyi`
+    # module may `require` a `.cr` file and not the other way round (R-2
+    # and R-3 are what an artifact is made of, and a `.cr` file provides
+    # neither), so a project converts *top down*: the file nothing
+    # requires becomes a module first, its own requires stay Crystal, and
+    # the program keeps building at every step.
+    single = nil
+    out_named = out_dir
+    if File.file?(src) && src.ends_with?(".cr")
+      single = File.expand_path(src)
+      src = File.dirname(single)
+      out_dir ||= src
+    end
     abort! "migrate: no such directory: #{src}", :USAGE_ERROR unless Dir.exists?(src)
     out_dir ||= abort!("migrate: --out DIR is where the modules go", :USAGE_ERROR)
     src = File.expand_path(src)
     out_dir = File.expand_path(out_dir)
     # Writing the modules into the tree being read mixes the two languages
     # in one directory and hands the *next* run its own output as source.
-    # `--out src` did it, and left a `src/src` behind.
-    if out_dir == src || out_dir.starts_with?(src + "/")
+    # `--out src` did it, and left a `src/src` behind. One file is the
+    # exception: `x.cr` becomes `x.iyi` beside it, which is what converting
+    # a file at a time means, and an import prefers the `.iyi`.
+    if single.nil? && (out_dir == src || out_dir.starts_with?(src + "/"))
       abort! "migrate: --out #{out_dir} is inside the tree it reads (#{src}); the modules go beside it, not into it", :USAGE_ERROR
     end
 
@@ -124,7 +140,7 @@ class Iyi::Command
     # library is migrated and the narrowing is printed; a spec suite or an
     # example directory is migrated by naming it.
     library_root = File.join(src, "src")
-    if File.file?(File.join(src, MANIFEST_FILE)) && Dir.exists?(library_root)
+    if single.nil? && File.file?(File.join(src, MANIFEST_FILE)) && Dir.exists?(library_root)
       puts "#{src} is a project root, so its library is what is migrated: #{library_root}"
       puts "everything else beside the manifest - a spec suite, an example, a `bin` - is a program of its own; name one to migrate it"
       puts
@@ -138,7 +154,64 @@ class Iyi::Command
       }.first? || ""
     end
 
-    files = Dir.glob(File.join(src, "**", "*.cr")).sort
+    # Walked up to the manifest, because the source root is not always one
+    # level down: `src/kemal` is where a person runs the verb on one file,
+    # and the `lib` its shards are in is two directories above it.
+    project_root = src
+    walking = src
+    while !walking.empty? && walking != "/"
+      if File.file?(File.join(walking, MANIFEST_FILE))
+        project_root = walking
+        break
+      end
+      walking = File.dirname(walking)
+    end
+
+    files = single ? [single] : Dir.glob(File.join(src, "**", "*.cr")).sort
+
+    # One file at a time only works from the *top*: a `.cr` file cannot
+    # require an iyi module, and a `require` that finds one gets a
+    # compilation unit rather than names - so a file something else
+    # requires would be defined twice, or not at all. The file nothing
+    # requires is the one that can go first, which is a program's entry or
+    # a script.
+    still_crystal = nil
+    if single
+      requirers = Dir.glob(File.join(project_root, "**", "*.{cr,iyi}")).sort.reject do |file|
+        file == single || shards_install?(file, project_root)
+      end.select do |file|
+        here = File.dirname(file)
+        File.read_lines(file).any? do |line|
+          next false unless (match = MigrateUnit::REQUIRE.match(line))
+          target = match[1] || ""
+          next false unless target.starts_with?('.')
+          resolved = File.expand_path(target, here)
+          resolved == single || resolved + ".cr" == single ||
+            (target.ends_with?("*") && single.starts_with?(File.dirname(resolved) + "/"))
+        end
+      end
+      # A *module* that requires it is the one that breaks: a `require`
+      # that finds a `.iyi` gets a compilation unit and none of its names,
+      # so that consumer has to `import` it - which is the whole tree's
+      # job. Crystal files are unaffected, because Crystal's own `require`
+      # only ever finds the `.cr`, which stays where it is: what they
+      # build and what a module builds are then two programs from one
+      # source, and that is worth saying rather than discovering.
+      by_module = requirers.select(&.ends_with?(".iyi"))
+      unless by_module.empty?
+        named = by_module.first(4).map { |file| file.lchop(project_root + "/") }.join(", ")
+        more = by_module.size > 4 ? " and #{by_module.size - 4} more" : ""
+        abort! "migrate: #{by_module.size} module#{by_module.size == 1 ? "" : "s"} already require #{single.lchop(project_root + "/")} (#{named}#{more}); " \
+               "a `require` that finds a `.iyi` gets a compilation unit and none of its names, so that consumer needs an `import` - which is the whole tree's job: " \
+               "#{Command.program_name} migrate #{File.dirname(single)} --out DIR", :USAGE_ERROR
+      end
+      by_crystal = requirers.reject(&.ends_with?(".iyi"))
+      unless by_crystal.empty?
+        named = by_crystal.first(3).map { |file| file.lchop(project_root + "/") }.join(", ")
+        more = by_crystal.size > 3 ? " and #{by_crystal.size - 3} more" : ""
+        still_crystal = "#{by_crystal.size} Crystal file#{by_crystal.size == 1 ? "" : "s"} still require #{single.lchop(project_root + "/")} (#{named}#{more}); they keep reading the `.cr`, which stays where it is - so what they build and what a module builds are two programs over one source until they are migrated too"
+      end
+    end
     # A shards directory is other projects' source. `shards install`
     # writes it to a `lib/` beside the manifest, and this tree reaches
     # what is in there through its own `require "kemal"`, which becomes
@@ -163,7 +236,11 @@ class Iyi::Command
     # resolve takes the probe back to the prelude alone, which is what a
     # tree that does not compile as Crystal gets anyway.
     required_by_tree = Set(String).new
-    files.each do |file|
+    # The whole source root even for one file: a module is a compilation
+    # unit and has to require what it uses, and what one file uses was
+    # required by another - `base_log_handler.cr` names `HTTP::Handler`
+    # and requires nothing.
+    (single ? Dir.glob(File.join(src, "**", "*.cr")).sort.reject { |file| shards_install?(file, src) } : files).each do |file|
       File.each_line(file) do |line|
         next unless (match = MigrateUnit::REQUIRE.match(line))
         target = match[1] || ""
@@ -179,6 +256,7 @@ class Iyi::Command
     tree_roots.reject! { |name| library_names.includes?(name) }
 
     notes = Notes.new
+    still_crystal.try { |message| notes.add "vendored", message }
     notes.add "vendored", "#{vendored} files under a `lib/` beside a manifest are other projects' source and stayed there; this tree reaches them through its own requires" if vendored > 0
     units = files.map { |file| MigrateUnit.read(file, src, tree_roots, notes) }
     by_source = units.to_h { |unit| {unit.source, unit} }
@@ -188,6 +266,15 @@ class Iyi::Command
     shard_requires = [] of String
     units.each do |unit|
       unit.shard_requires.each { |name| shard_requires << name unless shard_requires.includes?(name) }
+    end
+    # One file at a time has to carry what the *tree* requires, not what
+    # this file wrote: a module is a compilation unit, and
+    # `base_log_handler.cr` names `HTTP::Handler` without requiring
+    # anything - the require is in the file at the top of the tree. With
+    # only its own, the module refused with `undefined constant
+    # HTTP::Handler` in code that had not changed.
+    if single
+      required_by_tree.each { |name| shard_requires << name unless shard_requires.includes?(name) }
     end
 
     # The symbol table: every constant path the tree declares, and the
@@ -211,7 +298,13 @@ class Iyi::Command
       end
     end
 
-    project_root = Dir.current
+    # The directory the *original* program was built from, which is where
+    # a template's path is written from: `ECR.embed("src/views/x.ecr")`
+    # resolves against the build's working directory, so the copy has to
+    # sit at that same path under the migrated tree. This was the process's
+    # own cwd, so migrating from anywhere but the project root put every
+    # asset under a directory the build does not look in, and the first
+    # template refused with `No such file or directory`.
     inferred = annotate ? infer_types(units, src, notes) : nil
     # Every `def` this tree names with a bang, so a call to one is known
     # to be the tree's own: `node.sort!` is a method here and loses the
@@ -251,8 +344,11 @@ class Iyi::Command
     # business rather than something this text can see.
     template_names = MigrateUnit.new(src, "", [] of String, "", [] of String,
       [] of String, [] of String, 0, [] of String, [] of String)
+    # One file at a time leaves the tree alone: its assets, its manifest
+    # and its `lib` are where they were, and the module is written beside
+    # them. Copying them onto themselves is all that would happen.
     assets = 0
-    Dir.glob(File.join(src, "**", "*")).sort.each do |file|
+    Dir.glob(single ? [] of String : File.join(src, "**", "*")).sort.each do |file|
       next unless File.file?(file)
       next if file.ends_with?(".cr")
       next if shards_install?(file, src)
@@ -282,13 +378,14 @@ class Iyi::Command
     # migrated tree replaces the link with its own copy.
     shards_dir = File.join(File.dirname(src), "lib")
     linked = File.join(out_dir, "lib")
-    if Dir.exists?(shards_dir) && !File.exists?(linked) && !File.symlink?(linked)
+    if single.nil? && Dir.exists?(shards_dir) && !File.exists?(linked) && !File.symlink?(linked)
       Dir.mkdir_p(out_dir)
       File.symlink(shards_dir, linked)
       notes.add "vendored", "lib -> #{shards_dir}, the shards this tree requires; `shards install` here writes its own copy over it"
     end
 
     [MANIFEST_FILE, "shard.lock"].each do |manifest|
+      next if single
       source_manifest = File.join(File.dirname(src), manifest)
       next unless File.file?(source_manifest)
       Dir.mkdir_p(out_dir)
@@ -397,6 +494,7 @@ class Iyi::Command
     end
 
     written = {} of String => String
+    written_paths = {} of String => String
     modules = {} of String => Array(MigrateUnit)
     units.each { |unit| (modules[remap[unit.path]? || unit.path] ||= [] of MigrateUnit) << unit }
     modules.each do |module_path, members|
@@ -439,7 +537,18 @@ class Iyi::Command
         # so one module requires the shards and every other imports it:
         # the effects land in a module that is initialised first, by rule
         # rather than by the order files happened to compile in.
-        io << "import " << SHARDS_MODULE << '\n' if !shard_requires.empty? && module_path != SHARDS_MODULE
+        io << "import " << SHARDS_MODULE << '\n' if single.nil? && !shard_requires.empty? && module_path != SHARDS_MODULE
+        # One file at a time: what it required stays required, because
+        # those files are still Crystal. A `.iyi` module may require a
+        # `.cr` file; the other direction is what R-2 and R-3 forbid.
+        if single
+          members.each do |member|
+            # Relative to where this module is *written*, which is beside
+            # the source unless `--out` said otherwise.
+            here = out_named.nil? ? File.dirname(single) : File.join(out_dir, File.dirname(module_path))
+            member.required_paths(here).each { |path| io << "require \"" << path << "\"\n" }
+          end
+        end
         sidecars.each { |member| io << "require \"./" << File.basename(member.path) << "_crystal.cr\"\n" }
         io << '\n' unless shard_requires.empty? && sidecars.empty?
         imports.to_a.sort.each { |imported| io << "import " << imported << '\n' }
@@ -456,7 +565,7 @@ class Iyi::Command
       end
     end
 
-    unless shard_requires.empty?
+    if single.nil? && !shard_requires.empty?
       written[SHARDS_MODULE] = String.build do |io|
         io << "# The shards this tree was written against, required once and\n"
         io << "# imported by every module: III.5 initialises an import before\n"
@@ -468,12 +577,28 @@ class Iyi::Command
     end
 
     written.each do |module_path, text|
-      target = File.join(out_dir, "#{module_path}.iyi")
+      # One file at a time goes *beside* its source, under its own name.
+      # The header still says `module kemal/base_log_handler`, which is
+      # what an importer writes and where the file already sits under the
+      # tree's source root - `out_dir/kemal/base_log_handler.iyi` from a
+      # run inside that directory made a second `kemal/` under it.
+      target =
+        if single && out_named.nil?
+          File.join(File.dirname(single), "#{File.basename(module_path)}.iyi")
+        else
+          File.join(out_dir, "#{module_path}.iyi")
+        end
       Dir.mkdir_p(File.dirname(target))
       File.write(target, text)
+      written_paths[module_path] = target
     end
 
-    puts "#{units.size} files → #{written.size} modules under #{out_dir}/"
+    if single
+      puts "#{single.lchop(Dir.current + "/")} → #{(written_paths.values.first? || "").lchop(Dir.current + "/")}"
+      puts "its own requires stayed Crystal: those files are still the other language, and a module may require them"
+    else
+      puts "#{units.size} files → #{written.size} modules under #{out_dir}/"
+    end
     if verbose
       units.each do |unit|
         target = remap[unit.path]? || unit.path
@@ -495,9 +620,15 @@ class Iyi::Command
         # templates a macro embeds were copied into it at the paths their
         # `embed` names, and their constant paths were rewritten with the
         # module that embeds them.
+        # One file at a time is checked where it sits, from the project's
+        # own root: its `require`s are relative to it and its shards are
+        # under the root's `lib`, both of which the tree it belongs to
+        # already resolves.
+        written_at = written_paths[module_path]
+        where_from = single ? project_root : out_dir
         status = Process.run(executable,
-          ["check", "--crystal", "--no-color", File.join(out_dir, "#{module_path}.iyi")],
-          chdir: out_dir, output: output, error: output)
+          ["check", "--crystal", "--no-color", written_at],
+          chdir: where_from, output: output, error: output)
         if status.success?
           clean << module_path
         else
@@ -548,12 +679,21 @@ class Iyi::Command
         puts "#{mine} #{mine == 1 ? "is" : "are"} neither, and that is the migration's own: please report it with the module and the message" if mine > 0
       end
       exit 1 unless broke.empty?
+      if single
+        puts
+        puts "#{(written_paths.values.first? || "").lchop(project_root + "/")} is a module now, and the rest of the tree is still Crystal."
+        puts "Convert top down: the next file is one that requires this one, since a `.iyi` module may require a `.cr` file and not the other way round."
+        return
+      end
       entry = written.keys.find { |module_path| !module_path.includes?('/') && module_path != SHARDS_MODULE }
       puts
       puts "the tree is iyi's now. From #{out_dir}:"
       puts "  #{Command.program_name} build --crystal -o app #{entry || "<entry>"}.iyi"
       puts "  #{Command.program_name} check --crystal <one module>.iyi        # what an editor asks per change"
       puts "  #{Command.program_name} bind                                     # the shards behind a boundary, next"
+    elsif single
+      puts
+      puts "next: #{Command.program_name} check --crystal #{(written_paths.values.first? || "").lchop(project_root + "/")}   # from #{project_root}"
     else
       puts
       puts "next: #{Command.program_name} migrate #{src} --out #{out_dir} --check"
@@ -1594,6 +1734,35 @@ class Iyi::Command
         end
         io << rest
       end
+    end
+
+    # This file's own relative requires, as a module written into
+    # *out_dir* has to spell them: the files they name are still Crystal,
+    # sitting where they were, so the path is theirs relative to where the
+    # module now is - `require "./config"` beside the source, and
+    # `require "../src/config"` from a directory next to it.
+    def required_paths(out_dir : String) : Array(String)
+      here = File.dirname(source)
+      lines.compact_map do |line|
+        next unless (match = REQUIRE.match(line))
+        target = match[1] || ""
+        next unless target.starts_with?('.')
+        resolved = File.expand_path(target, here)
+        MigrateUnit.relative_to(resolved, out_dir)
+      end
+    end
+
+    # `to` seen from `from_dir`, with a `./` or as many `../` as it takes.
+    def self.relative_to(to : String, from_dir : String) : String
+      return "./" + to.lchop(from_dir + "/") if to.starts_with?(from_dir + "/")
+      up = [] of String
+      dir = from_dir
+      while !dir.empty? && dir != "/"
+        up << ".."
+        dir = File.dirname(dir)
+        return (up + [to.lchop(dir + "/")]).join("/") if to.starts_with?(dir + "/")
+      end
+      to
     end
 
     # Every unit this file's relative requires name, split by whether the

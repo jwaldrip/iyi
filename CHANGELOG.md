@@ -19,6 +19,28 @@
   III.10, Appendix B #17). They use `Iyi::Rx` now, and the one check a
   pattern would have been compiled per name and per line for — does this
   line name this word on its own — is hand-written.
+- **A template travels to the path the build looks in.** Its path is
+  written from the directory the *original* program was built from -
+  `ECR.embed("src/views/x.ecr")` resolves against the build's working
+  directory - and the copy went to a path relative to the *migrating
+  process's* cwd instead. Migrating from anywhere but the project root
+  therefore compiled 91 modules and refused the first template with `No
+  such file or directory`. The root is the tree's now; the gate migrates
+  from `/` and builds the result.
+- **`iyi migrate FILE.cr`: one file at a time.** It writes `FILE.iyi`
+  beside the source under its own name, with the header path an importer
+  writes; it carries what the *tree* requires, because a module is a
+  compilation unit and what one file uses another file required
+  (`base_log_handler.cr` names `HTTP::Handler` and requires nothing); its
+  own relative requires stay `require`s, since those files are still the
+  other language; and nothing else is touched - no manifest copy, no
+  assets, no `lib` link. It goes from the top only: a file a *module*
+  already requires is refused, because a `require` that finds a `.iyi`
+  gets a compilation unit and none of its names, and Crystal files that
+  require it are a note instead - they keep reading the `.cr`. Measured:
+  the application's entry alone becomes a module, the program builds with
+  the other 98 files still Crystal, and it answers the Crystal build byte
+  for byte.
 - **Twelve real projects, and the five rules six of them found.**
   `crystal-db`, `shards`, `halite`, `ameba`, `amber` and Kemal's own
   checkout, migrated as they come from GitHub. The library a tree is
