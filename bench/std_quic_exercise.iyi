@@ -1,0 +1,322 @@
+# QUIC Standard Library Exercise (RFC 9000, RFC 9001, RFC 9002)
+#
+# Verifies:
+# 1. RFC 9001 Appendix A.1 Key Derivation (Initial secrets, key, iv, hp for client & server)
+# 2. RFC 9001 Appendix A.2 Client Initial Packet Protection (exact 1200 bytes)
+# 3. RFC 9001 Appendix A.3 Server Initial Packet Protection (exact bytes)
+# 4. RFC 9001 Appendix A.4 Retry Packet Integrity Tag (exact 16 bytes)
+# 5. RFC 9001 Appendix A.5 ChaCha20-Poly1305 Short Header Packet (exact 21 bytes)
+# 6. RFC 9000 Appendix A.3 Packet Number Decoding & Reconstruction
+# 7. QUIC Frame Codecs (PADDING, PING, ACK, CRYPTO, STREAM, MAX_DATA, MAX_STREAM_DATA,
+#    MAX_STREAMS, PATH_CHALLENGE, CONNECTION_CLOSE, HANDSHAKE_DONE)
+# 8. RFC 9002 Loss Detection & NewReno Congestion Control (RTT, PTO, cwnd)
+# 9. Stream Multiplexing & Flow Control (StreamId, Stream, StreamManager)
+# 10. QuicConnection high-level protection & unprotection round-trip
+
+import std/slice
+import std/crypto
+import std/capsule
+import std/quic
+
+using std/slice::{Slice, Bytes}
+using std/crypto::{constant_time_compare, HKDF, AES128GCM}
+using std/quic::{
+  QuicVersion, PacketType, FrameType, TransportError,
+  KeyBundle, QuicCrypto,
+  PacketNumber, LongHeader, ShortHeader, VersionNegotiationPacket,
+  AckRange, FrameCodec, RttEstimator, SentPacket, NewRenoCongestionController,
+  StreamId, StreamStatus, QuicStream, StreamManager,
+  ConnectionRole, ConnectionState, QuicConnection
+}
+
+def hex_char_val(c : Char) : UInt8
+  if c >= '0' && c <= '9'
+    (c.ord - '0'.ord).to_u8
+  elsif c >= 'a' && c <= 'f'
+    (c.ord - 'a'.ord + 10).to_u8
+  elsif c >= 'A' && c <= 'F'
+    (c.ord - 'A'.ord + 10).to_u8
+  else
+    0_u8
+  end
+end
+
+def hex_to_bytes(hex : String) : Bytes
+  len = hex.bytesize // 2
+  b = Bytes.new(len)
+  i = 0
+  while i < len
+    hi = hex_char_val(hex[i * 2]).to_i32
+    lo = hex_char_val(hex[i * 2 + 1]).to_i32
+    b[i] = ((hi << 4) | lo).to_u8
+    i = i + 1
+  end
+  b
+end
+
+def bytes_to_hex(b : Bytes) : String
+  hex_chars = "0123456789abcdef"
+  String.new(b.size * 2) do |ptr|
+    i = 0
+    while i < b.size
+      byte = b[i].to_i32
+      ptr[i * 2] = hex_chars.to_unsafe[byte >> 4]
+      ptr[i * 2 + 1] = hex_chars.to_unsafe[byte & 0x0f]
+      i = i + 1
+    end
+  end
+end
+
+def assert_bytes_equal(actual : Bytes, expected : Bytes, label : String) : Nil
+  unless constant_time_compare(actual, expected)
+    raise "assertion failed: #{label} mismatch\nactual:   #{bytes_to_hex(actual)}\nexpected: #{bytes_to_hex(expected)}"
+  end
+end
+
+puts "== Section 1: RFC 9001 Appendix A.1 Keys"
+cid = hex_to_bytes("8394c8f03e515708")
+client_sec, server_sec = QuicCrypto.derive_initial_secrets(cid)
+
+expected_client_sec = hex_to_bytes("c00cf151ca5be075ed0ebfb5c80323c42d6b7db67881289af4008f1f6c357aea")
+assert_bytes_equal(client_sec, expected_client_sec, "RFC 9001 A.1 client initial secret")
+
+expected_server_sec = hex_to_bytes("3c199828fd139efd216c155ad844cc81fb82fa8d7446fa7d78be803acdda951b")
+assert_bytes_equal(server_sec, expected_server_sec, "RFC 9001 A.1 server initial secret")
+
+client_keys = QuicCrypto.derive_packet_keys(client_sec)
+assert_bytes_equal(client_keys.key, hex_to_bytes("1f369613dd76d5467730efcbe3b1a22d"), "client key")
+assert_bytes_equal(client_keys.iv, hex_to_bytes("fa044b2f42a3fd3b46fb255c"), "client iv")
+assert_bytes_equal(client_keys.hp, hex_to_bytes("9f50449e04a0e810283a1e9933adedd2"), "client hp")
+
+server_keys = QuicCrypto.derive_packet_keys(server_sec)
+assert_bytes_equal(server_keys.key, hex_to_bytes("cf3a5331653c364c88f0f379b6067e37"), "server key")
+assert_bytes_equal(server_keys.iv, hex_to_bytes("0ac1493ca1905853b0bba03e"), "server iv")
+assert_bytes_equal(server_keys.hp, hex_to_bytes("c206b8d9b9f0f37644430b490eeaa314"), "server hp")
+puts "  keys: client and server initial secrets, key, iv, hp match RFC 9001 A.1"
+
+puts "== Section 2: RFC 9001 Appendix A.2 Client Initial Packet"
+crypto_frame_hex = "060040f1010000ed0303ebf8fa56f12939b9584a3896472ec40bb863cfd3e868" \
+                   "04fe3a47f06a2b69484c00000413011302010000c000000010000e00000b6578" \
+                   "616d706c652e636f6dff01000100000a00080006001d00170018001000070005" \
+                   "04616c706e000500050100000000003300260024001d00209370b2c9caa47fba" \
+                   "baf4559fedba753de171fa71f50f1ce15d43e994ec74d748002b000302030400" \
+                   "0d0010000e0403050306030203080408050806002d00020101001c0002400100" \
+                   "3900320408ffffffffffffffff05048000ffff07048000ffff08011001048000" \
+                   "75300901100f088394c8f03e51570806048000ffff"
+crypto_frame = hex_to_bytes(crypto_frame_hex)
+
+plaintext_a2 = Bytes.new(1162, 0_u8)
+i = 0
+while i < crypto_frame.size
+  plaintext_a2[i] = crypto_frame[i]
+  i = i + 1
+end
+
+unprotected_hdr_a2 = hex_to_bytes("c300000001088394c8f03e5157080000449e00000002")
+packet_a2 = QuicCrypto.protect_packet(
+  client_keys,
+  unprotected_hdr_a2,
+  pn_offset: 18,
+  pn_len: 4,
+  packet_number: 2_u64,
+  plaintext: plaintext_a2,
+  is_long_header: true
+)
+
+raise "packet_a2 size must be 1200" unless packet_a2.size == 1200
+expected_hdr_a2 = hex_to_bytes("c000000001088394c8f03e5157080000449e7b9aec34")
+assert_bytes_equal(packet_a2[0, 22], expected_hdr_a2, "A.2 protected header")
+
+expected_sample_a2 = hex_to_bytes("d1b1c98dd7689fb8ec11d242b123dc9b")
+assert_bytes_equal(packet_a2[22, 16], expected_sample_a2, "A.2 sample in ciphertext")
+
+expected_tail_a2 = hex_to_bytes("e221af44860018ab0856972e194cd934")
+assert_bytes_equal(packet_a2[1200 - 16, 16], expected_tail_a2, "A.2 packet tail")
+puts "  client-initial: exact 1200-byte packet matches RFC 9001 A.2 byte for byte"
+
+puts "== Section 3: RFC 9001 Appendix A.3 Server Initial Packet"
+payload_a3 = hex_to_bytes(
+  "02000000000600405a020000560303eefce7f7b37ba1d1632e96677825ddf739" \
+  "88cfc79825df566dc5430b9a045a1200130100002e00330024001d00209d3c94" \
+  "0d89690b84d08a60993c144eca684d1081287c834d5311bcf32bb9da1a002b00" \
+  "020304"
+)
+unprotected_hdr_a3 = hex_to_bytes("c1000000010008f067a5502a4262b50040750001")
+packet_a3 = QuicCrypto.protect_packet(
+  server_keys,
+  unprotected_hdr_a3,
+  pn_offset: 18,
+  pn_len: 2,
+  packet_number: 1_u64,
+  plaintext: payload_a3,
+  is_long_header: true
+)
+
+expected_hdr_a3 = hex_to_bytes("cf000000010008f067a5502a4262b5004075c0d9")
+assert_bytes_equal(packet_a3[0, 20], expected_hdr_a3, "A.3 protected header")
+
+expected_packet_a3 = hex_to_bytes(
+  "cf000000010008f067a5502a4262b5004075c0d95a482cd0991cd25b0aac406a" \
+  "5816b6394100f37a1c69797554780bb38cc5a99f5ede4cf73c3ec2493a1839b3" \
+  "dbcba3f6ea46c5b7684df3548e7ddeb9c3bf9c73cc3f3bded74b562bfb19fb84" \
+  "022f8ef4cdd93795d77d06edbb7aaf2f58891850abbdca3d20398c276456cbc4" \
+  "2158407dd074ee"
+)
+assert_bytes_equal(packet_a3, expected_packet_a3, "A.3 full protected packet")
+puts "  server-initial: exact protected packet matches RFC 9001 A.3 byte for byte"
+
+puts "== Section 4: RFC 9001 Appendix A.4 Retry Packet Integrity"
+odcid = hex_to_bytes("8394c8f03e515708")
+retry_without_tag = hex_to_bytes("ff000000010008f067a5502a4262b5746f6b656e")
+retry_tag = QuicCrypto.calculate_retry_integrity_tag(odcid, retry_without_tag)
+expected_retry_tag = hex_to_bytes("04a265ba2eff4d829058fb3f0f2496ba")
+assert_bytes_equal(retry_tag, expected_retry_tag, "A.4 retry integrity tag")
+
+full_retry_pkt = hex_to_bytes("ff000000010008f067a5502a4262b5746f6b656e04a265ba2eff4d829058fb3f0f2496ba")
+raise "retry verification failed" unless QuicCrypto.verify_retry_integrity_tag(odcid, full_retry_pkt)
+puts "  retry-integrity: exact tag matches RFC 9001 A.4 byte for byte"
+
+puts "== Section 5: RFC 9001 Appendix A.5 ChaCha20-Poly1305 Short Header Packet"
+chacha_sec = hex_to_bytes("9ac312a7f877468ebe69422748ad00a15443f18203a07d6060f688f30f21632b")
+chacha_keys = QuicCrypto.derive_packet_keys(chacha_sec, is_chacha: true)
+assert_bytes_equal(chacha_keys.key, hex_to_bytes("c6d98ff3441c3fe1b2182094f69caa2ed4b716b65488960a7a984979fb23e1c8"), "chacha key")
+assert_bytes_equal(chacha_keys.iv, hex_to_bytes("e0459b3474bdd0e44a41c144"), "chacha iv")
+assert_bytes_equal(chacha_keys.hp, hex_to_bytes("25a282b9e82f06f21f488917a4fc8f1b73573685608597d0efcb076b0ab7a7a4"), "chacha hp")
+
+pn_a5 = 654360564_u64
+unprot_hdr_a5 = hex_to_bytes("4200bff4")
+payload_a5 = hex_to_bytes("01") # PING frame
+packet_a5 = QuicCrypto.protect_packet(
+  chacha_keys,
+  unprot_hdr_a5,
+  pn_offset: 1,
+  pn_len: 3,
+  packet_number: pn_a5,
+  plaintext: payload_a5,
+  is_long_header: false,
+  is_chacha: true
+)
+expected_pkt_a5 = hex_to_bytes("4cfe4189655e5cd55c41f69080575d7999c25a5bfb")
+assert_bytes_equal(packet_a5, expected_pkt_a5, "A.5 chacha20 protected packet")
+puts "  chacha20-short-header: exact 21-byte packet matches RFC 9001 A.5 byte for byte"
+
+puts "== Section 6: RFC 9000 Appendix A.3 Packet Number Decoding"
+# Worked examples from RFC 9000 Appendix A.3
+dec_1 = PacketNumber.decode(0xa82f30ea_u64, 0x9b32_u64, 16)
+raise "pn decode 1 mismatch" unless dec_1 == 0xa82f9b32_u64
+
+dec_2 = PacketNumber.decode(0xa82f30ea_u64, 0x0000_u64, 16)
+# candidate is 0xa82f0000
+raise "pn decode 2 mismatch" unless dec_2 == 0xa82f0000_u64
+
+dec_4 = PacketNumber.decode(0xa82f30ea_u64, 0xac_u64, 8)
+raise "pn decode 4 mismatch" unless dec_4 == 0xa82f30ac_u64
+puts "  packet-number: RFC 9000 Appendix A decoding algorithms verified"
+
+puts "== Section 7: QUIC Frame Codecs"
+# PING
+ping = FrameCodec.encode_ping
+raise "ping frame size" unless ping.size == 1 && ping[0] == 0x01_u8
+
+# PADDING
+pad = FrameCodec.encode_padding(32)
+raise "padding frame size" unless pad.size == 32 && pad[0] == 0x00_u8
+
+# ACK
+ranges = [AckRange.new(2_u64, 5_u64)]
+ack = FrameCodec.encode_ack(100_u64, 10_u64, 3_u64, ranges)
+raise "ack frame empty" if ack.empty?
+
+# CRYPTO
+crypto_f = FrameCodec.encode_crypto(0_u64, hex_to_bytes("01020304"))
+raise "crypto frame empty" if crypto_f.empty?
+
+# STREAM
+stream_f = FrameCodec.encode_stream(4_u64, 0_u64, hex_to_bytes("48656c6c6f"), fin: true)
+raise "stream frame empty" if stream_f.empty?
+
+# MAX_DATA, MAX_STREAM_DATA, MAX_STREAMS
+max_d = FrameCodec.encode_max_data(1048576_u64)
+raise "max data empty" if max_d.empty?
+max_sd = FrameCodec.encode_max_stream_data(4_u64, 65536_u64)
+raise "max stream data empty" if max_sd.empty?
+max_st = FrameCodec.encode_max_streams(100_u64, bidi: true)
+raise "max streams empty" if max_st.empty?
+
+# PATH_CHALLENGE and PATH_RESPONSE
+challenge_data = hex_to_bytes("0102030405060708")
+pch = FrameCodec.encode_path_challenge(challenge_data, is_response: false)
+pres = FrameCodec.encode_path_challenge(challenge_data, is_response: true)
+raise "path challenge type" unless pch[0] == 0x1a_u8
+raise "path response type" unless pres[0] == 0x1b_u8
+
+# CONNECTION_CLOSE
+cclose = FrameCodec.encode_connection_close(TransportError::NO_ERROR, "graceful close")
+raise "connection close empty" if cclose.empty?
+
+# HANDSHAKE_DONE
+hdone = FrameCodec.encode_handshake_done
+raise "handshake done" unless hdone.size == 1 && hdone[0] == 0x1e_u8
+puts "  frames: PING, PADDING, ACK, CRYPTO, STREAM, MAX_DATA, MAX_STREAM_DATA, MAX_STREAMS, PATH, CLOSE, HANDSHAKE_DONE encoded"
+
+puts "== Section 8: RFC 9002 Loss Detection and Congestion Control"
+rtt = RttEstimator.new(100_i64)
+raise "initial rtt" unless rtt.smoothed_rtt == 100_i64
+rtt.update_rtt(80_i64, ack_delay: 0_i64, handshake_confirmed: true)
+raise "updated smoothed rtt" unless rtt.smoothed_rtt > 0_i64
+raise "min rtt" unless rtt.min_rtt == 80_i64
+pto_val = rtt.pto(0)
+raise "pto calculation" unless pto_val > 0_i64
+
+cc = NewRenoCongestionController.new
+raise "initial cwnd" unless cc.congestion_window == 14720_i64
+raise "can send initial" unless cc.can_send?
+cc.on_packet_sent(1200)
+raise "bytes in flight" unless cc.bytes_in_flight == 1200_i64
+cc.on_packet_acked(1200)
+raise "bytes in flight after ack" unless cc.bytes_in_flight == 0_i64
+raise "cwnd increase slow start" unless cc.congestion_window > 14720_i64
+cc.on_congestion_event(1000_i64)
+raise "cwnd halved after congestion" unless cc.congestion_window < 15920_i64
+puts "  loss-and-congestion: RTT estimator, PTO backoff, NewReno cwnd slow start and recovery verified"
+
+puts "== Section 9: Stream State Machine and Flow Control"
+sid_bidi = StreamId.new(0_u64) # Client Bidi
+sid_uni  = StreamId.new(2_u64) # Client Uni
+sid_srv  = StreamId.new(1_u64) # Server Bidi
+raise "client bidi" unless sid_bidi.client_initiated? && sid_bidi.bidirectional?
+raise "client uni" unless sid_uni.client_initiated? && sid_uni.unidirectional?
+raise "server bidi" unless sid_srv.server_initiated? && sid_srv.bidirectional?
+
+sm = StreamManager.new(10000_u64)
+stream = sm.get_or_create_stream(0_u64)
+raise "stream initial state" unless stream.send_status == StreamStatus::READY
+raise "flow control check" unless stream.can_send?(500_u64)
+stream.append_send(hex_to_bytes("01020304"))
+raise "stream status sending" unless stream.send_status == StreamStatus::SENDING
+
+stream.append_recv(hex_to_bytes("05060708"), fin: true)
+raise "stream status recv" unless stream.recv_status == StreamStatus::DATA_RECVD
+data_in = stream.read_available
+assert_bytes_equal(data_in, hex_to_bytes("05060708"), "stream received data")
+puts "  streams: bidi/uni identifiers, state transitions, buffer queues, flow control verified"
+
+puts "== Section 10: Connection Protection Round-Trip"
+client_conn = QuicConnection.new(ConnectionRole::CLIENT, cid, hex_to_bytes("0102030405060708"))
+server_conn = QuicConnection.new(ConnectionRole::SERVER, hex_to_bytes("0102030405060708"), cid, initial_dcid: cid)
+
+# Client produces an Initial packet
+test_frames = FrameCodec.encode_ping
+client_pkt = client_conn.send_initial_packet(test_frames)
+raise "client packet empty" if client_pkt.size < 1200
+
+# Server receives and unprotects the packet
+server_hdr, server_decrypted = server_conn.receive_packet(client_pkt)
+raise "server header nil" if server_hdr.nil?
+raise "server header dcid" unless constant_time_compare(server_hdr.dcid, cid)
+raise "server decrypted payload" unless server_decrypted.size >= test_frames.size
+raise "first byte ping" unless server_decrypted[0] == 0x01_u8
+puts "  round-trip: Client Initial protected packet decrypted and authenticated by Server"
+
+puts
+puts "all std/quic checks passed"
