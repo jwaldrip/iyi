@@ -119,12 +119,16 @@
   end
 
   puts "allocation: size classes, alignment and headers verified"
-  # 1b. Dynamic String allocation, case conversion, and concatenation
+  puts "step 1: before upcase"
   shout = "hello, iyi!".upcase
+  puts "step 2: after upcase"
   beep = "BEEP " + 7.to_s
+  puts "step 3: after to_s"
+  puts shout
+  puts beep
   raise "upcase wrong" if shout != "HELLO, IYI!"
   raise "beep wrong" if beep != "BEEP 7"
-
+  puts "step 4: after comparisons"
   bad = 0
   index = 0
   while index < 50000
