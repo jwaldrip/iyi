@@ -136,6 +136,8 @@ pub struct Attribute
 end
 
 pub class Node
+  @@next_id : Int32 = 0
+  getter id : Int32
   property node_type : NodeType
   property name : String
   property prefix : String
@@ -144,10 +146,20 @@ pub class Node
   property attributes : Array(Attribute)
   property children : Array(Node)
   property parent : Node?
-  property namespace : Namespace?
+  @namespace : Namespace?
+
+  def namespace=(ns : Namespace?) : Nil
+    @namespace = ns
+  end
+  def ==(other : Node) : Bool
+    @id == other.id
+  end
+
   property namespaces : Array(Namespace)
 
   def initialize(@node_type : NodeType, @name : String = "", @content : String = "")
+    @@next_id = @@next_id + 1
+    @id = @@next_id
     @prefix = ""
     @local_name = @name
     colon = @name.index(':')
@@ -210,6 +222,47 @@ pub class Node
         i = i + 1
       end
     end
+  end
+  def namespace : Namespace?
+    return @namespace unless @namespace.nil?
+    if !@prefix.empty?
+      return resolve_namespace_prefix(@prefix)
+    else
+      return resolve_default_namespace
+    end
+  end
+
+  def namespace_uri : String
+    ns = namespace
+    ns.nil? ? "" : ns.uri
+  end
+
+  def resolve_namespace_prefix(prefix : String) : Namespace?
+    i = 0
+    while i < @namespaces.size
+      if @namespaces[i].prefix == prefix
+        return @namespaces[i]
+      end
+      i = i + 1
+    end
+    if !(p = @parent).nil?
+      return p.resolve_namespace_prefix(prefix)
+    end
+    nil
+  end
+
+  def resolve_default_namespace : Namespace?
+    i = 0
+    while i < @namespaces.size
+      if @namespaces[i].default?
+        return @namespaces[i]
+      end
+      i = i + 1
+    end
+    if !(p = @parent).nil?
+      return p.resolve_default_namespace
+    end
+    nil
   end
 
   def root : Node
