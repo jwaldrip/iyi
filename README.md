@@ -878,12 +878,34 @@ move is one of the four rules:
 | `abstract def` in a module | `abstract def` in a `trait`, and the trait is a type | II.6 |
 | everything is public unless `private` | everything is the module's own unless `pub`, and `pub` writes its types | R-2 |
 | shards, `shard.yml` | `--crystal` can `require` shards from `IYI_PATH`; `iyi bind` puts every shard under `lib/` behind a boundary, one `.iyimod` each, and a program `import`s it | no package manager; a required shard's source is compiled into the program, a bound one's object code is linked (SPEC.md III.6) |
-| a Crystal project you already have | `iyi migrate SRC --out DIR --annotate` writes it as iyi modules: the namespace becomes the path, qualified names become `using` lines, an import cycle becomes one module, a reopened foreign type stays Crystal beside its module, and the types R-2 wants are read off the program the compiler already typed | `--check` compiles every module written and names what is left; a 99-file application migrates to 91 modules that all compile, with 228 types written and 53 named as a person's to write; nine shards it depends on migrate too, five of them clean (SPEC.md III.6) |
+| a Crystal project you already have | `iyi migrate SRC --out DIR --annotate` writes it as iyi modules: the namespace becomes the path, qualified names become `using` lines, an import cycle becomes one module, a reopened foreign type stays Crystal beside its module, and the types R-2 wants are read off the program the compiler already typed | `--check` compiles every module written and names what is left; a 99-file application migrates to 91 modules that all compile, with 228 types written and 98 named as a person's to write; ten shards it depends on migrate too, five of them clean (SPEC.md III.6) |
 | macros | kept, and they travel in the artifact | |
 | `Nil`, union types, blocks, local inference | kept, unchanged | |
 
 A `.cr` file still compiles: this is Crystal's compiler, and `./bin/crystal`
 runs it under its own name. The rules above apply to `.iyi` files.
+
+### A project you already have, in one stanza
+
+```console
+$ iyi migrate src --out iyi --annotate --check
+$ cd iyi && iyi build --crystal -o app <entry>.iyi
+```
+
+`--annotate` writes the types R-2 asks for by reading them off the program
+the compiler already typed — every entry file, and the spec suite, which is
+where a library's calls are. `--check` compiles each module written, prints
+the first refusal of each, and says whose it is: a `require` this machine
+cannot resolve is the environment's, a missing signature is yours, and
+anything else is the verb's own. Then it prints the two commands above with
+your entry filled in.
+
+Measured, on a 99-file 8,079-line Kemal application: 91 modules, all 91
+compile, and the program answers the Crystal build byte for byte on every
+route tried. On the ten shards it depends on: `validator` 11 of 11, `radix`
+5 of 5, `exception_page` 3 of 3, `dotenv` 1 of 1, `backtracer` 4 of 4, and
+the rest are R-2 asking for a signature a person writes — except `kilt`,
+whose own `require` is not installed here at all.
 
 ## Questions you are about to ask
 

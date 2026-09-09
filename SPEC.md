@@ -3399,7 +3399,8 @@ what R-2 still wants is a person's to write, and it says *when* each entry
 is asked, because the two moments differ: a module's own `pub def` is
 refused by the next compile, and a public method of an exported type is
 refused when the module becomes an artifact - which is how the application
-compiles 91 of 91 with 98 entries still on the list. Until they are
+compiles 91 of 91 with 98 entries still on the list (228 types were
+written for it and 98 remain). Until they are
 written, its own modules do not become artifacts, which is where R-1's
 edit loop lives. The fixture
 does: `bench/migrate_gate.sh` annotates it, emits a `.iyimod` per module and
