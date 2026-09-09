@@ -156,14 +156,13 @@ prove_fails_capsule "varint 2-byte prefix broken" no_v2 "rfc9000 app a: 37 in 2 
 # 3. QUIC VarInt boundary size broken (encodes 64 in 1 byte instead of 2)
 prove_fails_capsule "varint boundary check broken" no_bound "boundary 64 size" \
   's/MAX_1BYTE = 63_u64/MAX_1BYTE = 64_u64/'
-
 # 4. HTTP Datagram quarter stream id calculation broken
 prove_fails_capsule "datagram quarter stream id broken" no_qid "dgram stream 4 stream_id" \
   's/@quarter_stream_id \* 4_u64/@quarter_stream_id * 2_u64/'
 
 # 5. Capsule length overrun check disabled
-prove_fails_capsule "capsule overrun check broken" no_overrun "capsule: length overrunning buffer not refused" \
-  's/return nil if capsule_len_u64 > remaining\.to_u64/return nil if false/'
+prove_fails_capsule "capsule overrun check broken" no_overrun "capsule: truncated payload not refused" \
+  's/return nil if capsule_len_u64 > remaining\.to_u64/return {new(capsule_type, Bytes.new(0)), hdr_len}/'
 
 # 6. Capsule extensibility broken (skipping unknown capsule types disabled)
 prove_fails_capsule "capsule extensibility broken" no_ext "extensibility: expected 2 known capsules" \
@@ -174,9 +173,8 @@ prove_fails_wt "webtransport bidi stream type broken" no_bidi "bidi wire prefix 
   's/STREAM_TYPE_BIDI = 0x41_u64/STREAM_TYPE_BIDI = 0x42_u64/'
 
 # 8. WebTransport close capsule error code broken
-prove_fails_wt "close session capsule error code broken" no_close "session close code" \
+prove_fails_wt "close session capsule error code broken" no_close "peer session code" \
   's/new(code, reason_str)/new(code + 1_u64, reason_str)/'
-
 echo
 if [ "$status" -eq 0 ]; then
   echo "all capsule and webtransport tests and failure proofs passed"
