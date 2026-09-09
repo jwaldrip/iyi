@@ -1,0 +1,468 @@
+# Standard CSV library for iyi, conforming to RFC 4180.
+#
+# Provides parsing and building of comma-separated values (CSV) with support for:
+#   * Quoted fields with embedded commas
+#   * Quoted fields with embedded newlines (CR, LF, and CRLF)
+#   * Escaped quotes represented as double-quotes ("")
+#   * Configurable separator and quote characters
+#   * Header row extraction and column access by header name or index
+#   * Streaming row-at-a-time consumption from IyiIO or String without loading
+#     large files into memory all at once
+#   * CSV generation through CSV.build and CSV::Builder
+#
+# Scope and omissions from Crystal's csv.cr:
+#   Crystal's implementation includes Regex-based header matching, token lexing
+#   indirections, and deep AST-level mapping annotations. iyi omits those layers
+#   to maintain a minimal dependency footprint while fully adhering to RFC 4180.
+
+module std/csv
+
+pub class MalformedCSVError < Exception
+  getter message : String
+
+  def initialize(@message : String)
+  end
+end
+
+abstract class Reader
+  abstract def eof? : Bool
+  abstract def peek_byte : UInt8?
+  abstract def next_byte : UInt8?
+end
+
+class StringReader < Reader
+  @ptr : Pointer(UInt8)
+  @len : Int32
+  @pos : Int32
+
+  def initialize(str : String)
+    @ptr = str.to_unsafe
+    @len = str.bytesize
+    @pos = 0
+  end
+
+  def eof? : Bool
+    @pos >= @len
+  end
+
+  def peek_byte : UInt8?
+    return nil if @pos >= @len
+    @ptr[@pos]
+  end
+
+  def next_byte : UInt8?
+    return nil if @pos >= @len
+    b = @ptr[@pos]
+    @pos = @pos + 1
+    b
+  end
+end
+
+class IOReader < Reader
+  @io : IyiIO
+  @buffer : Pointer(UInt8)
+  @cap : Int32
+  @pos : Int32
+  @limit : Int32
+  @eof : Bool
+
+  def initialize(@io : IyiIO, buffer_size : Int32 = 4096)
+    @cap = buffer_size
+    @buffer = Pointer(UInt8).malloc(buffer_size.to_u64)
+    @pos = 0
+    @limit = 0
+    @eof = false
+  end
+
+  def eof? : Bool
+    @pos >= @limit && @eof
+  end
+
+  private def fill_buffer : Nil
+    return if @eof
+    @pos = 0
+    s = @io.read_bytes(@cap)
+    if s.bytesize == 0
+      @eof = true
+      @limit = 0
+    else
+      @limit = s.bytesize
+      @buffer.copy_from(s.to_unsafe, @limit)
+    end
+  end
+
+  def peek_byte : UInt8?
+    if @pos >= @limit
+      fill_buffer
+      return nil if @pos >= @limit
+    end
+    @buffer[@pos]
+  end
+
+  def next_byte : UInt8?
+    if @pos >= @limit
+      fill_buffer
+      return nil if @pos >= @limit
+    end
+    b = @buffer[@pos]
+    @pos = @pos + 1
+    b
+  end
+end
+
+pub class Parser
+  @reader : Reader
+  @sep : UInt8
+  @quote : UInt8
+
+  def initialize(str : String, separator : Char = ',', quote_char : Char = '"')
+    @reader = StringReader.new(str)
+    @sep = separator.ord.to_u8
+    @quote = quote_char.ord.to_u8
+  end
+
+  def initialize(io : IyiIO, separator : Char = ',', quote_char : Char = '"', buffer_size : Int32 = 4096)
+    @reader = IOReader.new(io, buffer_size)
+    @sep = separator.ord.to_u8
+    @quote = quote_char.ord.to_u8
+  end
+
+  def parse : Array(Array(String))
+    rows = [] of Array(String)
+    while row = next_row
+      rows << row
+    end
+    rows
+  end
+
+  def each_row(&block : Array(String) -> Nil) : Nil
+    while row = next_row
+      block.call(row)
+    end
+  end
+
+  def next_row : Array(String)?
+    return nil if @reader.eof?
+
+    # Check for empty line
+    if (b = @reader.peek_byte) && (b == 10_u8 || b == 13_u8)
+      @reader.next_byte
+      if b == 13_u8 && @reader.peek_byte == 10_u8
+        @reader.next_byte
+      end
+      return [] of String
+    end
+
+    row = [] of String
+    end_of_row = false
+
+    while !end_of_row && !@reader.eof?
+      cell = parse_field(pointerof(end_of_row))
+      row << cell
+    end
+
+    if row.empty? && @reader.eof?
+      return nil
+    end
+
+    row
+  end
+
+  private def parse_field(end_of_row : Pointer(Bool)) : String
+    bytes = [] of UInt8
+
+    b = @reader.peek_byte
+    if b == @quote
+      # Quoted field
+      @reader.next_byte
+
+      while true
+        ch = @reader.next_byte
+        if ch.nil?
+          raise "malformed CSV: unclosed quote before end of file"
+        elsif ch == @quote
+          peek = @reader.peek_byte
+          if peek == @quote
+            @reader.next_byte
+            bytes << @quote
+          elsif peek == @sep
+            @reader.next_byte
+            break
+          elsif peek == 13_u8 # \r
+            @reader.next_byte
+            if @reader.peek_byte == 10_u8
+              @reader.next_byte
+            end
+            end_of_row.value = true
+            break
+          elsif peek == 10_u8 # \n
+            @reader.next_byte
+            end_of_row.value = true
+            break
+          elsif @reader.eof?
+            end_of_row.value = true
+            break
+          else
+            while (p = @reader.peek_byte) && (p == 32_u8 || p == 9_u8)
+              @reader.next_byte
+            end
+            p = @reader.peek_byte
+            if p == @sep
+              @reader.next_byte
+              break
+            elsif p == 13_u8
+              @reader.next_byte
+              if @reader.peek_byte == 10_u8
+                @reader.next_byte
+              end
+              end_of_row.value = true
+              break
+            elsif p == 10_u8
+              @reader.next_byte
+              end_of_row.value = true
+              break
+            elsif @reader.eof?
+              end_of_row.value = true
+              break
+            else
+              raise "malformed CSV: unexpected character after closing quote"
+            end
+          end
+        else
+          bytes << ch
+        end
+      end
+    else
+      while true
+        ch = @reader.peek_byte
+        if ch.nil?
+          end_of_row.value = true
+          break
+        elsif ch == @sep
+          @reader.next_byte
+          break
+        elsif ch == 13_u8 # \r
+          @reader.next_byte
+          if @reader.peek_byte == 10_u8
+            @reader.next_byte
+          end
+          end_of_row.value = true
+          break
+        elsif ch == 10_u8 # \n
+          @reader.next_byte
+          end_of_row.value = true
+          break
+        else
+          @reader.next_byte
+          bytes << ch
+        end
+      end
+    end
+
+    String.new(bytes.size) do |target|
+      target.copy_from(bytes.to_unsafe, bytes.size)
+    end
+  end
+end
+
+pub class Builder
+  @io : IyiIO?
+  @buffer : Array(String)
+  @sep : Char
+  @quote : Char
+
+  def initialize(@io : IyiIO? = nil, @sep : Char = ',', @quote : Char = '"')
+    @buffer = [] of String
+  end
+
+  def row(values : Array(String)) : Nil
+    cells = [] of String
+    values.each do |val|
+      cells << escape_cell(val)
+    end
+    line = cells.join(@sep.to_s)
+    if out_io = @io
+      out_io.puts(line)
+    else
+      @buffer << line
+      @buffer << "\n"
+    end
+  end
+
+  def row(*values) : Nil
+    strs = [] of String
+    values.each { |v| strs << v.to_s }
+    row(strs)
+  end
+
+  def to_s : String
+    @buffer.join
+  end
+
+  private def escape_cell(value : String) : String
+    len = value.bytesize
+    ptr = value.to_unsafe
+    sep_u8 = @sep.ord.to_u8
+    quote_u8 = @quote.ord.to_u8
+    needs_quote = false
+
+    i = 0
+    while i < len
+      b = ptr[i]
+      if b == sep_u8 || b == quote_u8 || b == 10_u8 || b == 13_u8
+        needs_quote = true
+        break
+      end
+      i = i + 1
+    end
+
+    if needs_quote
+      escaped_bytes = [] of UInt8
+      i = 0
+      while i < len
+        b = ptr[i]
+        if b == quote_u8
+          escaped_bytes << quote_u8
+          escaped_bytes << quote_u8
+        else
+          escaped_bytes << b
+        end
+        i = i + 1
+      end
+      escaped_str = String.new(escaped_bytes.size) do |target|
+        target.copy_from(escaped_bytes.to_unsafe, escaped_bytes.size)
+      end
+      "#{@quote}#{escaped_str}#{@quote}"
+    else
+      value
+    end
+  end
+end
+
+pub class CSV
+  DEFAULT_SEPARATOR  = ','
+  DEFAULT_QUOTE_CHAR = '"'
+
+  getter headers : Array(String)
+  getter indices : Hash(String, Int32)
+  getter current_row : Array(String)?
+
+  @parser : Parser
+  @has_headers : Bool
+
+  def initialize(str : String, headers : Bool = false, separator : Char = DEFAULT_SEPARATOR, quote_char : Char = DEFAULT_QUOTE_CHAR)
+    @parser = Parser.new(str, separator, quote_char)
+    @has_headers = headers
+    @headers = [] of String
+    @indices = Hash(String, Int32).new
+    @current_row = nil
+
+    if headers
+      if first = @parser.next_row
+        @headers = first
+        @headers.each_with_index do |h, idx|
+          @indices[h] = idx unless @indices.has_key?(h)
+        end
+      end
+    end
+  end
+
+  def initialize(io : IyiIO, headers : Bool = false, separator : Char = DEFAULT_SEPARATOR, quote_char : Char = DEFAULT_QUOTE_CHAR)
+    @parser = Parser.new(io, separator, quote_char)
+    @has_headers = headers
+    @headers = [] of String
+    @indices = Hash(String, Int32).new
+    @current_row = nil
+
+    if headers
+      if first = @parser.next_row
+        @headers = first
+        @headers.each_with_index do |h, idx|
+          @indices[h] = idx unless @indices.has_key?(h)
+        end
+      end
+    end
+  end
+
+  def next : Bool
+    row = @parser.next_row
+    @current_row = row
+    !row.nil?
+  end
+
+  def row : Array(String)
+    if r = @current_row
+      r
+    else
+      raise "no current row (did you call next?)"
+    end
+  end
+
+  def [](column_name : String) : String
+    idx = @indices[column_name]?
+    raise "unknown column: #{column_name}" unless idx
+    self[idx]
+  end
+
+  def []?(column_name : String) : String?
+    idx = @indices[column_name]?
+    return nil unless idx
+    self[idx]?
+  end
+
+  def [](index : Int32) : String
+    r = row
+    r[index]
+  end
+
+  def []?(index : Int32) : String?
+    r = @current_row
+    return nil unless r
+    r[index]?
+  end
+
+  def to_h : Hash(String, String)
+    result = Hash(String, String).new
+    r = row
+    @headers.each_with_index do |h, idx|
+      val = idx < r.size ? r[idx] : ""
+      result[h] = val
+    end
+    result
+  end
+
+  def each_row(&block : Array(String) -> Nil) : Nil
+    while self.next
+      block.call(row)
+    end
+  end
+
+  # Class-level helpers
+
+  def self.parse(str : String, separator : Char = DEFAULT_SEPARATOR, quote_char : Char = DEFAULT_QUOTE_CHAR) : Array(Array(String))
+    Parser.new(str, separator, quote_char).parse
+  end
+
+  def self.parse(io : IyiIO, separator : Char = DEFAULT_SEPARATOR, quote_char : Char = DEFAULT_QUOTE_CHAR) : Array(Array(String))
+    Parser.new(io, separator, quote_char).parse
+  end
+
+  def self.each_row(str : String, separator : Char = DEFAULT_SEPARATOR, quote_char : Char = DEFAULT_QUOTE_CHAR, &block : Array(String) -> Nil) : Nil
+    Parser.new(str, separator, quote_char).each_row(&block)
+  end
+
+  def self.each_row(io : IyiIO, separator : Char = DEFAULT_SEPARATOR, quote_char : Char = DEFAULT_QUOTE_CHAR, &block : Array(String) -> Nil) : Nil
+    Parser.new(io, separator, quote_char).each_row(&block)
+  end
+
+  def self.build(separator : Char = DEFAULT_SEPARATOR, quote_char : Char = DEFAULT_QUOTE_CHAR, &block : Builder -> Nil) : String
+    builder = Builder.new(nil, separator, quote_char)
+    block.call(builder)
+    builder.to_s
+  end
+
+  def self.build(io : IyiIO, separator : Char = DEFAULT_SEPARATOR, quote_char : Char = DEFAULT_QUOTE_CHAR, &block : Builder -> Nil) : Nil
+    builder = Builder.new(io, separator, quote_char)
+    block.call(builder)
+  end
+end
