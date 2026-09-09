@@ -330,7 +330,12 @@ module Iyi
     # Migrating a Crystal project is where it showed: `backtracer` parses a
     # backtrace with four literals, and no rewrite of them is honest.
     def expand(node : RegexLiteral)
-      if @program.iyi_prelude?
+      # Both halves of the question, because either alone is wrong. A `.cr`
+      # program is Crystal's and always had the literal; a `.iyi` one has it
+      # where the library it compiles against does - and a Program built
+      # without a driver (Crystal's own compiler specs do that) carries the
+      # default prelude flag while compiling snippets that are not iyi's.
+      if @program.iyi_prelude? && node.location.try(&.filename.to_s.ends_with?(".iyi"))
         node.raise "regex literals are not available in iyi: this program has no runtime Regex, and the compiler's engine, Iyi::Rx, is RE2-shaped and serves macros only. Use the macro methods (match, scan, gsub, split) for compile-time matching, or compile against Crystal's library with --crystal"
       end
 

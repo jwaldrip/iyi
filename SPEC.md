@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 106,639 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 106,644 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,565 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3350,8 +3350,10 @@ the program has no runtime `Regex` - iyi's own prelude - and that was
 being read off the file's extension instead: under `--crystal` the library
 is Crystal's, `Regex` is in it, and a `.iyi` file already writes
 `Regex.new("a.c")` and `=~`, so refusing the sugar for that call was a rule
-about a runtime that is present (`literal_expander.cr` asks the program
-now). `backtracer` went from 2 of 5 to 4 of 4. It admits no semantics that
+about a runtime that is present (`literal_expander.cr` asks the file *and*
+the program now - either half alone is wrong, and asking only the program
+refused snippets in Crystal's own compiler specs, which build a `Program`
+without a driver). `backtracer` went from 2 of 5 to 4 of 4. It admits no semantics that
 were not already reachable: the engine behind the literal is the one behind
 `Regex.new` in the library the program compiles against, so under
 `--crystal` it is that library's PCRE2 with that library's costs. iyi's own
