@@ -24,7 +24,7 @@ import std/digest
 using std/digest::{MD5, SHA1, SHA256, SHA384, SHA512}
 
 import std/crypto
-using std/crypto::{constant_time_compare, random_bytes, HMAC, HKDF, ChaCha20Poly1305, AES128GCM, AES256GCM}
+using std/crypto::{constant_time_compare, random_bytes, HMAC, HKDF, ChaCha20Poly1305, AES128GCM, AES256GCM, HeaderProtection}
 
 def hex_to_bytes(h : String) : Bytes
   len = h.bytesize // 2
@@ -285,6 +285,21 @@ def main : Nil
   rej_tag16 = AES256GCM.decrypt_detached(k_case16, iv_case4, ct16, tamper_tag16, aad_case4)
   assert_true("AES-256-GCM rejected tampered tag", rej_tag16.nil?)
   puts "  aes-256-gcm: NIST SP 800-38D Cases 13, 16 verified, tampered tag rejected"
+
+  # QUIC header protection, against RFC 9001's own worked packets rather than
+  # against itself: the client and server Initials of A.2 and A.3, and the
+  # ChaCha20 short header of A.5.
+  puts "  == 14. QUIC header protection (RFC 9001 appendix A)"
+  assert_eq("A.2 client Initial mask",
+    HeaderProtection.aes_mask(hex_to_bytes("9f50449e04a0e810283a1e9933adedd2"),
+      hex_to_bytes("d1b1c98dd7689fb8ec11d242b123dc9b")).hexstring, "437b9aec36")
+  assert_eq("A.3 server Initial mask",
+    HeaderProtection.aes_mask(hex_to_bytes("c206b8d9b9f0f37644430b490eeaa314"),
+      hex_to_bytes("2cd0991cd25b0aac406a5816b6394100")).hexstring, "2ec0d8356a")
+  assert_eq("A.5 ChaCha20 short header mask",
+    HeaderProtection.chacha_mask(hex_to_bytes("25a282b9e82f06f21f488917a4fc8f1b73573685608597d0efcb076b0ab7a7a4"),
+      hex_to_bytes("5e5cd55c41f69080575d7999c25a5bfb")).hexstring, "aefefe7d03")
+  puts "    header protection: RFC 9001 A.2, A.3 and A.5 masks matched"
 
   puts
   puts "all std/crypto checks passed"
