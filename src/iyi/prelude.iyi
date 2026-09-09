@@ -6518,8 +6518,8 @@ require "./file"
         def self.shade(base : UInt64) : Nil
           return if base == 0_u64
           return if colour(base) != WHITE
-          set_colour(base, GRAY)
-          push_queue(base)
+          self.set_colour(base, GRAY)
+          self.push_queue(base)
         end
 
         def self.layouts_table : UInt64
@@ -6572,7 +6572,7 @@ require "./file"
                   child_val = (Pointer(Int32).new(base + offset).value.to_i64 & 0xFFFFFFFF_i64).to_u64
                   if child_val != 0_u64
                     child_base = IyiHeap.base_of(child_val)
-                    shade(child_base) if child_base != 0_u64
+                    self.shade(child_base) if child_base != 0_u64
                   end
                   idx = idx + 1_u64
                 end
@@ -6585,14 +6585,14 @@ require "./file"
                   child_val = (Pointer(Int32).new(cursor).value.to_i64 & 0xFFFFFFFF_i64).to_u64
                   if child_val != 0_u64
                     child_base = IyiHeap.base_of(child_val)
-                    shade(child_base) if child_base != 0_u64
+                    self.shade(child_base) if child_base != 0_u64
                   end
                   cursor = cursor + 4_u64
                 end
               end
             end
 
-            set_colour(base, BLACK)
+            self.set_colour(base, BLACK)
             @@bytes_marked = @@bytes_marked + size
           end
         end
@@ -6648,13 +6648,18 @@ require "./file"
           end
         end
 
-        def self.collect : Nil
+        def self.mark : UInt64
           IyiHeap.init_if_needed
           @@bytes_marked = 0_u64
           @@queue_len = 0_u64
 
           IyiRoots.each_root(->(base : UInt64) { shade(base) })
           drain
+          @@bytes_marked
+        end
+
+        def self.collect : Nil
+          mark
           sweep
 
           budget = @@bytes_marked * 2_u64
