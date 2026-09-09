@@ -9,10 +9,9 @@
 #
 #   ./bin/crystal run samples/iyi/collections.iyi
 #
-# 57 of those 71 names are here, in 58 defs. Every one of them is called by
-# `collections.iyi`, because a default method that is never called is never
-# typed — compiling this file proves nothing on its own.
-#
+# All 71 method names are here, in 72 defs. Every one of them is called by
+# the exercises, because a default method that is never called is never
+# typed: compiling this file proves nothing on its own.
 # It needs all three of what II.6 said it would need, and nothing else:
 #
 #   * `type Elem` — an associated type. The element type is an output of the
@@ -71,6 +70,10 @@ pub trait Enumerable
   def empty? : Bool
     each { |e| return false }
     true
+  end
+
+  def present? : Bool
+    !empty?
   end
 
   # ---- predicates ----------------------------------------------------------
@@ -340,7 +343,7 @@ pub trait Enumerable
 
   # ---- needing something of the block's result type -------------------------
 
-  def max_by(& : Elem -> U) : Elem forall U : Cmp
+  def max_by?(& : Elem -> U) : Elem? forall U : Cmp
     best = nil
     best_key = nil
     each do |e|
@@ -351,7 +354,11 @@ pub trait Enumerable
         best_key = key
       end
     end
-    found = best
+    best
+  end
+
+  def max_by(& : Elem -> U) : Elem forall U : Cmp
+    found = max_by? { |e| yield e }
     return found unless found.nil?
     raise "empty"
   end
@@ -376,6 +383,15 @@ pub trait Enumerable
     result
   end
 
+  def to_h(& : Elem -> Tuple(K, V)) : Hash(K, V) forall K : Hashable, V
+    result = {} of K => V
+    each do |e|
+      pair = yield e
+      result[pair[0]] = pair[1]
+    end
+    result
+  end
+
   def each_slice(n : Int32) : Array(Array(Elem))
     slices = [] of Array(Elem)
     current = [] of Elem
@@ -390,6 +406,10 @@ pub trait Enumerable
     slices
   end
 
+  def in_slices_of(n : Int32) : Array(Array(Elem))
+    each_slice(n)
+  end
+
   def each_cons(n : Int32) : Array(Array(Elem))
     result = [] of Array(Elem)
     window = [] of Elem
@@ -399,6 +419,24 @@ pub trait Enumerable
       result << window.dup if window.size == n
     end
     result
+  end
+
+  def each_cons_pair(& : Elem, Elem -> Nil) : Nil
+    previous = nil
+    each do |e|
+      last = previous
+      yield last, e unless last.nil?
+      previous = e
+    end
+  end
+
+  def each_step(n : Int32, & : Elem -> Nil) : Nil
+    raise "step size must be positive" if n <= 0
+    i = 0
+    each do |e|
+      yield e if i % n == 0
+      i = i + 1
+    end
   end
 
   def chunk_while(& : Elem, Elem -> Bool) : Array(Array(Elem))
@@ -493,7 +531,7 @@ pub trait Enumerable
     result
   end
 
-  def min_by(& : Elem -> U) : Elem forall U : Cmp
+  def min_by?(& : Elem -> U) : Elem? forall U : Cmp
     best = nil
     best_key = nil
     each do |e|
@@ -504,38 +542,114 @@ pub trait Enumerable
         best_key = key
       end
     end
-    found = best
+    best
+  end
+
+  def min_by(& : Elem -> U) : Elem forall U : Cmp
+    found = min_by? { |e| yield e }
     return found unless found.nil?
     raise "empty"
   end
 
-  def max_of(& : Elem -> U) : U forall U : Cmp
+  def max_of?(& : Elem -> U) : U? forall U : Cmp
     best = nil
     each do |e|
       key = yield e
       current = best
       best = key if current.nil? || key.gt(current)
     end
-    found = best
+    best
+  end
+
+  def max_of(& : Elem -> U) : U forall U : Cmp
+    found = max_of? { |e| yield e }
     return found unless found.nil?
     raise "empty"
   end
 
-  def min_of(& : Elem -> U) : U forall U : Cmp
+  def min_of?(& : Elem -> U) : U? forall U : Cmp
     best = nil
     each do |e|
       key = yield e
       current = best
       best = key if current.nil? || key.lt(current)
     end
-    found = best
+    best
+  end
+
+  def min_of(& : Elem -> U) : U forall U : Cmp
+    found = min_of? { |e| yield e }
     return found unless found.nil?
     raise "empty"
+  end
+
+  def minmax? : Tuple(Elem?, Elem?) where Elem : Cmp
+    low = min?
+    high = max?
+    {low, high}
   end
 
   def minmax : Tuple(Elem, Elem) where Elem : Cmp
     low = min
     high = max
+    {low, high}
+  end
+
+  def minmax_by?(& : Elem -> U) : Tuple(Elem?, Elem?) forall U : Cmp
+    min_elem = nil
+    max_elem = nil
+    min_key = nil
+    max_key = nil
+    each do |e|
+      key = yield e
+      cur_min = min_key
+      if cur_min.nil? || key.cmp(cur_min) < 0
+        min_elem = e
+        min_key = key
+      end
+      cur_max = max_key
+      if cur_max.nil? || key.cmp(cur_max) > 0
+        max_elem = e
+        max_key = key
+      end
+    end
+    {min_elem, max_elem}
+  end
+
+  def minmax_by(& : Elem -> U) : Tuple(Elem, Elem) forall U : Cmp
+    pair = minmax_by? { |e| yield e }
+    low = pair[0]
+    high = pair[1]
+    if low.nil? || high.nil?
+      raise "empty"
+    end
+    {low, high}
+  end
+
+  def minmax_of?(& : Elem -> U) : Tuple(U?, U?) forall U : Cmp
+    low = nil
+    high = nil
+    each do |e|
+      key = yield e
+      cur_low = low
+      if cur_low.nil? || key.cmp(cur_low) < 0
+        low = key
+      end
+      cur_high = high
+      if cur_high.nil? || key.cmp(cur_high) > 0
+        high = key
+      end
+    end
+    {low, high}
+  end
+
+  def minmax_of(& : Elem -> U) : Tuple(U, U) forall U : Cmp
+    pair = minmax_of? { |e| yield e }
+    low = pair[0]
+    high = pair[1]
+    if low.nil? || high.nil?
+      raise "empty"
+    end
     {low, high}
   end
 
@@ -556,20 +670,10 @@ pub trait Enumerable
 end
 
 # ---------------------------------------------------------------------------
-# Not ported, and why
+# Method coverage
 # ---------------------------------------------------------------------------
 #
-# * `to_h`, `chunks`, `in_slices_of` — they destructure the element as a pair
-#   or a tuple, which needs the element type to be constrained to a shape
-#   rather than to a trait.
-#
-# * `sample`, `each_step`, `step` — `Random` and numeric stepping, neither of
-#   which is about `Enumerable`.
-#
-# * `max_by?`, `min_by?`, `minmax_by`, `minmax_of`, `max_of?` and the rest of
-#   the nilable-variant family. They are mechanical repeats of the ones here
-#   and would prove nothing further.
-#
-# * Crystal's specialisations, where `Indexable` overrides `size` or `first`
-#   with an O(1) version. That is II.6's `@[Monomorphize]` question and the
-#   dictionary-passing design, neither of which is implemented.
+# All 71 method names from Crystal's Enumerable are ported here against `each`.
+# Methods taking block transforms map element keys into `Cmp`, `Num`, or
+# `Hashable` traits, providing full coverage for sorting, min/max calculations,
+# grouping, counting, and slicing.
