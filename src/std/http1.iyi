@@ -41,9 +41,9 @@ pub alias Cookie = Std::Http::Cookie
 pub alias Cookies = Std::Http::Cookies
 
 # Protocol limits matching RFC 9112 and std/http
-pub MAX_REQUEST_LINE_SIZE = 8192
-pub MAX_HEADER_COUNT      =  100
-pub MAX_HEADERS_SIZE      = 16384
+pub MAX_REQUEST_LINE_SIZE =     8192
+pub MAX_HEADER_COUNT      =      100
+pub MAX_HEADERS_SIZE      =    16384
 pub MAX_CHUNK_SIZE        = 16777216 # 16 MB
 
 # ---------------------------------------------------------------------------
@@ -468,7 +468,7 @@ pub class BufferedTransportReader
           return HttpError.new("Request line exceeds maximum length (" + MAX_REQUEST_LINE_SIZE.to_s + " bytes)")
         end
         return line_res
-      in Nil       then return nil
+      in Nil then return nil
       in String
         if !line_res.empty?
           req_line = line_res
@@ -520,7 +520,7 @@ pub class BufferedTransportReader
           return HttpError.new("Headers size exceeds maximum limit (" + MAX_HEADERS_SIZE.to_s + " bytes)")
         end
         return h_res
-      in Nil       then return HttpError.new("Incomplete request: missing header end")
+      in Nil then return HttpError.new("Incomplete request: missing header end")
       in String
         line = h_res
         break if line.empty? # End of headers
@@ -678,7 +678,7 @@ pub class BufferedTransportReader
           return HttpError.new("Headers size exceeds maximum limit (" + MAX_HEADERS_SIZE.to_s + " bytes)")
         end
         return h_res
-      in Nil       then return HttpError.new("Incomplete response: missing header end")
+      in Nil then return HttpError.new("Incomplete response: missing header end")
       in String
         line = h_res
         break if line.empty?

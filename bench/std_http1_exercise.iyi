@@ -14,11 +14,7 @@ using std/slice::{Slice, Bytes}
 using std/uri::{URI, Params}
 using std/http::{Headers, Status, Request, Response, HttpError}
 using std/compress::{Gzip, Zlib, Deflate}
-using std/http1::{
-  Client, Server, Transport, TcpTransport, MockTransport, TlsTransport,
-  BufferedTransportReader, MAX_REQUEST_LINE_SIZE, MAX_HEADER_COUNT,
-  MAX_HEADERS_SIZE, MAX_CHUNK_SIZE
-}
+using std/http1::{Client, Server, Transport, TcpTransport, MockTransport, TlsTransport, BufferedTransportReader, MAX_REQUEST_LINE_SIZE, MAX_HEADER_COUNT, MAX_HEADERS_SIZE, MAX_CHUNK_SIZE}
 
 # --- Smuggling Suite: At least 6 named malformed framings ---
 
