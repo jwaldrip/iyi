@@ -50,7 +50,7 @@ class IyiSocket
 
     ip = parse_ip(host)
     addr = make_sockaddr_in(ip, port)
-    if __sys_connect(fd, addr, 16_u32) < 0
+    if __sys_connect(fd, addr) < 0
       __iyi_close(fd.to_i64)
       raise "cannot connect to #{host}:#{port}"
     end
@@ -66,7 +66,7 @@ class IyiSocket
 
     ip = parse_ip(host)
     addr = make_sockaddr_in(ip, port)
-    if __sys_bind(fd, addr, 16_u32) < 0
+    if __sys_bind(fd, addr) < 0
       __iyi_close(fd.to_i64)
       raise "cannot bind socket to #{host}:#{port}"
     end
@@ -263,12 +263,20 @@ class IyiSocket
       fun setsockopt(fd : Int32, level : Int32, optname : Int32, optval : Void*, optlen : UInt32) : Int32
     end
 
+    # The length of a `sockaddr_in`, in the type each branch's call wants. It
+    # is a property of the address family rather than of the caller, so the
+    # callers do not pass it: `UInt32` here for libSystem's `socklen_t`, and
+    # `Int64` on the syscall branch, because the prelude has no conversion
+    # between the two. `UInt32` has neither `to_i64` nor `to_u64`, and `Int32`
+    # has no `to_u32`, which is what made a shared parameter type impossible.
+    SOCKADDR_IN_SIZE = 16_u32
+
     def self.__sys_socket : Int32
       LibC.socket(2, 1, 0)
     end
 
-    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8), addrlen : UInt32) : Int32
-      LibC.bind(fd, addr.as(Void*), addrlen)
+    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8)) : Int32
+      LibC.bind(fd, addr.as(Void*), SOCKADDR_IN_SIZE)
     end
 
     def self.__sys_listen(fd : Int32, backlog : Int32) : Int32
@@ -279,8 +287,8 @@ class IyiSocket
       LibC.accept(fd, addr.as(Void*), addrlen)
     end
 
-    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8), addrlen : UInt32) : Int32
-      LibC.connect(fd, addr.as(Void*), addrlen)
+    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8)) : Int32
+      LibC.connect(fd, addr.as(Void*), SOCKADDR_IN_SIZE)
     end
 
     def self.__sys_send(fd : Int32, buf : Pointer(UInt8), len : UInt64) : Int64
@@ -321,6 +329,11 @@ class IyiSocket
       SYS_RECVFROM    = 207_i64
       SYS_SETSOCKOPT  = 208_i64
     {% end %}
+
+    # Sized as the syscall takes it, a full register. See the darwin branch's
+    # note: this is a separate constant rather than a converted one because
+    # the prelude has no conversion between `UInt32` and the 64-bit types.
+    SOCKADDR_IN_SIZE = 16_i64
 
     def self.__sys3(number : Int64, a : Int64, b : Int64, c : Int64) : Int64
       result = uninitialized Int64
@@ -374,8 +387,8 @@ class IyiSocket
       __sys3(SYS_SOCKET, 2_i64, 1_i64, 0_i64).to_i32
     end
 
-    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8), addrlen : UInt32) : Int32
-      __sys3(SYS_BIND, fd.to_i64, addr.address.to_i64, addrlen.to_i64).to_i32
+    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8)) : Int32
+      __sys3(SYS_BIND, fd.to_i64, addr.address.to_i64, SOCKADDR_IN_SIZE).to_i32
     end
 
     def self.__sys_listen(fd : Int32, backlog : Int32) : Int32
@@ -386,8 +399,8 @@ class IyiSocket
       __sys3(SYS_ACCEPT, fd.to_i64, addr.address.to_i64, addrlen.address.to_i64).to_i32
     end
 
-    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8), addrlen : UInt32) : Int32
-      __sys3(SYS_CONNECT, fd.to_i64, addr.address.to_i64, addrlen.to_i64).to_i32
+    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8)) : Int32
+      __sys3(SYS_CONNECT, fd.to_i64, addr.address.to_i64, SOCKADDR_IN_SIZE).to_i32
     end
 
     def self.__sys_send(fd : Int32, buf : Pointer(UInt8), len : UInt64) : Int64
@@ -411,7 +424,7 @@ class IyiSocket
       raise "IyiSocket is not supported on this platform"
     end
 
-    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8), addrlen : UInt32) : Int32
+    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8)) : Int32
       -1
     end
 
@@ -423,7 +436,7 @@ class IyiSocket
       -1
     end
 
-    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8), addrlen : UInt32) : Int32
+    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8)) : Int32
       -1
     end
 

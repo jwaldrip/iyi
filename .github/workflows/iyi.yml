@@ -594,7 +594,14 @@ jobs:
           for target in x86_64-linux-gnu aarch64-linux-gnu x86_64-darwin \
                         aarch64-darwin x86_64-windows-msvc x86_64-windows-gnu \
                         wasm32-wasi; do
-            for sample in hello webapp; do
+            # `io`, `socket` and `format` are here for a reason a shorter list
+            # would have hidden: each carries per-platform branches, and a
+            # branch only its own platform compiles is a branch nobody checks.
+            # `socket.iyi` reached master's queue with `UInt32#to_i64` in its
+            # Linux syscall path, a method this prelude does not have, and a
+            # darwin machine compiled it every time because darwin takes the
+            # libSystem branch instead.
+            for sample in hello webapp io socket format; do
               out="/tmp/iyi-$sample-$target"
               if ! ./bin/iyi build --cross-compile --target "$target" \
                     -o "$out" "samples/iyi/$sample.iyi" > "$out.log" 2>&1; then
