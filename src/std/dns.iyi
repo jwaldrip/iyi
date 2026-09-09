@@ -66,20 +66,25 @@ pub RCODE_REFUSED         = 5
 # --- Exception Hierarchy ---
 
 pub class DnsError < Exception
-  def initialize(message : String)
-    super(message)
+  getter message : String
+
+  def initialize(@message : String)
+  end
+
+  def to_s : String
+    @message
   end
 end
 
 pub class DnsFormatError < DnsError
   def initialize(message : String)
-    super(message)
+    @message = message
   end
 end
 
 pub class DnsIdMismatchError < DnsError
   def initialize(message : String)
-    super(message)
+    @message = message
   end
 end
 
@@ -87,26 +92,30 @@ pub class DnsResponseError < DnsError
   getter rcode : Int32
 
   def initialize(message : String, @rcode : Int32 = 0)
-    super(message)
+    @message = message
   end
 end
 
 pub class DnsTruncatedError < DnsError
   def initialize(message : String = "DNS response was truncated (TC bit set)")
-    super(message)
+    @message = message
   end
 end
 
 pub class DnsTimeoutError < DnsError
   def initialize(message : String = "DNS query timed out")
-    super(message)
+    @message = message
   end
 end
 
 pub class DnsResolveError < DnsError
   def initialize(message : String)
-    super(message)
+    @message = message
   end
+end
+
+def raise(err : DnsError) : NoReturn
+  ::raise(err.message)
 end
 
 # --- DNS Header and Sections ---
@@ -490,10 +499,10 @@ end
 
 # --- Entropy / Random Transaction ID Generation ---
 
-module Entropy
+pub struct Entropy
   # Reads a cryptographically secure 16-bit random integer from the OS entropy source.
   # Uses /dev/urandom on POSIX platforms, with a monotonic clock + memory entropy fallback.
-  def self.crypto_random_u16 : UInt16
+  def self.crypto_random_id : Int32
     c_urandom = Pointer(UInt8).malloc(13_u64)
     c_urandom[0] = 47_u8 # '/'
     c_urandom[1] = 100_u8 # 'd'
@@ -516,20 +525,20 @@ module Entropy
       __iyi_close(fd)
       if r == 2_i64
         val = (buf[0].to_i32 << 8) | buf[1].to_i32
-        return val.to_u16!
+        return val
       end
     end
 
     # Fallback to high-resolution monotonic time mixed with pointer address entropy
-    t = Time.monotonic_nanoseconds
-    mix = ((t >> 16) ^ t) & 0xFFFF_u64
-    mix.to_i32.to_u16!
+    t = Time.monotonic_nanoseconds.to_i64
+    mix = ((t >> 16) ^ t) & 0xFFFF_i64
+    mix.to_i32
   end
 end
 
 # --- Wire Encoding and Decoding ---
 
-module Wire
+pub struct Wire
   # Decodes a domain name starting at start_pos, handling RFC 1035 pointer compression.
   # Security bounds enforced:
   # - Loops bounded: max 32 pointer hops, raises DnsFormatError if exceeded.
@@ -636,7 +645,7 @@ module Wire
 
   # Encodes a standard DNS query into raw wire bytes.
   def self.encode_query(name : String, qtype : Int32 = TYPE_A, tx_id : Int32 = -1, rd : Bool = true, cd : Bool = false) : Tuple(Bytes, Int32)
-    actual_id = tx_id >= 0 ? tx_id : Entropy.crypto_random_u16.to_i32
+    actual_id = tx_id >= 0 ? tx_id : Entropy.crypto_random_id
 
     qname_bytes = encode_name(name)
     msg_size = 12 + qname_bytes.size + 4
@@ -1004,7 +1013,7 @@ end
 
 # --- Nameserver Discovery ---
 
-module Config
+pub struct Config
   FALLBACK_NAMESERVERS = ["1.1.1.1", "8.8.8.8"]
 
   # Reads nameservers from /etc/resolv.conf on POSIX systems.
@@ -1092,7 +1101,7 @@ pub class Cache
   end
 
   def clear : Nil
-    @entries.clear
+    @entries = Hash(String, CacheEntry).new
   end
 
   def size : Int32
@@ -1312,26 +1321,26 @@ end
 
 # --- Module-Level Shortcut Functions ---
 
-def self.resolve(hostname : String) : Array(String)
+pub def self.resolve(hostname : String) : Array(String)
   Resolver.new.resolve(hostname)
 end
 
-def self.resolve_a(hostname : String) : Array(String)
+pub def self.resolve_a(hostname : String) : Array(String)
   Resolver.new.resolve_a(hostname)
 end
 
-def self.resolve_aaaa(hostname : String) : Array(String)
+pub def self.resolve_aaaa(hostname : String) : Array(String)
   Resolver.new.resolve_aaaa(hostname)
 end
 
-def self.resolve_cname(hostname : String) : String?
+pub def self.resolve_cname(hostname : String) : String?
   Resolver.new.resolve_cname(hostname)
 end
 
-def self.resolve_txt(hostname : String) : Array(String)
+pub def self.resolve_txt(hostname : String) : Array(String)
   Resolver.new.resolve_txt(hostname)
 end
 
-def self.resolve_mx(hostname : String) : Array(MXRecord)
+pub def self.resolve_mx(hostname : String) : Array(MXRecord)
   Resolver.new.resolve_mx(hostname)
 end
