@@ -24,7 +24,7 @@
 
 module std/udp
 
-import std/slice
+pub import std/slice
 using std/slice::{Bytes, Slice}
 
 pub alias Bytes = Std::Slice::Bytes
