@@ -360,33 +360,23 @@ pub class UdpSocket
 
   # Returns the current receive buffer size (SO_RCVBUF).
   def receive_buffer_size : Int32
-    val = 0_i32
-    len = 4_u32
-    res = UdpSocket.__sys_getsockopt(@fd, SOL_SOCKET, SO_RCVBUF, pointerof(val).as(Void*), pointerof(len))
-    raise "cannot get receive buffer size" if res < 0
-    val
+    UdpSocket.__sys_get_buffer_size(@fd, SOL_SOCKET, SO_RCVBUF)
   end
 
   # Sets the receive buffer size (SO_RCVBUF).
   def receive_buffer_size=(size : Int32) : Nil
-    val = size
-    res = UdpSocket.__sys_setsockopt(@fd, SOL_SOCKET, SO_RCVBUF, pointerof(val).as(Void*), 4_u32)
+    res = UdpSocket.__sys_set_buffer_size(@fd, SOL_SOCKET, SO_RCVBUF, size)
     raise "cannot set receive buffer size" if res < 0
   end
 
   # Returns the current send buffer size (SO_SNDBUF).
   def send_buffer_size : Int32
-    val = 0_i32
-    len = 4_u32
-    res = UdpSocket.__sys_getsockopt(@fd, SOL_SOCKET, SO_SNDBUF, pointerof(val).as(Void*), pointerof(len))
-    raise "cannot get send buffer size" if res < 0
-    val
+    UdpSocket.__sys_get_buffer_size(@fd, SOL_SOCKET, SO_SNDBUF)
   end
 
   # Sets the send buffer size (SO_SNDBUF).
   def send_buffer_size=(size : Int32) : Nil
-    val = size
-    res = UdpSocket.__sys_setsockopt(@fd, SOL_SOCKET, SO_SNDBUF, pointerof(val).as(Void*), 4_u32)
+    res = UdpSocket.__sys_set_buffer_size(@fd, SOL_SOCKET, SO_SNDBUF, size)
     raise "cannot set send buffer size" if res < 0
   end
 
@@ -656,13 +646,13 @@ pub class UdpSocket
     buffer
   end
 
-  def self.make_sockaddr(host : String, port : Int32) : Tuple(Pointer(UInt8), UInt32, Int32)
+  def self.make_sockaddr(host : String, port : Int32)
     if host.includes?(":")
       v6_bytes = parse_ipv6(host)
-      {make_sockaddr_in6(v6_bytes, port), 28_u32, AF_INET6}
+      {make_sockaddr_in6(v6_bytes, port), SOCKADDR_IN6_SIZE, AF_INET6}
     else
       ip = parse_ipv4(host)
-      {make_sockaddr_in(ip, port), 16_u32, 2}
+      {make_sockaddr_in(ip, port), SOCKADDR_IN_SIZE, 2}
     end
   end
 
@@ -710,15 +700,16 @@ pub class UdpSocket
   # --- Platform System Call Bindings ---
 
   {% if flag?(:darwin) %}
-    AF_INET6        = 30
-    SOL_SOCKET      = 0xffff
-    SO_REUSEADDR    = 0x0004
-    SO_RCVBUF       = 0x1002
-    SO_SNDBUF       = 0x1001
-    SO_RCVTIMEO     = 0x1006
-    SO_SNDTIMEO     = 0x1005
-    MSG_DONTWAIT    = 0x80
-
+    AF_INET6           = 30
+    SOL_SOCKET         = 0xffff
+    SO_REUSEADDR       = 0x0004
+    SO_RCVBUF          = 0x1002
+    SO_SNDBUF          = 0x1001
+    SO_RCVTIMEO        = 0x1006
+    SO_SNDTIMEO        = 0x1005
+    MSG_DONTWAIT       = 0x80
+    SOCKADDR_IN_SIZE   = 16_u32
+    SOCKADDR_IN6_SIZE  = 28_u32
     lib LibC
       fun socket(domain : Int32, type : Int32, protocol : Int32) : Int32
       fun bind(fd : Int32, addr : Void*, addrlen : UInt32) : Int32
@@ -763,14 +754,18 @@ pub class UdpSocket
       LibC.getsockname(fd, addr.as(Void*), addrlen)
     end
 
-    def self.__sys_setsockopt(fd : Int32, level : Int32, optname : Int32, optval : Void*, optlen : UInt32) : Int32
-      LibC.setsockopt(fd, level, optname, optval, optlen)
+    def self.__sys_set_buffer_size(fd : Int32, level : Int32, optname : Int32, size : Int32) : Int32
+      val = size
+      LibC.setsockopt(fd, level, optname, pointerof(val).as(Void*), 4_u32)
     end
 
-    def self.__sys_getsockopt(fd : Int32, level : Int32, optname : Int32, optval : Void*, optlen : Pointer(UInt32)) : Int32
-      LibC.getsockopt(fd, level, optname, optval, optlen)
+    def self.__sys_get_buffer_size(fd : Int32, level : Int32, optname : Int32) : Int32
+      val = 0_i32
+      len = 4_u32
+      res = LibC.getsockopt(fd, level, optname, pointerof(val).as(Void*), pointerof(len))
+      raise "cannot get buffer size" if res < 0
+      val
     end
-
     def self.__sys_set_reuseaddr(fd : Int32) : Int32
       val = 1_i32
       LibC.setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, pointerof(val).as(Void*), 4_u32)
@@ -826,13 +821,15 @@ pub class UdpSocket
 
   {% elsif flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
     AF_INET6        = 10
-    SOL_SOCKET      = 1
-    SO_REUSEADDR    = 2
-    SO_RCVBUF       = 8
-    SO_SNDBUF       = 7
-    SO_RCVTIMEO     = 20
-    SO_SNDTIMEO     = 21
-    MSG_DONTWAIT    = 0x40
+    SOL_SOCKET         = 1
+    SO_REUSEADDR       = 2
+    SO_RCVBUF          = 8
+    SO_SNDBUF          = 7
+    SO_RCVTIMEO        = 20
+    SO_SNDTIMEO        = 21
+    MSG_DONTWAIT       = 0x40
+    SOCKADDR_IN_SIZE   = 16_i64
+    SOCKADDR_IN6_SIZE  = 28_i64
 
     {% if flag?(:x86_64) %}
       SYS_SOCKET        =  41_i64
@@ -914,20 +911,20 @@ pub class UdpSocket
       __sys3(SYS_SOCKET, domain.to_i64, 2_i64, 0_i64).to_i32
     end
 
-    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8), len : UInt32) : Int32
-      __sys3(SYS_BIND, fd.to_i64, addr.address.to_i64, len.to_i32.to_i64).to_i32
+    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8), len : Int64) : Int32
+      __sys3(SYS_BIND, fd.to_i64, addr.address.to_i64, len).to_i32
     end
 
-    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8), len : UInt32) : Int32
-      __sys3(SYS_CONNECT, fd.to_i64, addr.address.to_i64, len.to_i32.to_i64).to_i32
+    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8), len : Int64) : Int32
+      __sys3(SYS_CONNECT, fd.to_i64, addr.address.to_i64, len).to_i32
     end
 
     def self.__sys_send(fd : Int32, buf : Pointer(UInt8), len : UInt64) : Int64
       __sys6(SYS_SENDTO, fd.to_i64, buf.address.to_i64, len.to_i64, 0_i64, 0_i64, 0_i64)
     end
 
-    def self.__sys_sendto(fd : Int32, buf : Pointer(UInt8), len : UInt64, flags : Int32, addr : Pointer(UInt8), addrlen : UInt32) : Int64
-      __sys6(SYS_SENDTO, fd.to_i64, buf.address.to_i64, len.to_i64, flags.to_i64, addr.address.to_i64, addrlen.to_i32.to_i64)
+    def self.__sys_sendto(fd : Int32, buf : Pointer(UInt8), len : UInt64, flags : Int32, addr : Pointer(UInt8), addrlen : Int64) : Int64
+      __sys6(SYS_SENDTO, fd.to_i64, buf.address.to_i64, len.to_i64, flags.to_i64, addr.address.to_i64, addrlen)
     end
 
     def self.__sys_recvfrom(fd : Int32, buf : Pointer(UInt8), len : UInt64, flags : Int32, addr : Pointer(UInt8), addrlen : Pointer(UInt32)) : Int64
@@ -938,12 +935,17 @@ pub class UdpSocket
       __sys3(SYS_GETSOCKNAME, fd.to_i64, addr.address.to_i64, addrlen.address.to_i64).to_i32
     end
 
-    def self.__sys_setsockopt(fd : Int32, level : Int32, optname : Int32, optval : Void*, optlen : UInt32) : Int32
-      __sys5(SYS_SETSOCKOPT, fd.to_i64, level.to_i64, optname.to_i64, optval.as(Pointer(UInt8)).address.to_i64, optlen.to_i32.to_i64).to_i32
+    def self.__sys_set_buffer_size(fd : Int32, level : Int32, optname : Int32, size : Int32) : Int32
+      val = size
+      __sys5(SYS_SETSOCKOPT, fd.to_i64, level.to_i64, optname.to_i64, pointerof(val).address.to_i64, 4_i64).to_i32
     end
 
-    def self.__sys_getsockopt(fd : Int32, level : Int32, optname : Int32, optval : Void*, optlen : Pointer(UInt32)) : Int32
-      __sys5(SYS_GETSOCKOPT, fd.to_i64, level.to_i64, optname.to_i64, optval.as(Pointer(UInt8)).address.to_i64, optlen.address.to_i64).to_i32
+    def self.__sys_get_buffer_size(fd : Int32, level : Int32, optname : Int32) : Int32
+      val = 0_i32
+      len = 4_u32
+      res = __sys5(SYS_GETSOCKOPT, fd.to_i64, level.to_i64, optname.to_i64, pointerof(val).address.to_i64, pointerof(len).address.to_i64).to_i32
+      raise "cannot get buffer size" if res < 0
+      val
     end
 
     def self.__sys_set_reuseaddr(fd : Int32) : Int32
@@ -987,24 +989,25 @@ pub class UdpSocket
     end
 
   {% else %}
-    AF_INET6        = 10
-    SOL_SOCKET      = 1
-    SO_REUSEADDR    = 2
-    SO_RCVBUF       = 8
-    SO_SNDBUF       = 7
-    SO_RCVTIMEO     = 20
-    SO_SNDTIMEO     = 21
-    MSG_DONTWAIT    = 0x40
-
+    AF_INET6           = 10
+    SOL_SOCKET         = 1
+    SO_REUSEADDR       = 2
+    SO_RCVBUF          = 8
+    SO_SNDBUF          = 7
+    SO_RCVTIMEO        = 20
+    SO_SNDTIMEO        = 21
+    MSG_DONTWAIT       = 0x40
+    SOCKADDR_IN_SIZE   = 16_i64
+    SOCKADDR_IN6_SIZE  = 28_i64
     def self.__sys_socket(domain : Int32 = 2) : Int32
       raise "UdpSocket is not supported on this platform"
     end
 
-    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8), len : UInt32) : Int32
+    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8), len) : Int32
       -1
     end
 
-    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8), len : UInt32) : Int32
+    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8), len) : Int32
       -1
     end
 
@@ -1012,7 +1015,7 @@ pub class UdpSocket
       -1_i64
     end
 
-    def self.__sys_sendto(fd : Int32, buf : Pointer(UInt8), len : UInt64, flags : Int32, addr : Pointer(UInt8), addrlen : UInt32) : Int64
+    def self.__sys_sendto(fd : Int32, buf : Pointer(UInt8), len : UInt64, flags : Int32, addr : Pointer(UInt8), addrlen) : Int64
       -1_i64
     end
 
@@ -1024,14 +1027,13 @@ pub class UdpSocket
       -1
     end
 
-    def self.__sys_setsockopt(fd : Int32, level : Int32, optname : Int32, optval : Void*, optlen : UInt32) : Int32
+    def self.__sys_set_buffer_size(fd : Int32, level : Int32, optname : Int32, size : Int32) : Int32
       -1
     end
 
-    def self.__sys_getsockopt(fd : Int32, level : Int32, optname : Int32, optval : Void*, optlen : Pointer(UInt32)) : Int32
+    def self.__sys_get_buffer_size(fd : Int32, level : Int32, optname : Int32) : Int32
       -1
     end
-
     def self.__sys_set_reuseaddr(fd : Int32) : Int32
       -1
     end
