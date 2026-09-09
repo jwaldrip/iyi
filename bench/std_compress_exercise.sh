@@ -252,12 +252,12 @@ if [ $? -ne 0 ]; then
 fi
 
 # -----------------------------------------------------------------------------
-# Compression ratio reporting: honest comparison against gzip -9
+# Compression ratio reporting: honest comparison against zlib / gzip -9
 # -----------------------------------------------------------------------------
 echo
-echo "== compression ratio comparison: iyi Gzip vs system gzip -9"
+echo "== compression ratio comparison: iyi Deflate/Gzip vs zlib / system gzip -9"
 python3 -c "
-import os, subprocess
+import os, subprocess, zlib, gzip
 
 vec_dir = '$VEC_DIR'
 names = [
@@ -267,30 +267,56 @@ names = [
     ('rand', 'Random bytes (2,048 bytes)'),
 ]
 
-header = f'  {\"Test Input\":<32} | {\"Original\":<10} | {\"iyi Gzip\":<10} | {\"gzip -9\":<10} | {\"iyi Ratio\":<10} | {\"gzip -9 Ratio\":<12}'
-sep = '  ' + '-' * (len(header) - 2)
-print(sep)
-print(header)
-print(sep)
+print('  -- Pure DEFLATE Payload Comparison (excluding container framing) --')
+h1 = f'  {\"Test Input\":<32} | {\"Original\":<10} | {\"iyi DEFLATE\":<12} | {\"zlib -9\":<10} | {\"Payload Delta\":<14}'
+sep1 = '  ' + '-' * (len(h1) - 2)
+print(sep1)
+print(h1)
+print(sep1)
 
 for name, desc in names:
     raw_path = f'{vec_dir}/{name}.raw'
     orig_sz = os.path.getsize(raw_path)
+    with open(raw_path, 'rb') as f:
+        raw_data = f.read()
+    
+    iyi_def_sz = os.path.getsize(f'{vec_dir}/{name}_iyi_def.bin')
+    zlib_def_sz = len(zlib.compress(raw_data, 9)[2:-4])
+    delta = iyi_def_sz - zlib_def_sz
+    delta_str = f'{delta:+d} B' if delta != 0 else 'identical'
+
+    print(f'  {desc:<32} | {orig_sz:>8} B | {iyi_def_sz:>10} B | {zlib_def_sz:>8} B | {delta_str:>14}')
+
+print(sep1)
+print()
+print('  -- Gzip Container Comparison (framing + metadata breakdown) --')
+h2 = f'  {\"Test Input\":<32} | {\"iyi Gzip\":<10} | {\"py Gzip\":<10} | {\"CLI gzip -9\":<12} | {\"CLI Note\":<25}'
+sep2 = '  ' + '-' * (len(h2) - 2)
+print(sep2)
+print(h2)
+print(sep2)
+
+for name, desc in names:
+    raw_path = f'{vec_dir}/{name}.raw'
+    with open(raw_path, 'rb') as f:
+        raw_data = f.read()
+    
     iyi_sz = os.path.getsize(f'{vec_dir}/{name}_iyi.gz')
+    py_sz = len(gzip.compress(raw_data, 9))
 
-    # Run system gzip -9 on a copy
     copy_path = f'{vec_dir}/{name}_sys.raw'
-    with open(raw_path, 'rb') as src, open(copy_path, 'wb') as dst:
-        dst.write(src.read())
+    with open(raw_path, 'wb') as src, open(copy_path, 'wb') as dst:
+        dst.write(raw_data)
     subprocess.run(['gzip', '-9', '-f', copy_path], check=True)
-    sys_sz = os.path.getsize(f'{copy_path}.gz')
+    cli_sz = os.path.getsize(f'{copy_path}.gz')
+    
+    fname_overhead = cli_sz - py_sz
+    note = f'+{fname_overhead} B FNAME header' if fname_overhead > 0 else 'no extra metadata'
+    print(f'  {desc:<32} | {iyi_sz:>8} B | {py_sz:>8} B | {cli_sz:>10} B | {note:<25}')
 
-    r_iyi = f'{iyi_sz / orig_sz * 100:.1f}%' if orig_sz > 0 else 'N/A'
-    r_sys = f'{sys_sz / orig_sz * 100:.1f}%' if orig_sz > 0 else 'N/A'
-
-    print(f'  {desc:<32} | {orig_sz:>8} B | {iyi_sz:>8} B | {sys_sz:>8} B | {r_iyi:>10} | {r_sys:>12}')
-
-print(sep)
+print(sep2)
+print('  Note: CLI gzip -9 includes original filename (FNAME) in the header.')
+print('  iyi Gzip omits FNAME and sets MTIME=0 for deterministic, reproducible output.')
 "
 
 # -----------------------------------------------------------------------------
