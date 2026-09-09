@@ -24,7 +24,7 @@ using std/capsule::{VarInt, HttpDatagram, Capsule, CapsuleType, CapsuleReader, E
 using std/webtransport::{WebTransportConstants, CloseSessionCapsule, DrainSessionCapsule, BidiStreamHeader, UniStreamHeader, WebTransportDatagram, SessionStatus, WebTransportSession, WaveTwoTransportContract}
 
 # Helper to compare two byte slices
-def bytes_equal?(a : Slice(UInt8), b : Slice(UInt8)) : Bool
+def bytes_equal?(a : Bytes, b : Bytes) : Bool
   return false unless a.size == b.size
   i = 0
   while i < a.size
@@ -157,69 +157,25 @@ puts "    boundary values: 0, 63, 64, 16383, 16384, 1073741823, 1073741824, and 
 # =============================================================================
 
 # Refusal of truncated varints:
-trunc_caught = false
-begin
-  t_buf = Bytes.new(1)
-  t_buf[0] = 0x40_u8 # indicates 2-byte varint, but buffer size is only 1
-  VarInt.decode(t_buf)
-rescue ex
-  trunc_caught = true if ex.message.to_s.includes?("varint truncated")
-end
-raise "varint: truncated 2-byte not refused" unless trunc_caught
+t_buf = Bytes.new(1)
+t_buf[0] = 0x40_u8 # indicates 2-byte varint, but buffer size is only 1
+raise "varint: truncated 2-byte not refused" unless VarInt.decode?(t_buf).nil?
 
-trunc_caught_4 = false
-begin
-  t_buf4 = Bytes.new(3)
-  t_buf4[0] = 0x80_u8 # indicates 4-byte varint, but buffer size is 3
-  VarInt.decode(t_buf4)
-rescue ex
-  trunc_caught_4 = true if ex.message.to_s.includes?("varint truncated")
-end
-raise "varint: truncated 4-byte not refused" unless trunc_caught_4
+t_buf4 = Bytes.new(3)
+t_buf4[0] = 0x80_u8 # indicates 4-byte varint, but buffer size is 3
+raise "varint: truncated 4-byte not refused" unless VarInt.decode?(t_buf4).nil?
 
-trunc_caught_8 = false
-begin
-  t_buf8 = Bytes.new(7)
-  t_buf8[0] = 0xc0_u8 # indicates 8-byte varint, but buffer size is 7
-  VarInt.decode(t_buf8)
-rescue ex
-  trunc_caught_8 = true if ex.message.to_s.includes?("varint truncated")
-end
-raise "varint: truncated 8-byte not refused" unless trunc_caught_8
+t_buf8 = Bytes.new(7)
+t_buf8[0] = 0xc0_u8 # indicates 8-byte varint, but buffer size is 7
+raise "varint: truncated 8-byte not refused" unless VarInt.decode?(t_buf8).nil?
 
 # Refusal of overlong varints under strict mode:
-overlong_2_refused = false
-begin
-  VarInt.decode_strict(v37_2) # 37 encoded in 2 bytes
-rescue ex
-  overlong_2_refused = true if ex.message.to_s.includes?("overlong varint encoding")
-end
-raise "varint: overlong 2-byte not refused in strict mode" unless overlong_2_refused
-
-overlong_4_refused = false
-begin
-  VarInt.decode_strict(v37_4) # 37 encoded in 4 bytes
-rescue ex
-  overlong_4_refused = true if ex.message.to_s.includes?("overlong varint encoding")
-end
-raise "varint: overlong 4-byte not refused in strict mode" unless overlong_4_refused
-
-overlong_8_refused = false
-begin
-  VarInt.decode_strict(v37_8) # 37 encoded in 8 bytes
-rescue ex
-  overlong_8_refused = true if ex.message.to_s.includes?("overlong varint encoding")
-end
-raise "varint: overlong 8-byte not refused in strict mode" unless overlong_8_refused
+raise "varint: overlong 2-byte not refused in strict mode" unless VarInt.decode_strict?(v37_2).nil?
+raise "varint: overlong 4-byte not refused in strict mode" unless VarInt.decode_strict?(v37_4).nil?
+raise "varint: overlong 8-byte not refused in strict mode" unless VarInt.decode_strict?(v37_8).nil?
 
 # Refusal of reserved / out-of-range varint value (> 2^62 - 1):
-reserved_refused = false
-begin
-  VarInt.encode(VarInt::MAX + 1_u64)
-rescue ex
-  reserved_refused = true if ex.message.to_s.includes?("exceeds maximum 62-bit integer")
-end
-raise "varint: reserved value > 2^62 - 1 not refused" unless reserved_refused
+raise "varint: reserved value > 2^62 - 1 not refused" if VarInt.valid_value?(VarInt::MAX + 1_u64)
 
 puts "    varint errors: truncated varints, overlong encodings, and reserved values strictly refused"
 
@@ -271,32 +227,19 @@ raise "capsule 1 value" unless bytes_equal?(dec_cap1.value, cap_data)
 raise "capsule 1 consumed" unless c_cap1 == enc_cap1.size
 
 # Refusal of truncated capsule:
-cap_trunc_caught = false
-begin
-  # Encoded capsule has 1 byte type, 1 byte length (5), but slice is truncated to 4 bytes total
-  bad_slice = Bytes.new(4)
-  bad_slice[0] = enc_cap1[0]
-  bad_slice[1] = enc_cap1[1]
-  bad_slice[2] = enc_cap1[2]
-  bad_slice[3] = enc_cap1[3]
-  Capsule.decode(bad_slice)
-rescue ex
-  cap_trunc_caught = true if ex.message.to_s.includes?("overruns buffer")
-end
-raise "capsule: truncated payload not refused" unless cap_trunc_caught
+bad_slice = Bytes.new(4)
+bad_slice[0] = enc_cap1[0]
+bad_slice[1] = enc_cap1[1]
+bad_slice[2] = enc_cap1[2]
+bad_slice[3] = enc_cap1[3]
+raise "capsule: truncated payload not refused" unless Capsule.decode?(bad_slice).nil?
 
 # Refusal of length overrunning the buffer:
-overrun_caught = false
-begin
-  overrun_buf = Bytes.new(3)
-  overrun_buf[0] = 0x00_u8 # type 0 (DATAGRAM)
-  overrun_buf[1] = 0x32_u8 # length 50 bytes
-  overrun_buf[2] = 0xAA_u8 # only 1 byte payload available
-  Capsule.decode(overrun_buf)
-rescue ex
-  overrun_caught = true if ex.message.to_s.includes?("capsule length overruns buffer")
-end
-raise "capsule: length overrunning buffer not refused" unless overrun_caught
+overrun_buf = Bytes.new(3)
+overrun_buf[0] = 0x00_u8 # type 0 (DATAGRAM)
+overrun_buf[1] = 0x32_u8 # length 50 bytes
+overrun_buf[2] = 0xAA_u8 # only 1 byte payload available
+raise "capsule: length overrunning buffer not refused" unless Capsule.decode?(overrun_buf).nil?
 
 puts "    capsule framing: type/length/value round-trip, truncation and buffer overrun refused"
 
@@ -409,26 +352,19 @@ bidi_hdr = BidiStreamHeader.new(12_u64)
 enc_bidi = bidi_hdr.encode
 dec_bidi, consumed_bidi = BidiStreamHeader.decode(enc_bidi)
 raise "bidi session id" unless dec_bidi.session_id == 12_u64
-raise "bidi wire prefix 0x41" unless enc_bidi[0] == 0x41_u8
+raise "bidi wire prefix 0x4041" unless enc_bidi[0] == 0x40_u8 && enc_bidi[1] == 0x41_u8
 
 # Unidirectional stream header (Type 0x54, Session ID 12)
 uni_hdr = UniStreamHeader.new(12_u64)
 enc_uni = uni_hdr.encode
 dec_uni, consumed_uni = UniStreamHeader.decode(enc_uni)
 raise "uni session id" unless dec_uni.session_id == 12_u64
-raise "uni wire prefix 0x54" unless enc_uni[0] == 0x54_u8
-
+raise "uni wire prefix 0x4054" unless enc_uni[0] == 0x40_u8 && enc_uni[1] == 0x54_u8
 # Rejection of wrong stream type
-bad_type_caught = false
-begin
-  wrong_bidi = Bytes.new(2)
-  wrong_bidi[0] = 0x99_u8 # not 0x41
-  wrong_bidi[1] = 0x00_u8
-  BidiStreamHeader.decode(wrong_bidi)
-rescue ex
-  bad_type_caught = true if ex.message.to_s.includes?("invalid webtransport bidi stream type")
-end
-raise "bidi header: wrong type not refused" unless bad_type_caught
+wrong_bidi = Bytes.new(2)
+wrong_bidi[0] = 0x40_u8
+wrong_bidi[1] = 0x99_u8 # varint 0x99 (not 0x41)
+raise "bidi header: wrong type not refused" unless BidiStreamHeader.decode?(wrong_bidi).nil?
 
 puts "    webtransport stream framing: bidi 0x41 and uni 0x54 headers and session tagging verified"
 
