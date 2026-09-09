@@ -545,7 +545,7 @@ pub struct Wire
   # - Forward pointers rejected: pointer offset pointing ahead or to itself raises DnsFormatError.
   # - Name length bounded: maximum uncompressed name length is 255 octets (RFC 1035 2.3.4).
   # - Preserves exact casing of labels as received in wire bytes.
-  def self.decode_name(bytes : Bytes, start_pos : Int32) : Tuple(String, Int32)
+  def self.decode_name?(bytes : Bytes, start_pos : Int32) : Tuple(String, Int32)?
     pos = start_pos
     labels = [] of String
     hops = 0
@@ -554,9 +554,7 @@ pub struct Wire
     total_length = 0
 
     while true
-      if pos >= bytes.size
-        raise DnsFormatError.new("name decoding out of bounds at pos #{pos}")
-      end
+      return nil if pos >= bytes.size
 
       len = bytes[pos].to_i32
       if len == 0
@@ -565,9 +563,7 @@ pub struct Wire
         end
         break
       elsif (len & 0xC0) == 0xC0
-        if pos + 1 >= bytes.size
-          raise DnsFormatError.new("truncated compression pointer at pos #{pos}")
-        end
+        return nil if pos + 1 >= bytes.size
         ptr_offset = ((len & 0x3F) << 8) | bytes[pos + 1].to_i32
 
         if bytes_consumed < 0
@@ -575,28 +571,16 @@ pub struct Wire
         end
 
         hops = hops + 1
-        if hops > max_hops
-          raise DnsFormatError.new("compression pointer loop detected (hops > #{max_hops})")
-        end
-
-        # RFC 1035: pointer must point to an earlier location in the message
-        if ptr_offset >= pos && hops == 1
-          raise DnsFormatError.new("compression pointer points forward or to itself (offset #{ptr_offset} >= pos #{pos})")
-        end
-        if ptr_offset >= bytes.size
-          raise DnsFormatError.new("compression pointer out of packet bounds (offset #{ptr_offset} >= size #{bytes.size})")
-        end
+        return nil if hops > max_hops
+        return nil if ptr_offset >= pos && hops == 1
+        return nil if ptr_offset >= bytes.size
 
         pos = ptr_offset
       elsif (len & 0xC0) == 0
         pos = pos + 1
-        if pos + len > bytes.size
-          raise DnsFormatError.new("label extends beyond packet boundary at pos #{pos}")
-        end
+        return nil if pos + len > bytes.size
         total_length = total_length + len + 1
-        if total_length > 255
-          raise DnsFormatError.new("decompressed domain name exceeds 255 octets")
-        end
+        return nil if total_length > 255
 
         label_str = String.new(len) do |buf|
           buf.copy_from((bytes.to_unsafe + pos), len)
@@ -604,13 +588,19 @@ pub struct Wire
         labels << label_str
         pos = pos + len
       else
-        raise DnsFormatError.new("invalid label type byte 0x#{len.to_s(16)} at pos #{pos}")
+        return nil
       end
     end
 
     name = labels.empty? ? "." : labels.join(".")
     next_pos = bytes_consumed < 0 ? (pos - start_pos) : bytes_consumed
     {name, start_pos + next_pos}
+  end
+
+  def self.decode_name(bytes : Bytes, start_pos : Int32) : Tuple(String, Int32)
+    res = decode_name?(bytes, start_pos)
+    raise "DNS format error: malformed domain name or pointer loop" if res.nil?
+    res
   end
 
   # Encodes a domain name into wire label format without compression.
@@ -690,10 +680,9 @@ pub struct Wire
   end
 
   # Decodes a raw DNS message from wire bytes into a structured Message object.
-  def self.decode_message(bytes : Bytes) : Message
-    if bytes.size < 12
-      raise DnsFormatError.new("message too short for DNS header (< 12 bytes)")
-    end
+  # Returns nil if packet is malformed, truncated, or contains pointer loops.
+  def self.decode_message?(bytes : Bytes) : Message?
+    return nil if bytes.size < 12
 
     # Header parsing
     id = (bytes[0].to_i32 << 8) | bytes[1].to_i32
@@ -722,10 +711,10 @@ pub struct Wire
     questions = [] of Question
     qi = 0
     while qi < qdcount
-      qname, pos = decode_name(bytes, pos)
-      if pos + 4 > bytes.size
-        raise DnsFormatError.new("truncated question section at pos #{pos}")
-      end
+      qname_res = decode_name?(bytes, pos)
+      return nil if qname_res.nil?
+      qname, pos = qname_res
+      return nil if pos + 4 > bytes.size
       qtype = (bytes[pos].to_i32 << 8) | bytes[pos + 1].to_i32
       qclass = (bytes[pos + 2].to_i32 << 8) | bytes[pos + 3].to_i32
       pos = pos + 4
@@ -735,29 +724,40 @@ pub struct Wire
 
     # Answer section
     answers = [] of Record
-    pos = decode_records(bytes, pos, ancount, answers)
+    pos_ans = decode_records?(bytes, pos, ancount, answers)
+    return nil if pos_ans.nil?
+    pos = pos_ans
 
     # Authority section
     authorities = [] of Record
-    pos = decode_records(bytes, pos, nscount, authorities)
+    pos_auth = decode_records?(bytes, pos, nscount, authorities)
+    return nil if pos_auth.nil?
+    pos = pos_auth
 
     # Additional section
     additionals = [] of Record
-    pos = decode_records(bytes, pos, arcount, additionals)
+    pos_add = decode_records?(bytes, pos, arcount, additionals)
+    return nil if pos_add.nil?
 
     Message.new(header, questions, answers, authorities, additionals, bytes)
   end
 
-  private def self.decode_records(bytes : Bytes, start_pos : Int32, count : Int32, target : Array(Record)) : Int32
+  def self.decode_message(bytes : Bytes) : Message
+    msg = decode_message?(bytes)
+    raise "DNS format error: malformed DNS packet" if msg.nil?
+    msg
+  end
+
+  private def self.decode_records?(bytes : Bytes, start_pos : Int32, count : Int32, target : Array(Record)) : Int32?
     pos = start_pos
     i = 0
     while i < count
       record_start = pos
-      name, pos = decode_name(bytes, pos)
+      name_res = decode_name?(bytes, pos)
+      return nil if name_res.nil?
+      name, pos = name_res
 
-      if pos + 10 > bytes.size
-        raise DnsFormatError.new("truncated resource record header at pos #{pos}")
-      end
+      return nil if pos + 10 > bytes.size
 
       type_code = (bytes[pos].to_i32 << 8) | bytes[pos + 1].to_i32
       class_code = (bytes[pos + 2].to_i32 << 8) | bytes[pos + 3].to_i32
@@ -769,9 +769,7 @@ pub struct Wire
       rdlength = (bytes[pos + 8].to_i32 << 8) | bytes[pos + 9].to_i32
       pos = pos + 10
 
-      if pos + rdlength > bytes.size
-        raise DnsFormatError.new("RDLENGTH #{rdlength} extends past end of message (size #{bytes.size})")
-      end
+      return nil if pos + rdlength > bytes.size
 
       rdata_start = pos
       rdata_raw = bytes[rdata_start, rdlength]
@@ -803,16 +801,16 @@ pub struct Wire
         GenericRecord.new(type_code, rdata_raw)
       end
     when TYPE_CNAME
-      target, _ = decode_name(bytes, rdata_start)
-      CNameRecord.new(target)
+      target_res = decode_name?(bytes, rdata_start)
+      target_res ? CNameRecord.new(target_res[0]) : GenericRecord.new(type_code, rdata_raw)
     when TYPE_NS
-      ns, _ = decode_name(bytes, rdata_start)
-      NSRecord.new(ns)
+      ns_res = decode_name?(bytes, rdata_start)
+      ns_res ? NSRecord.new(ns_res[0]) : GenericRecord.new(type_code, rdata_raw)
     when TYPE_MX
       if rdlength >= 3
         pref = (bytes[rdata_start].to_i32 << 8) | bytes[rdata_start + 1].to_i32
-        exchange, _ = decode_name(bytes, rdata_start + 2)
-        MXRecord.new(pref, exchange)
+        ex_res = decode_name?(bytes, rdata_start + 2)
+        ex_res ? MXRecord.new(pref, ex_res[0]) : GenericRecord.new(type_code, rdata_raw)
       else
         GenericRecord.new(type_code, rdata_raw)
       end
@@ -832,15 +830,20 @@ pub struct Wire
       end
       TXTRecord.new(entries)
     when TYPE_SOA
-      mname, p1 = decode_name(bytes, rdata_start)
-      rname, p2 = decode_name(bytes, p1)
-      if p2 + 20 <= rdata_start + rdlength
-        serial = read_u32_be(bytes, p2)
-        refresh = read_u32_be(bytes, p2 + 4)
-        retry_val = read_u32_be(bytes, p2 + 8)
-        expire = read_u32_be(bytes, p2 + 12)
-        minimum = read_u32_be(bytes, p2 + 16)
-        SOARecord.new(mname, rname, serial, refresh, retry_val, expire, minimum)
+      mname_res = decode_name?(bytes, rdata_start)
+      if mname_res
+        rname_res = decode_name?(bytes, mname_res[1])
+        if rname_res && rname_res[1] + 20 <= rdata_start + rdlength
+          p2 = rname_res[1]
+          serial = read_u32_be(bytes, p2)
+          refresh = read_u32_be(bytes, p2 + 4)
+          retry_val = read_u32_be(bytes, p2 + 8)
+          expire = read_u32_be(bytes, p2 + 12)
+          minimum = read_u32_be(bytes, p2 + 16)
+          SOARecord.new(mname_res[0], rname_res[0], serial, refresh, retry_val, expire, minimum)
+        else
+          GenericRecord.new(type_code, rdata_raw)
+        end
       else
         GenericRecord.new(type_code, rdata_raw)
       end
@@ -853,10 +856,15 @@ pub struct Wire
         sig_exp = read_u32_be(bytes, rdata_start + 8)
         sig_inc = read_u32_be(bytes, rdata_start + 12)
         key_tag = (bytes[rdata_start + 16].to_i32 << 8) | bytes[rdata_start + 17].to_i32
-        signer, p_sig = decode_name(bytes, rdata_start + 18)
-        sig_len = (rdata_start + rdlength) - p_sig
-        sig = sig_len > 0 ? bytes[p_sig, sig_len] : Bytes.empty
-        RRSIGRecord.new(type_cov, algo, labels, orig_ttl, sig_exp, sig_inc, key_tag, signer, sig)
+        signer_res = decode_name?(bytes, rdata_start + 18)
+        if signer_res
+          p_sig = signer_res[1]
+          sig_len = (rdata_start + rdlength) - p_sig
+          sig = sig_len > 0 ? bytes[p_sig, sig_len] : Bytes.empty
+          RRSIGRecord.new(type_cov, algo, labels, orig_ttl, sig_exp, sig_inc, key_tag, signer_res[0], sig)
+        else
+          GenericRecord.new(type_code, rdata_raw)
+        end
       else
         GenericRecord.new(type_code, rdata_raw)
       end
@@ -953,11 +961,15 @@ pub struct Wire
   end
 
   private def self.hex_val(c : Char) : Int32
-    case c
-    when '0'..'9' then c.ord - 48
-    when 'a'..'f' then c.ord - 87
-    when 'A'..'F' then c.ord - 55
-    else 0
+    o = c.ord
+    if o >= 48 && o <= 57
+      o - 48
+    elsif o >= 97 && o <= 102
+      o - 87
+    elsif o >= 65 && o <= 70
+      o - 55
+    else
+      0
     end
   end
 end
@@ -993,11 +1005,12 @@ end
 # Mock Transport for deterministic unit testing without a network socket.
 pub class MockTransport < Transport
   property response : Bytes
+  property echo_tx_id : Bool
   getter last_query : Bytes?
   getter last_server : String?
   getter last_port : Int32?
 
-  def initialize(@response : Bytes)
+  def initialize(@response : Bytes, @echo_tx_id : Bool = false)
     @last_query = nil
     @last_server = nil
     @last_port = nil
@@ -1007,6 +1020,12 @@ pub class MockTransport < Transport
     @last_query = query
     @last_server = server
     @last_port = port
+    if @echo_tx_id && query.size >= 2 && @response.size >= 2
+      resp = @response.dup
+      resp[0] = query[0]
+      resp[1] = query[1]
+      return resp
+    end
     @response
   end
 end
@@ -1131,44 +1150,55 @@ pub class Resolver
   end
 
   # Sends a DNS query over the configured transport, verifying transaction ID and checking response.
-  def query(name : String, qtype : Int32 = TYPE_A, cd : Bool = false) : Message
+  # Sends a DNS query over the configured transport, returning Message?, or nil on failure/mismatch.
+  def query?(name : String, qtype : Int32 = TYPE_A, cd : Bool = false) : Message?
     query_bytes, expected_id = Wire.encode_query(name, qtype, cd: cd)
-    last_err : Exception? = nil
 
     si = 0
     while si < @nameservers.size
       server = @nameservers[si]
       attempt = 0
       while attempt < @max_retries
-        begin
-          resp_bytes = @transport.round_trip(query_bytes, server, @port, @timeout_ms)
-          msg = Wire.decode_message(resp_bytes)
-
-          # Transaction ID verification (anti-spoofing defense)
-          if msg.id != expected_id
-            raise DnsIdMismatchError.new("transaction ID mismatch: expected #{expected_id}, got #{msg.id}")
-          end
-
+        resp_bytes = @transport.round_trip(query_bytes, server, @port, @timeout_ms)
+        msg = Wire.decode_message?(resp_bytes)
+        if msg && msg.id == expected_id
           return msg
-        rescue ex : DnsIdMismatchError
-          # Immediately reject mismatched IDs: potential spoofing attempt
-          raise ex
-        rescue ex : DnsFormatError
-          raise ex
-        rescue ex
-          last_err = ex
         end
         attempt = attempt + 1
       end
       si = si + 1
     end
-
-    raise DnsResolveError.new("failed to query #{name} across #{@nameservers.size} nameservers: #{last_err}")
+    nil
   end
 
-  # Resolves a hostname to a list of IP addresses (defaulting to IPv4 A records).
-  # Follows CNAME chains up to 8 hops, checking the TTL cache first.
-  def resolve(hostname : String, qtype : Int32 = TYPE_A) : Array(String)
+  # Sends a DNS query over the configured transport, verifying transaction ID and raising on failure.
+  def query(name : String, qtype : Int32 = TYPE_A, cd : Bool = false) : Message
+    query_bytes, expected_id = Wire.encode_query(name, qtype, cd: cd)
+
+    si = 0
+    while si < @nameservers.size
+      server = @nameservers[si]
+      attempt = 0
+      while attempt < @max_retries
+        resp_bytes = @transport.round_trip(query_bytes, server, @port, @timeout_ms)
+        msg = Wire.decode_message(resp_bytes)
+
+        # Transaction ID verification (anti-spoofing defense)
+        if msg.id != expected_id
+          raise "DNS transaction ID mismatch: expected #{expected_id}, got #{msg.id}"
+        end
+
+        return msg
+        attempt = attempt + 1
+      end
+      si = si + 1
+    end
+
+    raise "failed to query #{name} across #{@nameservers.size} nameservers"
+  end
+
+  # Resolves a hostname to a list of IP addresses, returning nil on resolution failure.
+  def resolve?(hostname : String, qtype : Int32 = TYPE_A) : Array(String)?
     # Direct numeric resolution for IPv4 dotted-decimal
     if is_numeric_ipv4?(hostname)
       return [hostname]
@@ -1190,19 +1220,15 @@ pub class Resolver
     max_cname_hops = 8
 
     while hops < max_cname_hops
-      msg = query(current_name, qtype)
-
-      if msg.truncated?
-        # TC bit set: Datagram response exceeded size limit.
-        # Report honestly to the caller so TCP or DoT fallback can be chosen.
-        raise DnsTruncatedError.new("DNS response for #{current_name} was truncated (TC bit set)")
-      end
+      msg = query?(current_name, qtype)
+      return nil if msg.nil?
+      return nil if msg.truncated?
 
       if msg.rcode != RCODE_NO_ERROR
         if msg.rcode == RCODE_NAME_ERROR
-          return [] of String # NXDomain: non-existent domain
+          return [] of String
         end
-        raise DnsResponseError.new("DNS resolution for #{current_name} failed with #{msg.rcode_name}", msg.rcode)
+        return nil
       end
 
       addresses = [] of String
@@ -1243,8 +1269,14 @@ pub class Resolver
         return [] of String
       end
     end
+    nil
+  end
 
-    raise DnsResolveError.new("CNAME chain limit exceeded (> #{max_cname_hops} hops) resolving #{hostname}")
+  # Resolves a hostname to a list of IP addresses, raising on failure.
+  def resolve(hostname : String, qtype : Int32 = TYPE_A) : Array(String)
+    res = resolve?(hostname, qtype)
+    raise "failed to resolve #{hostname}" if res.nil?
+    res
   end
 
   def resolve_a(hostname : String) : Array(String)
