@@ -284,11 +284,17 @@ jobs:
       # fixture that plants every case the rewrite has to answer — a
       # namespace over several files, an `include` of one, a two-file
       # import cycle, `JSON::Serializable`, a reopening of `Int32`, a
-      # `not_nil!`, an ECR template embedded by a project-relative path.
+      # `not_nil!`, an ECR template embedded by a project-relative path,
+      # an untyped def whose types `--annotate` reads off the calls, and
+      # both bangs a rewrite has to tell apart — Crystal's in-place
+      # member and one the tree defines itself.
       # The gate is that the migrated tree prints what the Crystal one
       # printed, that every module compiles alone, that each planted case
-      # is named in the notes, and that the tree emits artifacts — which
-      # is R-2 satisfied and the thing a migration is for.
+      # is named in the notes, that the annotated tree emits artifacts and
+      # builds from them — which is R-2 satisfied and the thing a
+      # migration is for — and that `--out src` is refused, because a
+      # verb whose first mistake edits the project is not one a person
+      # tries twice.
       - name: A Crystal project becomes iyi modules, and answers the same
         run: bash bench/migrate_gate.sh
 
