@@ -87,6 +87,14 @@ prove_fails_capsule() {
   local label="$1" dir="$2" phrase="$3" sed_script="$4"
   mkdir -p "$WORK/$dir/std"
   sed -e "$sed_script" "$REPO/src/std/capsule.iyi" > "$WORK/$dir/std/capsule.iyi"
+  # A patch that matches nothing leaves the library intact, and an intact
+  # library passes, which reads as "this check cannot fail" when the truth is
+  # that nothing was broken to test it. Line-anchored patches drift.
+  if cmp -s "$REPO/src/std/capsule.iyi" "$WORK/$dir/std/capsule.iyi"; then
+    echo "  $label: the patch changed nothing, so this proves nothing"
+    status=1
+    return
+  fi
   cp "$REPO/src/std/webtransport.iyi" "$WORK/$dir/std/webtransport.iyi"
   if ! PATH=/opt/homebrew/bin:/usr/bin:/bin LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib \
        IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
@@ -119,6 +127,14 @@ prove_fails_wt() {
   mkdir -p "$WORK/$dir/std"
   cp "$REPO/src/std/capsule.iyi" "$WORK/$dir/std/capsule.iyi"
   sed -e "$sed_script" "$REPO/src/std/webtransport.iyi" > "$WORK/$dir/std/webtransport.iyi"
+  # A patch that matches nothing leaves the library intact, and an intact
+  # library passes, which reads as "this check cannot fail" when the truth is
+  # that nothing was broken to test it. Line-anchored patches drift.
+  if cmp -s "$REPO/src/std/webtransport.iyi" "$WORK/$dir/std/webtransport.iyi"; then
+    echo "  $label: the patch changed nothing, so this proves nothing"
+    status=1
+    return
+  fi
   if ! PATH=/opt/homebrew/bin:/usr/bin:/bin LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib \
        IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/std_capsule_exercise.iyi" \
@@ -155,7 +171,7 @@ prove_fails_capsule "varint 2-byte prefix broken" no_v2 "rfc9000 app a: 37 in 2 
 
 # 3. QUIC VarInt boundary size broken (encodes 64 in 1 byte instead of 2)
 prove_fails_capsule "varint boundary check broken" no_bound "boundary 64 size" \
-  's/MAX_1BYTE = 63_u64/MAX_1BYTE = 64_u64/'
+  's/MAX_1BYTE *= *63_u64/MAX_1BYTE = 64_u64/'
 # 4. HTTP Datagram quarter stream id calculation broken
 prove_fails_capsule "datagram quarter stream id broken" no_qid "dgram stream 4 stream_id" \
   's/@quarter_stream_id \* 4_u64/@quarter_stream_id * 2_u64/'

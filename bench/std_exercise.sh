@@ -75,6 +75,14 @@ prove_fails() {
   mkdir -p "$WORK/$dir/std"
   cp -R "$REPO/src/std/." "$WORK/$dir/std/"
   sed -e "$sed_script" "$REPO/src/std/$file" > "$WORK/$dir/std/$file"
+  # A patch that matches nothing leaves the library intact, and an intact
+  # library passes, which reads as "this check cannot fail" when the truth is
+  # that nothing was broken to test it. Line-anchored patches drift.
+  if cmp -s "$REPO/src/std/$file" "$WORK/$dir/std/$file"; then
+    echo "  $label: the patch changed nothing, so this proves nothing"
+    status=1
+    return
+  fi
   if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/std_exercise.iyi" \
        >"$WORK/$dir/build.log" 2>&1; then

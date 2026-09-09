@@ -102,6 +102,14 @@ prove_fails() {
   local inc_dir="$WORK/$dir/include"
   SETUP_INCLUDE "$inc_dir"
   sed -e "$sed_script" "$REPO/src/std/qpack.iyi" > "$inc_dir/std/qpack.iyi"
+  # A patch that matches nothing leaves the library intact, and an intact
+  # library passes, which reads as "this check cannot fail" when the truth is
+  # that nothing was broken to test it. Line-anchored patches drift.
+  if cmp -s "$REPO/src/std/qpack.iyi" "$inc_dir/std/qpack.iyi"; then
+    echo "  $label: the patch changed nothing, so this proves nothing"
+    status=1
+    return
+  fi
   if ! IYI_PATH="$inc_dir:$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/std_qpack_exercise.iyi" \
        >"$WORK/$dir/build.log" 2>&1; then

@@ -430,6 +430,14 @@ prove_fails() {
   local patch_dir="$WORK/$dir"
   SETUP_INCLUDE "$patch_dir"
   sed -e "$sed_script" "$REPO/src/std/compress.iyi" > "$patch_dir/std/compress.iyi"
+  # A patch that matches nothing leaves the library intact, and an intact
+  # library passes, which reads as "this check cannot fail" when the truth is
+  # that nothing was broken to test it. Line-anchored patches drift.
+  if cmp -s "$REPO/src/std/compress.iyi" "$patch_dir/std/compress.iyi"; then
+    echo "  $label: the patch changed nothing, so this proves nothing"
+    status=1
+    return
+  fi
 
   if ! IYI_PATH="$patch_dir:$REPO/src" "$IYI" build \
        -o "$patch_dir/program" "$REPO/bench/std_compress_exercise.iyi" \

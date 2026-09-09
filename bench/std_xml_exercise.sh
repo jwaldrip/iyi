@@ -82,6 +82,14 @@ prove_fails() {
   local label="$1" dir="$2" phrase="$3" sed_script="$4"
   mkdir -p "$WORK/$dir/std"
   sed -e "$sed_script" "$REPO/src/std/xml.iyi" > "$WORK/$dir/std/xml.iyi"
+  # A patch that matches nothing leaves the library intact, and an intact
+  # library passes, which reads as "this check cannot fail" when the truth is
+  # that nothing was broken to test it. Line-anchored patches drift.
+  if cmp -s "$REPO/src/std/xml.iyi" "$WORK/$dir/std/xml.iyi"; then
+    echo "  $label: the patch changed nothing, so this proves nothing"
+    status=1
+    return
+  fi
   if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/std_xml_exercise.iyi" \
        >"$WORK/$dir/build.log" 2>&1; then
@@ -255,6 +263,14 @@ prove_security_guard_can_fail() {
   local label="$1" dir="$2" harness_iyi="$3" sed_script="$4"
   mkdir -p "$WORK/$dir/std"
   sed -e "$sed_script" "$REPO/src/std/xml.iyi" > "$WORK/$dir/std/xml.iyi"
+  # A patch that matches nothing leaves the library intact, and an intact
+  # library passes, which reads as "this check cannot fail" when the truth is
+  # that nothing was broken to test it. Line-anchored patches drift.
+  if cmp -s "$REPO/src/std/xml.iyi" "$WORK/$dir/std/xml.iyi"; then
+    echo "  $label: the patch changed nothing, so this proves nothing"
+    status=1
+    return
+  fi
   if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$WORK/$harness_iyi.iyi" \
        >"$WORK/$dir/build.log" 2>&1; then

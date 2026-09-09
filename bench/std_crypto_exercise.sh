@@ -80,6 +80,15 @@ prove_fails() {
   cp "$REPO/src/std/digest.iyi" "$WORK/$dir/std/"
   cp "$REPO/src/std/crypto.iyi" "$WORK/$dir/std/"
   sed -e "$sed_script" "$REPO/src/std/$target_file" > "$WORK/$dir/std/$target_file"
+  # A patch that matches nothing leaves the library intact, and an intact
+  # library passes. That reads as "this check cannot fail" when the truth is
+  # that nothing was broken to test it. Line-anchored patches drift; this
+  # catches it at the patch rather than at the conclusion.
+  if cmp -s "$REPO/src/std/$target_file" "$WORK/$dir/std/$target_file"; then
+    echo "  $label: the patch changed nothing, so this proves nothing"
+    status=1
+    return
+  fi
   if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/std_crypto_exercise.iyi" \
        >"$WORK/$dir/build.log" 2>&1; then
@@ -108,12 +117,12 @@ prove_fails() {
 # 1. AES-128-GCM tag verification bypassed (must fail: tampered tag accepted)
 prove_fails "aes-128-gcm tampered tag accepted" aes_tamper \
   "assertion failed: AES-128-GCM rejected tampered tag" "crypto.iyi" \
-  '1090,1115s/return nil unless Std::Crypto.constant_time_compare(tag, expected_tag)/# bypass/'
+  '/AES-GCM: key must be 16 or 32 bytes/,/^  end$/s/return nil unless Std::Crypto.constant_time_compare(tag, expected_tag)/# bypass/'
 
 # 2. ChaCha20-Poly1305 tag verification bypassed (must fail: tampered tag accepted)
 prove_fails "chacha20-poly1305 tampered tag accepted" chacha_tamper \
   "assertion failed: ChaCha20-Poly1305 rejected tampered tag" "crypto.iyi" \
-  '720,735s/return nil unless Std::Crypto.constant_time_compare(tag, expected_tag)/# bypass/'
+  '/ChaCha20Poly1305: key must be 32 bytes/,/^  end$/s/return nil unless Std::Crypto.constant_time_compare(tag, expected_tag)/# bypass/'
 
 # 3. Digest output corrupted (zeroing first word of SHA-1/SHA-256)
 prove_fails "digest output corrupted" digest_corrupt \
