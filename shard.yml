@@ -12,7 +12,7 @@ description: |
   Compatible with Crystal and its own language. The compiler is built on
   Crystal's and is Apache 2.0 with it.
 
-crystal: ">= 1.0"
+crystal: ">= 1.13.0"
 
 license: Apache-2.0 WITH Swift-exception
 
