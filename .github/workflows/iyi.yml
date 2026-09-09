@@ -735,6 +735,12 @@ jobs:
               -o honest honest.iyi > honest.link )
           ( cd cross && ../bin/iyi build --cross-compile --target wasm32-wasi \
               -o theft theft.iyi > theft.link )
+          ( cd cross && ../bin/iyi build --cross-compile --target wasm32-wasi \
+              -o wasm32_exercise ../bench/wasm32_exercise.iyi > wasm32_exercise.link )
+          cat cross/wasm32_exercise.link
+          ( cd cross && ../bin/iyi build --cross-compile --release --target wasm32-wasi \
+              -o wasm32_exercise_rel ../bench/wasm32_exercise.iyi > wasm32_exercise_rel.link )
+          cat cross/wasm32_exercise_rel.link
 
       - uses: actions/upload-artifact@v4
         with:
@@ -1146,6 +1152,43 @@ jobs:
           ! grep -q 'root:' theft.txt
           grep -q 'File is not available on wasm32-wasi' theft.txt
           echo "sandbox: the theft died named and empty-handed"
+
+  # GC Stage 10: wasm32-wasi collector exercise under wasmtime.
+  wasm32-collector:
+    needs: cross-objects
+    runs-on: ubuntu-24.04
+    name: "The collector on wasm32-wasi"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-objects
+          path: cross
+
+      - name: Install wasi-sdk and wasmtime
+        run: |
+          curl -sSL -o /tmp/wasi-sdk.tar.gz \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz
+          sudo mkdir -p /opt/wasi-sdk
+          sudo tar -xzf /tmp/wasi-sdk.tar.gz -C /opt/wasi-sdk --strip-components=1
+          curl -sSL https://wasmtime.dev/install.sh | bash -s -- --version v48.0.1
+
+      - name: Link and run the wasm32 collector exercise
+        run: |
+          ln -sf /opt/wasi-sdk/bin/clang /opt/wasi-sdk/bin/cc
+          export PATH="/opt/wasi-sdk/bin:$PATH"
+          ( cd cross && eval "$(cat wasm32_exercise.link)" )
+          "$HOME/.wasmtime/bin/wasmtime" cross/wasm32_exercise > wasm32_exercise.txt
+          cat wasm32_exercise.txt
+          grep -q "all wasm32 collector checks passed" wasm32_exercise.txt
+
+      - name: Link and run the wasm32 collector exercise (release)
+        run: |
+          ln -sf /opt/wasi-sdk/bin/clang /opt/wasi-sdk/bin/cc
+          export PATH="/opt/wasi-sdk/bin:$PATH"
+          ( cd cross && eval "$(cat wasm32_exercise_rel.link)" )
+          "$HOME/.wasmtime/bin/wasmtime" cross/wasm32_exercise_rel > wasm32_exercise_rel.txt
+          cat wasm32_exercise_rel.txt
+          grep -q "all wasm32 collector checks passed" wasm32_exercise_rel.txt
 
   binary:
     needs: build
