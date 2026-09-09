@@ -41,7 +41,17 @@
   and a reader that raises, and `@items.uniq!` alone on a line - the
   mutation whose copy nobody reads - puts the copy back on the `@ivar`.
   A call nothing in any program made is named with its file, line and
-  the alternative rather than guessed at. And when `--check` comes back clean the verb says
+  the alternative rather than guessed at. Three more rules came from
+  running it over the shards the application depends on: a **bare** call
+  to a bang method (`validate_typ!(x)`, no receiver) is rewritten where
+  the name is one the tree defines, the **manifest travels** because a
+  shard's `version.cr` runs `shards version` on its own directory, and a
+  **merge follows the `require`** rather than the file - a class body
+  with `require "./x/*"` under it is loaded before the files that reopen
+  the class, and ordering them first left `abstract class` as a second
+  definition the other language ignores. `exception_page` 3 of 3,
+  `radix` 5 of 5, `dotenv` 1 of 1, `jwt` 5 of 7, `faker` 2 of 3,
+  `micrate` 4 of 8. And when `--check` comes back clean the verb says
   what to type next: the build command with the entry filled in, the
   per-module check an editor asks on every change, and `iyi bind`.
 - **`iyi migrate`: a Crystal project, written out as iyi modules.**

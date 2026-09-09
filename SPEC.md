@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 106,240 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 106,297 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,503 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3302,6 +3302,25 @@ resolved, so a method the tree defines is told from Crystal's. Where nothing
 in any program called it - a library with no program of its own - the line is
 named with its file and line and the alternative spelled out, rather than
 guessed at quietly.
+
+**Six shards, because a project is not one shape.** The rules above were
+found on an application; running them over the shards it depends on found
+three more, each a rule rather than a special case. A **bare** call to a
+bang method - `validate_typ!(payload)` inside the type that defines it -
+has no receiver to key the rewrite on, and is rewritten where the name is
+one this tree defines, which is what keeps `!=`, a prefix `!` and a
+`"boom!"` out of it. The **manifest travels**: a shard's `version.cr` is
+`{{ `shards version #{__DIR__}` }}`, and a tree written out without a
+`shard.yml` beside it does not compile at all. And a **merge follows the
+`require`, not the file**: `exception_page.cr` is a class body with
+`require "./exception_page/*"` *under* it, so the files that reopen the
+class are loaded after it — ordering them first made a reopening the first
+definition and left `abstract class` as a second one the other language
+ignores, which refused every `abstract def` in it. After those:
+`exception_page` 3 of 3, `radix` 5 of 5, `dotenv` 1 of 1, `jwt` 5 of 7,
+`faker` 2 of 3, `micrate` 4 of 8 — and every remaining refusal is R-2
+asking for a type where a library has no program to read one from, or a
+regex literal, which is IV.1d's open item and not migration's.
 
 **What it does not do, said here rather than found later.** The 52 defs
 above are a person's to write; until they are, the application's own modules

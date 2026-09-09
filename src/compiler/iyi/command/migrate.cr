@@ -211,6 +211,21 @@ class Iyi::Command
       end
       assets += 1
     end
+    # The manifest travels too, because a macro reads it: a shard's
+    # `version.cr` is `{{ `shards version #{__DIR__}` }}`, which walks up
+    # from the module's own directory looking for `shard.yml`, and a tree
+    # written out without one refuses to compile at all. It is the same
+    # rule as a template's - what the tree read while it was being built
+    # is part of the tree.
+    [MANIFEST_FILE, "shard.lock"].each do |manifest|
+      source_manifest = File.join(File.dirname(src), manifest)
+      next unless File.file?(source_manifest)
+      Dir.mkdir_p(out_dir)
+      File.copy(source_manifest, File.join(out_dir, manifest))
+      notes.add "embed", "#{manifest} travelled with the tree - a macro reads it for the version"
+      assets += 1
+    end
+
     used_by_templates = template_names.usings
     unless used_by_templates.empty?
       units.each do |unit|
@@ -398,6 +413,9 @@ class Iyi::Command
   # The module that owns the tree's shard requires.
   SHARDS_MODULE = "crystal_shards"
 
+  # The manifest a `shards version` macro walks up the tree to read.
+  MANIFEST_FILE = "shard.yml"
+
   # What counts as code a macro splices rather than data a program reads.
   TEMPLATE_EXTENSIONS = %w(.ecr .slang .slim .mustache .cr.erb)
 
@@ -487,8 +505,10 @@ class Iyi::Command
     visit = uninitialized Proc(MigrateUnit, Nil)
     visit = ->(unit : MigrateUnit) : Nil do
       return unless seen.add?(unit)
-      unit.required_units(by_source).each { |required| visit.call(required) if member_set.includes?(required) }
+      before, after = unit.requires_split(by_source)
+      before.each { |required| visit.call(required) if member_set.includes?(required) }
       ordered << unit
+      after.each { |required| visit.call(required) if member_set.includes?(required) }
     end
     members.each { |member| visit.call(member) }
     ordered
@@ -608,6 +628,10 @@ class Iyi::Command
     # A bang call that is the whole statement, on a name that can be
     # assigned to: an identifier, an `@ivar`, or a dotted path of them.
     BANG_STATEMENT = Rx::Pattern.compile("^([ \\t]*)(@?[a-z_][A-Za-z0-9_]*(?:\\.[a-z_][A-Za-z0-9_]*)*)\\.([a-z_][A-Za-z0-9_]*)!((?:\\(.*\\))?(?:\\s*(?:\\{.*\\}|do\\b.*))?)\\s*$")
+    # A call to a bang method with no receiver written - `validate_typ!(x)`
+    # inside the type that defines it. Only rewritten for names this tree
+    # defines, which is what keeps `!=`, a prefix `!` and a `"boom!"` out.
+    BARE_BANG = Rx::Pattern.compile("(^|[^.\\w@:$])([a-z_][A-Za-z0-9_]*)!")
     # A def's own name, bang and all.
     DEF_NAME = Rx::Pattern.compile("^\\s*(?:private\\s+|protected\\s+)?(?:abstract\\s+)?def\\s+(?:self\\.)?([A-Za-z_][A-Za-z0-9_]*[?!]?)")
     EXPORTED = Rx::Pattern.compile("^pub def[ \\t]+([A-Za-z0-9_?!]+)\\(([^)]*)\\)")
@@ -1168,11 +1192,33 @@ class Iyi::Command
       end
     end
 
+    # Every unit this file's relative requires name, split by whether the
+    # `require` is above this file's own code or below it. Crystal runs a
+    # required file where the `require` is written, so `exception_page.cr`
+    # - a class body with `require "./exception_page/*"` under it - is
+    # loaded *before* the files that reopen the class, and a merge that
+    # put them first made the reopening the first definition and the
+    # `abstract class` a second one Crystal ignores.
+    def requires_split(by_source : Hash(String, MigrateUnit)) : {Array(MigrateUnit), Array(MigrateUnit)}
+      body_at = lines.index do |line|
+        stripped = line.strip
+        !stripped.empty? && !stripped.starts_with?('#') && !REQUIRE.match(line)
+      end || lines.size
+      before = [] of MigrateUnit
+      after = [] of MigrateUnit
+      lines.each_with_index do |line, index|
+        next unless (match = REQUIRE.match(line)) && (match[1] || "").starts_with?('.')
+        resolve_require(match[1] || "", by_source).each do |unit|
+          (index < body_at ? before : after) << unit
+        end
+      end
+      {before, after}
+    end
+
     # Every unit this file's relative requires name, in order.
     def required_units(by_source : Hash(String, MigrateUnit)) : Array(MigrateUnit)
-      lines.compact_map do |line|
-        (match = REQUIRE.match(line)) && (match[1] || "").starts_with?('.') ? resolve_require(match[1] || "", by_source) : nil
-      end.flatten
+      before, after = requires_split(by_source)
+      before + after
     end
 
     private def resolve_require(target : String, by_source : Hash(String, MigrateUnit)) : Array(MigrateUnit)
@@ -1232,6 +1278,17 @@ class Iyi::Command
         receiver = line[start...at]
         line = line[0, start] + "(#{receiver} || raise \"nil where a value was expected\")" + line[(at + ".not_nil!".size)..]
         notes.add "bang", "#{path}: `not_nil!` became `(x || raise …)`"
+      end
+      line = Rx.gsub(line, BARE_BANG) do |match|
+        name = match[2].not_nil!
+        if @bang_renames.includes?(name)
+          "#{match[1]}#{name}_in_place"
+        elsif @tree_bangs.includes?(name)
+          notes.add "bang", "#{path}: `#{name}!` became `#{name}` - its definition here lost the bang too"
+          "#{match[1]}#{name}"
+        else
+          match[0].not_nil!
+        end
       end
       Rx.gsub(line, BANG) do |match|
         name = match[1].not_nil!

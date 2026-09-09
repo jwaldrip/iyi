@@ -141,6 +141,7 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # gates say "Crystal" because that is the input.
     (r"(a|the|as|ordinary|becomes|is|in|not|One|A) Crystal", "a sentence about the other language"),
     (r"which is the lookup Crystal performs", "a sentence about the other language"),
+    (r"every Crystal bang|Crystal ignores", "a sentence about the other language's rule"),
     (r"crystal_shards", "the module a migrated tree keeps its shard requires in"),
     (r"crystal_shop|crystal\.(out|err)|CRYSTAL=|\$CRYSTAL\b", "the gate's own Crystal arm"),
     (r"struct Int32", "the fixture's reopening of a library type"),
