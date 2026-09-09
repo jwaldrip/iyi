@@ -1,0 +1,92 @@
+# The `std/iterator` port, demonstrated — lazy sequences.
+#
+#   ./bin/iyi run samples/iyi/std_iterator.iyi
+#
+# `std/iterator.iyi` holds the `Iterator` trait and its lazy adaptors.
+# Unlike `Enumerable`, which processes sequences eagerly and creates intermediate
+# arrays at each step, `Iterator` transforms elements on demand when pulled.
+
+module samples/std_iterator
+
+import std/traits
+using std/traits::{Cmp, Num}
+
+import std/iterator
+using std/iterator::{Iterator, ArrayIterator}
+
+# An infinite sequence generator. Eagerly evaluating this would hang or OOM;
+# lazily evaluating it pulls only what the pipeline asks for.
+pub class NaturalNumbers
+  getter pulls : Int32
+
+  def initialize
+    @current = 1
+    @pulls = 0
+  end
+end
+
+impl Iterator for NaturalNumbers
+  type Elem = Int32
+
+  def next : Int32?
+    @pulls = @pulls + 1
+    val = @current
+    @current = @current + 1
+    val
+  end
+end
+
+# 1. Infinite sequence consumed finitely
+nats = NaturalNumbers.new
+first_five = nats.take(5).to_a
+puts "natural numbers first 5: #{first_five}"
+puts "pulls from generator:    #{nats.pulls}"
+
+# 2. Composed lazy pipeline: square even naturals and take 4
+# Eager evaluation would evaluate infinitely; lazy evaluation pulls only 8 items.
+nats2 = NaturalNumbers.new
+pipeline = nats2.select { |x| x % 2 == 0 }
+  .map { |x| x * x }
+  .take(4)
+  .to_a
+puts "even squares first 4:    #{pipeline}"
+puts "pulls for 4 matches:     #{nats2.pulls}"
+
+# 3. Zipping and Chaining
+evens = Iterator.of([2, 4, 6])
+odds = Iterator.of([1, 3, 5])
+all_numbers = odds.chain(evens).to_a
+puts "chained odds and evens:  #{all_numbers}"
+
+names = Iterator.of(["apple", "banana", "cherry"])
+scores = Iterator.of([100, 95, 88])
+pairs = names.zip(scores).to_a
+puts "zipped pairs:            #{pairs}"
+
+# 4. Slicing and Windowing
+data = Iterator.of([1, 2, 3, 4, 5, 6, 7])
+slices = data.each_slice(3).to_a
+puts "each_slice(3):           #{slices}"
+
+window_source = Iterator.of([10, 20, 30, 40, 50])
+windows = window_source.each_cons(3).to_a
+puts "each_cons(3):            #{windows}"
+
+# 5. Stepping, Cycling, and Indexing
+stepped = Iterator.of([0, 10, 20, 30, 40, 50, 60]).step(2).to_a
+puts "stepped by 2:            #{stepped}"
+
+cycled = Iterator.of(["tick", "tock"]).cycle(2).to_a
+puts "cycled 2 times:          #{cycled}"
+
+with_idx = Iterator.of(["alpha", "beta", "gamma"]).with_index(1).to_a
+puts "with_index(1):           #{with_idx}"
+
+# 6. Terminals: fold, count, search
+nums = Iterator.of([10, 20, 30, 40])
+sum = nums.reduce(0) { |acc, x| acc + x }
+puts "reduce sum:              #{sum}"
+
+items = Iterator.of([1, 5, 12, 8, 3, 19])
+greater_than_ten = items.find { |x| x > 10 }
+puts "first > 10:              #{greater_than_ten}"
