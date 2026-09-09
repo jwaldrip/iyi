@@ -199,6 +199,26 @@ fi
 # initialiser of any module that uses it, which means the entry's own
 # `require` cannot be spliced after the imported modules' initialisers
 # (semantic.cr, `splice_iyi_module_initialisers`).
+# `shards install` writes other projects' source into a `lib/` beside the
+# manifest, and `iyi migrate .` read all of it: on an application that was
+# 756 files that were not its own, 359 of them merged into one module.
+echo "== a shards directory is not this tree's to migrate"
+if (cd "$FIXTURE" && "$IYI" migrate . --out "$WORK/whole" > "$WORK/whole.log" 2>&1); then
+  holds "the shard's file is named as somebody else's" \
+        "other projects' source and stayed there" "$WORK/whole.log"
+  holds "and the narrower command is named"        "migrate src --out"  "$WORK/whole.log"
+  if [ -e "$WORK/whole/pretend.iyi" ]; then
+    step fail "the shard became a module of this tree"
+  elif [ -f "$WORK/whole/shop.iyi" ]; then
+    step ok "the tree's own code migrated and the shard did not"
+  else
+    step fail "the tree's own entry did not migrate"
+  fi
+else
+  step fail "migrate . failed"
+  tail -5 "$WORK/whole.log"
+fi
+
 # `--out src` wrote the modules into the tree it was reading and left a
 # `src/src` behind. A verb whose first mistake edits the project is not one
 # a person tries twice.

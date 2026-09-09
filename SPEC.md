@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 106,431 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 106,464 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,503 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3343,6 +3343,17 @@ with `--annotate --check`: `exception_page` 3 of 3, `radix` 5 of 5,
 `faker` 2 of 3, `backtracer` 2 of 5 — and every remaining refusal is R-2
 asking for a type where nothing in the library's own programs called the
 def, or a regex literal, which is IV.1d's open item and not migration's.
+
+**What is not the tree's to migrate.** `shards install` writes every
+dependency's source into a `lib/` beside the manifest, and `iyi migrate .`
+read all of it: on the application that is 889 files, 756 of them somebody
+else's, with 359 merged into one module because they import each other. A
+`lib/` with a manifest beside it is skipped and counted, since the tree
+reaches what is in there through its own `require "kemal"` - which is an
+import of `crystal_shards`, not a copy. A `lib` a person wrote themselves,
+with no manifest above it, is their code and is migrated. And pointing the
+verb at a project root says so: the library is its `src`, and everything
+else beside the manifest is a program of its own.
 
 **What it does not do, said here rather than found later.** The 53 defs
 above are a person's to write; until they are, the application's own modules

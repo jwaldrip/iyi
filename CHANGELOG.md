@@ -70,7 +70,11 @@
   subtraction), and a chain's `.not_nil!` on a line of its own has its
   receiver above it, so `( || raise …)` was written where nothing
   preceded it - `.try { |value| value } || raise …` composes and takes
-  the whole chain. `--out src` used to write the modules into the tree
+  the whole chain. A `lib/` with a manifest beside it is `shards
+  install`'s, not the tree's: `migrate .` on the application read 889
+  files, 756 of them somebody else's, and merged 359 into one module. It
+  is skipped and counted, and pointing the verb at a project root says
+  that the library is its `src`. `--out src` used to write the modules into the tree
   it was reading and leave a `src/src` behind; it is refused, and the
   gate holds the source tree untouched. And when `--check` comes back clean the verb says
   what to type next: the build command with the entry filled in, the

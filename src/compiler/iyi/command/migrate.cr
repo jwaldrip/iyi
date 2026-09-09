@@ -116,6 +116,14 @@ class Iyi::Command
     end
 
     files = Dir.glob(File.join(src, "**", "*.cr")).sort
+    # A shards directory is other projects' source. `shards install`
+    # writes it to a `lib/` beside the manifest, and this tree reaches
+    # what is in there through its own `require "kemal"`, which becomes
+    # an import of `crystal_shards` - not through a copy. `migrate .` on
+    # an application read 889 files, 756 of them somebody else's, and
+    # merged 359 into one module.
+    vendored = files.count { |file| shards_install?(file, src) }
+    files.reject! { |file| shards_install?(file, src) }
     abort! "migrate: no .cr under #{src}", :USAGE_ERROR if files.empty?
 
     # Which root namespaces are the tree's own, and which belong to the
@@ -141,6 +149,14 @@ class Iyi::Command
     tree_roots.reject! { |name| library_names.includes?(name) }
 
     notes = Notes.new
+    notes.add "vendored", "#{vendored} files under a `lib/` beside a manifest are other projects' source and stayed there; this tree reaches them through its own requires" if vendored > 0
+    # The convention this tool is pointed at wrongly most easily: a
+    # shards project's own code is its `src`, and everything else beside
+    # the manifest - a spec suite, a script, a `bin` - is a program of its
+    # own rather than part of the library.
+    if File.file?(File.join(src, MANIFEST_FILE)) && Dir.exists?(File.join(src, "src"))
+      notes.add "vendored", "#{src} is a project root: its library is its `src`, so `#{Command.program_name} migrate src --out #{out_dir}` migrates that alone"
+    end
     units = files.map { |file| MigrateUnit.read(file, src, tree_roots, notes) }
     by_source = units.to_h { |unit| {unit.source, unit} }
     by_namespace = {} of String => MigrateUnit
@@ -216,6 +232,7 @@ class Iyi::Command
     Dir.glob(File.join(src, "**", "*")).sort.each do |file|
       next unless File.file?(file)
       next if file.ends_with?(".cr")
+      next if shards_install?(file, src)
       relative_asset = file.lchop(project_root).lchop('/')
       target = File.join(out_dir, relative_asset)
       Dir.mkdir_p(File.dirname(target))
@@ -462,6 +479,7 @@ class Iyi::Command
       "annotate"   => "types written from what the calls said (--annotate)",
       "unexported" => "declarations no other module names, left unexported",
       "embed"      => "templates embedded at compile time, named from the project root",
+      "vendored"   => "what is not this tree's to migrate, and what is",
     }
 
     def print(verbose : Bool) : Nil
@@ -560,6 +578,21 @@ class Iyi::Command
     end
     members.each { |member| visit.call(member) }
     ordered
+  end
+
+  # Whether this file is in a shards install directory: a `lib/` with a
+  # manifest beside it, which is where `shards install` puts the source of
+  # every project this one depends on. A `lib` a person wrote themselves,
+  # with no manifest above it, is their code and is migrated.
+  private def shards_install?(file : String, src : String) : Bool
+    dir = File.dirname(file)
+    while dir.size > src.size && dir.starts_with?(src)
+      if File.basename(dir) == "lib" && File.file?(File.join(File.dirname(dir), MANIFEST_FILE))
+        return true
+      end
+      dir = File.dirname(dir)
+    end
+    false
   end
 
   # `include Logging` inside `module AcikTurkiye`: the namespace it names,
