@@ -703,7 +703,13 @@ class Iyi::Command
     def self.read(file : String, root : String, tree_roots : Set(String), notes : Notes) : MigrateUnit
       all = File.read(file).split('\n')
       relative = file.lchop(root).lchop('/')
-      stem = File.basename(file, ".cr")
+      # A file name is not a module name: `micrate-wrapper.cr` gave
+      # `module micrate-wrapper`, which parses as a subtraction and left
+      # the module refusing its own header. Everything a name cannot
+      # carry becomes `_`, which is what the path already is.
+      stem = File.basename(file, ".cr").gsub { |char|
+        char.ascii_alphanumeric? || char == '_' ? char : '_'
+      }
 
       # Rule 6 first, because a reopening at the end of a file is what
       # stops the module before it from being read as the file's wrapper.
@@ -1324,6 +1330,24 @@ class Iyi::Command
           return "#{indent}#{target}.#{verb}#{tail}"
         end
       end
+      # `.not_nil!` on a line of its own ends a chain the line does not
+      # contain: the receiver is on the lines above, and a line-local
+      # narrowing wrote `( || raise …)`, which does not parse. `||` binds
+      # looser than a chain, so the composing spelling takes all of it -
+      # which is what `not_nil!` meant where it sat.
+      if line.strip.starts_with?(".not_nil!")
+        indent = line[0, line.index('.') || 0]
+        rest = line.strip.lchop(".not_nil!")
+        if rest.empty? && !chain_continues?(source_line)
+          notes.add "bang", "#{path}: a chain's `.not_nil!` became `.try { |value| value } || raise …` - the receiver is on the lines above it"
+          return "#{indent}.try { |value| value } || raise \"nil where a value was expected\""
+        end
+        # Mid-chain: the `||` would swallow the steps after it, so the
+        # narrowing is left undone and named. The types then refuse at
+        # the use, which is where a person can see what to write.
+        notes.add "bang", "#{source}:#{source_line}: `.not_nil!` mid-chain became `.try { |value| value }`, which does not narrow - the raise is a person's to place"
+        return "#{indent}.try { |value| value }#{rest}"
+      end
       while (at = line.index(".not_nil!"))
         start = receiver_start(line, at)
         receiver = line[start...at]
@@ -1361,6 +1385,18 @@ class Iyi::Command
     # Whether the next thing in the file is an `end`, which makes this
     # line a body's last expression - what it answers is read, so it is
     # not a statement whose copy nobody wanted.
+    # Whether the chain on this line goes on below it: the next thing in
+    # the file is another `.step`.
+    private def chain_continues?(source_line : Int32) : Bool
+      index = source_line
+      while index < lines.size
+        stripped = lines[index].strip
+        return stripped.starts_with?('.') unless stripped.empty? || stripped.starts_with?('#')
+        index += 1
+      end
+      false
+    end
+
     private def return_position?(source_line : Int32) : Bool
       index = source_line
       while index < lines.size

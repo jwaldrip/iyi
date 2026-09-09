@@ -63,7 +63,12 @@
   `private class` nested in an exported one, which III.1's
   definition-site probe wrote the name of from outside - `nameable?` now
   answers false for a private type, and the fixture plants one.
-  `--out src` used to write the modules into the tree
+  Two more line-local rewrites could not see enough: a file name is not a
+  module name (`micrate-wrapper.cr` gave `module micrate-wrapper`, a
+  subtraction), and a chain's `.not_nil!` on a line of its own has its
+  receiver above it, so `( || raise …)` was written where nothing
+  preceded it - `.try { |value| value } || raise …` composes and takes
+  the whole chain. `--out src` used to write the modules into the tree
   it was reading and leave a `src/src` behind; it is refused, and the
   gate holds the source tree untouched. And when `--check` comes back clean the verb says
   what to type next: the build command with the entry filled in, the

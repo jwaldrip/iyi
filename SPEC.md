@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 106,395 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 106,431 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,503 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3317,7 +3317,14 @@ lost the `pub` on a name only the sidecar beside it uses. And a def is
 typed where it is written (III.1) by standing a probe up outside its type,
 which cannot name a `private class`: every def of a private class nested
 in an exported one was refused, pointing at the def
-(`definition_typing.cr`'s `nameable?`). Kemal is 11 of 13 after them. A **bare** call to a
+(`definition_typing.cr`'s `nameable?`). Two more are line-local rewrites that could not see enough: a **file name
+is not a module name** (`micrate-wrapper.cr` gave `module
+micrate-wrapper`, which parses as a subtraction), and a **chain's
+`.not_nil!` on a line of its own** has its receiver on the lines above, so
+`( || raise …)` was written where nothing preceded it - the composing
+spelling `.try { |value| value } || raise …` takes the whole chain, which
+is what the bang meant where it sat. Kemal is 11 of 13 after them,
+`micrate` 5 of 8, and the fixture plants both. A **bare** call to a
 bang method - `validate_typ!(payload)` inside the type that defines it -
 has no receiver to key the rewrite on, and is rewritten where the name is
 one this tree defines, which is what keeps `!=`, a prefix `!` and a

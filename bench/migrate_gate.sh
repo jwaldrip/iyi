@@ -125,6 +125,16 @@ else
   tail -6 "$WORK/annotate.log"
 fi
 
+# Two shapes a line-local rewrite gets wrong, both found on shards: a file
+# name that is not a module name (`price-list.cr` gave `module
+# shop/price-list`, a subtraction), and a chain whose `.not_nil!` sits on a
+# line of its own, where the receiver is above and the narrowing has to be
+# one that composes.
+echo "== a file name becomes a module name, and a chain keeps its narrowing"
+holds "the hyphen is gone from the module" "module shop/price_list" "$WORK/out/shop/price_list.iyi"
+holds "and the chain narrows without a receiver on the line" \
+      ".try { |value| value } || raise" "$WORK/out/shop/price_list.iyi"
+
 # A reopening of a type the tree does not own stays Crystal in a sidecar
 # beside its module (R-3), and it names the tree's own types too - which
 # moved. It has no `using` line to reach them through, so they are written

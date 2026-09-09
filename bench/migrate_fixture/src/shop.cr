@@ -1,5 +1,6 @@
 require "./shop/config"
 require "./shop/models/cart"
+require "./shop/price-list"
 require "./shop/models/item"
 require "./shop/counter"
 require "./shop/report"
@@ -13,6 +14,7 @@ puts Shop.banner
 puts Shop::Names.title("cart")
 puts cart.note
 puts cart.note?.nil?
+puts Shop::PriceList.dearest(cart.items).name
 puts Shop::Counter.priced(Shop::Models::Item.new("kahve", 90))
 puts cart.tidy!
 puts cart.total
