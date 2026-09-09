@@ -76,7 +76,13 @@ pub class UdpSocket
   @read_timeout : Int32
   @write_timeout : Int32
 
-  def initialize(@fd : Int32, @family : Int32 = 2)
+  def initialize(fd : Int32 = -1, @family : Int32 = 2)
+    if fd < 0
+      @fd = UdpSocket.__sys_socket(@family)
+      raise "cannot create UDP socket" if @fd < 0
+    else
+      @fd = fd
+    end
     @closed = false
     @non_blocking = false
     @read_timeout = 0
@@ -107,7 +113,7 @@ pub class UdpSocket
   end
 
   # Creates an unbound UDP socket.
-  def self.new(family : Int32 = 2) : UdpSocket
+  def self.unbound(family : Int32 = 2) : UdpSocket
     client(family)
   end
 
