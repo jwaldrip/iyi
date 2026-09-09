@@ -6128,18 +6128,6 @@ require "./socket"
         @@allocated_bytes : UInt64 = 0_u64
         @@budget : UInt64 = 1048576_u64
 
-        def self.print_hex(val : UInt64) : Nil
-          chars = "0123456789abcdef"
-          shift = 60_i64
-          while shift >= 0_i64
-            nibble = (val.unsafe_shr(shift.to_u64) & 15_u64).to_i64
-            ch = chars.to_unsafe + nibble
-            __iyi_write(1, ch.as(Void*), 1_u64)
-            shift = shift - 4_i64
-          end
-          __iyi_write(1, "\n".to_unsafe.as(Void*), 1_u64)
-        end
-
         def self.read64(address : UInt64) : UInt64
           Pointer(UInt64).new(address).value
         end
@@ -6238,8 +6226,7 @@ require "./socket"
           if head != 0_u64
             (free_lists + idx.to_i64).value = read64(head)
             p_obj = head
-            mark = read64(p_obj - 8_u64)
-            new_mark = (mark - (mark & (FREE_FLAG | IyiMark::COLOUR))) | bits | CARVED_FLAG | type_id.unsafe_shl(TYPE_SHIFT)
+            new_mark = bits | CARVED_FLAG | type_id.unsafe_shl(TYPE_SHIFT)
             write64(p_obj - 8_u64, new_mark)
             write64(p_obj - 16_u64, type_id)
             write64(p_obj - 24_u64, payload_cap)

@@ -91,14 +91,15 @@ class SeenLedger
 end
 
 class DecoyHolder
+  MASK = 0x5555555555555555_u64
   @@addr : UInt64 = 0_u64
 
   def self.set(a : UInt64) : Nil
-    @@addr = a
+    @@addr = a ^ MASK
   end
 
   def self.get : UInt64
-    @@addr
+    @@addr ^ MASK
   end
 end
 
