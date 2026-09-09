@@ -98,6 +98,17 @@
   # 2. Churn, and nobody calls collect. A rooted object with a pattern in it,
   # then 64 MiB of garbage: the collections have to come from the trigger,
   # the heap has to stay bounded, and the survivor has to keep its bytes.
+  #
+  # Bounded is measured against the arenas this program had before it churned,
+  # not against a number written here. 64 MiB of garbage through a heap that
+  # reclaims should need a couple of arenas beyond whatever the program was
+  # already holding, and the claim is about the churn rather than about the
+  # baseline. This read `> 8` until the prelude grew an IO layer, whose stdin,
+  # stdout and stderr buffers are live for the life of every program: nine
+  # arenas then failed a check that meant to be about garbage, and raising the
+  # constant would have bought green by making the check weaker every time the
+  # prelude grows. A delta cannot be defeated that way.
+  before_churn = arena_count
   survivor = Pointer(UInt8).malloc(96_u64)
   Held.keep = survivor.address
   index = 0_u64
@@ -110,8 +121,8 @@
   first_wave = IyiMark.collections
   raise "trigger: 64 MiB of churn ran no collection, so nothing triggers" if first_wave == 0
   arenas = arena_count
-  if arenas > 8_u64
-    raise "bounded: #{count(arenas)} arenas mapped after churn, so the memory is not coming back"
+  if arenas > before_churn + 2_u64
+    raise "bounded: #{count(arenas)} arenas mapped after churn against #{count(before_churn)} before it, so the memory is not coming back"
   end
   raise "survivor: the root was lost after #{count(first_wave)} triggered collections" if Held.keep != survivor.address
   index = 0_u64
