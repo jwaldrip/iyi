@@ -242,6 +242,19 @@ else
   step ok "and nothing names the module from inside it"
 fi
 
+# A Crystal module *mixed into a type* is the one shape this verb does not
+# rewrite: iyi spells a mixin as a `trait` with an `impl` per type (II.6),
+# and a mixin migrated as a module puts what `macro included` writes at the
+# module's own level - `can't declare instance variables in X because X
+# extends it`, which names nothing. Every site is named instead.
+echo "== a mixin is named, not guessed at"
+mkdir -p "$WORK/mixin/src/mix"
+printf 'module Mix\n  module Countable\n    macro included\n      @count = 0\n    end\n\n    def counted : Int32\n      @count\n    end\n  end\nend\n' > "$WORK/mixin/src/mix/countable.cr"
+printf 'require "./mix/countable"\n\nmodule Mix\n  class Bag\n    include Countable\n  end\nend\n' > "$WORK/mixin/src/mix.cr"
+(cd "$WORK/mixin" && "$IYI" migrate src --out "$WORK/mixin/out" --verbose > "$WORK/mixin.log" 2>&1)
+holds "the include into a type is named a mixin" "mixes " "$WORK/mixin.log"
+holds "and the trait it would be is named"      "a \`trait\` and an \`impl\`" "$WORK/mixin.log"
+
 # `--check` says whose each refusal is, because the three are worked on by
 # different people: a `require` this machine cannot resolve is the
 # environment's, R-2's question is the author's, and what is left is this

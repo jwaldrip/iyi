@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 106,736 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 106,886 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,565 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3405,6 +3405,39 @@ a `forall`**: `def f(x : Hash(String, V)) forall V` took one onto the end
 and wrote `forall V : ::Hash(…)`, which reads as a bound on `V`. Kemal's
 own checkout went from 0 of 12 modules compiling to 11, the twelfth being
 R-2 asking for one signature.
+
+**Twelve projects, and the five rules the last six found.** `crystal-db`,
+`shards`, `halite`, `ameba`, `amber` and Kemal's own checkout were
+migrated as they come from GitHub, and each found something. The
+**library the tree is written against is the one it requires**, not a bare
+prelude: `HTTP` is not declared until something requires `http/client`, so
+`module HTTP; struct Headers` - halite reopening Crystal's headers - was
+read as a module of the tree's own, compiled as a new type, and imported
+in a cycle. The probe requires what the tree requires now. A **merge can
+make a cycle**, so merging repeats until it cannot: `shards.cr` requires
+`commands/*`, `commands/build` reaches `commands/command`, and `command`
+is in a cycle with `shards` - the first merge left `M -> build -> M`, an
+import cycle in a tree that had none, refused in fourteen modules. A
+**`require` under a wrapper's `end`** does not stop the wrapper being
+peeled (`require "./features/*"` after `module Halite`), while a macro
+there does - `{% for cls in Exception.constants %}` re-exporting a peeled
+module's classes found the *other* language's `Exception` and aliased its
+constants over the module's own. A **class cannot inherit from itself**:
+`class Error < Error` in `shards/script.cr` means the enclosing
+namespace's `Error`, and written bare it read as iyi's own error trait. A
+**bang accessor keeps its visibility** (`protected getter! segment`),
+which the pattern had not allowed, leaving a `!` in a name.
+
+And the one shape this verb does not rewrite is named rather than guessed
+at: a Crystal module *mixed into a type* is a `trait` with an `impl` per
+type here (II.6), and a mixin migrated as a module puts what `macro
+included` writes at the module's own level - `can't declare instance
+variables in DB::Disposable because DB::Disposable extends it`, which
+points nowhere. Every site is named, and `--check` counts them as their
+own kind. `crystal-db` is 4 of 6 with one mixin and one signature left,
+`shards` 3 of 5 with two signatures, `halite` 5 of 7 with two,
+`ameba` and `amber` need `shards install` before anything (their own
+`require`s do not resolve here), and Kemal's checkout is 11 of 12.
 
 **What is not the tree's to migrate.** `shards install` writes every
 dependency's source into a `lib/` beside the manifest, and `iyi migrate .`

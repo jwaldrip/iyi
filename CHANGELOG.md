@@ -19,6 +19,28 @@
   III.10, Appendix B #17). They use `Iyi::Rx` now, and the one check a
   pattern would have been compiled per name and per line for — does this
   line name this word on its own — is hand-written.
+- **Twelve real projects, and the five rules six of them found.**
+  `crystal-db`, `shards`, `halite`, `ameba`, `amber` and Kemal's own
+  checkout, migrated as they come from GitHub. The library a tree is
+  written against is the one it *requires*, not a bare prelude: `HTTP`
+  is undeclared until something requires `http/client`, so halite
+  reopening `HTTP::Headers` was read as a module of the tree's own and
+  imported in a cycle. A merge can make a cycle, so merging repeats
+  until it cannot (`shards` had fourteen modules refused by a cycle its
+  tree did not have). A `require` under a wrapper's `end` does not stop
+  the peel, while a macro there does - `{% for cls in
+  Exception.constants %}` after a peeled `module Exception` found the
+  other language's and aliased its constants over the module's own
+  classes. `class Error < Error` means the enclosing namespace's, not
+  itself. And a bang accessor keeps its visibility
+  (`protected getter! segment`), which had left a `!` in a name.
+  The one shape the verb does not rewrite is now named at every site
+  instead of arriving as `can't declare instance variables in X because
+  X extends it`: a module *mixed into a type* is a `trait` and an
+  `impl` here, and `--check` counts those as their own kind.
+  `crystal-db` 4 of 6, `shards` 3 of 5, `halite` 5 of 7, Kemal's
+  checkout 11 of 12; `ameba` and `amber` need `shards install` first,
+  which the refusal says.
 - **Pointed at a project, the verb reaches what the project reaches.**
   Four fixes from one report - `iyi migrate <project> --out <dir>` on a
   shard checkout produced nonsense, and it did. A project root is not a

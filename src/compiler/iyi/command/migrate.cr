@@ -150,22 +150,29 @@ class Iyi::Command
     abort! "migrate: no .cr under #{src}", :USAGE_ERROR if files.empty?
 
     # Which root namespaces are the tree's own, and which belong to the
-    # library it is written against. A declaration under a name the
-    # library already owns is a reopening (rule 6) whether it is written
-    # that is the library: the compiler is asked, once, by analysing a
-    # program that is nothing but the prelude.
-    library = Compiler.new
-    library.no_codegen = true
-    library.stdout = IO::Memory.new
-    library.stderr = IO::Memory.new
-    library_names = begin
-      result = library.compile(
-        Compiler::Source.new(File.join(Dir.tempdir, "iyi-migrate-probe.cr"), ""),
-        File.tempname("iyi-migrate", nil))
-      (result.program.types?.try(&.keys) || [] of String).to_set
-    rescue ex : CodeError | Iyi::Error
-      abort! "migrate: could not read Crystal's library to see which names it owns: #{ex.message}", :CODE_ERROR
+    # library it is written against. A declaration under a name the library
+    # already owns is a reopening (rule 6) whether it is written qualified
+    # or not, and the compiler is asked rather than guessed at.
+    #
+    # Asked about *this tree's* library, not a bare prelude: `HTTP` is not
+    # declared until something requires `http/client`, so `module HTTP;
+    # struct Headers` - halite reopening Crystal's headers - was read as a
+    # module of the tree's own and compiled as a new type, and the module
+    # it was written beside then imported it in a cycle. The probe requires
+    # everything the tree requires by name; a require this machine cannot
+    # resolve takes the probe back to the prelude alone, which is what a
+    # tree that does not compile as Crystal gets anyway.
+    required_by_tree = Set(String).new
+    files.each do |file|
+      File.each_line(file) do |line|
+        next unless (match = MigrateUnit::REQUIRE.match(line))
+        target = match[1] || ""
+        required_by_tree << target unless target.starts_with?('.') || target.includes?('*')
+      end
     end
+    library_names = read_library_names(required_by_tree) ||
+                    read_library_names(Set(String).new) ||
+                    abort!("migrate: could not read Crystal's library to see which names it owns", :CODE_ERROR)
 
     tree_roots = Set(String).new
     files.each { |file| MigrateUnit.collect_roots(file, tree_roots) }
@@ -352,16 +359,41 @@ class Iyi::Command
     end
     units.each { |unit| unit.note_untyped_surface(notes, askers) }
 
-    # A cycle is one unit of compilation whatever its files were.
-    components = strongly_connected(units)
+    # A cycle is one unit of compilation whatever its files were - and
+    # merging one can *make* a cycle, which is why this repeats until it
+    # cannot. `shards.cr` requires `commands/*`, `commands/build` reaches
+    # `commands/command`, and `command` is in a cycle with `shards`: the
+    # first merge joined those two and left `M -> build -> M`, an import
+    # cycle in a tree that had none, refused by R-1 in fourteen modules.
     remap = {} of String => String
     merged = {} of String => Array(String)
-    components.each do |members|
-      next if members.size == 1
-      path = merged_path(members)
-      members.each { |member| remap[member.path] = path }
-      merged[path] = members.map(&.path)
-      notes.add "cycle", "#{path} is #{members.size} files R-1 cannot separate (#{members.map(&.path).join(", ")}); split it by moving what the later ones reach for into one module they can all import"
+    holders = {} of String => Array(MigrateUnit)
+    units.each { |unit| (holders[unit.path] ||= [] of MigrateUnit) << unit }
+    loop do
+      graph = {} of String => Set(String)
+      holders.each do |node, members|
+        edges = Set(String).new
+        members.each do |member|
+          member.imports.each do |imported|
+            target = remap[imported]? || imported
+            edges << target if target != node && holders.has_key?(target)
+          end
+        end
+        graph[node] = edges
+      end
+      cycles = strongly_connected_paths(graph).select { |nodes| nodes.size > 1 }
+      break if cycles.empty?
+      cycles.each do |nodes|
+        members = nodes.flat_map { |node| holders[node] }.sort_by { |unit| units.index(unit) || 0 }
+        path = merged_path(members)
+        nodes.each { |node| holders.delete(node) }
+        holders[path] = members
+        members.each { |member| remap[member.path] = path }
+        merged[path] = members.map(&.path)
+      end
+    end
+    merged.each do |path, members|
+      notes.add "cycle", "#{path} is #{members.size} files R-1 cannot separate (#{members.join(", ")}); split it by moving what the later ones reach for into one module they can all import"
     end
 
     written = {} of String => String
@@ -488,6 +520,7 @@ class Iyi::Command
       unless broke.empty?
         missing = Set(String).new
         asks = 0
+        mixins = 0
         mine = 0
         broke.each do |(_, message)|
           if (at = message.index("can't find file '"))
@@ -495,6 +528,12 @@ class Iyi::Command
             missing << (rest.index('\'').try { |close| rest[0, close] } || rest)
           elsif message.includes?("is exported and does not say what")
             asks += 1
+          elsif message.includes?("extends it") || message.includes?("is not a module, it's a")
+            # A module mixed into a type: iyi spells that a trait and an
+            # `impl`, this verb does not write those, and the notes above
+            # name every site. The compiler's own message for it names a
+            # module extending itself, which points nowhere useful.
+            mixins += 1
           else
             mine += 1
           end
@@ -505,6 +544,7 @@ class Iyi::Command
                "(#{missing.to_a.sort.join(", ")}): the tree does not compile as Crystal here either, so `shards install` comes first"
         end
         puts "#{asks} #{asks == 1 ? "is" : "are"} R-2 asking for a signature, which is a person's to write: the list above says which name and why" if asks > 0
+        puts "#{mixins} #{mixins == 1 ? "is a module mixed" : "are modules mixed"} into a type, which iyi spells as a `trait` and an `impl` (SPEC.md II.6): the notes above name every site, and this verb does not rewrite them" if mixins > 0
         puts "#{mine} #{mine == 1 ? "is" : "are"} neither, and that is the migration's own: please report it with the module and the message" if mine > 0
       end
       exit 1 unless broke.empty?
@@ -549,6 +589,7 @@ class Iyi::Command
       "bang"       => "`!` is III.1.7a's: rewritten, and worth reading",
       "include"    => "`include` of a namespace, which is a `using` line here",
       "nested"     => "modules left nested, which nothing outside can reach",
+      "mixin"      => "a module mixed into a type, which is a trait here and needs a person",
       "untyped"    => "exports whose types the compiler still has to be told",
       "annotate"   => "types written from what the calls said (--annotate)",
       "unexported" => "declarations no other module names, left unexported",
@@ -654,6 +695,23 @@ class Iyi::Command
     ordered
   end
 
+  # The type names a program that requires *these* names declares, or nil
+  # when that program does not compile - a shard that is not installed, a
+  # `require` with a path this machine does not have.
+  private def read_library_names(requires : Set(String)) : Set(String)?
+    probe = Compiler.new
+    probe.no_codegen = true
+    probe.stdout = IO::Memory.new
+    probe.stderr = IO::Memory.new
+    source = requires.to_a.sort.join { |name| "require \"#{name}\"\n" }
+    result = probe.compile(
+      Compiler::Source.new(File.join(Dir.tempdir, "iyi-migrate-probe.cr"), source),
+      File.tempname("iyi-migrate", nil))
+    (result.program.types?.try(&.keys) || [] of String).to_set
+  rescue ex : CodeError | Iyi::Error
+    nil
+  end
+
   # Whether this file is in a shards install directory: a `lib/` with a
   # manifest beside it, which is where `shards install` puts the source of
   # every project this one depends on. A `lib` a person wrote themselves,
@@ -684,6 +742,45 @@ class Iyi::Command
   end
 
   # Tarjan's strongly connected components over the import graph.
+  # Tarjan's strongly connected components over a graph of module paths,
+  # which is what the merge condenses one round at a time.
+  private def strongly_connected_paths(graph : Hash(String, Set(String))) : Array(Array(String))
+    index = 0
+    indices = {} of String => Int32
+    lowlink = {} of String => Int32
+    on_stack = Set(String).new
+    stack = [] of String
+    components = [] of Array(String)
+    visit = uninitialized Proc(String, Nil)
+    visit = ->(path : String) : Nil do
+      indices[path] = lowlink[path] = index
+      index += 1
+      stack << path
+      on_stack << path
+      (graph[path]? || Set(String).new).each do |next_path|
+        next unless graph.has_key?(next_path)
+        if !indices.has_key?(next_path)
+          visit.call(next_path)
+          lowlink[path] = Math.min(lowlink[path], lowlink[next_path])
+        elsif on_stack.includes?(next_path)
+          lowlink[path] = Math.min(lowlink[path], indices[next_path])
+        end
+      end
+      if lowlink[path] == indices[path]
+        component = [] of String
+        loop do
+          popped = stack.pop
+          on_stack.delete(popped)
+          component << popped
+          break if popped == path
+        end
+        components << component
+      end
+    end
+    graph.each_key { |path| visit.call(path) unless indices.has_key?(path) }
+    components
+  end
+
   private def strongly_connected(units : Array(MigrateUnit)) : Array(Array(MigrateUnit))
     by_path = units.to_h { |unit| {unit.path, unit} }
     index = 0
@@ -780,13 +877,16 @@ class Iyi::Command
     # `Regex`: pcre2 is on the list iyi means to need nothing from, and
     # `bench/dependency_floor.sh` fails the build when a file here puts it
     # back on the link line (SPEC.md III.10, Appendix B #17).
-    DECL    = Rx::Pattern.compile("^([ \\t]*)(?:(private|protected)[ \\t]+)?(?:abstract[ \\t]+)?(class|struct|module|enum|alias|annotation|lib)[ \\t]+([A-Z][A-Za-z0-9_:]*)")
-    DEF     = Rx::Pattern.compile("^([ \\t]*)(?:(private|protected)[ \\t]+)?(def|macro)[ \\t]+(?:self\\.)?([A-Za-z0-9_?!=<>+*/%\\[\\]-]+)")
-    CONST   = Rx::Pattern.compile("^([ \\t]*)([A-Z][A-Za-z0-9_]*)[ \\t]*=[^=]")
-    REQUIRE = Rx::Pattern.compile("^[ \\t]*require[ \\t]+\"([^\"]+)\"")
-    INCLUDE = Rx::Pattern.compile("^([ \\t]*)(?:include|extend)[ \\t]+(::)?([A-Z][A-Za-z0-9_:]*)[ \\t]*$")
-    MODULE  = Rx::Pattern.compile("^[ \\t]*module[ \\t]+([A-Z][A-Za-z0-9_:]*)[ \\t]*$")
-    PATH    = Rx::Pattern.compile("^(::)?[A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)+")
+    # A class or struct declaration with a superclass, for the one case
+    # where the two names are the same.
+    SELF_SUPER = Rx::Pattern.compile("^[ \\t]*(?:pub[ \\t]+)?(?:(?:private|protected)[ \\t]+)?(?:abstract[ \\t]+)?(class|struct)[ \\t]+([A-Z][A-Za-z0-9_]*)[ \\t]*<[ \\t]*([A-Z][A-Za-z0-9_]*)[ \\t]*$")
+    DECL       = Rx::Pattern.compile("^([ \\t]*)(?:(private|protected)[ \\t]+)?(?:abstract[ \\t]+)?(class|struct|module|enum|alias|annotation|lib)[ \\t]+([A-Z][A-Za-z0-9_:]*)")
+    DEF        = Rx::Pattern.compile("^([ \\t]*)(?:(private|protected)[ \\t]+)?(def|macro)[ \\t]+(?:self\\.)?([A-Za-z0-9_?!=<>+*/%\\[\\]-]+)")
+    CONST      = Rx::Pattern.compile("^([ \\t]*)([A-Z][A-Za-z0-9_]*)[ \\t]*=[^=]")
+    REQUIRE    = Rx::Pattern.compile("^[ \\t]*require[ \\t]+\"([^\"]+)\"")
+    INCLUDE    = Rx::Pattern.compile("^([ \\t]*)(?:include|extend)[ \\t]+(::)?([A-Z][A-Za-z0-9_:]*)[ \\t]*$")
+    MODULE     = Rx::Pattern.compile("^[ \\t]*module[ \\t]+([A-Z][A-Za-z0-9_:]*)[ \\t]*$")
+    PATH       = Rx::Pattern.compile("^(::)?[A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)+")
     # `Shop::Names.title(x)` and `Shop.banner`: a namespace and a method
     # of it, which is how a module function is called in the other language
     # and is not a constant path.
@@ -794,8 +894,8 @@ class Iyi::Command
     BANG      = Rx::Pattern.compile("\\.([a-z_]+)!")
     # `getter! x : T` and `property! x : T`: Crystal's accessor whose
     # reader raises where nil, which is `not_nil!` written by a macro.
-    BANG_ACCESSOR      = Rx::Pattern.compile("^([ \\t]*)(getter|property)!\\s+([a-z_][A-Za-z0-9_]*)\\s*:\\s*(.+)$")
-    BANG_ACCESSOR_BARE = Rx::Pattern.compile("^[ \\t]*(getter|property)!\\s+(.+)$")
+    BANG_ACCESSOR      = Rx::Pattern.compile("^([ \\t]*)((?:private|protected)[ \\t]+)?(getter|property)!\\s+([a-z_][A-Za-z0-9_]*)\\s*:\\s*(.+)$")
+    BANG_ACCESSOR_BARE = Rx::Pattern.compile("^[ \\t]*(?:(?:private|protected)[ \\t]+)?(getter|property)!\\s+(.+)$")
     # A bang call that is the whole statement, on a name that can be
     # assigned to: an identifier, an `@ivar`, or a dotted path of them.
     BANG_STATEMENT = Rx::Pattern.compile("^([ \\t]*)(@?[a-z_][A-Za-z0-9_]*(?:\\.[a-z_][A-Za-z0-9_]*)*)\\.([a-z_][A-Za-z0-9_]*)!((?:\\(.*\\))?(?:\\s*(?:\\{.*\\}|do\\b.*))?)\\s*$")
@@ -951,16 +1051,28 @@ class Iyi::Command
       # What follows the `end`. Nothing is the ordinary case; the `validator`
       # shard is the other one - `module Validator` with `alias Valid =
       # Validator` under it, where refusing to peel left the module nested
-      # and every consumer's `using validator::{Validator}` refused. A
-      # trailing *type* is a different matter: peeling would put `class Foo`
-      # inside this module and rename it, so that is not a wrapper.
+      # and every consumer's `using validator::{Validator}` refused.
+      #
+      # Only a name for a type may trail it. Anything else is code that ran
+      # *outside* the module and may name it: `halite/error.cr` closes
+      # `module Exception` and then, still inside `module Halite`, loops
+      # `{% for cls in Exception.constants %}` to re-export every class of
+      # it. Peeling the inner module leaves that macro naming a namespace
+      # that is gone - it found the *other* language's `Exception` and
+      # aliased its constants over the module's own classes.
       trailing = rest[(closing_at + 1)..]
       return false if trailing.size < peeled
       trailing = trailing[0, trailing.size - peeled]
-      trailing.none? do |line|
-        (match = DECL.match(line)) &&
-          (line.size - line.lstrip.size) == opener_indent &&
-          !(match[3] || "").in?("alias", "annotation")
+      trailing.all? do |line|
+        indent = line.size - line.lstrip.size
+        next true if indent > opener_indent || line.strip == "end"
+        # A `require` under the wrapper's `end` is how a Crystal file pulls
+        # in the directory beside it - `require "./features/*"` after
+        # `module Halite` - and it names nothing, so it does not stop the
+        # peel. Refusing it collapsed every such file onto one module path.
+        next true if REQUIRE.matches?(line)
+        next false unless indent == opener_indent
+        (match = DECL.match(line)) && (match[3] || "").in?("alias", "annotation")
       end
     end
 
@@ -1259,6 +1371,20 @@ class Iyi::Command
           end
         end
 
+        # An `include` *inside a type* is a different thing entirely: the
+        # module is a mixin, and iyi spells a mixin as a `trait` with an
+        # `impl` per type (R-3's orphan rule, II.6). A mixin migrated as a
+        # module puts what `macro included` writes at the module's own
+        # level, where a module extends itself - `can't declare instance
+        # variables in DB::Disposable because DB::Disposable extends it`,
+        # which names nothing a person can act on. It is named here
+        # instead, and it is the one shape this verb does not rewrite.
+        if (match = INCLUDE.match(line)) && !(match[1] || "").empty?
+          if target = Command.resolve_namespace_for(match[3] || "", self, by_namespace)
+            notes.add "mixin", "#{path}: `include #{match[3]}` mixes #{target.path} into a type; iyi spells that a `trait` and an `impl` for each type that has it (SPEC.md II.6), which this verb does not write - the two modules need a person"
+          end
+        end
+
         if (match = DECL.match(line)) && (match[1] || "").empty? && (match[4] || "").includes?("::")
           line = line.sub(match[4].not_nil!, match[4].not_nil!.split("::").last)
         end
@@ -1292,6 +1418,26 @@ class Iyi::Command
         if inferred && (match = DEF.match(line)) && !(match[1] || "").empty? && match[2].nil?
           line = annotate_def(line, source_index, inferred, notes)
         end
+        # `class Error < Error`, which is what `shards/script.cr` writes:
+        # a class cannot inherit from itself, so the superclass is the one
+        # the *enclosing* namespace offers - Crystal resolves it outwards
+        # before the new name exists. Written bare it read as this
+        # module's own, and iyi answered `Error is not a class, it's a
+        # trait`, naming its own error trait in a file nobody wrote.
+        if (match = SELF_SUPER.match(line)) && (match[2] || "") == (match[3] || "")
+          name = match[2] || ""
+          outer = exports.each_value.find do |export|
+            export.unit != self && export.name == name
+          end
+          if outer
+            imports << outer.unit.path
+            line = line.sub("< #{name}", "< #{MARK}#{outer.unit.path}#{MARK}#{name}#{MARK}")
+            notes.add "collide", "#{path}: `class #{name} < #{name}` inherits the one #{outer.unit.path} offers, written out - a class cannot inherit from itself"
+          else
+            line = line.sub("< #{name}", "< ::#{name}")
+            notes.add "collide", "#{path}: `class #{name} < #{name}` inherits the library's `::#{name}`, written out - a class cannot inherit from itself"
+          end
+        end
         line = rewrite_paths(line, exports, claimed, notes)
         if (match = BANG_ACCESSOR.match(line))
           # A bang accessor is `not_nil!` a macro wrote: the reader answers
@@ -1299,16 +1445,20 @@ class Iyi::Command
           # reader can see it, and `?` keeps the question the macro also
           # answered - the same three entry points, one of them visible.
           indent = match[1] || ""
-          kind = match[2] || ""
-          name = match[3] || ""
-          bare = (match[4] || "").strip
+          # `protected getter! segment : String` - the visibility rides on
+          # both the accessor and the reader, and leaving it out of the
+          # pattern left the bang in a name, which does not parse.
+          visibility = match[2] || ""
+          kind = match[3] || ""
+          name = match[4] || ""
+          bare = (match[5] || "").strip
           bare = bare[0, bare.size - 1].strip if bare.ends_with?('?')
           while bare.ends_with?("| Nil") || bare.ends_with?("|Nil")
             bare = bare[0, bare.rindex('|') || bare.size].strip
           end
           notes.add "bang", "#{path}: `#{kind}! #{name}` became `#{kind}? #{name}` and a reader that raises - `!` is III.1.7a's"
-          body << "#{indent}#{kind}? #{name} : #{bare} | Nil"
-          body << "#{indent}def #{name} : #{bare}"
+          body << "#{indent}#{visibility}#{kind}? #{name} : #{bare} | Nil"
+          body << "#{indent}#{visibility}def #{name} : #{bare}"
           body << "#{indent}  @#{name} || raise \"#{name} is not set\""
           body << "#{indent}end"
           next
