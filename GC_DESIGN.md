@@ -1747,11 +1747,11 @@ Each stage is independently verifiable; the tree is never left broken between th
 
 **Tasks:**
 
-1. **Windows Integration:**
-   - STW: use `SuspendThread()` and `GetThreadContext()` (Stage 4 already designed for this).
-   - Allocator: `VirtualAlloc()` / `VirtualFree()` (Stage 2).
-   - Root discovery: global segments from PE header; stack ranges; fiber stacks.
-   - Test on Windows x86_64 and arm64.
+1. **Windows Integration:** (Completed for x86_64)
+   - STW: `SuspendThread()` and `GetThreadContext()` for register capture.
+   - Allocator: `VirtualAlloc()` / `VirtualFree()` arenas, MAP-aligned via reserve/release/commit loop; `PAGE_READWRITE` and `MEM_RESET` page release.
+   - Root discovery: PE header parsing for `.data` and `.bss` ranges (omitting `.rdata` to avoid scanning read-only constants); TEB stack bounds (`StackBase` at `gs:0x08`, `StackLimit` at `gs:0x10`); callee-saved registers (rbx, rbp, rdi, rsi, r12-r15) via `spill_registers` (64 bytes).
+   - Test: `bench/windows_exercise.iyi` and `bench/windows_exercise.sh`, executed in CI on `windows-2022` (`windows-collector` job).
 
 2. **wasm32 Integration:** (Completed for wasm32-wasi)
    - Allocator: linear memory watermark with 64 KiB size-classed arenas, chunk headers, and free list reuse.

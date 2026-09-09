@@ -723,6 +723,10 @@ jobs:
               strings.iyi > strings-windows.link )
           cat cross/strings-windows.link
           ls -l cross
+          ( cd cross && ../bin/iyi build --cross-compile \
+              --target x86_64-windows-msvc -o windows_exercise \
+              ../bench/windows_exercise.iyi > windows_exercise.link )
+          cat cross/windows_exercise.link
 
       # SPEC.md III.12's programs, built here where the compiler is; the
       # three assertions run in the wasi job below, where the toolchain
@@ -1066,16 +1070,20 @@ jobs:
           $wrong = 0
 
           foreach ($run in 1..20) {
-            $got = normalise (.\strings-windows.exe | Out-String)
+            $got = normalise (.\strings-windows.exe 2>&1 | Out-String)
             if ($LASTEXITCODE -ne 0) {
               $crashed = $crashed + 1
-              Write-Host ("run {0,2}: exited {1}" -f $run, $LASTEXITCODE)
+              Write-Host ("run {0,2}: exited {1}, output: {2}" -f $run, $LASTEXITCODE, $got)
             } elseif ($got -eq $wanted) {
               $right = $right + 1
             } else {
               $wrong = $wrong + 1
               Write-Host ("run {0,2}: {1}" -f $run, ($got -replace "`n", " | "))
             }
+          }
+          if ($crashed -gt 0) {
+            Write-Host "Crash details from Application Event Log:"
+            Get-EventLog -LogName Application -Newest 5 | Format-List
           }
 
           Write-Host ""
@@ -1085,6 +1093,47 @@ jobs:
             exit 1
           }
           exit 0
+
+  # The GC Stage 10 Windows collector exercise on a real windows-2022 runner.
+  windows-collector:
+    needs: cross-objects
+    runs-on: windows-2022
+    name: "The collector on Windows x86_64"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-objects
+          path: cross
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: What the collector object asks Windows for
+        shell: cmd
+        run: dumpbin /nologo /symbols cross\windows_exercise.obj | findstr /C:"UNDEF"
+
+      - name: Link and run the Windows collector exercise
+        shell: pwsh
+        working-directory: cross
+        run: |
+          $command = (Get-Content windows_exercise.link -Raw).Trim()
+          Write-Host "linking with: $command"
+          $parts = $command -split '\s+'
+          & $parts[0] $parts[1..($parts.Length - 1)]
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "link failed with $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          $output = .\windows_exercise.exe
+          Write-Host $output
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "windows_exercise failed with $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          $text = $output -join "`n"
+          if ($text -notmatch "windows exercise: every check passed") {
+            Write-Host "exercise output missing pass marker"
+            exit 1
+          }
 
   # wasm32-wasi, run rather than type-checked. The module imports four
   # `wasi_snapshot_preview1` functions and nothing else, and what makes it a
