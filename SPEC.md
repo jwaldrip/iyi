@@ -3240,8 +3240,11 @@ designed:
 
 `--check` compiles every module written and prints the first refusal of each;
 that is the list a person works through, and on the application it is empty.
-**99 files became 91 modules and all 91 compile**, the program builds and
-answers what the Crystal build answers on every route tried, and
+**99 files became 91 modules and all 91 compile**, the program builds, and
+run against the demo database beside the Crystal build it answers **byte
+for byte on all nine routes tried** — `/api/v1/cities`, a city's districts,
+`discover`, `tags`, a search, a city's submissions, a user, the API root
+and one route the environment turns off — same bodies, same status codes.
 `bench/migrate_gate.sh` holds the whole of it on a fixture that plants each
 case above (in CI; hermetic, no shard).
 

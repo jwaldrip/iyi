@@ -19,6 +19,13 @@
   III.10, Appendix B #17). They use `Iyi::Rx` now, and the one check a
   pattern would have been compiled per name and per line for — does this
   line name this word on its own — is hand-written.
+- **The migrated application answers byte for byte, on real data.** Run
+  against the demo database beside the Crystal build of the same tree,
+  the 91-module program returns identical bodies and status codes on all
+  nine routes tried: the API root, `cities`, a city's districts,
+  `discover`, `tags`, a search, a city's submissions, a user, and one
+  route the environment turns off. Earlier runs only compared an empty
+  environment's 404s, which proved less than it looked.
 - **`iyi migrate --annotate`: the types R-2 wants, read off the
   program.** Crystal code does not write them and they are not missing —
   the compiler bound them to compile the program. `--annotate` compiles
