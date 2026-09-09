@@ -36,10 +36,19 @@ pub alias Bytes = Std::Slice::Bytes
 # HeaderField: Ordered representation of a single header name-value pair
 # ---------------------------------------------------------------------------
 
-pub enum IndexingMode
-  Incremental
-  WithoutIndexing
-  NeverIndexed
+pub struct IndexingMode
+  getter value : Int32
+
+  def initialize(@value : Int32)
+  end
+
+  def ==(other : IndexingMode) : Bool
+    @value == other.value
+  end
+
+  Incremental     = IndexingMode.new(0)
+  WithoutIndexing = IndexingMode.new(1)
+  NeverIndexed    = IndexingMode.new(2)
 end
 
 pub struct HeaderField
@@ -737,7 +746,7 @@ pub class Decoder
           return HpackError.new("Decompression bomb: decoded header list exceeds #{@max_header_list_size} octets")
         end
 
-        headers << HeaderField.new(name, val, IndexingMode::Incremental)
+        headers << HeaderField.new(name, val, IndexingMode::WithoutIndexing)
       end
     end
 
@@ -824,8 +833,7 @@ pub class Encoder
   end
 
   private def encode_field(field : HeaderField, buffer : Array(UInt8), huff : Bool) : Nil
-    case field.indexing
-    when IndexingMode::NeverIndexed
+    if field.indexing == IndexingMode::NeverIndexed
       # 6.2.3 Literal Header Field Never Indexed (0001xxxx)
       name_idx = Table.find_name(@dynamic_table, field.name)
       if name_idx > 0
@@ -836,7 +844,7 @@ pub class Encoder
         encode_string(field.name, buffer, huff)
         encode_string(field.value, buffer, huff)
       end
-    when IndexingMode::WithoutIndexing
+    elsif field.indexing == IndexingMode::WithoutIndexing
       # 6.2.2 Literal Header Field without Indexing (0000xxxx)
       name_idx = Table.find_name(@dynamic_table, field.name)
       if name_idx > 0
