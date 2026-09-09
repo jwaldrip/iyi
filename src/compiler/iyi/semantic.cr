@@ -117,6 +117,12 @@ class Iyi::Program
     # in it yet, and every pass from here on has to see them.
     node = splice_iyi_module_initialisers(node)
 
+    # And now that every import has been read, what their object code refers to
+    # by name. Asked per import it was a stricter order than the question: `pg`
+    # declares `PG` and `PQ`, each names the other, and no order of two
+    # boundaries answers both. See `Program::IyiArtifactRef`.
+    Prof.span("artifact references") { resolve_iyi_artifact_refs }
+
     @progress_tracker.stage("Semantic (new)") do
       Prof.span("new methods") { define_new_methods(new_expansions) }
     end

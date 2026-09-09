@@ -440,6 +440,17 @@ module Sidecar
     def index : Int32
       @index
     end
+
+    # And back the other way, which is the shape no ordering of two artifacts
+    # fixes: this body numbers a type of the namespace that names `Slot` in
+    # its own signatures. `pg` is the pair in the wild - `PG` names
+    # `PQ::Field`, `PQ` numbers `PG::Error` - so whichever boundary a
+    # consumer reads first refers to a type the other has not declared yet.
+    # A type id is a question about the *program*, and it is asked once, after
+    # every import is in.
+    def rebuilt : Int32
+      Shard::Part.new(@index).step(0)
+    end
   end
 end
 
@@ -529,6 +540,7 @@ puts Shard.worker
 Shard.render_text(STDOUT)
 puts ""
 puts Shard.slot(3).index
+puts Shard.slot(4).rebuilt
 IYI
 
 sed 's|require "./shard"|import shard|' "$WORK/app_source.iyi" > "$WORK/app_artifact.iyi"
