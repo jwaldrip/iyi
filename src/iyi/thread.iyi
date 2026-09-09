@@ -338,7 +338,9 @@
     # This thread's line; 0 on a thread nobody registered, which is the
     # main thread before the first `start`, and a child in the instant
     # before its first instruction — both found by handle then.
-    @[ThreadLocal]
+    {% unless flag?(:win32) %}
+      @[ThreadLocal]
+    {% end %}
     @@line : UInt64 = 0_u64
     # Every line, from the newest; the control page; the count of threads
     # a stop must hear from besides the stopper; the handler, once.
