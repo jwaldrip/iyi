@@ -1,0 +1,259 @@
+# Stage 10 Windows exercise: the collector on Windows x86_64.
+#
+#   ./bin/iyi run bench/windows_exercise.iyi
+#   ./bin/iyi build --cross-compile --target x86_64-windows-msvc bench/windows_exercise.iyi
+#
+# Proves allocation, size classes, header layout, TEB and PE root discovery,
+# callee-saved register spilling, sweep reclamation, and address reuse.
+
+{% if flag?(:gc_none) || flag?(:gc_boehm) %}
+  puts "windows: collector not enabled (-Dgc_none or -Dgc_boehm)"
+{% else %}
+  IyiMark.auto = false
+
+  class Box
+    property value : Int64 = 0_i64
+    property next : Box? = nil
+    def initialize(@value : Int64)
+    end
+  end
+
+  class GlobalHolder
+    @@root : Box? = nil
+    def self.root=(b : Box?)
+      @@root = b
+    end
+    def self.root : Box?
+      @@root
+    end
+    def self.slot_address : UInt64
+      pointerof(@@root).address
+    end
+  end
+
+  class Seen
+    LIMIT = 2048_u64
+    @@buffer : UInt64 = 0_u64
+    @@count : UInt64 = 0_u64
+
+    def self.buffer : UInt64
+      @@buffer = __iyi_mmap(LIMIT * 8_u64).address if @@buffer == 0
+      @@buffer
+    end
+
+    def self.add(value : UInt64) : Nil
+      return if @@count >= LIMIT
+      Pointer(UInt64).new(buffer + @@count * 8_u64).value = value
+      @@count = @@count + 1_u64
+    end
+
+    def self.holds?(value : UInt64) : Bool
+      index = 0_u64
+      while index < @@count
+        return true if Pointer(UInt64).new(buffer + index * 8_u64).value == value
+        index = index + 1_u64
+      end
+      false
+    end
+  end
+
+  def self.make_garbage(count : UInt64) : Nil
+    i = 0_u64
+    while i < count
+      ptr = Pointer(UInt8).malloc(64_u64).address
+      Seen.add(ptr)
+      i = i + 1_u64
+    end
+  end
+  {% if flag?(:win32) %}
+    puts "platform: windows-x86_64"
+  {% elsif flag?(:darwin) %}
+    puts "platform: darwin-aarch64"
+  {% else %}
+    puts "platform: linux"
+  {% end %}
+
+  # 1. Allocation, Size Classes, Alignment, and Header checks
+  p1 = Pointer(UInt8).malloc(24_u64)
+  p2 = Pointer(UInt8).malloc(120_u64)
+  p3 = Pointer(UInt8).malloc(500_u64)
+  p_large = Pointer(UInt8).malloc(2097152_u64)
+
+  raise "misaligned allocation p1" if (p1.address & 7_u64) != 0_u64
+  raise "misaligned allocation p2" if (p2.address & 7_u64) != 0_u64
+  raise "misaligned allocation p3" if (p3.address & 7_u64) != 0_u64
+  raise "misaligned allocation p_large" if (p_large.address & 7_u64) != 0_u64
+
+  # Verify clearing contract
+  raise "allocation not zeroed" if p1[0] != 0_u8 || p1[23] != 0_u8
+  raise "large allocation not zeroed" if p_large[0] != 0_u8 || p_large[1000] != 0_u8
+
+  # Verify size resolution
+  sz1 = IyiHeap.size_of(p1.address)
+  sz2 = IyiHeap.size_of(p2.address)
+  sz3 = IyiHeap.size_of(p3.address)
+  sz_large = IyiHeap.size_of(p_large.address)
+
+  raise "bad chunk size for p1" if sz1 < 24_u64
+  raise "bad chunk size for p2" if sz2 < 120_u64
+  raise "bad chunk size for p3" if sz3 < 500_u64
+  raise "bad size for large object" if sz_large < 2097152_u64
+
+  # Realloc test
+  p1_grown = IyiHeap.realloc(p1.as(Void*), 100_u64).as(UInt8*)
+  raise "realloc failed" if p1_grown.address == 0_u64
+  sz1_grown = IyiHeap.size_of(p1_grown.address)
+  # Header check: a word under a headed object (P-8) and type id in high 32 bits
+  headed_probe = IyiHeap.new_object(64_u64, 99_u64, true, false)
+  sz_headed = IyiHeap.size_of(headed_probe.address)
+  raise "header: bad size for headed object" if sz_headed != 64_u64
+  read_word = Pointer(UInt64).new(headed_probe.address - 8_u64).value
+  if read_word.unsafe_shr(32_u64) != 99_u64 || IyiMark.type_id_of(headed_probe.address) != 99_u64
+    raise "header: headed object type_id did not round trip through word at P-8"
+  end
+
+  # Headless object: fields alone, type id in arena's layout slot
+  headless_probe = IyiHeap.new_object(64_u64, 42_u64, false, false)
+  if IyiMark.type_id_of(headless_probe.address) != 42_u64
+    raise "header: headless object type_id did not round trip through layout slot"
+  end
+
+  puts "allocation: size classes, alignment and headers verified"
+  puts "step 1: before upcase"
+  shout = "hello, iyi!".upcase
+  puts "step 2: after upcase"
+  beep = "BEEP " + 7.to_s
+  puts "step 3: after to_s"
+  puts shout
+  puts beep
+  raise "upcase wrong" if shout != "HELLO, IYI!"
+  raise "beep wrong" if beep != "BEEP 7"
+  puts "step 4: after comparisons"
+  bad = 0
+  index = 0
+  while index < 50000
+    shout = "hello, iyi!".upcase
+    beep = "BEEP " + index.to_s
+    bad = bad + 1 if shout != "HELLO, IYI!"
+    bad = bad + 1 if beep.size < 6
+    index = index + 1
+  end
+  raise "string loop bad" if bad != 0
+  puts "strings: 50000 string allocations verified"
+
+  # 2. Stack and TEB Roots
+  sp = IyiRoots.stack_pointer
+  base = IyiRoots.stack_base
+  raise "stack bounds: sp >= base" if sp >= base
+  raise "stack bounds: base - sp > 512 MiB" if (base - sp) > 536870912_u64
+
+  {% if flag?(:win32) %}
+    teb = IyiRoots.current_teb
+    raise "stack bounds: current_teb is null" if teb == 0_u64
+    limit = IyiRoots.stack_limit
+    raise "stack bounds: stack_limit is null" if limit == 0_u64
+    raise "stack bounds: sp outside TEB stack range" if sp < limit || sp >= base
+    puts "stack: teb and bounds verified"
+  {% else %}
+    puts "stack: bounds verified"
+  {% end %}
+
+  # 3. Global Roots and PE Header
+  def self.set_global_root : Nil
+    GlobalHolder.root = Box.new(42_i64)
+  end
+  set_global_root
+  data_low = IyiRoots.data_low
+  data_high = IyiRoots.data_high
+  const_low = IyiRoots.const_low
+  const_high = IyiRoots.const_high
+
+  {% if flag?(:win32) %}
+    bss_low = IyiRoots.bss_low
+    bss_high = IyiRoots.bss_high
+    raise "globals: no data or bss section found" if (data_high <= data_low) && (bss_high <= bss_low)
+    slot = GlobalHolder.slot_address
+    in_data = (slot >= data_low && slot < data_high)
+    in_const = (const_high > const_low && slot >= const_low && slot < const_high)
+    in_bss = (bss_high > bss_low && slot >= bss_low && slot < bss_high)
+    raise "globals: class variable not in discovered PE sections" unless in_data || in_const || in_bss
+    puts "globals: pe header sections and roots verified"
+  {% else %}
+    raise "globals: data section empty" if data_high <= data_low
+    puts "globals: sections and roots verified"
+  {% end %}
+
+  # 4. Callee-Saved Registers and Spilling
+  {% if flag?(:win32) %}
+    raise "registers: win32 SPILL must be 64 bytes" if IyiRoots::SPILL != 64_u64
+  {% end %}
+
+  MASK = 0x5555555555555555_u64
+  reg_box = Box.new(777_i64)
+  reg_addr = reg_box.as(Void*).address
+  reg_hidden = reg_addr ^ MASK
+
+  {% if flag?(:x86_64) %}
+    asm("" :: "{r12}"(reg_hidden) :: "volatile")
+  {% else %}
+    asm("" :: "{x19}"(reg_hidden) :: "volatile")
+  {% end %}
+
+  IyiRoots.spill_registers
+
+  reg_check = uninitialized UInt64
+  {% if flag?(:x86_64) %}
+    asm("" : "={r12}"(reg_check) :: : "volatile")
+  {% else %}
+    asm("" : "={x19}"(reg_check) :: : "volatile")
+  {% end %}
+  raise "registers: r12 was clobbered" if reg_check != reg_hidden
+
+  spill_buf = IyiRoots.spill
+  found_in_spill = false
+  cursor = 0_u64
+  while cursor < IyiRoots::SPILL
+    val = IyiHeap.read64(spill_buf + cursor)
+    if val == reg_hidden
+      found_in_spill = true
+      break
+    end
+    cursor = cursor + 8_u64
+  end
+  raise "registers: hidden value not found in register spill" unless found_in_spill
+  puts "registers: callee-saved registers spilled before scanning"
+
+  # 5. Garbage Collection, Root Survival, Reclamation and Reuse
+  stack_box = Box.new(100_i64)
+  make_garbage(200_u64)
+
+  IyiMark.collect
+
+  # Live objects must survive
+  if gr = GlobalHolder.root
+    raise "survival: global root value corrupted" if gr.value != 42_i64
+  else
+    raise "survival: global root lost"
+  end
+
+  raise "survival: stack root lost" if stack_box.value != 100_i64
+  raise "survival: register root corrupted" if reg_box.value != 777_i64
+  puts "survival: live objects preserved across collection"
+
+  swept_count = IyiMark.swept
+  raise "sweep: nothing reclaimed" if swept_count == 0_u64
+  puts "sweep: unreachable objects reclaimed"
+
+  reused = 0_u64
+  j = 0_u64
+  while j < 200_u64
+    ptr = Pointer(UInt8).malloc(64_u64).address
+    reused = reused + 1_u64 if Seen.holds?(ptr)
+    j = j + 1_u64
+  end
+
+  raise "reuse: reclaimed address not reused" if reused == 0_u64
+  puts "reuse: reclaimed addresses reused"
+
+  puts "windows exercise: every check passed"
+{% end %}

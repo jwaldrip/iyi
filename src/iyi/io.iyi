@@ -279,6 +279,7 @@ class IyiIO
         @write_pos = count
       end
     end
+    flush if @sync
   end
 
   def write(text : String) : Nil
