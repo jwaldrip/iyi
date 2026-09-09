@@ -66,6 +66,17 @@ pub struct Datagram
       @port
     end
   end
+
+  # Decodes payload bytes as a String.
+  def text : String
+    String.new(@data.size) do |target|
+      target.copy_from(@data.to_unsafe, @data.size)
+    end
+  end
+
+  def to_s : String
+    text
+  end
 end
 
 pub class UdpSocket
