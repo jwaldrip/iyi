@@ -153,7 +153,7 @@ pub struct Any
   def as_bool? : Bool?
     case r = @raw
     when Bool then r
-    else nil
+    else           nil
     end
   end
 
@@ -189,23 +189,23 @@ pub struct Any
   def as_i64? : Int64?
     case r = @raw
     when Int64 then r
-    else nil
+    else            nil
     end
   end
 
   def as_f : Float64
     case r = @raw
     when Float64 then r
-    when Int64 then r.to_f64
-    else raise "expected Float, not #{r.class}"
+    when Int64   then r.to_f64
+    else              raise "expected Float, not #{r.class}"
     end
   end
 
   def as_f? : Float64?
     case r = @raw
     when Float64 then r
-    when Int64 then r.to_f64
-    else nil
+    when Int64   then r.to_f64
+    else              nil
     end
   end
 
@@ -216,7 +216,7 @@ pub struct Any
   def as_s? : String?
     case r = @raw
     when String then r
-    else nil
+    else             nil
     end
   end
 
@@ -227,7 +227,7 @@ pub struct Any
   def as_a? : Array(Any)?
     case r = @raw
     when Array(Any) then r
-    else nil
+    else                 nil
     end
   end
 
@@ -238,23 +238,23 @@ pub struct Any
   def as_h? : Hash(String, Any)?
     case r = @raw
     when Hash(String, Any) then r
-    else nil
+    else                        nil
     end
   end
 
   def size : Int32
     case r = @raw
-    when Array(Any) then r.size
+    when Array(Any)        then r.size
     when Hash(String, Any) then r.size
-    else raise "expected Array or Hash for #size, not #{r.class}"
+    else                        raise "expected Array or Hash for #size, not #{r.class}"
     end
   end
 
   def size? : Int32?
     case r = @raw
-    when Array(Any) then r.size
+    when Array(Any)        then r.size
     when Hash(String, Any) then r.size
-    else nil
+    else                        nil
     end
   end
 
@@ -642,7 +642,7 @@ class Lexer
   end
 
   private def consume_true(line : Int32, col : Int32) : Nil
-    advance # 't'
+    advance                   # 't'
     if current_byte == 114_u8 # 'r'
       advance
       if current_byte == 117_u8 # 'u'
@@ -663,7 +663,7 @@ class Lexer
   end
 
   private def consume_false(line : Int32, col : Int32) : Nil
-    advance # 'f'
+    advance                  # 'f'
     if current_byte == 97_u8 # 'a'
       advance
       if current_byte == 108_u8 # 'l'
@@ -686,7 +686,7 @@ class Lexer
   end
 
   private def consume_null(line : Int32, col : Int32) : Nil
-    advance # 'n'
+    advance                   # 'n'
     if current_byte == 117_u8 # 'u'
       advance
       if current_byte == 108_u8 # 'l'
@@ -1174,7 +1174,7 @@ pub struct Parser
   end
 end
 
-pub enum PullKind
+enum PullKind
   Null
   Bool
   Int
@@ -1482,7 +1482,7 @@ pub class Builder
     when 1 # In array, first element
       set_current_state(2)
       write_indent
-    when 2 # In array, subsequent element
+    when 2                  # In array, subsequent element
       @buffer.append(44_u8) # ','
       write_indent
     when 5 # In object, expecting value
@@ -1609,7 +1609,7 @@ pub class Builder
   end
 
   private def write_hex_u4(val : Int32) : Nil
-    @buffer.append(92_u8) # '\'
+    @buffer.append(92_u8)  # '\'
     @buffer.append(117_u8) # 'u'
     hex = "0123456789abcdef".to_unsafe
     @buffer.append(hex[(val >> 12) & 0x0F])
@@ -1670,7 +1670,7 @@ pub class Builder
 
   def field(name : String) : Nil
     st = current_state
-    if st == 4 # subsequent field
+    if st == 4              # subsequent field
       @buffer.append(44_u8) # ','
     end
     set_current_state(5) # expecting value
