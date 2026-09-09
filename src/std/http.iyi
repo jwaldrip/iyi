@@ -1,0 +1,1425 @@
+# Standard HTTP/1.1 protocol types and wire format for iyi.
+#
+# Foundation for HTTP/1.1, HTTP/2, HTTP/3, WebSockets, client, and server.
+# Designed version-neutral where possible so higher-level semantics are
+# preserved across wire protocols.
+
+module std/http
+
+import std/traits
+import std/text
+import std/slice
+import std/uri
+
+using std/traits::{Cmp}
+using std/slice::{Slice, Bytes}
+using std/uri::{Params, URI}
+
+# Re-export URI::Params as HTTP::Params per standard contract
+pub alias Params = Std::Uri::Params
+
+# HTTP Protocol Limits
+MAX_REQUEST_LINE_SIZE = 8192
+MAX_HEADER_COUNT      = 100
+MAX_HEADERS_SIZE      = 16384
+MAX_CHUNK_SIZE        = 16777216 # 16 MB
+
+# ---------------------------------------------------------------------------
+# HttpError: Error member for standard error unions
+# ---------------------------------------------------------------------------
+
+pub struct HttpError
+  getter message : String
+
+  def initialize(@message : String)
+  end
+
+  def to_s : String
+    @message
+  end
+end
+
+impl Error for HttpError
+  def message : String
+    @message
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Status: HTTP Status Codes and Reason Phrases
+# ---------------------------------------------------------------------------
+
+pub struct Status
+  getter code : Int32
+
+  def initialize(@code : Int32)
+    raise "Invalid HTTP status code: #{@code}" if @code < 100 || @code > 999
+  end
+
+  def description : String
+    case @code
+    when 100 then "Continue"
+    when 101 then "Switching Protocols"
+    when 102 then "Processing"
+    when 103 then "Early Hints"
+    when 200 then "OK"
+    when 201 then "Created"
+    when 202 then "Accepted"
+    when 203 then "Non-Authoritative Information"
+    when 204 then "No Content"
+    when 205 then "Reset Content"
+    when 206 then "Partial Content"
+    when 300 then "Multiple Choices"
+    when 301 then "Moved Permanently"
+    when 302 then "Found"
+    when 303 then "See Other"
+    when 304 then "Not Modified"
+    when 307 then "Temporary Redirect"
+    when 308 then "Permanent Redirect"
+    when 400 then "Bad Request"
+    when 401 then "Unauthorized"
+    when 402 then "Payment Required"
+    when 403 then "Forbidden"
+    when 404 then "Not Found"
+    when 405 then "Method Not Allowed"
+    when 406 then "Not Acceptable"
+    when 407 then "Proxy Authentication Required"
+    when 408 then "Request Timeout"
+    when 409 then "Conflict"
+    when 410 then "Gone"
+    when 411 then "Length Required"
+    when 412 then "Precondition Failed"
+    when 413 then "Payload Too Large"
+    when 414 then "URI Too Long"
+    when 415 then "Unsupported Media Type"
+    when 416 then "Range Not Satisfiable"
+    when 417 then "Expectation Failed"
+    when 418 then "I'm a teapot"
+    when 421 then "Misdirected Request"
+    when 422 then "Unprocessable Content"
+    when 426 then "Upgrade Required"
+    when 428 then "Precondition Required"
+    when 429 then "Too Many Requests"
+    when 431 then "Request Header Fields Too Large"
+    when 500 then "Internal Server Error"
+    when 501 then "Not Implemented"
+    when 502 then "Bad Gateway"
+    when 503 then "Service Unavailable"
+    when 504 then "Gateway Timeout"
+    when 505 then "HTTP Version Not Supported"
+    else          "Unknown"
+    end
+  end
+
+  def reason_phrase : String
+    description
+  end
+
+  def to_s : String
+    @code.to_s
+  end
+
+  def to_i : Int32
+    @code
+  end
+
+  def ==(other : Status) : Bool
+    @code == other.code
+  end
+
+  def ==(other_code : Int32) : Bool
+    @code == other_code
+  end
+
+  def informational? : Bool
+    @code >= 100 && @code <= 199
+  end
+
+  def success? : Bool
+    @code >= 200 && @code <= 299
+  end
+
+  def redirection? : Bool
+    @code >= 300 && @code <= 399
+  end
+
+  def client_error? : Bool
+    @code >= 400 && @code <= 499
+  end
+
+  def server_error? : Bool
+    @code >= 500 && @code <= 599
+  end
+
+  def ok? : Bool
+    @code == 200
+  end
+
+  def no_content? : Bool
+    @code == 204
+  end
+
+  def not_modified? : Bool
+    @code == 304
+  end
+
+  def bad_request? : Bool
+    @code == 400
+  end
+
+  def not_found? : Bool
+    @code == 404
+  end
+
+  def internal_server_error? : Bool
+    @code == 500
+  end
+
+  Continue                    = Status.new(100)
+  SwitchingProtocols           = Status.new(101)
+  OK                          = Status.new(200)
+  Created                     = Status.new(201)
+  Accepted                    = Status.new(202)
+  NoContent                   = Status.new(204)
+  PartialContent              = Status.new(206)
+  MovedPermanently            = Status.new(301)
+  Found                       = Status.new(302)
+  SeeOther                    = Status.new(303)
+  NotModified                 = Status.new(304)
+  TemporaryRedirect           = Status.new(307)
+  PermanentRedirect           = Status.new(308)
+  BadRequest                  = Status.new(400)
+  Unauthorized                = Status.new(401)
+  Forbidden                   = Status.new(403)
+  NotFound                    = Status.new(404)
+  MethodNotAllowed            = Status.new(405)
+  NotAcceptable               = Status.new(406)
+  Conflict                    = Status.new(409)
+  Gone                        = Status.new(410)
+  LengthRequired              = Status.new(411)
+  PreconditionFailed          = Status.new(412)
+  PayloadTooLarge             = Status.new(413)
+  URITooLong                  = Status.new(414)
+  UnsupportedMediaType        = Status.new(415)
+  RangeNotSatisfiable         = Status.new(416)
+  ExpectationFailed           = Status.new(417)
+  ImATeapot                   = Status.new(418)
+  UnprocessableEntity         = Status.new(422)
+  TooManyRequests             = Status.new(429)
+  RequestHeaderFieldsTooLarge = Status.new(431)
+  InternalServerError         = Status.new(500)
+  NotImplemented              = Status.new(501)
+  BadGateway                  = Status.new(502)
+  ServiceUnavailable          = Status.new(503)
+  GatewayTimeout              = Status.new(504)
+  HTTPVersionNotSupported     = Status.new(505)
+end
+
+# ---------------------------------------------------------------------------
+# Headers: Case-insensitive, preserving original case, multi-value map
+# ---------------------------------------------------------------------------
+
+pub struct Headers
+  @names : Array(String)
+  @values : Array(Array(String))
+  @keys_lower : Array(String)
+
+  def initialize
+    @names = [] of String
+    @values = [] of Array(String)
+    @keys_lower = [] of String
+  end
+
+  def size : Int32
+    @names.size
+  end
+
+  def empty? : Bool
+    @names.empty?
+  end
+
+  def self.validate_header_name(name : String) : Nil | HttpError
+    if name.empty?
+      return HttpError.new("Invalid header name: cannot be empty")
+    end
+    # Allow single leading ':' for HTTP/2 & HTTP/3 pseudo-headers (:status, :method, :protocol, etc.)
+    i = 0
+    if name.to_unsafe[0] == 58_u8 # ':'
+      if name.bytesize == 1
+        return HttpError.new("Header injection: invalid header name: " + name)
+      end
+      i = 1
+    end
+    while i < name.bytesize
+      b = name.to_unsafe[i]
+      if b == 13_u8 || b == 10_u8
+        return HttpError.new("Header injection: header name contains CR or LF")
+      end
+      if b <= 32_u8 || b >= 127_u8 || b == 58_u8 # 58 is ':'
+        return HttpError.new("Header injection: invalid header name: " + name)
+      end
+      i = i + 1
+    end
+    nil
+  end
+
+  def self.validate_header_value(value : String) : Nil | HttpError
+    i = 0
+    while i < value.bytesize
+      b = value.to_unsafe[i]
+      if b == 13_u8 || b == 10_u8
+        return HttpError.new("Header injection: header value contains CR or LF")
+      end
+      if b == 0_u8
+        return HttpError.new("Header injection: header value contains NUL byte")
+      end
+      i = i + 1
+    end
+    nil
+  end
+
+  # RFC 9110 rules for which headers may repeat as a list
+  def self.can_repeat?(name : String) : Bool
+    lower = name.downcase
+    if lower == "content-length" ||
+       lower == "content-type" ||
+       lower == "host" ||
+       lower == "if-modified-since" ||
+       lower == "if-unmodified-since" ||
+       lower == "if-match" ||
+       lower == "if-none-match" ||
+       lower == "location" ||
+       lower == "referer" ||
+       lower == "user-agent" ||
+       lower == "authorization" ||
+       lower == "proxy-authorization" ||
+       lower == "date" ||
+       lower == "retry-after" ||
+       lower == "from" ||
+       lower == "max-forwards"
+      false
+    else
+      true
+    end
+  end
+
+  private def find_index(lower_key : String) : Int32?
+    i = 0
+    while i < @keys_lower.size
+      return i if @keys_lower[i] == lower_key
+      i = i + 1
+    end
+    nil
+  end
+
+  def has_key?(name : String) : Bool
+    find_index(name.downcase) != nil
+  end
+
+  def [](name : String) : String
+    val = self[name]?
+    if val
+      val
+    else
+      raise "missing header: " + name
+    end
+  end
+
+  def []?(name : String) : String?
+    idx = find_index(name.downcase)
+    return nil unless idx
+    vals = @values[idx]
+    if vals.empty?
+      nil
+    elsif vals.size == 1
+      vals[0]
+    else
+      vals.join(", ")
+    end
+  end
+
+  def get(name : String) : Array(String)
+    idx = find_index(name.downcase)
+    if idx
+      @values[idx]
+    else
+      [] of String
+    end
+  end
+
+  def get?(name : String) : Array(String)?
+    idx = find_index(name.downcase)
+    idx ? @values[idx] : nil
+  end
+
+  def []=(name : String, value : String) : Nil
+    err_n = Headers.validate_header_name(name)
+    raise err_n.message if err_n
+    err_v = Headers.validate_header_value(value)
+    raise err_v.message if err_v
+
+    lower = name.downcase
+    idx = find_index(lower)
+    if idx
+      @names[idx] = name # preserve latest casing
+      @values[idx] = [value]
+    else
+      @names << name
+      @values << [value]
+      @keys_lower << lower
+    end
+  end
+
+  def []=(name : String, values : Array(String)) : Nil
+    err_n = Headers.validate_header_name(name)
+    raise err_n.message if err_n
+    values.each do |v|
+      err_v = Headers.validate_header_value(v)
+      raise err_v.message if err_v
+    end
+
+    lower = name.downcase
+    idx = find_index(lower)
+    if idx
+      @names[idx] = name
+      @values[idx] = values
+    else
+      @names << name
+      @values << values
+      @keys_lower << lower
+    end
+  end
+
+  def add(name : String, value : String) : Headers | HttpError
+    err_n = Headers.validate_header_name(name)
+    return err_n if err_n
+    err_v = Headers.validate_header_value(value)
+    return err_v if err_v
+
+    lower = name.downcase
+    idx = find_index(lower)
+
+    # Request smuggling protection: conflicting Content-Length values
+    if lower == "content-length"
+      if idx
+        existing = @values[idx]
+        if existing.size > 0 && existing[0].strip != value.strip
+          return HttpError.new("Request smuggling: conflicting Content-Length values")
+        end
+        return self
+      end
+    end
+
+    if idx
+      if Headers.can_repeat?(name)
+        @values[idx] << value
+      else
+        @names[idx] = name
+        @values[idx] = [value]
+      end
+    else
+      @names << name
+      @values << [value]
+      @keys_lower << lower
+    end
+    self
+  end
+
+  def delete(name : String) : Array(String)?
+    lower = name.downcase
+    idx = find_index(lower)
+    return nil unless idx
+
+    removed = @values[idx]
+    new_names = [] of String
+    new_values = [] of Array(String)
+    new_keys_lower = [] of String
+
+    i = 0
+    while i < @names.size
+      if i != idx
+        new_names << @names[i]
+        new_values << @values[i]
+        new_keys_lower << @keys_lower[i]
+      end
+      i = i + 1
+    end
+
+    @names = new_names
+    @values = new_values
+    @keys_lower = new_keys_lower
+    removed
+  end
+
+  def each(& : (String, Array(String)) -> Nil) : Nil
+    i = 0
+    while i < @names.size
+      yield @names[i], @values[i]
+      i = i + 1
+    end
+  end
+
+  def each_pair(& : (String, String) -> Nil) : Nil
+    i = 0
+    while i < @names.size
+      name = @names[i]
+      vals = @values[i]
+      v_idx = 0
+      while v_idx < vals.size
+        yield name, vals[v_idx]
+        v_idx = v_idx + 1
+      end
+      i = i + 1
+    end
+  end
+
+  def includes_word?(name : String, word : String) : Bool
+    val = self[name]?
+    return false unless val
+    parts = val.split(',')
+    target = word.downcase.strip
+    parts.each do |part|
+      return true if part.downcase.strip == target
+    end
+    false
+  end
+
+  def dup : Headers
+    copy = Headers.new
+    each_pair do |k, v|
+      copy.add(k, v)
+    end
+    copy
+  end
+
+  def serialize : String | HttpError
+    parts = [] of String
+    i = 0
+    while i < @names.size
+      name = @names[i]
+      err_n = Headers.validate_header_name(name)
+      return err_n if err_n
+
+      vals = @values[i]
+      v_idx = 0
+      while v_idx < vals.size
+        val = vals[v_idx]
+        err_v = Headers.validate_header_value(val)
+        return err_v if err_v
+
+        parts << (name + ": " + val + "\r\n")
+        v_idx = v_idx + 1
+      end
+      i = i + 1
+    end
+    parts.join("")
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Cookies and SameSite: RFC 6265 implementation with hand-parser
+# ---------------------------------------------------------------------------
+
+pub struct SameSite
+  getter value : Int32
+
+  def initialize(@value : Int32)
+  end
+
+  Lax    = SameSite.new(1)
+  Strict = SameSite.new(2)
+  None   = SameSite.new(3)
+
+  def to_s : String
+    case @value
+    when 1 then "Lax"
+    when 2 then "Strict"
+    when 3 then "None"
+    else        "Lax"
+    end
+  end
+
+  def self.parse?(str : String) : SameSite?
+    lower = str.downcase.strip
+    case lower
+    when "lax"    then Lax
+    when "strict" then Strict
+    when "none"   then None
+    else               nil
+    end
+  end
+
+  def ==(other : SameSite) : Bool
+    @value == other.value
+  end
+end
+
+pub class Cookie
+  getter name : String
+  getter value : String
+  property path : String?
+  property domain : String?
+  property expires : String?
+  property max_age : Int64?
+  property secure : Bool
+  property http_only : Bool
+  property samesite : SameSite?
+  property extension : String?
+
+  def initialize(@name : String, @value : String,
+                 @path : String? = nil,
+                 @domain : String? = nil,
+                 @expires : String? = nil,
+                 @max_age : Int64? = nil,
+                 @secure : Bool = false,
+                 @http_only : Bool = false,
+                 @samesite : SameSite? = nil,
+                 @extension : String? = nil)
+    Cookie.validate_name(@name)
+    Cookie.validate_value(@value)
+  end
+
+  def self.validate_name(name : String) : Nil
+    raise "Invalid cookie name: cannot be empty" if name.empty?
+    i = 0
+    while i < name.bytesize
+      b = name.to_unsafe[i]
+      # RFC 6265 §4.1.1: US-ASCII except CTLs or separators
+      if b <= 32_u8 || b >= 127_u8 || b == 59_u8 || b == 44_u8 || b == 61_u8 # ';', ',', '='
+        raise "Invalid cookie name: contains invalid character"
+      end
+      i = i + 1
+    end
+  end
+
+  def self.validate_value(value : String) : Nil
+    i = 0
+    while i < value.bytesize
+      b = value.to_unsafe[i]
+      # RFC 6265 §4.1.1: printable characters except control, semicolon, whitespace, comma
+      if b == 13_u8 || b == 10_u8 || b == 59_u8 # CR, LF, ';'
+        raise "Invalid cookie value: contains invalid character"
+      end
+      i = i + 1
+    end
+  end
+
+  def to_cookie_string : String
+    @name + "=" + @value
+  end
+
+  def to_set_cookie : String
+    parts = [] of String
+    parts << (@name + "=" + @value)
+    if p = @path
+      parts << ("Path=" + p)
+    end
+    if d = @domain
+      parts << ("Domain=" + d)
+    end
+    if exp = @expires
+      parts << ("Expires=" + exp)
+    end
+    if ma = @max_age
+      parts << ("Max-Age=" + ma.to_s)
+    end
+    parts << "Secure" if @secure
+    parts << "HttpOnly" if @http_only
+    if ss = @samesite
+      parts << ("SameSite=" + ss.to_s)
+    end
+    if ext = @extension
+      parts << ext
+    end
+    parts.join("; ")
+  end
+
+  def to_s : String
+    to_set_cookie
+  end
+
+  # Hand-parser for Cookie header (RFC 6265)
+  def self.parse(header : String) : Array(Cookie)
+    cookies = [] of Cookie
+    return cookies if header.empty?
+
+    pairs = header.split(';')
+    pairs.each do |raw_pair|
+      pair = raw_pair.strip
+      unless pair.empty?
+        eq_idx = pair.index('=')
+        if eq_idx
+          k = pair[0, eq_idx].strip
+          v = pair[eq_idx + 1, pair.bytesize - eq_idx - 1].strip
+          # Unwrap quotes if present
+          if v.starts_with?('"') && v.ends_with?('"') && v.bytesize >= 2
+            v = v[1, v.bytesize - 2]
+          end
+          cookies << Cookie.new(k, v)
+        end
+      end
+    end
+    cookies
+  end
+
+  # Hand-parser for Set-Cookie header (RFC 6265)
+  def self.parse_set_cookie(header : String) : Cookie | HttpError
+    return HttpError.new("Empty Set-Cookie header") if header.empty?
+
+    tokens = header.split(';')
+    return HttpError.new("Invalid Set-Cookie header: no cookie pair") if tokens.empty?
+
+    first = tokens[0].strip
+    eq = first.index('=')
+    return HttpError.new("Invalid Set-Cookie header: missing '='") unless eq
+
+    name = first[0, eq].strip
+    value = first[eq + 1, first.bytesize - eq - 1].strip
+    if value.starts_with?('"') && value.ends_with?('"') && value.bytesize >= 2
+      value = value[1, value.bytesize - 2]
+    end
+
+    path = nil.as(String?)
+    domain = nil.as(String?)
+    expires = nil.as(String?)
+    max_age = nil.as(Int64?)
+    secure = false
+    http_only = false
+    samesite = nil.as(SameSite?)
+    extension = nil.as(String?)
+
+    t_idx = 1
+    while t_idx < tokens.size
+      token = tokens[t_idx].strip
+      unless token.empty?
+        t_eq = token.index('=')
+        if t_eq
+          attr_name = token[0, t_eq].strip.downcase
+          attr_val = token[t_eq + 1, token.bytesize - t_eq - 1].strip
+
+          case attr_name
+          when "path"
+            path = attr_val
+          when "domain"
+            domain = attr_val.lstrip('.')
+          when "expires"
+            expires = attr_val
+          when "max-age"
+            max_age = attr_val.to_i64?
+          when "samesite"
+            samesite = SameSite.parse?(attr_val)
+          else
+            extension = token
+          end
+        else
+          flag = token.downcase
+          case flag
+          when "secure"
+            secure = true
+          when "httponly"
+            http_only = true
+          else
+            extension = token
+          end
+        end
+      end
+      t_idx = t_idx + 1
+    end
+
+    Cookie.new(name, value,
+      path: path,
+      domain: domain,
+      expires: expires,
+      max_age: max_age,
+      secure: secure,
+      http_only: http_only,
+      samesite: samesite,
+      extension: extension
+    )
+  end
+end
+
+pub class Cookies
+  @cookies : Array(Cookie)
+
+  def initialize
+    @cookies = [] of Cookie
+  end
+
+  def size : Int32
+    @cookies.size
+  end
+
+  def empty? : Bool
+    @cookies.empty?
+  end
+
+  def [](name : String) : Cookie
+    c = self[name]?
+    if c
+      c
+    else
+      raise "missing cookie: " + name
+    end
+  end
+
+  def []?(name : String) : Cookie?
+    i = 0
+    while i < @cookies.size
+      return @cookies[i] if @cookies[i].name == name
+      i = i + 1
+    end
+    nil
+  end
+
+  def has_key?(name : String) : Bool
+    self[name]? != nil
+  end
+
+  def []=(name : String, value : String) : Cookie
+    cookie = Cookie.new(name, value)
+    self[name] = cookie
+    cookie
+  end
+
+  def []=(name : String, cookie : Cookie) : Cookie
+    idx = -1
+    i = 0
+    while i < @cookies.size
+      if @cookies[i].name == name
+        idx = i
+        break
+      end
+      i = i + 1
+    end
+    if idx >= 0
+      @cookies[idx] = cookie
+    else
+      @cookies << cookie
+    end
+    cookie
+  end
+
+  def <<(cookie : Cookie) : Cookies
+    self[cookie.name] = cookie
+    self
+  end
+
+  def delete(name : String) : Cookie?
+    idx = -1
+    i = 0
+    while i < @cookies.size
+      if @cookies[i].name == name
+        idx = i
+        break
+      end
+      i = i + 1
+    end
+    return nil if idx < 0
+    removed = @cookies[idx]
+    new_cookies = [] of Cookie
+    i = 0
+    while i < @cookies.size
+      new_cookies << @cookies[i] if i != idx
+      i = i + 1
+    end
+    @cookies = new_cookies
+    removed
+  end
+
+  def each(& : Cookie -> Nil) : Nil
+    @cookies.each do |c|
+      yield c
+    end
+  end
+
+  def self.from_client_headers(headers : Headers) : Cookies
+    result = Cookies.new
+    raw = headers.get("Cookie")
+    raw.each do |line|
+      parsed = Cookie.parse(line)
+      parsed.each do |c|
+        result << c
+      end
+    end
+    result
+  end
+
+  def self.from_server_headers(headers : Headers) : Cookies
+    result = Cookies.new
+    raw = headers.get("Set-Cookie")
+    raw.each do |line|
+      parsed = Cookie.parse_set_cookie(line)
+      case parsed
+      in Cookie    then result << parsed
+      in HttpError then nil
+      end
+    end
+    result
+  end
+
+  def add_request_headers(headers : Headers) : Headers
+    return headers if @cookies.empty?
+    parts = [] of String
+    @cookies.each do |c|
+      parts << c.to_cookie_string
+    end
+    headers["Cookie"] = parts.join("; ")
+    headers
+  end
+
+  def add_response_headers(headers : Headers) : Headers
+    @cookies.each do |c|
+      headers.add("Set-Cookie", c.to_set_cookie)
+    end
+    headers
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Request: Version-neutral HTTP request model
+# ---------------------------------------------------------------------------
+
+pub class Request
+  @method : String
+  @target : String
+  @version : String
+  @headers : Headers
+  @body : String
+  @cookies : Cookies?
+  property method : String
+  property target : String
+  property version : String
+
+  property headers : Headers
+  property body : String
+
+  def initialize(@method : String, @target : String,
+                 headers : Headers? = nil,
+                 @body : String = "",
+                 @version : String = "HTTP/1.1")
+    @headers = headers ? headers.dup : Headers.new
+    @method = @method.upcase
+  end
+
+  def resource : String
+    @target
+  end
+
+  def content_length : Int64?
+    val = @headers["Content-Length"]?
+    val ? val.strip.to_i64? : nil
+  end
+
+  def chunked? : Bool
+    @headers.includes_word?("Transfer-Encoding", "chunked")
+  end
+
+  def keep_alive? : Bool
+    if @version == "HTTP/1.1"
+      !@headers.includes_word?("Connection", "close")
+    elsif @version == "HTTP/1.0"
+      @headers.includes_word?("Connection", "keep-alive")
+    else
+      true
+    end
+  end
+
+  def query_params : Params
+    q_idx = @target.index('?')
+    if q_idx
+      query_str = @target[q_idx + 1, @target.bytesize - q_idx - 1]
+      Params.parse(query_str)
+    else
+      Params.new
+    end
+  end
+
+  def form_params : Params
+    Params.parse(@body)
+  end
+
+  def cookies : Cookies
+    if c = @cookies
+      c
+    else
+      c = Cookies.from_client_headers(@headers)
+      @cookies = c
+      c
+    end
+  end
+
+  # Serializes request to HTTP/1.1 wire format
+  def serialize(chunked : Bool = false, trailers : Headers? = nil) : String | HttpError
+    out = [] of String
+    out << (@method + " " + @target + " " + @version + "\r\n")
+
+    h = if c = @cookies
+          c.add_request_headers(@headers.dup)
+        else
+          @headers.dup
+    end
+    if chunked
+      h["Transfer-Encoding"] = "chunked"
+      h.delete("Content-Length")
+    elsif @body.bytesize > 0 && !h.has_key?("Content-Length")
+      h["Content-Length"] = @body.bytesize.to_s
+    end
+
+    ser_h = h.serialize
+    case ser_h
+    in HttpError then return ser_h
+    in String    then out << ser_h
+    end
+
+    out << "\r\n"
+
+    if chunked
+      if @body.bytesize > 0
+        hex_len = @body.bytesize.to_i64.to_s(16)
+        out << (hex_len + "\r\n" + @body + "\r\n")
+      end
+      # final zero chunk
+      out << "0\r\n"
+      if trailers && !trailers.empty?
+        ser_t = trailers.serialize
+        case ser_t
+        in HttpError then return ser_t
+        in String    then out << ser_t
+        end
+      end
+      out << "\r\n"
+    else
+      out << @body
+    end
+
+    out.join("")
+  end
+
+  # Parses an HTTP/1.1 wire format request
+  def self.parse(raw : String) : Request | HttpError
+    return HttpError.new("Empty request") if raw.empty?
+
+    # 1. Parse Request Line
+    line_end = raw.index("\n")
+    return HttpError.new("Invalid request: no newline found") unless line_end
+
+    req_line = raw[0, line_end].chomp("\r")
+    if req_line.bytesize > MAX_REQUEST_LINE_SIZE
+      return HttpError.new("Request line exceeds maximum length (#{MAX_REQUEST_LINE_SIZE} bytes)")
+    end
+
+    parts = req_line.split(' ')
+    if parts.size != 3
+      return HttpError.new("Invalid request line: expected method, target, version")
+    end
+
+    method = parts[0]
+    target = parts[1]
+    version = parts[2]
+
+    # 2. Parse Headers
+    headers = Headers.new
+    cur_pos = line_end + 1
+    total_headers_size = 0
+    header_count = 0
+
+    has_cl = false
+    first_cl_val = ""
+    has_te = false
+
+    while cur_pos < raw.bytesize
+      next_nl = raw.index("\n", cur_pos)
+      return HttpError.new("Incomplete request: missing header end") unless next_nl
+
+      line = raw[cur_pos, next_nl - cur_pos].chomp("\r")
+      cur_pos = next_nl + 1
+
+      break if line.empty? # End of headers
+
+      total_headers_size = total_headers_size + line.bytesize + 2
+      if total_headers_size > MAX_HEADERS_SIZE
+        return HttpError.new("Headers size exceeds maximum limit (#{MAX_HEADERS_SIZE} bytes)")
+      end
+
+      header_count = header_count + 1
+      if header_count > MAX_HEADER_COUNT
+        return HttpError.new("Header count exceeds maximum limit (#{MAX_HEADER_COUNT})")
+      end
+
+      colon = line.index(':')
+      return HttpError.new("Invalid header line: missing colon") unless colon
+
+      h_name = line[0, colon].strip
+      h_val = line[colon + 1, line.bytesize - colon - 1].strip
+
+      lower_name = h_name.downcase
+      if lower_name == "content-length"
+        if has_cl && first_cl_val != h_val
+          return HttpError.new("Request smuggling: conflicting Content-Length values")
+        end
+        has_cl = true
+        first_cl_val = h_val
+      elsif lower_name == "transfer-encoding"
+        has_te = true
+      end
+
+      add_res = headers.add(h_name, h_val)
+      case add_res
+      in HttpError then return add_res
+      in Headers   then nil
+      end
+    end
+
+    # Request smuggling check: both Transfer-Encoding and Content-Length
+    if has_cl && has_te
+      return HttpError.new("Request smuggling: both Content-Length and Transfer-Encoding present")
+    end
+
+    # 3. Parse Body
+    body_res = Std::Http.parse_body(raw, cur_pos, headers)
+    case body_res
+    in HttpError               then return body_res
+    in Tuple(String, Headers?) then
+      req = Request.new(method, target, headers, body_res[0], version)
+      return req
+    end
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Response: Version-neutral HTTP response model
+# ---------------------------------------------------------------------------
+
+pub class Response
+  @status : Status
+  @status_message : String
+  @version : String
+  @headers : Headers
+  @body : String
+  @trailers : Headers
+  @cookies : Cookies?
+
+  property status : Status
+  property status_message : String
+  property version : String
+
+  property headers : Headers
+  property body : String
+  property trailers : Headers
+
+  def initialize(@status : Status,
+                 headers : Headers? = nil,
+                 @body : String = "",
+                 status_message : String? = nil,
+                 @version : String = "HTTP/1.1")
+    @status_message = status_message || @status.description
+    @headers = headers ? headers.dup : Headers.new
+    @trailers = Headers.new
+  end
+
+  def self.new(status_code : Int32,
+               headers : Headers? = nil,
+               body : String = "",
+               status_message : String? = nil,
+               version : String = "HTTP/1.1") : Response
+    new(Status.new(status_code), headers, body, status_message, version)
+  end
+
+  def status_code : Int32
+    @status.code
+  end
+
+  def success? : Bool
+    @status.success?
+  end
+
+  def content_length : Int64?
+    val = @headers["Content-Length"]?
+    val ? val.strip.to_i64? : nil
+  end
+
+  def chunked? : Bool
+    @headers.includes_word?("Transfer-Encoding", "chunked")
+  end
+
+  def keep_alive? : Bool
+    if @version == "HTTP/1.1"
+      !@headers.includes_word?("Connection", "close")
+    elsif @version == "HTTP/1.0"
+      @headers.includes_word?("Connection", "keep-alive")
+    else
+      true
+    end
+  end
+
+  def cookies : Cookies
+    if c = @cookies
+      c
+    else
+      c = Cookies.from_server_headers(@headers)
+      @cookies = c
+      c
+    end
+  end
+
+  # Serializes response to HTTP/1.1 wire format
+  def serialize(chunked : Bool = false, trailers : Headers? = nil) : String | HttpError
+    out = [] of String
+    out << (@version + " " + @status.code.to_s + " " + @status_message + "\r\n")
+
+    h = if c = @cookies
+          c.add_response_headers(@headers.dup)
+        else
+          @headers.dup
+    end
+    if chunked
+      h["Transfer-Encoding"] = "chunked"
+      h.delete("Content-Length")
+    elsif @body.bytesize > 0 && !h.has_key?("Content-Length")
+      h["Content-Length"] = @body.bytesize.to_s
+    end
+
+    ser_h = h.serialize
+    case ser_h
+    in HttpError then return ser_h
+    in String    then out << ser_h
+    end
+
+    out << "\r\n"
+
+    if chunked
+      if @body.bytesize > 0
+        hex_len = @body.bytesize.to_i64.to_s(16)
+        out << (hex_len + "\r\n" + @body + "\r\n")
+      end
+      out << "0\r\n"
+      t_to_send = trailers || @trailers
+      if t_to_send && !t_to_send.empty?
+        ser_t = t_to_send.serialize
+        case ser_t
+        in HttpError then return ser_t
+        in String    then out << ser_t
+        end
+      end
+      out << "\r\n"
+    else
+      out << @body
+    end
+
+    out.join("")
+  end
+
+  # Parses an HTTP/1.1 wire format response
+  def self.parse(raw : String) : Response | HttpError
+    return HttpError.new("Empty response") if raw.empty?
+
+    # 1. Parse Status Line
+    line_end = raw.index("\n")
+    return HttpError.new("Invalid response: no newline found") unless line_end
+
+    status_line = raw[0, line_end].chomp("\r")
+    if status_line.bytesize > MAX_REQUEST_LINE_SIZE
+      return HttpError.new("Status line exceeds maximum length (#{MAX_REQUEST_LINE_SIZE} bytes)")
+    end
+
+    parts = status_line.split(' ', 3)
+    if parts.size < 2
+      return HttpError.new("Invalid status line: expected version and status code")
+    end
+
+    version = parts[0]
+    code_int = parts[1].to_i?
+    return HttpError.new("Invalid HTTP status code: " + parts[1]) unless code_int
+    return HttpError.new("Invalid HTTP status code out of range: " + parts[1]) if code_int < 100 || code_int > 999
+
+    status = Status.new(code_int)
+    message = parts.size >= 3 ? parts[2].chomp("\r") : status.description
+
+    # 2. Parse Headers
+    headers = Headers.new
+    cur_pos = line_end + 1
+    total_headers_size = 0
+    header_count = 0
+
+    has_cl = false
+    first_cl_val = ""
+    has_te = false
+
+    while cur_pos < raw.bytesize
+      next_nl = raw.index("\n", cur_pos)
+      return HttpError.new("Incomplete response: missing header end") unless next_nl
+
+      line = raw[cur_pos, next_nl - cur_pos].chomp("\r")
+      cur_pos = next_nl + 1
+
+      break if line.empty? # End of headers
+
+      total_headers_size = total_headers_size + line.bytesize + 2
+      if total_headers_size > MAX_HEADERS_SIZE
+        return HttpError.new("Headers size exceeds maximum limit (#{MAX_HEADERS_SIZE} bytes)")
+      end
+
+      header_count = header_count + 1
+      if header_count > MAX_HEADER_COUNT
+        return HttpError.new("Header count exceeds maximum limit (#{MAX_HEADER_COUNT})")
+      end
+
+      colon = line.index(':')
+      return HttpError.new("Invalid header line: missing colon") unless colon
+
+      h_name = line[0, colon].strip
+      h_val = line[colon + 1, line.bytesize - colon - 1].strip
+
+      lower_name = h_name.downcase
+      if lower_name == "content-length"
+        if has_cl && first_cl_val != h_val
+          return HttpError.new("Request smuggling: conflicting Content-Length values")
+        end
+        has_cl = true
+        first_cl_val = h_val
+      elsif lower_name == "transfer-encoding"
+        has_te = true
+      end
+
+      add_res = headers.add(h_name, h_val)
+      case add_res
+      in HttpError then return add_res
+      in Headers   then nil
+      end
+    end
+
+    if has_cl && has_te
+      return HttpError.new("Request smuggling: both Content-Length and Transfer-Encoding present")
+    end
+
+    # 3. Parse Body
+    body_res = Std::Http.parse_body(raw, cur_pos, headers)
+    case body_res
+    in HttpError               then return body_res
+    in Tuple(String, Headers?) then
+      resp = Response.new(status, headers, body_res[0], message, version)
+      if tr = body_res[1]
+        resp.trailers = tr
+      end
+      return resp
+    end
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Body Parser: Handles Fixed Length, Chunked Encoding & Trailers
+# ---------------------------------------------------------------------------
+
+private def self.is_hex_digit(b : UInt8) : Bool
+  (b >= 48_u8 && b <= 57_u8) || (b >= 97_u8 && b <= 102_u8) || (b >= 65_u8 && b <= 70_u8)
+end
+
+def self.parse_body(raw : String, start_pos : Int32, headers : Headers) : Tuple(String, Headers?) | HttpError
+  if headers.includes_word?("Transfer-Encoding", "chunked")
+    # Chunked body parser
+    body_parts = [] of String
+    pos = start_pos
+    trailers = Headers.new
+
+    while true
+      nl = raw.index("\n", pos)
+      return HttpError.new("Incomplete chunked body: missing final zero chunk") unless nl
+
+      size_line = raw[pos, nl - pos].chomp("\r").strip
+      pos = nl + 1
+
+      # Strip chunk extensions
+      semi = size_line.index(';')
+      size_token = semi ? size_line[0, semi].strip : size_line
+
+      if size_token.empty?
+        return HttpError.new("Invalid chunk size: not valid hex")
+      end
+
+      # Validate hex digits
+      valid_hex = true
+      i = 0
+      while i < size_token.bytesize
+        unless is_hex_digit(size_token.to_unsafe[i])
+          valid_hex = false
+          break
+        end
+        i = i + 1
+      end
+
+      return HttpError.new("Invalid chunk size: not valid hex") unless valid_hex
+      chunk_size = size_token.to_i64?(16)
+      return HttpError.new("Invalid chunk size: not valid hex") unless chunk_size
+      return HttpError.new("Invalid chunk size: negative") if chunk_size < 0
+
+      if chunk_size > MAX_CHUNK_SIZE.to_i64
+        return HttpError.new("Chunk size exceeds maximum allowed size (#{MAX_CHUNK_SIZE} bytes)")
+      end
+
+      if chunk_size == 0
+        # Final zero chunk! Read trailers until empty line
+        while pos < raw.bytesize
+          t_nl = raw.index("\n", pos)
+          break unless t_nl
+
+          t_line = raw[pos, t_nl - pos].chomp("\r")
+          pos = t_nl + 1
+          break if t_line.empty?
+
+          t_colon = t_line.index(':')
+          if t_colon
+            t_k = t_line[0, t_colon].strip
+            t_v = t_line[t_colon + 1, t_line.bytesize - t_colon - 1].strip
+            t_add = trailers.add(t_k, t_v)
+            case t_add
+            in HttpError then return t_add
+            in Headers   then nil
+            end
+          end
+        end
+        return {body_parts.join(""), trailers}
+      end
+
+      # Read chunk data
+      available = raw.bytesize - pos
+      if available < chunk_size
+        return HttpError.new("Incomplete chunked body: missing final zero chunk")
+      end
+
+      chunk_data = raw[pos, chunk_size.to_i32]
+      body_parts << chunk_data
+      pos = pos + chunk_size.to_i32
+
+      # Expect CRLF after chunk data
+      if pos >= raw.bytesize
+        return HttpError.new("Invalid chunked encoding: missing CRLF after chunk data")
+      end
+
+      if raw.to_unsafe[pos] == 13_u8 && (pos + 1 < raw.bytesize) && raw.to_unsafe[pos + 1] == 10_u8
+        pos = pos + 2
+      elsif raw.to_unsafe[pos] == 10_u8
+        pos = pos + 1
+      else
+        return HttpError.new("Invalid chunked encoding: missing CRLF after chunk data")
+      end
+    end
+  elsif headers.has_key?("Content-Length")
+    cl_str = headers["Content-Length"].strip
+    cl = cl_str.to_i64?
+    return HttpError.new("Invalid Content-Length") unless cl
+    return HttpError.new("Negative Content-Length") if cl < 0
+
+    available = raw.bytesize - start_pos
+    if available < cl
+      return HttpError.new("Incomplete body: expected #{cl} bytes but got #{available}")
+    end
+
+    body = raw[start_pos, cl.to_i32]
+    return {body, nil.as(Headers?)}
+  else
+    # No Content-Length and not chunked: rest of raw data
+    body = raw[start_pos, raw.bytesize - start_pos]
+    return {body, nil.as(Headers?)}
+  end
+end
