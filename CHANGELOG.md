@@ -52,9 +52,11 @@
   **merge follows the `require`** rather than the file - a class body
   with `require "./x/*"` under it is loaded before the files that reopen
   the class, and ordering them first left `abstract class` as a second
-  definition the other language ignores. `exception_page` 3 of 3,
+  definition the other language ignores. With `--annotate --check`:
+  `exception_page` 3 of 3,
   `radix` 5 of 5, `dotenv` 1 of 1, `jwt` 5 of 7, `faker` 2 of 3,
-  `micrate` 4 of 8, `kemal` 11 of 13. A **sidecar** - the `.cr` file a
+  `micrate` 4 of 6, `kemal` 11 of 13, `backtracer` 2 of 5 (regex
+  literals, IV.1d's). A **sidecar** - the `.cr` file a
   reopening of somebody else's type stays in - names the tree's own
   types too and has no `using` line to reach them through, so every such
   path is written in full and what it names counts as crossing: Kemal's

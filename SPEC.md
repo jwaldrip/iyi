@@ -3317,15 +3317,17 @@ lost the `pub` on a name only the sidecar beside it uses. And a def is
 typed where it is written (III.1) by standing a probe up outside its type,
 which cannot name a `private class`: every def of a private class nested
 in an exported one was refused, pointing at the def
-(`definition_typing.cr`'s `nameable?`). Two more are line-local rewrites that could not see enough: a **file name
+(`definition_typing.cr`'s `nameable?`).
+
+Two more are line-local rewrites that could not see enough: a **file name
 is not a module name** (`micrate-wrapper.cr` gave `module
 micrate-wrapper`, which parses as a subtraction), and a **chain's
 `.not_nil!` on a line of its own** has its receiver on the lines above, so
 `( || raise …)` was written where nothing preceded it - the composing
 spelling `.try { |value| value } || raise …` takes the whole chain, which
-is what the bang meant where it sat. Kemal is 11 of 13 after them,
-`micrate` 5 of 8, and the fixture plants both. A **bare** call to a
-bang method - `validate_typ!(payload)` inside the type that defines it -
+is what the bang meant where it sat. The fixture plants both.
+
+A **bare** call to a bang method - `validate_typ!(payload)` inside the type that defines it -
 has no receiver to key the rewrite on, and is rewritten where the name is
 one this tree defines, which is what keeps `!=`, a prefix `!` and a
 `"boom!"` out of it. The **manifest travels**: a shard's `version.cr` is
@@ -3335,11 +3337,12 @@ one this tree defines, which is what keeps `!=`, a prefix `!` and a
 `require "./exception_page/*"` *under* it, so the files that reopen the
 class are loaded after it — ordering them first made a reopening the first
 definition and left `abstract class` as a second one the other language
-ignores, which refused every `abstract def` in it. After those:
-`exception_page` 3 of 3, `radix` 5 of 5, `dotenv` 1 of 1, `jwt` 5 of 7,
-`faker` 2 of 3, `micrate` 4 of 8 — and every remaining refusal is R-2
-asking for a type where a library has no program to read one from, or a
-regex literal, which is IV.1d's open item and not migration's.
+ignores, which refused every `abstract def` in it. After all of them,
+with `--annotate --check`: `exception_page` 3 of 3, `radix` 5 of 5,
+`dotenv` 1 of 1, `kemal` 11 of 13, `jwt` 5 of 7, `micrate` 4 of 6,
+`faker` 2 of 3, `backtracer` 2 of 5 — and every remaining refusal is R-2
+asking for a type where nothing in the library's own programs called the
+def, or a regex literal, which is IV.1d's open item and not migration's.
 
 **What it does not do, said here rather than found later.** The 53 defs
 above are a person's to write; until they are, the application's own modules
