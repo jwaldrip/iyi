@@ -2578,9 +2578,9 @@ what the build corrected) — a *dynamic* group's union still
 comes out through `task.value`; a fiber blocked *joining* is the one park
 cancellation does not reach, which a failing group papers over by
 cancelling every child; and the platforms that cannot carry the model get
-nothing rather than an imitation — wasm32 cannot switch stacks, and win32
-is unwritten. darwin arm64 stopped being one of them: its kqueue poller is
-the paragraph above, and it holds the same gates in CI.
+nothing rather than an imitation: wasm32 cannot switch stacks (measured in
+III.4.12), and win32 is unwritten. darwin arm64 stopped being one of them:
+its kqueue poller is the paragraph above, and it holds the same gates in CI.
 
 #### III.4.9 The typed group, `group do ... end!`: **BUILT, with one correction the build forced**
 
@@ -2821,6 +2821,91 @@ total paused a fortieth to a tenth of Boehm's, the longest pause under
 Go's on churn and binary trees and level on the live items, and the
 footprint Go's on churn and binary trees and a budget over it on the
 live items.
+
+#### III.4.12 Concurrency on wasm32-wasi: **MEASURED and REFUSED: why this target has no runtime**
+
+SPEC.md III.4 specifies structured concurrency (`group`/`spawn`, `Channel`,
+`select`, cancellation as values) on Linux x86_64, Linux aarch64 and darwin
+arm64. On wasm32-wasi a program naming `group` fails to compile with an
+explicit refusal. III.4.8 rejected shipping the syntax as sequential
+imitation, because a `group` whose tasks run sequentially is not concurrency
+and would teach everyone the wrong thing about what iyi does.
+
+This section records the investigation into whether wasm32-wasi could support
+real coroutines, what each candidate mechanism costs, what specifically blocks
+it on this toolchain, and what would have to change for the verdict to flip.
+The probe is `bench/wasm_concurrency_probe.sh`.
+
+**1. Native WebAssembly stack switching.** Core WebAssembly has an unaddressable
+call stack and value stack. The stack-switching proposal adds instructions to
+allocate, suspend, resume and switch stacks. In wasmtime 48.0.1 (7bac2c277
+2026-08-24), `wasmtime -W help` lists `-W stack-switching[=y|n]`, but passing
+the flag to run a module fails immediately:
+
+```
+Error: the wasm_stack_switching feature is not supported on this compiler configuration
+```
+
+Passing `-W all-proposals=y` fails with the same error. Cranelift and Wasmtime
+disable stack switching at compile time in shipped binaries. Native stack
+switching is unavailable on the host.
+
+**2. WASI threads (wasi-threads Preview1).** wasi-sdk 24 ships
+`wasm32-wasi-threads-clang`. Compiling a pthread program with `-pthread
+-Wl,--shared-memory,--max-memory=67108864` produces a module importing
+`wasi::thread-spawn`. Running under wasmtime 48.0.1 fails by default:
+
+```
+Error: unknown import: `wasi::thread-spawn` has not been defined
+```
+
+Attempting to enable threading via `wasmtime run -S threads=y` fails:
+
+```
+Error: the `-Sthreads` flag is no longer supported
+```
+
+Attempting `wasmtime run -S preview2=n -S threads=y` fails with `the
+\`-Spreview2=n\` flag is no longer supported`. Wasmtime 48.0.1 removed the
+legacy Preview1 wasi-threads implementation. Furthermore, SPEC.md III.9
+forbids linking pthreads, which would reintroduce libc onto the link line and
+destroy the dependency floor.
+
+**3. Binaryen Asyncify (wasm-opt --asyncify).** Binaryen provides a post-link
+whole-module transformation that rewrites function bodies to unwind the call
+stack into a linear-memory buffer and rewind it upon re-entry. Tested on real
+binaries under wasmtime 48.0.1, Asyncify is blocked by architecture and toolchain:
+
+- **Asymmetric host requirement.** Asyncify unwinding unwinds the entire call
+  stack out of `main` and `_start`. Standalone WASI CLI hosts (`wasmtime run`)
+  do not provide an Asyncify host runner to intercept the unwind and re-invoke
+  entry points. In-module attempts to unwind without a host trap or exit the
+  process without resumption.
+- **Code size penalty.** Whole-module instrumentation increases binary size
+  substantially: 120,442 B to 182,811 B (+51.8%) on `samples/iyi/hello.iyi`, and
+  80,227 B to 141,802 B (+76.7%) on `fib.iyi`.
+- **Execution slowdown.** On recursive Fibonacci (32) under wasmtime 48.0.1,
+  native execution averaged 18.2 ms (min 16.7 ms); asyncified execution
+  averaged 37.7 ms (min 33.8 ms), a 106.9% slowdown (2.07x wall time).
+- **Build toolchain boundary.** The iyi compiler compiles wasm by emitting an
+  unlinked object file and printing the driver link command. `wasm-opt` is a
+  separate post-link binary that neither iyi nor wasi-sdk 24 packages, which
+  would violate III.9's toolchain floor.
+
+**The refusal.** `group` remains a compile-time error on wasm32-wasi. The macro
+in `src/iyi/prelude.iyi` names the reason:
+
+```
+group is not available on wasm32-wasi: WebAssembly cannot switch stacks, wasmtime 48 disables the stack-switching proposal, wasi-threads is unsupported, and asyncify cannot run without a host event loop (SPEC.md III.4)
+```
+
+**What would have to change for the answer to flip.** For wasm32-wasi to carry
+iyi's structured concurrency, the host runtime and toolchain must provide
+native stack switching out of the box: either the Wasm stack-switching proposal
+stabilised and enabled by default in Cranelift/Wasmtime without extra flags, or
+WASI 0.2/0.3 component-model async execution supporting stackful fibers directly.
+Neither a sequential imitation nor a post-link bytecode transformation is
+acceptable.
 
 ### III.5 Module initialisation: **PROPOSED; rules 1, 2 and 4 BUILT**
 
