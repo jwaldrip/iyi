@@ -2735,6 +2735,68 @@ describe "Semantic: iyi" do
         CODE
     end
 
+    # `pub` is what another module may name, and two kinds of declaration
+    # were missing from it. An `alias` is a name for a type - half of what
+    # the `validator` shard's surface is - and an `annotation` is applied
+    # by *consumers*: `annotation Checker` in a shard means a class in
+    # somebody else's module writes `@[Check::Checker]`. Both were refused
+    # by the parser ("can't apply `pub` to ..."), which left a migrated
+    # tree unable to export either.
+    it "exports an alias" do
+      assert_no_errors <<-CODE
+        module app/thing
+
+        pub alias Money = Int32
+
+        pub def owed : Money
+          1
+        end
+        CODE
+    end
+
+    it "leaves an unexported alias to the module's own body" do
+      assert_error <<-CODE, "does not export `Money`"
+        module app/thing
+
+        alias Money = Int32
+
+        module Consumer
+          using app/thing::{Money}
+        end
+        CODE
+    end
+
+    it "exports an annotation, which is what a consumer applies" do
+      assert_no_errors <<-CODE
+        module app/thing
+
+        pub annotation Priced; end
+
+        module Consumer
+          using app/thing::{Priced}
+
+          @[Priced]
+          class Item
+            def priced? : Bool
+              {{ @type.annotation(Priced) ? true : false }}
+            end
+          end
+        end
+        CODE
+    end
+
+    it "leaves an unexported annotation to the module's own body" do
+      assert_error <<-CODE, "does not export `Priced`"
+        module app/thing
+
+        annotation Priced; end
+
+        module Consumer
+          using app/thing::{Priced}
+        end
+        CODE
+    end
+
     it "refuses a selective `using` of a name the module does not export" do
       assert_error <<-CODE, "App::Greeter does not export `internal`"
         module app/greeter

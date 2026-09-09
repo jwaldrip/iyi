@@ -39,7 +39,15 @@ module Iyi::IyiMod
   # pointer with nothing under them unless that byte says so; v44 code
   # stored a type id under every `__crystal_malloc64`, which under the
   # v45 prelude is the chunk before.
-  FORMAT_VERSION = 45_u32
+  # v46: a type layout's pointer offsets are u32, not u16 - a type larger
+  # than 64 KiB has offsets a u16 cannot say, and `Gcry::Heap` is one.
+  # v47: a class variable carries the annotations written above it, because
+  # `@[ThreadLocal]` decides which global its object code writes to.
+  # v48: a shard's top-level `fun`s travel as source, because their machine
+  # code is in a main module and main modules do not travel.
+  # v49: a match type is named the way its `~match<...>` symbol is, which for
+  # a union of virtual types is not the way it prints.
+  FORMAT_VERSION = 49_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -136,6 +144,10 @@ module Iyi::IyiMod
     # `ldflags`, `framework`, static — is already on the consumer's own copy of
     # the annotation. What was missing is only that somebody used it.
     Libs = 18
+
+    # iyi: under `--crystal`, the shard's own top-level `fun`s, as source. See
+    # `Artifact#top_level_funs`.
+    TopLevelFuns = 19
 
     # iyi: the pointer maps of the types this module owns, one `TypeLayout`
     # per type, keyed in the file by the type's name. Same reason as
@@ -425,6 +437,23 @@ module Iyi::IyiMod
   # because a declaration that does names it: a carried record's `handler :
   # Handler` is the text the module was written with, and a consumer without
   # the alias reads it as an undefined constant.
+  # One class variable of a declaration: what it is called, its type, the
+  # value the shard wrote beside it, and the annotations above it.
+  #
+  # The annotations are the reason this is a record rather than the triple it
+  # was. `@[ThreadLocal]` is not decoration: a thread-local class variable is
+  # reached through a function that hands back a per-thread address, and one
+  # the consumer declared without it is a different global from the one this
+  # artifact's object code writes to. `gcry` has eleven, and a consumer got
+  # `relocation R_X86_64_TPOFF32 cannot be used against symbol
+  # 'Gcry::Heap::mark_worker'` - the link asking for a thread-local that
+  # nobody had declared thread-local.
+  record ClassVarDecl,
+    name : String,
+    type : String,
+    value : String,
+    annotations : Array(String) = [] of String
+
   record TypeDecl,
     name : String,
     kind : String,
@@ -470,7 +499,7 @@ module Iyi::IyiMod
     # `members` is: it renders differently and means differently. A field is
     # allocated per instance and has no value here; a class variable is
     # allocated once and its value is half of what has to arrive.
-    class_vars : Array({String, String, String}) = [] of {String, String, String},
+    class_vars : Array(ClassVarDecl) = [] of ClassVarDecl,
     # iyi: what this class inherits from, empty when it inherits from the root
     # its kind implies.
     #
@@ -660,7 +689,7 @@ module Iyi::IyiMod
     # `TypeDecl`. `module Backtracer; class_getter(configuration)` is the case
     # — `Backtracer::configuration` was undefined at the end of a build that
     # had every one of the shard's *types* and their class variables.
-    class_vars : Array({String, String, String}) = [] of {String, String, String} do
+    class_vars : Array(ClassVarDecl) = [] of ClassVarDecl do
     def self.empty
       new([] of Signature, [] of TypeDecl, [] of ImplRecord)
     end
@@ -712,6 +741,13 @@ module Iyi::IyiMod
   # pointer words of every arm, because which arm is live is runtime
   # business; over-marking retains, and under-marking loses.
   #
+  # The offsets are u32. They were u16, which capped a mapped object at 64
+  # KiB and refused the one type in this tree that is bigger: `Gcry::Heap`
+  # holds a pointer word at byte offset 464,024, and a shard whose own heap
+  # cannot be described is a shard that cannot cross a boundary. The
+  # runtime table has always been u64 words, so the widening is the
+  # artifact's alone.
+  #
   # The offsets describe the object as it is laid out today, type id word
   # included. When Stage 2 puts the mark word header on live objects the
   # map shifts with it, and that migration is Stage 2's.
@@ -727,8 +763,8 @@ module Iyi::IyiMod
     type_id : Int32,
     alloc_size : UInt32,
     scan_cap : UInt32,
-    scan_offsets : Array(UInt16),
-    noscan_offsets : Array(UInt16)
+    scan_offsets : Array(UInt32),
+    noscan_offsets : Array(UInt32)
 
   # What a `.iyimod` says about the module it was built from.
   #
@@ -985,6 +1021,21 @@ module Iyi::IyiMod
     # a type name starts with a capital, so nothing else can key against it.
     property top_level : Array(Signature)
 
+    # iyi: the shard's own top-level `fun`s, as source.
+    #
+    # A `fun` written outside every namespace is a C symbol with a body, and
+    # neither half of it can travel the way a `def` does: the declaration
+    # belongs at the consumer's global scope - inside a module it is `can only
+    # declare fun at lib or global scope` - and the machine code is in the
+    # *main* module of the build that made it, which never travels. So the
+    # source crosses and the consumer compiles it, which is what already
+    # happens to a top-level `def`'s body.
+    #
+    # `gcry` writes two, one per worker thread it starts by `pthread_create`,
+    # and its own object code calls them by their C names: without this a
+    # consumer's link ended on `undefined symbol: gcry_mark_worker_main`.
+    property top_level_funs : Array(String)
+
     # iyi: what the shard added to types it does not own. See
     # `Section::Reopened`.
     #
@@ -1103,7 +1154,7 @@ module Iyi::IyiMod
                    @module_extends_self = true,
                    @regexes = [] of RegexConst, @class_vars = [] of ClassVarRef,
                    @match_types = [] of String, @symbols = [] of String,
-                   @top_level = [] of Signature,
+                   @top_level = [] of Signature, @top_level_funs = [] of String,
                    @reopened = [] of TypeDecl, @libs = [] of String,
                    @layouts = [] of {String, TypeLayout})
     end
@@ -1195,6 +1246,9 @@ module Iyi::IyiMod
       sections << {Section::Reopened, encode_reopened(artifact)}
     end
 
+    unless artifact.top_level_funs.empty?
+      sections << {Section::TopLevelFuns, encode_strings(artifact.top_level_funs)}
+    end
     unless artifact.top_level.empty?
       sections << {Section::TopLevel, encode_top_level(artifact)}
     end
@@ -1347,6 +1401,7 @@ module Iyi::IyiMod
       symbols = [] of String
       libs = [] of String
       top_level = [] of Signature
+      top_level_funs = [] of String
       reopened = [] of TypeDecl
       requires = [] of String
       hashes = Hashes.empty
@@ -1367,25 +1422,26 @@ module Iyi::IyiMod
         file.read_fully?(payload) || raise Error.new("#{path} ends inside a section")
         verify(path, section, payload, sum)
         case section
-        when Section::Header      then header = decode_header(payload)
-        when Section::Imports     then imports = decode_imports(payload)
-        when Section::Exports     then exports = decode_exports(payload)
-        when Section::ObjectCode  then object_code = decode_object_code(payload)
-        when Section::MonoBodies  then mono_bodies = decode_mono_bodies(payload)
-        when Section::MacroBodies then macro_bodies = decode_macro_bodies(payload)
-        when Section::Initialiser then initialiser = String.new(payload)
-        when Section::TypeIds     then type_ids = decode_type_ids(payload)
-        when Section::Constants   then constants = decode_constants(payload)
-        when Section::Regexes     then regexes = decode_regexes(payload)
-        when Section::ClassVars   then class_vars = decode_class_vars(payload)
-        when Section::MatchTypes  then match_types = decode_match_types(payload)
-        when Section::Symbols     then symbols = decode_symbols(payload)
-        when Section::Libs        then libs = decode_libs(payload)
-        when Section::TopLevel    then top_level = decode_top_level(payload)
-        when Section::Reopened    then reopened = decode_reopened(payload)
-        when Section::Requires    then requires = decode_requires(payload)
-        when Section::Hashes      then hashes = decode_hashes(payload)
-        when Section::Layouts     then layouts = decode_layouts(payload)
+        when Section::Header       then header = decode_header(payload)
+        when Section::Imports      then imports = decode_imports(payload)
+        when Section::Exports      then exports = decode_exports(payload)
+        when Section::ObjectCode   then object_code = decode_object_code(payload)
+        when Section::MonoBodies   then mono_bodies = decode_mono_bodies(payload)
+        when Section::MacroBodies  then macro_bodies = decode_macro_bodies(payload)
+        when Section::Initialiser  then initialiser = String.new(payload)
+        when Section::TypeIds      then type_ids = decode_type_ids(payload)
+        when Section::Constants    then constants = decode_constants(payload)
+        when Section::Regexes      then regexes = decode_regexes(payload)
+        when Section::ClassVars    then class_vars = decode_class_vars(payload)
+        when Section::MatchTypes   then match_types = decode_match_types(payload)
+        when Section::Symbols      then symbols = decode_symbols(payload)
+        when Section::Libs         then libs = decode_libs(payload)
+        when Section::TopLevel     then top_level = decode_top_level(payload)
+        when Section::TopLevelFuns then top_level_funs = decode_strings(payload)
+        when Section::Reopened     then reopened = decode_reopened(payload)
+        when Section::Requires     then requires = decode_requires(payload)
+        when Section::Hashes       then hashes = decode_hashes(payload)
+        when Section::Layouts      then layouts = decode_layouts(payload)
         else
           # Written by a later compiler, or a section this one does not need.
           # Skipping is the point of the table.
@@ -1402,7 +1458,7 @@ module Iyi::IyiMod
         hashes, constants, macro_bodies, requires, header[:crystal_library],
         header[:class_root], header[:filled], header[:module_extends_self],
         regexes, class_vars, match_types, symbols,
-        top_level, reopened, libs, layouts)
+        top_level, top_level_funs, reopened, libs, layouts)
     end
   rescue ex : Error
     raise ex
@@ -1473,9 +1529,7 @@ module Iyi::IyiMod
       io.puts "exports       (none)"
     else
       io.puts "exports"
-      exports.class_vars.each do |(name, type, value)|
-        io.puts "  #{name} : #{type}#{value.empty? ? "" : " = #{value}"}"
-      end
+      exports.class_vars.each { |class_var| io.puts "  #{dump_class_var(class_var)}" }
       exports.functions.each { |signature| io.puts "  #{render_signature(signature)}" }
 
       # Named for what they are, because the dump renders an exported def and
@@ -1562,6 +1616,11 @@ module Iyi::IyiMod
       end
     end
 
+    unless artifact.top_level_funs.empty?
+      io.puts "top-level funs"
+      artifact.top_level_funs.each { |source| io.puts "  #{source.lines.first? || ""}" }
+    end
+
     unless artifact.top_level.empty?
       io.puts "top-level defs"
       artifact.top_level.each { |signature| io.puts "  #{render_signature(signature)}" }
@@ -1636,6 +1695,11 @@ module Iyi::IyiMod
   # Empty for every module that has none, which is every iyi module: iyi has no
   # top level to write a `def` at. This is a `--crystal` shard's shape.
   def self.top_level_declarations(artifact : Artifact, io : IO) : Nil
+    # The `fun`s first, and with their bodies: this is the one text outside the
+    # module, which is the only scope a `fun` can be declared in. See
+    # `Artifact#top_level_funs`.
+    artifact.top_level_funs.each { |source| io << source << '\n' }
+
     bodies = artifact.mono_bodies
     artifact.top_level.each_with_index do |signature, index|
       io << '\n' if index > 0
@@ -1706,10 +1770,9 @@ module Iyi::IyiMod
     # a method like any other.
     unless exports.class_vars.empty?
       io << '\n'
-      exports.class_vars.each do |(name, type, value)|
-        io << name << " : " << type
-        io << " = " << value unless value.empty?
-        io << '\n'
+      exports.class_vars.each do |class_var|
+        class_var.annotations.each { |source| io << source << '\n' }
+        io << render_class_var(class_var) << '\n'
       end
     end
 
@@ -2103,11 +2166,29 @@ module Iyi::IyiMod
     declaration.macros.each { |source| io.puts "#{inner}#{source.lines.first? || ""}" }
     declaration.assoc_types.each { |name| io.puts "#{inner}type #{name}" }
     declaration.fields.each { |(name, type, _)| io.puts "#{inner}#{name} : #{type}" }
-    declaration.class_vars.each do |(name, type, value)|
-      io.puts "#{inner}#{name} : #{type}#{value.empty? ? "" : " = #{value}"}"
-    end
+    declaration.class_vars.each { |class_var| io.puts "#{inner}#{dump_class_var(class_var)}" }
     declaration.types.each { |nested| dump_type_declaration io, nested, inner }
     declaration.methods.each { |signature| io.puts "#{inner}#{render_signature(signature)}" }
+  end
+
+  # One class variable, as source.
+  #
+  # `@@x : T = uninitialized T` is not a form any parser here takes:
+  # `uninitialized` is the whole right-hand side of an assignment or it is a
+  # call to a method nobody wrote - `undefined method 'uninitialized' for
+  # Gcry::Platform:Module`. So one the shard declared that way renders as the
+  # assignment it wrote, whose type is the one written beside it anyway.
+  private def self.render_class_var(class_var : ClassVarDecl) : String
+    name, type, value = class_var.name, class_var.type, class_var.value
+    return "#{name} = #{value}" if value.starts_with?("uninitialized ")
+    value.empty? ? "#{name} : #{type}" : "#{name} : #{type} = #{value}"
+  end
+
+  # The same line for a *dump*, where the annotations go beside it rather than
+  # above it: one line per class variable is what makes a dump readable.
+  private def self.dump_class_var(class_var : ClassVarDecl) : String
+    line = render_class_var(class_var)
+    class_var.annotations.empty? ? line : "#{class_var.annotations.join(' ')} #{line}"
   end
 
   # One type declaration, and the types declared inside it.
@@ -2167,10 +2248,9 @@ module Iyi::IyiMod
     # assignment so that a variable with no initialiser still arrives typed —
     # a lazy `class_getter` has its `||=` in the method that travels as machine
     # code, and all that is owed here is the global it assigns to.
-    declaration.class_vars.each do |(name, type, value)|
-      io << inner << name << " : " << type
-      io << " = " << value unless value.empty?
-      io << '\n'
+    declaration.class_vars.each do |class_var|
+      class_var.annotations.each { |source| io << inner << source << '\n' }
+      io << inner << render_class_var(class_var) << '\n'
     end
 
     # An enum's members, which are what an enum is. `Small = 0` rather than
@@ -2453,6 +2533,16 @@ module Iyi::IyiMod
     read_strings(IO::Memory.new(payload))
   end
 
+  private def self.encode_strings(values : Array(String)) : Bytes
+    io = IO::Memory.new
+    write_strings io, values
+    io.to_slice
+  end
+
+  private def self.decode_strings(payload : Bytes) : Array(String)
+    read_strings(IO::Memory.new(payload))
+  end
+
   private def self.decode_mono_bodies(payload : Bytes) : Hash(String, String)
     io = IO::Memory.new(payload)
     bodies = {} of String => String
@@ -2607,11 +2697,11 @@ module Iyi::IyiMod
       type_id = io.read_bytes(Int32, FORMAT)
       alloc_size = io.read_bytes(UInt32, FORMAT)
       scan_cap = io.read_bytes(UInt32, FORMAT)
-      scan_offsets = Array(UInt16).new(io.read_bytes(UInt32, FORMAT)) do
-        io.read_bytes(UInt16, FORMAT)
+      scan_offsets = Array(UInt32).new(io.read_bytes(UInt32, FORMAT)) do
+        io.read_bytes(UInt32, FORMAT)
       end
-      noscan_offsets = Array(UInt16).new(io.read_bytes(UInt32, FORMAT)) do
-        io.read_bytes(UInt16, FORMAT)
+      noscan_offsets = Array(UInt32).new(io.read_bytes(UInt32, FORMAT)) do
+        io.read_bytes(UInt32, FORMAT)
       end
       {name, TypeLayout.new(type_id, alloc_size, scan_cap, scan_offsets, noscan_offsets)}
     end
@@ -2662,7 +2752,7 @@ module Iyi::IyiMod
 
     write_signatures io, artifact.exports.carried_functions, docs
 
-    write_triples io, artifact.exports.class_vars
+    write_class_vars io, artifact.exports.class_vars
 
     io.to_slice
   end
@@ -2682,7 +2772,7 @@ module Iyi::IyiMod
       write_strings io, declaration.supertraits
       write_triples io, declaration.fields
       write_pairs io, declaration.members
-      write_triples io, declaration.class_vars
+      write_class_vars io, declaration.class_vars
       write_string io, declaration.superclass
       write_strings io, declaration.includes
       write_strings io, declaration.macros
@@ -2705,7 +2795,7 @@ module Iyi::IyiMod
       supertraits = read_strings(io)
       fields = read_triples(io)
       members = read_pairs(io)
-      class_vars = read_triples(io)
+      class_vars = read_class_vars(io)
       superclass = read_string(io)
       includes = read_strings(io)
       macros = read_strings(io)
@@ -2767,7 +2857,7 @@ module Iyi::IyiMod
         free_variable_bounds, assoc_types, read_signatures(io))
     end
 
-    Exports.new(functions, types, impls, read_signatures(io), read_triples(io))
+    Exports.new(functions, types, impls, read_signatures(io), read_class_vars(io))
   end
 
   private def self.write_strings(io : IO, values : Array(String)) : Nil
@@ -2799,6 +2889,22 @@ module Iyi::IyiMod
   private def self.read_triples(io : IO) : Array({String, String, String})
     Array({String, String, String}).new(io.read_bytes(UInt32, FORMAT)) do
       {read_string(io), read_string(io), read_string(io)}
+    end
+  end
+
+  private def self.write_class_vars(io : IO, values : Array(ClassVarDecl)) : Nil
+    io.write_bytes values.size.to_u32, FORMAT
+    values.each do |class_var|
+      write_string io, class_var.name
+      write_string io, class_var.type
+      write_string io, class_var.value
+      write_strings io, class_var.annotations
+    end
+  end
+
+  private def self.read_class_vars(io : IO) : Array(ClassVarDecl)
+    Array(ClassVarDecl).new(io.read_bytes(UInt32, FORMAT)) do
+      ClassVarDecl.new(read_string(io), read_string(io), read_string(io), read_strings(io))
     end
   end
 

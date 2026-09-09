@@ -13,7 +13,9 @@ module std/slice
 import std/enumerable
 using std/enumerable::{Enumerable}
 
-alias Bytes = Slice(UInt8)
+# `pub`, because an alias is part of a module's surface like anything else: an
+# unexported one is unreachable from a consumer, which R-2 now says out loud.
+pub alias Bytes = Slice(UInt8)
 
 pub struct Slice(T)
   @pointer : Pointer(T)

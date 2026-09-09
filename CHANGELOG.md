@@ -19,6 +19,75 @@
   III.10, Appendix B #17). They use `Iyi::Rx` now, and the one check a
   pattern would have been compiled per name and per line for — does this
   line name this word on its own — is hand-written.
+- **A template travels to the path the build looks in.** Its path is
+  written from the directory the *original* program was built from -
+  `ECR.embed("src/views/x.ecr")` resolves against the build's working
+  directory - and the copy went to a path relative to the *migrating
+  process's* cwd instead. Migrating from anywhere but the project root
+  therefore compiled 91 modules and refused the first template with `No
+  such file or directory`. The root is the tree's now; the gate migrates
+  from `/` and builds the result.
+- **`iyi migrate FILE.cr`: one file at a time.** It writes `FILE.iyi`
+  beside the source under its own name, with the header path an importer
+  writes; it carries what the *tree* requires, because a module is a
+  compilation unit and what one file uses another file required
+  (`base_log_handler.cr` names `HTTP::Handler` and requires nothing); its
+  own relative requires stay `require`s, since those files are still the
+  other language; and nothing else is touched - no manifest copy, no
+  assets, no `lib` link. It goes from the top only: a file a *module*
+  already requires is refused, because a `require` that finds a `.iyi`
+  gets a compilation unit and none of its names, and Crystal files that
+  require it are a note instead - they keep reading the `.cr`. Measured:
+  the application's entry alone becomes a module, the program builds with
+  the other 98 files still Crystal, and it answers the Crystal build byte
+  for byte.
+- **Twelve real projects, and the five rules six of them found.**
+  `crystal-db`, `shards`, `halite`, `ameba`, `amber` and Kemal's own
+  checkout, migrated as they come from GitHub. The library a tree is
+  written against is the one it *requires*, not a bare prelude: `HTTP`
+  is undeclared until something requires `http/client`, so halite
+  reopening `HTTP::Headers` was read as a module of the tree's own and
+  imported in a cycle. A merge can make a cycle, so merging repeats
+  until it cannot (`shards` had fourteen modules refused by a cycle its
+  tree did not have). A `require` under a wrapper's `end` does not stop
+  the peel, while a macro there does - `{% for cls in
+  Exception.constants %}` after a peeled `module Exception` found the
+  other language's and aliased its constants over the module's own
+  classes. `class Error < Error` means the enclosing namespace's, not
+  itself. And a bang accessor keeps its visibility
+  (`protected getter! segment`), which had left a `!` in a name.
+  The one shape the verb does not rewrite is now named at every site
+  instead of arriving as `can't declare instance variables in X because
+  X extends it`: a module *mixed into a type* is a `trait` and an
+  `impl` here, and `--check` counts those as their own kind.
+  `crystal-db` 4 of 6, `shards` 3 of 5, `halite` 5 of 7, Kemal's
+  checkout 11 of 12; `ameba` and `amber` need `shards install` first,
+  which the refusal says.
+- **Pointed at a project, the verb reaches what the project reaches.**
+  Four fixes from one report - `iyi migrate <project> --out <dir>` on a
+  shard checkout produced nonsense, and it did. A project root is not a
+  source tree: a shards project's library is its `src` and everything
+  beside the manifest is a program of its own, so Kemal's root read 79
+  files instead of 34 and merged 24 of them into one module; the library
+  is migrated and the narrowing is printed. A merged module is named
+  after the project (`kemal_and_others`, where joining stems
+  alphabetically said `cli_and_others`). The shards the tree requires
+  are reached from the tree that is written - a `lib` symlink beside the
+  modules, since `require "exception_page"` resolves from `./lib`
+  relative to the compiler's cwd and every module used to refuse with
+  `can't find file` until a person exported `CRYSTAL_PATH` by hand; the
+  manifest travels beside it, so `shards install` there replaces the
+  link. And a return type goes before a `forall`, not after it. Kemal's
+  own checkout: 0 of 12 modules compiling → **11 of 12**, the twelfth
+  being R-2 asking for one signature. The migrated application now
+  builds and serves with no environment set at all.
+- **The migrated application answers byte for byte, on real data.** Run
+  against the demo database beside the Crystal build of the same tree,
+  the 91-module program returns identical bodies and status codes on all
+  nine routes tried: the API root, `cities`, a city's districts,
+  `discover`, `tags`, a search, a city's submissions, a user, and one
+  route the environment turns off. Earlier runs only compared an empty
+  environment's 404s, which proved less than it looked.
 - **`iyi migrate --annotate`: the types R-2 wants, read off the
   program.** Crystal code does not write them and they are not missing —
   the compiler bound them to compile the program. `--annotate` compiles
@@ -52,9 +121,11 @@
   **merge follows the `require`** rather than the file - a class body
   with `require "./x/*"` under it is loaded before the files that reopen
   the class, and ordering them first left `abstract class` as a second
-  definition the other language ignores. `exception_page` 3 of 3,
+  definition the other language ignores. With `--annotate --check`:
+  `exception_page` 3 of 3,
   `radix` 5 of 5, `dotenv` 1 of 1, `jwt` 5 of 7, `faker` 2 of 3,
-  `micrate` 4 of 8, `kemal` 11 of 13. A **sidecar** - the `.cr` file a
+  `micrate` 4 of 6, `kemal` 11 of 13, `backtracer` 2 of 5 (regex
+  literals, IV.1d's). A **sidecar** - the `.cr` file a
   reopening of somebody else's type stays in - names the tree's own
   types too and has no `using` line to reach them through, so every such
   path is written in full and what it names counts as crossing: Kemal's
@@ -63,7 +134,48 @@
   `private class` nested in an exported one, which III.1's
   definition-site probe wrote the name of from outside - `nameable?` now
   answers false for a private type, and the fixture plants one.
-  `--out src` used to write the modules into the tree
+  Two more line-local rewrites could not see enough: a file name is not a
+  module name (`micrate-wrapper.cr` gave `module micrate-wrapper`, a
+  subtraction), and a chain's `.not_nil!` on a line of its own has its
+  receiver above it, so `( || raise …)` was written where nothing
+  preceded it - `.try { |value| value } || raise …` composes and takes
+  the whole chain. Three shards were refused by the *language*, not by
+  the migration. A **regex literal** is refused where the program has no
+  runtime `Regex` - iyi's own prelude - and that was read off the file's
+  extension: under `--crystal` the library is Crystal's and `Regex` is in
+  it, so a `.iyi` file that already writes `Regex.new("a.c")` may write
+  the sugar for it (`backtracer` 2 of 5 → **4 of 4**). And `pub` did not
+  admit an **alias** or an **annotation**, which are both surface - a
+  name for a type, and a mark a *consumer* applies. Both take `pub` and
+  both travel in the artifact, the alias as what it resolved to
+  (`validator` 8 of 11 → **11 of 11**). With them came a codegen fix that
+  was not theirs: code emitted into `_main`, such as a constant's
+  initialiser, kept whichever module's closure host was open, so
+  `~$Regex:<hash>:const_init` referred to a `Regex.new` copied into a
+  module's unit with internal linkage and the link ended undefined. Two
+  more rewrites: a `macro is!` loses its bang the way a `def` does, and a
+  def whose parameter list runs over several lines is named rather than
+  annotated (writing the return type after the `(` produced
+  `def before_check( : ::Nil`). And a `module` whose file has trailing
+  declarations under its `end` is peeled after all - `module Validator`
+  with `alias Valid = Validator` beside it was left nested, and every
+  consumer's `using` refused. `--check` says whose each refusal is now: a
+  `require` this machine cannot resolve is the environment's (`shards
+  install` comes first, and that is all twelve of `kilt`'s), R-2's
+  question is the author's, and what is left is the verb's own and asks
+  to be reported. The list of what R-2 still wants moved
+  after the `pub` pass and grew a return-type case: it used to name
+  declarations that then lost their `pub` - entries nobody could act on -
+  and left `zip_types is exported and does not say what it returns` to
+  arrive as a compiler refusal instead of a note. Each entry now names
+  the module that forces the export and *when* the question is asked:
+  the next compile for a module's own `pub def`, the artifact for a
+  public method of an exported type, which is how a tree compiles clean
+  with the list still long. A `lib/` with a manifest beside it is `shards
+  install`'s, not the tree's: `migrate .` on the application read 889
+  files, 756 of them somebody else's, and merged 359 into one module. It
+  is skipped and counted, and pointing the verb at a project root says
+  that the library is its `src`. `--out src` used to write the modules into the tree
   it was reading and leave a `src/src` behind; it is refused, and the
   gate holds the source tree untouched. And when `--check` comes back clean the verb says
   what to type next: the build command with the entry filled in, the
@@ -110,8 +222,69 @@
   And what it is worth in build time is written beside it: 8% on the
   kemal sample (2.03 s to 1.88), because a `--crystal` build's bill is
   Crystal's library and the program's own code, not the shard. On a
-  real 21-shard application it binds 12 of 19 and names the seven it
-  cannot, five of them defects of the boundary itself, each with a log.
+  real 21-shard application it binds 18 of 19 and writes 22 artifacts,
+  because a shard with more than one namespace is more than one
+  boundary; the one it does not bind is macros, which do not cross.
+- **A boundary a program can import: fifteen defects, found by consuming
+  one.** `iyi bind` wrote artifacts a reader could parse and a program
+  could not use. A probe that does nothing but `import <name>` now
+  builds, links and runs against 20 of the 22 artifacts a real 21-shard
+  application produces, where 11 of 18 did. Every one of the fifteen is
+  a shape `bench/bind_roundtrip.sh` carries now, and the fixture fails
+  without the fix that found it. A class variable's `@[ThreadLocal]`
+  travels, because a consumer that declares the variable without it
+  writes to a different global than the object code does — `relocation
+  R_X86_64_TPOFF32 cannot be used against symbol` from a link with
+  every declaration in hand. One the shard declared `uninitialized`
+  renders as the assignment it wrote, and one whose default calls a
+  private method carries that method (`email`'s `@@log : Log =
+  create_logger`). A private method named only *after* a non-ASCII
+  character in a travelling body travels: the search for what a body
+  calls was byte arithmetic on a character index, so `gcry`'s
+  `append_hex` read as uncalled. A shard's own top-level `fun` crosses
+  as source, because its machine code is in a main module and main
+  modules do not travel — and the text joins the consumer's tree, since
+  a `fun` is emitted where it is written rather than where it is called.
+  A macro call at the top level does not travel at all: it is a
+  declaration written compactly, and copying `Kilt.register_engine("ecr",
+  ECR.embed)` into the initialiser handed a consumer `ECR.embed` with
+  nothing in it. A class variable reached only through `pointerof`
+  travels (`gcry`'s `@@old_segv`), a type layout may be past 64 KiB
+  (`Gcry::Heap`, offsets now u32), a match type is named the way its
+  `~match<...>` symbol is rather than the way it prints, and one is
+  resolved part by part — a union of virtual types, a module used as a
+  value, a generic instantiated with either — instead of being refused
+  whole. A private type of Crystal's library is not a name a boundary may
+  write and *is* a value it may hold, which is two questions and now two
+  tables. And a bare name from another boundary is not adopted where
+  Crystal's library or this shard itself declares one: `Kilt::Exception`
+  had been rewriting every `class Error < Exception` bound after it, and
+  `jwt` came out importing eleven boundaries it names nothing from
+  because the edge test was a substring match.
+- **One boundary per namespace, and per part.** A boundary is rooted at
+  one namespace and a shard need not have one: `pg` declares `PG` and
+  `PQ`, its wire protocol, and `PG`'s signatures name `PQ::Field` while
+  its units number it. `tool bind` reports the namespaces it found
+  beside the one it was given (`also declares: PQ`), and `iyi bind`
+  binds each — the root first, because binding it is what finds them,
+  then again with them beside it. The parts a shard's entry never
+  requires are boundaries too: `bindata` ships `src/bindata/asn1.cr`,
+  which `jwt` requires and `bindata`'s own entry does not, so `jwt`'s
+  object code numbered an `ASN1::BER` no artifact carried. What is left
+  is the cycle: `PQ` numbers `PG::Error` while `PG` names `PQ::Field`,
+  an import graph is a DAG (R-1), and those two are the pair a program
+  cannot import today.
+- **What cannot compile cannot cross.** A shard can hold a method whose
+  body does not typecheck when it is instantiated — nothing in
+  `ed25519` calls `RistrettoPoint#==`, whose body calls an
+  `assert_rst_point` that shard never defined — and the keep file calls
+  everything, so the fill build died and took the shard and every shard
+  behind it. The method the error trace lands in is written to
+  `<artifact>.drop`, both builds run again without it, and the boundary
+  carries the rest: `ed25519` loses two methods and `jwt`, which
+  depends on it, binds. The keep file marks each call with the key that
+  names it, the drop file says what it left out and why, and discovery
+  is each run's — a shard fixed since the last one binds whole.
 - **The context pack says how a consumer names what it shows.** Every
   block of `iyi mod context` opens with the two lines a file writes to
   reach the surface beneath - `import kemal/dsl`, then `using

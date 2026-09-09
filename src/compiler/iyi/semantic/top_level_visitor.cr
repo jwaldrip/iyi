@@ -1146,6 +1146,11 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
       scope.types[name] = type
     end
 
+    # iyi: `pub annotation` (R-2). An annotation a consumer applies is part
+    # of the surface; one nothing outside writes is the module's own.
+    record_export scope, name, node.exported?
+    type.private = true if unexported_in_unit?(scope, node.exported?)
+
     node.resolved_type = type
 
     attach_doc type, node, annotations
@@ -1176,6 +1181,11 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     scope.types[name] = alias_type
 
     alias_type.private = true if node.visibility.private?
+
+    # iyi: `pub alias` (R-2). An unmarked one is the module's own, the same
+    # as an unmarked class - and the artifact carries the marked ones.
+    record_export scope, name, node.exported?
+    alias_type.private = true if unexported_in_unit?(scope, node.exported?)
 
     node.resolved_type = alias_type
 

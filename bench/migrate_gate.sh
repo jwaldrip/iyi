@@ -125,6 +125,25 @@ else
   tail -6 "$WORK/annotate.log"
 fi
 
+# Two shapes a line-local rewrite gets wrong, both found on shards: a file
+# name that is not a module name (`price-list.cr` gave `module
+# shop/price-list`, a subtraction), and a chain whose `.not_nil!` sits on a
+# line of its own, where the receiver is above and the narrowing has to be
+# one that composes.
+echo "== a file name becomes a module name, and a chain keeps its narrowing"
+holds "the hyphen is gone from the module" "module shop/price_list" "$WORK/out/shop/price_list.iyi"
+holds "and the chain narrows without a receiver on the line" \
+      ".try { |value| value } || raise" "$WORK/out/shop/price_list.iyi"
+
+# A regex literal is refused only where the program has no runtime `Regex`
+# - iyi's own prelude. A migrated tree is compiled against Crystal's
+# library, where the class behind the literal lives, and the fixture's
+# `Shop::Names.slug` is one: it has to compile in a `.iyi` module, and the
+# constant it expands to has to travel in that module's artifact, which
+# the artifact steps above build from.
+echo "== a regex literal is the module's, and travels"
+holds "the literal is in the module, not rewritten" "gsub(/[^a-z0-9]+/i" "$WORK/out/shop/names.iyi"
+
 # A reopening of a type the tree does not own stays Crystal in a sidecar
 # beside its module (R-3), and it names the tree's own types too - which
 # moved. It has no `using` line to reach them through, so they are written
@@ -189,6 +208,170 @@ fi
 # initialiser of any module that uses it, which means the entry's own
 # `require` cannot be spliced after the imported modules' initialisers
 # (semantic.cr, `splice_iyi_module_initialisers`).
+# `pub` is what another module may name, and two kinds of declaration were
+# missing from it: an `alias` (a name for a type) and an `annotation` (which
+# a *consumer* applies). The fixture's `Shop::Money` and `Shop::Priced` are
+# both, written in `shop/report`'s signature and over its class - and both
+# have to travel in the artifact, which the steps above build from.
+echo "== an alias and an annotation are part of a module's surface"
+holds "the alias is exported"        "pub alias Money = Int32"  "$WORK/out/shop/config.iyi"
+holds "the annotation is exported"   "pub annotation Priced"    "$WORK/out/shop/config.iyi"
+holds "and both are reached by name" "Money, Priced}"           "$WORK/out/shop/report.iyi"
+# `mod dump` rather than `strings`: the declarations section is compressed,
+# so the bytes are not the text.
+if "$IYI" mod dump "$WORK/annotated/mods/shop/config.iyimod" 2>/dev/null | grep -q "pub annotation Priced"; then
+  step ok "the annotation travels in the artifact"
+else
+  step fail "the artifact does not carry the annotation"
+fi
+if "$IYI" mod dump "$WORK/annotated/mods/shop/config.iyimod" 2>/dev/null | grep -q "pub alias Money = Int32"; then
+  step ok "and the alias travels as what it resolved to"
+else
+  step fail "the artifact does not carry the alias"
+fi
+
+# A call on the module's *own* namespace: the wrapper became the module, so
+# `Shop::Counter.report(count)` inside `shop/counter` is `report(count)`.
+# Left qualified it read as a name the module does not export - R-2 refusing
+# a file nobody wrote.
+echo "== a call on the module's own namespace loses it"
+holds "the self-qualified call is bare" "report(count)} x2" "$WORK/out/shop/counter.iyi"
+if grep -vE '^[[:space:]]*#' "$WORK/out/shop/counter.iyi" | grep -q "Shop::Counter"; then
+  step fail "the module's own namespace survived: $(grep -vE '^[[:space:]]*#' "$WORK/out/shop/counter.iyi" | grep -m1 'Shop::Counter')"
+else
+  step ok "and nothing names the module from inside it"
+fi
+
+# A Crystal module *mixed into a type* is the one shape this verb does not
+# rewrite: iyi spells a mixin as a `trait` with an `impl` per type (II.6),
+# and a mixin migrated as a module puts what `macro included` writes at the
+# module's own level - `can't declare instance variables in X because X
+# extends it`, which names nothing. Every site is named instead.
+echo "== a mixin is named, not guessed at"
+mkdir -p "$WORK/mixin/src/mix"
+printf 'module Mix\n  module Countable\n    macro included\n      @count = 0\n    end\n\n    def counted : Int32\n      @count\n    end\n  end\nend\n' > "$WORK/mixin/src/mix/countable.cr"
+printf 'require "./mix/countable"\n\nmodule Mix\n  class Bag\n    include Countable\n  end\nend\n' > "$WORK/mixin/src/mix.cr"
+(cd "$WORK/mixin" && "$IYI" migrate src --out "$WORK/mixin/out" --verbose > "$WORK/mixin.log" 2>&1)
+holds "the include into a type is named a mixin" "mixes " "$WORK/mixin.log"
+holds "and the trait it would be is named"      "a \`trait\` and an \`impl\`" "$WORK/mixin.log"
+
+# `--check` says whose each refusal is, because the three are worked on by
+# different people: a `require` this machine cannot resolve is the
+# environment's, R-2's question is the author's, and what is left is this
+# verb's. A tree with a shard that is not installed prints the first, and
+# nothing else - the fixture gets one by asking for a shard that is not there.
+echo "== a refusal says whose it is"
+mkdir -p "$WORK/absent/src"
+printf 'require "nowhere"\n\nmodule Absent\n  def self.hello : String\n    "hi"\n  end\nend\n' > "$WORK/absent/src/absent.cr"
+(cd "$WORK/absent" && "$IYI" migrate src --out "$WORK/absent/out" --check > "$WORK/absent.log" 2>&1)
+holds "the require is named as the environment's" "the tree does not compile as Crystal here either" "$WORK/absent.log"
+if grep -q "that is the migration's own" "$WORK/absent.log"; then
+  step fail "a missing shard was counted as the migration's"
+else
+  step ok "and nothing is blamed on the rewrite"
+fi
+
+# `shards install` writes other projects' source into a `lib/` beside the
+# manifest, and `iyi migrate .` read all of it: on an application that was
+# 756 files that were not its own, 359 of them merged into one module.
+# One file at a time, which is the other way to do this. It goes beside its
+# source under its own name (a run inside the directory put a second one
+# under it), it carries what the *tree* requires because a module is a
+# compilation unit, and it is refused where a module already requires the
+# file - that consumer would get a compilation unit and none of its names.
+echo "== one file at a time, from the top"
+rm -rf "$WORK/step"
+mkdir -p "$WORK/step/src/shop"
+printf 'name: step\nversion: 0.1.0\n' > "$WORK/step/shard.yml"
+printf 'require "json"\n\nmodule Shop\n  class Item\n    include JSON::Serializable\n    getter name : String\n\n    def initialize(@name)\n    end\n  end\nend\n' > "$WORK/step/src/shop/item.cr"
+printf 'require "./shop/item"\n\nputs Shop::Item.new("kahve").to_json\n' > "$WORK/step/src/shop.cr"
+(cd "$WORK/step" && "$CRYSTAL" run src/shop.cr 2>/dev/null | grep -v '^Using compiled compiler' > "$WORK/step_crystal.out")
+if (cd "$WORK/step" && "$IYI" migrate src/shop.cr --check > "$WORK/step.log" 2>&1); then
+  if [ -f "$WORK/step/src/shop.iyi" ]; then
+    step ok "the module is beside its source, under its own name"
+  else
+    step fail "the module went somewhere else: $(find "$WORK/step" -name '*.iyi' | head -1)"
+  fi
+  holds "its own requires stayed Crystal" 'require "./shop/item"' "$WORK/step/src/shop.iyi"
+  if (cd "$WORK/step" && "$IYI" run --crystal src/shop.iyi 2>/dev/null | grep -v '^Using compiled compiler' > "$WORK/step_iyi.out") &&
+     diff -q "$WORK/step_crystal.out" "$WORK/step_iyi.out" > /dev/null; then
+    step ok "and the program answers what it answered"
+  else
+    step fail "the program does not answer the same"
+    tail -3 "$WORK/step_iyi.out"
+  fi
+else
+  step fail "migrate of one file failed"
+  tail -5 "$WORK/step.log"
+fi
+if (cd "$WORK/step" && "$IYI" migrate src/shop/item.cr > "$WORK/step_refuse.log" 2>&1); then
+  step fail "a file a module already requires was converted anyway"
+else
+  holds "a file a module requires is refused, with why" "none of its names" "$WORK/step_refuse.log"
+fi
+
+# A template's path is written from the directory the *original* program
+# was built from - `ECR.embed("src/views/report.html.ecr")` resolves against
+# the build's working directory - so the copy has to sit at that same path
+# under the migrated tree. It used to be the process's own cwd: migrating
+# from anywhere but the project root put every asset under a directory the
+# build does not look in, and the first template refused with `No such file
+# or directory` in a program that had compiled.
+echo "== a template travels to the path the build looks in"
+if (cd / && "$IYI" migrate "$FIXTURE/src" --out "$WORK/elsewhere" > "$WORK/elsewhere.log" 2>&1); then
+  if [ -f "$WORK/elsewhere/src/shop/views/report.html.ecr" ]; then
+    step ok "the template is where the embed names it, from any cwd"
+  else
+    step fail "the template landed elsewhere: $(find "$WORK/elsewhere" -name '*.ecr' | head -1)"
+  fi
+  if (cd "$WORK/elsewhere" && "$IYI" build --crystal -o "$WORK/elsewhere_shop" shop.iyi > "$WORK/elsewhere_build.log" 2>&1); then
+    step ok "and the program builds from there"
+  else
+    step fail "the program does not build from another cwd"
+    grep -m1 -A3 "Error" "$WORK/elsewhere_build.log"
+  fi
+else
+  step fail "migrate from another cwd failed"
+  tail -5 "$WORK/elsewhere.log"
+fi
+
+echo "== a project root is not a source tree"
+if (cd "$FIXTURE" && "$IYI" migrate . --out "$WORK/whole" > "$WORK/whole.log" 2>&1); then
+  holds "the library is what is migrated" "its library is what is migrated" "$WORK/whole.log"
+  holds "and the shards it requires are reached" "lib -> " "$WORK/whole.log"
+  if [ -e "$WORK/whole/pretend.iyi" ]; then
+    step fail "a shard under lib/ became a module of this tree"
+  elif [ -f "$WORK/whole/shop.iyi" ]; then
+    step ok "the tree's own code migrated and the shard did not"
+  else
+    step fail "the tree's own entry did not migrate"
+  fi
+else
+  step fail "migrate . failed"
+  tail -5 "$WORK/whole.log"
+fi
+
+# A tree whose sources are *at* the root, with a `lib/` beside the manifest:
+# there is no `src` to narrow to, so the shards directory itself has to be
+# left where it is. `migrate .` on an application read 889 files, 756 of
+# them somebody else's, and merged 359 of them into one module.
+mkdir -p "$WORK/flat/lib/other/src"
+printf 'name: flat\nversion: 0.1.0\n' > "$WORK/flat/shard.yml"
+printf 'module Flat\n  def self.hello : String\n    "hi"\n  end\nend\n' > "$WORK/flat/code.cr"
+printf 'module Other\n  VERSION = "9.9"\nend\n' > "$WORK/flat/lib/other/src/other.cr"
+if (cd "$WORK/flat" && "$IYI" migrate . --out "$WORK/flat_out" > "$WORK/flat.log" 2>&1); then
+  holds "the shards directory is named as somebody else's" \
+        "other projects' source and stayed there" "$WORK/flat.log"
+  if [ -e "$WORK/flat_out/other.iyi" ]; then
+    step fail "a shard under lib/ became a module of this tree"
+  else
+    step ok "and only the tree's own file became a module"
+  fi
+else
+  step fail "migrate . on a flat tree failed"
+  tail -5 "$WORK/flat.log"
+fi
+
 # `--out src` wrote the modules into the tree it was reading and left a
 # `src/src` behind. A verb whose first mistake edits the project is not one
 # a person tries twice.

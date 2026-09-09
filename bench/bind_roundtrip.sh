@@ -317,7 +317,140 @@ module Shard
     [pick(flag)]
   end
 
+  # Seven shapes a real shard has and this fixture did not. Every one of them
+  # was found by *consuming* an artifact rather than by writing one: the
+  # declarations read back fine and the program that imported them stopped.
+
+  # A thread-local class variable. `@[ThreadLocal]` is not decoration - the
+  # variable is reached through a function handing back a per-thread address -
+  # so a consumer that declared it without the annotation writes to a
+  # different global than this module's object code does. `gcry` has eleven,
+  # and the link said `relocation R_X86_64_TPOFF32 cannot be used against
+  # symbol` with every declaration in hand.
+  @[ThreadLocal]
+  @@ticks = 0
+
+  def tick : Int32
+    @@ticks = @@ticks + 1
+    @@ticks
+  end
+
+  # One the shard declared `uninitialized`, which is the only other way to
+  # write a class variable whose type cannot hold nil. Carried without it, a
+  # consumer stops on `class variable @@buffer of Shard is not nilable ... so
+  # it must have an initializer`.
+  @@buffer = uninitialized StaticArray(UInt8, 4)
+
+  def buffered : Int32
+    @@buffer[0] = 7_u8
+    @@buffer[0].to_i32
+  end
+
+  # And one whose default *calls* a method the shard keeps to itself. The
+  # default is source the consumer runs, so what it names is what the consumer
+  # has to have: `email` writes `@@log : Log = create_logger` and a program
+  # that imported that boundary stopped on `undefined local variable or
+  # method 'create_logger'` before a line of its own.
+  @@label : String = build_label
+
+  def label : String
+    @@label
+  end
+
+  private def self.build_label : String
+    "shard-label"
+  end
+
+  # A body with a character outside ASCII in it, and a call to a private
+  # method after it. The search for what a travelling body calls was byte
+  # arithmetic on a *character* index, so every call past the first multi-byte
+  # character read as uncalled: `gcry`'s `append_hex` never travelled and a
+  # consumer compiling the body that calls it said `undefined method`.
+  # A module of class methods, which is `gcry`'s `StwWatchdog` in miniature:
+  # a module's methods are compiled per *including* type, so their bodies
+  # travel and the consumer compiles them - and then every name they call has
+  # to have travelled too. The method below is called from nowhere else,
+  # which is what makes this a test: one that another body also names would
+  # travel anyway and the check would pass either way.
+  module Notes
+    def self.dashed : String
+      "one — two " + dash_note
+    end
+
+    private def self.dash_note : String
+      "dashed"
+    end
+  end
+
+  # The shard's own `fun`, called from its own code: the machine code for one
+  # is in a *main* module, which never travels, and the declaration belongs at
+  # the consumer's global scope rather than inside a module - `can only declare
+  # fun at lib or global scope` is what carrying it the other way said.
+  def worker : Int32
+    shard_worker_main(Pointer(Void).null)
+    1
+  end
+
+  # Public, because a `fun` is outside every namespace and a private method
+  # is not callable from there - and its body calls one that is, which is the
+  # chain `gcry` has: `fun gcry_stw_watchdog_main` calls `StwWatchdog.
+  # watch_loop`, whose body calls `append_hex`.
+  def self.worker_note : Nil
+    @@ticks = @@ticks + Notes.dashed.size
+  end
+
+  # A type from the namespace beside this one, named in this one's surface.
+  def slot(index : Int32) : Sidecar::Slot
+    Sidecar::Slot.new(index)
+  end
+
+  # Two macros, one taking the other *as an argument*. A macro call at the top
+  # level is a declaration written compactly rather than code that runs, and
+  # copying one into the initialiser handed a consumer `Shard.embed` with
+  # nothing in it: `kilt` writes `Kilt.register_engine("ecr", ECR.embed)` and
+  # that is what `wrong number of arguments for macro 'embed' (given 0,
+  # expected 2)` was.
+  macro embed(text, into)
+    {{into}} << {{text}}
+  end
+
+  macro register(kind, embed_macro)
+    module Shard
+      def self.render_{{kind.id}}(io : IO) : Nil
+        {{embed_macro.name.id}}("<{{kind.id}}>", io)
+      end
+    end
+  end
+
 end
+
+# A second top-level namespace, which is a boundary of its own. `pg` declares
+# `PG` and `PQ` - its wire protocol - in one tree, and `PG`'s signatures name
+# `PQ::Field` while its units number it: under one artifact the declarations
+# land inside the wrong namespace and the object code is missing. `iyi bind`
+# binds each namespace it is told about, and `tool bind` is what says which
+# they are.
+module Sidecar
+  struct Slot
+    @index : Int32
+
+    def initialize(@index : Int32)
+    end
+
+    def index : Int32
+      @index
+    end
+  end
+end
+
+# The `fun` this shard's own code calls, whose body calls back into it.
+fun shard_worker_main(arg : Void*) : Void*
+  Shard.worker_note
+  Pointer(Void).null
+end
+
+# And the macro call, which declares `Shard.render_text`.
+Shard.register("text", Shard.embed)
 CR
 
 printf 'require "./shard"\n' > "$WORK/entry.cr"
@@ -383,6 +516,19 @@ puts ""
 puts part.kind(2)
 puts part.kind(1)
 puts part.kind(0)
+
+# The shapes a consumer is the only thing that can check: a class variable
+# that is thread-local, one the shard left uninitialized, one whose default
+# calls a private method, a body with a character outside ASCII in it, the
+# shard's own `fun`, a macro-written def, and the namespace beside this one.
+puts Shard.tick
+puts Shard.buffered
+puts Shard.label
+puts Shard::Notes.dashed
+puts Shard.worker
+Shard.render_text(STDOUT)
+puts ""
+puts Shard.slot(3).index
 IYI
 
 sed 's|require "./shard"|import shard|' "$WORK/app_source.iyi" > "$WORK/app_artifact.iyi"
@@ -391,15 +537,39 @@ cd "$WORK" || exit 1
 mkdir mods
 status=0
 
+# The namespace beside the root goes first, and `--use-iyimod mods` on the
+# root's own run is what lets its declarations name that namespace's types.
+# This is what `iyi bind` does for a shard with more than one namespace; here
+# the order is written out, because this file drives `tool bind` itself.
+if ! "$CRYSTAL" tool bind -e Sidecar --emit-bind mods entry.cr > sidecar.log 2>&1; then
+  echo "binding the namespace beside the root failed"
+  tail -12 sidecar.log
+  echo "workdir $WORK"
+  exit 1
+fi
+if ! (cd mods && "$CRYSTAL" build --iyi-keep Sidecar --emit-bind . \
+        -o keepside sidecar_keep.cr > fill-sidecar.log 2>&1); then
+  echo "filling the namespace beside the root failed"
+  tail -12 mods/fill-sidecar.log
+  echo "workdir $WORK"
+  exit 1
+fi
+
 # The declarations. `--emit-bind` writes the artifact and the keep file beside
 # it; the keep file is where the per-type units come from.
-if ! "$CRYSTAL" tool bind -e Shard --emit-bind mods entry.cr > bind.log 2>&1; then
+if ! "$CRYSTAL" tool bind -e Shard --emit-bind mods --use-iyimod mods entry.cr > bind.log 2>&1; then
   echo "binding the shard failed"
   tail -12 bind.log
   echo "workdir $WORK"
   exit 1
 fi
 sed -n '/written returns/,/^$/p' bind.log
+
+# And the line a driver reads to find the namespace it has to bind beside this
+# one. Without it `iyi bind` writes one artifact per shard and a consumer of
+# `pg` cannot name `PQ::Field`.
+printf 'the namespace beside the root, reported: '
+grep -m1 '^also declares: ' bind.log || echo "MISSING"
 
 # The object code. A getter whose body is one instance variable is inlined and
 # emits no symbol, which is why this build is `--iyi-keep` rather than ordinary.
