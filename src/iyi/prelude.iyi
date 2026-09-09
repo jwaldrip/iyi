@@ -470,6 +470,7 @@ end
 
 require "./io"
 require "./file"
+require "./socket"
 
 # ── The memory layer ────────────────────────────────────────────────────
 #

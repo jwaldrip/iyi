@@ -95,8 +95,11 @@ trap 'rm -rf "$WORK"' EXIT
 # sample that starts a task (`samples/iyi/workers.iyi`, III.4): a fiber's
 # stack has a guard page under it, and on darwin the guard is libSystem's
 # `mprotect`. Linux names none of the six: clone, sched_getaffinity,
-# futex, rt_sigaction, madvise and mprotect are syscalls.
-ALLOWED_SYMBOLS_DARWIN="__error _tlv_bootstrap madvise mprotect pipe pthread_create pthread_kill sigaction sysctlbyname _dyld_get_image_header _dyld_get_image_vmaddr_slide chmod clock_gettime_nsec_np close exit kevent kqueue mmap munmap open pthread_get_stackaddr_np pthread_self read unlink write"
+# futex, rt_sigaction, madvise and mprotect are syscalls. `accept`, `bind`,
+# `connect`, `getsockname`, `listen`, `recv`, `send`, `setsockopt` and `socket`
+# joined with `IyiSocket` (samples/iyi/socket.iyi): on darwin libSystem is the
+# platform interface, while Linux issues raw socket syscalls and names none of them.
+ALLOWED_SYMBOLS_DARWIN="__error _tlv_bootstrap accept bind chmod clock_gettime_nsec_np close connect exit getsockname kevent kqueue listen madvise mmap mprotect munmap open pipe pthread_create pthread_get_stackaddr_np pthread_kill pthread_self read recv send setsockopt sigaction socket sysctlbyname unlink write _dyld_get_image_header _dyld_get_image_vmaddr_slide"
 ALLOWED_SYMBOLS_LINUX="ITM_deregisterTMCloneTable ITM_registerTMCloneTable _cxa_finalize _gmon_start__ _libc_start_main"
 
 # What a program may link. The platform libc only.
