@@ -6067,96 +6067,695 @@ require "./file"
       fun memory_grow = "llvm.wasm.memory.grow.i32"(memory_index : Int32, delta_pages : Int32) : Int32
     end
 
-    # Pages are 64 KiB. A request larger than one page rounds up to the whole
-    # pages it needs and gets a region of its own; `memory.grow` answers -1
-    # when the engine refuses the growth, and a failure is answered rather
-    # than wrapped, because read as a page count -1 would seat the cursor
-    # 64 KiB below any memory the engine ever handed out, which is heap
-    # corruption wearing a success, so it takes the same write-and-exit the
-    # Linux branch's failed `mmap` takes. Every size rides in the eight bytes
-    # under the pointer exactly as on Linux, because `realloc` has no other
-    # way to know how much to copy, and the eight bytes keep every user
-    # pointer 8-aligned; grow regions are page-aligned and the bump is always
-    # a multiple of 8, so the header store stays aligned too. Fresh pages are
-    # zeroed by the wasm spec itself, so `__crystal_malloc64`'s documented
-    # clear comes from the engine rather than a second pass over the bytes,
-    # the same standing Linux's `MAP_ANONYMOUS` zero-fill has there: nothing
-    # is handed out twice, so nothing can be dirtier than the engine left it,
-    # and the atomic variant is the same memory for the same reason. The
-    # cursor and what is left of the region are `UInt64` class variables on
-    # `IyiHeap` for the Linux branch's reasons, which hold here word for
-    # word: `$` globals are refused, a `fun` body cannot reach `@@` state,
-    # and literal initializers fold into the LLVM global's static zero, so
-    # zero means "grow on the first allocation" rather than a value startup
-    # code installs. `-Dgc_iyi` does not reach this branch either, by design
-    # rather than omission: wasm32 has no mmap, and its arena is a watermark
-    # over linear memory, a separate design that GC_DESIGN.md's Stage 2
-    # defers, so the flag keeps this allocator.
-    class IyiHeap
-      @@cursor : UInt64 = 0_u64
-      @@left : UInt64 = 0_u64
+    lib LibSymbols
+      $__data_end : UInt8
+      $__heap_base : UInt8
+    end
 
-      def self.alloc(size : UInt64) : Void*
-        bytes = size.to_i64
-        remainder = bytes % 8
-        bytes = bytes + (8 - remainder) if remainder > 0
-        # Two words under the pointer: the size for `realloc` at P-16, and
-        # at P-8 the object header word every mode leaves, whose high half
-        # codegen fills with the type id.
-        bytes = bytes + 16
+    lib LibWasmIntrinsics
+      fun stacksave = "llvm.stacksave.p0" : Void*
+      fun frameaddress = "llvm.frameaddress.p0"(level : Int32) : Void*
+    end
 
-        if @@left < bytes.to_u64
-          pages = bytes // 65536
-          pages = pages + 1 if bytes % 65536 > 0
-          previous = LibWasmMem.memory_grow(0, pages.to_i32)
-          if previous < 0
+    lib LibIyiGCTable
+      $__iyi_gc_layouts : Void*
+      $__iyi_marking : UInt8
+    end
+
+    fun __iyi_write_barrier_begin : Nil
+    end
+
+    fun __iyi_write_barrier(address : Void*, words : Int32) : Nil
+    end
+
+    {% if !flag?(:gc_none) %}
+      class IyiHeap
+        PAGE = 65536_u64
+        CLASSES = 67
+        IYI_ARENA = 0x4959495F4152454E_u64
+        IYI_LARGE = 0x4959495F4C415247_u64
+
+        HEADER = 8_u64
+        LARGE_USER = 24_u64
+
+        FREE_FLAG    = 4_u64
+        ATOMIC_FLAG  = 8_u64
+        HEADED_FLAG  = 32_u64
+        UNTYPED_FLAG = 64_u64
+        CARVED_FLAG  = 128_u64
+        TYPE_SHIFT   = 32_u64
+
+        @@heap_start : UInt64 = 0_u64
+        @@heap_limit : UInt64 = 0_u64
+        @@free_lists : Pointer(UInt64) = Pointer(UInt64).new(0_u64)
+        @@active_arenas : Pointer(UInt64) = Pointer(UInt64).new(0_u64)
+        @@all_arenas : UInt64 = 0_u64
+        @@large_objects : UInt64 = 0_u64
+        @@allocated_bytes : UInt64 = 0_u64
+        @@budget : UInt64 = 1048576_u64
+
+        def self.read64(address : UInt64) : UInt64
+          Pointer(UInt64).new(address).value
+        end
+
+        def self.write64(address : UInt64, value : UInt64) : Nil
+          Pointer(UInt64).new(address).value = value
+        end
+
+        def self.read8(address : UInt64) : UInt8
+          Pointer(UInt8).new(address).value
+        end
+
+        def self.write8(address : UInt64, value : UInt8) : Nil
+          Pointer(UInt8).new(address).value = value
+        end
+
+        def self.class_index(size : UInt64) : Int32
+          return ((size + 7_u64).unsafe_shr(3_u64).to_i64 - 2_i64).to_i32 if size > 16_u64 && size <= 128_u64
+          return 0 if size <= 16_u64
+          base = 128_u64
+          index = 15
+          while base + base < size
+            base = base + base
+            index = index + 4
+          end
+          step = base.unsafe_shr(2_u64)
+          index + ((size - base + step - 1_u64).unsafe_div(step)).to_i64.to_i32 - 1
+        end
+
+        def self.chunk_of(index : Int32) : UInt64
+          return (index.to_i64 + 2_i64).to_u64 * 8_u64 if index < 15
+          above = (index - 15).to_i64.to_u64
+          base = 128_u64.unsafe_shl(above.unsafe_shr(2_u64))
+          base + ((above & 3_u64) + 1_u64) * base.unsafe_shr(2_u64)
+        end
+
+        def self.update_heap_limits(page : UInt64, pages : UInt64) : Nil
+          top = page + pages * PAGE
+          @@heap_limit = top if top > @@heap_limit
+          @@heap_start = page if @@heap_start == 0_u64 || page < @@heap_start
+        end
+
+        def self.init_if_needed : Nil
+          return if @@heap_start != 0_u64
+          prev = LibWasmMem.memory_grow(0, 1)
+          if prev < 0
             __iyi_write(1, "iyi: out of memory\n".to_unsafe.as(Void*), 19_u64)
             __iyi_exit(1)
           end
-          @@cursor = previous.to_u64.unsafe_shl(16)
-          @@left = pages.to_u64.unsafe_shl(16)
+          page = prev.to_u64.unsafe_shl(16_u64)
+          @@heap_start = page
+          @@heap_limit = page + PAGE
+          write64(page + 40_u64, 0_u64)
+          ptr = Pointer(UInt64).new(page)
+          idx = 0_u64
+          while idx < 1024_u64
+            (ptr + idx.to_i64).value = 0_u64
+            idx = idx + 1_u64
+          end
+          @@free_lists = Pointer(UInt64).new(page)
+          @@active_arenas = Pointer(UInt64).new(page + 512_u64)
+          IyiMark.init_queue(page + 1024_u64, 7168_u64)
         end
 
-        block = Pointer(Void).new(@@cursor)
-        @@cursor = @@cursor + bytes.to_u64
-        @@left = @@left - bytes.to_u64
-        block.as(Pointer(UInt64)).value = size
-        block + 16_i64
-      end
-
-      # Allocate-and-copy rather than growth in place, because nothing frees
-      # and the old size rides in the sixteen bytes under the pointer, which
-      # is the only place that knows it.
-      def self.realloc(pointer : Void*, size : UInt64) : Void*
-        return alloc(size) if pointer.address == 0
-        old_size = Pointer(UInt64).new(pointer.address - 16).value
-        new_pointer = alloc(size)
-        source = pointer.as(Pointer(UInt8))
-        destination = new_pointer.as(Pointer(UInt8))
-        limit = old_size < size ? old_size : size
-        index = 0_u64
-        while index < limit
-          (destination + index.to_i64).value = (source + index.to_i64).value
-          index = index + 1
+        def self.clear_bytes(destination : UInt64, count : UInt64) : Nil
+          wcount = count.unsafe_div(8_u64)
+          ptr = Pointer(UInt64).new(destination)
+          idx = 0_u64
+          while idx < wcount
+            (ptr + idx.to_i64).value = 0_u64
+            idx = idx + 1_u64
+          end
+          tail = wcount * 8_u64
+          bptr = Pointer(UInt8).new(destination + tail)
+          bidx = 0_u64
+          while tail + bidx < count
+            (bptr + bidx.to_i64).value = 0_u8
+            bidx = bidx + 1_u64
+          end
         end
-        new_pointer
-      end
-    end
 
-    # Codegen emits calls to these by name for every allocation, so they are not
-    # optional and their names are not ours to choose.
+        def self.take(size : UInt64, clear : Bool, bits : UInt64, type_id : UInt64) : UInt64
+          init_if_needed
+          size = 8_u64 if size == 0_u64
+          remainder = size.to_i64 % 8_i64
+          size = size + (8_u64 - remainder.to_u64) if remainder > 0_i64
+
+          total = size + 24_u64
+          if total > 16384_u64
+            return take_large(size, clear, bits, type_id)
+          end
+
+          idx = class_index(total)
+          chunk_size = chunk_of(idx)
+          payload_cap = chunk_size - 24_u64
+
+          head = (@@free_lists + idx.to_i64).value
+          if head != 0_u64
+            (@@free_lists + idx.to_i64).value = read64(head)
+            p_obj = head
+            mark = read64(p_obj - 8_u64)
+            new_mark = (mark - (mark & (FREE_FLAG | IyiMark::COLOUR))) | bits | CARVED_FLAG | type_id.unsafe_shl(TYPE_SHIFT)
+            write64(p_obj - 8_u64, new_mark)
+            write64(p_obj - 16_u64, type_id)
+            write64(p_obj - 24_u64, payload_cap)
+            if clear
+              clear_bytes(p_obj, size)
+            end
+            @@allocated_bytes = @@allocated_bytes + chunk_size
+            IyiMark.collect_if_due
+            return p_obj
+          end
+
+          arena = (@@active_arenas + idx.to_i64).value
+          if arena == 0_u64 || read64(arena + 24_u64) + chunk_size > PAGE
+            prev = LibWasmMem.memory_grow(0, 1)
+            if prev < 0
+              __iyi_write(1, "iyi: out of memory\n".to_unsafe.as(Void*), 19_u64)
+              __iyi_exit(1)
+            end
+            arena = prev.to_u64.unsafe_shl(16_u64)
+            update_heap_limits(arena, 1_u64)
+            write64(arena + 0_u64, @@all_arenas)
+            @@all_arenas = arena
+            write64(arena + 8_u64, chunk_size)
+            write64(arena + 16_u64, idx.to_u64)
+            write64(arena + 24_u64, 64_u64)
+            write64(arena + 40_u64, IYI_ARENA)
+            (@@active_arenas + idx.to_i64).value = arena
+          end
+
+          cursor = read64(arena + 24_u64)
+          chunk_head = arena + cursor
+          write64(arena + 24_u64, cursor + chunk_size)
+
+          p_obj = chunk_head + 24_u64
+          write64(p_obj - 24_u64, payload_cap)
+          write64(p_obj - 16_u64, type_id)
+          write64(p_obj - 8_u64, bits | CARVED_FLAG | type_id.unsafe_shl(TYPE_SHIFT))
+
+          if clear
+            clear_bytes(p_obj, size)
+          end
+
+          @@allocated_bytes = @@allocated_bytes + chunk_size
+          IyiMark.collect_if_due
+          p_obj
+        end
+
+        def self.take_large(size : UInt64, clear : Bool, bits : UInt64, type_id : UInt64) : UInt64
+          total = size + 64_u64
+          pages = (total + PAGE - 1_u64).unsafe_div(PAGE)
+          prev = LibWasmMem.memory_grow(0, pages.to_i32)
+          if prev < 0
+            __iyi_write(1, "iyi: out of memory\n".to_unsafe.as(Void*), 19_u64)
+            __iyi_exit(1)
+          end
+          arena = prev.to_u64.unsafe_shl(16_u64)
+          total_bytes = pages * PAGE
+          update_heap_limits(arena, pages)
+
+          write64(arena + 0_u64, @@large_objects)
+          @@large_objects = arena
+          write64(arena + 8_u64, size)
+          write64(arena + 16_u64, pages)
+          write64(arena + 40_u64, IYI_LARGE)
+
+          p_obj = arena + 24_u64
+          write64(p_obj - 24_u64, size)
+          write64(p_obj - 16_u64, type_id)
+          write64(p_obj - 8_u64, bits | CARVED_FLAG | type_id.unsafe_shl(TYPE_SHIFT))
+
+          if clear
+            clear_bytes(p_obj, size)
+          end
+
+          @@allocated_bytes = @@allocated_bytes + total_bytes
+          IyiMark.collect_if_due
+          p_obj
+        end
+
+        def self.alloc(size : UInt64) : Void*
+          Pointer(Void).new(take(size, true, UNTYPED_FLAG, 0_u64))
+        end
+
+        def self.alloc_atomic(size : UInt64) : Void*
+          Pointer(Void).new(take(size, false, UNTYPED_FLAG | ATOMIC_FLAG, 0_u64))
+        end
+
+        def self.new_object(size : UInt64, type_id : UInt64, headed : Bool, atomic : Bool) : Void*
+          flags = (headed ? HEADED_FLAG : 0_u64) | (atomic ? ATOMIC_FLAG : 0_u64)
+          Pointer(Void).new(take(size, !atomic, flags, type_id))
+        end
+
+        def self.realloc(pointer : Void*, size : UInt64) : Void*
+          return alloc(size) if pointer.address == 0_u64
+          old_size = read64(pointer.address - 24_u64)
+          new_ptr = alloc(size)
+          src = pointer.as(Pointer(UInt8))
+          dst = new_ptr.as(Pointer(UInt8))
+          limit = old_size < size ? old_size : size
+          idx = 0_u64
+          while idx < limit
+            (dst + idx.to_i64).value = (src + idx.to_i64).value
+            idx = idx + 1_u64
+          end
+          new_ptr
+        end
+
+        def self.base_of(word : UInt64) : UInt64
+          return 0_u64 if word < @@heap_start || word >= @@heap_limit
+          page = word - (word & 65535_u64)
+          magic = read64(page + 40_u64)
+          if magic == IYI_ARENA
+            chunk_size = read64(page + 8_u64)
+            return 0_u64 if chunk_size == 0_u64
+            cursor = read64(page + 24_u64)
+            first = page + 64_u64
+            return 0_u64 if word < first || word >= page + cursor
+            chunk_idx = (word - first).unsafe_div(chunk_size)
+            head = first + chunk_idx * chunk_size
+            p_obj = head + 24_u64
+            mark = read64(p_obj - 8_u64)
+            return 0_u64 if mark & FREE_FLAG != 0_u64
+            return p_obj
+          elsif magic == IYI_LARGE
+            p_obj = page + 24_u64
+            size = read64(p_obj - 24_u64)
+            return 0_u64 if word < page || word >= p_obj + size
+            mark = read64(p_obj - 8_u64)
+            return 0_u64 if mark & FREE_FLAG != 0_u64
+            return p_obj
+          end
+          0_u64
+        end
+
+        def self.size_of(base : UInt64) : UInt64
+          read64(base - 24_u64)
+        end
+
+        def self.allocated_bytes : UInt64
+          @@allocated_bytes
+        end
+
+        def self.allocated_bytes=(value : UInt64) : Nil
+          @@allocated_bytes = value
+        end
+
+        def self.budget : UInt64
+          @@budget
+        end
+
+        def self.budget=(value : UInt64) : Nil
+          @@budget = value
+        end
+
+        def self.all_arenas : UInt64
+          @@all_arenas
+        end
+
+        def self.large_objects : UInt64
+          @@large_objects
+        end
+
+        def self.free_list(index : Int32) : UInt64
+          return 0_u64 if @@free_lists.address == 0_u64
+          (@@free_lists + index.to_i64).value
+        end
+
+        def self.set_free_list(index : Int32, head : UInt64) : Nil
+          return if @@free_lists.address == 0_u64
+          (@@free_lists + index.to_i64).value = head
+        end
+
+        def self.sweep_left_of(index : Int32) : UInt64
+          0_u64
+        end
+
+        def self.pages_retained : UInt64
+          0_u64
+        end
+
+        def self.pages_rewarmed : UInt64
+          0_u64
+        end
+      end
+
+      class IyiRoots
+        def self.each_root(visit : Proc(UInt64, Nil)) : Nil
+          scan_stack(visit)
+          scan_globals(visit)
+        end
+
+        def self.scan_stack(visit : Proc(UInt64, Nil)) : Nil
+          sp = LibWasmIntrinsics.stacksave.address
+          stack_base = pointerof(LibSymbols.__heap_base).address
+          scan_range(sp, stack_base, visit)
+        end
+
+        def self.scan_globals(visit : Proc(UInt64, Nil)) : Nil
+          data_end = pointerof(LibSymbols.__data_end).address
+          scan_range(0_u64, data_end, visit)
+        end
+
+        def self.scan_range(low : UInt64, high : UInt64, visit : Proc(UInt64, Nil)) : Nil
+          return if high <= low
+          cursor = low
+          rem = cursor & 3_u64
+          cursor = cursor + (4_u64 - rem) if rem != 0_u64
+          while cursor + 4_u64 <= high
+            val = (Pointer(Int32).new(cursor).value.to_i64 & 0xFFFFFFFF_i64).to_u64
+            if val != 0_u64
+              base = IyiHeap.base_of(val)
+              visit.call(base) if base != 0_u64
+            end
+            cursor = cursor + 4_u64
+          end
+        end
+
+        def self.base_of(word : UInt64) : UInt64
+          IyiHeap.base_of(word)
+        end
+      end
+
+      class IyiMark
+        WHITE  = 0_u64
+        GRAY   = 1_u64
+        BLACK  = 2_u64
+        COLOUR = 3_u64
+
+        @@auto : Bool = true
+        @@swept : UInt64 = 0_u64
+        @@bytes_freed : UInt64 = 0_u64
+        @@collections : UInt64 = 0_u64
+        @@chunks_kept : UInt64 = 0_u64
+        @@bytes_marked : UInt64 = 0_u64
+
+        @@queue : Pointer(UInt64) = Pointer(UInt64).new(0_u64)
+        @@queue_cap : UInt64 = 0_u64
+        @@queue_len : UInt64 = 0_u64
+
+        def self.init_queue(buffer : UInt64, capacity : UInt64) : Nil
+          @@queue = Pointer(UInt64).new(buffer)
+          @@queue_cap = capacity.unsafe_div(8_u64)
+          @@queue_len = 0_u64
+        end
+
+        def self.push_queue(base : UInt64) : Nil
+          if @@queue_len < @@queue_cap
+            (@@queue + @@queue_len.to_i64).value = base
+            @@queue_len = @@queue_len + 1_u64
+          else
+            prev = LibWasmMem.memory_grow(0, 1)
+            if prev >= 0
+              page = prev.to_u64.unsafe_shl(16_u64)
+              IyiHeap.update_heap_limits(page, 1_u64)
+              new_q = Pointer(UInt64).new(page)
+              idx = 0_u64
+              while idx < @@queue_len
+                (new_q + idx.to_i64).value = (@@queue + idx.to_i64).value
+                idx = idx + 1_u64
+              end
+              @@queue = new_q
+              @@queue_cap = 65536_u64.unsafe_div(8_u64)
+              (@@queue + @@queue_len.to_i64).value = base
+              @@queue_len = @@queue_len + 1_u64
+            end
+          end
+        end
+
+        def self.auto=(value : Bool) : Nil
+          @@auto = value
+        end
+
+        def self.auto : Bool
+          @@auto
+        end
+
+        def self.swept : UInt64
+          @@swept
+        end
+
+        def self.bytes_freed : UInt64
+          @@bytes_freed
+        end
+
+        def self.collections : UInt64
+          @@collections
+        end
+
+        def self.colour(base : UInt64) : UInt64
+          return WHITE if base == 0_u64
+          mark = IyiHeap.read64(base - 8_u64)
+          mark & COLOUR
+        end
+
+        def self.set_colour(base : UInt64, col : UInt64) : Nil
+          mark = IyiHeap.read64(base - 8_u64)
+          IyiHeap.write64(base - 8_u64, (mark - (mark & COLOUR)) | col)
+        end
+
+        def self.shade(base : UInt64) : Nil
+          return if base == 0_u64
+          return if colour(base) != WHITE
+          set_colour(base, GRAY)
+          push_queue(base)
+        end
+
+        def self.layouts_table : UInt64
+          pointerof(LibIyiGCTable.__iyi_gc_layouts).address == 0_u64 ? 0_u64 : LibIyiGCTable.__iyi_gc_layouts.address
+        end
+
+        def self.layout_search(table : UInt64, entry_count : UInt64, type_id : UInt64) : UInt64
+          return 0_u64 if entry_count == 0_u64 || table == 0_u64
+          low = 0_u64
+          high = entry_count - 1_u64
+          while low <= high
+            mid = low + (high - low).unsafe_shr(1_u64)
+            entry = table + 8_u64 + mid * 40_u64
+            entry_id = IyiHeap.read64(entry)
+            if entry_id == type_id
+              return entry
+            elsif entry_id < type_id
+              low = mid + 1_u64
+            else
+              return 0_u64 if mid == 0_u64
+              high = mid - 1_u64
+            end
+          end
+          0_u64
+        end
+
+        def self.drain : Nil
+          table = layouts_table
+          has_table = table != 0_u64 && IyiHeap.read64(table) > 0_u64
+          entry_count = has_table ? IyiHeap.read64(table) : 0_u64
+
+          while @@queue_len > 0_u64
+            @@queue_len = @@queue_len - 1_u64
+            base = (@@queue + @@queue_len.to_i64).value
+
+            mark = IyiHeap.read64(base - 8_u64)
+            is_atomic = mark & IyiHeap::ATOMIC_FLAG != 0_u64
+            type_id = IyiHeap.read64(base - 16_u64)
+            size = IyiHeap.read64(base - 24_u64)
+
+            if !is_atomic
+              entry = has_table && type_id != 0_u64 ? layout_search(table, entry_count, type_id) : 0_u64
+              if entry != 0_u64
+                scan_count = IyiHeap.read64(entry + 24_u64)
+                scan_index = IyiHeap.read64(entry + 32_u64)
+                offsets_base = table + 8_u64 + entry_count * 40_u64 + scan_index * 8_u64
+                idx = 0_u64
+                while idx < scan_count
+                  offset = IyiHeap.read64(offsets_base + idx * 8_u64)
+                  child_val = (Pointer(Int32).new(base + offset).value.to_i64 & 0xFFFFFFFF_i64).to_u64
+                  if child_val != 0_u64
+                    child_base = IyiHeap.base_of(child_val)
+                    shade(child_base) if child_base != 0_u64
+                  end
+                  idx = idx + 1_u64
+                end
+              else
+                cursor = base
+                limit = base + size
+                rem = cursor & 3_u64
+                cursor = cursor + (4_u64 - rem) if rem != 0_u64
+                while cursor + 4_u64 <= limit
+                  child_val = (Pointer(Int32).new(cursor).value.to_i64 & 0xFFFFFFFF_i64).to_u64
+                  if child_val != 0_u64
+                    child_base = IyiHeap.base_of(child_val)
+                    shade(child_base) if child_base != 0_u64
+                  end
+                  cursor = cursor + 4_u64
+                end
+              end
+            end
+
+            set_colour(base, BLACK)
+            @@bytes_marked = @@bytes_marked + size
+          end
+        end
+
+        def self.sweep : Nil
+          @@swept = 0_u64
+          @@bytes_freed = 0_u64
+          @@chunks_kept = 0_u64
+
+          arena = IyiHeap.all_arenas
+          while arena != 0_u64
+            chunk_size = IyiHeap.read64(arena + 8_u64)
+            class_idx = IyiHeap.read64(arena + 16_u64).to_i32
+            cursor = IyiHeap.read64(arena + 24_u64)
+            head = arena + 64_u64
+            while head + chunk_size <= arena + cursor
+              p_obj = head + 24_u64
+              mark = IyiHeap.read64(p_obj - 8_u64)
+              if mark & IyiHeap::FREE_FLAG != 0_u64
+                # already free
+              elsif mark & COLOUR == WHITE
+                IyiHeap.write64(p_obj, IyiHeap.free_list(class_idx))
+                IyiHeap.set_free_list(class_idx, p_obj)
+                IyiHeap.write64(p_obj - 8_u64, mark | IyiHeap::FREE_FLAG)
+                payload_size = IyiHeap.read64(p_obj - 24_u64)
+                @@bytes_freed = @@bytes_freed + payload_size
+                @@swept = @@swept + 1_u64
+              elsif mark & COLOUR == BLACK
+                set_colour(p_obj, WHITE)
+                @@chunks_kept = @@chunks_kept + 1_u64
+              end
+              head = head + chunk_size
+            end
+            arena = IyiHeap.read64(arena + 0_u64)
+          end
+
+          large = IyiHeap.large_objects
+          while large != 0_u64
+            p_obj = large + 24_u64
+            mark = IyiHeap.read64(p_obj - 8_u64)
+            if mark & IyiHeap::FREE_FLAG != 0_u64
+              # already free
+            elsif mark & COLOUR == WHITE
+              IyiHeap.write64(p_obj - 8_u64, mark | IyiHeap::FREE_FLAG)
+              size = IyiHeap.read64(p_obj - 24_u64)
+              @@bytes_freed = @@bytes_freed + size
+              @@swept = @@swept + 1_u64
+            elsif mark & COLOUR == BLACK
+              set_colour(p_obj, WHITE)
+              @@chunks_kept = @@chunks_kept + 1_u64
+            end
+            large = IyiHeap.read64(large + 0_u64)
+          end
+        end
+
+        def self.collect : Nil
+          IyiHeap.init_if_needed
+          @@bytes_marked = 0_u64
+          @@queue_len = 0_u64
+
+          IyiRoots.each_root(->(base : UInt64) { shade(base) })
+          drain
+          sweep
+
+          budget = @@bytes_marked * 2_u64
+          budget = 1048576_u64 if budget < 1048576_u64
+          IyiHeap.budget = budget
+          IyiHeap.allocated_bytes = 0_u64
+          @@collections = @@collections + 1_u64
+        end
+
+        def self.sweep_one(wanted : UInt64) : UInt64
+          0_u64
+        end
+
+        def self.epoch_flag : UInt64
+          0_u64
+        end
+
+        def self.pressure(bytes : UInt64) : Nil
+          collect_if_due
+        end
+
+        def self.born_during_mark(base : UInt64, size : UInt64) : Nil
+        end
+
+        def self.assist : Nil
+        end
+
+        def self.collect_if_due : Nil
+          if @@auto && IyiHeap.allocated_bytes >= IyiHeap.budget
+            collect
+          end
+        end
+      end
+    {% else %}
+      class IyiHeap
+        @@cursor : UInt64 = 0_u64
+        @@left : UInt64 = 0_u64
+
+        def self.alloc(size : UInt64) : Void*
+          bytes = size.to_i64
+          remainder = bytes % 8
+          bytes = bytes + (8 - remainder) if remainder > 0
+          bytes = bytes + 16
+
+          if @@left < bytes.to_u64
+            pages = bytes // 65536
+            pages = pages + 1 if bytes % 65536 > 0
+            previous = LibWasmMem.memory_grow(0, pages.to_i32)
+            if previous < 0
+              __iyi_write(1, "iyi: out of memory\n".to_unsafe.as(Void*), 19_u64)
+              __iyi_exit(1)
+            end
+            @@cursor = previous.to_u64.unsafe_shl(16)
+            @@left = pages.to_u64.unsafe_shl(16)
+          end
+
+          block = Pointer(Void).new(@@cursor)
+          @@cursor = @@cursor + bytes.to_u64
+          @@left = @@left - bytes.to_u64
+          block.as(Pointer(UInt64)).value = size
+          block + 16_i64
+        end
+
+        def self.alloc_atomic(size : UInt64) : Void*
+          alloc(size)
+        end
+
+        def self.realloc(pointer : Void*, size : UInt64) : Void*
+          return alloc(size) if pointer.address == 0
+          old_size = Pointer(UInt64).new(pointer.address - 16).value
+          new_pointer = alloc(size)
+          source = pointer.as(Pointer(UInt8))
+          destination = new_pointer.as(Pointer(UInt8))
+          limit = old_size < size ? old_size : size
+          index = 0_u64
+          while index < limit
+            (destination + index.to_i64).value = (source + index.to_i64).value
+            index = index + 1
+          end
+          new_pointer
+        end
+      end
+    {% end %}
+
     fun __crystal_malloc64(size : UInt64) : Void*
       IyiHeap.alloc(size)
     end
 
     fun __crystal_malloc_atomic64(size : UInt64) : Void*
-      IyiHeap.alloc(size)
+      IyiHeap.alloc_atomic(size)
     end
 
     fun __crystal_realloc64(pointer : Void*, size : UInt64) : Void*
       IyiHeap.realloc(pointer, size)
     end
 
+    {% if !flag?(:gc_none) %}
+      fun __iyi_new(size : UInt64, type_id : UInt64, flags : UInt64) : Void*
+        IyiHeap.new_object(size, type_id, flags & 1_u64 != 0, flags & 2_u64 != 0)
+      end
+    {% end %}
     # `memset` is defined locally because codegen itself reaches for the name
     # (`pre_initialize_aggregate` and `generic_array_malloc` lower to the LLVM
     # `llvm.memset` intrinsic, which becomes a C `memset` call once the size is
