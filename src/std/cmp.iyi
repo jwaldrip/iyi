@@ -16,24 +16,23 @@
 module std/cmp
 
 import std/traits
-using std/traits::{Cmp}
 
 # Returns the lesser of a and b.
-def min(a : T, b : T) : T forall T : Cmp
+pub def min(a : T, b : T) : T forall T : Std::Traits::Cmp
   a < b ? a : b
 end
 
 # Returns the greater of a and b.
-def max(a : T, b : T) : T forall T : Cmp
+pub def max(a : T, b : T) : T forall T : Std::Traits::Cmp
   a > b ? a : b
 end
 
 # Clamps val between min_val and max_val.
-def clamp(val : T, min_val : T, max_val : T) : T forall T : Cmp
+pub def clamp(val : T, min_val : T, max_val : T) : T forall T : Std::Traits::Cmp
   val.clamp(min_val, max_val)
 end
 
 # Clamps val within range.
-def clamp(val : T, range : Range) : T forall T : Cmp
+pub def clamp(val : T, range : Range) : T forall T : Std::Traits::Cmp
   val.clamp(range)
 end
