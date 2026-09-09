@@ -29,7 +29,6 @@
 module std/xml
 
 import std/text
-using std/text::{Char, String}
 
 pub struct NodeType
   getter value : Int32
@@ -122,8 +121,8 @@ pub struct Attribute
     if @local_name.empty?
       colon = @name.index(':')
       if !colon.nil? && colon > 0
-        @prefix = @name.byte_slice(0, colon)
-        @local_name = @name.byte_slice(colon + 1, @name.bytesize - colon - 1)
+        @prefix = @name[0, colon]
+        @local_name = @name[colon + 1, @name.bytesize - colon - 1]
       else
         @prefix = ""
         @local_name = @name
@@ -153,8 +152,8 @@ pub class Node
     @local_name = @name
     colon = @name.index(':')
     if !colon.nil? && colon > 0
-      @prefix = @name.byte_slice(0, colon)
-      @local_name = @name.byte_slice(colon + 1, @name.bytesize - colon - 1)
+      @prefix = @name[0, colon]
+      @local_name = @name[colon + 1, @name.bytesize - colon - 1]
     end
     @attributes = [] of Attribute
     @children = [] of Node
@@ -567,7 +566,7 @@ class EntityTable
             res << "&"
             i = i + 1
           else
-            ent_name = val.byte_slice(i + 1, semi - i - 1)
+            ent_name = val[i + 1, semi - i - 1]
             res << expand(ent_name, depth + 1)
             i = semi + 1
           end
@@ -980,7 +979,7 @@ pub class Parser
         elem.namespaces << ns
         elem.namespace = ns
       elsif attr_name.starts_with?("xmlns:")
-        ns_prefix = attr_name.byte_slice(6, attr_name.bytesize - 6)
+        ns_prefix = attr_name[6, attr_name.bytesize - 6]
         ns = Namespace.new(ns_prefix, attr_val)
         elem.namespaces << ns
         if elem.prefix == ns_prefix
@@ -999,7 +998,7 @@ pub class Parser
         # End tag
         if !text_buffer.empty?
           elem.add_child(Node.new_text(text_buffer.join("")))
-          text_buffer.clear
+          text_buffer = [] of String
         end
 
         end_line = @line
@@ -1020,25 +1019,25 @@ pub class Parser
       elsif match_str?("<!--")
         if !text_buffer.empty?
           elem.add_child(Node.new_text(text_buffer.join("")))
-          text_buffer.clear
+          text_buffer = [] of String
         end
         elem.add_child(parse_comment)
       elsif match_str?("<![CDATA[")
         if !text_buffer.empty?
           elem.add_child(Node.new_text(text_buffer.join("")))
-          text_buffer.clear
+          text_buffer = [] of String
         end
         elem.add_child(parse_cdata)
       elsif match_str?("<?")
         if !text_buffer.empty?
           elem.add_child(Node.new_text(text_buffer.join("")))
-          text_buffer.clear
+          text_buffer = [] of String
         end
         elem.add_child(parse_pi)
       elsif match_str?("<")
         if !text_buffer.empty?
           elem.add_child(Node.new_text(text_buffer.join("")))
-          text_buffer.clear
+          text_buffer = [] of String
         end
         child = parse_element
         elem.add_child(child)
@@ -1283,7 +1282,7 @@ pub def unescape(text : String) : String
     if text.to_unsafe[i] == 38_u8 # '&'
       semi = text.index(';', i)
       if !semi.nil?
-        ent = text.byte_slice(i + 1, semi - i - 1)
+        ent = text[i + 1, semi - i - 1]
         if ent == "lt"
           parts << "<"
           i = semi + 1
@@ -1305,7 +1304,7 @@ pub def unescape(text : String) : String
           i = semi + 1
           next
         elsif ent.starts_with?("#x") || ent.starts_with?("#X")
-          hex_str = ent.byte_slice(2, ent.bytesize - 2)
+          hex_str = ent[2, ent.bytesize - 2]
           cp = hex_str.to_i?(16)
           if !cp.nil?
             parts << cp.unsafe_chr.to_s
@@ -1313,7 +1312,7 @@ pub def unescape(text : String) : String
             next
           end
         elsif ent.starts_with?("#")
-          dec_str = ent.byte_slice(1, ent.bytesize - 1)
+          dec_str = ent[1, ent.bytesize - 1]
           cp = dec_str.to_i?
           if !cp.nil?
             parts << cp.unsafe_chr.to_s
