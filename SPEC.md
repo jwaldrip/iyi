@@ -2580,8 +2580,10 @@ comes out through `task.value`; a fiber blocked *joining* is the one park
 cancellation does not reach, which a failing group papers over by
 cancelling every child; and the platforms that cannot carry the model get
 nothing rather than an imitation: wasm32 cannot switch stacks (measured in
-III.4.12), and win32 is unwritten. darwin arm64 stopped being one of them:
-its kqueue poller is the paragraph above, and it holds the same gates in CI.
+III.4.12). darwin arm64 and Windows x86_64 run the real runtime: darwin's kqueue
+poller is the paragraph above, and Windows x86_64 uses handwritten asm with TEB
+stack bounds management (gs:0x08 and gs:0x10), IOCP completion polling, and
+CancelIoEx cancellation reaching blocked IO, holding the windows-runtime gate in CI.
 
 #### III.4.9 The typed group, `group do ... end!`: **BUILT, with one correction the build forced**
 

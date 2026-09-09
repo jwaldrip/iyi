@@ -42,7 +42,7 @@ require "./format"
 # darwin rides the aarch64 arm of the same runtime through libSystem —
 # its own branch below says why libSystem — and the Linux pair keeps its
 # raw syscalls.
-{% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+{% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
   require "./concurrency"
   # A kernel thread, and the stop-the-world over them (GC_DESIGN.md Stage
   # 4); the file itself says which builds get one.
@@ -76,7 +76,7 @@ class IyiRuntimeLock
     # and fifteen helpers spinning on one while a collection held it
     # slowed the holder; a read spins on a shared line.
     while word.value.get != 0_u64 || !word.value.compare_and_set(0_u64, 1_u64)[1]
-      {% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64))) %}
+      {% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64))) %}
         IyiThread.park_if_requested
       {% end %}
       {% if flag?(:x86_64) %}
@@ -214,6 +214,13 @@ end
   def __iyi_file_write(fd : Int64, buffer : Void*, count : UInt64) : Int64
     __iyi_write(fd.to_i32, buffer, count)
   end
+  def __iyi_write(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    __iyi_write(fd.to_i32, buffer, count)
+  end
+
+  def __iyi_read(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    __iyi_read(fd.to_i32, buffer, count)
+  end
 
   def __iyi_exit(status : Int32) : NoReturn
     {% if flag?(:x86_64) %}
@@ -250,6 +257,13 @@ end
     LibC.read(fd, buffer, count)
   end
 
+  def __iyi_write(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    LibC.write(fd.to_i32, buffer, count)
+  end
+
+  def __iyi_read(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    LibC.read(fd.to_i32, buffer, count)
+  end
   def __iyi_open_read(path : UInt8*) : Int64
     LibC.open(path, 0).to_i64
   end
@@ -327,11 +341,35 @@ end
   # STD_OUTPUT_HANDLE (-11), STD_ERROR_HANDLE (-12). They are negative
   # identifiers reinterpreted as DWORD; as Int32 they spell themselves.
   def __iyi_write(fd : Int32, buffer : Void*, count : UInt64) : Int64
-    std_handle = -11
-    std_handle = -12 if fd == 2
-    std_handle = -10 if fd == 0
+    if fd == 1
+      handle = LibC.GetStdHandle(-11)
+    elsif fd == 2
+      handle = LibC.GetStdHandle(-12)
+    elsif fd == 0
+      handle = LibC.GetStdHandle(-10)
+    else
+      handle = Pointer(Void).new(fd.to_i64.to_u64)
+    end
     written = uninitialized Int32
-    if LibC.WriteFile(LibC.GetStdHandle(std_handle), buffer,
+    if LibC.WriteFile(handle, buffer,
+         count.to_i32, pointerof(written), nil) == 0
+      return -1_i64
+    end
+    written.to_i64
+  end
+
+  def __iyi_write(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    if fd == 1_i64
+      handle = LibC.GetStdHandle(-11)
+    elsif fd == 2_i64
+      handle = LibC.GetStdHandle(-12)
+    elsif fd == 0_i64
+      handle = LibC.GetStdHandle(-10)
+    else
+      handle = Pointer(Void).new(fd.to_u64)
+    end
+    written = uninitialized Int32
+    if LibC.WriteFile(handle, buffer,
          count.to_i32, pointerof(written), nil) == 0
       return -1_i64
     end
@@ -339,9 +377,27 @@ end
   end
 
   def __iyi_read(fd : Int32, buffer : Void*, count : UInt64) : Int64
-    std_handle = -10
+    if fd == 0
+      handle = LibC.GetStdHandle(-10)
+    else
+      handle = Pointer(Void).new(fd.to_i64.to_u64)
+    end
     read = uninitialized Int32
-    if LibC.ReadFile(LibC.GetStdHandle(std_handle), buffer,
+    if LibC.ReadFile(handle, buffer,
+         count.to_i32, pointerof(read), nil) == 0
+      return 0_i64
+    end
+    read.to_i64
+  end
+
+  def __iyi_read(fd : Int64, buffer : Void*, count : UInt64) : Int64
+    if fd == 0_i64
+      handle = LibC.GetStdHandle(-10)
+    else
+      handle = Pointer(Void).new(fd.to_u64)
+    end
+    read = uninitialized Int32
+    if LibC.ReadFile(handle, buffer,
          count.to_i32, pointerof(read), nil) == 0
       return 0_i64
     end
@@ -732,6 +788,18 @@ require "./socket"
         fun QueryPerformanceCounter(lpPerformanceCount : Int64*) : Int32
         fun QueryPerformanceFrequency(lpFrequency : Int64*) : Int32
         fun CreateThread(lpThreadAttributes : Void*, dwStackSize : UInt64, lpStartAddress : Void*, lpParameter : Void*, dwCreationFlags : Int32, lpThreadId : Int32*) : Void*
+        fun GetLastError : Int32
+        fun CreateIoCompletionPort(file_handle : Void*, existing_completion_port : Void*, completion_key : UInt64, number_of_concurrent_threads : Int32) : Void*
+        fun GetQueuedCompletionStatus(completion_port : Void*, lp_number_of_bytes_transferred : Int32*, lp_completion_key : UInt64*, lp_overlapped : Void**, dw_milliseconds : Int32) : Int32
+        fun PostQueuedCompletionStatus(completion_port : Void*, dw_number_of_bytes_transferred : Int32, dw_completion_key : UInt64, lp_overlapped : Void*) : Int32
+        fun CancelIoEx(h_file : Void*, lp_overlapped : Void*) : Int32
+        fun SetFileCompletionNotificationModes(file_handle : Void*, flags : UInt8) : Int32
+        fun WaitForSingleObject(h_handle : Void*, dw_milliseconds : Int32) : Int32
+        fun DuplicateHandle(h_source_process_handle : Void*, h_source_handle : Void*, h_target_process_handle : Void*, lp_target_handle : Void**, dw_desired_access : Int32, b_inherit_handle : Int32, dw_options : Int32) : Int32
+        fun SwitchToThread : Int32
+        fun GetActiveProcessorCount(group_number : UInt16) : Int32
+        fun CreateNamedPipeA(lp_name : UInt8*, dw_open_mode : Int32, dw_pipe_mode : Int32, n_max_instances : Int32, n_out_buffer_size : Int32, n_in_buffer_size : Int32, n_default_time_out : Int32, lp_security_attributes : Void*) : Void*
+        fun ConnectNamedPipe(h_named_pipe : Void*, lp_overlapped : Void*) : Int32
       end
 
       fun __iyi_mmap(length : UInt64) : Pointer(Void)
@@ -1445,7 +1513,7 @@ require "./socket"
       # a stop that was deferred while it was up is paid now.
       def self.leave(table : Pointer(UInt64)) : Nil
         write64(table.address + CACHE_INSIDE, read64(table.address + CACHE_INSIDE) &- 1_u64)
-        {% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64))) %}
+        {% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64))) %}
           if read64(table.address + CACHE_INSIDE) == 0_u64 && read64(table.address + CACHE_REQUEST) != 0
             IyiThread.park_if_requested
           end
@@ -2878,7 +2946,8 @@ require "./socket"
 
         def self.capture_thread_registers(thread_handle : Void*, out_spill : UInt64) : UInt64
           ctx_buf = uninitialized UInt8[1280]
-          ctx_addr = (ctx_buf.to_unsafe.address + 15_u64) & ~15_u64
+          addr = pointerof(ctx_buf).address + 15_u64
+          ctx_addr = addr - (addr & 15_u64)
           ctx_ptr = Pointer(Void).new(ctx_addr)
           Pointer(UInt32).new(ctx_addr + 48_u64).value = 0x100003_u32
           if LibC.GetThreadContext(thread_handle, ctx_ptr) == 0
@@ -3187,7 +3256,7 @@ require "./socket"
       # unmapped gap between the two mappings and fault.
       def self.each_stack_root(visit : Proc(UInt64, Nil)) : Nil
         top = 0_u64
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           top = IyiScheduler.current_stack_top
           top = IyiThread.current_stack_top if top == 0
         {% end %}
@@ -3199,7 +3268,7 @@ require "./socket"
       # was by the collection that asks (thread.iyi); on one thread, an
       # empty walk.
       def self.each_thread_root(visit : Proc(UInt64, Nil)) : Nil
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           IyiThread.each_stopped_root(visit)
         {% end %}
       end
@@ -3215,7 +3284,7 @@ require "./socket"
       # discovered. On the targets with no scheduler there is nothing to
       # walk and this is the empty walk it looks like.
       def self.each_fiber_root(visit : Proc(UInt64, Nil)) : Nil
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           fiber = IyiScheduler.first_fiber
           while fiber.is_a?(IyiFiber)
             if fiber.state != 0 && fiber.state != 6 && fiber.saved_sp != 0
@@ -4274,7 +4343,7 @@ require "./socket"
       # a parked helper spins, fifteen of them on three cores held the
       # parallel mark's exercise past its five minutes.
       def self.workers=(count : UInt64) : Nil
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           cap = default_helpers
           count = cap if count > cap
         {% end %}
@@ -4295,7 +4364,7 @@ require "./socket"
         {% end %}
       end
 
-      {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+      {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
       def self.default_helpers : UInt64
         cores = IyiThread.core_count
         cores = 16_u64 if cores > 16_u64
@@ -4764,14 +4833,14 @@ require "./socket"
       # Whether helpers are at a round right now: the allocating thread
       # spins on a class's batch only while one is coming.
       def self.helpers_sweeping? : Bool
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           @@helpers > 0_u64 && @@sweep_left != 0_u64 && pool_word(POOL_SWEEP).value.get != 0_u64
         {% else %}
           false
         {% end %}
       end
 
-      {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+      {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
         # A helper's turn of the round: one slice, the way an allocating
         # thread takes one - so three helpers are on one arena at once,
         # and the arena a program churns through is swept three times
@@ -4871,7 +4940,7 @@ require "./socket"
       # An allocating thread about to wait on a class names it for the
       # helpers; the last to name one is the one they read.
       def self.sweep_wanted(index : Int32) : Nil
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           pool_word(POOL_SWEEP_WANTED).value.set(index.to_u64 + 1_u64)
         {% end %}
       end
@@ -5387,7 +5456,7 @@ require "./socket"
       end
 
       def self.collect_if_due : Nil
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           # Helper 0 takes a concurrent mark's second stop, and a stop
           # names registered threads only: a program that never started a
           # thread has a main thread with no line until here, and the
@@ -5405,7 +5474,7 @@ require "./socket"
           return
         end
         @@collecting = true
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           start_helpers(@@helpers_wanted)
           close_sweep_round
           if concurrent_possible?
@@ -5427,7 +5496,7 @@ require "./socket"
         collect_locked(false)
         @@collecting = false
         IyiRuntimeLock.unlock
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           wake_sweep_round
         {% end %}
       end
@@ -5450,7 +5519,7 @@ require "./socket"
           IyiRuntimeLock.lock
         end
         @@collecting = true
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           close_sweep_round
         {% end %}
         collect_locked(true)
@@ -5493,7 +5562,7 @@ require "./socket"
           @@debt_paid_before_stop = @@debt_paid_before_stop + 1_u64
         end
         started = now_ns
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           others = IyiThread.stop_others
         {% end %}
         while sweep_one_held
@@ -5503,7 +5572,7 @@ require "./socket"
         scavenge
         begin_sweep
         sweep_large
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           while eager && sweep_one_held
           end
         {% else %}
@@ -5517,7 +5586,7 @@ require "./socket"
         # blackened it — which is what lets the sweep be lazy: the budget
         # no longer waits on a sweep to count.
         @@budget = next_budget(@@bytes_marked)
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           open_sweep_round
           IyiThread.resume_others(others)
         {% end %}
@@ -5533,7 +5602,7 @@ require "./socket"
         budget == 0 ? MIN_BUDGET : budget
       end
 
-      {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+      {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
         # ── The mark beside the program — GC_DESIGN.md Stage 9 ──────────────
         #
         # Two stops instead of one. The first is the roots: every thread
@@ -7160,7 +7229,7 @@ class IyiDeferNode
   end
 end
 
-{% unless (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+{% unless (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
   # No fibers on this target, so one global stack is exact: a single
   # thread of control pushes and pops in strict block-nesting order.
   class IyiDefers
@@ -7218,7 +7287,7 @@ def raise(message : String, file : String = __FILE__, line : Int32 = __LINE__) :
     print line.to_s
     print "\n"
   end
-  {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+  {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
     IyiScheduler.panic_current(message)
   {% else %}
     IyiDefers.drain
