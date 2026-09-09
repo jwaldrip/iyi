@@ -6110,12 +6110,35 @@ require "./socket"
 
         @@heap_start : UInt64 = 0_u64
         @@heap_limit : UInt64 = 0_u64
-        @@free_lists : Pointer(UInt64) = Pointer(UInt64).new(0_u64)
-        @@active_arenas : Pointer(UInt64) = Pointer(UInt64).new(0_u64)
         @@all_arenas : UInt64 = 0_u64
+
+        def self.free_lists : Pointer(UInt64)
+          Pointer(UInt64).new(@@heap_start)
+        end
+
+        def self.active_arenas : Pointer(UInt64)
+          Pointer(UInt64).new(@@heap_start + 1024_u64)
+        end
+
+        def self.heap_start : UInt64
+          init_if_needed
+          @@heap_start
+        end
         @@large_objects : UInt64 = 0_u64
         @@allocated_bytes : UInt64 = 0_u64
         @@budget : UInt64 = 1048576_u64
+
+        def self.print_hex(val : UInt64) : Nil
+          chars = "0123456789abcdef"
+          shift = 60_i64
+          while shift >= 0_i64
+            nibble = (val.unsafe_shr(shift.to_u64) & 15_u64).to_i64
+            ch = chars.to_unsafe + nibble
+            __iyi_write(1, ch.as(Void*), 1_u64)
+            shift = shift - 4_i64
+          end
+          __iyi_write(1, "\n".to_unsafe.as(Void*), 1_u64)
+        end
 
         def self.read64(address : UInt64) : UInt64
           Pointer(UInt64).new(address).value
@@ -6172,13 +6195,11 @@ require "./socket"
           write64(page + 40_u64, 0_u64)
           ptr = Pointer(UInt64).new(page)
           idx = 0_u64
-          while idx < 1024_u64
+          while idx < 8192_u64
             (ptr + idx.to_i64).value = 0_u64
             idx = idx + 1_u64
           end
-          @@free_lists = Pointer(UInt64).new(page)
-          @@active_arenas = Pointer(UInt64).new(page + 512_u64)
-          IyiMark.init_queue(page + 1024_u64, 7168_u64)
+          IyiMark.init_queue(page + 2048_u64, 63488_u64)
         end
 
         def self.clear_bytes(destination : UInt64, count : UInt64) : Nil
@@ -6213,9 +6234,9 @@ require "./socket"
           chunk_size = chunk_of(idx)
           payload_cap = chunk_size - 24_u64
 
-          head = (@@free_lists + idx.to_i64).value
+          head = (free_lists + idx.to_i64).value
           if head != 0_u64
-            (@@free_lists + idx.to_i64).value = read64(head)
+            (free_lists + idx.to_i64).value = read64(head)
             p_obj = head
             mark = read64(p_obj - 8_u64)
             new_mark = (mark - (mark & (FREE_FLAG | IyiMark::COLOUR))) | bits | CARVED_FLAG | type_id.unsafe_shl(TYPE_SHIFT)
@@ -6230,7 +6251,7 @@ require "./socket"
             return p_obj
           end
 
-          arena = (@@active_arenas + idx.to_i64).value
+          arena = (active_arenas + idx.to_i64).value
           if arena == 0_u64 || read64(arena + 24_u64) + chunk_size > PAGE
             prev = LibWasmMem.memory_grow(0, 1)
             if prev < 0
@@ -6245,7 +6266,7 @@ require "./socket"
             write64(arena + 16_u64, idx.to_u64)
             write64(arena + 24_u64, 64_u64)
             write64(arena + 40_u64, IYI_ARENA)
-            (@@active_arenas + idx.to_i64).value = arena
+            (active_arenas + idx.to_i64).value = arena
           end
 
           cursor = read64(arena + 24_u64)
@@ -6382,13 +6403,13 @@ require "./socket"
         end
 
         def self.free_list(index : Int32) : UInt64
-          return 0_u64 if @@free_lists.address == 0_u64
-          (@@free_lists + index.to_i64).value
+          return 0_u64 if @@heap_start == 0_u64
+          (free_lists + index.to_i64).value
         end
 
         def self.set_free_list(index : Int32, head : UInt64) : Nil
-          return if @@free_lists.address == 0_u64
-          (@@free_lists + index.to_i64).value = head
+          return if @@heap_start == 0_u64
+          (free_lists + index.to_i64).value = head
         end
 
         def self.sweep_left_of(index : Int32) : UInt64
@@ -6464,7 +6485,14 @@ require "./socket"
           @@queue_len = 0_u64
         end
 
+        def self.ensure_queue : Nil
+          if @@queue.address == 0_u64
+            init_queue(IyiHeap.heap_start + 2048_u64, 63488_u64)
+          end
+        end
+
         def self.push_queue(base : UInt64) : Nil
+          ensure_queue
           if @@queue_len < @@queue_cap
             (@@queue + @@queue_len.to_i64).value = base
             @@queue_len = @@queue_len + 1_u64
