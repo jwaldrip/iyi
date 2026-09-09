@@ -439,6 +439,7 @@ class IyiFiber
     @wait_overlapped = Pointer(UInt8).malloc(32_u64)
     @io_bytes_read = 0_i64
   end
+
   # The running program's own context: no stack to build, the kernel gave
   # it one, and the first switch away fills in @sp.
   def self.main : IyiFiber

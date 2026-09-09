@@ -264,6 +264,7 @@ end
   def __iyi_read(fd : Int64, buffer : Void*, count : UInt64) : Int64
     LibC.read(fd.to_i32, buffer, count)
   end
+
   def __iyi_open_read(path : UInt8*) : Int64
     LibC.open(path, 0).to_i64
   end
