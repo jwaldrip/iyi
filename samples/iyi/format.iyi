@@ -36,7 +36,7 @@ puts sprintf("negative zero: %06d", -42)
 puts sprintf("int precision: %.4d", 7)
 puts sprintf("float precision: %.2f", 3.14159)
 puts sprintf("float precision: %.4f", 3.14159)
-puts sprintf("string precision: %.3s", "crystal")
+puts sprintf("string precision: %.3s", "cinnabar")
 
 # 6. Boundary cases
 puts sprintf("wider than field: %3d", 12345)

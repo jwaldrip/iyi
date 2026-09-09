@@ -90,14 +90,14 @@ raise "format: precision float 0 round down failed" if p9 != "3"
 p10 = sprintf("%.0f", 2.5)
 raise "format: precision float tie away from zero failed" if p10 != "3"
 
-p11 = sprintf("%.3s", "crystal")
-raise "format: precision string truncate failed" if p11 != "cry"
+p11 = sprintf("%.3s", "cinnabar")
+raise "format: precision string truncate failed" if p11 != "cin"
 
-p12 = sprintf("%6.3s", "crystal")
-raise "format: precision string width failed" if p12 != "   cry"
+p12 = sprintf("%6.3s", "cinnabar")
+raise "format: precision string width failed" if p12 != "   cin"
 
-p13 = sprintf("%-6.3s", "crystal")
-raise "format: precision string left-aligned failed" if p13 != "cry   "
+p13 = sprintf("%-6.3s", "cinnabar")
+raise "format: precision string left-aligned failed" if p13 != "cin   "
 
 puts "    precision: integer minimum digits, string truncation, and float rounding verified"
 
