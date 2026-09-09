@@ -278,6 +278,22 @@ module Iyi
   # five more were refused for naming types their actual consumer would have.
   @@crystal_types = Set(String).new
 
+  # And the library's types a consumer cannot *name* but can hold. See
+  # `nameable_value?`.
+  @@crystal_private = Set(String).new
+
+  # The shard's own top-level `fun`s, as source. Travelling bodies like any
+  # other, and the consumer compiles them: see `called_privates`.
+  @@top_level_fun_sources = [] of String
+
+  # Types no file can write `uninitialized` of: an abstract struct is not a
+  # value with a size - `uninitialized ::Number` is `can't use Number as the
+  # type of a variable yet`, and `quartz_mailer`'s
+  # `def smtp_port=(port : Number)` took the whole shard down over it. The
+  # method's body travels instead, the way it does for every other shape the
+  # keep file cannot stand a value up for.
+  @@unwritable = Set(String).new
+
   # And what to call them from outside. A bound artifact's declarations sit
   # under the module the consumer imports, so `IO` is `Io::IO` there — the
   # producer's name is not the consumer's, and an artifact that referred to one
@@ -294,6 +310,23 @@ module Iyi
   # pcre2 on its link line. Compile the grammar once through Iyi::Rx instead
   # of maintaining four hand-written tokenizers (SPEC.md III.10).
   private BIND_TYPE_NAME = Rx::Pattern.compile("[A-Za-z_][A-Za-z0-9_:]*")
+
+  # Methods this run leaves out of both the artifact and the keep file, read
+  # from `<artifact>.drop` beside the artifact - one key per line, in the
+  # spelling the keep file's `# bind-drop:` markers use.
+  #
+  # What it is for is a method whose *body does not compile* when it is
+  # instantiated. A shard's own build never typed it - Crystal types a body
+  # when something calls it, and nothing in `ed25519` calls
+  # `RistrettoPoint#==`, whose body calls an `assert_rst_point` that shard
+  # never defined. The keep file calls everything, so the fill build is where
+  # that surfaces, and it stopped the whole shard: `jwt` went unbound behind
+  # it over one method a consumer could not have called either.
+  #
+  # A method that cannot compile cannot cross. Leaving it out is the same
+  # verdict this tool reaches everywhere else, arrived at one build later:
+  # `iyi bind` reruns with the key appended and the boundary carries the rest.
+  @@drop = Set(String).new
 
   # How deep `Call#instantiate` may go before this tool calls it non-terminating.
   # See `Program#iyi_instantiation_limit`.
@@ -316,7 +349,9 @@ module Iyi
     @@root = root
     @@duck_bodies = nil
     @@builtin = program.builtin_type_names
+    @@crystal_private = Set(String).new
     @@crystal_types = crystal_library_types program
+    @@unwritable = unwritable_types program
     @@bound_prefix = {} of String => String
     @@mono_bodies = {} of String => String
     @@bound_module = {} of String => String
@@ -324,6 +359,8 @@ module Iyi
     @@bound = bound_dir ? bound_names(program, bound_dir, io) : Set(String).new
     @@library_names = Set(String).new
     @@self_shadowed = Set(String).new
+    @@drop = artifact_dir ? drop_list(artifact_dir, root) : Set(String).new
+    @@top_level_fun_sources = top_level_funs program
 
     methods = [] of BindMethod
     collect_bind program.types?, root, methods
@@ -332,6 +369,23 @@ module Iyi
     inferable = methods.count(&.verdict.needs_return?)
     human = methods.count(&.verdict.needs_human?)
 
+    # The shard's *other* namespaces, which are boundaries of their own.
+    #
+    # A boundary is rooted at one namespace and a shard need not have only
+    # one: `pg` declares `PG` and `PQ`, its wire protocol, in the same tree.
+    # Rooted at `PG` alone the artifact carried `PG`'s units and referred to
+    # `Array(PQ::Field)`, a type the consumer had never heard of - `"p_g"
+    # numbers `Array(PQ::Field)`, and this build cannot name it`. Neither half
+    # can be fixed inside one artifact: the declarations belong at the
+    # consumer's top level rather than under `PG`, and the object code is a
+    # unit of its own.
+    #
+    # So they are reported, and `iyi bind` binds each of them beside this one.
+    # Named on one line, in a shape a driver can read.
+    others = other_namespaces program, root
+    io.puts "also declares: #{others.join(", ")}" unless others.empty?
+    io.puts
+
     io.puts "#{root}: #{methods.size} public methods on its own types"
     io.puts
     io.puts "  R-2 as written            #{ready}"
@@ -339,6 +393,15 @@ module Iyi
     io.puts "  a human has to write      #{human}"
     io.puts
     io.puts "  of those, take a block    #{methods.count(&.block)}"
+
+    unless @@drop.empty?
+      io.puts
+      io.puts "left out by #{iyi_module_name(root).gsub('/', '-')}.drop: #{@@drop.size}"
+      io.puts "  a body that does not compile when it is instantiated cannot"
+      io.puts "  cross, and the fill build is where that is found. These are"
+      io.puts "  out of the declarations and out of the keep file both:"
+      @@drop.to_a.sort.each { |key| io.puts "    #{key}" }
+    end
 
     machine = methods.select(&.verdict.needs_return?)
     unless machine.empty?
@@ -792,6 +855,16 @@ module Iyi
     # below is *Crystal*, compiled against the shard where these names are the
     # shard's own: renaming there produces `undefined constant Any` and no
     # object file at all.
+    # What `<artifact>.drop` names comes out of both sides at once, which is
+    # the whole reason it is applied here: the artifact and the keep file below
+    # are built from these two lists, and a declaration whose object code is
+    # not emitted is a link error one build later. See `@@drop`.
+    unless @@drop.empty?
+      signatures.reject! { |signature| @@drop.includes? drop_key(root, signature) }
+      prefix = module_root?(program, root) ? "#{root}::" : ""
+      types = types.map { |declaration| drop_methods declaration, prefix }
+    end
+
     exported = signatures
     carried_types = types
 
@@ -811,7 +884,7 @@ module Iyi
       if root_type && module_root?(program, root)
         collect_class_vars(root_type)
       else
-        [] of {String, String, String}
+        [] of IyiMod::ClassVarDecl
       end
 
     if module_root? program, root
@@ -830,8 +903,9 @@ module Iyi
         rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, strip_root(signature, root)) { |body| body }
       end
       carried_types = carried_types.map { |declaration| strip_root_declaration declaration, root }
-      root_class_vars = root_class_vars.map do |(name, type, value)|
-        {name, strip_root(type, root), strip_root(value, root)}
+      root_class_vars = root_class_vars.map do |class_var|
+        class_var.copy_with(type: strip_root(class_var.type, root),
+          value: strip_root(class_var.value, root))
       end
     end
 
@@ -861,8 +935,8 @@ module Iyi
       end
       reopened = reopened.map { |declaration| map_names_declaration declaration }
       carried_types = carried_types.map { |declaration| map_names_declaration declaration }
-      root_class_vars = root_class_vars.map do |(name, type, value)|
-        {name, map_names(type), map_names(value)}
+      root_class_vars = root_class_vars.map do |class_var|
+        class_var.copy_with(type: map_names(class_var.type), value: map_names(class_var.value))
       end
     end
 
@@ -914,6 +988,10 @@ module Iyi
       # it the artifact is one of its own only moved the refusal later.
       crystal_library: true,
       top_level: top_exported,
+      # And the shard's own top-level `fun`s, whose source the consumer
+      # compiles: their machine code is in a main module, which never
+      # travels. See `IyiMod::Artifact#top_level_funs`.
+      top_level_funs: @@top_level_fun_sources,
       reopened: reopened,
     )
 
@@ -1286,7 +1364,7 @@ module Iyi
     # undefined than declared wrong. What it costs is named rather than hidden
     # — the symbol comes back, and it comes back with the type that could not
     # travel written next to it.
-    class_vars = declaration.class_vars.select { |(_, type_name, _)| resolvable.call(type_name) }
+    class_vars = declaration.class_vars.select { |class_var| resolvable.call(class_var.type) }
 
     methods = declaration.methods.select do |signature|
       (signature.parameters + [signature.return_type]).all? { |text| resolvable.call(text) }
@@ -1602,8 +1680,8 @@ module Iyi
   # than saying nothing. The name still travels in `ClassVars`, which is what
   # makes the *global* exist for the object code to refer to — that half was
   # never the library's to provide.
-  private def self.declared_class_vars(type : Type) : Array({String, String, String})
-    return [] of {String, String, String} if library_type?(type, library_root(type.program))
+  private def self.declared_class_vars(type : Type) : Array(IyiMod::ClassVarDecl)
+    return [] of IyiMod::ClassVarDecl if library_type?(type, library_root(type.program))
     collect_class_vars(type)
   end
 
@@ -1625,8 +1703,8 @@ module Iyi
   # declared shape alone.
   KEEP_CALL_CAP = 16
 
-  private def self.keep_call(io : IO, target : String, signature : IyiMod::Signature,
-                             counter : Int32) : Int32
+  private def self.keep_call(io : IO, owner : String, target : String,
+                             signature : IyiMod::Signature, counter : Int32) : Int32
     # An `abstract def` has nothing to emit and calling one is not a thing this
     # file can do: `t0.title` on a class with no subclass has no type, and the
     # compiler said so as `BUG: … has no type` from inside codegen rather than
@@ -1681,6 +1759,14 @@ module Iyi
     declared = signature.parameters.map do |parameter|
       parameter.split(" = ").first.split(" : ").last
     end
+    # Nor one whose type is an abstract struct: there is no value of it to
+    # stand up. See `@@unwritable`.
+    return counter if declared.any? do |type|
+                        Rx.scan(type, BIND_TYPE_NAME).any? do |match|
+                          @@unwritable.includes?((match[0] || "").lchop("::"))
+                        end
+                      end
+
     # Nor a parameter whose type holds an `_`.
     #
     # `_` is the *absence* of a type rather than a type: `OptionParser -> _` is
@@ -1692,6 +1778,12 @@ module Iyi
     return counter if declared.any? do |type|
                         Rx.scan(type, BIND_TYPE_NAME).any? { |match| match[0] == "_" }
                       end
+
+    # Which method the lines below belong to, for the one reader that needs it:
+    # `iyi bind`, when the fill build stops inside one of them. The compiler's
+    # error trace names this file and a line; the marker above that line names
+    # the method, which is what goes in `<artifact>.drop`. See `@@drop`.
+    io << "  # bind-drop: " << drop_key(owner, signature) << "\n"
 
     shapes = declared.map { |type| [type] + union_members(type) }
 
@@ -1795,7 +1887,9 @@ module Iyi
     # `nil`: `uninitialized _` is not a thing, and what the block returns is
     # not what this call is for.
     unless signature.block_parameter.empty?
-      inputs, output = block_shape signature.block_parameter
+      shape = block_shape signature.block_parameter
+      return counter unless shape
+      inputs, output = shape
       names = inputs.map_with_index { |_, index| "b#{counter + index}" }
       counter += inputs.size
       io << " { "
@@ -1816,11 +1910,83 @@ module Iyi
   end
 
   # `&block : Int32, String -> Bool` read as its inputs and its output.
-  private def self.block_shape(written : String) : {Array(String), String}
-    restriction = written.split(" : ", 2).last.strip.lchop('(').rchop(')')
-    head, _, tail = restriction.partition("->")
-    inputs = head.split(',').map(&.strip).reject(&.empty?)
-    {inputs, tail.strip}
+  # What a block takes and answers, or nil when neither can be read.
+  #
+  # A proc type is rendered *canonically* - `&block : Proc(Pointer(Void),
+  # Nil)`, not `Void* -> Nil` - and splitting that on commas counted the
+  # output as a second input: `Gcry.add_finalizer(a43) { |b44, b45| nil }`
+  # for a block of one, and the fill build stopped on `wrong number of
+  # block parameters`. A name that is neither shape (an alias that did not
+  # resolve) has no arity to read, and guessing one is what this file must
+  # never do: the caller skips the method, whose body travels anyway.
+  private def self.block_shape(written : String) : {Array(String), String}?
+    restriction = written.split(" : ", 2).last.strip
+    restriction = restriction[1..-2].strip if restriction.starts_with?('(') && restriction.ends_with?(')') && balanced?(restriction[1..-2])
+
+    if restriction.starts_with?("Proc(") && restriction.ends_with?(')')
+      parts = split_top_level(restriction[5..-2])
+      return nil if parts.empty?
+      return {parts[0...-1], parts.last}
+    end
+
+    at = top_level_arrow(restriction)
+    return nil unless at
+    head = restriction[0, at].strip
+    tail = restriction[(at + 2)..].strip
+    {split_top_level(head).reject(&.empty?), tail}
+  end
+
+  # Whether every bracket in *text* closes, so `(A, B)` can be unwrapped
+  # while `(A) -> (B)` is left alone.
+  private def self.balanced?(text : String) : Bool
+    depth = 0
+    text.each_char do |char|
+      case char
+      when '(', '[', '{' then depth += 1
+      when ')', ']', '}' then depth -= 1
+      end
+      return false if depth < 0
+    end
+    depth.zero?
+  end
+
+  # Where the top-level `->` is, or nil: `Proc(A, B) -> C` has one and
+  # `Array(Int32)` has none.
+  private def self.top_level_arrow(text : String) : Int32?
+    depth = 0
+    index = 0
+    while index < text.size
+      case text[index]
+      when '(', '[', '{' then depth += 1
+      when ')', ']', '}' then depth -= 1
+      when '-'
+        return index if depth.zero? && text[index + 1]? == '>'
+      end
+      index += 1
+    end
+    nil
+  end
+
+  # `A, Proc(B, C), D` as three, not four.
+  private def self.split_top_level(text : String) : Array(String)
+    parts = [] of String
+    depth = 0
+    from = 0
+    index = 0
+    while index < text.size
+      case text[index]
+      when '(', '[', '{' then depth += 1
+      when ')', ']', '}' then depth -= 1
+      when ','
+        if depth.zero?
+          parts << text[from...index].strip
+          from = index + 1
+        end
+      end
+      index += 1
+    end
+    parts << text[from..].strip
+    parts.reject(&.empty?)
   end
 
   # A file that calls everything and is never called.
@@ -1882,9 +2048,10 @@ module Iyi
       extended = extends_self? program, root
       signatures.each do |signature|
         next if !extended && signature.receiver.empty?
-        counter = keep_call(io, root, signature, counter)
+        counter = keep_call(io, root, root, signature, counter)
       end
       accessors.each do |(signature, _)|
+        io << "  # bind-drop: -\n"
         io << "  " << root << "." << signature.name << "\n"
       end
       prefix = module_root?(program, root) ? "#{root}::" : ""
@@ -1893,6 +2060,38 @@ module Iyi
       end
       io << "end\n"
     end
+  end
+
+  # The name one method is left out by. See `@@drop`.
+  #
+  # The owner is spelled as the *producer* writes it, because that is the
+  # spelling the keep file's marker carries and the keep file is compiled
+  # against the shard's own source.
+  private def self.drop_key(owner : String, signature : IyiMod::Signature) : String
+    "#{owner}#{signature.receiver.empty? ? "#" : "."}#{signature.name}" \
+    "(#{signature.parameters.join(", ")})#{signature.block_parameter}"
+  end
+
+  # *declaration* without the methods `<artifact>.drop` names, through the
+  # types under it: a nested type's methods are called by the keep file too.
+  private def self.drop_methods(declaration : IyiMod::TypeDecl, prefix : String) : IyiMod::TypeDecl
+    qualified = "#{prefix}#{declaration.name}"
+    kept = declaration.methods.reject { |signature| @@drop.includes? drop_key(qualified, signature) }
+    nested = declaration.types.map { |type| drop_methods type, "#{qualified}::" }
+    declaration.copy_with(methods: kept, types: nested)
+  end
+
+  # The keys in `<artifact>.drop`, if a previous run left one beside the
+  # artifact. Blank lines and `#` comments are a person's, and ignored.
+  private def self.drop_list(dir : String, root : String) : Set(String)
+    keys = Set(String).new
+    path = File.join(dir, "#{iyi_module_name(root).gsub('/', '-')}.drop")
+    return keys unless File.file?(path)
+    File.each_line(path) do |line|
+      key = line.strip
+      keys << key unless key.empty? || key.starts_with?('#')
+    end
+    keys
   end
 
   # Whether the root is a module, which decides what of its own can travel.
@@ -1951,6 +2150,11 @@ module Iyi
     if declaration.type_parameters.empty?
       receiver = "t#{counter}"
       counter += 1
+      # `-`: standing a value of the type up belongs to no one method, so
+      # there is nothing here for `<artifact>.drop` to leave out. A fill build
+      # that stops on one of these lines is a type the keep file cannot name a
+      # value of, which is this file's bug rather than the shard's.
+      io << "  # bind-drop: -\n"
       io << "  " << receiver << " = uninitialized " << qualified << "\n"
 
       # And the class side, through a *value* of the metaclass rather than
@@ -2010,7 +2214,7 @@ module Iyi
           else
             metaclass
           end
-        counter = keep_call(io, target, signature, counter)
+        counter = keep_call(io, qualified, target, signature, counter)
       end
     end
 
@@ -2081,14 +2285,35 @@ module Iyi
       kept = found.select do |name|
         declared_type?(program, name) || declared_type?(program, qualify.call(name))
       end
-      names.concat kept
+      # A name Crystal's own library declares is Crystal's, and no boundary
+      # takes that spelling. `kilt` is a module root, so `Kilt::Exception` is
+      # declared in its artifact as `Exception` — and adopting the bare name
+      # rewrote `class Error < Exception` in *every shard bound after it* to
+      # `class Error < Kilt::Exception`, which is a different type, in a
+      # module the shard does not use. It travelled as an import edge too, so
+      # a program that wanted `jwt` was handed `kilt`, `p_g` and nine more,
+      # and stopped on the first of them that could not be named.
+      #
+      # The qualified name is recorded either way: what a consumer writes for
+      # that type is `Kilt::Exception`, and that is what it can name.
+      bare = kept.reject do |name|
+        @@crystal_types.includes?(name) || @@builtin.includes?(name) ||
+          # Nor a name *this* shard declares. A module root's declarations are
+          # written with the root stripped, so `JWT::Error` and
+          # `Validator::Error` are both `Error` here - and jwt's own text,
+          # stripped the same way, came out saying `Validator::Error` for the
+          # class beside it. A bare name a shard declares itself is the
+          # shard's own, and its own types travel with it.
+          name == @@root || declared_type?(program, "#{@@root}::#{name}")
+      end
+      names.concat bare
       # Under the root as well, because that is how the *producer* writes them.
       # `Radix` declares `Tree` and `Kemal` says `Radix::Tree`, so recording
       # only the bare name left every one of those eight signatures waiting on
       # a boundary that was carrying the type.
       kept.each { |name| names << qualify.call(name) }
       artifact.exports.types.each do |declaration|
-        next unless kept.includes? declaration.name
+        next unless bare.includes? declaration.name
         @@bound_prefix[declaration.name] = qualify.call(declaration.name)
         @@bound_module[declaration.name] = artifact.module_name
         program.iyi_bind_boundaries[declaration.name] = artifact.module_name
@@ -2226,8 +2451,9 @@ module Iyi
       # The value as well as the type. It is an expression that names types —
       # `@@config = Config.new` — and it is rendered inside the module the same
       # way an alias's right-hand side is.
-      class_vars: declaration.class_vars.map do |(name, type, value)|
-        {name, strip_root(type, root), strip_root(value, root)}
+      class_vars: declaration.class_vars.map do |class_var|
+        class_var.copy_with(type: strip_root(class_var.type, root),
+          value: strip_root(class_var.value, root))
       end,
       superclass: strip_root(declaration.superclass, root),
       includes: declaration.includes.map { |name| strip_root(name, root) },
@@ -2269,7 +2495,7 @@ module Iyi
   # Rewrites every bound name in *text* to what the consumer calls it. The name
   # has to stand alone on both sides: `JSON` is bound, `JSONThing` is not.
   private def self.map_names(text : String) : String
-    @@bound_prefix.reduce(text) do |carried, (name, qualified)|
+    mapped = @@bound_prefix.reduce(text) do |carried, (name, qualified)|
       # Recorded where the name is *met* rather than where the text changed. A
       # class root needs no rewriting — the consumer names its types exactly as
       # it declares them — so `mapped != carried` would have said "this
@@ -2280,6 +2506,36 @@ module Iyi
         qualified
       end
     end
+
+    # And a name the producer already wrote in full, which the rewrite above
+    # cannot see: `exception_page` writes `@frames :
+    # Array(Backtracer::Backtrace::Frame)`, where `Backtrace` is part of a
+    # longer name rather than a bare one, so nothing was replaced and no
+    # import edge was recorded. The declaration needed none - it is already
+    # the consumer's spelling - but a consumer that never loaded `backtracer`
+    # stopped on `undefined constant Backtracer::Backtrace::Frame`.
+    @@bound_prefix.each do |name, qualified|
+      next if qualified == name
+      @@bound_used << @@bound_module[name] if names_on_boundary?(mapped, qualified)
+    end
+
+    mapped
+  end
+
+  # Whether *needle* stands in *text* as a whole name, by the rule
+  # `replace_on_boundary` replaces on.
+  private def self.names_on_boundary?(text : String, needle : String) : Bool
+    return false if needle.empty?
+    index = 0
+    while (found = text.byte_index(needle, index))
+      after = found + needle.bytesize
+      if !after_name_byte?(text, found) &&
+         (after >= text.bytesize || !identifier_byte?(text.to_unsafe[after]))
+        return true
+      end
+      index = found + 1
+    end
+    false
   end
 
   private def self.map_names(signature : IyiMod::Signature) : IyiMod::Signature
@@ -2310,8 +2566,8 @@ module Iyi
       end,
       types: declaration.types.map { |nested| map_names_declaration nested, "#{path}::#{nested.name}" },
       value: map_names(declaration.value),
-      class_vars: declaration.class_vars.map do |(name, type, value)|
-        {name, map_names(type), map_names(value)}
+      class_vars: declaration.class_vars.map do |class_var|
+        class_var.copy_with(type: map_names(class_var.type), value: map_names(class_var.value))
       end,
       superclass: map_names(declaration.superclass),
       includes: declaration.includes.map { |name| map_names(name) },
@@ -2406,6 +2662,26 @@ module Iyi
   # Read from where each type was written rather than from a list: a list is a
   # claim that everything not in it does not matter, and this file has already
   # recorded what that costs once.
+  # Every abstract struct in the program, by name: `Number`, `Int`, `Float`
+  # and any the shard declares itself.
+  private def self.unwritable_types(program : Program) : Set(String)
+    names = Set(String).new
+    collect_unwritable program.types?, "", names
+    names
+  end
+
+  private def self.collect_unwritable(types : Hash(String, Type)?, prefix : String,
+                                      names : Set(String)) : Nil
+    return unless types
+    types.each do |name, type|
+      next unless type.is_a?(NamedType)
+      if type.responds_to?(:abstract?) && type.abstract? && type.struct?
+        names << "#{prefix}#{name}"
+      end
+      collect_unwritable type.types?, "#{prefix}#{name}::", names
+    end
+  end
+
   private def self.crystal_library_types(program : Program) : Set(String)
     names = Set(String).new
     library = program.requires.find(&.ends_with?("prelude.cr"))
@@ -2417,14 +2693,50 @@ module Iyi
   end
 
   private def self.collect_crystal_types(types : Hash(String, Type)?, prefix : String,
-                                         root : String, names : Set(String)) : Nil
+                                         root : String, names : Set(String),
+                                         hidden : Bool = false) : Nil
     return unless types
 
     types.each do |name, type|
       next unless type.is_a?(NamedType)
       written_here = type.locations.try(&.any? { |location| location.filename.to_s.starts_with?(root) })
-      names << "#{prefix}#{name}" if written_here
-      collect_crystal_types type.types?, "#{prefix}#{name}::", root, names
+      next unless written_here || type.types?
+
+      # A `private` type of the library is not a name a consumer can write.
+      # `Log::ProcFormatter` is one, and `EMail`'s
+      # `def self.client_log_formatter : ::Log::ProcFormatter` was carried as
+      # surface because this table said the name was available: the fill build
+      # then stopped on `private constant Log::ProcFormatter referenced`, and
+      # the whole shard did not bind over one def nobody outside could have
+      # called anyway.
+      #
+      # It goes in the other table instead, because a *value* of it can cross
+      # even where the name cannot: `Log::Formatter.new { }` answers one, and
+      # `EMail::Client::LOG_FORMATTER` is that call. See `nameable_value?`.
+      inside = hidden || type.private?
+      if written_here
+        (inside ? @@crystal_private : names) << "#{prefix}#{name}"
+      end
+      collect_crystal_types type.types?, "#{prefix}#{name}::", root, names, inside
+    end
+  end
+
+  # Whether a *value* of this type can exist on the far side.
+  #
+  # A different question from `nameable?`, which asks whether the name can be
+  # written down. A constant is source the consumer runs - `LOG_FORMATTER =
+  # Log::Formatter.new { }` - and what that source names is `Log::Formatter`,
+  # which is public; the type it answers is `Log::ProcFormatter`, which is
+  # not, and the consumer never has to write it.
+  private def self.nameable_value?(name : String, root : String) : Bool
+    return true if nameable?(name, root)
+    return false if module_valued?(name)
+
+    Rx.scan(name, BIND_TYPE_NAME).all? do |match|
+      part = match[0].not_nil!
+      next true if part == "class" || part == "_"
+      bare = part.lchop("::")
+      @@crystal_private.includes?(bare) || nameable_name?(part, root)
     end
   end
 
@@ -2460,6 +2772,37 @@ module Iyi
   # two: a type the shard wrote is under the shard, and one the library wrote is
   # under the library. A type both of them touch counts as the shard's, because
   # what the shard added to it has to travel somehow.
+  # The top-level namespaces the shard declares itself, other than *root*.
+  #
+  # Its own, by where they are written: a shard that reopens `JSON` writes
+  # `module JSON` in its own file too, and that namespace is Crystal's - what
+  # the shard added to it travels in `Reopened`. So a namespace counts here
+  # only if *every* file that declares it is the shard's own.
+  private def self.other_namespaces(program : Program, root : String) : Array(String)
+    source = program.filename
+    return [] of String unless source.is_a?(String)
+    directory = File.dirname(source)
+    return [] of String if directory.empty?
+
+    names = [] of String
+    program.types?.try &.each do |name, type|
+      next if name == root
+      next unless type.is_a?(NamedType)
+      next if type.is_a?(GenericType)
+      locations = type.locations
+      next unless locations && !locations.empty?
+      next unless locations.all? do |location|
+                    filename = location.filename
+                    filename.is_a?(String) && filename.starts_with?(directory)
+                  end
+      # A namespace with nothing in it is nothing to bind: `PQ` holds types
+      # and defs, while a bare `module Foo; end` in a shard's file holds none.
+      next if (type.types?.try(&.size) || 0) == 0 && (type.as?(ModuleType).try(&.defs.try(&.size)) || 0) == 0
+      names << name
+    end
+    names.sort!
+  end
+
   private def self.library_type?(type : Type, root : String?) : Bool
     return false unless root
     return false unless type.responds_to?(:locations)
@@ -2686,6 +3029,61 @@ module Iyi
     parts.join('\n')
   end
 
+  # Whether this call names a macro rather than a method.
+  #
+  # Asked of the program, because the parser cannot tell them apart: both are
+  # `Call` nodes and the difference is what the name was defined as.
+  private def self.macro_call?(program : Program, call : Call) : Bool
+    owner =
+      case receiver = call.obj
+      when Nil
+        program.as(Type)
+      when Path
+        found = nil.as(Type?)
+        table = program.types?
+        receiver.names.each do |part|
+          next_type = table.try &.[]?(part)
+          return false unless next_type
+          found = next_type
+          table = next_type.as?(NamedType).try(&.types?)
+        end
+        found
+      else
+        return false
+      end
+    return false unless owner
+
+    {owner.as?(ModuleType), owner.metaclass.as?(ModuleType)}.each do |scope|
+      return true if scope.try(&.macros).try(&.has_key?(call.name))
+    end
+    false
+  end
+
+  # The shard's own top-level `fun`s, as source.
+  #
+  # Read from the files rather than from the program, because what has to
+  # cross is the *text*: `External` is a `Def` by the time semantic analysis
+  # is done, and rendering one back as a `fun` with its body is a translation
+  # nobody needs when the file beside it says it exactly.
+  private def self.top_level_funs(program : Program) : Array(String)
+    source = program.filename
+    return [] of String unless source.is_a?(String)
+    directory = File.dirname(source)
+    return [] of String if directory.empty?
+
+    funs = [] of String
+    program.requires.each do |path|
+      next unless path.starts_with?(directory)
+      next unless File.file?(path)
+      parser = program.new_parser(File.read(path))
+      parser.filename = path
+      flat_expressions(parser.parse).each do |node|
+        funs << node.to_s if node.is_a?(FunDef)
+      end
+    end
+    funs
+  end
+
   # The statements one of the shard's files writes outside every declaration.
   #
   # A declaration is not one of these — a class, a module, a `def`, a `lib`, an
@@ -2702,8 +3100,14 @@ module Iyi
     flat_expressions(nodes).each do |node|
       case node
       when Require, ClassDef, ModuleDef, Def, Macro, LibDef, EnumDef,
-           Alias, AnnotationDef, Include, Extend, TypeDeclaration, Nop
+           Alias, AnnotationDef, Include, Extend, TypeDeclaration, Nop, FunDef
         # A declaration, or a require. Somebody else carries it.
+        #
+        # `FunDef` is one of them, and it took a consumer to say so: copied
+        # here, gcry's top-level `fun gcry_mark_worker_main` was rendered
+        # inside the module the declarations sit in - `can only declare fun at
+        # lib or global scope` - and the symbol it declares is already in this
+        # artifact's object code.
       when MacroExpression, MacroFor, MacroIf
         # A macro at the top level writes declarations, and the declarations it
         # wrote have already travelled — `Exports` has them, one entry per
@@ -2714,6 +3118,15 @@ module Iyi
       when Assign
         # `TABLE = [...]` is a constant and `constant_source` has it; anything
         # else assigned at the top level is a local nobody outside can read.
+      when Call
+        # A call to a *macro* is a declaration written compactly, not code
+        # that runs, and whatever it declared has already travelled in
+        # `Exports`. `kilt` writes `Kilt.register_engine("ecr", ECR.embed)` at
+        # its top level - a macro whose two arguments are unevaluated AST -
+        # and copying the line into the initialiser handed a consumer
+        # `ECR.embed` with nothing in it: `wrong number of arguments for macro
+        # 'embed' (given 0, expected 2)`, from a file nobody wrote.
+        lines << node.to_s unless macro_call?(program, node)
       else
         lines << node.to_s
       end
@@ -2770,7 +3183,7 @@ module Iyi
         # A value the consumer cannot name is one it cannot rebuild, and a
         # constant it cannot rebuild is better left undefined than defined wrong.
         answer = type.value.type?.try(&.devirtualize.to_s)
-        next if answer && !nameable?(answer, root)
+        next if answer && !nameable_value?(answer, root)
         written = type.iyi_value_source
         # A constant with none is one nobody wrote — see `Const#iyi_value_source`
         # — and the node is the best answer left.
@@ -3096,6 +3509,22 @@ module Iyi
     # and `io_for` is `private def self.`; the consumer said `undefined method
     # 'io_for' for OpenSSL::GETS_BIO.class`.
     reach.concat own_constant_sources(type)
+    # And a class variable's default, and a field's. Both render as
+    # `name : type = value` in the declaration, so the consumer's own compiler
+    # runs that value with the type for a scope - the same position a
+    # constant's value is in. `email` writes `@@log : Log = create_logger`
+    # beside `private def self.create_logger`, and a program that imported the
+    # boundary stopped on `undefined local variable or method
+    # 'create_logger' for EMail::Client.class` before it reached a line of its
+    # own.
+    declared_class_vars(type).each { |class_var| reach << class_var.value unless class_var.value.empty? }
+    # And the shard's top-level `fun`s, which the consumer compiles: their
+    # bodies are the one text that can call into any type the shard has.
+    # `gcry`'s `fun gcry_stw_watchdog_main` calls `StwWatchdog.append_hex`,
+    # which that module keeps to itself, and a consumer said `undefined
+    # method 'append_hex' for Gcry::StwWatchdog:Module`.
+    reach.concat @@top_level_fun_sources
+    split_fields(type).each { |(_, _, value)| reach << value unless value.empty? }
     # A method answering an ancestor's requirement is wanted whether or not
     # anything here travels, so the search below has to run.
     reach << "" if pool.any?(&.answers_abstract)
@@ -3284,11 +3713,19 @@ module Iyi
     found
   end
 
+  # By *byte* index, because the two lines below are byte arithmetic.
+  #
+  # `String#index` answers in characters, and the two agree only while the
+  # text is ASCII. One em dash in a string literal and every match after it
+  # was tested against the wrong bytes: `gcry`'s `StwWatchdog#report` has one,
+  # so `append_hex` - called on the line after it - was read as uncalled, and
+  # a consumer compiling that body said `undefined method 'append_hex'`. The
+  # bug is invisible in the common case, which is why it is written down here.
   private def self.calls?(body : String, method : String) : Bool
     return false unless body.includes?(method)
 
     index = 0
-    while (found = body.index(method, index))
+    while (found = body.byte_index(method, index))
       after = found + method.bytesize
       before_ok = found == 0 || !identifier_byte?(body.to_unsafe[found - 1])
       after_ok = after >= body.bytesize || !identifier_byte?(body.to_unsafe[after])
@@ -3377,13 +3814,29 @@ module Iyi
   #
   # Own only — `class_vars?` rather than a lookup, because looking one up walks
   # ancestors and copies what it finds onto the asking type.
-  private def self.collect_class_vars(type : Type) : Array({String, String, String})
-    class_vars = [] of {String, String, String}
+  private def self.collect_class_vars(type : Type) : Array(IyiMod::ClassVarDecl)
+    class_vars = [] of IyiMod::ClassVarDecl
     return class_vars unless type.responds_to?(:class_vars?)
 
     type.class_vars?.try &.each do |name, variable|
       initialiser = variable.iyi_initialiser_source
-      class_vars << {name, variable.type?.try(&.devirtualize.to_s) || "?", initialiser}
+      written = variable.type?.try(&.devirtualize.to_s) || "?"
+      # `@[ThreadLocal]` travels with the variable, because it decides which
+      # global the object code on both sides writes to. See
+      # `IyiMod::ClassVarDecl`.
+      annotations = variable.thread_local? ? ["@[ThreadLocal]"] : [] of String
+      # A class variable with no initialiser and a type that cannot hold `nil`
+      # is one the shard declared `uninitialized`: Crystal has no third way to
+      # write one, and it refuses the declaration without either. Rendered
+      # without it, `gcry`'s `@@ranges = uninitialized StaticArray(RootRange,
+      # MAX_RANGES)` reached a consumer as a bare type declaration and
+      # stopped it - `class variable '@@ranges' of Gcry::Platform is not
+      # nilable ... so it must have an initializer`.
+      if initialiser.empty? && written != "?" &&
+         written != "Nil" && !union_members(written).includes?("Nil")
+        initialiser = "uninitialized #{written}"
+      end
+      class_vars << IyiMod::ClassVarDecl.new(name, written, initialiser, annotations)
     end
     class_vars
   end
@@ -3886,7 +4339,7 @@ module Iyi
     end
 
     fields = [] of {String, String, String}
-    defaulted = [] of {String, String, String}
+    defaulted = [] of IyiMod::ClassVarDecl
     if type.is_a?(InstanceVarContainer)
       type.instance_vars.each do |field, variable|
         filename = written_in variable.location
@@ -3969,6 +4422,12 @@ module Iyi
     each_bind_def(program) do |a_def|
       filename = written_in a_def.location
       next unless filename && filename.starts_with?(directory)
+      # A `fun` is not a `def`. `gcry` writes `fun gcry_mark_worker_main(arg :
+      # Void*)` at its top level for a raw pthread to call, and the symbol is
+      # the C name in this artifact's own object code - nothing outside names
+      # it, and a `def` declaration of it asks the linker for a mangled name
+      # nobody emitted.
+      next if a_def.is_a?(External)
       methods << classify_bind(program, a_def)
     end
   end

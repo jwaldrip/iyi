@@ -890,6 +890,15 @@ module Iyi
                 if node_exp.var.initializer
                   initialize_class_var(node_exp)
                 end
+                # iyi: recorded here as well as at the two reads, because this
+                # is the third way a unit reaches one and it reaches the
+                # *global* rather than either read. `gcry` writes
+                # `@@old_segv = uninitialized LibC::Sigaction` and only ever
+                # passes `pointerof(@@old_segv)` to `sigaction`, so the
+                # variable travelled in the declarations, was named by no
+                # `ClassVarRef`, and a consumer's link ended on `undefined
+                # symbol: Gcry::SegvReport::old_segv`.
+                iyi_record_unit_class_var node_exp.var, lazy: false
                 get_global class_var_global_name(node_exp.var), node_exp.type, node_exp.var
               when Global
                 node.raise "BUG: there should be no use of global variables other than $~ and $?"

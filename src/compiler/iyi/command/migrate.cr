@@ -431,8 +431,14 @@ class Iyi::Command
     kept_in = 0
     units.each do |unit|
       wanted = needed[unit.path]? || Set(String).new
-      unit.pub_sites.each do |(index, name)|
+      unit.pub_sites.each do |(index, name, source_line)|
         next if wanted.includes?(name)
+        # A program called it, which for a library is the only surface
+        # there is: `Valid.email?` is called by validator's own specs and
+        # by nothing in its `src`, so taking `pub` off left a migrated
+        # library whose whole API was unreachable - it compiled, module by
+        # module, and answered nothing from outside.
+        next if inferred.try(&.called?({unit.source, source_line}))
         line = unit.body[index]?
         next unless line && line.starts_with?("pub ")
         unit.body[index] = line.lchop("pub ")
@@ -545,7 +551,7 @@ class Iyi::Command
           members.each do |member|
             # Relative to where this module is *written*, which is beside
             # the source unless `--out` said otherwise.
-            here = out_named.nil? ? File.dirname(single) : File.join(out_dir, File.dirname(module_path))
+            here = out_named.nil? ? File.dirname(single) : File.expand_path(File.dirname(module_path), out_dir)
             member.required_paths(here).each { |path| io << "require \"" << path << "\"\n" }
           end
         end
@@ -1011,7 +1017,10 @@ class Iyi::Command
     # Where a `pub` was written and what it exports, so the driver can
     # take it back off: what no other module names is not the module's
     # surface, and R-2 asks a signature only of what is.
-    getter pub_sites = [] of {Int32, String}
+    # Where a `pub` was written, what it exports, and which line of the
+    # source it came from - the last so the driver can ask whether any
+    # program called it.
+    getter pub_sites = [] of {Int32, String, Int32}
 
     # Through `Iyi::Rx`, the compiler's own engine, and not Crystal's
     # `Regex`: pcre2 is on the list iyi means to need nothing from, and
@@ -1542,7 +1551,7 @@ class Iyi::Command
           end
         elsif (match = DEF.match(line)) && (match[1] || "").empty? && match[2].nil?
           line = annotate_def(line, source_index, inferred, notes) if inferred
-          pub_sites << {body.size, match[4] || ""}
+          pub_sites << {body.size, match[4] || "", source_index + 1}
           # `def self.banner` at a module's top level is Crystal saying
           # "a module function"; an iyi module extends itself, so the
           # module function is the plain spelling and `def self.` would
@@ -1551,7 +1560,7 @@ class Iyi::Command
           line = line.sub("def self.", "def ")
           line = "pub " + line
         elsif (match = CONST.match(line)) && (match[1] || "").empty?
-          pub_sites << {body.size, match[2] || ""}
+          pub_sites << {body.size, match[2] || "", source_index + 1}
           line = "pub " + line
         end
 

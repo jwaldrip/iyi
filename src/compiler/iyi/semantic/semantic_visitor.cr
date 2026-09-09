@@ -688,21 +688,25 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
       # Nothing marks them as an artifact's: they arrive with their bodies for
       # the same reason the DSL could not travel before — `-> _` blocks have no
       # symbol per method — so the consumer compiles them like its own.
-      unless artifact.top_level.empty?
+      # The `fun`s are in the same text, and the same reason puts them there:
+      # a `fun` can only be declared at global scope. See
+      # `IyiMod::Artifact#top_level_funs`.
+      top_nodes = nil.as(ASTNode?)
+      unless artifact.top_level.empty? && artifact.top_level_funs.empty?
         top_source = String.build { |io| IyiMod.top_level_declarations(artifact, io) }
         top_path = "#{artifact_path} (top level)"
         top_parser = @program.new_parser(top_source)
         top_parser.filename = top_path
         Iyi.register_iyi_declarations top_path, top_source
-        top_nodes = @program.normalize(top_parser.parse, inside_exp: false)
+        top_nodes = nodes = @program.normalize(top_parser.parse, inside_exp: false)
         # The same mark the module's own declarations take, and for the same
         # two reasons: one that arrived without a body is a header, and a call
         # to it is typed from its return annotation rather than from the body
         # that is not there. Without it `def render_404 : String` read as a
         # definition whose body is empty — `must return String but it is
         # returning Nil`.
-        top_nodes.accept IyiMod::DeclarationMarker.new
-        iyi_at_top_level { top_nodes.accept self }
+        nodes.accept IyiMod::DeclarationMarker.new
+        iyi_at_top_level { nodes.accept self }
       end
 
       iyi_at_top_level { parsed_nodes.accept self }
@@ -729,7 +733,17 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     number_iyi_artifact_types node, artifact
     resolve_iyi_artifact_match_types node, artifact
 
-    FileNode.new(parsed_nodes, artifact_path)
+    # The top-level text joins the tree as well, and a `fun` is why it has to.
+    # A `def` is emitted when something calls it, so accepting it above was
+    # enough; a `fun` is emitted where it is *written*, and a node the codegen
+    # pass never walks is machine code nobody produces. `gcry`'s own units
+    # call `gcry_mark_worker_main` by its C name, and a consumer's link ended
+    # on `undefined symbol` with the declaration in hand.
+    if top = top_nodes
+      FileNode.new(Expressions.new([top, parsed_nodes] of ASTNode), artifact_path)
+    else
+      FileNode.new(parsed_nodes, artifact_path)
+    end
   end
 
   # iyi: creates the types the artifact's object code refers to a type id of,
@@ -800,20 +814,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     return if artifact.object_code.empty?
 
     artifact.match_types.each do |name|
-      metaclass = name.ends_with?(".class")
-      base = metaclass ? name.rchop(".class") : name
-      virtual = base.ends_with?('+')
-      base = base.rchop('+') if virtual
-
-      parser = @program.new_parser(base)
-      parser.next_token
-      type_node = parser.parse_bare_proc_type
-      parser.check :EOF
-
-      type = @program.lookup_type(type_node, include_private: true)
-      type = type.virtual_type if virtual
-      type = type.metaclass if metaclass
-      @program.iyi_artifact_match_types[name] = type
+      @program.iyi_artifact_match_types[name] = iyi_match_type_named(name)
     rescue CodeError
       # The same refusal a type id gets, for the same reason: the alternative
       # is a mangled symbol at link time with no module named beside it.
@@ -827,6 +828,132 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
         Build the module from source, or export the type it names.
         MESSAGE
     end
+  end
+
+  # iyi: one match type, from the name its symbol carries.
+  #
+  # The name is a *printed* type rather than source: `IPSocket+` is a virtual
+  # type, `Random::Secure:Module` is a module used as a value, and
+  # `(File::PReader | IO::FileDescriptor+ | OpenSSL::SSL::Socket+)` is a union
+  # of both kinds. None of the three is anything a program can write, which is
+  # why this reads the parts and asks the program for each: parsing the whole
+  # string refused every union whose members are not plain names, and refusing
+  # is how `faker` and `quartz` stopped - one with an error naming a type
+  # nobody can spell, the other with an undefined `~match<...>` at link time.
+  private def iyi_match_type_named(name : String) : Type
+    body = name.strip
+    body = body[1..-2].strip if iyi_wrapped_in_parens?(body)
+
+    members = iyi_split_union(body)
+    if members.size > 1
+      return @program.union_of(members.map { |member| iyi_match_type_named(member) }).not_nil!
+    end
+
+    metaclass = body.ends_with?(".class")
+    body = body.rchop(".class").strip if metaclass
+    # A module used as a value prints this way and is reached as the module's
+    # metaclass, which is what holds its class methods.
+    module_value = body.ends_with?(":Module")
+    body = body.rchop(":Module").strip if module_value
+    virtual = body.ends_with?('+')
+    body = body.rchop('+').strip if virtual
+
+    type = iyi_match_base_type(body)
+    type = type.virtual_type if virtual
+    type = type.metaclass if metaclass || module_value
+    type
+  end
+
+  # One printed type with no suffix left on it: a name, or a generic
+  # instantiated with types that may carry suffixes of their own.
+  #
+  # `DB::PoolResourceLost(DB::Connection+)` is the case that needs the second
+  # half: the argument is a virtual type, which no parser takes, so the head
+  # and the arguments are resolved apart and the generic is instantiated here.
+  private def iyi_match_base_type(body : String) : Type
+    if body.ends_with?(')') && (open = body.index('(')) && open > 0
+      head = body[0...open].strip
+      arguments = iyi_split_arguments(body[(open + 1)..-2])
+      unless arguments.empty?
+        generic = iyi_match_named_type(head)
+        if generic.is_a?(GenericType)
+          type_vars = arguments.map do |argument|
+            if argument.to_i?
+              NumberLiteral.new(argument).as(TypeVar)
+            else
+              iyi_match_type_named(argument).as(TypeVar)
+            end
+          end
+          return generic.instantiate(type_vars)
+        end
+      end
+    end
+
+    iyi_match_named_type body
+  end
+
+  private def iyi_match_named_type(body : String) : Type
+    parser = @program.new_parser(body)
+    parser.next_token
+    type_node = parser.parse_bare_proc_type
+    parser.check :EOF
+    @program.lookup_type(type_node, include_private: true)
+  end
+
+  # Whether one pair of parentheses encloses the whole of *text*, so `(A | B)`
+  # unwraps and `(A) | (B)` does not.
+  private def iyi_wrapped_in_parens?(text : String) : Bool
+    return false unless text.starts_with?('(') && text.ends_with?(')')
+    depth = 0
+    text.each_char_with_index do |char, index|
+      case char
+      when '(' then depth += 1
+      when ')'
+        depth -= 1
+        return index == text.size - 1 if depth.zero?
+      end
+    end
+    false
+  end
+
+  # `A, B(C, D), 16` as three, splitting only where the depth is zero.
+  private def iyi_split_arguments(text : String) : Array(String)
+    arguments = [] of String
+    depth = 0
+    from = 0
+    text.each_char_with_index do |char, index|
+      case char
+      when '(', '[', '{' then depth += 1
+      when ')', ']', '}' then depth -= 1
+      when ','
+        if depth.zero?
+          arguments << text[from...index].strip
+          from = index + 1
+        end
+      end
+    end
+    arguments << text[from..].strip
+    arguments.reject(&.empty?)
+  end
+
+  # `A | B+ | C(D | E)` as three, splitting only where the depth is zero.
+  private def iyi_split_union(text : String) : Array(String)
+    members = [] of String
+    depth = 0
+    from = 0
+    text.each_char_with_index do |char, index|
+      case char
+      when '(', '[', '{' then depth += 1
+      when ')', ']', '}' then depth -= 1
+      when '|'
+        if depth.zero?
+          members << text[from...index].strip
+          from = index + 1
+        end
+      end
+    end
+    members << text[from..].strip
+    members.reject(&.empty?)
   end
 
   # iyi: reads the constants the artifact's object code reads, on its behalf

@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 107,055 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 108,078 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,565 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3129,20 +3129,41 @@ not this.
 
 **And on a real application, the boundary's own limits, counted.** A 8,079-line
 kemal application with 21 shards under `lib/`, 78,430 lines of them: `iyi
-bind` binds 12 of the 19 its manifest depends on, in 62 s, and names the
-seven it does not. One has no surface R-2 can write (`prop`, macros, rule
-4); two depend on it or on another that failed (`validator`,
-`quartz_mailer`, `jwt`); three fail in the fill build on defects the
-boundary has and this verb only reports — a private constant in a
-signature (`email`, `Log::ProcFormatter`), a method the keep file cannot
-see (`ed25519`), a block arity the keep file gets wrong (`gcry`) — and
-`pg`, which binds and fills, refuses at the consumer under IV.1g: its object
-code numbers `Array(PQ::Field)`, a type it never exports. So the shards this
-application actually requires — pg, validator, jwt, quartz_mailer, faker
-through email — do not cross today, and the application's own build reads
-9.8 s front end, of which the shards a probe measures are under a second.
-Those five are the boundary's next work, each with a log naming it; the
-verb is not.
+bind` binds 18 of the 19 its manifest depends on and writes 22 artifacts,
+because a shard with more than one namespace is more than one boundary. The
+one it does not bind is `prop`, whose whole surface is macros (rule 4), and
+nothing waits on it: a macro-only shard has no declarations, no object code
+and no artifact, so `validator`, written on its macros, binds beside it.
+
+Written is not the same as usable, and the second number is the one that
+counts: a program that does nothing but `import <name>` builds, links and
+runs against **20 of the 22**. Getting there took fifteen defects, each
+found by consuming an artifact rather than by writing one, and each is now
+a shape in `bench/bind_roundtrip.sh`'s fixture: a class variable's
+`@[ThreadLocal]` (a consumer that does not carry it writes to a different
+global than the object code does), one the shard declared `uninitialized`,
+a default that calls a private method, a private method named only after a
+non-ASCII character in a travelling body, a shard's own top-level `fun`
+(machine code in a main module, which never travels, so the source crosses
+and the consumer compiles it), a macro call copied into the initialiser, a
+type layout past 64 KiB, a match type named the way it prints rather than
+the way its symbol is, and a bare name one boundary's declarations took
+from another's.
+
+Three rules came out of it. **A boundary is rooted at one namespace, and a
+shard need not have one**: `pg` declares `PG` and `PQ`, its wire protocol,
+so `iyi bind` binds each — `tool bind` reports the others it found — and
+the parts a shard's entry never requires (`bindata/asn1.cr`) are boundaries
+too, since a program that requires one needs its declarations from
+somewhere. **What cannot compile cannot cross**: a method whose body does
+not typecheck when it is instantiated goes in `<artifact>.drop`, both
+builds run again without it, and the rest of the boundary is not hostage to
+it (`ed25519` loses two methods calling an `assert_rst_point` that shard
+never defined, and `jwt` binds behind it). **An import graph is a DAG**, and
+that is the one limit left: `PG` names `PQ::Field` in its signatures while
+`PQ` numbers `PG::Error` in its object code, and two boundaries cannot hold
+a cycle. Those two are the pair a program cannot import today; the artifacts
+are written and the refusal is IV.1g's, at the consumer, naming the type.
 
 **What a migration would need, measured on an application, before any
 `iyi migrate` is written.** The question a Crystal user asks next is not

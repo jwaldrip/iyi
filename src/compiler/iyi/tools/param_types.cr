@@ -93,6 +93,14 @@ module Iyi
       @call_answers[key]? || @body_answers[key]?
     end
 
+    # Whether any program in this project called the def written here.
+    # For a *library* that is the only signal of a public surface there
+    # is: its consumers are outside the tree, and the tree's own modules
+    # name almost none of it - the specs do, and they are a program.
+    def called?(key : {String, Int32}) : Bool
+      @call_answers.has_key?(key) || @from_calls.has_key?(key)
+    end
+
     # Where the bang method called at this position was written, or nil
     # if the program has no such call - a macro wrote it, or nothing was
     # instantiated.

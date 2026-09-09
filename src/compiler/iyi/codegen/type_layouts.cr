@@ -48,15 +48,15 @@ module Iyi
       gc_scan_offsets(type, struct_type, 0_u64, scan_offsets)
       scan_offsets.sort!.uniq!
 
-      # The format's offsets are u16. A type with a pointer word past 64 KiB
+      # The format's offsets are u32. A type with a pointer word past 4 GiB
       # is refused rather than written down wrong: a truncated offset is a
       # field the collector never marks.
       scan_offsets.each do |offset|
-        if offset > UInt16::MAX
+        if offset > UInt32::MAX
           raise Iyi::Error.new(
             "#{type} holds a pointer word at byte offset #{offset}, which a " \
-            "TypeLayout offset (u16) cannot say. The format caps a mapped " \
-            "object at 64 KiB; this type is past it.")
+            "TypeLayout offset (u32) cannot say. The format caps a mapped " \
+            "object at 4 GiB; this type is past it.")
         end
       end
 
@@ -64,8 +64,8 @@ module Iyi
         type_id: llvm_id.type_id(type),
         alloc_size: typer.size_of(struct_type).to_u32,
         scan_cap: gc_scan_cap(type, struct_type).to_u32,
-        scan_offsets: scan_offsets.map(&.to_u16),
-        noscan_offsets: [] of UInt16,
+        scan_offsets: scan_offsets.map(&.to_u32),
+        noscan_offsets: [] of UInt32,
       )
     end
 

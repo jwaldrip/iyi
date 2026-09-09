@@ -285,7 +285,10 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     # is the `require`s a shard's source made that resolved into Crystal's
     # library, replayed in the artifact because the consumer's prelude does not
     # hold every file of it. Renaming either would claim a name iyi does not own.
-    (r"crystal_types|crystal_requires", "what a --crystal consumer already has, carried by name"),
+    # `crystal_private` is the other half of that question: the names Crystal's
+    # library declares `private`, which a bound shard may *hold* a value of and
+    # may not write down. Same table, same language, one predicate apart.
+    (r"crystal_types|crystal_requires|crystal_private", "what a --crystal consumer already has, carried by name"),
     (r"a \*Crystal\* source", "a sentence about the other language"),
 ]
 

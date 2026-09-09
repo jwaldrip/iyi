@@ -746,9 +746,18 @@ module Iyi
         end
         next if edges.includes?(other.module_name)
 
-        declared = [] of String
-        other.exports.types.each { |declaration| declared << declaration.name }
-        next unless declared.any? { |name| artifact.type_ids.any?(&.includes?(name)) }
+        # By whole name, as the *producer* writes it. This was a substring
+        # test over the bare declared names, and a bare name is a common word:
+        # `DB` declares `Any` and `Kemal` declares `Config`, so every artifact
+        # whose object code numbered a `JSON::Any` or a `Log::Configuration`
+        # picked up an edge to a shard it had never heard of. `jwt` came out
+        # importing eleven boundaries, nine of which it names nothing from,
+        # and a program that wanted `jwt` was handed `p_g` — whose own
+        # declarations it then could not satisfy, so nothing built at all.
+        declared = Set(String).new
+        prefix = other.class_root ? "" : other.module_name.split('/').map(&.camelcase).join("::")
+        other.exports.types.each { |declaration| collect_bind_declared declaration, prefix, declared }
+        next unless artifact.type_ids.any? { |id| type_id_names(id).any? { |name| declared.includes?(name) } }
 
         # Not if it already points here. Every one of these boundaries was bound
         # in a program that held all of them, so each one's units number the
@@ -760,6 +769,35 @@ module Iyi
         artifact.imports << IyiMod::ImportEdge.new(other.module_name)
         edges << other.module_name
       end
+    end
+
+    # Every name *declared_by* one boundary, qualified the way the program the
+    # fill build compiled spells it: a module root's declarations are written
+    # under the module (`bin_data` declares `BitField`, which that program
+    # calls `BinData::BitField`), a class root's are already absolute.
+    private def collect_bind_declared(declaration : IyiMod::TypeDecl, prefix : String,
+                                      into : Set(String)) : Nil
+      qualified = prefix.empty? ? declaration.name : "#{prefix}::#{declaration.name}"
+      into << qualified
+      declaration.types.each { |nested| collect_bind_declared nested, qualified, into }
+    end
+
+    # The type names inside one type id: `Hash::Entry(String,
+    # BinData::BitField)` names three. Every character that cannot be in a
+    # name ends one, and a leading `::` is not part of it.
+    private def type_id_names(id : String) : Array(String)
+      names = [] of String
+      from = -1
+      id.each_char_with_index do |char, index|
+        if char.ascii_alphanumeric? || char == '_' || char == ':'
+          from = index if from < 0
+        elsif from >= 0
+          names << id[from...index].lchop("::")
+          from = -1
+        end
+      end
+      names << id[from..].lchop("::") if from >= 0
+      names
     end
 
     # iyi: attaches each module's object code and writes the artifacts.
@@ -895,7 +933,7 @@ module Iyi
       # The module's own class variables — the ones owned by the module unit
       # rather than by a type inside it. They belong to no `TypeDecl`, because
       # a module is not one, and a class variable is a global either way.
-      module_class_vars = type ? collect_iyi_class_vars(type) : [] of {String, String, String}
+      module_class_vars = type ? collect_iyi_class_vars(type) : [] of IyiMod::ClassVarDecl
 
       IyiMod::Exports.new(functions, types, impls, carried_functions, module_class_vars)
     end
@@ -1080,7 +1118,13 @@ module Iyi
                                         unit_names : Array(String)) : Array(String)
       names = Set(String).new
       unit_names.each do |unit_name|
-        program.iyi_unit_match_types[unit_name]?.try &.each { |type| names << type.to_s }
+        # `llvm_name`, not `to_s`, because the *symbol* is built from it:
+        # `~match<(File::PReader | IO::FileDescriptor+ | ...)>` is what a
+        # unit calls, and `to_s` prints that union without the `+`s. The
+        # consumer defines the function under exactly the name that
+        # travelled, so a name that is not the symbol's is a link error with
+        # a mangled name in it and no way back to this line.
+        program.iyi_unit_match_types[unit_name]?.try &.each { |type| names << type.llvm_name }
       end
       names.to_a.sort!
     end
@@ -1695,13 +1739,18 @@ module Iyi
     # up walks ancestors and *copies* what it finds onto the asking type, so a
     # module that merely reads `@@x` from an included module would otherwise
     # declare a second one of its own.
-    private def collect_iyi_class_vars(type : Type) : Array({String, String, String})
-      class_vars = [] of {String, String, String}
+    private def collect_iyi_class_vars(type : Type) : Array(IyiMod::ClassVarDecl)
+      class_vars = [] of IyiMod::ClassVarDecl
       return class_vars unless type.responds_to?(:class_vars?)
 
       type.class_vars?.try &.each do |name, variable|
         initialiser = variable.iyi_initialiser_source
-        class_vars << {name, variable.type?.try(&.to_s) || "?", initialiser}
+        # `@[ThreadLocal]` travels with it: a consumer that declared the
+        # variable without it writes to a different global than this module's
+        # object code does. See `IyiMod::ClassVarDecl`.
+        annotations = variable.thread_local? ? ["@[ThreadLocal]"] : [] of String
+        class_vars << IyiMod::ClassVarDecl.new(name, variable.type?.try(&.to_s) || "?",
+          initialiser, annotations)
       end
       class_vars
     end

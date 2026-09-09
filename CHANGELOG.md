@@ -222,8 +222,69 @@
   And what it is worth in build time is written beside it: 8% on the
   kemal sample (2.03 s to 1.88), because a `--crystal` build's bill is
   Crystal's library and the program's own code, not the shard. On a
-  real 21-shard application it binds 12 of 19 and names the seven it
-  cannot, five of them defects of the boundary itself, each with a log.
+  real 21-shard application it binds 18 of 19 and writes 22 artifacts,
+  because a shard with more than one namespace is more than one
+  boundary; the one it does not bind is macros, which do not cross.
+- **A boundary a program can import: fifteen defects, found by consuming
+  one.** `iyi bind` wrote artifacts a reader could parse and a program
+  could not use. A probe that does nothing but `import <name>` now
+  builds, links and runs against 20 of the 22 artifacts a real 21-shard
+  application produces, where 11 of 18 did. Every one of the fifteen is
+  a shape `bench/bind_roundtrip.sh` carries now, and the fixture fails
+  without the fix that found it. A class variable's `@[ThreadLocal]`
+  travels, because a consumer that declares the variable without it
+  writes to a different global than the object code does — `relocation
+  R_X86_64_TPOFF32 cannot be used against symbol` from a link with
+  every declaration in hand. One the shard declared `uninitialized`
+  renders as the assignment it wrote, and one whose default calls a
+  private method carries that method (`email`'s `@@log : Log =
+  create_logger`). A private method named only *after* a non-ASCII
+  character in a travelling body travels: the search for what a body
+  calls was byte arithmetic on a character index, so `gcry`'s
+  `append_hex` read as uncalled. A shard's own top-level `fun` crosses
+  as source, because its machine code is in a main module and main
+  modules do not travel — and the text joins the consumer's tree, since
+  a `fun` is emitted where it is written rather than where it is called.
+  A macro call at the top level does not travel at all: it is a
+  declaration written compactly, and copying `Kilt.register_engine("ecr",
+  ECR.embed)` into the initialiser handed a consumer `ECR.embed` with
+  nothing in it. A class variable reached only through `pointerof`
+  travels (`gcry`'s `@@old_segv`), a type layout may be past 64 KiB
+  (`Gcry::Heap`, offsets now u32), a match type is named the way its
+  `~match<...>` symbol is rather than the way it prints, and one is
+  resolved part by part — a union of virtual types, a module used as a
+  value, a generic instantiated with either — instead of being refused
+  whole. A private type of Crystal's library is not a name a boundary may
+  write and *is* a value it may hold, which is two questions and now two
+  tables. And a bare name from another boundary is not adopted where
+  Crystal's library or this shard itself declares one: `Kilt::Exception`
+  had been rewriting every `class Error < Exception` bound after it, and
+  `jwt` came out importing eleven boundaries it names nothing from
+  because the edge test was a substring match.
+- **One boundary per namespace, and per part.** A boundary is rooted at
+  one namespace and a shard need not have one: `pg` declares `PG` and
+  `PQ`, its wire protocol, and `PG`'s signatures name `PQ::Field` while
+  its units number it. `tool bind` reports the namespaces it found
+  beside the one it was given (`also declares: PQ`), and `iyi bind`
+  binds each — the root first, because binding it is what finds them,
+  then again with them beside it. The parts a shard's entry never
+  requires are boundaries too: `bindata` ships `src/bindata/asn1.cr`,
+  which `jwt` requires and `bindata`'s own entry does not, so `jwt`'s
+  object code numbered an `ASN1::BER` no artifact carried. What is left
+  is the cycle: `PQ` numbers `PG::Error` while `PG` names `PQ::Field`,
+  an import graph is a DAG (R-1), and those two are the pair a program
+  cannot import today.
+- **What cannot compile cannot cross.** A shard can hold a method whose
+  body does not typecheck when it is instantiated — nothing in
+  `ed25519` calls `RistrettoPoint#==`, whose body calls an
+  `assert_rst_point` that shard never defined — and the keep file calls
+  everything, so the fill build died and took the shard and every shard
+  behind it. The method the error trace lands in is written to
+  `<artifact>.drop`, both builds run again without it, and the boundary
+  carries the rest: `ed25519` loses two methods and `jwt`, which
+  depends on it, binds. The keep file marks each call with the key that
+  names it, the drop file says what it left out and why, and discovery
+  is each run's — a shard fixed since the last one binds whole.
 - **The context pack says how a consumer names what it shows.** Every
   block of `iyi mod context` opens with the two lines a file writes to
   reach the surface beneath - `import kemal/dsl`, then `using
