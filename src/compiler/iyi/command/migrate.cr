@@ -78,9 +78,11 @@ class Iyi::Command
           beside its module.
 
           --annotate write the types R-2 wants where the Crystal never had
-                    them, read off the calls the compiler resolved: a
-                    parameter every call site passes one type gets it, one
-                    that is passed two is left and named
+                    them, read off the calls the compiler resolved in every
+                    program the tree has - each entry file, and the spec
+                    suite, which is where a library's calls are. A
+                    parameter two of them bound differently is left
+                    alone and named, with what is missing
           --check   compile every module written (`check --crystal`) and
                     print the first refusal of each
           --verbose every note, rather than the first few of each kind
@@ -167,7 +169,7 @@ class Iyi::Command
     end
 
     project_root = Dir.current
-    inferred = annotate ? infer_types(units, notes) : nil
+    inferred = annotate ? infer_types(units, src, notes) : nil
     # Every `def` this tree names with a bang, so a call to one is known
     # to be the tree's own: `node.sort!` is a method here and loses the
     # bang, where `array.sort!` is Crystal's and needs the copy assigned
@@ -459,40 +461,66 @@ class Iyi::Command
   # The types the tree's own calls say its untyped parameters are. The
   # program is compiled once, as Crystal, from the file nothing requires —
   # the entry — because that is the compile that resolves every call.
-  private def infer_types(units : Array(MigrateUnit), notes : Notes) : ParamTypes?
+  private def infer_types(units : Array(MigrateUnit), src : String, notes : Notes) : ParamTypes?
     required = Set(String).new
     by_source = units.to_h { |unit| {unit.source, unit} }
     units.each { |unit| unit.required_units(by_source).each { |target| required << target.source } }
     entries = units.reject { |unit| required.includes?(unit.source) }
-    if entries.empty?
-      notes.add "annotate", "every file is required by another, so there is no entry to compile: --annotate needs one"
-      return nil
-    end
     # Every file nothing requires is a program of its own — the app, a
     # migration runner, a seeder — and a def only one of them calls is
     # typed only there. All of them are read, and the readings merged.
+    programs = entries.map { |entry| {entry.relative, entry.source, File.read(entry.source)} }
+
+    # A library has no program of its own, and its specs are the calls it
+    # was written for: `spec/jwt_spec.cr` requires the shard and hands its
+    # methods arguments, which is the reading R-2 wants. The suite is
+    # compiled the way it runs, as one program, because a front end per
+    # file would cost a minute on a project with fifty of them.
+    spec_dir = File.join(File.dirname(src), "spec")
+    specs = Dir.glob(File.join(spec_dir, "**", "*_spec.cr")).sort
+    unless specs.empty?
+      # Named one by one rather than as `spec/**`, because the requires are
+      # resolved from this source's own directory and a glob of them is
+      # not: the file is written into the spec directory so every relative
+      # `require` inside a spec still means what it meant.
+      suite = String.build do |io|
+        specs.each do |spec|
+          io << %(require ".) << spec.lchop(spec_dir).rchop(".cr") << %("\n)
+        end
+      end
+      programs << {"#{specs.size} spec file#{specs.size == 1 ? "" : "s"}",
+                   File.join(spec_dir, "iyi-migrate-specs.cr"), suite}
+    end
+
+    if programs.empty?
+      notes.add "annotate", "every file is required by another and there are no specs, so there is no program to read: --annotate needs one"
+      return nil
+    end
+
     merged = nil
-    entries.each do |entry|
+    read = [] of String
+    programs.each do |(name, filename, text)|
       compiler = Compiler.new
       compiler.no_codegen = true
       compiler.stdout = IO::Memory.new
       compiler.stderr = IO::Memory.new
       begin
         result = compiler.compile(
-          Compiler::Source.new(entry.source, File.read(entry.source)),
+          Compiler::Source.new(filename, text),
           File.tempname("iyi-migrate-types", nil))
       rescue ex : CodeError | Iyi::Error
-        notes.add "annotate", "#{entry.relative} does not compile as Crystal, so its calls said nothing: #{ex.message.to_s.lines.first?}"
+        notes.add "annotate", "#{name} does not compile as Crystal, so its calls said nothing: #{ex.message.to_s.lines.first?}"
         next
       end
       types = Iyi.param_types(result)
+      read << name
       if first = merged
         first.merge!(types)
       else
         merged = types
       end
     end
-    notes.add "annotate", "read from #{entries.size} program#{entries.size == 1 ? "" : "s"}: #{entries.map(&.relative).join(", ")}"
+    notes.add "annotate", "read from #{read.size} program#{read.size == 1 ? "" : "s"}: #{read.join(", ")}" unless read.empty?
     merged
   end
 

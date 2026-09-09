@@ -22,12 +22,15 @@
 - **`iyi migrate --annotate`: the types R-2 wants, read off the
   program.** Crystal code does not write them and they are not missing —
   the compiler bound them to compile the program. `--annotate` compiles
-  the tree once per entry (every file nothing requires) and writes them
+  the tree once per entry (every file nothing requires) and once for the
+  spec suite - where a *library* keeps its call sites - and writes them
   in: a parameter from the instantiated def, where the binding happened,
   and the answer from the call, because a boundary is about what a caller
   is handed; a parameter two instantiations bound differently is written
   as neither and reported as both. On the 99-file application it writes
-  **225** types and names the 52 it cannot, each with what is missing.
+  **226** types in 46 s and names the 53 it cannot, each with what is
+  missing; `radix` types nothing without its specs and eleven
+  declarations with them.
   Two rules came with it: `pub` is what another module names, so a def or
   constant nothing outside names stays the module's own (a *type* keeps
   its `pub` — a shard's macro names the class that includes it), and a
