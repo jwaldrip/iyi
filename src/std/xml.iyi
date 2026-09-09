@@ -151,6 +151,7 @@ pub class Node
   def namespace=(ns : Namespace?) : Nil
     @namespace = ns
   end
+
   def ==(other : Node) : Bool
     @id == other.id
   end
@@ -223,6 +224,7 @@ pub class Node
       end
     end
   end
+
   def namespace : Namespace?
     return @namespace unless @namespace.nil?
     if !@prefix.empty?
