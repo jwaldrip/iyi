@@ -305,7 +305,7 @@ claim that hid 9,000 lines of runtime would be a claim about the wrong number.
 **The ceiling is breached, and this records it rather than moving it.** The
 library was under 3,734 until `io.iyi`, `socket.iyi` and `format.iyi` were
 written, which is what took it past the ceiling, and the platform work since
-has carried it to 4,688, 954 lines over. Each module was added for the reason
+has carried it to 4,689, 955 lines over. Each module was added for the reason
 the rule allows, a program in this repository needs it, and together they are
 still more than the rule intended to permit.
 
