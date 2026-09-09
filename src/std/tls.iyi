@@ -53,16 +53,24 @@ pub import std/dns
 # -----------------------------------------------------------------------------
 # TLS Errors
 # -----------------------------------------------------------------------------
-
 pub class Error < Exception
+  getter message : String
+
+  def initialize(@message : String)
+  end
 end
 
 pub class HandshakeError < Error
+  def initialize(message : String)
+    @message = message
+  end
 end
 
 pub class VerificationError < Error
+  def initialize(message : String)
+    @message = message
+  end
 end
-
 # -----------------------------------------------------------------------------
 # ASN.1 DER Parser
 # -----------------------------------------------------------------------------
@@ -370,8 +378,8 @@ module X25519
     priv = Std::Crypto.random_bytes(32)
     base_u = Bytes.new(32, 0_u8)
     base_u[0] = 9_u8
-    pub = scalar_mult(priv, base_u)
-    {priv, pub}
+    public_key = scalar_mult(priv, base_u)
+    {priv, public_key}
   end
 end
 
@@ -887,16 +895,12 @@ pub class Certificate
     end
 
     serial = Std::Tls.parse_integer(tbs_children[c_idx])
-    c_idx = c_idx + 1 # signature algo
-    c_idx = c_idx + 1 # issuer
-
-    issuer_elem = tbs_children[c_idx - 1]
-    validity_elem = tbs_children[c_idx]
-    c_idx = c_idx + 1 # subject
-
-    subject_elem = tbs_children[c_idx]
-    c_idx = c_idx + 1 # spki
-    spki_elem = tbs_children[c_idx]
+    sig_algo_elem = tbs_children[c_idx + 1]
+    issuer_elem = tbs_children[c_idx + 2]
+    validity_elem = tbs_children[c_idx + 3]
+    subject_elem = tbs_children[c_idx + 4]
+    spki_elem = tbs_children[c_idx + 5]
+    c_idx = c_idx + 5
 
     # Validity
     v_children = Std::Tls.parse_asn1_children(validity_elem)
@@ -1332,7 +1336,7 @@ pub class RecordCipher
     ct, tag = case @cipher_suite
               when :aes_128_gcm       then AES128GCM.encrypt_detached(@key, nonce, pt, ad)
               when :chacha20_poly1305 then ChaCha20Poly1305.encrypt_detached(@key, nonce, pt, ad)
-              else                         raise HandshakeError.new("unsupported cipher suite #{@cipher_suite}")
+              else                         raise "unsupported cipher suite #{@cipher_suite}"
               end
 
     out = Bytes.new(5 + ct.size + 16)
@@ -1355,7 +1359,7 @@ pub class RecordCipher
     pt = case @cipher_suite
          when :aes_128_gcm       then AES128GCM.decrypt_detached(@key, nonce, ct, tag, ad)
          when :chacha20_poly1305 then ChaCha20Poly1305.decrypt_detached(@key, nonce, ct, tag, ad)
-         else                         raise HandshakeError.new("unsupported cipher suite #{@cipher_suite}")
+         else                         raise "unsupported cipher suite #{@cipher_suite}"
          end
     return nil if pt.nil?
 
@@ -1410,7 +1414,7 @@ pub class Client
     current_time : Int64? = nil
   ) : Client
     ips = Std::Dns.resolve_a(host)
-    raise HandshakeError.new("could not resolve hostname #{host}") if ips.empty?
+    raise "could not resolve hostname #{host}" if ips.empty?
     sock = IyiSocket.connect(ips[0], port)
     wrap_socket(sock, host, alpn, verify_peer, ca_store, current_time)
   end
@@ -1550,10 +1554,10 @@ pub class Client
 
     # Read ServerHello
     sh_header = read_exact_bytes(socket, 5)
-    raise HandshakeError.new("expected Handshake record for ServerHello, got 0x#{sh_header[0].to_s(16)}") if sh_header[0] != 0x16_u8
+    raise "expected Handshake record for ServerHello, got 0x#{sh_header[0].to_s(16)}" if sh_header[0] != 0x16_u8
     sh_len = (sh_header[3].to_i32 << 8) | sh_header[4].to_i32
     sh_payload = read_exact_bytes(socket, sh_len)
-    raise HandshakeError.new("expected ServerHello message, got 0x#{sh_payload[0].to_s(16)}") if sh_payload[0] != 0x02_u8
+    raise "expected ServerHello message, got 0x#{sh_payload[0].to_s(16)}" if sh_payload[0] != 0x02_u8
 
     sh_msg_len = (sh_payload[1].to_i32 << 16) | (sh_payload[2].to_i32 << 8) | sh_payload[3].to_i32
     sh_msg = sh_payload[0, 4 + sh_msg_len]
@@ -1582,17 +1586,17 @@ pub class Client
       p_idx = p_idx + ext_l
     end
 
-    raise HandshakeError.new("server did not return x25519 key share") if server_pub.size != 32
+    raise "server did not return x25519 key share" if server_pub.size != 32
 
     cipher_sym = case cs_id
                  when 0x1301 then :aes_128_gcm
                  when 0x1303 then :chacha20_poly1305
-                 else             raise HandshakeError.new("unsupported cipher suite 0x#{cs_id.to_s(16)}")
+                 else             raise "unsupported cipher suite 0x#{cs_id.to_s(16)}"
                  end
 
     shared_secret = X25519.scalar_mult(client_priv, server_pub)
     if X25519.is_all_zero(shared_secret)
-      raise HandshakeError.new("X25519 shared secret is all-zero (invalid curve point)")
+      raise "X25519 shared secret is all-zero (invalid curve point)"
     end
 
     # Key schedule
@@ -1634,17 +1638,17 @@ pub class Client
         next
       end
 
-      raise HandshakeError.new("expected encrypted record 0x17, got 0x#{rec_hdr[0].to_s(16)}") if rec_hdr[0] != 0x17_u8
+      raise "expected encrypted record 0x17, got 0x#{rec_hdr[0].to_s(16)}" if rec_hdr[0] != 0x17_u8
 
       full_rec = Bytes.new(5 + rec_len)
       i = 0; while i < 5; full_rec[i] = rec_hdr[i]; i = i + 1; end
       i = 0; while i < rec_len; full_rec[5 + i] = rec_payload[i]; i = i + 1; end
 
       dec_res = server_hs_cipher.decrypt(full_rec)
-      raise HandshakeError.new("record decryption or authentication failed") if dec_res.nil?
+      raise "record decryption or authentication failed" if dec_res.nil?
 
       inner_type, inner_data = dec_res
-      raise HandshakeError.new("expected Handshake payload (0x16), got 0x#{inner_type.to_s(16)}") if inner_type != 0x16_u8
+      raise "expected Handshake payload (0x16), got 0x#{inner_type.to_s(16)}" if inner_type != 0x16_u8
 
       new_buf = Bytes.new(handshake_buf.size + inner_data.size)
       i = 0; while i < handshake_buf.size; new_buf[i] = handshake_buf[i]; i = i + 1; end
@@ -1723,7 +1727,7 @@ pub class Client
           expected_verify_data = HMAC.digest(:sha256, s_finished_key, th_cv)
           server_verify_data = msg_data[4, 32]
           if !Std::Crypto.constant_time_compare(server_verify_data, expected_verify_data)
-            raise VerificationError.new("server Finished MAC verification failed")
+            raise "server Finished MAC verification failed"
           end
 
           handshake_transcript << msg_data
@@ -1741,16 +1745,16 @@ pub class Client
     now_sec = current_time || Time.utc.seconds
 
     if verify_peer
-      raise VerificationError.new("server did not present any certificates") if peer_cert.nil?
+      raise "server did not present any certificates" if peer_cert.nil?
 
       # 1. Hostname matching
       if !peer_cert.matches_hostname(hostname)
-        raise VerificationError.new("hostname mismatch: certificate does not match #{hostname}")
+        raise "hostname mismatch: certificate does not match #{hostname}"
       end
 
       # 2. Validity dates
       if !peer_cert.valid_at?(now_sec)
-        raise VerificationError.new("certificate has expired or is not yet valid")
+        raise "certificate has expired or is not yet valid"
       end
 
       # 3. CertificateVerify signature
@@ -1807,7 +1811,7 @@ pub class Client
       end
 
       if !cv_valid
-        raise VerificationError.new("CertificateVerify signature verification failed")
+        raise "CertificateVerify signature verification failed"
       end
 
       # 4. Chain verification against trust store
@@ -1815,11 +1819,11 @@ pub class Client
       if trust_store.certificates.empty?
         # Say plainly when trust store cannot be read
         # If verify_peer requested and trust store has no certificates, we cannot establish trust
-        raise VerificationError.new("cannot verify certificate chain: system trust store not found or empty")
+        raise "cannot verify certificate chain: system trust store not found or empty"
       else
         chain_ok = trust_store.verify_chain(cert_chain, hostname, now_sec)
         if !chain_ok
-          raise VerificationError.new("certificate chain verification failed: could not chain to trusted root")
+          raise "certificate chain verification failed: could not chain to trusted root"
         end
       end
     end
@@ -1875,7 +1879,7 @@ pub class Client
   # --- Application Data I/O ---
 
   def write(data : Bytes) : Nil
-    raise Error.new("cannot write to closed TLS client") if @closed
+    raise "cannot write to closed TLS client" if @closed
     rec = @write_cipher.encrypt(0x17_u8, data)
     @socket.write(rec.to_unsafe, rec.size)
   end
@@ -1885,11 +1889,11 @@ pub class Client
   end
 
   def read(max_bytes : Int32 = 4096) : Bytes
-    raise Error.new("cannot read from closed TLS client") if @closed
+    raise "cannot read from closed TLS client" if @closed
     while true
-      rec_hdr = read_exact_bytes(@socket, 5)
+      rec_hdr = Client.read_exact_bytes(@socket, 5)
       rec_len = (rec_hdr[3].to_i32 << 8) | rec_hdr[4].to_i32
-      rec_payload = read_exact_bytes(@socket, rec_len)
+      rec_payload = Client.read_exact_bytes(@socket, rec_len)
 
       if rec_hdr[0] == 0x14_u8 # ChangeCipherSpec
         next
@@ -1900,7 +1904,7 @@ pub class Client
       i = 0; while i < rec_len; full_rec[5 + i] = rec_payload[i]; i = i + 1; end
 
       dec_res = @read_cipher.decrypt(full_rec)
-      raise Error.new("TLS record decryption failed") if dec_res.nil?
+      raise "TLS record decryption failed" if dec_res.nil?
 
       inner_type, inner_payload = dec_res
       if inner_type == 0x17_u8 # Application Data
@@ -1932,13 +1936,13 @@ pub class Client
     @closed
   end
 
-  private def self.read_exact_bytes(socket : IyiSocket, count : Int32) : Bytes
+  def self.read_exact_bytes(socket : IyiSocket, count : Int32) : Bytes
     buf = Bytes.new(count)
     read_bytes = 0
     while read_bytes < count
       ptr = (buf.to_unsafe + read_bytes.to_i64).as(Pointer(UInt8))
       n = socket.read(ptr, count - read_bytes)
-      raise Error.new("TLS socket closed prematurely") if n <= 0
+      raise "TLS socket closed prematurely" if n <= 0
       read_bytes = read_bytes + n
     end
     buf
