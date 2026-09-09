@@ -21,17 +21,14 @@ trap 'rm -rf "$WORK"' EXIT
 
 status=0
 
-# Ensure include directory has std modules resolved
+# Ensure include directory has std modules resolved. One home, `src/std`: the
+# fallback to `samples/iyi/std` that used to sit here was a transition shim,
+# and that directory no longer exists.
 SETUP_INCLUDE() {
   local target_dir="$1"
   mkdir -p "$target_dir/std"
-  if [ -f "$REPO/src/std/enumerable.iyi" ]; then
-    ln -sf "$REPO/src/std/enumerable.iyi" "$target_dir/std/enumerable.iyi"
-    ln -sf "$REPO/src/std/traits.iyi" "$target_dir/std/traits.iyi"
-  else
-    ln -sf "$REPO/samples/iyi/std/enumerable.iyi" "$target_dir/std/enumerable.iyi"
-    ln -sf "$REPO/samples/iyi/std/traits.iyi" "$target_dir/std/traits.iyi"
-  fi
+  ln -sf "$REPO/src/std/enumerable.iyi" "$target_dir/std/enumerable.iyi"
+  ln -sf "$REPO/src/std/traits.iyi" "$target_dir/std/traits.iyi"
 }
 
 DEFAULT_INCLUDE="$WORK/default_include"

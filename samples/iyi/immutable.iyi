@@ -91,13 +91,13 @@ puts "group_by        #{words.group_by { |s| s.size }[4].join(",")}"
 puts "two elem types  #{nums.map { |x| x + 1 }.join(",")} / #{words.map { |s| s.size }.join(",")}"
 
 # ---------------------------------------------------------------------------
-# All of the above, with `samples/iyi/std` deleted
+# All of the above, with `src/std` deleted
 # ---------------------------------------------------------------------------
 #
 #     ./bin/crystal build --no-codegen --emit-iyimod /tmp/mods samples/iyi/immutable.iyi
-#     mv samples/iyi/std /tmp/std-elsewhere
+#     mv src/std /tmp/std-elsewhere
 #     ./bin/crystal build --use-iyimod /tmp/mods samples/iyi/immutable.iyi   # compiles
-#     mv /tmp/std-elsewhere samples/iyi/std
+#     mv /tmp/std-elsewhere src/std
 #
 # This file is the hard case for R-1's contract, not `modules.iyi`: what has to
 # survive the round trip is a generic struct, a 575-line trait with an

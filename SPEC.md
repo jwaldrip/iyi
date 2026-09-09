@@ -63,7 +63,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 14,731 lines, of which 4,688 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
+| iyi's own prelude | 14,732 lines, of which 4,689 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -88,7 +88,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 14,731 lines
+> "No standard library worth the name" is still true of iyi's own 14,732 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -270,8 +270,8 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 14,731 lines,
-primitives included, of which the library is 4,688.** Not a standard library:
+**3. A deliberately tiny prelude, written in iyi. Done: 14,732 lines,
+primitives included, of which the library is 4,689.** Not a standard library:
 integers, booleans, a string, one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
 existing sample needs it, never because it belongs there.
@@ -297,7 +297,7 @@ collector (GC_DESIGN.md, the block between two marks in `prelude.iyi`),
 the scheduler and the kernel thread (III.4, `concurrency.iyi` and
 `thread.iyi`), the shortest-round-trip float text (`float.iyi`) - and they
 are most of its lines. So the figure held to the ceiling is the library:
-**4,688 lines** of the 13,581, measured by `bench/doc_numbers.py` as
+**4,689 lines** of the 13,581, measured by `bench/doc_numbers.py` as
 everything under `src/iyi/` except those three. The whole-prelude figure is
 stated beside it because a reader sees the whole file, and a "tiny prelude"
 claim that hid 9,000 lines of runtime would be a claim about the wrong number.
@@ -825,7 +825,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 108,004 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 14,731-line own prelude + 4,771 in std |
+| Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 4,771 in std |
 | Specs | 21,146 lines | 9,565 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -1191,8 +1191,8 @@ It ports. But it required three things Draft 0 did not have, and exposed one
 genuine conflict.
 
 **It now ports in the compiler, not on paper.**
-`samples/iyi/std/enumerable.iyi` carries **57 of Crystal's 71 distinct method
-names** (58 defs against Crystal's 117, which counts overloads), all written
+`src/std/enumerable.iyi` carries **all 71 of Crystal's distinct method
+names** (72 defs against Crystal's 117, which counts overloads), all written
 against one `abstract def each`. `samples/iyi/collections.iyi` implements it for
 two types that answer `Elem` differently and calls every one of them. A default
 method that is never called is never typed, so a trait that merely compiles
@@ -1475,7 +1475,7 @@ impl's answer to an associated type becomes an argument of the `include` the
 compiler writes, and that argument may name a parameter of the *target*,
 `List`'s `T`, which is not in scope where the impl was written. Pushing the
 target's scope to find it loses the trait, whose name lives in the impl's own
-module, and breaks every `impl Cmp for Int32` in `samples/iyi/std/traits.iyi`.
+module, and breaks every `impl Cmp for Int32` in `src/std/traits.iyi`.
 The parameters have to be passed as **free variables** into a lookup that still
 happens in the impl's scope, which is what resolving a superclass from inside a
 generic already does. Both names then resolve, each from where it actually
@@ -1532,7 +1532,7 @@ accepting it opens no coherence hole.
 
 **Built since this was written, and the sentence outlived it:** associated
 types (`type Elem` in a trait, `type Elem = T` in an impl, II.6) parse and
-check — `samples/iyi/std/enumerable.iyi` declares one and `std/list.iyi`
+check — `src/std/enumerable.iyi` declares one and `std/list.iyi`
 answers it — and a trait requires another with `trait Ord : Eq`
 (`std/traits.iyi`'s `Num : Cmp`); `spec/compiler/semantic/iyi_spec.cr`'s
 "supertraits" and "associated types" hold both. What II.7's table still
@@ -2320,7 +2320,7 @@ field's type must be shareable in turn: integers, floats, `Bool`, `Char`,
 every member is; a class typed as its base is when every subclass is. The
 trust half is `@[Share]` on a declaration, meaning shareable whenever the
 type arguments are, whatever the fields do: `Atomic(T)` carries it, and
-`samples/iyi/std/list.iyi`'s `List(T)` carries it, the list this section
+`src/std/list.iyi`'s `List(T)` carries it, the list this section
 said should stay short. The marker travels: a producer writes `@[Share]`
 into the artifact declaration of every type it found shareable, and a
 consumer reads that and never recomputes — the bodies that said no field
@@ -2370,7 +2370,7 @@ now met.** Every failure in that clean-sheet code was a type holding an
 `Array`, which made a **shareable immutable collection** something the standard
 library owed the language rather than a convenience: without it the `Mutex(T)`
 escape becomes the normal case, and an escape hatch used routinely is the
-definition of a failed rule. `samples/iyi/std/list.iyi` is that collection, and
+definition of a failed rule. `src/std/list.iyi` is that collection, and
 `samples/iyi/immutable.iyi` exercises it.
 
 Two things building it settled that the count could not:
@@ -8604,7 +8604,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 14,731-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 14,732-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler
@@ -9569,7 +9569,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | `macro_run` must go | +7.4 s per distinct script on a cold build, memoised per script but not amortised across scripts; two scripts cost twice (II.10) |
 | Macro expansion is not a compile-time cost | a template macro runs at 1.00–1.05× hand-written code; a computing macro adds ~9 µs per method against the ~18 µs the method costs anyway (II.10) |
 | `method_missing` is safe to cut | one occurrence in stdlib, zero in Kemal |
-| Traits can carry the stdlib | `Enumerable` ported and running: 57 of its 71 method names on one `each`, implemented for two element types, every method called (`samples/iyi/std/enumerable.iyi`) |
+| Traits can carry the stdlib | `Enumerable` ported and running: all 71 of its method names on one `each`, implemented for two element types, every method called (`src/std/enumerable.iyi`) |
 | `Share` prices a style rather than failing | clean-sheet iyi code is 77% shareable as written and 100% given an immutable collection; the compiler, built as a mutable workspace, is 38.5% and stays there (III.4.7) |
 | Module-level mutable state is already rare | 3 of 483 compiler types hold a class variable, so III.4.5 costs almost nothing |
 | Coherence costs nothing at build time | the import DAG plus the orphan rule make duplicate impls unrepresentable (IV.4) |
