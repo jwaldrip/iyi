@@ -1060,7 +1060,7 @@ pub class Request
     end
 
     # 3. Parse Body
-    body_res = parse_body(raw, cur_pos, headers)
+    body_res = Std::Http.parse_body(raw, cur_pos, headers)
     case body_res
     in HttpError               then return body_res
     in Tuple(String, Headers?) then
@@ -1266,7 +1266,7 @@ pub class Response
     end
 
     # 3. Parse Body
-    body_res = parse_body(raw, cur_pos, headers)
+    body_res = Std::Http.parse_body(raw, cur_pos, headers)
     case body_res
     in HttpError               then return body_res
     in Tuple(String, Headers?) then
@@ -1287,7 +1287,7 @@ private def self.is_hex_digit(b : UInt8) : Bool
   (b >= 48_u8 && b <= 57_u8) || (b >= 97_u8 && b <= 102_u8) || (b >= 65_u8 && b <= 70_u8)
 end
 
-private def self.parse_body(raw : String, start_pos : Int32, headers : Headers) : Tuple(String, Headers?) | HttpError
+def self.parse_body(raw : String, start_pos : Int32, headers : Headers) : Tuple(String, Headers?) | HttpError
   if headers.includes_word?("Transfer-Encoding", "chunked")
     # Chunked body parser
     body_parts = [] of String
