@@ -469,6 +469,7 @@ end
 {% end %}
 
 require "./file"
+require "./socket"
 
 # ── The memory layer ────────────────────────────────────────────────────
 #
