@@ -1,0 +1,252 @@
+# Format strings, exercised rather than asserted.
+#
+#   ./bin/iyi run bench/format_exercise.iyi
+#
+# Exercises the format string implementation across its entire surface:
+# field width, left and right alignment, zero-padding between signs or
+# prefixes and digits, integer precision, float precision with correct
+# rounding (half away from zero), string truncation, all supported integer
+# bases (decimal, hex lowercase/uppercase, octal, binary) with alternate
+# form prefixes, negative numbers in all bases, and boundary cases: values
+# wider than their field, precision 0, and minimum/maximum 32-bit and 64-bit
+# integers.
+#
+# Every section prints a line, and each check raises on mismatch, so a failure
+# exits non-zero with the failing section named.
+
+# 1. Field width: values narrower than width pad to the minimum width.
+w1 = sprintf("%10s", "hello")
+raise "format: width string failed" if w1 != "     hello"
+
+w2 = sprintf("%8d", 42)
+raise "format: width int failed" if w2 != "      42"
+
+w3 = sprintf("%10.2f", 3.14)
+raise "format: width float failed" if w3 != "      3.14"
+
+puts "    width: strings, integers, and floats pad to specified minimum field width"
+
+# 2. Alignment: default right-align, '-' flag left-aligns (padding on right).
+a1 = sprintf("%-10s", "hello")
+raise "format: alignment string failed" if a1 != "hello     "
+
+a2 = sprintf("%-8d", 42)
+raise "format: alignment int failed" if a2 != "42      "
+
+a3 = sprintf("%-10.2f", 3.14)
+raise "format: alignment float failed" if a3 != "3.14      "
+
+puts "    alignment: left-alignment flag '-' places padding on the right"
+
+# 3. Zero pad: '0' flag pads with zeros between sign/prefix and digits.
+z1 = sprintf("%08d", 42)
+raise "format: zero pad positive int failed" if z1 != "00000042"
+
+z2 = sprintf("%08d", -42)
+raise "format: zero pad negative int failed" if z2 != "-0000042"
+
+z3 = sprintf("%+08d", 42)
+raise "format: zero pad plus sign failed" if z3 != "+0000042"
+
+z4 = sprintf("%#08x", 255)
+raise "format: zero pad hex prefix failed" if z4 != "0x0000ff"
+
+z5 = sprintf("%08.2f", 3.14)
+raise "format: zero pad float failed" if z5 != "00003.14"
+
+z6 = sprintf("%08.2f", -3.14)
+raise "format: zero pad negative float failed" if z6 != "-0003.14"
+
+puts "    zero pad: zeros inserted between sign or prefix and digits up to width"
+
+# 4. Precision: integer minimum digits, float fractional rounding, string truncation.
+p1 = sprintf("%.4d", 42)
+raise "format: precision int failed" if p1 != "0042"
+
+p2 = sprintf("%8.4d", 42)
+raise "format: precision int with width failed" if p2 != "    0042"
+
+p3 = sprintf("%.2f", 3.14159)
+raise "format: precision float round down failed" if p3 != "3.14"
+
+p4 = sprintf("%.4f", 3.14159)
+raise "format: precision float round up failed" if p4 != "3.1416"
+
+p5 = sprintf("%.1f", 99.99)
+raise "format: precision float carry failed" if p5 != "100.0"
+
+p6 = sprintf("%.2f", 0.005)
+raise "format: precision float small carry failed" if p6 != "0.01"
+
+p7 = sprintf("%.4f", 0.00123)
+raise "format: precision float small round failed" if p7 != "0.0012"
+
+p8 = sprintf("%.0f", 3.6)
+raise "format: precision float 0 round up failed" if p8 != "4"
+
+p9 = sprintf("%.0f", 3.4)
+raise "format: precision float 0 round down failed" if p9 != "3"
+
+p10 = sprintf("%.0f", 2.5)
+raise "format: precision float tie away from zero failed" if p10 != "3"
+
+p11 = sprintf("%.3s", "crystal")
+raise "format: precision string truncate failed" if p11 != "cry"
+
+p12 = sprintf("%6.3s", "crystal")
+raise "format: precision string width failed" if p12 != "   cry"
+
+p13 = sprintf("%-6.3s", "crystal")
+raise "format: precision string left-aligned failed" if p13 != "cry   "
+
+puts "    precision: integer minimum digits, string truncation, and float rounding verified"
+
+# 5. Base: decimal, hex, octal, binary, with and without alternate form '#'.
+b1 = sprintf("%d", 12345)
+raise "format: base dec failed" if b1 != "12345"
+
+b2 = sprintf("%u", 12345)
+raise "format: base unsigned dec failed" if b2 != "12345"
+
+b3 = sprintf("%x", 255)
+raise "format: base hex lower failed" if b3 != "ff"
+
+b4 = sprintf("%X", 255)
+raise "format: base hex upper failed" if b4 != "FF"
+
+b5 = sprintf("%#x", 255)
+raise "format: base hex lower alt failed" if b5 != "0xff"
+
+b6 = sprintf("%#X", 255)
+raise "format: base hex upper alt failed" if b6 != "0XFF"
+
+b7 = sprintf("%o", 255)
+raise "format: base oct failed" if b7 != "377"
+
+b8 = sprintf("%#o", 255)
+raise "format: base oct alt failed" if b8 != "0o377"
+
+b9 = sprintf("%b", 42)
+raise "format: base bin failed" if b9 != "101010"
+
+b10 = sprintf("%#b", 42)
+raise "format: base bin alt failed" if b10 != "0b101010"
+
+puts "    base: decimal, lowercase/uppercase hex, octal, and binary with alternate prefixes"
+
+# 6. Negative numbers: signed integers, signs, and negative non-decimal bases.
+n1 = sprintf("%d", -42)
+raise "format: negative int failed" if n1 != "-42"
+
+n2 = sprintf("%+d", 42)
+raise "format: sign plus positive failed" if n2 != "+42"
+
+n3 = sprintf("%+d", -42)
+raise "format: sign plus negative failed" if n3 != "-42"
+
+n4 = sprintf("% d", 42)
+raise "format: sign space positive failed" if n4 != " 42"
+
+n5 = sprintf("% d", -42)
+raise "format: sign space negative failed" if n5 != "-42"
+
+n6 = sprintf("%x", -255)
+raise "format: negative hex failed" if n6 != "-ff"
+
+n7 = sprintf("%o", -255)
+raise "format: negative oct failed" if n7 != "-377"
+
+n8 = sprintf("%b", -5)
+raise "format: negative bin failed" if n8 != "-101"
+
+n9 = sprintf("%.2f", -3.14159)
+raise "format: negative float failed" if n9 != "-3.14"
+
+n10 = sprintf("%+8.2f", -3.14)
+raise "format: negative float plus sign failed" if n10 != "   -3.14"
+
+n11 = sprintf("%+8.2f", 3.14)
+raise "format: positive float plus sign failed" if n11 != "   +3.14"
+
+puts "    negative: signed values, explicit + and space signs, and negative non-decimal bases"
+
+# 7. Boundary cases: wider than field, precision 0, minimum and maximum integers.
+bd1 = sprintf("%3s", "abcdef")
+raise "format: boundary wider string truncated" if bd1 != "abcdef"
+
+bd2 = sprintf("%3d", 123456)
+raise "format: boundary wider int truncated" if bd2 != "123456"
+
+bd3 = sprintf("%4.2f", 1234.56)
+raise "format: boundary wider float truncated" if bd3 != "1234.56"
+
+bd4 = sprintf("%.0f", 3.6)
+raise "format: boundary float prec 0 failed" if bd4 != "4"
+
+bd5 = sprintf("%.0f", 0.0)
+raise "format: boundary float zero prec 0 failed" if bd5 != "0"
+
+bd6 = sprintf("%#.0f", 3.0)
+raise "format: boundary float hash prec 0 failed" if bd6 != "3."
+
+bd7 = sprintf("%.0d", 0)
+raise "format: boundary int zero prec 0 non-empty" if bd7 != ""
+
+bd8 = sprintf("%5.0d", 0)
+raise "format: boundary int zero prec 0 width failed" if bd8 != "     "
+
+bd9 = sprintf("%+5.0d", 0)
+raise "format: boundary int zero prec 0 plus width failed" if bd9 != "    +"
+
+bd10 = sprintf("%.0s", "hello")
+raise "format: boundary string prec 0 non-empty" if bd10 != ""
+
+# Int64::MIN and MAX
+min_i64 = -9223372036854775808_i64
+max_i64 = 9223372036854775807_i64
+
+bd11 = sprintf("%d", min_i64)
+raise "format: boundary min int64 dec failed" if bd11 != "-9223372036854775808"
+
+bd12 = sprintf("%x", min_i64)
+raise "format: boundary min int64 hex failed" if bd12 != "-8000000000000000"
+
+bd13 = sprintf("%o", min_i64)
+raise "format: boundary min int64 oct failed" if bd13 != "-1000000000000000000000"
+
+bd14 = sprintf("%b", min_i64)
+raise "format: boundary min int64 bin failed" if bd14 != "-1000000000000000000000000000000000000000000000000000000000000000"
+
+bd15 = sprintf("%d", max_i64)
+raise "format: boundary max int64 dec failed" if bd15 != "9223372036854775807"
+
+bd16 = sprintf("%x", max_i64)
+raise "format: boundary max int64 hex failed" if bd16 != "7fffffffffffffff"
+
+# Int32::MIN and MAX
+min_i32 = -2147483648
+max_i32 = 2147483647
+
+bd17 = sprintf("%d", min_i32)
+raise "format: boundary min int32 dec failed" if bd17 != "-2147483648"
+
+bd18 = sprintf("%x", min_i32)
+raise "format: boundary min int32 hex failed" if bd18 != "-80000000"
+
+bd19 = sprintf("%d", max_i32)
+raise "format: boundary max int32 dec failed" if bd19 != "2147483647"
+
+bd20 = sprintf("%x", max_i32)
+raise "format: boundary max int32 hex failed" if bd20 != "7fffffff"
+
+# UInt64::MAX
+max_u64 = 18446744073709551615_u64
+bd21 = sprintf("%u", max_u64)
+raise "format: boundary max uint64 dec failed" if bd21 != "18446744073709551615"
+
+bd22 = sprintf("%x", max_u64)
+raise "format: boundary max uint64 hex failed" if bd22 != "ffffffffffffffff"
+
+puts "    boundary: wider than field, precision 0, and minimum/maximum 32-bit and 64-bit integers"
+
+puts "    all format checks passed"
