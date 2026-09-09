@@ -6,7 +6,7 @@
 # call. Errors panic with the path in the message.
 
 class File
-  def self.open(path : String, mode : String = "r") : IyiIO
+  def self.open(path : String, mode : String = "r", buffer_size : Int32 = 4096) : IyiIO
     fd = if mode == "r"
       __iyi_open_read(c_path(path))
     elsif mode == "w"
@@ -15,11 +15,11 @@ class File
       raise "unsupported mode: #{mode}"
     end
     raise "cannot open #{path}" if fd < 0_i64
-    IyiIO.new(fd, buffer_size: 4096, sync: false)
+    IyiIO.new(fd, buffer_size, false)
   end
 
-  def self.open(path : String, mode : String = "r", & : IyiIO -> Nil) : Nil
-    io = open(path, mode)
+  def self.open(path : String, mode : String = "r", buffer_size : Int32 = 4096, & : IyiIO -> Nil) : Nil
+    io = open(path, mode, buffer_size)
     defer io.close
     yield io
   end
@@ -27,7 +27,7 @@ class File
   def self.read(path : String) : String
     fd = __iyi_open_read(c_path(path))
     raise "cannot read #{path}" if fd < 0_i64
-    io = IyiIO.new(fd, buffer_size: 4096, sync: false)
+    io = IyiIO.new(fd, 4096, false)
     defer io.close
     io.read_all
   end
@@ -35,7 +35,7 @@ class File
   def self.write(path : String, contents : String) : Nil
     fd = __iyi_open_write(c_path(path))
     raise "cannot write #{path}" if fd < 0_i64
-    io = IyiIO.new(fd, buffer_size: 4096, sync: false)
+    io = IyiIO.new(fd, 4096, false)
     defer io.close
     io.write(contents)
     io.flush

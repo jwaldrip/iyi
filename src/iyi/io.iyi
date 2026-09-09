@@ -46,6 +46,13 @@ class IyiIO
     @fd
   end
 
+  def write_pos : Int32
+    @write_pos
+  end
+
+  def write_capacity : Int32
+    @write_capacity
+  end
   def closed? : Bool
     @closed
   end
