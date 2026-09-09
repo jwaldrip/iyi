@@ -113,7 +113,7 @@ def measured() -> dict[str, int]:
     return {
         "prelude": wc(sorted((REPO / "src/iyi").glob("*.iyi"))),
         "prelude_library": prelude_library_lines(),
-        "samples_std": wc(sorted((REPO / "samples/iyi/std").glob("*.iyi"))),
+        "std": wc(sorted((REPO / "src/std").glob("*.iyi"))),
         "compiler": wc(sorted((REPO / "src/compiler").rglob("*.cr"))),
         "samples": len(sorted((REPO / "samples/iyi").glob("*.iyi"))),
         # Bytes on disk, not lines: the docs quote the library's size as a
@@ -190,7 +190,7 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     ("prelude", r"against iyi's own ([\d,]+)-line prelude", "SPEC.md", 1),
     ("prelude", r"against iyi's own ([\d,]+)-line library", "CHANGELOG.md", 1),
     ("prelude", r"against iyi's own ([\d,]+)-line", "samples/iyi/calc.iyi", 1),
-    ("samples_std", r"own prelude \+ ([\d,]+) in samples", "SPEC.md", 1),
+    ("std", r"own prelude \+ ([\d,]+) in std", "SPEC.md", 1),
     ("compiler", r"\| ([\d,]+) lines, Crystal, forked", "SPEC.md", 1),
     ("spec_iyi", r"\| ([\d,]+) for iyi \|", "SPEC.md", 1),
     ("prelude_kb", r"library is ([\d,]+) KB on disk", "README.md", 1),

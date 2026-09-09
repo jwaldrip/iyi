@@ -28,8 +28,8 @@ name: iyi
 #   targets          the platform files the library still carries, type-checked
 #                    by cross-compiling: an edit to `src/lib_c` or
 #                    `src/crystal/system` is invisible here until somebody
-#                    builds for that machine
 #   binary           the thing a person downloads, unpacked somewhere else
+#   std              the native standard library (src/std/) and its module exercises
 on: [push, pull_request]
 
 permissions: {}
@@ -540,6 +540,26 @@ jobs:
       # step above.
       - name: The numbers the docs state
         run: python3 bench/doc_numbers.py --list
+
+  std:
+    needs: build
+    runs-on: ubuntu-24.04
+    container:
+      image: crystallang/crystal:1.21.0-build
+    name: "The native standard library and its module exercises"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: crystal
+          path: .build
+      - run: chmod +x .build/crystal
+      - name: Build iyi binary
+        run: make -o .build/crystal iyi
+      - name: The standard library foundation and discovered exercises
+        run: bash bench/std_exercise.sh
 
   targets:
     needs: build
@@ -1514,7 +1534,7 @@ jobs:
   # sentence a release opens with is written where the version is named.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [binary, darwin, clean-room, iyi, compiler-specs, stdlib-specs, samples, targets, cross-run, wasi-run]
+    needs: [binary, darwin, clean-room, iyi, compiler-specs, stdlib-specs, samples, std, targets, cross-run, wasi-run]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

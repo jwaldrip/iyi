@@ -307,12 +307,12 @@ library was under 3,734 until `io.iyi`, `socket.iyi` and `format.iyi` were
 written, which is what took it past the ceiling, and the platform work since
 has carried it to 4,688, 954 lines over. Each module was
 added for the reason the rule allows, a program in this repository needs it,
-and together they are still more than the rule intended to permit. Two answers
-are open and neither is taken here: the ceiling was Crystal's *core* and a
-language with sockets and formatted output may simply need a larger one, or
-these three belong outside the prelude the way `enumerable.iyi` lives in the
-samples. What is not open is pretending the number still fits.
-
+and together they are still more than the rule intended to permit. The standard
+library under `src/std/` (`enumerable`, `traits`, `cmp`, `list`, `derives`) is
+deliberately outside that count: it is opt-in via `import std/...`, compiles
+against `.iyimod` module artifacts without prelude bloat, and does not touch
+the prelude ceiling. What is not open is pretending the prelude number itself
+still fits.
 The ceiling was not a guess. Crystal's own 0.1.0 shipped 8,161 lines of
 library. Its core is **3,551 lines** of that: `object`, `nil`, `bool`, `char`,
 `int`, `float`, `number`, `string`, `array`, `hash`, `range`, `enumerable`,
@@ -818,7 +818,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 106,314 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 14,731-line own prelude + 778 in samples |
+| Library | 8,161 lines (3,551 of it core) | 14,731-line own prelude + 955 in std |
 | Specs | 21,146 lines | 9,503 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
