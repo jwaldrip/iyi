@@ -1112,7 +1112,8 @@ jobs:
             Write-Host "windows_exercise failed with $LASTEXITCODE"
             exit $LASTEXITCODE
           }
-          if ($output -notmatch "windows exercise: every check passed") {
+          $text = $output -join "`n"
+          if ($text -notmatch "windows exercise: every check passed") {
             Write-Host "exercise output missing pass marker"
             exit 1
           }
