@@ -93,6 +93,7 @@ puts "    content extraction: direct and recursive descendant text verified"
 xml_namespaces = "<root xmlns=\"http://example.com/ns\" xmlns:h=\"http://www.w3.org/TR/html4/\" xmlns:b=\"http://books.org\"><h:table b:class=\"grid\"><h:tr><h:td>Cell</h:td></h:tr></h:table></root>"
 doc4 = parse(xml_namespaces)
 ns_root = doc4.root
+assert_true(!ns_root.namespace.nil?, "xml: root default namespace present")
 if r_ns = ns_root.namespace
   assert_equal("http://example.com/ns", r_ns.uri, "xml: root default namespace")
   assert_true(r_ns.default?, "xml: root namespace default?")
@@ -104,8 +105,9 @@ if tbl = table_node
   assert_equal("h:table", tbl.name, "xml: table qualified name")
   assert_equal("h", tbl.prefix, "xml: table prefix")
   assert_equal("table", tbl.local_name, "xml: table local name")
+  assert_true(!tbl.namespace.nil?, "xml: table resolved namespace")
   if tbl_ns = tbl.namespace
-    assert_equal("http://www.w3.org/TR/html4/", tbl_ns.uri, "xml: table resolved namespace")
+    assert_equal("http://www.w3.org/TR/html4/", tbl_ns.uri, "xml: table resolved namespace uri")
     assert_equal("h", tbl_ns.prefix, "xml: table namespace prefix")
   end
 
