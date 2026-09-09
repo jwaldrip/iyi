@@ -28,53 +28,58 @@ module std/time
 import std/traits
 using std/traits::{Cmp}
 
-pub enum DayOfWeek
-  Monday    = 1
-  Tuesday   = 2
-  Wednesday = 3
-  Thursday  = 4
-  Friday    = 5
-  Saturday  = 6
-  Sunday    = 7
+pub struct DayOfWeek
+  getter value : Int32
+
+  def initialize(@value : Int32)
+  end
+
+  Monday    = DayOfWeek.new(1)
+  Tuesday   = DayOfWeek.new(2)
+  Wednesday = DayOfWeek.new(3)
+  Thursday  = DayOfWeek.new(4)
+  Friday    = DayOfWeek.new(5)
+  Saturday  = DayOfWeek.new(6)
+  Sunday    = DayOfWeek.new(7)
 
   def ==(other : DayOfWeek) : Bool
-    value == other.value
+    @value == other.value
   end
 
   def ===(other : DayOfWeek) : Bool
-    value == other.value
+    @value == other.value
   end
 
   def monday? : Bool
-    value == 1
+    @value == 1
   end
 
   def tuesday? : Bool
-    value == 2
+    @value == 2
   end
 
   def wednesday? : Bool
-    value == 3
+    @value == 3
   end
 
   def thursday? : Bool
-    value == 4
+    @value == 4
   end
 
   def friday? : Bool
-    value == 5
+    @value == 5
   end
 
   def saturday? : Bool
-    value == 6
+    @value == 6
   end
 
   def sunday? : Bool
-    value == 7
+    @value == 7
   end
 
   def to_s : String
-    case value
+    case @value
     when 1 then "Monday"
     when 2 then "Tuesday"
     when 3 then "Wednesday"
@@ -89,6 +94,7 @@ end
 pub struct Span
   @seconds : Int64
   getter nanoseconds : Int32
+
   def initialize(seconds : Int64 = 0_i64, nanoseconds : Int32 = 0)
     sec = seconds + (nanoseconds.to_i64 // 1000000000_i64)
     nsec = (nanoseconds.to_i64 % 1000000000_i64).to_i32
@@ -267,10 +273,10 @@ pub struct Span
     prefix = (@seconds < 0 || @nanoseconds < 0) ? "-" : ""
 
     body = if d > 0
-      "#{d}.#{Time.pad2(h)}:#{Time.pad2(m)}:#{Time.pad2(s)}"
-    else
-      "#{Time.pad2(h)}:#{Time.pad2(m)}:#{Time.pad2(s)}"
-    end
+             "#{d}.#{Time.pad2(h)}:#{Time.pad2(m)}:#{Time.pad2(s)}"
+           else
+             "#{Time.pad2(h)}:#{Time.pad2(m)}:#{Time.pad2(s)}"
+           end
 
     if ns_abs > 0
       "#{prefix}#{body}.#{Time.pad9(ns_abs)}"
@@ -322,7 +328,6 @@ pub struct Time
       # CLOCK_MONOTONIC = 6 on Darwin
       LibSystem.clock_gettime_nsec_np(6)
     end
-
   {% elsif flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
     struct KernelTimeSpec
       property tv_sec : Int64
@@ -386,7 +391,6 @@ pub struct Time
         (count.to_u64 * 1000000000_u64) // freq.to_u64
       end
     end
-
   {% elsif flag?(:wasm32) %}
     lib LibWasi
       fun clock_time_get = __wasi_clock_time_get(id : Int32, precision : UInt64, time : UInt64*) : Int32
@@ -403,7 +407,6 @@ pub struct Time
       LibWasi.clock_time_get(1, 1000_u64, pointerof(ns))
       ns
     end
-
   {% else %}
     def self.wall_clock_nanoseconds : UInt64
       0_u64
@@ -514,9 +517,20 @@ pub struct Time
 
   # Number of days between 1970-01-01 and the given civil date.
   # Follows Howard Hinnant's Gregorian calendar algorithm.
+  def self.floor_div(a : Int64, b : Int64) : Int64
+    q = a // b
+    r = a % b
+    (r != 0_i64 && a < 0_i64) ? q - 1_i64 : q
+  end
+
+  def self.floor_mod(a : Int64, b : Int64) : Int64
+    r = a % b
+    (r != 0_i64 && a < 0_i64) ? r + b : r
+  end
+
   def self.days_from_civil(y : Int64, m : Int32, d : Int32) : Int64
     y = y - 1_i64 if m <= 2
-    era = (y >= 0_i64 ? y : y - 399_i64) // 400_i64
+    era = floor_div(y >= 0_i64 ? y : y - 399_i64, 400_i64)
     yoe = y - era * 400_i64
     doy = (153_i64 * (m.to_i64 + (m <= 2 ? 9_i64 : -3_i64)) + 2_i64) // 5_i64 + d.to_i64 - 1_i64
     doe = yoe * 365_i64 + yoe // 4_i64 - yoe // 100_i64 + doy
@@ -543,7 +557,7 @@ pub struct Time
   # ---------------------------------------------------------------------------
 
   private def civil_parts : {Int32, Int32, Int32}
-    days = @seconds // 86400_i64
+    days = Time.floor_div(@seconds, 86400_i64)
     Time.civil_from_days(days)
   end
 
@@ -560,17 +574,17 @@ pub struct Time
   end
 
   def hour : Int32
-    sec_in_day = @seconds % 86400_i64
+    sec_in_day = Time.floor_mod(@seconds, 86400_i64)
     (sec_in_day // 3600_i64).to_i32
   end
 
   def minute : Int32
-    sec_in_day = @seconds % 86400_i64
+    sec_in_day = Time.floor_mod(@seconds, 86400_i64)
     ((sec_in_day % 3600_i64) // 60_i64).to_i32
   end
 
   def second : Int32
-    sec_in_day = @seconds % 86400_i64
+    sec_in_day = Time.floor_mod(@seconds, 86400_i64)
     (sec_in_day % 60_i64).to_i32
   end
 
@@ -591,9 +605,9 @@ pub struct Time
   end
 
   def day_of_week : DayOfWeek
-    days = @seconds // 86400_i64
+    days = Time.floor_div(@seconds, 86400_i64)
     # 1970-01-01 was Thursday (day 4). Monday is 1, Sunday is 7.
-    w = ((days + 3_i64) % 7_i64) + 1_i64
+    w = Time.floor_mod(days + 3_i64, 7_i64) + 1_i64
     case w
     when 1 then DayOfWeek::Monday
     when 2 then DayOfWeek::Tuesday

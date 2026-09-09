@@ -1,0 +1,49 @@
+# Demonstrates `std/time`: wall clock, monotonic stopwatch, civil calendar, and RFC 3339.
+#
+# Run via:
+#     ./bin/iyi run samples/iyi/std_time.iyi
+
+module samples/std_time
+
+import std/time
+using std/time::{Time, Span}
+
+# 1. Fixed reference date demonstration
+ref_time = Time.utc(2024, 2, 29, 12, 30, 45, 123)
+puts "Reference time (UTC): #{ref_time.to_s}"
+puts "RFC 3339:             #{ref_time.to_rfc3339(3)}"
+puts "Unix timestamp:       #{ref_time.to_unix} s (#{ref_time.to_unix_ms} ms)"
+
+# 2. Civil calendar components
+puts "Year:                 #{ref_time.year}"
+puts "Month:                #{ref_time.month}"
+puts "Day:                  #{ref_time.day}"
+puts "Day of week:          #{ref_time.day_of_week.to_s}"
+puts "Day of year:          #{ref_time.day_of_year}"
+
+# 3. Time arithmetic with Span
+one_day = Span.days(1_i64)
+tomorrow = ref_time + one_day
+yesterday = ref_time - one_day
+puts "Tomorrow:             #{tomorrow.to_rfc3339}"
+puts "Yesterday:            #{yesterday.to_rfc3339}"
+
+# 4. Live clock queries (wall clock and monotonic stopwatch)
+now = Time.utc
+puts "Live wall clock valid: #{now.year >= 2024}"
+
+start = Time.monotonic
+# Burn a few cycles to measure elapsed duration
+acc = 0_i64
+i = 0
+while i < 100000
+  acc = acc + i.to_i64
+  i = i + 1
+end
+elapsed = Time.monotonic - start
+puts "Monotonic duration >= 0: #{elapsed.total_seconds >= 0.0}"
+
+# 5. Parsing RFC 3339 strings
+event = Time.parse_rfc3339("2024-02-29T12:00:00Z")
+puts "Leap day event:       #{event.to_s}"
+puts "Is leap year:         #{Time.leap_year?(event.year)}"
