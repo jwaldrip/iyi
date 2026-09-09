@@ -20,7 +20,7 @@
 
 def read_teb_tls_slot : UInt64
   slot = uninitialized UInt64
-  {% if flag?(:x86_64) %}
+  {% if flag?(:win32) && flag?(:x86_64) %}
     asm("movq %gs:0x58, $0" : "=r"(slot) ::: "volatile")
   {% else %}
     slot = 0_u64

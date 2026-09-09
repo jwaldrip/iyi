@@ -807,7 +807,6 @@ class IyiScheduler
   def self.read_current(fd : Int32 | Int64, buffer : Void*, count : UInt64) : Int64 | Cancelled
     fiber = current
     return Cancelled.new if fiber.cancelled
-    return 0_i64 if count == 0_u64
 
     handle = Pointer(Void).new(0_u64)
     if fd == 0_i32 || fd == 0_i64
@@ -943,6 +942,8 @@ class IyiScheduler
       {% if flag?(:win32) %}
         fiber.cancelled = true
         LibC.CancelIoEx(fiber.wait_handle, fiber.wait_overlapped.as(Void*))
+        io_remove(fiber)
+        enqueue(fiber)
       {% else %}
         io_remove(fiber)
         enqueue(fiber)
@@ -1117,6 +1118,11 @@ class IyiScheduler
     end
   end
 
+  def self.read_posix(fd : Int32, buffer : Void*, count : UInt64) : Int64 | Cancelled
+    wait_readable_posix(fd)!
+    __iyi_read(fd, buffer, count)
+  end
+
   def self.io_take(fd : Int32) : IyiFiber?
     head = state.io_head
     return nil unless head.is_a?(IyiFiber)
@@ -1139,7 +1145,11 @@ class IyiScheduler
   end
 
   def self.io_remove(fiber : IyiFiber) : Nil
-    io_take(fiber.wait_fd)
+    {% if flag?(:win32) %}
+      io_take_overlapped(fiber.wait_overlapped.address)
+    {% else %}
+      io_take(fiber.wait_fd)
+    {% end %}
   end
 
   # Deregistered on every exit from the io list — wake and cancel both —
@@ -1271,13 +1281,19 @@ def wait_readable(fd : Int64) : Nil | Cancelled
 end
 
 def iyi_read(fd : Int32, buffer : Void*, count : UInt64) : Int64 | Cancelled
-  wait_readable(fd)!
-  __iyi_read(fd, buffer, count)
+  {% if flag?(:win32) %}
+    IyiScheduler.read_current(fd, buffer, count)
+  {% else %}
+    IyiScheduler.read_posix(fd, buffer, count)
+  {% end %}
 end
 
 def iyi_read(fd : Int64, buffer : Void*, count : UInt64) : Int64 | Cancelled
-  wait_readable(fd)!
-  __iyi_read(fd.to_i32, buffer, count)
+  {% if flag?(:win32) %}
+    IyiScheduler.read_current(fd, buffer, count)
+  {% else %}
+    IyiScheduler.read_posix(fd.to_i32, buffer, count)
+  {% end %}
 end
 
 # ── Tasks and groups — III.4.1 ─────────────────────────────────────────
