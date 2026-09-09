@@ -305,14 +305,21 @@ claim that hid 9,000 lines of runtime would be a claim about the wrong number.
 **The ceiling is breached, and this records it rather than moving it.** The
 library was under 3,734 until `io.iyi`, `socket.iyi` and `format.iyi` were
 written, which is what took it past the ceiling, and the platform work since
-has carried it to 4,688, 954 lines over. Each module was
-added for the reason the rule allows, a program in this repository needs it,
-and together they are still more than the rule intended to permit. The standard
-library under `src/std/` (`enumerable`, `traits`, `cmp`, `list`, `derives`) is
-deliberately outside that count: it is opt-in via `import std/...`, compiles
-against `.iyimod` module artifacts without prelude bloat, and does not touch
-the prelude ceiling. What is not open is pretending the prelude number itself
-still fits.
+has carried it to 4,688, 954 lines over. Each module was added for the reason
+the rule allows, a program in this repository needs it, and together they are
+still more than the rule intended to permit.
+
+**The standard library is deliberately outside that count, and this is the
+answer this section left open.** `src/std/` is 4,769 lines across ten modules:
+`traits`, `cmp`, `enumerable`, `indexable`, `iterator`, `slice`, `text`,
+`time`, `list` and `derives`. It is opt-in via `import std/...`, it lives
+outside `src/iyi/` where `bench/doc_numbers.py` measures the ceiling, and a
+program that imports none of it pays for none of it. So the prelude rule keeps
+its meaning, "a method enters because a program in this repository needs it",
+while the language still gets a library. The other answer this section named,
+moving the ceiling, is not taken. What is not open is pretending the prelude
+number itself still fits.
+
 The ceiling was not a guess. Crystal's own 0.1.0 shipped 8,161 lines of
 library. Its core is **3,551 lines** of that: `object`, `nil`, `bool`, `char`,
 `int`, `float`, `number`, `string`, `array`, `hash`, `range`, `enumerable`,
@@ -818,7 +825,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 106,314 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 14,731-line own prelude + 955 in std |
+| Library | 8,161 lines (3,551 of it core) | 14,731-line own prelude + 4,769 in std |
 | Specs | 21,146 lines | 9,503 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -1223,6 +1230,35 @@ this section had wrong or had not reached:
 
 Finding 6 below is realised too: `zip` is `forall O : Enumerable`, and `O::Elem`
 names what the other collection yields without the caller stating it.
+
+**Two more findings, from porting the rest of the library rather than just
+`Enumerable`.** `src/std/` now carries `Indexable`, `Iterator`, `Slice`,
+`Char`/`String` and `Time` alongside it, and two of them found limits this
+section had not reached.
+
+- **An associated type does not specialise through a type variable.** An
+  adaptor parameterised on the upstream iterator alone, `MapIterator(I, U)`
+  referring to `I::Elem`, does not compile: for a receiver of
+  `ArrayIterator(Int32)` the compiler resolves `I::Elem` against the generic
+  declaration, where `type Elem = T`, and asks for `Proc(T, Int32)` instead of
+  `Proc(Int32, Int32)`. The projection is not specialised to the receiver's
+  argument. The port works around it by passing the element type explicitly,
+  `MapIterator(I, T, U)` built as `MapIterator(self, Elem, U)`, where `Elem` is
+  already concrete at the call. Lazy pipelines do compose and do stay lazy, so
+  the shape is expressible; it costs one type parameter per adaptor that this
+  section's model says it should not. That is a compiler limitation rather than
+  a design decision, and it is written down here because the next person to
+  build a generic adaptor will hit it in the same place.
+- **A trait cannot include a trait, so `Indexable` costs two impls.** A type
+  that implements `size` and `unsafe_fetch` gets `Indexable`'s whole surface,
+  and `Indexable` can define `each` from those two, but it cannot thereby be
+  `Enumerable`: supertraits are requirements rather than inclusions, and the
+  orphan rule (R-3) forbids `impl Enumerable for Array(T)` anywhere but the
+  module defining one of them. So a type writes `impl Indexable` with its two
+  methods and then an empty `impl Enumerable` answering only `type Elem`, and
+  the second one exists purely to open the door. Nothing is unsound and nothing
+  is unexpressible; it is one more line than the ergonomics claim implies, and
+  the claim should say so rather than be quietly generous.
 
 **1. Traits need associated types as well as parameters.**
 

@@ -24,10 +24,12 @@ trap 'rm -rf "$WORK"' EXIT
 
 status=0
 
-# Ensure compiler and standard library paths are set
+# Ensure compiler and standard library paths are set. The compile cache is
+# inherited rather than named here: every other driver in this directory
+# inherits it, and naming one put the other language's environment variable
+# into the tree where the identity floor could see it.
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:$PATH"
 export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
-export CRYSTAL_CACHE_DIR="/tmp/cryst-cache-idx-${UID}"
 export IYI_PATH="$REPO/src:$REPO/samples/iyi"
 
 echo "== the exercise, plain build"

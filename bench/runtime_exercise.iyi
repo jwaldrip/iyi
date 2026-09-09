@@ -172,6 +172,7 @@ log_msg("a failing task cancelled a sibling blocked in sleep, in #{cancelled_aft
 
 # 4. Error unwrap `!` drains a cancelled task
 log_msg("step 4: drain through !\n")
+
 def two_naps : Nil | Cancelled
   sleep(10000)!
   sleep(10000)!
@@ -288,6 +289,7 @@ log_msg("task.value joined and answered\n")
 
 # 9. Deferred join on early return out of group block
 log_msg("step 9: deferred join\n")
+
 def leaves_early(finished : Pointer(Int32)) : Nil
   group do |g|
     g.spawn do
@@ -345,6 +347,7 @@ log_msg("a parked receiver completed a rendezvous send\n")
 
 # 11. FIFO order of parked rendezvous sends
 log_msg("step 11: FIFO rendezvous\n")
+
 def spawn_send(g : IyiGroup, fifo : Channel(Int32), n : Int32) : Nil
   g.spawn do
     fifo.send(n)
@@ -473,6 +476,7 @@ log_msg("select with nothing ready took its else\n")
 
 # 15. Typed group
 log_msg("step 15: typed group\n")
+
 def fetch_pair(fail_second : Bool) : Tuple(Int32, Int32) | TaskFailed | Cancelled | Panicked
   group do |g|
     x = g.spawn do

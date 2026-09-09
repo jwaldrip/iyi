@@ -21,6 +21,7 @@ pub struct Slice(T)
   @read_only : Bool
 
   getter size : Int32
+
   def read_only? : Bool
     @read_only
   end
