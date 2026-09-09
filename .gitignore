@@ -19,6 +19,9 @@
 /docs/
 /man/
 
+# Spec artifacts
+/spec/manual/dwarf/
+
 # CI
 /coverage/
 /tmp/

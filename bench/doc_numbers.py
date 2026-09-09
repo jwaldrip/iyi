@@ -207,7 +207,10 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     # The count of sample programs was quoted as a word and drifted by three
     # before anything noticed, because the digit patterns above cannot see a
     # spelled-out number.
-    ("samples", r"\| (\w+) programs:", "README.md", 1),
+    # `[\w-]+` rather than `\w+`: past twenty the spelled-out number is
+    # hyphenated, and `\w+` silently stopped matching the sentence at
+    # "twenty-three" rather than reporting the count had moved.
+    ("samples", r"\| ([\w-]+) programs:", "README.md", 1),
 ]
 
 # The prose spells small numbers as words and should keep doing so, so the
@@ -218,6 +221,9 @@ WORDS = {
     "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
     "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
     "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "twenty-one": 21, "twenty-two": 22, "twenty-three": 23,
+    "twenty-four": 24, "twenty-five": 25, "twenty-six": 26,
+    "twenty-seven": 27, "twenty-eight": 28, "twenty-nine": 29, "thirty": 30,
 }
 
 

@@ -1,0 +1,1 @@
+Buffered text that must remain in memory until flush is called.

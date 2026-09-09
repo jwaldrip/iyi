@@ -1,0 +1,20 @@
+# IO: line-at-a-time reading of standard input.
+#
+#   printf "first line\nsecond line\nthird line\n" | ./bin/iyi run samples/iyi/io.iyi
+#
+# Reads standard input line by line through stdin.read_line, demonstrating
+# buffered stream reading.
+
+module samples/io
+
+line_number = 0
+while line = stdin.read_line(chomp: true)
+  line_number = line_number + 1
+  puts "#{line_number}: #{line}"
+end
+
+if line_number == 0
+  puts "no lines read from standard input"
+else
+  puts "read #{line_number} line(s) from standard input"
+end

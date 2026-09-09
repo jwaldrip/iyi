@@ -1,0 +1,36 @@
+# Sockets: TCP client and server in one program on loopback.
+#
+#   ./bin/iyi run samples/iyi/socket.iyi
+#
+# Binds to an ephemeral port (port 0), connects, exchanges a message each way,
+# prints what arrived, and closes cleanly.
+
+module samples/socket
+
+# Server listens on an ephemeral port. The number the kernel picks is different
+# on every run, so it is used rather than printed: `bench/arena_exercise.sh`
+# runs every sample twice and asks for identical output, and a sample that
+# prints its port is a sample that can never answer that.
+server = IyiSocket.listen(0)
+port = server.local_port
+puts "server listening on an ephemeral port"
+
+# Client connects to server on loopback
+client = IyiSocket.connect("127.0.0.1", port)
+client.write("hello from client\n")
+
+# Server accepts and reads the message
+conn = server.accept
+msg = conn.read(1024)
+puts "server received: #{msg}"
+
+# Server replies to client
+conn.write("hello from server\n")
+reply = client.read(1024)
+puts "client received: #{reply}"
+
+# Clean teardown
+client.close
+conn.close
+server.close
+puts "closed"
