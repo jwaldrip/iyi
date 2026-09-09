@@ -1749,8 +1749,8 @@ Each stage is independently verifiable; the tree is never left broken between th
 
 1. **Windows Integration:** (Completed for x86_64)
    - STW: `SuspendThread()` and `GetThreadContext()` for register capture.
-   - Allocator: `VirtualAlloc()` / `VirtualFree()` arenas, MAP-aligned via reserve/release/commit loop; `PAGE_READWRITE` and `MEM_DECOMMIT` page release.
-   - Root discovery: PE header parsing for `.data`, `.rdata`, and `.bss` ranges; TEB stack bounds (`StackBase` at `gs:0x08`, `StackLimit` at `gs:0x10`); callee-saved registers (rbx, rbp, rdi, rsi, r12-r15) via `spill_registers` (64 bytes).
+   - Allocator: `VirtualAlloc()` / `VirtualFree()` arenas, MAP-aligned via reserve/release/commit loop; `PAGE_READWRITE` and `MEM_RESET` page release.
+   - Root discovery: PE header parsing for `.data` and `.bss` ranges (omitting `.rdata` to avoid scanning read-only constants); TEB stack bounds (`StackBase` at `gs:0x08`, `StackLimit` at `gs:0x10`); callee-saved registers (rbx, rbp, rdi, rsi, r12-r15) via `spill_registers` (64 bytes).
    - Test: `bench/windows_exercise.iyi` and `bench/windows_exercise.sh`, executed in CI on `windows-2022` (`windows-collector` job).
 
 2. **wasm32 Integration:**
