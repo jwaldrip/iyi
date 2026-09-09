@@ -404,7 +404,7 @@ pub class CSV
     self[idx]
   end
 
-  def [](column_name : String)? : String?
+  def []?(column_name : String) : String?
     idx = @indices[column_name]?
     return nil unless idx
     self[idx]?
@@ -415,7 +415,7 @@ pub class CSV
     r[index]
   end
 
-  def [](index : Int32)? : String?
+  def []?(index : Int32) : String?
     r = @current_row
     return nil unless r
     r[index]?
