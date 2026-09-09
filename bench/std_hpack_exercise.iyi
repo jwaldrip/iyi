@@ -436,7 +436,11 @@ def main : Nil
   zero_idx = Bytes.new(1, 0x80_u8) # indexed field with idx = 0
   inv_dec = Decoder.new
   err_zero = inv_dec.decode(zero_idx)
-  assert_bool(err_zero.is_a?(HpackError), true, "index 0 in indexed field is rejected")
+  is_zero_err = false
+  if err_zero.is_a?(HpackError)
+    is_zero_err = err_zero.message.includes?("Invalid index 0")
+  end
+  assert_bool(is_zero_err, true, "index 0 in indexed field is rejected with invalid index message")
 
   # Out of range index (> 61 when dynamic table empty)
   out_of_range_idx = Bytes.new(1, 0x80_u8 | 62_u8) # index 62 when dynamic table has 0 entries
