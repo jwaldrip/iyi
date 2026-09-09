@@ -2440,6 +2440,10 @@ module Iyi
     property name : Path
     property doc : String?
     property name_location : Location?
+    # iyi: `pub annotation Checker` — an annotation another module writes
+    # (R-2). A shard's own annotation is applied by its consumers, which is
+    # what makes it part of the surface rather than the module's own.
+    property? exported = false
 
     def initialize(@name)
     end
@@ -3228,6 +3232,9 @@ module Iyi
     property value : ASTNode
     property doc : String?
     property visibility = Visibility::Public
+    # iyi: `pub alias Errors = Hash(...)` — a name for a type another module
+    # writes (R-2). It travels in the artifact as what it resolved to.
+    property? exported = false
 
     def initialize(@name : Path, @value : ASTNode)
     end

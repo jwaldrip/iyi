@@ -14,6 +14,8 @@ puts Shop.banner
 puts Shop::Names.title("cart")
 puts cart.note
 puts cart.note?.nil?
+report = Shop::Report.new(cart)
+puts "#{report.owed} owed, priced? #{report.priced?}"
 puts Shop::PriceList.dearest(cart.items).name
 puts Shop::Counter.priced(Shop::Models::Item.new("kahve", 90))
 puts cart.tidy!

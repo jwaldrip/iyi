@@ -2326,6 +2326,21 @@ module Iyi
           enum_def = parse_enum_def
           enum_def.exported = true if enum_def.is_a?(EnumDef)
           enum_def
+        when Keyword::ALIAS
+          # A name for a type is a name another module writes: `alias Errors
+          # = Hash(Symbol | String, Array(String))` is half of what the
+          # `validator` shard's surface says, and it travels in the artifact
+          # as what it resolved to (`TypeDecl#value`).
+          node_alias = parse_alias
+          node_alias.exported = true if node_alias.is_a?(Alias)
+          node_alias
+        when Keyword::ANNOTATION
+          # An annotation is applied by *consumers*: a shard declaring
+          # `annotation Checker` means a class in somebody else's module to
+          # write `@[Check::Checker]`, which is exactly a surface.
+          annotation_def = parse_annotation_def
+          annotation_def.exported = true if annotation_def.is_a?(AnnotationDef)
+          annotation_def
         when Keyword::ABSTRACT
           # `pub abstract class`. Being abstract and being reachable are
           # different questions — one says the type cannot be instantiated, the

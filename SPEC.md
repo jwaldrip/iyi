@@ -808,9 +808,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 106,464 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 106,584 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
-| Specs | 21,146 lines | 9,503 for iyi |
+| Specs | 21,146 lines | 9,565 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |
@@ -3338,11 +3338,39 @@ one this tree defines, which is what keeps `!=`, a prefix `!` and a
 class are loaded after it — ordering them first made a reopening the first
 definition and left `abstract class` as a second one the other language
 ignores, which refused every `abstract def` in it. After all of them,
-with `--annotate --check`: `exception_page` 3 of 3, `radix` 5 of 5,
-`dotenv` 1 of 1, `kemal` 11 of 13, `jwt` 5 of 7, `micrate` 4 of 6,
-`faker` 2 of 3, `backtracer` 2 of 5 — and every remaining refusal is R-2
-asking for a type where nothing in the library's own programs called the
-def, or a regex literal, which is IV.1d's open item and not migration's.
+with `--annotate --check`: `validator` 11 of 11, `radix` 5 of 5,
+`exception_page` 3 of 3, `dotenv` 1 of 1, `backtracer` 4 of 4, `kemal` 11
+of 13, `jwt` 5 of 7, `micrate` 4 of 6, `faker` 2 of 3 — and every
+remaining refusal is R-2 asking a type of a def nothing in the library's
+own programs calls, which is a person's to write.
+
+Three of those shards were refused by the *language* rather than by the
+migration, and each is settled here. A **regex literal** is refused where
+the program has no runtime `Regex` - iyi's own prelude - and that was
+being read off the file's extension instead: under `--crystal` the library
+is Crystal's, `Regex` is in it, and a `.iyi` file already writes
+`Regex.new("a.c")` and `=~`, so refusing the sugar for that call was a rule
+about a runtime that is present (`literal_expander.cr` asks the program
+now). `backtracer` went from 2 of 5 to 4 of 4. It admits no semantics that
+were not already reachable: the engine behind the literal is the one behind
+`Regex.new` in the library the program compiles against, so under
+`--crystal` it is that library's PCRE2 with that library's costs. iyi's own
+library still has no runtime `Regex`, and III.10's linear-time guarantee is
+about iyi's own engine — the sugar does not move either line. And `pub` did not admit an
+**alias** or an **annotation**, which are both surface: a name for a type
+is half of what `validator` exports, and an annotation is applied by a
+*consumer* - `annotation Checker` in a shard means a class in somebody
+else's module writes `@[Check::Checker]`. Both take `pub` now and both
+travel in the artifact, the alias as what it resolved to and the
+annotation as its name; `validator` went from 8 of 11 to 11 of 11.
+
+One codegen bug came with the regex literals, and it was not theirs: code
+emitted into `_main` - a constant's initialiser - kept whichever module's
+closure host was open, so `~$Regex:<hash>:const_init` landed in `_main`
+while `Regex.new` was copied into the module's unit with internal linkage,
+and the link ended undefined. `in_main` clears it (IV.1g), and the gate
+holds it: the fixture has a regex literal in a module, emits an artifact
+per module and builds the program from those.
 
 **What is not the tree's to migrate.** `shards install` writes every
 dependency's source into a `lib/` beside the manifest, and `iyi migrate .`
@@ -3368,11 +3396,26 @@ sidecar's methods are its module's own: a reopening travels as source, so
 `3.priced_like(item)` works anywhere in the module that requires it and
 nowhere in a module that read that one as an artifact - the fixture calls
 it from inside, which is what the rule already says about where a
-reopening is closed. And migration is not a
-speed-up by itself: on the application the whole program compiles in 4.71 s
-of front end as Crystal and 5.09 s as modules, while *one module* compiles
-in 3.15 s, because what remains is Crystal's library and 21 shards — which
-is what `iyi bind` is for and what IV.1d's open item would take out.
+reopening is closed.
+
+**What it costs and what it buys, measured.** On the application, best of
+three: the whole program's front end is **4.72 s** as Crystal and **4.99 s**
+as modules — the module boundary is bookkeeping, and it is not free. What a
+*change* costs is the number that moved: Crystal has no unit smaller than
+the program, so every edit is the 4.72 s, and one module is **2.7–3.2 s**.
+That is 1.5×, and the shape of what is left says why it is not more: a
+module with *nothing of its own* costs **2.66 s** on this tree, of which
+**1.48 s** is Crystal's library and the rest is 21 shards. The module's own
+few hundred lines are half a second. Migration splits the program; it does
+not move the floor, and moving the floor is what `iyi bind` is for.
+
+On the fixture — seven modules, a few hundred lines — the same numbers say
+the boundary is not free at any size: 1.80 s as Crystal, 1.85 s as modules
+from source, **2.29 s** from artifacts, 1.40 s for one module. Reading seven
+artifacts costs more than compiling the source they stand for. Artifacts pay
+where a module's own code is large or its dependencies are behind a
+boundary, and the honest place to read that is here rather than in a
+headline.
 
 **Why this is cheaper to build than it looks.** The mechanism that records an
 inferred type as though it had been written already exists and is already load

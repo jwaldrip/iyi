@@ -716,8 +716,10 @@ class Iyi::Command
     # inside the type that defines it. Only rewritten for names this tree
     # defines, which is what keeps `!=`, a prefix `!` and a `"boom!"` out.
     BARE_BANG = Rx::Pattern.compile("(^|[^.\\w@:$])([a-z_][A-Za-z0-9_]*)!")
-    # A def's own name, bang and all.
-    DEF_NAME = Rx::Pattern.compile("^\\s*(?:private\\s+|protected\\s+)?(?:abstract\\s+)?def\\s+(?:self\\.)?([A-Za-z_][A-Za-z0-9_]*[?!]?)")
+    # A def's or a macro's own name, bang and all: a macro cannot carry a
+    # `!` either, and `macro is!` is called as `is!(...)` from the module
+    # that defines it and from the ones that import it.
+    DEF_NAME = Rx::Pattern.compile("^\\s*(?:private\\s+|protected\\s+)?(?:abstract\\s+)?(?:def|macro)\\s+(?:self\\.)?([A-Za-z_][A-Za-z0-9_]*[?!]?)")
     EXPORTED = Rx::Pattern.compile("^pub def[ \\t]+([A-Za-z0-9_?!]+)\\(([^)]*)\\)")
 
     def initialize(@source, @relative, @namespace, @path, @exports, @includes,
@@ -851,11 +853,28 @@ class Iyi::Command
       opener_indent = lines[index].size - lines[index].lstrip.size
       rest = lines[(index + 1)..].reject { |line| line.strip.empty? || line.strip.starts_with?('#') }
       # The wrappers already peeled each contribute a closing `end` at the
-      # tail; this block's own `end` is the one before them.
+      # tail, and this block's own `end` is the first one at its indent.
       return false if rest.size <= peeled
-      closing = rest[rest.size - 1 - peeled]
-      return false unless closing.strip == "end" && (closing.size - closing.lstrip.size) == opener_indent
-      rest[0, rest.size - 1 - peeled].all? { |line| (line.size - line.lstrip.size) > opener_indent }
+      closing_at = rest.index do |line|
+        line.strip == "end" && (line.size - line.lstrip.size) == opener_indent
+      end
+      return false unless closing_at
+      return false unless rest[0, closing_at].all? { |line| (line.size - line.lstrip.size) > opener_indent }
+
+      # What follows the `end`. Nothing is the ordinary case; the `validator`
+      # shard is the other one - `module Validator` with `alias Valid =
+      # Validator` under it, where refusing to peel left the module nested
+      # and every consumer's `using validator::{Validator}` refused. A
+      # trailing *type* is a different matter: peeling would put `class Foo`
+      # inside this module and rename it, so that is not a wrapper.
+      trailing = rest[(closing_at + 1)..]
+      return false if trailing.size < peeled
+      trailing = trailing[0, trailing.size - peeled]
+      trailing.none? do |line|
+        (match = DECL.match(line)) &&
+          (line.size - line.lstrip.size) == opener_indent &&
+          !(match[3] || "").in?("alias", "annotation")
+      end
     end
 
     def qualified(name : String) : String
@@ -930,6 +949,16 @@ class Iyi::Command
       seen = inferred.params(key)
       answers = inferred.answer(key)
       return line unless seen || answers
+
+      # A parameter list that runs over several lines is not this line's to
+      # rewrite. `def before_check(` has no `)` to put a return type after,
+      # and putting one after the `(` wrote `def before_check( : ::Nil` -
+      # a file that does not parse, from a def whose types were known.
+      opens = line.count('(') - line.count(')')
+      unless opens.zero?
+        notes.add "annotate", "#{path}:#{source_index + 1}: this def's parameter list runs over several lines, so the types read off its calls were not written - write them where the parameters are"
+        return line
+      end
 
       # The *parameter list*, matched: `def self.get_all : Array(City)?`
       # has a paren and no parameters, and taking the last `)` in the line
@@ -1637,7 +1666,10 @@ class Iyi::Command
       # Not a declaration: perhaps the namespace itself, which a module
       # function is called on and a nested name is reached through.
       if unit = (qualify ? @by_namespace[token.lchop("::")]? : Command.resolve_namespace_for(token, self, @by_namespace))
-        return "" if unit == self && !qualify
+        # This module's own namespace, named on its own: it is the module,
+        # so the spelling is the namespace the path became. Erasing it wrote
+        # `alias Valid = ` where the source said `alias Valid = Validator`.
+        return MigrateUnit.namespace_of(path) if unit == self && !qualify
         imports << unit.path
         return "#{MARK}#{unit.path}#{MARK}#{MARK}"
       end

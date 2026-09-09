@@ -314,18 +314,24 @@ module Iyi
     # Only do this for regex literals that don't contain interpolation.
     # If there's an interpolation, expand to: Regex.new(interpolation, flags)
     #
-    # iyi: a `.iyi` program is refused instead. Its prelude (src/iyi/prelude.iyi)
-    # defines no Regex, so the expansion below would hand the semantic pass a
-    # path into the empty `Regex` class the compiler pre-declares in Program,
-    # and die with an "undefined method" far from the cause. Refusing here is
-    # the honest expansion: the regex engine that exists is the compiler's own,
-    # Iyi::Rx, RE2-shaped and compile-time only (SPEC.md III.10, Appendix
-    # B #17), reached through the macro methods rather than a runtime type.
-    # The file's extension is the discriminator, the same rule the prelude
-    # choice and the require refusal already use.
+    # iyi: refused where the program has no runtime `Regex`, which is iyi's
+    # own prelude (src/iyi/prelude.iyi) - the expansion below would hand the
+    # semantic pass a path into the empty `Regex` class the compiler
+    # pre-declares in Program and die with an "undefined method" far from the
+    # cause. The engine that exists there is the compiler's own, Iyi::Rx,
+    # RE2-shaped and compile-time only (SPEC.md III.10, Appendix B #17),
+    # reached through the macro methods.
+    #
+    # Under `--crystal` the library *is* Crystal's and `Regex` is in it: a
+    # `.iyi` file there already writes `Regex.new("a.c")`, `=~` and
+    # `String#match`, so refusing only the sugar for that call was a rule
+    # about a runtime that is present. It is the *program* that is asked
+    # now, not the file extension - which is what the message always said.
+    # Migrating a Crystal project is where it showed: `backtracer` parses a
+    # backtrace with four literals, and no rewrite of them is honest.
     def expand(node : RegexLiteral)
-      if node.location.try(&.filename.to_s.ends_with?(".iyi"))
-        node.raise "regex literals are not available in iyi: this program has no runtime Regex, and the compiler's engine, Iyi::Rx, is RE2-shaped and serves macros only. Use the macro methods (match, scan, gsub, split) for compile-time matching"
+      if @program.iyi_prelude?
+        node.raise "regex literals are not available in iyi: this program has no runtime Regex, and the compiler's engine, Iyi::Rx, is RE2-shaped and serves macros only. Use the macro methods (match, scan, gsub, split) for compile-time matching, or compile against Crystal's library with --crystal"
       end
 
       node_value = node.value

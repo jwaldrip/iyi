@@ -135,6 +135,15 @@ holds "the hyphen is gone from the module" "module shop/price_list" "$WORK/out/s
 holds "and the chain narrows without a receiver on the line" \
       ".try { |value| value } || raise" "$WORK/out/shop/price_list.iyi"
 
+# A regex literal is refused only where the program has no runtime `Regex`
+# - iyi's own prelude. A migrated tree is compiled against Crystal's
+# library, where the class behind the literal lives, and the fixture's
+# `Shop::Names.slug` is one: it has to compile in a `.iyi` module, and the
+# constant it expands to has to travel in that module's artifact, which
+# the artifact steps above build from.
+echo "== a regex literal is the module's, and travels"
+holds "the literal is in the module, not rewritten" "gsub(/[^a-z0-9]+/i" "$WORK/out/shop/names.iyi"
+
 # A reopening of a type the tree does not own stays Crystal in a sidecar
 # beside its module (R-3), and it names the tree's own types too - which
 # moved. It has no `using` line to reach them through, so they are written
@@ -199,6 +208,28 @@ fi
 # initialiser of any module that uses it, which means the entry's own
 # `require` cannot be spliced after the imported modules' initialisers
 # (semantic.cr, `splice_iyi_module_initialisers`).
+# `pub` is what another module may name, and two kinds of declaration were
+# missing from it: an `alias` (a name for a type) and an `annotation` (which
+# a *consumer* applies). The fixture's `Shop::Money` and `Shop::Priced` are
+# both, written in `shop/report`'s signature and over its class - and both
+# have to travel in the artifact, which the steps above build from.
+echo "== an alias and an annotation are part of a module's surface"
+holds "the alias is exported"        "pub alias Money = Int32"  "$WORK/out/shop/config.iyi"
+holds "the annotation is exported"   "pub annotation Priced"    "$WORK/out/shop/config.iyi"
+holds "and both are reached by name" "Money, Priced}"           "$WORK/out/shop/report.iyi"
+# `mod dump` rather than `strings`: the declarations section is compressed,
+# so the bytes are not the text.
+if "$IYI" mod dump "$WORK/annotated/mods/shop/config.iyimod" 2>/dev/null | grep -q "pub annotation Priced"; then
+  step ok "the annotation travels in the artifact"
+else
+  step fail "the artifact does not carry the annotation"
+fi
+if "$IYI" mod dump "$WORK/annotated/mods/shop/config.iyimod" 2>/dev/null | grep -q "pub alias Money = Int32"; then
+  step ok "and the alias travels as what it resolved to"
+else
+  step fail "the artifact does not carry the alias"
+fi
+
 # `shards install` writes other projects' source into a `lib/` beside the
 # manifest, and `iyi migrate .` read all of it: on an application that was
 # 756 files that were not its own, 359 of them merged into one module.

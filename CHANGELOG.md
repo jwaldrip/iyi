@@ -70,7 +70,27 @@
   subtraction), and a chain's `.not_nil!` on a line of its own has its
   receiver above it, so `( || raise …)` was written where nothing
   preceded it - `.try { |value| value } || raise …` composes and takes
-  the whole chain. A `lib/` with a manifest beside it is `shards
+  the whole chain. Three shards were refused by the *language*, not by
+  the migration. A **regex literal** is refused where the program has no
+  runtime `Regex` - iyi's own prelude - and that was read off the file's
+  extension: under `--crystal` the library is Crystal's and `Regex` is in
+  it, so a `.iyi` file that already writes `Regex.new("a.c")` may write
+  the sugar for it (`backtracer` 2 of 5 → **4 of 4**). And `pub` did not
+  admit an **alias** or an **annotation**, which are both surface - a
+  name for a type, and a mark a *consumer* applies. Both take `pub` and
+  both travel in the artifact, the alias as what it resolved to
+  (`validator` 8 of 11 → **11 of 11**). With them came a codegen fix that
+  was not theirs: code emitted into `_main`, such as a constant's
+  initialiser, kept whichever module's closure host was open, so
+  `~$Regex:<hash>:const_init` referred to a `Regex.new` copied into a
+  module's unit with internal linkage and the link ended undefined. Two
+  more rewrites: a `macro is!` loses its bang the way a `def` does, and a
+  def whose parameter list runs over several lines is named rather than
+  annotated (writing the return type after the `(` produced
+  `def before_check( : ::Nil`). And a `module` whose file has trailing
+  declarations under its `end` is peeled after all - `module Validator`
+  with `alias Valid = Validator` beside it was left nested, and every
+  consumer's `using` refused. A `lib/` with a manifest beside it is `shards
   install`'s, not the tree's: `migrate .` on the application read 889
   files, 756 of them somebody else's, and merged 359 into one module. It
   is skipped and counted, and pointing the verb at a project root says
