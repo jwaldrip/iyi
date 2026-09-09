@@ -19,6 +19,24 @@
   III.10, Appendix B #17). They use `Iyi::Rx` now, and the one check a
   pattern would have been compiled per name and per line for — does this
   line name this word on its own — is hand-written.
+- **Pointed at a project, the verb reaches what the project reaches.**
+  Four fixes from one report - `iyi migrate <project> --out <dir>` on a
+  shard checkout produced nonsense, and it did. A project root is not a
+  source tree: a shards project's library is its `src` and everything
+  beside the manifest is a program of its own, so Kemal's root read 79
+  files instead of 34 and merged 24 of them into one module; the library
+  is migrated and the narrowing is printed. A merged module is named
+  after the project (`kemal_and_others`, where joining stems
+  alphabetically said `cli_and_others`). The shards the tree requires
+  are reached from the tree that is written - a `lib` symlink beside the
+  modules, since `require "exception_page"` resolves from `./lib`
+  relative to the compiler's cwd and every module used to refuse with
+  `can't find file` until a person exported `CRYSTAL_PATH` by hand; the
+  manifest travels beside it, so `shards install` there replaces the
+  link. And a return type goes before a `forall`, not after it. Kemal's
+  own checkout: 0 of 12 modules compiling → **11 of 12**, the twelfth
+  being R-2 asking for one signature. The migrated application now
+  builds and serves with no environment set at all.
 - **The migrated application answers byte for byte, on real data.** Run
   against the demo database beside the Crystal build of the same tree,
   the 91-module program returns identical bodies and status codes on all

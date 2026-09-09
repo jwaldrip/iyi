@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 106,672 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 106,736 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,565 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3382,6 +3382,29 @@ while `Regex.new` was copied into the module's unit with internal linkage,
 and the link ended undefined. `in_main` clears it (IV.1g), and the gate
 holds it: the fixture has a regex literal in a module, emits an artifact
 per module and builds the program from those.
+
+**Where the verb is pointed, and what it reaches.** Four things came from
+one report: `iyi migrate <project> --out <dir>` on a shard checkout
+"produced nonsense". It did. A **project root is not a source tree** - a
+shards project keeps its library in `src` and its *programs* beside the
+manifest, a spec suite and an `examples/` and a `bin/`, and reading all of
+them together is what nobody means: on Kemal's root that was 79 files
+instead of 34, with 24 of them merged into one module because the specs
+and the examples require each other and the library. The library is
+migrated and the narrowing is printed. A **merged module is named after
+the project**: the manifest says `name: kemal` and one of the files is
+`kemal.cr`, where joining twenty-four stems alphabetically had called it
+`cli_and_others`. The **shards the tree requires are reached from the tree
+that is written**: `require "exception_page"` resolves from `./lib`
+relative to wherever the compiler runs, and the modules are somewhere
+else, so every module refused with `can't find file 'exception_page'`
+until a person exported `CRYSTAL_PATH` by hand - a `lib` symlink beside
+the modules answers it, and the manifest travelling beside it means
+`shards install` there replaces the link. And a **return type goes before
+a `forall`**: `def f(x : Hash(String, V)) forall V` took one onto the end
+and wrote `forall V : ::Hash(…)`, which reads as a bound on `V`. Kemal's
+own checkout went from 0 of 12 modules compiling to 11, the twelfth being
+R-2 asking for one signature.
 
 **What is not the tree's to migrate.** `shards install` writes every
 dependency's source into a `lib/` beside the manifest, and `iyi migrate .`

@@ -230,6 +230,18 @@ else
   step fail "the artifact does not carry the alias"
 fi
 
+# A call on the module's *own* namespace: the wrapper became the module, so
+# `Shop::Counter.report(count)` inside `shop/counter` is `report(count)`.
+# Left qualified it read as a name the module does not export - R-2 refusing
+# a file nobody wrote.
+echo "== a call on the module's own namespace loses it"
+holds "the self-qualified call is bare" "report(count)} x2" "$WORK/out/shop/counter.iyi"
+if grep -vE '^[[:space:]]*#' "$WORK/out/shop/counter.iyi" | grep -q "Shop::Counter"; then
+  step fail "the module's own namespace survived: $(grep -vE '^[[:space:]]*#' "$WORK/out/shop/counter.iyi" | grep -m1 'Shop::Counter')"
+else
+  step ok "and nothing names the module from inside it"
+fi
+
 # `--check` says whose each refusal is, because the three are worked on by
 # different people: a `require` this machine cannot resolve is the
 # environment's, R-2's question is the author's, and what is left is this
@@ -249,13 +261,12 @@ fi
 # `shards install` writes other projects' source into a `lib/` beside the
 # manifest, and `iyi migrate .` read all of it: on an application that was
 # 756 files that were not its own, 359 of them merged into one module.
-echo "== a shards directory is not this tree's to migrate"
+echo "== a project root is not a source tree"
 if (cd "$FIXTURE" && "$IYI" migrate . --out "$WORK/whole" > "$WORK/whole.log" 2>&1); then
-  holds "the shard's file is named as somebody else's" \
-        "other projects' source and stayed there" "$WORK/whole.log"
-  holds "and the narrower command is named"        "migrate src --out"  "$WORK/whole.log"
+  holds "the library is what is migrated" "its library is what is migrated" "$WORK/whole.log"
+  holds "and the shards it requires are reached" "lib -> " "$WORK/whole.log"
   if [ -e "$WORK/whole/pretend.iyi" ]; then
-    step fail "the shard became a module of this tree"
+    step fail "a shard under lib/ became a module of this tree"
   elif [ -f "$WORK/whole/shop.iyi" ]; then
     step ok "the tree's own code migrated and the shard did not"
   else
@@ -264,6 +275,27 @@ if (cd "$FIXTURE" && "$IYI" migrate . --out "$WORK/whole" > "$WORK/whole.log" 2>
 else
   step fail "migrate . failed"
   tail -5 "$WORK/whole.log"
+fi
+
+# A tree whose sources are *at* the root, with a `lib/` beside the manifest:
+# there is no `src` to narrow to, so the shards directory itself has to be
+# left where it is. `migrate .` on an application read 889 files, 756 of
+# them somebody else's, and merged 359 of them into one module.
+mkdir -p "$WORK/flat/lib/other/src"
+printf 'name: flat\nversion: 0.1.0\n' > "$WORK/flat/shard.yml"
+printf 'module Flat\n  def self.hello : String\n    "hi"\n  end\nend\n' > "$WORK/flat/code.cr"
+printf 'module Other\n  VERSION = "9.9"\nend\n' > "$WORK/flat/lib/other/src/other.cr"
+if (cd "$WORK/flat" && "$IYI" migrate . --out "$WORK/flat_out" > "$WORK/flat.log" 2>&1); then
+  holds "the shards directory is named as somebody else's" \
+        "other projects' source and stayed there" "$WORK/flat.log"
+  if [ -e "$WORK/flat_out/other.iyi" ]; then
+    step fail "a shard under lib/ became a module of this tree"
+  else
+    step ok "and only the tree's own file became a module"
+  fi
+else
+  step fail "migrate . on a flat tree failed"
+  tail -5 "$WORK/flat.log"
 fi
 
 # `--out src` wrote the modules into the tree it was reading and left a

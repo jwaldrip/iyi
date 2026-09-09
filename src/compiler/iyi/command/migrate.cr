@@ -115,6 +115,29 @@ class Iyi::Command
       abort! "migrate: --out #{out_dir} is inside the tree it reads (#{src}); the modules go beside it, not into it", :USAGE_ERROR
     end
 
+    # A project root is not a source tree. A shards project keeps its
+    # library in `src` and its *programs* beside the manifest - a spec
+    # suite, an `examples/`, a `bin/` - and reading all of them together
+    # is what a person never means: pointed at Kemal's root this read 79
+    # files instead of 34 and merged 24 of them into one module, because
+    # the specs and the examples require each other and the library. The
+    # library is migrated and the narrowing is printed; a spec suite or an
+    # example directory is migrated by naming it.
+    library_root = File.join(src, "src")
+    if File.file?(File.join(src, MANIFEST_FILE)) && Dir.exists?(library_root)
+      puts "#{src} is a project root, so its library is what is migrated: #{library_root}"
+      puts "everything else beside the manifest - a spec suite, an example, a `bin` - is a program of its own; name one to migrate it"
+      puts
+      src = library_root
+    end
+
+    manifest = File.join(File.dirname(src), MANIFEST_FILE)
+    if File.file?(manifest)
+      @project_name = File.read_lines(manifest).compact_map { |line|
+        line.starts_with?("name:") ? line.lchop("name:").strip : nil
+      }.first? || ""
+    end
+
     files = Dir.glob(File.join(src, "**", "*.cr")).sort
     # A shards directory is other projects' source. `shards install`
     # writes it to a `lib/` beside the manifest, and this tree reaches
@@ -150,13 +173,6 @@ class Iyi::Command
 
     notes = Notes.new
     notes.add "vendored", "#{vendored} files under a `lib/` beside a manifest are other projects' source and stayed there; this tree reaches them through its own requires" if vendored > 0
-    # The convention this tool is pointed at wrongly most easily: a
-    # shards project's own code is its `src`, and everything else beside
-    # the manifest - a spec suite, a script, a `bin` - is a program of its
-    # own rather than part of the library.
-    if File.file?(File.join(src, MANIFEST_FILE)) && Dir.exists?(File.join(src, "src"))
-      notes.add "vendored", "#{src} is a project root: its library is its `src`, so `#{Command.program_name} migrate src --out #{out_dir}` migrates that alone"
-    end
     units = files.map { |file| MigrateUnit.read(file, src, tree_roots, notes) }
     by_source = units.to_h { |unit| {unit.source, unit} }
     by_namespace = {} of String => MigrateUnit
@@ -250,6 +266,21 @@ class Iyi::Command
     # written out without one refuses to compile at all. It is the same
     # rule as a template's - what the tree read while it was being built
     # is part of the tree.
+    # The shards the tree was written against, reached from the tree that
+    # is now written: a migrated `require "exception_page"` is resolved
+    # from `./lib` relative to wherever the compiler is run, and the
+    # modules are somewhere else - so every module refused with `can't
+    # find file 'exception_page'` until a person exported CRYSTAL_PATH by
+    # hand. The manifest travels beside this, so `shards install` in the
+    # migrated tree replaces the link with its own copy.
+    shards_dir = File.join(File.dirname(src), "lib")
+    linked = File.join(out_dir, "lib")
+    if Dir.exists?(shards_dir) && !File.exists?(linked) && !File.symlink?(linked)
+      Dir.mkdir_p(out_dir)
+      File.symlink(shards_dir, linked)
+      notes.add "vendored", "lib -> #{shards_dir}, the shards this tree requires; `shards install` here writes its own copy over it"
+    end
+
     [MANIFEST_FILE, "shard.lock"].each do |manifest|
       source_manifest = File.join(File.dirname(src), manifest)
       next unless File.file?(source_manifest)
@@ -693,6 +724,10 @@ class Iyi::Command
 
   # One path for a cycle's modules: their common directory, then their own
   # names joined, or the first and "and_others" when that runs long.
+  # The name the manifest gives the project, which is the name of the file
+  # every other one is reached through when a tree cannot be separated.
+  @project_name = ""
+
   private def merged_path(members : Array(MigrateUnit)) : String
     dirs = members.map { |member| member.path.includes?('/') ? File.dirname(member.path) : "" }
     common = dirs.first.split('/')
@@ -702,7 +737,16 @@ class Iyi::Command
     end
     stems = members.map { |member| File.basename(member.path) }.sort
     name = stems.join('_')
-    name = "#{stems.first}_and_others" if name.size > 40
+    if name.size > 40
+      # The name a person would give the merged unit is the project's own:
+      # the manifest says `name: kemal`, and one of these files is
+      # `kemal.cr`. Joining the stems alphabetically called the twenty-four
+      # files of a framework `cli_and_others`, which names nothing.
+      own = @project_name
+      root = members.find { |member| File.basename(member.path) == own } ||
+             members.min_by { |member| {member.path.count('/'), member.path.size, member.path} }
+      name = "#{File.basename(root.path)}_and_others"
+    end
     prefix = common.reject(&.empty?).join('/')
     prefix.empty? ? name : "#{prefix}/#{name}"
   end
@@ -1051,7 +1095,15 @@ class Iyi::Command
         unless rest.includes?(':') || name == "initialize" || name.ends_with?('=')
           answer = MigrateUnit.absolute_type(answers.first)
           if answer
-            line = tail + " : " + answer
+            # Before a `forall`, not after it: `def f(x : Hash(String, V))
+            # forall V` took the return type onto the end and wrote
+            # `forall V : ::Hash(...)`, which reads as a bound on `V` and
+            # does not parse. The clause stays last, where it belongs.
+            if (at = tail.index(" forall "))
+              line = tail[0, at] + " : " + answer + tail[at..]
+            else
+              line = tail + " : " + answer
+            end
             notes.add "annotate", "#{path}: `#{name}` answers #{answer}, read off its calls"
           end
         end
@@ -1683,6 +1735,22 @@ class Iyi::Command
       if at = token.index('.')
         head = token[0, at]
         method = token[(at + 1)..]
+        # This module's own namespace, calling its own module function:
+        # `Deep.run` inside `module Deep` is `run` here, because the
+        # wrapper became the module. `resolve_namespace_for` answers nil
+        # for self, so the call was left qualified and R-2 refused it -
+        # `Deep does not export 'run'`, in a file nobody wrote.
+        # ...and the name has to be *this* module's. Two files can share a
+        # source namespace - `module Shop` in `shop.cr` and in
+        # `shop/config.cr` - and `Shop.banner` written in the first is the
+        # second's module function, which arrives by import.
+        # `@exports` and not `exports`: the parameter is the tree's table
+        # and shadows this unit's own list of what it declares.
+        if namespace_names?(head) && @exports.includes?(method)
+          return method unless qualify
+          imports << path
+          return "#{MARK}#{path}#{MARK}#{MARK}.#{method}"
+        end
         if unit = (qualify ? @by_namespace[head.lchop("::")]? : Command.resolve_namespace_for(head, self, @by_namespace))
           # Qualified rather than bare under a `using`: a module function
           # called from inside a type's body does not resolve as a bare
@@ -1691,10 +1759,6 @@ class Iyi::Command
           return method if unit == self && !qualify
           imports << unit.path
           return "#{MARK}#{unit.path}#{MARK}#{MARK}.#{method}"
-        end
-        if qualify && namespace_names?(head)
-          imports << path
-          return "#{MARK}#{path}#{MARK}#{MARK}.#{method}"
         end
         return rewrite_path(head, exports, claimed, notes, qualify) + "." + method
       end

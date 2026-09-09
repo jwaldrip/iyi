@@ -17,6 +17,7 @@ puts cart.note?.nil?
 report = Shop::Report.new(cart)
 puts "#{report.owed} owed, priced? #{report.priced?}"
 puts Shop::PriceList.dearest(cart.items).name
+puts Shop::Counter.twice(cart.total)
 puts Shop::Counter.priced(Shop::Models::Item.new("kahve", 90))
 puts cart.tidy!
 puts cart.total

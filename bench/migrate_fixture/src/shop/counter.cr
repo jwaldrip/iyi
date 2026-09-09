@@ -25,5 +25,13 @@ module Shop
     def self.report(count : Int32) : String
       count.liras
     end
+
+    # A call on this module's *own* namespace: the wrapper becomes the
+    # module, so `Shop::Counter.report` is `report` here - left qualified
+    # it read as a name the module does not export, in a file nobody
+    # wrote.
+    def self.twice(count : Int32) : String
+      "#{Shop::Counter.report(count)} x2"
+    end
   end
 end
