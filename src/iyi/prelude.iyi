@@ -55,7 +55,6 @@ require "./format"
   macro group(*args, **kwargs)
     \{% raise "group is not available on wasm32-wasi: WebAssembly cannot switch stacks, wasmtime 48 disables the stack-switching proposal, wasi-threads is unsupported, and asyncify cannot run without a host event loop (SPEC.md III.4)" %}
   end
-
 {% end %}
 
 # The runtime's one lock: what the allocator's centre, the scheduler's
