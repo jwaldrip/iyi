@@ -242,7 +242,14 @@ pub struct Headers
     if name.empty?
       return HttpError.new("Invalid header name: cannot be empty")
     end
+    # Allow single leading ':' for HTTP/2 & HTTP/3 pseudo-headers (:status, :method, :protocol, etc.)
     i = 0
+    if name.to_unsafe[0] == 58_u8 # ':'
+      if name.bytesize == 1
+        return HttpError.new("Header injection: invalid header name: " + name)
+      end
+      i = 1
+    end
     while i < name.bytesize
       b = name.to_unsafe[i]
       if b == 13_u8 || b == 10_u8
@@ -879,7 +886,7 @@ pub class Request
   @version : String
   @headers : Headers
   @body : String
-
+  @cookies : Cookies?
   property method : String
   property target : String
   property version : String
@@ -933,7 +940,13 @@ pub class Request
   end
 
   def cookies : Cookies
-    Cookies.from_client_headers(@headers)
+    if c = @cookies
+      c
+    else
+      c = Cookies.from_client_headers(@headers)
+      @cookies = c
+      c
+    end
   end
 
   # Serializes request to HTTP/1.1 wire format
@@ -941,7 +954,11 @@ pub class Request
     out = [] of String
     out << (@method + " " + @target + " " + @version + "\r\n")
 
-    h = @headers.dup
+    h = if c = @cookies
+          c.add_request_headers(@headers.dup)
+        else
+          @headers.dup
+    end
     if chunked
       h["Transfer-Encoding"] = "chunked"
       h.delete("Content-Length")
@@ -1081,6 +1098,7 @@ pub class Response
   @headers : Headers
   @body : String
   @trailers : Headers
+  @cookies : Cookies?
 
   property status : Status
   property status_message : String
@@ -1136,7 +1154,13 @@ pub class Response
   end
 
   def cookies : Cookies
-    Cookies.from_server_headers(@headers)
+    if c = @cookies
+      c
+    else
+      c = Cookies.from_server_headers(@headers)
+      @cookies = c
+      c
+    end
   end
 
   # Serializes response to HTTP/1.1 wire format
@@ -1144,7 +1168,11 @@ pub class Response
     out = [] of String
     out << (@version + " " + @status.code.to_s + " " + @status_message + "\r\n")
 
-    h = @headers.dup
+    h = if c = @cookies
+          c.add_response_headers(@headers.dup)
+        else
+          @headers.dup
+    end
     if chunked
       h["Transfer-Encoding"] = "chunked"
       h.delete("Content-Length")
@@ -1310,14 +1338,17 @@ def self.parse_body(raw : String, start_pos : Int32, headers : Headers) : Tuple(
       end
 
       # Validate hex digits
+      valid_hex = true
       i = 0
       while i < size_token.bytesize
         unless is_hex_digit(size_token.to_unsafe[i])
-          return HttpError.new("Invalid chunk size: not valid hex")
+          valid_hex = false
+          break
         end
         i = i + 1
       end
 
+      return HttpError.new("Invalid chunk size: not valid hex") unless valid_hex
       chunk_size = size_token.to_i64?(16)
       return HttpError.new("Invalid chunk size: not valid hex") unless chunk_size
       return HttpError.new("Invalid chunk size: negative") if chunk_size < 0
