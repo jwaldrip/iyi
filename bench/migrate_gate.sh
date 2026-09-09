@@ -125,6 +125,16 @@ else
   tail -6 "$WORK/annotate.log"
 fi
 
+# A reopening of a type the tree does not own stays Crystal in a sidecar
+# beside its module (R-3), and it names the tree's own types too - which
+# moved. It has no `using` line to reach them through, so they are written
+# in full: Kemal's `context_crystal.cr` asked for a `Kemal::Route` that no
+# longer existed, which is `undefined constant` in a file nobody wrote.
+echo "== a sidecar's names follow the types that moved"
+holds "the tree's own type is named where it went" \
+      "item : Shop::Models::CartItem::Item" "$WORK/out/shop/counter_crystal.cr"
+holds "and the reopened type is left alone" "struct Int32" "$WORK/out/shop/counter_crystal.cr"
+
 # `!` is III.1.7a's, so every Crystal bang has to be rewritten - and which
 # rewrite is right depends on whose method it is. The fixture plants both on
 # the same line shape: `@items.uniq!` is Crystal's in-place member, whose

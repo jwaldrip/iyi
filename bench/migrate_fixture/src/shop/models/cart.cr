@@ -28,6 +28,17 @@ module Shop::Models
       items.size
     end
 
+    # `private class` is file-private in the other language, and a def is
+    # typed where it is written (III.1) by standing a probe up outside its
+    # type - which cannot name a private one. Every def of a private class
+    # nested in an exported one was refused until the probe learned that,
+    # and nothing calls this one, because the probe does not need a call.
+    private class Tally
+      def zero : Int32
+        0
+      end
+    end
+
     def total : Int32
       items.sum(&.price)
     end

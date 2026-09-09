@@ -54,7 +54,16 @@
   the class, and ordering them first left `abstract class` as a second
   definition the other language ignores. `exception_page` 3 of 3,
   `radix` 5 of 5, `dotenv` 1 of 1, `jwt` 5 of 7, `faker` 2 of 3,
-  `micrate` 4 of 8. `--out src` used to write the modules into the tree
+  `micrate` 4 of 8, `kemal` 11 of 13. A **sidecar** - the `.cr` file a
+  reopening of somebody else's type stays in - names the tree's own
+  types too and has no `using` line to reach them through, so every such
+  path is written in full and what it names counts as crossing: Kemal's
+  `context_crystal.cr` asked for `Kemal::Route` after `Route` had moved.
+  Two of the refusals were not migration's: that one, and a def of a
+  `private class` nested in an exported one, which III.1's
+  definition-site probe wrote the name of from outside - `nameable?` now
+  answers false for a private type, and the fixture plants one.
+  `--out src` used to write the modules into the tree
   it was reading and leave a `src/src` behind; it is refused, and the
   gate holds the source tree untouched. And when `--check` comes back clean the verb says
   what to type next: the build command with the entry filled in, the

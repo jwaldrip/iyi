@@ -348,6 +348,13 @@ module Iyi::DefinitionTyping
       end
       current = type
       while current.is_a?(NamedType)
+        # A `private class` is file-private in the other language, and a
+        # probe stands outside: it cannot write the name at all. R-2's
+        # wall below stops it at an unexported one for the same reason —
+        # and this one was missing, so a private class nested in an
+        # exported one had its own defs probed by a name nobody can use
+        # ("private constant referenced", pointing at the def).
+        return false if current.private?
         namespace = current.namespace
         # `Program` is its own namespace (constructed `super(self, self,
         # "main")`); walking past it loops forever — call.cr's using walk

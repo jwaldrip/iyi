@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 106,329 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 106,395 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,503 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3305,9 +3305,19 @@ in any program called it - a library with no program of its own - the line is
 named with its file and line and the alternative spelled out, rather than
 guessed at quietly.
 
-**Six shards, because a project is not one shape.** The rules above were
+**Seven shards, because a project is not one shape.** The rules above were
 found on an application; running them over the shards it depends on found
-three more, each a rule rather than a special case. A **bare** call to a
+three more, each a rule rather than a special case, and two bugs that were
+not migration's at all. A **sidecar** - the `.cr` file a reopening of
+somebody else's type stays in - names the tree's own types too, and has no
+`using` line to reach them through, so every such path is written in full
+and what it names counts as crossing: Kemal's `context_crystal.cr` asked
+for `Kemal::Route` after `Route` had moved, and its `HeadRequestHandler`
+lost the `pub` on a name only the sidecar beside it uses. And a def is
+typed where it is written (III.1) by standing a probe up outside its type,
+which cannot name a `private class`: every def of a private class nested
+in an exported one was refused, pointing at the def
+(`definition_typing.cr`'s `nameable?`). Kemal is 11 of 13 after them. A **bare** call to a
 bang method - `validate_typ!(payload)` inside the type that defines it -
 has no receiver to key the rewrite on, and is rewritten where the name is
 one this tree defines, which is what keeps `!=`, a prefix `!` and a
@@ -3328,11 +3338,16 @@ regex literal, which is IV.1d's open item and not migration's.
 above are a person's to write; until they are, the application's own modules
 do not become artifacts, which is where R-1's edit loop lives. The fixture
 does: `bench/migrate_gate.sh` annotates it, emits a `.iyimod` per module and
-builds the program from those, byte for byte. One thing a migrated tree can
-hit there is not migration's: an exported parameter whose declared type is
+builds the program from those, byte for byte. Two things a migrated tree can
+hit there are not migration's. An exported parameter whose declared type is
 wider than the argument the producing build passed is compiled at the
 argument's type, and the consumer asks the linker for the declared one
-(`collect_iyi_object_code` names the eight lines that reproduce it). And migration is not a
+(`collect_iyi_object_code` names the eight lines that reproduce it). And a
+sidecar's methods are its module's own: a reopening travels as source, so
+`3.priced_like(item)` works anywhere in the module that requires it and
+nowhere in a module that read that one as an artifact - the fixture calls
+it from inside, which is what the rule already says about where a
+reopening is closed. And migration is not a
 speed-up by itself: on the application the whole program compiles in 4.71 s
 of front end as Crystal and 5.09 s as modules, while *one module* compiles
 in 3.15 s, because what remains is Crystal's library and 21 shards — which

@@ -193,6 +193,16 @@ class Iyi::Command
       unit.render(by_source, by_namespace, exports, notes, project_root, inferred, tree_bangs, tree_sources)
     end
 
+    # Before the `pub` pass below, because a sidecar names the tree's
+    # types too and what it names has to cross: `HeadRequestHandler`'s
+    # `NullIO` is reached from the reopening beside it and from nowhere
+    # else, and a `pub` taken off it left the module refusing its own
+    # sidecar. The rewrite also records an import per name it reached.
+    units.each do |unit|
+      next if unit.sidecar.empty?
+      unit.sidecar_text = unit.rewrite_sidecar(exports, notes)
+    end
+
     # Everything under the tree that is not Crystal travels with it: a
     # view, a fixture, a JSON file the program reads. A *template* is
     # code — a macro splices it into whichever module renders it — so its
@@ -262,6 +272,9 @@ class Iyi::Command
           (needed[target] ||= Set(String).new) << name unless name.empty?
         end
       end
+      MigrateUnit.marks(unit.sidecar_text).each do |(target, name)|
+        (needed[target] ||= Set(String).new) << name unless name.empty?
+      end
     end
     kept_in = 0
     units.each do |unit|
@@ -311,10 +324,13 @@ class Iyi::Command
       sidecars.each do |member|
         sidecar_path = File.join(out_dir, File.dirname(module_path), "#{File.basename(member.path)}_crystal.cr")
         Dir.mkdir_p(File.dirname(sidecar_path))
+        # `""` for the module path, because a sidecar is outside every
+        # module: no name collapses to the bare spelling, all of them are
+        # written in full.
         File.write(sidecar_path,
           "# Reopenings of types this tree does not own, kept as Crystal: R-3 closes\n" \
           "# a type where it is written, and these are somebody else's (SPEC.md III.6).\n" +
-          member.sidecar.join('\n').strip + "\n")
+          MigrateUnit.resolve_marks(member.sidecar_text, remap, "").strip + "\n")
       end
 
       written[module_path] = String.build do |io|
@@ -629,6 +645,9 @@ class Iyi::Command
     getter shard_requires : Array(String)
     # Reopenings of types the tree does not own, kept as Crystal.
     getter sidecar : Array(String)
+    # The sidecar with the tree's own paths written in full, and the
+    # markers the driver resolves once the merges are known.
+    property sidecar_text : String = ""
     getter imports = Set(String).new
     getter usings = {} of String => Set(String)
     getter body = [] of String
@@ -1390,8 +1409,21 @@ class Iyi::Command
     # Every constant path this tree declares, rewritten to the bare name
     # its module exports. Resolved outwards from this file's namespace,
     # the way Crystal resolves a constant; string contents are skipped.
+    # A sidecar is Crystal, not an iyi module: it reopens somebody else's
+    # type and is `require`d by the module beside it. It has no `using`
+    # line to reach a name through, so every path it names that the tree
+    # declares is written in full - `Radix::Result(Kemal::Route)` becomes
+    # `Radix::Result(CliAndOthers::Route)`, because that is where `Route`
+    # went. Left alone, a sidecar names types that no longer exist, which
+    # is `undefined constant` in a file a person did not write.
+    def rewrite_sidecar(exports : Hash(String, Export), notes : Notes) : String
+      claimed = {} of String => String
+      sidecar.map { |line| rewrite_paths(line, exports, claimed, notes, qualify: true) }.join('\n')
+    end
+
     private def rewrite_paths(line : String, exports : Hash(String, Export),
-                              claimed : Hash(String, String), notes : Notes) : String
+                              claimed : Hash(String, String), notes : Notes,
+                              qualify : Bool = false) : String
       return line if line.strip.starts_with?('#')
       String.build do |io|
         index = 0
@@ -1455,30 +1487,35 @@ class Iyi::Command
             next
           end
           token = match[0].not_nil!
-          io << rewrite_path(token, exports, claimed, notes)
+          io << rewrite_path(token, exports, claimed, notes, qualify)
           index += token.size
         end
       end
     end
 
     private def rewrite_path(token : String, exports : Hash(String, Export),
-                             claimed : Hash(String, String), notes : Notes) : String
+                             claimed : Hash(String, String), notes : Notes,
+                             qualify : Bool = false) : String
       # `Shop::Names.title` is a namespace and a method: the method is one
       # module's export, and naming it bare under a `using` is what R-2b
       # says a consumer writes.
       if at = token.index('.')
         head = token[0, at]
         method = token[(at + 1)..]
-        if unit = Command.resolve_namespace_for(head, self, @by_namespace)
+        if unit = (qualify ? @by_namespace[head.lchop("::")]? : Command.resolve_namespace_for(head, self, @by_namespace))
           # Qualified rather than bare under a `using`: a module function
           # called from inside a type's body does not resolve as a bare
           # name, and `Module::Path.method` is what R-2b names as the
           # other spelling. It reads the same as the Crystal it came from.
-          return method if unit == self
+          return method if unit == self && !qualify
           imports << unit.path
           return "#{MARK}#{unit.path}#{MARK}#{MARK}.#{method}"
         end
-        return rewrite_path(head, exports, claimed, notes) + "." + method
+        if qualify && namespace_names?(head)
+          imports << path
+          return "#{MARK}#{path}#{MARK}#{MARK}.#{method}"
+        end
+        return rewrite_path(head, exports, claimed, notes, qualify) + "." + method
       end
 
       absolute = token.starts_with?("::")
@@ -1488,12 +1525,23 @@ class Iyi::Command
       (parts.size).downto(1) do |take|
         head = parts[0, take]
         tail = parts[take..]
-        depths = absolute ? [0] : (0..namespace.size).to_a.reverse
+        # A sidecar resolves *absolutely* and nothing else. It reopens
+        # somebody else's type, so the names in its body mean what they
+        # mean in that type's scope, not in this module's: `Log::Metadata`
+        # there is the other language's `Log`, and resolving it outwards
+        # from `AcikTurkiye::Logging` found this tree's own `Log` constant
+        # and turned a reopening of a foreign type into a redefinition of
+        # the tree's - 4 of 91 modules compiling, from 91.
+        depths = (absolute || qualify) ? [0] : (0..namespace.size).to_a.reverse
         depths.each do |depth|
           candidate = (namespace[0, depth] + head).join("::")
           export = exports[candidate]?
           next unless export
           suffix = tail.empty? ? "" : "::" + tail.join("::")
+          if qualify
+            imports << export.unit.path
+            return "#{MARK}#{export.unit.path}#{MARK}#{export.name}#{MARK}" + suffix
+          end
           if export.unit == self
             return export.name + suffix
           end
@@ -1519,12 +1567,23 @@ class Iyi::Command
       end
       # Not a declaration: perhaps the namespace itself, which a module
       # function is called on and a nested name is reached through.
-      if unit = Command.resolve_namespace_for(token, self, @by_namespace)
-        return "" if unit == self
+      if unit = (qualify ? @by_namespace[token.lchop("::")]? : Command.resolve_namespace_for(token, self, @by_namespace))
+        return "" if unit == self && !qualify
         imports << unit.path
         return "#{MARK}#{unit.path}#{MARK}#{MARK}"
       end
+      # This module's own namespace, named from a sidecar: `Kemal::Route`
+      # where `Kemal` is what this module became.
+      if qualify && namespace_names?(token)
+        imports << path
+        return "#{MARK}#{path}#{MARK}#{MARK}"
+      end
       token
+    end
+
+    # Whether `token` is this module's own namespace, written out.
+    private def namespace_names?(token : String) : Bool
+      MigrateUnit.namespace_of(path) == token.lchop("::")
     end
   end
 

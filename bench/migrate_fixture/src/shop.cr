@@ -13,6 +13,7 @@ puts Shop.banner
 puts Shop::Names.title("cart")
 puts cart.note
 puts cart.note?.nil?
+puts Shop::Counter.priced(Shop::Models::Item.new("kahve", 90))
 puts cart.tidy!
 puts cart.total
 puts Shop::Counter.report(cart.total)
