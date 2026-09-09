@@ -55,7 +55,9 @@ class Iyi::Program
     return false unless iyi_prelude?
     return false if has_flag?("gc_boehm") || has_flag?("gc_none")
     return false unless (has_flag?("linux") && (has_flag?("x86_64") || has_flag?("aarch64"))) ||
-                        has_flag?("darwin")
+                        has_flag?("darwin") ||
+                        has_flag?("win32") ||
+                        has_flag?("wasm32")
     # And the ground truth over the flags: the header exists if and only if
     # the arena compiled in, and the arena is `IyiHeap`. A spec-built
     # program carries the default `iyi_prelude?` without ever loading the
@@ -133,6 +135,7 @@ class Iyi::CodeGenVisitor
     symbol = @main_mod.globals[GC_LAYOUTS_NAME]? ||
              @main_mod.globals.add(@main_llvm_context.void_pointer, GC_LAYOUTS_NAME)
     symbol.initializer = table
+    symbol.dll_storage_class = LLVM::DLLStorageClass::Default
     unless @single_module
       symbol.linkage = LLVM::Linkage::External
     end
@@ -145,6 +148,7 @@ class Iyi::CodeGenVisitor
     flag = @main_mod.globals[MARKING_NAME]? ||
            @main_mod.globals.add(@main_llvm_context.int8, MARKING_NAME)
     flag.initializer = @main_llvm_context.int8.const_int(0)
+    flag.dll_storage_class = LLVM::DLLStorageClass::Default
     unless @single_module
       flag.linkage = LLVM::Linkage::External
     end
