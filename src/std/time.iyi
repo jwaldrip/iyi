@@ -1,0 +1,907 @@
+# `Time` and `Time::Span`: the wall clock, the monotonic clock, civil-calendar
+# arithmetic, and ISO 8601 (RFC 3339) representation.
+#
+# A language with no clock cannot log, measure, or expire anything.
+# This module ports Crystal's core time types while adhering to the dependency
+# floor (SPEC.md III.9, III.10):
+#
+#   * On Darwin, libSystem's `clock_gettime_nsec_np` provides wall clock and
+#     monotonic readings with zero new symbols beyond what concurrency already links.
+#   * On Linux, raw `clock_gettime` syscalls (228 on x86_64, 113 on aarch64)
+#     issue direct kernel requests with zero libc symbols.
+#   * On Windows, kernel32's `GetSystemTimeAsFileTime` and `QueryPerformanceCounter`
+#     provide nanosecond-scale wall and monotonic time.
+#   * On wasm32-wasi, WASI import `__wasi_clock_time_get` provides both clocks.
+#
+# What was left out from Crystal's 1,626-line `src/time.cr`:
+#   * Time zones (`Time::Location` and zoneinfo database): reading tzdata from disk
+#     requires hundreds of lines of filesystem parsing and external data files.
+#     All timestamps here are UTC, with fixed timezone offsets supported in
+#     RFC 3339 parsing.
+#   * Complex strftime-like format strings (`Time::Format`): RFC 3339 covers
+#     standard serialization without a heavy regex or pattern compiler.
+#   * MonthSpan: civil month additions vary by calendar rules and are rarely
+#     used compared to duration-based Spans.
+
+module std/time
+
+import std/traits
+using std/traits::{Cmp}
+
+pub enum DayOfWeek
+  Monday    = 1
+  Tuesday   = 2
+  Wednesday = 3
+  Thursday  = 4
+  Friday    = 5
+  Saturday  = 6
+  Sunday    = 7
+
+  def ==(other : DayOfWeek) : Bool
+    value == other.value
+  end
+
+  def ===(other : DayOfWeek) : Bool
+    value == other.value
+  end
+
+  def monday? : Bool
+    value == 1
+  end
+
+  def tuesday? : Bool
+    value == 2
+  end
+
+  def wednesday? : Bool
+    value == 3
+  end
+
+  def thursday? : Bool
+    value == 4
+  end
+
+  def friday? : Bool
+    value == 5
+  end
+
+  def saturday? : Bool
+    value == 6
+  end
+
+  def sunday? : Bool
+    value == 7
+  end
+
+  def to_s : String
+    case value
+    when 1 then "Monday"
+    when 2 then "Tuesday"
+    when 3 then "Wednesday"
+    when 4 then "Thursday"
+    when 5 then "Friday"
+    when 6 then "Saturday"
+    else        "Sunday"
+    end
+  end
+end
+
+pub struct Span
+  @seconds : Int64
+  getter nanoseconds : Int32
+  def initialize(seconds : Int64 = 0_i64, nanoseconds : Int32 = 0)
+    sec = seconds + (nanoseconds.to_i64 // 1000000000_i64)
+    nsec = (nanoseconds.to_i64 % 1000000000_i64).to_i32
+    if sec > 0 && nsec < 0
+      sec = sec - 1_i64
+      nsec = nsec + 1000000000
+    elsif sec < 0 && nsec > 0
+      sec = sec + 1_i64
+      nsec = nsec - 1000000000
+    end
+    @seconds = sec
+    @nanoseconds = nsec
+  end
+
+  def self.new(*, days : Int64 = 0_i64, hours : Int64 = 0_i64, minutes : Int64 = 0_i64, seconds : Int64 = 0_i64, milliseconds : Int64 = 0_i64, nanoseconds : Int64 = 0_i64) : Span
+    total_sec = days * 86400_i64 + hours * 3600_i64 + minutes * 60_i64 + seconds + (milliseconds // 1000_i64) + (nanoseconds // 1000000000_i64)
+    total_ns = ((milliseconds % 1000_i64) * 1000000_i64 + (nanoseconds % 1000000000_i64)).to_i32
+    new(total_sec, total_ns)
+  end
+
+  def self.zero : Span
+    new(0_i64, 0)
+  end
+
+  def self.days(n : Int64) : Span
+    new(n * 86400_i64, 0)
+  end
+
+  def self.hours(n : Int64) : Span
+    new(n * 3600_i64, 0)
+  end
+
+  def self.minutes(n : Int64) : Span
+    new(n * 60_i64, 0)
+  end
+
+  def self.seconds(n : Int64) : Span
+    new(n, 0)
+  end
+
+  def self.milliseconds(n : Int64) : Span
+    sec = n // 1000_i64
+    rem = (n % 1000_i64).to_i32
+    if rem < 0
+      sec = sec - 1_i64
+      rem = rem + 1000
+    end
+    new(sec, rem * 1000000)
+  end
+
+  def self.nanoseconds(n : Int64) : Span
+    sec = n // 1000000000_i64
+    rem = (n % 1000000000_i64).to_i32
+    if rem < 0
+      sec = sec - 1_i64
+      rem = rem + 1000000000
+    end
+    new(sec, rem)
+  end
+
+  def to_i : Int64
+    @seconds
+  end
+
+  def total_seconds_i64 : Int64
+    @seconds
+  end
+
+  def days : Int64
+    @seconds // 86400_i64
+  end
+
+  def hours : Int32
+    ((@seconds % 86400_i64) // 3600_i64).to_i32
+  end
+
+  def minutes : Int32
+    ((@seconds % 3600_i64) // 60_i64).to_i32
+  end
+
+  def seconds : Int32
+    (@seconds % 60_i64).to_i32
+  end
+
+  def milliseconds : Int32
+    @nanoseconds // 1000000
+  end
+
+  def millisecond : Int32
+    @nanoseconds // 1000000
+  end
+
+  def nanoseconds : Int32
+    @nanoseconds
+  end
+
+  def nanosecond : Int32
+    @nanoseconds
+  end
+
+  def total_seconds : Float64
+    @seconds.to_f + (@nanoseconds.to_f / 1000000000.0)
+  end
+
+  def total_milliseconds : Float64
+    @seconds.to_f * 1000.0 + (@nanoseconds.to_f / 1000000.0)
+  end
+
+  def total_nanoseconds : Float64
+    @seconds.to_f * 1000000000.0 + @nanoseconds.to_f
+  end
+
+  def total_days : Float64
+    total_seconds / 86400.0
+  end
+
+  def total_hours : Float64
+    total_seconds / 3600.0
+  end
+
+  def total_minutes : Float64
+    total_seconds / 60.0
+  end
+
+  def +(other : Span) : Span
+    Span.new(@seconds + other.@seconds, @nanoseconds + other.@nanoseconds)
+  end
+
+  def -(other : Span) : Span
+    Span.new(@seconds - other.@seconds, @nanoseconds - other.@nanoseconds)
+  end
+
+  def - : Span
+    Span.new(-@seconds, -@nanoseconds)
+  end
+
+  def <=>(other : Span) : Int32
+    if @seconds != other.@seconds
+      @seconds < other.@seconds ? -1 : 1
+    elsif @nanoseconds != other.@nanoseconds
+      @nanoseconds < other.@nanoseconds ? -1 : 1
+    else
+      0
+    end
+  end
+
+  def <(other : Span) : Bool
+    (self <=> other) < 0
+  end
+
+  def >(other : Span) : Bool
+    (self <=> other) > 0
+  end
+
+  def <=(other : Span) : Bool
+    (self <=> other) <= 0
+  end
+
+  def >=(other : Span) : Bool
+    (self <=> other) >= 0
+  end
+
+  def ==(other : Span) : Bool
+    @seconds == other.@seconds && @nanoseconds == other.@nanoseconds
+  end
+
+  def to_s : String
+    sec_abs = @seconds < 0 ? -@seconds : @seconds
+    ns_abs = @nanoseconds < 0 ? -@nanoseconds : @nanoseconds
+
+    d = sec_abs // 86400_i64
+    h = ((sec_abs % 86400_i64) // 3600_i64).to_i32
+    m = ((sec_abs % 3600_i64) // 60_i64).to_i32
+    s = (sec_abs % 60_i64).to_i32
+
+    prefix = (@seconds < 0 || @nanoseconds < 0) ? "-" : ""
+
+    body = if d > 0
+      "#{d}.#{Time.pad2(h)}:#{Time.pad2(m)}:#{Time.pad2(s)}"
+    else
+      "#{Time.pad2(h)}:#{Time.pad2(m)}:#{Time.pad2(s)}"
+    end
+
+    if ns_abs > 0
+      "#{prefix}#{body}.#{Time.pad9(ns_abs)}"
+    else
+      "#{prefix}#{body}"
+    end
+  end
+end
+
+impl Cmp for Span
+  def cmp(other : self) : Int32
+    self <=> other
+  end
+end
+
+pub struct Time
+  getter seconds : Int64
+  getter nanoseconds : Int32
+
+  alias Span = Std::Time::Span
+  alias DayOfWeek = Std::Time::DayOfWeek
+
+  def initialize(@seconds : Int64, nanoseconds : Int32 = 0)
+    sec = @seconds + (nanoseconds.to_i64 // 1000000000_i64)
+    nsec = (nanoseconds.to_i64 % 1000000000_i64).to_i32
+    if nsec < 0
+      sec = sec - 1_i64
+      nsec = nsec + 1000000000
+    end
+    @seconds = sec
+    @nanoseconds = nsec
+  end
+
+  # ---------------------------------------------------------------------------
+  # Platform-specific clock mechanisms
+  # ---------------------------------------------------------------------------
+
+  {% if flag?(:darwin) %}
+    lib LibSystem
+      fun clock_gettime_nsec_np(clock_id : Int32) : UInt64
+    end
+
+    def self.wall_clock_nanoseconds : UInt64
+      # CLOCK_REALTIME = 0 on Darwin
+      LibSystem.clock_gettime_nsec_np(0)
+    end
+
+    def self.monotonic_nanoseconds : UInt64
+      # CLOCK_MONOTONIC = 6 on Darwin
+      LibSystem.clock_gettime_nsec_np(6)
+    end
+
+  {% elsif flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+    struct KernelTimeSpec
+      property tv_sec : Int64
+      property tv_nsec : Int64
+      def initialize(@tv_sec : Int64, @tv_nsec : Int64)
+      end
+    end
+
+    def self.kernel_clock_gettime(clock_id : Int64) : {Int64, Int64}
+      ts = uninitialized KernelTimeSpec
+      result = uninitialized Int64
+      {% if flag?(:x86_64) %}
+        asm("syscall" : "={rax}"(result)
+                      : "{rax}"(228_i64), "{rdi}"(clock_id), "{rsi}"(pointerof(ts).as(Void*))
+                      : "rcx", "r11", "memory"
+                      : "volatile")
+      {% else %}
+        asm("svc #0" : "={x0}"(result)
+                     : "{x8}"(113_i64), "{x0}"(clock_id), "{x1}"(pointerof(ts).as(Void*))
+                     : "memory"
+                     : "volatile")
+      {% end %}
+      {ts.tv_sec, ts.tv_nsec}
+    end
+
+    def self.wall_clock_nanoseconds : UInt64
+      # CLOCK_REALTIME = 0 on Linux
+      sec, nsec = kernel_clock_gettime(0_i64)
+      sec.to_u64 * 1000000000_u64 + nsec.to_u64
+    end
+
+    def self.monotonic_nanoseconds : UInt64
+      # CLOCK_MONOTONIC = 1 on Linux
+      sec, nsec = kernel_clock_gettime(1_i64)
+      sec.to_u64 * 1000000000_u64 + nsec.to_u64
+    end
+
+  {% elsif flag?(:windows) %}
+    lib LibKernel32
+      fun GetSystemTimeAsFileTime(time : Int64*) : Void
+      fun QueryPerformanceCounter(count : Int64*) : Int32
+      fun QueryPerformanceFrequency(freq : Int64*) : Int32
+    end
+
+    def self.wall_clock_nanoseconds : UInt64
+      filetime = uninitialized Int64
+      LibKernel32.GetSystemTimeAsFileTime(pointerof(filetime))
+      epoch_diff = 116444736000000000_i64
+      unix_100ns = filetime - epoch_diff
+      unix_100ns.to_u64 * 100_u64
+    end
+
+    def self.monotonic_nanoseconds : UInt64
+      count = uninitialized Int64
+      freq = uninitialized Int64
+      LibKernel32.QueryPerformanceCounter(pointerof(count))
+      LibKernel32.QueryPerformanceFrequency(pointerof(freq))
+      if freq == 0_i64
+        0_u64
+      else
+        (count.to_u64 * 1000000000_u64) // freq.to_u64
+      end
+    end
+
+  {% elsif flag?(:wasm32) %}
+    lib LibWasi
+      fun clock_time_get = __wasi_clock_time_get(id : Int32, precision : UInt64, time : UInt64*) : Int32
+    end
+
+    def self.wall_clock_nanoseconds : UInt64
+      ns = uninitialized UInt64
+      LibWasi.clock_time_get(0, 1000_u64, pointerof(ns))
+      ns
+    end
+
+    def self.monotonic_nanoseconds : UInt64
+      ns = uninitialized UInt64
+      LibWasi.clock_time_get(1, 1000_u64, pointerof(ns))
+      ns
+    end
+
+  {% else %}
+    def self.wall_clock_nanoseconds : UInt64
+      0_u64
+    end
+
+    def self.monotonic_nanoseconds : UInt64
+      0_u64
+    end
+  {% end %}
+
+  # ---------------------------------------------------------------------------
+  # Constructors
+  # ---------------------------------------------------------------------------
+
+  def self.utc : Time
+    total_ns = wall_clock_nanoseconds
+    sec = (total_ns // 1000000000_u64).to_i64
+    nano = (total_ns % 1000000000_u64).to_i32
+    new(sec, nano)
+  end
+
+  def self.monotonic : Span
+    total_ns = monotonic_nanoseconds
+    sec = (total_ns // 1000000000_u64).to_i64
+    nano = (total_ns % 1000000000_u64).to_i32
+    Span.new(sec, nano)
+  end
+
+  def self.utc(year : Int32, month : Int32, day : Int32, hour : Int32 = 0, minute : Int32 = 0, second : Int32 = 0, millisecond : Int32 = 0, nanosecond : Int32 = 0) : Time
+    if month < 1 || month > 12
+      raise "invalid month: #{month}"
+    end
+    max_d = days_in_month(year, month)
+    if day < 1 || day > max_d
+      raise "invalid day: #{day} for year #{year} month #{month}"
+    end
+    if hour < 0 || hour > 23
+      raise "invalid hour: #{hour}"
+    end
+    if minute < 0 || minute > 59
+      raise "invalid minute: #{minute}"
+    end
+    if second < 0 || second > 59
+      raise "invalid second: #{second}"
+    end
+    if millisecond < 0 || millisecond > 999
+      raise "invalid millisecond: #{millisecond}"
+    end
+    if nanosecond < 0 || nanosecond > 999999999
+      raise "invalid nanosecond: #{nanosecond}"
+    end
+
+    total_ns = millisecond.to_i64 * 1000000_i64 + nanosecond.to_i64
+    extra_sec = total_ns // 1000000000_i64
+    nano_rem = (total_ns % 1000000000_i64).to_i32
+
+    days = days_from_civil(year.to_i64, month, day)
+    sec = days * 86400_i64 + hour.to_i64 * 3600_i64 + minute.to_i64 * 60_i64 + second.to_i64 + extra_sec
+    new(sec, nano_rem)
+  end
+
+  def self.new(year : Int32, month : Int32, day : Int32, hour : Int32 = 0, minute : Int32 = 0, second : Int32 = 0, millisecond : Int32 = 0, nanosecond : Int32 = 0) : Time
+    utc(year, month, day, hour, minute, second, millisecond, nanosecond)
+  end
+
+  def self.from_unix(seconds : Int64, nanoseconds : Int32 = 0) : Time
+    new(seconds, nanoseconds)
+  end
+
+  def self.unix(seconds : Int64, nanoseconds : Int32 = 0) : Time
+    new(seconds, nanoseconds)
+  end
+
+  def self.from_unix_ms(milliseconds : Int64) : Time
+    sec = milliseconds // 1000_i64
+    rem = (milliseconds % 1000_i64).to_i32
+    if rem < 0
+      sec = sec - 1_i64
+      rem = rem + 1000
+    end
+    new(sec, rem * 1000000)
+  end
+
+  def self.unix_ms(milliseconds : Int64) : Time
+    from_unix_ms(milliseconds)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Calendar arithmetic
+  # ---------------------------------------------------------------------------
+
+  def self.leap_year?(year : Int32) : Bool
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+  end
+
+  def self.days_in_month(year : Int32, month : Int32) : Int32
+    case month
+    when 1, 3, 5, 7, 8, 10, 12
+      31
+    when 4, 6, 9, 11
+      30
+    when 2
+      leap_year?(year) ? 29 : 28
+    else
+      raise "invalid month: #{month}"
+    end
+  end
+
+  # Number of days between 1970-01-01 and the given civil date.
+  # Follows Howard Hinnant's Gregorian calendar algorithm.
+  def self.days_from_civil(y : Int64, m : Int32, d : Int32) : Int64
+    y = y - 1_i64 if m <= 2
+    era = (y >= 0_i64 ? y : y - 399_i64) // 400_i64
+    yoe = y - era * 400_i64
+    doy = (153_i64 * (m.to_i64 + (m <= 2 ? 9_i64 : -3_i64)) + 2_i64) // 5_i64 + d.to_i64 - 1_i64
+    doe = yoe * 365_i64 + yoe // 4_i64 - yoe // 100_i64 + doy
+    era * 146097_i64 + doe - 719468_i64
+  end
+
+  # Converts days since 1970-01-01 into {year, month, day}.
+  def self.civil_from_days(z : Int64) : {Int32, Int32, Int32}
+    z = z + 719468_i64
+    era = (z >= 0_i64 ? z : z - 146096_i64) // 146097_i64
+    doe = z - era * 146097_i64
+    yoe = (doe - doe // 1460_i64 + doe // 36524_i64 - doe // 146096_i64) // 365_i64
+    y = yoe + era * 400_i64
+    doy = doe - (365_i64 * yoe + yoe // 4_i64 - yoe // 100_i64)
+    mp = (5_i64 * doy + 2_i64) // 153_i64
+    d = doy - (153_i64 * mp + 2_i64) // 5_i64 + 1_i64
+    m = mp + (mp < 10_i64 ? 3_i64 : -9_i64)
+    y = y + 1_i64 if m <= 2
+    {y.to_i32, m.to_i32, d.to_i32}
+  end
+
+  # ---------------------------------------------------------------------------
+  # Accessors
+  # ---------------------------------------------------------------------------
+
+  private def civil_parts : {Int32, Int32, Int32}
+    days = @seconds // 86400_i64
+    Time.civil_from_days(days)
+  end
+
+  def year : Int32
+    civil_parts[0]
+  end
+
+  def month : Int32
+    civil_parts[1]
+  end
+
+  def day : Int32
+    civil_parts[2]
+  end
+
+  def hour : Int32
+    sec_in_day = @seconds % 86400_i64
+    (sec_in_day // 3600_i64).to_i32
+  end
+
+  def minute : Int32
+    sec_in_day = @seconds % 86400_i64
+    ((sec_in_day % 3600_i64) // 60_i64).to_i32
+  end
+
+  def second : Int32
+    sec_in_day = @seconds % 86400_i64
+    (sec_in_day % 60_i64).to_i32
+  end
+
+  def millisecond : Int32
+    @nanoseconds // 1000000
+  end
+
+  def milliseconds : Int32
+    @nanoseconds // 1000000
+  end
+
+  def nanosecond : Int32
+    @nanoseconds
+  end
+
+  def nanoseconds : Int32
+    @nanoseconds
+  end
+
+  def day_of_week : DayOfWeek
+    days = @seconds // 86400_i64
+    # 1970-01-01 was Thursday (day 4). Monday is 1, Sunday is 7.
+    w = ((days + 3_i64) % 7_i64) + 1_i64
+    case w
+    when 1 then DayOfWeek::Monday
+    when 2 then DayOfWeek::Tuesday
+    when 3 then DayOfWeek::Wednesday
+    when 4 then DayOfWeek::Thursday
+    when 5 then DayOfWeek::Friday
+    when 6 then DayOfWeek::Saturday
+    else        DayOfWeek::Sunday
+    end
+  end
+
+  def day_of_year : Int32
+    y, m, d = civil_parts
+    d_today = Time.days_from_civil(y.to_i64, m, d)
+    d_jan1 = Time.days_from_civil(y.to_i64, 1, 1)
+    (d_today - d_jan1 + 1_i64).to_i32
+  end
+
+  def to_unix : Int64
+    @seconds
+  end
+
+  def to_unix_ms : Int64
+    @seconds * 1000_i64 + (@nanoseconds // 1000000).to_i64
+  end
+
+  def to_unix_f : Float64
+    @seconds.to_f + (@nanoseconds.to_f / 1000000000.0)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Arithmetic
+  # ---------------------------------------------------------------------------
+
+  def +(span : Span) : Time
+    Time.new(@seconds + span.total_seconds_i64, @nanoseconds + span.nanoseconds)
+  end
+
+  def -(span : Span) : Time
+    Time.new(@seconds - span.total_seconds_i64, @nanoseconds - span.nanoseconds)
+  end
+
+  def -(other : Time) : Span
+    Span.new(@seconds - other.seconds, @nanoseconds - other.nanoseconds)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Comparison
+  # ---------------------------------------------------------------------------
+
+  def <=>(other : Time) : Int32
+    if @seconds != other.seconds
+      @seconds < other.seconds ? -1 : 1
+    elsif @nanoseconds != other.nanoseconds
+      @nanoseconds < other.nanoseconds ? -1 : 1
+    else
+      0
+    end
+  end
+
+  def <(other : Time) : Bool
+    (self <=> other) < 0
+  end
+
+  def >(other : Time) : Bool
+    (self <=> other) > 0
+  end
+
+  def <=(other : Time) : Bool
+    (self <=> other) <= 0
+  end
+
+  def >=(other : Time) : Bool
+    (self <=> other) >= 0
+  end
+
+  def ==(other : Time) : Bool
+    @seconds == other.seconds && @nanoseconds == other.nanoseconds
+  end
+
+  # ---------------------------------------------------------------------------
+  # Formatting and Parsing (RFC 3339)
+  # ---------------------------------------------------------------------------
+
+  def to_rfc3339(fraction_digits : Int32 = 0) : String
+    y, m, d = civil_parts
+    h = hour
+    mi = minute
+    s = second
+
+    base = "#{Time.pad4(y)}-#{Time.pad2(m)}-#{Time.pad2(d)}T#{Time.pad2(h)}:#{Time.pad2(mi)}:#{Time.pad2(s)}"
+    if fraction_digits == 3
+      "#{base}.#{Time.pad3(millisecond)}Z"
+    elsif fraction_digits == 6
+      "#{base}.#{Time.pad6(@nanoseconds // 1000)}Z"
+    elsif fraction_digits == 9
+      "#{base}.#{Time.pad9(@nanoseconds)}Z"
+    else
+      "#{base}Z"
+    end
+  end
+
+  def to_s : String
+    y, m, d = civil_parts
+    h = hour
+    mi = minute
+    s = second
+    "#{Time.pad4(y)}-#{Time.pad2(m)}-#{Time.pad2(d)} #{Time.pad2(h)}:#{Time.pad2(mi)}:#{Time.pad2(s)} UTC"
+  end
+
+  # Parses an RFC 3339 / ISO 8601 string into a UTC Time.
+  # Handles forms like:
+  #   2024-02-29T12:30:45Z
+  #   2024-02-29T12:30:45.123Z
+  #   2024-02-29T12:30:45.123456789Z
+  #   2024-02-29 12:30:45Z
+  #   2024-02-29T12:30:45+05:00
+  #   2024-02-29T12:30:45-08:00
+  def self.parse_rfc3339(str : String) : Time
+    len = str.bytesize
+    if len < 20
+      raise "RFC 3339 string too short: #{str}"
+    end
+
+    if str[4] != '-' || str[7] != '-' || str[13] != ':' || str[16] != ':'
+      raise "invalid RFC 3339 format delimiters: #{str}"
+    end
+
+    sep = str[10]
+    if sep != 'T' && sep != 't' && sep != ' '
+      raise "invalid RFC 3339 date/time separator: #{sep}"
+    end
+
+    y = parse_int(str, 0, 4)
+    m = parse_int(str, 5, 2)
+    d = parse_int(str, 8, 2)
+    h = parse_int(str, 11, 2)
+    mi = parse_int(str, 14, 2)
+    s = parse_int(str, 17, 2)
+
+    idx = 19
+    nanos = 0
+
+    # Optional fractional seconds
+    if idx < len && str[idx] == '.'
+      idx = idx + 1
+      start_frac = idx
+      while idx < len
+        code = str.to_unsafe[idx].to_i32
+        break if code < 48 || code > 57
+        idx = idx + 1
+      end
+      frac_len = idx - start_frac
+      if frac_len == 0
+        raise "empty fractional seconds in RFC 3339: #{str}"
+      end
+
+      # Parse up to 9 digits into nanoseconds
+      frac_val = 0
+      pos = 0
+      while pos < 9
+        if pos < frac_len
+          code = str.to_unsafe[start_frac + pos].to_i32
+          frac_val = frac_val * 10 + (code - 48)
+        else
+          frac_val = frac_val * 10
+        end
+        pos = pos + 1
+      end
+      nanos = frac_val
+    end
+
+    # Time zone offset
+    if idx >= len
+      raise "missing timezone in RFC 3339 string: #{str}"
+    end
+
+    tz_char = str[idx]
+    offset_sec = 0_i64
+
+    if tz_char == 'Z' || tz_char == 'z'
+      offset_sec = 0_i64
+    elsif tz_char == '+' || tz_char == '-'
+      sign = tz_char == '+' ? 1_i64 : -1_i64
+      rem_len = len - idx - 1
+      if rem_len >= 5 && str[idx + 3] == ':'
+        # +HH:MM
+        oh = parse_int(str, idx + 1, 2).to_i64
+        om = parse_int(str, idx + 4, 2).to_i64
+        offset_sec = sign * (oh * 3600_i64 + om * 60_i64)
+      elsif rem_len >= 4 && str[idx + 1].ord >= 48 && str[idx + 1].ord <= 57
+        # +HHMM
+        oh = parse_int(str, idx + 1, 2).to_i64
+        om = parse_int(str, idx + 3, 2).to_i64
+        offset_sec = sign * (oh * 3600_i64 + om * 60_i64)
+      elsif rem_len >= 2
+        # +HH
+        oh = parse_int(str, idx + 1, 2).to_i64
+        offset_sec = sign * (oh * 3600_i64)
+      else
+        raise "invalid timezone offset in RFC 3339: #{str}"
+      end
+    else
+      raise "invalid timezone designator in RFC 3339: #{tz_char}"
+    end
+
+    # Convert to UTC by subtracting the offset from local time
+    days = days_from_civil(y.to_i64, m, d)
+    local_sec = days * 86400_i64 + h.to_i64 * 3600_i64 + mi.to_i64 * 60_i64 + s.to_i64
+    utc_sec = local_sec - offset_sec
+    Time.new(utc_sec, nanos)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Private formatting helpers
+  # ---------------------------------------------------------------------------
+
+  def self.pad2(n : Int32) : String
+    if n < 10
+      "0" + n.to_s
+    else
+      n.to_s
+    end
+  end
+
+  def self.pad3(n : Int32) : String
+    if n < 10
+      "00" + n.to_s
+    elsif n < 100
+      "0" + n.to_s
+    else
+      n.to_s
+    end
+  end
+
+  def self.pad4(n : Int32) : String
+    if n < 10
+      "000" + n.to_s
+    elsif n < 100
+      "00" + n.to_s
+    elsif n < 1000
+      "0" + n.to_s
+    else
+      n.to_s
+    end
+  end
+
+  def self.pad6(n : Int32) : String
+    s = n.to_s
+    zeros = 6 - s.bytesize
+    if zeros <= 0
+      s
+    elsif zeros == 1
+      "0" + s
+    elsif zeros == 2
+      "00" + s
+    elsif zeros == 3
+      "000" + s
+    elsif zeros == 4
+      "0000" + s
+    else
+      "00000" + s
+    end
+  end
+
+  def self.pad9(n : Int32) : String
+    s = n.to_s
+    zeros = 9 - s.bytesize
+    if zeros <= 0
+      s
+    elsif zeros == 1
+      "0" + s
+    elsif zeros == 2
+      "00" + s
+    elsif zeros == 3
+      "000" + s
+    elsif zeros == 4
+      "0000" + s
+    elsif zeros == 5
+      "00000" + s
+    elsif zeros == 6
+      "000000" + s
+    elsif zeros == 7
+      "0000000" + s
+    elsif zeros == 8
+      "00000000" + s
+    else
+      "000000000"
+    end
+  end
+
+  private def self.parse_int(str : String, start : Int32, count : Int32) : Int32
+    val = 0
+    i = 0
+    while i < count
+      code = str.to_unsafe[start + i].to_i32
+      if code < 48 || code > 57
+        raise "invalid digit in RFC 3339 string: #{str}"
+      end
+      val = val * 10 + (code - 48)
+      i = i + 1
+    end
+    val
+  end
+end
+
+impl Cmp for Time
+  def cmp(other : self) : Int32
+    self <=> other
+  end
+end
