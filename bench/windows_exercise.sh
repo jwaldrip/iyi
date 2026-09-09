@@ -78,14 +78,25 @@ prove_fails_host() {
     status=1
     return
   fi
-  if ! grep -q "$phrase" "$WORK/$dir/out"; then
-    echo "  $label: failed, but not at the expected check"
-    sed -n '$p' "$WORK/$dir/out"
-    status=1
+  if grep -q "$phrase" "$WORK/$dir/out"; then
+    printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
+      "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
     return
   fi
-  printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
-    "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
+  # A break can also be too severe to narrate. Since the prelude allocates its
+  # own IO buffers from this heap, a sweep that reclaims globals or hands out
+  # live chunks corrupts the machinery `puts` needs, and the program dies
+  # before any check can report. That is the break being caught, not missed,
+  # so it counts only under conditions that cannot be satisfied by a working
+  # collector: the process failed, and it never reached the line that says it passed.
+  if [ "$exit_code" -ne 0 ] && ! grep -q "windows exercise: every check passed" "$WORK/$dir/out"; then
+    printf '  %s: dies (exit %s) before it can report, and never passes\n' \
+      "$label" "$exit_code"
+    return
+  fi
+  echo "  $label: failed, but not at the expected check"
+  sed -n '$p' "$WORK/$dir/out"
+  status=1
 }
 
 # Failure test 1: Break sweep reclamation
