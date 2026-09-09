@@ -50,14 +50,14 @@ def main : Nil
 
   # "123456789"
   digits = make_bytes(9) { |i| (49 + i).to_u8 }
-  raise "adler32: 123456789" unless Adler32.checksum(digits) == 152961502_u64  # 0x091E01DE
+  raise "adler32: 123456789" unless Adler32.checksum(digits) == 152961502_u64 # 0x091E01DE
   raise "crc32: 123456789" unless CRC32.checksum(digits) == 3421780262_u64    # 0xCBF43926
 
   # "Wikipedia"
   wiki_str = "Wikipedia"
   wiki_bytes = make_bytes(wiki_str.bytesize) { |i| wiki_str[i].ord.to_u8 }
   raise "adler32: Wikipedia" unless Adler32.checksum(wiki_bytes) == 300286872_u64 # 0x11E60398
-  raise "crc32: Wikipedia" unless CRC32.checksum(wiki_bytes) == 2913648686_u64   # 0xADA4F72E
+  raise "crc32: Wikipedia" unless CRC32.checksum(wiki_bytes) == 2913648686_u64    # 0xADA4F72E
 
   puts "    checksums: adler32 and crc32 verified against standard vectors"
 
@@ -234,7 +234,7 @@ def main : Nil
     193, 222, 252, 193, 64, 242, 76, 228, 38, 137, 77, 250, 8, 179, 163, 41, 130, 7, 37, 89,
     240, 105, 81, 70, 219, 11, 222, 18, 54, 130, 157, 153, 140, 142, 108, 168, 242, 36, 202, 215,
     165, 218, 138, 251, 75, 181, 138, 35, 131, 236, 168, 45, 8, 170, 218, 106, 244, 235, 191, 67,
-    237, 28, 247, 215, 254, 134, 101, 58, 166, 99, 58, 166, 227, 207, 29, 63
+    237, 28, 247, 215, 254, 134, 101, 58, 166, 99, 58, 166, 227, 207, 29, 63,
   ]
   dyn_bytes = make_bytes(dyn_vec.size) { |i| dyn_vec[i].to_u8 }
   dyn_dec = Inflate.decompress(dyn_bytes)
@@ -243,7 +243,7 @@ def main : Nil
   # Vector D: Standard zlib container produced by Python zlib for "iyi native zlib compression"
   zlib_vec = [
     120, 156, 203, 172, 204, 84, 200, 75, 44, 201, 44, 75, 85, 168, 202, 201, 76, 82, 72,
-    206, 207, 45, 40, 74, 45, 46, 206, 204, 207, 3, 0, 144, 203, 10, 150
+    206, 207, 45, 40, 74, 45, 46, 206, 204, 207, 3, 0, 144, 203, 10, 150,
   ]
   zlib_bytes = make_bytes(zlib_vec.size) { |i| zlib_vec[i].to_u8 }
   zlib_dec = Zlib.decompress(zlib_bytes)
@@ -255,7 +255,7 @@ def main : Nil
   gzip_vec = [
     31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 203, 172, 204, 84, 200, 75, 44, 201, 44, 75, 85,
     72, 175, 202, 44, 80, 72, 206, 207, 45, 40, 74, 45, 46, 206, 204, 207, 3, 0, 203,
-    178, 247, 59, 27, 0, 0, 0
+    178, 247, 59, 27, 0, 0, 0,
   ]
   gzip_bytes = make_bytes(gzip_vec.size) { |i| gzip_vec[i].to_u8 }
   gzip_dec = Gzip.decompress(gzip_bytes)
