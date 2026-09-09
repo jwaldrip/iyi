@@ -122,33 +122,32 @@ prove_fails "handshake accept vector mismatch" handshake_corrupt \
 # 2. Unmasked client frame accepted (must fail: unmasked client frame rejected with 1002)
 prove_fails "unmasked client frame accepted" unmasked_bypass \
   "assertion failed: unmasked client frame was not rejected" "websocket.iyi" \
-  's/unless masked$/if false/'
+  's/unless masked$/if false/g'
 
 # 3. Oversized control frame accepted (must fail: payload > 125 rejected with 1002)
 prove_fails "oversized control frame accepted" oversized_bypass \
   "assertion failed: oversized control frame was not rejected" "websocket.iyi" \
-  's/if len7 > 125_u8$/if false/'
+  's/if len7 > 125_u8$/if false/g'
 
 # 4. Fragmented control frame accepted (must fail: control frame with FIN=0 rejected with 1002)
 prove_fails "fragmented control frame accepted" frag_ctrl_bypass \
   "assertion failed: fragmented control frame was not rejected" "websocket.iyi" \
-  's/unless fin$/if false/'
+  's/unless fin$/if false/g'
 
 # 5. Bad RSV bits accepted (must fail: RSV set without extension rejected with 1002)
 prove_fails "bad RSV bits accepted" bad_rsv_bypass \
   "assertion failed: bad RSV frame was not rejected" "websocket.iyi" \
-  's/if rsv1 || rsv2 || rsv3$/if false/'
+  's/return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "RSV bits set without negotiated extension")/# bypass RSV/g'
 
 # 6. Incremental UTF-8 validation bypassed (must fail: invalid UTF-8 in split frame rejected with 1007)
 prove_fails "invalid UTF-8 in split text frame accepted" utf8_bypass \
   "assertion failed: invalid UTF-8 in split text frame was not rejected" "websocket.iyi" \
-  's/unless @utf8_validator.update(frame.payload)$/if false/'
+  's/unless @utf8_validator.update(frame.payload)$/if false/g'
 
 # 7. Invalid close code accepted (must fail: code 1005 rejected with 1002)
 prove_fails "forbidden close code 1005 accepted" close_code_bypass \
-  "assertion failed: forbidden close code 1005 was not rejected" "websocket.iyi" \
-  's/code == 1005 || //'
-
+  "assertion failed: forbidden code 1005 is invalid" "websocket.iyi" \
+  's/code == 1005 || //g'
 echo
 if [ "$status" -eq 0 ]; then
   echo "WebSocket standard library: RFC 6455 handshake, base64, framing, client/server,"

@@ -379,12 +379,12 @@ def test_rejection_suite : Nil
   # Frame with masked = false fed to server
   unmasked_frame = Frame.new(OP_TEXT, string_to_bytes("unmasked from client"), fin: true, masked: false)
   trans1.feed(unmasked_frame.serialize(masked_override: false))
-  err1 = server1.receive
+  err1 = server1.receive_frame
   case err1
   in WebSocketError
     assert_true(err1.code == CLOSE_PROTOCOL_ERROR, "unmasked client frame rejected with 1002")
-  in Message, Nil
-    raise "unmasked client frame was not rejected"
+  in Frame, Nil
+    raise "assertion failed: unmasked client frame was not rejected"
   end
   puts "  unmasked client frame: rejected (code 1002)"
 
@@ -395,12 +395,12 @@ def test_rejection_suite : Nil
   oversized_payload = Bytes.new(126)
   oversized_frame = Frame.new(OP_PING, oversized_payload, fin: true, masked: true)
   trans2.feed(oversized_frame.serialize)
-  err2 = server2.receive
+  err2 = server2.receive_frame
   case err2
   in WebSocketError
     assert_true(err2.code == CLOSE_PROTOCOL_ERROR, "oversized control frame rejected with 1002")
-  in Message, Nil
-    raise "oversized control frame was not rejected"
+  in Frame, Nil
+    raise "assertion failed: oversized control frame was not rejected"
   end
   puts "  oversized control frame: rejected (code 1002)"
 
@@ -409,26 +409,26 @@ def test_rejection_suite : Nil
   server3 = Session.new(trans3, is_server: true)
   frag_ctrl = Frame.new(OP_PING, string_to_bytes("ping"), fin: false, masked: true)
   trans3.feed(frag_ctrl.serialize)
-  err3 = server3.receive
+  err3 = server3.receive_frame
   case err3
   in WebSocketError
     assert_true(err3.code == CLOSE_PROTOCOL_ERROR, "fragmented control frame rejected with 1002")
-  in Message, Nil
-    raise "fragmented control frame was not rejected"
+  in Frame, Nil
+    raise "assertion failed: fragmented control frame was not rejected"
   end
   puts "  fragmented control frame: rejected (code 1002)"
 
   # 4. Bad RSV: frame with RSV1/2/3 set without negotiated extension must be rejected with 1002
   trans4 = MemoryTransport.new
   server4 = Session.new(trans4, is_server: true, deflate_enabled: false)
-  bad_rsv_frame = Frame.new(OP_TEXT, string_to_bytes("bad rsv"), fin: true, masked: true, rsv1: true)
+  bad_rsv_frame = Frame.new(OP_TEXT, string_to_bytes("bad rsv"), fin: true, masked: true, rsv2: true)
   trans4.feed(bad_rsv_frame.serialize)
-  err4 = server4.receive
+  err4 = server4.receive_frame
   case err4
   in WebSocketError
     assert_true(err4.code == CLOSE_PROTOCOL_ERROR, "bad RSV rejected with 1002")
-  in Message, Nil
-    raise "bad RSV frame was not rejected"
+  in Frame, Nil
+    raise "assertion failed: bad RSV frame was not rejected"
   end
   puts "  bad RSV: rejected (code 1002)"
 
@@ -445,7 +445,7 @@ def test_rejection_suite : Nil
   in WebSocketError
     assert_true(err5.code == CLOSE_INVALID_PAYLOAD, "invalid UTF-8 in split text frame rejected with 1007")
   in Message, Nil
-    raise "invalid UTF-8 in split text frame was not rejected"
+    raise "assertion failed: invalid UTF-8 in split text frame was not rejected"
   end
   puts "  invalid UTF-8 in split text frame: rejected (code 1007)"
 
@@ -469,7 +469,7 @@ def test_rejection_suite : Nil
     in WebSocketError
       assert_true(err6.code == CLOSE_PROTOCOL_ERROR, "forbidden close code #{fc} rejected with 1002")
     in Frame, Nil
-      raise "forbidden close code #{fc} was not rejected"
+      raise "assertion failed: forbidden close code #{fc} was not rejected"
     end
     idx = idx + 1
   end
