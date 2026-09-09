@@ -46,9 +46,9 @@ using std/hpack::{Integer, Huffman, HpackError}
 # Qpack Error Codes and Error Structure
 # ---------------------------------------------------------------------------
 
-QPACK_DECOMPRESSION_FAILED = 0x0200_u64
-QPACK_ENCODER_STREAM_ERROR = 0x0201_u64
-QPACK_DECODER_STREAM_ERROR = 0x0202_u64
+pub QPACK_DECOMPRESSION_FAILED = 0x0200_u64
+pub QPACK_ENCODER_STREAM_ERROR = 0x0201_u64
+pub QPACK_DECODER_STREAM_ERROR = 0x0202_u64
 
 pub struct QpackError
   getter code : UInt64
