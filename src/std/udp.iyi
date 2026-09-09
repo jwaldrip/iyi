@@ -601,7 +601,7 @@ pub class UdpSocket
       buffer[0] = 16_u8 # sin_len = 16
       buffer[1] = 2_u8  # sin_family = AF_INET (2)
     {% else %}
-      buffer[0] = 2_u8  # sin_family = AF_INET (2)
+      buffer[0] = 2_u8 # sin_family = AF_INET (2)
       buffer[1] = 0_u8
     {% end %}
 
@@ -700,16 +700,17 @@ pub class UdpSocket
   # --- Platform System Call Bindings ---
 
   {% if flag?(:darwin) %}
-    AF_INET6           = 30
-    SOL_SOCKET         = 0xffff
-    SO_REUSEADDR       = 0x0004
-    SO_RCVBUF          = 0x1002
-    SO_SNDBUF          = 0x1001
-    SO_RCVTIMEO        = 0x1006
-    SO_SNDTIMEO        = 0x1005
-    MSG_DONTWAIT       = 0x80
-    SOCKADDR_IN_SIZE   = 16_u32
-    SOCKADDR_IN6_SIZE  = 28_u32
+    AF_INET6          =     30
+    SOL_SOCKET        = 0xffff
+    SO_REUSEADDR      = 0x0004
+    SO_RCVBUF         = 0x1002
+    SO_SNDBUF         = 0x1001
+    SO_RCVTIMEO       = 0x1006
+    SO_SNDTIMEO       = 0x1005
+    MSG_DONTWAIT      =   0x80
+    SOCKADDR_IN_SIZE  = 16_u32
+    SOCKADDR_IN6_SIZE = 28_u32
+
     lib LibC
       fun socket(domain : Int32, type : Int32, protocol : Int32) : Int32
       fun bind(fd : Int32, addr : Void*, addrlen : UInt32) : Int32
@@ -766,6 +767,7 @@ pub class UdpSocket
       raise "cannot get buffer size" if res < 0
       val
     end
+
     def self.__sys_set_reuseaddr(fd : Int32) : Int32
       val = 1_i32
       LibC.setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, pointerof(val).as(Void*), 4_u32)
@@ -775,7 +777,9 @@ pub class UdpSocket
       sec = (ms // 1000).to_i64
       usec = ((ms % 1000) * 1000).to_i32
       tv = Pointer(UInt8).malloc(16_u64)
-      i = 0; while i < 16; tv[i] = 0_u8; i = i + 1; end
+      i = 0; while i < 16
+        tv[i] = 0_u8; i = i + 1
+      end
       tv.as(Pointer(Int64)).value = sec
       Pointer(Int32).new(tv.address + 8_u64).value = usec
       LibC.setsockopt(fd, SOL_SOCKET, optname, tv.as(Void*), 16_u32)
@@ -786,7 +790,9 @@ pub class UdpSocket
       return false if kq < 0
 
       change = Pointer(UInt8).malloc(32_u64)
-      i = 0; while i < 32; change[i] = 0_u8; i = i + 1; end
+      i = 0; while i < 32
+        change[i] = 0_u8; i = i + 1
+      end
       change.as(Pointer(UInt64)).value = fd.to_u64
       # EVFILT_READ is -1 (0xFFFF), EV_ADD is 1
       change[8] = 0xFF_u8
@@ -802,7 +808,9 @@ pub class UdpSocket
       end
 
       event = Pointer(UInt8).malloc(32_u64)
-      i = 0; while i < 32; event[i] = 0_u8; i = i + 1; end
+      i = 0; while i < 32
+        event[i] = 0_u8; i = i + 1
+      end
 
       sec = (timeout_ms // 1000).to_i64
       nsec = ((timeout_ms % 1000) * 1_000_000).to_i64
@@ -818,7 +826,6 @@ pub class UdpSocket
     def self.__is_eagain(res : Int64) : Bool
       res < 0_i64 && LibC.__error.value == 35
     end
-
   {% elsif flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
     AF_INET6        = 10
     SOL_SOCKET         = 1
@@ -989,16 +996,17 @@ pub class UdpSocket
     end
 
   {% else %}
-    AF_INET6           = 10
-    SOL_SOCKET         = 1
-    SO_REUSEADDR       = 2
-    SO_RCVBUF          = 8
-    SO_SNDBUF          = 7
-    SO_RCVTIMEO        = 20
-    SO_SNDTIMEO        = 21
-    MSG_DONTWAIT       = 0x40
-    SOCKADDR_IN_SIZE   = 16_i64
-    SOCKADDR_IN6_SIZE  = 28_i64
+    AF_INET6          =     10
+    SOL_SOCKET        =      1
+    SO_REUSEADDR      =      2
+    SO_RCVBUF         =      8
+    SO_SNDBUF         =      7
+    SO_RCVTIMEO       =     20
+    SO_SNDTIMEO       =     21
+    MSG_DONTWAIT      =   0x40
+    SOCKADDR_IN_SIZE  = 16_i64
+    SOCKADDR_IN6_SIZE = 28_i64
+
     def self.__sys_socket(domain : Int32 = 2) : Int32
       raise "UdpSocket is not supported on this platform"
     end
@@ -1034,6 +1042,7 @@ pub class UdpSocket
     def self.__sys_get_buffer_size(fd : Int32, level : Int32, optname : Int32) : Int32
       -1
     end
+
     def self.__sys_set_reuseaddr(fd : Int32) : Int32
       -1
     end

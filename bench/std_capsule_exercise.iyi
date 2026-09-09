@@ -275,10 +275,18 @@ e4 = cap_close.encode
 total_stream_size = e1.size + e2.size + e3.size + e4.size
 stream_buf = Bytes.new(total_stream_size)
 p = 0
-i = 0; while i < e1.size; stream_buf[p] = e1[i]; p = p + 1; i = i + 1; end
-i = 0; while i < e2.size; stream_buf[p] = e2[i]; p = p + 1; i = i + 1; end
-i = 0; while i < e3.size; stream_buf[p] = e3[i]; p = p + 1; i = i + 1; end
-i = 0; while i < e4.size; stream_buf[p] = e4[i]; p = p + 1; i = i + 1; end
+i = 0; while i < e1.size
+  stream_buf[p] = e1[i]; p = p + 1; i = i + 1
+end
+i = 0; while i < e2.size
+  stream_buf[p] = e2[i]; p = p + 1; i = i + 1
+end
+i = 0; while i < e3.size
+  stream_buf[p] = e3[i]; p = p + 1; i = i + 1
+end
+i = 0; while i < e4.size
+  stream_buf[p] = e4[i]; p = p + 1; i = i + 1
+end
 
 # CapsuleReader.read_known MUST skip the 2 unknown capsules and return exactly the 2 known ones
 known_only = CapsuleReader.read_known(stream_buf)

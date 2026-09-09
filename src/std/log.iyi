@@ -210,25 +210,77 @@ pub class Logger
     end
   end
 
-  def debug(message : String) : Nil; log(Severity::Debug, message); end
-  def debug(&b : -> String) : Nil; log(Severity::Debug, &b); end
-  def info(message : String) : Nil; log(Severity::Info, message); end
-  def info(&b : -> String) : Nil; log(Severity::Info, &b); end
-  def notice(message : String) : Nil; log(Severity::Notice, message); end
-  def notice(&b : -> String) : Nil; log(Severity::Notice, &b); end
-  def warn(message : String) : Nil; log(Severity::Warn, message); end
-  def warn(&b : -> String) : Nil; log(Severity::Warn, &b); end
-  def error(message : String) : Nil; log(Severity::Error, message); end
-  def error(&b : -> String) : Nil; log(Severity::Error, &b); end
-  def fatal(message : String) : Nil; log(Severity::Fatal, message); end
-  def fatal(&b : -> String) : Nil; log(Severity::Fatal, &b); end
+  def debug(message : String) : Nil
+    log(Severity::Debug, message)
+  end
 
-  def debug? : Bool; level <= Severity::Debug; end
-  def info? : Bool; level <= Severity::Info; end
-  def notice? : Bool; level <= Severity::Notice; end
-  def warn? : Bool; level <= Severity::Warn; end
-  def error? : Bool; level <= Severity::Error; end
-  def fatal? : Bool; level <= Severity::Fatal; end
+  def debug(&b : -> String) : Nil
+    log(Severity::Debug, &b)
+  end
+
+  def info(message : String) : Nil
+    log(Severity::Info, message)
+  end
+
+  def info(&b : -> String) : Nil
+    log(Severity::Info, &b)
+  end
+
+  def notice(message : String) : Nil
+    log(Severity::Notice, message)
+  end
+
+  def notice(&b : -> String) : Nil
+    log(Severity::Notice, &b)
+  end
+
+  def warn(message : String) : Nil
+    log(Severity::Warn, message)
+  end
+
+  def warn(&b : -> String) : Nil
+    log(Severity::Warn, &b)
+  end
+
+  def error(message : String) : Nil
+    log(Severity::Error, message)
+  end
+
+  def error(&b : -> String) : Nil
+    log(Severity::Error, &b)
+  end
+
+  def fatal(message : String) : Nil
+    log(Severity::Fatal, message)
+  end
+
+  def fatal(&b : -> String) : Nil
+    log(Severity::Fatal, &b)
+  end
+
+  def debug? : Bool
+    level <= Severity::Debug
+  end
+
+  def info? : Bool
+    level <= Severity::Info
+  end
+
+  def notice? : Bool
+    level <= Severity::Notice
+  end
+
+  def warn? : Bool
+    level <= Severity::Warn
+  end
+
+  def error? : Bool
+    level <= Severity::Error
+  end
+
+  def fatal? : Bool
+    level <= Severity::Fatal
+  end
 end
 
 pub class Log
@@ -270,16 +322,51 @@ pub class Log
     root.backend = backend
   end
 
-  def self.debug(msg : String) : Nil; root.debug(msg); end
-  def self.debug(&b : -> String) : Nil; root.debug(&b); end
-  def self.info(msg : String) : Nil; root.info(msg); end
-  def self.info(&b : -> String) : Nil; root.info(&b); end
-  def self.notice(msg : String) : Nil; root.notice(msg); end
-  def self.notice(&b : -> String) : Nil; root.notice(&b); end
-  def self.warn(msg : String) : Nil; root.warn(msg); end
-  def self.warn(&b : -> String) : Nil; root.warn(&b); end
-  def self.error(msg : String) : Nil; root.error(msg); end
-  def self.error(&b : -> String) : Nil; root.error(&b); end
-  def self.fatal(msg : String) : Nil; root.fatal(msg); end
-  def self.fatal(&b : -> String) : Nil; root.fatal(&b); end
+  def self.debug(msg : String) : Nil
+    root.debug(msg)
+  end
+
+  def self.debug(&b : -> String) : Nil
+    root.debug(&b)
+  end
+
+  def self.info(msg : String) : Nil
+    root.info(msg)
+  end
+
+  def self.info(&b : -> String) : Nil
+    root.info(&b)
+  end
+
+  def self.notice(msg : String) : Nil
+    root.notice(msg)
+  end
+
+  def self.notice(&b : -> String) : Nil
+    root.notice(&b)
+  end
+
+  def self.warn(msg : String) : Nil
+    root.warn(msg)
+  end
+
+  def self.warn(&b : -> String) : Nil
+    root.warn(&b)
+  end
+
+  def self.error(msg : String) : Nil
+    root.error(msg)
+  end
+
+  def self.error(&b : -> String) : Nil
+    root.error(&b)
+  end
+
+  def self.fatal(msg : String) : Nil
+    root.fatal(msg)
+  end
+
+  def self.fatal(&b : -> String) : Nil
+    root.fatal(&b)
+  end
 end

@@ -22,9 +22,11 @@ trap 'rm -rf "$WORK"' EXIT
 
 status=0
 
+# The compile cache is inherited rather than named here, the way every other
+# driver in this directory does it. Naming one puts the other language's
+# environment variable into the tree, which the identity floor refuses.
 export PATH="/opt/homebrew/bin:/usr/bin:/bin"
 export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib"
-export CRYSTAL_CACHE_DIR="/tmp/iyi-crystal-cache-dns"
 
 run_case() {
   local label="$1" name="$2"

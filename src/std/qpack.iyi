@@ -219,189 +219,189 @@ pub STATIC_TABLE = [
 pub class Qpack
   STATIC_TABLE = Std::Qpack::STATIC_TABLE
 
-# Static Table Lookups
-# ---------------------------------------------------------------------------
+  # Static Table Lookups
+  # ---------------------------------------------------------------------------
 
-def self.get_static(index : Int32) : TableEntry?
-  if index >= 0 && index < STATIC_TABLE.size
-    STATIC_TABLE[index]
-  else
-    nil
-  end
-end
-
-def self.find_static(name : String, value : String) : Int32?
-  i = 0
-  while i < STATIC_TABLE.size
-    e = STATIC_TABLE[i]
-    if e.name == name && e.value == value
-      return i
+  def self.get_static(index : Int32) : TableEntry?
+    if index >= 0 && index < STATIC_TABLE.size
+      STATIC_TABLE[index]
+    else
+      nil
     end
-    i = i + 1
   end
-  nil
-end
 
-def self.find_static_name(name : String) : Int32?
-  i = 0
-  while i < STATIC_TABLE.size
-    e = STATIC_TABLE[i]
-    if e.name == name
-      return i
-    end
-    i = i + 1
-  end
-  nil
-end
-
-# ---------------------------------------------------------------------------
-# String Literal and Prefix Codecs
-# ---------------------------------------------------------------------------
-
-def self.encode_string(str : String, prefix_bits : Int32, prefix_byte : UInt8, buffer : Array(UInt8), use_huffman : Bool = false) : Nil
-  huff_len = Huffman.encoded_size(str)
-  if use_huffman && huff_len < str.bytesize
-    flag = (1_u8.unsafe_shl(prefix_bits - 1))
-    Integer.encode(huff_len.to_u64, prefix_bits - 1, prefix_byte | flag, buffer)
-    Huffman.encode(str, buffer)
-  else
-    Integer.encode(str.bytesize.to_u64, prefix_bits - 1, prefix_byte, buffer)
+  def self.find_static(name : String, value : String) : Int32?
     i = 0
-    while i < str.bytesize
-      buffer << str.to_unsafe[i]
+    while i < STATIC_TABLE.size
+      e = STATIC_TABLE[i]
+      if e.name == name && e.value == value
+        return i
+      end
       i = i + 1
     end
-  end
-end
-
-def self.decode_string(bytes : Bytes, offset : Int32, prefix_bits : Int32) : Tuple(String, Int32) | QpackError
-  if offset >= bytes.size
-    return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Unexpected EOF decoding string prefix")
-  end
-  flag = (1_u8.unsafe_shl(prefix_bits - 1))
-  huffman = (bytes[offset] & flag) != 0_u8
-
-  res_len = Integer.decode(bytes, offset, prefix_bits - 1)
-  if res_len.is_a?(HpackError)
-    return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Integer decode error in string length: #{res_len.message}")
-  end
-  length = res_len[0].to_i32
-  cur_offset = res_len[1]
-
-  if cur_offset + length > bytes.size
-    return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Unexpected EOF reading string literal of length #{length}")
+    nil
   end
 
-  if huffman
-    str_res = Huffman.decode(bytes, cur_offset, length)
-    if str_res.is_a?(HpackError)
-      return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Huffman decode error: #{str_res.message}")
-    end
-    {str_res, cur_offset + length}
-  else
-    str = String.new(length) do |buf|
-      buf.copy_from((bytes + cur_offset).to_unsafe, length)
-    end
-    {str, cur_offset + length}
-  end
-end
-
-# ---------------------------------------------------------------------------
-# Prefix Encoding and Decoding (RFC 9204 Section 4.5.1)
-# ---------------------------------------------------------------------------
-
-def self.encode_prefix(req_insert_count : Int64, base : Int64, max_table_capacity : Int32, buffer : Array(UInt8)) : Nil
-  max_entries = max_table_capacity // 32
-  if req_insert_count == 0_i64
-    Integer.encode(0_u64, 8, 0_u8, buffer)
-    Integer.encode(0_u64, 7, 0_u8, buffer)
-  else
-    full_range = (2 * max_entries).to_i64
-    enc_insert_count = (req_insert_count % full_range) + 1_i64
-    Integer.encode(enc_insert_count.to_u64, 8, 0_u8, buffer)
-    if base >= req_insert_count
-      delta_base = (base - req_insert_count).to_u64
-      Integer.encode(delta_base, 7, 0_u8, buffer)
-    else
-      delta_base = (req_insert_count - base - 1_i64).to_u64
-      Integer.encode(delta_base, 7, 0x80_u8, buffer)
-    end
-  end
-end
-
-def self.decode_prefix(bytes : Bytes, offset : Int32, total_inserts : Int64, max_table_capacity : Int32) : Tuple(Int64, Int64, Int32) | QpackError
-  res_ric = Integer.decode(bytes, offset, 8)
-  if res_ric.is_a?(HpackError)
-    return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Decode ReqInsertCount error: #{res_ric.message}")
-  end
-  enc_ric = res_ric[0].to_i64
-  offset = res_ric[1]
-
-  max_entries = max_table_capacity // 32
-  full_range = (2 * max_entries).to_i64
-
-  req_insert_count = 0_i64
-  if enc_ric == 0_i64
-    req_insert_count = 0_i64
-  else
-    if full_range == 0_i64 || enc_ric > full_range
-      return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Invalid EncodedInsertCount: #{enc_ric}")
-    end
-    max_value = total_inserts + max_entries.to_i64
-    max_wrapped = (max_value // full_range) * full_range
-    req_insert_count = max_wrapped + enc_ric - 1_i64
-    if req_insert_count > max_value
-      if req_insert_count <= full_range
-        return QpackError.new(QPACK_DECOMPRESSION_FAILED, "EncodedInsertCount #{enc_ric} exceeds max value #{max_value}")
+  def self.find_static_name(name : String) : Int32?
+    i = 0
+    while i < STATIC_TABLE.size
+      e = STATIC_TABLE[i]
+      if e.name == name
+        return i
       end
-      req_insert_count = req_insert_count - full_range
+      i = i + 1
     end
+    nil
+  end
+
+  # ---------------------------------------------------------------------------
+  # String Literal and Prefix Codecs
+  # ---------------------------------------------------------------------------
+
+  def self.encode_string(str : String, prefix_bits : Int32, prefix_byte : UInt8, buffer : Array(UInt8), use_huffman : Bool = false) : Nil
+    huff_len = Huffman.encoded_size(str)
+    if use_huffman && huff_len < str.bytesize
+      flag = (1_u8.unsafe_shl(prefix_bits - 1))
+      Integer.encode(huff_len.to_u64, prefix_bits - 1, prefix_byte | flag, buffer)
+      Huffman.encode(str, buffer)
+    else
+      Integer.encode(str.bytesize.to_u64, prefix_bits - 1, prefix_byte, buffer)
+      i = 0
+      while i < str.bytesize
+        buffer << str.to_unsafe[i]
+        i = i + 1
+      end
+    end
+  end
+
+  def self.decode_string(bytes : Bytes, offset : Int32, prefix_bits : Int32) : Tuple(String, Int32) | QpackError
+    if offset >= bytes.size
+      return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Unexpected EOF decoding string prefix")
+    end
+    flag = (1_u8.unsafe_shl(prefix_bits - 1))
+    huffman = (bytes[offset] & flag) != 0_u8
+
+    res_len = Integer.decode(bytes, offset, prefix_bits - 1)
+    if res_len.is_a?(HpackError)
+      return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Integer decode error in string length: #{res_len.message}")
+    end
+    length = res_len[0].to_i32
+    cur_offset = res_len[1]
+
+    if cur_offset + length > bytes.size
+      return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Unexpected EOF reading string literal of length #{length}")
+    end
+
+    if huffman
+      str_res = Huffman.decode(bytes, cur_offset, length)
+      if str_res.is_a?(HpackError)
+        return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Huffman decode error: #{str_res.message}")
+      end
+      {str_res, cur_offset + length}
+    else
+      str = String.new(length) do |buf|
+        buf.copy_from((bytes + cur_offset).to_unsafe, length)
+      end
+      {str, cur_offset + length}
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Prefix Encoding and Decoding (RFC 9204 Section 4.5.1)
+  # ---------------------------------------------------------------------------
+
+  def self.encode_prefix(req_insert_count : Int64, base : Int64, max_table_capacity : Int32, buffer : Array(UInt8)) : Nil
+    max_entries = max_table_capacity // 32
     if req_insert_count == 0_i64
-      return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Decoded ReqInsertCount is zero from non-zero EncodedInsertCount")
+      Integer.encode(0_u64, 8, 0_u8, buffer)
+      Integer.encode(0_u64, 7, 0_u8, buffer)
+    else
+      full_range = (2 * max_entries).to_i64
+      enc_insert_count = (req_insert_count % full_range) + 1_i64
+      Integer.encode(enc_insert_count.to_u64, 8, 0_u8, buffer)
+      if base >= req_insert_count
+        delta_base = (base - req_insert_count).to_u64
+        Integer.encode(delta_base, 7, 0_u8, buffer)
+      else
+        delta_base = (req_insert_count - base - 1_i64).to_u64
+        Integer.encode(delta_base, 7, 0x80_u8, buffer)
+      end
     end
   end
 
-  if offset >= bytes.size
-    return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Unexpected EOF decoding Base")
-  end
-  sign = (bytes[offset] & 0x80_u8) != 0_u8
-  res_delta = Integer.decode(bytes, offset, 7)
-  if res_delta.is_a?(HpackError)
-    return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Decode DeltaBase error: #{res_delta.message}")
-  end
-  delta_base = res_delta[0].to_i64
-  offset = res_delta[1]
-
-  base = 0_i64
-  if !sign
-    base = req_insert_count + delta_base
-  else
-    if req_insert_count <= delta_base
-      return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Invalid Base: ReqInsertCount (#{req_insert_count}) <= DeltaBase (#{delta_base}) with sign=1")
+  def self.decode_prefix(bytes : Bytes, offset : Int32, total_inserts : Int64, max_table_capacity : Int32) : Tuple(Int64, Int64, Int32) | QpackError
+    res_ric = Integer.decode(bytes, offset, 8)
+    if res_ric.is_a?(HpackError)
+      return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Decode ReqInsertCount error: #{res_ric.message}")
     end
-    base = req_insert_count - delta_base - 1_i64
+    enc_ric = res_ric[0].to_i64
+    offset = res_ric[1]
+
+    max_entries = max_table_capacity // 32
+    full_range = (2 * max_entries).to_i64
+
+    req_insert_count = 0_i64
+    if enc_ric == 0_i64
+      req_insert_count = 0_i64
+    else
+      if full_range == 0_i64 || enc_ric > full_range
+        return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Invalid EncodedInsertCount: #{enc_ric}")
+      end
+      max_value = total_inserts + max_entries.to_i64
+      max_wrapped = (max_value // full_range) * full_range
+      req_insert_count = max_wrapped + enc_ric - 1_i64
+      if req_insert_count > max_value
+        if req_insert_count <= full_range
+          return QpackError.new(QPACK_DECOMPRESSION_FAILED, "EncodedInsertCount #{enc_ric} exceeds max value #{max_value}")
+        end
+        req_insert_count = req_insert_count - full_range
+      end
+      if req_insert_count == 0_i64
+        return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Decoded ReqInsertCount is zero from non-zero EncodedInsertCount")
+      end
+    end
+
+    if offset >= bytes.size
+      return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Unexpected EOF decoding Base")
+    end
+    sign = (bytes[offset] & 0x80_u8) != 0_u8
+    res_delta = Integer.decode(bytes, offset, 7)
+    if res_delta.is_a?(HpackError)
+      return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Decode DeltaBase error: #{res_delta.message}")
+    end
+    delta_base = res_delta[0].to_i64
+    offset = res_delta[1]
+
+    base = 0_i64
+    if !sign
+      base = req_insert_count + delta_base
+    else
+      if req_insert_count <= delta_base
+        return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Invalid Base: ReqInsertCount (#{req_insert_count}) <= DeltaBase (#{delta_base}) with sign=1")
+      end
+      base = req_insert_count - delta_base - 1_i64
+    end
+
+    {req_insert_count, base, offset}
   end
 
-  {req_insert_count, base, offset}
-end
+  # ---------------------------------------------------------------------------
+  # Decoder Stream Instruction Encoders (RFC 9204 Section 4.4)
+  # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Decoder Stream Instruction Encoders (RFC 9204 Section 4.4)
-# ---------------------------------------------------------------------------
+  def self.encode_section_ack(stream_id : UInt64, buffer : Array(UInt8)) : Nil
+    Integer.encode(stream_id, 7, 0x80_u8, buffer)
+  end
 
-def self.encode_section_ack(stream_id : UInt64, buffer : Array(UInt8)) : Nil
-  Integer.encode(stream_id, 7, 0x80_u8, buffer)
-end
+  def self.encode_stream_cancel(stream_id : UInt64, buffer : Array(UInt8)) : Nil
+    Integer.encode(stream_id, 6, 0x40_u8, buffer)
+  end
 
-def self.encode_stream_cancel(stream_id : UInt64, buffer : Array(UInt8)) : Nil
-  Integer.encode(stream_id, 6, 0x40_u8, buffer)
-end
+  def self.encode_insert_count_increment(increment : UInt64, buffer : Array(UInt8)) : Nil
+    Integer.encode(increment, 6, 0x00_u8, buffer)
+  end
 
-def self.encode_insert_count_increment(increment : UInt64, buffer : Array(UInt8)) : Nil
-  Integer.encode(increment, 6, 0x00_u8, buffer)
-end
-
-# ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
 end
 
 # Dynamic Table (RFC 9204 Section 3.2)

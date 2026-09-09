@@ -22,8 +22,7 @@ import std/hpack
 
 using std/slice::{Slice, Bytes}
 using std/hpack::{Integer, Huffman, HpackError}
-using std/qpack::{Qpack, TableEntry, FieldLine, Encoder, Decoder, QpackError,
-                  QPACK_DECOMPRESSION_FAILED, QPACK_ENCODER_STREAM_ERROR, QPACK_DECODER_STREAM_ERROR}
+using std/qpack::{Qpack, TableEntry, FieldLine, Encoder, Decoder, QpackError, QPACK_DECOMPRESSION_FAILED, QPACK_ENCODER_STREAM_ERROR, QPACK_DECODER_STREAM_ERROR}
 
 # ===========================================================================
 # 1. Static Table (Appendix A, 99 entries)
@@ -158,7 +157,7 @@ raise "b2: dynamic table size mismatch" unless decoder_b2.dynamic_table.size == 
 
 fields_b2 = [
   FieldLine.new(":authority", "www.example.com"),
-  FieldLine.new(":path", "/sample/path")
+  FieldLine.new(":path", "/sample/path"),
 ]
 dummy_enc_b2 = [] of UInt8
 payload_b2 = [] of UInt8
@@ -202,7 +201,7 @@ raise "b4: encoder duplicate mismatch (expected 02, got #{b4_enc_bytes.hexstring
 fields_b4 = [
   FieldLine.new(":authority", "www.example.com"),
   FieldLine.new(":path", "/"),
-  FieldLine.new("custom-key", "custom-value")
+  FieldLine.new("custom-key", "custom-value"),
 ]
 dummy_enc_b4 = [] of UInt8
 payload_b4 = [] of UInt8

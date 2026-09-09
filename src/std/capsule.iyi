@@ -49,9 +49,9 @@ pub struct VarInt
   pub MAX = 4611686018427387903_u64
 
   # Upper bounds for canonical N-byte representations.
-  pub MAX_1BYTE = 63_u64
-  pub MAX_2BYTE = 16383_u64
-  pub MAX_4BYTE = 1073741823_u64
+  pub MAX_1BYTE =                  63_u64
+  pub MAX_2BYTE =               16383_u64
+  pub MAX_4BYTE =          1073741823_u64
   pub MAX_8BYTE = 4611686018427387903_u64
 
   # Checks if value can be represented as a 62-bit QUIC varint.
@@ -276,9 +276,9 @@ end
 
 # Standard and extended capsule types.
 pub struct CapsuleType
-  pub DATAGRAM                      = 0x00_u64
-  pub CLOSE_WEBTRANSPORT_SESSION    = 0x2843_u64
-  pub DRAIN_WEBTRANSPORT_SESSION    = 0x78ae_u64
+  pub DATAGRAM                   =   0x00_u64
+  pub CLOSE_WEBTRANSPORT_SESSION = 0x2843_u64
+  pub DRAIN_WEBTRANSPORT_SESSION = 0x78ae_u64
 end
 
 pub struct Capsule

@@ -332,16 +332,45 @@ pub class MD5
     out
   end
 
-  def hexdigest : String; final.hexstring; end
-  def self.digest(data : Bytes) : Bytes; new.update(data).final; end
-  def self.digest(data : String) : Bytes; new.update(data).final; end
-  def self.hexdigest(data : Bytes) : String; new.update(data).hexdigest; end
-  def self.hexdigest(data : String) : String; new.update(data).hexdigest; end
-  def self.digest_size : Int32; 16; end
-  def self.block_size : Int32; 64; end
-  def digest_size : Int32; 16; end
-  def block_size : Int32; 64; end
-  def finished? : Bool; @finished; end
+  def hexdigest : String
+    final.hexstring
+  end
+
+  def self.digest(data : Bytes) : Bytes
+    new.update(data).final
+  end
+
+  def self.digest(data : String) : Bytes
+    new.update(data).final
+  end
+
+  def self.hexdigest(data : Bytes) : String
+    new.update(data).hexdigest
+  end
+
+  def self.hexdigest(data : String) : String
+    new.update(data).hexdigest
+  end
+
+  def self.digest_size : Int32
+    16
+  end
+
+  def self.block_size : Int32
+    64
+  end
+
+  def digest_size : Int32
+    16
+  end
+
+  def block_size : Int32
+    64
+  end
+
+  def finished? : Bool
+    @finished
+  end
 end
 
 pub class SHA1
@@ -486,16 +515,45 @@ pub class SHA1
     out
   end
 
-  def hexdigest : String; final.hexstring; end
-  def self.digest(data : Bytes) : Bytes; new.update(data).final; end
-  def self.digest(data : String) : Bytes; new.update(data).final; end
-  def self.hexdigest(data : Bytes) : String; new.update(data).hexdigest; end
-  def self.hexdigest(data : String) : String; new.update(data).hexdigest; end
-  def self.digest_size : Int32; 20; end
-  def self.block_size : Int32; 64; end
-  def digest_size : Int32; 20; end
-  def block_size : Int32; 64; end
-  def finished? : Bool; @finished; end
+  def hexdigest : String
+    final.hexstring
+  end
+
+  def self.digest(data : Bytes) : Bytes
+    new.update(data).final
+  end
+
+  def self.digest(data : String) : Bytes
+    new.update(data).final
+  end
+
+  def self.hexdigest(data : Bytes) : String
+    new.update(data).hexdigest
+  end
+
+  def self.hexdigest(data : String) : String
+    new.update(data).hexdigest
+  end
+
+  def self.digest_size : Int32
+    20
+  end
+
+  def self.block_size : Int32
+    64
+  end
+
+  def digest_size : Int32
+    20
+  end
+
+  def block_size : Int32
+    64
+  end
+
+  def finished? : Bool
+    @finished
+  end
 end
 
 pub class SHA256
@@ -1083,16 +1141,45 @@ pub class SHA256
     out
   end
 
-  def hexdigest : String; final.hexstring; end
-  def self.digest(data : Bytes) : Bytes; new.update(data).final; end
-  def self.digest(data : String) : Bytes; new.update(data).final; end
-  def self.hexdigest(data : Bytes) : String; new.update(data).hexdigest; end
-  def self.hexdigest(data : String) : String; new.update(data).hexdigest; end
-  def self.digest_size : Int32; 32; end
-  def self.block_size : Int32; 64; end
-  def digest_size : Int32; 32; end
-  def block_size : Int32; 64; end
-  def finished? : Bool; @finished; end
+  def hexdigest : String
+    final.hexstring
+  end
+
+  def self.digest(data : Bytes) : Bytes
+    new.update(data).final
+  end
+
+  def self.digest(data : String) : Bytes
+    new.update(data).final
+  end
+
+  def self.hexdigest(data : Bytes) : String
+    new.update(data).hexdigest
+  end
+
+  def self.hexdigest(data : String) : String
+    new.update(data).hexdigest
+  end
+
+  def self.digest_size : Int32
+    32
+  end
+
+  def self.block_size : Int32
+    64
+  end
+
+  def digest_size : Int32
+    32
+  end
+
+  def block_size : Int32
+    64
+  end
+
+  def finished? : Bool
+    @finished
+  end
 end
 
 pub class SHA512
@@ -1793,16 +1880,45 @@ pub class SHA512
     out
   end
 
-  def hexdigest : String; final.hexstring; end
-  def self.digest(data : Bytes) : Bytes; new.update(data).final; end
-  def self.digest(data : String) : Bytes; new.update(data).final; end
-  def self.hexdigest(data : Bytes) : String; new.update(data).hexdigest; end
-  def self.hexdigest(data : String) : String; new.update(data).hexdigest; end
-  def self.digest_size : Int32; 64; end
-  def self.block_size : Int32; 128; end
-  def digest_size : Int32; 64; end
-  def block_size : Int32; 128; end
-  def finished? : Bool; @finished; end
+  def hexdigest : String
+    final.hexstring
+  end
+
+  def self.digest(data : Bytes) : Bytes
+    new.update(data).final
+  end
+
+  def self.digest(data : String) : Bytes
+    new.update(data).final
+  end
+
+  def self.hexdigest(data : Bytes) : String
+    new.update(data).hexdigest
+  end
+
+  def self.hexdigest(data : String) : String
+    new.update(data).hexdigest
+  end
+
+  def self.digest_size : Int32
+    64
+  end
+
+  def self.block_size : Int32
+    128
+  end
+
+  def digest_size : Int32
+    64
+  end
+
+  def block_size : Int32
+    128
+  end
+
+  def finished? : Bool
+    @finished
+  end
 end
 
 pub class SHA384 < SHA512
@@ -1838,19 +1954,59 @@ pub class SHA384 < SHA512
     out
   end
 
-  def self.digest_size : Int32; 48; end
-  def self.block_size : Int32; 128; end
-  def digest_size : Int32; 48; end
-  def block_size : Int32; 128; end
+  def self.digest_size : Int32
+    48
+  end
+
+  def self.block_size : Int32
+    128
+  end
+
+  def digest_size : Int32
+    48
+  end
+
+  def block_size : Int32
+    128
+  end
 end
 
-pub def md5(data : Bytes) : Bytes; MD5.digest(data); end
-pub def md5(data : String) : Bytes; MD5.digest(data); end
-pub def sha1(data : Bytes) : Bytes; SHA1.digest(data); end
-pub def sha1(data : String) : Bytes; SHA1.digest(data); end
-pub def sha256(data : Bytes) : Bytes; SHA256.digest(data); end
-pub def sha256(data : String) : Bytes; SHA256.digest(data); end
-pub def sha384(data : Bytes) : Bytes; SHA384.digest(data); end
-pub def sha384(data : String) : Bytes; SHA384.digest(data); end
-pub def sha512(data : Bytes) : Bytes; SHA512.digest(data); end
-pub def sha512(data : String) : Bytes; SHA512.digest(data); end
+pub def md5(data : Bytes) : Bytes
+  MD5.digest(data)
+end
+
+pub def md5(data : String) : Bytes
+  MD5.digest(data)
+end
+
+pub def sha1(data : Bytes) : Bytes
+  SHA1.digest(data)
+end
+
+pub def sha1(data : String) : Bytes
+  SHA1.digest(data)
+end
+
+pub def sha256(data : Bytes) : Bytes
+  SHA256.digest(data)
+end
+
+pub def sha256(data : String) : Bytes
+  SHA256.digest(data)
+end
+
+pub def sha384(data : Bytes) : Bytes
+  SHA384.digest(data)
+end
+
+pub def sha384(data : String) : Bytes
+  SHA384.digest(data)
+end
+
+pub def sha512(data : Bytes) : Bytes
+  SHA512.digest(data)
+end
+
+pub def sha512(data : String) : Bytes
+  SHA512.digest(data)
+end

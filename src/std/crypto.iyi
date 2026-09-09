@@ -214,7 +214,7 @@ pub class HMAC
                  when SHA256 then h.final
                  when SHA384 then h.final
                  when SHA512 then h.final
-                 else raise "unreachable"
+                 else             raise "unreachable"
                  end
 
     case @algorithm
@@ -289,7 +289,7 @@ pub struct HKDF
     when :sha512 then 64
     when :sha1   then 20
     when :md5    then 16
-    else raise "HKDF: unsupported hash type #{hash_type}"
+    else              raise "HKDF: unsupported hash type #{hash_type}"
     end
   end
 
@@ -434,7 +434,7 @@ module ChaCha20
     i = 0
     while i < 16
       w = (state[i] &+ orig[i]) & 0xffffffff_u64
-      out_ptr[4*i]     = (w & 0xff_u64).to_u8
+      out_ptr[4*i] = (w & 0xff_u64).to_u8
       out_ptr[4*i + 1] = ((w.unsafe_shr(8_u64)) & 0xff_u64).to_u8
       out_ptr[4*i + 2] = ((w.unsafe_shr(16_u64)) & 0xff_u64).to_u8
       out_ptr[4*i + 3] = ((w.unsafe_shr(24_u64)) & 0xff_u64).to_u8
@@ -760,16 +760,16 @@ module AES
     0xba_u8, 0x78_u8, 0x25_u8, 0x2e_u8, 0x1c_u8, 0xa6_u8, 0xb4_u8, 0xc6_u8, 0xe8_u8, 0xdd_u8, 0x74_u8, 0x1f_u8, 0x4b_u8, 0xbd_u8, 0x8b_u8, 0x8a_u8,
     0x70_u8, 0x3e_u8, 0xb5_u8, 0x66_u8, 0x48_u8, 0x03_u8, 0xf6_u8, 0x0e_u8, 0x61_u8, 0x35_u8, 0x57_u8, 0xb9_u8, 0x86_u8, 0xc1_u8, 0x1d_u8, 0x9e_u8,
     0xe1_u8, 0xf8_u8, 0x98_u8, 0x11_u8, 0x69_u8, 0xd9_u8, 0x8e_u8, 0x94_u8, 0x9b_u8, 0x1e_u8, 0x87_u8, 0xe9_u8, 0xce_u8, 0x55_u8, 0x28_u8, 0xdf_u8,
-    0x8c_u8, 0xa1_u8, 0x89_u8, 0x0d_u8, 0xbf_u8, 0xe6_u8, 0x42_u8, 0x68_u8, 0x41_u8, 0x99_u8, 0x2d_u8, 0x0f_u8, 0xb0_u8, 0x54_u8, 0xbb_u8, 0x16_u8
+    0x8c_u8, 0xa1_u8, 0x89_u8, 0x0d_u8, 0xbf_u8, 0xe6_u8, 0x42_u8, 0x68_u8, 0x41_u8, 0x99_u8, 0x2d_u8, 0x0f_u8, 0xb0_u8, 0x54_u8, 0xbb_u8, 0x16_u8,
   ]
 
   RCON = [0x01_u64, 0x02_u64, 0x04_u64, 0x08_u64, 0x10_u64, 0x20_u64, 0x40_u64, 0x80_u64, 0x1b_u64, 0x36_u64]
 
   def self.sub_word(w : UInt64) : UInt64
     (SBOX[((w.unsafe_shr(24_u64)) & 0xff_u64).to_i32].to_u64.unsafe_shl(24_u64)) |
-    (SBOX[((w.unsafe_shr(16_u64)) & 0xff_u64).to_i32].to_u64.unsafe_shl(16_u64)) |
-    (SBOX[((w.unsafe_shr(8_u64)) & 0xff_u64).to_i32].to_u64.unsafe_shl(8_u64)) |
-    SBOX[(w & 0xff_u64).to_i32].to_u64
+      (SBOX[((w.unsafe_shr(16_u64)) & 0xff_u64).to_i32].to_u64.unsafe_shl(16_u64)) |
+      (SBOX[((w.unsafe_shr(8_u64)) & 0xff_u64).to_i32].to_u64.unsafe_shl(8_u64)) |
+      SBOX[(w & 0xff_u64).to_i32].to_u64
   end
 
   def self.rot_word(w : UInt64) : UInt64
@@ -824,7 +824,7 @@ module AES
     c = 0
     while c < 4
       k = rk[c]
-      state[4 * c]     = state[4 * c] ^ ((k.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+      state[4 * c] = state[4 * c] ^ ((k.unsafe_shr(24_u64)) & 0xff_u64).to_u8
       state[4 * c + 1] = state[4 * c + 1] ^ ((k.unsafe_shr(16_u64)) & 0xff_u64).to_u8
       state[4 * c + 2] = state[4 * c + 2] ^ ((k.unsafe_shr(8_u64)) & 0xff_u64).to_u8
       state[4 * c + 3] = state[4 * c + 3] ^ (k & 0xff_u64).to_u8
@@ -855,7 +855,7 @@ module AES
         s1 = state[4 * c + 1]
         s2 = state[4 * c + 2]
         s3 = state[4 * c + 3]
-        state[4 * c]     = xtime(s0) ^ (xtime(s1) ^ s1) ^ s2 ^ s3
+        state[4 * c] = xtime(s0) ^ (xtime(s1) ^ s1) ^ s2 ^ s3
         state[4 * c + 1] = s0 ^ xtime(s1) ^ (xtime(s2) ^ s2) ^ s3
         state[4 * c + 2] = s0 ^ s1 ^ xtime(s2) ^ (xtime(s3) ^ s3)
         state[4 * c + 3] = (xtime(s0) ^ s0) ^ s1 ^ s2 ^ xtime(s3)
@@ -866,7 +866,7 @@ module AES
       c = 0
       while c < 4
         k = rk[4 * r + c]
-        state[4 * c]     = state[4 * c] ^ ((k.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+        state[4 * c] = state[4 * c] ^ ((k.unsafe_shr(24_u64)) & 0xff_u64).to_u8
         state[4 * c + 1] = state[4 * c + 1] ^ ((k.unsafe_shr(16_u64)) & 0xff_u64).to_u8
         state[4 * c + 2] = state[4 * c + 2] ^ ((k.unsafe_shr(8_u64)) & 0xff_u64).to_u8
         state[4 * c + 3] = state[4 * c + 3] ^ (k & 0xff_u64).to_u8
@@ -891,7 +891,7 @@ module AES
     c = 0
     while c < 4
       k = rk[4 * nr + c]
-      output[4 * c]     = state[4 * c] ^ ((k.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+      output[4 * c] = state[4 * c] ^ ((k.unsafe_shr(24_u64)) & 0xff_u64).to_u8
       output[4 * c + 1] = state[4 * c + 1] ^ ((k.unsafe_shr(16_u64)) & 0xff_u64).to_u8
       output[4 * c + 2] = state[4 * c + 2] ^ ((k.unsafe_shr(8_u64)) & 0xff_u64).to_u8
       output[4 * c + 3] = state[4 * c + 3] ^ (k & 0xff_u64).to_u8
@@ -933,13 +933,15 @@ module AES
 
   def self.ghash(h_bytes : Bytes, aad : Bytes, ct : Bytes) : Bytes
     h_hi = (h_bytes[0].to_u64.unsafe_shl(56_u64)) | (h_bytes[1].to_u64.unsafe_shl(48_u64)) | (h_bytes[2].to_u64.unsafe_shl(40_u64)) | (h_bytes[3].to_u64.unsafe_shl(32_u64)) |
-           (h_bytes[4].to_u64.unsafe_shl(24_u64)) | (h_bytes[5].to_u64.unsafe_shl(16_u64)) | (h_bytes[6].to_u64.unsafe_shl(8_u64))  | h_bytes[7].to_u64
+           (h_bytes[4].to_u64.unsafe_shl(24_u64)) | (h_bytes[5].to_u64.unsafe_shl(16_u64)) | (h_bytes[6].to_u64.unsafe_shl(8_u64)) | h_bytes[7].to_u64
     h_lo = (h_bytes[8].to_u64.unsafe_shl(56_u64)) | (h_bytes[9].to_u64.unsafe_shl(48_u64)) | (h_bytes[10].to_u64.unsafe_shl(40_u64)) | (h_bytes[11].to_u64.unsafe_shl(32_u64)) |
-           (h_bytes[12].to_u64.unsafe_shl(24_u64)) | (h_bytes[13].to_u64.unsafe_shl(16_u64)) | (h_bytes[14].to_u64.unsafe_shl(8_u64))  | h_bytes[15].to_u64
+           (h_bytes[12].to_u64.unsafe_shl(24_u64)) | (h_bytes[13].to_u64.unsafe_shl(16_u64)) | (h_bytes[14].to_u64.unsafe_shl(8_u64)) | h_bytes[15].to_u64
 
     y_buf = Pointer(UInt8).malloc(16_u64)
     i = 0
-    while i < 16; y_buf[i] = 0_u8; i = i + 1; end
+    while i < 16
+      y_buf[i] = 0_u8; i = i + 1
+    end
 
     block = Pointer(UInt8).malloc(16_u64)
     res_hi = Pointer(UInt64).malloc(1_u64)
@@ -951,8 +953,12 @@ module AES
     while remaining > 0
       chunk = remaining > 16 ? 16 : remaining
       i = 0
-      while i < chunk; block[i] = y_buf[i] ^ aad[offset + i]; i = i + 1; end
-      while i < 16; block[i] = y_buf[i]; i = i + 1; end
+      while i < chunk
+        block[i] = y_buf[i] ^ aad[offset + i]; i = i + 1
+      end
+      while i < 16
+        block[i] = y_buf[i]; i = i + 1
+      end
       ghash_mult(block, h_hi, h_lo, res_hi, res_lo)
       # Put into y_buf
       j = 0
@@ -971,8 +977,12 @@ module AES
     while remaining > 0
       chunk = remaining > 16 ? 16 : remaining
       i = 0
-      while i < chunk; block[i] = y_buf[i] ^ ct[offset + i]; i = i + 1; end
-      while i < 16; block[i] = y_buf[i]; i = i + 1; end
+      while i < chunk
+        block[i] = y_buf[i] ^ ct[offset + i]; i = i + 1
+      end
+      while i < 16
+        block[i] = y_buf[i]; i = i + 1
+      end
       ghash_mult(block, h_hi, h_lo, res_hi, res_lo)
       j = 0
       while j < 8
@@ -1015,13 +1025,17 @@ module AES
     # Compute H = AES_K(0^16)
     zero_block = Pointer(UInt8).malloc(16_u64)
     h_ptr = Pointer(UInt8).malloc(16_u64)
-    i = 0; while i < 16; zero_block[i] = 0_u8; i = i + 1; end
+    i = 0; while i < 16
+      zero_block[i] = 0_u8; i = i + 1
+    end
     encrypt_block(nr, rk, zero_block, h_ptr)
     h_bytes = Bytes.new(h_ptr, 16)
 
     # J0 = nonce || 0x00000001
     j0_ptr = Pointer(UInt8).malloc(16_u64)
-    i = 0; while i < 12; j0_ptr[i] = nonce[i]; i = i + 1; end
+    i = 0; while i < 12
+      j0_ptr[i] = nonce[i]; i = i + 1
+    end
     j0_ptr[12] = 0_u8; j0_ptr[13] = 0_u8; j0_ptr[14] = 0_u8; j0_ptr[15] = 1_u8
 
     # CTR encryption of plaintext with J1, J2, ...
@@ -1029,7 +1043,9 @@ module AES
     ct_ptr = ciphertext.to_unsafe
     cb = Pointer(UInt8).malloc(16_u64)
     ks = Pointer(UInt8).malloc(16_u64)
-    i = 0; while i < 12; cb[i] = nonce[i]; i = i + 1; end
+    i = 0; while i < 12
+      cb[i] = nonce[i]; i = i + 1
+    end
 
     num_blocks = (plaintext.size + 15) // 16
     blk = 0
@@ -1078,7 +1094,9 @@ module AES
     # Compute H = AES_K(0^16)
     zero_block = Pointer(UInt8).malloc(16_u64)
     h_ptr = Pointer(UInt8).malloc(16_u64)
-    i = 0; while i < 16; zero_block[i] = 0_u8; i = i + 1; end
+    i = 0; while i < 16
+      zero_block[i] = 0_u8; i = i + 1
+    end
     encrypt_block(nr, rk, zero_block, h_ptr)
     h_bytes = Bytes.new(h_ptr, 16)
 
@@ -1087,7 +1105,9 @@ module AES
 
     # Expected Tag = S ^ AES_K(J0)
     j0_ptr = Pointer(UInt8).malloc(16_u64)
-    i = 0; while i < 12; j0_ptr[i] = nonce[i]; i = i + 1; end
+    i = 0; while i < 12
+      j0_ptr[i] = nonce[i]; i = i + 1
+    end
     j0_ptr[12] = 0_u8; j0_ptr[13] = 0_u8; j0_ptr[14] = 0_u8; j0_ptr[15] = 1_u8
     e_j0 = Pointer(UInt8).malloc(16_u64)
     encrypt_block(nr, rk, j0_ptr, e_j0)
@@ -1108,7 +1128,9 @@ module AES
     pt_ptr = plaintext.to_unsafe
     cb = Pointer(UInt8).malloc(16_u64)
     ks = Pointer(UInt8).malloc(16_u64)
-    i = 0; while i < 12; cb[i] = nonce[i]; i = i + 1; end
+    i = 0; while i < 12
+      cb[i] = nonce[i]; i = i + 1
+    end
 
     num_blocks = (ciphertext.size + 15) // 16
     blk = 0
@@ -1146,8 +1168,12 @@ pub class AES128GCM
   def self.encrypt(key : Bytes, nonce : Bytes, plaintext : Bytes, ad : Bytes = Bytes.empty) : Bytes
     ct, tag = encrypt_detached(key, nonce, plaintext, ad)
     out = Bytes.new(ct.size + 16)
-    i = 0; while i < ct.size; out[i] = ct[i]; i = i + 1; end
-    i = 0; while i < 16; out[ct.size + i] = tag[i]; i = i + 1; end
+    i = 0; while i < ct.size
+      out[i] = ct[i]; i = i + 1
+    end
+    i = 0; while i < 16
+      out[ct.size + i] = tag[i]; i = i + 1
+    end
     out
   end
 
@@ -1174,8 +1200,12 @@ pub class AES256GCM
   def self.encrypt(key : Bytes, nonce : Bytes, plaintext : Bytes, ad : Bytes = Bytes.empty) : Bytes
     ct, tag = encrypt_detached(key, nonce, plaintext, ad)
     out = Bytes.new(ct.size + 16)
-    i = 0; while i < ct.size; out[i] = ct[i]; i = i + 1; end
-    i = 0; while i < 16; out[ct.size + i] = tag[i]; i = i + 1; end
+    i = 0; while i < ct.size
+      out[i] = ct[i]; i = i + 1
+    end
+    i = 0; while i < 16
+      out[ct.size + i] = tag[i]; i = i + 1
+    end
     out
   end
 

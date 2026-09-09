@@ -169,7 +169,7 @@ pub class StaticTable
     HeaderField.new("user-agent", ""),
     HeaderField.new("vary", ""),
     HeaderField.new("via", ""),
-    HeaderField.new("www-authenticate", "")
+    HeaderField.new("www-authenticate", ""),
   ]
 
   def self.size : Int32
@@ -433,7 +433,6 @@ HUFFMAN_NEXT_STATE = [66, 1, 93, 2, 104, 3, 119, 4, 144, 5, 75, 6, 123, 7, 71, 8
 
 HUFFMAN_SYMBOL = [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 36, -1, -1, -1, -1, -1, -1, 123, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, 135, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 254, -1, 2, 3, -1, -1, 4, 5, 6, 7, -1, -1, -1, -1, 8, 11, -1, -1, -1, -1, 239, -1, 9, 142, -1, -1, -1, -1, -1, -1, 249, -1, -1, -1, 10, 13, 12, 14, -1, -1, 15, 16, 17, 18, -1, -1, -1, -1, 19, 20, 21, 23, 22, 256, -1, -1, 24, 25, 26, 27, -1, -1, 28, 29, 30, 31, -1, -1, -1, -1, -1, -1, -1, -1, 32, 37, -1, -1, 33, 34, 124, -1, 35, 62, -1, -1, 38, 42, 63, -1, 39, 43, 40, 41, 44, 59, 45, 46, -1, -1, -1, -1, 47, 51, -1, -1, -1, -1, 48, 49, 50, 97, 52, 53, -1, -1, 54, 55, 56, 57, -1, -1, -1, -1, -1, -1, -1, -1, 58, 66, 60, 96, -1, -1, -1, -1, 61, 65, 64, 91, 67, 68, -1, -1, -1, -1, -1, -1, 69, 70, 71, 72, -1, -1, 73, 74, 75, 76, -1, -1, -1, -1, 77, 78, 79, 80, -1, -1, 81, 82, 83, 84, -1, -1, -1, -1, 85, 86, 87, 89, 88, 90, -1, -1, -1, -1, 92, 195, 93, 126, 94, 125, 95, 98, -1, -1, 99, 101, -1, -1, 100, 102, 103, 104, 105, 111, -1, -1, 106, 107, -1, -1, 108, 109, 110, 112, 113, 118, 114, 117, 115, 116, -1, -1, 119, 120, 121, 122, 127, 220, 208, -1, 128, 130, -1, -1, -1, -1, -1, -1, 230, -1, 129, 132, -1, -1, -1, -1, 131, 162, -1, -1, 133, 134, 136, 146, 137, 138, -1, -1, 139, 140, 141, 143, -1, -1, 144, 145, -1, -1, -1, -1, -1, -1, 147, 149, 148, 159, 150, 151, -1, -1, 152, 155, -1, -1, -1, -1, 153, 161, -1, -1, -1, -1, 154, 156, 157, 158, 160, 163, -1, -1, 164, 169, -1, -1, -1, -1, 165, 166, 167, 172, 168, 174, 170, 173, -1, -1, -1, -1, 171, 206, -1, -1, 175, 180, -1, -1, -1, -1, 176, 177, -1, -1, -1, -1, 178, 181, 179, 209, 182, 183, 184, 194, 185, 186, -1, -1, 187, 189, -1, -1, 188, 191, 190, 196, -1, -1, -1, -1, -1, -1, 192, 193, 197, 231, -1, -1, 198, 228, -1, -1, -1, -1, 199, 207, 200, 201, -1, -1, 202, 205, -1, -1, -1, -1, 255, -1, 203, 204, 210, 213, -1, -1, -1, -1, -1, -1, 211, 212, 214, 221, 215, 225, -1, -1, 216, 217, -1, -1, 218, 219, -1, -1, 222, 223, 224, 226, 227, 229, 232, 233, 234, 235, 236, 237, 238, 240, 241, 244, 242, 243, -1, -1, -1, -1, 245, 246, 247, 248, -1, -1, 250, 251, 252, 253]
 
-
 pub class Huffman
   def self.encode(input : String, buffer : Array(UInt8)) : Nil
     bit_buf = 0_u64
@@ -443,10 +442,10 @@ pub class Huffman
       byte_val = input.to_unsafe[i].to_i32
       code = HUFFMAN_CODES[byte_val]
       code_len = HUFFMAN_LENS[byte_val]
-      
+
       bit_buf = (bit_buf.unsafe_shl(code_len)) | code
       bits_in_buf = bits_in_buf + code_len
-      
+
       while bits_in_buf >= 8
         bits_in_buf = bits_in_buf - 8
         byte_out = (bit_buf.unsafe_shr(bits_in_buf)) & 255_u64
@@ -454,7 +453,7 @@ pub class Huffman
       end
       i = i + 1
     end
-    
+
     if bits_in_buf > 0
       pad_len = 8 - bits_in_buf
       eos_pad = (1_u64.unsafe_shl(pad_len)) - 1_u64
@@ -600,7 +599,6 @@ pub class Decoder
         end
 
         headers << field
-
       elsif (b & 0x40_u8) != 0_u8
         # 6.2.1 Literal Header Field with Incremental Indexing (starts with 01, 6-bit prefix)
         dec_int = Integer.decode(payload, offset, 6)
@@ -644,7 +642,6 @@ pub class Decoder
 
         @dynamic_table.add(name, val, false)
         headers << HeaderField.new(name, val, IndexingMode::Incremental)
-
       elsif (b & 0x20_u8) != 0_u8
         # 6.3 Dynamic Table Size Update (starts with 001, 5-bit prefix)
         dec_int = Integer.decode(payload, offset, 5)
@@ -661,7 +658,6 @@ pub class Decoder
         if err
           return err
         end
-
       elsif (b & 0x10_u8) != 0_u8
         # 6.2.3 Literal Header Field Never Indexed (starts with 0001, 4-bit prefix)
         dec_int = Integer.decode(payload, offset, 4)
@@ -704,7 +700,6 @@ pub class Decoder
         end
 
         headers << HeaderField.new(name, val, IndexingMode::NeverIndexed)
-
       else
         # 6.2.2 Literal Header Field without Indexing (starts with 0000, 4-bit prefix)
         dec_int = Integer.decode(payload, offset, 4)

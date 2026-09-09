@@ -51,6 +51,7 @@ pub struct Any
 
   def initialize(@raw : Type)
   end
+
   def initialize(value : Int32)
     @raw = value.to_i64
   end

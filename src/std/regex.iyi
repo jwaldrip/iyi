@@ -42,7 +42,6 @@ def raise(error : SyntaxError) : NoReturn
   raise error.message
 end
 
-
 alias LookMaps = Array(Array(Bool))
 
 # Built-in character sets
@@ -404,7 +403,7 @@ end
 
 # The compiled regular expression object.
 pub class Regex
-  MAX_REPEAT = 1000
+  MAX_REPEAT =    1000
   MAX_PROG   = 200_000
 
   getter source : String
@@ -440,7 +439,6 @@ pub class Regex
     @names = parser.group_names
     @assertions = assertions
   end
-
 
   def self.escape(str : String) : String
     parts = [] of String
@@ -798,6 +796,7 @@ pub class Regex
     bounds
   end
 end
+
 pub struct MatchData
   getter subject : String
   @slots : Array(Int32)
@@ -882,6 +881,7 @@ pub struct MatchData
     result
   end
 end
+
 class ::Regex
   def self.new(source : String, ignore_case : Bool = false) : Std::Regex::Regex
     Std::Regex::Regex.new(source, ignore_case)
@@ -1199,7 +1199,7 @@ class Parser
         lo = item.as(Char)
         nxt = peek_byte_at(1)
         if peek_byte == 0x2D_u8 && nxt > 0_u8 && nxt != 0x5D_u8 # '-'
-          @pos = @pos + 1 # '-'
+          @pos = @pos + 1                                       # '-'
           rhs = parse_class_item
           if rhs.is_a?(Char)
             hi = rhs.as(Char)

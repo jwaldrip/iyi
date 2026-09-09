@@ -59,8 +59,8 @@ using std/capsule::{VarInt, HttpDatagram, Capsule, CapsuleType, CapsuleReader, E
 
 pub struct WebTransportConstants
   # Extended CONNECT settings
-  pub SETTINGS_ENABLE_CONNECT_PROTOCOL = 0x08_u64
-  pub SETTINGS_H3_DATAGRAM             = 0x33_u64
+  pub SETTINGS_ENABLE_CONNECT_PROTOCOL   =   0x08_u64
+  pub SETTINGS_H3_DATAGRAM               =   0x33_u64
   pub SETTINGS_WEBTRANSPORT_MAX_SESSIONS = 0x2b60_u64
 
   # Stream Type prefixes (encoded as QUIC variable-length integers)
@@ -411,10 +411,10 @@ pub class WebTransportSession
   getter close_code : UInt64
   getter close_reason : String
   getter is_client : Bool
+
   def status_name : String
     SessionStatus.name(@status)
   end
-
 
   def connecting? : Bool
     @status == SessionStatus::CONNECTING

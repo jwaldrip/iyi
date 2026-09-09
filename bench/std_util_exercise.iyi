@@ -77,7 +77,7 @@ test_records = [
   ["multiline\nentry\r\nwith breaks", "normal"],
   ["with \"\"escaped\"\" quotes", "clean"],
   ["", "empty_cell"],
-  ["trailing", ""]
+  ["trailing", ""],
 ]
 built_csv = CSV.build do |b|
   test_records.each { |rec| b.row(rec) }

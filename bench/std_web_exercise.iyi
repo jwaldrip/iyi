@@ -154,10 +154,10 @@ end
 raise "params: each count" unless count_iter == 2
 
 # Parsing query strings with repeated keys and + as space
-parsed_params = Params.parse("category=programming+language&item=iyi&item=crystal;author=jason")
+parsed_params = Params.parse("category=programming+language&item=iyi&item=cinnabar;author=jason")
 raise "params: parse category" unless parsed_params["category"] == "programming language"
 item_list = parsed_params.fetch_all("item")
-raise "params: parse repeated" unless item_list.size == 2 && item_list[0] == "iyi" && item_list[1] == "crystal"
+raise "params: parse repeated" unless item_list.size == 2 && item_list[0] == "iyi" && item_list[1] == "cinnabar"
 raise "params: parse author" unless parsed_params["author"] == "jason"
 raise "params: to_s" unless parsed_params.to_s.includes?("category=programming+language")
 

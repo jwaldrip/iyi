@@ -32,27 +32,27 @@ pub alias Bytes = Std::Slice::Bytes
 # --- DNS Protocol Constants ---
 
 # Standard Record Types (RFC 1035, RFC 3596, RFC 4034, RFC 5155)
-pub TYPE_A      = 1
-pub TYPE_NS     = 2
-pub TYPE_CNAME  = 5
-pub TYPE_SOA    = 6
-pub TYPE_PTR    = 12
-pub TYPE_MX     = 15
-pub TYPE_TXT    = 16
-pub TYPE_AAAA   = 28
-pub TYPE_DS     = 43
-pub TYPE_RRSIG  = 46
-pub TYPE_NSEC   = 47
-pub TYPE_DNSKEY = 48
-pub TYPE_NSEC3  = 50
-pub TYPE_OPT    = 41
+pub TYPE_A      =   1
+pub TYPE_NS     =   2
+pub TYPE_CNAME  =   5
+pub TYPE_SOA    =   6
+pub TYPE_PTR    =  12
+pub TYPE_MX     =  15
+pub TYPE_TXT    =  16
+pub TYPE_AAAA   =  28
+pub TYPE_DS     =  43
+pub TYPE_RRSIG  =  46
+pub TYPE_NSEC   =  47
+pub TYPE_DNSKEY =  48
+pub TYPE_NSEC3  =  50
+pub TYPE_OPT    =  41
 pub TYPE_ANY    = 255
 
 # Record Classes (RFC 1035)
-pub CLASS_IN  = 1
-pub CLASS_CS  = 2
-pub CLASS_CH  = 3
-pub CLASS_HS  = 4
+pub CLASS_IN  =   1
+pub CLASS_CS  =   2
+pub CLASS_CH  =   3
+pub CLASS_HS  =   4
 pub CLASS_ANY = 255
 
 # Response Codes (RCODE, RFC 1035)
@@ -153,7 +153,7 @@ pub struct Header
     @qdcount : Int32,
     @ancount : Int32,
     @nscount : Int32,
-    @arcount : Int32
+    @arcount : Int32,
   )
   end
 end
@@ -284,7 +284,7 @@ pub class RRSIGRecord < RecordData
     @signature_inception : Int64,
     @key_tag : Int32,
     @signer_name : String,
-    @signature : Bytes
+    @signature : Bytes,
   )
   end
 
@@ -351,7 +351,7 @@ pub class NSEC3Record < RecordData
     @iterations : Int32,
     @salt : Bytes,
     @next_hashed_owner : Bytes,
-    @type_bit_maps : Bytes
+    @type_bit_maps : Bytes,
   )
   end
 
@@ -452,7 +452,7 @@ pub class Message
     @answers : Array(Record),
     @authorities : Array(Record),
     @additionals : Array(Record),
-    @raw_bytes : Bytes
+    @raw_bytes : Bytes,
   )
   end
 
@@ -486,13 +486,13 @@ pub class Message
 
   def rcode_name : String
     case @header.rcode
-    when RCODE_NO_ERROR then "NoError"
-    when RCODE_FORMAT_ERROR then "FormErr"
-    when RCODE_SERVER_FAILURE then "ServFail"
-    when RCODE_NAME_ERROR then "NXDomain"
+    when RCODE_NO_ERROR        then "NoError"
+    when RCODE_FORMAT_ERROR    then "FormErr"
+    when RCODE_SERVER_FAILURE  then "ServFail"
+    when RCODE_NAME_ERROR      then "NXDomain"
     when RCODE_NOT_IMPLEMENTED then "NotImp"
-    when RCODE_REFUSED then "Refused"
-    else "RCODE_#{@header.rcode}"
+    when RCODE_REFUSED         then "Refused"
+    else                            "RCODE_#{@header.rcode}"
     end
   end
 end
@@ -504,16 +504,16 @@ pub struct Entropy
   # Uses /dev/urandom on POSIX platforms, with a monotonic clock + memory entropy fallback.
   def self.crypto_random_id : Int32
     c_urandom = Pointer(UInt8).malloc(13_u64)
-    c_urandom[0] = 47_u8 # '/'
-    c_urandom[1] = 100_u8 # 'd'
-    c_urandom[2] = 101_u8 # 'e'
-    c_urandom[3] = 118_u8 # 'v'
-    c_urandom[4] = 47_u8 # '/'
-    c_urandom[5] = 117_u8 # 'u'
-    c_urandom[6] = 114_u8 # 'r'
-    c_urandom[7] = 97_u8 # 'a'
-    c_urandom[8] = 110_u8 # 'n'
-    c_urandom[9] = 100_u8 # 'd'
+    c_urandom[0] = 47_u8   # '/'
+    c_urandom[1] = 100_u8  # 'd'
+    c_urandom[2] = 101_u8  # 'e'
+    c_urandom[3] = 118_u8  # 'v'
+    c_urandom[4] = 47_u8   # '/'
+    c_urandom[5] = 117_u8  # 'u'
+    c_urandom[6] = 114_u8  # 'r'
+    c_urandom[7] = 97_u8   # 'a'
+    c_urandom[8] = 110_u8  # 'n'
+    c_urandom[9] = 100_u8  # 'd'
     c_urandom[10] = 111_u8 # 'o'
     c_urandom[11] = 109_u8 # 'm'
     c_urandom[12] = 0_u8
@@ -1144,7 +1144,7 @@ pub class Resolver
     @port : Int32 = 53,
     @timeout_ms : Int32 = 2000,
     @max_retries : Int32 = 2,
-    enable_cache : Bool = true
+    enable_cache : Bool = true,
   )
     @cache = enable_cache ? Cache.new : nil
   end

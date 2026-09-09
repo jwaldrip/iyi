@@ -12,16 +12,7 @@
 import std/dns
 import std/slice
 import std/time
-using std/dns::{
-  Wire, Message, Record, Header, Question,
-  ARecord, AAAARecord, CNameRecord, NSRecord, MXRecord, TXTRecord, SOARecord,
-  DSRecord, DNSKEYRecord, RRSIGRecord, NSECRecord, NSEC3Record, GenericRecord,
-  Transport, UdpTransport, MockTransport, Config, Cache, Resolver,
-  DnsError, DnsFormatError, DnsIdMismatchError, DnsTruncatedError,
-  TYPE_A, TYPE_NS, TYPE_CNAME, TYPE_SOA, TYPE_MX, TYPE_TXT, TYPE_AAAA,
-  TYPE_DS, TYPE_RRSIG, TYPE_NSEC, TYPE_DNSKEY, TYPE_NSEC3,
-  CLASS_IN, RCODE_NO_ERROR, RCODE_NAME_ERROR
-}
+using std/dns::{Wire, Message, Record, Header, Question, ARecord, AAAARecord, CNameRecord, NSRecord, MXRecord, TXTRecord, SOARecord, DSRecord, DNSKEYRecord, RRSIGRecord, NSECRecord, NSEC3Record, GenericRecord, Transport, UdpTransport, MockTransport, Config, Cache, Resolver, DnsError, DnsFormatError, DnsIdMismatchError, DnsTruncatedError, TYPE_A, TYPE_NS, TYPE_CNAME, TYPE_SOA, TYPE_MX, TYPE_TXT, TYPE_AAAA, TYPE_DS, TYPE_RRSIG, TYPE_NSEC, TYPE_DNSKEY, TYPE_NSEC3, CLASS_IN, RCODE_NO_ERROR, RCODE_NAME_ERROR}
 using std/slice::{Bytes}
 using std/time::{Time}
 
@@ -34,7 +25,7 @@ raise "encode: id hi" unless query_bytes[0] == 0x12_u8
 raise "encode: id lo" unless query_bytes[1] == 0x34_u8
 raise "encode: flags rd" unless query_bytes[2] == 0x01_u8 && query_bytes[3] == 0x00_u8
 raise "encode: qdcount" unless query_bytes[4] == 0x00_u8 && query_bytes[5] == 0x01_u8
-raise "encode: label len" unless query_bytes[12] == 7_u8 # 'example' length
+raise "encode: label len" unless query_bytes[12] == 7_u8  # 'example' length
 raise "encode: label2 len" unless query_bytes[20] == 3_u8 # 'com' length
 raise "encode: zero term" unless query_bytes[24] == 0_u8
 raise "encode: qtype" unless query_bytes[25] == 0x00_u8 && query_bytes[26] == 0x01_u8
@@ -324,7 +315,7 @@ while rep < 5
 end
 long_name_buf[lpos] = 0_u8
 lpos = lpos + 1
-long_name_buf[lpos] = 0_u8 # type A hi
+long_name_buf[lpos] = 0_u8     # type A hi
 long_name_buf[lpos + 1] = 1_u8 # type A lo
 long_name_buf[lpos + 2] = 0_u8 # class IN hi
 long_name_buf[lpos + 3] = 1_u8 # class IN lo

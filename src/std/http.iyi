@@ -19,9 +19,9 @@ using std/uri::{Params, URI}
 pub alias Params = Std::Uri::Params
 
 # HTTP Protocol Limits
-MAX_REQUEST_LINE_SIZE = 8192
-MAX_HEADER_COUNT      = 100
-MAX_HEADERS_SIZE      = 16384
+MAX_REQUEST_LINE_SIZE =     8192
+MAX_HEADER_COUNT      =      100
+MAX_HEADERS_SIZE      =    16384
 MAX_CHUNK_SIZE        = 16777216 # 16 MB
 
 # ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ pub struct Status
   end
 
   Continue                    = Status.new(100)
-  SwitchingProtocols           = Status.new(101)
+  SwitchingProtocols          = Status.new(101)
   OK                          = Status.new(200)
   Created                     = Status.new(201)
   Accepted                    = Status.new(202)
@@ -958,7 +958,7 @@ pub class Request
           c.add_request_headers(@headers.dup)
         else
           @headers.dup
-    end
+        end
     if chunked
       h["Transfer-Encoding"] = "chunked"
       h.delete("Content-Length")
@@ -1079,8 +1079,8 @@ pub class Request
     # 3. Parse Body
     body_res = Std::Http.parse_body(raw, cur_pos, headers)
     case body_res
-    in HttpError               then return body_res
-    in Tuple(String, Headers?) then
+    in HttpError then return body_res
+    in Tuple(String, Headers?)
       req = Request.new(method, target, headers, body_res[0], version)
       return req
     end
@@ -1172,7 +1172,7 @@ pub class Response
           c.add_response_headers(@headers.dup)
         else
           @headers.dup
-    end
+        end
     if chunked
       h["Transfer-Encoding"] = "chunked"
       h.delete("Content-Length")
@@ -1296,8 +1296,8 @@ pub class Response
     # 3. Parse Body
     body_res = Std::Http.parse_body(raw, cur_pos, headers)
     case body_res
-    in HttpError               then return body_res
-    in Tuple(String, Headers?) then
+    in HttpError then return body_res
+    in Tuple(String, Headers?)
       resp = Response.new(status, headers, body_res[0], message, version)
       if tr = body_res[1]
         resp.trailers = tr

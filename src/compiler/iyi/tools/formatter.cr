@@ -3483,8 +3483,11 @@ module Iyi
       false
     end
 
-    # iyi: `import app/greeter`
+    # iyi: `import app/greeter`, and `pub import` re-exporting it, which is
+    # R-1's facade rule. Note this node spells it `exported` rather than
+    # `exported?`, so a scan for the predicate form does not find it.
     def visit(node : ImportDecl)
+      write_keyword :pub, " " if node.exported
       write_keyword :import, " "
       format_iyi_module_path node.path
 
@@ -3700,6 +3703,7 @@ module Iyi
     end
 
     def visit(node : AnnotationDef)
+      write_keyword :pub, " " if node.exported?
       write_keyword :annotation, " "
 
       accept node.name
@@ -3804,6 +3808,7 @@ module Iyi
     end
 
     def visit(node : EnumDef)
+      write_keyword :pub, " " if node.exported?
       write_keyword :enum, " "
       accept node.name
 

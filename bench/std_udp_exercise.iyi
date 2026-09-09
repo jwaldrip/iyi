@@ -132,7 +132,7 @@ puts "poll_read: ok"
 
 # 7. Datagram truncation
 client.send_to("0123456789ABCDEF0123456789ABCDEF", "127.0.0.1", s_port) # 32 bytes
-trunc_payload, _, _ = server.receive_from(10) # buffer size 10
+trunc_payload, _, _ = server.receive_from(10)                           # buffer size 10
 raise "truncation: size mismatch #{trunc_payload.size}" if trunc_payload.size != 10
 trunc_str = bytes_to_s(trunc_payload)
 raise "truncation: content mismatch #{trunc_str}" if trunc_str != "0123456789"
