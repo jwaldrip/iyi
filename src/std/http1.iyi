@@ -463,7 +463,11 @@ pub class BufferedTransportReader
     while true
       line_res = read_line(MAX_REQUEST_LINE_SIZE)
       case line_res
-      in HttpError then return line_res
+      in HttpError
+        if line_res.message.includes?("Line exceeds maximum length")
+          return HttpError.new("Request line exceeds maximum length (" + MAX_REQUEST_LINE_SIZE.to_s + " bytes)")
+        end
+        return line_res
       in Nil       then return nil
       in String
         if !line_res.empty?
@@ -511,7 +515,11 @@ pub class BufferedTransportReader
     while true
       h_res = read_line(MAX_HEADERS_SIZE)
       case h_res
-      in HttpError then return h_res
+      in HttpError
+        if h_res.message.includes?("Line exceeds maximum length")
+          return HttpError.new("Headers size exceeds maximum limit (" + MAX_HEADERS_SIZE.to_s + " bytes)")
+        end
+        return h_res
       in Nil       then return HttpError.new("Incomplete request: missing header end")
       in String
         line = h_res
@@ -665,7 +673,11 @@ pub class BufferedTransportReader
     while true
       h_res = read_line(MAX_HEADERS_SIZE)
       case h_res
-      in HttpError then return h_res
+      in HttpError
+        if h_res.message.includes?("Line exceeds maximum length")
+          return HttpError.new("Headers size exceeds maximum limit (" + MAX_HEADERS_SIZE.to_s + " bytes)")
+        end
+        return h_res
       in Nil       then return HttpError.new("Incomplete response: missing header end")
       in String
         line = h_res
