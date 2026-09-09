@@ -42,6 +42,7 @@ def raise(error : SyntaxError) : NoReturn
   raise error.message
 end
 
+
 alias LookMaps = Array(Array(Bool))
 
 # Built-in character sets
@@ -381,7 +382,11 @@ struct LookSpec
 end
 
 class Budget
-  property spent : Int32 = 0
+  property spent : Int32
+
+  def initialize
+    @spent = 0
+  end
 end
 
 struct Assertion
@@ -436,9 +441,6 @@ pub class Regex
     @assertions = assertions
   end
 
-  def self.new(source : String, ignore_case : Bool = false) : Regex
-    Regex.new(source, ignore_case)
-  end
 
   def self.escape(str : String) : String
     parts = [] of String
@@ -796,7 +798,6 @@ pub class Regex
     bounds
   end
 end
-
 pub struct MatchData
   getter subject : String
   @slots : Array(Int32)
@@ -881,17 +882,29 @@ pub struct MatchData
     result
   end
 end
+class ::Regex
+  def self.new(source : String, ignore_case : Bool = false) : Std::Regex::Regex
+    Std::Regex::Regex.new(source, ignore_case)
+  end
+
+  def self.escape(str : String) : String
+    Std::Regex::Regex.escape(str)
+  end
+end
+
+alias ::MatchData = Std::Regex::MatchData
+alias ::SyntaxError = Std::Regex::SyntaxError
 
 class ::String
-  def =~(pattern : Regex) : Int32?
+  def =~(pattern : Std::Regex::Regex) : Int32?
     pattern =~ self
   end
 
-  def match(pattern : Regex) : MatchData?
+  def match(pattern : Std::Regex::Regex) : Std::Regex::MatchData?
     pattern.match(self)
   end
 
-  def match?(pattern : Regex) : Bool
+  def match?(pattern : Std::Regex::Regex) : Bool
     pattern.match?(self)
   end
 end
@@ -1179,7 +1192,7 @@ class Parser
       end
       first = false
       item = parse_class_item
-      if item.is_a?(ClassData::Member)
+      if item.is_a?(Member)
         members << item
       else
         # Literal character
