@@ -97,7 +97,11 @@
   `def before_check( : ::Nil`). And a `module` whose file has trailing
   declarations under its `end` is peeled after all - `module Validator`
   with `alias Valid = Validator` beside it was left nested, and every
-  consumer's `using` refused. The list of what R-2 still wants moved
+  consumer's `using` refused. `--check` says whose each refusal is now: a
+  `require` this machine cannot resolve is the environment's (`shards
+  install` comes first, and that is all twelve of `kilt`'s), R-2's
+  question is the author's, and what is left is the verb's own and asks
+  to be reported. The list of what R-2 still wants moved
   after the `pub` pass and grew a return-type case: it used to name
   declarations that then lost their `pub` - entries nobody could act on -
   and left `zip_types is exported and does not say what it returns` to

@@ -448,6 +448,34 @@ class Iyi::Command
       end
       broke.each { |(module_path, message)| puts "  #{module_path}: #{message}" }
       puts "#{clean.size} of #{written.size} modules compile; #{broke.size} carry what is listed above"
+
+      # Whose each refusal is, because the three are worked on by different
+      # people. A missing `require` is the *environment's*: the source tree
+      # does not compile here either, and `shards install` is the answer, not
+      # a rewrite. R-2's question is the *author's*. What is left is this
+      # verb's, and that is the count worth reading first.
+      unless broke.empty?
+        missing = Set(String).new
+        asks = 0
+        mine = 0
+        broke.each do |(_, message)|
+          if (at = message.index("can't find file '"))
+            rest = message[(at + "can't find file '".size)..]
+            missing << (rest.index('\'').try { |close| rest[0, close] } || rest)
+          elsif message.includes?("is exported and does not say what")
+            asks += 1
+          else
+            mine += 1
+          end
+        end
+        puts
+        unless missing.empty?
+          puts "#{broke.size - asks - mine} of them are a `require` this machine cannot resolve " \
+               "(#{missing.to_a.sort.join(", ")}): the tree does not compile as Crystal here either, so `shards install` comes first"
+        end
+        puts "#{asks} #{asks == 1 ? "is" : "are"} R-2 asking for a signature, which is a person's to write: the list above says which name and why" if asks > 0
+        puts "#{mine} #{mine == 1 ? "is" : "are"} neither, and that is the migration's own: please report it with the module and the message" if mine > 0
+      end
       exit 1 unless broke.empty?
       entry = written.keys.find { |module_path| !module_path.includes?('/') && module_path != SHARDS_MODULE }
       puts

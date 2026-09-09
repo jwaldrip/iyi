@@ -808,7 +808,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 106,644 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 106,672 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,565 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3238,8 +3238,14 @@ designed:
    `<% %>` regions, with the names it uses handed to every module that names a
    template.
 
-`--check` compiles every module written and prints the first refusal of each;
-that is the list a person works through, and on the application it is empty.
+`--check` compiles every module written and prints the first refusal of each,
+then says *whose* each one is, because the three are worked on by different
+people: a `require` this machine cannot resolve is the environment's - the
+tree does not compile as Crystal here either, and `shards install` comes
+before any rewrite, which is the whole of `kilt`'s 12 - R-2's question for a
+signature is the author's, and what is left is this verb's own and asks to
+be reported. That is the list a person works through, and on the
+application it is empty.
 **99 files became 91 modules and all 91 compile**, the program builds, and
 run against the demo database beside the Crystal build it answers **byte
 for byte on all nine routes tried** — `/api/v1/cities`, a city's districts,

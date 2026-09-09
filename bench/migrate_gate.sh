@@ -230,6 +230,22 @@ else
   step fail "the artifact does not carry the alias"
 fi
 
+# `--check` says whose each refusal is, because the three are worked on by
+# different people: a `require` this machine cannot resolve is the
+# environment's, R-2's question is the author's, and what is left is this
+# verb's. A tree with a shard that is not installed prints the first, and
+# nothing else - the fixture gets one by asking for a shard that is not there.
+echo "== a refusal says whose it is"
+mkdir -p "$WORK/absent/src"
+printf 'require "nowhere"\n\nmodule Absent\n  def self.hello : String\n    "hi"\n  end\nend\n' > "$WORK/absent/src/absent.cr"
+(cd "$WORK/absent" && "$IYI" migrate src --out "$WORK/absent/out" --check > "$WORK/absent.log" 2>&1)
+holds "the require is named as the environment's" "the tree does not compile as Crystal here either" "$WORK/absent.log"
+if grep -q "that is the migration's own" "$WORK/absent.log"; then
+  step fail "a missing shard was counted as the migration's"
+else
+  step ok "and nothing is blamed on the rewrite"
+fi
+
 # `shards install` writes other projects' source into a `lib/` beside the
 # manifest, and `iyi migrate .` read all of it: on an application that was
 # 756 files that were not its own, 359 of them merged into one module.
