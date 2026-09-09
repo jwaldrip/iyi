@@ -1,0 +1,51 @@
+# Format strings for iyi: width, alignment, padding, precision, and bases.
+#
+#   ./bin/iyi run samples/iyi/format.iyi
+#
+# `sprintf` returns formatted text, `printf` writes directly to standard output,
+# and `String.format` or `format % args` provides the object surface.
+# This fills the gaps string interpolation cannot: field width, alignment,
+# zero-padding, float precision with correct rounding, integer bases, and sign.
+
+module samples/format
+
+# 1. Strings and characters
+puts sprintf("hello %s", "world")
+puts sprintf("char '%c' (ascii %d)", 'A', 65)
+
+# 2. Width and alignment
+cell = "hi"
+puts sprintf("right '%5s'", cell)
+puts sprintf("left  '%-5s'", cell)
+
+# 3. Integer bases and prefixes
+n = 255
+puts sprintf("dec: %d", n)
+puts sprintf("hex: %x", n)
+puts sprintf("HEX: %#X", n)
+puts sprintf("oct: %#o", n)
+puts sprintf("bin: %#b", 5)
+
+# 4. Signs and zero padding
+puts sprintf("plus: %+d", 42)
+puts sprintf("zero: %06d", 42)
+puts sprintf("sign zero: %+06d", 42)
+puts sprintf("negative zero: %06d", -42)
+
+# 5. Precision
+puts sprintf("int precision: %.4d", 7)
+puts sprintf("float precision: %.2f", 3.14159)
+puts sprintf("float precision: %.4f", 3.14159)
+puts sprintf("string precision: %.3s", "crystal")
+
+# 6. Boundary cases
+puts sprintf("wider than field: %3d", 12345)
+puts sprintf("zero precision float: %.0f", 3.6)
+puts sprintf("zero precision zero int: '%5.0d'", 0)
+puts sprintf("min int64: %d", -9223372036854775808_i64)
+puts sprintf("max int64: %d", 9223372036854775807_i64)
+
+# 7. Surface styles
+puts String.format("String.format: %s = %d", "answer", 42)
+puts "percent tuple: %s = %04d" % {"score", 99}
+printf("printf: %s completed\n", "run")
