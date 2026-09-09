@@ -3042,9 +3042,6 @@ require "./file"
             if name == 0x000000617461642E_u64 # .data
               @@data_low = dos_header + vaddr
               @@data_high = @@data_low + vsize
-            elsif name == 0x000061746164722E_u64 # .rdata
-              @@const_low = dos_header + vaddr
-              @@const_high = @@const_low + vsize
             elsif name == 0x000000007373622E_u64 # .bss
               @@bss_low = dos_header + vaddr
               @@bss_high = @@bss_low + vsize
