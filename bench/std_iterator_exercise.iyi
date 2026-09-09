@@ -1,0 +1,246 @@
+# The `std/iterator` port, exercised and proven.
+#
+#     ./bin/iyi run bench/std_iterator_exercise.iyi
+#
+# Exercises every lazy adaptor and every terminal in `std/iterator`.
+# Compiling proves nothing on its own because default trait methods are only
+# typed when called.
+#
+# Laziness is proven rather than asserted:
+# 1. An infinite sequence (`InfiniteCounter`) that would run forever or exhaust
+#    memory under eager evaluation is consumed finitely via `take(3)`.
+# 2. A counting iterator tracks the exact number of `next` calls, proving that
+#    a pipeline `map -> select -> take(3)` pulls only four elements from the
+#    source, leaving the rest uncomputed.
+# 3. Terminals `any?` and `find` demonstrate short-circuiting on infinite sources.
+
+module bench/std_iterator_exercise
+
+import std/traits
+using std/traits::{Cmp, Num}
+
+import std/iterator
+using std/iterator::{Iterator, ArrayIterator}
+
+# ---- Tracking Iterators for Laziness Proofs ---------------------------------
+
+pub class InfiniteCounter
+  getter pulls : Int32
+
+  def initialize
+    @current = 0
+    @pulls = 0
+  end
+
+  def pull_count : Int32
+    @pulls
+  end
+end
+
+impl Iterator for InfiniteCounter
+  type Elem = Int32
+
+  def next : Int32?
+    @pulls = @pulls + 1
+    val = @current
+    @current = @current + 1
+    val
+  end
+end
+
+def assert_equal(label : String, actual : String, expected : String)
+  if actual != expected
+    raise "assertion failed for #{label}: expected #{expected}, got #{actual}"
+  end
+end
+
+def assert_true(label : String, condition : Bool)
+  unless condition
+    raise "assertion failed for #{label}: expected true, got false"
+  end
+end
+
+# ---- 1. Laziness Proof: Infinite Sources & Exact Pull Counts ---------------
+
+puts "iterator: infinite take"
+# Infinite source consumed finitely:
+inf = InfiniteCounter.new
+first_three = inf.take(3).to_a
+assert_equal("infinite take", first_three.to_s, "[0, 1, 2]")
+assert_equal("infinite take pulls", inf.pull_count.to_s, "3")
+
+puts "iterator: pipeline laziness"
+# Pipeline laziness: map -> select -> take(3)
+# 0 -> map: 0 -> select: false (skip)
+# 1 -> map: 2 -> select: true -> take 1
+# 2 -> map: 4 -> select: true -> take 2
+# 3 -> map: 6 -> select: true -> take 3 (done)
+# Total pulls from counter: 4
+counter = InfiniteCounter.new
+pipeline_result = counter.map { |x| x * 2 }.select { |x| x > 0 }.take(3).to_a
+assert_equal("pipeline result", pipeline_result.to_s, "[2, 4, 6]")
+assert_equal("pipeline exact pulls", counter.pull_count.to_s, "4")
+
+puts "iterator: short-circuit any?"
+# Short-circuiting terminals: any? stops at first match on infinite source
+inf_any = InfiniteCounter.new
+matched = inf_any.any? { |x| x == 5 }
+assert_true("any? match", matched)
+assert_equal("any? pull count", inf_any.pull_count.to_s, "6")
+
+puts "iterator: short-circuit find"
+# Short-circuiting find stops at 7 on infinite source
+inf_find = InfiniteCounter.new
+found = inf_find.find { |x| x == 7 }
+assert_equal("find result", found.to_s, "7")
+assert_equal("find pull count", inf_find.pull_count.to_s, "8")
+
+# ---- 2. Transform Adaptors -------------------------------------------------
+
+puts "iterator: map"
+it_map = Iterator.of([1, 2, 3, 4]).map { |x| x * 10 }
+assert_equal("map", it_map.to_a.to_s, "[10, 20, 30, 40]")
+
+puts "iterator: compact_map"
+it_cm = Iterator.of([1, 2, 3, 4, 5]).compact_map { |x| x % 2 == 0 ? x * 100 : nil }
+assert_equal("compact_map", it_cm.to_a.to_s, "[200, 400]")
+
+puts "iterator: flat_map"
+it_fm = Iterator.of([1, 2, 3]).flat_map { |x| [x, x * 10] }
+assert_equal("flat_map", it_fm.to_a.to_s, "[1, 10, 2, 20, 3, 30]")
+
+# ---- 3. Filtering Adaptors -------------------------------------------------
+
+puts "iterator: select"
+it_sel = Iterator.of([1, 2, 3, 4, 5]).select { |x| x % 2 != 0 }
+assert_equal("select", it_sel.to_a.to_s, "[1, 3, 5]")
+
+puts "iterator: reject"
+it_rej = Iterator.of([1, 2, 3, 4, 5]).reject { |x| x % 2 != 0 }
+assert_equal("reject", it_rej.to_a.to_s, "[2, 4]")
+
+# ---- 4. Slicing and Windowing Adaptors --------------------------------------
+
+puts "iterator: take and first(n)"
+it_take = Iterator.of([1, 2, 3, 4, 5]).take(2)
+assert_equal("take", it_take.to_a.to_s, "[1, 2]")
+it_first_n = Iterator.of([1, 2, 3, 4, 5]).first(2)
+assert_equal("first(n)", it_first_n.to_a.to_s, "[1, 2]")
+
+puts "iterator: take_while"
+it_tw = Iterator.of([1, 2, 3, 4, 1]).take_while { |x| x < 4 }
+assert_equal("take_while", it_tw.to_a.to_s, "[1, 2, 3]")
+
+puts "iterator: skip"
+it_skip = Iterator.of([1, 2, 3, 4, 5]).skip(3)
+assert_equal("skip", it_skip.to_a.to_s, "[4, 5]")
+
+puts "iterator: skip_while"
+it_sw = Iterator.of([1, 2, 3, 4, 1]).skip_while { |x| x < 3 }
+assert_equal("skip_while", it_sw.to_a.to_s, "[3, 4, 1]")
+
+puts "iterator: each_slice"
+it_sl = Iterator.of([1, 2, 3, 4, 5]).each_slice(2)
+assert_equal("each_slice", it_sl.to_a.to_s, "[[1, 2], [3, 4], [5]]")
+
+puts "iterator: each_cons"
+it_cons = Iterator.of([1, 2, 3, 4, 5]).each_cons(3)
+assert_equal("each_cons", it_cons.to_a.to_s, "[[1, 2, 3], [2, 3, 4], [3, 4, 5]]")
+
+puts "iterator: step"
+it_step = Iterator.of([1, 2, 3, 4, 5, 6, 7]).step(3)
+assert_equal("step", it_step.to_a.to_s, "[1, 4, 7]")
+
+# ---- 5. Composition Adaptors -----------------------------------------------
+
+puts "iterator: zip"
+it_z1 = Iterator.of([1, 2, 3])
+it_z2 = Iterator.of(["a", "b", "c", "d"])
+assert_equal("zip", it_z1.zip(it_z2).to_a.to_s, "[{1, \"a\"}, {2, \"b\"}, {3, \"c\"}]")
+
+puts "iterator: chain"
+it_c1 = Iterator.of([1, 2])
+it_c2 = Iterator.of([3, 4])
+assert_equal("chain", it_c1.chain(it_c2).to_a.to_s, "[1, 2, 3, 4]")
+
+puts "iterator: with_index"
+it_wi = Iterator.of(["alpha", "beta"]).with_index(10)
+assert_equal("with_index iter", it_wi.to_a.to_s, "[{\"alpha\", 10}, {\"beta\", 11}]")
+
+wi_yielded = [] of String
+Iterator.of(["x", "y"]).with_index(0) do |val, idx|
+  wi_yielded << "#{val}:#{idx}"
+end
+assert_equal("with_index block", wi_yielded.to_s, "[\"x:0\", \"y:1\"]")
+
+puts "iterator: cycle"
+it_cyc_n = Iterator.of([1, 2]).cycle(3)
+assert_equal("cycle(n)", it_cyc_n.to_a.to_s, "[1, 2, 1, 2, 1, 2]")
+
+it_cyc_inf = Iterator.of([7, 8]).cycle.take(5)
+assert_equal("cycle inf take", it_cyc_inf.to_a.to_s, "[7, 8, 7, 8, 7]")
+
+# ---- 6. Terminals ----------------------------------------------------------
+
+puts "iterator: terminals folding"
+it_red = Iterator.of([1, 2, 3, 4])
+assert_equal("reduce", it_red.reduce(0) { |acc, x| acc + x }.to_s, "10")
+
+it_red_opt = Iterator.of([1, 2, 3, 4])
+assert_equal("reduce?", it_red_opt.reduce? { |acc, x| acc + x }.to_s, "10")
+
+it_red_empty = Iterator.of([] of Int32)
+assert_true("reduce? empty", it_red_empty.reduce? { |acc, x| acc + x }.nil?)
+
+puts "iterator: terminals counting"
+it_cnt = Iterator.of([10, 20, 30, 40])
+assert_equal("count", it_cnt.count.to_s, "4")
+
+it_sz = Iterator.of([10, 20, 30, 40])
+assert_equal("size", it_sz.size.to_s, "4")
+
+it_cnt_blk = Iterator.of([1, 2, 3, 4, 5])
+assert_equal("count block", it_cnt_blk.count { |x| x % 2 == 1 }.to_s, "3")
+
+puts "iterator: terminals predicates"
+assert_true("any? non-empty", Iterator.of([1]).any?)
+assert_true("any? empty is false", !Iterator.of([] of Int32).any?)
+assert_true("any? block true", Iterator.of([1, 2, 3]).any? { |x| x == 2 })
+assert_true("any? block false", !Iterator.of([1, 2, 3]).any? { |x| x == 99 })
+
+assert_true("all? true", Iterator.of([2, 4, 6]).all? { |x| x % 2 == 0 })
+assert_true("all? false", !Iterator.of([2, 3, 4]).all? { |x| x % 2 == 0 })
+
+assert_true("none? true", Iterator.of([1, 3, 5]).none? { |x| x % 2 == 0 })
+assert_true("none? false", !Iterator.of([1, 2, 3]).none? { |x| x % 2 == 0 })
+
+puts "iterator: terminals searching"
+assert_equal("find", Iterator.of([10, 20, 30]).find { |x| x > 15 }.to_s, "20")
+assert_equal("find? hit", Iterator.of([10, 20, 30]).find? { |x| x > 15 }.to_s, "20")
+assert_true("find? miss", Iterator.of([10, 20, 30]).find? { |x| x > 100 }.nil?)
+
+assert_equal("first", Iterator.of([42, 99]).first.to_s, "42")
+assert_equal("first? hit", Iterator.of([42, 99]).first?.to_s, "42")
+assert_true("first? empty", Iterator.of([] of Int32).first?.nil?)
+
+puts "iterator: terminals traits"
+it_max = Iterator.of([15, 3, 99, 42])
+assert_equal("max", it_max.max.to_s, "99")
+
+it_min = Iterator.of([15, 3, 99, 42])
+assert_equal("min", it_min.min.to_s, "3")
+
+it_sum = Iterator.of([1, 2, 3, 4, 5])
+assert_equal("sum", it_sum.sum.to_s, "15")
+
+it_prod = Iterator.of([1, 2, 3, 4, 5])
+assert_equal("product", it_prod.product.to_s, "120")
+
+# ---- 7. Terminals each & to_a -----------------------------------------------
+
+puts "iterator: each"
+each_collected = [] of Int32
+Iterator.of([1, 2, 3]).each { |x| each_collected << x }
+assert_equal("each", each_collected.to_s, "[1, 2, 3]")
+
+puts "all iterator checks passed"

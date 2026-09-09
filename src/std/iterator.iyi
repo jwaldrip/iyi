@@ -1,0 +1,975 @@
+# `Iterator`, ported for lazy sequences.
+#
+# Crystal's `iterator.cr` is 1,893 lines and provides the abstraction that
+# makes sequence transformations composable without allocating intermediate
+# arrays at each stage. Against the Go bar, which has no lazy sequence
+# abstraction, this gives iyi expressive power while avoiding unnecessary
+# heap allocations.
+#
+# ## The Associated Type and Lazy Adaptors
+#
+# Like `Enumerable`, `Iterator` uses an associated type `type Elem`. The core
+# requirement is a single method:
+#
+#     abstract def next : Elem?
+#
+# Returning `nil` signals exhaustion. In contrast to Crystal's `Iterator::Stop`
+# sentinel singleton, iyi uses nilable element types (`Elem?`), matching
+# the convention used across the prelude.
+#
+# ### Why adaptors take (I, T, U) rather than (I, U)
+#
+# In a naive design, `MapIterator` would be parameterized as `(I, U)` with
+# `@func : I::Elem -> U`. However, when `I` is an unspecialized type variable
+# on a struct definition, the compiler projects `I::Elem` against the generic
+# declaration rather than specializing it to the receiver's type arguments.
+# For example, `ArrayIterator(Int32)::Elem` resolves to the unspecialized `T`
+# rather than `Int32`, causing the constructor to expect `Proc(T, U)` instead
+# of `Proc(Int32, U)`.
+#
+# Passing `Elem` explicitly as a type parameter `T` solves this completely:
+#
+#     def map(&func : Elem -> U) : MapIterator(self, Elem, U) forall U
+#       MapIterator(self, Elem, U).new(self, func)
+#     end
+#
+# Inside `Iterator#map`, `self` is the concrete implementer and `Elem` is its
+# known associated type. Passing `Elem` directly into `MapIterator(self, Elem, U)`
+# avoids inter-struct projection, produces zero heap overhead, and maintains
+# full static type safety.
+#
+# ## Why Enumerable does not have #lazy
+#
+# `Enumerable` defines `abstract def each(& : Elem -> Nil) : Nil`. A push-based
+# interface cannot be converted to a pull-based iterator without either:
+# 1. Buffering the entire sequence into an array, which destroys laziness and
+#    hangs on infinite sequences, or
+# 2. Stackful coroutines or fibers, which are absent from the minimal runtime.
+# Concrete collections (like `Array`) provide their own iterator constructors
+# (such as `Iterator.of(array)` or `ArrayIterator.new(array)`), avoiding any
+# circular dependency between `std/enumerable` and `std/iterator`.
+#
+# ## What was omitted from Crystal's 1,893 lines and why
+#
+# * `Iterator::Stop` sentinel: replaced by `Elem?`, which is native to iyi's
+#   type system and avoids an extra allocation or runtime type check.
+# * Duck-typed N-ary `zip(*others)`: Crystal defines multiple macro overloads
+#   to handle 1..N arguments. iyi uses a clean binary `zip(other : O)` with
+#   `O::Elem`, composable into multiple zips if needed.
+# * Collection-specific iterators: specialized iterators for `Hash`, `Range`,
+#   `Slice`, and `String` belong in their respective modules, not in the core
+#   iterator trait.
+# * `cons_pair`: redundant with `each_cons(2)`.
+# * `in_slices_of`, `chunks`: require structural constraints on tuples or pairs.
+
+module std/iterator
+
+import std/traits
+using std/traits::{Cmp, Num}
+
+pub trait Iterator
+  type Elem
+
+  abstract def next : Elem?
+
+  # Convenience constructor for arrays.
+  def self.of(array : Array(T)) : ArrayIterator(T) forall T
+    ArrayIterator(T).new(array)
+  end
+
+  # ---- lazy adaptors -------------------------------------------------------
+
+  def map(&func : Elem -> U) : MapIterator(self, Elem, U) forall U
+    MapIterator(self, Elem, U).new(self, func)
+  end
+
+  def select(&func : Elem -> Bool) : SelectIterator(self, Elem)
+    SelectIterator(self, Elem).new(self, func)
+  end
+
+  def reject(&func : Elem -> Bool) : RejectIterator(self, Elem)
+    RejectIterator(self, Elem).new(self, func)
+  end
+
+  def take(n : Int32) : TakeIterator(self, Elem)
+    TakeIterator(self, Elem).new(self, n)
+  end
+
+  def first(n : Int32) : TakeIterator(self, Elem)
+    take(n)
+  end
+
+  def take_while(&func : Elem -> Bool) : TakeWhileIterator(self, Elem)
+    TakeWhileIterator(self, Elem).new(self, func)
+  end
+
+  def skip(n : Int32) : SkipIterator(self, Elem)
+    SkipIterator(self, Elem).new(self, n)
+  end
+
+  def skip_while(&func : Elem -> Bool) : SkipWhileIterator(self, Elem)
+    SkipWhileIterator(self, Elem).new(self, func)
+  end
+
+  def zip(other : O) : ZipIterator(self, Elem, O, O::Elem) forall O
+    ZipIterator(self, Elem, O, O::Elem).new(self, other)
+  end
+
+  def chain(other : O) : ChainIterator(self, O, Elem) forall O
+    ChainIterator(self, O, Elem).new(self, other)
+  end
+
+  def flat_map(&func : Elem -> Array(U)) : FlatMapIterator(self, Elem, U) forall U
+    FlatMapIterator(self, Elem, U).new(self, func)
+  end
+
+  def each_slice(n : Int32) : SliceIterator(self, Elem)
+    SliceIterator(self, Elem).new(self, n)
+  end
+
+  def each_cons(n : Int32) : ConsIterator(self, Elem)
+    ConsIterator(self, Elem).new(self, n)
+  end
+
+  def with_index(offset : Int32 = 0) : WithIndexIterator(self, Elem)
+    WithIndexIterator(self, Elem).new(self, offset)
+  end
+
+  def with_index(offset : Int32 = 0, & : Elem, Int32 -> Nil) : Nil
+    i = offset
+    while !(item = self.next).nil?
+      yield item, i
+      i = i + 1
+    end
+  end
+
+  def cycle : CycleIterator(self, Elem)
+    CycleIterator(self, Elem).new(self)
+  end
+
+  def cycle(n : Int32) : CycleNIterator(self, Elem)
+    CycleNIterator(self, Elem).new(self, n)
+  end
+
+  def step(n : Int32) : StepIterator(self, Elem)
+    StepIterator(self, Elem).new(self, n)
+  end
+
+  def compact_map(&func : Elem -> U?) : CompactMapIterator(self, Elem, U) forall U
+    CompactMapIterator(self, Elem, U).new(self, func)
+  end
+
+  # ---- terminals -----------------------------------------------------------
+
+  def each(& : Elem -> Nil) : Nil
+    while !(item = self.next).nil?
+      yield item
+    end
+  end
+
+  def to_a : Array(Elem)
+    result = [] of Elem
+    each { |e| result << e }
+    result
+  end
+
+  def reduce(initial : U, & : U, Elem -> U) : U forall U
+    acc = initial
+    each { |e| acc = yield acc, e }
+    acc
+  end
+
+  def reduce?(& : Elem, Elem -> Elem) : Elem?
+    acc = nil
+    each do |e|
+      current = acc
+      acc = current.nil? ? e : (yield current, e)
+    end
+    acc
+  end
+
+  def count : Int32
+    n = 0
+    each { |e| n = n + 1 }
+    n
+  end
+
+  def count(& : Elem -> Bool) : Int32
+    n = 0
+    each { |e| n = n + 1 if yield e }
+    n
+  end
+
+  def size : Int32
+    count
+  end
+
+  def any? : Bool
+    !self.next.nil?
+  end
+
+  def any?(& : Elem -> Bool) : Bool
+    each { |e| return true if yield e }
+    false
+  end
+
+  def all?(& : Elem -> Bool) : Bool
+    each { |e| return false unless yield e }
+    true
+  end
+
+  def none?(& : Elem -> Bool) : Bool
+    each { |e| return false if yield e }
+    true
+  end
+
+  def find?(& : Elem -> Bool) : Elem?
+    each { |e| return e if yield e }
+    nil
+  end
+
+  def find(& : Elem -> Bool) : Elem
+    each { |e| return e if yield e }
+    raise "no element matched"
+  end
+
+  def first? : Elem?
+    self.next
+  end
+
+  def first : Elem
+    item = self.next
+    return item unless item.nil?
+    raise "empty"
+  end
+
+  def max : Elem where Elem : Cmp
+    best = nil
+    each do |e|
+      current = best
+      best = e if current.nil? || e.gt(current)
+    end
+    found = best
+    return found unless found.nil?
+    raise "empty"
+  end
+
+  def min : Elem where Elem : Cmp
+    best = nil
+    each do |e|
+      current = best
+      best = e if current.nil? || e.lt(current)
+    end
+    found = best
+    return found unless found.nil?
+    raise "empty"
+  end
+
+  def sum : Elem where Elem : Num
+    acc = Elem.zero
+    each { |e| acc = acc.add(e) }
+    acc
+  end
+
+  def product : Elem where Elem : Num
+    acc = Elem.one
+    each { |e| acc = acc.mul(e) }
+    acc
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Adaptor implementations
+# ---------------------------------------------------------------------------
+
+pub struct ArrayIterator(T)
+  def initialize(@array : Array(T))
+    @index = 0
+  end
+
+  def next : T?
+    if @index < @array.size
+      item = @array[@index]
+      @index = @index + 1
+      item
+    else
+      nil
+    end
+  end
+end
+
+impl Iterator for ArrayIterator(T) forall T
+  type Elem = T
+
+  def next : T?
+    if @index < @array.size
+      item = @array[@index]
+      @index = @index + 1
+      item
+    else
+      nil
+    end
+  end
+end
+
+pub struct MapIterator(I, T, U)
+  def initialize(@iter : I, @func : T -> U)
+  end
+
+  def next : U?
+    item = @iter.next
+    if item.nil?
+      nil
+    else
+      @func.call(item)
+    end
+  end
+end
+
+impl Iterator for MapIterator(I, T, U) forall I, T, U
+  type Elem = U
+
+  def next : U?
+    item = @iter.next
+    if item.nil?
+      nil
+    else
+      @func.call(item)
+    end
+  end
+end
+
+pub struct SelectIterator(I, T)
+  def initialize(@iter : I, @func : T -> Bool)
+  end
+
+  def next : T?
+    while !(item = @iter.next).nil?
+      if @func.call(item)
+        return item
+      end
+    end
+    nil
+  end
+end
+
+impl Iterator for SelectIterator(I, T) forall I, T
+  type Elem = T
+
+  def next : T?
+    while !(item = @iter.next).nil?
+      if @func.call(item)
+        return item
+      end
+    end
+    nil
+  end
+end
+
+pub struct RejectIterator(I, T)
+  def initialize(@iter : I, @func : T -> Bool)
+  end
+
+  def next : T?
+    while !(item = @iter.next).nil?
+      unless @func.call(item)
+        return item
+      end
+    end
+    nil
+  end
+end
+
+impl Iterator for RejectIterator(I, T) forall I, T
+  type Elem = T
+
+  def next : T?
+    while !(item = @iter.next).nil?
+      unless @func.call(item)
+        return item
+      end
+    end
+    nil
+  end
+end
+
+pub struct TakeIterator(I, T)
+  def initialize(@iter : I, @n : Int32)
+    @count = 0
+  end
+
+  def next : T?
+    if @count < @n
+      item = @iter.next
+      if item.nil?
+        nil
+      else
+        @count = @count + 1
+        item
+      end
+    else
+      nil
+    end
+  end
+end
+
+impl Iterator for TakeIterator(I, T) forall I, T
+  type Elem = T
+
+  def next : T?
+    if @count < @n
+      item = @iter.next
+      if item.nil?
+        nil
+      else
+        @count = @count + 1
+        item
+      end
+    else
+      nil
+    end
+  end
+end
+
+pub struct TakeWhileIterator(I, T)
+  def initialize(@iter : I, @func : T -> Bool)
+    @done = false
+  end
+
+  def next : T?
+    if @done
+      nil
+    else
+      item = @iter.next
+      if item.nil? || !@func.call(item)
+        @done = true
+        nil
+      else
+        item
+      end
+    end
+  end
+end
+
+impl Iterator for TakeWhileIterator(I, T) forall I, T
+  type Elem = T
+
+  def next : T?
+    if @done
+      nil
+    else
+      item = @iter.next
+      if item.nil? || !@func.call(item)
+        @done = true
+        nil
+      else
+        item
+      end
+    end
+  end
+end
+
+pub struct SkipIterator(I, T)
+  def initialize(@iter : I, @n : Int32)
+    @skipped = 0
+  end
+
+  def next : T?
+    while @skipped < @n
+      item = @iter.next
+      if item.nil?
+        return nil
+      end
+      @skipped = @skipped + 1
+    end
+    @iter.next
+  end
+end
+
+impl Iterator for SkipIterator(I, T) forall I, T
+  type Elem = T
+
+  def next : T?
+    while @skipped < @n
+      item = @iter.next
+      if item.nil?
+        return nil
+      end
+      @skipped = @skipped + 1
+    end
+    @iter.next
+  end
+end
+
+pub struct SkipWhileIterator(I, T)
+  def initialize(@iter : I, @func : T -> Bool)
+    @skipping = true
+  end
+
+  def next : T?
+    while @skipping
+      item = @iter.next
+      if item.nil?
+        return nil
+      end
+      if @func.call(item)
+        # keep skipping
+      else
+        @skipping = false
+        return item
+      end
+    end
+    @iter.next
+  end
+end
+
+impl Iterator for SkipWhileIterator(I, T) forall I, T
+  type Elem = T
+
+  def next : T?
+    while @skipping
+      item = @iter.next
+      if item.nil?
+        return nil
+      end
+      if @func.call(item)
+        # keep skipping
+      else
+        @skipping = false
+        return item
+      end
+    end
+    @iter.next
+  end
+end
+
+pub struct ZipIterator(I1, T1, I2, T2)
+  def initialize(@iter1 : I1, @iter2 : I2)
+  end
+
+  def next : Tuple(T1, T2)?
+    item1 = @iter1.next
+    item2 = @iter2.next
+    if item1.nil? || item2.nil?
+      nil
+    else
+      {item1, item2}
+    end
+  end
+end
+
+impl Iterator for ZipIterator(I1, T1, I2, T2) forall I1, T1, I2, T2
+  type Elem = Tuple(T1, T2)
+
+  def next : Tuple(T1, T2)?
+    item1 = @iter1.next
+    item2 = @iter2.next
+    if item1.nil? || item2.nil?
+      nil
+    else
+      {item1, item2}
+    end
+  end
+end
+
+pub struct ChainIterator(I1, I2, T)
+  def initialize(@iter1 : I1, @iter2 : I2)
+    @first_done = false
+  end
+
+  def next : T?
+    if !@first_done
+      item = @iter1.next
+      if !item.nil?
+        return item
+      end
+      @first_done = true
+    end
+    @iter2.next
+  end
+end
+
+impl Iterator for ChainIterator(I1, I2, T) forall I1, I2, T
+  type Elem = T
+
+  def next : T?
+    if !@first_done
+      item = @iter1.next
+      if !item.nil?
+        return item
+      end
+      @first_done = true
+    end
+    @iter2.next
+  end
+end
+
+pub struct FlatMapIterator(I, T, U)
+  def initialize(@iter : I, @func : T -> Array(U))
+    @current_sub = [] of U
+    @current_idx = 0
+  end
+
+  def next : U?
+    loop do
+      if @current_idx < @current_sub.size
+        val = @current_sub[@current_idx]
+        @current_idx = @current_idx + 1
+        return val
+      end
+      item = @iter.next
+      if item.nil?
+        return nil
+      end
+      @current_sub = @func.call(item)
+      @current_idx = 0
+    end
+  end
+end
+
+impl Iterator for FlatMapIterator(I, T, U) forall I, T, U
+  type Elem = U
+
+  def next : U?
+    loop do
+      if @current_idx < @current_sub.size
+        val = @current_sub[@current_idx]
+        @current_idx = @current_idx + 1
+        return val
+      end
+      item = @iter.next
+      if item.nil?
+        return nil
+      end
+      @current_sub = @func.call(item)
+      @current_idx = 0
+    end
+  end
+end
+
+pub struct SliceIterator(I, T)
+  def initialize(@iter : I, @n : Int32)
+  end
+
+  def next : Array(T)?
+    slice = [] of T
+    while slice.size < @n
+      item = @iter.next
+      if item.nil?
+        break
+      end
+      slice << item
+    end
+    if slice.empty?
+      nil
+    else
+      slice
+    end
+  end
+end
+
+impl Iterator for SliceIterator(I, T) forall I, T
+  type Elem = Array(T)
+
+  def next : Array(T)?
+    slice = [] of T
+    while slice.size < @n
+      item = @iter.next
+      if item.nil?
+        break
+      end
+      slice << item
+    end
+    if slice.empty?
+      nil
+    else
+      slice
+    end
+  end
+end
+
+pub struct ConsIterator(I, T)
+  def initialize(@iter : I, @n : Int32)
+    @window = [] of T
+    @started = false
+  end
+
+  def next : Array(T)?
+    if !@started
+      @started = true
+      while @window.size < @n
+        item = @iter.next
+        if item.nil?
+          return nil
+        end
+        @window << item
+      end
+      return @window.dup
+    end
+    item = @iter.next
+    if item.nil?
+      nil
+    else
+      @window.shift
+      @window << item
+      @window.dup
+    end
+  end
+end
+
+impl Iterator for ConsIterator(I, T) forall I, T
+  type Elem = Array(T)
+
+  def next : Array(T)?
+    if !@started
+      @started = true
+      while @window.size < @n
+        item = @iter.next
+        if item.nil?
+          return nil
+        end
+        @window << item
+      end
+      return @window.dup
+    end
+    item = @iter.next
+    if item.nil?
+      nil
+    else
+      @window.shift
+      @window << item
+      @window.dup
+    end
+  end
+end
+
+pub struct WithIndexIterator(I, T)
+  def initialize(@iter : I, @offset : Int32)
+    @index = @offset
+  end
+
+  def next : Tuple(T, Int32)?
+    item = @iter.next
+    if item.nil?
+      nil
+    else
+      idx = @index
+      @index = @index + 1
+      {item, idx}
+    end
+  end
+end
+
+impl Iterator for WithIndexIterator(I, T) forall I, T
+  type Elem = Tuple(T, Int32)
+
+  def next : Tuple(T, Int32)?
+    item = @iter.next
+    if item.nil?
+      nil
+    else
+      idx = @index
+      @index = @index + 1
+      {item, idx}
+    end
+  end
+end
+
+pub struct CycleIterator(I, T)
+  def initialize(@iter : I)
+    @cache = [] of T
+    @cached = false
+    @idx = 0
+  end
+
+  def next : T?
+    if @cached
+      return nil if @cache.empty?
+      if @idx >= @cache.size
+        @idx = 0
+      end
+      val = @cache[@idx]
+      @idx = @idx + 1
+      val
+    else
+      item = @iter.next
+      if item.nil?
+        @cached = true
+        return nil if @cache.empty?
+        @idx = 1
+        @cache[0]
+      else
+        @cache << item
+        item
+      end
+    end
+  end
+end
+
+impl Iterator for CycleIterator(I, T) forall I, T
+  type Elem = T
+
+  def next : T?
+    if @cached
+      return nil if @cache.empty?
+      if @idx >= @cache.size
+        @idx = 0
+      end
+      val = @cache[@idx]
+      @idx = @idx + 1
+      val
+    else
+      item = @iter.next
+      if item.nil?
+        @cached = true
+        return nil if @cache.empty?
+        @idx = 1
+        @cache[0]
+      else
+        @cache << item
+        item
+      end
+    end
+  end
+end
+
+pub struct CycleNIterator(I, T)
+  def initialize(@iter : I, @n : Int32)
+    @cache = [] of T
+    @cached = false
+    @idx = 0
+    @cycles_left = @n
+  end
+
+  def next : T?
+    return nil if @cycles_left <= 0
+    if @cached
+      return nil if @cache.empty?
+      if @idx >= @cache.size
+        @cycles_left = @cycles_left - 1
+        return nil if @cycles_left <= 0
+        @idx = 0
+      end
+      val = @cache[@idx]
+      @idx = @idx + 1
+      val
+    else
+      item = @iter.next
+      if item.nil?
+        @cached = true
+        @cycles_left = @cycles_left - 1
+        return nil if @cycles_left <= 0 || @cache.empty?
+        @idx = 1
+        @cache[0]
+      else
+        @cache << item
+        item
+      end
+    end
+  end
+end
+
+impl Iterator for CycleNIterator(I, T) forall I, T
+  type Elem = T
+
+  def next : T?
+    return nil if @cycles_left <= 0
+    if @cached
+      return nil if @cache.empty?
+      if @idx >= @cache.size
+        @cycles_left = @cycles_left - 1
+        return nil if @cycles_left <= 0
+        @idx = 0
+      end
+      val = @cache[@idx]
+      @idx = @idx + 1
+      val
+    else
+      item = @iter.next
+      if item.nil?
+        @cached = true
+        @cycles_left = @cycles_left - 1
+        return nil if @cycles_left <= 0 || @cache.empty?
+        @idx = 1
+        @cache[0]
+      else
+        @cache << item
+        item
+      end
+    end
+  end
+end
+
+pub struct StepIterator(I, T)
+  def initialize(@iter : I, @by : Int32)
+    raise "step size must be >= 1" if @by < 1
+    @first = true
+  end
+
+  def next : T?
+    if @first
+      @first = false
+      @iter.next
+    else
+      i = 1
+      while i < @by
+        item = @iter.next
+        if item.nil?
+          return nil
+        end
+        i = i + 1
+      end
+      @iter.next
+    end
+  end
+end
+
+impl Iterator for StepIterator(I, T) forall I, T
+  type Elem = T
+
+  def next : T?
+    if @first
+      @first = false
+      @iter.next
+    else
+      i = 1
+      while i < @by
+        item = @iter.next
+        if item.nil?
+          return nil
+        end
+        i = i + 1
+      end
+      @iter.next
+    end
+  end
+end
+
+pub struct CompactMapIterator(I, T, U)
+  def initialize(@iter : I, @func : T -> U?)
+  end
+
+  def next : U?
+    while !(item = @iter.next).nil?
+      res = @func.call(item)
+      unless res.nil?
+        return res
+      end
+    end
+    nil
+  end
+end
+
+impl Iterator for CompactMapIterator(I, T, U) forall I, T, U
+  type Elem = U
+
+  def next : U?
+    while !(item = @iter.next).nil?
+      res = @func.call(item)
+      unless res.nil?
+        return res
+      end
+    end
+    nil
+  end
+end
