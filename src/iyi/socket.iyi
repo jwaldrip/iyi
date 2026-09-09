@@ -1,0 +1,11 @@
+# Sockets — TCP networking for iyi
+#
+# Blocking TCP socket with numeric IP resolution (IPv4 dotted-decimal and localhost).
+# Linux raw syscalls (x86_64, aarch64) and Darwin libSystem (arm64).
+
+class IyiSocket
+  getter fd : Int32
+
+  def initialize(@fd : Int32)
+  end
+end
