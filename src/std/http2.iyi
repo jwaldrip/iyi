@@ -391,6 +391,7 @@ pub class Stream
   property weight : Int32
   property dependency : Int32
   property exclusive : Bool
+  property has_received_initial_headers : Bool
 
   def initialize(@id : Int32, initial_send_window : Int64 = DEFAULT_INITIAL_WINDOW_SIZE, initial_recv_window : Int64 = DEFAULT_INITIAL_WINDOW_SIZE)
     @state = StreamState::Idle
@@ -406,6 +407,7 @@ pub class Stream
     @weight = 16
     @dependency = 0
     @exclusive = false
+    @has_received_initial_headers = false
   end
 
   def on_send_headers(end_stream : Bool) : Nil | Http2Error
@@ -1257,13 +1259,14 @@ pub class Connection
         end
       end
 
-      if stream.headers.empty? || !stream.end_stream_received
-        stream.headers << f
-      else
+      if stream.has_received_initial_headers
         stream.trailers << f
+      else
+        stream.headers << f
       end
       i = i + 1
     end
+    stream.has_received_initial_headers = true
 
     nil
   end
@@ -1372,7 +1375,7 @@ pub class Connection
     end
 
     offset = 0
-    while offset < payload.size
+    while offset + 6 <= payload.size
       id = (payload[offset].to_i32 << 8) | payload[offset + 1].to_i32
       val = (payload[offset + 2].to_i64 << 24) | (payload[offset + 3].to_i64 << 16) | (payload[offset + 4].to_i64 << 8) | payload[offset + 5].to_i64
       offset = offset + 6
