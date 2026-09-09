@@ -1,0 +1,459 @@
+# Sockets: TCP networking for iyi
+#
+# A blocking TCP socket with numeric IP resolution (IPv4 dotted-decimal and localhost).
+#
+# Address resolution:
+# getaddrinfo is the standard route in libc, but on Linux it pulls in libc.so,
+# dynamic NSS modules (libnss_dns, libnss_files), and resolver state, which destroys
+# the zero-undefined-symbol dependency floor (SPEC.md III.9).
+# By parsing numeric IPv4 dotted-decimal strings (and mapping "localhost" to 127.0.0.1)
+# in pure iyi arithmetic without libc, Linux programs retain raw syscall purity
+# (zero undefined symbols) and Darwin programs only link standard socket symbols
+# provided by libSystem.
+#
+# Concurrency:
+# Sockets are blocking. Event-loop integration (with III.4 group/Channel) would
+# require non-blocking fds registered with the runtime's kqueue (Darwin) or
+# epoll (Linux) poller, parking the calling fiber when EAGAIN is returned.
+
+struct IPv4Address
+  getter b0 : UInt8
+  getter b1 : UInt8
+  getter b2 : UInt8
+  getter b3 : UInt8
+
+  def initialize(@b0 : UInt8, @b1 : UInt8, @b2 : UInt8, @b3 : UInt8)
+  end
+end
+
+class IyiSocket
+  getter fd : Int32
+
+  def initialize(@fd : Int32)
+  end
+
+  def to_unsafe : Int32
+    @fd
+  end
+
+  {% if @top_level.has_constant?("IyiIO") %}
+    def to_io : IyiIO
+      IyiIO.new(@fd)
+    end
+  {% end %}
+
+  # --- Connection and Listening ---
+
+  def self.connect(host : String, port : Int32) : IyiSocket
+    fd = __sys_socket
+    raise "cannot create socket" if fd < 0
+
+    ip = parse_ip(host)
+    addr = make_sockaddr_in(ip, port)
+    if __sys_connect(fd, addr) < 0
+      __iyi_close(fd.to_i64)
+      raise "cannot connect to #{host}:#{port}"
+    end
+
+    IyiSocket.new(fd)
+  end
+
+  def self.listen(host : String, port : Int32, backlog : Int32 = 128) : IyiSocket
+    fd = __sys_socket
+    raise "cannot create socket" if fd < 0
+
+    __sys_set_reuseaddr(fd)
+
+    ip = parse_ip(host)
+    addr = make_sockaddr_in(ip, port)
+    if __sys_bind(fd, addr) < 0
+      __iyi_close(fd.to_i64)
+      raise "cannot bind socket to #{host}:#{port}"
+    end
+
+    if __sys_listen(fd, backlog) < 0
+      __iyi_close(fd.to_i64)
+      raise "cannot listen on socket"
+    end
+
+    IyiSocket.new(fd)
+  end
+
+  def self.listen(port : Int32, backlog : Int32 = 128) : IyiSocket
+    listen("0.0.0.0", port, backlog)
+  end
+
+  def accept : IyiSocket
+    addr = Pointer(UInt8).malloc(16_u64)
+    len = 16_u32
+    client_fd = IyiSocket.__sys_accept(@fd, addr, pointerof(len))
+    raise "cannot accept socket" if client_fd < 0
+
+    IyiSocket.new(client_fd)
+  end
+
+  # --- Reading and Writing ---
+
+  def read(max_bytes : Int32 = 4096) : String
+    buffer = Pointer(UInt8).malloc(max_bytes.to_u64)
+    count = IyiSocket.__sys_recv(@fd, buffer, max_bytes.to_u64)
+    raise "cannot read from socket" if count < 0_i64
+    return "" if count == 0_i64
+
+    String.new(count.to_i32) do |target|
+      target.copy_from(buffer, count.to_i32)
+    end
+  end
+
+  def read(buffer : Pointer(UInt8), count : Int32) : Int32
+    n = IyiSocket.__sys_recv(@fd, buffer, count.to_u64)
+    raise "cannot read from socket" if n < 0_i64
+    n.to_i32
+  end
+
+  def recv(max_bytes : Int32 = 4096) : String
+    read(max_bytes)
+  end
+
+  def recv(buffer : Pointer(UInt8), count : Int32) : Int32
+    read(buffer, count)
+  end
+
+  def write(contents : String) : Int32
+    written = 0
+    total = contents.bytesize
+    bytes = contents.to_unsafe
+    while written < total
+      count = IyiSocket.__sys_send(@fd, bytes + written, (total - written).to_u64)
+      raise "cannot write to socket" if count <= 0_i64
+      written = written + count.to_i32
+    end
+    written
+  end
+
+  def write(buffer : Pointer(UInt8), count : Int32) : Int32
+    written = 0
+    while written < count
+      n = IyiSocket.__sys_send(@fd, buffer + written, (count - written).to_u64)
+      raise "cannot write to socket" if n <= 0_i64
+      written = written + n.to_i32
+    end
+    written
+  end
+
+  def send(contents : String) : Int32
+    write(contents)
+  end
+
+  def send(buffer : Pointer(UInt8), count : Int32) : Int32
+    write(buffer, count)
+  end
+
+  # --- Lifecycle and Metadata ---
+
+  def close : Nil
+    if @fd >= 0
+      __iyi_close(@fd.to_i64)
+      @fd = -1
+    end
+  end
+
+  def closed? : Bool
+    @fd < 0
+  end
+
+  def local_port : Int32
+    addr = Pointer(UInt8).malloc(16_u64)
+    len = 16_u32
+    res = IyiSocket.__sys_getsockname(@fd, addr, pointerof(len))
+    raise "cannot get local port" if res < 0
+
+    high = addr[2].to_i32
+    low = addr[3].to_i32
+    (high << 8) | low
+  end
+
+  def local_address : String
+    addr = Pointer(UInt8).malloc(16_u64)
+    len = 16_u32
+    res = IyiSocket.__sys_getsockname(@fd, addr, pointerof(len))
+    raise "cannot get local address" if res < 0
+
+    "#{addr[4]}.#{addr[5]}.#{addr[6]}.#{addr[7]}"
+  end
+
+  # --- Address and Struct Construction ---
+
+  def self.parse_ip(host : String) : IPv4Address
+    return IPv4Address.new(127_u8, 0_u8, 0_u8, 1_u8) if host == "localhost"
+    return IPv4Address.new(0_u8, 0_u8, 0_u8, 0_u8) if host == "0.0.0.0" || host == ""
+
+    parts = 0
+    curr = 0
+    has_digit = false
+    bytes = Pointer(UInt8).malloc(4_u64)
+    index = 0
+    len = host.bytesize
+
+    while index < len
+      ch = host[index]
+      if ch == '.'
+        raise "cannot resolve address: #{host}" unless has_digit
+        raise "cannot resolve address: #{host}" if curr > 255 || parts >= 4
+        bytes[parts] = curr.to_u8
+        parts = parts + 1
+        curr = 0
+        has_digit = false
+      elsif ch >= '0' && ch <= '9'
+        curr = curr * 10 + (ch.ord - 48)
+        has_digit = true
+      else
+        raise "cannot resolve address: #{host}"
+      end
+      index = index + 1
+    end
+
+    raise "cannot resolve address: #{host}" unless has_digit
+    raise "cannot resolve address: #{host}" if curr > 255
+    raise "cannot resolve address: #{host}" unless parts == 3
+    bytes[3] = curr.to_u8
+
+    IPv4Address.new(bytes[0], bytes[1], bytes[2], bytes[3])
+  end
+
+  def self.make_sockaddr_in(ip : IPv4Address, port : Int32) : Pointer(UInt8)
+    buffer = Pointer(UInt8).malloc(16_u64)
+    index = 0
+    while index < 16
+      buffer[index] = 0_u8
+      index = index + 1
+    end
+
+    {% if flag?(:darwin) %}
+      buffer[0] = 16_u8 # sin_len = 16
+      buffer[1] = 2_u8  # sin_family = AF_INET (2)
+    {% else %}
+      buffer[0] = 2_u8 # sin_family = AF_INET (2) (little-endian uint16)
+      buffer[1] = 0_u8
+    {% end %}
+
+    buffer[2] = ((port >> 8) & 255).to_u8
+    buffer[3] = (port & 255).to_u8
+
+    buffer[4] = ip.b0
+    buffer[5] = ip.b1
+    buffer[6] = ip.b2
+    buffer[7] = ip.b3
+
+    buffer
+  end
+
+  # --- Platform System Call Bindings ---
+
+  {% if flag?(:darwin) %}
+    lib LibC
+      fun socket(domain : Int32, type : Int32, protocol : Int32) : Int32
+      fun bind(fd : Int32, addr : Void*, addrlen : UInt32) : Int32
+      fun listen(fd : Int32, backlog : Int32) : Int32
+      fun accept(fd : Int32, addr : Void*, addrlen : UInt32*) : Int32
+      fun connect(fd : Int32, addr : Void*, addrlen : UInt32) : Int32
+      fun send(fd : Int32, buf : Void*, len : UInt64, flags : Int32) : Int64
+      fun recv(fd : Int32, buf : Void*, len : UInt64, flags : Int32) : Int64
+      fun getsockname(fd : Int32, addr : Void*, addrlen : UInt32*) : Int32
+      fun setsockopt(fd : Int32, level : Int32, optname : Int32, optval : Void*, optlen : UInt32) : Int32
+    end
+
+    # The length of a `sockaddr_in`, in the type each branch's call wants. It
+    # is a property of the address family rather than of the caller, so the
+    # callers do not pass it: `UInt32` here for libSystem's `socklen_t`, and
+    # `Int64` on the syscall branch, because the prelude has no conversion
+    # between the two. `UInt32` has neither `to_i64` nor `to_u64`, and `Int32`
+    # has no `to_u32`, which is what made a shared parameter type impossible.
+    SOCKADDR_IN_SIZE = 16_u32
+
+    def self.__sys_socket : Int32
+      LibC.socket(2, 1, 0)
+    end
+
+    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8)) : Int32
+      LibC.bind(fd, addr.as(Void*), SOCKADDR_IN_SIZE)
+    end
+
+    def self.__sys_listen(fd : Int32, backlog : Int32) : Int32
+      LibC.listen(fd, backlog)
+    end
+
+    def self.__sys_accept(fd : Int32, addr : Pointer(UInt8), addrlen : Pointer(UInt32)) : Int32
+      LibC.accept(fd, addr.as(Void*), addrlen)
+    end
+
+    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8)) : Int32
+      LibC.connect(fd, addr.as(Void*), SOCKADDR_IN_SIZE)
+    end
+
+    def self.__sys_send(fd : Int32, buf : Pointer(UInt8), len : UInt64) : Int64
+      LibC.send(fd, buf.as(Void*), len, 0)
+    end
+
+    def self.__sys_recv(fd : Int32, buf : Pointer(UInt8), len : UInt64) : Int64
+      LibC.recv(fd, buf.as(Void*), len, 0)
+    end
+
+    def self.__sys_getsockname(fd : Int32, addr : Pointer(UInt8), addrlen : Pointer(UInt32)) : Int32
+      LibC.getsockname(fd, addr.as(Void*), addrlen)
+    end
+
+    def self.__sys_set_reuseaddr(fd : Int32) : Int32
+      val = 1_i32
+      LibC.setsockopt(fd, 0xffff, 0x0004, pointerof(val).as(Void*), 4_u32)
+    end
+  {% elsif flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64)) %}
+    {% if flag?(:x86_64) %}
+      SYS_SOCKET      =  41_i64
+      SYS_CONNECT     =  42_i64
+      SYS_ACCEPT      =  43_i64
+      SYS_SENDTO      =  44_i64
+      SYS_RECVFROM    =  45_i64
+      SYS_BIND        =  49_i64
+      SYS_LISTEN      =  50_i64
+      SYS_GETSOCKNAME =  51_i64
+      SYS_SETSOCKOPT  =  54_i64
+    {% else %}
+      SYS_SOCKET      = 198_i64
+      SYS_BIND        = 200_i64
+      SYS_LISTEN      = 201_i64
+      SYS_ACCEPT      = 202_i64
+      SYS_CONNECT     = 203_i64
+      SYS_GETSOCKNAME = 204_i64
+      SYS_SENDTO      = 206_i64
+      SYS_RECVFROM    = 207_i64
+      SYS_SETSOCKOPT  = 208_i64
+    {% end %}
+
+    # Sized as the syscall takes it, a full register. See the darwin branch's
+    # note: this is a separate constant rather than a converted one because
+    # the prelude has no conversion between `UInt32` and the 64-bit types.
+    SOCKADDR_IN_SIZE = 16_i64
+
+    def self.__sys3(number : Int64, a : Int64, b : Int64, c : Int64) : Int64
+      result = uninitialized Int64
+      {% if flag?(:x86_64) %}
+        asm("syscall" : "={rax}"(result)
+                      : "{rax}"(number), "{rdi}"(a), "{rsi}"(b), "{rdx}"(c)
+                      : "rcx", "r11", "memory"
+                      : "volatile")
+      {% else %}
+        asm("svc #0" : "={x0}"(result)
+                     : "{x8}"(number), "{x0}"(a), "{x1}"(b), "{x2}"(c)
+                     : "memory"
+                     : "volatile")
+      {% end %}
+      result
+    end
+
+    def self.__sys5(number : Int64, a : Int64, b : Int64, c : Int64, d : Int64, e : Int64) : Int64
+      result = uninitialized Int64
+      {% if flag?(:x86_64) %}
+        asm("syscall" : "={rax}"(result)
+                      : "{rax}"(number), "{rdi}"(a), "{rsi}"(b), "{rdx}"(c), "{r10}"(d), "{r8}"(e)
+                      : "rcx", "r11", "memory"
+                      : "volatile")
+      {% else %}
+        asm("svc #0" : "={x0}"(result)
+                     : "{x8}"(number), "{x0}"(a), "{x1}"(b), "{x2}"(c), "{x3}"(d), "{x4}"(e)
+                     : "memory"
+                     : "volatile")
+      {% end %}
+      result
+    end
+
+    def self.__sys6(number : Int64, a : Int64, b : Int64, c : Int64, d : Int64, e : Int64, f : Int64) : Int64
+      result = uninitialized Int64
+      {% if flag?(:x86_64) %}
+        asm("syscall" : "={rax}"(result)
+                      : "{rax}"(number), "{rdi}"(a), "{rsi}"(b), "{rdx}"(c), "{r10}"(d), "{r8}"(e), "{r9}"(f)
+                      : "rcx", "r11", "memory"
+                      : "volatile")
+      {% else %}
+        asm("svc #0" : "={x0}"(result)
+                     : "{x8}"(number), "{x0}"(a), "{x1}"(b), "{x2}"(c), "{x3}"(d), "{x4}"(e), "{x5}"(f)
+                     : "memory"
+                     : "volatile")
+      {% end %}
+      result
+    end
+
+    def self.__sys_socket : Int32
+      __sys3(SYS_SOCKET, 2_i64, 1_i64, 0_i64).to_i32
+    end
+
+    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8)) : Int32
+      __sys3(SYS_BIND, fd.to_i64, addr.address.to_i64, SOCKADDR_IN_SIZE).to_i32
+    end
+
+    def self.__sys_listen(fd : Int32, backlog : Int32) : Int32
+      __sys3(SYS_LISTEN, fd.to_i64, backlog.to_i64, 0_i64).to_i32
+    end
+
+    def self.__sys_accept(fd : Int32, addr : Pointer(UInt8), addrlen : Pointer(UInt32)) : Int32
+      __sys3(SYS_ACCEPT, fd.to_i64, addr.address.to_i64, addrlen.address.to_i64).to_i32
+    end
+
+    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8)) : Int32
+      __sys3(SYS_CONNECT, fd.to_i64, addr.address.to_i64, SOCKADDR_IN_SIZE).to_i32
+    end
+
+    def self.__sys_send(fd : Int32, buf : Pointer(UInt8), len : UInt64) : Int64
+      __sys6(SYS_SENDTO, fd.to_i64, buf.address.to_i64, len.to_i64, 0_i64, 0_i64, 0_i64)
+    end
+
+    def self.__sys_recv(fd : Int32, buf : Pointer(UInt8), len : UInt64) : Int64
+      __sys6(SYS_RECVFROM, fd.to_i64, buf.address.to_i64, len.to_i64, 0_i64, 0_i64, 0_i64)
+    end
+
+    def self.__sys_getsockname(fd : Int32, addr : Pointer(UInt8), addrlen : Pointer(UInt32)) : Int32
+      __sys3(SYS_GETSOCKNAME, fd.to_i64, addr.address.to_i64, addrlen.address.to_i64).to_i32
+    end
+
+    def self.__sys_set_reuseaddr(fd : Int32) : Int32
+      val = 1_i32
+      __sys5(SYS_SETSOCKOPT, fd.to_i64, 1_i64, 2_i64, pointerof(val).address.to_i64, 4_i64).to_i32
+    end
+  {% else %}
+    def self.__sys_socket : Int32
+      raise "IyiSocket is not supported on this platform"
+    end
+
+    def self.__sys_bind(fd : Int32, addr : Pointer(UInt8)) : Int32
+      -1
+    end
+
+    def self.__sys_listen(fd : Int32, backlog : Int32) : Int32
+      -1
+    end
+
+    def self.__sys_accept(fd : Int32, addr : Pointer(UInt8), addrlen : Pointer(UInt32)) : Int32
+      -1
+    end
+
+    def self.__sys_connect(fd : Int32, addr : Pointer(UInt8)) : Int32
+      -1
+    end
+
+    def self.__sys_send(fd : Int32, buf : Pointer(UInt8), len : UInt64) : Int64
+      -1_i64
+    end
+
+    def self.__sys_recv(fd : Int32, buf : Pointer(UInt8), len : UInt64) : Int64
+      -1_i64
+    end
+
+    def self.__sys_getsockname(fd : Int32, addr : Pointer(UInt8), addrlen : Pointer(UInt32)) : Int32
+      -1
+    end
+
+    def self.__sys_set_reuseaddr(fd : Int32) : Int32
+      -1
+    end
+  {% end %}
+end

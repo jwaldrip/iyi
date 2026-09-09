@@ -3196,9 +3196,9 @@ module Iyi
         "/"   => "Unterminated regular expression",
         "%x[" => "Unterminated command literal",
         "`"   => "Unterminated command literal",
-        "%w[" => "Unterminated string array literal", # FIXME: #12277
-        "%W[" => "Unterminated string array literal", # FIXME: #12277
-        "%i[" => "Unterminated symbol array literal", # FIXME: #12277
+        "%w[" => "Unterminated string array literal",
+        "%W[" => "Unterminated string array literal",
+        "%i[" => "Unterminated symbol array literal",
         ":\"" => "unterminated quoted symbol",
       }
     end

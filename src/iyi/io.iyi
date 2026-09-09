@@ -1,0 +1,420 @@
+# IO: stream abstraction over file descriptors with buffering.
+#
+# Offers buffered reading and writing over any file descriptor or handle:
+# standard streams (stdin, stdout, stderr), open files, pipes, and sockets.
+# Replaces the old monolithic read_input and unifies puts and print into
+# one write path.
+
+class IyiIO
+  @fd : Int64
+  @closed : Bool
+  @eof : Bool
+  property sync : Bool
+
+  @read_buffer : Pointer(UInt8)
+  @read_capacity : Int32
+  @read_pos : Int32
+  @read_limit : Int32
+
+  @write_buffer : Pointer(UInt8)
+  @write_capacity : Int32
+  @write_pos : Int32
+
+  def initialize(@fd : Int64, buffer_size : Int32 = 4096, @sync : Bool = false)
+    @closed = false
+    @eof = false
+
+    @read_capacity = buffer_size
+    @read_buffer = Pointer(UInt8).malloc(buffer_size.to_u64)
+    @read_pos = 0
+    @read_limit = 0
+
+    @write_capacity = buffer_size
+    @write_buffer = Pointer(UInt8).malloc(buffer_size.to_u64)
+    @write_pos = 0
+  end
+
+  def self.new(fd : Int32, buffer_size : Int32 = 4096, sync : Bool = false) : IyiIO
+    new(fd.to_i64, buffer_size, sync)
+  end
+
+  def fd : Int32
+    @fd.to_i32
+  end
+
+  def handle : Int64
+    @fd
+  end
+
+  def write_pos : Int32
+    @write_pos
+  end
+
+  def write_capacity : Int32
+    @write_capacity
+  end
+
+  def closed? : Bool
+    @closed
+  end
+
+  def eof? : Bool
+    return true if @closed
+    return false if @read_pos < @read_limit
+    return true if @eof
+    fill_buffer
+    @eof && @read_pos >= @read_limit
+  end
+
+  private def fill_buffer : Int32
+    return 0 if @closed || @eof
+    @read_pos = 0
+    @read_limit = 0
+
+    count = low_level_read(@fd, @read_buffer.as(Void*), @read_capacity.to_u64)
+    if count <= 0_i64
+      @eof = true
+      return 0
+    end
+    @read_limit = count.to_i
+    @read_limit
+  end
+
+  def read_bytes(count : Int32) : String
+    raise "cannot read from closed IO" if @closed
+    return "" if count <= 0
+
+    result_buf = Pointer(UInt8).malloc(count.to_u64)
+    total_read = 0
+
+    while total_read < count
+      avail = @read_limit - @read_pos
+      if avail > 0
+        needed = count - total_read
+        to_copy = avail < needed ? avail : needed
+        (result_buf + total_read).copy_from(@read_buffer + @read_pos, to_copy)
+        total_read = total_read + to_copy
+        @read_pos = @read_pos + to_copy
+      else
+        break if @eof
+        filled = fill_buffer
+        break if filled <= 0
+      end
+    end
+
+    String.new(total_read) do |target|
+      target.copy_from(result_buf, total_read)
+    end
+  end
+
+  def read_all : String
+    raise "cannot read from closed IO" if @closed
+
+    capacity = 8192
+    buffer = Pointer(UInt8).malloc(capacity.to_u64)
+    filled = 0
+
+    while true
+      avail = @read_limit - @read_pos
+      if avail > 0
+        if (filled + avail) > capacity
+          while (filled + avail) > capacity
+            capacity = capacity * 2
+          end
+          buffer = buffer.realloc(capacity.to_u64)
+        end
+        (buffer + filled).copy_from(@read_buffer + @read_pos, avail)
+        filled = filled + avail
+        @read_pos = @read_limit
+      else
+        break if @eof
+        got = fill_buffer
+        break if got <= 0
+      end
+    end
+
+    String.new(filled) do |target|
+      target.copy_from(buffer, filled)
+    end
+  end
+
+  def read_line(chomp : Bool = false) : String?
+    raise "cannot read from closed IO" if @closed
+
+    if @read_pos >= @read_limit
+      return nil if @eof
+      filled = fill_buffer
+      return nil if filled <= 0
+    end
+
+    # Fast path: scan current buffer for newline
+    found = -1
+    i = @read_pos
+    while i < @read_limit
+      if @read_buffer[i] == 10_u8
+        found = i
+        break
+      end
+      i = i + 1
+    end
+
+    if found >= 0
+      take_count = found - @read_pos + 1
+      start_ptr = @read_buffer + @read_pos
+      @read_pos = found + 1
+
+      if chomp
+        len = take_count
+        len = len - 1 if len > 0 && start_ptr[len - 1] == 10_u8
+        len = len - 1 if len > 0 && start_ptr[len - 1] == 13_u8
+        return String.new(len) do |target|
+          target.copy_from(start_ptr, len)
+        end
+      else
+        return String.new(take_count) do |target|
+          target.copy_from(start_ptr, take_count)
+        end
+      end
+    end
+
+    # Multi-buffer path: accumulate until newline or EOF
+    line_cap = 256
+    line_buf = Pointer(UInt8).malloc(line_cap.to_u64)
+    line_len = 0
+
+    while true
+      avail = @read_limit - @read_pos
+      if avail > 0
+        found_idx = -1
+        j = @read_pos
+        while j < @read_limit
+          if @read_buffer[j] == 10_u8
+            found_idx = j
+            break
+          end
+          j = j + 1
+        end
+
+        if found_idx >= 0
+          take = found_idx - @read_pos + 1
+          if (line_len + take) > line_cap
+            while (line_len + take) > line_cap
+              line_cap = line_cap * 2
+            end
+            line_buf = line_buf.realloc(line_cap.to_u64)
+          end
+          (line_buf + line_len).copy_from(@read_buffer + @read_pos, take)
+          line_len = line_len + take
+          @read_pos = found_idx + 1
+          break
+        else
+          if (line_len + avail) > line_cap
+            while (line_len + avail) > line_cap
+              line_cap = line_cap * 2
+            end
+            line_buf = line_buf.realloc(line_cap.to_u64)
+          end
+          (line_buf + line_len).copy_from(@read_buffer + @read_pos, avail)
+          line_len = line_len + avail
+          @read_pos = @read_limit
+        end
+      end
+
+      break if @eof
+      got = fill_buffer
+      break if got <= 0
+    end
+
+    return nil if line_len == 0 && @eof
+
+    if chomp
+      len = line_len
+      len = len - 1 if len > 0 && line_buf[len - 1] == 10_u8
+      len = len - 1 if len > 0 && line_buf[len - 1] == 13_u8
+      String.new(len) do |target|
+        target.copy_from(line_buf, len)
+      end
+    else
+      String.new(line_len) do |target|
+        target.copy_from(line_buf, line_len)
+      end
+    end
+  end
+
+  def gets(chomp : Bool = false) : String?
+    read_line(chomp)
+  end
+
+  def write(bytes : Pointer(UInt8), count : Int32) : Nil
+    raise "cannot write to closed IO" if @closed
+    return if count <= 0
+
+    if @sync
+      flush if @write_pos > 0
+      written = 0_i64
+      total = count.to_i64
+      while written < total
+        n = low_level_write(@fd, (bytes + written).as(Void*), (total - written).to_u64)
+        raise "write failed" if n <= 0_i64
+        written = written + n
+      end
+      return
+    end
+
+    if (@write_pos + count) <= @write_capacity
+      (@write_buffer + @write_pos).copy_from(bytes, count)
+      @write_pos = @write_pos + count
+    else
+      flush
+      if count >= @write_capacity
+        written = 0_i64
+        total = count.to_i64
+        while written < total
+          n = low_level_write(@fd, (bytes + written).as(Void*), (total - written).to_u64)
+          raise "write failed" if n <= 0_i64
+          written = written + n
+        end
+      else
+        @write_buffer.copy_from(bytes, count)
+        @write_pos = count
+      end
+    end
+  end
+
+  def write(text : String) : Nil
+    write(text.to_unsafe, text.bytesize)
+  end
+
+  def write_line(text : String = "") : Nil
+    write(text)
+    write("\n")
+    flush if @sync
+  end
+
+  def print(text : String) : Nil
+    write(text)
+  end
+
+  def print(value) : Nil
+    write(value.to_s)
+  end
+
+  def puts(text : String) : Nil
+    write_line(text)
+  end
+
+  def puts : Nil
+    write_line("")
+  end
+
+  def puts(value) : Nil
+    write_line(value.to_s)
+  end
+
+  def flush : Nil
+    return if @closed
+    if @write_pos > 0
+      written = 0_i64
+      total = @write_pos.to_i64
+      while written < total
+        n = low_level_write(@fd, (@write_buffer + written).as(Void*), (total - written).to_u64)
+        raise "write failed" if n <= 0_i64
+        written = written + n
+      end
+      @write_pos = 0
+    end
+  end
+
+  def close : Nil
+    return if @closed
+    flush if @write_pos > 0
+    low_level_close(@fd)
+    @closed = true
+  end
+
+  private def low_level_read(target_fd : Int64, buffer : Void*, count : UInt64) : Int64
+    {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+      if target_fd == 0_i64
+        outcome = iyi_read(0, buffer, count)
+        return 0_i64 if outcome.is_a?(Cancelled)
+        outcome
+      else
+        __iyi_read(target_fd.to_i32, buffer, count)
+      end
+    {% elsif flag?(:win32) %}
+      if target_fd == 0_i64
+        __iyi_read(0, buffer, count)
+      else
+        __iyi_file_read(target_fd, buffer, count)
+      end
+    {% else %}
+      __iyi_read(target_fd.to_i32, buffer, count)
+    {% end %}
+  end
+
+  private def low_level_write(target_fd : Int64, buffer : Void*, count : UInt64) : Int64
+    {% if flag?(:win32) %}
+      if target_fd == 1_i64 || target_fd == 2_i64
+        __iyi_write(target_fd.to_i32, buffer, count)
+      else
+        __iyi_file_write(target_fd, buffer, count)
+      end
+    {% else %}
+      __iyi_write(target_fd.to_i32, buffer, count)
+    {% end %}
+  end
+
+  private def low_level_close(target_fd : Int64) : Nil
+    __iyi_close(target_fd)
+  end
+end
+
+alias IO = IyiIO
+
+STDIN  = IyiIO.new(0_i64, buffer_size: 4096, sync: false)
+STDOUT = IyiIO.new(1_i64, buffer_size: 4096, sync: true)
+STDERR = IyiIO.new(2_i64, buffer_size: 4096, sync: true)
+
+def stdin : IyiIO
+  STDIN
+end
+
+def stdout : IyiIO
+  STDOUT
+end
+
+def stderr : IyiIO
+  STDERR
+end
+
+def print(text : String) : Nil
+  stdout.write(text)
+end
+
+def print(value) : Nil
+  print value.to_s
+end
+
+def puts(text : String) : Nil
+  stdout.write_line(text)
+end
+
+def puts : Nil
+  stdout.write_line("")
+end
+
+def puts(first, second, *rest : *T) : Nil forall T
+  puts first
+  puts second
+  {% for i in 0...T.size %}
+    puts rest[{{i}}]
+  {% end %}
+end
+
+def puts(value) : Nil
+  puts value.to_s
+end
+
+def read_input : String
+  stdin.read_all
+end
