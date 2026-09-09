@@ -1247,7 +1247,9 @@ require "./socket"
       SLICE         = 65536_u64
       CENTRAL_ALLOCATED = 1280_u64
 
-      @[ThreadLocal]
+      {% unless flag?(:win32) %}
+        @[ThreadLocal]
+      {% end %}
       @@cache : UInt64 = 0_u64
       @@caches : UInt64 = 0_u64
       @@central : UInt64 = 0_u64
@@ -3441,7 +3443,9 @@ require "./socket"
       #   +24  the arena its pending live count is for   +32  the count
       #   +40  the type id whose layout entry is cached   +48  the entry
       #   +88  the stack's capacity in entries
-      @[ThreadLocal]
+      {% unless flag?(:win32) %}
+        @[ThreadLocal]
+      {% end %}
       @@worker : UInt64 = 0_u64
       @@collector_worker : UInt64 = 0_u64
       W_STACK = 0_u64
