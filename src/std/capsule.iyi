@@ -54,6 +54,11 @@ pub struct VarInt
   pub MAX_4BYTE = 1073741823_u64
   pub MAX_8BYTE = 4611686018427387903_u64
 
+  # Checks if value can be represented as a 62-bit QUIC varint.
+  def self.valid_value?(value : UInt64) : Bool
+    value <= MAX
+  end
+
   # Calculates the minimum number of bytes required to canonically encode value.
   def self.encoded_size(value : UInt64) : Int32
     if value <= MAX_1BYTE
@@ -118,14 +123,9 @@ pub struct VarInt
     buf
   end
 
-  # Decodes a QUIC variable-length integer from *bytes* starting at *offset*.
-  # Returns a tuple of {decoded_value, bytes_consumed}.
-  # If *strict* is true, overlong encodings (values encoded in more bytes than
-  # their minimum representation) are refused.
-  def self.decode(bytes : Slice(UInt8), offset : Int32 = 0, strict : Bool = false) : {UInt64, Int32}
-    if offset < 0 || offset >= bytes.size
-      raise "varint truncated: buffer empty or offset beyond end"
-    end
+  # Decodes a QUIC variable-length integer, returning nil if truncated, overlong, or reserved.
+  def self.decode?(bytes : Bytes, offset : Int32 = 0, strict : Bool = false) : {UInt64, Int32}?
+    return nil if offset < 0 || offset >= bytes.size
 
     b0 = bytes[offset]
     prefix = (b0.to_i32 >> 6) & 0x03
@@ -134,30 +134,20 @@ pub struct VarInt
       val = (b0 & 0x3f_u8).to_u64
       {val, 1}
     elsif prefix == 1_u8
-      if offset + 2 > bytes.size
-        raise "varint truncated: 2-byte varint requires 2 bytes, but only #{bytes.size - offset} available"
-      end
+      return nil if offset + 2 > bytes.size
       val = (b0 & 0x3f_u8).to_u64.unsafe_shl(8_u64) | bytes[offset + 1].to_u64
-      if strict && val <= MAX_1BYTE
-        raise "overlong varint encoding: value #{val} encoded in 2 bytes"
-      end
+      return nil if strict && val <= MAX_1BYTE
       {val, 2}
     elsif prefix == 2_u8
-      if offset + 4 > bytes.size
-        raise "varint truncated: 4-byte varint requires 4 bytes, but only #{bytes.size - offset} available"
-      end
+      return nil if offset + 4 > bytes.size
       val = (b0 & 0x3f_u8).to_u64.unsafe_shl(24_u64) |
             bytes[offset + 1].to_u64.unsafe_shl(16_u64) |
             bytes[offset + 2].to_u64.unsafe_shl(8_u64) |
             bytes[offset + 3].to_u64
-      if strict && val <= MAX_2BYTE
-        raise "overlong varint encoding: value #{val} encoded in 4 bytes"
-      end
+      return nil if strict && val <= MAX_2BYTE
       {val, 4}
     else # prefix == 3_u8
-      if offset + 8 > bytes.size
-        raise "varint truncated: 8-byte varint requires 8 bytes, but only #{bytes.size - offset} available"
-      end
+      return nil if offset + 8 > bytes.size
       val = (b0 & 0x3f_u8).to_u64.unsafe_shl(56_u64) |
             bytes[offset + 1].to_u64.unsafe_shl(48_u64) |
             bytes[offset + 2].to_u64.unsafe_shl(40_u64) |
@@ -166,19 +156,39 @@ pub struct VarInt
             bytes[offset + 5].to_u64.unsafe_shl(16_u64) |
             bytes[offset + 6].to_u64.unsafe_shl(8_u64) |
             bytes[offset + 7].to_u64
-      if strict && val <= MAX_4BYTE
-        raise "overlong varint encoding: value #{val} encoded in 8 bytes"
-      end
-      if val > MAX
-        raise "reserved varint encoding: value #{val} exceeds maximum 62-bit integer"
-      end
+      return nil if strict && val <= MAX_4BYTE
+      return nil if val > MAX
       {val, 8}
     end
   end
 
+  # Decodes a QUIC variable-length integer from *bytes* starting at *offset*.
+  # Raises on truncated buffers, reserved values, or overlong encodings (if strict).
+  def self.decode(bytes : Bytes, offset : Int32 = 0, strict : Bool = false) : {UInt64, Int32}
+    res = decode?(bytes, offset, strict: strict)
+    if res.nil?
+      if offset < 0 || offset >= bytes.size
+        raise "varint truncated: buffer empty or offset beyond end"
+      end
+      b0 = bytes[offset]
+      prefix = (b0.to_i32 >> 6) & 0x03
+      req = prefix == 0 ? 1 : (prefix == 1 ? 2 : (prefix == 2 ? 4 : 8))
+      avail = bytes.size - offset
+      if avail < req
+        raise "varint truncated: #{req}-byte varint requires #{req} bytes, but only #{avail} available"
+      end
+      raise "overlong varint encoding: value encoded in non-minimal bytes"
+    end
+    res
+  end
+
   # Strict decoding shorthand: refuses overlong and reserved encodings.
-  def self.decode_strict(bytes : Slice(UInt8), offset : Int32 = 0) : {UInt64, Int32}
+  def self.decode_strict(bytes : Bytes, offset : Int32 = 0) : {UInt64, Int32}
     decode(bytes, offset, strict: true)
+  end
+
+  def self.decode_strict?(bytes : Bytes, offset : Int32 = 0) : {UInt64, Int32}?
+    decode?(bytes, offset, strict: true)
   end
 end
 
@@ -228,17 +238,17 @@ pub struct HttpDatagram
   end
 
   # Decodes an HTTP Datagram from a byte slice.
-  def self.decode(bytes : Slice(UInt8), offset : Int32 = 0, strict : Bool = false) : {HttpDatagram, Int32}
-    if offset < 0 || offset >= bytes.size
-      raise "http datagram truncated: empty buffer or offset beyond end"
-    end
+  # Decodes an HTTP Datagram, returning nil if truncated.
+  def self.decode?(bytes : Bytes, offset : Int32 = 0, strict : Bool = false) : {HttpDatagram, Int32}?
+    return nil if offset < 0 || offset >= bytes.size
 
-    qid, qid_len = VarInt.decode(bytes, offset, strict: strict)
+    q_res = VarInt.decode?(bytes, offset, strict: strict)
+    return nil if q_res.nil?
+    qid, qid_len = q_res
+
     payload_offset = offset + qid_len
     payload_size = bytes.size - payload_offset
-    if payload_size < 0
-      raise "http datagram truncated: buffer ends before payload"
-    end
+    return nil if payload_size < 0
 
     payload = Bytes.new(payload_size)
     k = 0
@@ -248,6 +258,15 @@ pub struct HttpDatagram
     end
 
     {new(qid, payload), bytes.size - offset}
+  end
+
+  # Decodes an HTTP Datagram from a byte slice, raising on truncation.
+  def self.decode(bytes : Bytes, offset : Int32 = 0, strict : Bool = false) : {HttpDatagram, Int32}
+    res = decode?(bytes, offset, strict: strict)
+    if res.nil?
+      raise "http datagram truncated: buffer empty or ends before payload"
+    end
+    res
   end
 end
 
@@ -327,7 +346,40 @@ pub struct Capsule
   # Decodes a single capsule from bytes starting at offset.
   # Returns {Capsule, total_bytes_consumed}.
   # Refuses truncated capsules or lengths that overrun the buffer.
-  def self.decode(bytes : Slice(UInt8), offset : Int32 = 0, strict : Bool = false) : {Capsule, Int32}
+  # Decodes a single capsule, returning nil if truncated or length overruns buffer.
+  def self.decode?(bytes : Bytes, offset : Int32 = 0, strict : Bool = false) : {Capsule, Int32}?
+    return nil if offset < 0 || offset >= bytes.size
+
+    t_res = VarInt.decode?(bytes, offset, strict: strict)
+    return nil if t_res.nil?
+    capsule_type, type_len = t_res
+
+    len_offset = offset + type_len
+    return nil if len_offset >= bytes.size
+
+    l_res = VarInt.decode?(bytes, len_offset, strict: strict)
+    return nil if l_res.nil?
+    capsule_len_u64, len_len = l_res
+
+    hdr_len = type_len + len_len
+    val_offset = offset + hdr_len
+    remaining = bytes.size - val_offset
+
+    return nil if capsule_len_u64 > remaining.to_u64
+
+    capsule_len = capsule_len_u64.to_i32
+    val = Bytes.new(capsule_len)
+    i = 0
+    while i < capsule_len
+      val[i] = bytes[val_offset + i]
+      i = i + 1
+    end
+
+    {new(capsule_type, val), hdr_len + capsule_len}
+  end
+
+  # Decodes a single capsule from bytes starting at offset, raising on error.
+  def self.decode(bytes : Bytes, offset : Int32 = 0, strict : Bool = false) : {Capsule, Int32}
     if offset < 0 || offset >= bytes.size
       raise "truncated capsule: buffer empty or offset beyond end"
     end
@@ -366,7 +418,7 @@ end
 pub struct CapsuleReader
   # Decodes all capsules in buffer into an array.
   # Preserves unknown capsules in the list for inspection.
-  def self.read_all(bytes : Slice(UInt8), strict : Bool = false) : Array(Capsule)
+  def self.read_all(bytes : Bytes, strict : Bool = false) : Array(Capsule)
     capsules = [] of Capsule
     offset = 0
     while offset < bytes.size
@@ -379,7 +431,7 @@ pub struct CapsuleReader
 
   # Decodes capsules from stream buffer, actively skipping unknown types
   # and returning only recognized capsules, demonstrating RFC 9297 extensibility.
-  def self.read_known(bytes : Slice(UInt8), strict : Bool = false) : Array(Capsule)
+  def self.read_known(bytes : Bytes, strict : Bool = false) : Array(Capsule)
     capsules = [] of Capsule
     offset = 0
     while offset < bytes.size
@@ -393,7 +445,7 @@ pub struct CapsuleReader
   end
 
   # Decodes capsules and reports both known capsules and the count of skipped unknown types.
-  def self.read_with_skip_count(bytes : Slice(UInt8), strict : Bool = false) : {Array(Capsule), Int32}
+  def self.read_with_skip_count(bytes : Bytes, strict : Bool = false) : {Array(Capsule), Int32}
     capsules = [] of Capsule
     skipped = 0
     offset = 0
@@ -417,6 +469,10 @@ end
 pub struct ExtendedConnect
   # Setting identifier enabling Extended CONNECT protocol negotiation.
   pub SETTINGS_ENABLE_CONNECT_PROTOCOL = 0x08_u64
+
+  def self.settings_id : UInt64
+    SETTINGS_ENABLE_CONNECT_PROTOCOL
+  end
 
   pub HEADER_METHOD    = ":method"
   pub HEADER_PROTOCOL  = ":protocol"
