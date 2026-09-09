@@ -1280,8 +1280,9 @@ describe Iyi::IyiMod do
       artifact.class_vars.map(&.lazy).uniq.should eq [false]
 
       tally = artifact.exports.types.find { |type| type.name == "Tally" }.should_not be_nil
-      tally.class_vars.should eq [{"@@cache", "(String | Nil)", ""},
-                                  {"@@seen", "Int32", "0"}]
+      tally.class_vars.map { |class_var| {class_var.name, class_var.type, class_var.value} }
+        .should eq [{"@@cache", "(String | Nil)", ""}, {"@@seen", "Int32", "0"}]
+      tally.class_vars.map(&.annotations).should eq [[] of String, [] of String]
 
       File.delete "app/counter.iyi"
 
@@ -2224,8 +2225,8 @@ describe Iyi::IyiMod do
   describe "layouts" do
     it "round-trips them" do
       layouts = [
-        {"App::Shapes::Point", Iyi::IyiMod::TypeLayout.new(41, 8_u32, 8_u32, [] of UInt16, [] of UInt16)},
-        {"App::Shapes::Labelled", Iyi::IyiMod::TypeLayout.new(8, 40_u32, 36_u32, [8_u16, 24_u16], [] of UInt16)},
+        {"App::Shapes::Point", Iyi::IyiMod::TypeLayout.new(41, 8_u32, 8_u32, [] of UInt32, [] of UInt32)},
+        {"App::Shapes::Labelled", Iyi::IyiMod::TypeLayout.new(8, 40_u32, 36_u32, [8_u32, 24_u32], [] of UInt32)},
       ]
       with_temporary_file do |path|
         Iyi::IyiMod.write sample_artifact(layouts: layouts), path
@@ -2238,7 +2239,7 @@ describe Iyi::IyiMod do
         # With no object code after it, the layouts payload is the last bytes
         # of the file, so the last byte is this section's own.
         Iyi::IyiMod.write sample_artifact(layouts: [
-          {"App::Shapes::Labelled", Iyi::IyiMod::TypeLayout.new(8, 40_u32, 36_u32, [8_u16, 24_u16], [] of UInt16)},
+          {"App::Shapes::Labelled", Iyi::IyiMod::TypeLayout.new(8, 40_u32, 36_u32, [8_u32, 24_u32], [] of UInt32)},
         ]), path
         bytes = File.read(path).to_slice.dup
         bytes[bytes.size - 1] ^= 0xFF_u8
@@ -2253,7 +2254,7 @@ describe Iyi::IyiMod do
     it "shows them in mod dump, in a form to check against the struct as written" do
       io = IO::Memory.new
       Iyi::IyiMod.dump sample_artifact(layouts: [
-        {"App::Shapes::Labelled", Iyi::IyiMod::TypeLayout.new(8, 40_u32, 36_u32, [8_u16, 24_u16], [] of UInt16)},
+        {"App::Shapes::Labelled", Iyi::IyiMod::TypeLayout.new(8, 40_u32, 36_u32, [8_u32, 24_u32], [] of UInt32)},
       ]), io
       text = io.to_s
 
@@ -2381,12 +2382,12 @@ describe Iyi::IyiMod do
         # collector, and this type has a layout with nothing to scan.
         point = shapes.types["Point"]
         point_layout = layout_of.call("App::Shapes::Point")
-        point_layout.scan_offsets.should eq [] of UInt16
+        point_layout.scan_offsets.should eq [] of UInt32
         point_layout.alloc_size.should eq program.instance_size_of(point).to_u32
 
         inner = shapes.types["Inner"]
         inner_layout = layout_of.call("App::Shapes::Inner")
-        inner_layout.scan_offsets.should eq [offset_of.call(inner, "@ref").to_u16]
+        inner_layout.scan_offsets.should eq [offset_of.call(inner, "@ref").to_u32]
         inner_layout.alloc_size.should eq program.instance_size_of(inner).to_u32
         # The scan cap is the end of the last field, before tail padding.
         expected_cap = offset_of.call(inner, "@n") + program.size_of(program.int32)
@@ -2428,7 +2429,7 @@ describe Iyi::IyiMod do
         box = shapes.types["Box"].as(Iyi::GenericType).instantiated_types
           .find { |instance| instance.to_s == "App::Shapes::Box(String)" }.not_nil!
         box_layout = layout_of.call("App::Shapes::Box(String)")
-        box_layout.scan_offsets.should eq [offset_of.call(box, "@value").to_u16]
+        box_layout.scan_offsets.should eq [offset_of.call(box, "@value").to_u32]
         artifact.layouts.find { |(name, _)| name.includes?("Unused") }.should be_nil
 
         # Empty everywhere, on purpose: what noscan means is Stage 6's to say.
