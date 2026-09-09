@@ -582,7 +582,7 @@ lines of iyi's own prelude.
 **One name is unreachable, and it is a class of names.** `!` in iyi propagates
 an error, so a method whose name ends in one cannot be called from a `.iyi`
 file — `a.sort!` asks the compiler to propagate `Array(Int32)`'s errors, and it
-says so. Crystal's standard library has **51 such names**, `not_nil!`, `sort!`,
+says so. Crystal's standard library has **50 such names**, `not_nil!`, `sort!`,
 `map!`, `select!` and `uniq!` among them. What replaces them is what Crystal
 writes anyway when it wants a copy or a narrowing:
 
