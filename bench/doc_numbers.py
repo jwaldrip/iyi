@@ -191,6 +191,11 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     ("prelude", r"against iyi's own ([\d,]+)-line library", "CHANGELOG.md", 1),
     ("prelude", r"against iyi's own ([\d,]+)-line", "samples/iyi/calc.iyi", 1),
     ("std", r"own prelude \+ ([\d,]+) in std", "SPEC.md", 1),
+    # Two more sentences quote the same number in prose. They were written
+    # untracked, drifted the moment the library grew, and the table above went
+    # on passing beside them.
+    ("std", r"`src/std/` is \*\*([\d,]+) lines across", "SPEC.md", 1),
+    ("std", r"the standard library, ([\d,]+) lines of iyi", "README.md", 1),
     ("compiler", r"\| ([\d,]+) lines, Crystal, forked", "SPEC.md", 1),
     ("spec_iyi", r"\| ([\d,]+) for iyi \|", "SPEC.md", 1),
     ("prelude_kb", r"library is ([\d,]+) KB on disk", "README.md", 1),
