@@ -56,7 +56,35 @@
 @[NoInline]
 @[Naked]
 fun __iyi_ctx_swap(current : Pointer(UInt64), target : Pointer(UInt64)) : Nil
-  {% if flag?(:x86_64) %}
+  {% if flag?(:win32) && flag?(:x86_64) %}
+    asm("pushq %r15
+         pushq %r14
+         pushq %r13
+         pushq %r12
+         pushq %rbp
+         pushq %rbx
+         pushq %rdi
+         pushq %rsi
+         movq %gs:0x08, %r8
+         movq %gs:0x10, %r9
+         pushq %r8
+         pushq %r9
+         movq %rsp, (%rcx)
+         movq (%rdx), %rsp
+         popq %r9
+         popq %r8
+         movq %r8, %gs:0x08
+         movq %r9, %gs:0x10
+         popq %rsi
+         popq %rdi
+         popq %rbx
+         popq %rbp
+         popq %r12
+         popq %r13
+         popq %r14
+         popq %r15
+         retq" :::: "volatile")
+  {% elsif flag?(:x86_64) %}
     asm("pushq %rdi
          pushq %rbx
          pushq %rbp
@@ -145,7 +173,10 @@ end
 # The numbers live in top-level constants because a local born inside a
 # `{% if %}` dies at its `{% end %}`: a macro expansion is re-parsed, and
 # only declarations cross back out of one.
-{% if flag?(:darwin) %}
+{% if flag?(:win32) %}
+  IYI_POLL_DATA_OFFSET =  0_u64
+  IYI_POLL_EVENT_BYTES = 32_i64
+{% elsif flag?(:darwin) %}
   # A kevent's fd is its first field (`ident`), so the data offset is 0.
   IYI_POLL_DATA_OFFSET =  0_u64
   IYI_POLL_EVENT_BYTES = 32_i64
@@ -199,6 +230,8 @@ end
     Pointer(UInt64).new(change.address + 24_u64).value = 0_u64
     change
   end
+{% elsif flag?(:win32) %}
+  # Windows uses kernel32 APIs directly via LibC
 {% else %}
   fun __iyi_conc_syscall3(number : Int64, a : Int64, b : Int64, c : Int64) : Int64
     result = uninitialized Int64
@@ -241,7 +274,15 @@ end
 # deadline is a duration, so the slew 6 carries and 4 does not is
 # nothing the queue wants.
 def __iyi_monotonic_ns : Int64
-  {% if flag?(:darwin) %}
+  {% if flag?(:win32) %}
+    qpc = uninitialized Int64
+    freq = uninitialized Int64
+    LibC.QueryPerformanceCounter(pointerof(qpc))
+    LibC.QueryPerformanceFrequency(pointerof(freq))
+    sec = qpc // freq
+    rem = qpc % freq
+    sec * 1000000000_i64 + (rem * 1000000000_i64) // freq
+  {% elsif flag?(:darwin) %}
     LibC.clock_gettime_nsec_np(4).to_i64
   {% else %}
     spec = Pointer(UInt64).malloc(2_u64)
@@ -355,6 +396,9 @@ class IyiFiber
 
   property deadline : Int64
   property wait_fd : Int32
+  property wait_handle : Void*
+  property wait_overlapped : Pointer(UInt8)
+  property io_bytes_read : Int64
 
   # Which park this fiber is suspended in, counted up at every park. A
   # channel node names the park it was made for, and a node whose nonce is
@@ -391,6 +435,9 @@ class IyiFiber
     @park_nonce = 0_u64
     @next_fiber = nil
     @stack_top = 0_u64
+    @wait_handle = Pointer(Void).new(0_u64)
+    @wait_overlapped = Pointer(UInt8).malloc(32_u64)
+    @io_bytes_read = 0_i64
   end
 
   # The running program's own context: no stack to build, the kernel gave
@@ -410,7 +457,13 @@ class IyiFiber
     # `{% if %}` dies at its `{% end %}` — the file's own top-level
     # constants comment says why.
     base = 0_u64
-    {% if flag?(:darwin) %}
+    {% if flag?(:win32) %}
+      base_ptr = LibC.VirtualAlloc(nil, STACK_BYTES, 0x2000_i32, 1_i32)
+      raise "VirtualAlloc reserve failed" if base_ptr.address == 0_u64
+      base = base_ptr.address
+      committed = LibC.VirtualAlloc(Pointer(Void).new(base + PAGE), STACK_BYTES - PAGE, 0x1000_i32, 4_i32)
+      raise "VirtualAlloc commit failed" if committed.address == 0_u64
+    {% elsif flag?(:darwin) %}
       # libSystem's mmap: MAP_PRIVATE|MAP_ANON is 0x1002 here rather
       # than Linux's 0x22, and failure is MAP_FAILED (every bit set)
       # rather than -errno.
@@ -426,7 +479,21 @@ class IyiFiber
     {% end %}
     top = base + STACK_BYTES
     @stack_top = top
-    {% if flag?(:x86_64) %}
+    {% if flag?(:win32) && flag?(:x86_64) %}
+      entry_sp = top - 40_u64
+      ret_slot = entry_sp - 8_u64
+      Pointer(UInt64).new(ret_slot).value = __iyi_fiber_entry_address
+
+      saved = ret_slot - 80_u64
+      Pointer(UInt64).new(saved + 0_u64).value = base + PAGE
+      Pointer(UInt64).new(saved + 8_u64).value = top
+      index = 0_i64
+      while index < 8_i64
+        Pointer(UInt64).new(saved + 16_u64 + index * 8_u64).value = 0_u64
+        index = index + 1
+      end
+      @sp = saved
+    {% elsif flag?(:x86_64) %}
       # The first resume pops seven zeroed callee-saved slots and returns
       # into the trampoline. The entry slot is placed so the trampoline
       # begins with rsp ≡ 8 (mod 16), which is what the ABI promises a
@@ -557,7 +624,9 @@ class IyiSchedulerState
 end
 
 class IyiScheduler
-  @[ThreadLocal]
+  {% unless flag?(:win32) %}
+    @[ThreadLocal]
+  {% end %}
   @@state : IyiSchedulerState?
   @@states_head : IyiSchedulerState?
 
@@ -735,7 +804,74 @@ class IyiScheduler
     nil
   end
 
-  def self.wait_readable_current(fd : Int32) : Nil | Cancelled
+  def self.read_current(fd : Int32 | Int64, buffer : Void*, count : UInt64) : Int64 | Cancelled
+    fiber = current
+    return Cancelled.new if fiber.cancelled
+
+    handle = Pointer(Void).new(0_u64)
+    if fd == 0_i32 || fd == 0_i64
+      handle = LibC.GetStdHandle(-10)
+    elsif fd == 1_i32 || fd == 1_i64
+      handle = LibC.GetStdHandle(-11)
+    elsif fd == 2_i32 || fd == 2_i64
+      handle = LibC.GetStdHandle(-12)
+    else
+      handle = Pointer(Void).new(fd.to_i64.to_u64)
+    end
+
+    LibC.CreateIoCompletionPort(handle, Pointer(Void).new(pollfd.to_u64), 0_u64, 0_i32)
+    LibC.SetFileCompletionNotificationModes(handle, 1_u8)
+
+    ov = fiber.wait_overlapped
+    Pointer(UInt64).new(ov.address + 0_u64).value = 0_u64
+    Pointer(UInt64).new(ov.address + 8_u64).value = 0_u64
+    Pointer(UInt64).new(ov.address + 16_u64).value = 0_u64
+    Pointer(UInt64).new(ov.address + 24_u64).value = 0_u64
+
+    fiber.wait_handle = handle
+    fiber.io_bytes_read = 0_i64
+
+    read_bytes = uninitialized Int32
+    ok = LibC.ReadFile(handle, buffer, count.to_i32, pointerof(read_bytes), ov.as(Void*))
+    if ok != 0
+      return read_bytes.to_i64
+    end
+
+    err = LibC.GetLastError
+    if err != 997_i32
+      if err == 109_i32 || err == 38_i32
+        return 0_i64
+      end
+      if err == 87_i32
+        if LibC.ReadFile(handle, buffer, count.to_i32, pointerof(read_bytes), nil) != 0
+          return read_bytes.to_i64
+        end
+      end
+      return 0_i64
+    end
+
+    fiber.state = 3
+    fiber.next_io = state.io_head
+    state.io_head = fiber
+    reschedule
+
+    return Cancelled.new if fiber.cancelled
+    fiber.io_bytes_read
+  end
+
+  def self.wait_readable_current(fd : Int32 | Int64) : Nil | Cancelled
+    fiber = current
+    return Cancelled.new if fiber.cancelled
+    {% if flag?(:win32) %}
+      res = read_current(fd, Pointer(Void).new(0_u64), 0_u64)
+      return res if res.is_a?(Cancelled)
+      nil
+    {% else %}
+      wait_readable_posix(fd.to_i32)
+    {% end %}
+  end
+
+  def self.wait_readable_posix(fd : Int32) : Nil | Cancelled
     fiber = current
     return Cancelled.new if fiber.cancelled
 
@@ -803,8 +939,15 @@ class IyiScheduler
       sleep_remove(fiber)
       enqueue(fiber)
     elsif fiber.state == 3
-      io_remove(fiber)
-      enqueue(fiber)
+      {% if flag?(:win32) %}
+        fiber.cancelled = true
+        LibC.CancelIoEx(fiber.wait_handle, fiber.wait_overlapped.as(Void*))
+        io_remove(fiber)
+        enqueue(fiber)
+      {% else %}
+        io_remove(fiber)
+        enqueue(fiber)
+      {% end %}
     elsif fiber.state == 4
       # The channel's node is left where it is: waking bumps nothing here,
       # because the enqueue below changes the state the node's `current?`
@@ -833,7 +976,33 @@ class IyiScheduler
     end
 
     count = 0_i64
-    {% if flag?(:darwin) %}
+    {% if flag?(:win32) %}
+      timeout_ms = timeout < 0 ? -1_i32 : timeout.to_i32
+      bytes_transferred = uninitialized Int32
+      completion_key = uninitialized UInt64
+      overlapped_ptr = Pointer(Void).new(0_u64)
+      port = Pointer(Void).new(pollfd.to_u64)
+
+      LibC.GetQueuedCompletionStatus(port, pointerof(bytes_transferred), pointerof(completion_key), pointerof(overlapped_ptr), timeout_ms)
+      if overlapped_ptr.address != 0_u64
+        fiber = io_take_overlapped(overlapped_ptr.address)
+        if fiber.is_a?(IyiFiber)
+          fiber.io_bytes_read = bytes_transferred.to_i64
+          enqueue(fiber)
+        end
+      end
+
+      while true
+        overlapped_ptr = Pointer(Void).new(0_u64)
+        more = LibC.GetQueuedCompletionStatus(port, pointerof(bytes_transferred), pointerof(completion_key), pointerof(overlapped_ptr), 0_i32)
+        break if overlapped_ptr.address == 0_u64
+        fiber = io_take_overlapped(overlapped_ptr.address)
+        if fiber.is_a?(IyiFiber)
+          fiber.io_bytes_read = bytes_transferred.to_i64
+          enqueue(fiber)
+        end
+      end
+    {% elsif flag?(:darwin) %}
       # kevent's timeout is a timespec pointer and null means forever:
       # -1 becomes the null, anything else two 8-byte words. A -1 return
       # with errno EINTR (4) is a wakeup with no news, the same story
@@ -928,6 +1097,32 @@ class IyiScheduler
     end
   end
 
+  def self.io_take_overlapped(ptr : UInt64) : IyiFiber?
+    head = state.io_head
+    return nil unless head.is_a?(IyiFiber)
+    if head.wait_overlapped.address == ptr
+      state.io_head = head.next_io
+      head.next_io = nil
+      return head
+    end
+    cursor = head
+    while true
+      after = cursor.next_io
+      return nil unless after.is_a?(IyiFiber)
+      if after.wait_overlapped.address == ptr
+        cursor.next_io = after.next_io
+        after.next_io = nil
+        return after
+      end
+      cursor = after
+    end
+  end
+
+  def self.read_posix(fd : Int32, buffer : Void*, count : UInt64) : Int64 | Cancelled
+    wait_readable_posix(fd)!
+    __iyi_read(fd, buffer, count)
+  end
+
   def self.io_take(fd : Int32) : IyiFiber?
     head = state.io_head
     return nil unless head.is_a?(IyiFiber)
@@ -950,7 +1145,11 @@ class IyiScheduler
   end
 
   def self.io_remove(fiber : IyiFiber) : Nil
-    io_take(fiber.wait_fd)
+    {% if flag?(:win32) %}
+      io_take_overlapped(fiber.wait_overlapped.address)
+    {% else %}
+      io_take(fiber.wait_fd)
+    {% end %}
   end
 
   # Deregistered on every exit from the io list — wake and cancel both —
@@ -958,7 +1157,9 @@ class IyiScheduler
   # want it. EPOLL_CTL_DEL = 2 on Linux; EV_DELETE's packed word on
   # darwin, where a fd already gone is kevent's problem and not ours.
   def self.io_forget(fiber : IyiFiber) : Nil
-    {% if flag?(:darwin) %}
+    {% if flag?(:win32) %}
+      fiber.next_io = nil
+    {% elsif flag?(:darwin) %}
       change = __iyi_kevent_change(fiber.wait_fd, 0x2FFFF_u64)
       LibC.kevent(pollfd.to_i32, change.as(Void*), 1,
         Pointer(Void).new(0_u64), 0, Pointer(Void).new(0_u64))
@@ -974,7 +1175,11 @@ class IyiScheduler
   def self.pollfd : Int64
     fd = state.pollfd
     return fd if fd > 0
-    {% if flag?(:darwin) %}
+    {% if flag?(:win32) %}
+      h = LibC.CreateIoCompletionPort(Pointer(Void).new(0xFFFFFFFFFFFFFFFF_u64), Pointer(Void).new(0_u64), 0_u64, 1_i32)
+      raise "CreateIoCompletionPort failed" if h.address == 0_u64
+      fd = h.address.to_i64
+    {% elsif flag?(:darwin) %}
       fd = LibC.kqueue.to_i64
       raise "kqueue failed" if fd < 0
     {% else %}
@@ -1071,11 +1276,24 @@ def wait_readable(fd : Int32) : Nil | Cancelled
   IyiScheduler.wait_readable_current(fd)
 end
 
-# A read that parks the fiber instead of the thread. The propagation is
-# the runtime's own dogfood: a cancelled wait leaves as a value.
+def wait_readable(fd : Int64) : Nil | Cancelled
+  IyiScheduler.wait_readable_current(fd)
+end
+
 def iyi_read(fd : Int32, buffer : Void*, count : UInt64) : Int64 | Cancelled
-  wait_readable(fd)!
-  __iyi_read(fd, buffer, count)
+  {% if flag?(:win32) %}
+    IyiScheduler.read_current(fd, buffer, count)
+  {% else %}
+    IyiScheduler.read_posix(fd, buffer, count)
+  {% end %}
+end
+
+def iyi_read(fd : Int64, buffer : Void*, count : UInt64) : Int64 | Cancelled
+  {% if flag?(:win32) %}
+    IyiScheduler.read_current(fd, buffer, count)
+  {% else %}
+    IyiScheduler.read_posix(fd.to_i32, buffer, count)
+  {% end %}
 end
 
 # ── Tasks and groups — III.4.1 ─────────────────────────────────────────

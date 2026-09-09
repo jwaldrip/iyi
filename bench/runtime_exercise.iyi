@@ -1,18 +1,39 @@
-# Exercises the concurrency runtime: SPEC.md III.4, built in III.4.8's order.
+# Exercises SPEC.md III.4 concurrency runtime on Windows x86_64, Linux, and Darwin.
 #
-# Every check here is a property III.4 states, asserted rather than printed:
-# a wrong answer is exit 1 with the property named. The one property a
-# program cannot assert about itself — that a deadlocked program dies loudly
-# instead of hanging — is bench/concurrency_exercise.sh's failure proof.
-#
-# The timing thresholds are structural, not benchmarks: 2 x 150 ms of
-# sleeping finishing under 260 ms cannot happen sequentially, and a task
-# blocked for 10 s finishing under 5 s cannot happen unless cancellation
-# reached it while blocked. Generous margins, because the aarch64 arm of CI
-# runs under emulation.
+# Properties asserted:
+# 1. Genuine task interleaving across channels in a group (ping-pong order).
+# 2. Overlapping waits (anti-sequential clock).
+# 3. Cancellation reaching a task blocked in sleep.
+# 4. Error unwrap `!` draining a cancelled task through later waits.
+# 5. Poller: a read parks the fiber, and another fiber wakes it by writing.
+# 6. Cancellation reaching a task blocked in IO (CancelIoEx on Windows).
+# 7. Channel close waking parked receivers with ChannelClosed.
+# 8. Task joining and value propagation via task.value.
+# 9. Deferred join on early return out of group block.
+# 10. Rendezvous send parking until received, and receiver completing send.
+# 11. FIFO order of parked rendezvous sends.
+# 12. Cancelled rendezvous send dying undelivered.
+# 13. Channel close failing parked senders.
+# 14. Select taking ready arm, parked send arm winning, select with else.
+# 15. Typed group returning tuple on success and error on failure.
+# 16. Dynamic group keeping general form.
+
+def read_teb_tls_slot : UInt64
+  slot = uninitialized UInt64
+  {% if flag?(:win32) && flag?(:x86_64) %}
+    asm("movq %gs:0x58, $0" : "=r"(slot) ::: "volatile")
+  {% else %}
+    slot = 0_u64
+  {% end %}
+  slot
+end
+
+def log_msg(msg : String) : Nil
+  __iyi_write(1, msg.to_unsafe.as(Void*), msg.size.to_u64)
+end
 
 def fail(message : String) : Nil
-  puts "FAIL: #{message}"
+  log_msg("FAIL: " + message + "\n")
   __iyi_exit(1)
 end
 
@@ -20,23 +41,22 @@ def elapsed_ms(since : Int64) : Int64
   (__iyi_monotonic_ns - since) // 1000000_i64
 end
 
-# A pipe, for the poller check. The exercise's own binding, the way every
-# probe of a call the prelude does not carry yet gets one: raw `pipe2` on
-# Linux, libSystem's `pipe` on darwin, which is III.9's darwin rule
-# applied to a test probe.
 {% if flag?(:darwin) %}
   lib LibC
     fun pipe(fds : Int32*) : Int32
   end
 
-  def make_pipe : Pointer(Int32)
-    fds = Pointer(UInt8).malloc(8_u64).as(Pointer(Int32))
-    fail("pipe failed") if LibC.pipe(fds) < 0
+  def make_pipe : Pointer(Int64)
+    raw_fds = Pointer(UInt8).malloc(8_u64).as(Pointer(Int32))
+    fail("pipe failed") if LibC.pipe(raw_fds) < 0
+    fds = Pointer(UInt8).malloc(16_u64).as(Pointer(Int64))
+    fds[0] = raw_fds[0].to_i64
+    fds[1] = raw_fds[1].to_i64
     fds
   end
 {% elsif flag?(:win32) %}
   def make_pipe : Pointer(Int64)
-    pipe_name = "\\\\.\\pipe\\iyi_conc_pipe_#{__iyi_monotonic_ns}".to_unsafe
+    pipe_name = "\\\\.\\pipe\\iyi_runtime_pipe_#{__iyi_monotonic_ns}".to_unsafe
     h_read = LibC.CreateNamedPipeA(pipe_name, 0x40000001_i32, 0_i32, 1_i32, 4096_i32, 4096_i32, 0_i32, Pointer(Void).new(0_u64))
     fail("CreateNamedPipeA failed") if h_read.address &+ 1_u64 == 0_u64
     h_write = LibC.CreateFileA(pipe_name, 1073741824_i32, 0_i32, Pointer(Void).new(0_u64), 3_i32, 128_i32, Pointer(Void).new(0_u64))
@@ -53,10 +73,13 @@ end
     EX_SYS_PIPE2 = 59_i64
   {% end %}
 
-  def make_pipe : Pointer(Int32)
-    fds = Pointer(UInt8).malloc(8_u64).as(Pointer(Int32))
-    result = __iyi_conc_syscall3(EX_SYS_PIPE2, fds.address.to_i64, 0_i64, 0_i64)
+  def make_pipe : Pointer(Int64)
+    raw_fds = Pointer(UInt8).malloc(8_u64).as(Pointer(Int32))
+    result = __iyi_conc_syscall3(EX_SYS_PIPE2, raw_fds.address.to_i64, 0_i64, 0_i64)
     fail("pipe2 failed") if result < 0
+    fds = Pointer(UInt8).malloc(16_u64).as(Pointer(Int64))
+    fds[0] = raw_fds[0].to_i64
+    fds[1] = raw_fds[1].to_i64
     fds
   end
 {% end %}
@@ -72,17 +95,22 @@ impl Error for TaskFailed
   end
 end
 
-# ── 1. Interleaving is real, and deterministic ──────────────────────────
-#
-# Two tasks ping-pong through two channels. A `group` that ran its tasks
-# one after another — the imitation III.4.8 refused to ship — cannot
-# produce this order: each letter needs the other task to have moved.
+# 1. Genuine task interleaving
+slot0 = read_teb_tls_slot
+log_msg("main teb_tls_slot: ")
+log_msg(slot0 == 0_u64 ? "null\n" : "non-null\n")
+
+log_msg("step 1: interleaving\n")
 ping = Channel(Int32).new(1)
 pong = Channel(Int32).new(1)
 order = ""
 
 group do |g|
   g.spawn do
+    slot_fiber = read_teb_tls_slot
+    log_msg("fiber teb_tls_slot: ")
+    log_msg(slot_fiber == 0_u64 ? "null\n" : "non-null\n")
+
     round = 0
     while round < 3
       ping.receive
@@ -105,9 +133,10 @@ group do |g|
 end
 
 fail("interleaving: expected bababa, got #{order}") unless order == "bababa"
-puts "interleaved: #{order}"
+log_msg("interleaved: " + order + "\n")
 
-# ── 2. Waits overlap: the anti-sequential clock ─────────────────────────
+# 2. Overlapping waits: anti-sequential clock
+log_msg("step 2: overlapping sleeps\n")
 started = __iyi_monotonic_ns
 group do |g|
   g.spawn do
@@ -119,9 +148,10 @@ group do |g|
 end
 overlap = elapsed_ms(started)
 fail("overlap: 2 x 150 ms took #{overlap} ms, which is sequential") if overlap >= 260
-puts "two 150 ms sleeps in #{overlap} ms"
+log_msg("two 150 ms sleeps in #{overlap} ms\n")
 
-# ── 3. The first failing task cancels a *blocked* sibling — III.4.2/3 ───
+# 3. Failing task cancels sibling blocked in sleep
+log_msg("step 3: sleep cancellation\n")
 started = __iyi_monotonic_ns
 victim_saw = ""
 group do |g|
@@ -138,9 +168,10 @@ end
 cancelled_after = elapsed_ms(started)
 fail("cancellation never reached the sleeping task") unless victim_saw == "cancelled"
 fail("cancellation took #{cancelled_after} ms against a 10 s sleep") if cancelled_after >= 5000
-puts "a failing task cancelled a sibling blocked in sleep, in #{cancelled_after} ms"
+log_msg("a failing task cancelled a sibling blocked in sleep, in #{cancelled_after} ms\n")
 
-# ── 4. `!` drains a cancelled task through its later waits ──────────────
+# 4. Error unwrap `!` drains a cancelled task
+log_msg("step 4: drain through !\n")
 def two_naps : Nil | Cancelled
   sleep(10000)!
   sleep(10000)!
@@ -162,9 +193,10 @@ group do |g|
 end
 fail("`!` did not propagate Cancelled out of the task body") unless drained == "propagated"
 fail("draining a cancelled task took #{elapsed_ms(started)} ms") if elapsed_ms(started) >= 5000
-puts "a cancelled task drained through `!`"
+log_msg("a cancelled task drained through `!`\n")
 
-# ── 5. The poller: a read parks the fiber, the thread keeps working ─────
+# 5. Poller: a read parks the fiber, and another fiber wakes it by writing
+log_msg("step 5: poller read/write\n")
 fds = make_pipe
 read_fd = fds[0]
 write_fd = fds[1]
@@ -193,10 +225,36 @@ group do |g|
   end
 end
 
-fail("poller: expected parked,wrote,read:7 — got #{io_order}") unless io_order == "parked,wrote,read:7"
-puts "a read parked in the poller and a sleeping writer woke it"
+fail("poller: expected parked,wrote,read:7 got #{io_order}") unless io_order == "parked,wrote,read:7"
+log_msg("a read parked in the poller and a sleeping writer woke it\n")
 
-# ── 6. A closed channel drains, then refuses, and wakes the parked ──────
+# 6. Cancellation reaching a task blocked in IO (CancelIoEx on Windows)
+log_msg("step 6: IO cancellation\n")
+io_pipe = make_pipe
+io_read_fd = io_pipe[0]
+io_victim_saw = ""
+started = __iyi_monotonic_ns
+
+group do |g|
+  g.spawn do
+    buf = Pointer(UInt8).malloc(1_u64)
+    outcome = iyi_read(io_read_fd, buf.as(Void*), 1_u64)
+    io_victim_saw = outcome.is_a?(Cancelled) ? "cancelled" : "read"
+    outcome
+  end
+  g.spawn do
+    sleep(20)
+    TaskFailed.new
+  end
+end
+
+io_cancelled_after = elapsed_ms(started)
+fail("cancellation never reached the IO-blocked task: #{io_victim_saw}") unless io_victim_saw == "cancelled"
+fail("cancellation of IO took #{io_cancelled_after} ms") if io_cancelled_after >= 5000
+log_msg("a failing task cancelled a sibling blocked in IO, in #{io_cancelled_after} ms\n")
+
+# 7. Channel close waking parked receivers with ChannelClosed
+log_msg("step 7: channel close\n")
 late = Channel(Int32).new(1)
 closed_saw = ""
 group do |g|
@@ -212,9 +270,10 @@ group do |g|
   end
 end
 fail("close did not wake the parked receiver with ChannelClosed") unless closed_saw == "closed"
-puts "close woke a parked receiver with ChannelClosed"
+log_msg("close woke a parked receiver with ChannelClosed\n")
 
-# ── 7. `task.value` joins and answers what the block returned ───────────
+# 8. task.value joins and answers what block returned
+log_msg("step 8: task.value\n")
 doubled = 0
 group do |g|
   t = g.spawn do
@@ -225,9 +284,10 @@ group do |g|
   doubled = value.is_a?(Int32) ? value * 2 : -1
 end
 fail("task.value answered #{doubled // 2}") unless doubled == 42
-puts "task.value joined and answered"
+log_msg("task.value joined and answered\n")
 
-# ── 8. The join is deferred: an early return cannot leak a task ─────────
+# 9. Deferred join on early return out of group block
+log_msg("step 9: deferred join\n")
 def leaves_early(finished : Pointer(Int32)) : Nil
   group do |g|
     g.spawn do
@@ -243,13 +303,10 @@ flag = Pointer(Int32).malloc(4_u64)
 flag.value = 0
 leaves_early(flag)
 fail("a `return` out of the group block left its task running") unless flag.value == 1
-puts "an early return still joined the group"
+log_msg("an early return still joined the group\n")
 
-# ── 9. A rendezvous send parks until its value is taken ─────────────────
-#
-# `Channel(T).new` with no capacity: the sender cannot leave `send` until
-# a receiver takes the value, and the order string is the witness — "s1"
-# can only follow "r". A buffered channel would print "s0,s1,r".
+# 10. Rendezvous send parks until value is taken, receiver completes send
+log_msg("step 10: rendezvous\n")
 meet = Channel(Int32).new
 meet_order = ""
 group do |g|
@@ -266,10 +323,9 @@ group do |g|
     value.is_a?(Int32) ? value : -1
   end
 end
-fail("rendezvous: expected s0,r,s1 — got #{meet_order}") unless meet_order == "s0,r,s1"
-puts "a rendezvous send parked until its value was taken"
+fail("rendezvous: expected s0,r,s1 got #{meet_order}") unless meet_order == "s0,r,s1"
+log_msg("a rendezvous send parked until its value was taken\n")
 
-# ── 10. And the other way round: a parked receiver completes the send ───
 meet2 = Channel(Int32).new
 got2 = 0
 group do |g|
@@ -285,12 +341,10 @@ group do |g|
   end
 end
 fail("rendezvous: the parked receiver got #{got2}") unless got2 == 23
-puts "a parked receiver completed a rendezvous send"
+log_msg("a parked receiver completed a rendezvous send\n")
 
-# ── 11. Parked sends complete in the order they parked ──────────────────
-#
-# The def is load-bearing: a `while` body is one scope, so a closure made
-# in it would capture one shared variable; a parameter is a fresh binding.
+# 11. FIFO order of parked rendezvous sends
+log_msg("step 11: FIFO rendezvous\n")
 def spawn_send(g : IyiGroup, fifo : Channel(Int32), n : Int32) : Nil
   g.spawn do
     fifo.send(n)
@@ -300,7 +354,7 @@ def spawn_send(g : IyiGroup, fifo : Channel(Int32), n : Int32) : Nil
 end
 
 fifo = Channel(Int32).new
-drained = ""
+fifo_drained = ""
 group do |g|
   index = 1
   while index <= 3
@@ -312,16 +366,17 @@ group do |g|
     round = 0
     while round < 3
       value = fifo.receive
-      drained = drained + (value.is_a?(Int32) ? value.to_s : "?")
+      fifo_drained = fifo_drained + (value.is_a?(Int32) ? value.to_s : "?")
       round = round + 1
     end
     0
   end
 end
-fail("rendezvous FIFO: expected 123, got #{drained}") unless drained == "123"
-puts "parked sends completed in park order"
+fail("rendezvous FIFO: expected 123, got #{fifo_drained}") unless fifo_drained == "123"
+log_msg("parked sends completed in park order\n")
 
-# ── 12. Cancellation reaches a parked sender; its value dies undelivered ─
+# 12. Cancelled rendezvous send dies undelivered
+log_msg("step 12: cancelled send\n")
 lonely = Channel(Int32).new
 sender_saw = ""
 group do |g|
@@ -336,14 +391,13 @@ group do |g|
   end
 end
 fail("a parked sender was not cancelled: #{sender_saw}") unless sender_saw == "cancelled"
-# Had the cancelled send's value leaked into the buffer, this receive
-# would answer 99; a closed empty channel answers ChannelClosed.
 lonely.close
 received_late = lonely.receive
 fail("a cancelled send's value was delivered anyway") if received_late.is_a?(Int32)
-puts "a cancelled rendezvous send died undelivered"
+log_msg("a cancelled rendezvous send died undelivered\n")
 
-# ── 13. Closing fails a parked sender, loudly ───────────────────────────
+# 13. Channel close failing parked senders
+log_msg("step 13: closed send\n")
 doomed = Channel(Int32).new
 closed_send = ""
 group do |g|
@@ -359,9 +413,10 @@ group do |g|
   end
 end
 fail("close did not fail the parked sender: #{closed_send}") unless closed_send == "refused"
-puts "close failed a parked sender with ChannelClosed"
+log_msg("close failed a parked sender with ChannelClosed\n")
 
-# ── 14. `select` takes the arm that is ready ────────────────────────────
+# 14. Select taking ready arm, parked send arm winning, select with else
+log_msg("step 14: select\n")
 left = Channel(Int32).new
 right = Channel(String).new
 picked = ""
@@ -382,9 +437,8 @@ group do |g|
   end
 end
 fail("select: expected right:hello, got #{picked}") unless picked == "right:hello"
-puts "select took the arm that became ready"
+log_msg("select took the arm that became ready\n")
 
-# ── 15. A select's send arm can win while parked ────────────────────────
 narrow = Channel(Int32).new
 sent_arm = ""
 group do |g|
@@ -404,9 +458,8 @@ group do |g|
   end
 end
 fail("select: the parked send arm saw #{sent_arm}") unless sent_arm == "sent"
-puts "a select's send arm won while parked"
+log_msg("a select's send arm won while parked\n")
 
-# ── 16. `select` with an `else` does not park ───────────────────────────
 idle = Channel(Int32).new
 took_else = ""
 select
@@ -416,13 +469,10 @@ else
   took_else = "else"
 end
 fail("select else: got #{took_else}") unless took_else == "else"
-puts "select with nothing ready took its else"
+log_msg("select with nothing ready took its else\n")
 
-# ── 17. The typed group — III.4.9 ────────────────────────────────────────
-#
-# Two direct spawns make the group a value: the tuple of what they
-# answered, or the first error member, with `!` propagating it out of the
-# enclosing def through III.1.2's ordinary machinery.
+# 15. Typed group
+log_msg("step 15: typed group\n")
 def fetch_pair(fail_second : Bool) : Tuple(Int32, Int32) | TaskFailed | Cancelled | Panicked
   group do |g|
     x = g.spawn do
@@ -443,18 +493,14 @@ in TaskFailed          then fail("typed group: failed on the success path")
 in Cancelled           then fail("typed group: cancelled on the success path")
 in Panicked            then fail("typed group: panicked on the success path")
 end
-puts "a typed group answered its tuple"
+log_msg("a typed group answered its tuple\n")
 
-started = __iyi_monotonic_ns
 broken = fetch_pair(true)
 fail("typed group: the failure did not leave as the error") unless broken.is_a?(TaskFailed)
-puts "a typed group's first failure left as the error"
+log_msg("a typed group's first failure left as the error\n")
 
-# ── 18. A dynamic group keeps the general form ───────────────────────────
-#
-# A spawn in a loop has no arity, so the group stays `Nil` and handles
-# answer through `task.value` — the expansion refusing quietly is the
-# method call standing as written.
+# 16. Dynamic group keeps general form
+log_msg("step 16: dynamic group\n")
 drainer = Channel(Int32).new(3)
 shape = group do |g|
   index = 0
@@ -469,6 +515,6 @@ while round < 3
   drainer.receive
   round = round + 1
 end
-puts "a dynamic group kept the general form"
+log_msg("dynamic group kept the general form\n")
 
-puts "concurrency exercise: every property held"
+log_msg("runtime exercise: every property held\n")
