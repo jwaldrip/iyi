@@ -211,7 +211,7 @@ pub class URI
     query : String? = nil,
     user : String? = nil,
     password : String? = nil,
-    fragment : String? = nil
+    fragment : String? = nil,
   )
     @scheme = scheme
     @port = port
@@ -386,18 +386,18 @@ pub class URI
 
   # Unreserved characters: ALPHA / DIGIT / "-" / "." / "_" / "~"
   def self.unreserved?(byte : UInt8) : Bool
-    (byte >= 97_u8 && byte <= 122_u8) || # a-z
+    (byte >= 97_u8 && byte <= 122_u8) ||  # a-z
       (byte >= 65_u8 && byte <= 90_u8) || # A-Z
       (byte >= 48_u8 && byte <= 57_u8) || # 0-9
-      byte == 45_u8 || # -
-      byte == 46_u8 || # .
-      byte == 95_u8 || # _
-      byte == 126_u8   # ~
+      byte == 45_u8 ||                    # -
+      byte == 46_u8 ||                    # .
+      byte == 95_u8 ||                    # _
+      byte == 126_u8                      # ~
   end
 
   # Gen-delims: ":" / "/" / "?" / "#" / "[" / "]" / "@"
   def self.gen_delim?(byte : UInt8) : Bool
-    byte == 58_u8 || # :
+    byte == 58_u8 ||   # :
       byte == 47_u8 || # /
       byte == 63_u8 || # ?
       byte == 35_u8 || # #
@@ -408,7 +408,7 @@ pub class URI
 
   # Sub-delims: "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" / "," / ";" / "="
   def self.sub_delim?(byte : UInt8) : Bool
-    byte == 33_u8 || # !
+    byte == 33_u8 ||   # !
       byte == 36_u8 || # $
       byte == 38_u8 || # &
       byte == 39_u8 || # '
@@ -426,7 +426,7 @@ pub class URI
   end
 
   private def self.hex_digit?(byte : UInt8) : Bool
-    (byte >= 48_u8 && byte <= 57_u8) ||  # 0-9
+    (byte >= 48_u8 && byte <= 57_u8) ||   # 0-9
       (byte >= 65_u8 && byte <= 70_u8) || # A-F
       (byte >= 97_u8 && byte <= 102_u8)   # a-f
   end
@@ -796,31 +796,31 @@ pub class URI
         input = input[3, input.bytesize - 3]
       elsif input.starts_with?("./")
         input = input[2, input.bytesize - 2]
-      # B. if the input buffer begins with a prefix of "/./" or "/.",
-      #    where "." is a complete path segment, then replace that
-      #    prefix with "/" in the input buffer; otherwise,
+        # B. if the input buffer begins with a prefix of "/./" or "/.",
+        #    where "." is a complete path segment, then replace that
+        #    prefix with "/" in the input buffer; otherwise,
       elsif input.starts_with?("/./")
         input = "/" + input[3, input.bytesize - 3]
       elsif input == "/."
         input = "/"
-      # C. if the input buffer begins with a prefix of "/../" or "/..",
-      #    where ".." is a complete path segment, then replace that
-      #    prefix with "/" in the input buffer and remove the last
-      #    segment and its preceding "/" (if any) from the output buffer;
+        # C. if the input buffer begins with a prefix of "/../" or "/..",
+        #    where ".." is a complete path segment, then replace that
+        #    prefix with "/" in the input buffer and remove the last
+        #    segment and its preceding "/" (if any) from the output buffer;
       elsif input.starts_with?("/../")
         input = "/" + input[4, input.bytesize - 4]
         output_segments.pop unless output_segments.empty?
       elsif input == "/.."
         input = "/"
         output_segments.pop unless output_segments.empty?
-      # D. if the input buffer consists only of "." or "..", then remove
-      #    that from the input buffer; otherwise,
+        # D. if the input buffer consists only of "." or "..", then remove
+        #    that from the input buffer; otherwise,
       elsif input == "." || input == ".."
         input = ""
-      # E. move the first path segment in the input buffer to the end of
-      #    the output buffer, including the initial "/" character (if any)
-      #    and any subsequent characters up to, but not including, the next
-      #    "/" character or the end of the input buffer.
+        # E. move the first path segment in the input buffer to the end of
+        #    the output buffer, including the initial "/" character (if any)
+        #    and any subsequent characters up to, but not including, the next
+        #    "/" character or the end of the input buffer.
       else
         slash_idx = -1
         if input.starts_with?('/')

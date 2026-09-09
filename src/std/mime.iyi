@@ -79,7 +79,7 @@ pub struct MediaType
 
   # Returns true if *byte* is a valid RFC 2045 / RFC 2616 token character.
   def self.token_byte?(b : UInt8) : Bool
-    (b >= 97_u8 && b <= 122_u8) || # a-z
+    (b >= 97_u8 && b <= 122_u8) ||  # a-z
       (b >= 65_u8 && b <= 90_u8) || # A-Z
       (b >= 48_u8 && b <= 57_u8) || # 0-9
       b == 33_u8 ||                 # !
@@ -168,7 +168,7 @@ pub struct MediaType
 
         val_str = ""
         if raw[ptr] == 34_u8 # '"' (quoted value)
-          ptr = ptr + 1 # skip opening quote
+          ptr = ptr + 1      # skip opening quote
           val_bytes = [] of UInt8
           closed = false
           while ptr < len
