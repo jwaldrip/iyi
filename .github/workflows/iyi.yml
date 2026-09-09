@@ -1068,6 +1068,10 @@ jobs:
               Write-Host ("run {0,2}: {1}" -f $run, ($got -replace "`n", " | "))
             }
           }
+          if ($crashed -gt 0) {
+            Write-Host "Crash details from Application Event Log:"
+            Get-EventLog -LogName Application -Newest 5 | Format-List
+          }
 
           Write-Host ""
           Write-Host ("right {0} of 20, wrong output {1}, crashed {2}" -f $right, $wrong, $crashed)
