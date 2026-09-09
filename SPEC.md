@@ -310,15 +310,36 @@ the rule allows, a program in this repository needs it, and together they are
 still more than the rule intended to permit.
 
 **The standard library is deliberately outside that count, and this is the
-answer this section left open.** `src/std/` is 4,769 lines across ten modules:
-`traits`, `cmp`, `enumerable`, `indexable`, `iterator`, `slice`, `text`,
-`time`, `list` and `derives`. It is opt-in via `import std/...`, it lives
-outside `src/iyi/` where `bench/doc_numbers.py` measures the ceiling, and a
-program that imports none of it pays for none of it. So the prelude rule keeps
-its meaning, "a method enters because a program in this repository needs it",
-while the language still gets a library. The other answer this section named,
-moving the ceiling, is not taken. What is not open is pretending the prelude
-number itself still fits.
+answer this section left open.** `src/std/` is **29,466 lines across twenty-six
+modules**. It is opt-in via `import std/...`, it lives outside `src/iyi/` where
+`bench/doc_numbers.py` measures the ceiling, and a program that imports none of
+it pays for none of it. So the prelude rule keeps its meaning, "a method enters
+because a program in this repository needs it", while the language still gets a
+library. The other answer this section named, moving the ceiling, is not taken.
+What is not open is pretending the prelude number itself still fits.
+
+**Nothing in it links a C library, and six modules exist because of that
+rule.** Crystal binds libyaml, libxml2, zlib, GMP and PCRE; each is written
+here instead, which is the same choice `src/compiler/iyi/rx.cr` already made by
+writing 2,031 lines of regex engine rather than binding PCRE:
+
+| Crystal binds | iyi writes | what proves it |
+|---|---|---|
+| libyaml | `yaml.iyi` | the Norway problem, merge keys, an alias bomb bounded |
+| libxml2 | `xml.iyi` | an XXE attempt refused, billion laughs bounded |
+| zlib | `compress.iyi` | round trips against the real `gzip` in both directions |
+| GMP | `big.iyi` | 5,000 random algebraic identities, and `100!` |
+| PCRE | `regex.iyi` | a Thompson NFA, so `(a+)+b` is linear rather than 2^n |
+| OpenSSL digests | `digest.iyi`, `crypto.iyi` | NIST CAVP and RFC 2202, 4231, 5869, 8439 vectors |
+
+Two of these close gaps the prelude could not. `dns.iyi` resolves a hostname,
+which `src/iyi/socket.iyi` deliberately refused to do because `getaddrinfo`
+drags in libc and NSS and ends III.9's floor; the resolver is written instead,
+over `udp.iyi`, which did not exist either. And `hpack.iyi`, `qpack.iyi` and
+`capsule.iyi` are header compression and HTTP datagrams for HTTP/2 and HTTP/3,
+which Crystal does not have at all, so they are written from the RFCs and
+checked against the worked examples in RFC 7541 appendix C, RFC 9204 appendix
+B and RFC 9000 appendix A rather than against themselves.
 
 The ceiling was not a guess. Crystal's own 0.1.0 shipped 8,161 lines of
 library. Its core is **3,551 lines** of that: `object`, `nil`, `bool`, `char`,
@@ -824,8 +845,8 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 108,004 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 4,771 in std |
+| Compiler | 24,984 lines, **written in Crystal** | 108,009 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 29,466 in std |
 | Specs | 21,146 lines | 9,566 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -1259,6 +1280,18 @@ section had not reached.
   the second one exists purely to open the door. Nothing is unsound and nothing
   is unexpressible; it is one more line than the ergonomics claim implies, and
   the claim should say so rather than be quietly generous.
+- **A heterogeneous sequence cannot implement these traits at all.** `Tuple`
+  and `NamedTuple` were the one part of the collections port that did not
+  land, and the reason is structural rather than an omission: a trait answers
+  a single associated type, so `type Elem` cannot describe a sequence whose
+  elements differ. Forcing a union would box and would destroy the static
+  typing that makes a tuple worth having, and `forall *T`, a variadic generic
+  parameter on an `impl`, is not supported. The compiler handles tuples fine,
+  including compile-time indexing; what is missing is a way for user code to
+  write a trait whose return type depends on an index. So the port ships
+  macro-based tuple methods rather than an `impl`, and this is the boundary of
+  what II.6's model reaches. It is worth knowing before somebody designs
+  against the assumption that every collection can be `Enumerable`.
 
 **1. Traits need associated types as well as parameters.**
 

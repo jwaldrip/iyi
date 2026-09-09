@@ -1057,10 +1057,10 @@ marked PROPOSED are the parts that will move under you.
 | | |
 |---|---|
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
-| [`samples/iyi`](samples/iyi) | twenty-six programs: eighteen documenting a part of it, seven being a first hour, and `calc`, a language |
+| [`samples/iyi`](samples/iyi) | thirty-three programs: twenty-five documenting a part of it, seven being a first hour, and `calc`, a language |
 | [`samples/crystal/kemal`](samples/crystal/kemal) | a kemal application, from `shard.yml`: built from source and across four `.iyimod` boundaries |
 | [`src/iyi`](src/iyi) | iyi's own library, 14,732 lines. `--crystal` swaps it for Crystal's |
-| [`src/std`](src/std) | the standard library, in iyi. Opt-in with `import std/...`, outside the prelude's ceiling |
+| [`src/std`](src/std) | the standard library, 29,466 lines of iyi. Opt-in with `import std/...`, outside the prelude's ceiling |
 | [`src/compiler/iyi/iyimod.cr`](src/compiler/iyi/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |
