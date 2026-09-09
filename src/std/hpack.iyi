@@ -36,12 +36,26 @@ pub alias Bytes = Std::Slice::Bytes
 # HeaderField: Ordered representation of a single header name-value pair
 # ---------------------------------------------------------------------------
 
+pub enum IndexingMode
+  Incremental
+  WithoutIndexing
+  NeverIndexed
+end
+
 pub struct HeaderField
   getter name : String
   getter value : String
-  getter never_indexed : Bool
+  getter indexing : IndexingMode
 
-  def initialize(@name : String, @value : String, @never_indexed : Bool = false)
+  def initialize(@name : String, @value : String, @indexing : IndexingMode = IndexingMode::Incremental)
+  end
+
+  def initialize(@name : String, @value : String, never_indexed : Bool)
+    @indexing = never_indexed ? IndexingMode::NeverIndexed : IndexingMode::Incremental
+  end
+
+  def never_indexed : Bool
+    @indexing == IndexingMode::NeverIndexed
   end
 
   def size : Int32
@@ -54,7 +68,7 @@ pub struct HeaderField
   end
 
   def ==(other : HeaderField) : Bool
-    @name == other.name && @value == other.value && @never_indexed == other.never_indexed
+    @name == other.name && @value == other.value && @indexing == other.indexing
   end
 end
 
@@ -620,7 +634,7 @@ pub class Decoder
         end
 
         @dynamic_table.add(name, val, false)
-        headers << HeaderField.new(name, val, false)
+        headers << HeaderField.new(name, val, IndexingMode::Incremental)
 
       elsif (b & 0x20_u8) != 0_u8
         # 6.3 Dynamic Table Size Update (starts with 001, 5-bit prefix)
@@ -680,7 +694,7 @@ pub class Decoder
           return HpackError.new("Decompression bomb: decoded header list exceeds #{@max_header_list_size} octets")
         end
 
-        headers << HeaderField.new(name, val, true)
+        headers << HeaderField.new(name, val, IndexingMode::NeverIndexed)
 
       else
         # 6.2.2 Literal Header Field without Indexing (starts with 0000, 4-bit prefix)
@@ -723,7 +737,7 @@ pub class Decoder
           return HpackError.new("Decompression bomb: decoded header list exceeds #{@max_header_list_size} octets")
         end
 
-        headers << HeaderField.new(name, val, false)
+        headers << HeaderField.new(name, val, IndexingMode::Incremental)
       end
     end
 
@@ -810,8 +824,9 @@ pub class Encoder
   end
 
   private def encode_field(field : HeaderField, buffer : Array(UInt8), huff : Bool) : Nil
-    if field.never_indexed
-      # 6.2.3 Literal Header Field Never Indexed
+    case field.indexing
+    when IndexingMode::NeverIndexed
+      # 6.2.3 Literal Header Field Never Indexed (0001xxxx)
       name_idx = Table.find_name(@dynamic_table, field.name)
       if name_idx > 0
         Integer.encode(name_idx.to_u64, 4, 0x10_u8, buffer)
@@ -821,18 +836,30 @@ pub class Encoder
         encode_string(field.name, buffer, huff)
         encode_string(field.value, buffer, huff)
       end
+    when IndexingMode::WithoutIndexing
+      # 6.2.2 Literal Header Field without Indexing (0000xxxx)
+      name_idx = Table.find_name(@dynamic_table, field.name)
+      if name_idx > 0
+        Integer.encode(name_idx.to_u64, 4, 0x00_u8, buffer)
+        encode_string(field.value, buffer, huff)
+      else
+        buffer << 0x00_u8
+        encode_string(field.name, buffer, huff)
+        encode_string(field.value, buffer, huff)
+      end
     else
+      # IndexingMode::Incremental
       idx, exact = Table.find(@dynamic_table, field.name, field.value)
       if exact
-        # 6.1 Indexed Header Field
+        # 6.1 Indexed Header Field (1xxxxxxx)
         Integer.encode(idx.to_u64, 7, 0x80_u8, buffer)
       elsif idx > 0
-        # 6.2.1 Literal Header Field with Incremental Indexing, Indexed Name
+        # 6.2.1 Literal Header Field with Incremental Indexing, Indexed Name (01xxxxxx)
         Integer.encode(idx.to_u64, 6, 0x40_u8, buffer)
         encode_string(field.value, buffer, huff)
         @dynamic_table.add(field.name, field.value, false)
       else
-        # 6.2.1 Literal Header Field with Incremental Indexing, New Name
+        # 6.2.1 Literal Header Field with Incremental Indexing, New Name (01000000)
         buffer << 0x40_u8
         encode_string(field.name, buffer, huff)
         encode_string(field.value, buffer, huff)
