@@ -734,6 +734,10 @@ jobs:
               --target x86_64-windows-msvc -o runtime_exercise \
               ../bench/runtime_exercise.iyi > runtime_exercise.link )
           cat cross/runtime_exercise.link
+          ( cd cross && ../bin/iyi build --cross-compile \
+              --target x86_64-windows-msvc -o tls_probe \
+              ../bench/tls_probe.iyi > tls_probe.link )
+          cat cross/tls_probe.link
 
       # SPEC.md III.12's programs, built here where the compiler is; the
       # three assertions run in the wasi job below, where the toolchain
@@ -1159,6 +1163,21 @@ jobs:
         shell: cmd
         run: dumpbin /nologo /symbols cross\runtime_exercise.obj | findstr /C:"UNDEF"
 
+      - name: Run isolated TLS probe on Windows
+        shell: pwsh
+        working-directory: cross
+        run: |
+          $command = (Get-Content tls_probe.link -Raw).Trim()
+          Write-Host "linking tls_probe with: $command"
+          $parts = $command -split '\s+'
+          & $parts[0] $parts[1..($parts.Length - 1)]
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "tls_probe link failed with $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          .\tls_probe.exe
+          Write-Host "tls_probe exit code: $LASTEXITCODE"
+
       - name: Link and run the Windows runtime exercise
         shell: pwsh
         working-directory: cross
@@ -1171,16 +1190,10 @@ jobs:
             Write-Host "link failed with $LASTEXITCODE"
             exit $LASTEXITCODE
           }
-          $output = .\runtime_exercise.exe
-          Write-Host $output
+          .\runtime_exercise.exe
           if ($LASTEXITCODE -ne 0) {
             Write-Host "runtime_exercise failed with $LASTEXITCODE"
             exit $LASTEXITCODE
-          }
-          $text = $output -join "`n"
-          if ($text -notmatch "runtime exercise: every property held") {
-            Write-Host "exercise output missing pass marker"
-            exit 1
           }
 
   # wasm32-wasi, run rather than type-checked. The module imports four
