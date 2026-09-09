@@ -33,7 +33,7 @@ class String
   end
 
   protected def self.memory(bytes : Int32) : Pointer(UInt8)
-    {% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin) || flag?(:win32) || flag?(:wasm32)) %}
+    {% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin) || flag?(:wasm32)) %}
       IyiHeap.new_object(bytes.to_u64, "".crystal_type_id.to_u64, true, true).as(Pointer(UInt8))
     {% else %}
       memory = Pointer(UInt8).malloc(bytes.to_u64)
