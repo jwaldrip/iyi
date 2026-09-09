@@ -740,7 +740,10 @@ require "./file"
       end
 
       fun __iyi_release_pages(address : UInt64, length : UInt64) : Nil
-        LibC.VirtualFree(Pointer(Void).new(address), length, 0x4000_i32)
+        # On Windows, MEM_RESET (0x80000) advises the kernel that the pages can
+        # be discarded under memory pressure without decommitting the virtual address.
+        # Uncommitting with MEM_DECOMMIT causes 0xC0000005 on next access.
+        LibC.VirtualAlloc(Pointer(Void).new(address), length, 0x80000_i32, 4_i32)
       end
 
       fun __iyi_madvise(address : UInt64, length : UInt64, advice : Int64) : Nil
