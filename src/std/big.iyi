@@ -70,7 +70,7 @@ pub struct BigInt
 
   # Constructs a BigInt from an Int64.
   def self.new(val : Int64) : BigInt
-    return zero if val == 0_i64
+    return BigInt.zero if val == 0_i64
     if val < 0_i64
       sign = -1
       mag = val == -9223372036854775808_i64 ? 0x8000000000000000_u64 : (-val).to_u64
@@ -106,11 +106,9 @@ pub struct BigInt
   def self.parse(str : String, base : Int32 = 10) : BigInt
     raise "invalid base: #{base} (must be 2..36)" if base < 2 || base > 36
 
-    # Strip leading and trailing whitespace
-    bytes = str.to_slice
+    bytes = str.to_unsafe
     start_idx = 0
-    end_idx = bytes.size - 1
-
+    end_idx = str.bytesize - 1
     while start_idx <= end_idx && (bytes[start_idx] == 32_u8 || bytes[start_idx] == 9_u8 || bytes[start_idx] == 10_u8 || bytes[start_idx] == 13_u8)
       start_idx = start_idx + 1
     end
@@ -150,7 +148,7 @@ pub struct BigInt
     raise "invalid BigInt: empty digits after prefix" if start_idx > end_idx
 
     # Parse digits
-    result = zero
+    result = BigInt.zero
     radix_big = BigInt.new(actual_base.to_i64)
 
     # For base 10, parse in chunks of 9 digits to accelerate parsing
@@ -417,7 +415,7 @@ pub struct BigInt
     else
       c = cmp_abs(other)
       if c == 0
-        zero
+        BigInt.zero
       elsif c > 0
         res_limbs = sub_abs_limbs(@limbs, other.limbs)
         BigInt.new(@sign, res_limbs)
@@ -488,7 +486,7 @@ pub struct BigInt
 
   # Multiplication
   def *(other : BigInt) : BigInt
-    return zero if zero? || other.zero?
+    return BigInt.zero if zero? || other.zero?
     sign = @sign == other.sign ? 1 : -1
 
     res_limbs = if @limbs.size < KARATSUBA_THRESHOLD || other.limbs.size < KARATSUBA_THRESHOLD
@@ -596,18 +594,18 @@ pub struct BigInt
   # Division truncates towards zero; remainder follows the sign of the dividend (self).
   def divmod(other : BigInt) : Tuple(BigInt, BigInt)
     raise "division by zero" if other.zero?
-    return {zero, zero} if zero?
+    return {BigInt.zero, BigInt.zero} if zero?
 
     q_sign = @sign == other.sign ? 1 : -1
     r_sign = @sign # remainder sign follows dividend
 
     c = cmp_abs(other)
     if c < 0
-      return {zero, self}
+      return {BigInt.zero, self}
     elsif c == 0
       arr = Array(UInt64).new(1)
       arr << 1_u64
-      return {BigInt.new(q_sign, arr), zero}
+      return {BigInt.new(q_sign, arr), BigInt.zero}
     end
 
     # Single-limb divisor optimization: O(m) division
@@ -813,7 +811,7 @@ pub struct BigInt
   def **(exp : Int64) : BigInt
     raise "negative exponent: #{exp}" if exp < 0_i64
     return BigInt.one if exp == 0_i64
-    return zero if zero?
+    return BigInt.zero if zero?
 
     res = BigInt.one
     base = self
@@ -829,7 +827,7 @@ pub struct BigInt
   def **(exp : BigInt) : BigInt
     raise "negative exponent: #{exp}" if exp.negative?
     return BigInt.one if exp.zero?
-    return zero if zero?
+    return BigInt.zero if zero?
 
     res = BigInt.one
     base = self
@@ -848,7 +846,7 @@ pub struct BigInt
     raise "modulo by zero" if mod.zero?
     raise "modulus must be positive" if mod.negative?
     raise "negative exponent in pow_mod: #{exp}" if exp.negative?
-    return zero if mod == 1_i64
+    return BigInt.zero if mod == 1_i64
 
     # Ensure base is non-negative modulo mod
     base = self % mod
@@ -920,7 +918,7 @@ pub struct BigInt
 
     if positive?
       limb_shift = count // 32
-      return zero if limb_shift >= @limbs.size
+      return BigInt.zero if limb_shift >= @limbs.size
 
       bit_shift = (count % 32).to_u64
       res_size = @limbs.size - limb_shift
@@ -978,7 +976,7 @@ pub struct BigInt
   end
 
   # Helper: bitwise magnitude operation with sign inversion
-  private def twos_mag : BigInt
+  protected def twos_mag : BigInt
     abs - BigInt.one
   end
 
@@ -1022,7 +1020,7 @@ pub struct BigInt
       end
       -(BigInt.new(1, res) + BigInt.one)
     else
-      zero
+      BigInt.zero
     end
   end
 
@@ -1122,7 +1120,7 @@ pub struct BigInt
 
   # Converts this BigInt to a string in the given base (default 10).
   # Bases 2..36 supported. Digits above 9 are lowercase 'a'..'z'.
-  def to_s(base : Int32 = 10) : String
+  def to_s(base : Int32) : String
     raise "invalid base: #{base} (must be 2..36)" if base < 2 || base > 36
     return "0" if zero?
 
@@ -1305,7 +1303,7 @@ pub struct BigInt
     i = 0
     while i < @limbs.size
       limb = @limbs[i]
-      h = ((h.unsafe_shl(5)) - h) ^ limb.to_i32!
+      h = ((h.unsafe_shl(5)) - h) ^ (limb & 0x7FFFFFFF_u64).to_i32
       i = i + 1
     end
     h
@@ -1324,11 +1322,13 @@ end
 
 impl Num for BigInt
   def self.zero : self
-    BigInt.zero
+    BigInt.new(0, Array(UInt64).new)
   end
 
   def self.one : self
-    BigInt.one
+    arr = Array(UInt64).new(1)
+    arr << 1_u64
+    BigInt.new(1, arr)
   end
 
   def add(other : self) : self
@@ -1346,14 +1346,54 @@ impl Hashable for BigInt
   end
 end
 
-struct Int64
+struct ::Int64
   def to_big : Std::Big::BigInt
     Std::Big::BigInt.new(self)
   end
+
+  def +(other : Std::Big::BigInt) : Std::Big::BigInt
+    to_big + other
+  end
+
+  def -(other : Std::Big::BigInt) : Std::Big::BigInt
+    to_big - other
+  end
+
+  def *(other : Std::Big::BigInt) : Std::Big::BigInt
+    to_big * other
+  end
+
+  def ==(other : Std::Big::BigInt) : Bool
+    other == self
+  end
+
+  def <=>(other : Std::Big::BigInt) : Int32
+    to_big <=> other
+  end
 end
 
-struct Int32
+struct ::Int32
   def to_big : Std::Big::BigInt
     Std::Big::BigInt.new(self.to_i64)
+  end
+
+  def +(other : Std::Big::BigInt) : Std::Big::BigInt
+    to_big + other
+  end
+
+  def -(other : Std::Big::BigInt) : Std::Big::BigInt
+    to_big - other
+  end
+
+  def *(other : Std::Big::BigInt) : Std::Big::BigInt
+    to_big * other
+  end
+
+  def ==(other : Std::Big::BigInt) : Bool
+    other == self
+  end
+
+  def <=>(other : Std::Big::BigInt) : Int32
+    to_big <=> other
   end
 end
