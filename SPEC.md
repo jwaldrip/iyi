@@ -63,7 +63,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 14,380 lines, of which 4,623 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
+| iyi's own prelude | 14,388 lines, of which 4,631 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -88,7 +88,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 14,380 lines
+> "No standard library worth the name" is still true of iyi's own 14,388 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -270,8 +270,8 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 14,380 lines,
-primitives included, of which the library is 4,623.** Not a standard library:
+**3. A deliberately tiny prelude, written in iyi. Done: 14,388 lines,
+primitives included, of which the library is 4,631.** Not a standard library:
 integers, booleans, a string, one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
 existing sample needs it, never because it belongs there.
@@ -297,14 +297,15 @@ collector (GC_DESIGN.md, the block between two marks in `prelude.iyi`),
 the scheduler and the kernel thread (III.4, `concurrency.iyi` and
 `thread.iyi`), the shortest-round-trip float text (`float.iyi`) - and they
 are most of its lines. So the figure held to the ceiling is the library:
-**4,623 lines** of the 13,581, measured by `bench/doc_numbers.py` as
+**4,631 lines** of the 13,581, measured by `bench/doc_numbers.py` as
 everything under `src/iyi/` except those three. The whole-prelude figure is
 stated beside it because a reader sees the whole file, and a "tiny prelude"
 claim that hid 9,000 lines of runtime would be a claim about the wrong number.
 
 **The ceiling is breached, and this records it rather than moving it.** The
 library was under 3,734 until `io.iyi`, `socket.iyi` and `format.iyi` were
-written, and those three carry it to 4,623, which is 889 lines over. Each was
+written, which is what took it past the ceiling, and the platform work since
+has carried it to 4,631, 897 lines over. Each module was
 added for the reason the rule allows, a program in this repository needs it,
 and together they are still more than the rule intended to permit. Two answers
 are open and neither is taken here: the ceiling was Crystal's *core* and a
@@ -817,7 +818,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 106,314 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 14,380-line own prelude + 778 in samples |
+| Library | 8,161 lines (3,551 of it core) | 14,388-line own prelude + 778 in samples |
 | Specs | 21,146 lines | 9,503 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -2578,9 +2579,9 @@ what the build corrected) — a *dynamic* group's union still
 comes out through `task.value`; a fiber blocked *joining* is the one park
 cancellation does not reach, which a failing group papers over by
 cancelling every child; and the platforms that cannot carry the model get
-nothing rather than an imitation — wasm32 cannot switch stacks, and win32
-is unwritten. darwin arm64 stopped being one of them: its kqueue poller is
-the paragraph above, and it holds the same gates in CI.
+nothing rather than an imitation: wasm32 cannot switch stacks (measured in
+III.4.12), and win32 is unwritten. darwin arm64 stopped being one of them:
+its kqueue poller is the paragraph above, and it holds the same gates in CI.
 
 #### III.4.9 The typed group, `group do ... end!`: **BUILT, with one correction the build forced**
 
@@ -2821,6 +2822,91 @@ total paused a fortieth to a tenth of Boehm's, the longest pause under
 Go's on churn and binary trees and level on the live items, and the
 footprint Go's on churn and binary trees and a budget over it on the
 live items.
+
+#### III.4.12 Concurrency on wasm32-wasi: **MEASURED and REFUSED: why this target has no runtime**
+
+SPEC.md III.4 specifies structured concurrency (`group`/`spawn`, `Channel`,
+`select`, cancellation as values) on Linux x86_64, Linux aarch64 and darwin
+arm64. On wasm32-wasi a program naming `group` fails to compile with an
+explicit refusal. III.4.8 rejected shipping the syntax as sequential
+imitation, because a `group` whose tasks run sequentially is not concurrency
+and would teach everyone the wrong thing about what iyi does.
+
+This section records the investigation into whether wasm32-wasi could support
+real coroutines, what each candidate mechanism costs, what specifically blocks
+it on this toolchain, and what would have to change for the verdict to flip.
+The probe is `bench/wasm_concurrency_probe.sh`.
+
+**1. Native WebAssembly stack switching.** Core WebAssembly has an unaddressable
+call stack and value stack. The stack-switching proposal adds instructions to
+allocate, suspend, resume and switch stacks. In wasmtime 48.0.1 (7bac2c277
+2026-08-24), `wasmtime -W help` lists `-W stack-switching[=y|n]`, but passing
+the flag to run a module fails immediately:
+
+```
+Error: the wasm_stack_switching feature is not supported on this compiler configuration
+```
+
+Passing `-W all-proposals=y` fails with the same error. Cranelift and Wasmtime
+disable stack switching at compile time in shipped binaries. Native stack
+switching is unavailable on the host.
+
+**2. WASI threads (wasi-threads Preview1).** wasi-sdk 24 ships
+`wasm32-wasi-threads-clang`. Compiling a pthread program with `-pthread
+-Wl,--shared-memory,--max-memory=67108864` produces a module importing
+`wasi::thread-spawn`. Running under wasmtime 48.0.1 fails by default:
+
+```
+Error: unknown import: `wasi::thread-spawn` has not been defined
+```
+
+Attempting to enable threading via `wasmtime run -S threads=y` fails:
+
+```
+Error: the `-Sthreads` flag is no longer supported
+```
+
+Attempting `wasmtime run -S preview2=n -S threads=y` fails with `the
+\`-Spreview2=n\` flag is no longer supported`. Wasmtime 48.0.1 removed the
+legacy Preview1 wasi-threads implementation. Furthermore, SPEC.md III.9
+forbids linking pthreads, which would reintroduce libc onto the link line and
+destroy the dependency floor.
+
+**3. Binaryen Asyncify (wasm-opt --asyncify).** Binaryen provides a post-link
+whole-module transformation that rewrites function bodies to unwind the call
+stack into a linear-memory buffer and rewind it upon re-entry. Tested on real
+binaries under wasmtime 48.0.1, Asyncify is blocked by architecture and toolchain:
+
+- **Asymmetric host requirement.** Asyncify unwinding unwinds the entire call
+  stack out of `main` and `_start`. Standalone WASI CLI hosts (`wasmtime run`)
+  do not provide an Asyncify host runner to intercept the unwind and re-invoke
+  entry points. In-module attempts to unwind without a host trap or exit the
+  process without resumption.
+- **Code size penalty.** Whole-module instrumentation increases binary size
+  substantially: 120,442 B to 182,811 B (+51.8%) on `samples/iyi/hello.iyi`, and
+  80,227 B to 141,802 B (+76.7%) on `fib.iyi`.
+- **Execution slowdown.** On recursive Fibonacci (32) under wasmtime 48.0.1,
+  native execution averaged 18.2 ms (min 16.7 ms); asyncified execution
+  averaged 37.7 ms (min 33.8 ms), a 106.9% slowdown (2.07x wall time).
+- **Build toolchain boundary.** The iyi compiler compiles wasm by emitting an
+  unlinked object file and printing the driver link command. `wasm-opt` is a
+  separate post-link binary that neither iyi nor wasi-sdk 24 packages, which
+  would violate III.9's toolchain floor.
+
+**The refusal.** `group` remains a compile-time error on wasm32-wasi. The macro
+in `src/iyi/prelude.iyi` names the reason:
+
+```
+group is not available on wasm32-wasi: WebAssembly cannot switch stacks, wasmtime 48 disables the stack-switching proposal, wasi-threads is unsupported, and asyncify cannot run without a host event loop (SPEC.md III.4)
+```
+
+**What would have to change for the answer to flip.** For wasm32-wasi to carry
+iyi's structured concurrency, the host runtime and toolchain must provide
+native stack switching out of the box: either the Wasm stack-switching proposal
+stabilised and enabled by default in Cranelift/Wasmtime without extra flags, or
+WASI 0.2/0.3 component-model async execution supporting stackful fibers directly.
+Neither a sequential imitation nor a post-link bytecode transformation is
+acceptable.
 
 ### III.5 Module initialisation: **PROPOSED; rules 1, 2 and 4 BUILT**
 
@@ -8289,7 +8375,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 14,380-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 14,388-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler

@@ -47,6 +47,14 @@ require "./format"
   # A kernel thread, and the stop-the-world over them (GC_DESIGN.md Stage
   # 4); the file itself says which builds get one.
   require "./thread"
+{% elsif flag?(:wasm32) %}
+  # wasm32-wasi has no concurrency runtime (SPEC.md III.4): core WebAssembly
+  # has no stack-switching instruction, wasmtime 48 disables the stack-switching
+  # proposal, wasi-threads is unsupported, and asyncify cannot run without a host event loop.
+  # The compile error names the refusal rather than leaving `group` undefined.
+  macro group(*args, **kwargs)
+    \{% raise "group is not available on wasm32-wasi: WebAssembly cannot switch stacks, wasmtime 48 disables the stack-switching proposal, wasi-threads is unsupported, and asyncify cannot run without a host event loop (SPEC.md III.4)" %}
+  end
 {% end %}
 
 # The runtime's one lock: what the allocator's centre, the scheduler's
