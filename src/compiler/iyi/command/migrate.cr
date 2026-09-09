@@ -108,7 +108,12 @@ class Iyi::Command
     out_dir ||= abort!("migrate: --out DIR is where the modules go", :USAGE_ERROR)
     src = File.expand_path(src)
     out_dir = File.expand_path(out_dir)
-    abort! "migrate: --out #{out_dir} is inside #{src}; the modules would be migrated again", :USAGE_ERROR if out_dir.starts_with?(src + "/")
+    # Writing the modules into the tree being read mixes the two languages
+    # in one directory and hands the *next* run its own output as source.
+    # `--out src` did it, and left a `src/src` behind.
+    if out_dir == src || out_dir.starts_with?(src + "/")
+      abort! "migrate: --out #{out_dir} is inside the tree it reads (#{src}); the modules go beside it, not into it", :USAGE_ERROR
+    end
 
     files = Dir.glob(File.join(src, "**", "*.cr")).sort
     abort! "migrate: no .cr under #{src}", :USAGE_ERROR if files.empty?
@@ -116,7 +121,6 @@ class Iyi::Command
     # Which root namespaces are the tree's own, and which belong to the
     # library it is written against. A declaration under a name the
     # library already owns is a reopening (rule 6) whether it is written
-    # `struct Int32` or `class Log::Metadata`, and the only authority on
     # that is the library: the compiler is asked, once, by analysing a
     # program that is nothing but the prelude.
     library = Compiler.new

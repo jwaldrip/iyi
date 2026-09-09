@@ -54,7 +54,9 @@
   the class, and ordering them first left `abstract class` as a second
   definition the other language ignores. `exception_page` 3 of 3,
   `radix` 5 of 5, `dotenv` 1 of 1, `jwt` 5 of 7, `faker` 2 of 3,
-  `micrate` 4 of 8. And when `--check` comes back clean the verb says
+  `micrate` 4 of 8. `--out src` used to write the modules into the tree
+  it was reading and leave a `src/src` behind; it is refused, and the
+  gate holds the source tree untouched. And when `--check` comes back clean the verb says
   what to type next: the build command with the entry filled in, the
   per-module check an editor asks on every change, and `iyi bind`.
 - **`iyi migrate`: a Crystal project, written out as iyi modules.**

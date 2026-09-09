@@ -179,6 +179,21 @@ fi
 # initialiser of any module that uses it, which means the entry's own
 # `require` cannot be spliced after the imported modules' initialisers
 # (semantic.cr, `splice_iyi_module_initialisers`).
+# `--out src` wrote the modules into the tree it was reading and left a
+# `src/src` behind. A verb whose first mistake edits the project is not one
+# a person tries twice.
+echo "== the verb refuses to write into the tree it reads"
+if (cd "$FIXTURE" && "$IYI" migrate src --out src > "$WORK/into.log" 2>&1); then
+  step fail "migrate --out src was accepted"
+else
+  holds "and says where the modules go" "the modules go beside it, not into it" "$WORK/into.log"
+fi
+if [ -n "$(find "$FIXTURE/src" -name '*.iyi' -print -quit)" ]; then
+  step fail "the source tree has .iyi files in it"
+else
+  step ok "the source tree is untouched"
+fi
+
 echo "== a required file's top-level code runs before an import's initialiser"
 mkdir -p "$WORK/order"
 cat > "$WORK/order/registry.cr" <<'CR'
