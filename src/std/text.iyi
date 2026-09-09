@@ -865,7 +865,7 @@ class ::String
 
   def each_line(& : String -> Nil) : Nil
     lines.each do |line|
-      yield line
+      yield line.chomp('\r')
     end
   end
 
