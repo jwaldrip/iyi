@@ -119,6 +119,23 @@
   end
 
   puts "allocation: size classes, alignment and headers verified"
+  # 1b. Dynamic String allocation, case conversion, and concatenation
+  shout = "hello, iyi!".upcase
+  beep = "BEEP " + 7.to_s
+  raise "upcase wrong" if shout != "HELLO, IYI!"
+  raise "beep wrong" if beep != "BEEP 7"
+
+  bad = 0
+  index = 0
+  while index < 50000
+    shout = "hello, iyi!".upcase
+    beep = "BEEP " + index.to_s
+    bad = bad + 1 if shout != "HELLO, IYI!"
+    bad = bad + 1 if beep.size < 6
+    index = index + 1
+  end
+  raise "string loop bad" if bad != 0
+  puts "strings: 50000 string allocations verified"
 
   # 2. Stack and TEB Roots
   sp = IyiRoots.stack_pointer

@@ -5492,8 +5492,13 @@ require "./file"
         scavenge
         begin_sweep
         sweep_large
-        while eager && sweep_one_held
-        end
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
+          while eager && sweep_one_held
+          end
+        {% else %}
+          while sweep_one_held
+          end
+        {% end %}
         IyiHeap.allocated_word.value.set(0_u64)
         # The next budget: twice what the mark found live (Go's GOGC=100),
         # floored at MIN_BUDGET so a small program pays nothing. The mark

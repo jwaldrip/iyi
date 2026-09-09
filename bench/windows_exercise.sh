@@ -27,7 +27,7 @@ else
   status=1
 fi
 
-for check in "allocation:" "stack:" "globals:" "registers:" "survival:" "sweep:" "reuse:" "windows exercise: every check passed"; do
+for check in "allocation:" "strings:" "stack:" "globals:" "registers:" "survival:" "sweep:" "reuse:" "windows exercise: every check passed"; do
   if grep -q "$check" "$WORK/host.out"; then
     echo "  verified: $check"
   else
