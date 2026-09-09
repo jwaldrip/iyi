@@ -46,19 +46,19 @@ using std/hpack::{Integer, Huffman, HpackError}
 # Qpack Error Codes and Error Structure
 # ---------------------------------------------------------------------------
 
-QPACK_DECOMPRESSION_FAILED = 0x0200_u32
-QPACK_ENCODER_STREAM_ERROR = 0x0201_u32
-QPACK_DECODER_STREAM_ERROR = 0x0202_u32
+QPACK_DECOMPRESSION_FAILED = 0x0200_u64
+QPACK_ENCODER_STREAM_ERROR = 0x0201_u64
+QPACK_DECODER_STREAM_ERROR = 0x0202_u64
 
 pub struct QpackError
-  getter code : UInt32
+  getter code : UInt64
   getter message : String
 
-  def initialize(@code : UInt32, @message : String)
+  def initialize(@code : UInt64, @message : String)
   end
 
   def to_s : String
-    "QpackError(0x#{@code.to_s(16)}): #{@message}"
+    "QpackError(0x#{@code.to_s}): #{@message}"
   end
 end
 
@@ -113,7 +113,7 @@ end
 # ---------------------------------------------------------------------------
 # Static Table (RFC 9204 Appendix A, 99 entries)
 # ---------------------------------------------------------------------------
-STATIC_TABLE = [
+pub STATIC_TABLE = [
   TableEntry.new(":authority", ""),
   TableEntry.new(":path", "/"),
   TableEntry.new("age", "0"),
@@ -216,6 +216,9 @@ STATIC_TABLE = [
 ]
 
 # ---------------------------------------------------------------------------
+pub class Qpack
+  STATIC_TABLE = Std::Qpack::STATIC_TABLE
+
 # Static Table Lookups
 # ---------------------------------------------------------------------------
 
@@ -308,7 +311,7 @@ end
 # ---------------------------------------------------------------------------
 
 def self.encode_prefix(req_insert_count : Int64, base : Int64, max_table_capacity : Int32, buffer : Array(UInt8)) : Nil
-  max_entries = max_table_capacity / 32
+  max_entries = max_table_capacity // 32
   if req_insert_count == 0_i64
     Integer.encode(0_u64, 8, 0_u8, buffer)
     Integer.encode(0_u64, 7, 0_u8, buffer)
@@ -334,7 +337,7 @@ def self.decode_prefix(bytes : Bytes, offset : Int32, total_inserts : Int64, max
   enc_ric = res_ric[0].to_i64
   offset = res_ric[1]
 
-  max_entries = max_table_capacity / 32
+  max_entries = max_table_capacity // 32
   full_range = (2 * max_entries).to_i64
 
   req_insert_count = 0_i64
@@ -345,7 +348,7 @@ def self.decode_prefix(bytes : Bytes, offset : Int32, total_inserts : Int64, max
       return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Invalid EncodedInsertCount: #{enc_ric}")
     end
     max_value = total_inserts + max_entries.to_i64
-    max_wrapped = (max_value / full_range) * full_range
+    max_wrapped = (max_value // full_range) * full_range
     req_insert_count = max_wrapped + enc_ric - 1_i64
     if req_insert_count > max_value
       if req_insert_count <= full_range
@@ -399,6 +402,8 @@ def self.encode_insert_count_increment(increment : UInt64, buffer : Array(UInt8)
 end
 
 # ---------------------------------------------------------------------------
+end
+
 # Dynamic Table (RFC 9204 Section 3.2)
 # ---------------------------------------------------------------------------
 
@@ -419,7 +424,7 @@ pub class DynamicTable
   end
 
   def max_entries : Int32
-    @max_capacity / 32
+    @max_capacity // 32
   end
 
   def set_capacity(new_cap : Int32) : Nil | QpackError
@@ -583,8 +588,8 @@ pub class Encoder
     nil
   end
 
-  def encode(stream_id : UInt64, fields : Array(FieldLine), encoder_stream : Array(UInt8), field_section : Array(UInt8), allow_indexing : Bool = true, use_huffman : Bool = false) : Nil | QpackError
-    base = @dynamic_table.insert_count
+  def encode(stream_id : UInt64, fields : Array(FieldLine), encoder_stream : Array(UInt8), field_section : Array(UInt8), allow_indexing : Bool = true, use_huffman : Bool = false, base : Int64? = nil) : Nil | QpackError
+    actual_base = base ? base : @dynamic_table.insert_count
     req_insert_count = 0_i64
     stream_buf = [] of UInt8
     referenced_indices = [] of Int64
@@ -603,7 +608,7 @@ pub class Encoder
       if d_idx
         req_insert_count = d_idx + 1_i64 if d_idx + 1_i64 > req_insert_count
         referenced_indices << d_idx
-        encode_dynamic_indexed(stream_buf, base, d_idx)
+        encode_dynamic_indexed(stream_buf, actual_base, d_idx)
         next
       end
 
@@ -628,7 +633,7 @@ pub class Encoder
         new_abs_idx = @dynamic_table.insert_count - 1_i64
         req_insert_count = new_abs_idx + 1_i64 if new_abs_idx + 1_i64 > req_insert_count
         referenced_indices << new_abs_idx
-        encode_dynamic_indexed(stream_buf, base, new_abs_idx)
+        encode_dynamic_indexed(stream_buf, actual_base, new_abs_idx)
         next
       end
 
@@ -645,13 +650,13 @@ pub class Encoder
         if d_name_idx
           req_insert_count = d_name_idx + 1_i64 if d_name_idx + 1_i64 > req_insert_count
           referenced_indices << d_name_idx
-          if d_name_idx < base
-            rel_idx = (base - 1_i64 - d_name_idx).to_u64
+          if d_name_idx < actual_base
+            rel_idx = (actual_base - 1_i64 - d_name_idx).to_u64
             prefix_byte = 0x40_u8 | (field.never_index ? 0x20_u8 : 0x00_u8)
             Integer.encode(rel_idx, 4, prefix_byte, stream_buf)
             Qpack.encode_string(field.value, 8, 0_u8, stream_buf, use_huffman: use_huffman)
           else
-            post_base_idx = (d_name_idx - base).to_u64
+            post_base_idx = (d_name_idx - actual_base).to_u64
             prefix_byte = field.never_index ? 0x08_u8 : 0x00_u8
             Integer.encode(post_base_idx, 3, prefix_byte, stream_buf)
             Qpack.encode_string(field.value, 8, 0_u8, stream_buf, use_huffman: use_huffman)
@@ -667,7 +672,7 @@ pub class Encoder
     end
 
     # Prepend prefix
-    Qpack.encode_prefix(req_insert_count, base, @max_table_capacity, field_section)
+    Qpack.encode_prefix(req_insert_count, actual_base, @max_table_capacity, field_section)
     stream_buf.each { |b| field_section << b }
 
     if req_insert_count > 0_i64
@@ -842,7 +847,7 @@ pub class Decoder
     if req_insert_count > @dynamic_table.insert_count
       # Stream is blocked!
       # Check if req_insert_count can ever be satisfied
-      max_entries = @max_table_capacity / 32
+      max_entries = @max_table_capacity // 32
       if max_entries == 0 || req_insert_count > (@dynamic_table.insert_count + max_entries.to_i64)
         return QpackError.new(QPACK_DECOMPRESSION_FAILED, "Required Insert Count #{req_insert_count} can never be satisfied with max capacity #{@max_table_capacity}")
       end
