@@ -198,7 +198,7 @@ class Iyi::Command
   end
 
   private def run_one_test(file : String, deadline : Float64) : {file: String, status: String, seconds: Float64, output: String}
-    started = Time.monotonic
+    started = Time.instant
     output = IO::Memory.new
 
     binary = File.tempname("iyi-test", nil)
@@ -229,8 +229,8 @@ class Iyi::Command
     end
   end
 
-  private def elapsed(started : Time::Span) : Float64
-    (Time.monotonic - started).total_seconds.round(3)
+  private def elapsed(started : Time::Instant) : Float64
+    (Time.instant - started).total_seconds.round(3)
   end
 
   private def test_usage

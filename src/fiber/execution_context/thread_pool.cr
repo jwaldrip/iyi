@@ -93,7 +93,7 @@ class Fiber
           # OPTIMIZE: allocate minimum stack size
           pointer = Crystal::System::Fiber.allocate_stack(StackPool::STACK_SIZE, protect: true)
           stack = Stack.new(pointer, StackPool::STACK_SIZE, reusable: true)
-          Fiber.new(execution_context: ExecutionContext.default) { enter_thread_loop(@main_thread) }
+          Fiber.new(nil, stack, ExecutionContext.default) { enter_thread_loop(@main_thread) }
         end
       end
 
@@ -126,7 +126,12 @@ class Fiber
             end
 
             @mutex.synchronize do
-              @pool.push pointerof(parked)
+              # pthread_cond_wait happens to return zero without being signaled
+              # (Darwin targets at least), so we make sure to only add the
+              # thread to the pool once:
+              unless parked.linked?
+                @pool.push pointerof(parked)
+              end
             end
 
             if thread == @main_thread || {% flag?(:win32) && Crystal::EventLoop.has_constant?(:IOCP) %}
