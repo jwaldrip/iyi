@@ -4344,7 +4344,7 @@ require "./socket"
       # a parked helper spins, fifteen of them on three cores held the
       # parallel mark's exercise past its five minutes.
       def self.workers=(count : UInt64) : Nil
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
           cap = default_helpers
           count = cap if count > cap
         {% end %}
@@ -4365,7 +4365,7 @@ require "./socket"
         {% end %}
       end
 
-      {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+      {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
       def self.default_helpers : UInt64
         cores = IyiThread.core_count
         cores = 16_u64 if cores > 16_u64
@@ -4834,14 +4834,14 @@ require "./socket"
       # Whether helpers are at a round right now: the allocating thread
       # spins on a class's batch only while one is coming.
       def self.helpers_sweeping? : Bool
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
           @@helpers > 0_u64 && @@sweep_left != 0_u64 && pool_word(POOL_SWEEP).value.get != 0_u64
         {% else %}
           false
         {% end %}
       end
 
-      {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+      {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
         # A helper's turn of the round: one slice, the way an allocating
         # thread takes one - so three helpers are on one arena at once,
         # and the arena a program churns through is swept three times
@@ -4941,7 +4941,7 @@ require "./socket"
       # An allocating thread about to wait on a class names it for the
       # helpers; the last to name one is the one they read.
       def self.sweep_wanted(index : Int32) : Nil
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
           pool_word(POOL_SWEEP_WANTED).value.set(index.to_u64 + 1_u64)
         {% end %}
       end
@@ -5457,7 +5457,7 @@ require "./socket"
       end
 
       def self.collect_if_due : Nil
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
           # Helper 0 takes a concurrent mark's second stop, and a stop
           # names registered threads only: a program that never started a
           # thread has a main thread with no line until here, and the
@@ -5475,7 +5475,7 @@ require "./socket"
           return
         end
         @@collecting = true
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
           start_helpers(@@helpers_wanted)
           close_sweep_round
           if concurrent_possible?
@@ -5497,7 +5497,7 @@ require "./socket"
         collect_locked(false)
         @@collecting = false
         IyiRuntimeLock.unlock
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
           wake_sweep_round
         {% end %}
       end
@@ -5520,7 +5520,7 @@ require "./socket"
           IyiRuntimeLock.lock
         end
         @@collecting = true
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
           close_sweep_round
         {% end %}
         collect_locked(true)
@@ -5573,7 +5573,7 @@ require "./socket"
         scavenge
         begin_sweep
         sweep_large
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
           while eager && sweep_one_held
           end
         {% else %}
@@ -5587,8 +5587,10 @@ require "./socket"
         # blackened it — which is what lets the sweep be lazy: the budget
         # no longer waits on a sweep to count.
         @@budget = next_budget(@@bytes_marked)
-        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+        {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
           open_sweep_round
+          IyiThread.resume_others(others)
+        {% elsif flag?(:win32) && flag?(:x86_64) %}
           IyiThread.resume_others(others)
         {% end %}
         pause = now_ns - started
@@ -5603,7 +5605,7 @@ require "./socket"
         budget == 0 ? MIN_BUDGET : budget
       end
 
-      {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+      {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) %}
         # ── The mark beside the program — GC_DESIGN.md Stage 9 ──────────────
         #
         # Two stops instead of one. The first is the roots: every thread

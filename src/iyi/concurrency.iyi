@@ -483,14 +483,13 @@ class IyiFiber
       entry_sp = top - 40_u64
       ret_slot = entry_sp - 8_u64
       Pointer(UInt64).new(ret_slot).value = __iyi_fiber_entry_address
-      sb_slot = ret_slot - 8_u64
-      sl_slot = sb_slot - 8_u64
-      Pointer(UInt64).new(sb_slot).value = top
-      Pointer(UInt64).new(sl_slot).value = base + PAGE
-      saved = sl_slot - 64_u64
+
+      saved = ret_slot - 80_u64
+      Pointer(UInt64).new(saved + 0_u64).value = base + PAGE
+      Pointer(UInt64).new(saved + 8_u64).value = top
       index = 0_i64
       while index < 8_i64
-        (Pointer(UInt64).new(saved) + index).value = 0_u64
+        Pointer(UInt64).new(saved + 16_u64 + index * 8_u64).value = 0_u64
         index = index + 1
       end
       @sp = saved
