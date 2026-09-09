@@ -1,0 +1,249 @@
+# Text processing standard library exercise.
+#
+#   ./bin/iyi run bench/std_text_exercise.iyi
+#
+# Exercises the entire Char and String surface provided by std/text:
+# ASCII predicates, case conversion, integer and float parsing with failure stories,
+# strip/chomp/chop, splitting and partitioning, search and index, sub and gsub,
+# transformations (tr, squeeze, delete, count, center), UTF-8 decoding and
+# encoding preservation, and collection joining.
+#
+# Every section prints a progress line and raises on mismatch.
+
+import std/text
+
+# 1. Char inspection and ASCII predicates
+raise "char: ascii_letter lowercase" unless 'a'.ascii_letter?
+raise "char: ascii_letter uppercase" unless 'Z'.ascii_letter?
+raise "char: ascii_letter negative" if '5'.ascii_letter?
+raise "char: ascii_number positive" unless '9'.ascii_number?
+raise "char: ascii_number negative" if 'x'.ascii_number?
+raise "char: ascii_lowercase positive" unless 'k'.ascii_lowercase?
+raise "char: ascii_lowercase negative" if 'K'.ascii_lowercase?
+raise "char: ascii_uppercase positive" unless 'M'.ascii_uppercase?
+raise "char: ascii_uppercase negative" if 'm'.ascii_uppercase?
+raise "char: ascii_alphanumeric letter" unless 'q'.ascii_alphanumeric?
+raise "char: ascii_alphanumeric digit" unless '3'.ascii_alphanumeric?
+raise "char: ascii_alphanumeric symbol" if '!'.ascii_alphanumeric?
+raise "char: ascii_whitespace space" unless ' '.ascii_whitespace?
+raise "char: ascii_whitespace tab" unless '\t'.ascii_whitespace?
+raise "char: ascii_whitespace newline" unless '\n'.ascii_whitespace?
+raise "char: ascii_whitespace non-space" if 'a'.ascii_whitespace?
+raise "char: ord" unless 'A'.ord == 65
+puts "    char inspection: letter, number, case, alphanumeric, whitespace, and ord verified"
+
+# 2. Case conversion (Char and String)
+raise "char: upcase" unless 'g'.upcase == 'G'
+raise "char: upcase non-letter" unless '1'.upcase == '1'
+raise "char: downcase" unless 'G'.downcase == 'g'
+raise "char: downcase non-letter" unless '?'.downcase == '?'
+raise "string: capitalize standard" unless "hello WORLD".capitalize == "Hello world"
+raise "string: capitalize empty" unless "".capitalize == ""
+raise "string: capitalize single" unless "a".capitalize == "A"
+puts "    case conversion: char upcase, downcase, and string capitalize verified"
+
+# 3. Conversions with failure stories (Char and String)
+raise "char: to_i decimal" unless '7'.to_i == 7
+raise "char: to_i? valid" unless '4'.to_i? == 4
+raise "char: to_i? invalid" unless 'x'.to_i?.nil?
+raise "char: to_i hex" unless 'f'.to_i(16) == 15
+raise "char: to_i? hex invalid" unless 'z'.to_i?(16).nil?
+
+raise "string: to_i base 16" unless "ff".to_i(16) == 255
+raise "string: to_i base 2 negative" unless "-1010".to_i(2) == -10
+raise "string: to_i base 8 plus" unless "+77".to_i(8) == 63
+raise "string: to_i? invalid base" unless "89".to_i?(8).nil?
+raise "string: to_i? empty" unless "".to_i?(10).nil?
+
+raise "string: to_i64 plain" unless "9000000000".to_i64 == 9000000000_i64
+raise "string: to_i64 base 16" unless "100000000".to_i64(16) == 4294967296_i64
+raise "string: to_i64? invalid" unless "not_a_num".to_i64?.nil?
+raise "string: to_i64? base invalid" unless "zz".to_i64?(10).nil?
+
+raise "string: to_f? standard" unless "12.34".to_f? == 12.34
+raise "string: to_f? exponent" unless "-0.5e2".to_f? == -50.0
+raise "string: to_f? leading dot" unless ".5".to_f? == 0.5
+raise "string: to_f? trailing dot" unless "7.".to_f? == 7.0
+nan_val = "NaN".to_f?
+raise "string: to_f? nan" unless nan_val && nan_val != nan_val
+raise "string: to_f? invalid text" unless "bad".to_f?.nil?
+raise "string: to_f? double dot" unless "1.2.3".to_f?.nil?
+raise "string: to_f? double sign" unless "--5".to_f?.nil?
+raise "string: to_f? empty" unless "".to_f?.nil?
+puts "    base conversion: to_i, to_i64 with bases 2..36, and nilable to_f? verified"
+
+# 4. Whitespace, strip, chomp, chop, and blank/presence
+raise "string: blank? true" unless "  \t\r\n ".blank?
+raise "string: blank? empty" unless "".blank?
+raise "string: blank? false" if "  a  ".blank?
+raise "string: presence blank" unless "   ".presence.nil?
+raise "string: presence non-blank" unless "word".presence == "word"
+
+raise "string: lstrip" unless "  hi  ".lstrip == "hi  "
+raise "string: lstrip char" unless "===test===".lstrip('=') == "test==="
+raise "string: lstrip chars" unless "<({[test]})>".lstrip("<({[") == "test]})>"
+raise "string: rstrip" unless "  hi  ".rstrip == "  hi"
+raise "string: rstrip char" unless "===test===".rstrip('=') == "===test"
+raise "string: rstrip chars" unless "<({[test]})>".rstrip("]})>") == "<({[test"
+raise "string: strip char" unless "---mid---".strip('-') == "mid"
+raise "string: strip chars" unless "/* comment */".strip("/* ") == "comment"
+
+raise "string: chomp crlf" unless "line\r\n".chomp == "line"
+raise "string: chomp lf" unless "line\n".chomp == "line"
+raise "string: chomp cr" unless "line\r".chomp == "line"
+raise "string: chomp suffix" unless "file.tar.gz".chomp(".gz") == "file.tar"
+raise "string: chomp non-suffix" unless "file.tar".chomp(".gz") == "file.tar"
+raise "string: chop crlf" unless "line\r\n".chop == "line"
+raise "string: chop char" unless "word!".chop == "word"
+raise "string: chop empty" unless "".chop == ""
+
+raise "string: ends_with? char true" unless "hello".ends_with?('o')
+raise "string: ends_with? char false" if "hello".ends_with?('h')
+puts "    strip and chomp: blank, presence, lstrip, rstrip, strip, chomp, and chop verified"
+
+# 5. Split, join, partition, and rpartition
+sp1 = "  apple   banana   cherry  ".split
+raise "string: split whitespace" unless sp1.size == 3 && sp1[0] == "apple" && sp1[1] == "banana" && sp1[2] == "cherry"
+
+sp2 = "one two three four".split(2)
+raise "string: split limit" unless sp2.size == 2 && sp2[0] == "one" && sp2[1] == "two three four"
+
+sp3 = "a::b::c::d".split("::")
+raise "string: split str" unless sp3.size == 4 && sp3[1] == "b"
+
+sp4 = "a::b::c::d".split("::", 3)
+raise "string: split str limit" unless sp4.size == 3 && sp4[2] == "c::d"
+
+sp5 = "x,y,z,w".split(',', 2)
+raise "string: split char limit" unless sp5.size == 2 && sp5[1] == "y,z,w"
+
+part1 = "host:port:8080".partition(":")
+raise "string: partition found" unless part1[0] == "host" && part1[1] == ":" && part1[2] == "port:8080"
+
+part2 = "nohost".partition(":")
+raise "string: partition not found" unless part2[0] == "nohost" && part2[1] == "" && part2[2] == ""
+
+part3 = "key=value".partition('=')
+raise "string: partition char" unless part3[0] == "key" && part3[1] == "=" && part3[2] == "value"
+
+rpart1 = "host:port:8080".rpartition(":")
+raise "string: rpartition found" unless rpart1[0] == "host:port" && rpart1[1] == ":" && rpart1[2] == "8080"
+
+rpart2 = "nohost".rpartition(":")
+raise "string: rpartition not found" unless rpart2[0] == "" && rpart2[1] == "" && rpart2[2] == "nohost"
+
+rpart3 = "a/b/c".rpartition('/')
+raise "string: rpartition char" unless rpart3[0] == "a/b" && rpart3[1] == "/" && rpart3[2] == "c"
+
+raise "string: self.join array" unless String.join(["a", "b", "c"], "-") == "a-b-c"
+raise "string: self.join default sep" unless String.join(["a", "b", "c"]) == "abc"
+raise "array: join no sep" unless ["x", "y", "z"].join == "xyz"
+raise "array: join char sep" unless ["x", "y", "z"].join('/') == "x/y/z"
+puts "    split and partition: split on whitespace/char/str with limits, partition, and join verified"
+
+# 6. Search and index
+raise "string: index char with offset" unless "banana".index('a', 2) == 3
+raise "string: index char offset not found" unless "banana".index('b', 1).nil?
+raise "string: index str" unless "banana".index("na") == 2
+raise "string: index str with offset" unless "banana".index("na", 3) == 4
+raise "string: index str not found" unless "banana".index("xyz").nil?
+
+raise "string: rindex char" unless "banana".rindex('a') == 5
+raise "string: rindex char offset" unless "banana".rindex('a', 4) == 3
+raise "string: rindex char not found" unless "banana".rindex('z').nil?
+raise "string: rindex str" unless "banana".rindex("an") == 3
+raise "string: rindex str offset" unless "banana".rindex("an", 2) == 1
+raise "string: rindex str not found" unless "banana".rindex("xyz").nil?
+puts "    search and index: forward and reverse index on char and string with offsets verified"
+
+# 7. Substitutions (sub and gsub)
+raise "string: sub str" unless "hello world".sub("world", "there") == "hello there"
+raise "string: sub char" unless "banana".sub('a', 'o') == "bonana"
+raise "string: sub char to str" unless "a+b".sub('+', " plus ") == "a plus b"
+raise "string: sub str block" unless "item 123 end".sub("123") { |m| "[#{m}]" } == "item [123] end"
+raise "string: sub char block" unless "hello".sub('l') { |c| "L" } == "heLlo"
+
+raise "string: gsub str" unless "banana".gsub("an", "XX") == "bXXXXa"
+raise "string: gsub char" unless "banana".gsub('a', 'o') == "bonono"
+raise "string: gsub char to str" unless "a,b,c".gsub(',', " and ") == "a and b and c"
+raise "string: gsub str block" unless "foo bar foo".gsub("foo") { |m| m.upcase } == "FOO bar FOO"
+raise "string: gsub char block" unless "hello".gsub('l') { |c| "L" } == "heLLo"
+puts "    substitution: sub and gsub with string, char, and block overloads verified"
+
+# 8. Transformations (tr, delete, squeeze, count, center)
+raise "string: tr direct" unless "hello".tr("el", "ip") == "hippo"
+raise "string: tr short target" unless "hello".tr("aeiou", "*") == "h*ll*"
+raise "string: tr empty target" unless "hello".tr("el", "") == "ho"
+raise "string: delete char" unless "hello world".delete('o') == "hell wrld"
+raise "string: delete chars" unless "hello world".delete("aeiou") == "hll wrld"
+raise "string: squeeze all" unless "yellow  moon".squeeze == "yelow mon"
+raise "string: squeeze char" unless "yellow  moon".squeeze('o') == "yellow  mon"
+raise "string: squeeze chars" unless "yellow  moon".squeeze(" l") == "yelow moon"
+raise "string: count char" unless "banana".count('a') == 3
+raise "string: count str" unless "banana".count("an") == 2
+raise "string: center char pad" unless "hello".center(11, '-') == "---hello---"
+raise "string: center str pad" unless "hello".center(12, "-=") == "-=-hello-=-="
+puts "    transformations: tr, delete, squeeze, count, and center verified"
+
+# 9. UTF-8 awareness and byte/character boundaries
+# Multi-byte test string: "héllo" contains 2-byte UTF-8 character 'é' (\xC3\xA9).
+s_utf8 = "héllo"
+raise "utf8: size counts characters" unless s_utf8.size == 5
+raise "utf8: bytesize counts bytes" unless s_utf8.bytesize == 6
+# Indexing is byte-indexed:
+raise "utf8: byte indexing byte 0" unless s_utf8[0] == 'h'
+raise "utf8: byte indexing byte 1 (fragment)" unless s_utf8[1].ord == 195
+raise "utf8: byte indexing byte 2 (fragment)" unless s_utf8[2].ord == 169
+raise "utf8: byte indexing byte 3" unless s_utf8[3] == 'l'
+raise "utf8: byte offset index" unless s_utf8.index('l') == 3
+
+# Char encoding preservation:
+c_accent = 'é'
+raise "utf8: char ord" unless c_accent.ord == 233
+raise "utf8: char bytesize" unless c_accent.bytesize == 2
+raise "utf8: char to_s" unless c_accent.to_s == "é"
+raise "utf8: char to_s bytesize" unless c_accent.to_s.bytesize == 2
+raise "utf8: char to_s size" unless c_accent.to_s.size == 1
+
+# String chars decoding:
+decoded_chars = s_utf8.chars
+raise "utf8: chars size" unless decoded_chars.size == 5
+raise "utf8: chars[0]" unless decoded_chars[0] == 'h'
+raise "utf8: chars[1]" unless decoded_chars[1] == 'é'
+raise "utf8: chars[2]" unless decoded_chars[2] == 'l'
+raise "utf8: chars[3]" unless decoded_chars[3] == 'l'
+raise "utf8: chars[4]" unless decoded_chars[4] == 'o'
+
+# String each_char decoding:
+char_count = 0
+s_utf8.each_char do |c|
+  char_count = char_count + 1
+end
+raise "utf8: each_char count" unless char_count == 5
+
+# Byte iteration:
+b_list = s_utf8.bytes
+raise "utf8: bytes count" unless b_list.size == 6
+raise "utf8: bytes values" unless b_list[0] == 104_u8 && b_list[1] == 195_u8 && b_list[2] == 169_u8
+
+byte_count = 0
+s_utf8.each_byte do |b|
+  byte_count = byte_count + 1
+end
+raise "utf8: each_byte count" unless byte_count == 6
+
+# Line iteration:
+lines_seen = [] of String
+"first\nsecond\r\nthird".each_line do |line|
+  lines_seen << line
+end
+raise "utf8: each_line" unless lines_seen.size == 3 && lines_seen[1] == "second"
+
+# UTF-8 reverse preserves multi-byte characters intact:
+reversed = s_utf8.reverse
+raise "utf8: reverse content" unless reversed == "olléh"
+raise "utf8: reverse size" unless reversed.size == 5
+raise "utf8: reverse bytesize" unless reversed.bytesize == 6
+puts "    utf8 awareness: multi-byte characters, byte indexing, chars decoding, and reverse verified"
+
+puts "all std/text checks passed"
