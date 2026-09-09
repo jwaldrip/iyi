@@ -527,7 +527,7 @@ require "./file"
     LibGC.realloc(Pointer(Void).new(pointer.address - 8_u64), size + 8_u64) + 8_i64
   end
 {% else %}
-  {% if !flag?(:gc_none) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin)) %}
+  {% if !flag?(:gc_none) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin) || flag?(:win32)) %}
     # iyi: **the default allocator on POSIX is the owned collector.** The
     # size-class arena of GC_DESIGN.md's Stage 2, the roots, the marker,
     # the sweep and the allocation-pressure trigger — a plain `iyi build`
@@ -708,6 +708,45 @@ require "./file"
 
       fun __iyi_release_pages(address : UInt64, length : UInt64) : Nil
         LibC.madvise(Pointer(Void).new(address), length, 7_i32)
+      end
+    {% elsif flag?(:win32) %}
+      lib LibC
+        fun VirtualAlloc(lpAddress : Void*, dwSize : UInt64, flAllocationType : Int32, flProtect : Int32) : Void*
+        fun VirtualFree(lpAddress : Void*, dwSize : UInt64, dwFreeType : Int32) : Int32
+        fun GetModuleHandleA(lpModuleName : UInt8*) : Void*
+        fun GetCurrentThread : Void*
+        fun SuspendThread(hThread : Void*) : Int32
+        fun ResumeThread(hThread : Void*) : Int32
+        fun GetThreadContext(hThread : Void*, lpContext : Void*) : Int32
+        fun QueryPerformanceCounter(lpPerformanceCount : Int64*) : Int32
+        fun QueryPerformanceFrequency(lpFrequency : Int64*) : Int32
+        fun CreateThread(lpThreadAttributes : Void*, dwStackSize : UInt64, lpStartAddress : Void*, lpParameter : Void*, dwCreationFlags : Int32, lpThreadId : Int32*) : Void*
+      end
+
+      fun __iyi_mmap(length : UInt64) : Pointer(Void)
+        result = LibC.VirtualAlloc(nil, length, 0x3000_i32, 4_i32)
+        if result.address == 0_u64
+          __iyi_write(1, "iyi: out of memory\n".to_unsafe.as(Void*), 19_u64)
+          __iyi_exit(1)
+        end
+        Pointer(Void).new(result.address)
+      end
+
+      fun __iyi_munmap(address : UInt64, length : UInt64) : Nil
+        if LibC.VirtualFree(Pointer(Void).new(address), 0_u64, 0x8000_i32) == 0
+          __iyi_write(1, "iyi: munmap failed\n".to_unsafe.as(Void*), 19_u64)
+          __iyi_exit(1)
+        end
+      end
+
+      fun __iyi_release_pages(address : UInt64, length : UInt64) : Nil
+        LibC.VirtualFree(Pointer(Void).new(address), length, 0x4000_i32)
+      end
+
+      fun __iyi_madvise(address : UInt64, length : UInt64, advice : Int64) : Nil
+      end
+
+      fun __iyi_madvise_nohuge(address : UInt64, length : UInt64) : Nil
       end
     {% else %}
       # `mmap` the way the bump branch binds it, a raw syscall with the
@@ -2087,12 +2126,26 @@ require "./file"
       # A MAP-aligned mapping of MAP bytes: ask for twice, keep the aligned
       # middle, give the ends back.
       def self.map_aligned : UInt64
-        raw = __iyi_mmap(MAP * 2_u64).address
-        base = (raw + MAP - 1_u64) & (0_u64 &- MAP)
-        __iyi_munmap(raw, base - raw) if base > raw
-        tail = raw + MAP * 2_u64 - (base + MAP)
-        __iyi_munmap(base + MAP, tail) if tail > 0
-        base
+        {% if flag?(:win32) %}
+          loop do
+            raw = LibC.VirtualAlloc(nil, MAP * 2_u64, 0x2000_i32, 4_i32).address
+            if raw == 0_u64
+              __iyi_write(1, "iyi: out of memory\n".to_unsafe.as(Void*), 19_u64)
+              __iyi_exit(1)
+            end
+            base = (raw + MAP - 1_u64) & (0_u64 &- MAP)
+            LibC.VirtualFree(Pointer(Void).new(raw), 0_u64, 0x8000_i32)
+            committed = LibC.VirtualAlloc(Pointer(Void).new(base), MAP, 0x3000_i32, 4_i32).address
+            return base if committed == base
+          end
+        {% else %}
+          raw = __iyi_mmap(MAP * 2_u64).address
+          base = (raw + MAP - 1_u64) & (0_u64 &- MAP)
+          __iyi_munmap(raw, base - raw) if base > raw
+          tail = raw + MAP * 2_u64 - (base + MAP)
+          __iyi_munmap(base + MAP, tail) if tail > 0
+          base
+        {% end %}
       end
 
       # An arena's first HUGE_AT bytes refuse transparent huge pages and
@@ -2657,7 +2710,11 @@ require "./file"
       # Six callee-saved registers on x86_64 and twelve on aarch64, named
       # where they are spilled.
       {% if flag?(:x86_64) %}
-        SPILL = 48_u64
+        {% if flag?(:win32) %}
+          SPILL = 64_u64
+        {% else %}
+          SPILL = 48_u64
+        {% end %}
       {% else %}
         SPILL = 96_u64
       {% end %}
@@ -2677,6 +2734,8 @@ require "./file"
       @@const_low : UInt64 = 0_u64
       @@const_high : UInt64 = 0_u64
       @@found_globals : UInt64 = 0_u64
+      @@bss_low : UInt64 = 0_u64
+      @@bss_high : UInt64 = 0_u64
 
       # A root range that cannot be obtained ends the program. The whole
       # point of the range is that missing it frees live objects, so a
@@ -2713,7 +2772,16 @@ require "./file"
       # which retains a little more than it must and never less.
       def self.spill_registers : Nil
         buffer = spill
-        {% if flag?(:x86_64) %}
+        {% if flag?(:win32) && flag?(:x86_64) %}
+          asm("movq %rbx, 0($0)
+               movq %rbp, 8($0)
+               movq %rdi, 16($0)
+               movq %rsi, 24($0)
+               movq %r12, 32($0)
+               movq %r13, 40($0)
+               movq %r14, 48($0)
+               movq %r15, 56($0)" :: "{rcx}"(buffer) : "memory" : "volatile")
+        {% elsif flag?(:x86_64) %}
           asm("movq %rbx, 0($0)
                movq %rbp, 8($0)
                movq %r12, 16($0)
@@ -2761,6 +2829,56 @@ require "./file"
           base = LibC.pthread_get_stackaddr_np(LibC.pthread_self).address
           fatal("iyi: stack base unavailable\n") if base == 0
           base
+        end
+      {% elsif flag?(:win32) %}
+        def self.discover_stack_base : UInt64
+          base = uninitialized UInt64
+          {% if flag?(:x86_64) %}
+            asm("movq %gs:0x08, $0" : "=r"(base) :: : "volatile")
+          {% else %}
+            base = 0_u64
+          {% end %}
+          fatal("iyi: stack base unavailable\n") if base == 0
+          base
+        end
+
+        def self.stack_limit : UInt64
+          limit = uninitialized UInt64
+          {% if flag?(:x86_64) %}
+            asm("movq %gs:0x10, $0" : "=r"(limit) :: : "volatile")
+          {% else %}
+            limit = 0_u64
+          {% end %}
+          limit
+        end
+
+        def self.current_teb : UInt64
+          teb = uninitialized UInt64
+          {% if flag?(:x86_64) %}
+            asm("movq %gs:0x30, $0" : "=r"(teb) :: : "volatile")
+          {% else %}
+            teb = 0_u64
+          {% end %}
+          teb
+        end
+
+        def self.capture_thread_registers(thread_handle : Void*, out_spill : UInt64) : UInt64
+          ctx_buf = uninitialized UInt8[1280]
+          ctx_addr = (ctx_buf.to_unsafe.address + 15_u64) & ~15_u64
+          ctx_ptr = Pointer(Void).new(ctx_addr)
+          Pointer(UInt32).new(ctx_addr + 48_u64).value = 0x100003_u32
+          if LibC.GetThreadContext(thread_handle, ctx_ptr) == 0
+            return 0_u64
+          end
+          IyiHeap.write64(out_spill + 0_u64, IyiHeap.read64(ctx_addr + 144_u64))  # Rbx
+          IyiHeap.write64(out_spill + 8_u64, IyiHeap.read64(ctx_addr + 160_u64))  # Rbp
+          IyiHeap.write64(out_spill + 16_u64, IyiHeap.read64(ctx_addr + 176_u64)) # Rdi
+          IyiHeap.write64(out_spill + 24_u64, IyiHeap.read64(ctx_addr + 168_u64)) # Rsi
+          IyiHeap.write64(out_spill + 32_u64, IyiHeap.read64(ctx_addr + 216_u64)) # R12
+          IyiHeap.write64(out_spill + 40_u64, IyiHeap.read64(ctx_addr + 224_u64)) # R13
+          IyiHeap.write64(out_spill + 48_u64, IyiHeap.read64(ctx_addr + 232_u64)) # R14
+          IyiHeap.write64(out_spill + 56_u64, IyiHeap.read64(ctx_addr + 240_u64)) # R15
+          IyiHeap.read64(ctx_addr + 152_u64) # Rsp
         end
       {% else %}
         # What this number is: the end address of the kernel's `[stack]`
@@ -2899,6 +3017,41 @@ require "./file"
           fatal("iyi: no __DATA segment in the main image\n") if @@data_high <= @@data_low
           @@found_globals = 1_u64
         end
+      {% elsif flag?(:win32) %}
+        def self.discover_globals : Nil
+          dos_header = LibC.GetModuleHandleA(nil).address
+          fatal("iyi: no module handle for main image\n") if dos_header == 0
+          fatal("iyi: main image is not PE\n") if (IyiHeap.read64(dos_header) & 0xFFFF_u64) != 0x5A4D_u64
+          e_lfanew = IyiHeap.read64(dos_header + 0x3C_u64) & 0xFFFFFFFF_u64
+          nt_headers = dos_header + e_lfanew
+          fatal("iyi: main image is not PE\n") if (IyiHeap.read64(nt_headers) & 0xFFFFFFFF_u64) != 0x4550_u64
+          file_header = nt_headers + 4_u64
+          num_sections = (IyiHeap.read64(file_header).unsafe_shr(16_u64)) & 0xFFFF_u64
+          size_opt_header = (IyiHeap.read64(file_header + 16_u64)) & 0xFFFF_u64
+          section_header = file_header + 20_u64 + size_opt_header
+
+          seen = 0_u64
+          while seen < num_sections
+            name = IyiHeap.read64(section_header)
+            word8 = IyiHeap.read64(section_header + 8_u64)
+            vsize = word8 & 0xFFFFFFFF_u64
+            vaddr = word8.unsafe_shr(32_u64)
+            if name == 0x000000617461642E_u64 # .data
+              @@data_low = dos_header + vaddr
+              @@data_high = @@data_low + vsize
+            elsif name == 0x000061746164722E_u64 # .rdata
+              @@const_low = dos_header + vaddr
+              @@const_high = @@const_low + vsize
+            elsif name == 0x000000007373622E_u64 # .bss
+              @@bss_low = dos_header + vaddr
+              @@bss_high = @@bss_low + vsize
+            end
+            section_header = section_header + 40_u64
+            seen = seen + 1_u64
+          end
+          fatal("iyi: no data/bss segments in PE image\n") if @@data_high <= @@data_low && @@bss_high <= @@bss_low
+          @@found_globals = 1_u64
+        end
       {% else %}
         # `.data` and `.bss`, which are contiguous in every ELF layout the
         # link templates produce, so the two symbols bound one range rather
@@ -2941,6 +3094,15 @@ require "./file"
       def self.const_high : UInt64
         globals
         @@const_high
+      end
+      def self.bss_low : UInt64
+        globals
+        @@bss_low
+      end
+
+      def self.bss_high : UInt64
+        globals
+        @@bss_high
       end
 
       # Is this word a pointer to a live object, and if so where does that
@@ -3065,6 +3227,9 @@ require "./file"
       def self.each_global_root(visit : Proc(UInt64, Nil)) : Nil
         scan_range(data_low, data_high, visit)
         scan_range(const_low, const_high, visit)
+        {% if flag?(:win32) %}
+          scan_range(bss_low, bss_high, visit)
+        {% end %}
       end
 
       # The whole root set: the running stack, the spilled registers, the
@@ -3346,6 +3511,15 @@ require "./file"
                          : "volatile")
           {% end %}
           stamp.sec.to_u64 * 1000000000_u64 + stamp.nsec.to_u64
+        {% elsif flag?(:win32) %}
+          counts = uninitialized Int64
+          freq = uninitialized Int64
+          LibC.QueryPerformanceCounter(pointerof(counts))
+          LibC.QueryPerformanceFrequency(pointerof(freq))
+          return 0_u64 if freq <= 0_i64
+          c = counts.to_u64
+          f = freq.to_u64
+          (c.unsafe_div(f) * 1000000000_u64) + (c.unsafe_mod(f) * 1000000000_u64).unsafe_div(f)
         {% else %}
           LibC.clock_gettime_nsec_np(4)
         {% end %}
