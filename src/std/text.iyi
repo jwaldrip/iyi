@@ -1,0 +1,1096 @@
+# Standard text processing library for iyi.
+#
+# Answers the two architectural questions:
+#
+# 1. UTF-8 and byte indexing convention:
+#    iyi's `String#size` counts UTF-8 code points (via continuation-byte
+#    scanning in `src/iyi/string.iyi`), while `bytesize` counts raw bytes.
+#    Following the prelude's established convention, all string indexing
+#    (`[]`, `[start, count]`), slice operations, and search offsets
+#    (`index`, `rindex`, `sub`, `gsub`, `split`, `count`) are strictly
+#    BYTE-INDEXED.
+#    For example, with `s = "héllo"`, `s.size` is 5, `s.bytesize` is 6,
+#    `s[1]` is byte 195 (0xC3), `s[2]` is byte 169 (0xA9), and `s.index('l')`
+#    returns byte offset 3. This guarantees O(1) indexing and byte-slice
+#    alignment without hidden multi-byte traversals.
+#    Multi-byte UTF-8 awareness is preserved where character boundaries
+#    matter: `Char#to_s` encodes multi-byte Unicode code points into 1 to 4
+#    valid UTF-8 bytes rather than truncating to a single byte; `chars`
+#    and `each_char` decode full Unicode code points so `"héllo".chars.size`
+#    equals `"héllo".size` (5); and `reverse` reverses decoded characters
+#    so `"héllo".reverse` produces `"olléh"` rather than invalid byte sequences.
+#
+# 2. Garbage collector and allocation safety:
+#    Every string constructed in this library allocates through
+#    `String.new(bytesize) { |buffer| ... }`. This routes directly to
+#    `String.memory`, ensuring `IyiHeap.new_object` is called with the
+#    canonical `String` type ID, headed=true, atomic=true, and that the
+#    object header words (byte length and scanned character count) are
+#    properly initialized. No headless buffers, raw pointer arithmetic, or
+#    out-of-band allocations are used.
+#
+# 3. Regular expressions:
+#    iyi programs (`.iyi`) have no runtime `Regex` engine: `Iyi::Rx` is a
+#    linear-time engine internal to the compiler that serves compile-time
+#    macros only. `sub` and `gsub` here operate on exact string and character
+#    patterns.
+#
+# 4. Scope and omissions from Crystal's string.cr (5,922 lines):
+#    Crystal's stdlib carries large Unicode normalization tables (NFC, NFD),
+#    case folding across every script, grapheme clustering, regex matching,
+#    iconv encoding conversions, C string null-byte guards, and decades of
+#    legacy Ruby compatibility aliases.
+#    iyi omits those tables and wrappers to adhere to SPEC.md III.9 dependency
+#    and footprint floors. This library provides the core operations that real
+#    programs reach for: whitespace stripping, splitting, joining, indexing,
+#    substitutions, transformations (tr, squeeze, delete, count, center),
+#    character inspection, and robust conversions with nilable failure paths.
+
+module std/text
+
+struct ::Char
+  def ascii_letter? : Bool
+    (self >= 'a' && self <= 'z') || (self >= 'A' && self <= 'Z')
+  end
+
+  def ascii_number? : Bool
+    self >= '0' && self <= '9'
+  end
+
+  def ascii_lowercase? : Bool
+    self >= 'a' && self <= 'z'
+  end
+
+  def ascii_uppercase? : Bool
+    self >= 'A' && self <= 'Z'
+  end
+
+  def ascii_alphanumeric? : Bool
+    ascii_letter? || ascii_number?
+  end
+
+  def ascii_whitespace? : Bool
+    self == ' ' || self == '\t' || self == '\n' || self == '\r' || self == '\v' || self == '\f'
+  end
+
+  def upcase : Char
+    (self >= 'a' && self <= 'z') ? (ord - 32).unsafe_chr : self
+  end
+
+  def downcase : Char
+    (self >= 'A' && self <= 'Z') ? (ord + 32).unsafe_chr : self
+  end
+
+  def bytesize : Int32
+    cp = ord
+    if cp < 0x80
+      1
+    elsif cp < 0x800
+      2
+    elsif cp < 0x10000
+      3
+    elsif cp <= 0x10FFFF
+      4
+    else
+      1
+    end
+  end
+
+  # Encodes this character into valid UTF-8 bytes (1 to 4 bytes).
+  def to_s : String
+    cp = ord
+    if cp < 0x80
+      String.new(1) do |b|
+        b[0] = cp.to_u8
+      end
+    elsif cp < 0x800
+      String.new(2) do |b|
+        b[0] = (0xC0 | (cp >> 6)).to_u8
+        b[1] = (0x80 | (cp & 0x3F)).to_u8
+      end
+    elsif cp < 0x10000
+      String.new(3) do |b|
+        b[0] = (0xE0 | (cp >> 12)).to_u8
+        b[1] = (0x80 | ((cp >> 6) & 0x3F)).to_u8
+        b[2] = (0x80 | (cp & 0x3F)).to_u8
+      end
+    elsif cp <= 0x10FFFF
+      String.new(4) do |b|
+        b[0] = (0xF0 | (cp >> 18)).to_u8
+        b[1] = (0x80 | ((cp >> 12) & 0x3F)).to_u8
+        b[2] = (0x80 | ((cp >> 6) & 0x3F)).to_u8
+        b[3] = (0x80 | (cp & 0x3F)).to_u8
+      end
+    else
+      String.new(1) { |b| b[0] = '?'.ord.to_u8 }
+    end
+  end
+
+  def to_i : Int32
+    to_i(10)
+  end
+
+  def to_i? : Int32?
+    to_i?(10)
+  end
+
+  def to_i(base : Int32) : Int32
+    to_i?(base) || raise "not a digit in base #{base}: #{inspect}"
+  end
+
+  def to_i?(base : Int32) : Int32?
+    raise "base #{base} out of range (2..36)" if base < 2 || base > 36
+    o = ord
+    digit = -1
+    if o >= 48 && o <= 57
+      digit = o - 48
+    elsif o >= 97 && o <= 122
+      digit = o - 97 + 10
+    elsif o >= 65 && o <= 90
+      digit = o - 65 + 10
+    else
+      return nil
+    end
+    return nil if digit >= base
+    digit
+  end
+end
+
+class ::String
+  def blank? : Bool
+    i = 0
+    while i < bytesize
+      return false unless to_unsafe[i].unsafe_chr.whitespace?
+      i = i + 1
+    end
+    true
+  end
+
+  def presence : String?
+    blank? ? nil : self
+  end
+
+  def lstrip : String
+    i = 0
+    while i < bytesize && to_unsafe[i].unsafe_chr.whitespace?
+      i = i + 1
+    end
+    byte_slice(i, bytesize - i)
+  end
+
+  def lstrip(char : Char) : String
+    wanted = char.ord.to_u8
+    i = 0
+    while i < bytesize && to_unsafe[i] == wanted
+      i = i + 1
+    end
+    byte_slice(i, bytesize - i)
+  end
+
+  def lstrip(chars : String) : String
+    return self if chars.empty?
+    mask = Pointer(Bool).malloc(256_u64)
+    i = 0
+    while i < 256
+      mask[i] = false
+      i = i + 1
+    end
+    i = 0
+    while i < chars.bytesize
+      mask[chars.to_unsafe[i].to_i] = true
+      i = i + 1
+    end
+
+    at = 0
+    while at < bytesize && mask[to_unsafe[at].to_i]
+      at = at + 1
+    end
+    byte_slice(at, bytesize - at)
+  end
+
+  def rstrip : String
+    last = bytesize
+    while last > 0 && to_unsafe[last - 1].unsafe_chr.whitespace?
+      last = last - 1
+    end
+    byte_slice(0, last)
+  end
+
+  def rstrip(char : Char) : String
+    wanted = char.ord.to_u8
+    last = bytesize
+    while last > 0 && to_unsafe[last - 1] == wanted
+      last = last - 1
+    end
+    byte_slice(0, last)
+  end
+
+  def rstrip(chars : String) : String
+    return self if chars.empty?
+    mask = Pointer(Bool).malloc(256_u64)
+    i = 0
+    while i < 256
+      mask[i] = false
+      i = i + 1
+    end
+    i = 0
+    while i < chars.bytesize
+      mask[chars.to_unsafe[i].to_i] = true
+      i = i + 1
+    end
+
+    last = bytesize
+    while last > 0 && mask[to_unsafe[last - 1].to_i]
+      last = last - 1
+    end
+    byte_slice(0, last)
+  end
+
+  def strip(char : Char) : String
+    lstrip(char).rstrip(char)
+  end
+
+  def strip(chars : String) : String
+    lstrip(chars).rstrip(chars)
+  end
+
+  def chomp : String
+    if bytesize >= 2 && to_unsafe[bytesize - 2] == 13_u8 && to_unsafe[bytesize - 1] == 10_u8
+      return byte_slice(0, bytesize - 2)
+    elsif bytesize >= 1 && (to_unsafe[bytesize - 1] == 10_u8 || to_unsafe[bytesize - 1] == 13_u8)
+      return byte_slice(0, bytesize - 1)
+    end
+    self
+  end
+
+  def chomp(suffix : String) : String
+    return self unless ends_with?(suffix)
+    byte_slice(0, bytesize - suffix.bytesize)
+  end
+
+  def chop : String
+    return "" if empty?
+    if bytesize >= 2 && to_unsafe[bytesize - 2] == 13_u8 && to_unsafe[bytesize - 1] == 10_u8
+      return byte_slice(0, bytesize - 2)
+    end
+    byte_slice(0, bytesize - 1)
+  end
+
+  def ends_with?(char : Char) : Bool
+    bytesize > 0 && to_unsafe[bytesize - 1] == char.ord.to_u8
+  end
+
+  def split(separator : String, limit : Int32 = 0) : Array(String)
+    return [self] if limit == 1
+    return [] of String if empty? && limit < 0
+
+    if separator.empty?
+      pieces = [] of String
+      each_char do |c|
+        pieces << c.to_s
+      end
+      return pieces
+    end
+
+    pieces = [] of String
+    sep_size = separator.bytesize
+    start = 0
+    while (idx = index(separator, start))
+      pieces << byte_slice(start, idx - start)
+      start = idx + sep_size
+      if limit > 1 && pieces.size == limit - 1
+        break
+      end
+    end
+    pieces << byte_slice(start, bytesize - start)
+    pieces
+  end
+
+  def split(separator : Char, limit : Int32) : Array(String)
+    return [self] if limit == 1
+    pieces = [] of String
+    wanted = separator.ord.to_u8
+    start = 0
+    index = 0
+    while index < bytesize
+      if to_unsafe[index] == wanted
+        pieces << byte_slice(start, index - start)
+        start = index + 1
+        if limit > 1 && pieces.size == limit - 1
+          break
+        end
+      end
+      index = index + 1
+    end
+    pieces << byte_slice(start, bytesize - start)
+    pieces
+  end
+
+  def split : Array(String)
+    split(0)
+  end
+
+  def split(limit : Int32) : Array(String)
+    return [self] if limit == 1
+    pieces = [] of String
+    in_token = false
+    token_start = 0
+    i = 0
+    while i < bytesize
+      b = to_unsafe[i].unsafe_chr
+      if b.whitespace?
+        if in_token
+          pieces << byte_slice(token_start, i - token_start)
+          in_token = false
+          if limit > 1 && pieces.size == limit - 1
+            j = i + 1
+            while j < bytesize && to_unsafe[j].unsafe_chr.whitespace?
+              j = j + 1
+            end
+            if j < bytesize
+              pieces << byte_slice(j, bytesize - j)
+            end
+            return pieces
+          end
+        end
+      else
+        unless in_token
+          token_start = i
+          in_token = true
+        end
+      end
+      i = i + 1
+    end
+    if in_token
+      pieces << byte_slice(token_start, bytesize - token_start)
+    end
+    pieces
+  end
+
+  def index(char : Char, offset : Int32) : Int32?
+    offset = bytesize + offset if offset < 0
+    return nil if offset < 0 || offset >= bytesize
+
+    wanted = char.ord.to_u8
+    ptr = to_unsafe
+    i = offset
+    while i < bytesize
+      return i if ptr[i] == wanted
+      i = i + 1
+    end
+    nil
+  end
+
+  def index(search : String, offset : Int32 = 0) : Int32?
+    offset = bytesize + offset if offset < 0
+    return nil if offset < 0
+    return offset if search.bytesize == 0 && offset <= bytesize
+    return nil if offset + search.bytesize > bytesize
+
+    limit = bytesize - search.bytesize
+    i = offset
+    s_ptr = to_unsafe
+    t_ptr = search.to_unsafe
+    t_len = search.bytesize
+
+    while i <= limit
+      j = 0
+      while j < t_len && s_ptr[i + j] == t_ptr[j]
+        j = j + 1
+      end
+      return i if j == t_len
+      i = i + 1
+    end
+    nil
+  end
+
+  def rindex(char : Char, offset : Int32) : Int32?
+    offset = bytesize + offset if offset < 0
+    return nil if offset < 0
+    offset = bytesize - 1 if offset >= bytesize
+    wanted = char.ord.to_u8
+    ptr = to_unsafe
+
+    i = offset
+    while i >= 0
+      return i if ptr[i] == wanted
+      i = i - 1
+    end
+    nil
+  end
+
+  def rindex(char : Char) : Int32?
+    rindex(char, bytesize - 1)
+  end
+
+  def rindex(search : String, offset : Int32) : Int32?
+    offset = bytesize + offset if offset < 0
+    return nil if offset < 0
+    s_len = search.bytesize
+    return offset if s_len == 0 && offset <= bytesize
+    return nil if bytesize < s_len
+
+    max_start = bytesize - s_len
+    i = offset > max_start ? max_start : offset
+
+    s_ptr = to_unsafe
+    t_ptr = search.to_unsafe
+
+    while i >= 0
+      j = 0
+      while j < s_len && s_ptr[i + j] == t_ptr[j]
+        j = j + 1
+      end
+      return i if j == s_len
+      i = i - 1
+    end
+    nil
+  end
+
+  def rindex(search : String) : Int32?
+    rindex(search, bytesize - search.bytesize)
+  end
+
+  def sub(search : String, replacement : String) : String
+    idx = index(search)
+    return self unless idx
+    byte_slice(0, idx) + replacement + byte_slice(idx + search.bytesize, bytesize - idx - search.bytesize)
+  end
+
+  def sub(search : Char, replacement : Char) : String
+    sub(search.to_s, replacement.to_s)
+  end
+
+  def sub(search : Char, replacement : String) : String
+    sub(search.to_s, replacement)
+  end
+
+  def sub(search : String, & : String -> String) : String
+    idx = index(search)
+    return self unless idx
+    repl = yield search
+    byte_slice(0, idx) + repl + byte_slice(idx + search.bytesize, bytesize - idx - search.bytesize)
+  end
+
+  def sub(search : Char, & : Char -> String) : String
+    wanted = search.ord.to_u8
+    ptr = to_unsafe
+    i = 0
+    while i < bytesize
+      if ptr[i] == wanted
+        repl = yield search
+        return byte_slice(0, i) + repl + byte_slice(i + 1, bytesize - i - 1)
+      end
+      i = i + 1
+    end
+    self
+  end
+
+  def gsub(search : String, replacement : String) : String
+    return self if search.empty?
+    pieces = split(search)
+    pieces.join(replacement)
+  end
+
+  def gsub(search : Char, replacement : Char) : String
+    gsub(search.to_s, replacement.to_s)
+  end
+
+  def gsub(search : Char, replacement : String) : String
+    gsub(search.to_s, replacement)
+  end
+
+  def gsub(search : String, & : String -> String) : String
+    return self if search.empty?
+    idx = index(search)
+    return self unless idx
+
+    result = ""
+    start = 0
+    s_len = search.bytesize
+    while (idx = index(search, start))
+      result = result + byte_slice(start, idx - start)
+      result = result + yield search
+      start = idx + s_len
+    end
+    result = result + byte_slice(start, bytesize - start)
+    result
+  end
+
+  def gsub(search : Char, & : Char -> String) : String
+    wanted = search.ord.to_u8
+    ptr = to_unsafe
+    result = ""
+    start = 0
+    i = 0
+    found = false
+    while i < bytesize
+      if ptr[i] == wanted
+        found = true
+        result = result + byte_slice(start, i - start)
+        result = result + yield search
+        start = i + 1
+      end
+      i = i + 1
+    end
+    return self unless found
+    result = result + byte_slice(start, bytesize - start)
+    result
+  end
+
+  def capitalize : String
+    return "" if empty?
+    String.new(bytesize) do |buffer|
+      b0 = to_unsafe[0]
+      buffer[0] = (b0 >= 97_u8 && b0 <= 122_u8) ? (b0 - 32_u8) : b0
+      i = 1
+      while i < bytesize
+        b = to_unsafe[i]
+        buffer[i] = (b >= 65_u8 && b <= 90_u8) ? (b + 32_u8) : b
+        i = i + 1
+      end
+    end
+  end
+
+  def tr(from : String, to : String) : String
+    return delete(from) if to.empty?
+    return self if from.empty?
+
+    table = Pointer(Int32).malloc(256_u64)
+    i = 0
+    while i < 256
+      table[i] = -1
+      i = i + 1
+    end
+
+    f_len = from.bytesize
+    t_len = to.bytesize
+    i = 0
+    while i < f_len
+      f_byte = from.to_unsafe[i].to_i
+      t_byte = (i < t_len ? to.to_unsafe[i] : to.to_unsafe[t_len - 1]).to_i
+      table[f_byte] = t_byte
+      i = i + 1
+    end
+
+    String.new(bytesize) do |buffer|
+      i = 0
+      while i < bytesize
+        src = to_unsafe[i].to_i
+        mapped = table[src]
+        buffer[i] = mapped >= 0 ? mapped.to_u8 : src.to_u8
+        i = i + 1
+      end
+    end
+  end
+
+  def delete(char : Char) : String
+    wanted = char.ord.to_u8
+    matches = 0
+    i = 0
+    while i < bytesize
+      matches = matches + 1 if to_unsafe[i] == wanted
+      i = i + 1
+    end
+    return self if matches == 0
+
+    new_size = bytesize - matches
+    String.new(new_size) do |buffer|
+      i = 0
+      at = 0
+      while i < bytesize
+        b = to_unsafe[i]
+        if b != wanted
+          buffer[at] = b
+          at = at + 1
+        end
+        i = i + 1
+      end
+    end
+  end
+
+  def delete(chars : String) : String
+    return self if chars.empty?
+    mask = Pointer(Bool).malloc(256_u64)
+    i = 0
+    while i < 256
+      mask[i] = false
+      i = i + 1
+    end
+    i = 0
+    while i < chars.bytesize
+      mask[chars.to_unsafe[i].to_i] = true
+      i = i + 1
+    end
+
+    matches = 0
+    i = 0
+    while i < bytesize
+      matches = matches + 1 if mask[to_unsafe[i].to_i]
+      i = i + 1
+    end
+    return self if matches == 0
+
+    new_size = bytesize - matches
+    String.new(new_size) do |buffer|
+      i = 0
+      at = 0
+      while i < bytesize
+        b = to_unsafe[i]
+        unless mask[b.to_i]
+          buffer[at] = b
+          at = at + 1
+        end
+        i = i + 1
+      end
+    end
+  end
+
+  def squeeze : String
+    return self if bytesize <= 1
+    dup_count = 0
+    i = 1
+    while i < bytesize
+      dup_count = dup_count + 1 if to_unsafe[i] == to_unsafe[i - 1]
+      i = i + 1
+    end
+    return self if dup_count == 0
+
+    String.new(bytesize - dup_count) do |buffer|
+      buffer[0] = to_unsafe[0]
+      at = 1
+      i = 1
+      while i < bytesize
+        b = to_unsafe[i]
+        if b != to_unsafe[i - 1]
+          buffer[at] = b
+          at = at + 1
+        end
+        i = i + 1
+      end
+    end
+  end
+
+  def squeeze(char : Char) : String
+    return self if bytesize <= 1
+    wanted = char.ord.to_u8
+    dup_count = 0
+    i = 1
+    while i < bytesize
+      dup_count = dup_count + 1 if to_unsafe[i] == wanted && to_unsafe[i - 1] == wanted
+      i = i + 1
+    end
+    return self if dup_count == 0
+
+    String.new(bytesize - dup_count) do |buffer|
+      buffer[0] = to_unsafe[0]
+      at = 1
+      i = 1
+      while i < bytesize
+        b = to_unsafe[i]
+        if !(b == wanted && to_unsafe[i - 1] == wanted)
+          buffer[at] = b
+          at = at + 1
+        end
+        i = i + 1
+      end
+    end
+  end
+
+  def squeeze(chars : String) : String
+    return self if bytesize <= 1 || chars.empty?
+    mask = Pointer(Bool).malloc(256_u64)
+    i = 0
+    while i < 256
+      mask[i] = false
+      i = i + 1
+    end
+    i = 0
+    while i < chars.bytesize
+      mask[chars.to_unsafe[i].to_i] = true
+      i = i + 1
+    end
+
+    dup_count = 0
+    i = 1
+    while i < bytesize
+      b = to_unsafe[i]
+      dup_count = dup_count + 1 if mask[b.to_i] && b == to_unsafe[i - 1]
+      i = i + 1
+    end
+    return self if dup_count == 0
+
+    String.new(bytesize - dup_count) do |buffer|
+      buffer[0] = to_unsafe[0]
+      at = 1
+      i = 1
+      while i < bytesize
+        b = to_unsafe[i]
+        if !(mask[b.to_i] && b == to_unsafe[i - 1])
+          buffer[at] = b
+          at = at + 1
+        end
+        i = i + 1
+      end
+    end
+  end
+
+  def count(char : Char) : Int32
+    wanted = char.ord.to_u8
+    c = 0
+    i = 0
+    while i < bytesize
+      c = c + 1 if to_unsafe[i] == wanted
+      i = i + 1
+    end
+    c
+  end
+
+  def count(search : String) : Int32
+    return 0 if search.empty? || search.bytesize > bytesize
+    c = 0
+    start = 0
+    s_len = search.bytesize
+    while (idx = index(search, start))
+      c = c + 1
+      start = idx + s_len
+    end
+    c
+  end
+
+  def center(width : Int32, pad : Char = ' ') : String
+    return self if width <= bytesize
+    extra = width - bytesize
+    left = extra // 2
+    right = extra - left
+    pad_byte = pad.ord.to_u8
+
+    String.new(width) do |buffer|
+      i = 0
+      while i < left
+        buffer[i] = pad_byte
+        i = i + 1
+      end
+      (buffer + left).copy_from(to_unsafe, bytesize)
+      i = left + bytesize
+      while i < width
+        buffer[i] = pad_byte
+        i = i + 1
+      end
+    end
+  end
+
+  def center(width : Int32, pad : String) : String
+    return self if width <= bytesize
+    raise "empty padding" if pad.empty?
+    extra = width - bytesize
+    left = extra // 2
+    right = extra - left
+    p_len = pad.bytesize
+
+    String.new(width) do |buffer|
+      i = 0
+      while i < left
+        buffer[i] = pad.to_unsafe[i % p_len]
+        i = i + 1
+      end
+      (buffer + left).copy_from(to_unsafe, bytesize)
+      i = 0
+      while i < right
+        buffer[left + bytesize + i] = pad.to_unsafe[i % p_len]
+        i = i + 1
+      end
+    end
+  end
+
+  def chars : Array(Char)
+    arr = [] of Char
+    each_char do |c|
+      arr << c
+    end
+    arr
+  end
+
+  # Decodes UTF-8 codepoints one character at a time.
+  def each_char(& : Char -> Nil) : Nil
+    i = 0
+    ptr = to_unsafe
+    while i < bytesize
+      b = ptr[i].to_i
+      if (b & 0x80) == 0
+        yield b.unsafe_chr
+        i = i + 1
+      elsif (b & 0xE0) == 0xC0 && i + 1 < bytesize
+        b1 = ptr[i + 1].to_i
+        cp = ((b & 0x1F) << 6) | (b1 & 0x3F)
+        yield cp.unsafe_chr
+        i = i + 2
+      elsif (b & 0xF0) == 0xE0 && i + 2 < bytesize
+        b1 = ptr[i + 1].to_i
+        b2 = ptr[i + 2].to_i
+        cp = ((b & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
+        yield cp.unsafe_chr
+        i = i + 3
+      elsif (b & 0xF8) == 0xF0 && i + 3 < bytesize
+        b1 = ptr[i + 1].to_i
+        b2 = ptr[i + 2].to_i
+        b3 = ptr[i + 3].to_i
+        cp = ((b & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+        yield cp.unsafe_chr
+        i = i + 4
+      else
+        yield b.unsafe_chr
+        i = i + 1
+      end
+    end
+  end
+
+  def bytes : Array(UInt8)
+    arr = [] of UInt8
+    i = 0
+    while i < bytesize
+      arr << to_unsafe[i]
+      i = i + 1
+    end
+    arr
+  end
+
+  def each_byte(& : UInt8 -> Nil) : Nil
+    i = 0
+    while i < bytesize
+      yield to_unsafe[i]
+      i = i + 1
+    end
+  end
+
+  def each_line(& : String -> Nil) : Nil
+    lines.each do |line|
+      yield line
+    end
+  end
+
+  def to_i(base : Int32) : Int32
+    to_i?(base) || raise "not a number in base #{base}: #{inspect}"
+  end
+
+  def to_i?(base : Int32) : Int32?
+    raise "base #{base} out of range (2..36)" if base < 2 || base > 36
+    return nil if empty?
+
+    index = 0
+    sign = 1
+    if self[0] == '-'
+      return nil if bytesize == 1
+      sign = -1
+      index = 1
+    elsif self[0] == '+'
+      return nil if bytesize == 1
+      index = 1
+    end
+
+    value = 0
+    while index < bytesize
+      b = to_unsafe[index]
+      digit = -1
+      if b >= 48_u8 && b <= 57_u8
+        digit = (b - 48_u8).to_i
+      elsif b >= 97_u8 && b <= 122_u8
+        digit = (b - 97_u8).to_i + 10
+      elsif b >= 65_u8 && b <= 90_u8
+        digit = (b - 65_u8).to_i + 10
+      else
+        return nil
+      end
+      return nil if digit >= base
+      value = value * base + digit
+      index = index + 1
+    end
+
+    value * sign
+  end
+
+  def to_i64 : Int64
+    to_i64? || raise "not a number: #{inspect}"
+  end
+
+  def to_i64(base : Int32) : Int64
+    to_i64?(base) || raise "not a number in base #{base}: #{inspect}"
+  end
+
+  def to_i64? : Int64?
+    to_i64?(10)
+  end
+
+  def to_i64?(base : Int32) : Int64?
+    raise "base #{base} out of range (2..36)" if base < 2 || base > 36
+    return nil if empty?
+
+    index = 0
+    sign = 1_i64
+    if self[0] == '-'
+      return nil if bytesize == 1
+      sign = -1_i64
+      index = 1
+    elsif self[0] == '+'
+      return nil if bytesize == 1
+      index = 1
+    end
+
+    radix = base.to_i64
+    value = 0_i64
+    while index < bytesize
+      b = to_unsafe[index]
+      digit = -1_i64
+      if b >= 48_u8 && b <= 57_u8
+        digit = (b - 48_u8).to_i64
+      elsif b >= 97_u8 && b <= 122_u8
+        digit = (b - 97_u8).to_i64 + 10_i64
+      elsif b >= 65_u8 && b <= 90_u8
+        digit = (b - 65_u8).to_i64 + 10_i64
+      else
+        return nil
+      end
+      return nil if digit >= radix
+      value = value * radix + digit
+      index = index + 1
+    end
+
+    value * sign
+  end
+
+  def to_f? : Float64?
+    return nil if empty?
+    return to_f if self == "NaN" || self == "Infinity" || self == "-Infinity" || self == "+Infinity"
+
+    bytes = to_unsafe
+    size = bytesize
+    at = 0
+    if bytes[0] == 45_u8 || bytes[0] == 43_u8
+      at = 1
+    end
+    return nil if at >= size
+
+    seen_point = false
+    any_digit = false
+
+    while at < size
+      b = bytes[at]
+      if b >= 48_u8 && b <= 57_u8
+        any_digit = true
+      elsif b == 46_u8 && !seen_point
+        seen_point = true
+      elsif (b == 101_u8 || b == 69_u8) && any_digit
+        at = at + 1
+        return nil if at >= size
+        if bytes[at] == 45_u8 || bytes[at] == 43_u8
+          at = at + 1
+        end
+        return nil if at >= size
+        while at < size
+          eb = bytes[at]
+          return nil if eb < 48_u8 || eb > 57_u8
+          at = at + 1
+        end
+        break
+      else
+        return nil
+      end
+      at = at + 1
+    end
+
+    return nil unless any_digit
+    to_f
+  end
+
+  def reverse : String
+    ch = chars
+    String.new(bytesize) do |buf|
+      at = 0
+      rev_idx = ch.size - 1
+      while rev_idx >= 0
+        c = ch[rev_idx]
+        cp = c.ord
+        if cp < 0x80
+          buf[at] = cp.to_u8
+          at = at + 1
+        elsif cp < 0x800
+          buf[at] = (0xC0 | (cp >> 6)).to_u8
+          buf[at + 1] = (0x80 | (cp & 0x3F)).to_u8
+          at = at + 2
+        elsif cp < 0x10000
+          buf[at] = (0xE0 | (cp >> 12)).to_u8
+          buf[at + 1] = (0x80 | ((cp >> 6) & 0x3F)).to_u8
+          buf[at + 2] = (0x80 | (cp & 0x3F)).to_u8
+          at = at + 3
+        elsif cp <= 0x10FFFF
+          buf[at] = (0xF0 | (cp >> 18)).to_u8
+          buf[at + 1] = (0x80 | ((cp >> 12) & 0x3F)).to_u8
+          buf[at + 2] = (0x80 | ((cp >> 6) & 0x3F)).to_u8
+          buf[at + 3] = (0x80 | (cp & 0x3F)).to_u8
+          at = at + 4
+        else
+          buf[at] = '?'.ord.to_u8
+          at = at + 1
+        end
+        rev_idx = rev_idx - 1
+      end
+    end
+  end
+
+  def partition(separator : String) : Tuple(String, String, String)
+    idx = index(separator)
+    if idx
+      {byte_slice(0, idx), separator, byte_slice(idx + separator.bytesize, bytesize - idx - separator.bytesize)}
+    else
+      {self, "", ""}
+    end
+  end
+
+  def partition(separator : Char) : Tuple(String, String, String)
+    partition(separator.to_s)
+  end
+
+  def rpartition(separator : String) : Tuple(String, String, String)
+    idx = rindex(separator)
+    if idx
+      {byte_slice(0, idx), separator, byte_slice(idx + separator.bytesize, bytesize - idx - separator.bytesize)}
+    else
+      {"", "", self}
+    end
+  end
+
+  def rpartition(separator : Char) : Tuple(String, String, String)
+    rpartition(separator.to_s)
+  end
+
+  def self.join(items : Array(String), separator : String = "") : String
+    items.join(separator)
+  end
+
+  def self.join(items, separator : String = "") : String
+    result = ""
+    first = true
+    items.each do |item|
+      result = result + separator unless first
+      result = result + item.to_s
+      first = false
+    end
+    result
+  end
+
+  private def byte_slice(start : Int32, count : Int32) : String
+    String.new(count) do |buffer|
+      buffer.copy_from(to_unsafe + start, count)
+    end
+  end
+end
+
+class ::Array(T)
+  def join : String
+    join("")
+  end
+
+  def join(separator : Char) : String
+    join(separator.to_s)
+  end
+end
