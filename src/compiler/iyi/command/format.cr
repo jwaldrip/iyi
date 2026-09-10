@@ -86,8 +86,8 @@ class Iyi::Command
       excludes.map! { |p| Iyi.normalize_path p }
       excludes = excludes - includes
       if files.empty?
-        # A command called `iyi` owns `.iyi`. Crystal remains available as
-        # `crystal tool format` for `.cr`; neither command crosses the line.
+        # A command called `iyi` owns `.iyi`. The compatibility command owns
+        # `.cr`; neither command crosses the line during discovery.
         files = Dir["./**/*.iyi"]
       else
         files.map! { |p| Iyi.normalize_path p }

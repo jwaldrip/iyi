@@ -93,18 +93,18 @@ describe Iyi::Command::FormatCommand do
     with_tempdir do
       File.write "format.iyi", "if true\n1\nend"
       File.write "not_format.iyi", "if true\n  1\nend\n"
-      File.write "crystal.cr", "if true\n1\nend"
+      File.write "compat.cr", "if true\n1\nend"
 
       format_command = Iyi::Command::FormatCommand.new([] of String, color: false, stdin: stdin, stdout: stdout, stderr: stderr)
       format_command.run
       format_command.status_code.should eq(0)
       stdout.to_s.should contain("Format #{Path[".", "format.iyi"]}")
       stdout.to_s.should_not contain("Format #{Path[".", "not_format.iyi"]}")
-      stdout.to_s.should_not contain("crystal.cr")
+      stdout.to_s.should_not contain("compat.cr")
       stderr.to_s.should be_empty
 
       File.read("format.iyi").should eq("if true\n  1\nend\n")
-      File.read("crystal.cr").should eq("if true\n1\nend")
+      File.read("compat.cr").should eq("if true\n1\nend")
     end
   end
 
@@ -119,14 +119,14 @@ describe Iyi::Command::FormatCommand do
       File.write "not_format.iyi", "if true\n  1\nend\n"
       File.write File.join("dir", "format.iyi"), "if true\n1\nend"
       File.write File.join("dir", "not_format.iyi"), "if true\n  1\nend\n"
-      File.write File.join("dir", "crystal.cr"), "if true\n1\nend"
+      File.write File.join("dir", "compat.cr"), "if true\n1\nend"
 
       format_command = Iyi::Command::FormatCommand.new(["dir"], color: false, stdin: stdin, stdout: stdout, stderr: stderr)
       format_command.run
       format_command.status_code.should eq(0)
       stdout.to_s.should contain("Format #{Path[".", "dir", "format.iyi"]}")
       stdout.to_s.should_not contain("Format #{Path[".", "dir", "not_format.iyi"]}")
-      stdout.to_s.should_not contain("crystal.cr")
+      stdout.to_s.should_not contain("compat.cr")
       stderr.to_s.should be_empty
 
       {stdout, stderr}.each &.clear
@@ -142,7 +142,7 @@ describe Iyi::Command::FormatCommand do
 
       File.read("format.iyi").should eq("if true\n  1\nend\n")
       File.read(File.join("dir", "format.iyi")).should eq("if true\n  1\nend\n")
-      File.read(File.join("dir", "crystal.cr")).should eq("if true\n1\nend")
+      File.read(File.join("dir", "compat.cr")).should eq("if true\n1\nend")
     end
   end
 

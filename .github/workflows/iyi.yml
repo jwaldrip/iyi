@@ -77,7 +77,7 @@ jobs:
       - run: chmod +x .build/crystal .build/iyi
 
       # Each language owns its files. A green iyi format check must have run
-      # the iyi frontend rather than reaching the same parser through Crystal.
+      # the iyi frontend rather than the compatibility frontend.
       - name: Formatted
         run: |
           git ls-files -z '*.cr' | xargs -0 ./bin/crystal tool format --check
