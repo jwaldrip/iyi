@@ -264,6 +264,13 @@ module Iyi
   # waiting on, and once it has an artifact it stops being a gap.
   @@bound = Set(String).new
 
+  # The shard's own type names, qualified. See `nameable_name?`.
+  @@declared = Set(String).new
+
+  # The class variables a module body assigns, which the initialiser carries
+  # and the declaration therefore must not. See `collect_runnable`.
+  @@assigned_class_vars = Set(String).new
+
   # The types Crystal's library defines, which a consumer of a bound shard has.
   #
   # It has them because it must: the units number
@@ -358,6 +365,8 @@ module Iyi
     @@bound_used = Set(String).new
     @@bound = bound_dir ? bound_names(program, bound_dir, io) : Set(String).new
     @@library_names = Set(String).new
+    @@declared = declared_names program, root
+    @@assigned_class_vars = Set(String).new
     @@self_shadowed = Set(String).new
     @@drop = artifact_dir ? drop_list(artifact_dir, root) : Set(String).new
     @@top_level_fun_sources = top_level_funs program
@@ -659,7 +668,11 @@ module Iyi
       next unless owners.includes?(method.owner)
       next if method.private_def
       next unless method.verdict.ready? || method.inferred || method.body_answers
-      next if method.uncompilable
+      # Unless the body is what crosses. A method this build could not
+      # instantiate has no symbol here — which is the same thing a travelling
+      # body says — and the consumer compiles it in a program that has
+      # whatever this one was missing. See `body_answers`.
+      next if method.uncompilable && !method.body_answers
       # `storable` asks what a method *called by symbol* needs. One whose body
       # travels is compiled by the consumer, so what its parameters are written
       # as is not this file's business — `Kemal.run(args = ARGV, &)` writes no
@@ -825,6 +838,11 @@ module Iyi
         [] of IyiMod::Signature
       end
 
+    # Before the declarations, because it decides one thing about them: a
+    # class variable this text assigns must not also carry a value in its
+    # declaration. See `collect_runnable`.
+    initialiser = initialiser_source(program, root)
+
     types = type_declarations program, methods, root
 
     # A constant crosses as a function, and that function gets an iyi module
@@ -959,13 +977,17 @@ module Iyi
       # inside the module — so `TABLE = [...]` under `module store` is
       # `Store::TABLE`, in the namespace the shard wrote it in, built by the
       # consumer's own program at the time III.5 says.
-      initialiser: initialiser_source(program, root),
+      initialiser: initialiser,
       source_path: program.filename || "",
       compiler_version: IyiMod.compiler_version,
       target_triple: program.codegen_target.to_s,
       flags: program.flags.to_a.sort!,
       imports: @@bound_used.to_a.sort.map { |name| IyiMod::ImportEdge.new(name) },
       mono_bodies: @@mono_bodies.dup,
+      # The root's own macros, which are the module's surface as much as its
+      # defs are: `Kemal.get`, `Kemal.post` and the rest of that DSL are
+      # macros on the module itself. See `declared_macros`.
+      macro_bodies: root_type.try { |type| declared_macros(type) } || [] of String,
       requires: crystal_requires(program),
       # The declarations carry no `module` header when the root is a class: the
       # class is the namespace, and a header of its own name would put it one
@@ -1452,6 +1474,30 @@ module Iyi
     # it was written as, for the reason a field's type is: this file is read
     # where the shard was not, and `Union({{*TYPES}})` is a macro nobody can
     # run again.
+    # An annotation is a declaration that only a *macro* reads, and the macros
+    # travel now. `db` writes `annotation Field` beside `DB::Serializable`,
+    # whose `included` hook walks every instance variable asking for
+    # `@[DB::Field]`; a consumer that had the hook and not the annotation
+    # stopped inside the expansion, in a file it never wrote: `undefined
+    # constant ::DB::Field`. It carries nothing but its name, which is all an
+    # annotation is.
+    if type.is_a?(AnnotationType)
+      return IyiMod::TypeDecl.new(
+        name: name,
+        kind: "annotation",
+        type_parameters: [] of String,
+        assoc_types: [] of String,
+        supertraits: [] of String,
+        fields: [] of {String, String, String},
+        methods: [] of IyiMod::Signature,
+        # `pub`, because the whole of its use is outside: an annotation is
+        # written on a *consumer's* field and read by a macro that travelled.
+        # Unmarked it is `DB does not export DB::Field`, R-2 refusing a name
+        # the boundary carried for exactly this.
+        visibility: "pub",
+      )
+    end
+
     if type.is_a?(AliasType)
       return IyiMod::TypeDecl.new(
         name: name,
@@ -1545,6 +1591,14 @@ module Iyi
         visibility: "",
         types: nested,
         class_vars: declared_class_vars(type),
+        macros: declared_macros(type),
+        # What it includes, which a module has for the same reason a class
+        # does and was the one place this did not ask. `Kemal` writes `module
+        # HandlerInterface; include HTTP::Handler`, and every middleware in an
+        # application includes *that*: without the edge the consumer's own
+        # class was not an `HTTP::Handler`, and `Kemal.use(middleware)` — the
+        # line that installs it — said so.
+        includes: included_modules(type, root),
       )
     end
 
@@ -1622,6 +1676,7 @@ module Iyi
         # The defaulted fields go here, for the reason `split_fields` gives:
         # this is the triple that renders `name : type = value`.
         class_vars: declared_class_vars(type),
+        macros: declared_macros(type),
         superclass: superclass_name(type, root),
         includes: included_modules(type, root),
       )
@@ -1683,6 +1738,68 @@ module Iyi
   private def self.declared_class_vars(type : Type) : Array(IyiMod::ClassVarDecl)
     return [] of IyiMod::ClassVarDecl if library_type?(type, library_root(type.program))
     collect_class_vars(type)
+  end
+
+  # The macros one type declares, as source.
+  #
+  # III.6 rule 4 said no macro crosses, and that was a statement about what
+  # the format could carry rather than about what a boundary owes: an iyi
+  # module's macros have travelled in `MacroBodies` and `TypeDecl#macros`
+  # since modules had either, and a shard's were written as an empty list
+  # here. What that cost is a real application: `Kemal::HandlerInterface`
+  # offers `only` and `exclude` as macros, every middleware in a Kemal app
+  # calls one, and against the boundary they were `undefined method 'only'`.
+  #
+  # A macro is source and the consumer expands it, so what it names has to
+  # be reachable from where it lands - the same rule a travelling body
+  # takes. One that names something the shard kept to itself fails at the
+  # expansion, in the consumer's own file, which is where a macro's errors
+  # are anyway.
+  private def self.declared_macros(type : Type) : Array(String)
+    sources = [] of String
+    return sources if library_type?(type, library_root(type.program))
+
+    type.metaclass.as?(ModuleType).try &.macros.try &.each_value do |overloads|
+      overloads.each do |a_macro|
+        next unless shard_wrote_macro?(a_macro)
+        sources << a_macro.to_s
+      end
+    end
+
+    # And the hooks, which are macros the compiler keeps in a second place.
+    #
+    # `macro included` is not in `macros` — a name nobody calls is stored by
+    # the moment that fires it — and it is how a Crystal library hands a type
+    # its whole surface: `include DB::Serializable` is what defines
+    # `SubmissionStruct.new(rs)` and `from_rs`, so an application that
+    # included it against the boundary got `Array(NoReturn)` out of a query
+    # whose rows nothing knew how to make.
+    #
+    # `included` and `extended` only. The other two fire on a *declaration*,
+    # and every declaration this artifact carries is read back and declared
+    # again on the far side: `bindata` writes `macro inherited` defining six
+    # constants, `asn1` subclasses it fifteen times, and the consumer
+    # re-declaring those subclasses ran the hook over constants the artifact
+    # had already written down — `already initialized constant
+    # ASN1::BER::AFTER_DESERIALIZE`. What a consumer's own subclass needs from
+    # them is real and is not this: it is the second half of a boundary that
+    # can be inherited from, which nothing here claims yet.
+    type.metaclass.as?(ModuleType).try &.hooks.try &.each do |hook|
+      next unless hook.kind.included? || hook.kind.extended?
+      next unless shard_wrote_macro?(hook.macro)
+      sources << hook.macro.to_s
+    end
+    sources.sort!
+  end
+
+  # Where the macro was written, by the same test a `def` takes: a shard
+  # reopening `Object` must not carry the library's macros with it.
+  private def self.shard_wrote_macro?(a_macro) : Bool
+    filename = written_in a_macro.location
+    return false unless filename
+    library = @@library
+    return true if library.empty?
+    !filename.starts_with?(library)
   end
 
   # A method has as many symbols as it has ways of being called, and this emits
@@ -1759,6 +1876,20 @@ module Iyi
     declared = signature.parameters.map do |parameter|
       parameter.split(" = ").first.split(" : ").last
     end
+    # Nor a parameter that takes a *class*, for the reason a `forall` is not
+    # here: `def read(type : DB::Mappable.class)` is one instantiation per
+    # class the caller names, the classes are the consumer's, and the body is
+    # what travels. What this file would stand up is the module itself —
+    # `uninitialized DB::Mappable.class`, then a call on it — and the fill
+    # build stopped where the source says it must: `undefined method 'new' for
+    # DB::Mappable:Module`. The driver then dropped the method to get a build,
+    # and an application mapping rows into structs lost the one overload that
+    # does it.
+    return counter if declared.any? do |type|
+                        bare = type.lchop("::")
+                        bare.ends_with?(".class") || bare == "Class"
+                      end
+
     # Nor one whose type is an abstract struct: there is no value of it to
     # stand up. See `@@unwritable`.
     return counter if declared.any? do |type|
@@ -2131,6 +2262,13 @@ module Iyi
     # value: `undefined constant`, from a file nobody wrote.
     return counter if declaration.kind == "lib"
 
+    # Nor an annotation, for the plainest reason on this list: it is not a
+    # type a value can have. It travels because a travelling macro reads it —
+    # `DB::Serializable`'s hook asks every field for `@[DB::Field]` — and
+    # `uninitialized DB::Field` is `BUG: called create_llvm_type for
+    # DB::Field`, the fill build dying inside codegen.
+    return counter if declaration.kind == "annotation"
+
     qualified = "#{prefix}#{declaration.name}"
 
     # A generic has no machine code of its own to keep: its methods exist once
@@ -2178,6 +2316,12 @@ module Iyi
       counter += 1
       io << "  " << metaclass << " = uninitialized " << qualified << ".class\n"
 
+      # The path `MonoBodies` is keyed on, which is this declaration's own —
+      # written relative to the module, where the calls below are written from
+      # the top level.
+      relative_container = @@root.empty? ? qualified : qualified.lchop("#{@@root}::")
+      ordinals = {} of String => Int32
+
       declaration.methods.each do |signature|
         # `initialize` is not called here. It is in the declarations only where
         # `new` could not travel — a block-taking one — and then its body
@@ -2196,6 +2340,22 @@ module Iyi
         # `uninitialized` of. Its symbol is in the unit already — whatever
         # travelling body calls it is what emitted it.
         next if signature.visibility == "private"
+
+        # A method whose body travels is not called here, and this is the
+        # general form of the four shapes above it.
+        #
+        # There is no symbol to keep alive: the consumer compiles the body
+        # where it stands (IV.1g). Worse than useless, the call is a claim
+        # this build cannot make — `Quartz::Composer#deliver` calls `sender`,
+        # which every mailer defines and the shard itself never does, and
+        # `db`'s `read(type : DB::Mappable.class)` wants a class no shard has.
+        # Both are methods a *consumer* completes, and standing one up here
+        # stopped the fill build on the shard's own source.
+        travelling = @@mono_bodies.has_key?(
+          IyiMod.mono_body_key(relative_container, signature, ordinals[IyiMod.mono_body_key("", signature)]? || 0))
+        ordinals[IyiMod.mono_body_key("", signature)] =
+          (ordinals[IyiMod.mono_body_key("", signature)]? || 0) + 1
+        next if travelling
 
         # `new` through the class's *name*, and everything else on the class
         # side through the metaclass value.
@@ -2324,6 +2484,28 @@ module Iyi
   end
 
   # Whether the program really has a type by this qualified name.
+  # Every type the shard declares, qualified, gathered once. See
+  # `nameable_name?`, which asks this of a bare name a restriction wrote.
+  private def self.declared_names(program : Program, root : String) : Set(String)
+    names = Set(String).new
+    collect_declared_names program.types?, root, names
+    names
+  end
+
+  private def self.collect_declared_names(table, root : String, names : Set(String)) : Nil
+    table.try &.each_value do |type|
+      next unless type.is_a?(NamedType)
+      name = type.to_s
+      # Without its parameters, which is how a restriction writes one:
+      # `Radix::Tree(T)` prints its own, and `result : Result` names the type
+      # rather than an instantiation of it.
+      name = name[0...name.index('(')] if name.includes?('(')
+      next unless name == root || name.starts_with?("#{root}::")
+      names << name
+      collect_declared_names type.types?, root, names
+    end
+  end
+
   private def self.declared_type?(program : Program, qualified : String) : Bool
     table = program.types?
     qualified.split("::").each do |part|
@@ -2866,8 +3048,16 @@ module Iyi
         # `QueryMethods(Stmt)` binds `Stmt` and `query_one(… &block : ResultSet
         # -> U) : U forall U` binds `U`.
         bound = parameters + method.free_vars
+        # `?` is what a parameter nobody wrote a type for reads as, and it is
+        # not a name to resolve. Every one of a generic's methods travels as
+        # source, so the consumer infers it exactly as the shard's own
+        # compiler did: `radix` writes `private def find(path, result, node,
+        # first = false)` and its public `find` — which travels — calls it
+        # with `first: true`. Held to this test the private one never crossed
+        # and the consumer stopped inside the body it was handed: `no
+        # parameter named 'first'`.
         next unless method.signature_types.all? do |written|
-                      nameable?(written, root, bound)
+                      written == "?" || nameable?(written, root, bound)
                     end
         # An `abstract def` is a *requirement*, and it has no body by
         # definition — `method.body` is the empty string for one, which is
@@ -3032,11 +3222,22 @@ module Iyi
   #
   # Asked of the program, because the parser cannot tell them apart: both are
   # `Call` nodes and the difference is what the name was defined as.
-  private def self.macro_call?(program : Program, call : Call) : Bool
+  private def self.macro_call?(program : Program, call : Call,
+                               namespace : String = "") : Bool
     owner =
       case receiver = call.obj
       when Nil
-        program.as(Type)
+        # Where the call stands, which for one inside a `module` body is that
+        # module: `getter` and `property` are macros a class body calls with
+        # no receiver, and asked of the top level they are not macros at all.
+        #
+        # The top level is still asked, below: `record` is a macro of the
+        # prelude's, written at no namespace, and a module body calls it as
+        # readily as a file does. Missed, `record(Param, …)` was copied into
+        # `pq`'s initialiser and declared a second `PQ::Param` on the far
+        # side — one the boundary had not marked `pub`, so the shard beside
+        # it stopped on `PQ does not export PQ::Param`.
+        namespace_type(program, namespace) || program.as(Type)
       when Path
         found = nil.as(Type?)
         table = program.types?
@@ -3052,10 +3253,34 @@ module Iyi
       end
     return false unless owner
 
-    {owner.as?(ModuleType), owner.metaclass.as?(ModuleType)}.each do |scope|
+    scopes = [owner.as?(ModuleType), owner.metaclass.as?(ModuleType),
+              program.as?(ModuleType)]
+    # And what it inherits, because `getter` is `Object`'s and every class
+    # body calls it as its own.
+    if owner.responds_to?(:ancestors)
+      owner.ancestors.each do |ancestor|
+        scopes << ancestor.as?(ModuleType)
+        scopes << ancestor.metaclass.as?(ModuleType)
+      end
+    end
+    scopes.each do |scope|
       return true if scope.try(&.macros).try(&.has_key?(call.name))
     end
     false
+  end
+
+  # The type a path names, or nil where the shard does not declare one.
+  private def self.namespace_type(program : Program, namespace : String) : Type?
+    return nil if namespace.empty?
+    found = nil.as(Type?)
+    table = program.types?
+    namespace.split("::").each do |part|
+      next_type = table.try &.[]?(part)
+      return nil unless next_type
+      found = next_type
+      table = next_type.as?(NamedType).try(&.types?)
+    end
+    found
   end
 
   # The shard's own top-level `fun`s, as source.
@@ -3096,9 +3321,102 @@ module Iyi
     nodes = parser.parse
 
     lines = [] of String
-    flat_expressions(nodes).each do |node|
-      case node
-      when Require, ClassDef, ModuleDef, Def, Macro, LibDef, EnumDef,
+    collect_runnable program, nodes, "", lines
+    lines.join('\n')
+  rescue
+    ""
+  end
+
+  # The same question one namespace in.
+  #
+  # A `module` body runs its statements exactly as a file does — that is what
+  # `PG::Decoders` is made of: five `register_decoder BoolDecoder.new` lines
+  # under a `@@decoders` hash, and the hash's *default* is the byte decoder.
+  # Skipped as "a declaration, somebody else carries it", the artifact's
+  # object code arrived with an empty registry and every column came back raw:
+  # `In PG::ResultSet#read the column count returned a Slice(UInt8) but a
+  # Int64 was expected`, from an application whose front end had compiled
+  # clean.
+  #
+  # Written back as a reopening, absolute, so the statements run in the scope
+  # that wrote them: `register_decoder` is `PG::Decoders`' own and its
+  # argument names a class beside it.
+  private def self.collect_runnable(program : Program, node : ASTNode,
+                                    namespace : String, lines : Array(String),
+                                    assigned : Array(String)? = nil,
+                                    calls : Array(Bool)? = nil) : Nil
+    flat_expressions(node).each do |inner|
+      # Inside a declaration, a *call* is the only thing that is code.
+      #
+      # Everything else a body holds is the declaration's own and has already
+      # travelled by its own road: a class variable's assignment and its
+      # annotation are in `class_vars`, a constant is in the constants, an
+      # instance variable's is a field. Copied here as well they run a second
+      # time on the far side, over declarations that already exist — a
+      # `@[ThreadLocal] @@buffer = uninitialized StaticArray(UInt8, 4)` read
+      # back at the top level is a second, unrelated variable of the same
+      # name, and `bench/bind_roundtrip.sh` answered with a segfault.
+      # A class variable's assignment is the exception, and it is the reason
+      # the calls beside it can run at all: `PG::Decoders` writes
+      # `@@decoders = Hash(Int32, Decoder).new(ByteaDecoder.new)` and then
+      # five `register_decoder` lines under it. Carried without the
+      # assignment, the first call read a global nobody had filled — a
+      # segfault in `__crystal_main`, before the program's own first line.
+      #
+      # The declaration drops its value where this happens, so the variable
+      # is initialised exactly once and in the order the shard wrote.
+      if !namespace.empty? && inner.is_a?(Assign) && (target = inner.target).is_a?(ClassVar)
+        assigned.try &.<< "#{namespace}::#{target.name}"
+        lines << inner.to_s
+        next
+      end
+
+      if !namespace.empty? && !inner.is_a?(Call) && !inner.is_a?(ModuleDef) && !inner.is_a?(ClassDef)
+        next
+      end
+
+      case inner
+      when ModuleDef, ClassDef
+        name = inner.name.to_s
+        inside = namespace.empty? ? name : "#{namespace}::#{name}"
+        # This root's own namespaces only. A shard's files are read once per
+        # root it declares — `pg` declares `PG` and `PQ`, and both artifacts
+        # are built from the same directory — so `PG::Decoders`' body reached
+        # `pq`'s initialiser as well, where the name it is written with
+        # resolves to nothing: `undefined constant PG::Decoders::Decoder`.
+        next unless inside == @@root || inside.starts_with?("#{@@root}::") ||
+                    @@root.starts_with?("#{inside}::")
+        nested = [] of String
+        nested_assigned = [] of String
+        nested_calls = [] of Bool
+        collect_runnable program, inner.body, inside, nested, nested_assigned, nested_calls
+        # Only where something *runs*. A body whose whole content is a class
+        # variable's assignment has nothing this text is for — the
+        # declaration carries the value — and reopening the type to say it
+        # again is a name R-2 refuses: `Shard does not export Shard::Part`.
+        next if nested.empty? || nested_calls.empty?
+        @@assigned_class_vars.concat nested_assigned
+        calls.try &.<< true
+        keyword =
+          case inner
+          when ClassDef then inner.struct? ? "struct" : "class"
+          else               "module"
+          end
+        # Written relative to the shard's own root, because that is where
+        # this text is read: the initialiser is rendered *inside* the
+        # artifact's module, and an absolute `::PG::Decoders` from in there
+        # declares a second type of that name at the top level — one whose
+        # `@@decoders` is a different global from the one the object code
+        # writes to. The root itself needs no wrapper at all; its body is
+        # already the text's own scope.
+        relative = inside == @@root ? "" : inside.lchop("#{@@root}::")
+        lines << (relative.empty? ? nested.join('\n') : "#{keyword} #{relative}\n#{nested.join('\n')}\nend")
+      when VisibilityModifier
+        # `private def` and `protected getter` are declarations wearing a
+        # modifier. Read as "not a declaration" — which is what falling
+        # through to the last branch does — the whole method was copied into
+        # the initialiser, to be defined a second time on the far side.
+      when Require, Def, Macro, LibDef, EnumDef,
            Alias, AnnotationDef, Include, Extend, TypeDeclaration, Nop, FunDef
         # A declaration, or a require. Somebody else carries it.
         #
@@ -3125,14 +3443,14 @@ module Iyi
         # and copying the line into the initialiser handed a consumer
         # `ECR.embed` with nothing in it: `wrong number of arguments for macro
         # 'embed' (given 0, expected 2)`, from a file nobody wrote.
-        lines << node.to_s unless macro_call?(program, node)
+        unless macro_call?(program, inner, namespace)
+          lines << inner.to_s
+          calls.try &.<< true
+        end
       else
-        lines << node.to_s
+        lines << inner.to_s
       end
     end
-    lines.join('\n')
-  rescue
-    ""
   end
 
   # One `Expressions` tree as a flat list. Collected rather than yielded: a
@@ -3186,7 +3504,13 @@ module Iyi
         written = type.iyi_value_source
         # A constant with none is one nobody wrote — see `Const#iyi_value_source`
         # — and the node is the best answer left.
-        lines << "#{prefix}#{name} = #{written.empty? ? type.value.to_s : written}"
+        # `pub`, because a Crystal shard has no other word for it: every
+        # constant it writes is one a program requiring it can name, and R-2
+        # reads an unmarked one as the module's own business. `kilt` writes
+        # `ENGINES` and its `render` macro — which travels — expands to code
+        # that reads it, so a consumer stopped inside an expansion it never
+        # wrote: `Kilt does not export Kilt::ENGINES`.
+        lines << "pub #{prefix}#{name} = #{written.empty? ? type.value.to_s : written}"
       when NamedType
         next if type.is_a?(GenericType)
         next if type.private?
@@ -3239,11 +3563,19 @@ module Iyi
         next if method.name == "initialize" && method.written_block.empty?
 
         next unless method.verdict.ready? || method.inferred || method.body_answers
-        # A method the compiler refused to instantiate does not travel. The keep
-        # file names what a boundary declares, so one that does not typecheck
-        # takes the whole fill build with it — every declaration on disk and no
-        # machine code anywhere.
-        next if method.uncompilable
+        # A method the compiler refused to instantiate does not travel *as a
+        # symbol*. The keep file names what a boundary declares, so one that
+        # does not typecheck takes the whole fill build with it — every
+        # declaration on disk and no machine code anywhere.
+        #
+        # Its body still can, and for these two shards it is the only way it
+        # could: `Quartz::Composer#deliver` calls `sender`, which every mailer
+        # a consumer writes defines and the shard itself never does. Measured
+        # here it is `undefined method 'sender'`; compiled by the consumer,
+        # against the subclass that has one, it is the method the application
+        # calls. The keep file leaves a travelling body alone, so the fill
+        # build never sees it.
+        next if method.uncompilable && !method.body_answers
         # `storable` and the names below ask what a method *called by symbol*
         # needs, and one whose body travels is not called by symbol — the
         # consumer compiles it. The module-function collector has read them
@@ -3817,9 +4149,16 @@ module Iyi
     class_vars = [] of IyiMod::ClassVarDecl
     return class_vars unless type.responds_to?(:class_vars?)
 
+    owner = type.devirtualize.to_s
     type.class_vars?.try &.each do |name, variable|
       initialiser = variable.iyi_initialiser_source
       written = variable.type?.try(&.devirtualize.to_s) || "?"
+      # Unless the initialiser carries the assignment, in which case this one
+      # would run a second time — after the statements beside it, undoing
+      # them. `PG::Decoders` fills its `@@decoders` hash from five calls
+      # under the assignment, and a declaration that re-ran the assignment
+      # emptied the registry every consumer had just filled.
+      initialiser = "" if @@assigned_class_vars.includes?("#{owner}::#{name}")
       # `@[ThreadLocal]` travels with the variable, because it decides which
       # global the object code on both sides writes to. See
       # `IyiMod::ClassVarDecl`.
@@ -3939,6 +4278,15 @@ module Iyi
   private def self.nameable_name?(name : String, root : String) : Bool
     return true if name == root || name.starts_with?("#{root}::")
     bare = name.lchop("::")
+    # The shard's own, written the way the shard wrote it. A restriction
+    # naming a *generic* keeps its source text — `Radix::Tree(T)` writes
+    # `private def find(path, result : Result, node : Node, first = false)`
+    # and `Result(T)` resolved is a `T` nobody declares — and this file's
+    # declarations are written relative to the root, so a bare `Result` is
+    # the name a reader of them resolves. Asked only of the qualified form,
+    # the method was dropped and the public `find` that travels called it:
+    # `no parameter named 'first'`, inside a body the consumer never wrote.
+    return true if @@declared.includes?("#{root}::#{bare}")
     @@builtin.includes?(bare) || @@bound.includes?(bare) || @@crystal_types.includes?(bare)
   end
 
@@ -4020,12 +4368,45 @@ module Iyi
       # else's. `root` is the shard's namespace and the prelude's builtins are
       # nobody's to reopen.
       unless name == root || name.starts_with?("#{root}::")
-        declaration = reopened_declaration type, directory, library, root
+        declaration = top_level_alias(type, directory) ||
+                      reopened_declaration(type, directory, library, root)
         declarations << declaration if declaration
       end
 
       collect_reopened type.types?, directory, library, root, declarations
     end
+  end
+
+  # A name the shard wrote outside its own namespace, which is a name a
+  # program that requires it has.
+  #
+  # `validator` ends its file with `alias Valid = Validator`, and every call
+  # in an application is written `Valid.email?`. Nothing carried it: the walk
+  # that collects declarations starts at the shard's root, and this one is
+  # beside it. So a boundary that had every method of the shard answered
+  # `undefined constant Valid` at the first call site.
+  #
+  # Written `::Valid` — this is the top level and not the artifact's module —
+  # and with the right-hand side resolved, for the reason every other type in
+  # this file is: it is read where the shard was not.
+  private def self.top_level_alias(type : Type, directory : String) : IyiMod::TypeDecl?
+    return nil unless type.is_a?(AliasType)
+    return nil unless type.namespace.is_a?(Program)
+
+    written = type.locations.try(&.compact_map { |at| at.filename.as?(String) })
+    return nil unless written.try(&.any?(&.starts_with?(directory)))
+
+    IyiMod::TypeDecl.new(
+      name: "::#{type.to_s}",
+      kind: "alias",
+      type_parameters: [] of String,
+      assoc_types: [] of String,
+      supertraits: [] of String,
+      fields: [] of {String, String, String},
+      methods: [] of IyiMod::Signature,
+      visibility: "",
+      value: type.aliased_type.devirtualize.to_s,
+    )
   end
 
   # One `lib` of the library's, with only what the shard put in it.
@@ -4565,7 +4946,18 @@ module Iyi
     plain = resolve_restriction(owner, a_def.return_type, qualify: false)
 
     uncompilable = false
-    if verdict.needs_return?
+    # A method whose *types* the caller brings is not measured at all: its body
+    # travels, and instantiating it here asks a question with no answer — see
+    # `caller_shaped?`. Recording the failure is how two of `db`'s crossed
+    # nothing: `ResultSet#read(type : DB::Mappable.class)` was "uncompilable"
+    # because the synthetic call handed it the module itself, and
+    # `BeginTransaction#transaction(& : Transaction -> T) : T?` because the
+    # synthesised block's `T` is a name only a caller binds — `undefined
+    # constant ::T`. Neither failure was the shard's.
+    if a_def.free_vars.try { |free| !free.empty? } ||
+       a_def.args.any? { |arg| metaclass_restriction?(arg.restriction) }
+      # Nothing to ask.
+    elsif verdict.needs_return?
       inferred, refused, uncompilable = infer_return(owner, a_def)
     elsif verdict.needs_human? && (a_def.block_arg || a_def.block_arity)
       # A method whose body travels is not blocked by an untyped parameter.
@@ -4636,11 +5028,30 @@ module Iyi
       # travel. The third is `&` — or a bare `yield` — which names no block
       # parameter at all, and which is how Crystal's own libraries are written
       # far more often than the annotated form.
+      # And a fourth, which is not about blocks: the shard alone does not know
+      # what the method returns.
+      #
+      # `db` is an interface library. `DB.open(uri)` ends in
+      # `Database.new(connection_options, pool_options, &factory)`, and the
+      # options come off a `DB::Driver` — abstract, with no implementor until
+      # a program requires `pg` beside it. Compiled alone the call has no type
+      # at all, so there is nothing to declare *and nothing to emit*: the
+      # producer cannot compile that method either, and a declaration naming a
+      # symbol its own object code lacks is a link error waiting for the first
+      # consumer. It was dropped, and an application said
+      # `'DB.open' is expected to be invoked with a block, but no block was
+      # given` — the block-taking overload beside it was the only one left.
+      #
+      # The body is the answer for the same reason it is for a block: the
+      # program that calls this has the driver, so the consumer's own compiler
+      # can type what the producer's could not. If it cannot, it says so on the
+      # method's own source rather than on a name that went missing.
       body_answers: setter_body?(a_def) || delegating_overload?(a_def) ||
                     caller_shaped?(a_def) ||
                     (refused == "block returns `_`" ||
                      refused == "block is not annotated" ||
-                     refused == "yields without a block parameter") && !a_def.abstract? &&
+                     refused == "yields without a block parameter" ||
+                     refused == "no type" || uncompilable) && !a_def.abstract? &&
                     !a_def.body.nil? && !a_def.body.is_a?(Nop),
       # The return type is asked the same question the parameters are. `Int` is
       # the head of a family on either side of the arrow, and a method that
@@ -4724,8 +5135,29 @@ module Iyi
     # the block returns.
     return true if a_def.free_vars.try { |free| !free.empty? }
 
+    # And a parameter that takes a *class* says the same thing without a free
+    # variable to say it with. `db` writes `def read(type : DB::Mappable.class)`
+    # and `def read(type : Enum.class)`; which class arrives is the caller's to
+    # decide, there is one instantiation per class, and every one of them is in
+    # a program the producer never sees. Measured here the first is
+    # `read(DB::Mappable:Module)` — the module itself, which nothing can
+    # instantiate — and the tool recorded the failure and dropped the method.
+    #
+    # What that cost is the whole of `DB::Serializable`: `rs.read(Row)` then
+    # matched `read(type : T.class) : T forall T` instead, whose body reads one
+    # column and raises when it is not a `Row`, so a query mapping rows into
+    # structs typed `Array(NoReturn)` and the application would not compile.
+    return true if a_def.args.any? { |arg| metaclass_restriction?(arg.restriction) }
+
     a_def.args.any? { |arg| arg.restriction.nil? } ||
       !a_def.splat_index.nil? || !a_def.double_splat.nil?
+  end
+
+  # `Foo.class`, or the head of every metaclass there is.
+  private def self.metaclass_restriction?(restriction : ASTNode?) : Bool
+    return false unless restriction
+    return true if restriction.is_a?(Metaclass)
+    restriction.is_a?(Path) && restriction.to_s == "Class"
   end
 
   # The parameters as the source wrote them, stars and all.
@@ -4869,6 +5301,17 @@ module Iyi
     written = node.to_s
     return written if written == "_"
     return owner.instance_type.devirtualize.to_s if node.is_a?(Self)
+
+    # `Foo.class` resolves to a type whose name is the compiler's own spelling
+    # — `DB::Mappable:Module`, `Enum:Class` — and no source can carry that. So
+    # the metaclass is written back the way it was written down, over an
+    # instance name resolved like any other. `db` writes `def read(type :
+    # DB::Mappable.class)`, which is how a row becomes a struct, and it
+    # crossed as a parameter nothing could parse.
+    if node.is_a?(Metaclass)
+      inner = resolve_restriction(owner, node.name, qualify)
+      return inner ? "#{inner}.class" : written
+    end
 
     type = owner.lookup_type?(node)
     return written unless type

@@ -426,6 +426,54 @@
 
 ### Fixed
 
+- **A boundary carried its declarations and not what a consumer compiles
+  against them.** The 8,079-line kemal application was built against
+  `mods/` instead of `lib/` for the first time, and it took twelve defects
+  to get from "22 artifacts written" to a binary that boots. Each was found
+  by a real call site, not by reading the tool: a shard's **macros** never
+  crossed (`Kemal::HandlerInterface` offers `only` and `exclude`, so every
+  middleware in the application was `undefined method 'only'`), nor did
+  `macro included` — how `DB::Serializable` defines `new(rs)` and
+  `from_rs`, without which a query mapping rows into structs typed
+  `Array(NoReturn)` — nor the `annotation Field` that hook reads off every
+  instance variable. A macro that crossed was not exported (`Kilt does not
+  export 'render'`, inside an expansion the consumer never wrote), and
+  neither was the constant it names. `DB.open(uri)` was dropped, because
+  `db` is an interface library and the shard alone cannot type it — the
+  answer exists only in a program that also has `pg` — so the block-taking
+  overload beside it was the only one left and the application read
+  `'DB.open' is expected to be invoked with a block`. A parameter that
+  takes a *class* is one instantiation per class the caller names, and
+  three such methods (`read(type : DB::Mappable.class)`,
+  `read(type : Enum.class)`) were measured, refused and dropped rather
+  than travelling as source. A module carried no `include`, so a
+  middleware including `Kemal::HandlerInterface` was not an
+  `HTTP::Handler`. A private overload sharing a public one's name stayed
+  behind under a generic (`radix`'s `find(path, result, node, first =
+  false)`), and the public `find` that travels called it: `no parameter
+  named 'first'`. A named argument at a boundary call was keyed on what
+  the call site passed rather than on the declaration, so `pg` asked `db`
+  for `*DB::ConnectionLost::new<DB::Connection+, IO::Error+>` — one symbol
+  per exception class a caller happens to hold. And a module *body*'s
+  statements never travelled at all: `PG::Decoders` fills its decoder
+  registry with five `register_decoder` lines under the hash they fill, so
+  every column came back raw — `the column count returned a Slice(UInt8)
+  but a Int64 was expected` — from a build whose front end was clean.
+- **What binding costs, on that application, measured both ways.** Cold
+  cache, same compiler, same tree: from shard sources **17.0 s**, against
+  the boundaries **24.3 s**. The whole difference is the top-level pass —
+  2.3 s to 12.1 s — which is reading 267 MB of artifacts; the
+  application's own main pass *falls*, 7.9 s to 6.8 s, and codegen and
+  linking are level. A program that does nothing but import the twenty
+  boundaries spends 11.7 s there against 2.2 s for the same `require`s
+  from source. The binary is **14.2 MB from source and 209 MB from the
+  boundaries** (`.text` 7.0 MB against 112 MB): a source build's codegen
+  is demand-driven, and a consumer links every unit every artifact
+  carries. So the boundary's promise — the front end reads declarations
+  instead of code — is real and is currently paid for twice over by the
+  read itself. The next work is on the artifact: what it carries, and
+  when it has to be decoded.
+
 - **A green round is a program that does what was asked.** An empty
   file compiles, and a raw-grounded trial of the rounds arm was seen to
   answer nothing and score a one-round win for it. Green now means the
