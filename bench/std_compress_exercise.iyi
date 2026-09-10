@@ -21,7 +21,7 @@ import std/slice
 using std/slice::{Slice}
 
 import std/compress
-using std/compress::{Deflate, Inflate, Zlib, Gzip, Adler32, CRC32}
+using std/compress::{Deflate, Inflate, Zlib, Gzip, Adler32, CRC32, DecompressError, DecompressLimitExceeded}
 
 alias Bytes = Std::Slice::Bytes
 
@@ -264,6 +264,129 @@ def main : Nil
   raise "cross: gzip vector mismatch" unless gzip_dec == expected_gbytes
 
   puts "    cross-implementation: external zlib and gzip vectors decoded cleanly"
+
+  # ---------------------------------------------------------------------------
+  # 8. Bounded Decompression and Contract Guarantees
+  # ---------------------------------------------------------------------------
+  # Valid stored, fixed, and dynamic blocks under limit
+  r_valid_stored = Inflate.decompress(s_comp, 100_i64)
+  case r_valid_stored
+  when Bytes
+    raise "bounded: valid stored mismatch" unless r_valid_stored == s_data
+  else
+    raise "bounded: expected Bytes for valid stored block"
+  end
+
+  r_valid_fixed = Inflate.decompress(f_comp, 100_i64)
+  case r_valid_fixed
+  when Bytes
+    raise "bounded: valid fixed mismatch" unless r_valid_fixed == f_data
+  else
+    raise "bounded: expected Bytes for valid fixed block"
+  end
+
+  r_valid_dyn = Inflate.decompress(d_comp6, 2000_i64)
+  case r_valid_dyn
+  when Bytes
+    raise "bounded: valid dynamic mismatch" unless r_valid_dyn == text_data
+  else
+    raise "bounded: expected Bytes for valid dynamic block"
+  end
+
+  # Decompression bomb: 10,000 'A's compressed into 27 bytes
+  bomb_raw = make_bytes(10000) { 65_u8 }
+  bomb_comp = Deflate.compress(bomb_raw, 6)
+  bomb_lim = 75_i64
+  r_bomb = Inflate.decompress(bomb_comp, bomb_lim)
+  case r_bomb
+  when DecompressLimitExceeded
+    raise "bomb limit mismatch" unless r_bomb.limit == bomb_lim
+    raise "bomb produced mismatch" unless r_bomb.produced == bomb_lim
+  else
+    raise "expected DecompressLimitExceeded for decompression bomb"
+  end
+
+  # Malformed classes returning DecompressError rather than unwinding:
+  # 1. Unexpected EOF / truncation
+  bad_trunc = bomb_comp[0, bomb_comp.size // 2]
+  case Inflate.decompress(bad_trunc, 1000_i64)
+  when DecompressError
+    # ok
+  else
+    raise "expected DecompressError for truncated stream"
+  end
+
+  # 2. Block type 3 (reserved)
+  bad_b3 = make_bytes(2) { 7_u8 }
+  case Inflate.decompress(bad_b3, 1000_i64)
+  when DecompressError
+    # ok
+  else
+    raise "expected DecompressError for block type 3"
+  end
+
+  # 3. Stored block LEN/NLEN mismatch
+  bad_st = make_bytes(7) { 0_u8 }
+  bad_st[0] = 1_u8
+  bad_st[1] = 5_u8
+  bad_st[3] = 5_u8
+  case Inflate.decompress(bad_st, 1000_i64)
+  when DecompressError
+    # ok
+  else
+    raise "expected DecompressError for stored LEN/NLEN mismatch"
+  end
+
+  # 4. Back-reference distance beyond produced output
+  bad_d_val = 1 | (1 << 1) | (1 << 9) | (0b01100 << 10)
+  bad_dist_bytes = make_bytes(4) { 0_u8 }
+  bad_dist_bytes[0] = (bad_d_val & 0xFF).to_u8
+  bad_dist_bytes[1] = ((bad_d_val >> 8) & 0xFF).to_u8
+  bad_dist_bytes[2] = ((bad_d_val >> 16) & 0xFF).to_u8
+  case Inflate.decompress(bad_dist_bytes, 1000_i64)
+  when DecompressError
+    # ok
+  else
+    raise "expected DecompressError for back-reference distance beyond output"
+  end
+
+  # 5. Invalid HLIT (> 286)
+  b_hlit = make_bytes(4) { 0_u8 }
+  b_hlit[0] = 245_u8
+  case Inflate.decompress(b_hlit, 1000_i64)
+  when DecompressError
+    # ok
+  else
+    raise "expected DecompressError for invalid HLIT"
+  end
+
+  # 6. Invalid literal/length symbol (symbol 286)
+  val_sym = 3 | (99 << 3)
+  b_sym = make_bytes(3) { 0_u8 }
+  b_sym[0] = (val_sym & 0xFF).to_u8
+  b_sym[1] = ((val_sym >> 8) & 0xFF).to_u8
+  case Inflate.decompress(b_sym, 1000_i64)
+  when DecompressError
+    # ok
+  else
+    raise "expected DecompressError for symbol 286"
+  end
+
+  # 7. Distance symbol > 29 (symbol 30)
+  val_d = 3_i64 | (0b10001110_i64 << 3) | (0b1000000_i64 << 11) | (0b01111_i64 << 18)
+  b_dist = make_bytes(4) { 0_u8 }
+  b_dist[0] = (val_d & 0xFF_i64).to_u8
+  b_dist[1] = ((val_d >> 8) & 0xFF_i64).to_u8
+  b_dist[2] = ((val_d >> 16) & 0xFF_i64).to_u8
+  b_dist[3] = ((val_d >> 24) & 0xFF_i64).to_u8
+  case Inflate.decompress(b_dist, 1000_i64)
+  when DecompressError
+    # ok
+  else
+    raise "expected DecompressError for distance symbol 30"
+  end
+
+  puts "    bounded decompress: valid blocks, malformed classes, and bomb limit verified"
   puts "all std/compress checks passed"
 end
 

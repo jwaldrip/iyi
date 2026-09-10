@@ -70,7 +70,7 @@ fi
 
 echo
 echo "== every compress section reported"
-for phrase in "checksums:" "deflate stored:" "deflate fixed:" "deflate dynamic:" "zlib wrapper:" "gzip wrapper:" "cross-implementation:"; do
+for phrase in "checksums:" "deflate stored:" "deflate fixed:" "deflate dynamic:" "zlib wrapper:" "gzip wrapper:" "cross-implementation:" "bounded decompress:"; do
   if ! grep -qi "$phrase" "$WORK/compress-plain.out" 2>/dev/null; then
     echo "  MISSING: nothing reported for $phrase"
     status=1
@@ -492,7 +492,9 @@ prove_fails "broken zlib header" "fail_zlib" "invalid zlib header check" \
 # 7. Broken Gzip header (emits wrong magic byte)
 prove_fails "broken gzip header" "fail_gzip" "not in gzip format" \
   's/ptr\[0\] = 0x1F_u8/ptr[0] = 0x00_u8/'
-
+# 8. Bypassed bomb limit (guarded mutation proof: proves limit check is load-bearing)
+prove_fails "bypassed bomb limit" "fail_bomb" "expected DecompressLimitExceeded for decompression bomb" \
+  's/if @max_output_size >= 0_i64 && @out_buf\.size\.to_i64 >= @max_output_size/if false/'
 echo
 if [ "$status" -eq 0 ]; then
   echo "ALL COMPRESS EXERCISE CHECKS AND FAILURE PROOFS PASSED"
