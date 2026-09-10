@@ -5,7 +5,8 @@
 #
 # Provides:
 #   - Inflate: RFC 1951 decompressor supporting stored, fixed Huffman,
-#     and dynamic Huffman blocks, with strict corrupt-stream detection.
+#     and dynamic Huffman blocks, with strict corrupt-stream detection
+#     and bounded output limits (DecompressError, DecompressLimitExceeded).
 #   - Deflate: RFC 1951 compressor supporting stored blocks (level 0),
 #     fixed Huffman blocks (level 1), and dynamic Huffman blocks with an
 #     LZ77 hash-chain match finder (levels 2..9).
@@ -15,10 +16,38 @@
 #   - Adler32 and CRC32 checksum engines.
 
 module std/compress
+
 import std/slice
 using std/slice::{Slice}
 
 pub alias Bytes = Std::Slice::Bytes
+
+# -----------------------------------------------------------------------------
+# Decompression results and error types
+# -----------------------------------------------------------------------------
+
+pub struct DecompressError
+  getter message : String
+
+  def initialize(@message : String)
+  end
+
+  def to_s : String
+    @message
+  end
+end
+
+pub struct DecompressLimitExceeded
+  getter limit : Int64
+  getter produced : Int64
+
+  def initialize(@limit : Int64, @produced : Int64 = 0_i64)
+  end
+
+  def to_s : String
+    "decompress limit exceeded: " + @limit.to_s + " bytes"
+  end
+end
 
 # -----------------------------------------------------------------------------
 # Checksums: Adler-32 (RFC 1950) and CRC-32 (ISO 3309 / RFC 1952)
@@ -151,6 +180,12 @@ class ByteBuffer
     push(byte.to_u8)
   end
 
+  def copy_backward_one(distance : Int32) : Nil
+    ensure_capacity(1)
+    @pointer[@size] = @pointer[@size - distance]
+    @size = @size + 1
+  end
+
   def copy_backward(distance : Int32, length : Int32) : Nil
     raise "invalid backward distance (exceeds output size)" if distance > @size
     raise "backward distance exceeds 32KB window" if distance > 32768
@@ -181,10 +216,12 @@ class BitReader
   @bit_buf : Int64
   @bit_count : Int32
   @valid_bits : Int32
+  @error : String?
 
   getter pos : Int32
   getter bit_count : Int32
   getter valid_bits : Int32
+  getter error : String?
 
   def initialize(@bytes : Bytes, start_pos : Int32 = 0)
     @ptr = @bytes.to_unsafe
@@ -193,9 +230,19 @@ class BitReader
     @bit_buf = 0_i64
     @bit_count = 0
     @valid_bits = 0
+    @error = nil
+  end
+
+  def fail(msg : String) : Nil
+    @error = msg unless @error
+  end
+
+  def error? : Bool
+    !@error.nil?
   end
 
   def ensure_bits(count : Int32) : Nil
+    return if @error
     while @bit_count < count
       if @pos < @size
         byte_val = @ptr[@pos].to_i64
@@ -204,7 +251,10 @@ class BitReader
         @valid_bits = @valid_bits + 8
         @pos = @pos + 1
       else
-        raise "unexpected end of compressed data" if @valid_bits <= 0
+        if @valid_bits <= 0
+          fail("unexpected end of compressed data")
+          break
+        end
         @bit_count = count
         break
       end
@@ -213,26 +263,33 @@ class BitReader
 
   def peek_bits(count : Int32) : Int32
     ensure_bits(count)
+    return 0 if @error
     mask = (1_i64 << count) - 1_i64
     (@bit_buf & mask).to_i32
   end
 
   def consume_bits(count : Int32) : Nil
-    raise "unexpected end of compressed data" if count > @valid_bits
+    return if @error
+    if count > @valid_bits
+      fail("unexpected end of compressed data")
+      return
+    end
     @bit_buf = @bit_buf >> count
     @bit_count = @bit_count - count
     @valid_bits = @valid_bits - count
   end
 
   def read_bits(count : Int32) : Int32
-    return 0 if count == 0
+    return 0 if count == 0 || @error
     val = peek_bits(count)
+    return 0 if @error
     consume_bits(count)
     val
   end
 
   # Aligns reader to the next byte boundary, discarding unused bits in current byte.
   def align_to_byte : Nil
+    return if @error
     drop = @bit_count % 8
     if drop > 0
       drop = @valid_bits if drop > @valid_bits
@@ -241,13 +298,17 @@ class BitReader
   end
 
   def read_byte : UInt8
+    return 0_u8 if @error
     if @valid_bits >= 8
       val = (@bit_buf & 0xFF_i64).to_u8
       consume_bits(8)
       val
     else
       align_to_byte
-      raise "unexpected end of compressed data" if @pos >= @size
+      if @pos >= @size
+        fail("unexpected end of compressed data")
+        return 0_u8
+      end
       val = @ptr[@pos]
       @pos = @pos + 1
       val
@@ -255,16 +316,21 @@ class BitReader
   end
 
   def read_u16_le : Int32
+    return 0 if @error
     b0 = read_byte.to_i32
+    return 0 if @error
     b1 = read_byte.to_i32
     b0 | (b1 << 8)
   end
 
   def copy_bytes_to(buf : ByteBuffer, count : Int32) : Nil
     align_to_byte
+    return if @error
     c = count
     while c > 0
-      buf.push(read_byte)
+      b = read_byte
+      return if @error
+      buf.push(b)
       c = c - 1
     end
   end
@@ -336,11 +402,15 @@ class HuffmanDecoder
   @table : Array(Int32)
   @tree : Array(Int32)
   @tree_nodes : Int32
+  @error : String?
+
+  getter error : String?
 
   def initialize(lengths : Array(Int32), max_symbols : Int32)
     @table = Array(Int32).new(TABLE_SIZE) { 0 }
     @tree = Array(Int32).new(1024) { 0 }
     @tree_nodes = 0
+    @error = nil
     build(lengths, max_symbols)
   end
 
@@ -362,7 +432,10 @@ class HuffmanDecoder
     sym = 0
     while sym < count
       len = lengths[sym]
-      raise "invalid code length #{len} (> 15)" if len > 15
+      if len > 15
+        @error = "invalid code length #{len} (> 15)"
+        return
+      end
       bl_count[len] = bl_count[len] + 1 if len > 0
       sym = sym + 1
     end
@@ -445,7 +518,9 @@ class HuffmanDecoder
   end
 
   def decode(reader : BitReader) : Int32
+    return 0 if reader.error?
     peek = reader.peek_bits(TABLE_BITS)
+    return 0 if reader.error?
     entry = @table[peek]
     if entry > 0
       # Direct primary table hit
@@ -456,15 +531,21 @@ class HuffmanDecoder
     elsif entry < 0
       # Secondary tree traversal
       reader.consume_bits(TABLE_BITS)
+      return 0 if reader.error?
       node = -entry
       while node > 0
         bit = reader.read_bits(1)
+        return 0 if reader.error?
         node = @tree[node * 2 + bit]
       end
-      raise "invalid Huffman code in stream" if node == 0
+      if node == 0
+        reader.fail("invalid Huffman code in stream")
+        return 0
+      end
       -(node + 1)
     else
-      raise "invalid Huffman code in stream"
+      reader.fail("invalid Huffman code in stream")
+      0
     end
   end
 end
@@ -481,7 +562,6 @@ class FixedHuffman
     if dec = @@lit_decoder
       return dec
     end
-    # 288 literal/length symbols
     lens = Array(Int32).new(288) { 0 }
     i = 0
     while i <= 143
@@ -509,7 +589,6 @@ class FixedHuffman
     if dec = @@dist_decoder
       return dec
     end
-    # 32 distance symbols, all length 5
     lens = Array(Int32).new(32) { 5 }
     dec = HuffmanDecoder.new(lens, 32)
     @@dist_decoder = dec
@@ -542,108 +621,196 @@ module DeflateConstants
 end
 
 # -----------------------------------------------------------------------------
-# Inflate: RFC 1951 Decompressor
+# InflateDecoder: Internal decompressor engine
 # -----------------------------------------------------------------------------
 
-pub struct Inflate
+class InflateDecoder
   include DeflateConstants
 
-  # Decompresses raw DEFLATE *data* into original uncompressed bytes.
-  def self.decompress(data : Bytes) : Bytes
-    reader = BitReader.new(data)
-    out_buf = ByteBuffer.new(data.size * 2 + 512)
+  @reader : BitReader
+  @out_buf : ByteBuffer
+  @max_output_size : Int64
+  @error : String?
+  @limit_exceeded : Bool
 
+  def initialize(data : Bytes, @max_output_size : Int64 = -1_i64)
+    @reader = BitReader.new(data)
+    initial_cap = if @max_output_size >= 0_i64 && @max_output_size < 1024_i64
+                    @max_output_size.to_i32
+                  else
+                    data.size * 2 + 512
+                  end
+    @out_buf = ByteBuffer.new(initial_cap)
+    @error = nil
+    @limit_exceeded = false
+  end
+
+  def fail(msg : String) : Nil
+    @error = msg unless @error
+  end
+
+  def decode : Bytes | DecompressError | DecompressLimitExceeded
     final_block = false
     while !final_block
-      final_block = reader.read_bits(1) != 0
-      btype = reader.read_bits(2)
+      final_block = @reader.read_bits(1) != 0
+      if r_err = @reader.error
+        return DecompressError.new(r_err)
+      end
 
+      btype = @reader.read_bits(2)
+      if r_err = @reader.error
+        return DecompressError.new(r_err)
+      end
       case btype
       when 0
-        # Stored block
-        decode_stored(reader, out_buf)
+        decode_stored
       when 1
-        # Fixed Huffman block
         lit_dec = FixedHuffman.lit_decoder
         dist_dec = FixedHuffman.dist_decoder
-        decode_huffman_block(reader, out_buf, lit_dec, dist_dec)
+        decode_huffman_block(lit_dec, dist_dec)
       when 2
-        # Dynamic Huffman block
-        lit_dec, dist_dec = read_dynamic_huffman_trees(reader)
-        decode_huffman_block(reader, out_buf, lit_dec, dist_dec)
+        trees = read_dynamic_huffman_trees
+        if trees
+          lit_dec, dist_dec = trees
+          decode_huffman_block(lit_dec, dist_dec)
+        end
       else
-        raise "invalid DEFLATE block type: 3 (reserved)"
+        fail("invalid DEFLATE block type: 3 (reserved)")
+      end
+
+      if @limit_exceeded
+        return DecompressLimitExceeded.new(@max_output_size, @out_buf.size.to_i64)
+      end
+      if err = @error
+        return DecompressError.new(err)
+      end
+      if r_err = @reader.error
+        return DecompressError.new(r_err)
       end
     end
 
-    out_buf.to_slice
-  end
-
-  private def self.decode_stored(reader : BitReader, out_buf : ByteBuffer) : Nil
-    reader.align_to_byte
-    len = reader.read_u16_le
-    nlen = reader.read_u16_le
-    if (len ^ 0xFFFF) != nlen
-      raise "stored block length check failed: len #{len} nlen #{nlen}"
+    if @limit_exceeded
+      return DecompressLimitExceeded.new(@max_output_size, @out_buf.size.to_i64)
     end
-    reader.copy_bytes_to(out_buf, len)
+    if err = @error
+      return DecompressError.new(err)
+    end
+    if r_err = @reader.error
+      return DecompressError.new(r_err)
+    end
+
+    @out_buf.to_slice
   end
 
-  private def self.read_dynamic_huffman_trees(reader : BitReader) : Tuple(HuffmanDecoder, HuffmanDecoder)
-    hlit = reader.read_bits(5) + 257
-    hdist = reader.read_bits(5) + 1
-    hclen = reader.read_bits(4) + 4
+  private def decode_stored : Nil
+    @reader.align_to_byte
+    len = @reader.read_u16_le
+    nlen = @reader.read_u16_le
+    return if @reader.error?
 
-    raise "invalid HLIT #{hlit}" if hlit > 286
-    raise "invalid HDIST #{hdist}" if hdist > 32
+    if (len ^ 0xFFFF) != nlen
+      fail("stored block length check failed: len #{len} nlen #{nlen}")
+      return
+    end
+
+    l = len
+    while l > 0
+      if @max_output_size >= 0_i64 && @out_buf.size.to_i64 >= @max_output_size
+        @limit_exceeded = true
+        return
+      end
+      b = @reader.read_byte
+      return if @reader.error?
+      @out_buf.push(b)
+      l = l - 1
+    end
+  end
+
+  private def read_dynamic_huffman_trees : Tuple(HuffmanDecoder, HuffmanDecoder)?
+    hlit = @reader.read_bits(5) + 257
+    return nil if @reader.error?
+    hdist = @reader.read_bits(5) + 1
+    return nil if @reader.error?
+    hclen = @reader.read_bits(4) + 4
+    return nil if @reader.error?
+
+    if hlit > 286
+      fail("invalid HLIT #{hlit}")
+      return nil
+    end
+    if hdist > 32
+      fail("invalid HDIST #{hdist}")
+      return nil
+    end
 
     cl_lengths = Array(Int32).new(19) { 0 }
     i = 0
     while i < hclen
-      cl_lengths[CL_ORDER[i]] = reader.read_bits(3)
+      cl_lengths[CL_ORDER[i]] = @reader.read_bits(3)
+      return nil if @reader.error?
       i = i + 1
     end
 
     cl_decoder = HuffmanDecoder.new(cl_lengths, 19)
+    if err = cl_decoder.error
+      fail(err)
+      return nil
+    end
 
-    # Decode literal/length and distance code lengths
     total_codes = hlit + hdist
     all_lengths = Array(Int32).new(total_codes) { 0 }
     code_idx = 0
 
     while code_idx < total_codes
-      sym = cl_decoder.decode(reader)
+      sym = cl_decoder.decode(@reader)
+      return nil if @reader.error?
       if sym < 16
         all_lengths[code_idx] = sym
         code_idx = code_idx + 1
       elsif sym == 16
-        raise "symbol 16 repeat code with no previous length" if code_idx == 0
+        if code_idx == 0
+          fail("symbol 16 repeat code with no previous length")
+          return nil
+        end
         repeat_len = all_lengths[code_idx - 1]
-        repeat_count = 3 + reader.read_bits(2)
-        raise "repeat code exceeds total codes" if code_idx + repeat_count > total_codes
+        repeat_count = 3 + @reader.read_bits(2)
+        return nil if @reader.error?
+        if code_idx + repeat_count > total_codes
+          fail("repeat code exceeds total codes")
+          return nil
+        end
         while repeat_count > 0
           all_lengths[code_idx] = repeat_len
           code_idx = code_idx + 1
           repeat_count = repeat_count - 1
         end
       elsif sym == 17
-        repeat_count = 3 + reader.read_bits(3)
-        raise "repeat code exceeds total codes" if code_idx + repeat_count > total_codes
+        repeat_count = 3 + @reader.read_bits(3)
+        return nil if @reader.error?
+        if code_idx + repeat_count > total_codes
+          fail("repeat code exceeds total codes")
+          return nil
+        end
         while repeat_count > 0
           all_lengths[code_idx] = 0
           code_idx = code_idx + 1
           repeat_count = repeat_count - 1
         end
       elsif sym == 18
-        repeat_count = 11 + reader.read_bits(7)
-        raise "repeat code exceeds total codes" if code_idx + repeat_count > total_codes
+        repeat_count = 11 + @reader.read_bits(7)
+        return nil if @reader.error?
+        if code_idx + repeat_count > total_codes
+          fail("repeat code exceeds total codes")
+          return nil
+        end
         while repeat_count > 0
           all_lengths[code_idx] = 0
           code_idx = code_idx + 1
           repeat_count = repeat_count - 1
         end
       else
-        raise "invalid code length symbol #{sym}"
+        fail("invalid code length symbol #{sym}")
+        return nil
       end
     end
 
@@ -662,37 +829,109 @@ pub struct Inflate
     end
 
     lit_dec = HuffmanDecoder.new(lit_lens, hlit)
+    if err = lit_dec.error
+      fail(err)
+      return nil
+    end
+
     dist_dec = HuffmanDecoder.new(dist_lens, hdist)
+    if err = dist_dec.error
+      fail(err)
+      return nil
+    end
 
     {lit_dec, dist_dec}
   end
 
-  private def self.decode_huffman_block(reader : BitReader, out_buf : ByteBuffer, lit_dec : HuffmanDecoder, dist_dec : HuffmanDecoder) : Nil
+  private def decode_huffman_block(lit_dec : HuffmanDecoder, dist_dec : HuffmanDecoder) : Nil
     loop do
-      sym = lit_dec.decode(reader)
+      sym = lit_dec.decode(@reader)
+      return if @reader.error?
+
       if sym < 256
-        out_buf.push(sym.to_u8)
+        if @max_output_size >= 0_i64 && @out_buf.size.to_i64 >= @max_output_size
+          @limit_exceeded = true
+          return
+        end
+        @out_buf.push(sym.to_u8)
       elsif sym == 256
-        # End of block
         break
       elsif sym <= 285
-        # Match length
         len_idx = sym - 257
         base_len = LENGTH_BASE[len_idx]
         extra_bits = LENGTH_EXTRA_BITS[len_idx]
-        match_len = base_len + reader.read_bits(extra_bits)
+        match_len = base_len + @reader.read_bits(extra_bits)
+        return if @reader.error?
 
-        # Match distance
-        dist_sym = dist_dec.decode(reader)
-        raise "invalid distance symbol #{dist_sym}" if dist_sym > 29
+        dist_sym = dist_dec.decode(@reader)
+        return if @reader.error?
+        if dist_sym > 29
+          fail("invalid distance symbol #{dist_sym}")
+          return
+        end
+
         base_dist = DIST_BASE[dist_sym]
         dist_extra_bits = DIST_EXTRA_BITS[dist_sym]
-        match_dist = base_dist + reader.read_bits(dist_extra_bits)
+        match_dist = base_dist + @reader.read_bits(dist_extra_bits)
+        return if @reader.error?
 
-        out_buf.copy_backward(match_dist, match_len)
+        if match_dist > @out_buf.size
+          fail("invalid backward distance (exceeds output size)")
+          return
+        end
+        if match_dist > 32768
+          fail("backward distance exceeds 32KB window")
+          return
+        end
+        if match_dist <= 0
+          fail("invalid distance zero or negative")
+          return
+        end
+
+        l = match_len
+        while l > 0
+          if @max_output_size >= 0_i64 && @out_buf.size.to_i64 >= @max_output_size
+            @limit_exceeded = true
+            return
+          end
+          @out_buf.copy_backward_one(match_dist)
+          l = l - 1
+        end
       else
-        raise "invalid literal/length symbol #{sym}"
+        fail("invalid literal/length symbol #{sym}")
+        return
       end
+    end
+  end
+end
+
+# -----------------------------------------------------------------------------
+# Inflate: RFC 1951 Decompressor
+# -----------------------------------------------------------------------------
+
+pub struct Inflate
+  # Decompresses raw DEFLATE *data*, bounding output to at most *max_output_size* bytes.
+  # Returns:
+  #   - Bytes on success
+  #   - DecompressLimitExceeded if producing the next byte would exceed max_output_size
+  #   - DecompressError on any parse or corruption error condition without unwinding
+  pub def self.decompress(data : Bytes, max_output_size : Int64) : Bytes | DecompressError | DecompressLimitExceeded
+    InflateDecoder.new(data, max_output_size).decode
+  end
+
+  # Decompresses raw DEFLATE *data* into original uncompressed bytes.
+  # Panics on corruption or unexpected EOF.
+  def self.decompress(data : Bytes) : Bytes
+    res = decompress(data, -1_i64)
+    case res
+    when Bytes
+      res
+    when DecompressError
+      raise res.message
+    when DecompressLimitExceeded
+      raise res.to_s
+    else
+      raise "unexpected result from decompress"
     end
   end
 end
@@ -990,10 +1229,13 @@ pub struct Deflate
     Inflate.decompress(data)
   end
 
+  # Decompresses raw DEFLATE *data*, bounding output to at most *max_output_size* bytes.
+  pub def self.decompress(data : Bytes, max_output_size : Int64) : Bytes | DecompressError | DecompressLimitExceeded
+    Inflate.decompress(data, max_output_size)
+  end
+
   private def self.compress_empty : Bytes
     # Empty stream: single empty fixed Huffman block (BFINAL=1, BTYPE=01, EOB)
-    # BFINAL=1 (bit 0), BTYPE=01 (bits 1-2), EOB=256 (7 bits 0000000 -> 0)
-    # total 10 bits: 0b0000000011 -> 2 bytes: 0x03, 0x00
     b = Bytes.new(2)
     b[0] = 3_u8
     b[1] = 0_u8
@@ -1085,9 +1327,6 @@ pub struct Deflate
     size = data.size
     ptr = data.to_unsafe
 
-    # Tokens: lit_len array and dist array
-    # If dist == 0: lit_len is literal byte
-    # If dist > 0: lit_len is match length (3..258), dist is distance (1..32768)
     tokens_lit = Array(Int32).new(size)
     tokens_dist = Array(Int32).new(size)
 
@@ -1120,7 +1359,6 @@ pub struct Deflate
       chain = 0
 
       while cur >= 0 && (pos - cur) <= 32768 && chain < max_chain
-        # Compare bytes
         l = 0
         max_l = size - pos
         max_l = 258 if max_l > 258
@@ -1142,7 +1380,6 @@ pub struct Deflate
         tokens_lit << best_len
         tokens_dist << best_dist
 
-        # Insert skipped positions into hash table
         k = 1
         while k < best_len
           skip_pos = pos + k
@@ -1181,18 +1418,15 @@ pub struct Deflate
       t_lit = tokens_lit[i]
       t_dist = tokens_dist[i]
       if t_dist == 0
-        # Literal
         c, n = fixed_lit_code(t_lit)
         writer.write_bits(c, n)
       else
-        # Match
         len_sym, len_extra, len_ebits = encode_length(t_lit)
         c, n = fixed_lit_code(len_sym)
         writer.write_bits(c, n)
         writer.write_bits(len_extra, len_ebits) if len_ebits > 0
 
         dist_sym, dist_extra, dist_ebits = encode_distance(t_dist)
-        # Distance codes in fixed Huffman are 5 bits, reversed
         d_code = HuffmanEncoder.bit_reverse(dist_sym, 5)
         writer.write_bits(d_code, 5)
         writer.write_bits(dist_extra, dist_ebits) if dist_ebits > 0
@@ -1200,7 +1434,6 @@ pub struct Deflate
       i = i + 1
     end
 
-    # EOB symbol (256)
     eob_c, eob_n = fixed_lit_code(256)
     writer.write_bits(eob_c, eob_n)
 
@@ -1428,7 +1661,6 @@ pub struct Zlib
     adler = Adler32.checksum(data)
     deflated = Deflate.compress(data, level)
 
-    # 2-byte header + deflated data + 4-byte Adler-32
     out_size = 2 + deflated.size + 4
     out_buf = Bytes.new(out_size)
     ptr = out_buf.to_unsafe
@@ -1465,38 +1697,32 @@ pub struct Zlib
     cmf = ptr[0].to_i32
     flg = ptr[1].to_i32
 
-    # Verify header check: (CMF * 256 + FLG) % 31 == 0
     if ((cmf * 256 + flg) % 31) != 0
       raise "invalid zlib header check"
     end
 
-    # Compression method must be 8 (DEFLATE)
     cm = cmf & 0x0F
     if cm != 8
       raise "unsupported zlib compression method: #{cm}"
     end
 
-    # Window size: (cmf >> 4) must be <= 7 (32K window)
     cinfo = cmf >> 4
     if cinfo > 7
       raise "invalid zlib window size: #{cinfo}"
     end
 
-    # Preset dictionary flag
     fdict = (flg & 0x20) != 0
     payload_start = 2
     if fdict
       raise "zlib stream specifies preset dictionary which is not supported"
     end
 
-    # Extract raw DEFLATE stream (slice excluding 2-byte header and 4-byte footer)
     deflated_size = data.size - payload_start - 4
     raise "zlib payload size invalid" if deflated_size < 0
     deflated_data = data[payload_start, deflated_size]
 
     decompressed = Deflate.decompress(deflated_data)
 
-    # Verify Adler-32 checksum
     footer_pos = data.size - 4
     expected_adler = (ptr[footer_pos].to_u64.unsafe_shl(24)) |
                      (ptr[footer_pos + 1].to_u64.unsafe_shl(16)) |
@@ -1530,7 +1756,6 @@ pub struct Gzip
     isize = (data.size.to_u64) & 0xFFFFFFFF_u64
     deflated = Deflate.compress(data, level)
 
-    # 10-byte header + deflated data + 8-byte footer
     out_size = 10 + deflated.size + 8
     out_buf = Bytes.new(out_size)
     ptr = out_buf.to_unsafe
@@ -1594,7 +1819,6 @@ pub struct Gzip
 
     pos = 10
 
-    # FEXTRA (bit 2)
     if (flg & 0x04) != 0
       raise "truncated gzip extra field" if pos + 2 > data.size
       xlen = ptr[pos].to_i32 | (ptr[pos + 1].to_i32 << 8)
@@ -1602,38 +1826,33 @@ pub struct Gzip
       raise "truncated gzip extra field content" if pos > data.size
     end
 
-    # FNAME (bit 3): zero-terminated string
     if (flg & 0x08) != 0
       while pos < data.size && ptr[pos] != 0_u8
         pos = pos + 1
       end
-      pos = pos + 1 # skip null byte
+      pos = pos + 1
       raise "truncated gzip filename" if pos > data.size
     end
 
-    # FCOMMENT (bit 4): zero-terminated string
     if (flg & 0x10) != 0
       while pos < data.size && ptr[pos] != 0_u8
         pos = pos + 1
       end
-      pos = pos + 1 # skip null byte
+      pos = pos + 1
       raise "truncated gzip comment" if pos > data.size
     end
 
-    # FHCRC (bit 1): 2-byte CRC16 for header
     if (flg & 0x02) != 0
       pos = pos + 2
       raise "truncated gzip header CRC" if pos > data.size
     end
 
-    # Remaining bytes up to the last 8 bytes are the DEFLATE stream
     deflated_size = data.size - pos - 8
     raise "gzip payload size invalid" if deflated_size < 0
     deflated_data = data[pos, deflated_size]
 
     decompressed = Deflate.decompress(deflated_data)
 
-    # Footer verification: CRC-32 and ISIZE
     footer_pos = data.size - 8
     expected_crc = ptr[footer_pos].to_u64 |
                    (ptr[footer_pos + 1].to_u64.unsafe_shl(8)) |
