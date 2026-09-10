@@ -165,8 +165,7 @@ prove_fails "continuation frame with RSV1 accepted" cont_rsv1_bypass \
 # 10. Decompression bomb accepted without size check (Finding 4)
 prove_fails "decompression bomb accepted without size check" decomp_bomb_bypass \
   "assertion failed: decompression bomb was not rejected" "websocket.iyi" \
-  's/full_payload.size.to_i64 > @max_message_size/false/g'
-
+  's/Inflate.decompress(decomp_input, @max_message_size)/Inflate.decompress(decomp_input, -1_i64)/'
 # 11. Missing Host header accepted during handshake (Finding 7)
 prove_fails "missing Host header accepted" host_header_bypass \
   "assertion failed: missing Host header was not rejected" "websocket.iyi" \

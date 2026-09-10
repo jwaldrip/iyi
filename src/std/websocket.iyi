@@ -31,7 +31,7 @@ using std/digest::{SHA1}
 using std/crypto::{random_bytes, constant_time_compare}
 using std/http::{Headers, Request, Response, Status, HttpError}
 using std/uri::{URI}
-using std/compress::{Deflate, Inflate}
+using std/compress::{Deflate, Inflate, DecompressError, DecompressLimitExceeded}
 
 pub alias Bytes = Std::Slice::Bytes
 
@@ -86,39 +86,7 @@ pub def valid_opcode?(opcode : UInt8) : Bool
     opcode == OP_CLOSE || opcode == OP_PING || opcode == OP_PONG
 end
 
-# Pre-validates a raw DEFLATE stream to reject invalid block types or truncated headers
-# without causing an unhandled panic in Inflate.decompress.
-pub def valid_deflate_stream?(data : Bytes) : Bool
-  return false if data.size < 4
-  ptr = data.to_unsafe
-  len = data.size
 
-  # Must end with RFC 7692 00 00 FF FF tail appended before decompression
-  return false unless ptr[len - 4] == 0x00_u8 && ptr[len - 3] == 0x00_u8 &&
-                      ptr[len - 2] == 0xFF_u8 && ptr[len - 1] == 0xFF_u8
-
-  # Inspect first block header
-  b0 = ptr[0].to_i32
-  btype = (b0 >> 1) & 3
-  return false if btype == 3 # Reserved block type 3 is strictly invalid
-
-  if btype == 0 # Stored block
-    return false if len < 8
-    l1 = ptr[1].to_i32 | (ptr[2].to_i32 << 8)
-    l2 = ptr[3].to_i32 | (ptr[4].to_i32 << 8)
-    return false if (l1 ^ 0xFFFF) != l2
-    return false if 5 + l1 > len
-  elsif btype == 2 # Dynamic Huffman
-    return false if len < 6
-    hlit = ((b0 >> 3) & 0x1F) + 257
-    return false if hlit > 286
-    b1 = ptr[1].to_i32
-    hdist = (b1 & 0x1F) + 1
-    return false if hdist > 32
-  end
-
-  true
-end
 
 # =============================================================================
 # WebSocketError
@@ -1226,18 +1194,18 @@ pub class Session(T)
               decomp_input[full_payload.size + 2] = 0xFF_u8
               decomp_input[full_payload.size + 3] = 0xFF_u8
 
-              unless Std::Websocket.valid_deflate_stream?(decomp_input)
-                err = WebSocketError.new(CLOSE_INVALID_PAYLOAD, "Failed to decompress frame: invalid DEFLATE stream")
-                fail_connection(err.code, err.message)
-                return err
-              end
-
-              full_payload = Inflate.decompress(decomp_input)
-
-              if full_payload.size.to_i64 > @max_message_size
+              decomp_res = Inflate.decompress(decomp_input, @max_message_size)
+              case decomp_res
+              in DecompressLimitExceeded
                 err = WebSocketError.new(CLOSE_MESSAGE_TOO_BIG, "Decompressed message exceeds maximum size limit")
                 fail_connection(err.code, err.message)
                 return err
+              in DecompressError
+                err = WebSocketError.new(CLOSE_INVALID_PAYLOAD, "Failed to decompress frame: #{decomp_res.message}")
+                fail_connection(err.code, err.message)
+                return err
+              in Bytes
+                full_payload = decomp_res
               end
 
               if final_opcode == OP_TEXT
@@ -1344,7 +1312,30 @@ pub class Session(T)
   private def send_close(code : Int32, reason : String = "") : Nil | WebSocketError
     reason_bytesize = reason.bytesize
     if reason_bytesize > 123
-      reason_bytesize = 123
+      # Truncate at the last complete UTF-8 code point boundary <= 123 bytes
+      ptr = reason.to_unsafe
+      limit = 123
+      while limit > 0 && (ptr[limit] & 0xC0_u8) == 0x80_u8
+        limit = limit - 1
+      end
+      char_len = 1
+      if limit < reason_bytesize
+        b = ptr[limit]
+        if b <= 0x7F_u8
+          char_len = 1
+        elsif (b & 0xE0_u8) == 0xC0_u8
+          char_len = 2
+        elsif (b & 0xF0_u8) == 0xE0_u8
+          char_len = 3
+        elsif (b & 0xF8_u8) == 0xF0_u8
+          char_len = 4
+        end
+      end
+      if limit + char_len <= 123
+        reason_bytesize = limit + char_len
+      else
+        reason_bytesize = limit
+      end
     end
     payload_size = 2 + reason_bytesize
     payload = Bytes.new(payload_size)

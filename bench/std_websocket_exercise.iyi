@@ -574,18 +574,41 @@ def test_rejection_suite : Nil
     raise "assertion failed: continuation frame with RSV1 was not rejected"
   end
   # 12. Corrupted compressed payload returns 1007 rather than crashing (Finding 3)
-  t_corrupt_comp = MemoryTransport.new
-  s_corrupt_comp = Session.new(t_corrupt_comp, is_server: true, deflate_enabled: true)
-  corrupt_comp_frame = Frame.new(OP_TEXT, make_bytes([0xFF, 0xFF, 0xFF]), fin: true, masked: true, rsv1: true)
-  t_corrupt_comp.feed(corrupt_comp_frame.serialize)
-  err_decomp = s_corrupt_comp.receive
-  case err_decomp
-  in WebSocketError
-    assert_true(err_decomp.code == CLOSE_INVALID_PAYLOAD, "corrupt compressed frame rejected with 1007")
-  in Message, Nil
-    raise "assertion failed: corrupt compressed frame was not rejected"
-  end
+  # Adversarial cases: block type 3, truncated fixed Huffman, truncated dynamic Huffman,
+  # invalid back-reference distance, and invalid distance symbol > 29. None may unwind.
+  adv_corrupt_payloads = [
+    make_bytes([0xFF, 0xFF, 0xFF]), # Block type 3 (reserved)
+    make_bytes([0x03, 0xFF]),       # Truncated fixed Huffman
+    make_bytes([0xF5, 0x00]),       # Truncated dynamic Huffman after valid HLIT/HDIST
+    make_bytes([                    # Invalid back-reference distance exceeding buffer
+      (1 | (1 << 1) | (1 << 9) | (0b01100 << 10)) & 0xFF,
+      ((1 | (1 << 1) | (1 << 9) | (0b01100 << 10)) >> 8) & 0xFF,
+      ((1 | (1 << 1) | (1 << 9) | (0b01100 << 10)) >> 16) & 0xFF
+    ]),
+    make_bytes([                    # Invalid distance symbol 30 (> 29)
+      ((3_i64 | (0b10001110_i64 << 3) | (0b1000000_i64 << 11) | (0b01111_i64 << 18)) & 0xFF).to_i32,
+      (((3_i64 | (0b10001110_i64 << 3) | (0b1000000_i64 << 11) | (0b01111_i64 << 18)) >> 8) & 0xFF).to_i32,
+      (((3_i64 | (0b10001110_i64 << 3) | (0b1000000_i64 << 11) | (0b01111_i64 << 18)) >> 16) & 0xFF).to_i32,
+      (((3_i64 | (0b10001110_i64 << 3) | (0b1000000_i64 << 11) | (0b01111_i64 << 18)) >> 24) & 0xFF).to_i32
+    ])
+  ]
 
+  adv_i = 0
+  while adv_i < adv_corrupt_payloads.size
+    adv_payload = adv_corrupt_payloads[adv_i]
+    t_corrupt_comp = MemoryTransport.new
+    s_corrupt_comp = Session.new(t_corrupt_comp, is_server: true, deflate_enabled: true)
+    corrupt_comp_frame = Frame.new(OP_TEXT, adv_payload, fin: true, masked: true, rsv1: true)
+    t_corrupt_comp.feed(corrupt_comp_frame.serialize)
+    err_decomp = s_corrupt_comp.receive
+    case err_decomp
+    in WebSocketError
+      assert_true(err_decomp.code == CLOSE_INVALID_PAYLOAD, "adversarial corrupt compressed frame rejected with 1007")
+    in Message, Nil
+      raise "assertion failed: corrupt compressed frame was not rejected"
+    end
+    adv_i = adv_i + 1
+  end
   # 13. Decompression bomb exceeding max_message_size returns 1009 (Finding 4)
   t_bomb = MemoryTransport.new
   s_bomb = Session.new(t_bomb, is_server: true, deflate_enabled: true)
@@ -609,7 +632,7 @@ def test_rejection_suite : Nil
     raise "assertion failed: decompression bomb was not rejected"
   end
 
-  # 14. Close reason > 123 bytes truncated so close frame payload <= 125 (Finding 5)
+  # 14. Close reason > 123 bytes truncated at UTF-8 boundary so close frame payload <= 125 (Finding 5)
   t_long_reason = MemoryTransport.new
   s_long_reason = Session.new(t_long_reason, is_server: false)
   s_long_reason.close(CLOSE_NORMAL, "R" * 200)
@@ -622,6 +645,24 @@ def test_rejection_suite : Nil
     raise "assertion failed: valid truncated close frame could not be parsed"
   end
 
+  # Close reason where byte 123 falls inside a 4-byte code point (musical G clef U+1D11E)
+  # 121 bytes of ASCII + 4-byte character + extra
+  g_clef_bytes = make_bytes([0xF0, 0x9D, 0x84, 0x9E])
+  reason_4byte = ("A" * 121) + String.new(4) { |buf| buf.copy_from(g_clef_bytes.to_unsafe, 4) } + "extra-tail"
+  t_4b = MemoryTransport.new
+  s_4b = Session.new(t_4b, is_server: false)
+  s_4b.close(CLOSE_NORMAL, reason_4byte)
+  wire_4b = t_4b.take_all
+  parsed_4b = Frame.parse(wire_4b, is_server: true)
+  case parsed_4b
+  in Frame
+    # Payload must be exactly 2 bytes code + 121 bytes (the incomplete 4-byte char dropped)
+    assert_true(parsed_4b.payload.size == 123, "payload truncated to 123 bytes without split codepoint")
+    r_slice = Slice(UInt8).new(parsed_4b.payload.to_unsafe + 2, parsed_4b.payload.size - 2)
+    assert_true(Utf8Validator.valid?(r_slice), "emitted close reason is 100% valid UTF-8")
+  in WebSocketError
+    raise "assertion failed: close frame with 4-byte split code point rejected by parser"
+  end
   # 15. Pipelined WebSocket frame following HTTP 101 preserved in PrefixedTransport (Finding 6)
   raw_http_101 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n"
   pipeline_text = Frame.new(OP_TEXT, string_to_bytes("pipelined"), fin: true, masked: false)
