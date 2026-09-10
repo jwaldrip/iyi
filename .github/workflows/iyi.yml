@@ -49,15 +49,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build both frontends
-        run: make crystal iyi
+      - name: Build the compiler
+        run: make crystal
 
       - uses: actions/upload-artifact@v4
         with:
           name: crystal
-          path: |
-            .build/crystal
-            .build/iyi
+          path: .build/crystal
           retention-days: 1
 
   iyi:
@@ -74,7 +72,10 @@ jobs:
         with:
           name: crystal
           path: .build
-      - run: chmod +x .build/crystal .build/iyi
+      - run: chmod +x .build/crystal
+
+      - name: Build iyi for its own checks
+        run: make -o .build/crystal iyi
 
       # Each language owns its files. A green iyi format check must have run
       # the iyi frontend rather than the compatibility frontend.

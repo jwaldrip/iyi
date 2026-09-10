@@ -364,11 +364,19 @@ uninstall_iyi: ## iyi: remove what install_iyi installed
 # was slow.
 #
 # So it is asked of the binary rather than of the build: `--version` says which
-# it is.
+# it is. A binary that cannot answer is also a failed guard, not empty input for
+# `grep`: upload-artifact strips executable bits, and the old pipeline treated
+# that execution error as a release build.
 .PHONY: check_iyi_is_release
 check_iyi_is_release: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
 	@for bin in iyi$(EXE) $(IYI_DAEMON_BIN); do \
-	   if $(O)/$$bin --version | grep -q "not built in release mode"; then \
+	   version="$$("$(O)/$$bin" --version 2>&1)"; status=$$?; \
+	   if [ $$status -ne 0 ]; then \
+	     echo "$(O)/$$bin could not report its build mode:"; \
+	     printf '%s\n' "$$version"; \
+	     exit 1; \
+	   fi; \
+	   if printf '%s\n' "$$version" | grep -q "not built in release mode"; then \
 	     echo "$(O)/$$bin is not an optimised build, and a tarball ships what it packages."; \
 	     echo "It is up to date by file times, so make will not rebuild it. Force it:"; \
 	     echo "  make -B iyi iyi-daemon release=1"; \
