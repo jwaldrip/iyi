@@ -681,8 +681,8 @@ end
 # -----------------------------------------------------------------------------
 
 module P384
-  P = BigInt.from_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff")
-  N = BigInt.from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973")
+  P  = BigInt.from_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff")
+  N  = BigInt.from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973")
   GX = BigInt.from_hex("aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7")
   GY = BigInt.from_hex("3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f")
 
@@ -851,6 +851,86 @@ module RSA
     out
   end
 
+  def self.bit_length(value : BigInt) : Int32
+    raise "RSA: modulus must be positive" if value <= BigInt.zero
+    bits = 0
+    current = value
+    while current > BigInt.zero
+      current = current >> 1
+      bits = bits + 1
+    end
+    bits
+  end
+
+  # RSA-PSS signing per RFC 8017 sections 8.1.1 and 9.1.1.
+  #
+  # Supplying salt makes published vectors reproducible. A nil salt draws hLen
+  # bytes from the operating system CSPRNG. The native BigInt private operation
+  # is not constant-time or blinded and has not had independent review.
+  pub def self.sign_pss(n : BigInt, d : BigInt, hash_algo : Symbol, m_hash : Bytes, salt : Bytes? = nil) : Bytes
+    h_len = hash_algo == :sha384 ? 48 : 32
+    raise "RSA-PSS: unsupported hash #{hash_algo}" unless hash_algo == :sha256 || hash_algo == :sha384
+    raise "RSA-PSS: message hash must be #{h_len} bytes" unless m_hash.size == h_len
+
+    actual_salt = salt || Std::Crypto.random_bytes(h_len)
+    mod_bits = bit_length(n)
+    em_bits = mod_bits - 1
+    em_len = (em_bits + 7) // 8
+    raise "RSA-PSS: modulus too small" if em_len < h_len + actual_salt.size + 2
+
+    db_len = em_len - h_len - 1
+    ps_len = db_len - actual_salt.size - 1
+    db = Bytes.new(db_len, 0_u8)
+    db[ps_len] = 0x01_u8
+    i = 0
+    while i < actual_salt.size
+      db[ps_len + 1 + i] = actual_salt[i]
+      i = i + 1
+    end
+
+    m_prime = Bytes.new(8 + m_hash.size + actual_salt.size, 0_u8)
+    i = 0
+    while i < m_hash.size
+      m_prime[8 + i] = m_hash[i]
+      i = i + 1
+    end
+    i = 0
+    while i < actual_salt.size
+      m_prime[8 + m_hash.size + i] = actual_salt[i]
+      i = i + 1
+    end
+
+    h = hash_algo == :sha384 ? SHA384.digest(m_prime) : SHA256.digest(m_prime)
+    db_mask = hash_algo == :sha384 ? mgf1_sha384(h, db_len) : mgf1_sha256(h, db_len)
+    masked_db = Bytes.new(db_len)
+    i = 0
+    while i < db_len
+      masked_db[i] = db[i] ^ db_mask[i]
+      i = i + 1
+    end
+
+    unused_bits = 8 * em_len - em_bits
+    masked_db[0] = masked_db[0] & (0xff_u8.unsafe_shr(unused_bits.to_u64)) if unused_bits > 0
+
+    em = Bytes.new(em_len)
+    i = 0
+    while i < db_len
+      em[i] = masked_db[i]
+      i = i + 1
+    end
+    i = 0
+    while i < h_len
+      em[db_len + i] = h[i]
+      i = i + 1
+    end
+    em[em_len - 1] = 0xbc_u8
+
+    encoded = bytes_to_bigint_be(em)
+    signature = encoded.pow_mod(d, n)
+    k = (mod_bits + 7) // 8
+    bigint_to_bytes_be(signature, k)
+  end
+
   def self.mgf1_sha256(seed : Bytes, length : Int32) : Bytes
     out = Bytes.new(length)
     c = 0
@@ -899,15 +979,24 @@ module RSA
 
   # RSA-PSS verification per RFC 8017 / RFC 8446
   def self.verify_pss(n : BigInt, e : BigInt, hash_algo : Symbol, m_hash : Bytes, sig_bytes : Bytes, salt_len : Int32) : Bool
+    return false unless hash_algo == :sha256 || hash_algo == :sha384
+    return false if salt_len < 0
+    h_len = hash_algo == :sha384 ? 48 : 32
+    return false unless m_hash.size == h_len
+
+    mod_bits = bit_length(n)
+    em_bits = mod_bits - 1
+    em_len = (em_bits + 7) // 8
+    k = (mod_bits + 7) // 8
+    return false unless sig_bytes.size == k
+
     s = bytes_to_bigint_be(sig_bytes)
     return false if s >= n || s.negative?
 
-    # em = s^e mod n
+    # em = s^e mod n, encoded to emLen rather than the signature width.
     em_val = s.pow_mod(e, n)
-    em_len = sig_bytes.size
     em = bigint_to_bytes_be(em_val, em_len)
 
-    h_len = hash_algo == :sha384 ? 48 : 32
     return false if em_len < h_len + salt_len + 2
     return false if em[em_len - 1] != 0xbc_u8
 
@@ -923,8 +1012,14 @@ module RSA
       i = i + 1
     end
 
-    # Clear top bit (modulus bit length - 1)
-    db[0] = db[0] & 0x7f_u8
+    # The leftmost 8*emLen-emBits bits are required to be zero before the
+    # mask is removed, then cleared from DB for the padding comparison.
+    unused_bits = 8 * em_len - em_bits
+    if unused_bits > 0
+      high_mask = 0xff_u8.unsafe_shr(unused_bits.to_u64)
+      return false if (masked_db[0] & (0xff_u8 ^ high_mask)) != 0_u8
+      db[0] = db[0] & high_mask
+    end
 
     pad_len = masked_db_len - salt_len
     return false if pad_len < 1
@@ -1053,7 +1148,7 @@ pub class Certificate
     @has_key_usage : Bool,
     @key_usage_cert_sign : Bool,
     @sig_algo : Symbol,
-    @sig_bytes : Bytes
+    @sig_bytes : Bytes,
   )
   end
 
@@ -1723,7 +1818,7 @@ pub class Client
     client_private_key : Bytes? = nil,
     client_random_override : Bytes? = nil,
     session_id_override : Bytes? = nil,
-    client_hello_override : Bytes? = nil
+    client_hello_override : Bytes? = nil,
   ) : Client
     client_priv = client_private_key || Std::Crypto.random_bytes(32)
     base_u = Bytes.new(32, 0_u8); base_u[0] = 9_u8
@@ -2117,7 +2212,9 @@ pub class Client
         rem_len = handshake_buf.size - h_offset
         if rem_len > 0
           sliced_buf = Bytes.new(rem_len)
-          s_i = 0; while s_i < rem_len; sliced_buf[s_i] = handshake_buf[h_offset + s_i]; s_i = s_i + 1; end
+          s_i = 0; while s_i < rem_len
+            sliced_buf[s_i] = handshake_buf[h_offset + s_i]; s_i = s_i + 1
+          end
           handshake_buf = sliced_buf
         else
           handshake_buf = Bytes.empty
