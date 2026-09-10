@@ -33,6 +33,7 @@ pub class RecordingUpstream < Upstream
     @calls = @calls + 1
     @last_route = route
     @last_request = request
+    assert(route.offered_protocols.includes?(@protocol), "origin selected unoffered protocol #{@protocol}")
     headers = Headers.new
     headers["Content-Length"] = @body.bytesize.to_s
     if alt = @alt_svc
@@ -43,24 +44,27 @@ pub class RecordingUpstream < Upstream
 end
 
 puts "== Section 1: One application client surface"
-plain = Client.new
-h1_response = plain.get("http://example.com/")
+plain_origin = RecordingUpstream.new(Protocol::HTTP1, "plain")
+plain = Client.new(direct: plain_origin)
+h1_response = plain.get("http://app.example.test/")
 assert(h1_response.status_code == 200, "plain HTTP request returns 200")
 assert(plain.last_protocol == Protocol::HTTP1, "plain HTTP selects HTTP/1.1")
 puts "  client-api: get returns the shared Response model without a protocol choice"
 
 puts "== Section 2: TLS ALPN chooses HTTP/2 or HTTP/1.1"
-alpn_client = Client.new
-h2_response = alpn_client.get("https://nghttp2.org/httpbin/get")
+h2_origin = RecordingUpstream.new(Protocol::HTTP2, "h2")
+alpn_client = Client.new(direct: h2_origin)
+h2_response = alpn_client.get("https://h2.example.test/resource")
 assert(h2_response.status_code == 200, "ALPN HTTP/2 request returns 200")
-assert(!h2_response.body.empty?, "ALPN HTTP/2 response has a body")
 assert(alpn_client.last_protocol == Protocol::HTTP2, "TLS ALPN selected h2")
-fallback_client = Client.new
-h1_tls_response = fallback_client.get("https://www.gnu.org/")
+h1_tls_origin = RecordingUpstream.new(Protocol::HTTP1, "h1")
+fallback_client = Client.new(direct: h1_tls_origin)
+h1_tls_response = fallback_client.get("https://h1.example.test/resource")
 assert(h1_tls_response.status_code == 200, "ALPN HTTP/1.1 fallback returns 200")
-assert(!h1_tls_response.body.empty?, "ALPN HTTP/1.1 fallback response has a body")
 assert(fallback_client.last_protocol == Protocol::HTTP1, "TLS ALPN selected HTTP/1.1 fallback")
-puts "  alpn: nghttp2.org selected h2; www.gnu.org selected http/1.1 from the same offer"
+assert(h2_origin.last_route.as(Route).offered_protocols == [Protocol::HTTP2, Protocol::HTTP1], "ALPN offer order prefers h2")
+assert(h1_tls_origin.last_route.as(Route).offered_protocols == [Protocol::HTTP2, Protocol::HTTP1], "HTTP/1.1 origin received the same ALPN offer")
+puts "  alpn: the client offered h2 then http/1.1; the origin selected either without application input"
 
 puts "== Section 3: Alt-Svc moves the next request to HTTP/3"
 direct = RecordingUpstream.new(Protocol::HTTP2, "first", "h3=\":8443\"; ma=60")

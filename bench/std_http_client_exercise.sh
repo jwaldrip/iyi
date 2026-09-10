@@ -82,8 +82,8 @@ prove_fails() {
 echo
 echo "== proving negotiation decisions are load-bearing"
 prove_fails "ALPN h2 offer removed" no_h2 \
-  "assertion failed: TLS ALPN selected h2" \
-  's/\[Protocol::HTTP2, Protocol::HTTP1\], @verify_peer/[Protocol::HTTP1], @verify_peer/'
+  "assertion failed: origin selected unoffered protocol h2" \
+  's/offers = scheme == "https" ? \[Protocol::HTTP2, Protocol::HTTP1\] : \[Protocol::HTTP1\]/offers = [Protocol::HTTP1]/'
 prove_fails "Alt-Svc h3 route ignored" no_h3 \
   "assertion failed: second request uses learned HTTP\/3 transport" \
   's/if http3 = @http3/if http3 = nil.as(Upstream?)/'

@@ -102,6 +102,11 @@ prove_fails() {
     status=1
     return
   fi
+  if [ "$exit_code" -ne 1 ]; then
+    echo "  $label: expected exit 1, got $exit_code"
+    status=1
+    return
+  fi
   if ! grep -q "$phrase" "$WORK/$dir/out"; then
     echo "  $label: failed, but not at expected check (expected '$phrase')"
     sed -n '$p' "$WORK/$dir/out"
@@ -120,12 +125,12 @@ prove_fails "settings table capacity corrupted" settings_corrupt \
 # 2. DATA frame type corrupted
 prove_fails "data frame type corrupted" data_corrupt \
   "frame data type" "http3.iyi" \
-  's/pub DATA          = 0x00_u64/pub DATA          = 0x99_u64/'
+  's/pub DATA *= *0x00_u64/pub DATA = 0x99_u64/'
 
 # 3. Control stream type corrupted
 prove_fails "control stream type corrupted" ctrl_corrupt \
   "control stream type" "http3.iyi" \
-  's/pub CONTROL       = 0x00_u64/pub CONTROL       = 0x09_u64/'
+  's/pub CONTROL *= *0x00_u64/pub CONTROL = 0x09_u64/'
 
 # 4. QPACK field section decoding corrupted
 prove_fails "qpack decoding corrupted" qpack_corrupt \
