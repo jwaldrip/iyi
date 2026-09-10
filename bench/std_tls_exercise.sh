@@ -201,7 +201,7 @@ prove_fails "x25519 all-zero detection bypassed" x25519_bypass \
 # 2. Ed25519 signature forgery accepted
 prove_fails "ed25519 signature forgery accepted" ed25519_forge \
   "assertion failed: Ed25519 tampered signature rejected" "tls.iyi" \
-  's/diff1.zero? && diff2.zero?/true/'
+  's/diff1\.zero[?] && diff2\.zero[?]/true/'
 
 # 3. ECDSA P-256 signature forgery accepted
 prove_fails "p256 signature forgery accepted" p256_forge \
@@ -216,7 +216,7 @@ prove_fails "rsa-pss signature forgery accepted" rsa_forge \
 # 5. Record layer tampered tag accepted
 prove_fails "record layer tampered tag accepted" record_tamper \
   "assertion failed: Record layer tampered tag rejected" "tls.iyi" \
-  's/return nil if pt.nil?/pt = pt || Bytes.new(16, 0x16_u8)/'
+  's/return nil if pt\.nil[?]/pt = pt || Bytes.new(16, 0x16_u8)/'
 
 # 6. Certificate validity expiration bypassed
 prove_fails "certificate validity expiration bypassed" cert_validity \
@@ -249,7 +249,7 @@ prove_fails "handshake buffer slicing bypassed" buffer_slicing_bypass \
 # 12. Application data write record fragmentation bypassed (Finding 10)
 prove_fails "write record fragmentation bypassed" fragmentation_bypass \
   "assertion failed: Large write fragmented into exactly two records" "tls.iyi" \
-  's/chunk_len = remaining > MAX_RECORD_PLAINTEXT ? MAX_RECORD_PLAINTEXT : remaining/chunk_len = remaining/'
+  's/chunk_len = remaining > MAX_RECORD_PLAINTEXT [?] MAX_RECORD_PLAINTEXT : remaining/chunk_len = remaining/'
 
 # 13. Sequence number exhaustion guard bypassed (Finding 9)
 prove_fails_arg "sequence exhaustion guard bypassed" seq_exhaustion_bypass "seq_exhaustion" \
@@ -259,7 +259,7 @@ prove_fails_arg "sequence exhaustion guard bypassed" seq_exhaustion_bypass "seq_
 # 14. Nonzero key guard in CertificateVerify bypassed
 prove_fails_arg "nonzero key guard in CertificateVerify bypassed" cv_guard_bypass "mismatched_cv" \
   "P256.verify reached with zero public key" "tls.iyi" \
-  's/peer_cert.ec_curve == :p256 && !qx.zero? && !qy.zero?/true/'
+  's/peer_cert\.ec_curve == :p256 && !qx\.zero[?] && !qy\.zero[?]/true/'
 
 # 15. RSA-PSS encoding trailer corrupted
 prove_fails "rsa-pss signing trailer corrupted" pss_sign_trailer \

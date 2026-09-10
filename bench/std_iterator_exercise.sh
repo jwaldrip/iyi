@@ -153,11 +153,11 @@ prove_fails "take limit broken" broken_take "assertion failed for infinite take"
 
 # 2. Pipeline mapping broken (map iterator returns nil prematurely)
 prove_fails "map transform broken" broken_map "assertion failed for pipeline result" \
-  's/def next : U?/def next : U?; return nil/g'
+  's/def next : U[?]/def next : U?; return nil/g'
 
 # 3. Select filtering broken (fails to loop over elements)
 prove_fails "select predicate broken" broken_select "assertion failed for pipeline result" \
-  's/while !(item = @iter\.next)\.nil?/item = @iter.next; if !item.nil?/'
+  's/while !(item = @iter\.next)\.nil[?]/item = @iter.next; if !item.nil?/'
 # 4. Skip broken (fails to advance past requested count)
 prove_fails "skip count broken" broken_skip "assertion failed for skip" \
   's/while @skipped < @n/while @skipped < 0/'

@@ -180,12 +180,12 @@ prove_fails "Norway regression (NO treated as bool)" no_norway \
 # 5. Literal strip chomping broken
 prove_fails "Chomping regression (strip broken)" no_strip \
   "block: literal strip" \
-  's/while result\.ends_with?("\\n") || result\.ends_with?("\\r")/while false/'
+  's/while result\.ends_with[?]("\\n") || result\.ends_with[?]("\\r")/while false/'
 
 # 6. Sequence at same indent level broken
 prove_fails "Sequence at same indent broken" no_same_indent \
   "same indent: fruits size" \
-  's/if nxt\.text\.starts_with?("- ") || nxt\.text == "-"/if false/'
+  's/if nxt\.text\.starts_with[?]("- ") || nxt\.text == "-"/if false/'
 
 echo
 echo "== discovering and running sibling std exercises"

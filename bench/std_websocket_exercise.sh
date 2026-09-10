@@ -169,7 +169,7 @@ prove_fails "decompression bomb accepted without size check" decomp_bomb_bypass 
 # 11. Missing Host header accepted during handshake (Finding 7)
 prove_fails "missing Host header accepted" host_header_bypass \
   "assertion failed: missing Host header was not rejected" "websocket.iyi" \
-  's/if host.nil? || host.empty?$/if false/g'
+  's/if host\.nil[?] || host\.empty[?]$/if false/g'
 
 # 12. Data frame permitted after close sent (Finding 12)
 prove_fails "data frame permitted after close sent" post_close_bypass \

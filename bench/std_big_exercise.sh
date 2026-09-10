@@ -183,7 +183,7 @@ prove_fails "exponentiation broken" no_pow "pow: one exp" \
 
 # 7. Abs broken
 prove_fails "abs broken" no_abs "abs: negative" \
-  's/@sign < 0 ? BigInt\.new(1, @limbs\.dup) : self/self/'
+  's/@sign < 0 [?] BigInt\.new(1, @limbs\.dup) : self/self/'
 
 # 8. Factory one broken
 prove_fails "constant one broken" no_one "construct: one" \

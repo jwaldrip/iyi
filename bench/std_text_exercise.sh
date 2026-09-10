@@ -109,7 +109,7 @@ prove_fails() {
 
 # 1. ASCII letter predicate broken
 prove_fails "ascii letter predicate broken" no_letter "char: ascii_letter lowercase" \
-  's/def ascii_letter? : Bool/def ascii_letter? : Bool; return false/'
+  's/def ascii_letter[?] : Bool/def ascii_letter? : Bool; return false/'
 
 # 2. String capitalize broken
 prove_fails "string capitalize broken" no_capitalize "string: capitalize standard" \

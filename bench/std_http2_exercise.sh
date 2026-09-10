@@ -158,7 +158,7 @@ prove_fails "settings bad length check disabled" no_settings_len \
 # 6. SETTINGS ACK non-zero length check disabled
 prove_fails "settings ack non-zero length check disabled" no_settings_ack_len \
   "assertion failed: h2spec 6.5: SETTINGS ACK with non-zero length rejected" "http2.iyi" \
-  '/if header.ack?/,/end/s/if header.length != 0/if false/'
+  '/if header\.ack[?]/,/end/s/if header.length != 0/if false/'
 
 # 7. WINDOW_UPDATE 0 increment check disabled
 prove_fails "window update 0 increment check disabled" no_zero_inc \
@@ -188,7 +188,7 @@ prove_fails "client push rejection disabled" no_push_rej \
 # 12. PUSH_PROMISE on idle stream check disabled
 prove_fails "push promise idle stream check disabled" no_pp_idle \
   "assertion failed: finding 15: PUSH_PROMISE on idle stream rejected" "http2.iyi" \
-  '/Finding 15: Associated stream must be Open or HalfClosedLocal/,/return Http2Error/s/if assoc_stream.nil? || (assoc_stream.state != StreamState::Open && assoc_stream.state != StreamState::HalfClosedLocal)/if false/'
+  '/Finding 15: Associated stream must be Open or HalfClosedLocal/,/return Http2Error/s/if assoc_stream\.nil[?] || (assoc_stream.state != StreamState::Open && assoc_stream.state != StreamState::HalfClosedLocal)/if false/'
 # 13. PUSH_PROMISE promised stream ID monotonicity check disabled
 prove_fails "push promise monotonicity check disabled" no_pp_mono \
   "assertion failed: finding 16: decreasing promised stream ID rejected" "http2.iyi" \

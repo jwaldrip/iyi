@@ -182,7 +182,7 @@ prove_fails_capsule "capsule overrun check broken" no_overrun "capsule: truncate
 
 # 6. Capsule extensibility broken (skipping unknown capsule types disabled)
 prove_fails_capsule "capsule extensibility broken" no_ext "extensibility: expected 2 known capsules" \
-  's/unless capsule\.unknown\?/if true/'
+  's/unless capsule\.unknown[?]/if true/'
 
 # 7. WebTransport bidi stream type header broken
 prove_fails_wt "webtransport bidi stream type broken" no_bidi "bidi wire prefix 0x4041" \
