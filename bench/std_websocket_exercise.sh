@@ -151,7 +151,32 @@ prove_fails "invalid UTF-8 in split text frame accepted" utf8_bypass \
 prove_fails "forbidden close code 1005 accepted" close_code_bypass \
   "assertion failed: forbidden code 1005 is invalid" "websocket.iyi" \
   's/code == 1005 || //g'
-echo
+
+# 8. Control frame with RSV1 accepted when deflate enabled (Finding 1)
+prove_fails "control frame with RSV1 accepted" ctrl_rsv1_bypass \
+  "assertion failed: control frame with RSV1 was not rejected" "websocket.iyi" \
+  's/opcode >= 0x8_u8 && rsv1/false/g'
+
+# 9. Continuation frame with RSV1 accepted when deflate enabled (Finding 2)
+prove_fails "continuation frame with RSV1 accepted" cont_rsv1_bypass \
+  "assertion failed: continuation frame with RSV1 was not rejected" "websocket.iyi" \
+  's/if frame.rsv1$/if false/g'
+
+# 10. Decompression bomb accepted without size check (Finding 4)
+prove_fails "decompression bomb accepted without size check" decomp_bomb_bypass \
+  "assertion failed: decompression bomb was not rejected" "websocket.iyi" \
+  's/full_payload.size.to_i64 > @max_message_size/false/g'
+
+# 11. Missing Host header accepted during handshake (Finding 7)
+prove_fails "missing Host header accepted" host_header_bypass \
+  "assertion failed: missing Host header was not rejected" "websocket.iyi" \
+  's/if host.nil? || host.empty?$/if false/g'
+
+# 12. Data frame permitted after close sent (Finding 12)
+prove_fails "data frame permitted after close sent" post_close_bypass \
+  "assertion failed: data frame rejected after close initiated" "websocket.iyi" \
+  's/@close_sent && frame.opcode != OP_CLOSE && frame.opcode != OP_PONG/false/g'
+
 if [ "$status" -eq 0 ]; then
   echo "WebSocket standard library: RFC 6455 handshake, base64, framing, client/server,"
   echo "incremental UTF-8 validation, control frame interleaving, permessage-deflate,"

@@ -29,7 +29,7 @@ import std/compress
 using std/slice::{Slice, Bytes}
 using std/digest::{SHA1}
 using std/crypto::{random_bytes, constant_time_compare}
-using std/http::{Headers, Request, Response, Status}
+using std/http::{Headers, Request, Response, Status, HttpError}
 using std/uri::{URI}
 using std/compress::{Deflate, Inflate}
 
@@ -84,6 +84,40 @@ end
 pub def valid_opcode?(opcode : UInt8) : Bool
   opcode == OP_CONTINUATION || opcode == OP_TEXT || opcode == OP_BINARY ||
     opcode == OP_CLOSE || opcode == OP_PING || opcode == OP_PONG
+end
+
+# Pre-validates a raw DEFLATE stream to reject invalid block types or truncated headers
+# without causing an unhandled panic in Inflate.decompress.
+pub def valid_deflate_stream?(data : Bytes) : Bool
+  return false if data.size < 4
+  ptr = data.to_unsafe
+  len = data.size
+
+  # Must end with RFC 7692 00 00 FF FF tail appended before decompression
+  return false unless ptr[len - 4] == 0x00_u8 && ptr[len - 3] == 0x00_u8 &&
+                      ptr[len - 2] == 0xFF_u8 && ptr[len - 1] == 0xFF_u8
+
+  # Inspect first block header
+  b0 = ptr[0].to_i32
+  btype = (b0 >> 1) & 3
+  return false if btype == 3 # Reserved block type 3 is strictly invalid
+
+  if btype == 0 # Stored block
+    return false if len < 8
+    l1 = ptr[1].to_i32 | (ptr[2].to_i32 << 8)
+    l2 = ptr[3].to_i32 | (ptr[4].to_i32 << 8)
+    return false if (l1 ^ 0xFFFF) != l2
+    return false if 5 + l1 > len
+  elsif btype == 2 # Dynamic Huffman
+    return false if len < 6
+    hlit = ((b0 >> 3) & 0x1F) + 257
+    return false if hlit > 286
+    b1 = ptr[1].to_i32
+    hdist = (b1 & 0x1F) + 1
+    return false if hdist > 32
+  end
+
+  true
 end
 
 # =============================================================================
@@ -157,7 +191,7 @@ pub struct Base64
 
   pub def self.decode(str : String) : Bytes
     bytesize = str.bytesize
-    return Bytes.new(0) if bytesize == 0
+    return Bytes.new(0) if bytesize == 0 || (bytesize & 3) != 0
 
     s_ptr = str.to_unsafe
     pad = 0
@@ -340,6 +374,10 @@ pub struct Handshake
   pub def self.verify_client_request(req : Request) : String | WebSocketError
     return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "HTTP method must be GET") if req.method != "GET"
     return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "HTTP version must be >= 1.1") if req.version < "HTTP/1.1"
+    host = req.headers["Host"]?
+    if host.nil? || host.empty?
+      return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Missing Host header")
+    end
 
     unless req.headers.includes_word?("Upgrade", "websocket")
       return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Missing or invalid Upgrade header")
@@ -356,6 +394,10 @@ pub struct Handshake
 
     key = req.headers["Sec-WebSocket-Key"]?
     return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Missing Sec-WebSocket-Key header") unless key
+
+    if key.bytesize != 24 || !key.ends_with?("==")
+      return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Sec-WebSocket-Key must be 24-character base64 ending in ==")
+    end
 
     begin
       decoded = Base64.decode(key)
@@ -386,7 +428,8 @@ pub struct Handshake
   end
 
   # Validates the server's response on the client side against the expected client key.
-  pub def self.verify_server_response(res : Response, expected_key : String) : Nil | WebSocketError
+  pub def self.verify_server_response(res : Response, expected_key : String,
+                                      requested_subprotocols : Array(String)? = nil) : Nil | WebSocketError
     if res.status.code != 101
       return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Server response status is not 101: #{res.status.code}")
     end
@@ -407,7 +450,46 @@ pub struct Handshake
       return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Sec-WebSocket-Accept mismatch: got #{accept}, expected #{expected}")
     end
 
+    server_proto = res.headers["Sec-WebSocket-Protocol"]?
+    if sp = server_proto
+      if req_sp = requested_subprotocols
+        found = false
+        i = 0
+        while i < req_sp.size
+          if req_sp[i] == sp
+            found = true
+            break
+          end
+          i = i + 1
+        end
+        unless found
+          return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Server selected unrequested subprotocol: #{sp}")
+        end
+      else
+        return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Server returned Sec-WebSocket-Protocol but none requested")
+      end
+    end
+
     nil
+  end
+
+  # Extracts any bytes following the HTTP header terminator (\r\n\r\n or \n\n)
+  pub def self.extract_trailing_bytes(raw : String) : Bytes
+    idx = raw.index("\r\n\r\n")
+    header_end = idx ? idx + 4 : nil
+    unless header_end
+      idx2 = raw.index("\n\n")
+      header_end = idx2 ? idx2 + 2 : nil
+    end
+    if h_end = header_end
+      rem = raw.bytesize - h_end
+      if rem > 0
+        b = Bytes.new(rem)
+        b.to_unsafe.copy_from(raw.to_unsafe + h_end, rem)
+        return b
+      end
+    end
+    Bytes.new(0)
   end
 end
 
@@ -544,8 +626,8 @@ pub struct Frame
 
     # 2. RSV bits check: MUST be 0 unless negotiated extension (e.g. permessage-deflate uses RSV1)
     if deflate_enabled
-      if rsv2 || rsv3
-        return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "RSV2 or RSV3 bit set")
+      if (opcode >= 0x8_u8 && rsv1) || rsv2 || rsv3
+        return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "RSV bit set on control frame or unnegotiated RSV bit set")
       end
     else
       if rsv1 || rsv2 || rsv3
@@ -704,8 +786,8 @@ pub struct Frame
     end
 
     if deflate_enabled
-      if rsv2 || rsv3
-        return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "RSV2 or RSV3 bit set")
+      if (opcode >= 0x8_u8 && rsv1) || rsv2 || rsv3
+        return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "RSV bit set on control frame or unnegotiated RSV bit set")
       end
     else
       if rsv1 || rsv2 || rsv3
@@ -924,6 +1006,16 @@ pub class MemoryTransport
     @closed
   end
 
+  pub def take_all : Bytes
+    available = @tail - @head
+    return Bytes.new(0) if available <= 0
+    b = Bytes.new(available)
+    b.to_unsafe.copy_from(@buffer + @head, available)
+    @head = 0
+    @tail = 0
+    b
+  end
+
   private def ensure_capacity(needed : Int32) : Nil
     available_space = @capacity - @tail
     return if available_space >= needed
@@ -1059,6 +1151,11 @@ pub class Session(T)
               fail_connection(err.code, err.message)
               return err
             end
+            if frame.rsv1
+              err = WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Continuation frame cannot have RSV1 bit set")
+              fail_connection(err.code, err.message)
+              return err
+            end
           else
             unless @current_opcode.nil?
               err = WebSocketError.new(CLOSE_PROTOCOL_ERROR, "New data frame arrived before fragmented message completed")
@@ -1129,7 +1226,20 @@ pub class Session(T)
               decomp_input[full_payload.size + 2] = 0xFF_u8
               decomp_input[full_payload.size + 3] = 0xFF_u8
 
+              unless Std::Websocket.valid_deflate_stream?(decomp_input)
+                err = WebSocketError.new(CLOSE_INVALID_PAYLOAD, "Failed to decompress frame: invalid DEFLATE stream")
+                fail_connection(err.code, err.message)
+                return err
+              end
+
               full_payload = Inflate.decompress(decomp_input)
+
+              if full_payload.size.to_i64 > @max_message_size
+                err = WebSocketError.new(CLOSE_MESSAGE_TOO_BIG, "Decompressed message exceeds maximum size limit")
+                fail_connection(err.code, err.message)
+                return err
+              end
+
               if final_opcode == OP_TEXT
                 unless Utf8Validator.valid?(full_payload)
                   err = WebSocketError.new(CLOSE_INVALID_PAYLOAD, "Decompressed text frame is not valid UTF-8")
@@ -1154,6 +1264,9 @@ pub class Session(T)
   # Sends a raw Frame over the transport.
   pub def send_frame(frame : Frame) : Nil | WebSocketError
     return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Session already closed") if @closed
+    if @close_sent && frame.opcode != OP_CLOSE && frame.opcode != OP_PONG
+      return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Cannot send data frames after close initiated")
+    end
     wire = frame.serialize(masked_override: !@is_server)
     unless write_exact(@io, wire.to_unsafe, wire.size)
       @closed = true
@@ -1229,12 +1342,16 @@ pub class Session(T)
   end
 
   private def send_close(code : Int32, reason : String = "") : Nil | WebSocketError
-    payload_size = 2 + reason.bytesize
+    reason_bytesize = reason.bytesize
+    if reason_bytesize > 123
+      reason_bytesize = 123
+    end
+    payload_size = 2 + reason_bytesize
     payload = Bytes.new(payload_size)
     payload[0] = ((code >> 8) & 255).to_u8
     payload[1] = (code & 255).to_u8
-    if reason.bytesize > 0
-      (payload.to_unsafe + 2).copy_from(reason.to_unsafe, reason.bytesize)
+    if reason_bytesize > 0
+      (payload.to_unsafe + 2).copy_from(reason.to_unsafe, reason_bytesize)
     end
     frame = Frame.new(OP_CLOSE, payload, fin: true, masked: !@is_server)
     send_frame(frame)
@@ -1291,6 +1408,43 @@ pub class Session(T)
 end
 
 # =============================================================================
+# PrefixedTransport: Transparent wrapper preserving pipelined initial bytes
+# =============================================================================
+
+pub class PrefixedTransport(T)
+  @io : T
+  @prefix : Bytes
+  @prefix_pos : Int32
+
+  def initialize(@io : T, @prefix : Bytes)
+    @prefix_pos = 0
+  end
+
+  pub def read(buffer : Pointer(UInt8), count : Int32) : Int32
+    avail = @prefix.size - @prefix_pos
+    if avail > 0
+      to_read = count < avail ? count : avail
+      buffer.copy_from(@prefix.to_unsafe + @prefix_pos, to_read)
+      @prefix_pos = @prefix_pos + to_read
+      return to_read
+    end
+    @io.read(buffer, count)
+  end
+
+  pub def write(buffer : Pointer(UInt8), count : Int32) : Int32
+    @io.write(buffer, count)
+  end
+
+  pub def close : Nil
+    @io.close
+  end
+
+  pub def closed? : Bool
+    @io.closed?
+  end
+end
+
+# =============================================================================
 # Client and Server Helpers for IyiSocket
 # =============================================================================
 
@@ -1298,7 +1452,7 @@ pub struct Client
   # Connects to a WebSocket endpoint at `host:port/path` over TCP.
   pub def self.connect(host : String, port : Int32, path : String = "/",
                        subprotocols : Array(String)? = nil,
-                       extensions : Array(String)? = nil) : Session(IyiSocket) | WebSocketError
+                       extensions : Array(String)? = nil) : Session(PrefixedTransport(IyiSocket)) | WebSocketError
     socket = IyiSocket.connect(host, port)
     key = Handshake.generate_key
     req = Handshake.build_client_request(path, "#{host}:#{port}", key, subprotocols, extensions)
@@ -1315,11 +1469,14 @@ pub struct Client
     case parsed
     in HttpError then return WebSocketError.new(CLOSE_PROTOCOL_ERROR, parsed.message)
     in Response
-      err = Handshake.verify_server_response(parsed, key)
+      err = Handshake.verify_server_response(parsed, key, subprotocols)
       return err if err
-    end
 
-    Session.new(socket, is_server: false)
+      trailing = Handshake.extract_trailing_bytes(raw_resp)
+      transport = PrefixedTransport.new(socket, trailing)
+      deflate_active = parsed.headers.includes_word?("Sec-WebSocket-Extensions", "permessage-deflate")
+      return Session.new(transport, is_server: false, deflate_enabled: deflate_active)
+    end
   end
 end
 
@@ -1327,24 +1484,52 @@ pub struct Server
   # Performs the server-side upgrade handshake on an accepted IyiSocket.
   pub def self.upgrade(socket : IyiSocket,
                        subprotocol : String? = nil,
-                       extensions : Array(String)? = nil) : Session(IyiSocket) | WebSocketError
+                       extensions : Array(String)? = nil) : Session(PrefixedTransport(IyiSocket)) | WebSocketError
     raw_req = socket.read(4096)
     parsed = Request.parse(raw_req)
     case parsed
-    in HttpError then return WebSocketError.new(CLOSE_PROTOCOL_ERROR, parsed.message)
+    in HttpError
+      socket.write("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+      return WebSocketError.new(CLOSE_PROTOCOL_ERROR, parsed.message)
     in Request
       key_or_err = Handshake.verify_client_request(parsed)
       case key_or_err
-      in WebSocketError then return key_or_err
+      in WebSocketError
+        if key_or_err.message.includes?("Sec-WebSocket-Version")
+          socket.write("HTTP/1.1 426 Upgrade Required\r\nSec-WebSocket-Version: 13\r\nContent-Length: 0\r\n\r\n")
+        else
+          socket.write("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+        end
+        return key_or_err
       in String
-        resp = Handshake.build_server_response(key_or_err, subprotocol, extensions)
+        client_wants_deflate = parsed.headers.includes_word?("Sec-WebSocket-Extensions", "permessage-deflate")
+        server_allows_deflate = false
+        if ext_list = extensions
+          i = 0
+          while i < ext_list.size
+            if ext_list[i].includes?("permessage-deflate")
+              server_allows_deflate = true
+              break
+            end
+            i = i + 1
+          end
+        end
+        negotiated_deflate = client_wants_deflate && server_allows_deflate
+        resp_exts : Array(String)? = negotiated_deflate ? ["permessage-deflate"] : nil
+
+        resp = Handshake.build_server_response(key_or_err, subprotocol, resp_exts)
         ser = resp.serialize
         case ser
-        in HttpError then return WebSocketError.new(CLOSE_PROTOCOL_ERROR, ser.message)
+        in HttpError
+          socket.write("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+          return WebSocketError.new(CLOSE_PROTOCOL_ERROR, ser.message)
         in String
           socket.write(ser)
         end
-        return Session.new(socket, is_server: true)
+
+        trailing = Handshake.extract_trailing_bytes(raw_req)
+        transport = PrefixedTransport.new(socket, trailing)
+        return Session.new(transport, is_server: true, deflate_enabled: negotiated_deflate)
       end
     end
   end

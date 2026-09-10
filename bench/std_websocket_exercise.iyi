@@ -83,7 +83,7 @@ def test_handshake_vector : Nil
   in String
     assert_true(verified_key == key, "verified key matches client key")
     resp = Handshake.build_server_response(verified_key, "chat")
-    verify_err = Handshake.verify_server_response(resp, key)
+    verify_err = Handshake.verify_server_response(resp, key, ["chat", "superchat"])
     assert_true(verify_err.nil?, "server response verification passed")
   end
 
@@ -267,11 +267,22 @@ def test_client_server_communication : Nil
 
   # 8. Clean Close Handshake
   client.close(CLOSE_NORMAL, "Normal closure")
+
+  # Reject data frames after close initiated (@close_sent before peer reply)
+  err_while_closing = client.send_text("data while closing")
+  assert_true(err_while_closing.is_a?(WebSocketError), "data frame rejected after close initiated")
+
   s_close = server.receive
   assert_true(s_close.nil?, "server receive returned nil on close")
   assert_true(server.closed?, "server is closed")
   assert_true(server.close_code == CLOSE_NORMAL, "server recorded close code 1000")
   assert_true(server.close_reason == "Normal closure", "server recorded close reason")
+
+  # Client drains server's close echo response
+  c_close = client.receive
+  assert_true(c_close.nil?, "client receive returned nil on close echo")
+  assert_true(client.closed?, "client is closed after peer response")
+  assert_true(client.close_code == CLOSE_NORMAL, "client recorded close code 1000")
 
   puts "  client and server conversation, framing, ping/pong, and clean close passed"
 end
@@ -535,6 +546,181 @@ def test_rejection_suite : Nil
     raise "unexpected continuation frame not rejected"
   end
 
+  # 10. Control frame with RSV1=1 rejected when deflate enabled (Finding 1)
+  t_rsv1_ctrl = MemoryTransport.new
+  s_rsv1_ctrl = Session.new(t_rsv1_ctrl, is_server: true, deflate_enabled: true)
+  rsv1_ctrl = Frame.new(OP_PING, string_to_bytes("ping"), fin: true, masked: true, rsv1: true)
+  t_rsv1_ctrl.feed(rsv1_ctrl.serialize)
+  err_rsv1_ctrl = s_rsv1_ctrl.receive_frame
+  case err_rsv1_ctrl
+  in WebSocketError
+    assert_true(err_rsv1_ctrl.code == CLOSE_PROTOCOL_ERROR, "control frame with RSV1 rejected with 1002")
+  in Frame, Nil
+    raise "assertion failed: control frame with RSV1 was not rejected"
+  end
+
+  # 11. Continuation frame with RSV1=1 rejected when deflate enabled (Finding 2)
+  t_cont_rsv1 = MemoryTransport.new
+  s_cont_rsv1 = Session.new(t_cont_rsv1, is_server: true, deflate_enabled: true)
+  f_frag1_ok = Frame.new(OP_TEXT, string_to_bytes("part1"), fin: false, masked: true, rsv1: false)
+  t_cont_rsv1.feed(f_frag1_ok.serialize)
+  f_frag2_bad = Frame.new(OP_CONTINUATION, string_to_bytes("part2"), fin: true, masked: true, rsv1: true)
+  t_cont_rsv1.feed(f_frag2_bad.serialize)
+  err_cont_rsv1 = s_cont_rsv1.receive
+  case err_cont_rsv1
+  in WebSocketError
+    assert_true(err_cont_rsv1.code == CLOSE_PROTOCOL_ERROR, "continuation frame with RSV1 rejected with 1002")
+  in Message, Nil
+    raise "assertion failed: continuation frame with RSV1 was not rejected"
+  end
+  # 12. Corrupted compressed payload returns 1007 rather than crashing (Finding 3)
+  t_corrupt_comp = MemoryTransport.new
+  s_corrupt_comp = Session.new(t_corrupt_comp, is_server: true, deflate_enabled: true)
+  corrupt_comp_frame = Frame.new(OP_TEXT, make_bytes([0xFF, 0xFF, 0xFF]), fin: true, masked: true, rsv1: true)
+  t_corrupt_comp.feed(corrupt_comp_frame.serialize)
+  err_decomp = s_corrupt_comp.receive
+  case err_decomp
+  in WebSocketError
+    assert_true(err_decomp.code == CLOSE_INVALID_PAYLOAD, "corrupt compressed frame rejected with 1007")
+  in Message, Nil
+    raise "assertion failed: corrupt compressed frame was not rejected"
+  end
+
+  # 13. Decompression bomb exceeding max_message_size returns 1009 (Finding 4)
+  t_bomb = MemoryTransport.new
+  s_bomb = Session.new(t_bomb, is_server: true, deflate_enabled: true)
+  s_bomb.max_message_size = 50_i64
+  rep_text = "A" * 200
+  raw_rep = string_to_bytes(rep_text)
+  comp_bomb = Deflate.compress(raw_rep)
+  c_len = comp_bomb.size
+  if c_len >= 4 &&
+     comp_bomb[c_len - 4] == 0x00_u8 && comp_bomb[c_len - 3] == 0x00_u8 &&
+     comp_bomb[c_len - 2] == 0xFF_u8 && comp_bomb[c_len - 1] == 0xFF_u8
+    c_len = c_len - 4
+  end
+  bomb_frame = Frame.new(OP_TEXT, Slice(UInt8).new(comp_bomb.to_unsafe, c_len), fin: true, masked: true, rsv1: true)
+  t_bomb.feed(bomb_frame.serialize)
+  err_bomb = s_bomb.receive
+  case err_bomb
+  in WebSocketError
+    assert_true(err_bomb.code == CLOSE_MESSAGE_TOO_BIG, "decompression bomb rejected with 1009")
+  in Message, Nil
+    raise "assertion failed: decompression bomb was not rejected"
+  end
+
+  # 14. Close reason > 123 bytes truncated so close frame payload <= 125 (Finding 5)
+  t_long_reason = MemoryTransport.new
+  s_long_reason = Session.new(t_long_reason, is_server: false)
+  s_long_reason.close(CLOSE_NORMAL, "R" * 200)
+  sent_close_bytes = t_long_reason.take_all
+  parsed_sent_close = Frame.parse(sent_close_bytes, is_server: true)
+  case parsed_sent_close
+  in Frame
+    assert_true(parsed_sent_close.payload.size <= 125, "truncated close frame payload <= 125 bytes")
+  in WebSocketError
+    raise "assertion failed: valid truncated close frame could not be parsed"
+  end
+
+  # 15. Pipelined WebSocket frame following HTTP 101 preserved in PrefixedTransport (Finding 6)
+  raw_http_101 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n"
+  pipeline_text = Frame.new(OP_TEXT, string_to_bytes("pipelined"), fin: true, masked: false)
+  pipe_wire = pipeline_text.serialize(masked_override: false)
+  combined = raw_http_101 + String.new(pipe_wire.size) { |b| b.copy_from(pipe_wire.to_unsafe, pipe_wire.size) }
+  trailing = Handshake.extract_trailing_bytes(combined)
+  assert_true(trailing.size == pipe_wire.size, "trailing pipelined frame extracted")
+
+  # 16. Missing Host header rejected during handshake (Finding 7)
+  req_no_host = Request.new("GET", "/chat", Headers.new)
+  req_no_host.headers["Upgrade"] = "websocket"
+  req_no_host.headers["Connection"] = "Upgrade"
+  req_no_host.headers["Sec-WebSocket-Key"] = "dGhlIHNhbXBsZSBub25jZQ=="
+  req_no_host.headers["Sec-WebSocket-Version"] = "13"
+  err_host = Handshake.verify_client_request(req_no_host)
+  case err_host
+  in WebSocketError
+    assert_true(err_host.code == CLOSE_PROTOCOL_ERROR, "missing Host header rejected")
+  in String
+    raise "assertion failed: missing Host header was not rejected"
+  end
+
+  # 17. Malformed / unpadded Base64 nonce key rejected during handshake (Finding 8)
+  req_bad_key = Request.new("GET", "/chat", Headers.new)
+  req_bad_key.headers["Host"] = "example.com"
+  req_bad_key.headers["Upgrade"] = "websocket"
+  req_bad_key.headers["Connection"] = "Upgrade"
+  req_bad_key.headers["Sec-WebSocket-Key"] = "AAAAAAAAAAAAAAAAAAAAAA"
+  req_bad_key.headers["Sec-WebSocket-Version"] = "13"
+  err_bad_key = Handshake.verify_client_request(req_bad_key)
+  case err_bad_key
+  in WebSocketError
+    assert_true(err_bad_key.code == CLOSE_PROTOCOL_ERROR, "unpadded Sec-WebSocket-Key rejected")
+  in String
+    raise "assertion failed: unpadded Sec-WebSocket-Key was not rejected"
+  end
+
+  # 18. Unrequested subprotocol rejected on client verification (Finding 9)
+  resp_bad_sp = Response.new(101, Headers.new, status_message: "Switching Protocols")
+  resp_bad_sp.headers["Upgrade"] = "websocket"
+  resp_bad_sp.headers["Connection"] = "Upgrade"
+  resp_bad_sp.headers["Sec-WebSocket-Accept"] = Handshake.compute_accept("dGhlIHNhbXBsZSBub25jZQ==")
+  resp_bad_sp.headers["Sec-WebSocket-Protocol"] = "unrequested_proto"
+  err_bad_sp = Handshake.verify_server_response(resp_bad_sp, "dGhlIHNhbXBsZSBub25jZQ==", ["chat"])
+  case err_bad_sp
+  in WebSocketError
+    assert_true(err_bad_sp.code == CLOSE_PROTOCOL_ERROR, "unrequested subprotocol rejected")
+  in Nil
+    raise "assertion failed: unrequested subprotocol was not rejected"
+  end
+
+  # 19. Non-minimal 64-bit length rejected (Finding 13 item 1)
+  raw_bad_len64 = Bytes.new(14)
+  raw_bad_len64[0] = 0x81_u8
+  raw_bad_len64[1] = 0xFF_u8
+  raw_bad_len64[2] = 0_u8
+  raw_bad_len64[3] = 0_u8
+  raw_bad_len64[4] = 0_u8
+  raw_bad_len64[5] = 0_u8
+  raw_bad_len64[6] = 0_u8
+  raw_bad_len64[7] = 0_u8
+  raw_bad_len64[8] = 0x03_u8
+  raw_bad_len64[9] = 0xE8_u8 # 1000 <= 65535
+  parsed_bad64 = Frame.parse(raw_bad_len64, is_server: true)
+  case parsed_bad64
+  in WebSocketError
+    assert_true(parsed_bad64.code == CLOSE_PROTOCOL_ERROR, "non-minimal 64-bit length rejected")
+  in Frame
+    raise "assertion failed: non-minimal 64-bit length was not rejected"
+  end
+
+  # 20. 64-bit length with MSB set rejected (Finding 13 item 2)
+  raw_msb64 = Bytes.new(14)
+  raw_msb64[0] = 0x81_u8
+  raw_msb64[1] = 0xFF_u8
+  raw_msb64[2] = 0x80_u8 # MSB=1!
+  parsed_msb64 = Frame.parse(raw_msb64, is_server: true)
+  case parsed_msb64
+  in WebSocketError
+    assert_true(parsed_msb64.code == CLOSE_PROTOCOL_ERROR, "64-bit MSB=1 rejected")
+  in Frame
+    raise "assertion failed: 64-bit MSB=1 was not rejected"
+  end
+
+  # 21. New data frame mid-fragmentation rejected (Finding 13 item 3)
+  t_mid_frag = MemoryTransport.new
+  s_mid_frag = Session.new(t_mid_frag, is_server: true)
+  f_mid1 = Frame.new(OP_TEXT, string_to_bytes("frag1"), fin: false, masked: true)
+  t_mid_frag.feed(f_mid1.serialize)
+  f_mid2_bad = Frame.new(OP_BINARY, string_to_bytes("illegal"), fin: true, masked: true)
+  t_mid_frag.feed(f_mid2_bad.serialize)
+  err_mid_frag = s_mid_frag.receive
+  case err_mid_frag
+  in WebSocketError
+    assert_true(err_mid_frag.code == CLOSE_PROTOCOL_ERROR, "new data frame mid-fragmentation rejected")
+  in Message, Nil
+    raise "assertion failed: new data frame mid-fragmentation was not rejected"
+  end
+
   puts "  rejection suite passed completely"
 end
 
@@ -619,6 +805,25 @@ def test_live_socket : Nil
   assert_true(server.closed?, "server is marked closed")
 
   server_sock.close
+
+  # Test Server.upgrade HTTP error response (Finding 10)
+  s_sock_err = IyiSocket.listen(0)
+  err_port = s_sock_err.local_port
+  c_sock_err = IyiSocket.connect("127.0.0.1", err_port)
+  a_sock_err = s_sock_err.accept
+
+  bad_ver_req = "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 8\r\n\r\n"
+  c_sock_err.write(bad_ver_req)
+  up_res = Std::Websocket::Server.upgrade(a_sock_err)
+  assert_true(up_res.is_a?(WebSocketError), "Server.upgrade returned error on version 8")
+  http_resp = c_sock_err.read(4096)
+  assert_true(http_resp.includes?("426 Upgrade Required"), "server emitted 426 Upgrade Required")
+  assert_true(http_resp.includes?("Sec-WebSocket-Version: 13"), "server included Sec-WebSocket-Version: 13 in 426 response")
+
+  s_sock_err.close
+  c_sock_err.close
+  a_sock_err.close
+
   puts "  TCP loopback handshake, exchange, and close passed"
 end
 
