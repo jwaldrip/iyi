@@ -14,12 +14,12 @@ pub import std/time
 using std/http::{Headers, Request, Response}
 using std/uri::{URI}
 using std/slice::{Bytes}
+using std/time::{Time}
 
 pub struct Protocol
   pub HTTP1 = "http/1.1"
   pub HTTP2 = "h2"
   pub HTTP3 = "h3"
-  pub PROXY = "proxy"
 end
 
 # The route passed to transport infrastructure. Application code does not
@@ -73,7 +73,7 @@ end
 pub class Client
   getter last_protocol : String?
   getter alt_svc_entries : Array(AltSvcEntry)
-  property max_h2_reads : Int32
+  MAX_H2_READS = 64
 
   @proxy : Upstream?
   @http3 : Upstream?
@@ -87,13 +87,9 @@ pub class Client
     @direct : Upstream? = nil,
     @verify_peer : Bool = true,
     @timeout_ms : Int32 = 10000,
-    @max_h2_reads : Int32 = 64,
   )
     @last_protocol = nil
     @alt_svc_entries = [] of AltSvcEntry
-  end
-
-  def close : Nil
   end
 
   def get(url : String, headers : Headers? = nil) : Response
@@ -164,11 +160,12 @@ pub class Client
 
   private def execute_https(request : Request, url : String, host : String, port : Int32) : NegotiatedResponse
     tls = Std::Tls::Client.connect(host, port, [Protocol::HTTP2, Protocol::HTTP1], @verify_peer)
+    transport = Std::Http1::TlsTransport.new(tls)
+    transport.timeout_ms = @timeout_ms
     selected = tls.alpn_selected
     if selected == Protocol::HTTP2
       execute_http2(tls, request, url, host)
     elsif selected == Protocol::HTTP1 || selected.nil?
-      transport = Std::Http1::TlsTransport.new(tls)
       client = Std::Http1::Client.new(timeout_ms: @timeout_ms, verify_peer: @verify_peer, transport: transport)
       response = client.execute(request, url)
       client.close
@@ -202,7 +199,7 @@ pub class Client
 
     response = nil.as(Response?)
     reads = 0
-    while response.nil? && reads < @max_h2_reads
+    while response.nil? && reads < MAX_H2_READS
       incoming = tls.read(16384)
       break if incoming.empty?
       receive_error = client.receive(incoming)

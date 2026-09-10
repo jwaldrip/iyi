@@ -291,6 +291,10 @@ pub class TlsTransport < Transport
     TlsTransport.new(client)
   end
 
+  def timeout_ms=(ms : Int32) : Nil
+    TcpTransport.__set_sock_timeout(@tls.socket.to_unsafe, ms) if ms > 0
+  end
+
   def write(contents : String) : Int32
     @tls.write(contents)
     contents.bytesize

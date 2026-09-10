@@ -92,7 +92,7 @@ prove_fails "proxy precedence bypassed" no_proxy \
   's/if proxy = @proxy/if proxy = nil.as(Upstream?)/'
 prove_fails "Alt-Svc ma zero accepted" stale_h3 \
   "assertion failed: ma=0 clears HTTP\/3 route" \
-  's/return nil if max_age == 0_i64/# bypass/'
+  's/max_age = parsed$/max_age = parsed == 0_i64 ? 60_i64 : parsed/'
 
 echo
 if [ "$status" -eq 0 ]; then
