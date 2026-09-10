@@ -1,0 +1,19 @@
+module app
+
+import chainy
+
+pub class Mine
+  include Chainy::Link
+
+  @next : Chainy::Link | Nil = nil
+
+  def run(io : IO) : Nil
+    io << "mine "
+    run_next(io)
+  end
+end
+
+head = Chainy::First.new
+head.next = Mine.new
+head.run(STDOUT)
+puts

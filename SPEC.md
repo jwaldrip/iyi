@@ -938,7 +938,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 108,648 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 108,666 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 13,424-line own prelude + 43,273 in std |
 | Specs | 21,146 lines | 9,596 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3439,6 +3439,37 @@ The binary is **14.2 MB from source and 209 MB from the boundaries**,
 demand-driven and a consumer links every unit every artifact carries.
 Both numbers are about the artifact rather than about the rule: what it
 carries, and when a consumer has to decode it.
+
+**And what it does not survive: the first request.** The application boots
+and faults on the first HTTP request it is given, and the reason is a rule
+this format does not keep. A *module used as a type* — kemal's
+`@next : HTTP::Handler | Nil`, the handler chain — is dispatched as a test
+per includer, and the includers are the ones the *producing* build had. A
+consumer writes its own middleware, joins that set, and the artifact's
+compiled `Kemal::InitHandler@HTTP::Handler#call_next` matches none of its
+cases: it falls through to the union's `Proc` arm and calls through a
+pointer that was never a function.
+
+`bench/open_dispatch_fixture/` is that defect with no shard in it: a module
+`Link`, two includers in the shard, one in the consumer, and a boundary
+build that prints `first ` where the source build prints `first mine end`.
+It is not a gate, because it fails.
+
+The rule the fix needs is the same sentence IV.1g already makes about
+blocks and generics, said about *sets*: **an instantiation whose machine
+code enumerates the members of an open type is the whole program's answer,
+not the module's, so its body travels and the consumer compiles it.** A
+module is the open case — anybody may include one — and a class is the
+half already written down. Measured on a prototype: making such bodies
+travel fixes the fixture and reaches two further shapes behind it, both of
+which are the same kind of thing as the twelve above. A private helper
+kept out of the declarations because its *default value* names the module
+it lives in (`limit : Int32 = Kemal.config.max_request_body_size`) — fixed
+here, because the module a consumer imported is always a name it can
+resolve — and a private nested type named by a call inside a body that has
+just started to travel (`private constant Kemal::ParamParser::LimitedBodyIO
+referenced`). The measurement above is therefore a floor: the application
+builds, boots and answers nothing.
 
 Three rules came out of it. **A boundary is rooted at one namespace, and a
 shard need not have one**: `pg` declares `PG` and `PQ`, its wire protocol,

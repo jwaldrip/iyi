@@ -1376,7 +1376,16 @@ module Iyi
       Rx.scan(text, BIND_TYPE_NAME).all? do |match|
         part = match[0].not_nil!
         next true if part == "class"
-        next true unless part == root || part.starts_with?("#{root}::")
+        # The module itself is always there: it is the thing being imported.
+        # A parameter's text holds its *default* as well as its type, and
+        # kemal writes `limit : Int32 = Kemal.config.max_request_body_size`;
+        # asked whether `Kemal` is one of the carried types the answer was no
+        # — the root is not a declaration inside itself — and the method was
+        # pruned. It only ever needed to cross when the body calling it
+        # travelled, which is how a private helper came to be missing:
+        # `undefined method 'read_body_with_limit' for Kemal::ParamParser`.
+        next true if part == root
+        next true unless part.starts_with?("#{root}::")
         next true if library_name?(part)
         known.includes?(part)
       end
@@ -4407,6 +4416,15 @@ module Iyi
 
     written = type.locations.try(&.compact_map { |at| at.filename.as?(String) })
     return nil unless written.try(&.any?(&.starts_with?(directory)))
+
+    # And this root's own only. A shard's files are read once per root it
+    # declares, so a name written beside both — `alias Handy = Shard` in a
+    # shard that also declares `Sidecar` — crossed in each artifact, and a
+    # program importing both was told twice: `alias ::Handy is already
+    # defined`. The alias belongs to whichever boundary carries what it
+    # names.
+    aliased = type.aliased_type.devirtualize.to_s
+    return nil unless aliased == @@root || aliased.starts_with?("#{@@root}::")
 
     IyiMod::TypeDecl.new(
       name: "::#{type.to_s}",

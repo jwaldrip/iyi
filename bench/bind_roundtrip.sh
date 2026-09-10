@@ -235,6 +235,20 @@ module Shard
       @value
     end
 
+    # A public method and a *private overload of the same name*. Every
+    # generic's methods travel as source, and the private one was held to a
+    # test the public one passes — its unwritten parameter reads as `?`,
+    # which is not a name to resolve — so `radix`'s `find(path, result,
+    # node, first = false)` stayed behind and the public `find` that calls
+    # it reached a consumer as `no parameter named 'first'`.
+    def find(word : String) : String
+      find(word, 1, deep: true)
+    end
+
+    private def find(word : String, depth : Int32, deep = false)
+      deep ? "deep-#{word}-#{depth}" : word
+    end
+
     class Note
       @text : String
 
@@ -454,6 +468,87 @@ module Sidecar
   end
 end
 
+# The shapes a *consumer* is the only thing that exercises, each one a
+# defect an application found in the same week (SPEC.md III.6).
+module Shard
+  # A macro on the module itself. Crystal has no `pub`, so an artifact that
+  # carries one and does not mark it is a macro R-2 refuses: `Kilt does not
+  # export 'render'`, from inside an expansion the consumer never wrote.
+  LIMIT = 7
+
+  macro limited(n)
+    ({{ n }} > Shard::LIMIT ? Shard::LIMIT : {{ n }})
+  end
+
+  # What a module hands a type that includes it, which is a macro the
+  # compiler keeps in a second place and an annotation only a macro reads.
+  # `DB::Serializable` is this shape: without the hook a query mapping rows
+  # into structs types `Array(NoReturn)`, and without the annotation the
+  # expansion stops on `undefined constant DB::Field`.
+  annotation Field
+  end
+
+  module Stamped
+    def stamp : String
+      "stamped"
+    end
+  end
+
+  module Marked
+    # A module's own `include`, which a class carried and a module did not:
+    # `Kemal::HandlerInterface` includes `HTTP::Handler`, and a middleware
+    # that included it was not a handler.
+    include Stamped
+
+    macro included
+      def self.marked : String
+        "marked"
+      end
+    end
+  end
+
+  # A parameter that takes a *class*: one instantiation per class the caller
+  # names, so there is nothing here to measure and the body travels.
+  module Mappable
+    abstract def label : String
+  end
+
+  def self.build(type : Mappable.class) : String
+    type.new.label
+  end
+
+  # A named argument at a boundary call. Keyed on what the call site passes,
+  # a consumer asks for one symbol per exception class it happens to hold.
+  class Lost < Exception
+    def initialize(resource : String, cause : Exception | Nil = nil)
+      super("lost #{resource}")
+    end
+  end
+
+  # A module *body* that runs: the registry is filled by statements under the
+  # hash they fill, and an artifact that carried the hash and not the
+  # statements answered every lookup with the default.
+  module Registry
+    @@table = Hash(Int32, String).new("none")
+
+    def self.at(id : Int32) : String
+      @@table[id]
+    end
+
+    def self.put(id : Int32, name : String) : Nil
+      @@table[id] = name
+    end
+
+    put 1, "one"
+    put 2, "two"
+  end
+end
+
+# A name the shard writes outside its own namespace, which is a name every
+# program that requires it has. `validator` ends its file with `alias Valid =
+# Validator` and an application calls `Valid.email?`.
+alias Handy = Shard
+
 # The `fun` this shard's own code calls, whose body calls back into it.
 fun shard_worker_main(arg : Void*) : Void*
   Shard.worker_note
@@ -541,6 +636,42 @@ Shard.render_text(STDOUT)
 puts ""
 puts Shard.slot(3).index
 puts Shard.slot(4).rebuilt
+
+# And the shapes only a consumer reaches: a macro of the module's own that
+# names its constant, a hook that fires on a type this program declares, the
+# annotation that hook's expansion reads, a module's `include`, a parameter
+# that takes a class, a named argument, a private overload sharing a public
+# name, a module body's registry, and a name written outside the namespace.
+puts Shard.limited(9)
+puts Shard.limited(3)
+
+pub struct Row
+  include Shard::Mappable
+  include Shard::Marked
+
+  @[Shard::Field(key: "x")]
+  @x : Int32 = 1
+
+  def label : String
+    "row"
+  end
+
+  # Read where a macro can read it: an annotation of the shard's own, on a
+  # field of a type this program declares.
+  def annotated : String
+    {{ @type.instance_vars.first.annotation(Shard::Field) ? "annotated" : "bare" }}
+  end
+end
+
+puts Shard.build(Row)
+puts Row.marked
+puts Row.new.stamp
+puts Row.new.annotated
+puts Shard::Lost.new("thing", cause: IO::Error.new("gone")).message
+puts Shard::Holder(Int32).new(3).find("path")
+puts Shard::Registry.at(2)
+puts Shard::Registry.at(9)
+puts Handy.made
 IYI
 
 sed 's|require "./shard"|import shard|' "$WORK/app_source.iyi" > "$WORK/app_artifact.iyi"

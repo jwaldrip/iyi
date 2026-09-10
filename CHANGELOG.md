@@ -426,6 +426,31 @@
 
 ### Fixed
 
+- **A private helper the declarations pruned because its default names its
+  own module.** `prune_declaration` refuses a method whose text names a
+  type the artifact did not carry, and a parameter's text holds its
+  *default* as well as its type: kemal writes `limit : Int32 =
+  Kemal.config.max_request_body_size`, the walk asked whether `Kemal` was
+  one of the carried declarations — the root is not a declaration inside
+  itself — and dropped `ParamParser#read_body_with_limit`. The module a
+  consumer imported is always a name it can resolve, so the root answers
+  for itself now. Invisible until a body that calls it travelled:
+  `undefined method 'read_body_with_limit' for Kemal::ParamParser`.
+- **Diagnosed, not fixed: the application boots and faults on the first
+  request.** A module used as a *type* — `@next : HTTP::Handler | Nil`, the
+  handler chain every kemal app installs — is dispatched as a test per
+  includer, compiled against the includers the *producing* build had. A
+  consumer's own middleware joins that set, the artifact's
+  `Kemal::InitHandler@HTTP::Handler#call_next` matches none of its cases,
+  falls through to the union's `Proc` arm and calls a pointer that was
+  never a function. `bench/open_dispatch_fixture/` is the same defect in
+  forty lines with no shard in it — `first ` where the source build prints
+  `first mine end` — and SPEC.md III.6 now states the rule the fix needs:
+  an instantiation whose machine code enumerates an open type's members is
+  the whole program's answer, so the body travels. A prototype of that rule
+  fixes the fixture and uncovers two further shapes behind it, one of them
+  the pruning defect above; it is not landed, because the tail is longer
+  than one change.
 - **A boundary carried its declarations and not what a consumer compiles
   against them.** The 8,079-line kemal application was built against
   `mods/` instead of `lib/` for the first time, and it took twelve defects
