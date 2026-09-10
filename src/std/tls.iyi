@@ -112,6 +112,8 @@ pub def self.read_asn1(data : Bytes, offset : Int32) : ASN1Element?
     len = len_byte
   else
     num_bytes = len_byte & 0x7f
+    # Indefinite length (0x80) is forbidden in DER (ITU-T X.690 §10.1)
+    return nil if num_bytes == 0
     return nil if num_bytes > 4 || offset + 2 + num_bytes > data.size
     header_len = 2 + num_bytes
     i = 0
@@ -119,9 +121,10 @@ pub def self.read_asn1(data : Bytes, offset : Int32) : ASN1Element?
       len = (len << 8) | data[offset + 2 + i].to_i32
       i = i + 1
     end
+    return nil if len < 0
   end
 
-  return nil if offset + header_len + len > data.size
+  return nil if len < 0 || offset + header_len + len > data.size || offset + header_len + len < 0
   ASN1Element.new(tag, offset, header_len, len, data)
 end
 
@@ -644,11 +647,156 @@ module P256
     return false if r <= BigInt.zero || r >= N
     return false if s <= BigInt.zero || s >= N
 
+    effective_hash = hash_bytes.size > 32 ? hash_bytes[0, 32] : hash_bytes
     e = BigInt.zero
     two_five_six = BigInt.new(256_i64)
     i = 0
-    while i < hash_bytes.size
-      e = e * two_five_six + BigInt.new(hash_bytes[i].to_i64)
+    while i < effective_hash.size
+      e = e * two_five_six + BigInt.new(effective_hash[i].to_i64)
+      i = i + 1
+    end
+    e = e % N
+
+    w = modn_inv(s)
+    u1 = mod_n(e * w)
+    u2 = mod_n(r * w)
+
+    q_pt = JPoint.new(qx, qy, BigInt.one)
+    pt1 = j_mul(u1, G_POINT)
+    pt2 = j_mul(u2, q_pt)
+    res_pt = j_add(pt1, pt2)
+
+    return false if res_pt.infinity?
+
+    z_inv = modp_inv(res_pt.z)
+    rx = mod_p(res_pt.x * mod_p(z_inv * z_inv))
+    v = rx % N
+    v == r
+  end
+end
+
+# -----------------------------------------------------------------------------
+# ECDSA P-384 (secp384r1) Signature Verification
+# -----------------------------------------------------------------------------
+
+module P384
+  P = BigInt.from_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff")
+  N = BigInt.from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973")
+  GX = BigInt.from_hex("aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7")
+  GY = BigInt.from_hex("3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f")
+
+  struct JPoint
+    getter x : BigInt
+    getter y : BigInt
+    getter z : BigInt
+
+    def initialize(@x : BigInt, @y : BigInt, @z : BigInt)
+    end
+
+    def infinity? : Bool
+      @z.zero?
+    end
+  end
+
+  INFINITY = JPoint.new(BigInt.zero, BigInt.one, BigInt.zero)
+  G_POINT  = JPoint.new(GX, GY, BigInt.one)
+
+  def self.mod_p(x : BigInt) : BigInt
+    r = x % P
+    r.negative? ? (r + P) : r
+  end
+
+  def self.mod_n(x : BigInt) : BigInt
+    r = x % N
+    r.negative? ? (r + N) : r
+  end
+
+  def self.modp_inv(x : BigInt) : BigInt
+    x.pow_mod(P - BigInt.new(2_i64), P)
+  end
+
+  def self.modn_inv(x : BigInt) : BigInt
+    x.pow_mod(N - BigInt.new(2_i64), N)
+  end
+
+  def self.j_double(p : JPoint) : JPoint
+    return p if p.infinity? || p.y.zero?
+    two = BigInt.new(2_i64)
+    three = BigInt.new(3_i64)
+    four = BigInt.new(4_i64)
+    eight = BigInt.new(8_i64)
+
+    delta = mod_p(p.z * p.z)
+    gamma = mod_p(p.y * p.y)
+    beta = mod_p(p.x * gamma)
+    alpha = mod_p(three * mod_p(p.x - delta) * mod_p(p.x + delta))
+
+    x3 = mod_p(alpha * alpha - eight * beta)
+    z3 = mod_p(two * p.y * p.z)
+    y3 = mod_p(alpha * mod_p(four * beta - x3) - eight * mod_p(gamma * gamma))
+
+    JPoint.new(x3, y3, z3)
+  end
+
+  def self.j_add(p1 : JPoint, p2 : JPoint) : JPoint
+    return p2 if p1.infinity?
+    return p1 if p2.infinity?
+
+    z1sq = mod_p(p1.z * p1.z)
+    z2sq = mod_p(p2.z * p2.z)
+    u1 = mod_p(p1.x * z2sq)
+    u2 = mod_p(p2.x * z1sq)
+
+    s1 = mod_p(p1.y * mod_p(p2.z * z2sq))
+    s2 = mod_p(p2.y * mod_p(p1.z * z1sq))
+
+    if u1 == u2
+      if s1 != s2
+        return INFINITY
+      else
+        return j_double(p1)
+      end
+    end
+
+    h = mod_p(u2 - u1)
+    r = mod_p(s2 - s1)
+    h2 = mod_p(h * h)
+    h3 = mod_p(h * h2)
+    u1h2 = mod_p(u1 * h2)
+
+    two = BigInt.new(2_i64)
+    x3 = mod_p(mod_p(r * r) - h3 - two * u1h2)
+    y3 = mod_p(r * mod_p(u1h2 - x3) - s1 * h3)
+    z3 = mod_p(h * mod_p(p1.z * p2.z))
+
+    JPoint.new(x3, y3, z3)
+  end
+
+  def self.j_mul(k : BigInt, p : JPoint) : JPoint
+    res = INFINITY
+    curr = p
+    s = k
+    two = BigInt.new(2_i64)
+    while !s.zero?
+      if s.odd?
+        res = j_add(res, curr)
+      end
+      curr = j_double(curr)
+      s = s // two
+    end
+    res
+  end
+
+  def self.verify(qx : BigInt, qy : BigInt, hash_bytes : Bytes, r : BigInt, s : BigInt) : Bool
+    return false if r <= BigInt.zero || r >= N
+    return false if s <= BigInt.zero || s >= N
+
+    effective_hash = hash_bytes.size > 48 ? hash_bytes[0, 48] : hash_bytes
+    e = BigInt.zero
+    two_five_six = BigInt.new(256_i64)
+    i = 0
+    while i < effective_hash.size
+      e = e * two_five_six + BigInt.new(effective_hash[i].to_i64)
       i = i + 1
     end
     e = e % N
@@ -869,9 +1017,14 @@ pub class Certificate
   getter rsa_e : BigInt?
   getter ec_x : BigInt?
   getter ec_y : BigInt?
+  getter ec_curve : Symbol?
   getter ed25519_pub : Bytes?
   getter san_dns_names : Array(String)
   getter common_name : String?
+  getter is_ca : Bool
+  getter path_len : Int32?
+  getter has_key_usage : Bool
+  getter key_usage_cert_sign : Bool
   getter sig_algo : Symbol
   getter sig_bytes : Bytes
 
@@ -889,9 +1042,14 @@ pub class Certificate
     @rsa_e : BigInt?,
     @ec_x : BigInt?,
     @ec_y : BigInt?,
+    @ec_curve : Symbol?,
     @ed25519_pub : Bytes?,
     @san_dns_names : Array(String),
     @common_name : String?,
+    @is_ca : Bool,
+    @path_len : Int32?,
+    @has_key_usage : Bool,
+    @key_usage_cert_sign : Bool,
     @sig_algo : Symbol,
     @sig_bytes : Bytes,
   )
@@ -970,6 +1128,7 @@ pub class Certificate
     rsa_e = nil.as(BigInt?)
     ec_x = nil.as(BigInt?)
     ec_y = nil.as(BigInt?)
+    ec_curve = nil.as(Symbol?)
     ed_pub = nil.as(Bytes?)
 
     if pubkey_oid == "1.2.840.113549.1.1.1" # rsaEncryption
@@ -984,18 +1143,32 @@ pub class Certificate
       end
     elsif pubkey_oid == "1.2.840.10045.2.1" # id-ecPublicKey
       pubkey_algo = :ec
-      if pub_raw.size >= 65 && pub_raw[0] == 0x04_u8
-        # Uncompressed point 04 || X (32) || Y (32)
-        ec_x = RSA.bytes_to_bigint_be(pub_raw[1, 32])
-        ec_y = RSA.bytes_to_bigint_be(pub_raw[33, 32])
+      curve_oid = algo_children.size >= 2 ? Std::Tls.parse_oid(algo_children[1]) : ""
+      if curve_oid == "1.2.840.10045.3.1.7" # secp256r1
+        ec_curve = :p256
+        if pub_raw.size == 65 && pub_raw[0] == 0x04_u8
+          ec_x = RSA.bytes_to_bigint_be(pub_raw[1, 32])
+          ec_y = RSA.bytes_to_bigint_be(pub_raw[33, 32])
+        end
+      elsif curve_oid == "1.3.132.0.34" # secp384r1
+        ec_curve = :p384
+        if pub_raw.size == 97 && pub_raw[0] == 0x04_u8
+          ec_x = RSA.bytes_to_bigint_be(pub_raw[1, 48])
+          ec_y = RSA.bytes_to_bigint_be(pub_raw[49, 48])
+        end
       end
     elsif pubkey_oid == "1.3.101.112" # Ed25519
       pubkey_algo = :ed25519
       ed_pub = pub_raw
     end
 
-    # Extensions (SAN)
+    # Extensions (SAN, BasicConstraints, KeyUsage)
     san_names = Array(String).new
+    is_ca = false
+    path_len = nil.as(Int32?)
+    has_key_usage = false
+    key_usage_cert_sign = false
+
     k = c_idx + 1
     while k < tbs_children.size
       if tbs_children[k].tag == 0xa3_u8 # [3] Extensions
@@ -1023,6 +1196,33 @@ pub class Certificate
                   g_idx = g_idx + 1
                 end
               end
+            elsif ext_oid == "2.5.29.19" # basicConstraints (RFC 5280 §4.2.1.9)
+              bc_octets = ext_item[val_idx].value
+              bc_elem = Std::Tls.read_asn1(bc_octets, 0)
+              if bc_elem
+                bc_children = Std::Tls.parse_asn1_children(bc_elem)
+                bc_i = 0
+                while bc_i < bc_children.size
+                  bc_c = bc_children[bc_i]
+                  if bc_c.tag == 0x01_u8 # BOOLEAN
+                    is_ca = !bc_c.value.empty? && bc_c.value[0] != 0_u8
+                  elsif bc_c.tag == 0x02_u8 # INTEGER (pathLenConstraint)
+                    path_len = Std::Tls.parse_integer(bc_c).to_i64.to_i32
+                  end
+                  bc_i = bc_i + 1
+                end
+              end
+            elsif ext_oid == "2.5.29.15" # keyUsage (RFC 5280 §4.2.1.3)
+              ku_octets = ext_item[val_idx].value
+              ku_elem = Std::Tls.read_asn1(ku_octets, 0)
+              if ku_elem && ku_elem.tag == 0x03_u8 # BIT STRING
+                has_key_usage = true
+                if ku_elem.value.size >= 2
+                  first_byte = ku_elem.value[1]
+                  # bit 5: keyCertSign (0x04 in bitmask 0x04_u8)
+                  key_usage_cert_sign = (first_byte & 0x04_u8) != 0_u8
+                end
+              end
             end
           end
           e_i = e_i + 1
@@ -1039,7 +1239,7 @@ pub class Certificate
                when "1.2.840.113549.1.1.11" then :sha256_rsa # sha256WithRSAEncryption
                when "1.2.840.113549.1.1.12" then :sha384_rsa
                when "1.2.840.10045.4.3.2"   then :sha256_ecdsa # ecdsa-with-SHA256
-               when "1.2.840.10045.4.3.3"   then :sha384_ecdsa
+               when "1.2.840.10045.4.3.3"   then :sha384_ecdsa # ecdsa-with-SHA384
                when "1.3.101.112"           then :ed25519
                else                              :unknown
                end
@@ -1061,9 +1261,14 @@ pub class Certificate
       rsa_e,
       ec_x,
       ec_y,
+      ec_curve,
       ed_pub,
       san_names,
       common_name,
+      is_ca,
+      path_len,
+      has_key_usage,
+      key_usage_cert_sign,
       sig_algo,
       sig_bytes
     )
@@ -1082,7 +1287,7 @@ pub class Certificate
       i = 0
       while i < @san_dns_names.size
         pattern = @san_dns_names[i].downcase
-        return true if matches_pattern(pattern, target)
+        return true if Certificate.matches_pattern(pattern, target)
         i = i + 1
       end
       return false
@@ -1090,18 +1295,30 @@ pub class Certificate
 
     # Fallback to CommonName if no SAN
     if cn = @common_name
-      return matches_pattern(cn.downcase, target)
+      return Certificate.matches_pattern(cn.downcase, target)
     end
 
     false
   end
 
-  private def matches_pattern(pattern : String, target : String) : Bool
+  def self.matches_pattern(pattern : String, target : String) : Bool
     return true if pattern == target
 
     # Wildcard match: *.domain.com
     if pattern.bytesize > 2 && pattern[0] == '*' && pattern[1] == '.'
       suffix = pattern[2, pattern.bytesize - 2]
+      # RFC 6125 §6.4.3: Wildcard MUST NOT match against a top-level domain
+      has_dot = false
+      s_i = 0
+      while s_i < suffix.bytesize
+        if suffix[s_i] == '.'
+          has_dot = true
+          break
+        end
+        s_i = s_i + 1
+      end
+      return false unless has_dot
+
       # target must end with .suffix
       if target.bytesize > suffix.bytesize + 1
         sub_len = target.bytesize - suffix.bytesize - 1
@@ -1109,16 +1326,16 @@ pub class Certificate
         if target_suffix == suffix && target[sub_len] == '.'
           # Wildcard matches exactly one subdomain component (no dots in prefix)
           prefix = target[0, sub_len]
-          has_dot = false
+          p_dot = false
           p_i = 0
           while p_i < prefix.bytesize
             if prefix[p_i] == '.'
-              has_dot = true
+              p_dot = true
               break
             end
             p_i = p_i + 1
           end
-          return true unless has_dot
+          return true unless p_dot
         end
       end
     end
@@ -1152,7 +1369,27 @@ pub class Certificate
       return false if sig_parts.size < 2
       r = Std::Tls.parse_integer(sig_parts[0])
       s = Std::Tls.parse_integer(sig_parts[1])
-      P256.verify(qx, qy, th, r, s)
+      if issuer_cert.ec_curve == :p384
+        P384.verify(qx, qy, th, r, s)
+      else
+        P256.verify(qx, qy, th, r, s)
+      end
+    when :sha384_ecdsa
+      qx = issuer_cert.ec_x
+      qy = issuer_cert.ec_y
+      return false if qx.nil? || qy.nil?
+      th = SHA384.digest(@tbs_raw)
+      sig_elem = Std::Tls.read_asn1(@sig_bytes, 0)
+      return false if sig_elem.nil?
+      sig_parts = Std::Tls.parse_asn1_children(sig_elem)
+      return false if sig_parts.size < 2
+      r = Std::Tls.parse_integer(sig_parts[0])
+      s = Std::Tls.parse_integer(sig_parts[1])
+      if issuer_cert.ec_curve == :p384
+        P384.verify(qx, qy, th, r, s)
+      else
+        P256.verify(qx, qy, th, r, s)
+      end
     when :ed25519
       ed_pub = issuer_cert.ed25519_pub
       return false if ed_pub.nil?
@@ -1251,6 +1488,21 @@ pub class CertificateStore
       i = i + 1
     end
 
+    # 3. Path validation: every certificate acting as an intermediate issuer MUST be a CA
+    i = 1
+    while i < chain.size
+      issuer = chain[i]
+      return false unless issuer.is_ca
+      if issuer.has_key_usage
+        return false unless issuer.key_usage_cert_sign
+      end
+      if plen = issuer.path_len
+        certs_below = i - 1
+        return false if certs_below > plen
+      end
+      i = i + 1
+    end
+
     # 3. Each certificate signature must verify against the next certificate
     i = 0
     while i < chain.size - 1
@@ -1266,10 +1518,18 @@ pub class CertificateStore
     while t < @certificates.size
       anchor = @certificates[t]
       if anchor.subject_raw == top.issuer_raw
+        return false unless anchor.is_ca
+        if plen = anchor.path_len
+          return false if (chain.size - 1) > plen
+        end
         if top.verify_signature(anchor)
           return true
         end
       elsif anchor.subject_raw == top.subject_raw && anchor.raw == top.raw
+        return false unless anchor.is_ca
+        if plen = anchor.path_len
+          return false if (chain.size - 2) > plen
+        end
         return true
       end
       t = t + 1
@@ -1338,8 +1598,7 @@ pub class RecordCipher
   @iv : Bytes
   @seq : UInt64
 
-  def initialize(@cipher_suite : Symbol, @key : Bytes, @iv : Bytes)
-    @seq = 0_u64
+  def initialize(@cipher_suite : Symbol, @key : Bytes, @iv : Bytes, @seq : UInt64 = 0_u64)
   end
 
   def encrypt(content_type : UInt8, payload : Bytes) : Bytes
@@ -1349,9 +1608,9 @@ pub class RecordCipher
     end
     pt[payload.size] = content_type
 
+    raise "TLS record sequence number exhausted (cannot wrap)" if @seq == 0xffffffffffffffff_u64
     nonce = Std::Tls.make_nonce(@iv, @seq)
     @seq = @seq + 1_u64
-
     rec_len = pt.size + 16
     ad = Bytes.new(5)
     ad[0] = 0x17_u8
@@ -1386,9 +1645,9 @@ pub class RecordCipher
     ct = record[5, ct_len]
     tag = record[5 + ct_len, 16]
 
+    raise "TLS record sequence number exhausted (cannot wrap)" if @seq == 0xffffffffffffffff_u64
     nonce = Std::Tls.make_nonce(@iv, @seq)
     @seq = @seq + 1_u64
-
     pt = case @cipher_suite
          when :aes_128_gcm       then AES128GCM.decrypt_detached(@key, nonce, ct, tag, ad)
          when :chacha20_poly1305 then ChaCha20Poly1305.decrypt_detached(@key, nonce, ct, tag, ad)
@@ -1459,11 +1718,16 @@ pub class Client
     verify_peer : Bool = true,
     ca_store : CertificateStore? = nil,
     current_time : Int64? = nil,
+    client_private_key : Bytes? = nil,
+    client_random_override : Bytes? = nil,
+    session_id_override : Bytes? = nil,
+    client_hello_override : Bytes? = nil
   ) : Client
-    client_priv, client_pub = X25519.generate_keypair
-    client_random = Std::Crypto.random_bytes(32)
-    session_id = Std::Crypto.random_bytes(32)
-
+    client_priv = client_private_key || Std::Crypto.random_bytes(32)
+    base_u = Bytes.new(32, 0_u8); base_u[0] = 9_u8
+    client_pub = X25519.scalar_mult(client_priv, base_u)
+    client_random = client_random_override || Std::Crypto.random_bytes(32)
+    session_id = session_id_override || Std::Crypto.random_bytes(32)
     # 1. Extensions
     # SNI
     sni_len = hostname.bytesize
@@ -1486,14 +1750,16 @@ pub class Client
     ext_groups[6] = 0x00_u8; ext_groups[7] = 0x1d_u8
 
     # signature_algorithms
-    ext_sig_algos = Bytes.new(14)
+    # signature_algorithms (RFC 8446 §4.2.3: rsa_pkcs1 algorithms are invalid in TLS 1.3)
+    ext_sig_algos = Bytes.new(16)
     ext_sig_algos[0] = 0x00_u8; ext_sig_algos[1] = 0x0d_u8
-    ext_sig_algos[2] = 0x00_u8; ext_sig_algos[3] = 0x0a_u8
-    ext_sig_algos[4] = 0x00_u8; ext_sig_algos[5] = 0x08_u8
+    ext_sig_algos[2] = 0x00_u8; ext_sig_algos[3] = 0x0c_u8
+    ext_sig_algos[4] = 0x00_u8; ext_sig_algos[5] = 0x0a_u8
     ext_sig_algos[6] = 0x04_u8; ext_sig_algos[7] = 0x03_u8   # ecdsa_secp256r1_sha256
-    ext_sig_algos[8] = 0x08_u8; ext_sig_algos[9] = 0x04_u8   # rsa_pss_rsae_sha256
-    ext_sig_algos[10] = 0x04_u8; ext_sig_algos[11] = 0x01_u8 # rsa_pkcs1_sha256
-    ext_sig_algos[12] = 0x08_u8; ext_sig_algos[13] = 0x07_u8 # ed25519
+    ext_sig_algos[8] = 0x05_u8; ext_sig_algos[9] = 0x03_u8   # ecdsa_secp384r1_sha384
+    ext_sig_algos[10] = 0x08_u8; ext_sig_algos[11] = 0x04_u8 # rsa_pss_rsae_sha256
+    ext_sig_algos[12] = 0x08_u8; ext_sig_algos[13] = 0x05_u8 # rsa_pss_rsae_sha384
+    ext_sig_algos[14] = 0x08_u8; ext_sig_algos[15] = 0x07_u8 # ed25519
 
     # supported_versions (TLS 1.3 = 0x0304)
     ext_versions = Bytes.new(7)
@@ -1597,6 +1863,10 @@ pub class Client
       ch_msg[idx] = all_exts[i]; idx = idx + 1; i = i + 1
     end
 
+    if ch_override = client_hello_override
+      ch_msg = ch_override
+    end
+
     # Wrap in TLS plaintext record
     ch_record = Bytes.new(5 + ch_msg.size)
     ch_record[0] = 0x16_u8; ch_record[1] = 0x03_u8; ch_record[2] = 0x01_u8
@@ -1607,6 +1877,12 @@ pub class Client
     end
 
     socket.write(ch_record.to_unsafe, ch_record.size)
+
+    # Middlebox compatibility mode (RFC 8446 Appendix D.4):
+    # Send dummy ChangeCipherSpec immediately after first ClientHello
+    ccs = Bytes.new(6)
+    ccs[0] = 0x14_u8; ccs[1] = 0x03_u8; ccs[2] = 0x03_u8; ccs[3] = 0x00_u8; ccs[4] = 0x01_u8; ccs[5] = 0x01_u8
+    socket.write(ccs.to_unsafe, ccs.size)
 
     handshake_transcript = Array(Bytes).new
     handshake_transcript << ch_msg
@@ -1633,19 +1909,29 @@ pub class Client
     exts_end = p_idx + exts_len
 
     server_pub = Bytes.empty
+    has_supported_version_tls13 = false
+    key_share_group_valid = false
+
     while p_idx < exts_end
       ext_type = (sh_msg[p_idx].to_i32 << 8) | sh_msg[p_idx + 1].to_i32
       ext_l = (sh_msg[p_idx + 2].to_i32 << 8) | sh_msg[p_idx + 3].to_i32
       p_idx = p_idx + 4
-      if ext_type == 0x0033 # key_share
+      if ext_type == 0x002b && ext_l >= 2 # supported_versions
+        sel_ver = (sh_msg[p_idx].to_i32 << 8) | sh_msg[p_idx + 1].to_i32
+        has_supported_version_tls13 = (sel_ver == 0x0304)
+      elsif ext_type == 0x0033 && ext_l >= 4 # key_share
         group = (sh_msg[p_idx].to_i32 << 8) | sh_msg[p_idx + 1].to_i32
         k_len = (sh_msg[p_idx + 2].to_i32 << 8) | sh_msg[p_idx + 3].to_i32
-        server_pub = sh_msg[p_idx + 4, k_len]
+        if group == 0x001d && k_len == 32 # x25519
+          key_share_group_valid = true
+          server_pub = sh_msg[p_idx + 4, k_len]
+        end
       end
       p_idx = p_idx + ext_l
     end
 
-    raise "server did not return x25519 key share" if server_pub.size != 32
+    raise "server did not negotiate TLS 1.3 in supported_versions" unless has_supported_version_tls13
+    raise "server did not return valid x25519 key share" unless key_share_group_valid
 
     cipher_sym = case cs_id
                  when 0x1301 then :aes_128_gcm
@@ -1674,9 +1960,10 @@ pub class Client
     c_hs_traffic = Std::Tls.derive_secret(handshake_secret, "c hs traffic", th_sh)
     s_hs_traffic = Std::Tls.derive_secret(handshake_secret, "s hs traffic", th_sh)
 
-    c_hs_key = Std::Tls.hkdf_expand_label(c_hs_traffic, "key", Bytes.empty, 16)
+    key_len = cipher_sym == :chacha20_poly1305 ? 32 : 16
+    c_hs_key = Std::Tls.hkdf_expand_label(c_hs_traffic, "key", Bytes.empty, key_len)
     c_hs_iv = Std::Tls.hkdf_expand_label(c_hs_traffic, "iv", Bytes.empty, 12)
-    s_hs_key = Std::Tls.hkdf_expand_label(s_hs_traffic, "key", Bytes.empty, 16)
+    s_hs_key = Std::Tls.hkdf_expand_label(s_hs_traffic, "key", Bytes.empty, key_len)
     s_hs_iv = Std::Tls.hkdf_expand_label(s_hs_traffic, "iv", Bytes.empty, 12)
 
     server_hs_cipher = RecordCipher.new(cipher_sym, s_hs_key, s_hs_iv)
@@ -1755,21 +2042,35 @@ pub class Client
         elsif msg_type == 0x0b_u8 # Certificate
           # Extract certificates list
           ctx_len = msg_data[4].to_i32
+          raise "malformed Certificate message: invalid context length" if 5 + ctx_len + 3 > msg_data.size
           c_idx = 5 + ctx_len
           list_len = (msg_data[c_idx].to_i32 << 16) | (msg_data[c_idx + 1].to_i32 << 8) | msg_data[c_idx + 2].to_i32
           c_idx = c_idx + 3
           c_end = c_idx + list_len
-          while c_idx + 3 <= c_end
+          raise "malformed Certificate message: certificate list length overflows message" if c_end > msg_data.size
+          while c_idx < c_end
+            if c_idx + 3 > c_end
+              raise "malformed Certificate message: truncated certificate length header"
+            end
             cert_len = (msg_data[c_idx].to_i32 << 16) | (msg_data[c_idx + 1].to_i32 << 8) | msg_data[c_idx + 2].to_i32
             c_idx = c_idx + 3
-            break if c_idx + cert_len > c_end
+            if c_idx + cert_len > c_end
+              raise "malformed Certificate message: certificate length overflows certificate list"
+            end
             der_cert = msg_data[c_idx, cert_len]
             parsed_cert = Certificate.parse(der_cert)
-            if parsed_cert
-              cert_chain << parsed_cert
+            if parsed_cert.nil?
+              raise "failed to parse server certificate in handshake flight"
             end
+            cert_chain << parsed_cert
             c_idx = c_idx + cert_len
+            if c_idx + 2 > c_end
+              raise "malformed Certificate message: truncated certificate extensions header"
+            end
             ext_l = (msg_data[c_idx].to_i32 << 8) | msg_data[c_idx + 1].to_i32
+            if c_idx + 2 + ext_l > c_end
+              raise "malformed Certificate message: certificate extensions overflow certificate list"
+            end
             c_idx = c_idx + 2 + ext_l
           end
           handshake_transcript << msg_data
@@ -1807,6 +2108,18 @@ pub class Client
         end
 
         h_offset = h_offset + 4 + msg_len
+      end
+
+      # Slicing handshake buffer to drop parsed complete messages (Finding 3)
+      if h_offset > 0
+        rem_len = handshake_buf.size - h_offset
+        if rem_len > 0
+          sliced_buf = Bytes.new(rem_len)
+          s_i = 0; while s_i < rem_len; sliced_buf[s_i] = handshake_buf[h_offset + s_i]; s_i = s_i + 1; end
+          handshake_buf = sliced_buf
+        else
+          handshake_buf = Bytes.empty
+        end
       end
     end
 
@@ -1870,12 +2183,20 @@ pub class Client
           th_input = SHA384.digest(cv_input)
           cv_valid = RSA.verify_pss(n, e, :sha384, th_input, cert_verify_sig, 48)
         end
-      when 0x0401 # rsa_pkcs1_sha256
-        n = peer_cert.rsa_n
-        e = peer_cert.rsa_e
-        if n && e
-          th_input = SHA256.digest(cv_input)
-          cv_valid = RSA.verify_pkcs1v15(n, e, :sha256, th_input, cert_verify_sig)
+      when 0x0503 # ecdsa_secp384r1_sha384
+        qx = peer_cert.ec_x
+        qy = peer_cert.ec_y
+        if qx && qy
+          th_input = SHA384.digest(cv_input)
+          sig_elem = Std::Tls.read_asn1(cert_verify_sig, 0)
+          if sig_elem
+            sig_parts = Std::Tls.parse_asn1_children(sig_elem)
+            if sig_parts.size >= 2
+              r = Std::Tls.parse_integer(sig_parts[0])
+              s = Std::Tls.parse_integer(sig_parts[1])
+              cv_valid = P384.verify(qx, qy, th_input, r, s)
+            end
+          end
         end
       when 0x0807 # ed25519
         ed_pub = peer_cert.ed25519_pub
@@ -1913,9 +2234,9 @@ pub class Client
     c_ap_traffic = Std::Tls.derive_secret(master_secret, "c ap traffic", th_s_fin)
     s_ap_traffic = Std::Tls.derive_secret(master_secret, "s ap traffic", th_s_fin)
 
-    c_ap_key = Std::Tls.hkdf_expand_label(c_ap_traffic, "key", Bytes.empty, 16)
+    c_ap_key = Std::Tls.hkdf_expand_label(c_ap_traffic, "key", Bytes.empty, key_len)
     c_ap_iv = Std::Tls.hkdf_expand_label(c_ap_traffic, "iv", Bytes.empty, 12)
-    s_ap_key = Std::Tls.hkdf_expand_label(s_ap_traffic, "key", Bytes.empty, 16)
+    s_ap_key = Std::Tls.hkdf_expand_label(s_ap_traffic, "key", Bytes.empty, key_len)
     s_ap_iv = Std::Tls.hkdf_expand_label(s_ap_traffic, "iv", Bytes.empty, 12)
 
     # Send client Finished
@@ -1932,10 +2253,7 @@ pub class Client
     client_hs_cipher = RecordCipher.new(cipher_sym, c_hs_key, c_hs_iv)
     c_fin_record = client_hs_cipher.encrypt(0x16_u8, c_fin_msg)
 
-    # Send middlebox compatibility ChangeCipherSpec then client Finished
-    ccs = Bytes.new(6)
-    ccs[0] = 0x14_u8; ccs[1] = 0x03_u8; ccs[2] = 0x03_u8; ccs[3] = 0x00_u8; ccs[4] = 0x01_u8; ccs[5] = 0x01_u8
-    socket.write(ccs.to_unsafe, ccs.size)
+    # Send client Finished record
     socket.write(c_fin_record.to_unsafe, c_fin_record.size)
 
     # Instantiate Application Data ciphers
@@ -1956,10 +2274,20 @@ pub class Client
 
   # --- Application Data I/O ---
 
+  MAX_RECORD_PLAINTEXT = 16384
+
   def write(data : Bytes) : Nil
     raise "cannot write to closed TLS client" if @closed
-    rec = @write_cipher.encrypt(0x17_u8, data)
-    @socket.write(rec.to_unsafe, rec.size)
+    offset = 0
+    remaining = data.size
+    while remaining > 0
+      chunk_len = remaining > MAX_RECORD_PLAINTEXT ? MAX_RECORD_PLAINTEXT : remaining
+      chunk = data[offset, chunk_len]
+      rec = @write_cipher.encrypt(0x17_u8, chunk)
+      @socket.write(rec.to_unsafe, rec.size)
+      offset = offset + chunk_len
+      remaining = remaining - chunk_len
+    end
   end
 
   def write(str : String) : Nil

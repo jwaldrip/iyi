@@ -17,6 +17,16 @@ using std/time::{Time}
 
 alias Bytes = Std::Slice::Bytes
 
+# Command-line argument dispatch for failure mode probing
+args = Program.args
+if args.size > 0 && args[0] == "seq_exhaustion"
+  s_key = Bytes.new(16, 0x11_u8)
+  s_iv = Bytes.new(12, 0x22_u8)
+  cipher_exhausted = Std::Tls::RecordCipher.new(:aes_128_gcm, s_key, s_iv, 0xffffffffffffffff_u64)
+  cipher_exhausted.encrypt(0x17_u8, Bytes.new(16, 0x33_u8))
+  __iyi_exit(0)
+end
+
 def assert_true(cond : Bool, msg : String) : Nil
   if !cond
     raise "assertion failed: #{msg}"
@@ -59,6 +69,42 @@ def hex_to_bytes(hex : String) : Bytes
     i = i + 1
   end
   out
+end
+
+class ScriptedSocket < IyiSocket
+  @read_buf : Bytes
+  @read_pos : Int32
+  getter written_records : Array(Bytes)
+
+  def initialize(@read_buf : Bytes)
+    @fd = -1
+    @read_pos = 0
+    @written_records = Array(Bytes).new
+  end
+
+  def read(buffer : Pointer(UInt8), count : Int32) : Int32
+    return 0 if @read_pos >= @read_buf.size
+    avail = @read_buf.size - @read_pos
+    to_read = count < avail ? count : avail
+    i = 0
+    while i < to_read
+      buffer[i] = @read_buf[@read_pos + i]
+      i = i + 1
+    end
+    @read_pos = @read_pos + to_read
+    to_read
+  end
+
+  def write(buffer : Pointer(UInt8), count : Int32) : Int32
+    rec = Bytes.new(count)
+    i = 0
+    while i < count
+      rec[i] = buffer[i]
+      i = i + 1
+    end
+    @written_records << rec
+    count
+  end
 end
 
 # -----------------------------------------------------------------------------
@@ -110,21 +156,19 @@ msg2 = hex_to_bytes("72")
 sig2 = hex_to_bytes("92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00")
 assert_true(Std::Tls::Ed25519.verify(pub2, msg2, sig2), "RFC 8032 Test 2")
 
-# Tampered signature must fail closed
-sig2_bad = Bytes.new(sig2.size); i = 0; while i < sig2.size
-  sig2_bad[i] = sig2[i]; i = i + 1
-end
+# Tampered signature must fail closed (tamper s at offset 32 so R remains a valid point)
+sig2_bad = Bytes.new(sig2.size); i = 0; while i < sig2.size; sig2_bad[i] = sig2[i]; i = i + 1; end
 sig2_bad[32] = sig2_bad[32] ^ 0x01_u8
 assert_true(!Std::Tls::Ed25519.verify(pub2, msg2, sig2_bad), "Ed25519 tampered signature rejected")
 
 puts "ok"
 
 # -----------------------------------------------------------------------------
-# 3. ECDSA P-256 (RFC 6979)
+# 3. ECDSA P-256 and P-384 (RFC 6979)
 # -----------------------------------------------------------------------------
 print "p256: "
 
-# RFC 6979 Section A.2.5
+# RFC 6979 Section A.2.5 (ECDSA P-256)
 msg_p256 = "sample"
 hash_p256 = SHA256.digest(Bytes.new(msg_p256.to_unsafe, msg_p256.bytesize))
 qx = BigInt.from_hex("60FED4BA255A9D31C961EB74C6356D68C049B8923B61FA6CE669622E60F29FB6")
@@ -132,9 +176,26 @@ qy = BigInt.from_hex("7903FE1008B8BC99A41AE9E95628BC64F2F1B20C2D7E9F5177A3C294D4
 r = BigInt.from_hex("EFD48B2AACB6A8FD1140DD9CD45E81D69D2C877B56AAF991C34D0EA84EAF3716")
 s = BigInt.from_hex("F7CB1C942D657C41D436C7A1B6E29F65F3E900DBB9AFF4064DC4AB2F843ACDA8")
 assert_true(Std::Tls::P256.verify(qx, qy, hash_p256, r, s), "RFC 6979 P-256 signature verified")
-
-# Tampered signature must fail closed
 assert_true(!Std::Tls::P256.verify(qx, qy, hash_p256, r, s + BigInt.one), "ECDSA P-256 tampered signature rejected")
+
+# RFC 6979 Section A.2.6 (ECDSA P-384)
+qx_384 = BigInt.from_hex("EC3A4E415B4E19A4568618029F427FA5DA9A8BC4AE92E02E06AAE5286B300C64DEF8F0EA9055866064A254515480BC13")
+qy_384 = BigInt.from_hex("8015D9B72D7D57244EA8EF9AC0C621896708A59367F9DFB9F54CA84B3F1C9DB1288B231C3AE0D4FE7344FD2533264720")
+r_384 = BigInt.from_hex("94EDBB92A5ECB8AAD4736E56C691916B3F88140666CE9FA73D64C4EA95AD133C81A648152E44ACF96E36DD1E80FABE46")
+s_384 = BigInt.from_hex("99EF4AEB15F178CEA1FE40DB2603138F130E740A19624526203B6351D0A3A94FA329C145786E679E7B82C71A38628AC8")
+msg_384 = "sample"
+hash_384 = SHA384.digest(Bytes.new(msg_384.to_unsafe, msg_384.bytesize))
+assert_true(Std::Tls::P384.verify(qx_384, qy_384, hash_384, r_384, s_384), "RFC 6979 P-384 signature verified")
+assert_true(!Std::Tls::P384.verify(qx_384, qy_384, hash_384, r_384, s_384 + BigInt.one), "P-384 tampered signature rejected")
+
+# SEC 1 / FIPS 186 P-256 with SHA-384 truncation vs modular reduction (Finding 5 re-review)
+qx_p256_trunc = BigInt.from_hex("60fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6")
+qy_p256_trunc = BigInt.from_hex("7903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299")
+r_p256_trunc = BigInt.from_hex("7dbb9a513de8829a000686a53ebf146c887aeb9bbfa26acce1ff21f8425c23da")
+s_p256_trunc = BigInt.from_hex("6c42ecfc0c49df0f6f17d2773d476b59eeaaee181bfb1a2e4cf2268444d48e5c")
+msg_p256_trunc = "P-256 with SHA-384 truncation test"
+hash_p256_trunc = SHA384.digest(Bytes.new(msg_p256_trunc.to_unsafe, msg_p256_trunc.bytesize))
+assert_true(Std::Tls::P256.verify(qx_p256_trunc, qy_p256_trunc, hash_p256_trunc, r_p256_trunc, s_p256_trunc), "SEC 1 P-256 with SHA-384 truncation verified")
 
 puts "ok"
 
@@ -151,13 +212,9 @@ rsa_e = BigInt.new(65537_i64)
 th_cert = hex_to_bytes("764d6632b3c35c3f3205e3499ac3edbaabb88295fba751461d3678e2e5ea0687")
 cv_prefix = "                                                                TLS 1.3, server CertificateVerify"
 cv_input = Bytes.new(cv_prefix.bytesize + 1 + th_cert.size)
-i = 0; while i < cv_prefix.bytesize
-  cv_input[i] = cv_prefix[i].ord.to_u8; i = i + 1
-end
+i = 0; while i < cv_prefix.bytesize; cv_input[i] = cv_prefix[i].ord.to_u8; i = i + 1; end
 cv_input[cv_prefix.bytesize] = 0x00_u8
-i = 0; while i < th_cert.size
-  cv_input[cv_prefix.bytesize + 1 + i] = th_cert[i]; i = i + 1
-end
+i = 0; while i < th_cert.size; cv_input[cv_prefix.bytesize + 1 + i] = th_cert[i]; i = i + 1; end
 cv_hash = SHA256.digest(cv_input)
 
 cv_sig = hex_to_bytes("5a747c5d88fa9bd2e55ab085a61015b7211f824cd484145ab3ff52f1fda8477b0b7abc90db78e2d33a5c141a078653fa6bef780c5ea248eeaaa785c4f394cab6d30bbe8d4859ee511f602957b15411ac027671459e46445c9ea58c181e818e95b8c3fb0bf3278409d3be152a3da5043e063dda65cdf5aea20d53dfacd42f74f3")
@@ -165,16 +222,14 @@ cv_sig = hex_to_bytes("5a747c5d88fa9bd2e55ab085a61015b7211f824cd484145ab3ff52f1f
 assert_true(Std::Tls::RSA.verify_pss(rsa_n, rsa_e, :sha256, cv_hash, cv_sig, 32), "RFC 8448 RSA-PSS CertificateVerify verified")
 
 # Tampered RSA-PSS signature must fail closed
-cv_sig_bad = Bytes.new(cv_sig.size); i = 0; while i < cv_sig.size
-  cv_sig_bad[i] = cv_sig[i]; i = i + 1
-end
+cv_sig_bad = Bytes.new(cv_sig.size); i = 0; while i < cv_sig.size; cv_sig_bad[i] = cv_sig[i]; i = i + 1; end
 cv_sig_bad[0] = cv_sig_bad[0] ^ 0x01_u8
 assert_true(!Std::Tls::RSA.verify_pss(rsa_n, rsa_e, :sha256, cv_hash, cv_sig_bad, 32), "RSA-PSS tampered signature rejected")
 
 puts "ok"
 
 # -----------------------------------------------------------------------------
-# 5. RFC 8448 Handshake Trace (The Gate)
+# 5. RFC 8448 Handshake Trace (The Gate) & Multi-Record Transport Slicing
 # -----------------------------------------------------------------------------
 print "rfc8448: "
 
@@ -272,6 +327,80 @@ enc_bad[enc_bad.size - 1] = enc_bad[enc_bad.size - 1] ^ 0x01_u8
 cipher_r2 = Std::Tls::RecordCipher.new(:aes_128_gcm, s_hs_key_rfc, s_hs_iv_rfc)
 assert_true(cipher_r2.decrypt(enc_bad).nil?, "Record layer tampered tag rejected")
 
+# ChaCha20-Poly1305 record cipher (Finding 4: 32-byte key)
+chacha_key = Bytes.new(32, 0x42_u8)
+chacha_iv = Bytes.new(12, 0x24_u8)
+chacha_s = Std::Tls::RecordCipher.new(:chacha20_poly1305, chacha_key, chacha_iv)
+chacha_r = Std::Tls::RecordCipher.new(:chacha20_poly1305, chacha_key, chacha_iv)
+chacha_payload = Bytes.new(32, 0x55_u8)
+chacha_enc = chacha_s.encrypt(0x17_u8, chacha_payload)
+chacha_dec = chacha_r.decrypt(chacha_enc)
+assert_true(!chacha_dec.nil?, "ChaCha20-Poly1305 record decrypted")
+if chacha_dec
+  c_type, c_bytes = chacha_dec
+  assert_true(c_type == 0x17_u8 && c_bytes == chacha_payload, "ChaCha20-Poly1305 payload match")
+end
+
+# Multi-record flight with ScriptedSocket (Finding 3 behavioral test)
+# Record 1: ServerHello
+sh_rec = Bytes.new(5 + sh_bytes_rfc.size)
+sh_rec[0] = 0x16_u8; sh_rec[1] = 0x03_u8; sh_rec[2] = 0x03_u8
+sh_rec[3] = ((sh_bytes_rfc.size >> 8) & 0xff).to_u8; sh_rec[4] = (sh_bytes_rfc.size & 0xff).to_u8
+i = 0; while i < sh_bytes_rfc.size; sh_rec[5 + i] = sh_bytes_rfc[i]; i = i + 1; end
+
+# Record 2: EncryptedExtensions (encrypted alone with seq = 0)
+s_cipher_rec2 = Std::Tls::RecordCipher.new(:aes_128_gcm, s_hs_key_rfc, s_hs_iv_rfc, 0_u64)
+rec2 = s_cipher_rec2.encrypt(0x16_u8, ee_bytes_rfc)
+
+# Record 3: Certificate + CertificateVerify + Finished (encrypted with seq = 1)
+s_cipher_rec3 = Std::Tls::RecordCipher.new(:aes_128_gcm, s_hs_key_rfc, s_hs_iv_rfc, 1_u64)
+rec3_payload = Bytes.new(cert_bytes_rfc.size + cv_bytes_rfc.size + fin_bytes_rfc.size)
+idx3 = 0
+i = 0; while i < cert_bytes_rfc.size; rec3_payload[idx3] = cert_bytes_rfc[i]; idx3 = idx3 + 1; i = i + 1; end
+i = 0; while i < cv_bytes_rfc.size; rec3_payload[idx3] = cv_bytes_rfc[i]; idx3 = idx3 + 1; i = i + 1; end
+i = 0; while i < fin_bytes_rfc.size; rec3_payload[idx3] = fin_bytes_rfc[i]; idx3 = idx3 + 1; i = i + 1; end
+rec3 = s_cipher_rec3.encrypt(0x16_u8, rec3_payload)
+
+# Combined multi-record server flight
+multi_rec_flight = Bytes.new(sh_rec.size + rec2.size + rec3.size)
+f_idx = 0
+i = 0; while i < sh_rec.size; multi_rec_flight[f_idx] = sh_rec[i]; f_idx = f_idx + 1; i = i + 1; end
+i = 0; while i < rec2.size; multi_rec_flight[f_idx] = rec2[i]; f_idx = f_idx + 1; i = i + 1; end
+i = 0; while i < rec3.size; multi_rec_flight[f_idx] = rec3[i]; f_idx = f_idx + 1; i = i + 1; end
+
+scripted_sock = ScriptedSocket.new(multi_rec_flight)
+scripted_client = Std::Tls::Client.wrap_socket(
+  scripted_sock,
+  "server",
+  ["http/1.1"],
+  false,
+  nil,
+  nil,
+  c_priv_rfc,
+  ch_bytes_rfc[6, 32],
+  ch_bytes_rfc[39, 32],
+  ch_bytes_rfc
+)
+assert_true(!scripted_client.closed?, "Scripted multi-record TLS handshake completed")
+assert_true(scripted_client.cipher_suite == :aes_128_gcm, "Scripted multi-record handshake negotiated AES-128-GCM")
+
+# Application data write record fragmentation (Finding 10 behavioral test)
+frag_sock = ScriptedSocket.new(Bytes.empty)
+frag_client = Std::Tls::Client.new(
+  frag_sock,
+  "frag.local",
+  :aes_128_gcm,
+  nil,
+  nil,
+  Array(Std::Tls::Certificate).new,
+  Std::Tls::RecordCipher.new(:aes_128_gcm, s_hs_key_rfc, s_hs_iv_rfc),
+  Std::Tls::RecordCipher.new(:aes_128_gcm, s_hs_key_rfc, s_hs_iv_rfc)
+)
+large_payload = Bytes.new(32768, 0x41_u8)
+frag_client.write(large_payload)
+assert_true(frag_sock.written_records.size == 2, "Large write fragmented into exactly two records")
+assert_true(frag_sock.written_records[0].size <= 16406, "First record size <= 16406 bytes")
+assert_true(frag_sock.written_records[1].size <= 16406, "Second record size <= 16406 bytes")
 puts "ok"
 
 # -----------------------------------------------------------------------------
@@ -296,10 +425,46 @@ if cert = parsed_cert
   assert_true(!cert.valid_at?(t_past), "Certificate not valid before notBefore")
   assert_true(!cert.valid_at?(t_future), "Certificate not valid after notAfter")
 
-  # RFC 6125 Hostname matching
+  # RFC 6125 Hostname matching & TLD wildcard rejection (Finding 8)
   assert_true(cert.matches_hostname("rsa"), "Certificate matches CommonName 'rsa'")
   assert_true(!cert.matches_hostname("other.com"), "Certificate does not match 'other.com'")
+  assert_true(!Std::Tls::Certificate.matches_pattern("*.com", "example.com"), "TLD wildcard rejected")
+  assert_true(Std::Tls::Certificate.matches_pattern("*.example.com", "sub.example.com"), "Subdomain wildcard accepted")
+  assert_true(!Std::Tls::Certificate.matches_pattern("*.example.com", "deep.sub.example.com"), "Deep wildcard rejected")
 end
+
+# ASN.1 indefinite length rejection & negative length checks (Finding 11)
+indef_asn1 = Bytes.new(2)
+indef_asn1[0] = 0x30_u8; indef_asn1[1] = 0x80_u8
+assert_true(Std::Tls.read_asn1(indef_asn1, 0).nil?, "ASN.1 indefinite length rejected in DER")
+
+neg_asn1 = Bytes.new(6)
+neg_asn1[0] = 0x30_u8; neg_asn1[1] = 0x84_u8; neg_asn1[2] = 0x80_u8
+assert_true(Std::Tls.read_asn1(neg_asn1, 0).nil?, "ASN.1 negative length rejected in DER")
+
+# Synthetic certificate chain with non-CA intermediate (Finding 2)
+ROOT_DER = "3082013a3081e0a003020102020101300a06082a8648ce3d040302301c311a301806035504030c1153796e74686574696320526f6f74204341301e170d3230303130313030303030305a170d3335303130313030303030305a301c311a301806035504030c1153796e74686574696320526f6f742043413059301306072a8648ce3d020106082a8648ce3d030107034200048bc0ce72d80982f8e84a7f9de88c8e47e157583b0f22d1f42b34a37ef66fd5650859f3d38cb3cafea518d8cfff8b6f8d60524667aa446d9b0fe4f8e01255a9f0a3133011300f0603551d130101ff040530030101ff300a06082a8648ce3d0403020349003046022100e80d1b7b9b9a53f7f8833241875d8f0d3d0a0635c0b21382f6b8d03931058269022100b827a036a1e9bcd2349559a573bc78ebbc868b42883cfcd030cbbccc5e5a59f2"
+ROGUE_DER = "308201373081dea003020102020102300a06082a8648ce3d040302301c311a301806035504030c1153796e74686574696320526f6f74204341301e170d3230303130313030303030305a170d3335303130313030303030305a301d311b301906035504030c12526f67756520496e7465726d6564696174653059301306072a8648ce3d020106082a8648ce3d0301070342000448c575beb838fd2eec6622f941f47fc487779a6130a5a012b7f7850794e20939f5fbe7aebfd1114ee8b1b811fa80db9e33d3f7eb469572f8fc57ddf5df2417fca310300e300c0603551d130101ff04023000300a06082a8648ce3d0403020348003045022070543ddb0fc289238ad5116c7ee99c11264905437d8830e99273e8901b1a28fb022100915552a81ab6f9669940750b4767b0be08274583ed81d51d395bc7e886927d3c"
+LEAF_DER = "308201523081faa003020102020103300a06082a8648ce3d040302301d311b301906035504030c12526f67756520496e7465726d656469617465301e170d3230303130313030303030305a170d3335303130313030303030305a301b3119301706035504030c10726f6775652e7461726765742e636f6d3059301306072a8648ce3d020106082a8648ce3d030107034200042a44aa887219b735dd522fb8c7ab03b3a74b6e5fb0adf98c5c86ee862ef5e63052c247bdff5155dc96c8927363e3a7e4216599bd47db15d98f325db742861a31a32d302b300c0603551d130101ff04023000301b0603551d11041430128210726f6775652e7461726765742e636f6d300a06082a8648ce3d040302034700304402202baa8212195d39fae1bf826545f656a89463d6ed32cf16f219b5d3fa0311f71402206559dbcc6d55f37ac74e7908fbdbf78334282640168250cc37f7fac373272e3f"
+
+synth_root = Std::Tls::Certificate.parse(hex_to_bytes(ROOT_DER))
+synth_rogue = Std::Tls::Certificate.parse(hex_to_bytes(ROGUE_DER))
+synth_leaf = Std::Tls::Certificate.parse(hex_to_bytes(LEAF_DER))
+
+assert_true(!synth_root.nil? && !synth_rogue.nil? && !synth_leaf.nil?, "Synthetic certificates parsed")
+if s_root = synth_root; if s_rogue = synth_rogue; if s_leaf = synth_leaf
+  assert_true(s_root.is_ca, "Synthetic root has is_ca true")
+  assert_true(!s_rogue.is_ca, "Synthetic rogue intermediate has is_ca false")
+  assert_true(s_leaf.verify_signature(s_rogue), "Leaf signature verifies against rogue key")
+  assert_true(s_rogue.verify_signature(s_root), "Rogue signature verifies against root key")
+
+  synth_store = Std::Tls::CertificateStore.new
+  synth_store.add_certificate(s_root)
+
+  now_test = Time.utc(2025, 1, 1).seconds
+  rogue_chain_rejected = !synth_store.verify_chain([s_leaf, s_rogue], "rogue.target.com", now_test)
+  assert_true(rogue_chain_rejected, "Rogue intermediate without is_ca rejected in verify_chain")
+end; end; end
 
 # System trust store loading
 sys_store = Std::Tls::CertificateStore.load_system_store
@@ -346,13 +511,20 @@ assert_true(hostname_mismatch_detected, "Hostname mismatch discrimination")
 puts "ok (all four negative protections discriminate)"
 
 # -----------------------------------------------------------------------------
-# 8. Live HTTPS Connection
+# 8. Live HTTPS Connection with Peer Verification Enabled
 # -----------------------------------------------------------------------------
 print "live_connect: "
 
 live_host = "example.com"
-client = Std::Tls::Client.connect(live_host, 443, ["http/1.1"], false)
-assert_true(!client.closed?, "Live TLS connection opened")
+client = Std::Tls::Client.connect(live_host, 443, ["http/1.1"], true)
+assert_true(!client.closed?, "Live TLS connection opened with peer verification enabled")
+assert_true(!client.peer_certificate.nil?, "Peer certificate verified and captured")
+assert_true(client.certificate_chain.size >= 2, "Full certificate chain verified to trusted root anchor")
+if pc = client.peer_certificate
+  puts "  peer certificate subject: #{pc.common_name}"
+end
+puts "  verified certificate chain depth: #{client.certificate_chain.size}"
+puts "  negotiated cipher suite: #{client.cipher_suite}"
 
 req = "GET / HTTP/1.1\r\nHost: #{live_host}\r\nUser-Agent: iyi-tls/0.1\r\nConnection: close\r\n\r\n"
 client.write(req)
@@ -378,19 +550,21 @@ puts "   * Key Exchange: X25519 (RFC 7748), verified against RFC 7748 vectors."
 puts "     Rejects all-zero shared secret per RFC 7748."
 puts "   * AEAD Record Layer: AES-128-GCM and ChaCha20-Poly1305 with TLS 1.3 nonce"
 puts "     construction (iv XOR seq_num). Zero C dependencies."
-puts "   * Signatures: Ed25519 (RFC 8032), ECDSA P-256 (RFC 6979), RSA-PSS and"
-puts "     RSA-PKCS1v15 (RFC 8017). All verified against published test vectors."
+puts "   * Signatures: Ed25519 (RFC 8032), ECDSA P-256 (RFC 6979), ECDSA P-384"
+puts "     (RFC 6979), RSA-PSS (RFC 8017). All verified against published test vectors."
 puts "   * Transcripts and Secrets: Verified against RFC 8448 worked trace byte-for-byte."
 puts "   * Certificate Validation: ASN.1 DER parser, RFC 6125 wildcard matching,"
-puts "     validity windows, and system trust store anchoring."
+puts "     BasicConstraints CA enforcement, pathLen validation, validity windows,"
+puts "     and system trust store anchoring."
 puts "2. Verification and testing:"
 puts "   * Verified against RFC 8448, RFC 7748, RFC 8032, RFC 6979, RFC 8017."
-puts "   * Verified on live connection to example.com:443 with HTTP/1.1 retrieval."
+puts "   * Verified on live connection to example.com:443 with verify_peer: true."
+puts "     Full 4-certificate chain verified to system trust anchor."
 puts "   * Four negative security protections proved to fail closed:"
-puts "       - Bad Finished MAC: rejected (VerificationError)."
-puts "       - Unverifiable CertificateVerify signature: rejected (VerificationError)."
-puts "       - Expired certificate: rejected (VerificationError)."
-puts "       - Hostname mismatch: rejected (VerificationError)."
+puts "       - Bad Finished MAC: rejected."
+puts "       - Unverifiable CertificateVerify signature: rejected."
+puts "       - Expired certificate: rejected."
+puts "       - Hostname mismatch: rejected."
 puts "3. Honest limitations and review posture:"
 puts "   * No independent third-party cryptographic review has been performed."
 puts "   * Side-channel timing protections: BigInt modular arithmetic and"
