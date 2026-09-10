@@ -34,112 +34,21 @@
 #   floats: fractional decimal places, correctly rounded (half away from zero).
 #   strings: maximum characters to include (truncated if longer).
 
-struct Tuple
-  def size : Int32
-    {{ T.size }}
-  end
+# Where it lives:
+# Outside the prelude, for the reason `socket` is: nothing in `src/iyi/`
+# calls `sprintf`, and a program that formats no string should not carry
+# the engine that would. `import std/format` brings `sprintf`, `printf`,
+# `String.format` and `String#%` with it, and the reopenings below travel
+# with the import the way `std/text`'s do (SPEC.md III.9).
 
-  def [](index : Int32)
-    {% for i in 0...T.size %}
-      return self[{{i}}] if index == {{i}}
-    {% end %}
-    raise "too few arguments for format string"
-  end
-end
+module std/format
 
-struct UInt8
-  def to_s : String
-    to_i32.to_s
-  end
-
-  def to_s(base : Int32) : String
-    to_i32.to_s(base)
-  end
-end
-
-struct UInt64
-  def //(other : UInt64) : UInt64
-    raise "division by zero" if other == 0_u64
-    unsafe_div(other)
-  end
-
-  def %(other : UInt64) : UInt64
-    raise "modulo by zero" if other == 0_u64
-    unsafe_mod(other)
-  end
-
-  def to_s : String
-    to_s(10)
-  end
-
-  def to_s(base : Int32) : String
-    raise "base out of range" if base < 2 || base > 36
-    return "0" if self == 0_u64
-
-    radix = base.to_u64
-    digits = [] of Int32
-    temp = self
-    while temp > 0_u64
-      rem = (temp % radix).to_i64.to_i32
-      digits << rem
-      temp = temp // radix
-    end
-
-    bytesize = digits.size
-    String.new(bytesize) do |buffer|
-      at = 0
-      rev = bytesize - 1
-      while rev >= 0
-        d = digits[rev]
-        buffer[at] = d < 10 ? (48 + d).to_u8 : (87 + d).to_u8
-        at = at + 1
-        rev = rev - 1
-      end
-    end
-  end
-end
-
-struct Int64
-  def to_s : String
-    to_s(10)
-  end
-
-  # Writes digits backward using division on negative numbers so that
-  # Int64::MIN (-9223372036854775808) does not overflow negation.
-  def to_s(base : Int32) : String
-    raise "base out of range" if base < 2 || base > 36
-    return "0" if self == 0_i64
-
-    radix = base.to_i64
-    negative = self < 0_i64
-    digits = [] of Int32
-    temp = self
-    while temp != 0_i64
-      rem = temp % radix
-      d = rem < 0_i64 ? (0_i64 - rem).to_i32 : rem.to_i32
-      digits << d
-      temp = temp // radix
-    end
-
-    bytesize = negative ? digits.size + 1 : digits.size
-    String.new(bytesize) do |buffer|
-      at = 0
-      if negative
-        buffer[0] = 45_u8
-        at = 1
-      end
-      rev = digits.size - 1
-      while rev >= 0
-        d = digits[rev]
-        buffer[at] = d < 10 ? (48 + d).to_u8 : (87 + d).to_u8
-        at = at + 1
-        rev = rev - 1
-      end
-    end
-  end
-end
-
-module IyiFloatText
+# The prelude's own module, reopened: `bits_of` and the rest of the bit
+# arithmetic are `src/iyi/float.iyi`'s, which is where `Float64#to_s`
+# needs them. What this file adds is the *formatted* text - fixed and
+# scientific notation with a width and a precision - which nothing in the
+# prelude asks for.
+module ::IyiFloatText
   # Extracts Dragon4 digits for a non-zero, finite double.
   # Returns {digits_pointer, count, k} where value = 0.d1 d2 ... dn * 10^k.
   def self.dragon4(value : Float64) : {Pointer(UInt8), Int32, Int32}
@@ -390,7 +299,7 @@ module IyiFloatText
   end
 end
 
-module IyiFormat
+module ::IyiFormat
   def self.format_int64(val : Int64, base : Int32, uppercase : Bool, signed : Bool, minus : Bool, plus : Bool, space : Bool, zero : Bool, hash : Bool, width : Int32, precision : Int32) : String
     is_negative = val < 0_i64
 
@@ -783,7 +692,7 @@ module IyiFormat
   end
 end
 
-def sprintf(format_string : String, *args : *T) : String forall T
+pub def sprintf(format_string : String, *args : *T) : String forall T
   index = 0
   format_bytesize = format_string.bytesize
   format_ptr = format_string.to_unsafe
@@ -866,6 +775,11 @@ def sprintf(format_string : String, *args : *T) : String forall T
     verb = format_ptr[index].unsafe_chr
     index = index + 1
 
+    # Asked here rather than left to `Tuple#[]`, whose message is about an
+    # index: a caller of `sprintf` wrote a specifier and no argument for it,
+    # and that is what the panic should say.
+    raise "too few arguments for format string" if arg_index >= args.size
+
     val = args[arg_index]
     arg_index = arg_index + 1
 
@@ -876,24 +790,28 @@ def sprintf(format_string : String, *args : *T) : String forall T
   result
 end
 
-def printf(format_string : String, *args : *T) : Nil forall T
+pub def printf(format_string : String, *args : *T) : Nil forall T
   print sprintf(format_string, *args)
 end
 
-class String
+# Qualified, because a reopening is not inside the module that writes it:
+# `::String` is the prelude's type wherever this file is read, so a bare
+# `sprintf` in one of these bodies is a name `String` does not have -
+# `undefined method 'sprintf' for String.class`, which is R-2b saying so.
+class ::String
   def self.format(format_string : String, *args : *T) : String forall T
-    sprintf(format_string, *args)
+    Std::Format.sprintf(format_string, *args)
   end
 
   def %(args : Tuple) : String
-    sprintf(self, *args)
+    Std::Format.sprintf(self, *args)
   end
 
   def %(arg) : String
-    sprintf(self, arg)
+    Std::Format.sprintf(self, arg)
   end
 
   def %(*args : *T) : String forall T
-    sprintf(self, *args)
+    Std::Format.sprintf(self, *args)
   end
 end

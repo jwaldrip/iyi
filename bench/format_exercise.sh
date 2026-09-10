@@ -72,13 +72,15 @@ echo "== proving the checks can fail when formatting is broken"
 
 prove_fails() {
   local label="$1" dir="$2" phrase="$3" sed_script="$4"
-  mkdir -p "$WORK/$dir/iyi"
-  cp -R "$REPO/src/iyi/." "$WORK/$dir/iyi/"
-  sed -e "$sed_script" "$REPO/src/iyi/format.iyi" > "$WORK/$dir/iyi/format.iyi"
+  # The library the program imports, not the prelude: `std/format` is a
+  # module now, so the patched copy is `std/` and `IYI_PATH` finds it first.
+  mkdir -p "$WORK/$dir/std"
+  cp -R "$REPO/src/std/." "$WORK/$dir/std/"
+  sed -e "$sed_script" "$REPO/src/std/format.iyi" > "$WORK/$dir/std/format.iyi"
   # A patch that matches nothing leaves the library intact, and an intact
   # library passes, which reads as "this check cannot fail" when the truth is
   # that nothing was broken to test it. Line-anchored patches drift.
-  if cmp -s "$REPO/src/iyi/format.iyi" "$WORK/$dir/iyi/format.iyi"; then
+  if cmp -s "$REPO/src/std/format.iyi" "$WORK/$dir/std/format.iyi"; then
     echo "  $label: the patch changed nothing, so this proves nothing"
     status=1
     return

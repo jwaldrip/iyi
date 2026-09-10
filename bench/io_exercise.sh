@@ -25,7 +25,10 @@ run_case() {
     status=1
     return
   fi
-  "$WORK/$name" </dev/null >"$WORK/$name.out" 2>&1
+  # From the scratch directory, because the program writes its two files
+  # into the working one: run from the repository they landed in the
+  # repository, and two of them were committed before anybody noticed.
+  (cd "$WORK" && "$WORK/$name") </dev/null >"$WORK/$name.out" 2>&1
   local exit_code=$?
   if [ "$exit_code" -ne 0 ]; then
     echo "  $label: failed with exit code $exit_code"
@@ -61,7 +64,7 @@ prove_fails() {
     status=1
     return
   fi
-  "$WORK/$dir/program" </dev/null >"$WORK/$dir/out" 2>&1
+  (cd "$WORK/$dir" && "$WORK/$dir/program") </dev/null >"$WORK/$dir/out" 2>&1
   local exit_code=$?
   if [ "$exit_code" -eq 0 ]; then
     echo "  $label: the exercise still passed, so it does not test this"

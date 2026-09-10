@@ -14,8 +14,23 @@ class Iyi::CodeGenVisitor
   # undefined in the dynamic symbol table — a name on the link line the
   # dependency floor (SPEC.md III.9) counts, for a call that is never
   # made. bench/thread_floor.sh is where the difference is measured.
+  #
+  # Windows is the exception, and it is not a tuning choice. COFF has no
+  # local-exec: a thread-local's address comes from `_tls_index` and the TLS
+  # array the loader hangs off the TEB, registered by `__tls_used`. Forced
+  # local-exec, LLVM put the datum in `.tls$` and read it as an ordinary
+  # global - the same address in every thread, and an address the C runtime
+  # owns. `bench/tls_probe.iyi` printed `value wrong` for exactly that, and
+  # once anything shifted the layout the process died at exit with
+  # `0xC0000005`, in the runtime's own TLS teardown, after the program had
+  # finished. The general model is the one Windows has.
   def declare_thread_local(global : LLVM::Value) : Nil
-    global.thread_local_mode = LLVM::ThreadLocalMode::LocalExec
+    global.thread_local_mode =
+      if @program.has_flag?("win32")
+        LLVM::ThreadLocalMode::GeneralDynamic
+      else
+        LLVM::ThreadLocalMode::LocalExec
+      end
   end
 
   def declare_class_var(class_var : MetaTypeVar)

@@ -1,6 +1,12 @@
 # Exercise program for IyiIO: flush, short reads, buffer boundaries, and EOF.
 #
-#   ./bin/iyi run bench/io_exercise.iyi
+#   cd "$(mktemp -d)" && iyi run <repo>/bench/io_exercise.iyi
+#
+# From a scratch directory, because the two files below are written into
+# the working one: the prelude has no `File.tempname` and no `ENV`, so a
+# program cannot find a scratch directory for itself. `bench/io_exercise.sh`
+# runs it from one; run by hand in the repository it leaves them there, and
+# two of them were committed before anybody noticed.
 #
 # Each check raises on a wrong answer, and a panic exits non-zero,
 # which bench/io_exercise.sh keys on to prove checks can fail.
