@@ -13,6 +13,9 @@
 #   5. Record layer tampered tag rejection
 #   6. Certificate validity expiration enforcement
 #   7. Hostname mismatch refusal
+#   8. BasicConstraints CA enforcement
+#   9. TLD wildcard restriction enforcement
+#  10. ASN.1 indefinite length rejection
 #
 # Exits non-zero if any check fails.
 
@@ -154,6 +157,20 @@ prove_fails "certificate validity expiration bypassed" cert_validity \
 prove_fails "hostname mismatch accepted" hostname_mismatch \
   "assertion failed: Certificate does not match 'other.com'" "tls.iyi" \
   's/return true if pattern == target/return true/'
+
+# 8. BasicConstraints CA enforcement bypassed (Finding 2)
+prove_fails "basicConstraints CA enforcement bypassed" basic_constraints_bypass \
+  "assertion failed: Trust store root certificate has is_ca true" "tls.iyi" \
+  's/is_ca = !bc_c.value.empty? && bc_c.value\[0\] != 0_u8/is_ca = false/'
+# 9. TLD wildcard restriction bypassed (Finding 8)
+prove_fails "TLD wildcard restriction bypassed" tld_wildcard_bypass \
+  "assertion failed: TLD wildcard rejected" "tls.iyi" \
+  's/return false unless has_dot/# bypass/'
+
+# 10. ASN.1 indefinite length rejection bypassed (Finding 11)
+prove_fails "ASN.1 indefinite length rejection bypassed" asn1_indef_bypass \
+  "assertion failed: ASN.1 indefinite length rejected in DER" "tls.iyi" \
+  's/return nil if num_bytes == 0/# bypass/'
 echo
 if [ "$status" -eq 0 ]; then
   echo "all std_tls_exercise checks passed in plain and release modes, with every failure proof active"

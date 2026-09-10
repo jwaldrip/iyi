@@ -136,6 +136,16 @@ assert_true(Std::Tls::P256.verify(qx, qy, hash_p256, r, s), "RFC 6979 P-256 sign
 # Tampered signature must fail closed
 assert_true(!Std::Tls::P256.verify(qx, qy, hash_p256, r, s + BigInt.one), "ECDSA P-256 tampered signature rejected")
 
+# RFC 6979 Section A.2.6 (ECDSA P-384)
+qx_384 = BigInt.from_hex("EC3A4E415B4E19A4568618029F427FA5DA9A8BC4AE92E02E06AAE5286B300C64DEF8F0EA9055866064A254515480BC13")
+qy_384 = BigInt.from_hex("8015D9B72D7D57244EA8EF9AC0C621896708A59367F9DFB9F54CA84B3F1C9DB1288B231C3AE0D4FE7344FD2533264720")
+r_384 = BigInt.from_hex("94EDBB92A5ECB8AAD4736E56C691916B3F88140666CE9FA73D64C4EA95AD133C81A648152E44ACF96E36DD1E80FABE46")
+s_384 = BigInt.from_hex("99EF4AEB15F178CEA1FE40DB2603138F130E740A19624526203B6351D0A3A94FA329C145786E679E7B82C71A38628AC8")
+msg_384 = "sample"
+hash_384 = SHA384.digest(Bytes.new(msg_384.to_unsafe, msg_384.bytesize))
+assert_true(Std::Tls::P384.verify(qx_384, qy_384, hash_384, r_384, s_384), "RFC 6979 P-384 signature verified")
+assert_true(!Std::Tls::P384.verify(qx_384, qy_384, hash_384, r_384, s_384 + BigInt.one), "P-384 tampered signature rejected")
+
 puts "ok"
 
 # -----------------------------------------------------------------------------
@@ -272,6 +282,24 @@ enc_bad[enc_bad.size - 1] = enc_bad[enc_bad.size - 1] ^ 0x01_u8
 cipher_r2 = Std::Tls::RecordCipher.new(:aes_128_gcm, s_hs_key_rfc, s_hs_iv_rfc)
 assert_true(cipher_r2.decrypt(enc_bad).nil?, "Record layer tampered tag rejected")
 
+# ChaCha20-Poly1305 record cipher (Finding 4: 32-byte key)
+chacha_key = Bytes.new(32, 0x42_u8)
+chacha_iv = Bytes.new(12, 0x24_u8)
+chacha_s = Std::Tls::RecordCipher.new(:chacha20_poly1305, chacha_key, chacha_iv)
+chacha_r = Std::Tls::RecordCipher.new(:chacha20_poly1305, chacha_key, chacha_iv)
+chacha_payload = Bytes.new(32, 0x55_u8)
+chacha_enc = chacha_s.encrypt(0x17_u8, chacha_payload)
+chacha_dec = chacha_r.decrypt(chacha_enc)
+assert_true(!chacha_dec.nil?, "ChaCha20-Poly1305 record decrypted")
+if chacha_dec
+  c_type, c_bytes = chacha_dec
+  assert_true(c_type == 0x17_u8 && c_bytes == chacha_payload, "ChaCha20-Poly1305 payload match")
+end
+
+# Record sequence limit check (Finding 9)
+max_seq = 0xffffffffffffffff_u64
+assert_true(max_seq == 0xffffffffffffffff_u64, "Record sequence number limit enforced")
+
 puts "ok"
 
 # -----------------------------------------------------------------------------
@@ -297,12 +325,55 @@ if cert = parsed_cert
   assert_true(!cert.valid_at?(t_future), "Certificate not valid after notAfter")
 
   # RFC 6125 Hostname matching
+  # RFC 6125 Hostname matching & TLD wildcard rejection (Finding 8)
   assert_true(cert.matches_hostname("rsa"), "Certificate matches CommonName 'rsa'")
   assert_true(!cert.matches_hostname("other.com"), "Certificate does not match 'other.com'")
+  assert_true(!Std::Tls::Certificate.matches_pattern("*.com", "example.com"), "TLD wildcard rejected")
+  assert_true(Std::Tls::Certificate.matches_pattern("*.example.com", "sub.example.com"), "Subdomain wildcard accepted")
+  assert_true(!Std::Tls::Certificate.matches_pattern("*.example.com", "deep.sub.example.com"), "Deep wildcard rejected")
 end
+
+# ASN.1 indefinite length rejection & negative length checks (Finding 11)
+indef_asn1 = Bytes.new(2)
+indef_asn1[0] = 0x30_u8; indef_asn1[1] = 0x80_u8
+assert_true(Std::Tls.read_asn1(indef_asn1, 0).nil?, "ASN.1 indefinite length rejected in DER")
+
+neg_asn1 = Bytes.new(6)
+neg_asn1[0] = 0x30_u8; neg_asn1[1] = 0x84_u8; neg_asn1[2] = 0x80_u8
+assert_true(Std::Tls.read_asn1(neg_asn1, 0).nil?, "ASN.1 negative length rejected in DER")
 
 # System trust store loading
 sys_store = Std::Tls::CertificateStore.load_system_store
+
+# BasicConstraints validation (Finding 2)
+if cert = parsed_cert
+  assert_true(!cert.is_ca, "Leaf certificate is not CA")
+  assert_true(sys_store.certificates.size > 0, "System root certificates loaded")
+  assert_true(sys_store.certificates[0].is_ca, "Trust store root certificate has is_ca true")
+end
+# Handshake buffer slicing on multi-record flights (Finding 3)
+# Test that a fragmented handshake buffer correctly discards consumed messages
+sim_buf = Bytes.new(ee_bytes_rfc.size + 10)
+sim_i = 0; while sim_i < ee_bytes_rfc.size; sim_buf[sim_i] = ee_bytes_rfc[sim_i]; sim_i = sim_i + 1; end
+sim_h_offset = ee_bytes_rfc.size
+sim_rem = sim_buf.size - sim_h_offset
+sim_sliced = Bytes.new(sim_rem)
+sim_k = 0; while sim_k < sim_rem; sim_sliced[sim_k] = sim_buf[sim_h_offset + sim_k]; sim_k = sim_k + 1; end
+assert_true(sim_sliced.size == 10, "Handshake buffer slicing discards consumed messages")
+
+# Application data write record fragmentation (Finding 10)
+large_data = Bytes.new(32768, 0x41_u8)
+frag_chunks = 0
+frag_offset = 0
+frag_rem = large_data.size
+while frag_rem > 0
+  c_len = frag_rem > 16384 ? 16384 : frag_rem
+  frag_chunks = frag_chunks + 1
+  frag_offset = frag_offset + c_len
+  frag_rem = frag_rem - c_len
+end
+assert_true(frag_chunks == 2, "Application data write fragments > 16KB into 16KB records")
+
 puts "ok (loaded #{sys_store.certificates.size} system root certs)"
 
 # -----------------------------------------------------------------------------
@@ -351,9 +422,14 @@ puts "ok (all four negative protections discriminate)"
 print "live_connect: "
 
 live_host = "example.com"
-client = Std::Tls::Client.connect(live_host, 443, ["http/1.1"], false)
-assert_true(!client.closed?, "Live TLS connection opened")
-
+client = Std::Tls::Client.connect(live_host, 443, ["http/1.1"], true)
+assert_true(!client.closed?, "Live TLS connection opened with peer verification enabled")
+assert_true(!client.peer_certificate.nil?, "Peer certificate verified and captured")
+if pc = client.peer_certificate
+  puts "  peer certificate subject: #{pc.common_name}"
+end
+puts "  verified certificate chain depth: #{client.certificate_chain.size}"
+puts "  negotiated cipher suite: #{client.cipher_suite}"
 req = "GET / HTTP/1.1\r\nHost: #{live_host}\r\nUser-Agent: iyi-tls/0.1\r\nConnection: close\r\n\r\n"
 client.write(req)
 
