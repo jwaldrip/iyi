@@ -2511,7 +2511,7 @@ pub class QuicTlsContext
     @server_credentials : QuicServerCredentials? = nil,
     @verification_time : Int64? = nil,
   )
-    @ca_store = ca_store || CertificateStore.load_system_store
+    @ca_store = ca_store || (@role == ConnectionRole::CLIENT && @hostname.size > 0 ? CertificateStore.load_system_store : CertificateStore.new)
     @peer_tp = nil
     @peer_cert = nil
     @peer_chain = [] of Certificate
@@ -3218,14 +3218,15 @@ pub class QuicEndpoint
       i = i + 1
     end
 
-    @socket.read_timeout = timeout_ms
-    dgram = @socket.receive_datagram?
     count = 0
-    while !dgram.nil?
-      count = count + 1
-      dispatch_datagram(dgram, current_time)
-      @socket.read_timeout = 2
+    if @socket.poll_read(timeout_ms)
       dgram = @socket.receive_datagram?
+      while !dgram.nil?
+        count = count + 1
+        dispatch_datagram(dgram, current_time)
+        break unless @socket.poll_read(0)
+        dgram = @socket.receive_datagram?
+      end
     end
     count
   end

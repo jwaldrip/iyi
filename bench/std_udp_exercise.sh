@@ -163,7 +163,7 @@ prove_fails "receive timeout broken" bad_timeout "cannot set read timeout" \
 
 # 7. Broken poll_read (returns false when packet is waiting)
 prove_fails "poll_read broken" bad_poll "poll_read: expected true with packet waiting" \
-  's/nev > 0/false/'
+  's/UdpSocket\.__sys_poll_read(@fd, timeout_ms)/false/'
 
 echo
 if [ "$status" -eq 0 ]; then
