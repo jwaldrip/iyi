@@ -1256,12 +1256,20 @@ pub class Server
   @socket : IyiSocket?
   @stopped : Bool
   @active_transports : Array(Transport)
+  {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+    @conn_chan : Channel(IyiSocket)?
+    @group : IyiGroup?
+  {% end %}
 
   def initialize(@host : String = "127.0.0.1", @port : Int32 = 0, &handler : Request -> Response)
     @handler = handler
     @socket = nil
     @stopped = false
     @active_transports = [] of Transport
+    {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+      @conn_chan = nil
+      @group = nil
+    {% end %}
   end
 
   def initialize(@host : String = "127.0.0.1", @port : Int32 = 0)
@@ -1269,6 +1277,10 @@ pub class Server
     @socket = nil
     @stopped = false
     @active_transports = [] of Transport
+    {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+      @conn_chan = nil
+      @group = nil
+    {% end %}
   end
 
   def stopped? : Bool
@@ -1300,6 +1312,12 @@ pub class Server
     reader = BufferedTransportReader.new(transport)
 
     while !@stopped && !transport.closed?
+      {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+        if transport.is_a?(TcpTransport)
+          wait_res = wait_readable(transport.socket.to_unsafe)
+          break if wait_res.is_a?(Cancelled)
+        end
+      {% end %}
       req_res = reader.read_request
       case req_res
       in Nil
@@ -1372,7 +1390,56 @@ pub class Server
     end
   end
 
+  {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+    # Native concurrent server using III.4 structured concurrency runtime
+    def serve(concurrency : Int32 = 16) : Nil
+      sock = @socket
+      raise "server must call listen before serve" if sock.nil? || sock.closed?
+
+      conn_chan = Channel(IyiSocket).new(concurrency)
+      @conn_chan = conn_chan
+
+      group do |g|
+        @group = g
+        concurrency.times do
+          g.spawn do
+            loop do
+              case client_sock = conn_chan.receive
+              in IyiSocket
+                trans = TcpTransport.new(client_sock)
+                track_transport(trans)
+                handle_connection(trans)
+              in ChannelClosed
+                break
+              in Cancelled
+                break
+              end
+            end
+            0
+          end
+        end
+
+        g.spawn do
+          while !@stopped
+            break if sock.closed?
+            wait_readable(sock.to_unsafe)
+            break if sock.closed? || @stopped
+            client_sock = sock.accept
+            if @stopped || client_sock.closed? || sock.closed?
+              client_sock.close unless client_sock.closed?
+              break
+            end
+            conn_chan.send(client_sock)
+          end
+          conn_chan.close
+          0
+        end
+      end
+    end
+  {% end %}
+
   def stop : Nil
+    return if @stopped
     @stopped = true
     if sock = @socket
       sock.close unless sock.closed?
@@ -1381,6 +1448,14 @@ pub class Server
       trans.close unless trans.closed?
     end
     @active_transports = [] of Transport
+    {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+      if cc = @conn_chan
+        cc.close
+      end
+      if grp = @group
+        grp.cancel_children
+      end
+    {% end %}
   end
 
   def close : Nil

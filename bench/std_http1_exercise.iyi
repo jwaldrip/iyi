@@ -284,27 +284,23 @@ end
 # --- 100-Continue Exchange: Interactive Streaming Without Deadlock ---
 
 def test_100_continue_exchange : Nil
-  # 1. Interactive Server Test:
+  # Interactive Server Test:
   # The server MUST emit 100 Continue upon reading headers, BEFORE calling read_bytes!
   server = Server.new do |req|
     Response.new(200, body: "server received body: " + req.body)
   end
 
-  # Test with mock transport: provide headers first
   mock = MockTransport.new
   mock.in_buffer = "POST /upload HTTP/1.1\r\nHost: localhost\r\nExpect: 100-continue\r\nContent-Length: 11\r\n\r\n"
 
-  # Reader reads request: since headers have Expect: 100-continue, it writes 100 Continue to transport
   reader = BufferedTransportReader.new(mock)
-
-  # In another thread or simulation: feed the body ONLY AFTER 100 Continue was emitted
   mock.in_buffer = mock.in_buffer + "hello world"
   req = reader.read_request.as(Request)
 
   raise "100-continue missing in output" unless mock.out_buffer.includes?("HTTP/1.1 100 Continue\r\n\r\n")
   raise "body was not read after 100-continue" unless req.body == "hello world"
 
-  # 3. Client Side Test: client with Expect: 100-continue sends body after 100
+  # Client Side Test: client with Expect: 100-continue sends body after 100
   client_mock = MockTransport.new
   client_mock.in_buffer = "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
   client = Client.new(transport: client_mock)
@@ -414,7 +410,6 @@ def test_redirects : Nil
   resp_sec = client_redir.execute(req_sec, "http://example.com/secret")
   raise "redirect arrival failed" unless resp_sec.body == "arrived"
 
-  # Verify outgoing buffer on other.com did NOT leak Authorization or Cookie, and has updated Host
   raise "Host header desync on redirect" unless mock_redir.out_buffer.includes?("Host: other.com")
   lines = mock_redir.out_buffer.split("\r\n")
   second_req_started = false
@@ -514,20 +509,90 @@ def test_socket_round_trip : Nil
   client_trans3 = TcpTransport.connect("127.0.0.1", port)
   req3 = Request.new("GET", "/close-me")
   req3.headers["Host"] = "127.0.0.1:" + port.to_s
-  req3.headers["Connection"] = "keep-alive" # Client asks keep-alive
+  req3.headers["Connection"] = "keep-alive"
   client_trans3.write(req3.serialize.as(String))
   server.accept_one
 
   reader3 = BufferedTransportReader.new(client_trans3)
   resp3 = reader3.read_response("GET").as(Response)
   raise "handler close header ignored" unless resp3.headers.includes_word?("Connection", "close")
-  # Transport should be closed by server
   sleep_chunk = client_trans3.read(16)
   raise "server did not close connection on handler Connection: close" unless sleep_chunk.empty?
 
   server.stop
   puts "  socket roundtrip: ephemeral port bind (" + port.to_s + "), GET, POST, and handler Connection: close verified"
 end
+
+# --- Concurrent Connection Overlap Proof (Finding 12) ---
+
+{% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+  def test_concurrent_connection_overlap : Nil
+    server = Server.new("127.0.0.1", 0)
+
+    hold_started = Channel(Int32).new(1)
+    release_hold = Channel(Int32).new(1)
+    hold_done = Channel(Int32).new(1)
+
+    server.handler = ->(req : Request) {
+      if req.target == "/hold"
+        hold_started.send(1)
+        release_hold.receive
+        Response.new(200, body: "hold-released")
+      elsif req.target == "/fast"
+        Response.new(200, body: "fast-ok")
+      else
+        Response.new(404, body: "not found")
+      end
+    }
+
+    server.listen
+    port = server.port
+
+    group do |g|
+      # 1. Concurrent server runner
+      g.spawn do
+        server.serve(4)
+        0
+      end
+
+      # 2. Connection 1 (held open on keep-alive)
+      g.spawn do
+        c1 = TcpTransport.connect("127.0.0.1", port)
+        c1.write("GET /hold HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n")
+
+        wait_readable(c1.socket.to_unsafe)
+        reader1 = BufferedTransportReader.new(c1)
+        resp1 = reader1.read_response("GET").as(Response)
+        raise "hold response wrong" unless resp1.body == "hold-released"
+        c1.close
+        hold_done.send(1)
+        0
+      end
+
+      # 3. Connection 2 (fast request completed while connection 1 is actively held)
+      g.spawn do
+        hold_started.receive # ensure connection 1 is actively held by the server!
+        c2 = TcpTransport.connect("127.0.0.1", port)
+        c2.write("GET /fast HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        wait_readable(c2.socket.to_unsafe)
+        reader2 = BufferedTransportReader.new(c2)
+        resp2 = reader2.read_response("GET").as(Response)
+        raise "fast response wrong" unless resp2.body == "fast-ok"
+        c2.close
+
+        # Release connection 1 now that connection 2 has proven overlapping execution!
+        release_hold.send(1)
+
+        # Wait for connection 1 to finish reading
+        hold_done.receive
+        server.stop
+        0
+      end
+    end
+
+    puts "  concurrent overlap: overlapping connection execution and structured shutdown verified"
+  end
+{% end %}
 
 # --- CONNECT Tunnel Response (RFC 9110 §6.4.1) ---
 
@@ -547,15 +612,36 @@ end
 # --- CRLF Injection Defense ---
 
 def test_crlf_injection_defense : Nil
-  # Test CRLF in status_message
   crlf_err1 = Std::Http1.validate_no_crlf("OK\r\nInjected: evil", "status message")
   raise "CRLF in status message not detected" if crlf_err1.nil?
 
-  # Test CRLF in target
   crlf_err2 = Std::Http1.validate_no_crlf("/path\r\nInjected: evil", "request target")
   raise "CRLF in target not detected" if crlf_err2.nil?
 
   puts "  crlf injection: status message and request line CRLF injection validation verified"
+end
+
+# --- Strict Public Parser Surface (Finding 17) ---
+
+def test_strict_public_parser : Nil
+  # Verify Std::Http1.parse_request strictly rejects bare LF where CRLF required
+  bare_lf_req = "GET / HTTP/1.1\nHost: localhost\r\n\r\n"
+  res_p1 = Std::Http1.parse_request(bare_lf_req)
+  raise "Std::Http1.parse_request permitted bare LF" unless res_p1.is_a?(HttpError)
+  raise "wrong error for parse_request bare LF" unless res_p1.message.includes?("bare LF not permitted")
+
+  # Verify Std::Http1.parse_request rejects whitespace before colon
+  ws_colon_req = "GET / HTTP/1.1\r\nHost : localhost\r\n\r\n"
+  res_p2 = Std::Http1.parse_request(ws_colon_req)
+  raise "Std::Http1.parse_request permitted whitespace before colon" unless res_p2.is_a?(HttpError)
+
+  # Verify Std::Http1.parse_response strictly rejects bare LF
+  bare_lf_resp = "HTTP/1.1 200 OK\nContent-Length: 0\r\n\r\n"
+  res_p3 = Std::Http1.parse_response(bare_lf_resp)
+  raise "Std::Http1.parse_response permitted bare LF" unless res_p3.is_a?(HttpError)
+  raise "wrong error for parse_response bare LF" unless res_p3.message.includes?("bare LF not permitted")
+
+  puts "  strict public parser: Std::Http1.parse_request/parse_response strictly enforce RFC 9112 framing"
 end
 
 # --- Real Network Page Fetch ---
@@ -583,8 +669,12 @@ def main : Nil
   test_redirects
   test_content_encoding
   test_socket_round_trip
+  {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+    test_concurrent_connection_overlap
+  {% end %}
   test_connect_tunnel_response
   test_crlf_injection_defense
+  test_strict_public_parser
   test_real_network_fetch
   puts "all std/http1 checks passed"
 end
