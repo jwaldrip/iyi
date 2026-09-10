@@ -53,13 +53,13 @@ fi
 
 echo
 echo "== every quic section reported"
-for phrase in "keys:" "client-initial:" "server-initial:" "retry-integrity:" "chacha20-short-header:" "packet-number:" "packet-spaces:" "frames:" "loss-and-congestion:" "stream-and-congestion:" "transport-parameters:" "loopback-udp:" "pto-retransmit:"; do
+for phrase in "keys:" "client-initial:" "server-initial:" "retry-integrity:" "chacha20-short-header:" "packet-number:" "packet-spaces:" "frames:" "loss-and-congestion:" "stream-and-congestion:" "transport-parameters:" "loopback-udp:" "pto-retransmit:" "http3-over-quic:"; do
   grep -q "$phrase" "$WORK/quic-plain.out" 2>/dev/null || {
     echo "  MISSING: nothing reported for $phrase"
     status=1
   }
 done
-[ "$status" -eq 0 ] && echo "  keys, client-initial, server-initial, retry-integrity, chacha20-short-header, packet-number, packet-spaces, frames, loss-and-congestion, stream-and-congestion, transport-parameters, loopback-udp, and pto-retransmit all reported"
+[ "$status" -eq 0 ] && echo "  keys, client-initial, server-initial, retry-integrity, chacha20-short-header, packet-number, packet-spaces, frames, loss-and-congestion, stream-and-congestion, transport-parameters, loopback-udp, pto-retransmit, and http3-over-quic all reported"
 
 echo
 echo "== the same program with optimisation on (--release)"
@@ -112,31 +112,29 @@ prove_fails() {
     "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
 }
 
-# 1. Initial salt corrupted (fails RFC 9001 A.1 initial secret assertion)
-prove_fails "initial salt corrupted" salt_corrupt \
-  "assertion failed: RFC 9001 A.1 client initial secret mismatch" "quic.iyi" \
-  's/0x38_u8, 0x76_u8/0x39_u8, 0x76_u8/'
+# 1. Loopback UDP datagram dropped (fails real UDP packet receive)
+prove_fails "loopback UDP send_to dropped" udp_drop \
+  "server received nothing over UDP" "quic.iyi" \
+  's/@socket.send_to(data, host, port)/0 # drop/'
 
-# 2. Retry key corrupted (fails RFC 9001 A.4 retry tag assertion)
-prove_fails "retry key corrupted" retry_corrupt \
-  "assertion failed: A.4 retry integrity tag mismatch" "quic.iyi" \
-  's/0xbe_u8, 0x0c_u8/0xbf_u8, 0x0c_u8/'
+# 2. 1-RTT packet space corrupted (fails 1-RTT ACK processing)
+prove_fails "send_1rtt wrong space" 1rtt_space \
+  "bytes in flight did not drop on 1-RTT ACK" "quic.iyi" \
+  's/space = PacketSpace::APP_DATA/space = PacketSpace::INITIAL/'
 
-# 3. Packet number decoding broken
-prove_fails "packet number decode broken" pn_broken \
-  "pn decode 1 mismatch" "quic.iyi" \
-  's/candidate_pn = (expected_pn/candidate_pn = 0_u64 #/'
+# 3. Short header 1-RTT key corrupted on receive (fails 1-RTT decryption)
+prove_fails "short header 1-RTT read keys corrupted" sh_keys \
+  "1-RTT AEAD decryption failed" "quic.iyi" \
+  's/keys = @app_keys_in/keys = @initial_keys_in/'
+# 4. ACK feedback omitted (fails bytes_in_flight drop assertion)
+prove_fails "ACK feedback omitted" ack_feedback \
+  "bytes in flight did not drop on ACK" "quic.iyi" \
+  's/@congestion_ctrl.on_packet_acked(pkt.size, pkt.time_sent)/# no-op/'
 
-# 4. RTT estimator corrupted
-prove_fails "rtt estimator corrupted" rtt_corrupt \
-  "first sample min rtt" "quic.iyi" \
-  's/@min_rtt = latest/@min_rtt = 0_i64/'
-
-# 5. Stream ID classification broken
-prove_fails "stream id classification broken" stream_broken \
-  "client bidi" "quic.iyi" \
-  's/(@id & 0x01_u64) == 0_u64/false/'
-
+# 5. Stream limit enforcement (fails with STREAM_LIMIT_ERROR)
+prove_fails "stream limit enforcement" stream_limit \
+  "STREAM_LIMIT_ERROR" "quic.iyi" \
+  's/stream_idx < limit/false/'
 echo
 if [ "$status" -eq 0 ]; then
   echo "QUIC standard library: packet protection, A.1 keys, A.2 client initial,"

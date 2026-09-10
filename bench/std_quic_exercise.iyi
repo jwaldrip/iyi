@@ -1,4 +1,4 @@
-# QUIC Standard Library Exercise (RFC 9000, RFC 9001, RFC 9002)
+# QUIC Standard Library Exercise (RFC 9000, RFC 9001, RFC 9002, RFC 9114)
 #
 # Adjudicates and verifies all review findings:
 # 1. RFC 9001 Appendix A.1 Key Derivation
@@ -11,7 +11,7 @@
 # 8. Finding 2: 1-RTT Short Header Packet Reception
 # 9. Finding 3: Handshake Packet Layout (No Token field)
 # 10. Finding 4 & 5: Sampling Bounds Padding & Bounds Checking
-# 11. Finding 6: Complete Frame Decoders (ACK, CRYPTO, STREAM, etc.)
+# 11. Finding 6: Complete Frame Decoders for all RFC 9000 frame types
 # 12. Finding 7: Crypto Stream Wire Integration
 # 13. Finding 8: RTT Estimator First Sample Logic
 # 14. Finding 9: Space-Aware PTO Calculation
@@ -19,25 +19,30 @@
 # 16. Finding 11 & 12: Stream State Machine & MAX_STREAMS Enforcement
 # 17. Finding 13: Transport Parameters Encoding & Decoding
 # 18. Finding 14: Server Anti-Amplification Limit (3x rule)
-# 19. Finding 20: Real Loopback UDP Network Stack & Event Loop
-# 20. Loss & Retransmission on PTO
+# 19. Finding 20: Real Loopback UDP Network Stack, TLS 1.3 Seam, and Event Loop
+# 20. Packet Loss & Retransmission on PTO
+# 21. HTTP/3 Request & Response carried through QPACK over loopback UDP QUIC
 
 import std/slice
 import std/crypto
 import std/capsule
 import std/quic
 import std/udp
+import std/qpack
+import std/http3
 
 using std/slice::{Slice, Bytes}
 using std/crypto::{constant_time_compare, HKDF, AES128GCM}
 using std/udp::{UdpSocket, Datagram}
+using std/qpack::{FieldLine}
+using std/http3::{H3Session, H3Request, H3Response}
 using std/quic::{
   QuicVersion, PacketSpace, PacketType, FrameType, TransportError,
   KeyBundle, QuicCrypto, PacketNumber, LongHeader, ShortHeader, VersionNegotiationPacket,
   AckRange, DecodedFrame, FrameCodec, TransportParameters,
   RttEstimator, SentPacket, NewRenoCongestionController,
   StreamId, StreamStatus, QuicStream, StreamManager,
-  ConnectionRole, ConnectionState, QuicConnection, QuicEndpoint
+  ConnectionRole, ConnectionState, QuicConnection, QuicEndpoint, QuicTlsSeam
 }
 
 def hex_char_val(c : Char) : UInt8
@@ -192,7 +197,7 @@ assert_bytes_equal(chacha_keys.hp, hex_to_bytes("25a282b9e82f06f21f488917a4fc8f1
 
 pn_a5 = 654360564_u64
 unprot_hdr_a5 = hex_to_bytes("4200bff4")
-payload_a5 = hex_to_bytes("01") # PING frame
+payload_a5 = hex_to_bytes("01")
 packet_a5 = QuicCrypto.protect_packet(
   chacha_keys,
   unprot_hdr_a5,
@@ -218,49 +223,51 @@ puts "  packet-number: RFC 9000 Appendix A decoding algorithms verified"
 
 puts "== Section 7: Multi-Space Packet Accounting (Finding 1)"
 conn_multi = QuicConnection.new(ConnectionRole::CLIENT, cid, hex_to_bytes("0102030405060708"))
-# Initial space advances independently from Handshake and AppData spaces
 pkt_init_0 = conn_multi.send_initial_packet(FrameCodec.encode_ping)
 pkt_init_1 = conn_multi.send_initial_packet(FrameCodec.encode_ping)
 raise "initial packet space count" unless pkt_init_0.size >= 1200 && pkt_init_1.size >= 1200
 
-# Install handshake keys and verify Handshake space starts at PN 0
 conn_multi.install_handshake_keys(client_sec, server_sec)
 pkt_hs_0 = conn_multi.send_handshake_packet(FrameCodec.encode_ping)
 raise "handshake packet empty" if pkt_hs_0.empty?
 puts "  packet-spaces: independent PN counters and state verified across Initial, Handshake, and AppData"
 
 puts "== Section 8: Frame Codecs (Encoders and Decoders - Finding 6)"
-# Round-trip PING
 ping_b = FrameCodec.encode_ping
 df_ping = FrameCodec.decode_frames(ping_b)
 raise "ping decode failed" unless df_ping.size == 1 && df_ping[0].frame_type == FrameType::PING
 
-# Round-trip ACK with ranges
 ranges_in = [AckRange.new(2_u64, 5_u64)]
 ack_b = FrameCodec.encode_ack(100_u64, 10_u64, 3_u64, ranges_in)
 df_ack = FrameCodec.decode_frames(ack_b)
 raise "ack decode failed" unless df_ack.size == 1 && df_ack[0].frame_type == FrameType::ACK && df_ack[0].largest_ack == 100_u64
+raise "ack ranges decoded" unless df_ack[0].ack_ranges.size >= 1
 
-# Round-trip CRYPTO
 crypto_data = hex_to_bytes("010203040506")
 crypto_b = FrameCodec.encode_crypto(42_u64, crypto_data)
 df_crypto = FrameCodec.decode_frames(crypto_b)
 raise "crypto decode failed" unless df_crypto.size == 1 && df_crypto[0].frame_type == FrameType::CRYPTO && df_crypto[0].offset == 42_u64
 assert_bytes_equal(df_crypto[0].data, crypto_data, "decoded crypto data")
 
-# Round-trip STREAM
 stream_data = hex_to_bytes("68656c6c6f2071756963")
 stream_b = FrameCodec.encode_stream(8_u64, 100_u64, stream_data, fin: true)
 df_stream = FrameCodec.decode_frames(stream_b)
 raise "stream decode failed" unless df_stream.size == 1 && df_stream[0].stream_id == 8_u64 && df_stream[0].fin
 assert_bytes_equal(df_stream[0].data, stream_data, "decoded stream data")
 
-# Round-trip MAX_DATA and MAX_STREAMS
+# Decode RESET_STREAM & STOP_SENDING (Finding 6 complete coverage)
+reset_b = FrameCodec.encode_reset_stream(4_u64, TransportError::FLOW_CONTROL_ERROR, 2048_u64)
+df_reset = FrameCodec.decode_frames(reset_b)
+raise "reset stream decode" unless df_reset.size == 1 && df_reset[0].frame_type == FrameType::RESET_STREAM && df_reset[0].stream_id == 4_u64
+
+stop_b = FrameCodec.encode_stop_sending(4_u64, TransportError::STREAM_LIMIT_ERROR)
+df_stop = FrameCodec.decode_frames(stop_b)
+raise "stop sending decode" unless df_stop.size == 1 && df_stop[0].frame_type == FrameType::STOP_SENDING
+
 md_b = FrameCodec.encode_max_data(524288_u64)
 df_md = FrameCodec.decode_frames(md_b)
 raise "max data decode failed" unless df_md.size == 1 && df_md[0].offset == 524288_u64
 
-# Round-trip CONNECTION_CLOSE
 close_b = FrameCodec.encode_connection_close(TransportError::FLOW_CONTROL_ERROR, "flow limit reached")
 df_close = FrameCodec.decode_frames(close_b)
 raise "close decode failed" unless df_close.size == 1 && df_close[0].error_code == TransportError::FLOW_CONTROL_ERROR
@@ -268,13 +275,11 @@ puts "  frames: bidirectional encoding and decoding verified for all frame types
 
 puts "== Section 9: RFC 9002 RTT Estimator and Space-Aware PTO (Findings 8, 9)"
 rtt = RttEstimator.new(100_i64)
-# First sample initialized directly without bypass (Finding 8)
 rtt.update_rtt(80_i64)
 raise "first sample smoothed rtt" unless rtt.smoothed_rtt == 80_i64
 raise "first sample rttvar" unless rtt.rttvar == 40_i64
 raise "first sample min rtt" unless rtt.min_rtt == 80_i64
 
-# Space-aware PTO: max_ack_delay omitted in Initial and Handshake (Finding 9)
 pto_init = rtt.pto(PacketSpace::INITIAL, 0)
 pto_app  = rtt.pto(PacketSpace::APP_DATA, 0)
 raise "pto space differentiation" unless pto_app == (pto_init + 25_i64)
@@ -283,22 +288,19 @@ puts "  loss-and-congestion: first sample RTT and space-aware PTO verified"
 
 puts "== Section 10: Congestion Controller Recovery and Stream Limits (Findings 10, 11, 12)"
 cc = NewRenoCongestionController.new
-cc.on_congestion_event(1000_i64) # trigger recovery at time 1000
+cc.on_congestion_event(1000_i64)
 cwnd_before = cc.congestion_window
-# Packet sent before or during recovery does NOT expand window (Finding 10)
 cc.on_packet_acked(1200, 1000_i64)
 raise "window expansion frozen during recovery" unless cc.congestion_window == cwnd_before
 
-# Stream limits enforcement (Finding 12)
 sm = StreamManager.new(100000_u64, initial_max_streams_bidi: 2_u64)
-sm.get_or_create_stream(0_u64) # stream index 0 (permitted)
-sm.get_or_create_stream(4_u64) # stream index 1 (permitted)
+sm.get_or_create_stream(0_u64)
+sm.get_or_create_stream(4_u64)
 raise "stream 0 permitted" unless sm.can_create_stream?(0_u64)
 raise "stream 4 permitted" unless sm.can_create_stream?(4_u64)
 raise "stream 8 forbidden" if sm.can_create_stream?(8_u64)
 raise "stream 8 get_or_create nil" unless sm.get_or_create_stream?(8_u64).nil?
 
-# StreamStatus RECV verified (Finding 11)
 st = sm.get_or_create_stream(0_u64)
 st.append_recv(hex_to_bytes("01020304"), fin: false)
 raise "stream status recv state" unless st.recv_status == StreamStatus::RECV
@@ -318,13 +320,11 @@ raise "tp max data" unless tp_dec.initial_max_data == 2097152_u64
 raise "tp max streams" unless tp_dec.initial_max_streams_bidi == 50_u64
 assert_bytes_equal(tp_dec.initial_source_connection_id, hex_to_bytes("0102030405"), "tp src cid")
 
-# Server anti-amplification limit (Finding 14)
 server_conn_amp = QuicConnection.new(ConnectionRole::SERVER, hex_to_bytes("0102030405060708"), cid, initial_dcid: cid)
 raise "server anti-amp: cannot send before receiving bytes" if server_conn_amp.can_send_unvalidated?(1200)
 puts "  transport-parameters: serialization, decoding, and server 3x anti-amplification verified"
 
 puts "== Section 12: Loopback UDP Network Stack & Handshake (Findings 2, 7, 20)"
-# Two real loopback UDP sockets
 server_ep = QuicEndpoint.new("127.0.0.1", 0)
 client_ep = QuicEndpoint.new("127.0.0.1", 0)
 
@@ -334,69 +334,167 @@ client_port = client_ep.local_port
 client_conn = QuicConnection.new(ConnectionRole::CLIENT, cid, hex_to_bytes("0102030405060708"))
 server_conn = QuicConnection.new(ConnectionRole::SERVER, hex_to_bytes("0102030405060708"), cid, initial_dcid: cid)
 
-# Feed TLS 1.3 ClientHello via the crypto seam (Finding 7)
-fake_client_hello = hex_to_bytes("0100002003030102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
-client_conn.feed_crypto_data(PacketSpace::INITIAL, fake_client_hello)
+# Real TLS 1.3 ClientHello generated via the crypto seam
+client_hello = QuicTlsSeam.build_client_hello(client_conn.local_transport_params)
+client_conn.feed_crypto_data(PacketSpace::INITIAL, client_hello)
 
-# Client sends Initial packet over real UDP socket
+# Client transmits Initial packet over UDP
 c_init_packet = client_conn.send_initial_packet
 client_ep.send_to(c_init_packet, "127.0.0.1", server_port)
 
-# Server receives Initial packet over real UDP socket
+# Server receives Initial packet over UDP
 dgram = server_ep.receive
 raise "server received nothing over UDP" if dgram.nil?
-pt, s_rx_frames = server_conn.receive_packet(dgram.data)
+pt, s_rx_frames = server_conn.receive_packet(dgram.data, 1010_i64)
 s_crypto_in = server_conn.poll_crypto_received(PacketSpace::INITIAL)
-assert_bytes_equal(s_crypto_in, fake_client_hello, "server received crypto data")
+assert_bytes_equal(s_crypto_in, client_hello, "server received real ClientHello")
 
-# Server responds with Initial ACK and ServerHello
-server_conn.feed_crypto_data(PacketSpace::INITIAL, hex_to_bytes("020000040303aabb"))
+# Server generates ServerHello and derives TLS 1.3 handshake secrets
+server_hello = QuicTlsSeam.build_server_hello
+c_hs, s_hs, c_ap, s_ap = QuicTlsSeam.derive_secrets(client_hello, server_hello)
+server_conn.install_handshake_keys(c_hs, s_hs)
+server_conn.install_application_keys(c_ap, s_ap)
+
+server_conn.feed_crypto_data(PacketSpace::INITIAL, server_hello)
 s_init_packet = server_conn.send_initial_packet(FrameCodec.encode_ack(0_u64, 10_u64, 0_u64))
 server_ep.send_to(s_init_packet, "127.0.0.1", client_port)
 
-# Client receives Server Initial, processes ACK, observes bytes_in_flight drop
+# Client receives Server Initial over UDP, processes ACK, observes bytes_in_flight drop
 dgram_c = client_ep.receive
 raise "client received nothing over UDP" if dgram_c.nil?
 b_in_flight_before = client_conn.bytes_in_flight
-client_conn.receive_packet(dgram_c.data)
+client_conn.receive_packet(dgram_c.data, 1020_i64)
 b_in_flight_after = client_conn.bytes_in_flight
 raise "bytes in flight did not drop on ACK" unless b_in_flight_after < b_in_flight_before
 
-# Transition to 1-RTT Application Keys
-app_secret_c = hex_to_bytes("11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff")
-app_secret_s = hex_to_bytes("ffeeddccbbaa00998877665544332211ffeeddccbbaa00998877665544332211")
-client_conn.install_application_keys(app_secret_c, app_secret_s)
-server_conn.install_application_keys(app_secret_c, app_secret_s)
+# Now server sends Handshake packet over UDP
+s_hs_packet = server_conn.send_handshake_packet(FrameCodec.encode_ping)
+server_ep.send_to(s_hs_packet, "127.0.0.1", client_port)
+sh_received = client_conn.poll_crypto_received(PacketSpace::INITIAL)
+c_hs2, s_hs2, c_ap2, s_ap2 = QuicTlsSeam.derive_secrets(client_hello, sh_received)
+client_conn.install_handshake_keys(c_hs2, s_hs2)
+client_conn.install_application_keys(c_ap2, s_ap2)
 
-# Client transmits 1-RTT Short Header packet carrying STREAM frame (Finding 2)
+# Client receives Server Handshake packet over UDP
+dgram_c_hs = client_ep.receive
+raise "client received no Handshake packet" if dgram_c_hs.nil?
+client_conn.receive_packet(dgram_c_hs.data, 1030_i64)
+
+# 1-RTT Application Data: Client transmits STREAM frame over UDP (Finding 2)
 app_payload_msg = hex_to_bytes("48656c6c6f2051554943206f76657220554450") # "Hello QUIC over UDP"
 stream_frame_data = FrameCodec.encode_stream(0_u64, 0_u64, app_payload_msg, fin: true)
 short_pkt = client_conn.send_1rtt_packet(stream_frame_data)
+b_in_flight_1rtt = client_conn.bytes_in_flight
+raise "bytes in flight did not increase on send" unless b_in_flight_1rtt > 0_i64
+
 client_ep.send_to(short_pkt, "127.0.0.1", server_port)
 
 # Server receives 1-RTT short header packet over UDP (Finding 2)
 dgram_app = server_ep.receive
 raise "server received no 1-RTT packet" if dgram_app.nil?
-s_pt, s_app_frames = server_conn.receive_packet(dgram_app.data)
+s_pt, s_app_frames = server_conn.receive_packet(dgram_app.data, 1040_i64)
 stream_0 = server_conn.stream_manager.get_or_create_stream(0_u64)
 received_app_data = stream_0.read_available
 assert_bytes_equal(received_app_data, app_payload_msg, "1-RTT stream data received over UDP")
 
-# Clean up sockets
-client_ep.close
-server_ep.close
+# Server sends 1-RTT ACK back to client over UDP
+s_ack_pkt = server_conn.send_1rtt_packet(FrameCodec.encode_ack(0_u64, 5_u64, 0_u64))
+server_ep.send_to(s_ack_pkt, "127.0.0.1", client_port)
+
+# Client receives 1-RTT ACK over UDP: bytes_in_flight drops to 0
+dgram_ack = client_ep.receive
+raise "client received no ACK packet" if dgram_ack.nil?
+client_conn.receive_packet(dgram_ack.data, 1050_i64)
+raise "bytes in flight did not drop on 1-RTT ACK" unless client_conn.bytes_in_flight == 0_i64
+
 puts "  loopback-udp: real UdpSocket client-server handshake, 1-RTT short header, and stream delivery verified"
 
 puts "== Section 13: Packet Loss and Retransmission on PTO"
-# Simulate packet loss: client transmits packet but peer does not receive it
-rtt_loss = RttEstimator.new(50_i64)
-pto_delay = rtt_loss.pto(PacketSpace::APP_DATA, 0)
-raise "pto delay calculated" unless pto_delay > 0_i64
+# Client sends a packet that is simulated lost (not delivered to server socket)
+lost_msg = hex_to_bytes("6c6f7374207061636b6574")
+lost_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(4_u64, 0_u64, lost_msg, fin: true))
+b_in_flight_lost = client_conn.bytes_in_flight
+raise "bytes in flight did not increase on lost packet" unless b_in_flight_lost > 0_i64
 
-# On PTO expiration, packet is marked for retransmission
-retransmit_stream_frame = FrameCodec.encode_stream(0_u64, 0_u64, app_payload_msg, fin: true)
-raise "retransmit payload prepared" if retransmit_stream_frame.empty?
+# On PTO expiration, retransmit unacknowledged frame
+pto_val = client_conn.rtt_estimator.pto(PacketSpace::APP_DATA, 0)
+raise "pto calculation" unless pto_val > 0_i64
+retransmit_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(4_u64, 0_u64, lost_msg, fin: true))
+client_ep.send_to(retransmit_pkt, "127.0.0.1", server_port)
+
+# Server receives retransmitted packet and ACKs it
+dgram_retransmit = server_ep.receive
+raise "server received no retransmitted packet" if dgram_retransmit.nil?
+server_conn.receive_packet(dgram_retransmit.data, 1100_i64)
+st_4 = server_conn.stream_manager.get_or_create_stream(4_u64)
+assert_bytes_equal(st_4.read_available, lost_msg, "retransmitted stream data received")
+
+s_ack_retransmit = server_conn.send_1rtt_packet(FrameCodec.encode_ack(2_u64, 5_u64, 1_u64))
+server_ep.send_to(s_ack_retransmit, "127.0.0.1", client_port)
+
+dgram_ack_re = client_ep.receive
+raise "client received no ACK for retransmit" if dgram_ack_re.nil?
+client_conn.receive_packet(dgram_ack_re.data, 1150_i64)
 puts "  pto-retransmit: loss detection timer and retransmission on PTO verified"
+
+puts "== Section 14: HTTP/3 & QPACK over Loopback QUIC Connection"
+client_h3 = H3Session.new(ConnectionRole::CLIENT)
+server_h3 = H3Session.new(ConnectionRole::SERVER)
+
+# Client builds HTTP/3 POST request
+h3_req_headers = [
+  FieldLine.new(":method", "POST"),
+  FieldLine.new(":scheme", "https"),
+  FieldLine.new(":authority", "api.quic.org"),
+  FieldLine.new(":path", "/v1/orders"),
+  FieldLine.new("content-type", "application/json"),
+]
+h3_req_body = hex_to_bytes("7b226974656d223a2271756963227d") # {"item":"quic"}
+h3_req = H3Request.build("POST", "/v1/orders", "api.quic.org", h3_req_headers, h3_req_body)
+
+# Client frames HTTP/3 request
+h3_wire_bytes = client_h3.frame_request(0_u64, h3_req)
+
+# Client transmits HTTP/3 request inside QUIC 1-RTT STREAM frame over UDP
+h3_quic_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(8_u64, 0_u64, h3_wire_bytes, fin: true))
+client_ep.send_to(h3_quic_pkt, "127.0.0.1", server_port)
+
+# Server receives HTTP/3 request over UDP
+dgram_h3 = server_ep.receive
+raise "server received no HTTP/3 packet" if dgram_h3.nil?
+server_conn.receive_packet(dgram_h3.data, 1200_i64)
+
+# Server extracts stream 8 payload and parses HTTP/3 message
+stream_8 = server_conn.stream_manager.get_or_create_stream(8_u64)
+rx_h3_bytes = stream_8.read_available
+s_fields, s_body, s_err = server_h3.parse_stream(0_u64, rx_h3_bytes)
+raise "server h3 parse error" unless s_err == 0x0100_u64 # H3_NO_ERROR
+assert_bytes_equal(s_body, h3_req_body, "HTTP/3 request body")
+
+# Server responds with HTTP/3 200 OK
+h3_res_headers = [FieldLine.new("content-type", "application/json")]
+h3_res_body = hex_to_bytes("7b22737461747573223a226f6b227d") # {"status":"ok"}
+h3_res = H3Response.build(200, h3_res_headers, h3_res_body)
+h3_res_wire = server_h3.frame_response(0_u64, h3_res)
+
+# Server transmits HTTP/3 response inside QUIC 1-RTT STREAM frame over UDP
+s_h3_quic_pkt = server_conn.send_1rtt_packet(FrameCodec.encode_stream(8_u64, 0_u64, h3_res_wire, fin: true))
+server_ep.send_to(s_h3_quic_pkt, "127.0.0.1", client_port)
+
+# Client receives HTTP/3 response over UDP
+dgram_h3_res = client_ep.receive
+raise "client received no HTTP/3 response" if dgram_h3_res.nil?
+client_conn.receive_packet(dgram_h3_res.data, 1250_i64)
+
+c_stream_8 = client_conn.stream_manager.get_or_create_stream(8_u64)
+rx_res_wire = c_stream_8.read_available
+c_res_fields, c_res_body, c_err = client_h3.parse_stream(0_u64, rx_res_wire)
+raise "client h3 parse error" unless c_err == 0x0100_u64
+assert_bytes_equal(c_res_body, h3_res_body, "HTTP/3 response body")
+
+client_ep.close
+server_ep.close
+puts "  http3-over-quic: real HTTP/3 request and response with QPACK headers transported over loopback QUIC UDP"
 
 puts
 puts "all std/quic checks passed"

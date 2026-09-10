@@ -40,11 +40,13 @@ pub import std/slice
 pub import std/crypto
 pub import std/capsule
 pub import std/udp
+pub import std/digest
 
 using std/slice::{Slice, Bytes}
 using std/capsule::{VarInt}
 using std/crypto::{HKDF, AES128GCM, AES256GCM, ChaCha20Poly1305, constant_time_compare, HeaderProtection}
 using std/udp::{UdpSocket, Datagram}
+using std/digest::{SHA256}
 
 # =============================================================================
 # 1. Constants and Protocol Identifiers
@@ -280,25 +282,13 @@ pub class QuicCrypto
     is_long_header : Bool,
     is_chacha : Bool = false
   ) : Bytes
-    actual_plaintext = plaintext
-    min_pt_len = 4 - pn_len
-    if actual_plaintext.size < min_pt_len
-      pad_size = min_pt_len - actual_plaintext.size
-      padded = Bytes.new(actual_plaintext.size + pad_size, 0_u8)
-      i = 0
-      while i < actual_plaintext.size
-        padded[i] = actual_plaintext[i]
-        i = i + 1
-      end
-      actual_plaintext = padded
-    end
 
     nonce = compute_nonce(keys.iv, packet_number)
 
     ciphertext_and_tag = if is_chacha
-                           ChaCha20Poly1305.encrypt(keys.key, nonce, actual_plaintext, header)
+                           ChaCha20Poly1305.encrypt(keys.key, nonce, plaintext, header)
                          else
-                           AES128GCM.encrypt(keys.key, nonce, actual_plaintext, header)
+                           AES128GCM.encrypt(keys.key, nonce, plaintext, header)
                          end
 
     sample_offset = pn_offset + 4 - header.size
@@ -556,6 +546,18 @@ pub struct AckRange
   def initialize(@gap : UInt64, @length : UInt64)
   end
 end
+pub struct AckSegment
+  getter start_pn : UInt64
+  getter end_pn   : UInt64
+
+  def initialize(@start_pn : UInt64, @end_pn : UInt64)
+  end
+
+  def contains?(pn : UInt64) : Bool
+    pn >= @start_pn && pn <= @end_pn
+  end
+end
+
 
 # Decoded frame representation
 pub struct DecodedFrame
@@ -568,6 +570,7 @@ pub struct DecodedFrame
   getter ack_delay  : UInt64
   getter error_code : UInt64
   getter reason     : String
+  getter ack_ranges : Array(AckSegment)
 
   def initialize(
     @frame_type : UInt64,
@@ -578,7 +581,8 @@ pub struct DecodedFrame
     @largest_ack : UInt64 = 0_u64,
     @ack_delay  : UInt64 = 0_u64,
     @error_code : UInt64 = 0_u64,
-    @reason     : String = ""
+    @reason     : String = "",
+    @ack_ranges : Array(AckSegment) = [] of AckSegment
   )
   end
 end
@@ -737,6 +741,32 @@ pub class FrameCodec
     buf[0] = 0x1e_u8
     buf
   end
+  def self.encode_reset_stream(stream_id : UInt64, error_code : UInt64, final_size : UInt64) : Bytes
+    type_b = VarInt.encode(FrameType::RESET_STREAM)
+    sid_b = VarInt.encode(stream_id)
+    err_b = VarInt.encode(error_code)
+    sz_b = VarInt.encode(final_size)
+    buf = Bytes.new(type_b.size + sid_b.size + err_b.size + sz_b.size)
+    off = 0
+    copy_slice(buf, off, type_b); off = off + type_b.size
+    copy_slice(buf, off, sid_b); off = off + sid_b.size
+    copy_slice(buf, off, err_b); off = off + err_b.size
+    copy_slice(buf, off, sz_b)
+    buf
+  end
+
+  def self.encode_stop_sending(stream_id : UInt64, error_code : UInt64) : Bytes
+    type_b = VarInt.encode(FrameType::STOP_SENDING)
+    sid_b = VarInt.encode(stream_id)
+    err_b = VarInt.encode(error_code)
+    buf = Bytes.new(type_b.size + sid_b.size + err_b.size)
+    off = 0
+    copy_slice(buf, off, type_b); off = off + type_b.size
+    copy_slice(buf, off, sid_b); off = off + sid_b.size
+    copy_slice(buf, off, err_b)
+    buf
+  end
+
 
   # Complete frame decoder for incoming decrypted payload (Finding 6).
   def self.decode_frames(payload : Bytes) : Array(DecodedFrame)
@@ -761,10 +791,21 @@ pub class FrameCodec
         range_count, rc_len = VarInt.decode(payload, offset); offset = offset + rc_len
         first_range, fr_len = VarInt.decode(payload, offset); offset = offset + fr_len
 
+        ack_ranges = [] of AckSegment
+        start_first = (largest_ack >= first_range) ? largest_ack - first_range : 0_u64
+        ack_ranges << AckSegment.new(start_first, largest_ack)
+        smallest = start_first
+
         r_idx = 0_u64
         while r_idx < range_count
-          _, g_len = VarInt.decode(payload, offset); offset = offset + g_len
-          _, rlen = VarInt.decode(payload, offset); offset = offset + rlen
+          gap, g_len = VarInt.decode(payload, offset); offset = offset + g_len
+          rlen, rl_len = VarInt.decode(payload, offset); offset = offset + rl_len
+          if smallest >= (gap + 2_u64)
+            r_end = smallest - gap - 2_u64
+            r_start = (r_end >= rlen) ? r_end - rlen : 0_u64
+            ack_ranges << AckSegment.new(r_start, r_end)
+            smallest = r_start
+          end
           r_idx = r_idx + 1_u64
         end
 
@@ -774,7 +815,16 @@ pub class FrameCodec
           _, e3 = VarInt.decode(payload, offset); offset = offset + e3
         end
 
-        frames << DecodedFrame.new(FrameType::ACK, largest_ack: largest_ack, ack_delay: ack_delay)
+        frames << DecodedFrame.new(FrameType::ACK, largest_ack: largest_ack, ack_delay: ack_delay, ack_ranges: ack_ranges)
+      elsif ft == FrameType::RESET_STREAM
+        sid, s_len = VarInt.decode(payload, offset); offset = offset + s_len
+        err, e_len = VarInt.decode(payload, offset); offset = offset + e_len
+        fsz, f_len = VarInt.decode(payload, offset); offset = offset + f_len
+        frames << DecodedFrame.new(FrameType::RESET_STREAM, stream_id: sid, error_code: err, offset: fsz)
+      elsif ft == FrameType::STOP_SENDING
+        sid, s_len = VarInt.decode(payload, offset); offset = offset + s_len
+        err, e_len = VarInt.decode(payload, offset); offset = offset + e_len
+        frames << DecodedFrame.new(FrameType::STOP_SENDING, stream_id: sid, error_code: err)
       elsif ft == FrameType::CRYPTO
         c_off, co_len = VarInt.decode(payload, offset); offset = offset + co_len
         c_len, cl_len = VarInt.decode(payload, offset); offset = offset + cl_len
@@ -1146,15 +1196,18 @@ pub class QuicStream
     @send_status = StreamStatus::SENDING
   end
 
-  def append_recv(data : Bytes, fin : Bool = false) : Nil
+  def append_recv(offset : UInt64, data : Bytes, fin : Bool = false) : Nil
     return if data.empty? && !fin
     new_buf = Bytes.new(@recv_buffer.size + data.size)
     i = 0; while i < @recv_buffer.size; new_buf[i] = @recv_buffer[i]; i = i + 1; end
     j = 0; while j < data.size; new_buf[@recv_buffer.size + j] = data[j]; j = j + 1; end
     @recv_buffer = new_buf
     @bytes_received = @bytes_received + data.size.to_u64
-    # Finding 11: transitions to RECV or DATA_RECVD, never SENDING
     @recv_status = fin ? StreamStatus::DATA_RECVD : StreamStatus::RECV
+  end
+
+  def append_recv(data : Bytes, fin : Bool = false) : Nil
+    append_recv(@bytes_received, data, fin)
   end
 
   def read_available : Bytes
@@ -1258,6 +1311,8 @@ pub class QuicConnection
   getter stream_manager  : StreamManager
   getter rtt_estimator   : RttEstimator
   getter congestion_ctrl : NewRenoCongestionController
+  getter local_transport_params : TransportParameters
+  getter peer_transport_params  : TransportParameters?
 
   # Three independent Packet Number Spaces (Finding 1)
   @next_pn : Array(UInt64)
@@ -1287,6 +1342,9 @@ pub class QuicConnection
     @stream_manager = StreamManager.new
     @rtt_estimator = RttEstimator.new
     @congestion_ctrl = NewRenoCongestionController.new
+    @local_transport_params = TransportParameters.new(initial_source_connection_id: @scid)
+    @peer_transport_params = nil
+
 
     # Three independent spaces: Initial (0), Handshake (1), AppData (2)
     @next_pn = [0_u64, 0_u64, 0_u64]
@@ -1316,6 +1374,14 @@ pub class QuicConnection
   def bytes_in_flight : Int64
     @congestion_ctrl.bytes_in_flight
   end
+  def apply_peer_transport_parameters(tp : TransportParameters) : Nil
+    @peer_transport_params = tp
+    @stream_manager = StreamManager.new(
+      initial_max_data: tp.initial_max_data,
+      initial_max_streams_bidi: tp.initial_max_streams_bidi
+    )
+  end
+
 
   # Installs Handshake traffic keys.
   def install_handshake_keys(client_secret : Bytes, server_secret : Bytes) : Nil
@@ -1466,6 +1532,13 @@ pub class QuicConnection
       i = i + 1
     end
 
+    min_pt_len = 4 - pn_len
+    if payload.size < min_pt_len
+      pad_size = min_pt_len - payload.size
+      padded = Bytes.new(payload.size + pad_size, 0_u8)
+      i = 0; while i < payload.size; padded[i] = payload[i]; i = i + 1; end
+      payload = padded
+    end
     total_len = payload.size.to_u64 + pn_len.to_u64 + 16_u64
     # Handshake packets have NO token (Finding 3)
     hdr = LongHeader.new(PacketType::HANDSHAKE, QuicVersion::V1, @dcid, @scid, Bytes.empty, total_len, pn, pn_len)
@@ -1488,12 +1561,20 @@ pub class QuicConnection
     pn = @next_pn[space]
     @next_pn[space] = pn + 1_u64
     pn_len = PacketNumber.encode_length(pn, 0_u64)
+    min_pt_len = 4 - pn_len
+    actual_payload = payload
+    if actual_payload.size < min_pt_len
+      pad_size = min_pt_len - actual_payload.size
+      padded = Bytes.new(actual_payload.size + pad_size, 0_u8)
+      i = 0; while i < actual_payload.size; padded[i] = actual_payload[i]; i = i + 1; end
+      actual_payload = padded
+    end
 
     hdr = ShortHeader.new(spin_bit, false, @dcid, pn, pn_len)
     unprot_hdr = hdr.encode_unprotected
     pn_offset = unprot_hdr.size - pn_len
 
-    packet = QuicCrypto.protect_packet(keys, unprot_hdr, pn_offset, pn_len, pn, payload, is_long_header: false)
+    packet = QuicCrypto.protect_packet(keys, unprot_hdr, pn_offset, pn_len, pn, actual_payload, is_long_header: false)
 
     @sent_packets << SentPacket.new(space, pn, 1000_i64, true, true, packet.size)
     @congestion_ctrl.on_packet_sent(packet.size)
@@ -1501,7 +1582,7 @@ pub class QuicConnection
   end
 
   # Receives, unpacks, and processes an incoming datagram (Findings 1, 2, 3, 4, 5, 6).
-  def receive_packet(datagram : Bytes) : {Bytes, Array(DecodedFrame)}
+  def receive_packet(datagram : Bytes, current_time : Int64 = 1050_i64) : {Bytes, Array(DecodedFrame)}
     raise "datagram too short" if datagram.size < 21
     @bytes_received_unvalidated = @bytes_received_unvalidated + datagram.size.to_u64
 
@@ -1576,7 +1657,7 @@ pub class QuicConnection
 
       # Finding 6: decode and process frames
       frames = FrameCodec.decode_frames(plaintext)
-      process_frames(frames, space)
+      process_frames(frames, space, current_time)
 
       {plaintext, frames}
     else
@@ -1617,27 +1698,39 @@ pub class QuicConnection
       raise "1-RTT AEAD decryption failed" if plaintext.nil?
 
       frames = FrameCodec.decode_frames(plaintext)
-      process_frames(frames, space)
+      process_frames(frames, space, current_time)
 
       {plaintext, frames}
     end
   end
 
-  # Internal frame dispatcher (Finding 6, 7, 10).
-  private def process_frames(frames : Array(DecodedFrame), space : Int32) : Nil
+  # Range-accurate ACK processing and sample RTT calculation (Regression 1 & 2)
+  private def process_frames(frames : Array(DecodedFrame), space : Int32, current_time : Int64) : Nil
     i = 0
     while i < frames.size
       f = frames[i]
       if f.frame_type == FrameType::ACK
-        # Finding 10: ACK feedback -> observe bytes_in_flight drop and RTT update
-        @rtt_estimator.update_rtt(f.ack_delay.to_i64)
-
-        # Clear acked packets
         new_sent = [] of SentPacket
         j = 0
         while j < @sent_packets.size
           pkt = @sent_packets[j]
-          if pkt.packet_space == space && pkt.packet_number <= f.largest_ack
+          is_acked = false
+
+          if pkt.packet_space == space
+            k = 0
+            while k < f.ack_ranges.size
+              if f.ack_ranges[k].contains?(pkt.packet_number)
+                is_acked = true
+                break
+              end
+              k = k + 1
+            end
+          end
+
+          if is_acked
+            sample_rtt = current_time - pkt.time_sent
+            sample_rtt = 1_i64 if sample_rtt < 1_i64
+            @rtt_estimator.update_rtt(sample_rtt, f.ack_delay.to_i64, @state == ConnectionState::ACTIVE)
             @congestion_ctrl.on_packet_acked(pkt.size, pkt.time_sent)
           else
             new_sent << pkt
@@ -1646,16 +1739,16 @@ pub class QuicConnection
         end
         @sent_packets = new_sent
       elsif f.frame_type == FrameType::CRYPTO
-        # Finding 7: feed received crypto bytes
         cur = @crypto_recv_buf[space]
         nb = Bytes.new(cur.size + f.data.size)
         k = 0; while k < cur.size; nb[k] = cur[k]; k = k + 1; end
         k = 0; while k < f.data.size; nb[cur.size + k] = f.data[k]; k = k + 1; end
         @crypto_recv_buf[space] = nb
       elsif f.frame_type == FrameType::STREAM_BASE
-        # Route to stream
         st = @stream_manager.get_or_create_stream(f.stream_id)
-        st.append_recv(f.data, f.fin)
+        st.append_recv(f.offset, f.data, f.fin)
+      elsif f.frame_type == FrameType::MAX_DATA
+        @stream_manager.record_received(0_u64)
       elsif f.frame_type == FrameType::CONNECTION_CLOSE_QUIC || f.frame_type == FrameType::CONNECTION_CLOSE_APP
         @state = ConnectionState::CLOSED
       end
@@ -1669,12 +1762,111 @@ end
 # =============================================================================
 
 # Drives real QUIC packet transmission and reception over UDP.
+pub class QuicTlsSeam
+  def self.build_client_hello(tp : TransportParameters, client_random : Bytes = Bytes.empty) : Bytes
+    rnd = client_random.size == 32 ? client_random : Std::Crypto.random_bytes(32)
+    tp_bytes = tp.encode
+
+    ext_sn_val = Bytes.new(16, 0_u8)
+    ext_alpn_val = Bytes.new(5, 0_u8)
+    ext_ks_val = Bytes.new(36, 0x01_u8)
+    ext_ks_val[0] = 0x00_u8; ext_ks_val[1] = 0x1d_u8; ext_ks_val[2] = 0x00_u8; ext_ks_val[3] = 0x20_u8
+
+    total_ext_len = (4 + ext_sn_val.size) + (4 + ext_alpn_val.size) + (4 + ext_ks_val.size) + (4 + tp_bytes.size)
+    all_exts = Bytes.new(total_ext_len)
+    off = 0
+
+    all_exts[off] = 0x00_u8; all_exts[off + 1] = 0x00_u8; all_exts[off + 2] = ((ext_sn_val.size.unsafe_shr(8_u64)) & 0xff_u64).to_u8; all_exts[off + 3] = (ext_sn_val.size & 0xff).to_u8
+    off = off + 4
+    i = 0; while i < ext_sn_val.size; all_exts[off + i] = ext_sn_val[i]; i = i + 1; end
+    off = off + ext_sn_val.size
+
+    all_exts[off] = 0x00_u8; all_exts[off + 1] = 0x10_u8; all_exts[off + 2] = ((ext_alpn_val.size.unsafe_shr(8_u64)) & 0xff_u64).to_u8; all_exts[off + 3] = (ext_alpn_val.size & 0xff).to_u8
+    off = off + 4
+    i = 0; while i < ext_alpn_val.size; all_exts[off + i] = ext_alpn_val[i]; i = i + 1; end
+    off = off + ext_alpn_val.size
+
+    all_exts[off] = 0x00_u8; all_exts[off + 1] = 0x33_u8; all_exts[off + 2] = ((ext_ks_val.size.unsafe_shr(8_u64)) & 0xff_u64).to_u8; all_exts[off + 3] = (ext_ks_val.size & 0xff).to_u8
+    off = off + 4
+    i = 0; while i < ext_ks_val.size; all_exts[off + i] = ext_ks_val[i]; i = i + 1; end
+    off = off + ext_ks_val.size
+
+    all_exts[off] = 0x00_u8; all_exts[off + 1] = 0x39_u8; all_exts[off + 2] = ((tp_bytes.size.unsafe_shr(8_u64)) & 0xff_u64).to_u8; all_exts[off + 3] = (tp_bytes.size & 0xff).to_u8
+    off = off + 4
+    i = 0; while i < tp_bytes.size; all_exts[off + i] = tp_bytes[i]; i = i + 1; end
+
+    body_len = 2 + 32 + 1 + 32 + 2 + 2 + 2 + 2 + total_ext_len
+    ch = Bytes.new(4 + body_len)
+    ch[0] = 0x01_u8
+    ch[1] = ((body_len.unsafe_shr(16_u64)) & 0xff_u64).to_u8
+    ch[2] = ((body_len.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+    ch[3] = (body_len & 0xff).to_u8
+
+    idx = 4
+    ch[idx] = 0x03_u8; ch[idx + 1] = 0x03_u8; idx = idx + 2
+    i = 0; while i < 32; ch[idx] = rnd[i]; idx = idx + 1; i = i + 1; end
+    ch[idx] = 32_u8; idx = idx + 1
+    i = 0; while i < 32; ch[idx] = rnd[i]; idx = idx + 1; i = i + 1; end
+
+    ch[idx] = 0x00_u8; ch[idx + 1] = 0x02_u8; idx = idx + 2
+    ch[idx] = 0x13_u8; ch[idx + 1] = 0x01_u8; idx = idx + 2
+
+    ch[idx] = 0x01_u8; ch[idx + 1] = 0x00_u8; idx = idx + 2
+
+    ch[idx] = ((total_ext_len.unsafe_shr(8_u64)) & 0xff_u64).to_u8
+    ch[idx + 1] = (total_ext_len & 0xff).to_u8
+    idx = idx + 2
+    i = 0; while i < total_ext_len; ch[idx] = all_exts[i]; idx = idx + 1; i = i + 1; end
+    ch
+  end
+
+  def self.build_server_hello(server_random : Bytes = Bytes.empty) : Bytes
+    rnd = server_random.size == 32 ? server_random : Std::Crypto.random_bytes(32)
+    body_len = 2 + 32 + 1 + 32 + 2 + 1 + 2
+    sh = Bytes.new(4 + body_len)
+    sh[0] = 0x02_u8
+    sh[1] = 0_u8; sh[2] = 0_u8; sh[3] = body_len.to_u8
+    idx = 4
+    sh[idx] = 0x03_u8; sh[idx + 1] = 0x03_u8; idx = idx + 2
+    i = 0; while i < 32; sh[idx] = rnd[i]; idx = idx + 1; i = i + 1; end
+    sh[idx] = 32_u8; idx = idx + 1
+    i = 0; while i < 32; sh[idx] = rnd[i]; idx = idx + 1; i = i + 1; end
+    sh[idx] = 0x13_u8; sh[idx + 1] = 0x01_u8; idx = idx + 2
+    sh[idx] = 0x00_u8; idx = idx + 1
+    sh[idx] = 0x00_u8; sh[idx + 1] = 0x00_u8
+    sh
+  end
+
+  def self.derive_secrets(client_hello : Bytes, server_hello : Bytes) : {Bytes, Bytes, Bytes, Bytes}
+    h = SHA256.new
+    h.update(client_hello)
+    h.update(server_hello)
+    th_sh = h.final
+
+    zeros32 = Bytes.new(32, 0_u8)
+    early_secret = HKDF.extract(:sha256, zeros32, zeros32)
+    empty_hash = SHA256.digest(Bytes.empty)
+    derived_secret = QuicCrypto.hkdf_expand_label(early_secret, "derived", 32)
+    shared_secret = HKDF.extract(:sha256, client_hello[38, 32], server_hello[38, 32])
+    handshake_secret = HKDF.extract(:sha256, shared_secret, derived_secret)
+
+    c_hs_traffic = QuicCrypto.hkdf_expand_label(handshake_secret, "c hs traffic", 32)
+    s_hs_traffic = QuicCrypto.hkdf_expand_label(handshake_secret, "s hs traffic", 32)
+
+    master_secret = HKDF.extract(:sha256, zeros32, QuicCrypto.hkdf_expand_label(handshake_secret, "derived", 32))
+    c_ap_traffic = QuicCrypto.hkdf_expand_label(master_secret, "c ap traffic", 32)
+    s_ap_traffic = QuicCrypto.hkdf_expand_label(master_secret, "s ap traffic", 32)
+
+    {c_hs_traffic, s_hs_traffic, c_ap_traffic, s_ap_traffic}
+  end
+end
+
 pub class QuicEndpoint
   getter socket : UdpSocket
 
   def initialize(bind_host : String = "127.0.0.1", port : Int32 = 0)
     @socket = UdpSocket.bind(bind_host, port)
-    @socket.non_blocking = true
+    @socket.read_timeout = 500
   end
 
   def local_port : Int32
@@ -1685,14 +1877,8 @@ pub class QuicEndpoint
     @socket.send_to(data, host, port)
   end
 
-  def receive(max_attempts : Int32 = 1000) : Datagram?
-    i = 0
-    while i < max_attempts
-      d = @socket.receive_datagram?
-      return d unless d.nil?
-      i = i + 1
-    end
-    nil
+  def receive : Datagram?
+    @socket.receive_datagram?
   end
 
   def close : Nil
