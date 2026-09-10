@@ -261,6 +261,11 @@ prove_fails_arg "nonzero key guard in CertificateVerify bypassed" cv_guard_bypas
   "P256.verify reached with zero public key" "tls.iyi" \
   's/peer_cert.ec_curve == :p256 && !qx.zero? && !qy.zero?/true/'
 
+# 15. RSA-PSS encoding trailer corrupted
+prove_fails "rsa-pss signing trailer corrupted" pss_sign_trailer \
+  "assertion failed: NIST CAVP RSA-PSS signature generation" "tls.iyi" \
+  's/em\[em_len - 1\] = 0xbc_u8/em[em_len - 1] = 0xbd_u8/'
+
 echo
 if [ "$status" -eq 0 ]; then
   echo "all std_tls_exercise checks passed in plain and release modes, with every failure proof active"
