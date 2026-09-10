@@ -350,11 +350,23 @@ implementation that round-trips happily while disagreeing with the world:
 
 | module | gated on | what it answers |
 |---|---|---|
-| `tls.iyi` | RFC 8448's worked traces, byte for byte | a live TLS 1.3 connection to `example.com`, cipher `0x1301` |
-| `http1.iyi` | RFC 9112, and twelve smuggling framings refused | a client and a server that round-trip against each other |
-| `websocket.iyi` | RFC 6455 section 1.3's handshake vector | UTF-8 validated incrementally across fragment boundaries |
+| `tls.iyi` | RFC 8448's worked traces, byte for byte | a live authenticated TLS 1.3 connection to `example.com`, cipher `0x1301` |
+| `http1.iyi` | RFC 9112, and nineteen smuggling framings refused | a client and concurrent server, live HTTP and authenticated HTTPS |
+| `websocket.iyi` | RFC 6455 section 1.3's handshake vector | UTF-8 across fragments and stateless `permessage-deflate` negotiation |
 | `http2.iyi` | RFC 9113, sixteen h2spec shapes | three concurrent streams, and 100 KB through a 65,535-byte window |
-| `quic.iyi`, `http3.iyi` | RFC 9001 appendix A, byte for byte | the 1,200-byte client Initial, the server Initial, the Retry tag |
+| `quic.iyi`, `http3.iyi` | RFC 9001 appendix A, byte for byte | TLS 1.3, 1-RTT, ACK/PTO, H3/QPACK and WebTransport over UDP loopback |
+| `http_client.iyi` | live ALPN against two independent origins | one client selected `h2` at `nghttp2.org` and `http/1.1` at `www.gnu.org` |
+
+**Protocol is transport policy, not application policy.** `std/http_client`
+accepts the shared `Request` and returns the shared `Response`; `get` and
+`post` expose no protocol argument. Direct HTTPS offers `h2` and `http/1.1`
+through TLS ALPN. An `Alt-Svc` advertisement moves the next request to an
+available HTTP/3 transport, and an upstream proxy receives the ordered `h3`,
+`h2`, `http/1.1` offer and reports what it negotiated. The protocol remains
+observable as `last_protocol` for operations, but an application does not
+branch on it to send a request. The exercise runs the same call and models
+through all three outcomes, and the direct h2 and TLS http/1.1 paths are live
+network requests rather than mock selection.
 
 The QUIC result is the one worth stating precisely, because it was produced
 twice. Its author first wrote its own AES rather than reach across a module
