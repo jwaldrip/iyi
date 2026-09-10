@@ -63,14 +63,6 @@ export IYI_PATH="$WORK/lib:$REPO/share/iyi/src:$REPO/share/iyi/crystal:$REPO/src
 
 mkdir mods
 
-# openssl_ext declares X509_get0_signature's palg as X509_ALGOR* but passes
-# pointerof(alg_ptr), a Pointer(Pointer(X509_ALGOR)). The shard leaves that body
-# untyped because this HS256 application never calls it; bind's fill deliberately
-# instantiates every method and finds the mismatch. A body that cannot compile
-# cannot cross, so the boundary's drop file names that one method explicitly.
-cat > mods/open_s_s_l.drop <<'DROP'
-OpenSSL::X509::SignatureVerifier.extract_signature(cert : OpenSSL::X509::Certificate)
-DROP
 
 # In dependency order, and each boundary built against the ones before it. See
 # `bench/bind_chain.sh` for why both halves of that matter — binding into a
@@ -102,11 +94,6 @@ bind_one() {
 
 echo "bound, in dependency order:"
 bind_one openssl_ext OpenSSL lib/openssl_ext/src/openssl_ext.cr
-if ! grep -qx 'left out by open_s_s_l.drop: 1' bind-openssl_ext.log ||
-   ! grep -qx '    OpenSSL::X509::SignatureVerifier.extract_signature(cert : OpenSSL::X509::Certificate)' bind-openssl_ext.log; then
-  echo "the OpenSSL boundary did not report its one explicit drop"
-  exit 1
-fi
 bind_one bindata     BinData lib/bindata/src/bindata.cr
 bind_one asn1        ASN1    lib/bindata/src/bindata/asn1.cr
 bind_one jwt         JWT     lib/jwt/src/jwt.cr

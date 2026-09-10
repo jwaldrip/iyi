@@ -60,13 +60,6 @@ export IYI_PATH="$WORK/lib:$REPO/share/iyi/src:$REPO/share/iyi/crystal:$REPO/src
 
 mkdir mods
 
-# db declares a private checkout_some wrapper whose pool version has no such
-# method, and nothing in the pinned shard calls the wrapper. The shard compiler
-# therefore leaves it untyped; bind's fill instantiates it and finds the mismatch.
-# A body that cannot compile and cannot be called cannot cross this boundary.
-cat > mods/d_b.drop <<'DROP'
-DB::Database#checkout_some(candidates : Enumerable(WeakRef(DB::Connection)))
-DROP
 
 # In dependency order, each boundary bound against the ones before it. See
 # `bench/bind_chain.sh` for why both halves of that matter.
@@ -92,11 +85,6 @@ bind_one() {
 
 echo "bound, in dependency order:"
 bind_one db      DB      lib/db/src/db.cr
-if ! grep -qx 'left out by d_b.drop: 1' bind-db.log ||
-   ! grep -qx '    DB::Database#checkout_some(candidates : Enumerable(WeakRef(DB::Connection)))' bind-db.log; then
-  echo "the DB boundary did not report its one explicit drop"
-  exit 1
-fi
 bind_one sqlite3 SQLite3 lib/sqlite3/src/sqlite3.cr
 
 # `:memory:`, which is the strictest form this can take and the form
