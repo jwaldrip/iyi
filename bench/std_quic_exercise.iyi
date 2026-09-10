@@ -33,9 +33,11 @@ import std/http3
 import std/webtransport
 
 # Native raise needs the scheduler main fiber initialized before any
-# mutation proof can unwind through protocol code. Without it, a correct
-# rejection prints its panic and then exits by SIGSEGV instead of exit 1.
-_ = IyiScheduler.current
+# mutation proof can unwind through protocol code. Only targets with the
+# structured runtime define IyiScheduler; the other arms still compile.
+{% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+  _ = IyiScheduler.current
+{% end %}
 
 using std/slice::{Slice, Bytes}
 using std/crypto::{constant_time_compare, HKDF, AES128GCM}
