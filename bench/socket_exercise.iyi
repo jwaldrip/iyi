@@ -10,6 +10,9 @@
 # 4. closed peer detection (read returns empty string on EOF)
 # 5. refused connection when target port has no listener
 
+import std/socket
+using std/socket::{IyiSocket}
+
 args = Program.args
 if args.size > 0 && args[0] == "refused"
   probe_server = IyiSocket.listen(0)

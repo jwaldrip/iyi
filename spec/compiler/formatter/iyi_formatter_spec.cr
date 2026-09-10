@@ -37,11 +37,21 @@ describe "Formatter on iyi" do
   assert_iyi_format "module m\n\npub def polite(name : String) : String\n  name\nend"
   assert_iyi_format "module m\n\npub struct Box(T)\n  getter value : T\nend"
   assert_iyi_format "module m\n\npub class Holder\n  @x = 1\nend"
-  # `pub macro` and `pub CONST` were the two the formatter did not know, and
-  # nothing formatted in CI had either in it, so it refused a whole file the
-  # first time one was written. Every prefix R-2 allows is listed here now.
+  # Every declaration `pub` takes, one case each, because the formatter needs
+  # its own line per declaration and nothing but writing the syntax catches
+  # the omission. `pub macro`, `pub CONST` and `pub alias` were each found by
+  # a file the formatter refused - the third one under a comment already
+  # saying that the second had happened - so the list is checked against the
+  # parser's below rather than kept by hand.
   assert_iyi_format "module m\n\npub macro described(declaration)\n  def described : String\n    \"x\"\n  end\nend"
   assert_iyi_format "module m\n\npub LIMIT = 42"
+  assert_iyi_format "module m\n\npub import app/greeter"
+  assert_iyi_format "module m\n\npub enum Colour\n  Red\n  Green\nend"
+  assert_iyi_format "module m\n\npub alias Bytes = Slice(UInt8)"
+  assert_iyi_format "module m\n\npub annotation Checker\nend"
+  assert_iyi_format "module m\n\npub abstract class Sheet\n  abstract def title : String\nend"
+  assert_iyi_format "module m\n\npub abstract struct Shape\n  abstract def area : Int32\nend"
+  assert_iyi_format "module m\n\npub abstract def title : String"
 
   # Traits, their supertraits, and the associated types they declare.
   assert_iyi_format "module m\n\npub trait Show\n  abstract def show : String\nend"
@@ -65,6 +75,26 @@ describe "Formatter on iyi" do
   assert_iyi_format "module m\n\nvalue = read(path).or(0)"
   assert_iyi_format "module m\n\nvalue = read(path).or_panic"
   assert_iyi_format "module m\n\ndef f : Nil\n  defer close(handle)\nend"
+
+  # And the list itself, held against the parser's, because a case per
+  # declaration only helps while the cases are all of them. `parse_pub` is
+  # the one place that decides what `pub` takes; a keyword added there
+  # without a formatter case fails here instead of in somebody's file.
+  it "covers every declaration `pub` takes" do
+    source = File.read(File.expand_path("../../../src/compiler/iyi/syntax/parser.cr", __DIR__))
+    body = source[source.index!("def parse_pub")..]
+    body = body[..body.index!("\n    def ", 1)]
+    taken = body.scan(/Keyword::([A-Z]+)/).map(&.[1].downcase).to_set
+
+    # `const` has no keyword in front of it - `pub LIMIT = 42` is the name
+    # itself - so it is not in the parser's `case` and is covered by the line
+    # above all the same.
+    covered = Set{"trait", "import", "def", "class", "struct", "macro",
+                  "enum", "alias", "annotation", "abstract"}
+
+    (taken - covered).should be_empty
+    (covered - taken).should be_empty
+  end
 
   # Running at all: these two are wrong on the way in and right on the way out.
   assert_iyi_format "module m\n\npub    def   polite(name : String) : String\n  name\nend",

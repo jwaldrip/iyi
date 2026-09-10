@@ -88,6 +88,26 @@ end
 # tuple out and answers `[]`; what it looks like printed is the prelude's,
 # one element per position, each inspected.
 struct Tuple
+  # How many, which is the type's own arithmetic rather than anything a
+  # caller counts. It arrived inside `format.iyi` because `sprintf` walks
+  # its arguments, so `std/indexable` - which asks a tuple of indexes how
+  # long it is - only compiled while a formatter was in every program.
+  def size : Int32
+    {{ T.size }}
+  end
+
+  # Indexed by a *value* rather than by a literal, which is what walking a
+  # tuple at runtime needs: `std/indexable`'s `values_at(*indexes)` asks a
+  # tuple of indexes for its members one by one, and `sprintf` walks its
+  # arguments the same way. Both were reading it out of `format.iyi`, so
+  # either one only compiled while a formatter was in the program.
+  def [](index : Int32)
+    {% for i in 0...T.size %}
+      return self[{{i}}] if index == {{i}}
+    {% end %}
+    raise "index out of range"
+  end
+
   def to_s : String
     result = "{"
     {% for i in 0...T.size %}

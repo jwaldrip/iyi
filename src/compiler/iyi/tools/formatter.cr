@@ -3483,8 +3483,10 @@ module Iyi
       false
     end
 
-    # iyi: `import app/greeter`
+    # iyi: `import app/greeter`, and `pub import app/greeter` — the facade
+    # form, which re-exports what it imports (R-2).
     def visit(node : ImportDecl)
+      write_keyword :pub, " " if node.exported
       write_keyword :import, " "
       format_iyi_module_path node.path
 
@@ -3700,6 +3702,7 @@ module Iyi
     end
 
     def visit(node : AnnotationDef)
+      write_keyword :pub, " " if node.exported?
       write_keyword :annotation, " "
 
       accept node.name
@@ -3804,6 +3807,7 @@ module Iyi
     end
 
     def visit(node : EnumDef)
+      write_keyword :pub, " " if node.exported?
       write_keyword :enum, " "
       accept node.name
 
@@ -4384,10 +4388,11 @@ module Iyi
     def format_alias_or_typedef(node, keyword : Keyword, value)
       # iyi: `pub alias`, the same prefix `pub def`, `pub struct` and `pub
       # macro` carry (R-2). Without this the formatter refused every file with
-      # an exported alias in it, which is the third time this class of defect
-      # has been fixed here: the comment on `pub macro` above says the same
-      # thing. The node has carried `exported?` since aliases became part of a
-      # module's surface; only this method never read it.
+      # an exported alias in it. Every declaration `pub` takes needs its own
+      # line like this one, and three of them - `import`, `enum`,
+      # `annotation` - were missing it when
+      # `spec/compiler/formatter/iyi_formatter_spec.cr` was made to hold the
+      # parser's list: that spec is what catches the next one.
       write_keyword :pub, " " if node.responds_to?(:exported?) && node.exported?
       write_keyword keyword, " "
 

@@ -63,7 +63,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 14,732 lines, of which 4,689 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
+| iyi's own prelude | 13,424 lines, of which 3,381 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -88,7 +88,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 14,732 lines
+> "No standard library worth the name" is still true of iyi's own 13,424 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -270,8 +270,8 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 14,732 lines,
-primitives included, of which the library is 4,689.** Not a standard library:
+**3. A deliberately tiny prelude, written in iyi. Done: 13,424 lines,
+primitives included, of which the library is 3,381.** Not a standard library:
 integers, booleans, a string, one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
 existing sample needs it, never because it belongs there.
@@ -297,28 +297,44 @@ collector (GC_DESIGN.md, the block between two marks in `prelude.iyi`),
 the scheduler and the kernel thread (III.4, `concurrency.iyi` and
 `thread.iyi`), the shortest-round-trip float text (`float.iyi`) - and they
 are most of its lines. So the figure held to the ceiling is the library:
-**4,689 lines** of the 13,581, measured by `bench/doc_numbers.py` as
+**3,381 lines** of the 13,581, measured by `bench/doc_numbers.py` as
 everything under `src/iyi/` except those three. The whole-prelude figure is
 stated beside it because a reader sees the whole file, and a "tiny prelude"
 claim that hid 9,000 lines of runtime would be a claim about the wrong number.
 
-**The ceiling is breached, and this records it rather than moving it.** The
-library was under 3,734 until `io.iyi`, `socket.iyi` and `format.iyi` were
-written, which is what took it past the ceiling, and the platform work since
-has carried it to 4,689, 955 lines over. Each module was added for the reason
-the rule allows, a program in this repository needs it, and together they are
-still more than the rule intended to permit.
+**The ceiling was breached, and moving two files closed it.** The library
+was under 3,734 until `io.iyi`, `socket.iyi` and `format.iyi` were written,
+which took it to 4,689 — 955 lines over — and this section recorded the
+breach rather than moving the number. Two of the three then answered the
+question the standard library had already answered for `text` and `time`:
+nothing in `src/iyi/` calls `sprintf` and nothing in it opens a socket, so
+every program was carrying 1,358 lines for the programs that do. They are
+`src/std/format.iyi` and `src/std/socket.iyi` now, reached by `import
+std/format` and `import std/socket`, and the library is **3,381 lines**,
+353 under the ceiling. `io.iyi` stays: it is the write path behind `puts`,
+which every program has.
+
+What the move found is the reason to record it here rather than in a
+changelog. `format.iyi` had been *redefining* `Int64#to_s` and
+`Int64#to_s(base)` over the prelude's own, with the one shape that does not
+overflow at `Int64::MIN`, and declaring `UInt64#//`, `UInt64#%`,
+`UInt8#to_s`, `Tuple#size` and `Tuple#[]` that nothing else in the prelude
+had. So `std/time` could divide two `UInt64`s and `std/indexable` could walk
+a tuple only because a formatter happened to be in every program. Those are
+the number surface and the tuple's own arithmetic: they are in
+`src/iyi/number.iyi` and `src/iyi/object.iyi` now, one definition each, and
+`sprintf` asks its own question — "too few arguments for format string" —
+where it used to borrow a raise from an index.
 
 **The standard library is deliberately outside that count, and this is the
-answer this section left open.** `src/std/` is 4,769 lines across ten modules:
-`traits`, `cmp`, `enumerable`, `indexable`, `iterator`, `slice`, `text`,
-`time`, `list` and `derives`. It is opt-in via `import std/...`, it lives
-outside `src/iyi/` where `bench/doc_numbers.py` measures the ceiling, and a
-program that imports none of it pays for none of it. So the prelude rule keeps
-its meaning, "a method enters because a program in this repository needs it",
-while the language still gets a library. The other answer this section named,
-moving the ceiling, is not taken. What is not open is pretending the prelude
-number itself still fits.
+answer this section left open.** `src/std/` is 6,057 lines across twelve
+modules: `traits`, `cmp`, `enumerable`, `indexable`, `iterator`, `slice`,
+`text`, `time`, `format`, `socket`, `list` and `derives`. It is opt-in via
+`import std/...`, it lives outside `src/iyi/` where `bench/doc_numbers.py`
+measures the ceiling, and a program that imports none of it pays for none of
+it. So the prelude rule keeps its meaning, "a method enters because a
+program in this repository needs it", and the number it is held to is the
+one the rule named.
 
 The ceiling was not a guess. Crystal's own 0.1.0 shipped 8,161 lines of
 library. Its core is **3,551 lines** of that: `object`, `nil`, `bool`, `char`,
@@ -824,9 +840,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 108,055 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 4,771 in std |
-| Specs | 21,146 lines | 9,566 for iyi |
+| Compiler | 24,984 lines, **written in Crystal** | 108,060 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 13,424-line own prelude + 6,057 in std |
+| Specs | 21,146 lines | 9,596 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |
@@ -8611,7 +8627,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 14,732-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 13,424-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler
