@@ -114,7 +114,7 @@ prove_fails() {
 
 # 1. Loopback UDP datagram dropped (fails real UDP packet receive)
 prove_fails "loopback UDP send_to dropped" udp_drop \
-  "server received nothing over UDP" "quic.iyi" \
+  "server received no ClientHello" "quic.iyi" \
   's/@socket.send_to(data, host, port)/0 # drop/'
 
 # 2. 1-RTT packet space corrupted (fails 1-RTT ACK processing)
@@ -128,7 +128,7 @@ prove_fails "short header 1-RTT read keys corrupted" sh_keys \
   's/keys = @app_keys_in/keys = @initial_keys_in/'
 # 4. ACK feedback omitted (fails bytes_in_flight drop assertion)
 prove_fails "ACK feedback omitted" ack_feedback \
-  "bytes in flight did not drop on ACK" "quic.iyi" \
+  "bytes in flight did not drop on 1-RTT ACK" "quic.iyi" \
   's/@congestion_ctrl.on_packet_acked(pkt.size, pkt.time_sent)/# no-op/'
 
 # 5. Stream limit enforcement (fails with STREAM_LIMIT_ERROR)
