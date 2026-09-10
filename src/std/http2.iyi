@@ -422,7 +422,7 @@ pub class Stream
       @end_stream_sent = end_stream
       nil
     elsif @state == StreamState::ReservedLocal
-      @state = StreamState::HalfClosedRemote
+      @state = end_stream ? StreamState::Closed : StreamState::HalfClosedRemote
       @end_stream_sent = end_stream
       nil
     elsif @state == StreamState::Open
@@ -450,7 +450,7 @@ pub class Stream
       @end_stream_received = end_stream
       nil
     elsif @state == StreamState::ReservedRemote
-      @state = StreamState::HalfClosedLocal
+      @state = end_stream ? StreamState::Closed : StreamState::HalfClosedLocal
       @end_stream_received = end_stream
       nil
     elsif @state == StreamState::Open
@@ -571,9 +571,12 @@ pub class Connection
   property closed : Bool
   property goaway_sent : Bool
   property goaway_received : Bool
+  property goaway_sent_last_stream_id : Int32
+  property goaway_received_last_stream_id : Int32
   property last_error : Http2Error?
   getter completed_requests : Array(Tuple(Int32, Request))
   getter completed_responses : Array(Tuple(Int32, Response))
+  getter pushed_requests : Array(Tuple(Int32, Int32, Request))
   getter stream_rst_events : Array(Tuple(Int32, ErrorCode))
   property ping_ack_count : Int32
 
@@ -600,9 +603,12 @@ pub class Connection
     @closed = false
     @goaway_sent = false
     @goaway_received = false
+    @goaway_sent_last_stream_id = MAX_WINDOW_SIZE.to_i32
+    @goaway_received_last_stream_id = MAX_WINDOW_SIZE.to_i32
     @last_error = nil
     @completed_requests = [] of Tuple(Int32, Request)
     @completed_responses = [] of Tuple(Int32, Response)
+    @pushed_requests = [] of Tuple(Int32, Int32, Request)
     @stream_rst_events = [] of Tuple(Int32, ErrorCode)
     @ping_ack_count = 0
   end
@@ -655,13 +661,45 @@ pub class Connection
     i = 0
     while i < @streams.size
       st = @streams[i]
-      if st.state != StreamState::Idle && st.state != StreamState::Closed
+      if st.state == StreamState::Open || st.state == StreamState::HalfClosedLocal || st.state == StreamState::HalfClosedRemote
         count = count + 1
       end
       i = i + 1
     end
     count
   end
+  def get_pushed_request(promised_stream_id : Int32) : Request?
+    i = 0
+    while i < @pushed_requests.size
+      item = @pushed_requests[i]
+      if item[1] == promised_stream_id
+        return item[2]
+      end
+      i = i + 1
+    end
+    nil
+  end
+
+  private def record_pushed_request(assoc_stream_id : Int32, prom_stream : Stream) : Nil
+    method = ""
+    target = ""
+    headers = Headers.new
+    i = 0
+    while i < prom_stream.headers.size
+      f = prom_stream.headers[i]
+      if f.name == ":method"
+        method = f.value
+      elsif f.name == ":path"
+        target = f.value
+      elsif !f.name.starts_with?(":")
+        headers[f.name] = f.value
+      end
+      i = i + 1
+    end
+    pushed_req = Request.new(method, target, headers, "", "HTTP/2")
+    @pushed_requests << {assoc_stream_id, prom_stream.id, pushed_req}
+  end
+
 
   def request_trailers(stream_id : Int32) : Headers
     tr = Headers.new
@@ -779,6 +817,7 @@ pub class Connection
     end
     send_frame(FrameType::GOAWAY, 0_u8, 0_i32, payload)
     @goaway_sent = true
+    @goaway_sent_last_stream_id = last_stream_id
     @closed = true
   end
 
@@ -816,6 +855,23 @@ pub class Connection
   end
 
   def send_headers(stream_id : Int32, headers : Array(HeaderField), end_stream : Bool) : Nil | Http2Error
+    # Finding 18: Guard stream initiation after GOAWAY in send_headers
+    existing = find_stream(stream_id)
+    if existing.nil? || existing.state == StreamState::Idle
+      if @goaway_sent && stream_id > @goaway_sent_last_stream_id
+        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Cannot initiate stream #{stream_id} exceeding sent GOAWAY last stream ID #{@goaway_sent_last_stream_id}", stream_id, true)
+      end
+      if @goaway_received && stream_id > @goaway_received_last_stream_id
+        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Cannot initiate stream #{stream_id} exceeding peer GOAWAY last stream ID #{@goaway_received_last_stream_id}", stream_id, true)
+      end
+      if @goaway_received
+        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Cannot initiate stream #{stream_id} after receiving GOAWAY", stream_id, true)
+      end
+      if @goaway_sent
+        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Cannot initiate stream #{stream_id} after sending GOAWAY", stream_id, true)
+      end
+    end
+
     stream = create_stream(stream_id)
     err = stream.on_send_headers(end_stream)
     return err if err
@@ -1119,11 +1175,6 @@ pub class Connection
   end
 
   private def process_frame(header : FrameHeader, payload : Bytes) : Nil | Http2Error
-    # Check max frame size
-    if header.length > @local_settings.max_frame_size
-      return Http2Error.new(ErrorCode::FRAME_SIZE_ERROR, "Frame length #{header.length} exceeds MAX_FRAME_SIZE #{@local_settings.max_frame_size}", header.stream_id, true)
-    end
-
     # CONTINUATION state verification (RFC 9113 Section 6.2, 6.10)
     if @expecting_continuation
       if header.type != FrameType::CONTINUATION
@@ -1266,6 +1317,14 @@ pub class Connection
     # Stream state check & monotonic stream ID enforcement
     stream = find_stream(header.stream_id)
     if stream.nil? || stream.state == StreamState::Idle
+      # Finding 18: Inbound GOAWAY boundary enforcement (RFC 9113 6.8)
+      if @goaway_sent && header.stream_id > @goaway_sent_last_stream_id
+        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Stream ID #{header.stream_id} exceeds sent GOAWAY last stream ID #{@goaway_sent_last_stream_id}", header.stream_id, true)
+      end
+      if @goaway_received && header.stream_id > @goaway_received_last_stream_id
+        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Stream ID #{header.stream_id} exceeds received GOAWAY last stream ID #{@goaway_received_last_stream_id}", header.stream_id, true)
+      end
+
       # Finding 7: Enforce SETTINGS_MAX_CONCURRENT_STREAMS (RFC 9113 5.1.2)
       if active_stream_count >= @local_settings.max_concurrent_streams
         send_rst_stream(header.stream_id, ErrorCode::REFUSED_STREAM)
@@ -1351,6 +1410,9 @@ pub class Connection
       if @continuation_end_stream
         deliver_completed_stream(target_stream)
       end
+      if target_stream.state == StreamState::ReservedRemote
+        record_pushed_request(@continuation_stream_id, target_stream)
+      end
     end
 
     nil
@@ -1370,7 +1432,8 @@ pub class Connection
     has_path = false
     has_authority = false
     has_status = false
-
+    has_protocol = false
+    method_val = ""
     i = 0
     while i < fields.size
       f = fields[i]
@@ -1392,6 +1455,7 @@ pub class Connection
           if f.name == ":method"
             return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Duplicate :method pseudo-header", stream.id, false) if has_method
             has_method = true
+            method_val = f.value
           elsif f.name == ":scheme"
             return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Duplicate :scheme pseudo-header", stream.id, false) if has_scheme
             has_scheme = true
@@ -1402,7 +1466,8 @@ pub class Connection
             return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Duplicate :authority pseudo-header", stream.id, false) if has_authority
             has_authority = true
           elsif f.name == ":protocol"
-            # Allowed for Extended CONNECT (RFC 8441)
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Duplicate :protocol pseudo-header", stream.id, false) if has_protocol
+            has_protocol = true
           else
             return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Unknown request pseudo-header #{f.name}", stream.id, false)
           end
@@ -1445,9 +1510,29 @@ pub class Connection
     if !is_trailer
       is_request = (@role == Role::Server) || (stream.state == StreamState::ReservedRemote)
       if is_request
-        # Finding 13: RFC 9113 8.3.1: :method, :scheme, and :path must be present
-        if !has_method || !has_scheme || !has_path
-          return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Missing mandatory request pseudo-headers", stream.id, false)
+        if method_val == "CONNECT"
+          if has_protocol
+            # Extended CONNECT (RFC 8441): :method, :protocol, :scheme, :authority, :path must be present
+            if !has_scheme || !has_path || !has_authority
+              return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Extended CONNECT missing mandatory pseudo-headers", stream.id, false)
+            end
+          else
+            # Classic CONNECT (RFC 9113 8.5): :method and :authority MUST be present; :scheme and :path MUST be omitted
+            if !has_authority
+              return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "CONNECT missing :authority", stream.id, false)
+            end
+            if has_scheme || has_path
+              return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "CONNECT request must omit :scheme and :path", stream.id, false)
+            end
+          end
+        else
+          # All other HTTP methods: :method, :scheme, :path must be present; :protocol forbidden
+          if !has_method || !has_scheme || !has_path
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Missing mandatory request pseudo-headers", stream.id, false)
+          end
+          if has_protocol
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, ":protocol pseudo-header only allowed with CONNECT", stream.id, false)
+          end
         end
       else
         # Finding 13: RFC 9113 8.3.2: :status must be present
@@ -1705,6 +1790,7 @@ pub class Connection
 
     if header.end_headers?
       decode_and_apply_headers(prom_stream, fragment)
+      record_pushed_request(header.stream_id, prom_stream)
     else
       # Finding 1: Route subsequent CONTINUATION to promised_id!
       @expecting_continuation = true
@@ -1847,6 +1933,10 @@ pub class Client
       i = i + 1
     end
     nil
+  end
+
+  def get_pushed_request(promised_stream_id : Int32) : Request?
+    @connection.get_pushed_request(promised_stream_id)
   end
 end
 

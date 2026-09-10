@@ -141,16 +141,15 @@ prove_fails "data on stream 0 check disabled" no_stream0_data \
   "assertion failed: h2spec 6.1 code is PROTOCOL_ERROR" "http2.iyi" \
   '/RFC 9113 6.1: DATA frames MUST be associated with a stream/,/return Http2Error/s/if header.stream_id == 0/if false/'
 
-# 3. Stream ID monotonicity check disabled
+# 3. Stream ID monotonicity check disabled in process_headers
 prove_fails "stream monotonicity check disabled" no_monotonicity \
   "assertion failed: h2spec 5.1.1: decreasing stream ID rejected" "http2.iyi" \
-  's/if header.stream_id <= @last_peer_stream_id/if false/'
+  '/RFC 9113 5.1.1: stream identifier must be strictly greater than previous/,/return Http2Error/s/if header.stream_id <= @last_peer_stream_id/if false/'
 
 # 4. Frame on closed stream check disabled
 prove_fails "frame on closed stream check disabled" no_closed_check \
   "assertion failed: h2spec 5.1 message is closed stream" "http2.iyi" \
-  's/if stream.state == StreamState::Closed || stream.state == StreamState::HalfClosedRemote/if false/'
-
+  '/process_data/,/Flow control accounting/s/if stream.state == StreamState::Closed || stream.state == StreamState::HalfClosedRemote/if false/'
 # 5. SETTINGS bad length check disabled
 prove_fails "settings bad length check disabled" no_settings_len \
   "assertion failed: h2spec 6.5: SETTINGS length not multiple of 6 rejected" "http2.iyi" \
