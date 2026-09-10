@@ -153,8 +153,8 @@ class ByteBuffer
   getter capacity : Int32
 
   def initialize(initial_capacity : Int32 = 1024)
-    cap = initial_capacity < 16 ? 16 : initial_capacity
-    @pointer = Pointer(UInt8).malloc(cap.to_u64)
+    cap = initial_capacity < 0 ? 0 : initial_capacity
+    @pointer = cap == 0 ? Pointer(UInt8).new(0_u64) : Pointer(UInt8).malloc(cap.to_u64)
     @size = 0
     @capacity = cap
   end
@@ -635,12 +635,24 @@ class InflateDecoder
 
   def initialize(data : Bytes, @max_output_size : Int64 = -1_i64)
     @reader = BitReader.new(data)
-    initial_cap = if @max_output_size >= 0_i64 && @max_output_size < 1024_i64
-                    @max_output_size.to_i32
-                  else
-                    data.size * 2 + 512
-                  end
-    @out_buf = ByteBuffer.new(initial_cap)
+
+    # 1. Reasonable input-derived estimate: data.size * 2 + 512, avoiding overflow
+    in_sz = data.size.to_i64
+    est = in_sz > 1073741824_i64 ? 2147483647_i64 : (in_sz * 2_i64 + 512_i64)
+    est = 16_i64 if est < 16_i64
+
+    # 2. Output bound is also an allocation bound:
+    # Initial capacity must be min(reasonable input-derived capacity, max_output_size)
+    init_cap = if @max_output_size >= 0_i64
+                 est > @max_output_size ? @max_output_size : est
+               else
+                 est
+               end
+
+    init_cap = 0_i64 if init_cap < 0_i64
+    init_cap = 2147483647_i64 if init_cap > 2147483647_i64
+
+    @out_buf = ByteBuffer.new(init_cap.to_i32)
     @error = nil
     @limit_exceeded = false
   end
@@ -715,7 +727,7 @@ class InflateDecoder
 
     l = len
     while l > 0
-      if @max_output_size >= 0_i64 && @out_buf.size.to_i64 >= @max_output_size
+      if @max_output_size >= 0_i64 && @out_buf.size.to_i64 >= @max_output_size # GUARD_STORED_LIMIT
         @limit_exceeded = true
         return
       end
@@ -733,8 +745,7 @@ class InflateDecoder
     return nil if @reader.error?
     hclen = @reader.read_bits(4) + 4
     return nil if @reader.error?
-
-    if hlit > 286
+    if hlit > 286 # DYNAMIC_HLIT_INVARIANT
       fail("invalid HLIT #{hlit}")
       return nil
     end
@@ -849,7 +860,7 @@ class InflateDecoder
       return if @reader.error?
 
       if sym < 256
-        if @max_output_size >= 0_i64 && @out_buf.size.to_i64 >= @max_output_size
+        if @max_output_size >= 0_i64 && @out_buf.size.to_i64 >= @max_output_size # GUARD_LITERAL_LIMIT
           @limit_exceeded = true
           return
         end
@@ -890,7 +901,7 @@ class InflateDecoder
 
         l = match_len
         while l > 0
-          if @max_output_size >= 0_i64 && @out_buf.size.to_i64 >= @max_output_size
+          if @max_output_size >= 0_i64 && @out_buf.size.to_i64 >= @max_output_size # GUARD_MATCH_LIMIT
             @limit_exceeded = true
             return
           end

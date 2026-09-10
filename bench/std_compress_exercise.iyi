@@ -293,7 +293,30 @@ def main : Nil
     raise "bounded: expected Bytes for valid dynamic block"
   end
 
-  # Decompression bomb: 10,000 'A's compressed into 27 bytes
+  # Independent limit-overflow case 1: Stored block overflow (vector: 01 05 00 fa ff 48 65 6c 6c 6f with limit 3)
+  stored_vec_bytes = make_bytes(10) { |i| stored_vec[i].to_u8 }
+  r_stored_lim = Inflate.decompress(stored_vec_bytes, 3_i64)
+  case r_stored_lim
+  when DecompressLimitExceeded
+    raise "stored limit mismatch" unless r_stored_lim.limit == 3_i64
+    raise "stored produced mismatch" unless r_stored_lim.produced == 3_i64
+  else
+    raise "expected DecompressLimitExceeded for stored limit overflow"
+  end
+
+  # Independent limit-overflow case 2: Fixed-Huffman literal overflow (vector: f3 48 cd c9 c9 07 00 with limit 2)
+  fixed_lit_raw = [0xF3_u8, 0x48_u8, 0xCD_u8, 0xC9_u8, 0xC9_u8, 0x07_u8, 0x00_u8]
+  fixed_lit_bytes = make_bytes(7) { |i| fixed_lit_raw[i] }
+  r_fixed_lim = Inflate.decompress(fixed_lit_bytes, 2_i64)
+  case r_fixed_lim
+  when DecompressLimitExceeded
+    raise "fixed literal limit mismatch" unless r_fixed_lim.limit == 2_i64
+    raise "fixed literal produced mismatch" unless r_fixed_lim.produced == 2_i64
+  else
+    raise "expected DecompressLimitExceeded for fixed literal limit overflow"
+  end
+
+  # Independent limit-overflow case 3: LZ77 back-reference copy overflow (bomb with limit 75)
   bomb_raw = make_bytes(10000) { 65_u8 }
   bomb_comp = Deflate.compress(bomb_raw, 6)
   bomb_lim = 75_i64
@@ -303,9 +326,8 @@ def main : Nil
     raise "bomb limit mismatch" unless r_bomb.limit == bomb_lim
     raise "bomb produced mismatch" unless r_bomb.produced == bomb_lim
   else
-    raise "expected DecompressLimitExceeded for decompression bomb"
+    raise "expected DecompressLimitExceeded for match limit overflow"
   end
-
   # Malformed classes returning DecompressError rather than unwinding:
   # 1. Unexpected EOF / truncation
   bad_trunc = bomb_comp[0, bomb_comp.size // 2]
@@ -353,9 +375,10 @@ def main : Nil
   # 5. Invalid HLIT (> 286)
   b_hlit = make_bytes(4) { 0_u8 }
   b_hlit[0] = 245_u8
-  case Inflate.decompress(b_hlit, 1000_i64)
+  r_hlit = Inflate.decompress(b_hlit, 1000_i64)
+  case r_hlit
   when DecompressError
-    # ok
+    raise "hlit error mismatch" unless r_hlit.message == "invalid HLIT 287"
   else
     raise "expected DecompressError for invalid HLIT"
   end
