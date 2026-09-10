@@ -64,7 +64,7 @@ export IYI_PATH="$WORK/lib:$REPO/share/iyi/src:$REPO/share/iyi/crystal:$REPO/src
 mkdir mods
 
 # openssl_ext declares X509_get0_signature's palg as X509_ALGOR* but passes
-# pointerof(alg_ptr), a Pointer(Pointer(X509_ALGOR)). Crystal leaves the body
+# pointerof(alg_ptr), a Pointer(Pointer(X509_ALGOR)). The shard leaves that body
 # untyped because this HS256 application never calls it; bind's fill deliberately
 # instantiates every method and finds the mismatch. A body that cannot compile
 # cannot cross, so the boundary's drop file names that one method explicitly.
