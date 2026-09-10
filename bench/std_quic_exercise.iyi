@@ -47,14 +47,7 @@ using std/qpack::{FieldLine}
 using std/http3::{H3Session, H3Request, H3Response}
 using std/capsule::{Capsule}
 using std/webtransport::{WebTransportSession, SessionStatus, CloseSessionCapsule}
-using std/quic::{
-  QuicVersion, PacketSpace, PacketType, FrameType, TransportError,
-  KeyBundle, QuicCrypto, PacketNumber, LongHeader, ShortHeader, VersionNegotiationPacket,
-  AckRange, DecodedFrame, FrameCodec, TransportParameters,
-  RttEstimator, SentPacket, NewRenoCongestionController,
-  StreamId, StreamStatus, QuicStream, StreamManager,
-  ConnectionRole, ConnectionState, QuicConnection, QuicEndpoint, QuicTlsContext, QuicServerCredentials
-}
+using std/quic::{QuicVersion, PacketSpace, PacketType, FrameType, TransportError, KeyBundle, QuicCrypto, PacketNumber, LongHeader, ShortHeader, VersionNegotiationPacket, AckRange, DecodedFrame, FrameCodec, TransportParameters, RttEstimator, SentPacket, NewRenoCongestionController, StreamId, StreamStatus, QuicStream, StreamManager, ConnectionRole, ConnectionState, QuicConnection, QuicEndpoint, QuicTlsContext, QuicServerCredentials}
 
 def hex_char_val(c : Char) : UInt8
   if c >= '0' && c <= '9'
@@ -133,7 +126,9 @@ crypto_frame_hex = "060040f1010000ed0303ebf8fa56f12939b9584a3896472ec40bb863cfd3
 crypto_frame = hex_to_bytes(crypto_frame_hex)
 
 plaintext_a2 = Bytes.new(1162, 0_u8)
-i = 0; while i < crypto_frame.size; plaintext_a2[i] = crypto_frame[i]; i = i + 1; end
+i = 0; while i < crypto_frame.size
+  plaintext_a2[i] = crypto_frame[i]; i = i + 1
+end
 
 unprotected_hdr_a2 = hex_to_bytes("c300000001088394c8f03e5157080000449e00000002")
 packet_a2 = QuicCrypto.protect_packet(
@@ -343,7 +338,7 @@ raise "first sample rttvar" unless rtt.rttvar == 40_i64
 raise "first sample min rtt" unless rtt.min_rtt == 80_i64
 
 pto_init = rtt.pto(PacketSpace::INITIAL, 0)
-pto_app  = rtt.pto(PacketSpace::APP_DATA, 0)
+pto_app = rtt.pto(PacketSpace::APP_DATA, 0)
 raise "pto space differentiation" unless pto_app == (pto_init + 25_i64)
 raise "pto shift overflow guard" unless rtt.pto(PacketSpace::APP_DATA, 63) > 0_i64
 puts "  loss-and-congestion: first sample RTT and space-aware PTO verified"
@@ -384,7 +379,9 @@ assert_bytes_equal(tp_dec.initial_source_connection_id, hex_to_bytes("0102030405
 
 # Negative transport parameter checks: duplicate parameter and client forbidden parameter
 dup_tp_bytes = Bytes.new(tp_bytes.size + 6)
-i = 0; while i < tp_bytes.size; dup_tp_bytes[i] = tp_bytes[i]; i = i + 1; end
+i = 0; while i < tp_bytes.size
+  dup_tp_bytes[i] = tp_bytes[i]; i = i + 1
+end
 dup_tp_bytes[tp_bytes.size] = 0x04_u8; dup_tp_bytes[tp_bytes.size + 1] = 0x01_u8; dup_tp_bytes[tp_bytes.size + 2] = 0x20_u8
 dup_tp, dup_err = TransportParameters.decode?(dup_tp_bytes)
 raise "duplicate transport parameter not rejected" unless dup_tp.nil? && dup_err == TransportError::TRANSPORT_PARAMETER_ERROR
