@@ -128,6 +128,60 @@ prove_fails() {
     return
   fi
 
+  if [ "$exit_code" -ne 1 ]; then
+    echo "  $label: failed with signal/exit $exit_code instead of clean exit 1"
+    sed -n '$p' "$WORK/$dir/out"
+    status=1
+    return
+  fi
+
+  if ! grep -q "$phrase" "$WORK/$dir/out"; then
+    echo "  $label: failed, but not at expected check (expected '$phrase')"
+    sed -n '$p' "$WORK/$dir/out"
+    status=1
+    return
+  fi
+
+  printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
+    "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
+}
+
+prove_fails_arg() {
+  local label="$1" dir="$2" arg="$3" phrase="$4" target_file="$5" sed_script="$6"
+  mkdir -p "$WORK/$dir/std"
+  cp "$REPO/src/std/"*.iyi "$WORK/$dir/std/"
+  sed -e "$sed_script" "$REPO/src/std/$target_file" > "$WORK/$dir/std/$target_file"
+
+  if cmp -s "$REPO/src/std/$target_file" "$WORK/$dir/std/$target_file"; then
+    echo "  $label: the patch changed nothing, so this proves nothing"
+    status=1
+    return
+  fi
+
+  if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
+       -o "$WORK/$dir/program" "$REPO/bench/std_tls_exercise.iyi" \
+       >"$WORK/$dir/build.log" 2>&1; then
+    echo "  $label: the patched library did not build"
+    sed -n '1,12p' "$WORK/$dir/build.log"
+    status=1
+    return
+  fi
+
+  "$WORK/$dir/program" "$arg" >"$WORK/$dir/out" 2>&1
+  local exit_code=$?
+  if [ "$exit_code" -eq 0 ]; then
+    echo "  $label: the exercise still passed, so it does not test this"
+    status=1
+    return
+  fi
+
+  if [ "$exit_code" -ne 1 ]; then
+    echo "  $label: failed with signal/exit $exit_code instead of clean exit 1"
+    sed -n '$p' "$WORK/$dir/out"
+    status=1
+    return
+  fi
+
   if ! grep -q "$phrase" "$WORK/$dir/out"; then
     echo "  $label: failed, but not at expected check (expected '$phrase')"
     sed -n '$p' "$WORK/$dir/out"
@@ -196,6 +250,11 @@ prove_fails "handshake buffer slicing bypassed" buffer_slicing_bypass \
 prove_fails "write record fragmentation bypassed" fragmentation_bypass \
   "assertion failed: Large write fragmented into exactly two records" "tls.iyi" \
   's/chunk_len = remaining > MAX_RECORD_PLAINTEXT ? MAX_RECORD_PLAINTEXT : remaining/chunk_len = remaining/'
+
+# 13. Sequence number exhaustion guard bypassed (Finding 9)
+prove_fails_arg "sequence exhaustion guard bypassed" seq_exhaustion_bypass "seq_exhaustion" \
+  "assertion failed: nonce-reuse boundary guard failed: sequence wrapped without error" "tls.iyi" \
+  's/raise "TLS record sequence number exhausted (cannot wrap)" if @seq == 0xffffffffffffffff_u64/# bypass/'
 
 echo
 if [ "$status" -eq 0 ]; then

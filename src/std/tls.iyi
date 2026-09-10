@@ -1013,16 +1013,16 @@ pub class Certificate
   getter not_after : Int64
   getter pubkey_algo : Symbol # :rsa, :ec, :ed25519
   getter pubkey_bytes : Bytes
-  getter rsa_n : BigInt?
-  getter rsa_e : BigInt?
-  getter ec_x : BigInt?
-  getter ec_y : BigInt?
+  getter rsa_n : BigInt
+  getter rsa_e : BigInt
+  getter ec_x : BigInt
+  getter ec_y : BigInt
   getter ec_curve : Symbol?
   getter ed25519_pub : Bytes?
   getter san_dns_names : Array(String)
   getter common_name : String?
   getter is_ca : Bool
-  getter path_len : Int32?
+  getter path_len : Int32
   getter has_key_usage : Bool
   getter key_usage_cert_sign : Bool
   getter sig_algo : Symbol
@@ -1038,20 +1038,20 @@ pub class Certificate
     @not_after : Int64,
     @pubkey_algo : Symbol,
     @pubkey_bytes : Bytes,
-    @rsa_n : BigInt?,
-    @rsa_e : BigInt?,
-    @ec_x : BigInt?,
-    @ec_y : BigInt?,
+    @rsa_n : BigInt,
+    @rsa_e : BigInt,
+    @ec_x : BigInt,
+    @ec_y : BigInt,
     @ec_curve : Symbol?,
     @ed25519_pub : Bytes?,
     @san_dns_names : Array(String),
     @common_name : String?,
     @is_ca : Bool,
-    @path_len : Int32?,
+    @path_len : Int32,
     @has_key_usage : Bool,
     @key_usage_cert_sign : Bool,
     @sig_algo : Symbol,
-    @sig_bytes : Bytes,
+    @sig_bytes : Bytes
   )
   end
 
@@ -1124,10 +1124,10 @@ pub class Certificate
     pub_raw = pub_bits_val.size > 1 ? pub_bits_val[1, pub_bits_val.size - 1] : Bytes.empty
 
     pubkey_algo = :unknown
-    rsa_n = nil.as(BigInt?)
-    rsa_e = nil.as(BigInt?)
-    ec_x = nil.as(BigInt?)
-    ec_y = nil.as(BigInt?)
+    rsa_n = BigInt.zero
+    rsa_e = BigInt.zero
+    ec_x = BigInt.zero
+    ec_y = BigInt.zero
     ec_curve = nil.as(Symbol?)
     ed_pub = nil.as(Bytes?)
 
@@ -1165,7 +1165,7 @@ pub class Certificate
     # Extensions (SAN, BasicConstraints, KeyUsage)
     san_names = Array(String).new
     is_ca = false
-    path_len = nil.as(Int32?)
+    path_len = -1
     has_key_usage = false
     key_usage_cert_sign = false
 
@@ -1349,19 +1349,19 @@ pub class Certificate
     when :sha256_rsa
       n = issuer_cert.rsa_n
       e = issuer_cert.rsa_e
-      return false if n.nil? || e.nil?
+      return false if n.zero? || e.zero?
       th = SHA256.digest(@tbs_raw)
       RSA.verify_pkcs1v15(n, e, :sha256, th, @sig_bytes)
     when :sha384_rsa
       n = issuer_cert.rsa_n
       e = issuer_cert.rsa_e
-      return false if n.nil? || e.nil?
+      return false if n.zero? || e.zero?
       th = SHA384.digest(@tbs_raw)
       RSA.verify_pkcs1v15(n, e, :sha384, th, @sig_bytes)
     when :sha256_ecdsa
       qx = issuer_cert.ec_x
       qy = issuer_cert.ec_y
-      return false if qx.nil? || qy.nil?
+      return false if qx.zero? || qy.zero?
       th = SHA256.digest(@tbs_raw)
       sig_elem = Std::Tls.read_asn1(@sig_bytes, 0)
       return false if sig_elem.nil?
@@ -1377,7 +1377,7 @@ pub class Certificate
     when :sha384_ecdsa
       qx = issuer_cert.ec_x
       qy = issuer_cert.ec_y
-      return false if qx.nil? || qy.nil?
+      return false if qx.zero? || qy.zero?
       th = SHA384.digest(@tbs_raw)
       sig_elem = Std::Tls.read_asn1(@sig_bytes, 0)
       return false if sig_elem.nil?
@@ -1496,9 +1496,9 @@ pub class CertificateStore
       if issuer.has_key_usage
         return false unless issuer.key_usage_cert_sign
       end
-      if plen = issuer.path_len
+      if issuer.path_len >= 0
         certs_below = i - 1
-        return false if certs_below > plen
+        return false if certs_below > issuer.path_len
       end
       i = i + 1
     end
@@ -1519,16 +1519,16 @@ pub class CertificateStore
       anchor = @certificates[t]
       if anchor.subject_raw == top.issuer_raw
         return false unless anchor.is_ca
-        if plen = anchor.path_len
-          return false if (chain.size - 1) > plen
+        if anchor.path_len >= 0
+          return false if (chain.size - 1) > anchor.path_len
         end
         if top.verify_signature(anchor)
           return true
         end
       elsif anchor.subject_raw == top.subject_raw && anchor.raw == top.raw
         return false unless anchor.is_ca
-        if plen = anchor.path_len
-          return false if (chain.size - 2) > plen
+        if anchor.path_len >= 0
+          return false if (chain.size - 2) > anchor.path_len
         end
         return true
       end
@@ -1610,7 +1610,7 @@ pub class RecordCipher
 
     raise "TLS record sequence number exhausted (cannot wrap)" if @seq == 0xffffffffffffffff_u64
     nonce = Std::Tls.make_nonce(@iv, @seq)
-    @seq = @seq + 1_u64
+    @seq = @seq &+ 1_u64
     rec_len = pt.size + 16
     ad = Bytes.new(5)
     ad[0] = 0x17_u8
@@ -1647,7 +1647,7 @@ pub class RecordCipher
 
     raise "TLS record sequence number exhausted (cannot wrap)" if @seq == 0xffffffffffffffff_u64
     nonce = Std::Tls.make_nonce(@iv, @seq)
-    @seq = @seq + 1_u64
+    @seq = @seq &+ 1_u64
     pt = case @cipher_suite
          when :aes_128_gcm       then AES128GCM.decrypt_detached(@key, nonce, ct, tag, ad)
          when :chacha20_poly1305 then ChaCha20Poly1305.decrypt_detached(@key, nonce, ct, tag, ad)
@@ -2172,21 +2172,21 @@ pub class Client
       when 0x0804 # rsa_pss_rsae_sha256
         n = peer_cert.rsa_n
         e = peer_cert.rsa_e
-        if n && e
+        if !n.zero? && !e.zero?
           th_input = SHA256.digest(cv_input)
           cv_valid = RSA.verify_pss(n, e, :sha256, th_input, cert_verify_sig, 32)
         end
       when 0x0805 # rsa_pss_rsae_sha384
         n = peer_cert.rsa_n
         e = peer_cert.rsa_e
-        if n && e
+        if !n.zero? && !e.zero?
           th_input = SHA384.digest(cv_input)
           cv_valid = RSA.verify_pss(n, e, :sha384, th_input, cert_verify_sig, 48)
         end
       when 0x0503 # ecdsa_secp384r1_sha384
         qx = peer_cert.ec_x
         qy = peer_cert.ec_y
-        if qx && qy
+        if !qx.zero? && !qy.zero?
           th_input = SHA384.digest(cv_input)
           sig_elem = Std::Tls.read_asn1(cert_verify_sig, 0)
           if sig_elem
