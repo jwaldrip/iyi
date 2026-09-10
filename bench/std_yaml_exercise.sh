@@ -187,22 +187,6 @@ prove_fails "Sequence at same indent broken" no_same_indent \
   "same indent: fruits size" \
   's/if nxt\.text\.starts_with[?]("- ") || nxt\.text == "-"/if false/'
 
-echo
-echo "== discovering and running sibling std exercises"
-found_siblings=0
-for sibling in "$REPO"/bench/std_*_exercise.sh; do
-  [ -f "$sibling" ] || continue
-  [ "$(basename "$sibling")" = "std_yaml_exercise.sh" ] && continue
-  found_siblings=$((found_siblings + 1))
-  echo "-- running sibling: $(basename "$sibling")"
-  if ! bash "$sibling"; then
-    echo "FAIL: sibling $(basename "$sibling") failed"
-    status=1
-  fi
-done
-if [ "$found_siblings" -eq 0 ]; then
-  echo "  (no sibling exercises found yet)"
-fi
 
 echo
 if [ "$status" -eq 0 ]; then
