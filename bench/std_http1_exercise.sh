@@ -61,13 +61,13 @@ fi
 
 echo
 echo "== every HTTP/1.1 section reported"
-for phrase in "smuggling suite:" "100-continue exchange:" "chunked with trailers:" "keep-alive and pipelining:" "redirects:" "content encoding:" "socket roundtrip:" "connect tunnel:" "crlf injection:" "real network page fetch:"; do
+for phrase in "smuggling suite:" "100-continue exchange:" "chunked with trailers:" "keep-alive and pipelining:" "redirects:" "content encoding:" "socket roundtrip:" "connect tunnel:" "crlf injection:" "real network page fetch (HTTP):" "real network page fetch (HTTPS):"; do
   grep -q "$phrase" "$WORK/http1-plain.out" 2>/dev/null || {
     echo "  MISSING: nothing reported for $phrase"
     status=1
   }
 done
-[ "$status" -eq 0 ] && echo "  smuggling suite, 100-continue, chunked with trailers, keep-alive, pipelining, redirects, compression, socket roundtrip, connect tunnel, crlf injection, and network fetch all reported"
+[ "$status" -eq 0 ] && echo "  smuggling suite, 100-continue, chunked with trailers, keep-alive, pipelining, redirects, compression, socket roundtrip, connect tunnel, crlf injection, HTTP fetch, and HTTPS (TLS 1.3, verify_peer: true) fetch all reported"
 
 echo
 echo "== testing live server with curl"
