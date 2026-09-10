@@ -14,10 +14,10 @@ class Iyi::Command
       opts.banner = <<-USAGE
         Usage: #{Command.program_name} tool format [options] [- | file or directory ...]
 
-      Formats iyi code in place.
+        Formats iyi code in place.
 
-      If a file or directory is omitted,
-      iyi source files beneath the working directory are formatted.
+        If a file or directory is omitted,
+        iyi source files beneath the working directory are formatted.
 
         To format STDIN to STDOUT, use '-' in place of any path arguments.
 
