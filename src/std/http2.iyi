@@ -1782,6 +1782,13 @@ pub class Connection
     end
     @last_peer_stream_id = promised_id
 
+    # Finding 18: Inbound GOAWAY boundary enforcement on PUSH_PROMISE (RFC 9113 6.8)
+    if @goaway_sent && (header.stream_id > @goaway_sent_last_stream_id || promised_id > @goaway_sent_last_stream_id)
+      return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "PUSH_PROMISE exceeds sent GOAWAY last stream ID #{@goaway_sent_last_stream_id}", header.stream_id, true)
+    end
+    if @goaway_received && (header.stream_id > @goaway_received_last_stream_id || promised_id > @goaway_received_last_stream_id)
+      return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "PUSH_PROMISE exceeds received GOAWAY last stream ID #{@goaway_received_last_stream_id}", header.stream_id, true)
+    end
     fragment_len = payload.size - offset - pad_length
     fragment = payload[offset, fragment_len]
 
@@ -1836,6 +1843,7 @@ pub class Connection
     last_id = ((payload[0].to_i32 & 0x7F) << 24) | (payload[1].to_i32 << 16) | (payload[2].to_i32 << 8) | payload[3].to_i32
     code_val = (payload[4].to_i64 << 24) | (payload[5].to_i64 << 16) | (payload[6].to_i64 << 8) | payload[7].to_i64
     @goaway_received = true
+    @goaway_received_last_stream_id = last_id
     @closed = true
     nil
   end

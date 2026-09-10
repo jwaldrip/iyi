@@ -1101,14 +1101,58 @@ def test_remediation_findings : Nil
   end
 
   # Finding 18: GOAWAY last-stream-id boundary in both directions (RFC 9113 6.8)
-  # A. Outbound from client: send_headers and send_request rejected after GOAWAY
+  # A. Client receives GOAWAY(last_stream_id = 1) from server
   client18 = Connection.new(Role::Client)
   client18.start_connection; client18.flush_outbound
+  raw_set18 = [] of UInt8
+  FrameHeader.new(0, FrameType::SETTINGS, 0_u8, 0_i32).encode(raw_set18)
+  client18.receive(Bytes.new(raw_set18.size) { |idx| raw_set18[idx] })
+  client18.flush_outbound
+
+  # Client initiated stream 1 before GOAWAY
+  client18.send_headers(1, h_ok, false)
+  client18.flush_outbound
+
+  # Server sends GOAWAY with last_stream_id = 1
   raw_gw = [] of UInt8
   FrameHeader.new(8, FrameType::GOAWAY, 0_u8, 0_i32).encode(raw_gw)
   raw_gw << 0_u8; raw_gw << 0_u8; raw_gw << 0_u8; raw_gw << 1_u8 # last_stream_id = 1
   raw_gw << 0_u8; raw_gw << 0_u8; raw_gw << 0_u8; raw_gw << 0_u8 # NO_ERROR
   client18.receive(Bytes.new(raw_gw.size) { |idx| raw_gw[idx] })
+
+  # In-flight stream 1 (1 <= 1) response is accepted
+  h_resp18 = [HeaderField.new(":status", "200")]
+  enc_resp18 = client18.hpack_encoder.encode(h_resp18)
+  raw_resp18 = [] of UInt8
+  FrameHeader.new(enc_resp18.size, FrameType::HEADERS, FrameFlag::END_HEADERS | FrameFlag::END_STREAM, 1_i32).encode(raw_resp18)
+  j = 0; while j < enc_resp18.size; raw_resp18 << enc_resp18[j]; j = j + 1; end
+  err_resp18 = client18.receive(Bytes.new(raw_resp18.size) { |idx| raw_resp18[idx] })
+  assert_true(err_resp18.nil?, "finding 18: in-flight stream 1 <= last_stream_id accepted after GOAWAY")
+
+  # Server receives GOAWAY(last_stream_id = 1) from client
+  server_recv_gw = init_server_handshake
+  raw_client_gw = [] of UInt8
+  FrameHeader.new(8, FrameType::GOAWAY, 0_u8, 0_i32).encode(raw_client_gw)
+  raw_client_gw << 0_u8; raw_client_gw << 0_u8; raw_client_gw << 0_u8; raw_client_gw << 1_u8 # last_stream_id = 1
+  raw_client_gw << 0_u8; raw_client_gw << 0_u8; raw_client_gw << 0_u8; raw_client_gw << 0_u8 # NO_ERROR
+  server_recv_gw.receive(Bytes.new(raw_client_gw.size) { |idx| raw_client_gw[idx] })
+
+  # Newly initiated stream 3 (3 > 1) from peer is rejected by server
+  raw_s3 = [] of UInt8
+  FrameHeader.new(enc_ok.size, FrameType::HEADERS, FrameFlag::END_HEADERS, 3_i32).encode(raw_s3)
+  j = 0; while j < enc_ok.size; raw_s3 << enc_ok[j]; j = j + 1; end
+  err_s3 = server_recv_gw.receive(Bytes.new(raw_s3.size) { |idx| raw_s3[idx] })
+  assert_true(!err_s3.nil?, "finding 18: newly initiated stream 3 > received GOAWAY last_stream_id rejected")
+
+  # PUSH_PROMISE with promised stream 4 (4 > 1) is rejected
+  raw_pp_gw = [] of UInt8
+  FrameHeader.new(7, FrameType::PUSH_PROMISE, FrameFlag::END_HEADERS, 1_i32).encode(raw_pp_gw)
+  raw_pp_gw << 0_u8; raw_pp_gw << 0_u8; raw_pp_gw << 0_u8; raw_pp_gw << 4_u8
+  raw_pp_gw << 0x82_u8; raw_pp_gw << 0x87_u8; raw_pp_gw << 0x84_u8
+  err_pp_gw = client18.receive(Bytes.new(raw_pp_gw.size) { |idx| raw_pp_gw[idx] })
+  assert_true(!err_pp_gw.nil?, "finding 18: promised stream 4 > last_stream_id rejected after GOAWAY")
+
+  # Client attempting to initiate new stream via send_request is rejected
   req18 = Request.new("GET", "/test", Headers.new, "")
   s18_res = client18.send_request(req18)
   assert_true(!s18_res[1].nil?, "finding 18: send_request after GOAWAY rejected")

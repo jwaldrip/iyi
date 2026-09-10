@@ -193,6 +193,11 @@ prove_fails "push promise idle stream check disabled" no_pp_idle \
 prove_fails "push promise monotonicity check disabled" no_pp_mono \
   "assertion failed: finding 16: decreasing promised stream ID rejected" "http2.iyi" \
   's/if promised_id <= @last_peer_stream_id/if false/'
+
+# 14. GOAWAY received last_stream_id assignment removed
+prove_fails "goaway received last_stream_id assignment removed" no_gw_last_id \
+  "assertion failed: finding 18: newly initiated stream 3 > received GOAWAY last_stream_id rejected" "http2.iyi" \
+  's/@goaway_received_last_stream_id = last_id//'
 echo
 if [ "$status" -eq 0 ]; then
   echo "all std/http2 failure proofs passed"
