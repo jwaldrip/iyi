@@ -34,7 +34,21 @@
 #   floats: fractional decimal places, correctly rounded (half away from zero).
 #   strings: maximum characters to include (truncated if longer).
 
-module IyiFloatText
+# Where it lives:
+# Outside the prelude, for the reason `socket` is: nothing in `src/iyi/`
+# calls `sprintf`, and a program that formats no string should not carry
+# the engine that would. `import std/format` brings `sprintf`, `printf`,
+# `String.format` and `String#%` with it, and the reopenings below travel
+# with the import the way `std/text`'s do (SPEC.md III.9).
+
+module std/format
+
+# The prelude's own module, reopened: `bits_of` and the rest of the bit
+# arithmetic are `src/iyi/float.iyi`'s, which is where `Float64#to_s`
+# needs them. What this file adds is the *formatted* text - fixed and
+# scientific notation with a width and a precision - which nothing in the
+# prelude asks for.
+module ::IyiFloatText
   # Extracts Dragon4 digits for a non-zero, finite double.
   # Returns {digits_pointer, count, k} where value = 0.d1 d2 ... dn * 10^k.
   def self.dragon4(value : Float64) : {Pointer(UInt8), Int32, Int32}
@@ -285,7 +299,7 @@ module IyiFloatText
   end
 end
 
-module IyiFormat
+module ::IyiFormat
   def self.format_int64(val : Int64, base : Int32, uppercase : Bool, signed : Bool, minus : Bool, plus : Bool, space : Bool, zero : Bool, hash : Bool, width : Int32, precision : Int32) : String
     is_negative = val < 0_i64
 
@@ -678,7 +692,7 @@ module IyiFormat
   end
 end
 
-def sprintf(format_string : String, *args : *T) : String forall T
+pub def sprintf(format_string : String, *args : *T) : String forall T
   index = 0
   format_bytesize = format_string.bytesize
   format_ptr = format_string.to_unsafe
@@ -776,24 +790,28 @@ def sprintf(format_string : String, *args : *T) : String forall T
   result
 end
 
-def printf(format_string : String, *args : *T) : Nil forall T
+pub def printf(format_string : String, *args : *T) : Nil forall T
   print sprintf(format_string, *args)
 end
 
-class String
+# Qualified, because a reopening is not inside the module that writes it:
+# `::String` is the prelude's type wherever this file is read, so a bare
+# `sprintf` in one of these bodies is a name `String` does not have -
+# `undefined method 'sprintf' for String.class`, which is R-2b saying so.
+class ::String
   def self.format(format_string : String, *args : *T) : String forall T
-    sprintf(format_string, *args)
+    Std::Format.sprintf(format_string, *args)
   end
 
   def %(args : Tuple) : String
-    sprintf(self, *args)
+    Std::Format.sprintf(self, *args)
   end
 
   def %(arg) : String
-    sprintf(self, arg)
+    Std::Format.sprintf(self, arg)
   end
 
   def %(*args : *T) : String forall T
-    sprintf(self, *args)
+    Std::Format.sprintf(self, *args)
   end
 end
