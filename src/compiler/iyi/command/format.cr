@@ -163,7 +163,7 @@ class Iyi::Command
       else
         print_error "there's a bug formatting '#{filename}', to show more information, please run:
 
-  $ #{Command.program_name} tool format --show-backtrace #{@format_stdin ? "-" : "'#{filename}'"}
+  $ #{Iyi::Command.program_name} tool format --show-backtrace #{@format_stdin ? "-" : "'#{filename}'"}
 "
       end
       @status_code = 1
