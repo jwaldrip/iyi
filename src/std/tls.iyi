@@ -647,11 +647,12 @@ module P256
     return false if r <= BigInt.zero || r >= N
     return false if s <= BigInt.zero || s >= N
 
+    effective_hash = hash_bytes.size > 32 ? hash_bytes[0, 32] : hash_bytes
     e = BigInt.zero
     two_five_six = BigInt.new(256_i64)
     i = 0
-    while i < hash_bytes.size
-      e = e * two_five_six + BigInt.new(hash_bytes[i].to_i64)
+    while i < effective_hash.size
+      e = e * two_five_six + BigInt.new(effective_hash[i].to_i64)
       i = i + 1
     end
     e = e % N
@@ -790,11 +791,12 @@ module P384
     return false if r <= BigInt.zero || r >= N
     return false if s <= BigInt.zero || s >= N
 
+    effective_hash = hash_bytes.size > 48 ? hash_bytes[0, 48] : hash_bytes
     e = BigInt.zero
     two_five_six = BigInt.new(256_i64)
     i = 0
-    while i < hash_bytes.size
-      e = e * two_five_six + BigInt.new(hash_bytes[i].to_i64)
+    while i < effective_hash.size
+      e = e * two_five_six + BigInt.new(effective_hash[i].to_i64)
       i = i + 1
     end
     e = e % N
@@ -1516,10 +1518,18 @@ pub class CertificateStore
     while t < @certificates.size
       anchor = @certificates[t]
       if anchor.subject_raw == top.issuer_raw
+        return false unless anchor.is_ca
+        if plen = anchor.path_len
+          return false if (chain.size - 1) > plen
+        end
         if top.verify_signature(anchor)
           return true
         end
       elsif anchor.subject_raw == top.subject_raw && anchor.raw == top.raw
+        return false unless anchor.is_ca
+        if plen = anchor.path_len
+          return false if (chain.size - 2) > plen
+        end
         return true
       end
       t = t + 1
@@ -1588,8 +1598,7 @@ pub class RecordCipher
   @iv : Bytes
   @seq : UInt64
 
-  def initialize(@cipher_suite : Symbol, @key : Bytes, @iv : Bytes)
-    @seq = 0_u64
+  def initialize(@cipher_suite : Symbol, @key : Bytes, @iv : Bytes, @seq : UInt64 = 0_u64)
   end
 
   def encrypt(content_type : UInt8, payload : Bytes) : Bytes
@@ -1709,11 +1718,16 @@ pub class Client
     verify_peer : Bool = true,
     ca_store : CertificateStore? = nil,
     current_time : Int64? = nil,
+    client_private_key : Bytes? = nil,
+    client_random_override : Bytes? = nil,
+    session_id_override : Bytes? = nil,
+    client_hello_override : Bytes? = nil
   ) : Client
-    client_priv, client_pub = X25519.generate_keypair
-    client_random = Std::Crypto.random_bytes(32)
-    session_id = Std::Crypto.random_bytes(32)
-
+    client_priv = client_private_key || Std::Crypto.random_bytes(32)
+    base_u = Bytes.new(32, 0_u8); base_u[0] = 9_u8
+    client_pub = X25519.scalar_mult(client_priv, base_u)
+    client_random = client_random_override || Std::Crypto.random_bytes(32)
+    session_id = session_id_override || Std::Crypto.random_bytes(32)
     # 1. Extensions
     # SNI
     sni_len = hostname.bytesize
@@ -1847,6 +1861,10 @@ pub class Client
     idx = idx + 2
     i = 0; while i < all_exts_len
       ch_msg[idx] = all_exts[i]; idx = idx + 1; i = i + 1
+    end
+
+    if ch_override = client_hello_override
+      ch_msg = ch_override
     end
 
     # Wrap in TLS plaintext record
@@ -2024,14 +2042,21 @@ pub class Client
         elsif msg_type == 0x0b_u8 # Certificate
           # Extract certificates list
           ctx_len = msg_data[4].to_i32
+          raise "malformed Certificate message: invalid context length" if 5 + ctx_len + 3 > msg_data.size
           c_idx = 5 + ctx_len
           list_len = (msg_data[c_idx].to_i32 << 16) | (msg_data[c_idx + 1].to_i32 << 8) | msg_data[c_idx + 2].to_i32
           c_idx = c_idx + 3
           c_end = c_idx + list_len
-          while c_idx + 3 <= c_end
+          raise "malformed Certificate message: certificate list length overflows message" if c_end > msg_data.size
+          while c_idx < c_end
+            if c_idx + 3 > c_end
+              raise "malformed Certificate message: truncated certificate length header"
+            end
             cert_len = (msg_data[c_idx].to_i32 << 16) | (msg_data[c_idx + 1].to_i32 << 8) | msg_data[c_idx + 2].to_i32
             c_idx = c_idx + 3
-            break if c_idx + cert_len > c_end
+            if c_idx + cert_len > c_end
+              raise "malformed Certificate message: certificate length overflows certificate list"
+            end
             der_cert = msg_data[c_idx, cert_len]
             parsed_cert = Certificate.parse(der_cert)
             if parsed_cert.nil?
@@ -2039,7 +2064,13 @@ pub class Client
             end
             cert_chain << parsed_cert
             c_idx = c_idx + cert_len
+            if c_idx + 2 > c_end
+              raise "malformed Certificate message: truncated certificate extensions header"
+            end
             ext_l = (msg_data[c_idx].to_i32 << 8) | msg_data[c_idx + 1].to_i32
+            if c_idx + 2 + ext_l > c_end
+              raise "malformed Certificate message: certificate extensions overflow certificate list"
+            end
             c_idx = c_idx + 2 + ext_l
           end
           handshake_transcript << msg_data
