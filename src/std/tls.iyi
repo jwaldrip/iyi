@@ -644,6 +644,7 @@ module P256
   end
 
   def self.verify(qx : BigInt, qy : BigInt, hash_bytes : Bytes, r : BigInt, s : BigInt) : Bool
+    raise "P256.verify reached with zero public key" if qx.zero? && qy.zero?
     return false if r <= BigInt.zero || r >= N
     return false if s <= BigInt.zero || s >= N
 
@@ -788,6 +789,7 @@ module P384
   end
 
   def self.verify(qx : BigInt, qy : BigInt, hash_bytes : Bytes, r : BigInt, s : BigInt) : Bool
+    raise "P384.verify reached with zero public key" if qx.zero? && qy.zero?
     return false if r <= BigInt.zero || r >= N
     return false if s <= BigInt.zero || s >= N
 
@@ -2157,7 +2159,7 @@ pub class Client
       when 0x0403 # ecdsa_secp256r1_sha256
         qx = peer_cert.ec_x
         qy = peer_cert.ec_y
-        if qx && qy
+        if peer_cert.ec_curve == :p256 && !qx.zero? && !qy.zero?
           th_input = SHA256.digest(cv_input)
           sig_elem = Std::Tls.read_asn1(cert_verify_sig, 0)
           if sig_elem
@@ -2172,21 +2174,21 @@ pub class Client
       when 0x0804 # rsa_pss_rsae_sha256
         n = peer_cert.rsa_n
         e = peer_cert.rsa_e
-        if !n.zero? && !e.zero?
+        if peer_cert.pubkey_algo == :rsa && !n.zero? && !e.zero?
           th_input = SHA256.digest(cv_input)
           cv_valid = RSA.verify_pss(n, e, :sha256, th_input, cert_verify_sig, 32)
         end
       when 0x0805 # rsa_pss_rsae_sha384
         n = peer_cert.rsa_n
         e = peer_cert.rsa_e
-        if !n.zero? && !e.zero?
+        if peer_cert.pubkey_algo == :rsa && !n.zero? && !e.zero?
           th_input = SHA384.digest(cv_input)
           cv_valid = RSA.verify_pss(n, e, :sha384, th_input, cert_verify_sig, 48)
         end
       when 0x0503 # ecdsa_secp384r1_sha384
         qx = peer_cert.ec_x
         qy = peer_cert.ec_y
-        if !qx.zero? && !qy.zero?
+        if peer_cert.ec_curve == :p384 && !qx.zero? && !qy.zero?
           th_input = SHA384.digest(cv_input)
           sig_elem = Std::Tls.read_asn1(cert_verify_sig, 0)
           if sig_elem
@@ -2200,7 +2202,7 @@ pub class Client
         end
       when 0x0807 # ed25519
         ed_pub = peer_cert.ed25519_pub
-        if ed_pub
+        if peer_cert.pubkey_algo == :ed25519 && ed_pub
           cv_valid = Ed25519.verify(ed_pub, cv_input, cert_verify_sig)
         end
       end

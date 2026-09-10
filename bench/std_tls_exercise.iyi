@@ -392,6 +392,45 @@ scripted_client = Std::Tls::Client.wrap_socket(
 assert_true(!scripted_client.closed?, "Scripted multi-record TLS handshake completed")
 assert_true(scripted_client.cipher_suite == :aes_128_gcm, "Scripted multi-record handshake negotiated AES-128-GCM")
 
+
+# Scripted test: RSA cert paired with ECDSA 0x0403 scheme in CertificateVerify
+if args.size > 0 && args[0] == "mismatched_cv"
+  cv_mismatched = hex_to_bytes("0f00004a0403004630440220010101010101010101010101010101010101010101010101010101010101010102200202020202020202020202020202020202020202020202020202020202020202")
+  th_cv_m = SHA256.new.update(ch_bytes_rfc).update(sh_bytes_rfc).update(ee_bytes_rfc).update(cert_bytes_rfc).update(cv_mismatched).final
+  fin_m_data = HMAC.digest(:sha256, s_fin_key_rfc, th_cv_m)
+  fin_mismatched = Bytes.new(36)
+  fin_mismatched[0] = 0x14_u8; fin_mismatched[3] = 32_u8
+  i = 0; while i < 32; fin_mismatched[4 + i] = fin_m_data[i]; i = i + 1; end
+
+  s_cipher_mismatch = Std::Tls::RecordCipher.new(:aes_128_gcm, s_hs_key_rfc, s_hs_iv_rfc, 1_u64)
+  rec3_m_payload = Bytes.new(cert_bytes_rfc.size + cv_mismatched.size + fin_mismatched.size)
+  idx_m = 0
+  i = 0; while i < cert_bytes_rfc.size; rec3_m_payload[idx_m] = cert_bytes_rfc[i]; idx_m = idx_m + 1; i = i + 1; end
+  i = 0; while i < cv_mismatched.size; rec3_m_payload[idx_m] = cv_mismatched[i]; idx_m = idx_m + 1; i = i + 1; end
+  i = 0; while i < fin_mismatched.size; rec3_m_payload[idx_m] = fin_mismatched[i]; idx_m = idx_m + 1; i = i + 1; end
+  rec3_m = s_cipher_mismatch.encrypt(0x16_u8, rec3_m_payload)
+
+  mismatch_flight = Bytes.new(sh_rec.size + rec2.size + rec3_m.size)
+  f_m = 0
+  i = 0; while i < sh_rec.size; mismatch_flight[f_m] = sh_rec[i]; f_m = f_m + 1; i = i + 1; end
+  i = 0; while i < rec2.size; mismatch_flight[f_m] = rec2[i]; f_m = f_m + 1; i = i + 1; end
+  i = 0; while i < rec3_m.size; mismatch_flight[f_m] = rec3_m[i]; f_m = f_m + 1; i = i + 1; end
+
+  m_sock = ScriptedSocket.new(mismatch_flight)
+  Std::Tls::Client.wrap_socket(
+    m_sock,
+    "rsa",
+    ["http/1.1"],
+    true,
+    nil,
+    Time.utc(2020, 1, 1).seconds,
+    c_priv_rfc,
+    ch_bytes_rfc[6, 32],
+    ch_bytes_rfc[39, 32],
+    ch_bytes_rfc
+  )
+  __iyi_exit(0)
+end
 # Application data write record fragmentation (Finding 10 behavioral test)
 frag_sock = ScriptedSocket.new(Bytes.empty)
 frag_client = Std::Tls::Client.new(

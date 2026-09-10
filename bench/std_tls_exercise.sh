@@ -20,7 +20,7 @@
 #  11. Multi-record handshake buffer slicing enforcement
 #  12. Application data write record fragmentation enforcement
 #  13. Sequence number exhaustion guard enforcement
-#
+#  14. CertificateVerify nonzero key guard enforcement
 # Exits non-zero if any check fails.
 
 set -u
@@ -255,6 +255,11 @@ prove_fails "write record fragmentation bypassed" fragmentation_bypass \
 prove_fails_arg "sequence exhaustion guard bypassed" seq_exhaustion_bypass "seq_exhaustion" \
   "assertion failed: nonce-reuse boundary guard failed: sequence wrapped without error" "tls.iyi" \
   's/raise "TLS record sequence number exhausted (cannot wrap)" if @seq == 0xffffffffffffffff_u64/# bypass/'
+
+# 14. Nonzero key guard in CertificateVerify bypassed
+prove_fails_arg "nonzero key guard in CertificateVerify bypassed" cv_guard_bypass "mismatched_cv" \
+  "P256.verify reached with zero public key" "tls.iyi" \
+  's/peer_cert.ec_curve == :p256 && !qx.zero? && !qy.zero?/true/'
 
 echo
 if [ "$status" -eq 0 ]; then
