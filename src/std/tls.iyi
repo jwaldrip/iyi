@@ -1612,27 +1612,32 @@ pub class CertificateStore
       i = i + 1
     end
 
-    # 4. The top certificate must be anchored in the trust store
-    top = chain[chain.size - 1]
-    t = 0
-    while t < @certificates.size
-      anchor = @certificates[t]
-      if anchor.subject_raw == top.issuer_raw
-        return false unless anchor.is_ca
-        if anchor.path_len >= 0
-          return false if (chain.size - 1) > anchor.path_len
+    # 4. A certificate in the chain must be anchored in the trust store
+    k = chain.size - 1
+    while k >= 0
+      curr = chain[k]
+      t = 0
+      while t < @certificates.size
+        anchor = @certificates[t]
+        if anchor.subject_raw == curr.issuer_raw
+          if anchor.is_ca
+            if anchor.path_len < 0 || k <= anchor.path_len
+              if curr.verify_signature(anchor)
+                return true
+              end
+            end
+          end
+        elsif anchor.subject_raw == curr.subject_raw && (anchor.raw == curr.raw || anchor.pubkey_bytes == curr.pubkey_bytes)
+          if anchor.is_ca
+            certs_below = k > 0 ? k - 1 : 0
+            if anchor.path_len < 0 || certs_below <= anchor.path_len
+              return true
+            end
+          end
         end
-        if top.verify_signature(anchor)
-          return true
-        end
-      elsif anchor.subject_raw == top.subject_raw && anchor.raw == top.raw
-        return false unless anchor.is_ca
-        if anchor.path_len >= 0
-          return false if (chain.size - 2) > anchor.path_len
-        end
-        return true
+        t = t + 1
       end
-      t = t + 1
+      k = k - 1
     end
 
     # If no matching trust anchor found
