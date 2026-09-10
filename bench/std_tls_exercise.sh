@@ -21,6 +21,8 @@
 #  12. Application data write record fragmentation enforcement
 #  13. Sequence number exhaustion guard enforcement
 #  14. CertificateVerify nonzero key guard enforcement
+#  15. RSA-PSS signing trailer corruption detection
+#  16. Intermediate trust anchor signature verification enforcement
 # Exits non-zero if any check fails.
 
 set -u
@@ -265,6 +267,11 @@ prove_fails_arg "nonzero key guard in CertificateVerify bypassed" cv_guard_bypas
 prove_fails "rsa-pss signing trailer corrupted" pss_sign_trailer \
   "assertion failed: NIST CAVP RSA-PSS signature generation" "tls.iyi" \
   's/em\[em_len - 1\] = 0xbc_u8/em[em_len - 1] = 0xbd_u8/'
+
+# 16. Intermediate trust anchor signature verification bypassed
+prove_fails "intermediate trust anchor verification bypassed" inter_anchor_bypass \
+  "assertion failed: Intermediate-anchored chain verified to trusted root anchor" "tls.iyi" \
+  's/if curr.verify_signature(anchor)/if false \&\& curr.verify_signature(anchor)/'
 
 echo
 if [ "$status" -eq 0 ]; then
