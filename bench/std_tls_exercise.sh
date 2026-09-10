@@ -232,7 +232,7 @@ prove_fails "hostname mismatch accepted" hostname_mismatch \
 # 8. BasicConstraints CA enforcement bypassed (Finding 2)
 prove_fails "basicConstraints CA enforcement bypassed" basic_constraints_bypass \
   "assertion failed: Rogue intermediate without is_ca rejected in verify_chain" "tls.iyi" \
-  's/return false unless issuer.is_ca/# bypass/'
+  's/return false unless cert.is_ca/# bypass/'
 
 # 9. TLD wildcard restriction bypassed (Finding 8)
 prove_fails "TLD wildcard restriction bypassed" tld_wildcard_bypass \

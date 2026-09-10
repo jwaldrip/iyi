@@ -1581,67 +1581,65 @@ pub class CertificateStore
     leaf = chain[0]
     return false unless leaf.matches_hostname(hostname)
 
-    # 2. Every certificate in the chain must be within its validity window
-    i = 0
-    while i < chain.size
-      return false unless chain[i].valid_at?(time_sec)
-      i = i + 1
-    end
-
-    # 3. Path validation: every certificate acting as an intermediate issuer MUST be a CA
-    i = 1
-    while i < chain.size
-      issuer = chain[i]
-      return false unless issuer.is_ca
-      if issuer.has_key_usage
-        return false unless issuer.key_usage_cert_sign
-      end
-      if issuer.path_len >= 0
-        certs_below = i - 1
-        return false if certs_below > issuer.path_len
-      end
-      i = i + 1
-    end
-
-    # 3. Each certificate signature must verify against the next certificate
-    i = 0
-    while i < chain.size - 1
-      curr = chain[i]
-      issuer = chain[i + 1]
-      return false unless curr.verify_signature(issuer)
-      i = i + 1
-    end
-
-    # 4. A certificate in the chain must be anchored in the trust store
+    # 2. Search from the peer's highest certificate toward the leaf. A server
+    # may append certificates above a path this store can already anchor; only
+    # the candidate path through `chain[k]` participates in that decision.
     k = chain.size - 1
     while k >= 0
       curr = chain[k]
-      t = 0
-      while t < @certificates.size
-        anchor = @certificates[t]
-        if anchor.subject_raw == curr.issuer_raw
-          if anchor.is_ca
-            if anchor.path_len < 0 || k <= anchor.path_len
-              if curr.verify_signature(anchor)
+      if valid_chain_prefix?(chain, k, time_sec)
+        t = 0
+        while t < @certificates.size
+          anchor = @certificates[t]
+          if anchor.subject_raw == curr.issuer_raw
+            if anchor.is_ca
+              if anchor.path_len < 0 || k <= anchor.path_len
+                if curr.verify_signature(anchor)
+                  return true
+                end
+              end
+            end
+          elsif anchor.subject_raw == curr.subject_raw && (anchor.raw == curr.raw || anchor.pubkey_bytes == curr.pubkey_bytes)
+            if anchor.is_ca
+              certs_below = k > 0 ? k - 1 : 0
+              if anchor.path_len < 0 || certs_below <= anchor.path_len
                 return true
               end
             end
           end
-        elsif anchor.subject_raw == curr.subject_raw && (anchor.raw == curr.raw || anchor.pubkey_bytes == curr.pubkey_bytes)
-          if anchor.is_ca
-            certs_below = k > 0 ? k - 1 : 0
-            if anchor.path_len < 0 || certs_below <= anchor.path_len
-              return true
-            end
-          end
+          t = t + 1
         end
-        t = t + 1
       end
       k = k - 1
     end
 
-    # If no matching trust anchor found
     false
+  end
+
+  private def valid_chain_prefix?(chain : Array(Certificate), top : Int32, time_sec : Int64) : Bool
+    i = 0
+    while i <= top
+      cert = chain[i]
+      return false unless cert.valid_at?(time_sec)
+      if i > 0
+        return false unless cert.is_ca
+        if cert.has_key_usage
+          return false unless cert.key_usage_cert_sign
+        end
+        if cert.path_len >= 0
+          certs_below = i - 1
+          return false if certs_below > cert.path_len
+        end
+      end
+      i = i + 1
+    end
+
+    i = 0
+    while i < top
+      return false unless chain[i].verify_signature(chain[i + 1])
+      i = i + 1
+    end
+    true
   end
 end
 

@@ -596,6 +596,12 @@ if cr_root = c_root
         # 2. Chain with cross-signed root at top must verify to trusted root anchor
         cross_chain_ok = c_store.verify_chain([cr_leaf, cr_inter, cr_cross], "chain.target.com", now_cross)
         assert_true(cross_chain_ok, "Cross-signed root in chain verified to trusted root anchor")
+
+        # 3. A valid lower path ignores an unrelated certificate appended above it
+        if unrelated_root = synth_root
+          extra_chain_ok = c_store.verify_chain([cr_leaf, cr_inter, unrelated_root], "chain.target.com", now_cross)
+          assert_true(extra_chain_ok, "Intermediate anchor ignores unrelated certificate above the valid path")
+        end
       end
     end
   end
