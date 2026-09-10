@@ -67,13 +67,14 @@ for phrase in \
   "section 4: multiplexing concurrent streams" \
   "section 5: continuation frames and atomic non-interleaved assembly" \
   "section 6: flow control with transfer larger than initial window" \
-  "section 7: protocol error suite"; do
+  "section 7: protocol error suite" \
+  "section 8: remediation of 18 adversarial review findings"; do
   if ! grep -Fqi "$phrase" "$WORK/http2-plain.out" 2>/dev/null; then
     echo "  missing section: $phrase"
     status=1
   fi
 done
-[ "$status" -eq 0 ] && echo "  all 7 sections successfully reported"
+[ "$status" -eq 0 ] && echo "  all 8 sections successfully reported"
 
 echo
 echo "== the same program with optimisation on (--release)"
@@ -137,7 +138,7 @@ prove_fails "preface verification bypassed" no_preface \
 
 # 2. DATA on stream 0 check disabled
 prove_fails "data on stream 0 check disabled" no_stream0_data \
-  "assertion failed: h2spec 6.1 message is DATA on stream 0" "http2.iyi" \
+  "assertion failed: h2spec 6.1 code is PROTOCOL_ERROR" "http2.iyi" \
   '/RFC 9113 6.1: DATA frames MUST be associated with a stream/,/return Http2Error/s/if header.stream_id == 0/if false/'
 
 # 3. Stream ID monotonicity check disabled
@@ -172,9 +173,27 @@ prove_fails "window update overflow check disabled" no_overflow_check \
 
 # 9. CONTINUATION atomicity check disabled
 prove_fails "continuation atomicity check disabled" no_continuation_check \
-  "assertion failed: h2spec 6.2\/6.10 message is expected CONTINUATION" "http2.iyi" \
+  "assertion failed: h2spec 6.2\/6.10 code is PROTOCOL_ERROR" "http2.iyi" \
   's/if header.type != FrameType::CONTINUATION/if false/'
 
+# 10. Max concurrent streams enforcement disabled
+prove_fails "max concurrent streams disabled" no_max_streams \
+  "assertion failed: finding 7: max concurrent streams limit enforced" "http2.iyi" \
+  's/if active_stream_count >= @local_settings.max_concurrent_streams/if false/'
+
+# 11. Client SETTINGS_ENABLE_PUSH rejection disabled
+prove_fails "client push rejection disabled" no_push_rej \
+  "assertion failed: finding 11: client rejects server SETTINGS_ENABLE_PUSH" "http2.iyi" \
+  '/Finding 11: Client must reject SETTINGS_ENABLE_PUSH from server/,/return Http2Error/s/if @role == Role::Client/if false/'
+
+# 12. PUSH_PROMISE on idle stream check disabled
+prove_fails "push promise idle stream check disabled" no_pp_idle \
+  "assertion failed: finding 15: PUSH_PROMISE on idle stream rejected" "http2.iyi" \
+  '/Finding 15: Associated stream must be Open or HalfClosedLocal/,/return Http2Error/s/if assoc_stream.nil? || (assoc_stream.state != StreamState::Open && assoc_stream.state != StreamState::HalfClosedLocal)/if false/'
+# 13. PUSH_PROMISE promised stream ID monotonicity check disabled
+prove_fails "push promise monotonicity check disabled" no_pp_mono \
+  "assertion failed: finding 16: decreasing promised stream ID rejected" "http2.iyi" \
+  's/if promised_id <= @last_peer_stream_id/if false/'
 echo
 if [ "$status" -eq 0 ]; then
   echo "all std/http2 failure proofs passed"
