@@ -122,6 +122,11 @@ prove_fails "loopback UDP send_to dropped" udp_drop \
   "server received no ClientHello" "quic.iyi" \
   's/@socket.send_to(data, host, port)/0 # drop/'
 
+# 3. TLS 1.3 CertificateVerify downgraded to forbidden PKCS1v1.5
+prove_fails "CertificateVerify downgraded from RSA-PSS" cv_downgrade \
+  "TLS 1.3 requires rsa_pss_rsae_sha256 CertificateVerify" "quic.iyi" \
+  's/cv_msg\[4\] = 0x08_u8; cv_msg\[5\] = 0x04_u8/cv_msg[4] = 0x04_u8; cv_msg[5] = 0x01_u8/'
+
 # 2. Unknown destination connection ID routed to the first connection
 prove_fails "unknown destination connection ID routed" cid_fallback \
   "AEAD decryption failed" "quic.iyi" \

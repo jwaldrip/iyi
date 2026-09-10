@@ -1652,6 +1652,19 @@ pub struct ConnectionState
   pub CLOSED    = 4
 end
 
+# A QUIC server cannot manufacture or inherit an identity. Credentials belong
+# to the application, and tests pass fixtures explicitly through this type.
+pub class QuicServerCredentials
+  getter certificate_chain : Array(Bytes)
+  getter private_n : BigInt
+  getter private_d : BigInt
+
+  def initialize(@certificate_chain : Array(Bytes), @private_n : BigInt, @private_d : BigInt)
+    raise "QUIC TLS server certificate chain cannot be empty" if @certificate_chain.empty?
+    raise "QUIC TLS server RSA key cannot be zero" if @private_n.zero? || @private_d.zero?
+  end
+end
+
 pub class QuicConnection
   getter role            : Int32
   getter state           : Int32
@@ -1698,14 +1711,26 @@ pub class QuicConnection
   # Datagram queue
   @datagram_recv_queue : Array(Bytes)
 
-  def initialize(@role : Int32, @dcid : Bytes, @scid : Bytes, initial_dcid : Bytes = Bytes.empty, hostname : String = "rsa")
+  def initialize(
+    @role : Int32,
+    @dcid : Bytes,
+    @scid : Bytes,
+    initial_dcid : Bytes = Bytes.empty,
+    hostname : String = "",
+    ca_store : CertificateStore? = nil,
+    server_credentials : QuicServerCredentials? = nil,
+    verification_time : Int64? = nil,
+  )
     @state = ConnectionState::INITIAL
     @stream_manager = StreamManager.new
     @rtt_estimator = RttEstimator.new
     @congestion_ctrl = NewRenoCongestionController.new
     @local_transport_params = TransportParameters.new(initial_source_connection_id: @scid)
     @peer_transport_params = nil
-    @tls = QuicTlsContext.new(@role, @local_transport_params, hostname: hostname)
+    @tls = QuicTlsContext.new(
+      @role, @local_transport_params, hostname: hostname, ca_store: ca_store,
+      server_credentials: server_credentials, verification_time: verification_time,
+    )
     @remote_host = "127.0.0.1"
     @remote_port = 0
     @paused_by_anti_amplification = false
@@ -2378,6 +2403,8 @@ pub class QuicTlsContext
   getter peer_tp : TransportParameters?
   getter ca_store : CertificateStore
   getter peer_cert : Certificate?
+  getter peer_chain : Array(Certificate)
+  getter server_credentials : QuicServerCredentials?
 
   getter priv_key : Bytes
   getter pub_key : Bytes
@@ -2397,19 +2424,20 @@ pub class QuicTlsContext
   @server_random : Bytes
   @session_id : Bytes
 
-  TEST_RSA_N = BigInt.from_hex("b4bb498f8279303d980836399b36c6988c0c68de55e1bdb826d3901a2461eafd2de49a91d015abbc9a95137ace6c1af19eaa6af98c7ced43120998e187a80ee0ccb0524b1b018c3e0b63264d449a6d38e22a5fda430846748030530ef0461c8ca9d9efbfae8ea6d1d03e2bd193eff0ab9a8002c47428a6d35a8d88d79f7f1e3f")
-  TEST_RSA_E = BigInt.new(65537_i64)
-  TEST_RSA_D = BigInt.from_hex("04dea705d43a6ea7209dd8072111a83c81e322a59278b33480641eaf7c0a6985b8e31c44f6de62e1b4c2309f6126e77b7c41e923314bbfa3881305dc1217f16c819ce538e922f369828d0e57195d8c8488460207b2faa726bcf708bbd7db7f679f893492fc2a622e08970aac441ce4e0c3088df25ae679233df8a3bda2ff9941")
+  @verification_time : Int64?
 
   def initialize(
     @role : Int32,
     @local_tp : TransportParameters,
-    @hostname : String = "rsa",
-    ca_store : CertificateStore? = nil
+    @hostname : String = "",
+    ca_store : CertificateStore? = nil,
+    @server_credentials : QuicServerCredentials? = nil,
+    @verification_time : Int64? = nil,
   )
-    @ca_store = ca_store || CertificateStore.new
+    @ca_store = ca_store || CertificateStore.load_system_store
     @peer_tp = nil
     @peer_cert = nil
+    @peer_chain = [] of Certificate
     @priv_key = Bytes.empty
     @pub_key = Bytes.empty
     @peer_pub_key = Bytes.empty
@@ -2427,90 +2455,6 @@ pub class QuicTlsContext
     @client_random = Bytes.empty
     @server_random = Bytes.empty
     @session_id = Bytes.empty
-
-    if @ca_store.certificates.empty?
-      test_cert = Certificate.parse(QuicTlsContext.test_certificate_der)
-      if test_cert
-        @ca_store.add_certificate(test_cert)
-      end
-    end
-  end
-
-  def self.test_certificate_der : Bytes
-    hex1 = "308201af30820118a003020102020102300d06092a864886f70d01010b0500300e310c300a06035504031303727361301e170d3136303733303031323335395a170d3236303733303031323335395a300e310c300a0603550403130372736130819f300d06092a864886f70d010101050003818d0030818902818100b4bb498f8279303d980836399b36c6988c0c68de55e1bdb826d3901a2461eafd2de49a91d015abbc9a95137ace6c1af19eaa6af98c7ced43120998e187a80ee0ccb0524b1b018c3e0b63264d449a6d38e22a5fda430846748030530ef04"
-    hex2 = "61c8ca9d9efbfae8ea6d1d03e2bd193eff0ab9a8002c47428a6d35a8d88d79f7f1e3f0203010001a31d301b300c0603551d13040530030101ff300b0603551d0f0404030205a4300d06092a864886f70d01010b05000381810062500ccc8b152a395181b0ae4ab30dc112f7346ee9b980cc1a6be50b4296dcb99f26c0c3329742c3cf48ea548763aa92f576e330a45cdf0b91b1f4e1dcf46b91d4512acc16440562a033783369ee7dee8deb2066896121365d5f8441da8d2d418a8d96e2fd9ae465d2ee2ef25043ca2ac7644928f21ccb13583bd56e68c1e979"
-    QuicTlsContext.hex_to_bytes(hex1 + hex2)
-  end
-
-  def self.hex_to_bytes(hex : String) : Bytes
-    count = 0
-    i = 0
-    while i < hex.bytesize
-      c = hex[i]
-      if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-        count = count + 1
-      end
-      i = i + 1
-    end
-    out = Bytes.new(count // 2)
-    out_idx = 0
-    hi = -1
-    i = 0
-    while i < hex.bytesize
-      c = hex[i]
-      val = -1
-      if c >= '0' && c <= '9'
-        val = c.ord - 48
-      elsif c >= 'a' && c <= 'f'
-        val = c.ord - 87
-      elsif c >= 'A' && c <= 'F'
-        val = c.ord - 55
-      end
-      if val >= 0
-        if hi < 0
-          hi = val
-        else
-          out[out_idx] = ((hi << 4) | val).to_u8
-          out_idx = out_idx + 1
-          hi = -1
-        end
-      end
-      i = i + 1
-    end
-    out
-  end
-
-  def self.sign_rsa_pkcs1v15(d : BigInt, n : BigInt, m_hash : Bytes, key_size : Int32 = 128) : Bytes
-    prefix = [
-      0x30_u8, 0x31_u8, 0x30_u8, 0x0d_u8, 0x06_u8, 0x09_u8, 0x60_u8, 0x86_u8,
-      0x48_u8, 0x01_u8, 0x65_u8, 0x03_u8, 0x04_u8, 0x02_u8, 0x01_u8, 0x05_u8,
-      0x00_u8, 0x04_u8, 0x20_u8,
-    ]
-    di_len = prefix.size + m_hash.size
-    em = Bytes.new(key_size)
-    em[0] = 0x00_u8
-    em[1] = 0x01_u8
-    di_offset = key_size - di_len
-    i = 2
-    while i < di_offset - 1
-      em[i] = 0xff_u8
-      i = i + 1
-    end
-    em[di_offset - 1] = 0x00_u8
-    i = 0
-    while i < prefix.size
-      em[di_offset + i] = prefix[i]
-      i = i + 1
-    end
-    i = 0
-    while i < m_hash.size
-      em[di_offset + prefix.size + i] = m_hash[i]
-      i = i + 1
-    end
-
-    m_int = Std::Tls::RSA.bytes_to_bigint_be(em)
-    sig_int = m_int.pow_mod(d, n)
-    Std::Tls::RSA.bigint_to_bytes_be(sig_int, key_size)
   end
 
   private def hash_transcript(upto : Int32 = -1) : Bytes
@@ -2706,17 +2650,43 @@ pub class QuicTlsContext
     i = 0; while i < server_tp_bytes.size; ee_msg[10 + i] = server_tp_bytes[i]; i = i + 1; end
     @transcript << ee_msg
 
-    cert_der = QuicTlsContext.test_certificate_der
-    cert_list_len = 3 + cert_der.size + 2
+    credentials = @server_credentials
+    raise "QUIC TLS server credentials were not configured" if credentials.nil?
+    cert_chain = credentials.certificate_chain
+    cert_list_len = 0
+    i = 0
+    while i < cert_chain.size
+      cert_size = cert_chain[i].size
+      raise "QUIC TLS certificate is too large" if cert_size > 0xffffff
+      cert_list_len = cert_list_len + 3 + cert_size + 2
+      i = i + 1
+    end
+    raise "QUIC TLS certificate list is too large" if cert_list_len > 0xffffff
+
     cert_body_len = 1 + 3 + cert_list_len
     cert_msg = Bytes.new(4 + cert_body_len)
     cert_msg[0] = 0x0b_u8
     cert_msg[1] = ((cert_body_len >> 16) & 0xff).to_u8; cert_msg[2] = ((cert_body_len >> 8) & 0xff).to_u8; cert_msg[3] = (cert_body_len & 0xff).to_u8
     cert_msg[4] = 0x00_u8
     cert_msg[5] = ((cert_list_len >> 16) & 0xff).to_u8; cert_msg[6] = ((cert_list_len >> 8) & 0xff).to_u8; cert_msg[7] = (cert_list_len & 0xff).to_u8
-    cert_msg[8] = ((cert_der.size >> 16) & 0xff).to_u8; cert_msg[9] = ((cert_der.size >> 8) & 0xff).to_u8; cert_msg[10] = (cert_der.size & 0xff).to_u8
-    i = 0; while i < cert_der.size; cert_msg[11 + i] = cert_der[i]; i = i + 1; end
-    cert_msg[11 + cert_der.size] = 0x00_u8; cert_msg[11 + cert_der.size + 1] = 0x00_u8
+    cert_offset = 8
+    i = 0
+    while i < cert_chain.size
+      cert_der = cert_chain[i]
+      cert_msg[cert_offset] = ((cert_der.size >> 16) & 0xff).to_u8
+      cert_msg[cert_offset + 1] = ((cert_der.size >> 8) & 0xff).to_u8
+      cert_msg[cert_offset + 2] = (cert_der.size & 0xff).to_u8
+      cert_offset = cert_offset + 3
+      j = 0
+      while j < cert_der.size
+        cert_msg[cert_offset + j] = cert_der[j]
+        j = j + 1
+      end
+      cert_offset = cert_offset + cert_der.size
+      cert_msg[cert_offset] = 0x00_u8; cert_msg[cert_offset + 1] = 0x00_u8
+      cert_offset = cert_offset + 2
+      i = i + 1
+    end
     @transcript << cert_msg
 
     th_cert = hash_transcript
@@ -2726,12 +2696,12 @@ pub class QuicTlsContext
     cv_input[cv_prefix.bytesize] = 0x00_u8
     i = 0; while i < th_cert.size; cv_input[cv_prefix.bytesize + 1 + i] = th_cert[i]; i = i + 1; end
 
-    cv_sig = QuicTlsContext.sign_rsa_pkcs1v15(TEST_RSA_D, TEST_RSA_N, SHA256.digest(cv_input), 128)
+    cv_sig = Std::Tls::RSA.sign_pss(credentials.private_n, credentials.private_d, :sha256, SHA256.digest(cv_input))
     cv_body_len = 2 + 2 + cv_sig.size
     cv_msg = Bytes.new(4 + cv_body_len)
     cv_msg[0] = 0x0f_u8
     cv_msg[1] = ((cv_body_len >> 16) & 0xff).to_u8; cv_msg[2] = ((cv_body_len >> 8) & 0xff).to_u8; cv_msg[3] = (cv_body_len & 0xff).to_u8
-    cv_msg[4] = 0x04_u8; cv_msg[5] = 0x01_u8
+    cv_msg[4] = 0x08_u8; cv_msg[5] = 0x04_u8
     cv_msg[6] = ((cv_sig.size >> 8) & 0xff).to_u8; cv_msg[7] = (cv_sig.size & 0xff).to_u8
     i = 0; while i < cv_sig.size; cv_msg[8 + i] = cv_sig[i]; i = i + 1; end
     @transcript << cv_msg
@@ -2810,26 +2780,33 @@ pub class QuicTlsContext
   def handle_server_handshake_flight(flight : Bytes) : {Bytes, TransportParameters}
     offset = 0
     server_tp = nil.as(TransportParameters?)
-    server_cert = nil.as(Certificate?)
+    server_chain = [] of Certificate
     th_cert = Bytes.empty
     th_cv = Bytes.empty
     cert_verify_sig = Bytes.empty
+    cert_verify_scheme = 0
 
     while offset + 4 <= flight.size
       msg_type = flight[offset]
       msg_len = (flight[offset + 1].to_i32 << 16) | (flight[offset + 2].to_i32 << 8) | flight[offset + 3].to_i32
+      raise "TLS handshake message is truncated" if offset + 4 + msg_len > flight.size
       msg_data = flight[offset, 4 + msg_len]
       offset = offset + 4 + msg_len
 
       if msg_type == 0x08_u8
+        raise "EncryptedExtensions is truncated" if msg_data.size < 6
         ee_exts_len = (msg_data[4].to_i32 << 8) | msg_data[5].to_i32
         e_idx = 6
         e_end = 6 + ee_exts_len
-        while e_idx + 4 <= e_end
+        raise "EncryptedExtensions length overflows message" unless e_end == msg_data.size
+        while e_idx < e_end
+          raise "EncryptedExtensions entry is truncated" if e_idx + 4 > e_end
           ext_t = (msg_data[e_idx].to_i32 << 8) | msg_data[e_idx + 1].to_i32
           ext_l = (msg_data[e_idx + 2].to_i32 << 8) | msg_data[e_idx + 3].to_i32
           e_idx = e_idx + 4
+          raise "EncryptedExtensions value is truncated" if e_idx + ext_l > e_end
           if ext_t == 0x0039
+            raise "duplicate QUIC transport parameters extension" unless server_tp.nil?
             tp_b = msg_data[e_idx, ext_l]
             server_tp = TransportParameters.decode(tp_b, ConnectionRole::CLIENT)
           end
@@ -2837,23 +2814,42 @@ pub class QuicTlsContext
         end
         @transcript << msg_data
       elsif msg_type == 0x0b_u8
+        raise "Certificate message is truncated" if msg_data.size < 8
         ctx_len = msg_data[4].to_i32
         c_idx = 5 + ctx_len
+        raise "Certificate context overflows message" if c_idx + 3 > msg_data.size
         list_len = (msg_data[c_idx].to_i32 << 16) | (msg_data[c_idx + 1].to_i32 << 8) | msg_data[c_idx + 2].to_i32
         c_idx = c_idx + 3
-        c_len = (msg_data[c_idx].to_i32 << 16) | (msg_data[c_idx + 1].to_i32 << 8) | msg_data[c_idx + 2].to_i32
-        c_idx = c_idx + 3
-        der_cert = msg_data[c_idx, c_len]
-        server_cert = Certificate.parse(der_cert)
+        c_end = c_idx + list_len
+        raise "Certificate list length overflows message" unless c_end == msg_data.size
+        while c_idx < c_end
+          raise "Certificate entry length is truncated" if c_idx + 3 > c_end
+          c_len = (msg_data[c_idx].to_i32 << 16) | (msg_data[c_idx + 1].to_i32 << 8) | msg_data[c_idx + 2].to_i32
+          c_idx = c_idx + 3
+          raise "Certificate entry is truncated" if c_idx + c_len + 2 > c_end
+          der_cert = msg_data[c_idx, c_len]
+          parsed_cert = Certificate.parse(der_cert)
+          raise "Certificate entry could not be parsed" if parsed_cert.nil?
+          server_chain << parsed_cert
+          c_idx = c_idx + c_len
+          cert_ext_len = (msg_data[c_idx].to_i32 << 8) | msg_data[c_idx + 1].to_i32
+          c_idx = c_idx + 2
+          raise "Certificate extensions overflow entry" if c_idx + cert_ext_len > c_end
+          c_idx = c_idx + cert_ext_len
+        end
+        raise "Certificate list did not end at declared boundary" unless c_idx == c_end
         @transcript << msg_data
         th_cert = hash_transcript
       elsif msg_type == 0x0f_u8
-        sig_algo = (msg_data[4].to_i32 << 8) | msg_data[5].to_i32
+        raise "CertificateVerify is truncated" if msg_data.size < 8
+        cert_verify_scheme = (msg_data[4].to_i32 << 8) | msg_data[5].to_i32
         sig_len = (msg_data[6].to_i32 << 8) | msg_data[7].to_i32
+        raise "CertificateVerify signature length overflows message" unless 8 + sig_len == msg_data.size
         cert_verify_sig = msg_data[8, sig_len]
         @transcript << msg_data
         th_cv = hash_transcript
       elsif msg_type == 0x14_u8
+        raise "Finished message must contain 32 verify bytes" unless msg_data.size == 36
         s_verify_data = msg_data[4, 32]
         s_fin_key = Std::Tls.hkdf_expand_label(@s_hs_traffic, "finished", Bytes.empty, 32)
         expected_mac = HMAC.digest(:sha256, s_fin_key, th_cv)
@@ -2861,23 +2857,27 @@ pub class QuicTlsContext
           raise "Server Finished MAC verification failed"
         end
         @transcript << msg_data
+      else
+        raise "unexpected TLS handshake message type #{msg_type}"
       end
     end
 
+    raise "TLS handshake flight has trailing bytes" unless offset == flight.size
     raise "Server did not provide transport parameters" if server_tp.nil?
-    raise "Server did not provide certificate" if server_cert.nil?
+    raise "Server did not provide certificate" if server_chain.empty?
     @peer_tp = server_tp
-    @peer_cert = server_cert
+    @peer_chain = server_chain
+    @peer_cert = server_chain[0]
 
-    cert = server_cert
-    now_sec = 1577836800_i64
+    cert = server_chain[0]
+    now_sec = @verification_time || Time.utc.seconds
     if !cert.matches_hostname(@hostname)
       raise "Certificate hostname mismatch: expected #{@hostname}, got #{cert.common_name}"
     end
     if !cert.valid_at?(now_sec)
       raise "Certificate expired or not yet valid"
     end
-    if !@ca_store.verify_chain([cert], @hostname, now_sec)
+    if !@ca_store.verify_chain(server_chain, @hostname, now_sec)
       raise "Certificate chain verification failed against trust store"
     end
 
@@ -2889,8 +2889,9 @@ pub class QuicTlsContext
 
     rn = cert.rsa_n
     re = cert.rsa_e
-    raise "Missing RSA public key on certificate" if rn.nil? || re.nil?
-    if !Std::Tls::RSA.verify_pkcs1v15(rn, re, :sha256, SHA256.digest(cv_input), cert_verify_sig)
+    raise "Missing RSA public key on certificate" if rn.zero? || re.zero?
+    raise "TLS 1.3 requires rsa_pss_rsae_sha256 CertificateVerify" unless cert_verify_scheme == 0x0804
+    if !Std::Tls::RSA.verify_pss(rn, re, :sha256, SHA256.digest(cv_input), cert_verify_sig, 32)
       raise "CertificateVerify signature verification failed"
     end
     @cert_verified = true
