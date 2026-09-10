@@ -176,6 +176,10 @@ prove_fails "data frame permitted after close sent" post_close_bypass \
   "assertion failed: data frame rejected after close initiated" "websocket.iyi" \
   's/@close_sent && frame.opcode != OP_CLOSE && frame.opcode != OP_PONG/false/g'
 
+# 13. Removal of negotiated client_no_context_takeover parameter fails public connect/upgrade path
+prove_fails "server omitted client_no_context_takeover parameter rejected" no_ctx_takeover_bypass \
+  "client failed to verify server deflate response: Server omitted client_no_context_takeover parameter" "websocket.iyi" \
+  's/client_no_context_takeover; //'
 if [ "$status" -eq 0 ]; then
   echo "WebSocket standard library: RFC 6455 handshake, base64, framing, client/server,"
   echo "incremental UTF-8 validation, control frame interleaving, permessage-deflate,"

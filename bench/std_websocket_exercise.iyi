@@ -84,7 +84,7 @@ def test_handshake_vector : Nil
     assert_true(verified_key == key, "verified key matches client key")
     resp = Handshake.build_server_response(verified_key, "chat")
     verify_err = Handshake.verify_server_response(resp, key, ["chat", "superchat"])
-    assert_true(verify_err.nil?, "server response verification passed")
+    assert_true(verify_err == false, "server response verification passed (uncompressed)")
   end
 
   puts "  RFC 6455 Section 1.3 accept vector and handshake flow passed"
@@ -710,7 +710,7 @@ def test_rejection_suite : Nil
   case err_bad_sp
   in WebSocketError
     assert_true(err_bad_sp.code == CLOSE_PROTOCOL_ERROR, "unrequested subprotocol rejected")
-  in Nil
+  in Bool
     raise "assertion failed: unrequested subprotocol was not rejected"
   end
 
@@ -761,6 +761,54 @@ def test_rejection_suite : Nil
   in Message, Nil
     raise "assertion failed: new data frame mid-fragmentation was not rejected"
   end
+  # 22. Server selects bare permessage-deflate without client_no_context_takeover (rejected with 1002)
+  resp_bare1 = Response.new(101, Headers.new, status_message: "Switching Protocols")
+  resp_bare1.headers["Upgrade"] = "websocket"
+  resp_bare1.headers["Connection"] = "Upgrade"
+  resp_bare1.headers["Sec-WebSocket-Accept"] = Handshake.compute_accept("dGhlIHNhbXBsZSBub25jZQ==")
+  resp_bare1.headers["Sec-WebSocket-Extensions"] = "permessage-deflate; server_no_context_takeover"
+  err_bare1 = Handshake.verify_server_response(resp_bare1, "dGhlIHNhbXBsZSBub25jZQ==",
+                                               requested_extensions: ["permessage-deflate"])
+  case err_bare1
+  in WebSocketError
+    assert_true(err_bare1.code == CLOSE_PROTOCOL_ERROR, "omitted client_no_context_takeover rejected with 1002")
+  in Bool
+    raise "assertion failed: server omitted client_no_context_takeover was not rejected"
+  end
+
+  # 23. Server selects bare permessage-deflate without server_no_context_takeover (rejected with 1002)
+  resp_bare2 = Response.new(101, Headers.new, status_message: "Switching Protocols")
+  resp_bare2.headers["Upgrade"] = "websocket"
+  resp_bare2.headers["Connection"] = "Upgrade"
+  resp_bare2.headers["Sec-WebSocket-Accept"] = Handshake.compute_accept("dGhlIHNhbXBsZSBub25jZQ==")
+  resp_bare2.headers["Sec-WebSocket-Extensions"] = "permessage-deflate; client_no_context_takeover"
+  err_bare2 = Handshake.verify_server_response(resp_bare2, "dGhlIHNhbXBsZSBub25jZQ==",
+                                               requested_extensions: ["permessage-deflate"])
+  case err_bare2
+  in WebSocketError
+    assert_true(err_bare2.code == CLOSE_PROTOCOL_ERROR, "omitted server_no_context_takeover rejected with 1002")
+  in Bool
+    raise "assertion failed: server omitted server_no_context_takeover was not rejected"
+  end
+
+  # 24. Server selects unsupported window bits parameter (rejected with 1002)
+  resp_win = Response.new(101, Headers.new, status_message: "Switching Protocols")
+  resp_win.headers["Upgrade"] = "websocket"
+  resp_win.headers["Connection"] = "Upgrade"
+  resp_win.headers["Sec-WebSocket-Accept"] = Handshake.compute_accept("dGhlIHNhbXBsZSBub25jZQ==")
+  resp_win.headers["Sec-WebSocket-Extensions"] = "permessage-deflate; client_no_context_takeover; server_no_context_takeover; client_max_window_bits=10"
+  err_win = Handshake.verify_server_response(resp_win, "dGhlIHNhbXBsZSBub25jZQ==",
+                                             requested_extensions: ["permessage-deflate"])
+  case err_win
+  in WebSocketError
+    assert_true(err_win.code == CLOSE_PROTOCOL_ERROR, "unsupported window bits rejected with 1002")
+  in Bool
+    raise "assertion failed: unsupported window bits was not rejected"
+  end
+
+  # 25. Client offering bare permessage-deflate without no-context parameters is declined by server
+  _, srv_declined_active = Handshake.negotiate_server_extensions("permessage-deflate", true)
+  assert_true(!srv_declined_active, "server declined bare permessage-deflate offer")
 
   puts "  rejection suite passed completely"
 end
@@ -811,7 +859,7 @@ def test_live_socket : Nil
   case parsed_resp
   in Response
     h_err = Handshake.verify_server_response(parsed_resp, key)
-    assert_true(h_err.nil?, "client verified server 101 response")
+    assert_true(h_err == false, "client verified server 101 response")
   in HttpError
     raise "client failed to parse response: #{parsed_resp.message}"
   end
@@ -864,6 +912,76 @@ def test_live_socket : Nil
   s_sock_err.close
   c_sock_err.close
   a_sock_err.close
+
+  # 2. Live TCP test with permessage-deflate (no-context-takeover)
+  s_sock_deflate = IyiSocket.listen(0)
+  def_port = s_sock_deflate.local_port
+  c_sock_deflate = IyiSocket.connect("127.0.0.1", def_port)
+  a_sock_deflate = s_sock_deflate.accept
+
+  # Client sends handshake offering permessage-deflate with both no-context parameters
+  c_deflate_key = Handshake.generate_key
+  c_deflate_req = Handshake.build_client_request("/", "127.0.0.1:#{def_port}", c_deflate_key,
+                                                 extensions: ["permessage-deflate; client_no_context_takeover; server_no_context_takeover"])
+  ser_def_req = c_deflate_req.serialize
+  case ser_def_req
+  in String    then c_sock_deflate.write(ser_def_req)
+  in HttpError then raise "failed to serialize deflate client request"
+  end
+
+  # Server upgrades via Server.upgrade with permessage-deflate enabled
+  s_up_res = Std::Websocket::Server.upgrade(a_sock_deflate, extensions: ["permessage-deflate"])
+  case s_up_res
+  in WebSocketError then raise "server failed to upgrade with permessage-deflate: #{s_up_res.message}"
+  in Session(Std::Websocket::PrefixedTransport(IyiSocket))
+    assert_true(s_up_res.deflate_enabled, "server negotiated deflate_enabled: true")
+
+    raw_c_resp = c_sock_deflate.read(4096)
+    parsed_c_resp = Response.parse(raw_c_resp)
+    case parsed_c_resp
+    in Response
+      c_ver = Handshake.verify_server_response(parsed_c_resp, c_deflate_key,
+                                               requested_extensions: ["permessage-deflate; client_no_context_takeover; server_no_context_takeover"])
+      case c_ver
+      in WebSocketError then raise "client failed to verify server deflate response: #{c_ver.message}"
+      in Bool
+        assert_true(c_ver, "client verified deflate_enabled: true")
+        c_trans = Std::Websocket::PrefixedTransport.new(c_sock_deflate, Handshake.extract_trailing_bytes(raw_c_resp))
+        c_sess = Session.new(c_trans, is_server: false, deflate_enabled: true)
+
+        # Send Message 1: repetitive text that compresses
+        rep_msg = "The quick brown fox jumps over the lazy dog repeatedly! " * 5
+        c_sess.send_text(rep_msg)
+        s_m1 = s_up_res.receive
+        case s_m1
+        in Message
+          assert_true(s_m1.text == rep_msg, "server received message 1 independently")
+        in WebSocketError, Nil
+          raise "server failed to receive message 1"
+        end
+
+        # Send Message 2: identical content (under context-takeover, would back-reference message 1)
+        # Under stateless no-context-takeover, each message encodes/decodes independently
+        c_sess.send_text(rep_msg)
+        s_m2 = s_up_res.receive
+        case s_m2
+        in Message
+          assert_true(s_m2.text == rep_msg, "server received message 2 independently without dictionary drift")
+        in WebSocketError, Nil
+          raise "server failed to receive message 2 independently"
+        end
+
+        c_sess.close(CLOSE_NORMAL, "deflate done")
+        s_up_res.receive # drain close
+      end
+    in HttpError
+      raise "client failed to parse server deflate response"
+    end
+  end
+
+  s_sock_deflate.close
+  c_sock_deflate.close
+  a_sock_deflate.close
 
   puts "  TCP loopback handshake, exchange, and close passed"
 end
