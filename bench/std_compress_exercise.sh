@@ -481,9 +481,9 @@ prove_fails "broken stored block" "fail_stored" "stored block length check faile
 prove_fails "broken fixed huffman" "fail_fixed" "deflate fixed: text roundtrip" \
   's/code = 0x30 + sym/code = 0x31 + sym/'
 
-# 5. Broken Dynamic Huffman (emits wrong block type)
-prove_fails "broken dynamic huffman" "fail_dyn" "invalid backward distance" \
-  's/writer\.write_bits(2, 2).*/writer.write_bits(1, 2)/'
+# 5. Broken Dynamic Huffman table invariant (HLIT <= 286)
+prove_fails "broken dynamic hlit invariant" "fail_dyn_hlit" "hlit error mismatch" \
+  's/if hlit > 286 # DYNAMIC_HLIT_INVARIANT/if false # DYNAMIC_HLIT_INVARIANT/'
 
 # 6. Broken Zlib header (violates (CMF*256+FLG)%31 == 0)
 prove_fails "broken zlib header" "fail_zlib" "invalid zlib header check" \
@@ -492,9 +492,18 @@ prove_fails "broken zlib header" "fail_zlib" "invalid zlib header check" \
 # 7. Broken Gzip header (emits wrong magic byte)
 prove_fails "broken gzip header" "fail_gzip" "not in gzip format" \
   's/ptr\[0\] = 0x1F_u8/ptr[0] = 0x00_u8/'
-# 8. Bypassed bomb limit (guarded mutation proof: proves limit check is load-bearing)
-prove_fails "bypassed bomb limit" "fail_bomb" "expected DecompressLimitExceeded for decompression bomb" \
-  's/if @max_output_size >= 0_i64 && @out_buf\.size\.to_i64 >= @max_output_size/if false/'
+
+# 8a. Bypassed stored block limit guard (vector 01 05 00 fa ff 48 65 6c 6c 6f with limit 3)
+prove_fails "bypassed stored limit" "fail_lim_stored" "expected DecompressLimitExceeded for stored limit overflow" \
+  's/.*# GUARD_STORED_LIMIT/if false # GUARD_STORED_LIMIT/'
+
+# 8b. Bypassed fixed-Huffman literal limit guard (vector f3 48 cd c9 c9 07 00 with limit 2)
+prove_fails "bypassed literal limit" "fail_lim_lit" "expected DecompressLimitExceeded for fixed literal limit overflow" \
+  's/.*# GUARD_LITERAL_LIMIT/if false # GUARD_LITERAL_LIMIT/'
+
+# 8c. Bypassed LZ77 match copy limit guard (bomb with limit 75)
+prove_fails "bypassed match limit" "fail_lim_match" "expected DecompressLimitExceeded for match limit overflow" \
+  's/.*# GUARD_MATCH_LIMIT/if false # GUARD_MATCH_LIMIT/'
 echo
 if [ "$status" -eq 0 ]; then
   echo "ALL COMPRESS EXERCISE CHECKS AND FAILURE PROOFS PASSED"
