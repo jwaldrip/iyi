@@ -53,13 +53,13 @@ fi
 
 echo
 echo "== every http3 section reported"
-for phrase in "constants:" "settings:" "frames:" "control-stream:" "request-response:" "extended-connect:" "datagrams:"; do
+for phrase in "constants:" "settings:" "frames:" "control-stream:" "request-response:" "extended-connect:" "datagrams:" "control-stream-audit:" "forbidden-frames:" "settings-audit:"; do
   grep -q "$phrase" "$WORK/http3-plain.out" 2>/dev/null || {
     echo "  MISSING: nothing reported for $phrase"
     status=1
   }
 done
-[ "$status" -eq 0 ] && echo "  constants, settings, frames, control-stream, request-response, extended-connect, and datagrams all reported"
+[ "$status" -eq 0 ] && echo "  constants, settings, frames, control-stream, request-response, extended-connect, datagrams, control-stream-audit, forbidden-frames, and settings-audit all reported"
 
 echo
 echo "== the same program with optimisation on (--release)"
@@ -137,6 +137,20 @@ prove_fails "quarter stream id mapping corrupted" dgram_corrupt \
   "stream id mapping" "http3.iyi" \
   's/quarter_stream_id \* 4_u64/quarter_stream_id \* 2_u64/'
 
+# 6. Duplicate SETTINGS rejection on control stream
+prove_fails "duplicate SETTINGS accepted" dup_settings_fail \
+  "duplicate SETTINGS not rejected" "http3.iyi" \
+  's/return H3Error::FRAME_UNEXPECTED/return H3Error::NO_ERROR/'
+
+# 7. Forbidden frame rejection on request stream
+prove_fails "forbidden frame accepted" forbid_frame_fail \
+  "forbidden frame not rejected" "http3.iyi" \
+  's/return {fields, Bytes.empty, H3Error::FRAME_UNEXPECTED}/return {fields, Bytes.empty, H3Error::NO_ERROR}/'
+
+# 8. Reserved HTTP/2 setting accepted
+prove_fails "reserved H2 setting accepted" reserved_setting_fail \
+  "reserved H2 setting not rejected" "http3.iyi" \
+  's/id == 0x02_u64/false/'
 echo
 if [ "$status" -eq 0 ]; then
   echo "HTTP/3 standard library: stream types, frame codecs, settings dictionary,"

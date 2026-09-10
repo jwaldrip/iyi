@@ -53,13 +53,13 @@ fi
 
 echo
 echo "== every quic section reported"
-for phrase in "keys:" "client-initial:" "server-initial:" "retry-integrity:" "chacha20-short-header:" "packet-number:" "frames:" "loss-and-congestion:" "streams:" "round-trip:"; do
+for phrase in "keys:" "client-initial:" "server-initial:" "retry-integrity:" "chacha20-short-header:" "packet-number:" "packet-spaces:" "frames:" "loss-and-congestion:" "stream-and-congestion:" "transport-parameters:" "loopback-udp:" "pto-retransmit:"; do
   grep -q "$phrase" "$WORK/quic-plain.out" 2>/dev/null || {
     echo "  MISSING: nothing reported for $phrase"
     status=1
   }
 done
-[ "$status" -eq 0 ] && echo "  keys, client-initial, server-initial, retry-integrity, chacha20-short-header, packet-number, frames, loss-and-congestion, streams, and round-trip all reported"
+[ "$status" -eq 0 ] && echo "  keys, client-initial, server-initial, retry-integrity, chacha20-short-header, packet-number, packet-spaces, frames, loss-and-congestion, stream-and-congestion, transport-parameters, loopback-udp, and pto-retransmit all reported"
 
 echo
 echo "== the same program with optimisation on (--release)"
@@ -129,7 +129,7 @@ prove_fails "packet number decode broken" pn_broken \
 
 # 4. RTT estimator corrupted
 prove_fails "rtt estimator corrupted" rtt_corrupt \
-  "min rtt" "quic.iyi" \
+  "first sample min rtt" "quic.iyi" \
   's/@min_rtt = latest/@min_rtt = 0_i64/'
 
 # 5. Stream ID classification broken

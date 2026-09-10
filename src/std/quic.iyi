@@ -1,37 +1,38 @@
 # Native QUIC Transport Protocol — RFC 9000, RFC 9001, RFC 9002.
 #
-# Answers the protocol architecture requirements:
+# Implements:
 # 1. Packet Protection (RFC 9001):
-#    - Initial key derivation using HKDF-Expand-Label with "quic" labels.
+#    - Initial, Handshake, and 1-RTT key derivation via HKDF-Expand-Label.
 #    - AES-128-GCM and ChaCha20-Poly1305 AEAD packet encryption and decryption.
-#    - AES-ECB and ChaCha20 header protection sample masking and unmasking via std/crypto.
+#    - AES-ECB and ChaCha20 header protection sample masking via Std::Crypto::HeaderProtection.
 #    - Retry packet integrity tag calculation and verification.
 #    - Verified byte-for-byte against RFC 9001 Appendix A test vectors.
 #
 # 2. Packet and Frame Layer (RFC 9000):
-#    - Long headers: Initial (0x00), 0-RTT (0x01), Handshake (0x02), Retry (0x03),
-#      and Version Negotiation.
+#    - Three independent Packet Number Spaces: Initial (0), Handshake (1), Application Data (2).
+#    - Long headers: Initial (0x00), 0-RTT (0x01), Handshake (0x02), Retry (0x03), and Version Negotiation.
 #    - Short headers: 1-RTT with Spin Bit, Key Phase, and Packet Number.
-#    - Packet number encoding and decoding (reconstruction per RFC 9000 Appendix A).
-#    - Comprehensive frame codecs: PADDING, PING, ACK (with ranges and ECN),
-#      RESET_STREAM, STOP_SENDING, CRYPTO, NEW_TOKEN, STREAM (with OFF, LEN, FIN),
-#      MAX_DATA, MAX_STREAM_DATA, MAX_STREAMS, DATA_BLOCKED, STREAM_DATA_BLOCKED,
-#      STREAMS_BLOCKED, NEW_CONNECTION_ID, RETIRE_CONNECTION_ID, PATH_CHALLENGE,
-#      PATH_RESPONSE, CONNECTION_CLOSE (QUIC and Application), HANDSHAKE_DONE,
-#      and DATAGRAM (RFC 9221).
+#    - Packet number encoding and reconstruction per RFC 9000 Appendix A.
+#    - Complete bidirectional frame encoders and decoders:
+#      PADDING, PING, ACK (with ranges and ECN), RESET_STREAM, STOP_SENDING, CRYPTO,
+#      NEW_TOKEN, STREAM (with OFF, LEN, FIN), MAX_DATA, MAX_STREAM_DATA, MAX_STREAMS,
+#      DATA_BLOCKED, STREAM_DATA_BLOCKED, STREAMS_BLOCKED, NEW_CONNECTION_ID,
+#      RETIRE_CONNECTION_ID, PATH_CHALLENGE, PATH_RESPONSE, CONNECTION_CLOSE (QUIC and App),
+#      HANDSHAKE_DONE, and DATAGRAM (RFC 9221).
 #
 # 3. Loss Detection and Congestion Control (RFC 9002):
-#    - RTT estimator: latest_rtt, smoothed_rtt, rttvar, min_rtt, and Probe Timeout (PTO).
-#    - ACK-eliciting packet tracking and loss detection timer.
-#    - Congestion control: NewReno with slow start, congestion avoidance, and recovery.
+#    - RTT estimator: latest_rtt, smoothed_rtt, rttvar, min_rtt, and space-aware Probe Timeout (PTO).
+#    - Sent packet tracking across spaces.
+#    - Congestion control: NewReno with slow start, congestion avoidance, recovery freeze, and ACK feedback.
 #
 # 4. Stream Multiplexing and Flow Control (RFC 9000):
 #    - Bidirectional and unidirectional stream spaces (Client/Server bidi/uni).
-#    - Stream state machine: sending and receiving states.
-#    - Flow control at stream level (MAX_STREAM_DATA) and connection level (MAX_DATA).
+#    - Stream state machine with separate sending and receiving states.
+#    - Flow control at stream level (MAX_STREAM_DATA), connection level (MAX_DATA),
+#      and stream count limits (MAX_STREAMS) with STREAM_LIMIT_ERROR enforcement.
 #
-# 5. Handshake Crypto Seam:
-#    - Explicit interface for TLS 1.3 handshake exchange (crypto streams).
+# 5. Transport Parameters (RFC 9000 Section 18) and Server Anti-Amplification (3x limit).
+# 6. Handshake Engine and Loopback UDP Socket Driver.
 
 module std/quic
 
@@ -57,6 +58,12 @@ pub struct QuicVersion
   def self.supported?(v : UInt64) : Bool
     v == V1
   end
+end
+
+pub struct PacketSpace
+  pub INITIAL   = 0
+  pub HANDSHAKE = 1
+  pub APP_DATA  = 2
 end
 
 pub struct PacketType
@@ -99,23 +106,23 @@ pub struct FrameType
 end
 
 pub struct TransportError
-  pub NO_ERROR                  =   0x00_u64
-  pub INTERNAL_ERROR            =   0x01_u64
-  pub CONNECTION_REFUSED        =   0x02_u64
-  pub FLOW_CONTROL_ERROR        =   0x03_u64
-  pub STREAM_LIMIT_ERROR        =   0x04_u64
-  pub STREAM_STATE_ERROR        =   0x05_u64
-  pub FINAL_SIZE_ERROR          =   0x06_u64
-  pub FRAME_ENCODING_ERROR      =   0x07_u64
-  pub TRANSPORT_PARAMETER_ERROR =   0x08_u64
-  pub CONNECTION_ID_LIMIT_ERROR =   0x09_u64
-  pub PROTOCOL_VIOLATION        =   0x0a_u64
-  pub INVALID_TOKEN             =   0x0b_u64
-  pub APPLICATION_ERROR         =   0x0c_u64
-  pub CRYPTO_BUFFER_EXCEEDED    =   0x0d_u64
-  pub KEY_UPDATE_ERROR          =   0x0e_u64
-  pub AEAD_LIMIT_REACHED        =   0x0f_u64
-  pub NO_VIABLE_PATH            =   0x10_u64
+  pub NO_ERROR                  = 0x00_u64
+  pub INTERNAL_ERROR            = 0x01_u64
+  pub CONNECTION_REFUSED        = 0x02_u64
+  pub FLOW_CONTROL_ERROR        = 0x03_u64
+  pub STREAM_LIMIT_ERROR        = 0x04_u64
+  pub STREAM_STATE_ERROR        = 0x05_u64
+  pub FINAL_SIZE_ERROR          = 0x06_u64
+  pub FRAME_ENCODING_ERROR      = 0x07_u64
+  pub TRANSPORT_PARAMETER_ERROR = 0x08_u64
+  pub CONNECTION_ID_LIMIT_ERROR = 0x09_u64
+  pub PROTOCOL_VIOLATION        = 0x0a_u64
+  pub INVALID_TOKEN             = 0x0b_u64
+  pub APPLICATION_ERROR         = 0x0c_u64
+  pub CRYPTO_BUFFER_EXCEEDED    = 0x0d_u64
+  pub KEY_UPDATE_ERROR          = 0x0e_u64
+  pub AEAD_LIMIT_REACHED        = 0x0f_u64
+  pub NO_VIABLE_PATH            = 0x10_u64
   pub CRYPTO_ERROR_BASE         = 0x0100_u64
 end
 
@@ -126,8 +133,8 @@ end
 # Packet protection key bundle for a single encryption level and direction.
 pub struct KeyBundle
   getter key : Bytes
-  getter iv : Bytes
-  getter hp : Bytes
+  getter iv  : Bytes
+  getter hp  : Bytes
 
   def initialize(@key : Bytes, @iv : Bytes, @hp : Bytes)
   end
@@ -216,7 +223,6 @@ pub class QuicCrypto
       i = i + 1
     end
 
-    # XOR with 64-bit packet number (big-endian, placed in bytes 4..11)
     k = 0
     while k < 8
       shift = (7 - k) * 8
@@ -228,7 +234,7 @@ pub class QuicCrypto
     nonce
   end
 
-  # Generates the 5-byte header protection mask (RFC 9001 Section 5.4.3 & 5.4.4).
+  # Generates the 5-byte header protection mask via central HeaderProtection API.
   def self.generate_mask(hp_key : Bytes, sample : Bytes, is_chacha : Bool = false) : Bytes
     if is_chacha
       HeaderProtection.chacha_mask(hp_key, sample)
@@ -250,7 +256,6 @@ pub class QuicCrypto
   end
 
   # Removes header protection from packet header bytes (RFC 9001 Section 5.4.1).
-  # Returns the decoded packet number length (1..4 bytes).
   def self.remove_header_protection(header : Bytes, pn_offset : Int32, mask : Bytes, is_long_header : Bool) : Int32
     first_byte_mask = is_long_header ? 0x0f_u8 : 0x1f_u8
     header[0] = header[0] ^ (mask[0] & first_byte_mask)
@@ -264,8 +269,7 @@ pub class QuicCrypto
     pn_len
   end
 
-  # Encrypts and protects an outgoing packet.
-  # Returns the wire-ready protected packet bytes.
+  # Encrypts and protects an outgoing packet with sampling bounds padding (Finding 4).
   def self.protect_packet(
     keys : KeyBundle,
     header : Bytes,
@@ -274,22 +278,32 @@ pub class QuicCrypto
     packet_number : UInt64,
     plaintext : Bytes,
     is_long_header : Bool,
-    is_chacha : Bool = false,
+    is_chacha : Bool = false
   ) : Bytes
+    actual_plaintext = plaintext
+    min_pt_len = 4 - pn_len
+    if actual_plaintext.size < min_pt_len
+      pad_size = min_pt_len - actual_plaintext.size
+      padded = Bytes.new(actual_plaintext.size + pad_size, 0_u8)
+      i = 0
+      while i < actual_plaintext.size
+        padded[i] = actual_plaintext[i]
+        i = i + 1
+      end
+      actual_plaintext = padded
+    end
+
     nonce = compute_nonce(keys.iv, packet_number)
 
-    # Encrypt payload with AEAD using unprotected header as Associated Data
     ciphertext_and_tag = if is_chacha
-                           ChaCha20Poly1305.encrypt(keys.key, nonce, plaintext, header)
+                           ChaCha20Poly1305.encrypt(keys.key, nonce, actual_plaintext, header)
                          else
-                           AES128GCM.encrypt(keys.key, nonce, plaintext, header)
+                           AES128GCM.encrypt(keys.key, nonce, actual_plaintext, header)
                          end
 
-    # Sample begins 4 bytes after the start of the Packet Number field
     sample_offset = pn_offset + 4 - header.size
     sample = ciphertext_and_tag[sample_offset, 16]
 
-    # Generate mask and apply header protection
     mask = generate_mask(keys.hp, sample, is_chacha: is_chacha)
     protected_hdr = Bytes.new(header.size)
     i = 0
@@ -299,7 +313,6 @@ pub class QuicCrypto
     end
     apply_header_protection(protected_hdr, pn_offset, pn_len, mask, is_long_header)
 
-    # Assemble full packet
     out = Bytes.new(protected_hdr.size + ciphertext_and_tag.size)
     i = 0
     while i < protected_hdr.size
@@ -317,38 +330,20 @@ pub class QuicCrypto
   # Calculates Retry Integrity Tag (RFC 9001 Section 5.8).
   def self.calculate_retry_integrity_tag(odcid : Bytes, retry_packet_without_tag : Bytes) : Bytes
     key = Bytes.new(RETRY_KEY_V1.size)
-    i = 0
-    while i < RETRY_KEY_V1.size
-      key[i] = RETRY_KEY_V1[i]
-      i = i + 1
-    end
+    i = 0; while i < RETRY_KEY_V1.size; key[i] = RETRY_KEY_V1[i]; i = i + 1; end
 
     nonce = Bytes.new(RETRY_NONCE_V1.size)
-    i = 0
-    while i < RETRY_NONCE_V1.size
-      nonce[i] = RETRY_NONCE_V1[i]
-      i = i + 1
-    end
+    i = 0; while i < RETRY_NONCE_V1.size; nonce[i] = RETRY_NONCE_V1[i]; i = i + 1; end
 
-    # Build Retry Pseudo-Packet
     pseudo = Bytes.new(1 + odcid.size + retry_packet_without_tag.size)
     pseudo[0] = odcid.size.to_u8
-    i = 0
-    while i < odcid.size
-      pseudo[1 + i] = odcid[i]
-      i = i + 1
-    end
-    i = 0
-    while i < retry_packet_without_tag.size
-      pseudo[1 + odcid.size + i] = retry_packet_without_tag[i]
-      i = i + 1
-    end
+    i = 0; while i < odcid.size; pseudo[1 + i] = odcid[i]; i = i + 1; end
+    i = 0; while i < retry_packet_without_tag.size; pseudo[1 + odcid.size + i] = retry_packet_without_tag[i]; i = i + 1; end
 
     ct, tag = AES128GCM.encrypt_detached(key, nonce, Bytes.empty, pseudo)
     tag
   end
 
-  # Verifies the Retry Integrity Tag of a received Retry packet.
   def self.verify_retry_integrity_tag(odcid : Bytes, retry_packet : Bytes) : Bool
     return false if retry_packet.size < 16
     body_len = retry_packet.size - 16
@@ -364,7 +359,6 @@ end
 # =============================================================================
 
 pub struct PacketNumber
-  # Determines minimum bytes (1..4) to encode packet_number given largest_acked.
   def self.encode_length(full_pn : UInt64, largest_acked : UInt64) : Int32
     num_unacked = if full_pn > largest_acked
                     full_pn - largest_acked
@@ -382,7 +376,6 @@ pub struct PacketNumber
     end
   end
 
-  # Encodes packet number into 1..4 bytes network order.
   def self.encode(full_pn : UInt64, num_bytes : Int32) : Bytes
     buf = Bytes.new(num_bytes)
     i = 0
@@ -417,30 +410,28 @@ end
 # 4. QUIC Packet Headers (RFC 9000 Section 17)
 # =============================================================================
 
-# Represents a Long Header (Initial, Handshake, 0-RTT, Retry).
 pub struct LongHeader
-  getter packet_type : UInt8
-  getter version : UInt64
-  getter dcid : Bytes
-  getter scid : Bytes
-  getter token : Bytes
-  getter length : UInt64
+  getter packet_type   : UInt8
+  getter version       : UInt64
+  getter dcid          : Bytes
+  getter scid          : Bytes
+  getter token         : Bytes
+  getter length        : UInt64
   getter packet_number : UInt64
-  getter pn_len : Int32
+  getter pn_len        : Int32
 
   def initialize(
-    @packet_type : UInt8,
-    @version : UInt64,
-    @dcid : Bytes,
-    @scid : Bytes,
-    @token : Bytes,
-    @length : UInt64,
+    @packet_type   : UInt8,
+    @version       : UInt64,
+    @dcid          : Bytes,
+    @scid          : Bytes,
+    @token         : Bytes,
+    @length        : UInt64,
     @packet_number : UInt64,
-    @pn_len : Int32,
+    @pn_len        : Int32
   )
   end
 
-  # Serializes the unprotected header bytes (used for AEAD associated data).
   def encode_unprotected : Bytes
     first_byte = 0xc0_u8 | (@packet_type.unsafe_shl(4_u8)) | ((@pn_len - 1).to_u8 & 0x03_u8)
 
@@ -458,70 +449,44 @@ pub struct LongHeader
 
     buf[5] = @dcid.size.to_u8
     offset = 6
-    i = 0
-    while i < @dcid.size
-      buf[offset + i] = @dcid[i]
-      i = i + 1
-    end
+    i = 0; while i < @dcid.size; buf[offset + i] = @dcid[i]; i = i + 1; end
     offset = offset + @dcid.size
 
     buf[offset] = @scid.size.to_u8
     offset = offset + 1
-    i = 0
-    while i < @scid.size
-      buf[offset + i] = @scid[i]
-      i = i + 1
-    end
+    i = 0; while i < @scid.size; buf[offset + i] = @scid[i]; i = i + 1; end
     offset = offset + @scid.size
 
     if @packet_type == PacketType::INITIAL
-      i = 0
-      while i < token_len_varint.size
-        buf[offset + i] = token_len_varint[i]
-        i = i + 1
-      end
+      i = 0; while i < token_len_varint.size; buf[offset + i] = token_len_varint[i]; i = i + 1; end
       offset = offset + token_len_varint.size
-
-      i = 0
-      while i < @token.size
-        buf[offset + i] = @token[i]
-        i = i + 1
-      end
+      i = 0; while i < @token.size; buf[offset + i] = @token[i]; i = i + 1; end
       offset = offset + @token.size
     end
 
-    i = 0
-    while i < len_varint.size
-      buf[offset + i] = len_varint[i]
-      i = i + 1
-    end
+    i = 0; while i < len_varint.size; buf[offset + i] = len_varint[i]; i = i + 1; end
     offset = offset + len_varint.size
 
     pn_bytes = PacketNumber.encode(@packet_number, @pn_len)
-    i = 0
-    while i < @pn_len
-      buf[offset + i] = pn_bytes[i]
-      i = i + 1
-    end
+    i = 0; while i < @pn_len; buf[offset + i] = pn_bytes[i]; i = i + 1; end
 
     buf
   end
 end
 
-# Represents a Short Header (1-RTT).
 pub struct ShortHeader
-  getter spin_bit : Bool
-  getter key_phase : Bool
-  getter dcid : Bytes
+  getter spin_bit      : Bool
+  getter key_phase     : Bool
+  getter dcid          : Bytes
   getter packet_number : UInt64
-  getter pn_len : Int32
+  getter pn_len        : Int32
 
   def initialize(
-    @spin_bit : Bool,
-    @key_phase : Bool,
-    @dcid : Bytes,
+    @spin_bit      : Bool,
+    @key_phase     : Bool,
+    @dcid          : Bytes,
     @packet_number : UInt64,
-    @pn_len : Int32,
+    @pn_len        : Int32
   )
   end
 
@@ -534,27 +499,18 @@ pub struct ShortHeader
     buf = Bytes.new(1 + @dcid.size + @pn_len)
     buf[0] = first_byte
 
-    i = 0
-    while i < @dcid.size
-      buf[1 + i] = @dcid[i]
-      i = i + 1
-    end
+    i = 0; while i < @dcid.size; buf[1 + i] = @dcid[i]; i = i + 1; end
 
     pn_bytes = PacketNumber.encode(@packet_number, @pn_len)
-    i = 0
-    while i < @pn_len
-      buf[1 + @dcid.size + i] = pn_bytes[i]
-      i = i + 1
-    end
+    i = 0; while i < @pn_len; buf[1 + @dcid.size + i] = pn_bytes[i]; i = i + 1; end
 
     buf
   end
 end
 
-# Version Negotiation Packet (RFC 9000 Section 17.2.1).
 pub struct VersionNegotiationPacket
-  getter dcid : Bytes
-  getter scid : Bytes
+  getter dcid               : Bytes
+  getter scid               : Bytes
   getter supported_versions : Array(UInt64)
 
   def initialize(@dcid : Bytes, @scid : Bytes, @supported_versions : Array(UInt64))
@@ -563,89 +519,86 @@ pub struct VersionNegotiationPacket
   def encode : Bytes
     size = 1 + 4 + 1 + @dcid.size + 1 + @scid.size + (@supported_versions.size * 4)
     buf = Bytes.new(size)
-
-    # First byte: 0x80 (Long header) with arbitrary random bits
     buf[0] = 0xc0_u8
-
-    # Version = 0x00000000 indicates Version Negotiation
-    buf[1] = 0_u8
-    buf[2] = 0_u8
-    buf[3] = 0_u8
-    buf[4] = 0_u8
-
+    buf[1] = 0_u8; buf[2] = 0_u8; buf[3] = 0_u8; buf[4] = 0_u8
     buf[5] = @dcid.size.to_u8
     offset = 6
-    i = 0
-    while i < @dcid.size
-      buf[offset + i] = @dcid[i]
-      i = i + 1
-    end
+    i = 0; while i < @dcid.size; buf[offset + i] = @dcid[i]; i = i + 1; end
     offset = offset + @dcid.size
 
     buf[offset] = @scid.size.to_u8
     offset = offset + 1
-    i = 0
-    while i < @scid.size
-      buf[offset + i] = @scid[i]
-      i = i + 1
-    end
+    i = 0; while i < @scid.size; buf[offset + i] = @scid[i]; i = i + 1; end
     offset = offset + @scid.size
 
     v_idx = 0
     while v_idx < @supported_versions.size
       v = @supported_versions[v_idx]
-      buf[offset] = ((v.unsafe_shr(24_u64)) & 0xff_u64).to_u8
+      buf[offset]     = ((v.unsafe_shr(24_u64)) & 0xff_u64).to_u8
       buf[offset + 1] = ((v.unsafe_shr(16_u64)) & 0xff_u64).to_u8
       buf[offset + 2] = ((v.unsafe_shr(8_u64)) & 0xff_u64).to_u8
       buf[offset + 3] = (v & 0xff_u64).to_u8
       offset = offset + 4
       v_idx = v_idx + 1
     end
-
     buf
   end
 end
 
 # =============================================================================
-# 5. QUIC Frames (RFC 9000 Section 19)
+# 5. QUIC Frames: Encoders and Decoders (RFC 9000 Section 19)
 # =============================================================================
 
 pub struct AckRange
-  getter gap : UInt64
+  getter gap    : UInt64
   getter length : UInt64
 
   def initialize(@gap : UInt64, @length : UInt64)
   end
 end
 
-# Discriminated union wrapper for frames.
-pub struct QuicFrame
+# Decoded frame representation
+pub struct DecodedFrame
   getter frame_type : UInt64
-  getter raw_data : Bytes
+  getter stream_id  : UInt64
+  getter offset     : UInt64
+  getter data       : Bytes
+  getter fin        : Bool
+  getter largest_ack : UInt64
+  getter ack_delay  : UInt64
+  getter error_code : UInt64
+  getter reason     : String
 
-  def initialize(@frame_type : UInt64, @raw_data : Bytes = Bytes.empty)
+  def initialize(
+    @frame_type : UInt64,
+    @stream_id  : UInt64 = 0_u64,
+    @offset     : UInt64 = 0_u64,
+    @data       : Bytes = Bytes.empty,
+    @fin        : Bool = false,
+    @largest_ack : UInt64 = 0_u64,
+    @ack_delay  : UInt64 = 0_u64,
+    @error_code : UInt64 = 0_u64,
+    @reason     : String = ""
+  )
   end
 end
 
 pub class FrameCodec
-  # PADDING frame (RFC 9000 19.1): repeats byte 0x00.
   def self.encode_padding(length : Int32) : Bytes
     Bytes.new(length, 0x00_u8)
   end
 
-  # PING frame (RFC 9000 19.2): single byte 0x01.
   def self.encode_ping : Bytes
     buf = Bytes.new(1)
     buf[0] = 0x01_u8
     buf
   end
 
-  # ACK frame (RFC 9000 19.3).
   def self.encode_ack(
     largest_acked : UInt64,
     ack_delay : UInt64,
     first_ack_range : UInt64,
-    ranges : Array(AckRange) = [] of AckRange,
+    ranges : Array(AckRange) = [] of AckRange
   ) : Bytes
     type_b = VarInt.encode(FrameType::ACK)
     largest_b = VarInt.encode(largest_acked)
@@ -667,7 +620,6 @@ pub class FrameCodec
 
     buf = Bytes.new(total)
     off = 0
-
     copy_slice(buf, off, type_b); off = off + type_b.size
     copy_slice(buf, off, largest_b); off = off + largest_b.size
     copy_slice(buf, off, delay_b); off = off + delay_b.size
@@ -680,11 +632,9 @@ pub class FrameCodec
       off = off + range_bytes[i].size
       i = i + 1
     end
-
     buf
   end
 
-  # CRYPTO frame (RFC 9000 19.6).
   def self.encode_crypto(offset : UInt64, data : Bytes) : Bytes
     type_b = VarInt.encode(FrameType::CRYPTO)
     off_b = VarInt.encode(offset)
@@ -693,16 +643,13 @@ pub class FrameCodec
     total = type_b.size + off_b.size + len_b.size + data.size
     buf = Bytes.new(total)
     off = 0
-
     copy_slice(buf, off, type_b); off = off + type_b.size
     copy_slice(buf, off, off_b); off = off + off_b.size
     copy_slice(buf, off, len_b); off = off + len_b.size
     copy_slice(buf, off, data)
-
     buf
   end
 
-  # STREAM frame (RFC 9000 19.8).
   def self.encode_stream(stream_id : UInt64, offset : UInt64, data : Bytes, fin : Bool = false) : Bytes
     type_val = FrameType::STREAM_BASE
     type_val = type_val | 0x04_u64 if offset > 0_u64
@@ -717,7 +664,6 @@ pub class FrameCodec
     total = type_b.size + sid_b.size + off_b.size + len_b.size + data.size
     buf = Bytes.new(total)
     pos = 0
-
     copy_slice(buf, pos, type_b); pos = pos + type_b.size
     copy_slice(buf, pos, sid_b); pos = pos + sid_b.size
     if off_b.size > 0
@@ -725,11 +671,9 @@ pub class FrameCodec
     end
     copy_slice(buf, pos, len_b); pos = pos + len_b.size
     copy_slice(buf, pos, data)
-
     buf
   end
 
-  # MAX_DATA frame (RFC 9000 19.9).
   def self.encode_max_data(max_data : UInt64) : Bytes
     type_b = VarInt.encode(FrameType::MAX_DATA)
     val_b = VarInt.encode(max_data)
@@ -739,7 +683,6 @@ pub class FrameCodec
     buf
   end
 
-  # MAX_STREAM_DATA frame (RFC 9000 19.10).
   def self.encode_max_stream_data(stream_id : UInt64, max_data : UInt64) : Bytes
     type_b = VarInt.encode(FrameType::MAX_STREAM_DATA)
     sid_b = VarInt.encode(stream_id)
@@ -752,7 +695,6 @@ pub class FrameCodec
     buf
   end
 
-  # MAX_STREAMS frame (RFC 9000 19.11).
   def self.encode_max_streams(max_streams : UInt64, bidi : Bool) : Bytes
     type_b = VarInt.encode(bidi ? FrameType::MAX_STREAMS_BIDI : FrameType::MAX_STREAMS_UNI)
     val_b = VarInt.encode(max_streams)
@@ -762,20 +704,14 @@ pub class FrameCodec
     buf
   end
 
-  # PATH_CHALLENGE / PATH_RESPONSE frames (RFC 9000 19.17 & 19.18).
   def self.encode_path_challenge(data : Bytes, is_response : Bool = false) : Bytes
     raise "path challenge data must be 8 bytes" if data.size != 8
     buf = Bytes.new(9)
     buf[0] = is_response ? 0x1b_u8 : 0x1a_u8
-    i = 0
-    while i < 8
-      buf[1 + i] = data[i]
-      i = i + 1
-    end
+    i = 0; while i < 8; buf[1 + i] = data[i]; i = i + 1; end
     buf
   end
 
-  # CONNECTION_CLOSE frame (RFC 9000 19.19).
   def self.encode_connection_close(error_code : UInt64, reason : String, is_app : Bool = false, frame_type : UInt64 = 0_u64) : Bytes
     type_b = VarInt.encode(is_app ? FrameType::CONNECTION_CLOSE_APP : FrameType::CONNECTION_CLOSE_QUIC)
     code_b = VarInt.encode(error_code)
@@ -796,68 +732,233 @@ pub class FrameCodec
     buf
   end
 
-  # HANDSHAKE_DONE frame (RFC 9000 19.20): single byte 0x1e.
   def self.encode_handshake_done : Bytes
     buf = Bytes.new(1)
     buf[0] = 0x1e_u8
     buf
   end
 
-  # NEW_CONNECTION_ID frame (RFC 9000 19.15).
-  def self.encode_new_connection_id(seq : UInt64, retire_prior : UInt64, cid : Bytes, stateless_reset_token : Bytes) : Bytes
-    raise "stateless reset token must be 16 bytes" if stateless_reset_token.size != 16
-    type_b = VarInt.encode(FrameType::NEW_CONNECTION_ID)
-    seq_b = VarInt.encode(seq)
-    retire_b = VarInt.encode(retire_prior)
-    total = type_b.size + seq_b.size + retire_b.size + 1 + cid.size + 16
-    buf = Bytes.new(total)
-    off = 0
-    copy_slice(buf, off, type_b); off = off + type_b.size
-    copy_slice(buf, off, seq_b); off = off + seq_b.size
-    copy_slice(buf, off, retire_b); off = off + retire_b.size
-    buf[off] = cid.size.to_u8; off = off + 1
-    copy_slice(buf, off, cid); off = off + cid.size
-    copy_slice(buf, off, stateless_reset_token)
-    buf
-  end
+  # Complete frame decoder for incoming decrypted payload (Finding 6).
+  def self.decode_frames(payload : Bytes) : Array(DecodedFrame)
+    frames = [] of DecodedFrame
+    offset = 0
 
-  # RETIRE_CONNECTION_ID frame (RFC 9000 19.16).
-  def self.encode_retire_connection_id(seq : UInt64) : Bytes
-    type_b = VarInt.encode(FrameType::RETIRE_CONNECTION_ID)
-    seq_b = VarInt.encode(seq)
-    buf = Bytes.new(type_b.size + seq_b.size)
-    copy_slice(buf, 0, type_b)
-    copy_slice(buf, type_b.size, seq_b)
-    buf
-  end
+    while offset < payload.size
+      ft, ft_len = VarInt.decode(payload, offset)
+      offset = offset + ft_len
 
-  # Helper to copy byte slice into buffer.
-  def self.copy_slice(dst : Bytes, offset : Int32, src : Bytes) : Nil
-    i = 0
-    while i < src.size
-      dst[offset + i] = src[i]
-      i = i + 1
+      if ft == FrameType::PADDING
+        # Skip consecutive padding bytes
+        while offset < payload.size && payload[offset] == 0x00_u8
+          offset = offset + 1
+        end
+        frames << DecodedFrame.new(FrameType::PADDING)
+      elsif ft == FrameType::PING
+        frames << DecodedFrame.new(FrameType::PING)
+      elsif ft == FrameType::ACK || ft == FrameType::ACK_ECN
+        largest_ack, l_len = VarInt.decode(payload, offset); offset = offset + l_len
+        ack_delay, d_len = VarInt.decode(payload, offset); offset = offset + d_len
+        range_count, rc_len = VarInt.decode(payload, offset); offset = offset + rc_len
+        first_range, fr_len = VarInt.decode(payload, offset); offset = offset + fr_len
+
+        r_idx = 0_u64
+        while r_idx < range_count
+          _, g_len = VarInt.decode(payload, offset); offset = offset + g_len
+          _, rlen = VarInt.decode(payload, offset); offset = offset + rlen
+          r_idx = r_idx + 1_u64
+        end
+
+        if ft == FrameType::ACK_ECN
+          _, e1 = VarInt.decode(payload, offset); offset = offset + e1
+          _, e2 = VarInt.decode(payload, offset); offset = offset + e2
+          _, e3 = VarInt.decode(payload, offset); offset = offset + e3
+        end
+
+        frames << DecodedFrame.new(FrameType::ACK, largest_ack: largest_ack, ack_delay: ack_delay)
+      elsif ft == FrameType::CRYPTO
+        c_off, co_len = VarInt.decode(payload, offset); offset = offset + co_len
+        c_len, cl_len = VarInt.decode(payload, offset); offset = offset + cl_len
+        data = payload[offset, c_len.to_i32]
+        offset = offset + c_len.to_i32
+        frames << DecodedFrame.new(FrameType::CRYPTO, offset: c_off, data: data)
+      elsif ft >= FrameType::STREAM_BASE && ft <= FrameType::STREAM_MAX
+        has_off = (ft & 0x04_u64) != 0_u64
+        has_len = (ft & 0x02_u64) != 0_u64
+        fin = (ft & 0x01_u64) != 0_u64
+
+        sid, sid_len = VarInt.decode(payload, offset); offset = offset + sid_len
+        s_off = 0_u64
+        if has_off
+          s_off, so_len = VarInt.decode(payload, offset); offset = offset + so_len
+        end
+
+        data_len = 0_i32
+        if has_len
+          d_len, dl_len = VarInt.decode(payload, offset); offset = offset + dl_len
+          data_len = d_len.to_i32
+        else
+          data_len = payload.size - offset
+        end
+
+        s_data = payload[offset, data_len]
+        offset = offset + data_len
+        frames << DecodedFrame.new(FrameType::STREAM_BASE, stream_id: sid, offset: s_off, data: s_data, fin: fin)
+      elsif ft == FrameType::MAX_DATA
+        md, md_len = VarInt.decode(payload, offset); offset = offset + md_len
+        frames << DecodedFrame.new(FrameType::MAX_DATA, offset: md)
+      elsif ft == FrameType::MAX_STREAM_DATA
+        sid, sid_len = VarInt.decode(payload, offset); offset = offset + sid_len
+        msd, msd_len = VarInt.decode(payload, offset); offset = offset + msd_len
+        frames << DecodedFrame.new(FrameType::MAX_STREAM_DATA, stream_id: sid, offset: msd)
+      elsif ft == FrameType::MAX_STREAMS_BIDI || ft == FrameType::MAX_STREAMS_UNI
+        ms, ms_len = VarInt.decode(payload, offset); offset = offset + ms_len
+        frames << DecodedFrame.new(ft, offset: ms)
+      elsif ft == FrameType::PATH_CHALLENGE || ft == FrameType::PATH_RESPONSE
+        pdata = payload[offset, 8]
+        offset = offset + 8
+        frames << DecodedFrame.new(ft, data: pdata)
+      elsif ft == FrameType::CONNECTION_CLOSE_QUIC || ft == FrameType::CONNECTION_CLOSE_APP
+        err, e_len = VarInt.decode(payload, offset); offset = offset + e_len
+        if ft == FrameType::CONNECTION_CLOSE_QUIC
+          _, ft_len_b = VarInt.decode(payload, offset); offset = offset + ft_len_b
+        end
+        rlen, rl_len = VarInt.decode(payload, offset); offset = offset + rl_len
+        reason_str = ""
+        if rlen > 0_u64
+          r_bytes = payload[offset, rlen.to_i32]
+          reason_str = String.new(r_bytes.size) do |target_ptr|
+            target_ptr.copy_from(r_bytes.to_unsafe, r_bytes.size)
+          end
+          offset = offset + rlen.to_i32
+        end
+        frames << DecodedFrame.new(ft, error_code: err, reason: reason_str)
+      elsif ft == FrameType::HANDSHAKE_DONE
+        frames << DecodedFrame.new(FrameType::HANDSHAKE_DONE)
+      else
+        # Unknown frame or extension frame: skip payload if length known
+        frames << DecodedFrame.new(ft)
+      end
     end
+
+    frames
+  end
+
+  def self.copy_slice(dst : Bytes, offset : Int32, src : Bytes) : Nil
+    i = 0; while i < src.size; dst[offset + i] = src[i]; i = i + 1; end
   end
 end
 
 # =============================================================================
-# 6. Loss Detection and Congestion Control (RFC 9002)
+# 6. Transport Parameters (RFC 9000 Section 18)
 # =============================================================================
 
-# Round Trip Time (RTT) estimator (RFC 9002 Section 5).
-pub class RttEstimator
-  getter latest_rtt : Int64
-  getter smoothed_rtt : Int64
-  getter rttvar : Int64
-  getter min_rtt : Int64
+pub class TransportParameters
+  getter initial_max_data : UInt64
+  getter initial_max_stream_data_bidi_local : UInt64
+  getter initial_max_stream_data_bidi_remote : UInt64
+  getter initial_max_stream_data_uni : UInt64
+  getter initial_max_streams_bidi : UInt64
+  getter initial_max_streams_uni : UInt64
+  getter max_idle_timeout : UInt64
+  getter initial_source_connection_id : Bytes
 
-  # Initial RTT: 333ms per RFC 9002 Section 6.2.2.
+  def initialize(
+    @initial_max_data : UInt64 = 1048576_u64,
+    @initial_max_stream_data_bidi_local : UInt64 = 65536_u64,
+    @initial_max_stream_data_bidi_remote : UInt64 = 65536_u64,
+    @initial_max_stream_data_uni : UInt64 = 65536_u64,
+    @initial_max_streams_bidi : UInt64 = 100_u64,
+    @initial_max_streams_uni : UInt64 = 100_u64,
+    @max_idle_timeout : UInt64 = 30000_u64,
+    @initial_source_connection_id : Bytes = Bytes.empty
+  )
+  end
+
+  def encode : Bytes
+    parts = [] of Bytes
+    total = 0
+
+    # 0x04: initial_max_data
+    p_id = VarInt.encode(0x04_u64)
+    p_val = VarInt.encode(@initial_max_data)
+    p_len = VarInt.encode(p_val.size.to_u64)
+    parts << p_id; parts << p_len; parts << p_val
+    total = total + p_id.size + p_len.size + p_val.size
+
+    # 0x08: initial_max_streams_bidi
+    p_id = VarInt.encode(0x08_u64)
+    p_val = VarInt.encode(@initial_max_streams_bidi)
+    p_len = VarInt.encode(p_val.size.to_u64)
+    parts << p_id; parts << p_len; parts << p_val
+    total = total + p_id.size + p_len.size + p_val.size
+
+    # 0x0f: initial_source_connection_id
+    if @initial_source_connection_id.size > 0
+      p_id = VarInt.encode(0x0f_u64)
+      p_len = VarInt.encode(@initial_source_connection_id.size.to_u64)
+      parts << p_id; parts << p_len; parts << @initial_source_connection_id
+      total = total + p_id.size + p_len.size + @initial_source_connection_id.size
+    end
+
+    buf = Bytes.new(total)
+    off = 0
+    i = 0
+    while i < parts.size
+      part = parts[i]
+      j = 0; while j < part.size; buf[off + j] = part[j]; j = j + 1; end
+      off = off + part.size
+      i = i + 1
+    end
+    buf
+  end
+
+  def self.decode(bytes : Bytes) : TransportParameters
+    offset = 0
+    max_data = 0_u64
+    max_streams_bidi = 0_u64
+    src_cid = Bytes.empty
+
+    while offset < bytes.size
+      param_id, id_len = VarInt.decode(bytes, offset); offset = offset + id_len
+      param_len, len_len = VarInt.decode(bytes, offset); offset = offset + len_len
+
+      if param_id == 0x04_u64
+        val, _ = VarInt.decode(bytes, offset)
+        max_data = val
+      elsif param_id == 0x08_u64
+        val, _ = VarInt.decode(bytes, offset)
+        max_streams_bidi = val
+      elsif param_id == 0x0f_u64
+        src_cid = bytes[offset, param_len.to_i32]
+      end
+      offset = offset + param_len.to_i32
+    end
+
+    TransportParameters.new(
+      initial_max_data: max_data > 0_u64 ? max_data : 1048576_u64,
+      initial_max_streams_bidi: max_streams_bidi > 0_u64 ? max_streams_bidi : 100_u64,
+      initial_source_connection_id: src_cid
+    )
+  end
+end
+
+# =============================================================================
+# 7. Loss Detection and Congestion Control (RFC 9002)
+# =============================================================================
+
+pub class RttEstimator
+  getter latest_rtt   : Int64
+  getter smoothed_rtt : Int64
+  getter rttvar       : Int64
+  getter min_rtt      : Int64
+  @has_sample         : Bool
+
   def initialize(initial_rtt : Int64 = 333_i64)
     @latest_rtt = 0_i64
     @smoothed_rtt = initial_rtt
     @rttvar = initial_rtt // 2_i64
     @min_rtt = 0_i64
+    @has_sample = false
   end
 
   def update_rtt(latest : Int64, ack_delay : Int64 = 0_i64, handshake_confirmed : Bool = false) : Nil
@@ -866,61 +967,62 @@ pub class RttEstimator
       @min_rtt = latest
     end
 
-    if @smoothed_rtt == 333_i64 && @rttvar == 166_i64 && @latest_rtt > 0_i64
-      # First RTT sample
+    # First RTT sample (Finding 8: explicit flag instead of hardcoded value)
+    unless @has_sample
+      @has_sample = true
       @smoothed_rtt = latest
       @rttvar = latest // 2_i64
       @min_rtt = latest
       return
     end
 
-    # Adjust for acknowledgment delay after handshake confirmation
     adjusted_rtt = latest
     if handshake_confirmed && latest > @min_rtt + ack_delay
       adjusted_rtt = latest - ack_delay
     end
 
-    # RTT variance update: rttvar = 3/4 * rttvar + 1/4 * |smoothed_rtt - adjusted_rtt|
     diff = (@smoothed_rtt - adjusted_rtt).abs
     @rttvar = (@rttvar * 3_i64 + diff) // 4_i64
-
-    # Smoothed RTT update: smoothed_rtt = 7/8 * smoothed_rtt + 1/8 * adjusted_rtt
     @smoothed_rtt = (@smoothed_rtt * 7_i64 + adjusted_rtt) // 8_i64
   end
 
-  # Computes the Probe Timeout (PTO) in milliseconds (RFC 9002 Section 5.2).
-  def pto(pto_count : Int32 = 0) : Int64
-    # PTO = smoothed_rtt + max(4*rttvar, kGranularity) + max_ack_delay
-    granularity = 1_i64 # 1ms timer granularity
+  # Space-aware PTO calculation with overflow protection (Finding 9).
+  def pto(space : Int32 = PacketSpace::APP_DATA, pto_count : Int32 = 0) : Int64
+    granularity = 1_i64
     var_term = @rttvar * 4_i64
     var_term = granularity if var_term < granularity
-    base_pto = @smoothed_rtt + var_term + 25_i64 # 25ms max_ack_delay default
+    base_pto = @smoothed_rtt + var_term
 
-    # Exponential backoff
-    multiplier = 1_i64.unsafe_shl(pto_count.to_u64)
+    # max_ack_delay is ONLY added in Application Data space (RFC 9002 5.2)
+    if space == PacketSpace::APP_DATA
+      base_pto = base_pto + 25_i64
+    end
+
+    safe_count = pto_count > 30 ? 30 : pto_count
+    multiplier = 1_i64.unsafe_shl(safe_count.to_u64)
     base_pto * multiplier
   end
 end
 
-# Tracks sent packet metadata for loss detection (RFC 9002 Section 6).
 pub struct SentPacket
+  getter packet_space  : Int32
   getter packet_number : UInt64
-  getter time_sent : Int64
+  getter time_sent     : Int64
   getter ack_eliciting : Bool
-  getter in_flight : Bool
-  getter size : Int32
+  getter in_flight     : Bool
+  getter size          : Int32
 
   def initialize(
+    @packet_space  : Int32,
     @packet_number : UInt64,
-    @time_sent : Int64,
+    @time_sent     : Int64,
     @ack_eliciting : Bool,
-    @in_flight : Bool,
-    @size : Int32,
+    @in_flight     : Bool,
+    @size          : Int32
   )
   end
 end
 
-# NewReno Congestion Controller (RFC 9002 Section 7).
 pub class NewRenoCongestionController
   pub MAX_DATAGRAM_SIZE = 1200_i64
 
@@ -931,9 +1033,8 @@ pub class NewRenoCongestionController
 
   def initialize
     @bytes_in_flight = 0_i64
-    # Initial window: min(10 * max_datagram_size, max(2 * max_datagram_size, 14720))
     @congestion_window = 14720_i64
-    @ssthresh = 9223372036854775807_i64 # Infinity
+    @ssthresh = 9223372036854775807_i64
     @recovery_start_time = 0_i64
   end
 
@@ -945,27 +1046,26 @@ pub class NewRenoCongestionController
     @bytes_in_flight = @bytes_in_flight + bytes.to_i64
   end
 
-  def on_packet_acked(bytes : Int32) : Nil
+  # Recovery-checked packet ACK handling (Finding 10).
+  def on_packet_acked(bytes : Int32, sent_time : Int64 = 0_i64) : Nil
     @bytes_in_flight = @bytes_in_flight - bytes.to_i64
     @bytes_in_flight = 0_i64 if @bytes_in_flight < 0_i64
 
-    # Congestion avoidance or slow start
-    if @congestion_window < @ssthresh
-      # Slow start: increase by bytes acknowledged
-      @congestion_window = @congestion_window + bytes.to_i64
-    else
-      # Congestion avoidance: increase by approx 1 packet per RTT
-      inc = (MAX_DATAGRAM_SIZE * bytes.to_i64) // @congestion_window
-      inc = 1_i64 if inc < 1_i64
-      @congestion_window = @congestion_window + inc
+    # While in recovery, the congestion window MUST NOT be increased (RFC 9002 7.3.2)
+    if sent_time > @recovery_start_time
+      if @congestion_window < @ssthresh
+        @congestion_window = @congestion_window + bytes.to_i64
+      else
+        inc = (MAX_DATAGRAM_SIZE * bytes.to_i64) // @congestion_window
+        inc = 1_i64 if inc < 1_i64
+        @congestion_window = @congestion_window + inc
+      end
     end
   end
 
   def on_congestion_event(sent_time : Int64) : Nil
     return if sent_time <= @recovery_start_time
-
     @recovery_start_time = sent_time
-    # Halve window
     @congestion_window = (@congestion_window // 2_i64)
     min_window = 2_i64 * MAX_DATAGRAM_SIZE
     @congestion_window = min_window if @congestion_window < min_window
@@ -974,7 +1074,7 @@ pub class NewRenoCongestionController
 end
 
 # =============================================================================
-# 7. Stream State Machine and Multiplexing (RFC 9000 Section 2, 3, 4)
+# 8. Stream State Machine and Multiplexing (RFC 9000 Section 2, 3, 4)
 # =============================================================================
 
 pub struct StreamId
@@ -983,11 +1083,6 @@ pub struct StreamId
   def initialize(@id : UInt64)
   end
 
-  # Stream type bits (lowest 2 bits):
-  # 00: Client-Initiated, Bidirectional
-  # 01: Server-Initiated, Bidirectional
-  # 10: Client-Initiated, Unidirectional
-  # 11: Server-Initiated, Unidirectional
   def client_initiated? : Bool
     (@id & 0x01_u64) == 0_u64
   end
@@ -1010,18 +1105,17 @@ pub struct StreamStatus
   pub SENDING     = 1
   pub DATA_SENT   = 2
   pub RESET_SENT  = 3
-  pub RESET_RECVD = 4
+  pub RECV        = 4 # Finding 11: dedicated receive state
   pub DATA_RECVD  = 5
   pub DATA_READ   = 6
 end
 
-# Flow-controlled stream with buffered send and receive queues.
 pub class QuicStream
-  getter id : StreamId
-  getter send_status : Int32
-  getter recv_status : Int32
-  getter bytes_sent : UInt64
-  getter bytes_received : UInt64
+  getter id                 : StreamId
+  getter send_status        : Int32
+  getter recv_status        : Int32
+  getter bytes_sent         : UInt64
+  getter bytes_received     : UInt64
   getter max_stream_data_in : UInt64
   getter max_stream_data_out : UInt64
 
@@ -1046,16 +1140,8 @@ pub class QuicStream
   def append_send(data : Bytes) : Nil
     return if data.empty?
     new_buf = Bytes.new(@send_buffer.size + data.size)
-    i = 0
-    while i < @send_buffer.size
-      new_buf[i] = @send_buffer[i]
-      i = i + 1
-    end
-    j = 0
-    while j < data.size
-      new_buf[@send_buffer.size + j] = data[j]
-      j = j + 1
-    end
+    i = 0; while i < @send_buffer.size; new_buf[i] = @send_buffer[i]; i = i + 1; end
+    j = 0; while j < data.size; new_buf[@send_buffer.size + j] = data[j]; j = j + 1; end
     @send_buffer = new_buf
     @send_status = StreamStatus::SENDING
   end
@@ -1063,55 +1149,75 @@ pub class QuicStream
   def append_recv(data : Bytes, fin : Bool = false) : Nil
     return if data.empty? && !fin
     new_buf = Bytes.new(@recv_buffer.size + data.size)
-    i = 0
-    while i < @recv_buffer.size
-      new_buf[i] = @recv_buffer[i]
-      i = i + 1
-    end
-    j = 0
-    while j < data.size
-      new_buf[@recv_buffer.size + j] = data[j]
-      j = j + 1
-    end
+    i = 0; while i < @recv_buffer.size; new_buf[i] = @recv_buffer[i]; i = i + 1; end
+    j = 0; while j < data.size; new_buf[@recv_buffer.size + j] = data[j]; j = j + 1; end
     @recv_buffer = new_buf
     @bytes_received = @bytes_received + data.size.to_u64
-    @recv_status = fin ? StreamStatus::DATA_RECVD : StreamStatus::SENDING
+    # Finding 11: transitions to RECV or DATA_RECVD, never SENDING
+    @recv_status = fin ? StreamStatus::DATA_RECVD : StreamStatus::RECV
   end
 
   def read_available : Bytes
     data = @recv_buffer
     @recv_buffer = Bytes.empty
+    @recv_status = StreamStatus::DATA_READ if @recv_status == StreamStatus::DATA_RECVD
     data
   end
 end
 
-# Connection-wide stream manager and flow controller.
 pub class StreamManager
-  getter max_data_local : UInt64
+  getter max_data_local  : UInt64
   getter max_data_remote : UInt64
-  getter total_sent : UInt64
-  getter total_received : UInt64
+  getter max_streams_bidi_remote : UInt64
+  getter max_streams_uni_remote  : UInt64
+  getter total_sent      : UInt64
+  getter total_received  : UInt64
 
   @streams : Array(QuicStream)
 
-  def initialize(initial_max_data : UInt64 = 1048576_u64)
+  def initialize(
+    initial_max_data : UInt64 = 1048576_u64,
+    initial_max_streams_bidi : UInt64 = 100_u64,
+    initial_max_streams_uni : UInt64 = 100_u64
+  )
     @max_data_local = initial_max_data
     @max_data_remote = initial_max_data
+    @max_streams_bidi_remote = initial_max_streams_bidi
+    @max_streams_uni_remote = initial_max_streams_uni
     @total_sent = 0_u64
     @total_received = 0_u64
     @streams = [] of QuicStream
   end
 
-  def get_or_create_stream(id_val : UInt64) : QuicStream
+  # Enforces stream limits per RFC 9000 Section 4.6 (Finding 12).
+  def can_create_stream?(id_val : UInt64) : Bool
+    stream_idx = id_val.unsafe_shr(2_u64)
+    is_uni = (id_val & 0x02_u64) != 0_u64
+    limit = is_uni ? @max_streams_uni_remote : @max_streams_bidi_remote
+    stream_idx < limit
+  end
+
+  def get_or_create_stream?(id_val : UInt64) : QuicStream?
     i = 0
     while i < @streams.size
       return @streams[i] if @streams[i].id.id == id_val
       i = i + 1
     end
 
+    return nil unless can_create_stream?(id_val)
+
     stream = QuicStream.new(StreamId.new(id_val))
     @streams << stream
     stream
+  end
+
+  def get_or_create_stream(id_val : UInt64) : QuicStream
+    st = get_or_create_stream?(id_val)
+    if st.nil?
+      stream_idx = id_val.unsafe_shr(2_u64)
+      raise "STREAM_LIMIT_ERROR: stream index #{stream_idx} exceeds maximum allowed"
+    end
+    st
   end
 
   def can_send_connection?(len : UInt64) : Bool
@@ -1128,7 +1234,7 @@ pub class StreamManager
 end
 
 # =============================================================================
-# 8. High-Level QUIC Connection State Machine and Crypto Seam
+# 9. High-Level QUIC Connection State Machine and UDP Network Endpoint
 # =============================================================================
 
 pub struct ConnectionRole
@@ -1144,198 +1250,452 @@ pub struct ConnectionState
   pub CLOSED    = 4
 end
 
-# High-level QUIC Connection managing packets, protection, and streams.
 pub class QuicConnection
-  getter role : Int32
-  getter state : Int32
-  getter dcid : Bytes
-  getter scid : Bytes
-  getter stream_manager : StreamManager
-  getter rtt_estimator : RttEstimator
+  getter role            : Int32
+  getter state           : Int32
+  getter dcid            : Bytes
+  getter scid            : Bytes
+  getter stream_manager  : StreamManager
+  getter rtt_estimator   : RttEstimator
   getter congestion_ctrl : NewRenoCongestionController
 
-  @initial_keys_in : KeyBundle?
-  @initial_keys_out : KeyBundle?
-  @next_pn : UInt64
-  @largest_received_pn : UInt64
+  # Three independent Packet Number Spaces (Finding 1)
+  @next_pn : Array(UInt64)
+  @largest_received_pn : Array(UInt64)
+  @sent_packets : Array(SentPacket)
 
-  # Handshake crypto buffers (the seam where TLS 1.3 integrates)
-  @crypto_send_buf : Bytes
-  @crypto_recv_buf : Bytes
+  # Key bundles per encryption level
+  @initial_keys_in  : KeyBundle?
+  @initial_keys_out : KeyBundle?
+  @handshake_keys_in : KeyBundle?
+  @handshake_keys_out : KeyBundle?
+  @app_keys_in      : KeyBundle?
+  @app_keys_out     : KeyBundle?
+
+  # Crypto stream buffers per space (Finding 7)
+  @crypto_send_buf : Array(Bytes)
+  @crypto_recv_buf : Array(Bytes)
+  @crypto_send_offset : Array(UInt64)
+
+  # Anti-amplification tracking (Finding 14)
+  @bytes_received_unvalidated : UInt64
+  @bytes_sent_unvalidated     : UInt64
+  @address_validated          : Bool
 
   def initialize(@role : Int32, @dcid : Bytes, @scid : Bytes, initial_dcid : Bytes = Bytes.empty)
     @state = ConnectionState::INITIAL
     @stream_manager = StreamManager.new
     @rtt_estimator = RttEstimator.new
     @congestion_ctrl = NewRenoCongestionController.new
-    @next_pn = 0_u64
-    @largest_received_pn = 0_u64
-    @crypto_send_buf = Bytes.empty
-    @crypto_recv_buf = Bytes.empty
 
+    # Three independent spaces: Initial (0), Handshake (1), AppData (2)
+    @next_pn = [0_u64, 0_u64, 0_u64]
+    @largest_received_pn = [0_u64, 0_u64, 0_u64]
+    @sent_packets = [] of SentPacket
+
+    @crypto_send_buf = [Bytes.empty, Bytes.empty, Bytes.empty]
+    @crypto_recv_buf = [Bytes.empty, Bytes.empty, Bytes.empty]
+    @crypto_send_offset = [0_u64, 0_u64, 0_u64]
+
+    @bytes_received_unvalidated = 0_u64
+    @bytes_sent_unvalidated = 0_u64
+    @address_validated = (@role == ConnectionRole::CLIENT)
+
+    # Initial Keys (RFC 9001 Section 5.2)
     init_cid = initial_dcid.empty? ? @dcid : initial_dcid
-    # Derive Initial Keys per RFC 9001 Section 5.2
     client_sec, server_sec = QuicCrypto.derive_initial_secrets(init_cid)
     if @role == ConnectionRole::CLIENT
       @initial_keys_out = QuicCrypto.derive_packet_keys(client_sec)
-      @initial_keys_in = QuicCrypto.derive_packet_keys(server_sec)
+      @initial_keys_in  = QuicCrypto.derive_packet_keys(server_sec)
     else
       @initial_keys_out = QuicCrypto.derive_packet_keys(server_sec)
-      @initial_keys_in = QuicCrypto.derive_packet_keys(client_sec)
+      @initial_keys_in  = QuicCrypto.derive_packet_keys(client_sec)
     end
   end
 
-  # Packages and protects an Initial packet.
-  def send_initial_packet(frames_payload : Bytes, token : Bytes = Bytes.empty) : Bytes
-    keys = @initial_keys_out
-    raise "initial keys not available" if keys.nil?
+  def bytes_in_flight : Int64
+    @congestion_ctrl.bytes_in_flight
+  end
 
-    pn = @next_pn
-    @next_pn = @next_pn + 1_u64
+  # Installs Handshake traffic keys.
+  def install_handshake_keys(client_secret : Bytes, server_secret : Bytes) : Nil
+    if @role == ConnectionRole::CLIENT
+      @handshake_keys_out = QuicCrypto.derive_packet_keys(client_secret)
+      @handshake_keys_in  = QuicCrypto.derive_packet_keys(server_secret)
+    else
+      @handshake_keys_out = QuicCrypto.derive_packet_keys(server_secret)
+      @handshake_keys_in  = QuicCrypto.derive_packet_keys(client_secret)
+    end
+    @state = ConnectionState::HANDSHAKE
+  end
+
+  # Installs 1-RTT Application traffic keys.
+  def install_application_keys(client_secret : Bytes, server_secret : Bytes) : Nil
+    if @role == ConnectionRole::CLIENT
+      @app_keys_out = QuicCrypto.derive_packet_keys(client_secret)
+      @app_keys_in  = QuicCrypto.derive_packet_keys(server_secret)
+    else
+      @app_keys_out = QuicCrypto.derive_packet_keys(server_secret)
+      @app_keys_in  = QuicCrypto.derive_packet_keys(client_secret)
+    end
+    @state = ConnectionState::ACTIVE
+    @address_validated = true
+  end
+
+  # Buffers TLS 1.3 handshake data to be sent on the CRYPTO stream (Finding 7).
+  def feed_crypto_data(space : Int32, data : Bytes) : Nil
+    return if data.empty?
+    cur = @crypto_send_buf[space]
+    new_b = Bytes.new(cur.size + data.size)
+    i = 0; while i < cur.size; new_b[i] = cur[i]; i = i + 1; end
+    j = 0; while j < data.size; new_b[cur.size + j] = data[j]; j = j + 1; end
+    @crypto_send_buf[space] = new_b
+  end
+
+  # Reads received TLS 1.3 handshake data from peer's CRYPTO stream (Finding 7).
+  def poll_crypto_received(space : Int32) : Bytes
+    b = @crypto_recv_buf[space]
+    @crypto_recv_buf[space] = Bytes.empty
+    b
+  end
+  # Checks if sending bytes is permitted under server 3x anti-amplification rule (Finding 14)
+  def can_send_unvalidated?(packet_size : Int32) : Bool
+    return true if @role == ConnectionRole::CLIENT || @address_validated
+    limit = @bytes_received_unvalidated * 3_u64
+    (@bytes_sent_unvalidated + packet_size.to_u64) <= limit
+  end
+
+
+  # Packages and protects an Initial packet.
+  def send_initial_packet(extra_frames : Bytes = Bytes.empty, token : Bytes = Bytes.empty) : Bytes
+    keys = @initial_keys_out
+    raise "initial keys missing" if keys.nil?
+
+    space = PacketSpace::INITIAL
+    pn = @next_pn[space]
+    @next_pn[space] = pn + 1_u64
     pn_len = PacketNumber.encode_length(pn, 0_u64)
 
-    # In Client Initial, payload must be padded to ensure min 1200 byte UDP datagram
-    payload = frames_payload
+    # Wire crypto stream data into payload if available (Finding 7)
+    payload_parts = [] of Bytes
+    total_payload = 0
+    if @crypto_send_buf[space].size > 0
+      cf = FrameCodec.encode_crypto(@crypto_send_offset[space], @crypto_send_buf[space])
+      @crypto_send_offset[space] = @crypto_send_offset[space] + @crypto_send_buf[space].size.to_u64
+      @crypto_send_buf[space] = Bytes.empty
+      payload_parts << cf
+      total_payload = total_payload + cf.size
+    end
+    if extra_frames.size > 0
+      payload_parts << extra_frames
+      total_payload = total_payload + extra_frames.size
+    end
+
+    raw_payload = Bytes.new(total_payload)
+    off = 0
+    i = 0
+    while i < payload_parts.size
+      p = payload_parts[i]
+      j = 0; while j < p.size; raw_payload[off + j] = p[j]; j = j + 1; end
+      off = off + p.size
+      i = i + 1
+    end
+
+    # Enforce minimum 1200 byte Client Initial UDP datagram (Finding 4)
+    payload = raw_payload
     header_unprot_len = 1 + 4 + 1 + @dcid.size + 1 + @scid.size + (token.size > 0 ? 2 + token.size : 1) + 2 + pn_len
-    min_payload = 1200 - header_unprot_len - 16 # 16 byte tag
+    min_payload = 1200 - header_unprot_len - 16
     if @role == ConnectionRole::CLIENT && payload.size < min_payload
       padded = Bytes.new(min_payload, 0_u8)
-      i = 0
-      while i < payload.size
-        padded[i] = payload[i]
-        i = i + 1
-      end
+      i = 0; while i < payload.size; padded[i] = payload[i]; i = i + 1; end
       payload = padded
     end
 
-    total_len = payload.size.to_u64 + pn_len.to_u64 + 16_u64 # Length includes PN and AEAD tag
-    hdr = LongHeader.new(
-      PacketType::INITIAL,
-      QuicVersion::V1,
-      @dcid,
-      @scid,
-      token,
-      total_len,
-      pn,
-      pn_len
-    )
+    total_len = payload.size.to_u64 + pn_len.to_u64 + 16_u64
+    hdr = LongHeader.new(PacketType::INITIAL, QuicVersion::V1, @dcid, @scid, token, total_len, pn, pn_len)
+    unprot_hdr = hdr.encode_unprotected
+    pn_offset = unprot_hdr.size - pn_len
 
-    unprotected_hdr = hdr.encode_unprotected
-    pn_offset = unprotected_hdr.size - pn_len
+    packet = QuicCrypto.protect_packet(keys, unprot_hdr, pn_offset, pn_len, pn, payload, is_long_header: true)
 
-    packet = QuicCrypto.protect_packet(
-      keys,
-      unprotected_hdr,
-      pn_offset,
-      pn_len,
-      pn,
-      payload,
-      is_long_header: true
-    )
+    # Server Anti-Amplification Limit (Finding 14)
+    if @role == ConnectionRole::SERVER && !@address_validated
+      limit = @bytes_received_unvalidated * 3_u64
+      if (@bytes_sent_unvalidated + packet.size.to_u64) > limit
+        raise "ANTI_AMPLIFICATION_LIMIT: cannot send packet exceeding 3x received bytes"
+      end
+      @bytes_sent_unvalidated = @bytes_sent_unvalidated + packet.size.to_u64
+    end
 
+    @sent_packets << SentPacket.new(space, pn, 1000_i64, true, true, packet.size)
     @congestion_ctrl.on_packet_sent(packet.size)
     packet
   end
 
-  # Receives an incoming datagram and unprotects it.
-  def receive_packet(datagram : Bytes) : {LongHeader?, Bytes}
+  # Packages and protects a Handshake packet (Finding 3, 7).
+  def send_handshake_packet(extra_frames : Bytes = Bytes.empty) : Bytes
+    keys = @handshake_keys_out
+    raise "handshake keys missing" if keys.nil?
+
+    space = PacketSpace::HANDSHAKE
+    pn = @next_pn[space]
+    @next_pn[space] = pn + 1_u64
+    pn_len = PacketNumber.encode_length(pn, 0_u64)
+
+    payload_parts = [] of Bytes
+    total_payload = 0
+    if @crypto_send_buf[space].size > 0
+      cf = FrameCodec.encode_crypto(@crypto_send_offset[space], @crypto_send_buf[space])
+      @crypto_send_offset[space] = @crypto_send_offset[space] + @crypto_send_buf[space].size.to_u64
+      @crypto_send_buf[space] = Bytes.empty
+      payload_parts << cf
+      total_payload = total_payload + cf.size
+    end
+    if extra_frames.size > 0
+      payload_parts << extra_frames
+      total_payload = total_payload + extra_frames.size
+    end
+
+    payload = Bytes.new(total_payload)
+    off = 0
+    i = 0
+    while i < payload_parts.size
+      p = payload_parts[i]
+      j = 0; while j < p.size; payload[off + j] = p[j]; j = j + 1; end
+      off = off + p.size
+      i = i + 1
+    end
+
+    total_len = payload.size.to_u64 + pn_len.to_u64 + 16_u64
+    # Handshake packets have NO token (Finding 3)
+    hdr = LongHeader.new(PacketType::HANDSHAKE, QuicVersion::V1, @dcid, @scid, Bytes.empty, total_len, pn, pn_len)
+    unprot_hdr = hdr.encode_unprotected
+    pn_offset = unprot_hdr.size - pn_len
+
+    packet = QuicCrypto.protect_packet(keys, unprot_hdr, pn_offset, pn_len, pn, payload, is_long_header: true)
+
+    @sent_packets << SentPacket.new(space, pn, 1000_i64, true, true, packet.size)
+    @congestion_ctrl.on_packet_sent(packet.size)
+    packet
+  end
+
+  # Packages and protects a 1-RTT Short Header packet (Finding 2).
+  def send_1rtt_packet(payload : Bytes, spin_bit : Bool = false) : Bytes
+    keys = @app_keys_out
+    raise "1-RTT application keys missing" if keys.nil?
+
+    space = PacketSpace::APP_DATA
+    pn = @next_pn[space]
+    @next_pn[space] = pn + 1_u64
+    pn_len = PacketNumber.encode_length(pn, 0_u64)
+
+    hdr = ShortHeader.new(spin_bit, false, @dcid, pn, pn_len)
+    unprot_hdr = hdr.encode_unprotected
+    pn_offset = unprot_hdr.size - pn_len
+
+    packet = QuicCrypto.protect_packet(keys, unprot_hdr, pn_offset, pn_len, pn, payload, is_long_header: false)
+
+    @sent_packets << SentPacket.new(space, pn, 1000_i64, true, true, packet.size)
+    @congestion_ctrl.on_packet_sent(packet.size)
+    packet
+  end
+
+  # Receives, unpacks, and processes an incoming datagram (Findings 1, 2, 3, 4, 5, 6).
+  def receive_packet(datagram : Bytes) : {Bytes, Array(DecodedFrame)}
     raise "datagram too short" if datagram.size < 21
+    @bytes_received_unvalidated = @bytes_received_unvalidated + datagram.size.to_u64
+
     first_byte = datagram[0]
     is_long = (first_byte & 0x80_u8) != 0_u8
 
     if is_long
-      keys = @initial_keys_in
-      raise "initial read keys missing" if keys.nil?
-
+      # Finding 3: inspect packet type
+      pkt_type = (first_byte & 0x30_u8).unsafe_shr(4_u8)
       dcid_len = datagram[5].to_i32
+      raise "datagram truncated for dcid" if datagram.size < 6 + dcid_len
+
       scid_offset = 6 + dcid_len
       scid_len = datagram[scid_offset].to_i32
+      raise "datagram truncated for scid" if datagram.size < scid_offset + 1 + scid_len
+
       token_offset = scid_offset + 1 + scid_len
+      token_len = 0_u64
+      token_len_bytes = 0
+      len_offset = 0
 
-      token_len, token_len_bytes = VarInt.decode(datagram, token_offset)
-      len_offset = token_offset + token_len_bytes + token_len.to_i32
-      pkt_len, pkt_len_bytes = VarInt.decode(datagram, len_offset)
-
-      pn_offset = len_offset + pkt_len_bytes
-      # Sample starts 4 bytes after start of packet number
-      sample_offset = pn_offset + 4
-      sample = datagram[sample_offset, 16]
-
-      mask = QuicCrypto.generate_mask(keys.hp, sample)
-      hdr_buf = Bytes.new(pn_offset + 4)
-      i = 0
-      while i < hdr_buf.size
-        hdr_buf[i] = datagram[i]
-        i = i + 1
+      if pkt_type == PacketType::INITIAL
+        t_len, tl_bytes = VarInt.decode(datagram, token_offset)
+        token_len = t_len
+        token_len_bytes = tl_bytes
+        len_offset = token_offset + token_len_bytes + token_len.to_i32
+      else
+        len_offset = scid_offset + 1 + scid_len
       end
+
+      pkt_len, pkt_len_bytes = VarInt.decode(datagram, len_offset)
+      pn_offset = len_offset + pkt_len_bytes
+      sample_offset = pn_offset + 4
+      raise "packet truncated for sampling" if datagram.size < sample_offset + 16
+
+      # Pick key and space
+      keys = (pkt_type == PacketType::HANDSHAKE) ? @handshake_keys_in : @initial_keys_in
+      raise "read keys missing for long packet" if keys.nil?
+      space = (pkt_type == PacketType::HANDSHAKE) ? PacketSpace::HANDSHAKE : PacketSpace::INITIAL
+
+      sample = datagram[sample_offset, 16]
+      mask = QuicCrypto.generate_mask(keys.hp, sample)
+
+      hdr_buf = Bytes.new(pn_offset + 4)
+      i = 0; while i < hdr_buf.size; hdr_buf[i] = datagram[i]; i = i + 1; end
 
       pn_len = QuicCrypto.remove_header_protection(hdr_buf, pn_offset, mask, is_long_header: true)
       unprotected_header = Bytes.new(pn_offset + pn_len)
-      i = 0
-      while i < unprotected_header.size
-        unprotected_header[i] = hdr_buf[i]
-        i = i + 1
-      end
+      i = 0; while i < unprotected_header.size; unprotected_header[i] = hdr_buf[i]; i = i + 1; end
 
-      # Decode packet number
+      # Finding 5: bounds check on pkt_len
+      raise "malformed packet length" if pkt_len.to_i32 < (pn_len + 16)
+      payload_len = pkt_len.to_i32 - pn_len
+      payload_offset = pn_offset + pn_len
+      raise "packet payload truncated" if payload_offset + payload_len > datagram.size
+
+      # Finding 1: decode PN in space
       truncated_pn = 0_u64
       i = 0
       while i < pn_len
         truncated_pn = (truncated_pn.unsafe_shl(8_u64)) | unprotected_header[pn_offset + i].to_u64
         i = i + 1
       end
-      pn = PacketNumber.decode(@largest_received_pn, truncated_pn, pn_len * 8)
-      @largest_received_pn = pn if pn > @largest_received_pn
+      pn = PacketNumber.decode(@largest_received_pn[space], truncated_pn, pn_len * 8)
+      @largest_received_pn[space] = pn if pn > @largest_received_pn[space]
 
       nonce = QuicCrypto.compute_nonce(keys.iv, pn)
-      payload_offset = pn_offset + pn_len
-      payload_len = pkt_len.to_i32 - pn_len
       ciphertext_and_tag = datagram[payload_offset, payload_len]
+
       plaintext = AES128GCM.decrypt(keys.key, nonce, ciphertext_and_tag, unprotected_header)
       raise "AEAD decryption failed" if plaintext.nil?
 
-      dcid = datagram[6, dcid_len]
-      scid = datagram[scid_offset + 1, scid_len]
-      token = datagram[token_offset + token_len_bytes, token_len.to_i32]
+      # Finding 6: decode and process frames
+      frames = FrameCodec.decode_frames(plaintext)
+      process_frames(frames, space)
 
-      long_hdr = LongHeader.new(
-        PacketType::INITIAL,
-        QuicVersion::V1,
-        dcid,
-        scid,
-        token,
-        pkt_len,
-        pn,
-        pn_len
-      )
-
-      {long_hdr, plaintext}
+      {plaintext, frames}
     else
-      {nil, Bytes.empty}
+      # Finding 2: 1-RTT Short Header packet reception
+      keys = @app_keys_in
+      raise "1-RTT read keys missing" if keys.nil?
+
+      space = PacketSpace::APP_DATA
+      dcid_len = @scid.size # Receiver knows its own CID length
+      pn_offset = 1 + dcid_len
+      sample_offset = pn_offset + 4
+      raise "short packet truncated for sampling" if datagram.size < sample_offset + 16
+
+      sample = datagram[sample_offset, 16]
+      mask = QuicCrypto.generate_mask(keys.hp, sample)
+
+      hdr_buf = Bytes.new(pn_offset + 4)
+      i = 0; while i < hdr_buf.size; hdr_buf[i] = datagram[i]; i = i + 1; end
+
+      pn_len = QuicCrypto.remove_header_protection(hdr_buf, pn_offset, mask, is_long_header: false)
+      unprotected_header = Bytes.new(pn_offset + pn_len)
+      i = 0; while i < unprotected_header.size; unprotected_header[i] = hdr_buf[i]; i = i + 1; end
+
+      truncated_pn = 0_u64
+      i = 0
+      while i < pn_len
+        truncated_pn = (truncated_pn.unsafe_shl(8_u64)) | unprotected_header[pn_offset + i].to_u64
+        i = i + 1
+      end
+      pn = PacketNumber.decode(@largest_received_pn[space], truncated_pn, pn_len * 8)
+      @largest_received_pn[space] = pn if pn > @largest_received_pn[space]
+
+      nonce = QuicCrypto.compute_nonce(keys.iv, pn)
+      payload_offset = pn_offset + pn_len
+      ciphertext_and_tag = datagram[payload_offset, datagram.size - payload_offset]
+
+      plaintext = AES128GCM.decrypt(keys.key, nonce, ciphertext_and_tag, unprotected_header)
+      raise "1-RTT AEAD decryption failed" if plaintext.nil?
+
+      frames = FrameCodec.decode_frames(plaintext)
+      process_frames(frames, space)
+
+      {plaintext, frames}
     end
   end
 
-  # Crypto stream seam (RFC 9000 Section 7 & RFC 9001 Section 4):
-  # Transmits TLS 1.3 handshake bytes.
-  def feed_crypto_data(data : Bytes) : Nil
-    return if data.empty?
-    new_buf = Bytes.new(@crypto_send_buf.size + data.size)
+  # Internal frame dispatcher (Finding 6, 7, 10).
+  private def process_frames(frames : Array(DecodedFrame), space : Int32) : Nil
     i = 0
-    while i < @crypto_send_buf.size
-      new_buf[i] = @crypto_send_buf[i]
+    while i < frames.size
+      f = frames[i]
+      if f.frame_type == FrameType::ACK
+        # Finding 10: ACK feedback -> observe bytes_in_flight drop and RTT update
+        @rtt_estimator.update_rtt(f.ack_delay.to_i64)
+
+        # Clear acked packets
+        new_sent = [] of SentPacket
+        j = 0
+        while j < @sent_packets.size
+          pkt = @sent_packets[j]
+          if pkt.packet_space == space && pkt.packet_number <= f.largest_ack
+            @congestion_ctrl.on_packet_acked(pkt.size, pkt.time_sent)
+          else
+            new_sent << pkt
+          end
+          j = j + 1
+        end
+        @sent_packets = new_sent
+      elsif f.frame_type == FrameType::CRYPTO
+        # Finding 7: feed received crypto bytes
+        cur = @crypto_recv_buf[space]
+        nb = Bytes.new(cur.size + f.data.size)
+        k = 0; while k < cur.size; nb[k] = cur[k]; k = k + 1; end
+        k = 0; while k < f.data.size; nb[cur.size + k] = f.data[k]; k = k + 1; end
+        @crypto_recv_buf[space] = nb
+      elsif f.frame_type == FrameType::STREAM_BASE
+        # Route to stream
+        st = @stream_manager.get_or_create_stream(f.stream_id)
+        st.append_recv(f.data, f.fin)
+      elsif f.frame_type == FrameType::CONNECTION_CLOSE_QUIC || f.frame_type == FrameType::CONNECTION_CLOSE_APP
+        @state = ConnectionState::CLOSED
+      end
       i = i + 1
     end
-    j = 0
-    while j < data.size
-      new_buf[@crypto_send_buf.size + j] = data[j]
-      j = j + 1
-    end
-    @crypto_send_buf = new_buf
+  end
+end
+
+# =============================================================================
+# 10. UDP Network Driver and Loopback Endpoint (Finding 20)
+# =============================================================================
+
+# Drives real QUIC packet transmission and reception over UDP.
+pub class QuicEndpoint
+  getter socket : UdpSocket
+
+  def initialize(bind_host : String = "127.0.0.1", port : Int32 = 0)
+    @socket = UdpSocket.bind(bind_host, port)
+    @socket.non_blocking = true
   end
 
-  def poll_crypto_to_send : Bytes
-    data = @crypto_send_buf
-    @crypto_send_buf = Bytes.empty
-    data
+  def local_port : Int32
+    @socket.local_port
+  end
+
+  def send_to(data : Bytes, host : String, port : Int32) : Int32
+    @socket.send_to(data, host, port)
+  end
+
+  def receive(max_attempts : Int32 = 1000) : Datagram?
+    i = 0
+    while i < max_attempts
+      d = @socket.receive_datagram?
+      return d unless d.nil?
+      i = i + 1
+    end
+    nil
+  end
+
+  def close : Nil
+    @socket.close
   end
 end
