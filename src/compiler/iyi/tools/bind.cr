@@ -4417,6 +4417,15 @@ module Iyi
     written = type.locations.try(&.compact_map { |at| at.filename.as?(String) })
     return nil unless written.try(&.any?(&.starts_with?(directory)))
 
+    # And this root's own only. A shard's files are read once per root it
+    # declares, so a name written beside both — `alias Handy = Shard` in a
+    # shard that also declares `Sidecar` — crossed in each artifact, and a
+    # program importing both was told twice: `alias ::Handy is already
+    # defined`. The alias belongs to whichever boundary carries what it
+    # names.
+    aliased = type.aliased_type.devirtualize.to_s
+    return nil unless aliased == @@root || aliased.starts_with?("#{@@root}::")
+
     IyiMod::TypeDecl.new(
       name: "::#{type.to_s}",
       kind: "alias",
