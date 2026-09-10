@@ -33,6 +33,7 @@ import std/uri
 import std/http
 import std/compress
 import std/dns
+import std/socket
 import std/tls
 
 using std/traits::{Cmp}
@@ -41,6 +42,7 @@ using std/uri::{URI, Params}
 using std/http::{Headers, Status, Request, Response, HttpError, Cookies, Cookie}
 using std/compress::{Gzip, Zlib, Inflate}
 using std/tls::{CertificateStore, Certificate}
+using std/socket::{IyiSocket}
 pub alias TlsClient = Std::Tls::Client
 
 pub alias Headers = Std::Http::Headers

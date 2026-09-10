@@ -11,6 +11,7 @@ import std/crypto
 import std/http
 import std/compress
 import std/websocket
+import std/socket
 
 using std/slice::{Slice, Bytes}
 using std/digest::{SHA1}
@@ -18,6 +19,7 @@ using std/crypto::{random_bytes, constant_time_compare}
 using std/http::{Headers, Request, Response, Status, HttpError}
 using std/compress::{Deflate, Inflate}
 using std/websocket::{Base64, Handshake, Utf8Validator, Frame, Message, MemoryTransport, Session, valid_wire_close_code?, WebSocketError, OP_CONTINUATION, OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG, CLOSE_NORMAL, CLOSE_GOING_AWAY, CLOSE_PROTOCOL_ERROR, CLOSE_UNSUPPORTED_DATA, CLOSE_NO_STATUS_RCVD, CLOSE_ABNORMAL, CLOSE_INVALID_PAYLOAD, CLOSE_POLICY_VIOLATION, CLOSE_MESSAGE_TOO_BIG, CLOSE_MANDATORY_EXT, CLOSE_INTERNAL_ERROR}
+using std/socket::{IyiSocket}
 
 def assert_true(cond : Bool, msg : String) : Nil
   unless cond

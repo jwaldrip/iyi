@@ -32,6 +32,9 @@
 
 module std/tls
 
+pub import std/socket
+using std/socket::{IyiSocket}
+
 pub import std/slice
 using std/slice::{Slice}
 pub alias Bytes = Std::Slice::Bytes

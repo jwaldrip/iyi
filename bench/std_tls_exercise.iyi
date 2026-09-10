@@ -8,12 +8,14 @@ import std/crypto
 import std/big
 import std/time
 import std/dns
+import std/socket
 
 using std/slice::{Slice}
 using std/digest::{SHA256, SHA384, SHA512}
 using std/crypto::{HMAC, HKDF}
 using std/big::{BigInt}
 using std/time::{Time}
+using std/socket::{IyiSocket}
 
 alias Bytes = Std::Slice::Bytes
 

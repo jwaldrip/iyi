@@ -25,6 +25,7 @@ import std/crypto
 import std/http
 import std/uri
 import std/compress
+import std/socket
 
 using std/slice::{Slice, Bytes}
 using std/digest::{SHA1}
@@ -32,6 +33,7 @@ using std/crypto::{random_bytes, constant_time_compare}
 using std/http::{Headers, Request, Response, Status, HttpError}
 using std/uri::{URI}
 using std/compress::{Deflate, Inflate, DecompressError, DecompressLimitExceeded}
+using std/socket::{IyiSocket}
 
 pub alias Bytes = Std::Slice::Bytes
 
