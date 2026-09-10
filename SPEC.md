@@ -310,7 +310,7 @@ the rule allows, a program in this repository needs it, and together they are
 still more than the rule intended to permit.
 
 **The standard library is deliberately outside that count, and this is the
-answer this section left open.** `src/std/` is **37,592 lines across forty
+answer this section left open.** `src/std/` is **39,425 lines across forty
 modules**. It is opt-in via `import std/...`, it lives outside `src/iyi/` where
 `bench/doc_numbers.py` measures the ceiling, and a program that imports none of
 it pays for none of it. So the prelude rule keeps its meaning, "a method enters
@@ -895,8 +895,8 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 108,060 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 37,592 in std |
+| Compiler | 24,984 lines, **written in Crystal** | 108,068 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 39,425 in std |
 | Specs | 21,146 lines | 9,566 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -3991,19 +3991,19 @@ has `to_s`, `clone_without_location` and `accept_children`, because IV.6's parse
 work needed them. So this is nine visit methods against an interface that
 already exists, plus the idempotency tests the formatter has for everything else.
 
-Two consequences worth naming. Formatting has to be **exit-code correct** for a
-directory containing both `.cr` and `.iyi` files, because today's non-zero exit
-means no repository can put `iyi tool format` in CI at all. And CI's existing
-`tool format --check src spec` covers Crystal source only, so nothing formats
-`src/iyi` or `samples/iyi`, which is where the language's own examples live.
+Two consequences are enforced now. `iyi tool format` discovers `.iyi` files
+and nothing else when given a directory or no path; `crystal tool format`
+owns `.cr`. An explicitly named file can still be formatted, but neither
+command silently claims the other language's tree. The iyi command's help,
+syntax warnings and failures all name iyi and point at iyi's issue tracker.
 
-**Since built, and the claim above no longer reproduces.** `iyi tool format
---check` on a file carrying every iyi node — a module header, `impl`,
-`defer`, `!` — exits zero, formats idempotently, and CI's `Formatted` step
-has covered `src spec samples` for as long as the concurrency work has been
-landing: it is the step that caught this repository's own unformatted
-syscall table. The nine visit methods exist; what this section asked for
-is what the tree does.
+The command is exit-code correct on a file carrying every iyi node, including
+a module header, `pub import`, `pub enum`, `impl`, `defer` and `!`. The
+formatter's own specs use `.iyi` fixtures and leave an unformatted `.cr` file
+untouched. CI builds both frontends and runs two distinct checks over Git's
+tracked file lists: Crystal over `*.cr`, iyi over `*.iyi`. A green formatter
+job therefore proves the iyi frontend ran on the language's source, samples
+and exercises rather than reaching the same parser through Crystal.
 
 #### 2. A language server, and why iyi can have a good one: **BUILT — `iyi lsp`, measured by `bench/lsp_session.py`**
 

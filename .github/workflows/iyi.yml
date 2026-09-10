@@ -49,13 +49,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build
-        run: make crystal
+      - name: Build both frontends
+        run: make crystal iyi
 
       - uses: actions/upload-artifact@v4
         with:
           name: crystal
-          path: .build/crystal
+          path: |
+            .build/crystal
+            .build/iyi
           retention-days: 1
 
   iyi:
@@ -72,13 +74,14 @@ jobs:
         with:
           name: crystal
           path: .build
-      - run: chmod +x .build/crystal
+      - run: chmod +x .build/crystal .build/iyi
 
-      # Caught by hand once already, on files this fork wrote. `samples` is
-      # here because the formatter knows iyi now: before that it refused every
-      # `.iyi` file, so checking them would have checked nothing.
+      # Each language owns its files. A green iyi format check must have run
+      # the iyi frontend rather than the compatibility frontend.
       - name: Formatted
-        run: ./bin/crystal tool format --check src spec samples
+        run: |
+          git ls-files -z '*.cr' | xargs -0 ./bin/crystal tool format --check
+          git ls-files -z '*.iyi' | xargs -0 ./bin/iyi tool format --check
 
       - name: iyi's own specs
         run: |

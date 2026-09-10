@@ -86,8 +86,6 @@ pub def valid_opcode?(opcode : UInt8) : Bool
     opcode == OP_CLOSE || opcode == OP_PING || opcode == OP_PONG
 end
 
-
-
 # =============================================================================
 # WebSocketError
 # =============================================================================
@@ -462,7 +460,7 @@ pub struct Handshake
   # unsupported window-bit requirements, returns the negotiated response header.
   # Otherwise returns nil (declining deflate, continuing uncompressed).
   pub def self.negotiate_server_extensions(client_header : String?,
-                                          server_allows_deflate : Bool) : Tuple(Array(String)?, Bool)
+                                           server_allows_deflate : Bool) : Tuple(Array(String)?, Bool)
     return {nil, false} unless client_header && server_allows_deflate
 
     offers = parse_extension_offers(client_header)

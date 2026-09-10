@@ -285,7 +285,8 @@ llvm_ext: $(LLVM_EXT_OBJ)
 
 .PHONY: format
 format: ## Format sources
-	./bin/crystal tool format$(if $(check), --check) src spec samples scripts
+	git ls-files -z '*.cr' | xargs -0 ./bin/crystal tool format$(if $(check), --check)
+	git ls-files -z '*.iyi' | xargs -0 ./bin/iyi tool format$(if $(check), --check)
 
 .PHONY: generate_data
 generate_data: ## Run generator scripts for Unicode, SSL config, ...

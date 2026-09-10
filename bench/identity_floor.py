@@ -191,6 +191,10 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r"__crystal_|crystal_type_id|crystal_instance_type_id|LibCrystalMain", "Crystal's runtime ABI symbols"),
     (r"Crystal::(LLVM_VERSION|VERSION|DESCRIPTION|ABI)", "constants the bootstrap injects"),
     (r"Crystal\.format|module Crystal\b", "Crystal's own API, called or reopened"),
+    (
+        r"language = source\.filename",
+        "labels invalid .cr input as the compatibility language",
+    ),
     (r"```crystal", "a fenced code block's language tag"),
     (r"samples/crystal/", "programs that exist to use Crystal's library"),
     (r"src/crystal/", "a path inside Crystal's standard library"),
