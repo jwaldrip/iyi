@@ -114,6 +114,7 @@ def measured() -> dict[str, int]:
         "prelude": wc(sorted((REPO / "src/iyi").glob("*.iyi"))),
         "prelude_library": prelude_library_lines(),
         "std": wc(sorted((REPO / "src/std").glob("*.iyi"))),
+        "std_modules": len(sorted((REPO / "src/std").glob("*.iyi"))),
         "compiler": wc(sorted((REPO / "src/compiler").rglob("*.cr"))),
         "samples": len(sorted((REPO / "samples/iyi").glob("*.iyi"))),
         # Bytes on disk, not lines: the docs quote the library's size as a
@@ -196,6 +197,8 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     # on passing beside them.
     ("std", r"`src/std/` is \*\*([\d,]+) lines across", "SPEC.md", 1),
     ("std", r"the standard library, ([\d,]+) lines of iyi", "README.md", 1),
+    ("std_modules", r"lines across ([\w-]+)\s+modules", "SPEC.md", 1),
+    ("std_modules", r"lines of iyi across ([\w-]+) modules", "README.md", 1),
     ("compiler", r"\| ([\d,]+) lines, Crystal, forked", "SPEC.md", 1),
     ("spec_iyi", r"\| ([\d,]+) for iyi \|", "SPEC.md", 1),
     ("prelude_kb", r"library is ([\d,]+) KB on disk", "README.md", 1),

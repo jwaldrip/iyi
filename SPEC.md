@@ -310,7 +310,7 @@ the rule allows, a program in this repository needs it, and together they are
 still more than the rule intended to permit.
 
 **The standard library is deliberately outside that count, and this is the
-answer this section left open.** `src/std/` is **39,425 lines across forty
+answer this section left open.** `src/std/` is **41,948 lines across forty-one
 modules**. It is opt-in via `import std/...`, it lives outside `src/iyi/` where
 `bench/doc_numbers.py` measures the ceiling, and a program that imports none of
 it pays for none of it. So the prelude rule keeps its meaning, "a method enters
@@ -908,7 +908,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 108,068 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 39,425 in std |
+| Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 41,948 in std |
 | Specs | 21,146 lines | 9,566 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
