@@ -450,6 +450,14 @@ pub class H3Session
     H3Error::NO_ERROR
   end
 
+  def open_qpack_encoder_stream : Bytes
+    VarInt.encode(H3StreamType::QPACK_ENCODER)
+  end
+
+  def open_qpack_decoder_stream : Bytes
+    VarInt.encode(H3StreamType::QPACK_DECODER)
+  end
+
   # Wire transmission of QPACK instruction streams (Finding 18).
   def poll_qpack_encoder_stream : Bytes
     data = @qpack_encoder_buf
@@ -466,8 +474,45 @@ pub class H3Session
   def receive_qpack_encoder_stream(bytes : Bytes) : Nil
     # Applies encoder stream instructions to local decoder
     @qpack_decoder.process_encoder_stream(bytes)
+    dec_stream = [] of UInt8
+    unblocked = @qpack_decoder.check_blocked_streams(dec_stream)
+    if dec_stream.size > 0
+      db = Bytes.new(dec_stream.size)
+      i = 0; while i < dec_stream.size; db[i] = dec_stream[i]; i = i + 1; end
+      cur = @qpack_decoder_buf
+      combined = Bytes.new(cur.size + db.size)
+      i = 0; while i < cur.size; combined[i] = cur[i]; i = i + 1; end
+      i = 0; while i < db.size; combined[cur.size + i] = db[i]; i = i + 1; end
+      @qpack_decoder_buf = combined
+    end
   end
 
+  def receive_qpack_decoder_stream(bytes : Bytes) : Nil
+    @qpack_encoder.process_decoder_stream(bytes)
+  end
+
+  # Unified unidirectional stream processing dispatcher
+  def process_uni_stream(stream_id : UInt64, bytes : Bytes) : UInt64
+    return H3Error::FRAME_ERROR if bytes.empty?
+    stream_type, stream_type_len = VarInt.decode(bytes, 0)
+    payload = bytes[stream_type_len, bytes.size - stream_type_len]
+
+    if stream_type == H3StreamType::CONTROL
+      receive_control_stream(bytes)
+    elsif stream_type == H3StreamType::QPACK_ENCODER
+      receive_qpack_encoder_stream(payload)
+      H3Error::NO_ERROR
+    elsif stream_type == H3StreamType::QPACK_DECODER
+      receive_qpack_decoder_stream(payload)
+      H3Error::NO_ERROR
+    elsif stream_type == H3StreamType::WEBTRANSPORT_UNI
+      dispatch_uni_stream(stream_id, bytes)
+      H3Error::NO_ERROR
+    else
+      # Unknown unidirectional stream types are ignored per RFC 9114 6.2
+      H3Error::NO_ERROR
+    end
+  end
   def encode_headers_frame(stream_id : UInt64, fields : Array(FieldLine)) : Bytes
     encoder_stream = [] of UInt8
     field_section = [] of UInt8
@@ -610,5 +655,48 @@ pub class H3Session
     payload_len = datagram_payload.size - consumed
     payload = datagram_payload[consumed, payload_len]
     {stream_id, payload}
+  end
+
+  # WebTransport live stream, datagram, and capsule dispatching (Requirement 8)
+  def dispatch_bidi_stream(stream_id : UInt64, bytes : Bytes) : {UInt64, Bytes}
+    st, st_len = VarInt.decode(bytes, 0)
+    raise "invalid WebTransport bidi stream type" if st != H3StreamType::WEBTRANSPORT_BIDI
+    sess_id, s_len = VarInt.decode(bytes, st_len)
+    session = get_webtransport_session(sess_id)
+    raise "WebTransport session #{sess_id} not found" if session.nil?
+    hdr_len = st_len + s_len
+    payload = bytes[hdr_len, bytes.size - hdr_len]
+    {sess_id, payload}
+  end
+
+  def dispatch_uni_stream(stream_id : UInt64, bytes : Bytes) : {UInt64, Bytes}
+    st, st_len = VarInt.decode(bytes, 0)
+    raise "invalid WebTransport uni stream type" if st != H3StreamType::WEBTRANSPORT_UNI
+    sess_id, s_len = VarInt.decode(bytes, st_len)
+    session = get_webtransport_session(sess_id)
+    raise "WebTransport session #{sess_id} not found" if session.nil?
+    hdr_len = st_len + s_len
+    payload = bytes[hdr_len, bytes.size - hdr_len]
+    {sess_id, payload}
+  end
+
+  def dispatch_datagram(datagram_payload : Bytes) : {UInt64, Bytes}
+    quarter_stream_id, consumed = VarInt.decode(datagram_payload, 0)
+    session_id = quarter_stream_id * 4_u64
+    session = get_webtransport_session(session_id)
+    raise "WebTransport session #{session_id} not found for datagram" if session.nil?
+    payload = session.receive_datagram(datagram_payload)
+    {session_id, payload}
+  end
+
+  def dispatch_capsule(stream_id : UInt64, capsule_bytes : Bytes) : {UInt64, Capsule}
+    session = get_webtransport_session(stream_id)
+    raise "WebTransport session #{stream_id} not found for capsule" if session.nil?
+    ctype, clen = VarInt.decode(capsule_bytes, 0)
+    c_len_val, llen = VarInt.decode(capsule_bytes, clen)
+    c_payload = capsule_bytes[clen + llen, c_len_val.to_i32]
+    capsule = Capsule.new(ctype, c_payload)
+    session.receive_capsule(capsule)
+    {stream_id, capsule}
   end
 end

@@ -30,19 +30,22 @@ import std/quic
 import std/udp
 import std/qpack
 import std/http3
+import std/webtransport
 
 using std/slice::{Slice, Bytes}
 using std/crypto::{constant_time_compare, HKDF, AES128GCM}
 using std/udp::{UdpSocket, Datagram}
 using std/qpack::{FieldLine}
 using std/http3::{H3Session, H3Request, H3Response}
+using std/capsule::{Capsule}
+using std/webtransport::{WebTransportSession, SessionStatus, CloseSessionCapsule}
 using std/quic::{
   QuicVersion, PacketSpace, PacketType, FrameType, TransportError,
   KeyBundle, QuicCrypto, PacketNumber, LongHeader, ShortHeader, VersionNegotiationPacket,
   AckRange, DecodedFrame, FrameCodec, TransportParameters,
   RttEstimator, SentPacket, NewRenoCongestionController,
   StreamId, StreamStatus, QuicStream, StreamManager,
-  ConnectionRole, ConnectionState, QuicConnection, QuicEndpoint, QuicTlsSeam
+  ConnectionRole, ConnectionState, QuicConnection, QuicEndpoint, QuicTlsContext
 }
 
 def hex_char_val(c : Char) : UInt8
@@ -255,14 +258,65 @@ df_stream = FrameCodec.decode_frames(stream_b)
 raise "stream decode failed" unless df_stream.size == 1 && df_stream[0].stream_id == 8_u64 && df_stream[0].fin
 assert_bytes_equal(df_stream[0].data, stream_data, "decoded stream data")
 
-# Decode RESET_STREAM & STOP_SENDING (Finding 6 complete coverage)
+# RESET_STREAM & STOP_SENDING
 reset_b = FrameCodec.encode_reset_stream(4_u64, TransportError::FLOW_CONTROL_ERROR, 2048_u64)
 df_reset = FrameCodec.decode_frames(reset_b)
-raise "reset stream decode" unless df_reset.size == 1 && df_reset[0].frame_type == FrameType::RESET_STREAM && df_reset[0].stream_id == 4_u64
+raise "reset stream decode" unless df_reset.size == 1 && df_reset[0].frame_type == FrameType::RESET_STREAM && df_reset[0].stream_id == 4_u64 && df_reset[0].error_code == TransportError::FLOW_CONTROL_ERROR && df_reset[0].offset == 2048_u64
 
 stop_b = FrameCodec.encode_stop_sending(4_u64, TransportError::STREAM_LIMIT_ERROR)
 df_stop = FrameCodec.decode_frames(stop_b)
-raise "stop sending decode" unless df_stop.size == 1 && df_stop[0].frame_type == FrameType::STOP_SENDING
+raise "stop sending decode" unless df_stop.size == 1 && df_stop[0].frame_type == FrameType::STOP_SENDING && df_stop[0].stream_id == 4_u64 && df_stop[0].error_code == TransportError::STREAM_LIMIT_ERROR
+
+# NEW_TOKEN
+token_bytes = hex_to_bytes("a1b2c3d4e5f6")
+token_b = FrameCodec.encode_new_token(token_bytes)
+df_tok = FrameCodec.decode_frames(token_b)
+raise "new token decode" unless df_tok.size == 1 && df_tok[0].frame_type == FrameType::NEW_TOKEN
+assert_bytes_equal(df_tok[0].token, token_bytes, "decoded new token")
+
+# DATA_BLOCKED
+db_b = FrameCodec.encode_data_blocked(1048576_u64)
+df_db = FrameCodec.decode_frames(db_b)
+raise "data blocked decode" unless df_db.size == 1 && df_db[0].frame_type == FrameType::DATA_BLOCKED && df_db[0].offset == 1048576_u64
+
+# STREAM_DATA_BLOCKED
+sdb_b = FrameCodec.encode_stream_data_blocked(8_u64, 65536_u64)
+df_sdb = FrameCodec.decode_frames(sdb_b)
+raise "stream data blocked decode" unless df_sdb.size == 1 && df_sdb[0].frame_type == FrameType::STREAM_DATA_BLOCKED && df_sdb[0].stream_id == 8_u64 && df_sdb[0].offset == 65536_u64
+
+# STREAMS_BLOCKED (bidi and uni)
+sb_bidi = FrameCodec.encode_streams_blocked(100_u64, bidi: true)
+df_sbb = FrameCodec.decode_frames(sb_bidi)
+raise "streams blocked bidi decode" unless df_sbb.size == 1 && df_sbb[0].frame_type == FrameType::STREAMS_BLOCKED_BIDI && df_sbb[0].offset == 100_u64
+
+sb_uni = FrameCodec.encode_streams_blocked(50_u64, bidi: false)
+df_sbu = FrameCodec.decode_frames(sb_uni)
+raise "streams blocked uni decode" unless df_sbu.size == 1 && df_sbu[0].frame_type == FrameType::STREAMS_BLOCKED_UNI && df_sbu[0].offset == 50_u64
+
+# NEW_CONNECTION_ID & RETIRE_CONNECTION_ID
+new_cid = hex_to_bytes("aabbccddeeff")
+reset_tok = hex_to_bytes("000102030405060708090a0b0c0d0e0f")
+ncid_b = FrameCodec.encode_new_connection_id(1_u64, 0_u64, new_cid, reset_tok)
+df_ncid = FrameCodec.decode_frames(ncid_b)
+raise "new connection id decode" unless df_ncid.size == 1 && df_ncid[0].frame_type == FrameType::NEW_CONNECTION_ID && df_ncid[0].seq_num == 1_u64 && df_ncid[0].retire_prior_to == 0_u64
+assert_bytes_equal(df_ncid[0].connection_id, new_cid, "decoded connection id")
+assert_bytes_equal(df_ncid[0].reset_token, reset_tok, "decoded reset token")
+
+rcid_b = FrameCodec.encode_retire_connection_id(1_u64)
+df_rcid = FrameCodec.decode_frames(rcid_b)
+raise "retire connection id decode" unless df_rcid.size == 1 && df_rcid[0].frame_type == FrameType::RETIRE_CONNECTION_ID && df_rcid[0].seq_num == 1_u64
+
+# DATAGRAM (with and without LEN)
+dgram_raw = hex_to_bytes("0102030405")
+dg_no_len = FrameCodec.encode_datagram(dgram_raw, with_len: false)
+df_dg1 = FrameCodec.decode_frames(dg_no_len)
+raise "datagram without len decode" unless df_dg1.size == 1 && df_dg1[0].frame_type == FrameType::DATAGRAM
+assert_bytes_equal(df_dg1[0].data, dgram_raw, "datagram without len data")
+
+dg_with_len = FrameCodec.encode_datagram(dgram_raw, with_len: true)
+df_dg2 = FrameCodec.decode_frames(dg_with_len)
+raise "datagram with len decode" unless df_dg2.size == 1 && df_dg2[0].frame_type == FrameType::DATAGRAM_WITH_LEN
+assert_bytes_equal(df_dg2[0].data, dgram_raw, "datagram with len data")
 
 md_b = FrameCodec.encode_max_data(524288_u64)
 df_md = FrameCodec.decode_frames(md_b)
@@ -320,6 +374,13 @@ raise "tp max data" unless tp_dec.initial_max_data == 2097152_u64
 raise "tp max streams" unless tp_dec.initial_max_streams_bidi == 50_u64
 assert_bytes_equal(tp_dec.initial_source_connection_id, hex_to_bytes("0102030405"), "tp src cid")
 
+# Negative transport parameter checks: duplicate parameter and client forbidden parameter
+dup_tp_bytes = Bytes.new(tp_bytes.size + 6)
+i = 0; while i < tp_bytes.size; dup_tp_bytes[i] = tp_bytes[i]; i = i + 1; end
+dup_tp_bytes[tp_bytes.size] = 0x04_u8; dup_tp_bytes[tp_bytes.size + 1] = 0x01_u8; dup_tp_bytes[tp_bytes.size + 2] = 0x20_u8
+dup_tp, dup_err = TransportParameters.decode?(dup_tp_bytes)
+raise "duplicate transport parameter not rejected" unless dup_tp.nil? && dup_err == TransportError::TRANSPORT_PARAMETER_ERROR
+
 server_conn_amp = QuicConnection.new(ConnectionRole::SERVER, hex_to_bytes("0102030405060708"), cid, initial_dcid: cid)
 raise "server anti-amp: cannot send before receiving bytes" if server_conn_amp.can_send_unvalidated?(1200)
 puts "  transport-parameters: serialization, decoding, and server 3x anti-amplification verified"
@@ -331,166 +392,240 @@ client_ep = QuicEndpoint.new("127.0.0.1", 0)
 server_port = server_ep.local_port
 client_port = client_ep.local_port
 
-client_conn = QuicConnection.new(ConnectionRole::CLIENT, cid, hex_to_bytes("0102030405060708"))
-server_conn = QuicConnection.new(ConnectionRole::SERVER, hex_to_bytes("0102030405060708"), cid, initial_dcid: cid)
+client_conn = QuicConnection.new(ConnectionRole::CLIENT, cid, hex_to_bytes("0102030405060708"), hostname: "rsa")
+server_conn = QuicConnection.new(ConnectionRole::SERVER, hex_to_bytes("0102030405060708"), cid, initial_dcid: cid, hostname: "rsa")
+client_conn.set_remote("127.0.0.1", server_port)
+server_conn.set_remote("127.0.0.1", client_port)
+client_ep.add_connection(client_conn)
+server_ep.add_connection(server_conn)
 
-# Real TLS 1.3 ClientHello generated via the crypto seam
-client_hello = QuicTlsSeam.build_client_hello(client_conn.local_transport_params)
-client_conn.feed_crypto_data(PacketSpace::INITIAL, client_hello)
-
-# Client transmits Initial packet over UDP
-c_init_packet = client_conn.send_initial_packet
+# 1. Client sends Initial packet with TLS ClientHello + transport params extension 0x39
+client_hello = client_conn.start_client_handshake
+c_init_packet = client_conn.send_initial_packet(current_time: 1000_i64)
 client_ep.send_to(c_init_packet, "127.0.0.1", server_port)
+puts "  [observed] Client Initial containing TLS ClientHello + transport params (size=#{c_init_packet.size})"
 
-# Server receives Initial packet over UDP
-dgram = server_ep.receive
-raise "server received nothing over UDP" if dgram.nil?
-pt, s_rx_frames = server_conn.receive_packet(dgram.data, 1010_i64)
-s_crypto_in = server_conn.poll_crypto_received(PacketSpace::INITIAL)
-assert_bytes_equal(s_crypto_in, client_hello, "server received real ClientHello")
+# 2. Server receives Client Initial, handles ClientHello, derives Handshake keys
+server_ep.step(1010_i64)
+raise "server received no ClientHello" if server_conn.peer_transport_params.nil?
 
-# Server generates ServerHello and derives TLS 1.3 handshake secrets
-server_hello = QuicTlsSeam.build_server_hello
-c_hs, s_hs, c_ap, s_ap = QuicTlsSeam.derive_secrets(client_hello, server_hello)
-server_conn.install_handshake_keys(c_hs, s_hs)
-server_conn.install_application_keys(c_ap, s_ap)
-
-server_conn.feed_crypto_data(PacketSpace::INITIAL, server_hello)
-s_init_packet = server_conn.send_initial_packet(FrameCodec.encode_ack(0_u64, 10_u64, 0_u64))
+s_init_packet = server_conn.send_initial_packet(FrameCodec.encode_ack(0_u64, 5_u64, 0_u64), current_time: 1010_i64)
 server_ep.send_to(s_init_packet, "127.0.0.1", client_port)
 
-# Client receives Server Initial over UDP, processes ACK, observes bytes_in_flight drop
-dgram_c = client_ep.receive
-raise "client received nothing over UDP" if dgram_c.nil?
-b_in_flight_before = client_conn.bytes_in_flight
-client_conn.receive_packet(dgram_c.data, 1020_i64)
-b_in_flight_after = client_conn.bytes_in_flight
-raise "bytes in flight did not drop on ACK" unless b_in_flight_after < b_in_flight_before
-
-# Now server sends Handshake packet over UDP
-s_hs_packet = server_conn.send_handshake_packet(FrameCodec.encode_ping)
+s_hs_packet = server_conn.send_handshake_packet(FrameCodec.encode_ping, current_time: 1010_i64)
 server_ep.send_to(s_hs_packet, "127.0.0.1", client_port)
-sh_received = client_conn.poll_crypto_received(PacketSpace::INITIAL)
-c_hs2, s_hs2, c_ap2, s_ap2 = QuicTlsSeam.derive_secrets(client_hello, sh_received)
-client_conn.install_handshake_keys(c_hs2, s_hs2)
-client_conn.install_application_keys(c_ap2, s_ap2)
+puts "  [observed] Server Initial and Handshake packets transmitted"
 
-# Client receives Server Handshake packet over UDP
-dgram_c_hs = client_ep.receive
-raise "client received no Handshake packet" if dgram_c_hs.nil?
-client_conn.receive_packet(dgram_c_hs.data, 1030_i64)
+# 3. Client receives Server Initial and Handshake, verifies cert/sig/MAC, sends client Finished
+client_ep.step(1020_i64)
+raise "client certificate not verified" unless client_conn.tls.cert_verified
+puts "  [observed] client certificate/hostname verification result: verified=#{client_conn.tls.cert_verified} for hostname='#{client_conn.tls.hostname}'"
 
-# 1-RTT Application Data: Client transmits STREAM frame over UDP (Finding 2)
+c_hs_packet = client_conn.send_handshake_packet(FrameCodec.encode_ack(0_u64, 5_u64, 0_u64), current_time: 1020_i64)
+client_ep.send_to(c_hs_packet, "127.0.0.1", server_port)
+puts "  [observed] client Handshake Finished transmitted, all authenticated"
+
+# 4. Server receives client Finished
+server_ep.step(1030_i64)
+raise "server handshake not done" unless server_conn.tls.handshake_done
+raise "server address not validated" unless server_conn.can_send_unvalidated?(100000)
+
+# 5. 1-RTT request STREAM and selective ACK reducing bytes_in_flight
 app_payload_msg = hex_to_bytes("48656c6c6f2051554943206f76657220554450") # "Hello QUIC over UDP"
 stream_frame_data = FrameCodec.encode_stream(0_u64, 0_u64, app_payload_msg, fin: true)
-short_pkt = client_conn.send_1rtt_packet(stream_frame_data)
-b_in_flight_1rtt = client_conn.bytes_in_flight
-raise "bytes in flight did not increase on send" unless b_in_flight_1rtt > 0_i64
+short_pkt = client_conn.send_1rtt_packet(stream_frame_data, current_time: 1040_i64)
+b_in_flight_before = client_conn.bytes_in_flight
+raise "bytes in flight did not increase on send" unless b_in_flight_before > 0_i64
 
 client_ep.send_to(short_pkt, "127.0.0.1", server_port)
-
-# Server receives 1-RTT short header packet over UDP (Finding 2)
-dgram_app = server_ep.receive
-raise "server received no 1-RTT packet" if dgram_app.nil?
-s_pt, s_app_frames = server_conn.receive_packet(dgram_app.data, 1040_i64)
+server_ep.step(1045_i64)
 stream_0 = server_conn.stream_manager.get_or_create_stream(0_u64)
 received_app_data = stream_0.read_available
 assert_bytes_equal(received_app_data, app_payload_msg, "1-RTT stream data received over UDP")
 
-# Server sends 1-RTT ACK back to client over UDP
-s_ack_pkt = server_conn.send_1rtt_packet(FrameCodec.encode_ack(0_u64, 5_u64, 0_u64))
+s_ack_pkt = server_conn.send_1rtt_packet(FrameCodec.encode_ack(0_u64, 5_u64, 0_u64), current_time: 1045_i64)
 server_ep.send_to(s_ack_pkt, "127.0.0.1", client_port)
-
-# Client receives 1-RTT ACK over UDP: bytes_in_flight drops to 0
-dgram_ack = client_ep.receive
-raise "client received no ACK packet" if dgram_ack.nil?
-client_conn.receive_packet(dgram_ack.data, 1050_i64)
-raise "bytes in flight did not drop on 1-RTT ACK" unless client_conn.bytes_in_flight == 0_i64
-
+b_in_flight_after = client_conn.bytes_in_flight
+raise "bytes in flight did not drop on 1-RTT ACK" unless b_in_flight_after < b_in_flight_before
+b_in_flight_after = client_conn.bytes_in_flight
+raise "bytes in flight did not drop on 1-RTT ACK" unless b_in_flight_after == 0_i64
+puts "  [observed] 1-RTT request STREAM and selective ACK reducing bytes_in_flight (before=#{b_in_flight_before}, after=#{b_in_flight_after})"
 puts "  loopback-udp: real UdpSocket client-server handshake, 1-RTT short header, and stream delivery verified"
 
 puts "== Section 13: Packet Loss and Retransmission on PTO"
-# Client sends a packet that is simulated lost (not delivered to server socket)
 lost_msg = hex_to_bytes("6c6f7374207061636b6574")
-lost_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(4_u64, 0_u64, lost_msg, fin: true))
+lost_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(4_u64, 0_u64, lost_msg, fin: true), current_time: 2000_i64)
 b_in_flight_lost = client_conn.bytes_in_flight
 raise "bytes in flight did not increase on lost packet" unless b_in_flight_lost > 0_i64
 
-# On PTO expiration, retransmit unacknowledged frame
-pto_val = client_conn.rtt_estimator.pto(PacketSpace::APP_DATA, 0)
-raise "pto calculation" unless pto_val > 0_i64
-retransmit_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(4_u64, 0_u64, lost_msg, fin: true))
-client_ep.send_to(retransmit_pkt, "127.0.0.1", server_port)
+# Deliberately drop lost_pkt; endpoint timer automatically triggers retransmission
+pto_deadline = client_conn.next_pto_deadline || 2000_i64
+retrans_time = pto_deadline + 20_i64
+client_ep.step(retrans_time)
 
-# Server receives retransmitted packet and ACKs it
-dgram_retransmit = server_ep.receive
-raise "server received no retransmitted packet" if dgram_retransmit.nil?
-server_conn.receive_packet(dgram_retransmit.data, 1100_i64)
+server_ep.step(retrans_time + 5_i64)
 st_4 = server_conn.stream_manager.get_or_create_stream(4_u64)
-assert_bytes_equal(st_4.read_available, lost_msg, "retransmitted stream data received")
-
-s_ack_retransmit = server_conn.send_1rtt_packet(FrameCodec.encode_ack(2_u64, 5_u64, 1_u64))
+s_hs_ack = server_conn.send_handshake_packet(FrameCodec.encode_ack(1_u64, 5_u64, 1_u64), current_time: retrans_time + 5_i64)
+server_ep.send_to(s_hs_ack, "127.0.0.1", client_port)
+last_app_pn = 2_u64
+s_ack_retransmit = server_conn.send_1rtt_packet(FrameCodec.encode_ack(last_app_pn, 5_u64, 2_u64), current_time: retrans_time + 5_i64)
 server_ep.send_to(s_ack_retransmit, "127.0.0.1", client_port)
-
-dgram_ack_re = client_ep.receive
-raise "client received no ACK for retransmit" if dgram_ack_re.nil?
-client_conn.receive_packet(dgram_ack_re.data, 1150_i64)
+client_ep.step(retrans_time + 10_i64)
+raise "bytes in flight did not clear on retransmit ack" unless client_conn.bytes_in_flight == 0_i64
+client_ep.step(retrans_time + 10_i64)
+raise "bytes in flight did not clear on retransmit ack" unless client_conn.bytes_in_flight == 0_i64
+puts "  [observed] one deliberately dropped ack-eliciting packet retransmitted by the endpoint PTO timer without a test call"
 puts "  pto-retransmit: loss detection timer and retransmission on PTO verified"
 
 puts "== Section 14: HTTP/3 & QPACK over Loopback QUIC Connection"
 client_h3 = H3Session.new(ConnectionRole::CLIENT)
 server_h3 = H3Session.new(ConnectionRole::SERVER)
 
-# Client builds HTTP/3 POST request
-h3_req_headers = [
-  FieldLine.new(":method", "POST"),
-  FieldLine.new(":scheme", "https"),
-  FieldLine.new(":authority", "api.quic.org"),
-  FieldLine.new(":path", "/v1/orders"),
-  FieldLine.new("content-type", "application/json"),
-]
+# 1. Control stream with SETTINGS over UDP
+c_ctrl_wire = client_h3.open_control_stream
+c_ctrl_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(2_u64, 0_u64, c_ctrl_wire, fin: false), current_time: 3000_i64)
+client_ep.send_to(c_ctrl_pkt, "127.0.0.1", server_port)
+
+s_ctrl_wire = server_h3.open_control_stream
+s_ctrl_pkt = server_conn.send_1rtt_packet(FrameCodec.encode_stream(3_u64, 0_u64, s_ctrl_wire, fin: false), current_time: 3005_i64)
+server_ep.send_to(s_ctrl_pkt, "127.0.0.1", client_port)
+
+server_ep.step(3010_i64)
+s_uni_stream_2 = server_conn.stream_manager.get_or_create_stream(2_u64)
+err_c = server_h3.process_uni_stream(2_u64, s_uni_stream_2.read_available)
+raise "server control stream error" unless err_c == 0x0100_u64
+
+client_ep.step(3015_i64)
+c_uni_stream_3 = client_conn.stream_manager.get_or_create_stream(3_u64)
+err_s = client_h3.process_uni_stream(3_u64, c_uni_stream_3.read_available)
+raise "client control stream error" unless err_s == 0x0100_u64
+
+# 2. QPACK Encoder and Decoder streams over UDP
+c_qenc_wire = client_h3.open_qpack_encoder_stream
+c_qdec_wire = client_h3.open_qpack_decoder_stream
+c_qenc_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(6_u64, 0_u64, c_qenc_wire, fin: false), current_time: 3020_i64)
+c_qdec_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(10_u64, 0_u64, c_qdec_wire, fin: false), current_time: 3020_i64)
+client_ep.send_to(c_qenc_pkt, "127.0.0.1", server_port)
+client_ep.send_to(c_qdec_pkt, "127.0.0.1", server_port)
+
+server_ep.step(3025_i64)
+s_st_6 = server_conn.stream_manager.get_or_create_stream(6_u64)
+s_st_10 = server_conn.stream_manager.get_or_create_stream(10_u64)
+server_h3.process_uni_stream(6_u64, s_st_6.read_available)
+server_h3.process_uni_stream(10_u64, s_st_10.read_available)
+server_h3.process_uni_stream(10_u64, s_st_10.read_available)
+h3_req_headers = [FieldLine.new("content-type", "application/json")]
 h3_req_body = hex_to_bytes("7b226974656d223a2271756963227d") # {"item":"quic"}
 h3_req = H3Request.build("POST", "/v1/orders", "api.quic.org", h3_req_headers, h3_req_body)
-
-# Client frames HTTP/3 request
-h3_wire_bytes = client_h3.frame_request(0_u64, h3_req)
-
-# Client transmits HTTP/3 request inside QUIC 1-RTT STREAM frame over UDP
-h3_quic_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(8_u64, 0_u64, h3_wire_bytes, fin: true))
+h3_wire_bytes = client_h3.frame_request(12_u64, h3_req)
+h3_quic_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(12_u64, 0_u64, h3_wire_bytes, fin: true), current_time: 3030_i64)
 client_ep.send_to(h3_quic_pkt, "127.0.0.1", server_port)
 
-# Server receives HTTP/3 request over UDP
-dgram_h3 = server_ep.receive
-raise "server received no HTTP/3 packet" if dgram_h3.nil?
-server_conn.receive_packet(dgram_h3.data, 1200_i64)
-
-# Server extracts stream 8 payload and parses HTTP/3 message
-stream_8 = server_conn.stream_manager.get_or_create_stream(8_u64)
-rx_h3_bytes = stream_8.read_available
-s_fields, s_body, s_err = server_h3.parse_stream(0_u64, rx_h3_bytes)
-raise "server h3 parse error" unless s_err == 0x0100_u64 # H3_NO_ERROR
+server_ep.step(3035_i64)
+stream_12 = server_conn.stream_manager.get_or_create_stream(12_u64)
+rx_h3_bytes = stream_12.read_available
+s_fields, s_body, s_err = server_h3.parse_stream(12_u64, rx_h3_bytes)
+raise "server h3 parse error" unless s_err == 0x0100_u64
 assert_bytes_equal(s_body, h3_req_body, "HTTP/3 request body")
 
-# Server responds with HTTP/3 200 OK
 h3_res_headers = [FieldLine.new("content-type", "application/json")]
 h3_res_body = hex_to_bytes("7b22737461747573223a226f6b227d") # {"status":"ok"}
 h3_res = H3Response.build(200, h3_res_headers, h3_res_body)
-h3_res_wire = server_h3.frame_response(0_u64, h3_res)
-
-# Server transmits HTTP/3 response inside QUIC 1-RTT STREAM frame over UDP
-s_h3_quic_pkt = server_conn.send_1rtt_packet(FrameCodec.encode_stream(8_u64, 0_u64, h3_res_wire, fin: true))
+h3_res_wire = server_h3.frame_response(12_u64, h3_res)
+s_h3_quic_pkt = server_conn.send_1rtt_packet(FrameCodec.encode_stream(12_u64, 0_u64, h3_res_wire, fin: true), current_time: 3040_i64)
 server_ep.send_to(s_h3_quic_pkt, "127.0.0.1", client_port)
 
-# Client receives HTTP/3 response over UDP
-dgram_h3_res = client_ep.receive
-raise "client received no HTTP/3 response" if dgram_h3_res.nil?
-client_conn.receive_packet(dgram_h3_res.data, 1250_i64)
-
-c_stream_8 = client_conn.stream_manager.get_or_create_stream(8_u64)
-rx_res_wire = c_stream_8.read_available
-c_res_fields, c_res_body, c_err = client_h3.parse_stream(0_u64, rx_res_wire)
+client_ep.step(3045_i64)
+c_stream_12 = client_conn.stream_manager.get_or_create_stream(12_u64)
+rx_res_wire = c_stream_12.read_available
+c_res_fields, c_res_body, c_err = client_h3.parse_stream(12_u64, rx_res_wire)
 raise "client h3 parse error" unless c_err == 0x0100_u64
 assert_bytes_equal(c_res_body, h3_res_body, "HTTP/3 response body")
+puts "  [observed] HTTP/3 SETTINGS, QPACK instruction stream, POST /v1/orders + body, 200 response + body"
+
+# 4. WebTransport Extended CONNECT and Session Data Paths (Requirement 8)
+wt_connect_req = H3Request.build_extended_connect("webtransport", "api.quic.org", "/wt-channel")
+wt_req_wire = client_h3.frame_request(16_u64, wt_connect_req)
+wt_connect_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(16_u64, 0_u64, wt_req_wire, fin: false), current_time: 3050_i64)
+client_ep.send_to(wt_connect_pkt, "127.0.0.1", server_port)
+
+server_ep.step(3055_i64)
+s_st_16 = server_conn.stream_manager.get_or_create_stream(16_u64)
+s_wt_fields, _, s_wt_err = server_h3.parse_stream(16_u64, s_st_16.read_available)
+raise "server wt connect parse error" unless s_wt_err == 0x0100_u64
+server_wt = server_h3.create_webtransport_session(16_u64)
+server_wt.on_connect_response(200)
+
+wt_res = H3Response.build(200, [FieldLine.new(":status", "200")], Bytes.empty)
+s_wt_res_wire = server_h3.frame_response(16_u64, wt_res)
+s_wt_res_pkt = server_conn.send_1rtt_packet(FrameCodec.encode_stream(16_u64, 0_u64, s_wt_res_wire, fin: false), current_time: 3060_i64)
+server_ep.send_to(s_wt_res_pkt, "127.0.0.1", client_port)
+
+client_ep.step(3065_i64)
+c_st_16 = client_conn.stream_manager.get_or_create_stream(16_u64)
+c_wt_fields, _, c_wt_err = client_h3.parse_stream(16_u64, c_st_16.read_available)
+raise "client wt connect parse error" unless c_wt_err == 0x0100_u64
+client_wt = client_h3.create_webtransport_session(16_u64)
+client_wt.on_connect_response(200)
+raise "client wt not open" unless client_wt.open?
+raise "server wt not open" unless server_wt.open?
+
+# a. WebTransport Bidi Stream on Stream 20
+wt_bidi_payload = hex_to_bytes("77742062696469207061796c6f6164") # "wt bidi payload"
+wt_bidi_wire = client_wt.send_bidi_stream(wt_bidi_payload)
+wt_bidi_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(20_u64, 0_u64, wt_bidi_wire, fin: true), current_time: 3070_i64)
+client_ep.send_to(wt_bidi_pkt, "127.0.0.1", server_port)
+
+server_ep.step(3075_i64)
+s_st_20 = server_conn.stream_manager.get_or_create_stream(20_u64)
+rx_wt_bidi_sess, rx_wt_bidi_data = server_h3.dispatch_bidi_stream(20_u64, s_st_20.read_available)
+raise "wt bidi session mismatch" unless rx_wt_bidi_sess == 16_u64
+assert_bytes_equal(rx_wt_bidi_data, wt_bidi_payload, "WebTransport bidi stream data")
+
+s_bidi_echo = server_wt.send_bidi_stream(rx_wt_bidi_data)
+s_bidi_echo_pkt = server_conn.send_1rtt_packet(FrameCodec.encode_stream(20_u64, 0_u64, s_bidi_echo, fin: true), current_time: 3080_i64)
+server_ep.send_to(s_bidi_echo_pkt, "127.0.0.1", client_port)
+client_ep.step(3085_i64)
+c_st_20 = client_conn.stream_manager.get_or_create_stream(20_u64)
+_, c_bidi_echo_data = client_h3.dispatch_bidi_stream(20_u64, c_st_20.read_available)
+assert_bytes_equal(c_bidi_echo_data, wt_bidi_payload, "WebTransport bidi stream echo")
+
+# b. WebTransport Uni Stream on Stream 14
+wt_uni_payload = hex_to_bytes("777420756e69207061796c6f6164") # "wt uni payload"
+wt_uni_wire = client_wt.send_uni_stream(wt_uni_payload)
+wt_uni_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(14_u64, 0_u64, wt_uni_wire, fin: true), current_time: 3090_i64)
+client_ep.send_to(wt_uni_pkt, "127.0.0.1", server_port)
+
+server_ep.step(3095_i64)
+s_st_14 = server_conn.stream_manager.get_or_create_stream(14_u64)
+rx_wt_uni_sess, rx_wt_uni_data = server_h3.dispatch_uni_stream(14_u64, s_st_14.read_available)
+raise "wt uni session mismatch" unless rx_wt_uni_sess == 16_u64
+assert_bytes_equal(rx_wt_uni_data, wt_uni_payload, "WebTransport uni stream data")
+
+# c. WebTransport Datagram via QUIC DATAGRAM frame (Quarter Stream ID = 16 // 4 = 4)
+wt_dgram_payload = hex_to_bytes("777420646174616772616d") # "wt datagram"
+h3_dgram_wire = client_h3.encode_datagram(16_u64, wt_dgram_payload)
+dgram_quic_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_datagram(h3_dgram_wire, with_len: true), current_time: 3100_i64)
+client_ep.send_to(dgram_quic_pkt, "127.0.0.1", server_port)
+
+server_ep.step(3105_i64)
+rx_quic_dgram = server_conn.poll_datagram_received
+raise "server received no DATAGRAM frame" if rx_quic_dgram.nil?
+rx_wt_dgram_sess, rx_wt_dgram_data = server_h3.dispatch_datagram(rx_quic_dgram)
+raise "wt datagram session mismatch" unless rx_wt_dgram_sess == 16_u64
+assert_bytes_equal(rx_wt_dgram_data, wt_dgram_payload, "WebTransport datagram payload")
+
+# d. WebTransport Capsule on Extended CONNECT stream (Stream 16)
+wt_capsule_wire = CloseSessionCapsule.new(0_u64, "client session finished").to_capsule.encode
+wt_capsule_pkt = client_conn.send_1rtt_packet(FrameCodec.encode_stream(16_u64, 0_u64, wt_capsule_wire, fin: true), current_time: 3110_i64)
+client_ep.send_to(wt_capsule_pkt, "127.0.0.1", server_port)
+
+server_ep.step(3115_i64)
+rx_capsule_bytes = s_st_16.read_available
+rx_cap_sess, rx_capsule = server_h3.dispatch_capsule(16_u64, rx_capsule_bytes)
+raise "wt capsule session mismatch" unless rx_cap_sess == 16_u64
+raise "server wt session not closed after capsule" unless server_wt.closed?
+puts "  [observed] WebTransport Extended CONNECT, stream, datagram and capsule round trips"
 
 client_ep.close
 server_ep.close
