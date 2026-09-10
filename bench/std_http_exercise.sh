@@ -52,13 +52,13 @@ fi
 
 echo
 echo "== every HTTP section reported"
-for phrase in "status codes:" "headers:" "repetition rules:" "header injection:" "request smuggling:" "bounds:" "chunked parsing:" "roundtrip: full request" "roundtrip: Content-Length" "keep-alive:" "cookie parsing:" "params:"; do
+for phrase in "status codes:" "headers:" "repetition rules:" "header injection:" "request smuggling:" "bounds:" "chunked parsing:" "roundtrip: full request" "roundtrip: Content-Length" "keep-alive:" "cookie parsing:" "params:" "strict CRLF:" "RFC 9112 Section 5.1/5.2:" "Host header:" "Transfer-Encoding:" "forbidden trailers:" "Content-Length:" "persistent response framing:"; do
   grep -q "$phrase" "$WORK/http-plain.out" 2>/dev/null || {
     echo "  MISSING: nothing reported for $phrase"
     status=1
   }
 done
-[ "$status" -eq 0 ] && echo "  status, headers, repetition, injection, smuggling, bounds, chunked, roundtrips, keep-alive, cookies, and params all reported"
+[ "$status" -eq 0 ] && echo "  status, headers, repetition, injection, smuggling, bounds, chunked, roundtrips, keep-alive, cookies, params, CRLF, obs-fold, Host, TE, trailers, CL bounds, and persistent framing all reported"
 
 echo
 echo "== the same program with optimisation on (--release)"
@@ -112,9 +112,9 @@ prove_fails() {
 prove_fails "request smuggling dual CL/TE broken" no_smuggle_cl_te "smuggling with both CL and TE was not rejected" \
   's/if has_cl && has_te/if false \&\& has_cl \&\& has_te/'
 
-# 2. Request smuggling: conflicting CL values check broken in Headers#add
-prove_fails "request smuggling conflicting CL broken" no_smuggle_cl "conflicting CL on add was not rejected" \
-  's/existing\[0\]\.strip != value\.strip/false/'
+# 2. Request smuggling: conflicting CL values check broken
+prove_fails "request smuggling conflicting CL broken" no_smuggle_cl "wrong message for CL smuggling" \
+  's/Request smuggling: conflicting Content-Length values/Bypassed conflicting CL/g'
 
 # 3. Header injection: CR in header value broken
 prove_fails "header injection CR in value broken" no_inj_cr "CR header injection not caught" \
@@ -147,6 +147,40 @@ prove_fails "header repetition rules broken" no_repetition "Content-Type should 
 prove_fails "cookie SameSite parsing broken" no_samesite "parsed cookie samesite" \
   's/samesite = SameSite\.parse?(attr_val)/samesite = nil.as(SameSite?)/'
 
+# 11. Strict CRLF request line check broken
+prove_fails "strict CRLF request line check broken" no_crlf_req "bare LF in request line was not rejected" \
+  's/raw\.to_unsafe\[line_end - 1\] != 13_u8/false/'
+
+# 12. RFC 9112 obs-fold in header check broken
+prove_fails "obs-fold in header check broken" no_obs_fold "wrong obs-fold message" \
+  's/line\.starts_with?('\'' '\'') || line\.starts_with?('\''\\t'\'')/false/'
+
+# 13. RFC 9112 whitespace before colon check broken
+prove_fails "whitespace before colon check broken" no_ws_colon "wrong ws before colon message" \
+  's/colon > 0 && (line\.to_unsafe\[colon - 1\] == 32_u8 || line\.to_unsafe\[colon - 1\] == 9_u8)/false/'
+
+# 14. RFC 9112 mandatory Host header check broken
+prove_fails "mandatory Host header check broken" no_mandatory_host "missing Host header was not rejected" \
+  's/if version == "HTTP\/1\.1"/if false \&\& version == "HTTP\/1.1"/'
+
+# 15. RFC 9112 multiple Host headers check broken
+prove_fails "multiple Host headers check broken" no_multi_host "multiple Host headers was not rejected" \
+  's/if has_host/if false/'
+
+# 16. RFC 9112 Transfer-Encoding final chunked check broken
+prove_fails "Transfer-Encoding final chunked check broken" no_final_te "wrong non-final chunked message" \
+  's/if codings\[codings\.size - 1\] != "chunked"/if false/'
+# 17. RFC 9112 forbidden trailer header check broken
+prove_fails "forbidden trailer header check broken" no_forbid_trailer "forbidden trailer Host was not rejected" \
+  's/if Std::Http\.is_forbidden_trailer?(t_k)/if false/'
+
+# 18. Content-Length 32-bit bound check broken
+prove_fails "Content-Length 32-bit bound check broken" no_cl_bound "wrong oversized CL message" \
+  's/if cl_num > 2147483647_i64/if false/'
+
+# 19. RFC 9112 persistent response framing check broken
+prove_fails "persistent response framing check broken" no_unframed_resp "wrong unframed response message" \
+  's/Invalid persistent response: persistent connection requires Content-Length, chunked encoding, or Connection: close/Bypassed persistent framing/g'
 echo
 if [ "$status" -eq 0 ]; then
   echo "HTTP standard library: Status, Headers, Request, Response, wire format, chunked encoding,"

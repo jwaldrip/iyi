@@ -320,6 +320,7 @@ puts "    roundtrip: full request and response with chunked body and trailers ve
 # 16. Content-Length bodies roundtrip
 # ---------------------------------------------------------------------------
 req_cl = Request.new("POST", "/data", body: "fixed-length-payload")
+req_cl.headers["Host"] = "example.com"
 raw_cl_req = req_cl.serialize
 case raw_cl_req
 in HttpError then raise "failed serialize CL: #{raw_cl_req.message}"
@@ -427,5 +428,169 @@ raise "form_params action" unless fp["action"] == "login"
 raise "form_params flag" unless fp["flag"] == "true"
 
 puts "    params: query and form-urlencoded parsing reusing std/uri verified"
+
+# ---------------------------------------------------------------------------
+# 20. Strict RFC 9112 framing: CRLF required, bare LF rejected
+# ---------------------------------------------------------------------------
+bare_lf_req = "GET / HTTP/1.1\nHost: example.com\r\n\r\n"
+case Request.parse(bare_lf_req)
+in Request   then raise "bare LF in request line was not rejected"
+in HttpError then raise "wrong bare LF message" unless it.message.includes?("Invalid line ending: bare LF not permitted where CRLF required")
+end
+
+bare_lf_hdr = "GET / HTTP/1.1\r\nHost: example.com\n\r\n"
+case Request.parse(bare_lf_hdr)
+in Request   then raise "bare LF in header was not rejected"
+in HttpError then raise "wrong bare LF header message" unless it.message.includes?("Invalid line ending: bare LF not permitted where CRLF required")
+end
+
+bare_lf_status = "HTTP/1.1 200 OK\nContent-Length: 0\r\n\r\n"
+case Response.parse(bare_lf_status)
+in Response  then raise "bare LF in status line was not rejected"
+in HttpError then raise "wrong bare LF status message" unless it.message.includes?("Invalid line ending: bare LF not permitted where CRLF required")
+end
+
+bare_lf_chunk_size = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n5\nhello\r\n0\r\n\r\n"
+case Request.parse(bare_lf_chunk_size)
+in Request   then raise "bare LF in chunk size was not rejected"
+in HttpError then raise "wrong bare LF chunk size message" unless it.message.includes?("Invalid line ending: bare LF not permitted where CRLF required")
+end
+
+bare_lf_chunk_delim = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\n0\r\n\r\n"
+case Request.parse(bare_lf_chunk_delim)
+in Request   then raise "bare LF chunk delimiter was not rejected"
+in HttpError then raise "wrong bare LF chunk delim message" unless it.message.includes?("Invalid chunked encoding: missing CRLF after chunk data")
+end
+
+bare_lf_trailer = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-Trailer: val\n\r\n"
+case Request.parse(bare_lf_trailer)
+in Request   then raise "bare LF in trailer line was not rejected"
+in HttpError then raise "wrong bare LF trailer message" unless it.message.includes?("Invalid line ending: bare LF not permitted where CRLF required")
+end
+
+puts "    strict CRLF: bare LF rejected in request, status, header, chunk, and trailer lines verified"
+
+# ---------------------------------------------------------------------------
+# 21. RFC 9112 Section 5.1/5.2: obs-fold and whitespace before colon rejected
+# ---------------------------------------------------------------------------
+obs_fold_req = "GET / HTTP/1.1\r\nHost: example.com\r\n Obs-Fold: value\r\n\r\n"
+case Request.parse(obs_fold_req)
+in Request   then raise "obs-fold in header was not rejected"
+in HttpError then raise "wrong obs-fold message" unless it.message.includes?("Request smuggling: obsolete line folding (obs-fold) rejected")
+end
+
+ws_colon_req = "GET / HTTP/1.1\r\nHost : example.com\r\n\r\n"
+case Request.parse(ws_colon_req)
+in Request   then raise "whitespace before colon was not rejected"
+in HttpError then raise "wrong ws before colon message" unless it.message.includes?("Request smuggling: whitespace between header name and colon")
+end
+
+obs_fold_trailer = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n fold: value\r\n\r\n"
+case Request.parse(obs_fold_trailer)
+in Request   then raise "obs-fold in trailer was not rejected"
+in HttpError then raise "wrong obs-fold trailer message" unless it.message.includes?("Request smuggling: obsolete line folding (obs-fold) rejected")
+end
+
+ws_colon_trailer = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-Trailer : value\r\n\r\n"
+case Request.parse(ws_colon_trailer)
+in Request   then raise "whitespace before colon in trailer was not rejected"
+in HttpError then raise "wrong ws trailer message" unless it.message.includes?("Request smuggling: whitespace between header name and colon")
+end
+
+puts "    RFC 9112 Section 5.1/5.2: obs-fold and whitespace before colon rejected in headers and trailers verified"
+
+# ---------------------------------------------------------------------------
+# 22. RFC 9112 Section 3.2: Mandatory and unique Host header in HTTP/1.1
+# ---------------------------------------------------------------------------
+missing_host_req = "GET / HTTP/1.1\r\nUser-Agent: test\r\n\r\n"
+case Request.parse(missing_host_req)
+in Request   then raise "missing Host header was not rejected"
+in HttpError then raise "wrong missing host message" unless it.message.includes?("Invalid HTTP/1.1 request: missing mandatory Host header")
+end
+
+multi_host_req = "GET / HTTP/1.1\r\nHost: a.com\r\nHost: b.com\r\n\r\n"
+case Request.parse(multi_host_req)
+in Request   then raise "multiple Host headers was not rejected"
+in HttpError then raise "wrong multiple host message" unless it.message.includes?("Request smuggling: multiple Host headers rejected")
+end
+
+puts "    Host header: mandatory and exactly one Host header required in HTTP/1.1 verified"
+
+# ---------------------------------------------------------------------------
+# 23. RFC 9112 Section 6.1: Transfer-Encoding validation
+# ---------------------------------------------------------------------------
+dup_chunked_req = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked, chunked\r\n\r\n0\r\n\r\n"
+case Request.parse(dup_chunked_req)
+in Request   then raise "duplicate chunked was not rejected"
+in HttpError then raise "wrong dup chunked message" unless it.message.includes?("Request smuggling: duplicate chunked transfer coding")
+end
+
+non_final_chunked_req = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked, gzip\r\n\r\n0\r\n\r\n"
+case Request.parse(non_final_chunked_req)
+in Request   then raise "non-final chunked was not rejected"
+in HttpError then raise "wrong non-final chunked message" unless it.message.includes?("Request smuggling: chunked must be the final transfer coding")
+end
+
+unsupported_te_req = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: deflate\r\n\r\n0\r\n\r\n"
+case Request.parse(unsupported_te_req)
+in Request   then raise "unsupported Transfer-Encoding was not rejected"
+in HttpError then raise "wrong unsupported TE message" unless it.message.includes?("Unsupported Transfer-Encoding")
+end
+
+puts "    Transfer-Encoding: single and final chunked coding enforced, unsupported codings rejected verified"
+
+# ---------------------------------------------------------------------------
+# 24. RFC 9112 Section 7.1.2: Forbidden trailer headers rejected
+# ---------------------------------------------------------------------------
+forbidden_trailers = ["Host", "Content-Length", "Transfer-Encoding", "Trailer", "Connection", "Keep-Alive", "Upgrade", "TE"]
+forbidden_trailers.each do |f_hdr|
+  bad_trailer_req = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n#{f_hdr}: bad\r\n\r\n"
+  case Request.parse(bad_trailer_req)
+  in Request   then raise "forbidden trailer #{f_hdr} was not rejected"
+  in HttpError then raise "wrong forbidden trailer message for #{f_hdr}" unless it.message.includes?("Forbidden trailer header rejected")
+  end
+end
+
+puts "    forbidden trailers: Host, Content-Length, Transfer-Encoding, Trailer, Connection, Keep-Alive, Upgrade, TE rejected verified"
+
+# ---------------------------------------------------------------------------
+# 25. Content-Length 32-bit bound enforcement before conversion
+# ---------------------------------------------------------------------------
+huge_cl_req = "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5000000000\r\n\r\n"
+case Request.parse(huge_cl_req)
+in Request   then raise "oversized Content-Length was not rejected"
+in HttpError then raise "wrong oversized CL message" unless it.message.includes?("Content-Length exceeds 32-bit parser bound (2147483647 bytes)")
+end
+
+dup_cl_req = "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 10\r\nContent-Length: 10\r\n\r\n0123456789"
+case Request.parse(dup_cl_req)
+in Request   then raise "duplicate identical Content-Length was not rejected"
+in HttpError then raise "wrong duplicate CL message" unless it.message.includes?("Request smuggling: duplicate Content-Length headers")
+end
+
+puts "    Content-Length: 32-bit bounds check before conversion and duplicate CL rejection verified"
+
+# ---------------------------------------------------------------------------
+# 26. RFC 9112 Section 6.3: Persistent response without framing headers rejected
+# ---------------------------------------------------------------------------
+unframed_resp = "HTTP/1.1 200 OK\r\nServer: test\r\n\r\nsome content without framing"
+case Response.parse(unframed_resp)
+in Response  then raise "unframed persistent response was not rejected"
+in HttpError then raise "wrong unframed response message" unless it.message.includes?("Invalid persistent response: persistent connection requires Content-Length, chunked encoding, or Connection: close")
+end
+
+framed_close_resp = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\ncontent till closure"
+case Response.parse(framed_close_resp)
+in HttpError then raise "response with Connection: close failed: #{it.message}"
+in Response  then raise "response body close" unless it.body == "content till closure"
+end
+
+framed_204_resp = "HTTP/1.1 204 No Content\r\n\r\n"
+case Response.parse(framed_204_resp)
+in HttpError then raise "204 response failed: #{it.message}"
+in Response  then raise "204 body not empty" unless it.body.empty?
+end
+
+puts "    persistent response framing: rejection of unframed persistent responses verified"
 
 puts "all std/http checks passed"

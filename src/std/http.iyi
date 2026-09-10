@@ -399,12 +399,16 @@ pub struct Headers
     lower = name.downcase
     idx = find_index(lower)
 
-    # Request smuggling protection: conflicting Content-Length values
+    # Request smuggling protection: conflicting or duplicate Content-Length values
     if lower == "content-length"
       if idx
         existing = @values[idx]
-        if existing.size > 0 && existing[0].strip != value.strip
-          return HttpError.new("Request smuggling: conflicting Content-Length values")
+        if existing.size > 0
+          if existing[0].strip != value.strip
+            return HttpError.new("Request smuggling: conflicting Content-Length values")
+          else
+            return HttpError.new("Request smuggling: duplicate Content-Length headers")
+          end
         end
         return self
       end
@@ -999,12 +1003,16 @@ pub class Request
   # Parses an HTTP/1.1 wire format request
   def self.parse(raw : String) : Request | HttpError
     return HttpError.new("Empty request") if raw.empty?
-
     # 1. Parse Request Line
     line_end = raw.index("\n")
     return HttpError.new("Invalid request: no newline found") unless line_end
 
-    req_line = raw[0, line_end].chomp("\r")
+    # Strict CRLF check: bare LF is forbidden per RFC 9112 Section 2.2
+    if line_end == 0 || raw.to_unsafe[line_end - 1] != 13_u8
+      return HttpError.new("Invalid line ending: bare LF not permitted where CRLF required")
+    end
+
+    req_line = raw[0, line_end - 1]
     if req_line.bytesize > MAX_REQUEST_LINE_SIZE
       return HttpError.new("Request line exceeds maximum length (#{MAX_REQUEST_LINE_SIZE} bytes)")
     end
@@ -1027,12 +1035,17 @@ pub class Request
     has_cl = false
     first_cl_val = ""
     has_te = false
-
+    has_host = false
     while cur_pos < raw.bytesize
       next_nl = raw.index("\n", cur_pos)
       return HttpError.new("Incomplete request: missing header end") unless next_nl
 
-      line = raw[cur_pos, next_nl - cur_pos].chomp("\r")
+      # Strict CRLF check on each header line
+      if next_nl == cur_pos || raw.to_unsafe[next_nl - 1] != 13_u8
+        return HttpError.new("Invalid line ending: bare LF not permitted where CRLF required")
+      end
+
+      line = raw[cur_pos, (next_nl - 1) - cur_pos]
       cur_pos = next_nl + 1
 
       break if line.empty? # End of headers
@@ -1047,23 +1060,49 @@ pub class Request
         return HttpError.new("Header count exceeds maximum limit (#{MAX_HEADER_COUNT})")
       end
 
+      # RFC 9112 Section 5.2: Reject obsolete line folding (obs-fold)
+      if line.starts_with?(' ') || line.starts_with?('\t')
+        return HttpError.new("Request smuggling: obsolete line folding (obs-fold) rejected")
+      end
+
       colon = line.index(':')
       return HttpError.new("Invalid header line: missing colon") unless colon
 
-      h_name = line[0, colon].strip
+      # RFC 9112 Section 5.1: No whitespace between header name and colon
+      if colon > 0 && (line.to_unsafe[colon - 1] == 32_u8 || line.to_unsafe[colon - 1] == 9_u8)
+        return HttpError.new("Request smuggling: whitespace between header name and colon")
+      end
+
+      h_name = line[0, colon]
       h_val = line[colon + 1, line.bytesize - colon - 1].strip
+
+      err_n = Headers.validate_header_name(h_name)
+      return err_n if err_n
+      err_v = Headers.validate_header_value(h_val)
+      return err_v if err_v
 
       lower_name = h_name.downcase
       if lower_name == "content-length"
-        if has_cl && first_cl_val != h_val
-          return HttpError.new("Request smuggling: conflicting Content-Length values")
+        cl_bound_err = Std::Http.validate_content_length_digits_and_bounds(h_val)
+        return cl_bound_err if cl_bound_err
+
+        if has_cl
+          if first_cl_val != h_val
+            return HttpError.new("Request smuggling: conflicting Content-Length values")
+          else
+            return HttpError.new("Request smuggling: duplicate Content-Length headers")
+          end
         end
         has_cl = true
         first_cl_val = h_val
       elsif lower_name == "transfer-encoding"
         has_te = true
+      elsif lower_name == "host"
+        if has_host
+          return HttpError.new("Request smuggling: multiple Host headers rejected")
+        end
+        has_host = true
       end
-
       add_res = headers.add(h_name, h_val)
       case add_res
       in HttpError then return add_res
@@ -1074,6 +1113,22 @@ pub class Request
     # Request smuggling check: both Transfer-Encoding and Content-Length
     if has_cl && has_te
       return HttpError.new("Request smuggling: both Content-Length and Transfer-Encoding present")
+    end
+
+    # RFC 9112 Section 3.2: HTTP/1.1 requires exactly one Host header
+    if version == "HTTP/1.1"
+      unless has_host
+        return HttpError.new("Invalid HTTP/1.1 request: missing mandatory Host header")
+      end
+      host_val = headers["Host"]?
+      if host_val.nil? || host_val.empty?
+        return HttpError.new("Invalid HTTP/1.1 request: empty Host header")
+      end
+    end
+    # Validate Transfer-Encoding codings if present
+    if has_te
+      te_err = Std::Http.validate_transfer_encoding(headers)
+      return te_err if te_err
     end
 
     # 3. Parse Body
@@ -1218,7 +1273,12 @@ pub class Response
     line_end = raw.index("\n")
     return HttpError.new("Invalid response: no newline found") unless line_end
 
-    status_line = raw[0, line_end].chomp("\r")
+    # Strict CRLF check: bare LF is forbidden per RFC 9112 Section 2.2
+    if line_end == 0 || raw.to_unsafe[line_end - 1] != 13_u8
+      return HttpError.new("Invalid line ending: bare LF not permitted where CRLF required")
+    end
+
+    status_line = raw[0, line_end - 1]
     if status_line.bytesize > MAX_REQUEST_LINE_SIZE
       return HttpError.new("Status line exceeds maximum length (#{MAX_REQUEST_LINE_SIZE} bytes)")
     end
@@ -1234,7 +1294,7 @@ pub class Response
     return HttpError.new("Invalid HTTP status code out of range: " + parts[1]) if code_int < 100 || code_int > 999
 
     status = Status.new(code_int)
-    message = parts.size >= 3 ? parts[2].chomp("\r") : status.description
+    message = parts.size >= 3 ? parts[2] : status.description
 
     # 2. Parse Headers
     headers = Headers.new
@@ -1250,7 +1310,12 @@ pub class Response
       next_nl = raw.index("\n", cur_pos)
       return HttpError.new("Incomplete response: missing header end") unless next_nl
 
-      line = raw[cur_pos, next_nl - cur_pos].chomp("\r")
+      # Strict CRLF check on each header line
+      if next_nl == cur_pos || raw.to_unsafe[next_nl - 1] != 13_u8
+        return HttpError.new("Invalid line ending: bare LF not permitted where CRLF required")
+      end
+
+      line = raw[cur_pos, (next_nl - 1) - cur_pos]
       cur_pos = next_nl + 1
 
       break if line.empty? # End of headers
@@ -1265,16 +1330,38 @@ pub class Response
         return HttpError.new("Header count exceeds maximum limit (#{MAX_HEADER_COUNT})")
       end
 
+      # RFC 9112 Section 5.2: Reject obsolete line folding (obs-fold)
+      if line.starts_with?(' ') || line.starts_with?('\t')
+        return HttpError.new("Request smuggling: obsolete line folding (obs-fold) rejected")
+      end
+
       colon = line.index(':')
       return HttpError.new("Invalid header line: missing colon") unless colon
 
-      h_name = line[0, colon].strip
+      # RFC 9112 Section 5.1: No whitespace between header name and colon
+      if colon > 0 && (line.to_unsafe[colon - 1] == 32_u8 || line.to_unsafe[colon - 1] == 9_u8)
+        return HttpError.new("Request smuggling: whitespace between header name and colon")
+      end
+
+      h_name = line[0, colon]
       h_val = line[colon + 1, line.bytesize - colon - 1].strip
+
+      err_n = Headers.validate_header_name(h_name)
+      return err_n if err_n
+      err_v = Headers.validate_header_value(h_val)
+      return err_v if err_v
 
       lower_name = h_name.downcase
       if lower_name == "content-length"
-        if has_cl && first_cl_val != h_val
-          return HttpError.new("Request smuggling: conflicting Content-Length values")
+        cl_bound_err = Std::Http.validate_content_length_digits_and_bounds(h_val)
+        return cl_bound_err if cl_bound_err
+
+        if has_cl
+          if first_cl_val != h_val
+            return HttpError.new("Request smuggling: conflicting Content-Length values")
+          else
+            return HttpError.new("Request smuggling: duplicate Content-Length headers")
+          end
         end
         has_cl = true
         first_cl_val = h_val
@@ -1293,8 +1380,28 @@ pub class Response
       return HttpError.new("Request smuggling: both Content-Length and Transfer-Encoding present")
     end
 
+    # Validate Transfer-Encoding codings if present
+    if has_te
+      te_err = Std::Http.validate_transfer_encoding(headers)
+      return te_err if te_err
+    end
+
+    # RFC 9112 Section 6.3: Check persistence framing requirements
+    is_persistent = if version == "HTTP/1.1"
+                      !headers.includes_word?("Connection", "close")
+                    elsif version == "HTTP/1.0"
+                      headers.includes_word?("Connection", "keep-alive")
+                    else
+                      true
+                    end
+    body_forbidden = status.informational? || status.code == 204 || status.code == 304
+
+    if is_persistent && !body_forbidden && !has_cl && !has_te
+      return HttpError.new("Invalid persistent response: persistent connection requires Content-Length, chunked encoding, or Connection: close")
+    end
+
     # 3. Parse Body
-    body_res = Std::Http.parse_body(raw, cur_pos, headers)
+    body_res = Std::Http.parse_body(raw, cur_pos, headers, is_persistent_response: is_persistent, is_body_forbidden: body_forbidden)
     case body_res
     in HttpError then return body_res
     in Tuple(String, Headers?)
@@ -1308,14 +1415,97 @@ pub class Response
 end
 
 # ---------------------------------------------------------------------------
-# Body Parser: Handles Fixed Length, Chunked Encoding & Trailers
+# Framing & Body Helpers: Fixed Length, Chunked Encoding & Trailers
 # ---------------------------------------------------------------------------
 
 private def self.is_hex_digit(b : UInt8) : Bool
   (b >= 48_u8 && b <= 57_u8) || (b >= 97_u8 && b <= 102_u8) || (b >= 65_u8 && b <= 70_u8)
 end
 
-def self.parse_body(raw : String, start_pos : Int32, headers : Headers) : Tuple(String, Headers?) | HttpError
+def self.is_forbidden_trailer?(name : String) : Bool
+  lower = name.downcase
+  lower == "host" ||
+    lower == "content-length" ||
+    lower == "transfer-encoding" ||
+    lower == "trailer" ||
+    lower == "connection" ||
+    lower == "keep-alive" ||
+    lower == "upgrade" ||
+    lower == "te"
+end
+
+def self.validate_content_length_digits_and_bounds(val : String) : Nil | HttpError
+  if val.empty?
+    return HttpError.new("Invalid Content-Length: cannot be empty")
+  end
+  i = 0
+  while i < val.bytesize
+    b = val.to_unsafe[i]
+    if b < 48_u8 || b > 57_u8
+      return HttpError.new("Invalid Content-Length: must be non-negative integer digits")
+    end
+    i = i + 1
+  end
+
+  # Reject outside 32-bit body bound (2147483647 bytes) before conversion
+  if val.bytesize > 10
+    return HttpError.new("Content-Length exceeds 32-bit parser bound (2147483647 bytes)")
+  end
+  cl_num = val.to_i64
+  if cl_num > 2147483647_i64
+    return HttpError.new("Content-Length exceeds 32-bit parser bound (2147483647 bytes)")
+  end
+  nil
+end
+
+def self.validate_transfer_encoding(headers : Headers) : Nil | HttpError
+  te_vals = headers.get("Transfer-Encoding")
+  codings = [] of String
+  te_vals.each do |v|
+    v.split(',').each do |part|
+      trimmed = part.strip.downcase
+      codings << trimmed unless trimmed.empty?
+    end
+  end
+
+  if codings.empty?
+    return HttpError.new("Unsupported Transfer-Encoding: empty transfer encoding")
+  end
+
+  # RFC 9112 Section 6.1: chunked must be present and must be the final transfer coding
+  chunked_count = 0
+  codings.each do |c|
+    chunked_count = chunked_count + 1 if c == "chunked"
+  end
+
+  if chunked_count == 0
+    return HttpError.new("Unsupported Transfer-Encoding: chunked coding required")
+  end
+
+  if chunked_count > 1
+    return HttpError.new("Request smuggling: duplicate chunked transfer coding")
+  end
+
+  if codings[codings.size - 1] != "chunked"
+    return HttpError.new("Request smuggling: chunked must be the final transfer coding")
+  end
+
+  # Check intermediate codings
+  codings.each do |c|
+    if c != "chunked"
+      return HttpError.new("Unsupported Transfer-Encoding coding: " + c)
+    end
+  end
+  nil
+end
+
+def self.parse_body(raw : String, start_pos : Int32, headers : Headers,
+                    is_persistent_response : Bool = false,
+                    is_body_forbidden : Bool = false) : Tuple(String, Headers?) | HttpError
+  if is_body_forbidden
+    return {"", nil.as(Headers?)}
+  end
+
   if headers.includes_word?("Transfer-Encoding", "chunked")
     # Chunked body parser
     body_parts = [] of String
@@ -1326,7 +1516,12 @@ def self.parse_body(raw : String, start_pos : Int32, headers : Headers) : Tuple(
       nl = raw.index("\n", pos)
       return HttpError.new("Incomplete chunked body: missing final zero chunk") unless nl
 
-      size_line = raw[pos, nl - pos].chomp("\r").strip
+      # Strict CRLF check on chunk size line
+      if nl == pos || raw.to_unsafe[nl - 1] != 13_u8
+        return HttpError.new("Invalid line ending: bare LF not permitted where CRLF required")
+      end
+
+      size_line = raw[pos, (nl - 1) - pos].strip
       pos = nl + 1
 
       # Strip chunk extensions
@@ -1363,19 +1558,42 @@ def self.parse_body(raw : String, start_pos : Int32, headers : Headers) : Tuple(
           t_nl = raw.index("\n", pos)
           break unless t_nl
 
-          t_line = raw[pos, t_nl - pos].chomp("\r")
+          # Strict CRLF check on trailer lines
+          if t_nl == pos || raw.to_unsafe[t_nl - 1] != 13_u8
+            return HttpError.new("Invalid line ending: bare LF not permitted where CRLF required")
+          end
+
+          t_line = raw[pos, (t_nl - 1) - pos]
           pos = t_nl + 1
           break if t_line.empty?
 
+          # RFC 9112 Section 5.2: Reject obs-fold in trailers
+          if t_line.starts_with?(' ') || t_line.starts_with?('\t')
+            return HttpError.new("Request smuggling: obsolete line folding (obs-fold) rejected")
+          end
+
           t_colon = t_line.index(':')
-          if t_colon
-            t_k = t_line[0, t_colon].strip
-            t_v = t_line[t_colon + 1, t_line.bytesize - t_colon - 1].strip
-            t_add = trailers.add(t_k, t_v)
-            case t_add
-            in HttpError then return t_add
-            in Headers   then nil
-            end
+          if t_colon.nil?
+            return HttpError.new("Invalid trailer line: missing colon")
+          end
+
+          # RFC 9112 Section 5.1: No whitespace before colon
+          if t_colon > 0 && (t_line.to_unsafe[t_colon - 1] == 32_u8 || t_line.to_unsafe[t_colon - 1] == 9_u8)
+            return HttpError.new("Request smuggling: whitespace between header name and colon")
+          end
+
+          t_k = t_line[0, t_colon]
+          t_v = t_line[t_colon + 1, t_line.bytesize - t_colon - 1].strip
+
+          # RFC 9112 Section 7.1.2: Forbidden trailer headers
+          if Std::Http.is_forbidden_trailer?(t_k)
+            return HttpError.new("Forbidden trailer header rejected: " + t_k)
+          end
+
+          t_add = trailers.add(t_k, t_v)
+          case t_add
+          in HttpError then return t_add
+          in Headers   then nil
           end
         end
         return {body_parts.join(""), trailers}
@@ -1391,25 +1609,23 @@ def self.parse_body(raw : String, start_pos : Int32, headers : Headers) : Tuple(
       body_parts << chunk_data
       pos = pos + chunk_size.to_i32
 
-      # Expect CRLF after chunk data
-      if pos >= raw.bytesize
+      # Expect CRLF after chunk data (bare LF forbidden!)
+      if pos + 1 >= raw.bytesize
         return HttpError.new("Invalid chunked encoding: missing CRLF after chunk data")
       end
 
-      if raw.to_unsafe[pos] == 13_u8 && (pos + 1 < raw.bytesize) && raw.to_unsafe[pos + 1] == 10_u8
+      if raw.to_unsafe[pos] == 13_u8 && raw.to_unsafe[pos + 1] == 10_u8
         pos = pos + 2
-      elsif raw.to_unsafe[pos] == 10_u8
-        pos = pos + 1
       else
         return HttpError.new("Invalid chunked encoding: missing CRLF after chunk data")
       end
     end
   elsif headers.has_key?("Content-Length")
     cl_str = headers["Content-Length"].strip
-    cl = cl_str.to_i64?
-    return HttpError.new("Invalid Content-Length") unless cl
-    return HttpError.new("Negative Content-Length") if cl < 0
+    cl_err = Std::Http.validate_content_length_digits_and_bounds(cl_str)
+    return cl_err if cl_err
 
+    cl = cl_str.to_i64
     available = raw.bytesize - start_pos
     if available < cl
       return HttpError.new("Incomplete body: expected #{cl} bytes but got #{available}")
@@ -1418,7 +1634,9 @@ def self.parse_body(raw : String, start_pos : Int32, headers : Headers) : Tuple(
     body = raw[start_pos, cl.to_i32]
     return {body, nil.as(Headers?)}
   else
-    # No Content-Length and not chunked: rest of raw data
+    if is_persistent_response
+      return HttpError.new("Invalid persistent response: persistent connection requires Content-Length, chunked encoding, or Connection: close")
+    end
     body = raw[start_pos, raw.bytesize - start_pos]
     return {body, nil.as(Headers?)}
   end
