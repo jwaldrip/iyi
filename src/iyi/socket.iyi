@@ -15,18 +15,8 @@
 # Sockets are blocking. Event-loop integration (with III.4 group/Channel) would
 # require non-blocking fds registered with the runtime's kqueue (Darwin) or
 # epoll (Linux) poller, parking the calling fiber when EAGAIN is returned.
-#
-# Where it lives:
-# Outside the prelude, because a program that opens no socket should not
-# carry one. Nothing in `src/iyi/` uses this file - the prelude required it
-# and never called it - so every program paid 459 lines of it for the
-# programs that do. That is the same argument that put `text` and `time`
-# here, applied to the file that broke the library ceiling with them
-# (SPEC.md III.9).
 
-module std/socket
-
-pub struct IPv4Address
+struct IPv4Address
   getter b0 : UInt8
   getter b1 : UInt8
   getter b2 : UInt8
@@ -36,7 +26,7 @@ pub struct IPv4Address
   end
 end
 
-pub class IyiSocket
+class IyiSocket
   getter fd : Int32
 
   def initialize(@fd : Int32)

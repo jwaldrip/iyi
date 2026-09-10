@@ -82,16 +82,13 @@ echo
 echo "== the checks fail when the socket mechanism is broken"
 prove_fails() {
   local label="$1" dir="$2" phrase="$3" script="$4"
-  # The library the program imports, not the prelude: `std/socket` is a
-  # module now, so the patched copy is `std/` beside an untouched `iyi/`
-  # and `IYI_PATH` finds this one first.
-  mkdir -p "$WORK/$dir/std"
-  cp -R "$REPO/src/std/." "$WORK/$dir/std/"
-  awk "$script" "$REPO/src/std/socket.iyi" > "$WORK/$dir/std/socket.iyi"
+  mkdir -p "$WORK/$dir/iyi"
+  cp -R "$REPO/src/iyi/." "$WORK/$dir/iyi/"
+  awk "$script" "$REPO/src/iyi/socket.iyi" > "$WORK/$dir/iyi/socket.iyi"
   if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/socket_exercise.iyi" \
        >"$WORK/$dir/build.log" 2>&1; then
-    echo "  $label: the patched library did not build"
+    echo "  $label: the patched prelude did not build"
     sed -n '1,12p' "$WORK/$dir/build.log"
     status=1
     return

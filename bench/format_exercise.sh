@@ -72,11 +72,9 @@ echo "== proving the checks can fail when formatting is broken"
 
 prove_fails() {
   local label="$1" dir="$2" phrase="$3" sed_script="$4"
-  # The library the program imports, not the prelude: `std/format` is a
-  # module now, so the patched copy is `std/` and `IYI_PATH` finds it first.
-  mkdir -p "$WORK/$dir/std"
-  cp -R "$REPO/src/std/." "$WORK/$dir/std/"
-  sed -e "$sed_script" "$REPO/src/std/format.iyi" > "$WORK/$dir/std/format.iyi"
+  mkdir -p "$WORK/$dir/iyi"
+  cp -R "$REPO/src/iyi/." "$WORK/$dir/iyi/"
+  sed -e "$sed_script" "$REPO/src/iyi/format.iyi" > "$WORK/$dir/iyi/format.iyi"
   if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
        -o "$WORK/$dir/program" "$REPO/bench/format_exercise.iyi" \
        >"$WORK/$dir/build.log" 2>&1; then

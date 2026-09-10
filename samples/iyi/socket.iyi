@@ -7,9 +7,6 @@
 
 module samples/socket
 
-import std/socket
-using std/socket::{IyiSocket}
-
 # Server listens on an ephemeral port. The number the kernel picks is different
 # on every run, so it is used rather than printed: `bench/arena_exercise.sh`
 # runs every sample twice and asks for identical output, and a sample that
