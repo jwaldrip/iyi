@@ -1376,7 +1376,16 @@ module Iyi
       Rx.scan(text, BIND_TYPE_NAME).all? do |match|
         part = match[0].not_nil!
         next true if part == "class"
-        next true unless part == root || part.starts_with?("#{root}::")
+        # The module itself is always there: it is the thing being imported.
+        # A parameter's text holds its *default* as well as its type, and
+        # kemal writes `limit : Int32 = Kemal.config.max_request_body_size`;
+        # asked whether `Kemal` is one of the carried types the answer was no
+        # — the root is not a declaration inside itself — and the method was
+        # pruned. It only ever needed to cross when the body calling it
+        # travelled, which is how a private helper came to be missing:
+        # `undefined method 'read_body_with_limit' for Kemal::ParamParser`.
+        next true if part == root
+        next true unless part.starts_with?("#{root}::")
         next true if library_name?(part)
         known.includes?(part)
       end
