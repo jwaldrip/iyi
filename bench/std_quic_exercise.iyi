@@ -20,14 +20,7 @@ import std/quic
 
 using std/slice::{Slice, Bytes}
 using std/crypto::{constant_time_compare, HKDF, AES128GCM}
-using std/quic::{
-  QuicVersion, PacketType, FrameType, TransportError,
-  KeyBundle, QuicCrypto,
-  PacketNumber, LongHeader, ShortHeader, VersionNegotiationPacket,
-  AckRange, FrameCodec, RttEstimator, SentPacket, NewRenoCongestionController,
-  StreamId, StreamStatus, QuicStream, StreamManager,
-  ConnectionRole, ConnectionState, QuicConnection
-}
+using std/quic::{QuicVersion, PacketType, FrameType, TransportError, KeyBundle, QuicCrypto, PacketNumber, LongHeader, ShortHeader, VersionNegotiationPacket, AckRange, FrameCodec, RttEstimator, SentPacket, NewRenoCongestionController, StreamId, StreamStatus, QuicStream, StreamManager, ConnectionRole, ConnectionState, QuicConnection}
 
 def hex_char_val(c : Char) : UInt8
   if c >= '0' && c <= '9'
@@ -282,8 +275,8 @@ puts "  loss-and-congestion: RTT estimator, PTO backoff, NewReno cwnd slow start
 
 puts "== Section 9: Stream State Machine and Flow Control"
 sid_bidi = StreamId.new(0_u64) # Client Bidi
-sid_uni  = StreamId.new(2_u64) # Client Uni
-sid_srv  = StreamId.new(1_u64) # Server Bidi
+sid_uni = StreamId.new(2_u64)  # Client Uni
+sid_srv = StreamId.new(1_u64)  # Server Bidi
 raise "client bidi" unless sid_bidi.client_initiated? && sid_bidi.bidirectional?
 raise "client uni" unless sid_uni.client_initiated? && sid_uni.unidirectional?
 raise "server bidi" unless sid_srv.server_initiated? && sid_srv.bidirectional?

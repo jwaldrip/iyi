@@ -21,11 +21,7 @@ import std/http2
 using std/slice::{Slice, Bytes}
 using std/hpack::{HeaderField, IndexingMode}
 using std/http::{Headers, Request, Response, Status}
-using std/http2::{
-  CLIENT_PREFACE, CLIENT_PREFACE_BYTES, DEFAULT_INITIAL_WINDOW_SIZE, MAX_WINDOW_SIZE,
-  ErrorCode, FrameType, FrameFlag, SettingId, StreamState, FrameHeader, Http2Error,
-  Settings, Stream, Connection, Role, Client, Server
-}
+using std/http2::{CLIENT_PREFACE, CLIENT_PREFACE_BYTES, DEFAULT_INITIAL_WINDOW_SIZE, MAX_WINDOW_SIZE, ErrorCode, FrameType, FrameFlag, SettingId, StreamState, FrameHeader, Http2Error, Settings, Stream, Connection, Role, Client, Server}
 
 def assert_true(cond : Bool, label : String) : Nil
   if cond
@@ -567,7 +563,7 @@ def test_protocol_error_suite : Nil
 
   # Helper: build a fresh server and complete preface handshake
   # Then feed a raw malformed frame and verify rejection
-  
+
   # Shape 1: DATA frame on stream 0 (h2spec 6.1 / RFC 9113 6.1)
   server = Connection.new(Role::Server)
   server.start_connection

@@ -54,15 +54,15 @@ using std/http::{Headers, Request, Response, Status, HttpError}
 # Constants & Protocol Limits
 # ---------------------------------------------------------------------------
 
-pub CLIENT_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+pub CLIENT_PREFACE       = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 pub CLIENT_PREFACE_BYTES = Bytes.new(24) { |i| CLIENT_PREFACE.to_unsafe[i] }
 
-pub DEFAULT_INITIAL_WINDOW_SIZE = 65535_i64
-pub DEFAULT_MAX_FRAME_SIZE      = 16384_i32
-pub DEFAULT_HEADER_TABLE_SIZE   = 4096_i32
+pub DEFAULT_INITIAL_WINDOW_SIZE =      65535_i64
+pub DEFAULT_MAX_FRAME_SIZE      =      16384_i32
+pub DEFAULT_HEADER_TABLE_SIZE   =       4096_i32
 pub MAX_WINDOW_SIZE             = 2147483647_i64 # 2^31 - 1
-pub MAX_ALLOWED_FRAME_SIZE      = 16777215_i32   # 2^24 - 1
-pub MIN_ALLOWED_MAX_FRAME_SIZE  = 16384_i32
+pub MAX_ALLOWED_FRAME_SIZE      =   16777215_i32 # 2^24 - 1
+pub MIN_ALLOWED_MAX_FRAME_SIZE  =      16384_i32
 
 # ---------------------------------------------------------------------------
 # ErrorCode: RFC 9113 Section 7 HTTP/2 Error Codes
@@ -106,7 +106,7 @@ pub struct ErrorCode
     when 0x0b_i64 then "ENHANCE_YOUR_CALM"
     when 0x0c_i64 then "INADEQUATE_SECURITY"
     when 0x0d_i64 then "HTTP_1_1_REQUIRED"
-    else "UNKNOWN_ERROR(#{@value})"
+    else               "UNKNOWN_ERROR(#{@value})"
     end
   end
 
@@ -154,17 +154,17 @@ pub struct FrameType
     when 0x07_u8 then "GOAWAY"
     when 0x08_u8 then "WINDOW_UPDATE"
     when 0x09_u8 then "CONTINUATION"
-    else "UNKNOWN_FRAME(#{type})"
+    else              "UNKNOWN_FRAME(#{type})"
     end
   end
 end
 
 pub struct FrameFlag
-  END_STREAM   = 0x01_u8 # DATA, HEADERS
-  ACK          = 0x01_u8 # SETTINGS, PING
-  END_HEADERS  = 0x04_u8 # HEADERS, PUSH_PROMISE, CONTINUATION
-  PADDED       = 0x08_u8 # DATA, HEADERS, PUSH_PROMISE
-  PRIORITY     = 0x20_u8 # HEADERS
+  END_STREAM  = 0x01_u8 # DATA, HEADERS
+  ACK         = 0x01_u8 # SETTINGS, PING
+  END_HEADERS = 0x04_u8 # HEADERS, PUSH_PROMISE, CONTINUATION
+  PADDED      = 0x08_u8 # DATA, HEADERS, PUSH_PROMISE
+  PRIORITY    = 0x20_u8 # HEADERS
 end
 
 # ---------------------------------------------------------------------------
@@ -189,7 +189,7 @@ pub struct SettingId
     when 0x05_i32 then "SETTINGS_MAX_FRAME_SIZE"
     when 0x06_i32 then "SETTINGS_MAX_HEADER_LIST_SIZE"
     when 0x08_i32 then "SETTINGS_ENABLE_CONNECT_PROTOCOL"
-    else "UNKNOWN_SETTING(#{id})"
+    else               "UNKNOWN_SETTING(#{id})"
     end
   end
 end
@@ -217,7 +217,7 @@ pub struct StreamState
     when 4 then "half_closed_local"
     when 5 then "half_closed_remote"
     when 6 then "closed"
-    else "unknown"
+    else        "unknown"
     end
   end
 
@@ -344,7 +344,7 @@ pub class Settings
     @initial_window_size : Int64 = DEFAULT_INITIAL_WINDOW_SIZE,
     @max_frame_size : Int32 = DEFAULT_MAX_FRAME_SIZE,
     @max_header_list_size : Int32 = 16384,
-    @enable_connect_protocol : Int32 = 0
+    @enable_connect_protocol : Int32 = 0,
   )
   end
 
@@ -679,7 +679,7 @@ pub class Connection
       when 0 then ((val >> 24) & 0xFF).to_u8
       when 1 then ((val >> 16) & 0xFF).to_u8
       when 2 then ((val >> 8) & 0xFF).to_u8
-      else (val & 0xFF).to_u8
+      else        (val & 0xFF).to_u8
       end
     end
     send_frame(FrameType::RST_STREAM, 0_u8, stream_id, payload)
@@ -695,7 +695,7 @@ pub class Connection
         when 0 then ((id >> 24) & 0xFF).to_u8
         when 1 then ((id >> 16) & 0xFF).to_u8
         when 2 then ((id >> 8) & 0xFF).to_u8
-        else (id & 0xFF).to_u8
+        else        (id & 0xFF).to_u8
         end
       elsif i < 8
         val = error_code.to_i64
@@ -736,7 +736,7 @@ pub class Connection
       when 0 then ((inc >> 24) & 0xFF).to_u8
       when 1 then ((inc >> 16) & 0xFF).to_u8
       when 2 then ((inc >> 8) & 0xFF).to_u8
-      else (inc & 0xFF).to_u8
+      else        (inc & 0xFF).to_u8
       end
     end
     send_frame(FrameType::WINDOW_UPDATE, 0_u8, stream_id, payload)
@@ -835,7 +835,7 @@ pub class Connection
         when 0 then ((d >> 24) & 0xFF).to_u8
         when 1 then ((d >> 16) & 0xFF).to_u8
         when 2 then ((d >> 8) & 0xFF).to_u8
-        else (d & 0xFF).to_u8
+        else        (d & 0xFF).to_u8
         end
       else
         w = (weight < 1 ? 1 : (weight > 256 ? 256 : weight)) - 1

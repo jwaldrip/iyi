@@ -17,14 +17,7 @@ using std/digest::{SHA1}
 using std/crypto::{random_bytes, constant_time_compare}
 using std/http::{Headers, Request, Response, Status, HttpError}
 using std/compress::{Deflate, Inflate}
-using std/websocket::{
-  Base64, Handshake, Utf8Validator, Frame, Message, MemoryTransport, Session,
-  valid_wire_close_code?, WebSocketError,
-  OP_CONTINUATION, OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG,
-  CLOSE_NORMAL, CLOSE_GOING_AWAY, CLOSE_PROTOCOL_ERROR, CLOSE_UNSUPPORTED_DATA,
-  CLOSE_NO_STATUS_RCVD, CLOSE_ABNORMAL, CLOSE_INVALID_PAYLOAD, CLOSE_POLICY_VIOLATION,
-  CLOSE_MESSAGE_TOO_BIG, CLOSE_MANDATORY_EXT, CLOSE_INTERNAL_ERROR
-}
+using std/websocket::{Base64, Handshake, Utf8Validator, Frame, Message, MemoryTransport, Session, valid_wire_close_code?, WebSocketError, OP_CONTINUATION, OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG, CLOSE_NORMAL, CLOSE_GOING_AWAY, CLOSE_PROTOCOL_ERROR, CLOSE_UNSUPPORTED_DATA, CLOSE_NO_STATUS_RCVD, CLOSE_ABNORMAL, CLOSE_INVALID_PAYLOAD, CLOSE_POLICY_VIOLATION, CLOSE_MESSAGE_TOO_BIG, CLOSE_MANDATORY_EXT, CLOSE_INTERNAL_ERROR}
 
 def assert_true(cond : Bool, msg : String) : Nil
   unless cond
@@ -192,7 +185,7 @@ def test_client_server_communication : Nil
   case s_frag
   in Message
     assert_true(s_frag.text? && s_frag.text == "This is a fragmented text message sent in 5-byte chunks",
-                "server reassembled fragmented text")
+      "server reassembled fragmented text")
   in WebSocketError, Nil
     raise "server failed to receive fragmented text"
   end
@@ -220,7 +213,7 @@ def test_client_server_communication : Nil
   case m_b16
   in Message
     assert_true(m_b16.binary? && m_b16.payload.size == 1024 && m_b16.payload[500] == (500 & 255).to_u8,
-                "binary 16-bit payload")
+      "binary 16-bit payload")
   in WebSocketError, Nil
     raise "server failed to receive binary 16-bit"
   end
@@ -235,7 +228,7 @@ def test_client_server_communication : Nil
   in Message
     assert_true(m_b64.binary? && m_b64.payload.size == 70000 &&
                 m_b64.payload[0] == 42_u8 && m_b64.payload[69999] == 99_u8,
-                "binary 64-bit payload")
+      "binary 64-bit payload")
   in WebSocketError, Nil
     raise "client failed to receive binary 64-bit"
   end
@@ -359,7 +352,7 @@ def test_permessage_deflate : Nil
   case c_bin
   in Message
     assert_true(c_bin.binary? && c_bin.payload.size == 500 && c_bin.payload[499] == (499 % 10).to_u8,
-                "permessage-deflate binary roundtrip match")
+      "permessage-deflate binary roundtrip match")
   in WebSocketError, Nil
     raise "client failed to receive compressed binary"
   end
@@ -562,7 +555,7 @@ def test_live_socket : Nil
   req = Handshake.build_client_request("/", "127.0.0.1:#{port}", key)
   ser_req = req.serialize
   case ser_req
-  in String then client_sock.write(ser_req)
+  in String    then client_sock.write(ser_req)
   in HttpError then raise "failed to serialize client request: #{ser_req.message}"
   end
 
@@ -576,7 +569,7 @@ def test_live_socket : Nil
       resp = Handshake.build_server_response(v_key)
       ser_resp = resp.serialize
       case ser_resp
-      in String then accepted_sock.write(ser_resp)
+      in String    then accepted_sock.write(ser_resp)
       in HttpError then raise "failed to serialize server response"
       end
     in WebSocketError

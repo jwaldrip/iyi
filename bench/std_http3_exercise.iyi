@@ -20,11 +20,7 @@ using std/slice::{Slice, Bytes}
 using std/capsule::{VarInt}
 using std/qpack::{FieldLine, Encoder, Decoder}
 using std/quic::{ConnectionRole}
-using std/http3::{
-  H3StreamType, H3FrameType, H3Setting, H3Error,
-  SettingEntry, SettingsDictionary, H3FrameCodec,
-  H3Message, H3Request, H3Response, H3Session
-}
+using std/http3::{H3StreamType, H3FrameType, H3Setting, H3Error, SettingEntry, SettingsDictionary, H3FrameCodec, H3Message, H3Request, H3Response, H3Session}
 
 def bytes_equal(a : Bytes, b : Bytes) : Bool
   return false unless a.size == b.size

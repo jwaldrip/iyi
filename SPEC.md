@@ -310,7 +310,7 @@ the rule allows, a program in this repository needs it, and together they are
 still more than the rule intended to permit.
 
 **The standard library is deliberately outside that count, and this is the
-answer this section left open.** `src/std/` is **29,520 lines across twenty-six
+answer this section left open.** `src/std/` is **37,592 lines across forty
 modules**. It is opt-in via `import std/...`, it lives outside `src/iyi/` where
 `bench/doc_numbers.py` measures the ceiling, and a program that imports none of
 it pays for none of it. So the prelude rule keeps its meaning, "a method enters
@@ -340,6 +340,37 @@ over `udp.iyi`, which did not exist either. And `hpack.iyi`, `qpack.iyi` and
 which Crystal does not have at all, so they are written from the RFCs and
 checked against the worked examples in RFC 7541 appendix C, RFC 9204 appendix
 B and RFC 9000 appendix A rather than against themselves.
+
+**The protocol layer is where "Crystal does not have this" stops being a
+footnote.** TLS 1.3, HTTP/1.1, WebSocket, HTTP/2, and QUIC with HTTP/3 are
+written on top of the modules above, and three of the five have no Crystal
+equivalent to port from at all. Each is gated against the RFC's own worked
+bytes rather than against itself, which is the only test that catches an
+implementation that round-trips happily while disagreeing with the world:
+
+| module | gated on | what it answers |
+|---|---|---|
+| `tls.iyi` | RFC 8448's worked traces, byte for byte | a live TLS 1.3 connection to `example.com`, cipher `0x1301` |
+| `http1.iyi` | RFC 9112, and twelve smuggling framings refused | a client and a server that round-trip against each other |
+| `websocket.iyi` | RFC 6455 section 1.3's handshake vector | UTF-8 validated incrementally across fragment boundaries |
+| `http2.iyi` | RFC 9113, sixteen h2spec shapes | three concurrent streams, and 100 KB through a 65,535-byte window |
+| `quic.iyi`, `http3.iyi` | RFC 9001 appendix A, byte for byte | the 1,200-byte client Initial, the server Initial, the Retry tag |
+
+The QUIC result is the one worth stating precisely, because it was produced
+twice. Its author first wrote its own AES rather than reach across a module
+boundary, and after being given `Std::Crypto::HeaderProtection` instead, every
+appendix A mask still matched. Two independently written AES paths agreeing on
+the same bytes is a stronger statement than either one passing alone.
+
+**TLS carries a limitation section rather than an assurance.** It verifies
+X25519, Ed25519, ECDSA P-256, RSA-PSS and PKCS1v15, parses X.509 and matches
+hostnames per RFC 6125, and it fails closed on a bad Finished MAC, an
+unverifiable signature, an expired certificate and a hostname mismatch, each
+proven. It has also had no independent cryptographic review, its BigInt
+modular arithmetic is not guaranteed constant-time on every microarchitecture,
+and it is client-only. Hand-rolled TLS fails silently, so the honest posture is
+written down here beside the capability rather than left to be inferred from
+the fact that it works.
 
 **Each of those gates carries a failure proof, and two of the proofs were
 found to be proving nothing.** The pattern throughout this repository is to
@@ -865,7 +896,7 @@ Checking it moved two things and left the shape alone.
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
 | Compiler | 24,984 lines, **written in Crystal** | 108,060 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 29,520 in std |
+| Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 37,592 in std |
 | Specs | 21,146 lines | 9,566 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |

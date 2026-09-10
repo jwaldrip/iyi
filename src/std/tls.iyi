@@ -71,6 +71,7 @@ pub class VerificationError < Error
     @message = message
   end
 end
+
 # -----------------------------------------------------------------------------
 # ASN.1 DER Parser
 # -----------------------------------------------------------------------------
@@ -176,29 +177,29 @@ pub def self.parse_time_bytes(bytes : Bytes) : Int64
     if bytes[0] < '5'.ord.to_u8 && bytes.size == 13 # UTCTime 20YY
       year = 2000 + (bytes[0].to_i32 - 48) * 10 + (bytes[1].to_i32 - 48)
       idx = 2
-      month = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48); idx = idx + 2
-      day = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48); idx = idx + 2
-      hour = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48); idx = idx + 2
-      min = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48); idx = idx + 2
-      sec = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48)
+      month = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48); idx = idx + 2
+      day = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48); idx = idx + 2
+      hour = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48); idx = idx + 2
+      min = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48); idx = idx + 2
+      sec = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48)
       return Time.utc(year, month, day, hour, min, sec).seconds
     elsif bytes.size == 13 # UTCTime 19YY
       year = 1900 + (bytes[0].to_i32 - 48) * 10 + (bytes[1].to_i32 - 48)
       idx = 2
-      month = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48); idx = idx + 2
-      day = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48); idx = idx + 2
-      hour = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48); idx = idx + 2
-      min = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48); idx = idx + 2
-      sec = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48)
+      month = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48); idx = idx + 2
+      day = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48); idx = idx + 2
+      hour = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48); idx = idx + 2
+      min = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48); idx = idx + 2
+      sec = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48)
       return Time.utc(year, month, day, hour, min, sec).seconds
     elsif bytes.size >= 15 # GeneralizedTime YYYY
       year = (bytes[0].to_i32 - 48) * 1000 + (bytes[1].to_i32 - 48) * 100 + (bytes[2].to_i32 - 48) * 10 + (bytes[3].to_i32 - 48)
       idx = 4
-      month = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48); idx = idx + 2
-      day = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48); idx = idx + 2
-      hour = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48); idx = idx + 2
-      min = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48); idx = idx + 2
-      sec = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx+1].to_i32 - 48)
+      month = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48); idx = idx + 2
+      day = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48); idx = idx + 2
+      hour = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48); idx = idx + 2
+      min = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48); idx = idx + 2
+      sec = (bytes[idx].to_i32 - 48) * 10 + (bytes[idx + 1].to_i32 - 48)
       return Time.utc(year, month, day, hour, min, sec).seconds
     end
   end
@@ -272,7 +273,7 @@ end
 # -----------------------------------------------------------------------------
 
 module X25519
-  P = BigInt.from_hex("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed")
+  P   = BigInt.from_hex("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed")
   A24 = BigInt.new(121665_i64)
 
   def self.mod_p(x : BigInt) : BigInt
@@ -307,12 +308,16 @@ module X25519
 
   def self.scalar_mult(k_bytes : Bytes, u_bytes : Bytes) : Bytes
     k = Bytes.new(32)
-    i = 0; while i < 32; k[i] = k_bytes[i]; i = i + 1; end
+    i = 0; while i < 32
+      k[i] = k_bytes[i]; i = i + 1
+    end
     k[0] = k[0] & 248_u8
     k[31] = (k[31] & 127_u8) | 64_u8
 
     u_clamped = Bytes.new(32)
-    i = 0; while i < 32; u_clamped[i] = u_bytes[i]; i = i + 1; end
+    i = 0; while i < 32
+      u_clamped[i] = u_bytes[i]; i = i + 1
+    end
     u_clamped[31] = u_clamped[31] & 127_u8
 
     x1 = bytes_to_bigint_le(u_clamped)
@@ -388,7 +393,7 @@ end
 # -----------------------------------------------------------------------------
 
 module Ed25519
-  P = BigInt.from_hex("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed")
+  P       = BigInt.from_hex("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed")
   Q_ORDER = BigInt.from_hex("1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed")
 
   struct Point
@@ -410,7 +415,7 @@ module Ed25519
     x.pow_mod(P - BigInt.new(2_i64), P)
   end
 
-  D_CONST = mod_p((BigInt.zero - BigInt.new(121665_i64)) * modp_inv(BigInt.new(121666_i64)))
+  D_CONST      = mod_p((BigInt.zero - BigInt.new(121665_i64)) * modp_inv(BigInt.new(121666_i64)))
   MODP_SQRT_M1 = BigInt.new(2_i64).pow_mod((P - BigInt.one) // BigInt.new(4_i64), P)
 
   def self.recover_x(y : BigInt, sign : Int32) : BigInt?
@@ -484,8 +489,8 @@ module Ed25519
     diff1.zero? && diff2.zero?
   end
 
-  GY = mod_p(BigInt.new(4_i64) * modp_inv(BigInt.new(5_i64)))
-  GX = recover_x(GY, 0) || BigInt.zero
+  GY      = mod_p(BigInt.new(4_i64) * modp_inv(BigInt.new(5_i64)))
+  GX      = recover_x(GY, 0) || BigInt.zero
   G_POINT = Point.new(GX, GY, BigInt.one, mod_p(GX * GY))
 
   def self.verify(pub_key : Bytes, msg : Bytes, sig : Bytes) : Bool
@@ -502,9 +507,15 @@ module Ed25519
     return false if s_val >= Q_ORDER
 
     h_input = Bytes.new(32 + 32 + msg.size)
-    i = 0; while i < 32; h_input[i] = sig_r[i]; i = i + 1; end
-    i = 0; while i < 32; h_input[32 + i] = pub_key[i]; i = i + 1; end
-    i = 0; while i < msg.size; h_input[64 + i] = msg[i]; i = i + 1; end
+    i = 0; while i < 32
+      h_input[i] = sig_r[i]; i = i + 1
+    end
+    i = 0; while i < 32
+      h_input[32 + i] = pub_key[i]; i = i + 1
+    end
+    i = 0; while i < msg.size
+      h_input[64 + i] = msg[i]; i = i + 1
+    end
 
     digest = SHA512.digest(h_input)
     h_val = X25519.bytes_to_bigint_le(digest) % Q_ORDER
@@ -522,8 +533,8 @@ end
 # -----------------------------------------------------------------------------
 
 module P256
-  P = BigInt.from_hex("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff")
-  N = BigInt.from_hex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551")
+  P  = BigInt.from_hex("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff")
+  N  = BigInt.from_hex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551")
   GX = BigInt.from_hex("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296")
   GY = BigInt.from_hex("4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5")
 
@@ -541,7 +552,7 @@ module P256
   end
 
   INFINITY = JPoint.new(BigInt.zero, BigInt.one, BigInt.zero)
-  G_POINT = JPoint.new(GX, GY, BigInt.one)
+  G_POINT  = JPoint.new(GX, GY, BigInt.one)
 
   def self.mod_p(x : BigInt) : BigInt
     r = x % P
@@ -704,7 +715,9 @@ module RSA
       h = SHA256.new.update(seed).update(c_bytes).final
       chunk = length - offset
       chunk = 32 if chunk > 32
-      i = 0; while i < chunk; out[offset + i] = h[i]; i = i + 1; end
+      i = 0; while i < chunk
+        out[offset + i] = h[i]; i = i + 1
+      end
       offset = offset + chunk
       c = c + 1
     end
@@ -725,7 +738,9 @@ module RSA
       h = SHA384.new.update(seed).update(c_bytes).final
       chunk = length - offset
       chunk = 48 if chunk > 48
-      i = 0; while i < chunk; out[offset + i] = h[i]; i = i + 1; end
+      i = 0; while i < chunk
+        out[offset + i] = h[i]; i = i + 1
+      end
       offset = offset + chunk
       c = c + 1
     end
@@ -776,8 +791,12 @@ module RSA
     # M' = 8 zeros || m_hash || salt
     m_prime = Bytes.new(8 + m_hash.size + salt.size)
     idx = 8
-    i = 0; while i < m_hash.size; m_prime[idx] = m_hash[i]; idx = idx + 1; i = i + 1; end
-    i = 0; while i < salt.size; m_prime[idx] = salt[i]; idx = idx + 1; i = i + 1; end
+    i = 0; while i < m_hash.size
+      m_prime[idx] = m_hash[i]; idx = idx + 1; i = i + 1
+    end
+    i = 0; while i < salt.size
+      m_prime[idx] = salt[i]; idx = idx + 1; i = i + 1
+    end
 
     h_prime = hash_algo == :sha384 ? SHA384.digest(m_prime) : SHA256.digest(m_prime)
     Std::Crypto.constant_time_compare(h, h_prime)
@@ -799,20 +818,24 @@ module RSA
     prefix_sha256 = [
       0x30_u8, 0x31_u8, 0x30_u8, 0x0d_u8, 0x06_u8, 0x09_u8, 0x60_u8, 0x86_u8,
       0x48_u8, 0x01_u8, 0x65_u8, 0x03_u8, 0x04_u8, 0x02_u8, 0x01_u8, 0x05_u8,
-      0x00_u8, 0x04_u8, 0x20_u8
+      0x00_u8, 0x04_u8, 0x20_u8,
     ]
     prefix_sha384 = [
       0x30_u8, 0x41_u8, 0x30_u8, 0x0d_u8, 0x06_u8, 0x09_u8, 0x60_u8, 0x86_u8,
       0x48_u8, 0x01_u8, 0x65_u8, 0x03_u8, 0x04_u8, 0x02_u8, 0x02_u8, 0x05_u8,
-      0x00_u8, 0x04_u8, 0x30_u8
+      0x00_u8, 0x04_u8, 0x30_u8,
     ]
     prefix = hash_algo == :sha384 ? prefix_sha384 : prefix_sha256
     di_len = prefix.size + m_hash.size
     return false if em_len < 3 + 8 + di_len
 
     expected_di = Bytes.new(di_len)
-    i = 0; while i < prefix.size; expected_di[i] = prefix[i]; i = i + 1; end
-    i = 0; while i < m_hash.size; expected_di[prefix.size + i] = m_hash[i]; i = i + 1; end
+    i = 0; while i < prefix.size
+      expected_di[i] = prefix[i]; i = i + 1
+    end
+    i = 0; while i < m_hash.size
+      expected_di[prefix.size + i] = m_hash[i]; i = i + 1
+    end
 
     di_offset = em_len - di_len
     return false if em[di_offset - 1] != 0x00_u8
@@ -870,7 +893,7 @@ pub class Certificate
     @san_dns_names : Array(String),
     @common_name : String?,
     @sig_algo : Symbol,
-    @sig_bytes : Bytes
+    @sig_bytes : Bytes,
   )
   end
 
@@ -1199,7 +1222,7 @@ pub class CertificateStore
       "/etc/ssl/cert.pem",
       "/etc/ssl/certs/ca-certificates.crt",
       "/etc/pki/tls/certs/ca-bundle.crt",
-      "/etc/ssl/ca-bundle.pem"
+      "/etc/ssl/ca-bundle.pem",
     ]
     i = 0
     while i < paths.size
@@ -1296,7 +1319,9 @@ end
 
 pub def self.make_nonce(iv : Bytes, seq : UInt64) : Bytes
   nonce = Bytes.new(12)
-  i = 0; while i < 12; nonce[i] = iv[i]; i = i + 1; end
+  i = 0; while i < 12
+    nonce[i] = iv[i]; i = i + 1
+  end
   s = seq
   i = 11
   while i >= 4
@@ -1319,7 +1344,9 @@ pub class RecordCipher
 
   def encrypt(content_type : UInt8, payload : Bytes) : Bytes
     pt = Bytes.new(payload.size + 1)
-    i = 0; while i < payload.size; pt[i] = payload[i]; i = i + 1; end
+    i = 0; while i < payload.size
+      pt[i] = payload[i]; i = i + 1
+    end
     pt[payload.size] = content_type
 
     nonce = Std::Tls.make_nonce(@iv, @seq)
@@ -1340,9 +1367,15 @@ pub class RecordCipher
               end
 
     out = Bytes.new(5 + ct.size + 16)
-    i = 0; while i < 5; out[i] = ad[i]; i = i + 1; end
-    i = 0; while i < ct.size; out[5 + i] = ct[i]; i = i + 1; end
-    i = 0; while i < 16; out[5 + ct.size + i] = tag[i]; i = i + 1; end
+    i = 0; while i < 5
+      out[i] = ad[i]; i = i + 1
+    end
+    i = 0; while i < ct.size
+      out[5 + i] = ct[i]; i = i + 1
+    end
+    i = 0; while i < 16
+      out[5 + ct.size + i] = tag[i]; i = i + 1
+    end
     out
   end
 
@@ -1400,7 +1433,7 @@ pub class Client
     @peer_certificate : Certificate?,
     @certificate_chain : Array(Certificate),
     @write_cipher : RecordCipher,
-    @read_cipher : RecordCipher
+    @read_cipher : RecordCipher,
   )
     @closed = false
   end
@@ -1411,7 +1444,7 @@ pub class Client
     alpn : Array(String) = [] of String,
     verify_peer : Bool = true,
     ca_store : CertificateStore? = nil,
-    current_time : Int64? = nil
+    current_time : Int64? = nil,
   ) : Client
     ips = Std::Dns.resolve_a(host)
     raise "could not resolve hostname #{host}" if ips.empty?
@@ -1425,7 +1458,7 @@ pub class Client
     alpn : Array(String) = [] of String,
     verify_peer : Bool = true,
     ca_store : CertificateStore? = nil,
-    current_time : Int64? = nil
+    current_time : Int64? = nil,
   ) : Client
     client_priv, client_pub = X25519.generate_keypair
     client_random = Std::Crypto.random_bytes(32)
@@ -1441,7 +1474,9 @@ pub class Client
     ext_sni[4] = (((ext_sni_len - 2) >> 8) & 0xff).to_u8; ext_sni[5] = ((ext_sni_len - 2) & 0xff).to_u8
     ext_sni[6] = 0x00_u8
     ext_sni[7] = ((sni_len >> 8) & 0xff).to_u8; ext_sni[8] = (sni_len & 0xff).to_u8
-    i = 0; while i < sni_len; ext_sni[9 + i] = hostname[i].ord.to_u8; i = i + 1; end
+    i = 0; while i < sni_len
+      ext_sni[9 + i] = hostname[i].ord.to_u8; i = i + 1
+    end
 
     # supported_groups (x25519 0x001d)
     ext_groups = Bytes.new(8)
@@ -1455,8 +1490,8 @@ pub class Client
     ext_sig_algos[0] = 0x00_u8; ext_sig_algos[1] = 0x0d_u8
     ext_sig_algos[2] = 0x00_u8; ext_sig_algos[3] = 0x0a_u8
     ext_sig_algos[4] = 0x00_u8; ext_sig_algos[5] = 0x08_u8
-    ext_sig_algos[6] = 0x04_u8; ext_sig_algos[7] = 0x03_u8 # ecdsa_secp256r1_sha256
-    ext_sig_algos[8] = 0x08_u8; ext_sig_algos[9] = 0x04_u8 # rsa_pss_rsae_sha256
+    ext_sig_algos[6] = 0x04_u8; ext_sig_algos[7] = 0x03_u8   # ecdsa_secp256r1_sha256
+    ext_sig_algos[8] = 0x08_u8; ext_sig_algos[9] = 0x04_u8   # rsa_pss_rsae_sha256
     ext_sig_algos[10] = 0x04_u8; ext_sig_algos[11] = 0x01_u8 # rsa_pkcs1_sha256
     ext_sig_algos[12] = 0x08_u8; ext_sig_algos[13] = 0x07_u8 # ed25519
 
@@ -1474,13 +1509,17 @@ pub class Client
     ext_key_share[4] = 0x00_u8; ext_key_share[5] = 36_u8
     ext_key_share[6] = 0x00_u8; ext_key_share[7] = 0x1d_u8
     ext_key_share[8] = 0x00_u8; ext_key_share[9] = 0x20_u8
-    i = 0; while i < 32; ext_key_share[10 + i] = client_pub[i]; i = i + 1; end
+    i = 0; while i < 32
+      ext_key_share[10 + i] = client_pub[i]; i = i + 1
+    end
 
     # ALPN (optional)
     ext_alpn = Bytes.empty
     if !alpn.empty?
       alpn_str_len = 0
-      i = 0; while i < alpn.size; alpn_str_len = alpn_str_len + 1 + alpn[i].bytesize; i = i + 1; end
+      i = 0; while i < alpn.size
+        alpn_str_len = alpn_str_len + 1 + alpn[i].bytesize; i = i + 1
+      end
       ext_alpn = Bytes.new(4 + 2 + alpn_str_len)
       ext_alpn[0] = 0x00_u8; ext_alpn[1] = 0x10_u8 # alpn
       ext_alpn[2] = (((alpn_str_len + 2) >> 8) & 0xff).to_u8
@@ -1506,12 +1545,24 @@ pub class Client
     all_exts_len = ext_sni.size + ext_groups.size + ext_sig_algos.size + ext_versions.size + ext_key_share.size + ext_alpn.size
     all_exts = Bytes.new(all_exts_len)
     e_idx = 0
-    i = 0; while i < ext_sni.size; all_exts[e_idx] = ext_sni[i]; e_idx = e_idx + 1; i = i + 1; end
-    i = 0; while i < ext_groups.size; all_exts[e_idx] = ext_groups[i]; e_idx = e_idx + 1; i = i + 1; end
-    i = 0; while i < ext_sig_algos.size; all_exts[e_idx] = ext_sig_algos[i]; e_idx = e_idx + 1; i = i + 1; end
-    i = 0; while i < ext_versions.size; all_exts[e_idx] = ext_versions[i]; e_idx = e_idx + 1; i = i + 1; end
-    i = 0; while i < ext_key_share.size; all_exts[e_idx] = ext_key_share[i]; e_idx = e_idx + 1; i = i + 1; end
-    i = 0; while i < ext_alpn.size; all_exts[e_idx] = ext_alpn[i]; e_idx = e_idx + 1; i = i + 1; end
+    i = 0; while i < ext_sni.size
+      all_exts[e_idx] = ext_sni[i]; e_idx = e_idx + 1; i = i + 1
+    end
+    i = 0; while i < ext_groups.size
+      all_exts[e_idx] = ext_groups[i]; e_idx = e_idx + 1; i = i + 1
+    end
+    i = 0; while i < ext_sig_algos.size
+      all_exts[e_idx] = ext_sig_algos[i]; e_idx = e_idx + 1; i = i + 1
+    end
+    i = 0; while i < ext_versions.size
+      all_exts[e_idx] = ext_versions[i]; e_idx = e_idx + 1; i = i + 1
+    end
+    i = 0; while i < ext_key_share.size
+      all_exts[e_idx] = ext_key_share[i]; e_idx = e_idx + 1; i = i + 1
+    end
+    i = 0; while i < ext_alpn.size
+      all_exts[e_idx] = ext_alpn[i]; e_idx = e_idx + 1; i = i + 1
+    end
 
     ch_body_len = 2 + 32 + 33 + 6 + 2 + 2 + all_exts_len
     ch_msg = Bytes.new(4 + ch_body_len)
@@ -1522,9 +1573,13 @@ pub class Client
 
     idx = 4
     ch_msg[idx] = 0x03_u8; ch_msg[idx + 1] = 0x03_u8; idx = idx + 2
-    i = 0; while i < 32; ch_msg[idx] = client_random[i]; idx = idx + 1; i = i + 1; end
+    i = 0; while i < 32
+      ch_msg[idx] = client_random[i]; idx = idx + 1; i = i + 1
+    end
     ch_msg[idx] = 32_u8; idx = idx + 1
-    i = 0; while i < 32; ch_msg[idx] = session_id[i]; idx = idx + 1; i = i + 1; end
+    i = 0; while i < 32
+      ch_msg[idx] = session_id[i]; idx = idx + 1; i = i + 1
+    end
 
     # Cipher suites: 0x1301 (AES-128-GCM), 0x1303 (ChaCha20-Poly1305)
     ch_msg[idx] = 0x00_u8; ch_msg[idx + 1] = 0x04_u8; idx = idx + 2
@@ -1538,14 +1593,18 @@ pub class Client
     ch_msg[idx] = ((all_exts_len >> 8) & 0xff).to_u8
     ch_msg[idx + 1] = (all_exts_len & 0xff).to_u8
     idx = idx + 2
-    i = 0; while i < all_exts_len; ch_msg[idx] = all_exts[i]; idx = idx + 1; i = i + 1; end
+    i = 0; while i < all_exts_len
+      ch_msg[idx] = all_exts[i]; idx = idx + 1; i = i + 1
+    end
 
     # Wrap in TLS plaintext record
     ch_record = Bytes.new(5 + ch_msg.size)
     ch_record[0] = 0x16_u8; ch_record[1] = 0x03_u8; ch_record[2] = 0x01_u8
     ch_record[3] = ((ch_msg.size >> 8) & 0xff).to_u8
     ch_record[4] = (ch_msg.size & 0xff).to_u8
-    i = 0; while i < ch_msg.size; ch_record[5 + i] = ch_msg[i]; i = i + 1; end
+    i = 0; while i < ch_msg.size
+      ch_record[5 + i] = ch_msg[i]; i = i + 1
+    end
 
     socket.write(ch_record.to_unsafe, ch_record.size)
 
@@ -1607,7 +1666,9 @@ pub class Client
     handshake_secret = HKDF.extract(:sha256, shared_secret, derived_secret)
 
     h = SHA256.new
-    h_i = 0; while h_i < handshake_transcript.size; h.update(handshake_transcript[h_i]); h_i = h_i + 1; end
+    h_i = 0; while h_i < handshake_transcript.size
+      h.update(handshake_transcript[h_i]); h_i = h_i + 1
+    end
     th_sh = h.final
 
     c_hs_traffic = Std::Tls.derive_secret(handshake_secret, "c hs traffic", th_sh)
@@ -1641,8 +1702,12 @@ pub class Client
       raise "expected encrypted record 0x17, got 0x#{rec_hdr[0].to_s(16)}" if rec_hdr[0] != 0x17_u8
 
       full_rec = Bytes.new(5 + rec_len)
-      i = 0; while i < 5; full_rec[i] = rec_hdr[i]; i = i + 1; end
-      i = 0; while i < rec_len; full_rec[5 + i] = rec_payload[i]; i = i + 1; end
+      i = 0; while i < 5
+        full_rec[i] = rec_hdr[i]; i = i + 1
+      end
+      i = 0; while i < rec_len
+        full_rec[5 + i] = rec_payload[i]; i = i + 1
+      end
 
       dec_res = server_hs_cipher.decrypt(full_rec)
       raise "record decryption or authentication failed" if dec_res.nil?
@@ -1651,8 +1716,12 @@ pub class Client
       raise "expected Handshake payload (0x16), got 0x#{inner_type.to_s(16)}" if inner_type != 0x16_u8
 
       new_buf = Bytes.new(handshake_buf.size + inner_data.size)
-      i = 0; while i < handshake_buf.size; new_buf[i] = handshake_buf[i]; i = i + 1; end
-      i = 0; while i < inner_data.size; new_buf[handshake_buf.size + i] = inner_data[i]; i = i + 1; end
+      i = 0; while i < handshake_buf.size
+        new_buf[i] = handshake_buf[i]; i = i + 1
+      end
+      i = 0; while i < inner_data.size
+        new_buf[handshake_buf.size + i] = inner_data[i]; i = i + 1
+      end
       handshake_buf = new_buf
 
       h_offset = 0
@@ -1683,7 +1752,6 @@ pub class Client
             ee_idx = ee_idx + e_l
           end
           handshake_transcript << msg_data
-
         elsif msg_type == 0x0b_u8 # Certificate
           # Extract certificates list
           ctx_len = msg_data[4].to_i32
@@ -1708,19 +1776,21 @@ pub class Client
 
           # Save transcript hash up to Certificate for CertificateVerify
           h_c = SHA256.new
-          hc_i = 0; while hc_i < handshake_transcript.size; h_c.update(handshake_transcript[hc_i]); hc_i = hc_i + 1; end
+          hc_i = 0; while hc_i < handshake_transcript.size
+            h_c.update(handshake_transcript[hc_i]); hc_i = hc_i + 1
+          end
           th_cert = h_c.final
-
         elsif msg_type == 0x0f_u8 # CertificateVerify
           cert_verify_algo = (msg_data[4].to_i32 << 8) | msg_data[5].to_i32
           sig_l = (msg_data[6].to_i32 << 8) | msg_data[7].to_i32
           cert_verify_sig = msg_data[8, sig_l]
           handshake_transcript << msg_data
-
         elsif msg_type == 0x14_u8 # Finished
           # Verify server finished MAC
           h_fin = SHA256.new
-          hf_i = 0; while hf_i < handshake_transcript.size; h_fin.update(handshake_transcript[hf_i]); hf_i = hf_i + 1; end
+          hf_i = 0; while hf_i < handshake_transcript.size
+            h_fin.update(handshake_transcript[hf_i]); hf_i = hf_i + 1
+          end
           th_cv = h_fin.final
 
           s_finished_key = Std::Tls.hkdf_expand_label(s_hs_traffic, "finished", Bytes.empty, 32)
@@ -1761,9 +1831,13 @@ pub class Client
       # Content to verify: 64 spaces || "TLS 1.3, server CertificateVerify" || 0x00 || th_cert
       cv_prefix = "                                                                TLS 1.3, server CertificateVerify"
       cv_input = Bytes.new(cv_prefix.bytesize + 1 + th_cert.size)
-      i = 0; while i < cv_prefix.bytesize; cv_input[i] = cv_prefix[i].ord.to_u8; i = i + 1; end
+      i = 0; while i < cv_prefix.bytesize
+        cv_input[i] = cv_prefix[i].ord.to_u8; i = i + 1
+      end
       cv_input[cv_prefix.bytesize] = 0x00_u8
-      i = 0; while i < th_cert.size; cv_input[cv_prefix.bytesize + 1 + i] = th_cert[i]; i = i + 1; end
+      i = 0; while i < th_cert.size
+        cv_input[cv_prefix.bytesize + 1 + i] = th_cert[i]; i = i + 1
+      end
 
       cv_valid = false
       case cert_verify_algo
@@ -1831,7 +1905,9 @@ pub class Client
     # Derive application traffic keys
     master_secret = HKDF.extract(:sha256, zeros32, Std::Tls.derive_secret(handshake_secret, "derived", empty_hash))
     h_sfin = SHA256.new
-    hsf_i = 0; while hsf_i < handshake_transcript.size; h_sfin.update(handshake_transcript[hsf_i]); hsf_i = hsf_i + 1; end
+    hsf_i = 0; while hsf_i < handshake_transcript.size
+      h_sfin.update(handshake_transcript[hsf_i]); hsf_i = hsf_i + 1
+    end
     th_s_fin = h_sfin.final
 
     c_ap_traffic = Std::Tls.derive_secret(master_secret, "c ap traffic", th_s_fin)
@@ -1849,7 +1925,9 @@ pub class Client
     c_fin_msg = Bytes.new(4 + 32)
     c_fin_msg[0] = 0x14_u8
     c_fin_msg[1] = 0x00_u8; c_fin_msg[2] = 0x00_u8; c_fin_msg[3] = 32_u8
-    i = 0; while i < 32; c_fin_msg[4 + i] = c_verify_data[i]; i = i + 1; end
+    i = 0; while i < 32
+      c_fin_msg[4 + i] = c_verify_data[i]; i = i + 1
+    end
 
     client_hs_cipher = RecordCipher.new(cipher_sym, c_hs_key, c_hs_iv)
     c_fin_record = client_hs_cipher.encrypt(0x16_u8, c_fin_msg)
@@ -1900,8 +1978,12 @@ pub class Client
       end
 
       full_rec = Bytes.new(5 + rec_len)
-      i = 0; while i < 5; full_rec[i] = rec_hdr[i]; i = i + 1; end
-      i = 0; while i < rec_len; full_rec[5 + i] = rec_payload[i]; i = i + 1; end
+      i = 0; while i < 5
+        full_rec[i] = rec_hdr[i]; i = i + 1
+      end
+      i = 0; while i < rec_len
+        full_rec[5 + i] = rec_payload[i]; i = i + 1
+      end
 
       dec_res = @read_cipher.decrypt(full_rec)
       raise "TLS record decryption failed" if dec_res.nil?

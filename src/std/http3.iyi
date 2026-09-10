@@ -51,51 +51,51 @@ using std/quic::{StreamId, QuicStream, StreamManager}
 # =============================================================================
 
 pub struct H3StreamType
-  pub CONTROL       = 0x00_u64
-  pub PUSH          = 0x01_u64
-  pub QPACK_ENCODER = 0x02_u64
-  pub QPACK_DECODER = 0x03_u64
+  pub CONTROL           = 0x00_u64
+  pub PUSH              = 0x01_u64
+  pub QPACK_ENCODER     = 0x02_u64
+  pub QPACK_DECODER     = 0x03_u64
   pub WEBTRANSPORT_BIDI = 0x41_u64
   pub WEBTRANSPORT_UNI  = 0x54_u64
 end
 
 pub struct H3FrameType
-  pub DATA          = 0x00_u64
-  pub HEADERS       = 0x01_u64
-  pub CANCEL_PUSH   = 0x03_u64
-  pub SETTINGS      = 0x04_u64
-  pub PUSH_PROMISE  = 0x05_u64
-  pub GOAWAY        = 0x07_u64
-  pub MAX_PUSH_ID   = 0x0d_u64
+  pub DATA         = 0x00_u64
+  pub HEADERS      = 0x01_u64
+  pub CANCEL_PUSH  = 0x03_u64
+  pub SETTINGS     = 0x04_u64
+  pub PUSH_PROMISE = 0x05_u64
+  pub GOAWAY       = 0x07_u64
+  pub MAX_PUSH_ID  = 0x0d_u64
 end
 
 pub struct H3Setting
-  pub QPACK_MAX_TABLE_CAPACITY    = 0x01_u64
-  pub MAX_FIELD_SECTION_SIZE      = 0x06_u64
-  pub QPACK_BLOCKED_STREAMS       = 0x07_u64
-  pub ENABLE_CONNECT_PROTOCOL     = 0x08_u64
-  pub H3_DATAGRAM                 = 0x33_u64
-  pub WEBTRANSPORT_MAX_SESSIONS   = 0x2b60_u64
+  pub QPACK_MAX_TABLE_CAPACITY  =   0x01_u64
+  pub MAX_FIELD_SECTION_SIZE    =   0x06_u64
+  pub QPACK_BLOCKED_STREAMS     =   0x07_u64
+  pub ENABLE_CONNECT_PROTOCOL   =   0x08_u64
+  pub H3_DATAGRAM               =   0x33_u64
+  pub WEBTRANSPORT_MAX_SESSIONS = 0x2b60_u64
 end
 
 pub struct H3Error
-  pub NO_ERROR                  = 0x0100_u64
-  pub GENERAL_PROTOCOL_ERROR    = 0x0101_u64
-  pub INTERNAL_ERROR            = 0x0102_u64
-  pub STREAM_CREATION_ERROR     = 0x0103_u64
-  pub CLOSED_CRITICAL_STREAM    = 0x0104_u64
-  pub FRAME_UNEXPECTED          = 0x0105_u64
-  pub FRAME_ERROR               = 0x0106_u64
-  pub EXCESSIVE_LOAD            = 0x0107_u64
-  pub ID_ERROR                  = 0x0108_u64
-  pub SETTINGS_ERROR            = 0x0109_u64
-  pub MISSING_SETTINGS          = 0x010a_u64
-  pub REQUEST_REJECTED          = 0x010b_u64
-  pub REQUEST_CANCELLED         = 0x010c_u64
-  pub REQUEST_INCOMPLETE        = 0x010d_u64
-  pub MESSAGE_ERROR             = 0x010e_u64
-  pub CONNECT_ERROR             = 0x010f_u64
-  pub VERSION_FALLBACK          = 0x0110_u64
+  pub NO_ERROR               = 0x0100_u64
+  pub GENERAL_PROTOCOL_ERROR = 0x0101_u64
+  pub INTERNAL_ERROR         = 0x0102_u64
+  pub STREAM_CREATION_ERROR  = 0x0103_u64
+  pub CLOSED_CRITICAL_STREAM = 0x0104_u64
+  pub FRAME_UNEXPECTED       = 0x0105_u64
+  pub FRAME_ERROR            = 0x0106_u64
+  pub EXCESSIVE_LOAD         = 0x0107_u64
+  pub ID_ERROR               = 0x0108_u64
+  pub SETTINGS_ERROR         = 0x0109_u64
+  pub MISSING_SETTINGS       = 0x010a_u64
+  pub REQUEST_REJECTED       = 0x010b_u64
+  pub REQUEST_CANCELLED      = 0x010c_u64
+  pub REQUEST_INCOMPLETE     = 0x010d_u64
+  pub MESSAGE_ERROR          = 0x010e_u64
+  pub CONNECT_ERROR          = 0x010f_u64
+  pub VERSION_FALLBACK       = 0x0110_u64
 end
 
 # =============================================================================
@@ -103,7 +103,7 @@ end
 # =============================================================================
 
 pub struct SettingEntry
-  getter id    : UInt64
+  getter id : UInt64
   getter value : UInt64
 
   def initialize(@id : UInt64, @value : UInt64)
@@ -280,7 +280,7 @@ end
 
 pub class H3Message
   getter fields : Array(FieldLine)
-  getter body   : Bytes
+  getter body : Bytes
 
   def initialize(@fields : Array(FieldLine) = [] of FieldLine, @body : Bytes = Bytes.empty)
   end
@@ -373,15 +373,15 @@ end
 
 # Represents an established HTTP/3 session running on top of QUIC.
 pub class H3Session
-  getter role             : Int32
-  getter local_settings   : SettingsDictionary
-  getter remote_settings  : SettingsDictionary
-  getter qpack_encoder    : Encoder
-  getter qpack_decoder    : Decoder
+  getter role : Int32
+  getter local_settings : SettingsDictionary
+  getter remote_settings : SettingsDictionary
+  getter qpack_encoder : Encoder
+  getter qpack_decoder : Decoder
 
   # Control stream buffers
   @control_stream_out : Bytes
-  @control_stream_in  : Bytes
+  @control_stream_in : Bytes
 
   def initialize(role : Int32)
     @role = role

@@ -318,8 +318,8 @@ pub struct Handshake
 
   # Constructs a client handshake Request.
   pub def self.build_client_request(target : String, host : String, key : String,
-                                   subprotocols : Array(String)? = nil,
-                                   extensions : Array(String)? = nil) : Request
+                                    subprotocols : Array(String)? = nil,
+                                    extensions : Array(String)? = nil) : Request
     headers = Headers.new
     headers["Host"] = host
     headers["Upgrade"] = "websocket"
@@ -371,7 +371,7 @@ pub struct Handshake
 
   # Constructs the server's 101 Switching Protocols response.
   pub def self.build_server_response(key : String, subprotocol : String? = nil,
-                                    extensions : Array(String)? = nil) : Response
+                                     extensions : Array(String)? = nil) : Response
     headers = Headers.new
     headers["Upgrade"] = "websocket"
     headers["Connection"] = "Upgrade"
@@ -482,7 +482,7 @@ pub struct Frame
     else
       out_ptr[1] = mask_flag | 127_u8
       # 64-bit big endian length
-      out_ptr[offset]     = 0_u8
+      out_ptr[offset] = 0_u8
       out_ptr[offset + 1] = 0_u8
       out_ptr[offset + 2] = 0_u8
       out_ptr[offset + 3] = 0_u8
@@ -496,7 +496,7 @@ pub struct Frame
     if is_masked
       if k = key
         k_ptr = k.to_unsafe
-        out_ptr[offset]     = k_ptr[0]
+        out_ptr[offset] = k_ptr[0]
         out_ptr[offset + 1] = k_ptr[1]
         out_ptr[offset + 2] = k_ptr[2]
         out_ptr[offset + 3] = k_ptr[3]
@@ -528,14 +528,14 @@ pub struct Frame
     b0 = raw_ptr[0]
     b1 = raw_ptr[1]
 
-    fin  = (b0 & 0x80_u8) != 0_u8
+    fin = (b0 & 0x80_u8) != 0_u8
     rsv1 = (b0 & 0x40_u8) != 0_u8
     rsv2 = (b0 & 0x20_u8) != 0_u8
     rsv3 = (b0 & 0x10_u8) != 0_u8
     opcode = b0 & 0x0F_u8
 
     masked = (b1 & 0x80_u8) != 0_u8
-    len7   = b1 & 0x7F_u8
+    len7 = b1 & 0x7F_u8
 
     # 1. Opcode validity check
     unless valid_opcode?(opcode)
@@ -585,7 +585,7 @@ pub struct Frame
     elsif len7 == 126_u8
       return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Incomplete 16-bit payload length") if raw.size < offset + 2
       high = raw_ptr[offset].to_i64
-      low  = raw_ptr[offset + 1].to_i64
+      low = raw_ptr[offset + 1].to_i64
       payload_len = (high << 8) | low
       offset = offset + 2
 
@@ -674,7 +674,7 @@ pub struct Frame
     end
 
     Frame.new(opcode, payload, fin: fin, masked: masked, mask_key: mask_key,
-              rsv1: rsv1, rsv2: rsv2, rsv3: rsv3)
+      rsv1: rsv1, rsv2: rsv2, rsv3: rsv3)
   end
 
   # Reads a single frame from an IO stream with full RFC 6455 enforcement.
@@ -690,14 +690,14 @@ pub struct Frame
     b0 = h2_ptr[0]
     b1 = h2_ptr[1]
 
-    fin  = (b0 & 0x80_u8) != 0_u8
+    fin = (b0 & 0x80_u8) != 0_u8
     rsv1 = (b0 & 0x40_u8) != 0_u8
     rsv2 = (b0 & 0x20_u8) != 0_u8
     rsv3 = (b0 & 0x10_u8) != 0_u8
     opcode = b0 & 0x0F_u8
 
     masked = (b1 & 0x80_u8) != 0_u8
-    len7   = b1 & 0x7F_u8
+    len7 = b1 & 0x7F_u8
 
     unless valid_opcode?(opcode)
       return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Invalid or reserved opcode: #{opcode.to_i32}")
@@ -739,7 +739,7 @@ pub struct Frame
       len_buf = Bytes.new(2)
       return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Unexpected EOF reading 16-bit length") unless read_exact(io, len_buf.to_unsafe, 2)
       high = len_buf[0].to_i64
-      low  = len_buf[1].to_i64
+      low = len_buf[1].to_i64
       payload_len = (high << 8) | low
       if payload_len < 126_i64
         return WebSocketError.new(CLOSE_PROTOCOL_ERROR, "Payload length not minimally encoded (16-bit for length < 126)")
@@ -809,7 +809,7 @@ pub struct Frame
     end
 
     Frame.new(opcode, payload, fin: fin, masked: masked, mask_key: mask_key,
-              rsv1: rsv1, rsv2: rsv2, rsv3: rsv3)
+      rsv1: rsv1, rsv2: rsv2, rsv3: rsv3)
   end
 
   private def self.read_exact(io, buffer : Pointer(UInt8), count : Int32) : Bool
@@ -1124,7 +1124,7 @@ pub class Session(T)
               # Append 4-byte octet 0x00 0x00 0xFF 0xFF
               decomp_input = Bytes.new(full_payload.size + 4)
               decomp_input.to_unsafe.copy_from(full_payload.to_unsafe, full_payload.size)
-              decomp_input[full_payload.size]     = 0x00_u8
+              decomp_input[full_payload.size] = 0x00_u8
               decomp_input[full_payload.size + 1] = 0x00_u8
               decomp_input[full_payload.size + 2] = 0xFF_u8
               decomp_input[full_payload.size + 3] = 0xFF_u8
@@ -1267,7 +1267,7 @@ pub class Session(T)
 
       chunk = Slice(UInt8).new(payload.to_unsafe + offset, chunk_len)
       chunk_opcode = first ? opcode : OP_CONTINUATION
-      chunk_rsv1   = first ? rsv1 : false
+      chunk_rsv1 = first ? rsv1 : false
 
       frame = Frame.new(chunk_opcode, chunk, fin: is_final, masked: !@is_server, rsv1: chunk_rsv1)
       err = send_frame(frame)
