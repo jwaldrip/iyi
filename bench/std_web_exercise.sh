@@ -113,7 +113,7 @@ prove_fails() {
 # 1. Percent-encoding double-encode check broken
 prove_fails "percent double encoding broken" no_double_enc "uri.iyi" \
   "percent: double-encoded already encoded string" \
-  's/if i + 2 < len && hex_digit?(raw\[i + 1\])/if false/'
+  's/if i + 2 < len && hex_digit[?](raw\[i + 1\])/if false/'
 
 # 2. Percent-decoding truncated check broken
 prove_fails "percent truncated escape check broken" no_truncated_reject "uri.iyi" \

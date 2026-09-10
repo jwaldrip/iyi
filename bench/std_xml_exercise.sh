@@ -129,7 +129,7 @@ prove_fails "content extraction broken" no_content "xml: title content" \
 
 # 4. Namespace prefix resolution broken
 prove_fails "namespace prefix resolution broken" no_ns "xml: table resolved namespace" \
-  's/def resolve_namespace_prefix(prefix : String) : Namespace\?/def resolve_namespace_prefix(prefix : String) : Namespace?; return nil/'
+  's/def resolve_namespace_prefix(prefix : String) : Namespace[?]/def resolve_namespace_prefix(prefix : String) : Namespace?; return nil/'
 
 # 5. CDATA content empty
 prove_fails "cdata content broken" no_cdata "xml: raw cdata content" \
@@ -137,7 +137,7 @@ prove_fails "cdata content broken" no_cdata "xml: raw cdata content" \
 
 # 6. Predefined entity decoding broken
 prove_fails "entity decoding broken" no_entity "xml: predefined entities decoded" \
-  's/val = @entries\[name\]\?/val = "broken"/'
+  's/val = @entries\[name\][?]/val = "broken"/'
 
 # 7. Path calculation broken
 prove_fails "canonical path calculation broken" no_path "xml: page 2 canonical path" \

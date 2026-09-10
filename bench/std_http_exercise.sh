@@ -139,18 +139,18 @@ prove_fails "header count bounds broken" no_count_bound "oversized header count 
 
 # 9. Chunked parsing: non-hex chunk size check
 prove_fails "chunked non-hex size check broken" no_hex_check "bad hex chunk was not rejected" \
-  '/# GUARD: chunk hex validation/,+7{s/if !valid_hex/if false/; s/if chunk_size_raw.nil?/chunk_size_raw = chunk_size_raw || 5_i64; if chunk_size_raw.nil?/;}'
+  '/# GUARD: chunk hex validation/,+7{s/if !valid_hex/if false/; s/if chunk_size_raw\.nil[?]/chunk_size_raw = chunk_size_raw || 5_i64; if chunk_size_raw.nil?/;}'
 # 10. Chunked parsing: missing final zero chunk check
 prove_fails "chunked missing final zero check broken" no_zero_check "missing final zero chunk was not rejected" \
   '/# GUARD: chunk final zero/{n;s/return HttpError\.new("Incomplete chunked body: missing final zero chunk") unless nl/return {"", trailers} unless nl/;}'
 
 # 11. Header repetition rules: single-value header replaced
 prove_fails "header repetition rules broken" no_repetition "Content-Type should not repeat" \
-  's/if Headers\.can_repeat?(name)/if true/'
+  's/if Headers\.can_repeat[?](name)/if true/'
 
 # 12. Cookie SameSite parsing
 prove_fails "cookie SameSite parsing broken" no_samesite "parsed cookie samesite" \
-  's/samesite = SameSite\.parse?(attr_val)/samesite = nil.as(SameSite?)/'
+  's/samesite = SameSite\.parse[?](attr_val)/samesite = nil.as(SameSite?)/'
 
 # 13. Strict CRLF: bare LF in request line
 prove_fails "strict CRLF request line check broken" no_crlf_req "bare LF in request line was not rejected" \
@@ -169,7 +169,7 @@ prove_fails "whitespace before colon check broken" no_ws_colon "whitespace befor
   '/# GUARD: request whitespace before colon/,+4s/return HttpError\.new("Request smuggling: whitespace between header name and colon")/line[0, colon].strip/'
 prove_fails "mandatory Host header check broken" no_mandatory_host "missing Host header was not rejected" \
   '/# GUARD: request mandatory host/{n;s/if version == "HTTP\/1\.1"/if false/;}
-   s/host_val\.nil\? || host_val\.empty\?/false/'
+   s/host_val\.nil[?] || host_val\.empty[?]/false/'
 
 # 18. RFC 9112 Section 3.2: multiple Host headers in HTTP/1.1
 prove_fails "multiple Host headers check broken" no_multi_host "multiple Host headers was not rejected" \
@@ -180,7 +180,7 @@ prove_fails "Transfer-Encoding final chunked check broken" no_final_te "non-fina
   's/if codings\[codings\.size - 1\] != "chunked"/if false/; s/if c != "chunked"/if false/'
 # 20. RFC 9112 Section 7.1.2: forbidden trailer header
 prove_fails "forbidden trailer header check broken" no_forbid_trailer "forbidden trailer Host was not rejected" \
-  '/# GUARD: trailer forbidden headers/{n;s/if Std::Http\.is_forbidden_trailer?(t_k)/if false/;}'
+  '/# GUARD: trailer forbidden headers/{n;s/if Std::Http\.is_forbidden_trailer[?](t_k)/if false/;}'
 
 # 21. Content-Length 32-bit bound enforcement before conversion
 prove_fails "Content-Length 32-bit bound check broken" no_cl_bound "oversized Content-Length was not rejected" \

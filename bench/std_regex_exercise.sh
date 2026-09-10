@@ -125,7 +125,7 @@ prove_fails "Greedy quantifier broken" no_greedy "greedy takes longest match" \
 
 # 5. Lookahead assertion broken (invert look_holds?)
 prove_fails "Lookahead broken" no_look "positive lookahead success" \
-  's/inst\.b == 1 ? !held : held/inst.b == 1 ? held : !held/'
+  's/inst\.b == 1 [?] !held : held/inst.b == 1 ? held : !held/'
 
 echo
 if [ "$status" -eq 0 ]; then

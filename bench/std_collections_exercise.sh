@@ -169,7 +169,7 @@ prove_fails "Set union operation" broken_union "set.iyi" "union size is 8" \
 
 # 4. Break Set difference
 prove_fails "Set difference operation" broken_diff "set.iyi" "s1 - s2" \
-  's/unless other\.includes?(v)/if other\.includes?(v)/'
+  's/unless other\.includes[?](v)/if other.includes?(v)/'
 
 # 5. Break Tuple equality
 prove_fails "Tuple equality" broken_tuple_eq "tuple.iyi" "tuple equality" \

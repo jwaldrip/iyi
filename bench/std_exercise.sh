@@ -118,7 +118,7 @@ prove_fails "Cmp clamp broken" no_clamp "traits.iyi" "Cmp: clamp min" \
 
 # 3. Enumerable present? inverted
 prove_fails "Enumerable present? inverted" no_present "enumerable.iyi" "enum: present? true" \
-  's/!empty?/empty?/'
+  's/!empty[?]/empty?/'
 
 # 4. Enumerable minmax inverted
 prove_fails "Enumerable minmax inverted" no_minmax "enumerable.iyi" "enum: minmax? min" \
@@ -126,7 +126,7 @@ prove_fails "Enumerable minmax inverted" no_minmax "enumerable.iyi" "enum: minma
 
 # 5. Enumerable each_cons_pair skips yields
 prove_fails "Enumerable each_cons_pair broken" no_cons_pair "enumerable.iyi" "enum: each_cons_pair" \
-  's/yield last, e unless last\.nil?/previous = nil/'
+  's/yield last, e unless last\.nil[?]/previous = nil/'
 
 # 6. Enumerable to_h corrupted
 prove_fails "Enumerable to_h corrupted" no_to_h "enumerable.iyi" "enum: to_h" \

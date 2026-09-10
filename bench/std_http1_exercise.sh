@@ -268,7 +268,7 @@ prove_fails "missing mandatory Host header broken" missing_host \
 # 12. Obsolete line folding in trailer bypass (must fail: obs-fold in trailer accepted)
 prove_fails "obs-fold in trailer broken" obs_fold_trailer \
   "obs-fold in trailer was not rejected" \
-  's/if t_line\.starts_with?('\'' '\'') || t_line\.starts_with?('\''\\t'\'')/if false/'
+  's/if t_line\.starts_with[?]('\'' '\'') || t_line\.starts_with[?]('\''\\t'\'')/if false/'
 
 echo
 if [ "$status" -eq 0 ]; then

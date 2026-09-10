@@ -130,7 +130,7 @@ prove_fails "CertificateVerify downgraded from RSA-PSS" cv_downgrade \
 # 2. Unknown destination connection ID routed to the first connection
 prove_fails "unknown destination connection ID routed" cid_fallback \
   "AEAD decryption failed" "quic.iyi" \
-  's/return if target_conn.nil?/target_conn = @connections[0] if target_conn.nil? \&\& !@connections.empty?/'
+  's/return if target_conn\.nil[?]/target_conn = @connections[0] if target_conn.nil? \&\& !@connections.empty?/'
 
 # 2. 1-RTT packet space corrupted (fails 1-RTT ACK processing)
 prove_fails "send_1rtt wrong space" 1rtt_space \

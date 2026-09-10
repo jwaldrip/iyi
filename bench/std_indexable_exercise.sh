@@ -159,7 +159,7 @@ prove_fails "fetch default fallback" broken_fetch "assertion failed: fetch out o
 
 # 3. Break bsearch binary search: return nil unconditionally
 prove_fails "bsearch binary search" broken_bsearch "assertion failed: bsearch found" \
-  's/idx ? unsafe_fetch(idx) : nil/nil/'
+  's/idx [?] unsafe_fetch(idx) : nil/nil/'
 
 # 4. Break values_at: skip last element
 prove_fails "values_at lookup" broken_values "expected .10,50,30., got" \

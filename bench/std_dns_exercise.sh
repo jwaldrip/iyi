@@ -155,7 +155,7 @@ prove_fails "dnssec ds record digest parsing broken" no_ds "captured DS: digest 
 
 # 7. Exact owner-name casing preservation broken
 prove_fails "owner-name casing preservation broken" no_casing "casing: question casing" \
-  's/name = labels\.empty\? \? "\." : labels\.join("\.")/name = labels.empty? ? "." : labels.join(".").downcase/'
+  's/name = labels\.empty[?] [?] "[.]" : labels\.join("[.]")/name = labels.empty? ? "." : labels.join(".").downcase/'
 prove_fails "cname target parsing broken" no_cname "captured CNAME: ans1 cname target" \
   's/CNameRecord\.new(target_res\[0\])/CNameRecord.new("wrong.domain")/'
 
