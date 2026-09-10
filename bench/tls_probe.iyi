@@ -1,0 +1,50 @@
+# Isolated test of @[ThreadLocal] on Windows x86_64 without fibers or groups.
+
+class TlsHolder
+  @[ThreadLocal]
+  @@value : Int64 = 42_i64
+
+  def self.value : Int64
+    @@value
+  end
+
+  def self.value=(v : Int64)
+    @@value = v
+  end
+end
+
+def read_teb_tls_slot : UInt64
+  slot = uninitialized UInt64
+  {% if flag?(:x86_64) %}
+    asm("movq %gs:0x58, $0" : "=r"(slot) ::: "volatile")
+  {% else %}
+    slot = 0_u64
+  {% end %}
+  slot
+end
+
+slot = read_teb_tls_slot
+__iyi_write(1, "tls_probe: teb_tls_slot at start: ".to_unsafe.as(Void*), 35_u64)
+if slot == 0_u64
+  __iyi_write(1, "null\n".to_unsafe.as(Void*), 5_u64)
+else
+  __iyi_write(1, "non-null\n".to_unsafe.as(Void*), 9_u64)
+end
+
+__iyi_write(1, "tls_probe: before touching ThreadLocal\n".to_unsafe.as(Void*), 39_u64)
+v = TlsHolder.value
+__iyi_write(1, "tls_probe: after touching ThreadLocal\n".to_unsafe.as(Void*), 38_u64)
+if v == 42_i64
+  __iyi_write(1, "tls_probe: value ok\n".to_unsafe.as(Void*), 20_u64)
+else
+  __iyi_write(1, "tls_probe: value wrong\n".to_unsafe.as(Void*), 23_u64)
+end
+
+TlsHolder.value = 99_i64
+v2 = TlsHolder.value
+if v2 == 99_i64
+  __iyi_write(1, "tls_probe: write ok\n".to_unsafe.as(Void*), 20_u64)
+else
+  __iyi_write(1, "tls_probe: write wrong\n".to_unsafe.as(Void*), 23_u64)
+end
+__iyi_write(1, "tls_probe: PASSED\n".to_unsafe.as(Void*), 18_u64)

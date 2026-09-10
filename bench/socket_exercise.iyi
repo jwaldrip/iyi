@@ -1,0 +1,75 @@
+# Sockets: runtime verification exercise.
+#
+#   ./bin/iyi run bench/socket_exercise.iyi
+#   ./bin/iyi run bench/socket_exercise.iyi refused
+#
+# Exercised rather than asserted:
+# 1. connect and accept on loopback with an ephemeral port (port 0)
+# 2. a message each way (ping from client, pong from server)
+# 3. short reads respecting byte limits (4 bytes, 8 bytes, 4 bytes)
+# 4. closed peer detection (read returns empty string on EOF)
+# 5. refused connection when target port has no listener
+
+args = Program.args
+if args.size > 0 && args[0] == "refused"
+  probe_server = IyiSocket.listen(0)
+  refused_port = probe_server.local_port
+  probe_server.close
+  # Attempt connection to closed port; must raise "cannot connect"
+  IyiSocket.connect("127.0.0.1", refused_port)
+  __iyi_exit(0)
+end
+
+# 1. Ephemeral port bind and accept
+server = IyiSocket.listen(0)
+port = server.local_port
+raise "local_port failed: port must be positive" if port <= 0
+
+client = IyiSocket.connect("127.0.0.1", port)
+raise "connect failed: client is closed" if client.closed?
+
+client.write("ping from client\n")
+
+conn = server.accept
+raise "accept failed: server connection is closed" if conn.closed?
+puts "connect_accept: ok"
+
+# 2. Message exchange each way
+msg = conn.read(1024)
+raise "message_exchange: server received wrong message" if msg != "ping from client\n"
+
+conn.write("pong from server\n")
+reply = client.read(1024)
+raise "message_exchange: client received wrong reply" if reply != "pong from server\n"
+puts "message_exchange: ok"
+
+# 3. Short read respecting buffer limits
+client.write("0123456789ABCDEF")
+
+c1 = conn.read(4)
+raise "short_read: chunk 1 size mismatch" if c1.bytesize != 4
+raise "short_read: chunk 1 content mismatch" if c1 != "0123"
+
+c2 = conn.read(8)
+raise "short_read: chunk 2 size mismatch" if c2.bytesize != 8
+raise "short_read: chunk 2 content mismatch" if c2 != "456789AB"
+
+c3 = conn.read(4)
+raise "short_read: chunk 3 size mismatch" if c3.bytesize != 4
+raise "short_read: chunk 3 content mismatch" if c3 != "CDEF"
+puts "short_read: ok"
+
+# 4. Closed peer detection (EOF)
+client.close
+raise "closed_peer: client close failed" unless client.closed?
+
+eof = conn.read(1024)
+raise "closed_peer: expected empty string on EOF" if eof.bytesize != 0
+
+conn.close
+server.close
+raise "closed_peer: conn close failed" unless conn.closed?
+raise "closed_peer: server close failed" unless server.closed?
+puts "closed_peer: ok"
+
+puts "socket_exercise: all checks passed"

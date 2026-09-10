@@ -113,7 +113,7 @@ def measured() -> dict[str, int]:
     return {
         "prelude": wc(sorted((REPO / "src/iyi").glob("*.iyi"))),
         "prelude_library": prelude_library_lines(),
-        "samples_std": wc(sorted((REPO / "samples/iyi/std").glob("*.iyi"))),
+        "std": wc(sorted((REPO / "src/std").glob("*.iyi"))),
         "compiler": wc(sorted((REPO / "src/compiler").rglob("*.cr"))),
         "samples": len(sorted((REPO / "samples/iyi").glob("*.iyi"))),
         # Bytes on disk, not lines: the docs quote the library's size as a
@@ -190,7 +190,7 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     ("prelude", r"against iyi's own ([\d,]+)-line prelude", "SPEC.md", 1),
     ("prelude", r"against iyi's own ([\d,]+)-line library", "CHANGELOG.md", 1),
     ("prelude", r"against iyi's own ([\d,]+)-line", "samples/iyi/calc.iyi", 1),
-    ("samples_std", r"own prelude \+ ([\d,]+) in samples", "SPEC.md", 1),
+    ("std", r"own prelude \+ ([\d,]+) in std", "SPEC.md", 1),
     ("compiler", r"\| ([\d,]+) lines, Crystal, forked", "SPEC.md", 1),
     ("spec_iyi", r"\| ([\d,]+) for iyi \|", "SPEC.md", 1),
     ("prelude_kb", r"library is ([\d,]+) KB on disk", "README.md", 1),
@@ -207,7 +207,10 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     # The count of sample programs was quoted as a word and drifted by three
     # before anything noticed, because the digit patterns above cannot see a
     # spelled-out number.
-    ("samples", r"\| (\w+) programs:", "README.md", 1),
+    # `[\w-]+` rather than `\w+`: past twenty the spelled-out number is
+    # hyphenated, and `\w+` silently stopped matching the sentence at
+    # "twenty-three" rather than reporting the count had moved.
+    ("samples", r"\| ([\w-]+) programs:", "README.md", 1),
 ]
 
 # The prose spells small numbers as words and should keep doing so, so the
@@ -218,6 +221,9 @@ WORDS = {
     "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
     "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
     "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "twenty-one": 21, "twenty-two": 22, "twenty-three": 23,
+    "twenty-four": 24, "twenty-five": 25, "twenty-six": 26,
+    "twenty-seven": 27, "twenty-eight": 28, "twenty-nine": 29, "thirty": 30,
 }
 
 

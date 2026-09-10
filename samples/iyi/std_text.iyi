@@ -1,0 +1,35 @@
+# Standard text processing library demonstration.
+#
+#   ./bin/iyi run samples/iyi/std_text.iyi
+
+import std/text
+
+# 1. Whitespace stripping and line cleaning
+raw_line = "  \tGET /api/v1/users HTTP/1.1\r\n"
+cleaned = raw_line.strip.chomp
+puts "cleaned line: '#{cleaned}'"
+
+# 2. Splitting and partitioning
+parts = cleaned.split
+method = parts[0]
+path = parts[1]
+version = parts[2]
+puts "HTTP method: #{method}, path: #{path}, version: #{version}"
+
+key_val = "Authorization: Bearer token123".partition(": ")
+header_name = key_val[0]
+header_val = key_val[2]
+puts "Header '#{header_name}' = '#{header_val}'"
+
+# 3. Substitutions and transformations
+slug = "Hello World! This is iyi std/text.".downcase.tr(" /.", "---").delete("!")
+puts "slug: #{slug}"
+
+# 4. UTF-8 multi-byte handling
+greeting = "héllo world"
+puts "greeting size: #{greeting.size} characters, #{greeting.bytesize} bytes"
+puts "reversed greeting: #{greeting.reverse}"
+
+# 5. Base conversion
+hex_color = "ff"
+puts "hex '#{hex_color}' to decimal: #{hex_color.to_i(16)}"

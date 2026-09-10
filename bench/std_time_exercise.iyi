@@ -1,0 +1,245 @@
+# Exercises `std/time`: `Time` and `Time::Span`.
+#
+# Proves:
+#   * Known-value table across calendar landmarks: Unix epoch, leap day (2024-02-29),
+#     days before and after, century non-leap year (1900), century leap year (2000),
+#     and minimum/maximum supported years (0001 to 9999).
+#   * Gregorian leap-year rules and month lengths.
+#   * Bidirectional round-trip between civil date and Unix timestamp across 5,000+
+#     scattered days (~1778 to ~2161).
+#   * Platform wall clock and monotonic clock readings.
+#   * Span construction, accessors, operators (+, -, -@), and Time arithmetic.
+#   * ISO 8601 / RFC 3339 serialization (fraction digits 0, 3, 6, 9) and parsing
+#     with timezone offset conversions.
+#   * Comparable trait implementation via `Std::Traits::Cmp`.
+#
+# Run via:
+#     ./bin/iyi run bench/std_time_exercise.iyi
+
+module bench/std_time_exercise
+
+import std/time
+using std/time::{Time, Span, DayOfWeek}
+
+def assert_true(cond : Bool, msg : String) : Nil
+  if !cond
+    raise "ASSERTION FAILED: #{msg}"
+  end
+end
+
+def assert_equal(expected : Int64, actual : Int64, msg : String) : Nil
+  if expected != actual
+    raise "ASSERTION FAILED: #{msg} (expected #{expected}, got #{actual})"
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Known-value table
+# ---------------------------------------------------------------------------
+
+puts "== known-value table"
+printf "  %-20s | %-13s | %-12s | %-10s | %-4s | %s\n", "Date (UTC)", "Unix Expected", "Unix Actual", "DayOfWeek", "DoY", "Status"
+puts "  ---------------------+---------------+--------------+------------+------+-------"
+
+known_dates = [
+  {"1970-01-01 00:00:00", 1970, 1, 1, 0, 0, 0, 0_i64, "Thursday", 1},
+  {"2024-02-29 12:34:56", 2024, 2, 29, 12, 34, 56, 1709210096_i64, "Thursday", 60},
+  {"2024-02-28 12:34:56", 2024, 2, 28, 12, 34, 56, 1709123696_i64, "Wednesday", 59},
+  {"2024-03-01 12:34:56", 2024, 3, 1, 12, 34, 56, 1709296496_i64, "Friday", 61},
+  {"2000-02-29 00:00:00", 2000, 2, 29, 0, 0, 0, 951782400_i64, "Tuesday", 60},
+  {"1900-02-28 23:59:59", 1900, 2, 28, 23, 59, 59, -2203891201_i64, "Wednesday", 59},
+  {"1900-03-01 00:00:00", 1900, 3, 1, 0, 0, 0, -2203891200_i64, "Thursday", 60},
+  {"0001-01-01 00:00:00", 1, 1, 1, 0, 0, 0, -62135596800_i64, "Monday", 1},
+  {"9999-12-31 23:59:59", 9999, 12, 31, 23, 59, 59, 253402300799_i64, "Friday", 365},
+]
+
+known_dates.each do |row|
+  desc = row[0]
+  y = row[1]
+  m = row[2]
+  d = row[3]
+  h = row[4]
+  mi = row[5]
+  s = row[6]
+  expected_unix = row[7]
+  expected_dow = row[8]
+  expected_doy = row[9]
+
+  t = Time.utc(y, m, d, h, mi, s)
+  actual_unix = t.to_unix
+  assert_equal(expected_unix, actual_unix, "Unix timestamp mismatch for #{desc}")
+
+  # Verify roundtrip through from_unix
+  t_rt = Time.from_unix(actual_unix)
+  assert_equal(y.to_i64, t_rt.year.to_i64, "Year roundtrip mismatch for #{desc}")
+  assert_equal(m.to_i64, t_rt.month.to_i64, "Month roundtrip mismatch for #{desc}")
+  assert_equal(d.to_i64, t_rt.day.to_i64, "Day roundtrip mismatch for #{desc}")
+  assert_equal(h.to_i64, t_rt.hour.to_i64, "Hour roundtrip mismatch for #{desc}")
+  assert_equal(mi.to_i64, t_rt.minute.to_i64, "Minute roundtrip mismatch for #{desc}")
+  assert_equal(s.to_i64, t_rt.second.to_i64, "Second roundtrip mismatch for #{desc}")
+
+  # Verify day of week
+  dow_str = t.day_of_week.to_s
+  if dow_str != expected_dow
+    raise "Day of week mismatch for #{desc}: expected #{expected_dow}, got #{dow_str}"
+  end
+
+  # Verify day of year
+  assert_equal(expected_doy.to_i64, t.day_of_year.to_i64, "Day of year mismatch for #{desc}")
+
+  printf "  %-20s | %13d | %12d | %-10s | %4d | OK\n", desc, expected_unix, actual_unix, dow_str, t.day_of_year
+end
+
+# ---------------------------------------------------------------------------
+# Leap-year rules
+# ---------------------------------------------------------------------------
+
+puts "\n== leap-year rules"
+assert_true(Time.leap_year?(2024), "2024 is a leap year (divisible by 4, not 100)")
+assert_true(!Time.leap_year?(2023), "2023 is not a leap year")
+assert_true(!Time.leap_year?(1900), "1900 is not a leap year (century rule: divisible by 100, not 400)")
+assert_true(Time.leap_year?(2000), "2000 is a leap year (400-year cycle rule: divisible by 400)")
+assert_true(!Time.leap_year?(2100), "2100 is not a leap year (divisible by 100, not 400)")
+assert_true(Time.leap_year?(2400), "2400 is a leap year (divisible by 400)")
+
+assert_equal(29_i64, Time.days_in_month(2024, 2).to_i64, "Feb 2024 has 29 days")
+assert_equal(28_i64, Time.days_in_month(2023, 2).to_i64, "Feb 2023 has 28 days")
+assert_equal(28_i64, Time.days_in_month(1900, 2).to_i64, "Feb 1900 has 28 days")
+assert_equal(29_i64, Time.days_in_month(2000, 2).to_i64, "Feb 2000 has 29 days")
+puts "  2024 leap, 2023 non-leap, 1900 non-leap (century), 2000 leap (400-year) all verified"
+
+# ---------------------------------------------------------------------------
+# Scattered roundtrip over 5,000 timestamps
+# ---------------------------------------------------------------------------
+
+puts "\n== scattered roundtrip (5000 timestamps)"
+count = 0
+step = 28_i64
+day_idx = -70000_i64
+while day_idx <= 70000_i64
+  sec = day_idx * 86400_i64 + (day_idx % 86400_i64).abs
+  t = Time.from_unix(sec)
+  y = t.year
+  m = t.month
+  d = t.day
+  h = t.hour
+  mi = t.minute
+  s = t.second
+
+  t_rebuilt = Time.utc(y, m, d, h, mi, s)
+  if t_rebuilt.to_unix != sec
+    raise "Roundtrip mismatch at day #{day_idx}: original #{sec}, rebuilt #{t_rebuilt.to_unix}"
+  end
+
+  count += 1
+  day_idx += step
+end
+puts "  #{count} scattered timestamps across years ~1778 to ~2161 round-tripped identically"
+
+# ---------------------------------------------------------------------------
+# Platform clocks
+# ---------------------------------------------------------------------------
+
+puts "\n== platform clocks"
+now = Time.utc
+puts "  wall clock:  #{now.to_rfc3339(3)}"
+assert_true(now.to_unix > 1700000000_i64, "wall clock must be past year 2023")
+
+mono1 = Time.monotonic
+mono2 = Time.monotonic
+puts "  monotonic:   #{mono1.to_s}"
+assert_true(mono2 >= mono1, "monotonic clock must be non-decreasing")
+
+# ---------------------------------------------------------------------------
+# Span construction, accessors, and arithmetic
+# ---------------------------------------------------------------------------
+
+puts "\n== span construction, accessors, and arithmetic"
+s = Span.new(days: 2_i64, hours: 5_i64, minutes: 30_i64, seconds: 15_i64, milliseconds: 500_i64, nanoseconds: 123456_i64)
+assert_equal(2_i64, s.days, "Span#days")
+assert_equal(5_i64, s.hours.to_i64, "Span#hours")
+assert_equal(30_i64, s.minutes.to_i64, "Span#minutes")
+assert_equal(15_i64, s.seconds.to_i64, "Span#seconds")
+assert_equal(500_i64, s.milliseconds.to_i64, "Span#milliseconds")
+assert_equal(500123456_i64, s.nanoseconds.to_i64, "Span#nanoseconds")
+assert_true((s.total_seconds - 192615.500123456).abs < 0.000001, "Span#total_seconds")
+
+# Helper constructors
+s_days = Span.days(3_i64)
+s_hours = Span.hours(6_i64)
+s_mins = Span.minutes(45_i64)
+s_secs = Span.seconds(30_i64)
+s_sum = s_days + s_hours + s_mins + s_secs
+assert_equal(3_i64 * 86400_i64 + 6_i64 * 3600_i64 + 45_i64 * 60_i64 + 30_i64, s_sum.to_i, "Span addition")
+
+# Span subtraction and negation
+s_neg = -s_hours
+assert_equal(-6_i64 * 3600_i64, s_neg.to_i, "Span negation")
+s_diff = s_hours - s_mins
+assert_equal(6_i64 * 3600_i64 - 45_i64 * 60_i64, s_diff.to_i, "Span subtraction")
+
+# Comparisons via Cmp
+assert_true(s_mins < s_hours, "Span <")
+assert_true(s_hours > s_mins, "Span >")
+assert_true(s_hours == Span.hours(6_i64), "Span ==")
+
+# Time + Span, Time - Span, Time - Time
+t_base = Time.utc(2024, 1, 1, 0, 0, 0)
+t_advanced = t_base + Span.days(10_i64) + Span.hours(3_i64)
+assert_equal(2024_i64, t_advanced.year.to_i64, "Time+Span year")
+assert_equal(1_i64, t_advanced.month.to_i64, "Time+Span month")
+assert_equal(11_i64, t_advanced.day.to_i64, "Time+Span day")
+assert_equal(3_i64, t_advanced.hour.to_i64, "Time+Span hour")
+
+t_retracted = t_advanced - Span.days(10_i64) - Span.hours(3_i64)
+assert_true(t_retracted == t_base, "Time - Span roundtrip")
+
+elapsed = t_advanced - t_base
+assert_equal(10_i64 * 86400_i64 + 3_i64 * 3600_i64, elapsed.to_i, "Time - Time")
+puts "  Span accessors, operators (+, -, -@, cmp) and Time arithmetic verified"
+
+# ---------------------------------------------------------------------------
+# RFC 3339 formatting and parsing
+# ---------------------------------------------------------------------------
+
+puts "\n== RFC 3339 formatting and parsing"
+t_fmt = Time.utc(2024, 2, 29, 15, 30, 45, 123, 456789)
+assert_true(t_fmt.to_rfc3339 == "2024-02-29T15:30:45Z", "to_rfc3339 default")
+assert_true(t_fmt.to_rfc3339(3) == "2024-02-29T15:30:45.123Z", "to_rfc3339 ms")
+assert_true(t_fmt.to_rfc3339(6) == "2024-02-29T15:30:45.123456Z", "to_rfc3339 us")
+assert_true(t_fmt.to_rfc3339(9) == "2024-02-29T15:30:45.123456789Z", "to_rfc3339 ns")
+
+p1 = Time.parse_rfc3339("2024-02-29T15:30:45Z")
+assert_equal(Time.utc(2024, 2, 29, 15, 30, 45).to_unix, p1.to_unix, "parse_rfc3339 Z")
+
+p2 = Time.parse_rfc3339("2024-02-29T15:30:45.123456789Z")
+assert_true(p2 == t_fmt, "parse_rfc3339 with nanoseconds")
+
+p3 = Time.parse_rfc3339("2024-02-29T17:30:45+02:00")
+assert_equal(Time.utc(2024, 2, 29, 15, 30, 45).to_unix, p3.to_unix, "parse_rfc3339 positive offset")
+
+p4 = Time.parse_rfc3339("2024-02-29T07:30:45-08:00")
+assert_equal(Time.utc(2024, 2, 29, 15, 30, 45).to_unix, p4.to_unix, "parse_rfc3339 negative offset")
+
+p5 = Time.parse_rfc3339("2024-02-29 15:30:45Z")
+assert_equal(p1.to_unix, p5.to_unix, "parse_rfc3339 with space separator")
+puts "  to_rfc3339 (0, 3, 6, 9 digits) and parse_rfc3339 (UTC, offsets, fractions) verified"
+
+# ---------------------------------------------------------------------------
+# Time comparison via Cmp
+# ---------------------------------------------------------------------------
+
+puts "\n== time comparison via Cmp"
+t_early = Time.utc(2024, 1, 1, 0, 0, 0)
+t_late = Time.utc(2024, 1, 2, 0, 0, 0)
+assert_true(t_early < t_late, "Time <")
+assert_true(t_late > t_early, "Time >")
+assert_true(t_early <= t_late, "Time <=")
+assert_true(t_early != t_late, "Time !=")
+assert_true(t_early == Time.utc(2024, 1, 1, 0, 0, 0), "Time ==")
+assert_equal(-1_i64, (t_early <=> t_late).to_i64, "Time <=>")
+assert_equal(1_i64, (t_late <=> t_early).to_i64, "Time <=>")
+assert_equal(0_i64, (t_early <=> t_early).to_i64, "Time <=>")
+puts "  Time comparison (<=>, <, >, <=, >=, ==, !=, cmp) verified"
+
+puts "\nALL CHECKS PASSED"

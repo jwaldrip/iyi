@@ -148,6 +148,10 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r"struct Int32", "the fixture's reopening of a library type"),
     (r"stays Crystal", "where a reopening belongs (SPEC.md III.6)"),
     (r"Crystal::EventLoop", "a class inside Crystal's standard library"),
+    # Crystal's DWARF reader, arriving with the 1.22 merge: the spec exercises
+    # `Crystal::DWARF` directly, and that is the namespace the class is
+    # actually in, on the `--crystal` side this fork keeps whole.
+    (r"Crystal::DWARF", "a namespace inside Crystal's standard library"),
     # A constant `openssl_ext` defines inside its own `lib`, named for the
     # language whose `IO` it bridges. A boundary that reopens a namespace the
     # library already has must not assign it twice, and naming the one that

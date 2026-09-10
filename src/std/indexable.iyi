@@ -1,0 +1,403 @@
+# `Indexable`, ported for iyi standard library.
+#
+# Random-access sequence abstraction: the second load-bearing trait in
+# the standard library, sitting under Array, Slice, Deque, and other indexed
+# collections. It builds on Enumerable by requiring only two methods:
+#
+#   * `abstract def size : Int32`
+#   * `abstract def unsafe_fetch(index : Int32) : Elem`
+#
+# From these two requirements, Indexable supplies:
+#   * Indexed access: `[]` and `[]?` with negative index resolution (e.g. `a[-1]`)
+#   * Boundary elements: `first`, `first?`, `last`, `last?` in O(1)
+#   * Default and block-based fetching: `fetch`
+#   * Forward and reverse element search: `index`, `rindex`
+#   * Index and reverse iteration: `each_index`, `reverse_each`
+#   * Multi-element lookup: `values_at`
+#   * Slicing and windowing: `each_slice`, `each_cons`
+#   * Selection and search: `sample`, `bsearch`, `bsearch_index`
+#   * Structural inspection: `dig`, `dig?`, `equals?`
+#   * Serialization and conversions: `join`, `to_a`, `hash`
+#   * Default iteration: `def each` which satisfies Enumerable requirements
+
+module std/indexable
+
+import std/enumerable
+using std/enumerable::{Enumerable}
+import std/traits
+using std/traits::{Cmp, Hashable}
+
+pub trait Indexable
+  type Elem
+
+  abstract def size : Int32
+  abstract def unsafe_fetch(index : Int32) : Elem
+
+  # ---- iteration -----------------------------------------------------------
+
+  # Default iteration yielding elements sequentially from 0 up to size - 1.
+  # Satisfies Enumerable's abstract def each requirement.
+  def each(& : Elem -> Nil) : Nil
+    i = 0
+    while i < size
+      yield unsafe_fetch(i)
+      i = i + 1
+    end
+  end
+
+  # Returns true when the collection contains no elements.
+  def empty? : Bool
+    size == 0
+  end
+
+  # Yields each valid index from 0 up to size - 1.
+  def each_index(& : Int32 -> Nil) : Nil
+    i = 0
+    while i < size
+      yield i
+      i = i + 1
+    end
+  end
+
+  # Yields elements in reverse order, from size - 1 down to 0.
+  def reverse_each(& : Elem -> Nil) : Nil
+    i = size - 1
+    while i >= 0
+      yield unsafe_fetch(i)
+      i = i - 1
+    end
+  end
+
+  # ---- indexing ------------------------------------------------------------
+
+  # Returns the element at the given index. Negative indices count from the
+  # end, so `a[-1]` returns the last element. Raises when index is out of bounds.
+  def [](index : Int32) : Elem
+    index = size + index if index < 0
+    raise "index out of range" if index < 0 || index >= size
+    unsafe_fetch(index)
+  end
+
+  # Returns the element at the given index, or nil when index is out of bounds.
+  # Negative indices count from the end.
+  def []?(index : Int32) : Elem?
+    index = size + index if index < 0
+    return nil if index < 0 || index >= size
+    unsafe_fetch(index)
+  end
+
+  # Returns the element at index. If out of bounds, returns the default value.
+  def fetch(index : Int32, default : Elem) : Elem
+    index = size + index if index < 0
+    if index < 0 || index >= size
+      default
+    else
+      unsafe_fetch(index)
+    end
+  end
+
+  # Returns the element at index. If out of bounds, yields the original index
+  # to the given block and returns its result.
+  def fetch(index : Int32, & : Int32 -> Elem) : Elem
+    orig = index
+    index = size + index if index < 0
+    if index < 0 || index >= size
+      yield orig
+    else
+      unsafe_fetch(index)
+    end
+  end
+
+  # ---- boundaries ----------------------------------------------------------
+
+  # Returns the first element. Raises when the collection is empty.
+  def first : Elem
+    raise "first of an empty collection" if empty?
+    unsafe_fetch(0)
+  end
+
+  # Returns the first element, or nil when the collection is empty.
+  def first? : Elem?
+    empty? ? nil : unsafe_fetch(0)
+  end
+
+  # Returns the last element. Raises when the collection is empty.
+  def last : Elem
+    raise "last of an empty collection" if empty?
+    unsafe_fetch(size - 1)
+  end
+
+  # Returns the last element, or nil when the collection is empty.
+  def last? : Elem?
+    empty? ? nil : unsafe_fetch(size - 1)
+  end
+
+  # ---- search --------------------------------------------------------------
+
+  # Returns the first index where element equals value, or nil if not found.
+  def index(value : Elem) : Int32?
+    i = 0
+    while i < size
+      return i if unsafe_fetch(i) == value
+      i = i + 1
+    end
+    nil
+  end
+
+  # Returns the first index for which the block returns true, or nil.
+  def index(& : Elem -> Bool) : Int32?
+    i = 0
+    while i < size
+      return i if yield unsafe_fetch(i)
+      i = i + 1
+    end
+    nil
+  end
+
+  # Returns the last index where element equals value, or nil if not found.
+  def rindex(value : Elem) : Int32?
+    i = size - 1
+    while i >= 0
+      return i if unsafe_fetch(i) == value
+      i = i - 1
+    end
+    nil
+  end
+
+  # Returns the last index for which the block returns true, or nil.
+  def rindex(& : Elem -> Bool) : Int32?
+    i = size - 1
+    while i >= 0
+      return i if yield unsafe_fetch(i)
+      i = i - 1
+    end
+    nil
+  end
+
+  # Binary search on a sorted collection. Returns the first element for which
+  # the block returns true, or nil if no element matches.
+  def bsearch(& : Elem -> Bool) : Elem?
+    idx = bsearch_index { |val| yield val }
+    idx ? unsafe_fetch(idx) : nil
+  end
+
+  # Binary search returning the index of the first element for which the block
+  # returns true, or nil.
+  def bsearch_index(& : Elem -> Bool) : Int32?
+    low = 0
+    high = size
+    while low < high
+      mid = low + (high - low) // 2
+      if yield unsafe_fetch(mid)
+        high = mid
+      else
+        low = mid + 1
+      end
+    end
+    low < size && (yield unsafe_fetch(low)) ? low : nil
+  end
+
+  # ---- multi-element access ------------------------------------------------
+
+  # Returns an Array containing elements at the given indices.
+  def values_at(*indexes : Int32) : Array(Elem)
+    result = Array(Elem).new(indexes.size)
+    i = 0
+    while i < indexes.size
+      result << self[indexes[i]]
+      i = i + 1
+    end
+    result
+  end
+
+  # Returns an Array containing elements at the given indices array.
+  def values_at(indexes : Array(Int32)) : Array(Elem)
+    result = Array(Elem).new(indexes.size)
+    i = 0
+    while i < indexes.size
+      result << self[indexes[i]]
+      i = i + 1
+    end
+    result
+  end
+
+  # Yields slices of n elements each to the given block.
+  def each_slice(n : Int32, & : Array(Elem) -> Nil) : Nil
+    raise "slice size must be positive" if n <= 0
+    i = 0
+    while i < size
+      slice = [] of Elem
+      j = 0
+      while j < n && (i + j) < size
+        slice << unsafe_fetch(i + j)
+        j = j + 1
+      end
+      yield slice
+      i = i + n
+    end
+  end
+
+  # Returns an Array of slices of n elements each.
+  def each_slice(n : Int32) : Array(Array(Elem))
+    slices = [] of Array(Elem)
+    each_slice(n) { |s| slices << s }
+    slices
+  end
+
+  # Yields consecutive overlapping windows of n elements each.
+  def each_cons(n : Int32, & : Array(Elem) -> Nil) : Nil
+    raise "cons size must be positive" if n <= 0
+    return if n > size
+    i = 0
+    while i <= size - n
+      window = [] of Elem
+      j = 0
+      while j < n
+        window << unsafe_fetch(i + j)
+        j = j + 1
+      end
+      yield window
+      i = i + 1
+    end
+  end
+
+  # Returns an Array of consecutive overlapping windows of n elements each.
+  def each_cons(n : Int32) : Array(Array(Elem))
+    result = [] of Array(Elem)
+    each_cons(n) { |w| result << w }
+    result
+  end
+
+  # ---- sampling ------------------------------------------------------------
+
+  # Returns a sample element from the collection. Raises if empty.
+  def sample : Elem
+    raise "can't sample empty collection" if empty?
+    unsafe_fetch(size // 2)
+  end
+
+  # Returns a pseudo-random element using a 64-bit linear congruential generator
+  # initialized with the given seed. Deterministic across runs for a given seed.
+  def sample(seed : Int32) : Elem
+    raise "can't sample empty collection" if empty?
+    val = (seed.to_u64 &* 6364136223846793005_u64) &+ 1442695040888963407_u64
+    idx = (val % size.to_u64).to_i32
+    unsafe_fetch(idx)
+  end
+
+  # Returns a sample element using the index returned by the caller's block.
+  def sample(& : Int32 -> Int32) : Elem
+    raise "can't sample empty collection" if empty?
+    idx = yield size
+    self[idx]
+  end
+
+  # ---- nested navigation ---------------------------------------------------
+
+  # Single-index navigation.
+  def dig(index : Int32) : Elem
+    self[index]
+  end
+
+  # Single-index nilable navigation.
+  def dig?(index : Int32) : Elem?
+    self[index]?
+  end
+
+  # Multi-level navigation across nested indexable structures.
+  def dig(index : Int32, *subindexes)
+    val = self[index]
+    if val.responds_to?(:dig)
+      val.dig(*subindexes)
+    else
+      val
+    end
+  end
+
+  # Multi-level nilable navigation across nested indexable structures.
+  def dig?(index : Int32, *subindexes)
+    val = self[index]?
+    return nil if val.nil?
+    if val.responds_to?(:dig?)
+      val.dig?(*subindexes)
+    else
+      val
+    end
+  end
+
+  # ---- comparison and equality ---------------------------------------------
+
+  # Structural equality comparing collection size and element values.
+  def equals?(other : self) : Bool
+    return false unless size == other.size
+    i = 0
+    while i < size
+      return false unless unsafe_fetch(i) == other.unsafe_fetch(i)
+      i = i + 1
+    end
+    true
+  end
+
+  # Structural equality comparing elements with a custom predicate block.
+  def equals?(other : self, & : Elem, Elem -> Bool) : Bool
+    return false unless size == other.size
+    i = 0
+    while i < size
+      return false unless yield unsafe_fetch(i), other.unsafe_fetch(i)
+      i = i + 1
+    end
+    true
+  end
+
+  # ---- conversion and formatting -------------------------------------------
+
+  # Joins element string representations with the specified separator.
+  def join(separator : String = "") : String
+    result = ""
+    first = true
+    i = 0
+    while i < size
+      result = result + separator unless first
+      result = result + unsafe_fetch(i).to_s
+      first = false
+      i = i + 1
+    end
+    result
+  end
+
+  # Copies elements into a newly allocated Array with pre-allocated capacity.
+  def to_a : Array(Elem)
+    result = Array(Elem).new(size)
+    i = 0
+    while i < size
+      result << unsafe_fetch(i)
+      i = i + 1
+    end
+    result
+  end
+
+  # Computes a hash code by combining element hash values.
+  def hash : Int32
+    h = size
+    i = 0
+    while i < size
+      elem = unsafe_fetch(i)
+      h = 31 * h + (elem.responds_to?(:hash) ? elem.hash : 0)
+      i = i + 1
+    end
+    h
+  end
+end
+
+# Implement Indexable for the prelude's Array(T).
+#
+# Array(T) already provides `size : Int32`, `[]`, `[]?`, `each`, etc.
+# Providing `unsafe_fetch` maps directly to uncheck-indexed buffer access
+# through `to_unsafe[index]`, equipping Array with the full Indexable trait.
+impl Indexable for Array(T) forall T
+  type Elem = T
+
+  def unsafe_fetch(index : Int32) : T
+    to_unsafe[index]
+  end
+end

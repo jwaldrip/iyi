@@ -1,0 +1,303 @@
+# Exercise for `src/std/indexable.iyi`.
+#
+# Verifies the full surface of the Indexable trait across two types:
+#   1. The prelude's `Array(T)` equipped with `impl Indexable`.
+#   2. `MinimalSeq(T)`, a custom type implementing ONLY `size` and `unsafe_fetch`,
+#      receiving all Indexable defaults and satisfying Enumerable without writing
+#      `def each`.
+#
+# Every method in `src/std/indexable.iyi` is exercised here.
+
+module bench/std_indexable_exercise
+
+import std/indexable
+using std/indexable::{Indexable}
+import std/enumerable
+using std/enumerable::{Enumerable}
+
+# Minimal custom sequence implementing ONLY the two requirements.
+# Does NOT implement `def each`. Indexable supplies `def each`, which then
+# satisfies Enumerable's requirement check with an empty impl body.
+pub struct MinimalSeq(T)
+  @data : Array(T)
+
+  def initialize(@data : Array(T))
+  end
+end
+
+impl Indexable for MinimalSeq(T) forall T
+  type Elem = T
+
+  def size : Int32
+    @data.size
+  end
+
+  def unsafe_fetch(index : Int32) : T
+    @data.unsafe_fetch(index)
+  end
+end
+
+impl Enumerable for MinimalSeq(T) forall T
+  type Elem = T
+end
+
+# Nested box for testing dig and dig?
+pub struct NestedBox
+  @data : Array(Array(Int32))
+
+  def initialize(@data : Array(Array(Int32)))
+  end
+end
+
+impl Indexable for NestedBox
+  type Elem = Array(Int32)
+
+  def size : Int32
+    @data.size
+  end
+
+  def unsafe_fetch(index : Int32) : Array(Int32)
+    @data.unsafe_fetch(index)
+  end
+end
+
+def assert_true(cond : Bool, msg : String) : Nil
+  raise "assertion failed: #{msg}" unless cond
+end
+
+def assert_equal(expected : String, actual : String, msg : String) : Nil
+  raise "expected '#{expected}', got '#{actual}' in #{msg}" unless expected == actual
+end
+
+# 1. Array(T) surface
+puts "== array surface"
+arr = [10, 20, 30, 40, 50]
+
+assert_true(arr.size == 5, "array size")
+assert_true(!arr.empty?, "array empty?")
+
+# Indexing and negative index resolution
+assert_true(arr[0] == 10, "arr[0]")
+assert_true(arr[2] == 30, "arr[2]")
+assert_true(arr[4] == 50, "arr[4]")
+assert_true(arr[-1] == 50, "arr[-1]")
+assert_true(arr[-2] == 40, "arr[-2]")
+assert_true(arr[-5] == 10, "arr[-5]")
+
+# Nilable indexing
+assert_true(arr[0]? == 10, "arr[0]?")
+assert_true(arr[-1]? == 50, "arr[-1]?")
+assert_true(arr[5]?.nil?, "arr[5]? out of range")
+assert_true(arr[-6]?.nil?, "arr[-6]? out of range")
+
+# Boundaries
+assert_true(arr.first == 10, "arr.first")
+assert_true(arr.first? == 10, "arr.first?")
+assert_true(arr.last == 50, "arr.last")
+assert_true(arr.last? == 50, "arr.last?")
+
+# Fetch
+assert_true(arr.fetch(1, 999) == 20, "fetch in bounds")
+assert_true(arr.fetch(10, 999) == 999, "fetch out of bounds default")
+assert_true(arr.fetch(-1, 999) == 50, "fetch negative in bounds")
+assert_true(arr.fetch(10) { |i| i * 100 } == 1000, "fetch block out of bounds")
+assert_true(arr.fetch(-10) { |i| i * 10 } == -100, "fetch block negative out of bounds")
+
+# Search: index and rindex
+assert_true(arr.index(30) == 2, "index by value")
+assert_true(arr.index(999).nil?, "index not found")
+assert_true(arr.index { |x| x > 25 } == 2, "index by predicate")
+assert_true(arr.index { |x| x > 999 }.nil?, "index predicate not found")
+
+assert_true(arr.rindex(40) == 3, "rindex by value")
+assert_true(arr.rindex(999).nil?, "rindex not found")
+assert_true(arr.rindex { |x| x < 45 } == 3, "rindex by predicate")
+assert_true(arr.rindex { |x| x < 0 }.nil?, "rindex predicate not found")
+
+# Index and reverse iteration
+idx_sum = 0
+arr.each_index { |i| idx_sum = idx_sum + i }
+assert_true(idx_sum == 10, "each_index sum")
+
+rev_result = [] of Int32
+arr.reverse_each { |x| rev_result << x }
+assert_equal("50,40,30,20,10", rev_result.join(","), "reverse_each")
+
+# Values_at
+va_splat = arr.values_at(0, -1, 2)
+assert_equal("10,50,30", va_splat.join(","), "values_at splat")
+
+va_array = arr.values_at([3, 1])
+assert_equal("40,20", va_array.join(","), "values_at array")
+
+# Slicing and windowing
+slices = arr.each_slice(2)
+assert_true(slices.size == 3, "each_slice size")
+assert_equal("10,20", slices[0].join(","), "slice 0")
+assert_equal("30,40", slices[1].join(","), "slice 1")
+assert_equal("50", slices[2].join(","), "slice 2")
+
+slice_accum = [] of String
+arr.each_slice(2) { |s| slice_accum << s.join("+") }
+assert_equal("10+20,30+40,50", slice_accum.join(","), "each_slice block")
+
+windows = arr.each_cons(3)
+assert_true(windows.size == 3, "each_cons size")
+assert_equal("10,20,30", windows[0].join(","), "cons 0")
+assert_equal("20,30,40", windows[1].join(","), "cons 1")
+assert_equal("30,40,50", windows[2].join(","), "cons 2")
+
+cons_accum = [] of String
+arr.each_cons(3) { |w| cons_accum << w.join("+") }
+assert_equal("10+20+30,20+30+40,30+40+50", cons_accum.join(","), "each_cons block")
+
+# Sampling
+s_default = arr.sample
+assert_true(arr.includes?(s_default), "sample default in range")
+
+s_seed1 = arr.sample(42)
+s_seed2 = arr.sample(42)
+assert_true(s_seed1 == s_seed2, "sample deterministic for same seed")
+
+s_block = arr.sample { |sz| 1 }
+assert_true(s_block == 20, "sample with custom block")
+
+# Binary search
+bs_elem = arr.bsearch { |x| x >= 35 }
+assert_true(bs_elem == 40, "bsearch found")
+assert_true(arr.bsearch { |x| x > 100 }.nil?, "bsearch not found")
+
+bs_idx = arr.bsearch_index { |x| x >= 35 }
+assert_true(bs_idx == 3, "bsearch_index found")
+assert_true(arr.bsearch_index { |x| x > 100 }.nil?, "bsearch_index not found")
+
+# Dig single and multi-level
+assert_true(arr.dig(2) == 30, "dig flat")
+assert_true(arr.dig?(2) == 30, "dig? flat")
+assert_true(arr.dig?(10).nil?, "dig? out of bounds")
+
+nested = NestedBox.new([[1, 2], [3, 4, 5], [6]])
+assert_true(nested.dig(1, 2) == 5, "dig nested")
+assert_true(nested.dig?(1, 2) == 5, "dig? nested")
+assert_true(nested.dig?(1, 10).nil?, "dig? nested out of bounds")
+assert_true(nested.dig?(10, 0).nil?, "dig? outer out of bounds")
+
+# Equals
+arr_copy = [10, 20, 30, 40, 50]
+arr_diff = [10, 20, 99, 40, 50]
+assert_true(arr.equals?(arr_copy), "equals? same elements")
+assert_true(!arr.equals?(arr_diff), "equals? different elements")
+assert_true(!arr.equals?([10, 20]), "equals? different size")
+
+assert_true(arr.equals?(arr_copy) { |a, b| a == b }, "equals? with block true")
+assert_true(!arr.equals?(arr_diff) { |a, b| a == b }, "equals? with block false")
+
+# Join, to_a, hash
+assert_equal("10-20-30-40-50", arr.join("-"), "join with dash")
+assert_equal("1020304050", arr.join, "join with default empty separator")
+
+arr_to_a = arr.to_a
+assert_true(arr_to_a.size == 5, "to_a size")
+assert_equal("10,20,30,40,50", arr_to_a.join(","), "to_a elements")
+
+h1 = arr.hash
+h2 = arr_copy.hash
+assert_true(h1 != 0, "hash non-zero")
+assert_true(h1 == h2, "hash identical for identical contents")
+
+puts "array surface: all passed"
+
+# 2. MinimalSeq(T) surface: only size and unsafe_fetch implemented
+puts "== minimal sequence surface"
+seq = MinimalSeq(Int32).new([1, 2, 3, 4, 5])
+
+# Indexable methods on MinimalSeq
+assert_true(seq.size == 5, "seq size")
+assert_true(!seq.empty?, "seq empty?")
+assert_true(seq[0] == 1, "seq[0]")
+assert_true(seq[-1] == 5, "seq[-1]")
+assert_true(seq[2]? == 3, "seq[2]?")
+assert_true(seq.first == 1, "seq.first")
+assert_true(seq.first? == 1, "seq.first?")
+assert_true(seq.last == 5, "seq.last")
+assert_true(seq.last? == 5, "seq.last?")
+assert_true(seq.fetch(10, 99) == 99, "seq fetch default")
+assert_true(seq.fetch(1, 99) == 2, "seq fetch in bounds")
+assert_true(seq.fetch(10) { |i| i * 2 } == 20, "seq fetch block")
+assert_true(seq.index(3) == 2, "seq index value")
+assert_true(seq.index { |x| x == 4 } == 3, "seq index predicate")
+assert_true(seq.rindex(2) == 1, "seq rindex value")
+assert_true(seq.rindex { |x| x <= 3 } == 2, "seq rindex predicate")
+assert_equal("1,3,5", seq.values_at(0, 2, 4).join(","), "seq values_at splat")
+assert_equal("2,4", seq.values_at([1, 3]).join(","), "seq values_at array")
+assert_equal("1-2-3-4-5", seq.join("-"), "seq join")
+assert_equal("1,2,3,4,5", seq.to_a.join(","), "seq to_a")
+assert_true(seq.bsearch { |x| x >= 3 } == 3, "seq bsearch")
+assert_true(seq.bsearch_index { |x| x >= 3 } == 2, "seq bsearch_index")
+assert_true(seq.sample(10) >= 1 && seq.sample(10) <= 5, "seq sample seeded")
+assert_true(seq.equals?(seq), "seq equals? self")
+
+# 12+ Enumerable methods on MinimalSeq:
+# all satisfied via Indexable's def each, without MinimalSeq writing def each
+assert_true(seq.any? { |x| x == 3 }, "seq any?")
+assert_true(seq.all? { |x| x > 0 }, "seq all?")
+assert_true(seq.none? { |x| x < 0 }, "seq none?")
+assert_true(seq.one? { |x| x == 5 }, "seq one?")
+assert_true(seq.count { |x| x % 2 == 1 } == 3, "seq count")
+assert_true(seq.find? { |x| x == 4 } == 4, "seq find? found")
+assert_true(seq.find? { |x| x == 99 }.nil?, "seq find? not found")
+assert_true(seq.find { |x| x == 4 } == 4, "seq find")
+assert_equal("2,4,6,8,10", seq.map { |x| x * 2 }.join(","), "seq map")
+assert_equal("1,3,5", seq.select { |x| x % 2 == 1 }.join(","), "seq select")
+assert_equal("2,4", seq.reject { |x| x % 2 == 1 }.join(","), "seq reject")
+assert_true(seq.reduce(0) { |acc, x| acc + x } == 15, "seq reduce")
+assert_true(seq.includes?(4), "seq includes? true")
+assert_true(!seq.includes?(99), "seq includes? false")
+
+puts "minimal sequence surface: all passed"
+
+# 3. Empty collection handling
+puts "== empty collection handling"
+empty_seq = MinimalSeq(Int32).new([] of Int32)
+assert_true(empty_seq.empty?, "empty_seq is empty")
+assert_true(empty_seq.size == 0, "empty_seq size 0")
+assert_true(empty_seq[0]?.nil?, "empty_seq[0]? is nil")
+assert_true(empty_seq[-1]?.nil?, "empty_seq[-1]? is nil")
+assert_true(empty_seq.first?.nil?, "empty_seq.first? is nil")
+assert_true(empty_seq.last?.nil?, "empty_seq.last? is nil")
+assert_true(empty_seq.fetch(0, 99) == 99, "empty_seq fetch default")
+assert_equal("", empty_seq.join(","), "empty_seq join empty")
+assert_true(empty_seq.to_a.empty?, "empty_seq to_a empty")
+assert_true(empty_seq.each_slice(2).empty?, "empty_seq each_slice empty")
+assert_true(empty_seq.each_cons(2).empty?, "empty_seq each_cons empty")
+assert_true(empty_seq.bsearch { |x| x > 0 }.nil?, "empty_seq bsearch nil")
+assert_true(empty_seq.index(1).nil?, "empty_seq index nil")
+assert_true(empty_seq.rindex(1).nil?, "empty_seq rindex nil")
+
+puts "empty collection handling: all passed"
+
+# 4. Probe triggers when invoked with an argument for failure proof testing
+if Program.args.size > 0
+  mode = Program.args[0]
+  case mode
+  when "probe_positive_out_of_range"
+    puts "triggering positive out of range raise:"
+    arr[10]
+  when "probe_negative_out_of_range"
+    puts "triggering negative out of range raise:"
+    arr[-10]
+  when "probe_empty_first"
+    puts "triggering empty first raise:"
+    empty_seq.first
+  when "probe_empty_last"
+    puts "triggering empty last raise:"
+    empty_seq.last
+  when "probe_empty_sample"
+    puts "triggering empty sample raise:"
+    empty_seq.sample
+  else
+    raise "unknown probe mode: #{mode}"
+  end
+end
+
+puts "all indexable checks passed"

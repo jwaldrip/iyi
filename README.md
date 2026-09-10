@@ -379,8 +379,8 @@ line so it cannot move unread.
 **Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 36 KB
 binary that starts in 1.6 ms; the same program compiled with Crystal's standard
 library is 1,553 KB and 3.2 ms. Nothing clever is happening: a program links what
-it uses, and iyi's own library is 11,886 lines rather than 8,161. The whole
-library is 470 KB on disk beside the binary.
+it uses, and iyi's own library is 14,732 lines rather than 8,161. The whole
+library is 555 KB on disk beside the binary.
 
 <sup>Sizes and start times are a plain `iyi build`, no flags, on macOS arm64
 with LLVM 22. They move with the platform and the LLVM, which is why they are
@@ -407,7 +407,7 @@ tar -xzf iyi-0.11.0-linux-x86_64.tar.gz -C ~/.local
 ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 
-The tarball is relocatable and carries both libraries: iyi's own 470 KB, and
+The tarball is relocatable and carries both libraries: iyi's own 555 KB, and
 Crystal's standard library for `--crystal`. `bin/iyi` finds them beside itself,
 so there is nothing to configure and no `IYI_PATH` to set. LLVM is inside the
 binary — a static minimal build from `scripts/build-static-llvm.sh`, the same
@@ -576,13 +576,13 @@ $ curl localhost:3000/json
 `pub`, traits with defaults, `impl … forall`, error unions and `!`, `.or`,
 `or_panic`, `defer` — all of them, on a program that requires a shard. R-2
 still refuses an export that does not write its types. What changes is what the
-program *has*: 8,161 lines of Crystal's standard library instead of 11,886
+program *has*: 8,161 lines of Crystal's standard library instead of 14,732
 lines of iyi's own prelude.
 
 **One name is unreachable, and it is a class of names.** `!` in iyi propagates
 an error, so a method whose name ends in one cannot be called from a `.iyi`
 file — `a.sort!` asks the compiler to propagate `Array(Int32)`'s errors, and it
-says so. Crystal's standard library has **51 such names**, `not_nil!`, `sort!`,
+says so. Crystal's standard library has **50 such names**, `not_nil!`, `sort!`,
 `map!`, `select!` and `uniq!` among them. What replaces them is what Crystal
 writes anyway when it wants a copy or a narrowing:
 
@@ -724,8 +724,8 @@ puts Box.new("hi").show                # => Box(hi)
 type already in scope would depend on what the file imports, and a library
 could change the meaning of your `impl` by adding an export.
 
-**One `each`, fifty-seven methods.** `samples/iyi/std/enumerable.iyi` is
-`Enumerable` ported to a trait: one requirement, 57 defaults. Implement the
+**One `each`, seventy more methods.** `src/std/enumerable.iyi` is
+`Enumerable` ported to a trait: one requirement, 70 defaults. Implement the
 requirement, answer the associated type, and the rest arrives. It is checked
 once at the `impl`, not at every call.
 
@@ -958,7 +958,7 @@ marked PROPOSED are the parts that will move under you.
 
 ## What is not here
 
-- **iyi's own library is 11,886 lines, and its IO is `puts`, `print`,
+- **iyi's own library is 14,732 lines, and its IO is `puts`, `print`,
   `read_input` and `File`**: integers, booleans, a string, one sequence, one
   dictionary, one range. `read_input` returns everything on standard input as
   one string, because there is no `IO` to keep the rest in. `File.read`,
@@ -969,7 +969,7 @@ marked PROPOSED are the parts that will move under you.
   line is about iyi's own.
 - **The prelude's collections are smaller than Crystal's.** A method is in
   there because a program in this repository needed it, so most of what you
-  reach for is not; `samples/iyi/std/enumerable.iyi` is where the rest is
+  reach for is not; `src/std/enumerable.iyi` is where the rest is
   being written, as trait defaults. `a[-1]` indexes from the end, the way
   Crystal's does; out of range after that wrap still raises.
   `samples/iyi/formatting.iyi` is the rest of the small set: `to_s(base)`,
@@ -1057,9 +1057,10 @@ marked PROPOSED are the parts that will move under you.
 | | |
 |---|---|
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
-| [`samples/iyi`](samples/iyi) | twenty programs: twelve documenting a part of it, seven being a first hour, and `calc`, a language |
+| [`samples/iyi`](samples/iyi) | twenty-six programs: eighteen documenting a part of it, seven being a first hour, and `calc`, a language |
 | [`samples/crystal/kemal`](samples/crystal/kemal) | a kemal application, from `shard.yml`: built from source and across four `.iyimod` boundaries |
-| [`src/iyi`](src/iyi) | iyi's own library, 11,886 lines. `--crystal` swaps it for Crystal's |
+| [`src/iyi`](src/iyi) | iyi's own library, 14,732 lines. `--crystal` swaps it for Crystal's |
+| [`src/std`](src/std) | the standard library, in iyi. Opt-in with `import std/...`, outside the prelude's ceiling |
 | [`src/compiler/iyi/iyimod.cr`](src/compiler/iyi/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |

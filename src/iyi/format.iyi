@@ -1,0 +1,899 @@
+# Format strings for iyi.
+#
+# Provides `sprintf`, `printf`, and `String.format` / `String#%` with
+# standard format specifiers:
+#
+#   `%[flags][width][.precision]specifier`
+#
+# Supported specifiers:
+#   %s - string (Object#to_s)
+#   %p - inspected value (Object#inspect)
+#   %c - character (Char or integer ASCII code)
+#   %d, %i - signed decimal integer
+#   %u - unsigned decimal integer
+#   %x - hexadecimal lowercase
+#   %X - hexadecimal uppercase
+#   %o - octal integer
+#   %b - binary integer
+#   %f - floating point in fixed-point decimal notation
+#   %e - floating point in scientific notation (lowercase e)
+#   %E - floating point in scientific notation (uppercase E)
+#   %% - literal percent sign
+#
+# Flags:
+#   -  left-align within field (default right-align)
+#   +  always show sign (+ or -)
+#   (space) space before non-negative numbers if no sign
+#   0  pad with zeros instead of spaces (between sign/prefix and digits)
+#   #  alternate format (0x, 0X, 0o, 0b prefixes, trailing dot for float prec 0)
+#
+# Width: minimum field width; values wider than field are never truncated.
+# Precision:
+#   integers: minimum digits to appear (padded with leading zeros);
+#             precision 0 on value 0 produces zero digits.
+#   floats: fractional decimal places, correctly rounded (half away from zero).
+#   strings: maximum characters to include (truncated if longer).
+
+struct Tuple
+  def size : Int32
+    {{ T.size }}
+  end
+
+  def [](index : Int32)
+    {% for i in 0...T.size %}
+      return self[{{i}}] if index == {{i}}
+    {% end %}
+    raise "too few arguments for format string"
+  end
+end
+
+struct UInt8
+  def to_s : String
+    to_i32.to_s
+  end
+
+  def to_s(base : Int32) : String
+    to_i32.to_s(base)
+  end
+end
+
+struct UInt64
+  def //(other : UInt64) : UInt64
+    raise "division by zero" if other == 0_u64
+    unsafe_div(other)
+  end
+
+  def %(other : UInt64) : UInt64
+    raise "modulo by zero" if other == 0_u64
+    unsafe_mod(other)
+  end
+
+  def to_s : String
+    to_s(10)
+  end
+
+  def to_s(base : Int32) : String
+    raise "base out of range" if base < 2 || base > 36
+    return "0" if self == 0_u64
+
+    radix = base.to_u64
+    digits = [] of Int32
+    temp = self
+    while temp > 0_u64
+      rem = (temp % radix).to_i64.to_i32
+      digits << rem
+      temp = temp // radix
+    end
+
+    bytesize = digits.size
+    String.new(bytesize) do |buffer|
+      at = 0
+      rev = bytesize - 1
+      while rev >= 0
+        d = digits[rev]
+        buffer[at] = d < 10 ? (48 + d).to_u8 : (87 + d).to_u8
+        at = at + 1
+        rev = rev - 1
+      end
+    end
+  end
+end
+
+struct Int64
+  def to_s : String
+    to_s(10)
+  end
+
+  # Writes digits backward using division on negative numbers so that
+  # Int64::MIN (-9223372036854775808) does not overflow negation.
+  def to_s(base : Int32) : String
+    raise "base out of range" if base < 2 || base > 36
+    return "0" if self == 0_i64
+
+    radix = base.to_i64
+    negative = self < 0_i64
+    digits = [] of Int32
+    temp = self
+    while temp != 0_i64
+      rem = temp % radix
+      d = rem < 0_i64 ? (0_i64 - rem).to_i32 : rem.to_i32
+      digits << d
+      temp = temp // radix
+    end
+
+    bytesize = negative ? digits.size + 1 : digits.size
+    String.new(bytesize) do |buffer|
+      at = 0
+      if negative
+        buffer[0] = 45_u8
+        at = 1
+      end
+      rev = digits.size - 1
+      while rev >= 0
+        d = digits[rev]
+        buffer[at] = d < 10 ? (48 + d).to_u8 : (87 + d).to_u8
+        at = at + 1
+        rev = rev - 1
+      end
+    end
+  end
+end
+
+module IyiFloatText
+  # Extracts Dragon4 digits for a non-zero, finite double.
+  # Returns {digits_pointer, count, k} where value = 0.d1 d2 ... dn * 10^k.
+  def self.dragon4(value : Float64) : {Pointer(UInt8), Int32, Int32}
+    bits = bits_of(value)
+    exponent_bits = bits.unsafe_shr(52_u64) & 2047_u64
+    fraction = bits & 4503599627370495_u64
+
+    hidden = 4503599627370496_u64
+    f = exponent_bits == 0_u64 ? fraction : fraction | hidden
+    e = exponent_bits == 0_u64 ? -1074 : exponent_bits.to_i64.to_i32 - 1075
+
+    unequal = fraction == 0_u64 && exponent_bits > 1_u64
+    r = IyiBig.new(f)
+    s = IyiBig.new(1_u64)
+    if e >= 0
+      r.shl(e + (unequal ? 2 : 1))
+      s.shl(unequal ? 2 : 1)
+      m_plus = IyiBig.new(1_u64)
+      m_plus.shl(unequal ? e + 1 : e)
+      m_minus = IyiBig.new(1_u64)
+      m_minus.shl(e)
+    else
+      r.shl(unequal ? 2 : 1)
+      s.shl(-e + (unequal ? 2 : 1))
+      m_plus = IyiBig.new(unequal ? 2_u64 : 1_u64)
+      m_minus = IyiBig.new(1_u64)
+    end
+
+    even = f & 1_u64 == 0_u64
+
+    length = 0
+    probe = f
+    while probe != 0_u64
+      probe = probe.unsafe_shr(1_u64)
+      length = length + 1
+    end
+    k = ((e + length - 1) * 1233) // 4096
+    k = k - 1 if (e + length - 1) < 0 && ((e + length - 1) * 1233) % 4096 != 0
+    k = k + 1
+    if k >= 0
+      s.mul_pow10(k)
+    else
+      r.mul_pow10(-k)
+      m_plus.mul_pow10(-k)
+      m_minus.mul_pow10(-k)
+    end
+    while (c = r.compare_sum(m_plus, s)) > 0 || (c == 0 && even)
+      s.mul_small(10_u64)
+      k = k + 1
+    end
+    while true
+      r_ten = r.copy
+      r_ten.mul_small(10_u64)
+      m_ten = m_plus.copy
+      m_ten.mul_small(10_u64)
+      c = r_ten.compare_sum(m_ten, s)
+      break if c > 0 || (c == 0 && even)
+      r.mul_small(10_u64)
+      m_plus.mul_small(10_u64)
+      m_minus.mul_small(10_u64)
+      k = k - 1
+    end
+
+    digits = Pointer(UInt8).malloc(24_u64)
+    count = 0
+    while true
+      r.mul_small(10_u64)
+      m_plus.mul_small(10_u64)
+      m_minus.mul_small(10_u64)
+      digit = r.divide_digit(s)
+      low_c = r.compare(m_minus)
+      low = low_c < 0 || (low_c == 0 && even)
+      high_c = r.compare_sum(m_plus, s)
+      high = high_c > 0 || (high_c == 0 && even)
+      if !low && !high
+        digits[count] = digit.to_u8
+        count = count + 1
+        next
+      end
+      if low && high
+        twice = r.copy
+        twice.shl(1)
+        c = twice.compare(s)
+        digit = digit + 1 if c > 0 || (c == 0 && digit % 2 == 1)
+      elsif high
+        digit = digit + 1
+      end
+      digits[count] = digit.to_u8
+      count = count + 1
+      break
+    end
+
+    {digits, count, k}
+  end
+
+  # Fixed-point decimal format with exact places, rounding half away from zero.
+  def self.format_fixed(value : Float64, precision : Int32) : String
+    bits = bits_of(value)
+    exponent_bits = bits.unsafe_shr(52_u64) & 2047_u64
+    fraction = bits & 4503599627370495_u64
+
+    if exponent_bits == 2047_u64
+      return fraction != 0_u64 ? "NaN" : (bits.unsafe_shr(63_u64) != 0_u64 ? "-Infinity" : "Infinity")
+    end
+    if exponent_bits == 0_u64 && fraction == 0_u64
+      if precision <= 0
+        return "0"
+      else
+        return "0." + ("0" * precision)
+      end
+    end
+
+    res = dragon4(value.abs)
+    raw_digits = res[0]
+    count = res[1]
+    k = res[2]
+
+    # Map place P to digit (P = 0 for units, -1 for tenths, etc.)
+    top_p = k - 1 > 0 ? k - 1 : 0
+    round_p = 0 - precision - 1
+
+    round_i = k - round_p
+    round_digit = (round_i >= 1 && round_i <= count) ? raw_digits[round_i - 1].to_i32 : 0
+    carry = round_digit >= 5 ? 1 : 0
+
+    place_digits = [] of Int32
+    p = 0 - precision
+    while p <= top_p || carry > 0
+      i = k - p
+      d = (i >= 1 && i <= count) ? raw_digits[i - 1].to_i32 : 0
+      d = d + carry
+      if d >= 10
+        place_digits << (d - 10)
+        carry = 1
+      else
+        place_digits << d
+        carry = 0
+      end
+      p = p + 1
+    end
+
+    actual_top = p - 1
+    actual_top = top_p if actual_top < top_p
+
+    int_digits = ""
+    cur = actual_top
+    while cur >= 0
+      offset = cur - (0 - precision)
+      d = (offset >= 0 && offset < place_digits.size) ? place_digits[offset] : 0
+      int_digits = int_digits + d.to_s
+      cur = cur - 1
+    end
+
+    if precision > 0
+      frac_digits = ""
+      cur = -1
+      while cur >= 0 - precision
+        offset = cur - (0 - precision)
+        d = (offset >= 0 && offset < place_digits.size) ? place_digits[offset] : 0
+        frac_digits = frac_digits + d.to_s
+        cur = cur - 1
+      end
+      int_digits + "." + frac_digits
+    else
+      int_digits
+    end
+  end
+
+  # Scientific notation with exact places and rounding half away from zero.
+  def self.format_exp(value : Float64, uppercase : Bool, precision : Int32, hash_flag : Bool) : String
+    bits = bits_of(value)
+    exponent_bits = bits.unsafe_shr(52_u64) & 2047_u64
+    fraction = bits & 4503599627370495_u64
+
+    if exponent_bits == 2047_u64
+      return fraction != 0_u64 ? "NaN" : (bits.unsafe_shr(63_u64) != 0_u64 ? "-Infinity" : "Infinity")
+    end
+    if exponent_bits == 0_u64 && fraction == 0_u64
+      e_tag = uppercase ? "E+00" : "e+00"
+      if precision <= 0
+        return hash_flag ? "0." + e_tag : "0" + e_tag
+      else
+        return "0." + ("0" * precision) + e_tag
+      end
+    end
+
+    res = dragon4(value.abs)
+    raw_digits = res[0]
+    count = res[1]
+    k = res[2]
+
+    exp = k - 1
+    total_needed = 1 + precision
+    round_idx = total_needed + 1
+
+    round_d = (round_idx >= 1 && round_idx <= count) ? raw_digits[round_idx - 1].to_i32 : 0
+    carry = round_d >= 5 ? 1 : 0
+
+    digits_out = [] of Int32
+    total_needed.times { digits_out << 0 }
+
+    idx = total_needed
+    while idx >= 1
+      d = (idx >= 1 && idx <= count) ? raw_digits[idx - 1].to_i32 : 0
+      d = d + carry
+      if d >= 10
+        digits_out[idx - 1] = d - 10
+        carry = 1
+      else
+        digits_out[idx - 1] = d
+        carry = 0
+      end
+      idx = idx - 1
+    end
+
+    if carry > 0
+      digits_out[0] = 1
+      z = 1
+      while z < total_needed
+        digits_out[z] = 0
+        z = z + 1
+      end
+      exp = exp + 1
+    end
+
+    int_part = digits_out[0].to_s
+    frac_part = ""
+    f_idx = 1
+    while f_idx < total_needed
+      frac_part = frac_part + digits_out[f_idx].to_s
+      f_idx = f_idx + 1
+    end
+
+    num = ""
+    if precision > 0
+      num = int_part + "." + frac_part
+    elsif hash_flag
+      num = int_part + "."
+    else
+      num = int_part
+    end
+
+    e_char = uppercase ? "E" : "e"
+    sign_char = exp >= 0 ? "+" : "-"
+    exp_mag = exp < 0 ? 0 - exp : exp
+    exp_str = exp_mag < 10 ? "0" + exp_mag.to_s : exp_mag.to_s
+    num + e_char + sign_char + exp_str
+  end
+end
+
+module IyiFormat
+  def self.format_int64(val : Int64, base : Int32, uppercase : Bool, signed : Bool, minus : Bool, plus : Bool, space : Bool, zero : Bool, hash : Bool, width : Int32, precision : Int32) : String
+    is_negative = val < 0_i64
+
+    sign = ""
+    if is_negative
+      sign = "-"
+    elsif signed
+      if plus
+        sign = "+"
+      elsif space
+        sign = " "
+      end
+    end
+
+    prefix = ""
+    if hash && val != 0_i64
+      if base == 16
+        prefix = uppercase ? "0X" : "0x"
+      elsif base == 8
+        prefix = "0o"
+      elsif base == 2
+        prefix = "0b"
+      end
+    end
+
+    digits = ""
+    if val == 0_i64
+      digits = precision == 0 ? "" : "0"
+    else
+      radix = base.to_i64
+      digit_list = [] of Int32
+      temp = val
+      while temp != 0_i64
+        rem = temp % radix
+        d = rem < 0_i64 ? (0_i64 - rem).to_i32 : rem.to_i32
+        digit_list << d
+        temp = temp // radix
+      end
+      bytesize = digit_list.size
+      hex_base = uppercase ? 55 : 87
+      digits = String.new(bytesize) do |buffer|
+        at = 0
+        rev = bytesize - 1
+        while rev >= 0
+          d = digit_list[rev]
+          buffer[at] = d < 10 ? (48 + d).to_u8 : (hex_base + d).to_u8
+          at = at + 1
+          rev = rev - 1
+        end
+      end
+    end
+
+    # Minimum digits padding
+    if precision >= 0
+      zero = false
+      if digits.bytesize < precision
+        digits = ("0" * (precision - digits.bytesize)) + digits
+      end
+    end
+
+    total_len = sign.bytesize + prefix.bytesize + digits.bytesize
+    if total_len < width
+      pad_count = width - total_len
+      if minus
+        sign + prefix + digits + (" " * pad_count)
+      elsif zero
+        sign + prefix + ("0" * pad_count) + digits
+      else
+        (" " * pad_count) + sign + prefix + digits
+      end
+    else
+      sign + prefix + digits
+    end
+  end
+
+  def self.format_uint64(val : UInt64, base : Int32, uppercase : Bool, signed : Bool, minus : Bool, plus : Bool, space : Bool, zero : Bool, hash : Bool, width : Int32, precision : Int32) : String
+    sign = ""
+    if signed
+      sign = "+" if plus
+      sign = " " if space && !plus
+    end
+
+    prefix = ""
+    if hash && val != 0_u64
+      if base == 16
+        prefix = uppercase ? "0X" : "0x"
+      elsif base == 8
+        prefix = "0o"
+      elsif base == 2
+        prefix = "0b"
+      end
+    end
+
+    digits = ""
+    if val == 0_u64
+      digits = precision == 0 ? "" : "0"
+    else
+      radix = base.to_u64
+      digit_list = [] of Int32
+      temp = val
+      while temp > 0_u64
+        rem = (temp % radix).to_i64.to_i32
+        digit_list << rem
+        temp = temp // radix
+      end
+      bytesize = digit_list.size
+      hex_base = uppercase ? 55 : 87
+      digits = String.new(bytesize) do |buffer|
+        at = 0
+        rev = bytesize - 1
+        while rev >= 0
+          d = digit_list[rev]
+          buffer[at] = d < 10 ? (48 + d).to_u8 : (hex_base + d).to_u8
+          at = at + 1
+          rev = rev - 1
+        end
+      end
+    end
+
+    if precision >= 0
+      zero = false
+      if digits.bytesize < precision
+        digits = ("0" * (precision - digits.bytesize)) + digits
+      end
+    end
+
+    total_len = sign.bytesize + prefix.bytesize + digits.bytesize
+    if total_len < width
+      pad_count = width - total_len
+      if minus
+        sign + prefix + digits + (" " * pad_count)
+      elsif zero
+        sign + prefix + ("0" * pad_count) + digits
+      else
+        (" " * pad_count) + sign + prefix + digits
+      end
+    else
+      sign + prefix + digits
+    end
+  end
+
+  def self.format_float64(val : Float64, minus : Bool, plus : Bool, space : Bool, zero : Bool, hash : Bool, width : Int32, precision : Int32) : String
+    prec = precision < 0 ? 6 : precision
+    bits = IyiFloatText.bits_of(val)
+    is_nan = (bits.unsafe_shr(52_u64) & 2047_u64 == 2047_u64) && (bits & 4503599627370495_u64 != 0_u64)
+    if is_nan
+      return format_string_arg("NaN", minus, width, -1)
+    end
+
+    is_inf = (bits.unsafe_shr(52_u64) & 2047_u64 == 2047_u64) && (bits & 4503599627370495_u64 == 0_u64)
+    if is_inf
+      str = bits.unsafe_shr(63_u64) != 0_u64 ? "-Infinity" : (plus ? "+Infinity" : (space ? " Infinity" : "Infinity"))
+      return format_string_arg(str, minus, width, -1)
+    end
+
+    is_negative = bits.unsafe_shr(63_u64) != 0_u64
+    sign = ""
+    if is_negative
+      sign = "-"
+    elsif plus
+      sign = "+"
+    elsif space
+      sign = " "
+    end
+
+    num_str = IyiFloatText.format_fixed(val.abs, prec)
+    if hash && prec == 0
+      num_str = num_str + "."
+    end
+
+    total_len = sign.bytesize + num_str.bytesize
+    if total_len < width
+      pad_count = width - total_len
+      if minus
+        sign + num_str + (" " * pad_count)
+      elsif zero
+        sign + ("0" * pad_count) + num_str
+      else
+        (" " * pad_count) + sign + num_str
+      end
+    else
+      sign + num_str
+    end
+  end
+
+  def self.format_float_exp(val : Float64, uppercase : Bool, minus : Bool, plus : Bool, space : Bool, zero : Bool, hash : Bool, width : Int32, precision : Int32) : String
+    prec = precision < 0 ? 6 : precision
+    bits = IyiFloatText.bits_of(val)
+    is_nan = (bits.unsafe_shr(52_u64) & 2047_u64 == 2047_u64) && (bits & 4503599627370495_u64 != 0_u64)
+    if is_nan
+      return format_string_arg("NaN", minus, width, -1)
+    end
+
+    is_inf = (bits.unsafe_shr(52_u64) & 2047_u64 == 2047_u64) && (bits & 4503599627370495_u64 == 0_u64)
+    if is_inf
+      str = bits.unsafe_shr(63_u64) != 0_u64 ? "-Infinity" : (plus ? "+Infinity" : (space ? " Infinity" : "Infinity"))
+      return format_string_arg(str, minus, width, -1)
+    end
+
+    is_negative = bits.unsafe_shr(63_u64) != 0_u64
+    sign = ""
+    if is_negative
+      sign = "-"
+    elsif plus
+      sign = "+"
+    elsif space
+      sign = " "
+    end
+
+    num_str = IyiFloatText.format_exp(val.abs, uppercase, prec, hash)
+
+    total_len = sign.bytesize + num_str.bytesize
+    if total_len < width
+      pad_count = width - total_len
+      if minus
+        sign + num_str + (" " * pad_count)
+      elsif zero
+        sign + ("0" * pad_count) + num_str
+      else
+        (" " * pad_count) + sign + num_str
+      end
+    else
+      sign + num_str
+    end
+  end
+
+  def self.format_string_arg(str : String, minus : Bool, width : Int32, precision : Int32) : String
+    res = str
+    if precision >= 0 && res.bytesize > precision
+      res = res[0, precision]
+    end
+    if res.bytesize < width
+      pad = " " * (width - res.bytesize)
+      minus ? res + pad : pad + res
+    else
+      res
+    end
+  end
+
+  def self.format_char_arg(val, minus : Bool, width : Int32) : String
+    ch = case val
+         when Char
+           val
+         when Int32
+           val.chr
+         when Int64
+           val.to_i32.chr
+         when UInt8
+           val.to_i32.chr
+         else
+           val.to_s.empty? ? ' ' : val.to_s[0]
+         end
+    s = ch.to_s
+    if width > 1
+      pad = " " * (width - 1)
+      minus ? s + pad : pad + s
+    else
+      s
+    end
+  end
+
+  def self.format_arg(val, verb : Char, minus : Bool, plus : Bool, space : Bool, zero : Bool, hash : Bool, width : Int32, precision : Int32) : String
+    case verb
+    when 's'
+      format_string_arg(val.to_s, minus, width, precision)
+    when 'p'
+      format_string_arg(val.inspect, minus, width, precision)
+    when 'c'
+      format_char_arg(val, minus, width)
+    when 'd', 'i'
+      case val
+      when Int32
+        format_int64(val.to_i64, 10, false, true, minus, plus, space, zero, hash, width, precision)
+      when Int64
+        format_int64(val, 10, false, true, minus, plus, space, zero, hash, width, precision)
+      when UInt64
+        format_uint64(val, 10, false, true, minus, plus, space, zero, hash, width, precision)
+      when UInt8
+        format_int64(val.to_i64, 10, false, true, minus, plus, space, zero, hash, width, precision)
+      else
+        format_string_arg(val.to_s, minus, width, precision)
+      end
+    when 'u'
+      case val
+      when Int32
+        format_int64(val < 0 ? (val.to_i64 & 4294967295_i64) : val.to_i64, 10, false, false, minus, plus, space, zero, hash, width, precision)
+      when Int64
+        format_int64(val, 10, false, false, minus, plus, space, zero, hash, width, precision)
+      when UInt64
+        format_uint64(val, 10, false, false, minus, plus, space, zero, hash, width, precision)
+      when UInt8
+        format_int64(val.to_i64, 10, false, false, minus, plus, space, zero, hash, width, precision)
+      else
+        format_string_arg(val.to_s, minus, width, precision)
+      end
+    when 'x'
+      case val
+      when Int32
+        format_int64(val.to_i64, 16, false, false, minus, plus, space, zero, hash, width, precision)
+      when Int64
+        format_int64(val, 16, false, false, minus, plus, space, zero, hash, width, precision)
+      when UInt64
+        format_uint64(val, 16, false, false, minus, plus, space, zero, hash, width, precision)
+      when UInt8
+        format_int64(val.to_i64, 16, false, false, minus, plus, space, zero, hash, width, precision)
+      else
+        format_string_arg(val.to_s, minus, width, precision)
+      end
+    when 'X'
+      case val
+      when Int32
+        format_int64(val.to_i64, 16, true, false, minus, plus, space, zero, hash, width, precision)
+      when Int64
+        format_int64(val, 16, true, false, minus, plus, space, zero, hash, width, precision)
+      when UInt64
+        format_uint64(val, 16, true, false, minus, plus, space, zero, hash, width, precision)
+      when UInt8
+        format_int64(val.to_i64, 16, true, false, minus, plus, space, zero, hash, width, precision)
+      else
+        format_string_arg(val.to_s, minus, width, precision)
+      end
+    when 'o'
+      case val
+      when Int32
+        format_int64(val.to_i64, 8, false, false, minus, plus, space, zero, hash, width, precision)
+      when Int64
+        format_int64(val, 8, false, false, minus, plus, space, zero, hash, width, precision)
+      when UInt64
+        format_uint64(val, 8, false, false, minus, plus, space, zero, hash, width, precision)
+      when UInt8
+        format_int64(val.to_i64, 8, false, false, minus, plus, space, zero, hash, width, precision)
+      else
+        format_string_arg(val.to_s, minus, width, precision)
+      end
+    when 'b'
+      case val
+      when Int32
+        format_int64(val.to_i64, 2, false, false, minus, plus, space, zero, hash, width, precision)
+      when Int64
+        format_int64(val, 2, false, false, minus, plus, space, zero, hash, width, precision)
+      when UInt64
+        format_uint64(val, 2, false, false, minus, plus, space, zero, hash, width, precision)
+      when UInt8
+        format_int64(val.to_i64, 2, false, false, minus, plus, space, zero, hash, width, precision)
+      else
+        format_string_arg(val.to_s, minus, width, precision)
+      end
+    when 'f'
+      case val
+      when Float64
+        format_float64(val, minus, plus, space, zero, hash, width, precision)
+      when Int32
+        format_float64(val.to_f64, minus, plus, space, zero, hash, width, precision)
+      when Int64
+        format_float64(val.to_f64, minus, plus, space, zero, hash, width, precision)
+      when UInt64
+        format_float64(val.to_f64, minus, plus, space, zero, hash, width, precision)
+      else
+        format_string_arg(val.to_s, minus, width, precision)
+      end
+    when 'e'
+      case val
+      when Float64
+        format_float_exp(val, false, minus, plus, space, zero, hash, width, precision)
+      when Int32
+        format_float_exp(val.to_f64, false, minus, plus, space, zero, hash, width, precision)
+      when Int64
+        format_float_exp(val.to_f64, false, minus, plus, space, zero, hash, width, precision)
+      when UInt64
+        format_float_exp(val.to_f64, false, minus, plus, space, zero, hash, width, precision)
+      else
+        format_string_arg(val.to_s, minus, width, precision)
+      end
+    when 'E'
+      case val
+      when Float64
+        format_float_exp(val, true, minus, plus, space, zero, hash, width, precision)
+      when Int32
+        format_float_exp(val.to_f64, true, minus, plus, space, zero, hash, width, precision)
+      when Int64
+        format_float_exp(val.to_f64, true, minus, plus, space, zero, hash, width, precision)
+      when UInt64
+        format_float_exp(val.to_f64, true, minus, plus, space, zero, hash, width, precision)
+      else
+        format_string_arg(val.to_s, minus, width, precision)
+      end
+    else
+      raise "unknown format specifier '%#{verb}'"
+    end
+  end
+end
+
+def sprintf(format_string : String, *args : *T) : String forall T
+  index = 0
+  format_bytesize = format_string.bytesize
+  format_ptr = format_string.to_unsafe
+  arg_index = 0
+  result = ""
+
+  while index < format_bytesize
+    byte = format_ptr[index]
+    if byte != 37_u8 # '%'
+      start = index
+      while index < format_bytesize && format_ptr[index] != 37_u8
+        index = index + 1
+      end
+      result = result + format_string[start, index - start]
+      next
+    end
+
+    index = index + 1
+    if index >= format_bytesize
+      raise "incomplete format specifier at end of string"
+    end
+
+    if format_ptr[index] == 37_u8 # '%%'
+      result = result + "%"
+      index = index + 1
+      next
+    end
+
+    minus = false
+    plus = false
+    space = false
+    zero = false
+    hash = false
+
+    parsing_flags = true
+    while parsing_flags && index < format_bytesize
+      case format_ptr[index]
+      when 45_u8 # '-'
+        minus = true
+        index = index + 1
+      when 43_u8 # '+'
+        plus = true
+        index = index + 1
+      when 32_u8 # ' '
+        space = true
+        index = index + 1
+      when 48_u8 # '0'
+        zero = true
+        index = index + 1
+      when 35_u8 # '#'
+        hash = true
+        index = index + 1
+      else
+        parsing_flags = false
+      end
+    end
+
+    zero = false if minus
+
+    width = 0
+    while index < format_bytesize && format_ptr[index] >= 48_u8 && format_ptr[index] <= 57_u8
+      width = width * 10 + (format_ptr[index] - 48_u8).to_i32
+      index = index + 1
+    end
+
+    precision = -1
+    if index < format_bytesize && format_ptr[index] == 46_u8 # '.'
+      index = index + 1
+      precision = 0
+      while index < format_bytesize && format_ptr[index] >= 48_u8 && format_ptr[index] <= 57_u8
+        precision = precision * 10 + (format_ptr[index] - 48_u8).to_i32
+        index = index + 1
+      end
+    end
+
+    if index >= format_bytesize
+      raise "incomplete format specifier at end of string"
+    end
+
+    verb = format_ptr[index].unsafe_chr
+    index = index + 1
+
+    val = args[arg_index]
+    arg_index = arg_index + 1
+
+    formatted = IyiFormat.format_arg(val, verb, minus, plus, space, zero, hash, width, precision)
+    result = result + formatted
+  end
+
+  result
+end
+
+def printf(format_string : String, *args : *T) : Nil forall T
+  print sprintf(format_string, *args)
+end
+
+class String
+  def self.format(format_string : String, *args : *T) : String forall T
+    sprintf(format_string, *args)
+  end
+
+  def %(args : Tuple) : String
+    sprintf(self, *args)
+  end
+
+  def %(arg) : String
+    sprintf(self, arg)
+  end
+
+  def %(*args : *T) : String forall T
+    sprintf(self, *args)
+  end
+end

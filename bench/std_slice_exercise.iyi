@@ -1,0 +1,234 @@
+# `std/slice` standard library exercise.
+# Tests every method and invariant of Slice(T) and Bytes.
+
+module bench/std_slice_exercise
+
+import std/slice
+using std/slice::{Slice}
+
+alias Bytes = Std::Slice::Bytes
+
+class BufferHolder
+  getter ptr : Pointer(UInt8)
+
+  def initialize(size : Int32)
+    @ptr = Pointer(UInt8).malloc(size.to_u64)
+  end
+end
+
+def make_interior_slice : Bytes
+  holder = BufferHolder.new(128)
+  i = 0
+  while i < 128
+    holder.ptr[i] = (i + 17).to_u8
+    i = i + 1
+  end
+  # Return subslice of the buffer (interior pointer at offset 32)
+  Bytes.new(holder.ptr + 32_i64, 64)
+end
+
+def main : Nil
+  puts "== slice constructors and basic properties"
+  s_empty = Slice(Int32).empty
+  puts "empty: size=#{s_empty.size} empty?=#{s_empty.empty?}"
+
+  s_val = Slice(Int32).new(4, 42)
+  puts "value new: #{s_val.to_s}"
+
+  s_block = Slice(Int32).new(5) { |i| (i + 1) * 10 }
+  puts "block new: #{s_block.to_s}"
+
+  raw_ptr = Pointer(Int32).malloc(3_u64)
+  raw_ptr[0] = 100
+  raw_ptr[1] = 200
+  raw_ptr[2] = 300
+  s_raw = Slice(Int32).new(raw_ptr, 3)
+  puts "raw ptr new: #{s_raw.to_s}"
+
+  s_ro = Slice(Int32).new(3, read_only: true) { |i| i * 5 }
+  puts "read only?: #{s_ro.read_only?} #{s_block.read_only?}"
+
+  puts "bytesize: #{s_block.bytesize} (expected #{5 * sizeof(Int32)})"
+  puts "to_unsafe: #{s_block.to_unsafe.address > 0_u64}"
+
+  puts "== unsafe accessors"
+  puts "unsafe_fetch: #{s_block.unsafe_fetch(2)}"
+  s_block.unsafe_put(2, 999)
+  puts "unsafe_put: #{s_block.unsafe_fetch(2)}"
+  s_block[2] = 30
+
+  puts "== indexing and bounds"
+  puts "index 0: #{s_block[0]}"
+  puts "index -1: #{s_block[-1]}"
+  puts "index -2: #{s_block[-2]}"
+  puts "index 1?: #{s_block[1]?}"
+  puts "index 99?: #{s_block[99]?.inspect}"
+  puts "index -99?: #{s_block[-99]?.inspect}"
+
+  s_block[0] = 11
+  s_block[-1] = 55
+  puts "indexed write: #{s_block.to_s}"
+  s_block[0] = 10
+  s_block[-1] = 50
+
+  puts "== subslicing"
+  s_sub_plus = s_block + 2
+  puts "subslice +: #{s_sub_plus.to_s}"
+
+  s_sub_count = s_block[1, 3]
+  puts "subslice count: #{s_sub_count.to_s}"
+  puts "subslice count out of bounds?: #{s_block[1, 10]?.inspect}"
+
+  s_sub_range_inc = s_block[1..3]
+  puts "subslice range inclusive: #{s_sub_range_inc.to_s}"
+
+  s_sub_range_exc = s_block[1...3]
+  puts "subslice range exclusive: #{s_sub_range_exc.to_s}"
+
+  puts "subslice range?: #{s_block[1..10]?.inspect}"
+
+  puts "== copying and moving"
+  dst = Slice(Int32).new(5, 0)
+  src = Slice(Int32).new(3) { |i| i + 1 }
+  src.copy_to(dst)
+  puts "copy_to slice: #{dst.to_s}"
+
+  dst2 = Slice(Int32).new(3, 0)
+  dst2.copy_from(src)
+  puts "copy_from slice: #{dst2.to_s}"
+
+  ptr_dst = Pointer(Int32).malloc(3_u64)
+  src.copy_to(ptr_dst, 3)
+  puts "copy_to ptr: #{ptr_dst[0]} #{ptr_dst[1]} #{ptr_dst[2]}"
+
+  dst3 = Slice(Int32).new(3, 0)
+  dst3.copy_from(ptr_dst, 3)
+  puts "copy_from ptr: #{dst3.to_s}"
+
+  # Overlapping moves
+  shift_slice = Slice(Int32).new(5) { |i| i + 1 }
+  (shift_slice + 1).move_from(shift_slice.to_unsafe, 4)
+  puts "move_from overlapping right: #{shift_slice.to_s}"
+
+  shift_slice.fill { |i| i + 1 }
+  shift_slice.move_from((shift_slice + 1).to_unsafe, 4)
+  puts "move_from overlapping left: #{shift_slice.to_s}"
+
+  shift_slice.fill { |i| i + 1 }
+  shift_sub = shift_slice + 1
+  shift_slice.move_to(shift_sub.to_unsafe, 4)
+  puts "move_to overlapping right: #{shift_slice.to_s}"
+
+  slice_a = Slice(Int32).new(3) { |i| i + 10 }
+  slice_b = Slice(Int32).new(4, 0)
+  slice_a.move_to(slice_b)
+  puts "move_to slice: #{slice_b.to_s}"
+
+  slice_c = Slice(Int32).new(4, 0)
+  slice_c.move_from(slice_a)
+  puts "move_from slice: #{slice_c.to_s}"
+
+  puts "== filling, swapping, reversing"
+  f_slice = Slice(Int32).new(4, 0)
+  f_slice.fill(7)
+  puts "fill value: #{f_slice.to_s}"
+
+  f_slice.fill(9, 1, 2)
+  puts "fill range: #{f_slice.to_s}"
+
+  f_slice.fill { |i| (i + 1) * 2 }
+  puts "fill block: #{f_slice.to_s}"
+
+  f_slice.swap(0, 3)
+  puts "swap: #{f_slice.to_s}"
+
+  f_slice.reverse
+  puts "reverse: #{f_slice.to_s}"
+
+  f_slice.reverse_in_place
+  puts "reverse_in_place: #{f_slice.to_s}"
+
+  puts "== duplicates, conversions and strings"
+  s_dup = f_slice.dup
+  puts "dup: #{s_dup.to_s} same?=#{f_slice.same?(s_dup)} eq?=#{f_slice == s_dup}"
+
+  s_clone = f_slice.clone
+  puts "clone: #{s_clone.to_s}"
+
+  puts "inspect: #{s_dup.inspect}"
+
+  arr = f_slice.to_a
+  puts "to_a: #{arr.to_s}"
+
+  bytes = Bytes.new(4)
+  bytes[0] = 0xDE_u8
+  bytes[1] = 0xAD_u8
+  bytes[2] = 0xBE_u8
+  bytes[3] = 0xEF_u8
+  puts "bytes hexstring: #{bytes.hexstring}"
+  puts "bytes to_s: #{bytes.to_s}"
+
+  puts "== equality and identity"
+  eq1 = Slice(Int32).new(3) { |i| i }
+  eq2 = Slice(Int32).new(3) { |i| i }
+  eq3 = Slice(Int32).new(3) { |i| i + 1 }
+  eq4 = Slice(Int32).new(4) { |i| i }
+  puts "eq same content: #{eq1 == eq2}"
+  puts "eq diff content: #{eq1 == eq3}"
+  puts "eq diff size: #{eq1 == eq4}"
+  puts "eq other type: #{eq1 == 123}"
+  puts "same self: #{eq1.same?(eq1)}"
+  puts "same copy: #{eq1.same?(eq2)}"
+
+  puts "== enumerable integration"
+  enum_s = Slice(Int32).new(5) { |i| (i + 1) * 3 }
+  puts "each sum: #{enum_s.sum}"
+  puts "any? 9: #{enum_s.any? { |x| x == 9 }}"
+  puts "all? pos: #{enum_s.all? { |x| x > 0 }}"
+  puts "none? neg: #{enum_s.none? { |x| x < 0 }}"
+  puts "count: #{enum_s.count { |x| x > 6 }}"
+  puts "first: #{enum_s.first}"
+  puts "map: #{enum_s.map { |x| x * 2 }.to_s}"
+  puts "select: #{enum_s.select { |x| x > 6 }.to_s}"
+  puts "reject: #{enum_s.reject { |x| x > 6 }.to_s}"
+  puts "reduce: #{enum_s.reduce(0) { |acc, x| acc + x }}"
+
+  ewi_indices = [] of Int32
+  enum_s.each_with_index do |val, idx|
+    ewi_indices << idx
+  end
+  puts "each_with_index: #{ewi_indices.to_s}"
+
+  puts "== gc liveness verification"
+  sub = make_interior_slice
+  # Churn allocations
+  churn = 0
+  while churn < 5000
+    p = Pointer(UInt8).malloc(256_u64)
+    p[0] = 0xAA_u8
+    churn = churn + 1
+  end
+
+  {% if !flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin) || flag?(:win32)) %}
+    IyiMark.collect
+    puts "gc collections: #{IyiMark.collections}"
+  {% else %}
+    puts "gc collections: skipped"
+  {% end %}
+
+  survived = true
+  k = 0
+  while k < 64
+    expected = (k + 32 + 17).to_u8
+    if sub[k] != expected
+      survived = false
+      puts "byte corrupted at #{k}: expected #{expected}, got #{sub[k]}"
+    end
+    k = k + 1
+  end
+  puts "collector memory preserved through subslice: #{survived}"
+
+  puts "all slice checks passed"
+end
+
+main

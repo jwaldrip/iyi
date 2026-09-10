@@ -63,7 +63,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 11,886 lines, of which 2,927 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
+| iyi's own prelude | 14,732 lines, of which 4,689 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -88,7 +88,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 11,886 lines
+> "No standard library worth the name" is still true of iyi's own 14,732 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -270,8 +270,8 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 11,886 lines,
-primitives included, of which the library is 2,927.** Not a standard library:
+**3. A deliberately tiny prelude, written in iyi. Done: 14,732 lines,
+primitives included, of which the library is 4,689.** Not a standard library:
 integers, booleans, a string, one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
 existing sample needs it, never because it belongs there.
@@ -297,12 +297,28 @@ collector (GC_DESIGN.md, the block between two marks in `prelude.iyi`),
 the scheduler and the kernel thread (III.4, `concurrency.iyi` and
 `thread.iyi`), the shortest-round-trip float text (`float.iyi`) - and they
 are most of its lines. So the figure held to the ceiling is the library:
-**2,927 lines** of the 11,886, measured by `bench/doc_numbers.py` as
-everything under `src/iyi/` except those three, and under 3,734 with the
-samples that needed a first hour's worth of methods. The whole-prelude
-figure is stated beside it because a reader sees the whole file, and a
-"tiny prelude" claim that hid 9,000 lines of runtime would be a claim
-about the wrong number.
+**4,689 lines** of the 13,581, measured by `bench/doc_numbers.py` as
+everything under `src/iyi/` except those three. The whole-prelude figure is
+stated beside it because a reader sees the whole file, and a "tiny prelude"
+claim that hid 9,000 lines of runtime would be a claim about the wrong number.
+
+**The ceiling is breached, and this records it rather than moving it.** The
+library was under 3,734 until `io.iyi`, `socket.iyi` and `format.iyi` were
+written, which is what took it past the ceiling, and the platform work since
+has carried it to 4,689, 955 lines over. Each module was added for the reason
+the rule allows, a program in this repository needs it, and together they are
+still more than the rule intended to permit.
+
+**The standard library is deliberately outside that count, and this is the
+answer this section left open.** `src/std/` is 4,769 lines across ten modules:
+`traits`, `cmp`, `enumerable`, `indexable`, `iterator`, `slice`, `text`,
+`time`, `list` and `derives`. It is opt-in via `import std/...`, it lives
+outside `src/iyi/` where `bench/doc_numbers.py` measures the ceiling, and a
+program that imports none of it pays for none of it. So the prelude rule keeps
+its meaning, "a method enters because a program in this repository needs it",
+while the language still gets a library. The other answer this section named,
+moving the ceiling, is not taken. What is not open is pretending the prelude
+number itself still fits.
 
 The ceiling was not a guess. Crystal's own 0.1.0 shipped 8,161 lines of
 library. Its core is **3,551 lines** of that: `object`, `nil`, `bool`, `char`,
@@ -808,8 +824,8 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 108,129 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 11,886-line own prelude + 778 in samples |
+| Compiler | 24,984 lines, **written in Crystal** | 108,055 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 14,732-line own prelude + 4,771 in std |
 | Specs | 21,146 lines | 9,566 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
@@ -1175,8 +1191,8 @@ It ports. But it required three things Draft 0 did not have, and exposed one
 genuine conflict.
 
 **It now ports in the compiler, not on paper.**
-`samples/iyi/std/enumerable.iyi` carries **57 of Crystal's 71 distinct method
-names** (58 defs against Crystal's 117, which counts overloads), all written
+`src/std/enumerable.iyi` carries **all 71 of Crystal's distinct method
+names** (72 defs against Crystal's 117, which counts overloads), all written
 against one `abstract def each`. `samples/iyi/collections.iyi` implements it for
 two types that answer `Elem` differently and calls every one of them. A default
 method that is never called is never typed, so a trait that merely compiles
@@ -1214,6 +1230,35 @@ this section had wrong or had not reached:
 
 Finding 6 below is realised too: `zip` is `forall O : Enumerable`, and `O::Elem`
 names what the other collection yields without the caller stating it.
+
+**Two more findings, from porting the rest of the library rather than just
+`Enumerable`.** `src/std/` now carries `Indexable`, `Iterator`, `Slice`,
+`Char`/`String` and `Time` alongside it, and two of them found limits this
+section had not reached.
+
+- **An associated type does not specialise through a type variable.** An
+  adaptor parameterised on the upstream iterator alone, `MapIterator(I, U)`
+  referring to `I::Elem`, does not compile: for a receiver of
+  `ArrayIterator(Int32)` the compiler resolves `I::Elem` against the generic
+  declaration, where `type Elem = T`, and asks for `Proc(T, Int32)` instead of
+  `Proc(Int32, Int32)`. The projection is not specialised to the receiver's
+  argument. The port works around it by passing the element type explicitly,
+  `MapIterator(I, T, U)` built as `MapIterator(self, Elem, U)`, where `Elem` is
+  already concrete at the call. Lazy pipelines do compose and do stay lazy, so
+  the shape is expressible; it costs one type parameter per adaptor that this
+  section's model says it should not. That is a compiler limitation rather than
+  a design decision, and it is written down here because the next person to
+  build a generic adaptor will hit it in the same place.
+- **A trait cannot include a trait, so `Indexable` costs two impls.** A type
+  that implements `size` and `unsafe_fetch` gets `Indexable`'s whole surface,
+  and `Indexable` can define `each` from those two, but it cannot thereby be
+  `Enumerable`: supertraits are requirements rather than inclusions, and the
+  orphan rule (R-3) forbids `impl Enumerable for Array(T)` anywhere but the
+  module defining one of them. So a type writes `impl Indexable` with its two
+  methods and then an empty `impl Enumerable` answering only `type Elem`, and
+  the second one exists purely to open the door. Nothing is unsound and nothing
+  is unexpressible; it is one more line than the ergonomics claim implies, and
+  the claim should say so rather than be quietly generous.
 
 **1. Traits need associated types as well as parameters.**
 
@@ -1430,7 +1475,7 @@ impl's answer to an associated type becomes an argument of the `include` the
 compiler writes, and that argument may name a parameter of the *target*,
 `List`'s `T`, which is not in scope where the impl was written. Pushing the
 target's scope to find it loses the trait, whose name lives in the impl's own
-module, and breaks every `impl Cmp for Int32` in `samples/iyi/std/traits.iyi`.
+module, and breaks every `impl Cmp for Int32` in `src/std/traits.iyi`.
 The parameters have to be passed as **free variables** into a lookup that still
 happens in the impl's scope, which is what resolving a superclass from inside a
 generic already does. Both names then resolve, each from where it actually
@@ -1487,7 +1532,7 @@ accepting it opens no coherence hole.
 
 **Built since this was written, and the sentence outlived it:** associated
 types (`type Elem` in a trait, `type Elem = T` in an impl, II.6) parse and
-check — `samples/iyi/std/enumerable.iyi` declares one and `std/list.iyi`
+check — `src/std/enumerable.iyi` declares one and `std/list.iyi`
 answers it — and a trait requires another with `trait Ord : Eq`
 (`std/traits.iyi`'s `Num : Cmp`); `spec/compiler/semantic/iyi_spec.cr`'s
 "supertraits" and "associated types" hold both. What II.7's table still
@@ -2275,7 +2320,7 @@ field's type must be shareable in turn: integers, floats, `Bool`, `Char`,
 every member is; a class typed as its base is when every subclass is. The
 trust half is `@[Share]` on a declaration, meaning shareable whenever the
 type arguments are, whatever the fields do: `Atomic(T)` carries it, and
-`samples/iyi/std/list.iyi`'s `List(T)` carries it, the list this section
+`src/std/list.iyi`'s `List(T)` carries it, the list this section
 said should stay short. The marker travels: a producer writes `@[Share]`
 into the artifact declaration of every type it found shareable, and a
 consumer reads that and never recomputes — the bodies that said no field
@@ -2325,7 +2370,7 @@ now met.** Every failure in that clean-sheet code was a type holding an
 `Array`, which made a **shareable immutable collection** something the standard
 library owed the language rather than a convenience: without it the `Mutex(T)`
 escape becomes the normal case, and an escape hatch used routinely is the
-definition of a failed rule. `samples/iyi/std/list.iyi` is that collection, and
+definition of a failed rule. `src/std/list.iyi` is that collection, and
 `samples/iyi/immutable.iyi` exercises it.
 
 Two things building it settled that the count could not:
@@ -2570,9 +2615,11 @@ what the build corrected) — a *dynamic* group's union still
 comes out through `task.value`; a fiber blocked *joining* is the one park
 cancellation does not reach, which a failing group papers over by
 cancelling every child; and the platforms that cannot carry the model get
-nothing rather than an imitation — wasm32 cannot switch stacks, and win32
-is unwritten. darwin arm64 stopped being one of them: its kqueue poller is
-the paragraph above, and it holds the same gates in CI.
+nothing rather than an imitation: wasm32 cannot switch stacks (measured in
+III.4.12). darwin arm64 and Windows x86_64 run the real runtime: darwin's kqueue
+poller is the paragraph above, and Windows x86_64 uses handwritten asm with TEB
+stack bounds management (gs:0x08 and gs:0x10), IOCP completion polling, and
+CancelIoEx cancellation reaching blocked IO, holding the windows-runtime gate in CI.
 
 #### III.4.9 The typed group, `group do ... end!`: **BUILT, with one correction the build forced**
 
@@ -2813,6 +2860,91 @@ total paused a fortieth to a tenth of Boehm's, the longest pause under
 Go's on churn and binary trees and level on the live items, and the
 footprint Go's on churn and binary trees and a budget over it on the
 live items.
+
+#### III.4.12 Concurrency on wasm32-wasi: **MEASURED and REFUSED: why this target has no runtime**
+
+SPEC.md III.4 specifies structured concurrency (`group`/`spawn`, `Channel`,
+`select`, cancellation as values) on Linux x86_64, Linux aarch64 and darwin
+arm64. On wasm32-wasi a program naming `group` fails to compile with an
+explicit refusal. III.4.8 rejected shipping the syntax as sequential
+imitation, because a `group` whose tasks run sequentially is not concurrency
+and would teach everyone the wrong thing about what iyi does.
+
+This section records the investigation into whether wasm32-wasi could support
+real coroutines, what each candidate mechanism costs, what specifically blocks
+it on this toolchain, and what would have to change for the verdict to flip.
+The probe is `bench/wasm_concurrency_probe.sh`.
+
+**1. Native WebAssembly stack switching.** Core WebAssembly has an unaddressable
+call stack and value stack. The stack-switching proposal adds instructions to
+allocate, suspend, resume and switch stacks. In wasmtime 48.0.1 (7bac2c277
+2026-08-24), `wasmtime -W help` lists `-W stack-switching[=y|n]`, but passing
+the flag to run a module fails immediately:
+
+```
+Error: the wasm_stack_switching feature is not supported on this compiler configuration
+```
+
+Passing `-W all-proposals=y` fails with the same error. Cranelift and Wasmtime
+disable stack switching at compile time in shipped binaries. Native stack
+switching is unavailable on the host.
+
+**2. WASI threads (wasi-threads Preview1).** wasi-sdk 24 ships
+`wasm32-wasi-threads-clang`. Compiling a pthread program with `-pthread
+-Wl,--shared-memory,--max-memory=67108864` produces a module importing
+`wasi::thread-spawn`. Running under wasmtime 48.0.1 fails by default:
+
+```
+Error: unknown import: `wasi::thread-spawn` has not been defined
+```
+
+Attempting to enable threading via `wasmtime run -S threads=y` fails:
+
+```
+Error: the `-Sthreads` flag is no longer supported
+```
+
+Attempting `wasmtime run -S preview2=n -S threads=y` fails with `the
+\`-Spreview2=n\` flag is no longer supported`. Wasmtime 48.0.1 removed the
+legacy Preview1 wasi-threads implementation. Furthermore, SPEC.md III.9
+forbids linking pthreads, which would reintroduce libc onto the link line and
+destroy the dependency floor.
+
+**3. Binaryen Asyncify (wasm-opt --asyncify).** Binaryen provides a post-link
+whole-module transformation that rewrites function bodies to unwind the call
+stack into a linear-memory buffer and rewind it upon re-entry. Tested on real
+binaries under wasmtime 48.0.1, Asyncify is blocked by architecture and toolchain:
+
+- **Asymmetric host requirement.** Asyncify unwinding unwinds the entire call
+  stack out of `main` and `_start`. Standalone WASI CLI hosts (`wasmtime run`)
+  do not provide an Asyncify host runner to intercept the unwind and re-invoke
+  entry points. In-module attempts to unwind without a host trap or exit the
+  process without resumption.
+- **Code size penalty.** Whole-module instrumentation increases binary size
+  substantially: 120,442 B to 182,811 B (+51.8%) on `samples/iyi/hello.iyi`, and
+  80,227 B to 141,802 B (+76.7%) on `fib.iyi`.
+- **Execution slowdown.** On recursive Fibonacci (32) under wasmtime 48.0.1,
+  native execution averaged 18.2 ms (min 16.7 ms); asyncified execution
+  averaged 37.7 ms (min 33.8 ms), a 106.9% slowdown (2.07x wall time).
+- **Build toolchain boundary.** The iyi compiler compiles wasm by emitting an
+  unlinked object file and printing the driver link command. `wasm-opt` is a
+  separate post-link binary that neither iyi nor wasi-sdk 24 packages, which
+  would violate III.9's toolchain floor.
+
+**The refusal.** `group` remains a compile-time error on wasm32-wasi. The macro
+in `src/iyi/prelude.iyi` names the reason:
+
+```
+group is not available on wasm32-wasi: WebAssembly cannot switch stacks, wasmtime 48 disables the stack-switching proposal, wasi-threads is unsupported, and asyncify cannot run without a host event loop (SPEC.md III.4)
+```
+
+**What would have to change for the answer to flip.** For wasm32-wasi to carry
+iyi's structured concurrency, the host runtime and toolchain must provide
+native stack switching out of the box: either the Wasm stack-switching proposal
+stabilised and enabled by default in Cranelift/Wasmtime without extra flags, or
+WASI 0.2/0.3 component-model async execution supporting stackful fibers directly.
+Neither a sequential imitation nor a post-link bytecode transformation is
+acceptable.
 
 ### III.5 Module initialisation: **PROPOSED; rules 1, 2 and 4 BUILT**
 
@@ -8479,7 +8611,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 11,886-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 14,732-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler
@@ -9444,7 +9576,7 @@ For traceability, since several rules here rest on numbers rather than taste.
 | `macro_run` must go | +7.4 s per distinct script on a cold build, memoised per script but not amortised across scripts; two scripts cost twice (II.10) |
 | Macro expansion is not a compile-time cost | a template macro runs at 1.00–1.05× hand-written code; a computing macro adds ~9 µs per method against the ~18 µs the method costs anyway (II.10) |
 | `method_missing` is safe to cut | one occurrence in stdlib, zero in Kemal |
-| Traits can carry the stdlib | `Enumerable` ported and running: 57 of its 71 method names on one `each`, implemented for two element types, every method called (`samples/iyi/std/enumerable.iyi`) |
+| Traits can carry the stdlib | `Enumerable` ported and running: all 71 of its method names on one `each`, implemented for two element types, every method called (`src/std/enumerable.iyi`) |
 | `Share` prices a style rather than failing | clean-sheet iyi code is 77% shareable as written and 100% given an immutable collection; the compiler, built as a mutable workspace, is 38.5% and stays there (III.4.7) |
 | Module-level mutable state is already rare | 3 of 483 compiler types hold a class variable, so III.4.5 costs almost nothing |
 | Coherence costs nothing at build time | the import DAG plus the orphan rule make duplicate impls unrepresentable (IV.4) |

@@ -28,8 +28,8 @@ name: iyi
 #   targets          the platform files the library still carries, type-checked
 #                    by cross-compiling: an edit to `src/lib_c` or
 #                    `src/crystal/system` is invisible here until somebody
-#                    builds for that machine
 #   binary           the thing a person downloads, unpacked somewhere else
+#   std              the native standard library (src/std/) and its module exercises
 on: [push, pull_request]
 
 permissions: {}
@@ -243,6 +243,9 @@ jobs:
       # failure proofs because a gate that cannot fail is not a gate.
       - name: The concurrency runtime holds III.4's properties
         run: bash bench/concurrency_exercise.sh
+
+      - name: The runtime exercise holds III.4's properties
+        run: bash bench/runtime_exercise.sh
 
       # III.1.4: a panic kills the task, not the process — defers run
       # by registry, the boundary re-raises once, `.or_panic` is real.
@@ -538,6 +541,26 @@ jobs:
       - name: The numbers the docs state
         run: python3 bench/doc_numbers.py --list
 
+  std:
+    needs: build
+    runs-on: ubuntu-24.04
+    container:
+      image: crystallang/crystal:1.21.0-build
+    name: "The native standard library and its module exercises"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: crystal
+          path: .build
+      - run: chmod +x .build/crystal
+      - name: Build iyi binary
+        run: make -o .build/crystal iyi
+      - name: The standard library foundation and discovered exercises
+        run: bash bench/std_exercise.sh
+
   targets:
     needs: build
     runs-on: ubuntu-24.04
@@ -594,7 +617,14 @@ jobs:
           for target in x86_64-linux-gnu aarch64-linux-gnu x86_64-darwin \
                         aarch64-darwin x86_64-windows-msvc x86_64-windows-gnu \
                         wasm32-wasi; do
-            for sample in hello webapp; do
+            # `io`, `socket` and `format` are here for a reason a shorter list
+            # would have hidden: each carries per-platform branches, and a
+            # branch only its own platform compiles is a branch nobody checks.
+            # `socket.iyi` reached master's queue with `UInt32#to_i64` in its
+            # Linux syscall path, a method this prelude does not have, and a
+            # darwin machine compiled it every time because darwin takes the
+            # libSystem branch instead.
+            for sample in hello webapp io socket format; do
               out="/tmp/iyi-$sample-$target"
               if ! ./bin/iyi build --cross-compile --target "$target" \
                     -o "$out" "samples/iyi/$sample.iyi" > "$out.log" 2>&1; then
@@ -716,6 +746,18 @@ jobs:
               strings.iyi > strings-windows.link )
           cat cross/strings-windows.link
           ls -l cross
+          ( cd cross && ../bin/iyi build --cross-compile \
+              --target x86_64-windows-msvc -o windows_exercise \
+              ../bench/windows_exercise.iyi > windows_exercise.link )
+          cat cross/windows_exercise.link
+          ( cd cross && ../bin/iyi build --cross-compile \
+              --target x86_64-windows-msvc -o runtime_exercise \
+              ../bench/runtime_exercise.iyi > runtime_exercise.link )
+          cat cross/runtime_exercise.link
+          ( cd cross && ../bin/iyi build --cross-compile \
+              --target x86_64-windows-msvc -o tls_probe \
+              ../bench/tls_probe.iyi > tls_probe.link )
+          cat cross/tls_probe.link
 
       # SPEC.md III.12's programs, built here where the compiler is; the
       # three assertions run in the wasi job below, where the toolchain
@@ -728,6 +770,12 @@ jobs:
               -o honest honest.iyi > honest.link )
           ( cd cross && ../bin/iyi build --cross-compile --target wasm32-wasi \
               -o theft theft.iyi > theft.link )
+          ( cd cross && ../bin/iyi build --cross-compile --target wasm32-wasi \
+              -o wasm32_exercise ../bench/wasm32_exercise.iyi > wasm32_exercise.link )
+          cat cross/wasm32_exercise.link
+          ( cd cross && ../bin/iyi build --cross-compile --release --target wasm32-wasi \
+              -o wasm32_exercise_rel ../bench/wasm32_exercise.iyi > wasm32_exercise_rel.link )
+          cat cross/wasm32_exercise_rel.link
 
       - uses: actions/upload-artifact@v4
         with:
@@ -1053,16 +1101,20 @@ jobs:
           $wrong = 0
 
           foreach ($run in 1..20) {
-            $got = normalise (.\strings-windows.exe | Out-String)
+            $got = normalise (.\strings-windows.exe 2>&1 | Out-String)
             if ($LASTEXITCODE -ne 0) {
               $crashed = $crashed + 1
-              Write-Host ("run {0,2}: exited {1}" -f $run, $LASTEXITCODE)
+              Write-Host ("run {0,2}: exited {1}, output: {2}" -f $run, $LASTEXITCODE, $got)
             } elseif ($got -eq $wanted) {
               $right = $right + 1
             } else {
               $wrong = $wrong + 1
               Write-Host ("run {0,2}: {1}" -f $run, ($got -replace "`n", " | "))
             }
+          }
+          if ($crashed -gt 0) {
+            Write-Host "Crash details from Application Event Log:"
+            Get-EventLog -LogName Application -Newest 5 | Format-List
           }
 
           Write-Host ""
@@ -1072,6 +1124,97 @@ jobs:
             exit 1
           }
           exit 0
+
+  # The GC Stage 10 Windows collector exercise on a real windows-2022 runner.
+  windows-collector:
+    needs: cross-objects
+    runs-on: windows-2022
+    name: "The collector on Windows x86_64"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-objects
+          path: cross
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: What the collector object asks Windows for
+        shell: cmd
+        run: dumpbin /nologo /symbols cross\windows_exercise.obj | findstr /C:"UNDEF"
+
+      - name: Link and run the Windows collector exercise
+        shell: pwsh
+        working-directory: cross
+        run: |
+          $command = (Get-Content windows_exercise.link -Raw).Trim()
+          Write-Host "linking with: $command"
+          $parts = $command -split '\s+'
+          & $parts[0] $parts[1..($parts.Length - 1)]
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "link failed with $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          $output = .\windows_exercise.exe
+          Write-Host $output
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "windows_exercise failed with $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          $text = $output -join "`n"
+          if ($text -notmatch "windows exercise: every check passed") {
+            Write-Host "exercise output missing pass marker"
+            exit 1
+          }
+
+  # The concurrency runtime exercise on a real windows-2022 runner.
+  windows-runtime:
+    needs: cross-objects
+    runs-on: windows-2022
+    name: "The concurrency runtime on Windows x86_64"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-objects
+          path: cross
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: What the runtime object asks Windows for
+        shell: cmd
+        run: dumpbin /nologo /symbols cross\runtime_exercise.obj | findstr /C:"UNDEF"
+
+      - name: Run isolated TLS probe on Windows
+        shell: pwsh
+        working-directory: cross
+        run: |
+          $command = (Get-Content tls_probe.link -Raw).Trim()
+          Write-Host "linking tls_probe with: $command"
+          $parts = $command -split '\s+'
+          & $parts[0] $parts[1..($parts.Length - 1)]
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "tls_probe link failed with $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          .\tls_probe.exe
+          Write-Host "tls_probe exit code: $LASTEXITCODE"
+
+      - name: Link and run the Windows runtime exercise
+        shell: pwsh
+        working-directory: cross
+        run: |
+          $command = (Get-Content runtime_exercise.link -Raw).Trim()
+          Write-Host "linking with: $command"
+          $parts = $command -split '\s+'
+          & $parts[0] $parts[1..($parts.Length - 1)]
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "link failed with $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          .\runtime_exercise.exe
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "runtime_exercise failed with $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
 
   # wasm32-wasi, run rather than type-checked. The module imports four
   # `wasi_snapshot_preview1` functions and nothing else, and what makes it a
@@ -1139,6 +1282,43 @@ jobs:
           ! grep -q 'root:' theft.txt
           grep -q 'File is not available on wasm32-wasi' theft.txt
           echo "sandbox: the theft died named and empty-handed"
+
+  # GC Stage 10: wasm32-wasi collector exercise under wasmtime.
+  wasm32-collector:
+    needs: cross-objects
+    runs-on: ubuntu-24.04
+    name: "The collector on wasm32-wasi"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-objects
+          path: cross
+
+      - name: Install wasi-sdk and wasmtime
+        run: |
+          curl -sSL -o /tmp/wasi-sdk.tar.gz \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz
+          sudo mkdir -p /opt/wasi-sdk
+          sudo tar -xzf /tmp/wasi-sdk.tar.gz -C /opt/wasi-sdk --strip-components=1
+          curl -sSL https://wasmtime.dev/install.sh | bash -s -- --version v48.0.1
+
+      - name: Link and run the wasm32 collector exercise
+        run: |
+          ln -sf /opt/wasi-sdk/bin/clang /opt/wasi-sdk/bin/cc
+          export PATH="/opt/wasi-sdk/bin:$PATH"
+          ( cd cross && eval "$(cat wasm32_exercise.link)" )
+          "$HOME/.wasmtime/bin/wasmtime" cross/wasm32_exercise > wasm32_exercise.txt
+          cat wasm32_exercise.txt
+          grep -q "all wasm32 collector checks passed" wasm32_exercise.txt
+
+      - name: Link and run the wasm32 collector exercise (release)
+        run: |
+          ln -sf /opt/wasi-sdk/bin/clang /opt/wasi-sdk/bin/cc
+          export PATH="/opt/wasi-sdk/bin:$PATH"
+          ( cd cross && eval "$(cat wasm32_exercise_rel.link)" )
+          "$HOME/.wasmtime/bin/wasmtime" cross/wasm32_exercise_rel > wasm32_exercise_rel.txt
+          cat wasm32_exercise_rel.txt
+          grep -q "all wasm32 collector checks passed" wasm32_exercise_rel.txt
 
   binary:
     needs: build
@@ -1354,7 +1534,7 @@ jobs:
   # sentence a release opens with is written where the version is named.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [binary, darwin, clean-room, iyi, compiler-specs, stdlib-specs, samples, targets, cross-run, wasi-run]
+    needs: [binary, darwin, clean-room, iyi, compiler-specs, stdlib-specs, samples, std, targets, cross-run, wasi-run]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

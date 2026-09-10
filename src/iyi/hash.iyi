@@ -12,8 +12,9 @@
 # for it (`samples/iyi/sessions.iyi`) signs people out one at a time.
 #
 # Hashing is `key.hash`, defined per type in this prelude. It is deliberately
-# not iyi's `Hashable` trait: that trait lives in `samples/iyi/std`, and a
-# prelude that depended on a sample would have the dependency backwards.
+# not iyi's `Hashable` trait: that trait lives in `src/std`, which is the
+# opt-in library, and a prelude that depended on it would have the dependency
+# backwards.
 class Hash(K, V)
   @keys : Pointer(K)
   @values : Pointer(V)

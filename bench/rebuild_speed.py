@@ -27,6 +27,11 @@ import time
 
 IYI = os.path.abspath(os.environ.get("IYI", "./bin/iyi"))
 SAMPLES = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "samples", "iyi"))
+# `std` moved out of the samples into the library, so it is copied from there.
+# Copying the whole of it does not change what this measures: the entry imports
+# `std/list` and the front end types lazily, so the modules nobody imports are
+# never compiled. The copy happens before the clock starts either way.
+STD = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src", "std"))
 ROUNDS = 5
 
 ENTRY = """module main
@@ -71,8 +76,9 @@ def timed_build(cwd, extra, tick):
 
 def main():
     work = tempfile.mkdtemp(prefix="iyi-rebuild-speed")
-    for sub in ("calc", "kemal", "app", "std"):
+    for sub in ("calc", "kemal", "app"):
         shutil.copytree(os.path.join(SAMPLES, sub), os.path.join(work, sub))
+    shutil.copytree(STD, os.path.join(work, "std"))
     with open(os.path.join(work, "main.iyi"), "w") as f:
         f.write(ENTRY)
 

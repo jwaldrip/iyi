@@ -1,0 +1,424 @@
+# The standard library foundation exercise.
+#
+# Exercises std/traits (Cmp, Num, Hashable), std/cmp, std/enumerable (all 71
+# methods), std/list, and std/derives.
+#
+# Exits with panic if any assertion fails. Prints section progress and
+# "all std checks passed" on success.
+
+module bench/std_exercise
+
+import std/traits
+import std/cmp
+import std/enumerable
+import std/list
+import std/derives
+
+using std/traits::{Cmp, Num, Hashable}
+using std/enumerable::{Enumerable}
+using std/list::{List}
+using std/derives::{Show}
+
+# ---- Test Types -------------------------------------------------------------
+
+struct Score
+  getter val : Int32
+
+  def initialize(@val : Int32)
+  end
+end
+
+impl Cmp for Score
+  def cmp(other : self) : Int32
+    @val - other.val
+  end
+end
+
+impl Hashable for Score
+  def hash_key : Int32
+    @val
+  end
+end
+
+impl Show for Score
+  def show : String
+    "Score(#{@val})"
+  end
+end
+
+struct SimpleSeq
+  def initialize(@items : Array(Int32))
+  end
+end
+
+impl Enumerable for SimpleSeq
+  type Elem = Int32
+
+  def each(& : Int32 -> Nil) : Nil
+    @items.each { |x| yield x }
+  end
+end
+
+# ---- Helpers ----------------------------------------------------------------
+
+def assert_true(cond : Bool, msg : String) : Nil
+  raise "assert failed: #{msg}" unless cond
+end
+
+def assert_eq(a : Int32, b : Int32, msg : String) : Nil
+  raise "assert failed: #{msg} (#{a} != #{b})" unless a == b
+end
+
+def assert_str(a : String, b : String, msg : String) : Nil
+  raise "assert failed: #{msg} ('#{a}' != '#{b}')" unless a == b
+end
+
+# ---- Main Verification ------------------------------------------------------
+
+puts "== std/traits: Cmp operators and methods"
+s1 = Score.new(10)
+s2 = Score.new(20)
+s3 = Score.new(20)
+
+assert_true(s1 < s2, "Cmp: <")
+assert_true(s1 <= s2, "Cmp: <=")
+assert_true(s2 <= s3, "Cmp: <= equal")
+assert_true(s2 > s1, "Cmp: >")
+assert_true(s2 >= s1, "Cmp: >=")
+assert_true(s2 >= s3, "Cmp: >= equal")
+assert_true(s2 == s3, "Cmp: ==")
+assert_true(s1.lt(s2), "Cmp: lt")
+assert_true(s2.gt(s1), "Cmp: gt")
+assert_true(Score.new(15).between?(s1, s2), "Cmp: between?")
+assert_true(!Score.new(5).between?(s1, s2), "Cmp: between? low")
+assert_true(!Score.new(25).between?(s1, s2), "Cmp: between? high")
+
+clamped_low = Score.new(5).clamp(s1, s2)
+assert_eq(clamped_low.val, 10, "Cmp: clamp min")
+clamped_high = Score.new(35).clamp(s1, s2)
+assert_eq(clamped_high.val, 20, "Cmp: clamp max")
+clamped_mid = Score.new(14).clamp(s1, s2)
+assert_eq(clamped_mid.val, 14, "Cmp: clamp mid")
+
+clamped_rng = Score.new(2).clamp(s1..s2)
+assert_eq(clamped_rng.val, 10, "Cmp: clamp range")
+
+puts "== std/cmp: standalone functions"
+assert_eq(Std::Cmp.min(10, 20), 10, "cmp: min")
+assert_eq(Std::Cmp.max(10, 20), 20, "cmp: max")
+assert_eq(Std::Cmp.clamp(5, 10, 20), 10, "cmp: clamp min")
+assert_eq(Std::Cmp.clamp(25, 10, 20), 20, "cmp: clamp max")
+assert_eq(Std::Cmp.clamp(15, 10, 20), 15, "cmp: clamp mid")
+assert_eq(Std::Cmp.clamp(2, 10..20), 10, "cmp: clamp range")
+
+puts "== std/enumerable: all 71 methods"
+seq = SimpleSeq.new([3, 1, 4, 1, 5, 9, 2, 6])
+empty_seq = SimpleSeq.new([] of Int32)
+
+# 1. to_a
+assert_eq(seq.to_a.size, 8, "enum: to_a")
+
+# 2. size
+assert_eq(seq.size, 8, "enum: size")
+
+# 3. empty?
+assert_true(!seq.empty?, "enum: empty? false")
+assert_true(empty_seq.empty?, "enum: empty? true")
+
+# 4. present?
+assert_true(seq.present?, "enum: present? true")
+assert_true(!empty_seq.present?, "enum: present? false")
+
+# 5. all?
+assert_true(seq.all? { |x| x > 0 }, "enum: all? true")
+assert_true(!seq.all? { |x| x > 5 }, "enum: all? false")
+
+# 6. any?
+assert_true(seq.any? { |x| x == 9 }, "enum: any? true")
+assert_true(!seq.any? { |x| x == 42 }, "enum: any? false")
+
+# 7. none?
+assert_true(seq.none? { |x| x == 42 }, "enum: none? true")
+assert_true(!seq.none? { |x| x == 3 }, "enum: none? false")
+
+# 8. one?
+assert_true(seq.one? { |x| x == 9 }, "enum: one? true")
+assert_true(!seq.one? { |x| x == 1 }, "enum: one? false")
+
+# 9. count
+assert_eq(seq.count { |x| x == 1 }, 2, "enum: count")
+
+# 10. find?
+found_q = seq.find? { |x| x > 5 }
+assert_true(!found_q.nil? && found_q == 9, "enum: find?")
+assert_true(seq.find? { |x| x > 100 }.nil?, "enum: find? nil")
+
+# 11. find
+assert_eq(seq.find { |x| x == 9 }, 9, "enum: find")
+
+# 12. index?
+idx_q = seq.index? { |x| x == 4 }
+assert_true(!idx_q.nil? && idx_q == 2, "enum: index?")
+assert_true(seq.index? { |x| x == 100 }.nil?, "enum: index? nil")
+
+# 13. index
+assert_eq(seq.index { |x| x == 4 }, 2, "enum: index")
+
+# 14. first?
+assert_true(!seq.first?.nil? && seq.first? == 3, "enum: first?")
+assert_true(empty_seq.first?.nil?, "enum: first? nil")
+
+# 15. first
+assert_eq(seq.first, 3, "enum: first")
+
+# 16. first(n)
+assert_eq(seq.first(3).size, 3, "enum: first(n)")
+
+# 17. map
+mapped = seq.map { |x| x * 2 }
+assert_eq(mapped[0], 6, "enum: map")
+
+# 18. flat_map
+fmapped = seq.flat_map { |x| [x, x] }
+assert_eq(fmapped.size, 16, "enum: flat_map")
+
+# 19. map_with_index
+mwi = seq.map_with_index { |x, i| x + i }
+assert_eq(mwi[1], 2, "enum: map_with_index")
+
+# 20. select
+evens = seq.select { |x| x % 2 == 0 }
+assert_eq(evens.size, 3, "enum: select")
+
+# 21. reject
+odds = seq.reject { |x| x % 2 == 0 }
+assert_eq(odds.size, 5, "enum: reject")
+
+# 22. partition
+part = seq.partition { |x| x % 2 == 0 }
+assert_eq(part[0].size, 3, "enum: partition evens")
+assert_eq(part[1].size, 5, "enum: partition odds")
+
+# 23. take
+assert_eq(seq.take(3).size, 3, "enum: take")
+
+# 24. skip
+assert_eq(seq.skip(3).size, 5, "enum: skip")
+
+# 25. take_while
+tw = seq.take_while { |x| x < 5 }
+assert_eq(tw.size, 4, "enum: take_while")
+
+# 26. skip_while
+sw = seq.skip_while { |x| x < 5 }
+assert_eq(sw.size, 4, "enum: skip_while")
+# 27. reduce
+assert_eq(seq.reduce(0) { |acc, x| acc + x }, 31, "enum: reduce")
+
+# 28. reduce?
+r_q = seq.reduce? { |acc, x| acc + x }
+assert_true(!r_q.nil? && r_q == 31, "enum: reduce?")
+assert_true(empty_seq.reduce? { |acc, x| acc + x }.nil?, "enum: reduce? nil")
+
+# 29. each_with_index
+ewi_sum = 0
+seq.each_with_index { |x, i| ewi_sum = ewi_sum + i }
+assert_eq(ewi_sum, 28, "enum: each_with_index")
+
+# 30. each_with_object
+ewo = seq.each_with_object([] of Int32) { |arr, x| arr << (x * 10) }
+assert_eq(ewo.size, 8, "enum: each_with_object")
+
+# 31. join
+small_seq = SimpleSeq.new([3, 1, 4])
+assert_str(small_seq.join("-"), "3-1-4", "enum: join")
+# 32. includes?
+assert_true(seq.includes?(9), "enum: includes? true")
+assert_true(!seq.includes?(99), "enum: includes? false")
+
+# 33. max?
+assert_true(!seq.max?.nil? && seq.max? == 9, "enum: max?")
+assert_true(empty_seq.max?.nil?, "enum: max? nil")
+
+# 34. max
+assert_eq(seq.max, 9, "enum: max")
+
+# 35. min?
+assert_true(!seq.min?.nil? && seq.min? == 1, "enum: min?")
+assert_true(empty_seq.min?.nil?, "enum: min? nil")
+
+# 36. min
+assert_eq(seq.min, 1, "enum: min")
+
+# 37. sum
+assert_eq(seq.sum, 31, "enum: sum")
+assert_eq(empty_seq.sum, 0, "enum: sum empty")
+
+# 38. product
+prod_seq = SimpleSeq.new([2, 3, 4])
+assert_eq(prod_seq.product, 24, "enum: product")
+assert_eq(empty_seq.product, 1, "enum: product empty")
+
+# 39. tally
+t = seq.tally
+assert_eq(t[1], 2, "enum: tally")
+
+# 40. tally_by
+tb = seq.tally_by { |x| x % 2 }
+assert_eq(tb[0], 3, "enum: tally_by")
+assert_eq(tb[1], 5, "enum: tally_by")
+
+# 41. sorted
+assert_eq(seq.sorted[0], 1, "enum: sorted first")
+assert_eq(seq.sorted[7], 9, "enum: sorted last")
+
+# 42. max_by?
+assert_true(!seq.max_by? { |x| -x }.nil? && seq.max_by? { |x| -x } == 1, "enum: max_by?")
+assert_true(empty_seq.max_by? { |x| -x }.nil?, "enum: max_by? nil")
+
+# 43. max_by
+assert_eq(seq.max_by { |x| -x }, 1, "enum: max_by")
+
+# 44. min_by?
+assert_true(!seq.min_by? { |x| -x }.nil? && seq.min_by? { |x| -x } == 9, "enum: min_by?")
+assert_true(empty_seq.min_by? { |x| -x }.nil?, "enum: min_by? nil")
+
+# 45. min_by
+assert_eq(seq.min_by { |x| -x }, 9, "enum: min_by")
+
+# 46. max_of?
+assert_true(!seq.max_of? { |x| -x }.nil? && seq.max_of? { |x| -x } == -1, "enum: max_of?")
+assert_true(empty_seq.max_of? { |x| -x }.nil?, "enum: max_of? nil")
+
+# 47. max_of
+assert_eq(seq.max_of { |x| -x }, -1, "enum: max_of")
+
+# 48. min_of?
+assert_true(!seq.min_of? { |x| -x }.nil? && seq.min_of? { |x| -x } == -9, "enum: min_of?")
+assert_true(empty_seq.min_of? { |x| -x }.nil?, "enum: min_of? nil")
+
+# 49. min_of
+assert_eq(seq.min_of { |x| -x }, -9, "enum: min_of")
+
+# 50. minmax?
+mm_q = seq.minmax?
+assert_true(!mm_q[0].nil? && mm_q[0] == 1, "enum: minmax? min")
+assert_true(!mm_q[1].nil? && mm_q[1] == 9, "enum: minmax? max")
+empty_mm_q = empty_seq.minmax?
+assert_true(empty_mm_q[0].nil? && empty_mm_q[1].nil?, "enum: minmax? empty")
+
+# 51. minmax
+mm = seq.minmax
+assert_eq(mm[0], 1, "enum: minmax min")
+assert_eq(mm[1], 9, "enum: minmax max")
+
+# 52. minmax_by?
+mm_by_q = seq.minmax_by? { |x| -x }
+assert_true(!mm_by_q[0].nil? && mm_by_q[0] == 9, "enum: minmax_by? min")
+assert_true(!mm_by_q[1].nil? && mm_by_q[1] == 1, "enum: minmax_by? max")
+empty_mm_by_q = empty_seq.minmax_by? { |x| -x }
+assert_true(empty_mm_by_q[0].nil? && empty_mm_by_q[1].nil?, "enum: minmax_by? empty")
+
+# 53. minmax_by
+mm_by = seq.minmax_by { |x| -x }
+assert_eq(mm_by[0], 9, "enum: minmax_by min")
+assert_eq(mm_by[1], 1, "enum: minmax_by max")
+
+# 54. minmax_of?
+mm_of_q = seq.minmax_of? { |x| -x }
+assert_true(!mm_of_q[0].nil? && mm_of_q[0] == -9, "enum: minmax_of? min")
+assert_true(!mm_of_q[1].nil? && mm_of_q[1] == -1, "enum: minmax_of? max")
+empty_mm_of_q = empty_seq.minmax_of? { |x| -x }
+assert_true(empty_mm_of_q[0].nil? && empty_mm_of_q[1].nil?, "enum: minmax_of? empty")
+
+# 55. minmax_of
+mm_of = seq.minmax_of { |x| -x }
+assert_eq(mm_of[0], -9, "enum: minmax_of min")
+assert_eq(mm_of[1], -1, "enum: minmax_of max")
+
+# 56. group_by
+gb = seq.group_by { |x| x % 2 }
+assert_eq(gb[0].size, 3, "enum: group_by 0")
+assert_eq(gb[1].size, 5, "enum: group_by 1")
+
+# 57. index_by
+ib = small_seq.index_by { |x| x.to_s }
+assert_eq(ib["3"], 3, "enum: index_by")
+
+# 58. to_h
+th = small_seq.to_h { |x| {x.to_s, x * 10} }
+assert_eq(th["3"], 30, "enum: to_h")
+
+# 59. each_slice
+slices = seq.each_slice(3)
+assert_eq(slices.size, 3, "enum: each_slice count")
+assert_eq(slices[0].size, 3, "enum: each_slice 0")
+assert_eq(slices[2].size, 2, "enum: each_slice 2")
+
+# 60. in_slices_of
+in_sl = seq.in_slices_of(3)
+assert_eq(in_sl.size, 3, "enum: in_slices_of count")
+
+# 61. each_cons
+cons = seq.each_cons(3)
+assert_eq(cons.size, 6, "enum: each_cons count")
+
+# 62. each_cons_pair
+cons_pairs = [] of String
+small_seq.each_cons_pair { |a, b| cons_pairs << "#{a}-#{b}" }
+assert_str(cons_pairs.join(" "), "3-1 1-4", "enum: each_cons_pair")
+
+# 63. each_step
+stepped = [] of Int32
+seq.each_step(3) { |x| stepped << x }
+assert_eq(stepped.size, 3, "enum: each_step size")
+assert_eq(stepped[0], 3, "enum: each_step 0")
+assert_eq(stepped[1], 1, "enum: each_step 1")
+assert_eq(stepped[2], 2, "enum: each_step 2")
+
+# 64. chunk_while
+chunks = seq.chunk_while { |a, b| (a % 2) == (b % 2) }
+assert_true(chunks.size > 0, "enum: chunk_while")
+
+# 65. cycle
+cycled = [] of Int32
+small_seq.cycle(2) { |x| cycled << x }
+assert_eq(cycled.size, 6, "enum: cycle")
+
+# 66. compact_map
+comp = seq.compact_map { |x| x % 2 == 0 ? x * 10 : nil }
+assert_eq(comp.size, 3, "enum: compact_map")
+
+# 67. find_value
+fv = seq.find_value { |x| x > 5 ? "big-#{x}" : nil }
+assert_true(!fv.nil? && fv == "big-9", "enum: find_value")
+
+# 68. accumulate
+acc = small_seq.accumulate(0) { |a, b| a + b }
+assert_eq(acc.size, 4, "enum: accumulate")
+assert_eq(acc[3], 8, "enum: accumulate final")
+
+# 69. in_groups_of
+groups = small_seq.in_groups_of(2, 0)
+assert_eq(groups.size, 2, "enum: in_groups_of count")
+assert_eq(groups[1][1], 0, "enum: in_groups_of padded")
+
+# 70. zip
+zipped = small_seq.zip(SimpleSeq.new([10, 20, 30]))
+assert_eq(zipped.size, 3, "enum: zip count")
+assert_eq(zipped[0][0], 3, "enum: zip 0 0")
+assert_eq(zipped[0][1], 10, "enum: zip 0 1")
+# 71. sum_by
+assert_eq(seq.sum_by { |x| x * 2 }, 62, "enum: sum_by")
+
+puts "== std/list: immutable sequence"
+list = List.new([10, 20, 30]).appended(40)
+assert_eq(list.size, 4, "list: size")
+assert_true(!list.empty?, "list: empty?")
+assert_eq(list.at(0), 10, "list: at 0")
+assert_eq(list.at(3), 40, "list: at 3")
+assert_eq(list.to_a.size, 4, "list: to_a")
+puts "== std/derives: Show trait"
+assert_str(s1.show, "Score(10)", "derives: show")
+
+puts "all std checks passed"

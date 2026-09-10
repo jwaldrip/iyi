@@ -1,0 +1,421 @@
+# `Slice`, a bounded pointer — SPEC.md III.
+#
+# A `Slice(T)` is a `Pointer(T)` with a size and a read-only flag.
+# While raw pointers are unchecked and unsafe, a slice enforces bounds checks
+# on reads and writes, provides safe subslicing, in-place manipulation,
+# and integrates with `Enumerable`.
+#
+# `Bytes` is an alias for `Slice(UInt8)`, the currency of IO, sockets, and
+# binary protocols.
+
+module std/slice
+
+import std/enumerable
+using std/enumerable::{Enumerable}
+
+# `pub`, because an alias is part of a module's surface like anything else: an
+# unexported one is unreachable from a consumer, which R-2 now says out loud.
+pub alias Bytes = Slice(UInt8)
+
+pub struct Slice(T)
+  @pointer : Pointer(T)
+  @size : Int32
+  @read_only : Bool
+
+  getter size : Int32
+
+  def read_only? : Bool
+    @read_only
+  end
+
+  # Creates a slice wrapping *pointer* bounded by *size*.
+  def initialize(@pointer : Pointer(T), size : Int32, @read_only : Bool = false)
+    raise "negative size: #{size}" if size < 0
+    @size = size
+  end
+
+  # Allocates a slice of *size* elements on the heap.
+  def self.new(size : Int32, read_only : Bool = false) : self
+    raise "negative size: #{size}" if size < 0
+    pointer = size == 0 ? Pointer(T).new(0_u64) : Pointer(T).malloc(size.to_u64)
+    new(pointer, size, read_only: read_only)
+  end
+
+  # Allocates a slice of *size* elements initialized to *value*.
+  def self.new(size : Int32, value : T, read_only : Bool = false) : self
+    raise "negative size: #{size}" if size < 0
+    pointer = size == 0 ? Pointer(T).new(0_u64) : Pointer(T).malloc(size.to_u64)
+    slice = new(pointer, size, read_only: false)
+    slice.fill(value)
+    new(pointer, size, read_only: read_only)
+  end
+
+  # Allocates a slice of *size* elements initialized by yielding each index.
+  def self.new(size : Int32, & : Int32 -> T) : self
+    raise "negative size: #{size}" if size < 0
+    pointer = size == 0 ? Pointer(T).new(0_u64) : Pointer(T).malloc(size.to_u64)
+    i = 0
+    while i < size
+      pointer[i] = yield i
+      i = i + 1
+    end
+    new(pointer, size, read_only: false)
+  end
+
+  def self.new(size : Int32, read_only : Bool, & : Int32 -> T) : self
+    raise "negative size: #{size}" if size < 0
+    pointer = size == 0 ? Pointer(T).new(0_u64) : Pointer(T).malloc(size.to_u64)
+    i = 0
+    while i < size
+      pointer[i] = yield i
+      i = i + 1
+    end
+    new(pointer, size, read_only: read_only)
+  end
+
+  # Returns an empty slice of size 0.
+  def self.empty : self
+    new(Pointer(T).new(0_u64), 0, read_only: false)
+  end
+
+  # Raw pointer to the underlying buffer.
+  def to_unsafe : Pointer(T)
+    @pointer
+  end
+
+  # Returns the total size in bytes of this slice's elements.
+  def bytesize : Int32
+    @size * sizeof(T)
+  end
+
+  # Returns true if the slice contains no elements.
+  def empty? : Bool
+    @size == 0
+  end
+
+  # Raw element access without bounds checks (required for Indexable).
+  def unsafe_fetch(index : Int32) : T
+    @pointer[index]
+  end
+
+  # Raw element write without bounds checks.
+  def unsafe_put(index : Int32, value : T) : T
+    @pointer[index] = value
+  end
+
+  # Element access with bounds checking. Supports negative indices counting from the end.
+  def [](index : Int32) : T
+    actual = index < 0 ? index + @size : index
+    raise "index out of bounds: #{index} for size #{@size}" if actual < 0 || actual >= @size
+    @pointer[actual]
+  end
+
+  # Element access with bounds checking, returning nil if out of bounds.
+  def []?(index : Int32) : T?
+    actual = index < 0 ? index + @size : index
+    return nil if actual < 0 || actual >= @size
+    @pointer[actual]
+  end
+
+  # Element assignment with bounds checking and write-protection check.
+  def []=(index : Int32, value : T) : T
+    raise "cannot write to read-only Slice" if @read_only
+    actual = index < 0 ? index + @size : index
+    raise "index out of bounds: #{index} for size #{@size}" if actual < 0 || actual >= @size
+    @pointer[actual] = value
+  end
+
+  # Returns a subslice starting *offset* elements in, extending to the end.
+  def +(offset : Int32) : Slice(T)
+    raise "offset out of bounds: #{offset} for size #{@size}" if offset < 0 || offset > @size
+    Slice(T).new(@pointer + offset.to_i64, @size - offset, read_only: @read_only)
+  end
+
+  # Returns a subslice of *count* elements starting at *start*.
+  def [](start : Int32, count : Int32) : Slice(T)
+    self[start, count]? || raise "subslice out of bounds: start #{start}, count #{count} for size #{@size}"
+  end
+
+  # Returns a subslice of *count* elements starting at *start*, or nil if out of bounds.
+  def []?(start : Int32, count : Int32) : Slice(T)?
+    return nil if count < 0
+    actual_start = start < 0 ? start + @size : start
+    return nil if actual_start < 0 || actual_start > @size || count > (@size - actual_start)
+    Slice(T).new(@pointer + actual_start.to_i64, count, read_only: @read_only)
+  end
+
+  # Returns a subslice covering *range*.
+  def [](range : Range(Int32, Int32)) : Slice(T)
+    self[range]? || raise "range out of bounds: #{range.begin}..#{range.end} for size #{@size}"
+  end
+
+  # Returns a subslice covering *range*, or nil if out of bounds.
+  def []?(range : Range(Int32, Int32)) : Slice(T)?
+    b = range.begin
+    e = range.end
+    b = b + @size if b < 0
+    e = e + @size if e < 0
+    count = range.exclusive? ? (e - b) : (e - b + 1)
+    self[b, count]?
+  end
+
+  # Copies *count* elements from raw *source* pointer into this slice.
+  def copy_from(source : Pointer(T), count : Int32) : Nil
+    raise "cannot write to read-only Slice" if @read_only
+    raise "negative count: #{count}" if count < 0
+    raise "copy count #{count} exceeds destination size #{@size}" if count > @size
+    @pointer.copy_from(source, count)
+  end
+
+  # Copies *count* elements from this slice to raw *target* pointer.
+  def copy_to(target : Pointer(T), count : Int32) : Nil
+    raise "negative count: #{count}" if count < 0
+    raise "copy count #{count} exceeds source size #{@size}" if count > @size
+    target.copy_from(@pointer, count)
+  end
+
+  # Copies all elements from this slice to *target* slice.
+  def copy_to(target : Slice(T)) : Nil
+    raise "cannot write to read-only target Slice" if target.read_only?
+    raise "destination slice size #{target.size} too small for source size #{@size}" if target.size < @size
+    target.to_unsafe.copy_from(@pointer, @size)
+  end
+
+  # Copies all elements from *source* slice into this slice.
+  def copy_from(source : Slice(T)) : Nil
+    source.copy_to(self)
+  end
+
+  # Moves *count* elements from *source* pointer into this slice, safely handling overlaps.
+  def move_from(source : Pointer(T), count : Int32) : Nil
+    raise "cannot write to read-only Slice" if @read_only
+    raise "negative count: #{count}" if count < 0
+    raise "move count #{count} exceeds destination size #{@size}" if count > @size
+    target = @pointer
+    if target.address > source.address
+      idx = count - 1
+      while idx >= 0
+        target[idx] = source[idx]
+        idx = idx - 1
+      end
+    else
+      idx = 0
+      while idx < count
+        target[idx] = source[idx]
+        idx = idx + 1
+      end
+    end
+  end
+
+  # Moves *count* elements from this slice into *target* pointer, safely handling overlaps.
+  def move_to(target : Pointer(T), count : Int32) : Nil
+    raise "negative count: #{count}" if count < 0
+    raise "move count #{count} exceeds source size #{@size}" if count > @size
+    source = @pointer
+    if target.address > source.address
+      idx = count - 1
+      while idx >= 0
+        target[idx] = source[idx]
+        idx = idx - 1
+      end
+    else
+      idx = 0
+      while idx < count
+        target[idx] = source[idx]
+        idx = idx + 1
+      end
+    end
+  end
+
+  # Moves all elements from this slice into *target* slice, safely handling overlaps.
+  def move_to(target : Slice(T)) : Nil
+    raise "cannot write to read-only target Slice" if target.read_only?
+    raise "destination slice size #{target.size} too small for source size #{@size}" if target.size < @size
+    move_to(target.to_unsafe, @size)
+  end
+
+  # Moves all elements from *source* slice into this slice, safely handling overlaps.
+  def move_from(source : Slice(T)) : Nil
+    source.move_to(self)
+  end
+
+  # Fills the entire slice with *value*.
+  def fill(value : T) : self
+    raise "cannot write to read-only Slice" if @read_only
+    i = 0
+    while i < @size
+      @pointer[i] = value
+      i = i + 1
+    end
+    self
+  end
+
+  # Fills *count* elements starting at *start* with *value*.
+  def fill(value : T, start : Int32, count : Int32) : self
+    raise "cannot write to read-only Slice" if @read_only
+    raise "negative count: #{count}" if count < 0
+    actual_start = start < 0 ? start + @size : start
+    raise "index out of bounds: start #{start}, count #{count} for size #{@size}" if actual_start < 0 || actual_start > @size || count > (@size - actual_start)
+    i = 0
+    while i < count
+      @pointer[actual_start + i] = value
+      i = i + 1
+    end
+    self
+  end
+
+  # Fills the entire slice by yielding each index to the block.
+  def fill(& : Int32 -> T) : self
+    raise "cannot write to read-only Slice" if @read_only
+    i = 0
+    while i < @size
+      @pointer[i] = yield i
+      i = i + 1
+    end
+    self
+  end
+
+  # Swaps elements at index *i* and index *j*.
+  def swap(i : Int32, j : Int32) : self
+    raise "cannot write to read-only Slice" if @read_only
+    ai = i < 0 ? i + @size : i
+    aj = j < 0 ? j + @size : j
+    raise "index out of bounds: #{i} for size #{@size}" if ai < 0 || ai >= @size
+    raise "index out of bounds: #{j} for size #{@size}" if aj < 0 || aj >= @size
+    tmp = @pointer[ai]
+    @pointer[ai] = @pointer[aj]
+    @pointer[aj] = tmp
+    self
+  end
+
+  # Reverses the elements of the slice in-place.
+  def reverse : self
+    raise "cannot write to read-only Slice" if @read_only
+    left = 0
+    right = @size - 1
+    while left < right
+      tmp = @pointer[left]
+      @pointer[left] = @pointer[right]
+      @pointer[right] = tmp
+      left = left + 1
+      right = right - 1
+    end
+    self
+  end
+
+  def reverse_in_place : self
+    reverse
+  end
+
+  # Yields each element to the block.
+  def each(& : T -> Nil) : Nil
+    i = 0
+    while i < @size
+      yield @pointer[i]
+      i = i + 1
+    end
+  end
+
+  # Yields each element and its index to the block.
+  def each_with_index(& : T, Int32 -> Nil) : Nil
+    i = 0
+    while i < @size
+      yield @pointer[i], i
+      i = i + 1
+    end
+  end
+
+  # Returns an Array containing all elements in this slice.
+  def to_a : Array(T)
+    ary = Array(T).new(@size)
+    i = 0
+    while i < @size
+      ary << @pointer[i]
+      i = i + 1
+    end
+    ary
+  end
+
+  # Returns a new slice with copied contents.
+  def dup : Slice(T)
+    ptr = @size == 0 ? Pointer(T).new(0_u64) : Pointer(T).malloc(@size.to_u64)
+    copy = Slice(T).new(ptr, @size, read_only: @read_only)
+    copy.copy_from(self) if @size > 0
+    copy
+  end
+
+  # Returns a copy of this slice.
+  def clone : Slice(T)
+    dup
+  end
+
+  # String representation: Bytes[...] for Slice(UInt8), Slice[...] for others.
+  def to_s : String
+    items = [] of String
+    each { |value| items << value.to_s }
+    {% if T == UInt8 %}
+      "Bytes[" + items.join(", ") + "]"
+    {% else %}
+      "Slice[" + items.join(", ") + "]"
+    {% end %}
+  end
+
+  def inspect : String
+    to_s
+  end
+
+  # Returns a lowercase hex string representation of Bytes.
+  def hexstring : String
+    {% if T == UInt8 %}
+      str_size = @size * 2
+      String.new(str_size) do |buffer|
+        offset = 0
+        i = 0
+        while i < @size
+          v = @pointer[i].to_i32
+          hi = (v >> 4) & 0x0f
+          lo = v & 0x0f
+          buffer[offset] = (hi < 10 ? 48 + hi : 97 + (hi - 10)).to_u8
+          buffer[offset + 1] = (lo < 10 ? 48 + lo : 97 + (lo - 10)).to_u8
+          offset = offset + 2
+          i = i + 1
+        end
+      end
+    {% else %}
+      raise "hexstring is only supported on Slice(UInt8)"
+    {% end %}
+  end
+
+  # Returns true if this slice and *other* point to the exact same memory and have the same size.
+  def same?(other : Slice(T)) : Bool
+    @pointer.address == other.to_unsafe.address && @size == other.size
+  end
+
+  # Returns true if sizes match and all elements are equal.
+  def ==(other : Slice(U)) : Bool forall U
+    return false if @size != other.size
+    return true if @pointer.address == other.to_unsafe.address
+    i = 0
+    while i < @size
+      return false unless @pointer[i] == other.to_unsafe[i]
+      i = i + 1
+    end
+    true
+  end
+
+  def ==(other) : Bool
+    false
+  end
+end
+
+impl Enumerable for Slice(T) forall T
+  type Elem = T
+
+  def each(& : T -> Nil) : Nil
+    i = 0
+    while i < @size
+      yield @pointer[i]
+      i = i + 1
+    end
+  end
+end

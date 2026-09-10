@@ -1747,22 +1747,22 @@ Each stage is independently verifiable; the tree is never left broken between th
 
 **Tasks:**
 
-1. **Windows Integration:**
-   - STW: use `SuspendThread()` and `GetThreadContext()` (Stage 4 already designed for this).
-   - Allocator: `VirtualAlloc()` / `VirtualFree()` (Stage 2).
-   - Root discovery: global segments from PE header; stack ranges; fiber stacks.
-   - Test on Windows x86_64 and arm64.
+1. **Windows Integration:** (Completed for x86_64)
+   - STW: `SuspendThread()` and `GetThreadContext()` for register capture.
+   - Allocator: `VirtualAlloc()` / `VirtualFree()` arenas, MAP-aligned via reserve/release/commit loop; `PAGE_READWRITE` and `MEM_RESET` page release.
+   - Root discovery: PE header parsing for `.data` and `.bss` ranges (omitting `.rdata` to avoid scanning read-only constants); TEB stack bounds (`StackBase` at `gs:0x08`, `StackLimit` at `gs:0x10`); callee-saved registers (rbx, rbp, rdi, rsi, r12-r15) via `spill_registers` (64 bytes).
+   - Test: `bench/windows_exercise.iyi` and `bench/windows_exercise.sh`, executed in CI on `windows-2022` (`windows-collector` job).
 
-2. **wasm32 Integration:**
-   - Allocator: linear memory watermark (Stage 2 design included it).
-   - Implicit STW: at Fiber yield points (no explicit pause needed).
-   - Root discovery: stack (within wasm linear memory), globals (within linear memory).
-   - Pointer maps: account for wasm32 ABI (sizes/alignments differ from host).
-   - Test on wasm32-wasi.
+2. **wasm32 Integration:** (Completed for wasm32-wasi)
+   - Allocator: linear memory watermark with 64 KiB size-classed arenas, chunk headers, and free list reuse.
+   - Root discovery: linear memory scan from stacksave to __heap_base, and globals from 0 to __data_end.
+   - Mark and sweep: mark-queue with layout table traversal; sweep into free lists and large object tracking.
+   - Verified: bench/wasm32_exercise.sh passes under wasmtime in default and release modes.
 
-3. **Platform-Specific Pointer Maps:**
-   - If sizes differ by platform, emit platform-specific `TypeLayout` entries or key by `(type_id, target_arch)`.
-   - Compile-time: codegen knows the target; emit the right size.
+3. **Platform-Specific Pointer Maps:** (Measured and verified)
+   - Codegen emits target-specific TypeLayout entries for each build target based on LLVM target data.
+   - On wasm32, pointer fields and allocations take 32-bit sizes and alignments (e.g. 16 bytes vs 32 bytes on 64-bit host).
+   - .iyimod artifacts strictly record target_triple in their header and reject mismatched imports at compile time; entries do not need extra target keying.
 
 **Verification:** Build and run samples on all four platforms; verify collection works; measure RSS and pause time.
 

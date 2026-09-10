@@ -3507,9 +3507,16 @@ module Iyi
         assert_macro %({{x.excludes_end?}}), "true", {x: RangeLiteral.new(1.int32, 2.int32, true)}
       end
 
-      it "executes map" do
-        assert_macro %({{x.map(&.stringify)}}), %(["1", "2", "3"]), {x: RangeLiteral.new(1.int32, 3.int32, false)}
-        assert_macro %({{x.map(&.stringify)}}), %(["1", "2"]), {x: RangeLiteral.new(1.int32, 3.int32, true)}
+      describe "#map" do
+        it "with NumberLiteral" do
+          assert_macro %({{x.map(&.stringify)}}), %(["1", "2", "3"]), {x: RangeLiteral.new(1.int32, 3.int32, false)}
+          assert_macro %({{x.map(&.stringify)}}), %(["1", "2"]), {x: RangeLiteral.new(1.int32, 3.int32, true)}
+        end
+
+        it "with CharLiteral" do
+          assert_macro %({{x.map(&.stringify)}}), %(["'a'", "'b'", "'c'"]), {x: RangeLiteral.new(CharLiteral.new('a'), CharLiteral.new('c'), false)}
+          assert_macro %({{x.map(&.stringify)}}), %(["'a'", "'b'"]), {x: RangeLiteral.new(CharLiteral.new('a'), CharLiteral.new('c'), true)}
+        end
       end
 
       it "executes to_a" do
@@ -3597,6 +3604,14 @@ module Iyi
           x: Annotation.new(Path.new("Foo"), [] of ASTNode),
           y: true.bool,
         }
+      end
+    end
+
+    describe NumberLiteral do
+      describe "#chr" do
+        it "executes chr" do
+          assert_macro %({{x.chr}}), %('a'), {x: 97.int32}
+        end
       end
     end
 

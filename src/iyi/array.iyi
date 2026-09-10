@@ -101,7 +101,7 @@ class Array(T)
   end
 
   # Here rather than on `Enumerable`: the trait is iyi's, written in
-  # `samples/iyi/std`, and every one of its methods that returns a sequence
+  # `src/std`, and every one of its methods that returns a sequence
   # returns one of these. So an `Array` is what a sample ends up holding, and
   # `join` is what it ends up calling.
   # With nothing between: `["a", "b"].join` is `"ab"`.

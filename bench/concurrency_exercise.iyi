@@ -34,6 +34,18 @@ end
     fail("pipe failed") if LibC.pipe(fds) < 0
     fds
   end
+{% elsif flag?(:win32) %}
+  def make_pipe : Pointer(Int64)
+    pipe_name = "\\\\.\\pipe\\iyi_conc_pipe_#{__iyi_monotonic_ns}".to_unsafe
+    h_read = LibC.CreateNamedPipeA(pipe_name, 0x40000001_i32, 0_i32, 1_i32, 4096_i32, 4096_i32, 0_i32, Pointer(Void).new(0_u64))
+    fail("CreateNamedPipeA failed") if h_read.address &+ 1_u64 == 0_u64
+    h_write = LibC.CreateFileA(pipe_name, 1073741824_i32, 0_i32, Pointer(Void).new(0_u64), 3_i32, 128_i32, Pointer(Void).new(0_u64))
+    fail("CreateFileA for pipe failed") if h_write.address &+ 1_u64 == 0_u64
+    fds = Pointer(UInt8).malloc(16_u64).as(Pointer(Int64))
+    fds[0] = h_read.address.to_i64
+    fds[1] = h_write.address.to_i64
+    fds
+  end
 {% else %}
   {% if flag?(:x86_64) %}
     EX_SYS_PIPE2 = 293_i64

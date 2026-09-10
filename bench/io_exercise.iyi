@@ -1,0 +1,89 @@
+# Exercise program for IyiIO: flush, short reads, buffer boundaries, and EOF.
+#
+#   ./bin/iyi run bench/io_exercise.iyi
+#
+# Each check raises on a wrong answer, and a panic exits non-zero,
+# which bench/io_exercise.sh keys on to prove checks can fail.
+
+path = "bench-io-exercise-tmp.txt"
+flush_path = "bench-io-exercise-flush-tmp.txt"
+
+File.delete(path) if File.exists?(path)
+File.delete(flush_path) if File.exists?(flush_path)
+
+# 1. Write that must be flushed
+io_write = File.open(flush_path, "w", 128)
+message = "Buffered text that must remain in memory until flush is called."
+io_write.write(message)
+
+# Check disk before flush: file size must be 0
+before_disk = File.read(flush_path)
+raise "flush: expected 0 bytes on disk before flush, found #{before_disk.bytesize}" unless before_disk.bytesize == 0
+
+# Flush: buffer must now be written to disk
+io_write.flush
+after_disk = File.read(flush_path)
+raise "flush: expected #{message.bytesize} bytes on disk after flush, found #{after_disk.bytesize}" unless after_disk == message
+
+io_write.close
+puts "flush: ok"
+
+# 2. Short reads
+sample_text = "abcdefghijklmnopqrstuvwxyz0123456789"
+File.write(path, sample_text)
+
+io_short = File.open(path, "r", 4096)
+c1 = io_short.read_bytes(3)
+raise "short_reads: expected 'abc' but got '#{c1}'" unless c1 == "abc"
+c2 = io_short.read_bytes(4)
+raise "short_reads: expected 'defg' but got '#{c2}'" unless c2 == "defg"
+c3 = io_short.read_bytes(5)
+raise "short_reads: expected 'hijkl' but got '#{c3}'" unless c3 == "hijkl"
+io_short.close
+puts "short_reads: ok"
+
+# 3. Read spanning buffer boundary
+line1 = "0123456789abcdef0123456789\n"
+line2 = "The quick brown fox jumps over the lazy dog\n"
+line3 = "Short final line\n"
+boundary_content = line1 + line2 + line3
+File.write(path, boundary_content)
+
+# Buffer size 16 forces lines (27, 44 bytes) to cross multiple boundaries
+io_bound = File.open(path, "r", 16)
+r1 = io_bound.read_line(chomp: false)
+raise "buffer_boundary: line 1 mismatch" unless r1 == line1
+r2 = io_bound.read_line(chomp: false)
+raise "buffer_boundary: line 2 mismatch" unless r2 == line2
+r3 = io_bound.read_line(chomp: false)
+raise "buffer_boundary: line 3 mismatch" unless r3 == line3
+io_bound.close
+
+# Read bytes spanning buffer boundary with buffer size 8
+io_bound_bytes = File.open(path, "r", 8)
+chunk = io_bound_bytes.read_bytes(25)
+expected_chunk = boundary_content[0, 25]
+raise "buffer_boundary: read_bytes mismatch" unless chunk == expected_chunk
+io_bound_bytes.close
+puts "buffer_boundary: ok"
+
+# 4. EOF handling
+io_eof = File.open(path, "r", 16)
+all_content = io_eof.read_all
+raise "eof: read_all mismatch" unless all_content == boundary_content
+raise "eof: expected eof? to be true after reading all" unless io_eof.eof?
+
+extra_line = io_eof.read_line
+raise "eof: expected read_line at EOF to return nil" unless extra_line.nil?
+
+extra_bytes = io_eof.read_bytes(10)
+raise "eof: expected read_bytes at EOF to return empty string" unless extra_bytes == ""
+raise "eof: expected eof? to remain true" unless io_eof.eof?
+io_eof.close
+puts "eof: ok"
+
+# Cleanup
+File.delete(path) if File.exists?(path)
+File.delete(flush_path) if File.exists?(flush_path)
+
+puts "all io checks passed"

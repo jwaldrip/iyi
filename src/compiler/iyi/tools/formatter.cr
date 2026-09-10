@@ -4382,6 +4382,13 @@ module Iyi
     end
 
     def format_alias_or_typedef(node, keyword : Keyword, value)
+      # iyi: `pub alias`, the same prefix `pub def`, `pub struct` and `pub
+      # macro` carry (R-2). Without this the formatter refused every file with
+      # an exported alias in it, which is the third time this class of defect
+      # has been fixed here: the comment on `pub macro` above says the same
+      # thing. The node has carried `exported?` since aliases became part of a
+      # module's surface; only this method never read it.
+      write_keyword :pub, " " if node.responds_to?(:exported?) && node.exported?
       write_keyword keyword, " "
 
       name = node.name

@@ -1,0 +1,291 @@
+# wasm32-wasi collector exercise — GC_DESIGN.md Stage 10.
+#
+# Proves:
+# 1. Size-classed allocation and 8-byte alignment.
+# 2. Garbage collection and address reclamation.
+# 3. Rooted object survival from both globals and the shadow stack.
+# 4. Precision of layout scanning (pointer fields followed, integer fields ignored).
+# 5. Realloc memory preservation.
+
+def count(value : UInt64) : String
+  value.to_i64.to_s
+end
+
+def hex(value : UInt64) : String
+  value.to_i64.to_s(16)
+end
+
+class Node
+  property next : Node?
+  property value : Int32
+
+  def initialize(@value : Int32)
+    @next = nil
+  end
+end
+
+class TypedNode
+  property next : TypedNode?
+  property child : Node?
+  property decoy : UInt64
+
+  def initialize(@decoy : UInt64)
+    @next = nil
+    @child = nil
+  end
+end
+
+class RootedGlobal
+  @@head : Node? = nil
+  @@typed : TypedNode? = nil
+
+  def self.head : Node?
+    @@head
+  end
+
+  def self.head=(node : Node?) : Nil
+    @@head = node
+  end
+
+  def self.typed : TypedNode?
+    @@typed
+  end
+
+  def self.typed=(node : TypedNode?) : Nil
+    @@typed = node
+  end
+end
+
+class SeenLedger
+  LIMIT = 1024_u64
+  @@buffer : Pointer(UInt64) = Pointer(UInt64).new(0_u64)
+  @@count : UInt64 = 0_u64
+
+  def self.init : Nil
+    return if @@buffer.address != 0_u64
+    @@buffer = IyiHeap.alloc_atomic(LIMIT * 8_u64).as(Pointer(UInt64))
+    @@count = 0_u64
+  end
+
+  def self.add(addr : UInt64) : Nil
+    init
+    if @@count < LIMIT
+      (@@buffer + @@count.to_i64).value = addr
+      @@count = @@count + 1_u64
+    end
+  end
+
+  def self.holds?(addr : UInt64) : Bool
+    init
+    idx = 0_u64
+    while idx < @@count
+      return true if (@@buffer + idx.to_i64).value == addr
+      idx = idx + 1_u64
+    end
+    false
+  end
+
+  def self.forget : Nil
+    @@count = 0_u64
+  end
+end
+
+class DecoyHolder
+  MASK = 0x5555555555555555_u64
+  @@addr : UInt64 = 0_u64
+
+  def self.set(a : UInt64) : Nil
+    @@addr = a ^ MASK
+  end
+
+  def self.get : UInt64
+    @@addr ^ MASK
+  end
+end
+
+# === 1. Allocation and Alignment ===
+puts "== allocation and alignment =="
+blocks = [] of Pointer(UInt8)
+sizes = [16, 24, 48, 96, 128, 256, 512, 1024]
+idx = 0
+while idx < 128
+  sz = sizes[idx % sizes.size]
+  b = Pointer(UInt8).malloc(sz.to_u64)
+  if b.address & 7_u64 != 0_u64
+    raise "alignment: block #{idx} is not 8-aligned at 0x#{hex(b.address)}"
+  end
+  bidx = 0
+  while bidx < sz
+    (b + bidx.to_i64).value = ((idx + bidx * 31) % 256).to_u8
+    bidx = bidx + 1
+  end
+  blocks << b
+  idx = idx + 1
+end
+
+idx = 0
+while idx < blocks.size
+  sz = sizes[idx % sizes.size]
+  b = blocks[idx]
+  bidx = 0
+  while bidx < sz
+    expected = ((idx + bidx * 31) % 256).to_u8
+    actual = (b + bidx.to_i64).value
+    if actual != expected
+      raise "corruption: block #{idx} byte #{bidx} corrupted"
+    end
+    bidx = bidx + 1
+  end
+  idx = idx + 1
+end
+puts "allocation: 128 blocks across 8 sizes hold patterns, all 8-aligned"
+
+# === 2. Collection and Reclamation ===
+puts "== collection and reclamation =="
+SeenLedger.forget
+i = 0
+while i < 100
+  n = Node.new(i)
+  SeenLedger.add(n.as(Pointer(Void)).address)
+  i = i + 1
+end
+
+IyiMark.collect
+swept = IyiMark.swept
+freed = IyiMark.bytes_freed
+
+if swept == 0_u64 || freed == 0_u64
+  raise "reclamation: nothing was reclaimed by collection"
+end
+
+reused = 0_u64
+j = 0
+while j < 100
+  fresh_node = Node.new(j + 5000)
+  reused = reused + 1_u64 if SeenLedger.holds?(fresh_node.as(Pointer(Void)).address)
+  j = j + 1
+end
+
+if reused == 0_u64
+  raise "reclamation: no addresses were reused after collection"
+end
+puts "reclamation: #{count(swept)} chunks swept, #{count(freed)} bytes freed, #{count(reused)} of 100 allocations reused reclaimed addresses"
+
+# === 3. Rooted Object Survival ===
+puts "== rooted object survival =="
+# Global root
+RootedGlobal.head = Node.new(1111)
+g_child = Node.new(2222)
+g_head = RootedGlobal.head
+if g_head.is_a?(Node)
+  g_head.next = g_child
+end
+
+@[NoInline]
+def check_stack_survival : Nil
+  stack_root = Node.new(3333)
+  stack_child = Node.new(4444)
+  stack_root.next = stack_child
+  p_stack = pointerof(stack_root)
+
+  asm("" :: "r"(p_stack) : "memory")
+
+  k = 0
+  while k < 50
+    garbage = Node.new(k + 9000)
+    k = k + 1
+  end
+
+  IyiMark.collect
+
+  sr = p_stack.value
+  if sr.value != 3333
+    raise "survival: stack root was corrupted or collected"
+  end
+  sc = sr.next
+  if !sc.is_a?(Node) || sc.value != 4444
+    raise "survival: child of stack root was corrupted or collected"
+  end
+end
+
+check_stack_survival
+
+# Verify global root survived intact
+gh = RootedGlobal.head
+if !gh.is_a?(Node) || gh.value != 1111
+  raise "survival: global root was corrupted or collected"
+end
+gc = gh.next
+if !gc.is_a?(Node) || gc.value != 2222
+  raise "survival: child of global root was corrupted or collected"
+end
+
+puts "survival: global roots, stack roots, and reachable children all survived collection"
+
+# === 4. Precision of Layout Scanning ===
+puts "== precision and layout scan =="
+
+@[NoInline]
+def build_typed_graph : Nil
+  decoy = Node.new(7777)
+  DecoyHolder.set(decoy.as(Pointer(Void)).address)
+  real_child = Node.new(8888)
+  typed_root = TypedNode.new(DecoyHolder.get)
+  typed_root.child = real_child
+  RootedGlobal.typed = typed_root
+end
+
+@[NoInline]
+def wipe_stack_frame : Nil
+  a = 0_u64; b = 0_u64; c = 0_u64; d = 0_u64
+  asm("" :: "r"(pointerof(a)) : "memory")
+end
+
+build_typed_graph
+wipe_stack_frame
+
+# Mark only (without sweep, so colours reflect reachability directly)
+IyiMark.mark
+
+t_node = RootedGlobal.typed
+if t_node.is_a?(TypedNode)
+  ch = t_node.child
+  if !ch.is_a?(Node) || ch.value != 8888
+    raise "precision: child of typed node was collected"
+  end
+  if IyiMark.colour(ch.as(Pointer(Void)).address) != IyiMark::BLACK
+    raise "precision: real child was not marked black"
+  end
+end
+
+decoy_addr = DecoyHolder.get
+decoy_colour = IyiMark.colour(decoy_addr)
+if decoy_colour != IyiMark::WHITE
+  raise "precision: integer field holding address was followed by marker"
+end
+
+# Complete the collection by sweeping
+IyiMark.sweep
+puts "precision: typed node pointer field followed, integer field holding address not followed"
+
+# === 5. Realloc ===
+puts "== realloc =="
+buf = Pointer(UInt8).malloc(64_u64)
+bidx = 0
+while bidx < 64
+  (buf + bidx.to_i64).value = (bidx * 5 % 256).to_u8
+  bidx = bidx + 1
+end
+new_buf = buf.realloc(256_u64)
+bidx = 0
+while bidx < 64
+  expected = (bidx * 5 % 256).to_u8
+  actual = (new_buf + bidx.to_i64).value
+  if actual != expected
+    raise "realloc: byte #{bidx} corrupted after growth"
+  end
+  bidx = bidx + 1
+end
+puts "realloc: data preserved across buffer growth"
+
+puts "all wasm32 collector checks passed"

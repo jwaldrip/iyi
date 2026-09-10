@@ -219,18 +219,24 @@ describe "Compiler" do
   # false on the other, which is how this example read before CI ran on Linux.
   #
   # darwin binds libSystem (Apple documents it as the only supported interface
-  # and raw syscalls as not a stable ABI), so `malloc` and `realloc` must be
-  # among the undefined: "fewer GC symbols" would also pass a prelude that
-  # quietly stopped allocating. Linux issues the syscalls itself and the heap
-  # is a bump pointer over `mmap`, so the proof inverts: the allocator names
-  # must be absent, because a prelude that fell back to libc would put them
-  # right back on this list. Measured, the Linux object a plain build hands
-  # the linker leaves nothing undefined at all (`nm -u` on the cross-compiled
-  # fixture is empty); what a linked Linux binary does leave undefined belongs
-  # to the crt objects in the link template, not to the prelude. Holding the
-  # whole empty allowlist is the floor gate's job (SPEC.md III.9); this
-  # example asserts the allocator family because that is the trade this
-  # branch made.
+  # and raw syscalls as not a stable ABI), so the allocator's own syscalls must
+  # be among the undefined: "fewer GC symbols" would also pass a prelude that
+  # quietly stopped allocating, and `mmap` is what says it did not. `malloc`
+  # and `realloc` are absent now and that is the point of the branch: the
+  # collector is the default allocator on POSIX, it carves its arenas from
+  # `mmap` itself, and a prelude that fell back to libc's heap would put those
+  # two names right back on this list. This example asserted their PRESENCE
+  # when the default was still the bump pointer over libSystem's heap, and the
+  # assertion outlived that flip.
+  #
+  # Linux issues the syscalls itself, so the proof there reads the same way for
+  # `malloc` and `realloc` and cannot ask about `mmap`: measured, the Linux
+  # object a plain build hands the linker leaves nothing undefined at all
+  # (`nm -u` on the cross-compiled fixture is empty), and what a linked Linux
+  # binary leaves undefined belongs to the crt objects in the link template
+  # rather than to the prelude. Holding the whole empty allowlist is the floor
+  # gate's job (SPEC.md III.9); this example asserts the allocator family
+  # because that is the trade this branch made.
   it "resolves no GC_ symbol in a plain build" do
     pending! "nm is not available" unless nm_available?
 
@@ -243,8 +249,12 @@ describe "Compiler" do
       symbols.select(&.starts_with?("GC_")).should be_empty
 
       {% if flag?(:darwin) %}
-        symbols.should contain "malloc"
-        symbols.should contain "realloc"
+        # It still allocates, through its own arenas.
+        symbols.should contain "mmap"
+        symbols.should contain "munmap"
+        # And not through libSystem's heap, which is what the collector replaced.
+        symbols.should_not contain "malloc"
+        symbols.should_not contain "realloc"
       {% else %}
         # Not `pending!`: absence is a real assertion, the same claim the
         # darwin branch makes, asked in the only direction Linux can answer.

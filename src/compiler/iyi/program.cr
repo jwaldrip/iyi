@@ -1084,8 +1084,6 @@ module Iyi
       error_message.abstract = true
       error_trait.add_def error_message
 
-      define_crystal_constants
-
       # definition in `macros/types.cr`
       define_macro_types
     end
@@ -1121,7 +1119,7 @@ module Iyi
     getter(nil_var) { Var.new("<nil_var>", nil_type) }
 
     # Defines a predefined constant in the Crystal module, such as BUILD_DATE and VERSION.
-    private def define_crystal_constants
+    def define_crystal_constants
       if build_commit = Iyi::Config.build_commit
         build_commit_const = define_crystal_string_constant "BUILD_COMMIT", build_commit
       else
@@ -1168,7 +1166,7 @@ module Iyi
       define_crystal_string_constant "HOST_TRIPLE", Iyi::Config.host_target.to_s, <<-MD
         The LLVM target triple of the host system (the machine that the compiler runs on).
         MD
-      define_crystal_string_constant "TARGET_TRIPLE", Iyi::Config.host_target.to_s, <<-MD
+      define_crystal_string_constant "TARGET_TRIPLE", codegen_target.to_s, <<-MD
         The LLVM target triple of the target system (the machine that the compiler builds for).
         MD
     end
@@ -1220,7 +1218,6 @@ module Iyi
     {% end %}
 
     def codegen_target=(@codegen_target : Codegen::Target) : Codegen::Target
-      crystal.types["TARGET_TRIPLE"].as(Const).value.as(StringLiteral).value = codegen_target.to_s
       @codegen_target
     end
 
