@@ -348,10 +348,12 @@ pub class Settings
   )
   end
 
-  def encode : Bytes
+  def encode(is_server : Bool = false) : Bytes
     buf = [] of UInt8
     add_setting(buf, SettingId::HEADER_TABLE_SIZE, @header_table_size.to_i64)
-    add_setting(buf, SettingId::ENABLE_PUSH, @enable_push.to_i64)
+    if !is_server
+      add_setting(buf, SettingId::ENABLE_PUSH, @enable_push.to_i64)
+    end
     add_setting(buf, SettingId::MAX_CONCURRENT_STREAMS, @max_concurrent_streams.to_i64)
     add_setting(buf, SettingId::INITIAL_WINDOW_SIZE, @initial_window_size)
     add_setting(buf, SettingId::MAX_FRAME_SIZE, @max_frame_size.to_i64)
@@ -392,6 +394,8 @@ pub class Stream
   property dependency : Int32
   property exclusive : Bool
   property has_received_initial_headers : Bool
+  property pending_data : Array(UInt8)
+  property pending_end_stream : Bool
 
   def initialize(@id : Int32, initial_send_window : Int64 = DEFAULT_INITIAL_WINDOW_SIZE, initial_recv_window : Int64 = DEFAULT_INITIAL_WINDOW_SIZE)
     @state = StreamState::Idle
@@ -400,6 +404,8 @@ pub class Stream
     @headers = [] of HeaderField
     @trailers = [] of HeaderField
     @data = [] of UInt8
+    @pending_data = [] of UInt8
+    @pending_end_stream = false
     @end_stream_received = false
     @end_stream_sent = false
     @rst_received = false
@@ -416,7 +422,7 @@ pub class Stream
       @end_stream_sent = end_stream
       nil
     elsif @state == StreamState::ReservedLocal
-      @state = StreamState::HalfClosedRemote
+      @state = end_stream ? StreamState::Closed : StreamState::HalfClosedRemote
       @end_stream_sent = end_stream
       nil
     elsif @state == StreamState::Open
@@ -444,7 +450,7 @@ pub class Stream
       @end_stream_received = end_stream
       nil
     elsif @state == StreamState::ReservedRemote
-      @state = StreamState::HalfClosedLocal
+      @state = end_stream ? StreamState::Closed : StreamState::HalfClosedLocal
       @end_stream_received = end_stream
       nil
     elsif @state == StreamState::Open
@@ -556,16 +562,21 @@ pub class Connection
   property preface_received : Bool
   property expecting_continuation : Bool
   property continuation_stream_id : Int32
+  property continuation_target_stream_id : Int32
   property continuation_end_stream : Bool
+  property first_frame_received : Bool
   getter continuation_buffer : Array(UInt8)
   getter outbound_buffer : Array(UInt8)
   getter inbound_buffer : Array(UInt8)
   property closed : Bool
   property goaway_sent : Bool
   property goaway_received : Bool
+  property goaway_sent_last_stream_id : Int32
+  property goaway_received_last_stream_id : Int32
   property last_error : Http2Error?
   getter completed_requests : Array(Tuple(Int32, Request))
   getter completed_responses : Array(Tuple(Int32, Response))
+  getter pushed_requests : Array(Tuple(Int32, Int32, Request))
   getter stream_rst_events : Array(Tuple(Int32, ErrorCode))
   property ping_ack_count : Int32
 
@@ -583,16 +594,21 @@ pub class Connection
     @preface_received = false
     @expecting_continuation = false
     @continuation_stream_id = 0_i32
+    @continuation_target_stream_id = 0_i32
     @continuation_end_stream = false
+    @first_frame_received = false
     @continuation_buffer = [] of UInt8
     @outbound_buffer = [] of UInt8
     @inbound_buffer = [] of UInt8
     @closed = false
     @goaway_sent = false
     @goaway_received = false
+    @goaway_sent_last_stream_id = MAX_WINDOW_SIZE.to_i32
+    @goaway_received_last_stream_id = MAX_WINDOW_SIZE.to_i32
     @last_error = nil
     @completed_requests = [] of Tuple(Int32, Request)
     @completed_responses = [] of Tuple(Int32, Response)
+    @pushed_requests = [] of Tuple(Int32, Int32, Request)
     @stream_rst_events = [] of Tuple(Int32, ErrorCode)
     @ping_ack_count = 0
   end
@@ -640,6 +656,100 @@ pub class Connection
     s
   end
 
+  def active_stream_count : Int32
+    count = 0
+    i = 0
+    while i < @streams.size
+      st = @streams[i]
+      if st.state == StreamState::Open || st.state == StreamState::HalfClosedLocal || st.state == StreamState::HalfClosedRemote
+        count = count + 1
+      end
+      i = i + 1
+    end
+    count
+  end
+  def get_pushed_request(promised_stream_id : Int32) : Request?
+    i = 0
+    while i < @pushed_requests.size
+      item = @pushed_requests[i]
+      if item[1] == promised_stream_id
+        return item[2]
+      end
+      i = i + 1
+    end
+    nil
+  end
+
+  private def record_pushed_request(assoc_stream_id : Int32, prom_stream : Stream) : Nil
+    method = ""
+    target = ""
+    headers = Headers.new
+    i = 0
+    while i < prom_stream.headers.size
+      f = prom_stream.headers[i]
+      if f.name == ":method"
+        method = f.value
+      elsif f.name == ":path"
+        target = f.value
+      elsif !f.name.starts_with?(":")
+        headers[f.name] = f.value
+      end
+      i = i + 1
+    end
+    pushed_req = Request.new(method, target, headers, "", "HTTP/2")
+    @pushed_requests << {assoc_stream_id, prom_stream.id, pushed_req}
+  end
+
+
+  def request_trailers(stream_id : Int32) : Headers
+    tr = Headers.new
+    s = find_stream(stream_id)
+    if s
+      i = 0
+      while i < s.trailers.size
+        f = s.trailers[i]
+        tr[f.name] = f.value
+        i = i + 1
+      end
+    end
+    tr
+  end
+
+  def flush_stream_pending_data(stream : Stream) : Nil | Http2Error
+    return nil if stream.pending_data.empty?
+    max_frame = @peer_settings.max_frame_size
+
+    while !stream.pending_data.empty?
+      available_quota = stream.send_window < @connection_send_window ? stream.send_window : @connection_send_window
+      break if available_quota <= 0_i64
+
+      rem_size = stream.pending_data.size
+      to_send = rem_size < available_quota.to_i32 ? rem_size : available_quota.to_i32
+      to_send = to_send < max_frame ? to_send : max_frame
+
+      is_last = (to_send == rem_size) && stream.pending_end_stream
+      err = stream.on_send_data(is_last)
+      return err if err
+
+      chunk = Bytes.new(to_send) { |idx| stream.pending_data[idx] }
+      flags = is_last ? FrameFlag::END_STREAM : 0_u8
+      send_frame(FrameType::DATA, flags, stream.id, chunk)
+
+      stream.send_window = stream.send_window - to_send.to_i64
+      @connection_send_window = @connection_send_window - to_send.to_i64
+
+      new_pending = [] of UInt8
+      idx = to_send
+      while idx < rem_size
+        new_pending << stream.pending_data[idx]
+        idx = idx + 1
+      end
+      stream.pending_data = new_pending
+    end
+
+    nil
+  end
+
   # -------------------------------------------------------------------------
   # Frame Sending Methods
   # -------------------------------------------------------------------------
@@ -655,7 +765,7 @@ pub class Connection
   end
 
   def send_settings(settings : Settings) : Nil
-    payload = settings.encode
+    payload = settings.encode(@role == Role::Server)
     send_frame(FrameType::SETTINGS, 0_u8, 0_i32, payload)
   end
 
@@ -707,6 +817,7 @@ pub class Connection
     end
     send_frame(FrameType::GOAWAY, 0_u8, 0_i32, payload)
     @goaway_sent = true
+    @goaway_sent_last_stream_id = last_stream_id
     @closed = true
   end
 
@@ -744,6 +855,23 @@ pub class Connection
   end
 
   def send_headers(stream_id : Int32, headers : Array(HeaderField), end_stream : Bool) : Nil | Http2Error
+    # Finding 18: Guard stream initiation after GOAWAY in send_headers
+    existing = find_stream(stream_id)
+    if existing.nil? || existing.state == StreamState::Idle
+      if @goaway_sent && stream_id > @goaway_sent_last_stream_id
+        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Cannot initiate stream #{stream_id} exceeding sent GOAWAY last stream ID #{@goaway_sent_last_stream_id}", stream_id, true)
+      end
+      if @goaway_received && stream_id > @goaway_received_last_stream_id
+        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Cannot initiate stream #{stream_id} exceeding peer GOAWAY last stream ID #{@goaway_received_last_stream_id}", stream_id, true)
+      end
+      if @goaway_received
+        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Cannot initiate stream #{stream_id} after receiving GOAWAY", stream_id, true)
+      end
+      if @goaway_sent
+        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Cannot initiate stream #{stream_id} after sending GOAWAY", stream_id, true)
+      end
+    end
+
     stream = create_stream(stream_id)
     err = stream.on_send_headers(end_stream)
     return err if err
@@ -781,6 +909,16 @@ pub class Connection
       return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Cannot send DATA on unknown stream #{stream_id}", stream_id, false)
     end
 
+    if !stream.pending_data.empty?
+      i = 0
+      while i < data.size
+        stream.pending_data << data[i]
+        i = i + 1
+      end
+      stream.pending_end_stream = end_stream
+      return flush_stream_pending_data(stream)
+    end
+
     if data.empty?
       err = stream.on_send_data(end_stream)
       return err if err
@@ -793,10 +931,15 @@ pub class Connection
     max_frame = @peer_settings.max_frame_size
 
     while offset < data.size
-      # Flow control constraint
       available_quota = stream.send_window < @connection_send_window ? stream.send_window : @connection_send_window
       if available_quota <= 0_i64
-        return Http2Error.new(ErrorCode::FLOW_CONTROL_ERROR, "Send window exhausted (stream: #{stream.send_window}, conn: #{@connection_send_window})", stream_id, false)
+        rem_idx = offset
+        while rem_idx < data.size
+          stream.pending_data << data[rem_idx]
+          rem_idx = rem_idx + 1
+        end
+        stream.pending_end_stream = end_stream
+        return nil
       end
 
       remaining = data.size - offset
@@ -853,9 +996,15 @@ pub class Connection
 
   # High-level request / response helpers
   def send_request(req : Request) : Tuple(Int32, Nil | Http2Error)
+    if @goaway_received || @goaway_sent || @closed
+      return {0, Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Cannot initiate request after GOAWAY", 0, true)}
+    end
+    if active_stream_count >= @peer_settings.max_concurrent_streams
+      return {0, Http2Error.new(ErrorCode::REFUSED_STREAM, "Max concurrent streams limit #{@peer_settings.max_concurrent_streams} exceeded", 0, false)}
+    end
+
     stream_id = @next_stream_id
     @next_stream_id = @next_stream_id + 2
-
     fields = [] of HeaderField
     fields << HeaderField.new(":method", req.method)
     fields << HeaderField.new(":path", req.target)
@@ -970,6 +1119,15 @@ pub class Connection
       end
 
       header = dec[0]
+
+      # Finding 4: Inbound Buffer Hang on Oversized Frame Length (RFC 9113 4.2)
+      if header.length > @local_settings.max_frame_size
+        err = Http2Error.new(ErrorCode::FRAME_SIZE_ERROR, "Frame length #{header.length} exceeds MAX_FRAME_SIZE #{@local_settings.max_frame_size}", header.stream_id, true)
+        @last_error = err
+        send_goaway(@last_peer_stream_id, ErrorCode::FRAME_SIZE_ERROR, Bytes.empty)
+        return err
+      end
+
       total_frame_len = 9 + header.length
       if @inbound_buffer.size < total_frame_len
         # Frame payload is incomplete, wait for more data
@@ -988,12 +1146,26 @@ pub class Connection
       end
       @inbound_buffer = rem_buf
 
+      # Finding 10: Server and Client First Frame Enforcement (RFC 9113 3.4)
+      if !@first_frame_received
+        if header.type != FrameType::SETTINGS
+          err = Http2Error.new(ErrorCode::PROTOCOL_ERROR, "First frame on HTTP/2 connection must be SETTINGS", 0, true)
+          @last_error = err
+          send_goaway(@last_peer_stream_id, ErrorCode::PROTOCOL_ERROR, Bytes.empty)
+          return err
+        end
+        @first_frame_received = true
+      end
+
       # Process the complete frame
       err = process_frame(header, payload)
       if err
         @last_error = err
         if err.connection_error
           send_goaway(@last_peer_stream_id, err.code, Bytes.empty)
+        elsif err.stream_id != 0
+          # Finding 6: Stream errors emit RST_STREAM (RFC 9113 5.4.2)
+          send_rst_stream(err.stream_id, err.code)
         end
         return err
       end
@@ -1003,11 +1175,6 @@ pub class Connection
   end
 
   private def process_frame(header : FrameHeader, payload : Bytes) : Nil | Http2Error
-    # Check max frame size
-    if header.length > @local_settings.max_frame_size
-      return Http2Error.new(ErrorCode::FRAME_SIZE_ERROR, "Frame length #{header.length} exceeds MAX_FRAME_SIZE #{@local_settings.max_frame_size}", header.stream_id, true)
-    end
-
     # CONTINUATION state verification (RFC 9113 Section 6.2, 6.10)
     if @expecting_continuation
       if header.type != FrameType::CONTINUATION
@@ -1063,7 +1230,12 @@ pub class Connection
 
     # Stream state validation
     stream = find_stream(header.stream_id)
-    if stream.nil?
+    if stream.nil? || stream.state == StreamState::Idle
+      # Finding 3: Implicit stream closure per RFC 9113 5.1.1
+      if header.stream_id <= @last_peer_stream_id
+        send_rst_stream(header.stream_id, ErrorCode::STREAM_CLOSED)
+        return Http2Error.new(ErrorCode::STREAM_CLOSED, "DATA received on closed stream #{header.stream_id}", header.stream_id, false)
+      end
       # Idle stream receiving DATA is a connection error PROTOCOL_ERROR (RFC 9113 5.1)
       return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "DATA received on idle stream #{header.stream_id}", header.stream_id, true)
     end
@@ -1074,17 +1246,17 @@ pub class Connection
       return Http2Error.new(ErrorCode::STREAM_CLOSED, "DATA received on closed/half-closed stream #{header.stream_id}", header.stream_id, false)
     end
 
-    # Flow control accounting
-    if data_len > stream.recv_window
-      return Http2Error.new(ErrorCode::FLOW_CONTROL_ERROR, "Stream flow control exceeded: #{data_len} > #{stream.recv_window}", header.stream_id, false)
+    # Finding 9: Flow control accounting includes entire payload (RFC 9113 5.2, 6.1)
+    total_flow_bytes = payload.size.to_i64
+    if total_flow_bytes > stream.recv_window
+      return Http2Error.new(ErrorCode::FLOW_CONTROL_ERROR, "Stream flow control exceeded: #{total_flow_bytes} > #{stream.recv_window}", header.stream_id, false)
     end
-    if data_len > @connection_recv_window
-      return Http2Error.new(ErrorCode::FLOW_CONTROL_ERROR, "Connection flow control exceeded: #{data_len} > #{@connection_recv_window}", 0, true)
+    if total_flow_bytes > @connection_recv_window
+      return Http2Error.new(ErrorCode::FLOW_CONTROL_ERROR, "Connection flow control exceeded: #{total_flow_bytes} > #{@connection_recv_window}", 0, true)
     end
 
-    stream.recv_window = stream.recv_window - data_len.to_i64
-    @connection_recv_window = @connection_recv_window - data_len.to_i64
-
+    stream.recv_window = stream.recv_window - total_flow_bytes
+    @connection_recv_window = @connection_recv_window - total_flow_bytes
     # Append data
     i = 0
     while i < data_len
@@ -1144,7 +1316,21 @@ pub class Connection
 
     # Stream state check & monotonic stream ID enforcement
     stream = find_stream(header.stream_id)
-    if stream.nil?
+    if stream.nil? || stream.state == StreamState::Idle
+      # Finding 18: Inbound GOAWAY boundary enforcement (RFC 9113 6.8)
+      if @goaway_sent && header.stream_id > @goaway_sent_last_stream_id
+        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Stream ID #{header.stream_id} exceeds sent GOAWAY last stream ID #{@goaway_sent_last_stream_id}", header.stream_id, true)
+      end
+      if @goaway_received && header.stream_id > @goaway_received_last_stream_id
+        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Stream ID #{header.stream_id} exceeds received GOAWAY last stream ID #{@goaway_received_last_stream_id}", header.stream_id, true)
+      end
+
+      # Finding 7: Enforce SETTINGS_MAX_CONCURRENT_STREAMS (RFC 9113 5.1.2)
+      if active_stream_count >= @local_settings.max_concurrent_streams
+        send_rst_stream(header.stream_id, ErrorCode::REFUSED_STREAM)
+        return Http2Error.new(ErrorCode::REFUSED_STREAM, "Max concurrent streams limit #{@local_settings.max_concurrent_streams} exceeded", header.stream_id, false)
+      end
+
       # New stream initiation
       is_client_peer = @role == Role::Server
       expected_parity = is_client_peer ? 1 : 0
@@ -1158,7 +1344,9 @@ pub class Connection
       end
       @last_peer_stream_id = header.stream_id
 
-      stream = create_stream(header.stream_id)
+      if stream.nil?
+        stream = create_stream(header.stream_id)
+      end
     else
       if stream.state == StreamState::Closed || stream.state == StreamState::HalfClosedRemote
         send_rst_stream(header.stream_id, ErrorCode::STREAM_CLOSED)
@@ -1181,6 +1369,7 @@ pub class Connection
       # Buffer for CONTINUATION frames
       @expecting_continuation = true
       @continuation_stream_id = header.stream_id
+      @continuation_target_stream_id = header.stream_id
       @continuation_end_stream = header.end_stream?
       @continuation_buffer = [] of UInt8
       j = 0
@@ -1202,22 +1391,27 @@ pub class Connection
 
     if header.end_headers?
       @expecting_continuation = false
-      stream = find_stream(header.stream_id)
-      if stream.nil?
-        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Unknown stream #{header.stream_id} for CONTINUATION", header.stream_id, true)
+      target_stream = find_stream(@continuation_target_stream_id)
+      if target_stream.nil?
+        return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Unknown stream #{@continuation_target_stream_id} for CONTINUATION", @continuation_target_stream_id, true)
       end
 
-      err = stream.on_recv_headers(@continuation_end_stream)
-      return err if err
+      if @continuation_stream_id == @continuation_target_stream_id
+        err = target_stream.on_recv_headers(@continuation_end_stream)
+        return err if err
+      end
 
       full_fragment = Bytes.new(@continuation_buffer.size) { |idx| @continuation_buffer[idx] }
       @continuation_buffer = [] of UInt8
 
-      dec_err = decode_and_apply_headers(stream, full_fragment)
+      dec_err = decode_and_apply_headers(target_stream, full_fragment)
       return dec_err if dec_err
 
       if @continuation_end_stream
-        deliver_completed_stream(stream)
+        deliver_completed_stream(target_stream)
+      end
+      if target_stream.state == StreamState::ReservedRemote
+        record_pushed_request(@continuation_stream_id, target_stream)
       end
     end
 
@@ -1231,51 +1425,132 @@ pub class Connection
     end
 
     fields = decoded
-    # RFC 9113 8.3: Pseudo-headers must precede regular headers
+    is_trailer = stream.has_received_initial_headers
     seen_regular = false
+    has_method = false
+    has_scheme = false
+    has_path = false
+    has_authority = false
+    has_status = false
+    has_protocol = false
+    method_val = ""
     i = 0
     while i < fields.size
       f = fields[i]
       if f.name.starts_with?(":")
+        # Finding 13: RFC 9113 8.3: Pseudo-headers MUST NOT appear in trailer sections
+        if is_trailer
+          return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Pseudo-header #{f.name} in trailers", stream.id, false)
+        end
+
+        # RFC 9113 8.3: Pseudo-headers must precede regular headers
         if seen_regular
-          return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Pseudo-header #{f.name} after regular header", stream.id, true)
+          return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Pseudo-header #{f.name} after regular header", stream.id, false)
+        end
+
+        # Finding 13: Validate allowed pseudo-headers per RFC 9113 8.3
+        is_request = (@role == Role::Server) || (stream.state == StreamState::ReservedRemote)
+        if is_request
+          # Request pseudo-headers
+          if f.name == ":method"
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Duplicate :method pseudo-header", stream.id, false) if has_method
+            has_method = true
+            method_val = f.value
+          elsif f.name == ":scheme"
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Duplicate :scheme pseudo-header", stream.id, false) if has_scheme
+            has_scheme = true
+          elsif f.name == ":path"
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Duplicate :path pseudo-header", stream.id, false) if has_path
+            has_path = true
+          elsif f.name == ":authority"
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Duplicate :authority pseudo-header", stream.id, false) if has_authority
+            has_authority = true
+          elsif f.name == ":protocol"
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Duplicate :protocol pseudo-header", stream.id, false) if has_protocol
+            has_protocol = true
+          else
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Unknown request pseudo-header #{f.name}", stream.id, false)
+          end
+        else
+          # Response pseudo-headers
+          if f.name == ":status"
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Duplicate :status pseudo-header", stream.id, false) if has_status
+            has_status = true
+          else
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Unknown response pseudo-header #{f.name}", stream.id, false)
+          end
         end
       else
         seen_regular = true
-        # RFC 9113 8.2: Header names must be lowercase
+        # Finding 5: Casing check is a stream error
         j = 0
         while j < f.name.bytesize
           ch = f.name.to_unsafe[j]
-          if ch >= 65_u8 && ch <= 90_u8 # Uppercase A-Z
-            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Uppercase header name #{f.name}", stream.id, true)
+          if ch >= 65_u8 && ch <= 90_u8
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Uppercase header name #{f.name}", stream.id, false)
           end
           j = j + 1
         end
 
-        # RFC 9113 8.2.2: Connection-specific headers forbidden
+        # Finding 5: Connection header check is a stream error
         lower = f.name.downcase
         if lower == "connection" || lower == "keep-alive" || lower == "proxy-connection" || lower == "transfer-encoding" || lower == "upgrade"
-          return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Forbidden connection header: #{f.name}", stream.id, true)
+          return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Forbidden connection header: #{f.name}", stream.id, false)
         end
       end
 
-      if stream.has_received_initial_headers
+      if is_trailer
         stream.trailers << f
       else
         stream.headers << f
       end
       i = i + 1
     end
-    stream.has_received_initial_headers = true
 
+    if !is_trailer
+      is_request = (@role == Role::Server) || (stream.state == StreamState::ReservedRemote)
+      if is_request
+        if method_val == "CONNECT"
+          if has_protocol
+            # Extended CONNECT (RFC 8441): :method, :protocol, :scheme, :authority, :path must be present
+            if !has_scheme || !has_path || !has_authority
+              return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Extended CONNECT missing mandatory pseudo-headers", stream.id, false)
+            end
+          else
+            # Classic CONNECT (RFC 9113 8.5): :method and :authority MUST be present; :scheme and :path MUST be omitted
+            if !has_authority
+              return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "CONNECT missing :authority", stream.id, false)
+            end
+            if has_scheme || has_path
+              return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "CONNECT request must omit :scheme and :path", stream.id, false)
+            end
+          end
+        else
+          # All other HTTP methods: :method, :scheme, :path must be present; :protocol forbidden
+          if !has_method || !has_scheme || !has_path
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Missing mandatory request pseudo-headers", stream.id, false)
+          end
+          if has_protocol
+            return Http2Error.new(ErrorCode::PROTOCOL_ERROR, ":protocol pseudo-header only allowed with CONNECT", stream.id, false)
+          end
+        end
+      else
+        # Finding 13: RFC 9113 8.3.2: :status must be present
+        if !has_status
+          return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Missing mandatory :status response pseudo-header", stream.id, false)
+        end
+      end
+    end
+
+    stream.has_received_initial_headers = true
     nil
   end
 
   private def deliver_completed_stream(stream : Stream) : Nil
     if @role == Role::Server
-      # Reconstruct Request
-      method = "GET"
-      target = "/"
+      # Reconstruct Request without fabricating defaults
+      method = ""
+      target = ""
       headers = Headers.new
       i = 0
       while i < stream.headers.size
@@ -1285,7 +1560,14 @@ pub class Connection
         elsif f.name == ":path"
           target = f.value
         elsif !f.name.starts_with?(":")
-          headers[f.name] = f.value
+          # Finding 17: Repeated header field lines concatenation (RFC 9113 8.2.3)
+          if headers.has_key?(f.name)
+            existing = headers[f.name]
+            sep = f.name.downcase == "cookie" ? "; " : ", "
+            headers[f.name] = existing + sep + f.value
+          else
+            headers[f.name] = f.value
+          end
         end
         i = i + 1
       end
@@ -1293,21 +1575,35 @@ pub class Connection
       req = Request.new(method, target, headers, body, "HTTP/2")
       @completed_requests << {stream.id, req}
     else
-      # Reconstruct Response
-      status_code = 200
+      # Reconstruct Response without fabricating defaults
+      status_code = 0
       headers = Headers.new
       i = 0
       while i < stream.headers.size
         f = stream.headers[i]
         if f.name == ":status"
-          status_code = f.value.to_i? || 200
+          status_code = f.value.to_i? || 0
         elsif !f.name.starts_with?(":")
-          headers[f.name] = f.value
+          # Finding 17: Repeated header field lines concatenation (RFC 9113 8.2.3)
+          if headers.has_key?(f.name)
+            existing = headers[f.name]
+            sep = f.name.downcase == "cookie" ? "; " : ", "
+            headers[f.name] = existing + sep + f.value
+          else
+            headers[f.name] = f.value
+          end
         end
         i = i + 1
       end
       body = stream.data_string
       resp = Response.new(status_code, headers, body, nil, "HTTP/2")
+      # Finding 14: Populate trailers on Response
+      t_idx = 0
+      while t_idx < stream.trailers.size
+        tr = stream.trailers[t_idx]
+        resp.trailers[tr.name] = tr.value
+        t_idx = t_idx + 1
+      end
       @completed_responses << {stream.id, resp}
     end
   end
@@ -1317,7 +1613,7 @@ pub class Connection
       return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "PRIORITY frame on stream 0", 0, true)
     end
     if header.length != 5
-      return Http2Error.new(ErrorCode::FRAME_SIZE_ERROR, "PRIORITY length must be 5, got #{header.length}", header.stream_id, false)
+      return Http2Error.new(ErrorCode::FRAME_SIZE_ERROR, "PRIORITY length must be 5, got #{header.length}", header.stream_id, true)
     end
 
     dep = ((payload[0].to_i32 & 0x7F) << 24) | (payload[1].to_i32 << 16) | (payload[2].to_i32 << 8) | payload[3].to_i32
@@ -1348,6 +1644,10 @@ pub class Connection
 
     s = find_stream(header.stream_id)
     if s.nil? || s.state == StreamState::Idle
+      # Finding 3: Implicit stream closure per RFC 9113 5.1.1
+      if header.stream_id <= @last_peer_stream_id
+        return nil
+      end
       # RFC 9113 5.1: RST_STREAM on idle stream is connection error PROTOCOL_ERROR
       return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "RST_STREAM received on idle stream #{header.stream_id}", header.stream_id, true)
     end
@@ -1385,12 +1685,14 @@ pub class Connection
         @peer_settings.header_table_size = val.to_i32
         @hpack_encoder.set_max_table_size(val.to_i32)
       when SettingId::ENABLE_PUSH
+        # Finding 11: Client must reject SETTINGS_ENABLE_PUSH from server (RFC 9113 6.5.2)
+        if @role == Role::Client
+          return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Server must not send SETTINGS_ENABLE_PUSH to client", 0, true)
+        end
         if val != 0_i64 && val != 1_i64
           return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "SETTINGS_ENABLE_PUSH must be 0 or 1, got #{val}", 0, true)
         end
         @peer_settings.enable_push = val.to_i32
-      when SettingId::MAX_CONCURRENT_STREAMS
-        @peer_settings.max_concurrent_streams = val.to_i32
       when SettingId::INITIAL_WINDOW_SIZE
         if val > MAX_WINDOW_SIZE
           return Http2Error.new(ErrorCode::FLOW_CONTROL_ERROR, "SETTINGS_INITIAL_WINDOW_SIZE exceeds 2^31-1: #{val}", 0, true)
@@ -1444,6 +1746,12 @@ pub class Connection
       return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "PUSH_PROMISE received while push disabled", header.stream_id, true)
     end
 
+    # Finding 15: Associated stream must be Open or HalfClosedLocal (RFC 9113 6.6)
+    assoc_stream = find_stream(header.stream_id)
+    if assoc_stream.nil? || (assoc_stream.state != StreamState::Open && assoc_stream.state != StreamState::HalfClosedLocal)
+      return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "PUSH_PROMISE on stream #{header.stream_id} in invalid state", header.stream_id, true)
+    end
+
     offset = 0
     pad_length = 0
     if header.padded?
@@ -1465,11 +1773,22 @@ pub class Connection
     promised_id = (p0 << 24) | (p1 << 16) | (p2 << 8) | p3
     offset = offset + 4
 
-    # Server promised stream ID must be even
+    # Finding 16: Server promised stream ID must be even and > last_peer_stream_id (RFC 9113 5.1.1, 6.6)
     if promised_id % 2 != 0 || promised_id == 0
       return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Promised stream ID #{promised_id} must be even", header.stream_id, true)
     end
+    if promised_id <= @last_peer_stream_id
+      return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "Promised stream ID #{promised_id} <= last peer stream ID #{@last_peer_stream_id}", header.stream_id, true)
+    end
+    @last_peer_stream_id = promised_id
 
+    # Finding 18: Inbound GOAWAY boundary enforcement on PUSH_PROMISE (RFC 9113 6.8)
+    if @goaway_sent && (header.stream_id > @goaway_sent_last_stream_id || promised_id > @goaway_sent_last_stream_id)
+      return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "PUSH_PROMISE exceeds sent GOAWAY last stream ID #{@goaway_sent_last_stream_id}", header.stream_id, true)
+    end
+    if @goaway_received && (header.stream_id > @goaway_received_last_stream_id || promised_id > @goaway_received_last_stream_id)
+      return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "PUSH_PROMISE exceeds received GOAWAY last stream ID #{@goaway_received_last_stream_id}", header.stream_id, true)
+    end
     fragment_len = payload.size - offset - pad_length
     fragment = payload[offset, fragment_len]
 
@@ -1478,9 +1797,12 @@ pub class Connection
 
     if header.end_headers?
       decode_and_apply_headers(prom_stream, fragment)
+      record_pushed_request(header.stream_id, prom_stream)
     else
+      # Finding 1: Route subsequent CONTINUATION to promised_id!
       @expecting_continuation = true
       @continuation_stream_id = header.stream_id
+      @continuation_target_stream_id = promised_id
       @continuation_end_stream = false
       @continuation_buffer = [] of UInt8
       j = 0
@@ -1521,6 +1843,7 @@ pub class Connection
     last_id = ((payload[0].to_i32 & 0x7F) << 24) | (payload[1].to_i32 << 16) | (payload[2].to_i32 << 8) | payload[3].to_i32
     code_val = (payload[4].to_i64 << 24) | (payload[5].to_i64 << 16) | (payload[6].to_i64 << 8) | payload[7].to_i64
     @goaway_received = true
+    @goaway_received_last_stream_id = last_id
     @closed = true
     nil
   end
@@ -1536,15 +1859,28 @@ pub class Connection
       is_conn = header.stream_id == 0
       return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "WINDOW_UPDATE increment cannot be 0", header.stream_id, is_conn)
     end
-
     if header.stream_id == 0
       if @connection_send_window + inc > MAX_WINDOW_SIZE
         return Http2Error.new(ErrorCode::FLOW_CONTROL_ERROR, "Connection send window overflow: #{@connection_send_window} + #{inc}", 0, true)
       end
       @connection_send_window = @connection_send_window + inc
+
+      # Finding 8: Flush pending data on streams
+      idx = 0
+      while idx < @streams.size
+        st = @streams[idx]
+        if !st.pending_data.empty?
+          flush_stream_pending_data(st)
+        end
+        idx = idx + 1
+      end
     else
       s = find_stream(header.stream_id)
       if s.nil? || s.state == StreamState::Idle
+        # Finding 3: Implicit stream closure per RFC 9113 5.1.1
+        if header.stream_id <= @last_peer_stream_id
+          return nil
+        end
         # RFC 9113 5.1: WINDOW_UPDATE on idle stream is connection error PROTOCOL_ERROR
         return Http2Error.new(ErrorCode::PROTOCOL_ERROR, "WINDOW_UPDATE received on idle stream #{header.stream_id}", header.stream_id, true)
       end
@@ -1561,12 +1897,16 @@ pub class Connection
       end
 
       s.send_window = s.send_window + inc
+
+      # Finding 8: Flush pending data on this stream
+      if !s.pending_data.empty?
+        flush_stream_pending_data(s)
+      end
     end
 
     nil
   end
 end
-
 # ---------------------------------------------------------------------------
 # High-Level Client & Server
 # ---------------------------------------------------------------------------
@@ -1602,6 +1942,10 @@ pub class Client
     end
     nil
   end
+
+  def get_pushed_request(promised_stream_id : Int32) : Request?
+    @connection.get_pushed_request(promised_stream_id)
+  end
 end
 
 pub class Server
@@ -1634,5 +1978,9 @@ pub class Server
       i = i + 1
     end
     nil
+  end
+
+  def get_request_trailers(stream_id : Int32) : Headers
+    @connection.request_trailers(stream_id)
   end
 end
