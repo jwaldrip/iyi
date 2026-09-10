@@ -56,51 +56,51 @@ using std/webtransport::{WebTransportSession, SessionStatus}
 # =============================================================================
 
 pub struct H3StreamType
-  pub CONTROL       = 0x00_u64
-  pub PUSH          = 0x01_u64
-  pub QPACK_ENCODER = 0x02_u64
-  pub QPACK_DECODER = 0x03_u64
+  pub CONTROL           = 0x00_u64
+  pub PUSH              = 0x01_u64
+  pub QPACK_ENCODER     = 0x02_u64
+  pub QPACK_DECODER     = 0x03_u64
   pub WEBTRANSPORT_BIDI = 0x41_u64
   pub WEBTRANSPORT_UNI  = 0x54_u64
 end
 
 pub struct H3FrameType
-  pub DATA          = 0x00_u64
-  pub HEADERS       = 0x01_u64
-  pub CANCEL_PUSH   = 0x03_u64
-  pub SETTINGS      = 0x04_u64
-  pub PUSH_PROMISE  = 0x05_u64
-  pub GOAWAY        = 0x07_u64
-  pub MAX_PUSH_ID   = 0x0d_u64
+  pub DATA         = 0x00_u64
+  pub HEADERS      = 0x01_u64
+  pub CANCEL_PUSH  = 0x03_u64
+  pub SETTINGS     = 0x04_u64
+  pub PUSH_PROMISE = 0x05_u64
+  pub GOAWAY       = 0x07_u64
+  pub MAX_PUSH_ID  = 0x0d_u64
 end
 
 pub struct H3Setting
-  pub QPACK_MAX_TABLE_CAPACITY    = 0x01_u64
-  pub MAX_FIELD_SECTION_SIZE      = 0x06_u64
-  pub QPACK_BLOCKED_STREAMS       = 0x07_u64
-  pub ENABLE_CONNECT_PROTOCOL     = 0x08_u64
-  pub H3_DATAGRAM                 = 0x33_u64
-  pub WEBTRANSPORT_MAX_SESSIONS   = 0x2b60_u64
+  pub QPACK_MAX_TABLE_CAPACITY  =   0x01_u64
+  pub MAX_FIELD_SECTION_SIZE    =   0x06_u64
+  pub QPACK_BLOCKED_STREAMS     =   0x07_u64
+  pub ENABLE_CONNECT_PROTOCOL   =   0x08_u64
+  pub H3_DATAGRAM               =   0x33_u64
+  pub WEBTRANSPORT_MAX_SESSIONS = 0x2b60_u64
 end
 
 pub struct H3Error
-  pub NO_ERROR                  = 0x0100_u64
-  pub GENERAL_PROTOCOL_ERROR    = 0x0101_u64
-  pub INTERNAL_ERROR            = 0x0102_u64
-  pub STREAM_CREATION_ERROR     = 0x0103_u64
-  pub CLOSED_CRITICAL_STREAM    = 0x0104_u64
-  pub FRAME_UNEXPECTED          = 0x0105_u64
-  pub FRAME_ERROR               = 0x0106_u64
-  pub EXCESSIVE_LOAD            = 0x0107_u64
-  pub ID_ERROR                  = 0x0108_u64
-  pub SETTINGS_ERROR            = 0x0109_u64
-  pub MISSING_SETTINGS          = 0x010a_u64
-  pub REQUEST_REJECTED          = 0x010b_u64
-  pub REQUEST_CANCELLED         = 0x010c_u64
-  pub REQUEST_INCOMPLETE        = 0x010d_u64
-  pub MESSAGE_ERROR             = 0x010e_u64
-  pub CONNECT_ERROR             = 0x010f_u64
-  pub VERSION_FALLBACK          = 0x0110_u64
+  pub NO_ERROR               = 0x0100_u64
+  pub GENERAL_PROTOCOL_ERROR = 0x0101_u64
+  pub INTERNAL_ERROR         = 0x0102_u64
+  pub STREAM_CREATION_ERROR  = 0x0103_u64
+  pub CLOSED_CRITICAL_STREAM = 0x0104_u64
+  pub FRAME_UNEXPECTED       = 0x0105_u64
+  pub FRAME_ERROR            = 0x0106_u64
+  pub EXCESSIVE_LOAD         = 0x0107_u64
+  pub ID_ERROR               = 0x0108_u64
+  pub SETTINGS_ERROR         = 0x0109_u64
+  pub MISSING_SETTINGS       = 0x010a_u64
+  pub REQUEST_REJECTED       = 0x010b_u64
+  pub REQUEST_CANCELLED      = 0x010c_u64
+  pub REQUEST_INCOMPLETE     = 0x010d_u64
+  pub MESSAGE_ERROR          = 0x010e_u64
+  pub CONNECT_ERROR          = 0x010f_u64
+  pub VERSION_FALLBACK       = 0x0110_u64
 end
 
 # =============================================================================
@@ -108,7 +108,7 @@ end
 # =============================================================================
 
 pub struct SettingEntry
-  getter id    : UInt64
+  getter id : UInt64
   getter value : UInt64
 
   def initialize(@id : UInt64, @value : UInt64)
@@ -227,13 +227,19 @@ pub class H3FrameCodec
 
     buf = Bytes.new(type_b.size + len_b.size + payload.size)
     off = 0
-    i = 0; while i < type_b.size; buf[off + i] = type_b[i]; i = i + 1; end
+    i = 0; while i < type_b.size
+      buf[off + i] = type_b[i]; i = i + 1
+    end
     off = off + type_b.size
 
-    i = 0; while i < len_b.size; buf[off + i] = len_b[i]; i = i + 1; end
+    i = 0; while i < len_b.size
+      buf[off + i] = len_b[i]; i = i + 1
+    end
     off = off + len_b.size
 
-    i = 0; while i < payload.size; buf[off + i] = payload[i]; i = i + 1; end
+    i = 0; while i < payload.size
+      buf[off + i] = payload[i]; i = i + 1
+    end
 
     buf
   end
@@ -282,7 +288,7 @@ end
 
 pub class H3Message
   getter fields : Array(FieldLine)
-  getter body   : Bytes
+  getter body : Bytes
 
   def initialize(@fields : Array(FieldLine) = [] of FieldLine, @body : Bytes = Bytes.empty)
   end
@@ -374,17 +380,17 @@ end
 # =============================================================================
 
 pub class H3Session
-  getter role             : Int32
-  getter local_settings   : SettingsDictionary
-  getter remote_settings  : SettingsDictionary
-  getter qpack_encoder    : Encoder
-  getter qpack_decoder    : Decoder
+  getter role : Int32
+  getter local_settings : SettingsDictionary
+  getter remote_settings : SettingsDictionary
+  getter qpack_encoder : Encoder
+  getter qpack_decoder : Decoder
 
   @control_stream_out : Bytes
   @control_received_settings : Bool
-  @qpack_encoder_buf  : Bytes
-  @qpack_decoder_buf  : Bytes
-  @blocked_streams    : Array(BlockedStream)
+  @qpack_encoder_buf : Bytes
+  @qpack_decoder_buf : Bytes
+  @blocked_streams : Array(BlockedStream)
   @webtransport_sessions : Array(WebTransportSession)
 
   def initialize(role : Int32)
@@ -414,8 +420,12 @@ pub class H3Session
     settings_frame = H3FrameCodec.encode_settings(@local_settings)
 
     buf = Bytes.new(type_b.size + settings_frame.size)
-    i = 0; while i < type_b.size; buf[i] = type_b[i]; i = i + 1; end
-    j = 0; while j < settings_frame.size; buf[type_b.size + j] = settings_frame[j]; j = j + 1; end
+    i = 0; while i < type_b.size
+      buf[i] = type_b[i]; i = i + 1
+    end
+    j = 0; while j < settings_frame.size
+      buf[type_b.size + j] = settings_frame[j]; j = j + 1
+    end
     @control_stream_out = buf
     buf
   end
@@ -478,11 +488,17 @@ pub class H3Session
     unblocked = @qpack_decoder.check_blocked_streams(dec_stream)
     if dec_stream.size > 0
       db = Bytes.new(dec_stream.size)
-      i = 0; while i < dec_stream.size; db[i] = dec_stream[i]; i = i + 1; end
+      i = 0; while i < dec_stream.size
+        db[i] = dec_stream[i]; i = i + 1
+      end
       cur = @qpack_decoder_buf
       combined = Bytes.new(cur.size + db.size)
-      i = 0; while i < cur.size; combined[i] = cur[i]; i = i + 1; end
-      i = 0; while i < db.size; combined[cur.size + i] = db[i]; i = i + 1; end
+      i = 0; while i < cur.size
+        combined[i] = cur[i]; i = i + 1
+      end
+      i = 0; while i < db.size
+        combined[cur.size + i] = db[i]; i = i + 1
+      end
       @qpack_decoder_buf = combined
     end
   end
@@ -513,6 +529,7 @@ pub class H3Session
       H3Error::NO_ERROR
     end
   end
+
   def encode_headers_frame(stream_id : UInt64, fields : Array(FieldLine)) : Bytes
     encoder_stream = [] of UInt8
     field_section = [] of UInt8
@@ -522,16 +539,24 @@ pub class H3Session
     # Buffer outbound encoder stream instructions (Finding 18)
     if encoder_stream.size > 0
       eb = Bytes.new(encoder_stream.size)
-      i = 0; while i < encoder_stream.size; eb[i] = encoder_stream[i]; i = i + 1; end
+      i = 0; while i < encoder_stream.size
+        eb[i] = encoder_stream[i]; i = i + 1
+      end
       cur = @qpack_encoder_buf
       combined = Bytes.new(cur.size + eb.size)
-      i = 0; while i < cur.size; combined[i] = cur[i]; i = i + 1; end
-      i = 0; while i < eb.size; combined[cur.size + i] = eb[i]; i = i + 1; end
+      i = 0; while i < cur.size
+        combined[i] = cur[i]; i = i + 1
+      end
+      i = 0; while i < eb.size
+        combined[cur.size + i] = eb[i]; i = i + 1
+      end
       @qpack_encoder_buf = combined
     end
 
     compressed_fields = Bytes.new(field_section.size)
-    i = 0; while i < field_section.size; compressed_fields[i] = field_section[i]; i = i + 1; end
+    i = 0; while i < field_section.size
+      compressed_fields[i] = field_section[i]; i = i + 1
+    end
     H3FrameCodec.encode_headers(compressed_fields)
   end
 
@@ -542,11 +567,17 @@ pub class H3Session
 
     if decoder_stream.size > 0
       db = Bytes.new(decoder_stream.size)
-      i = 0; while i < decoder_stream.size; db[i] = decoder_stream[i]; i = i + 1; end
+      i = 0; while i < decoder_stream.size
+        db[i] = decoder_stream[i]; i = i + 1
+      end
       cur = @qpack_decoder_buf
       combined = Bytes.new(cur.size + db.size)
-      i = 0; while i < cur.size; combined[i] = cur[i]; i = i + 1; end
-      i = 0; while i < db.size; combined[cur.size + i] = db[i]; i = i + 1; end
+      i = 0; while i < cur.size
+        combined[i] = cur[i]; i = i + 1
+      end
+      i = 0; while i < db.size
+        combined[cur.size + i] = db[i]; i = i + 1
+      end
       @qpack_decoder_buf = combined
     end
 
@@ -566,8 +597,12 @@ pub class H3Session
       data_frame = H3FrameCodec.encode_data(request.body)
       total = headers_frame.size + data_frame.size
       buf = Bytes.new(total)
-      i = 0; while i < headers_frame.size; buf[i] = headers_frame[i]; i = i + 1; end
-      j = 0; while j < data_frame.size; buf[headers_frame.size + j] = data_frame[j]; j = j + 1; end
+      i = 0; while i < headers_frame.size
+        buf[i] = headers_frame[i]; i = i + 1
+      end
+      j = 0; while j < data_frame.size
+        buf[headers_frame.size + j] = data_frame[j]; j = j + 1
+      end
       buf
     end
   end
@@ -580,8 +615,12 @@ pub class H3Session
       data_frame = H3FrameCodec.encode_data(response.body)
       total = headers_frame.size + data_frame.size
       buf = Bytes.new(total)
-      i = 0; while i < headers_frame.size; buf[i] = headers_frame[i]; i = i + 1; end
-      j = 0; while j < data_frame.size; buf[headers_frame.size + j] = data_frame[j]; j = j + 1; end
+      i = 0; while i < headers_frame.size
+        buf[i] = headers_frame[i]; i = i + 1
+      end
+      j = 0; while j < data_frame.size
+        buf[headers_frame.size + j] = data_frame[j]; j = j + 1
+      end
       buf
     end
   end
@@ -614,7 +653,9 @@ pub class H3Session
     i = 0
     while i < body_chunks.size
       chunk = body_chunks[i]
-      j = 0; while j < chunk.size; body[off + j] = chunk[j]; j = j + 1; end
+      j = 0; while j < chunk.size
+        body[off + j] = chunk[j]; j = j + 1
+      end
       off = off + chunk.size
       i = i + 1
     end
@@ -644,8 +685,12 @@ pub class H3Session
     qid_b = VarInt.encode(quarter_stream_id)
 
     buf = Bytes.new(qid_b.size + payload.size)
-    i = 0; while i < qid_b.size; buf[i] = qid_b[i]; i = i + 1; end
-    j = 0; while j < payload.size; buf[qid_b.size + j] = payload[j]; j = j + 1; end
+    i = 0; while i < qid_b.size
+      buf[i] = qid_b[i]; i = i + 1
+    end
+    j = 0; while j < payload.size
+      buf[qid_b.size + j] = payload[j]; j = j + 1
+    end
     buf
   end
 

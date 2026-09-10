@@ -22,11 +22,7 @@ using std/slice::{Slice, Bytes}
 using std/capsule::{VarInt}
 using std/qpack::{FieldLine, Encoder, Decoder}
 using std/quic::{ConnectionRole}
-using std/http3::{
-  H3StreamType, H3FrameType, H3Setting, H3Error,
-  SettingEntry, SettingsDictionary, H3FrameCodec,
-  H3Message, H3Request, H3Response, H3Session
-}
+using std/http3::{H3StreamType, H3FrameType, H3Setting, H3Error, SettingEntry, SettingsDictionary, H3FrameCodec, H3Message, H3Request, H3Response, H3Session}
 
 def bytes_equal(a : Bytes, b : Bytes) : Bool
   return false unless a.size == b.size
@@ -222,11 +218,17 @@ settings_frame_raw = H3FrameCodec.encode_settings(settings)
 ctrl_hdr = VarInt.encode(H3StreamType::CONTROL)
 dup_stream = Bytes.new(ctrl_hdr.size + settings_frame_raw.size * 2)
 off = 0
-i = 0; while i < ctrl_hdr.size; dup_stream[off + i] = ctrl_hdr[i]; i = i + 1; end
+i = 0; while i < ctrl_hdr.size
+  dup_stream[off + i] = ctrl_hdr[i]; i = i + 1
+end
 off = off + ctrl_hdr.size
-i = 0; while i < settings_frame_raw.size; dup_stream[off + i] = settings_frame_raw[i]; i = i + 1; end
+i = 0; while i < settings_frame_raw.size
+  dup_stream[off + i] = settings_frame_raw[i]; i = i + 1
+end
 off = off + settings_frame_raw.size
-i = 0; while i < settings_frame_raw.size; dup_stream[off + i] = settings_frame_raw[i]; i = i + 1; end
+i = 0; while i < settings_frame_raw.size
+  dup_stream[off + i] = settings_frame_raw[i]; i = i + 1
+end
 
 dup_test_session = H3Session.new(ConnectionRole::SERVER)
 dup_err = dup_test_session.receive_control_stream(dup_stream)
