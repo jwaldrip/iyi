@@ -668,6 +668,7 @@ pub class Connection
     end
     count
   end
+
   def get_pushed_request(promised_stream_id : Int32) : Request?
     i = 0
     while i < @pushed_requests.size
@@ -699,7 +700,6 @@ pub class Connection
     pushed_req = Request.new(method, target, headers, "", "HTTP/2")
     @pushed_requests << {assoc_stream_id, prom_stream.id, pushed_req}
   end
-
 
   def request_trailers(stream_id : Int32) : Headers
     tr = Headers.new
@@ -1907,6 +1907,7 @@ pub class Connection
     nil
   end
 end
+
 # ---------------------------------------------------------------------------
 # High-Level Client & Server
 # ---------------------------------------------------------------------------

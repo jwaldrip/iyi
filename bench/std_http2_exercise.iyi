@@ -81,17 +81,19 @@ def transfer_bytes(conn_a : Connection, conn_b : Connection) : Int32
   end
   total
 end
+
 def init_server_handshake : Connection
   server = Connection.new(Role::Server)
   server.start_connection
   raw_init = [] of UInt8
-  j = 0; while j < CLIENT_PREFACE_BYTES.size; raw_init << CLIENT_PREFACE_BYTES[j]; j = j + 1; end
+  j = 0; while j < CLIENT_PREFACE_BYTES.size
+    raw_init << CLIENT_PREFACE_BYTES[j]; j = j + 1
+  end
   FrameHeader.new(0, FrameType::SETTINGS, 0_u8, 0_i32).encode(raw_init)
   server.receive(Bytes.new(raw_init.size) { |idx| raw_init[idx] })
   server.flush_outbound
   server
 end
-
 
 # ---------------------------------------------------------------------------
 # Section 1: Connection Preface & SETTINGS Handshake
@@ -792,10 +794,14 @@ def test_remediation_findings : Nil
   raw_pp = [] of UInt8
   FrameHeader.new(4 + mid1, FrameType::PUSH_PROMISE, 0_u8, 1_i32).encode(raw_pp)
   raw_pp << 0_u8; raw_pp << 0_u8; raw_pp << 0_u8; raw_pp << 2_u8
-  j = 0; while j < mid1; raw_pp << enc_push[j]; j = j + 1; end
+  j = 0; while j < mid1
+    raw_pp << enc_push[j]; j = j + 1
+  end
   rem_pp_len = enc_push.size - mid1
   FrameHeader.new(rem_pp_len, FrameType::CONTINUATION, FrameFlag::END_HEADERS, 1_i32).encode(raw_pp)
-  j = mid1; while j < enc_push.size; raw_pp << enc_push[j]; j = j + 1; end
+  j = mid1; while j < enc_push.size
+    raw_pp << enc_push[j]; j = j + 1
+  end
   client1.receive(Bytes.new(raw_pp.size) { |idx| raw_pp[idx] })
   pushed_req = client1.get_pushed_request(2)
   assert_true(!pushed_req.nil?, "finding 1: pushed request delivered to client")
@@ -844,13 +850,17 @@ def test_remediation_findings : Nil
   raw_pr = [] of UInt8
   FrameHeader.new(4 + enc_pr.size, FrameType::PUSH_PROMISE, FrameFlag::END_HEADERS, 1_i32).encode(raw_pr)
   raw_pr << 0_u8; raw_pr << 0_u8; raw_pr << 0_u8; raw_pr << 2_u8
-  j = 0; while j < enc_pr.size; raw_pr << enc_pr[j]; j = j + 1; end
+  j = 0; while j < enc_pr.size
+    raw_pr << enc_pr[j]; j = j + 1
+  end
   client_rr.receive(Bytes.new(raw_pr.size) { |idx| raw_pr[idx] })
   resp_pr = [HeaderField.new(":status", "200")]
   enc_resp_pr = server_rr.hpack_encoder.encode(resp_pr)
   raw_resp_pr = [] of UInt8
   FrameHeader.new(enc_resp_pr.size, FrameType::HEADERS, FrameFlag::END_HEADERS | FrameFlag::END_STREAM, 2_i32).encode(raw_resp_pr)
-  j = 0; while j < enc_resp_pr.size; raw_resp_pr << enc_resp_pr[j]; j = j + 1; end
+  j = 0; while j < enc_resp_pr.size
+    raw_resp_pr << enc_resp_pr[j]; j = j + 1
+  end
   client_rr.receive(Bytes.new(raw_resp_pr.size) { |idx| raw_resp_pr[idx] })
   s2 = client_rr.find_stream(2)
   assert_true(!s2.nil?, "promised stream 2 exists")
@@ -874,7 +884,9 @@ def test_remediation_findings : Nil
   bad_enc = server5.hpack_encoder.encode(bad_h)
   raw_m5 = [] of UInt8
   FrameHeader.new(bad_enc.size, FrameType::HEADERS, FrameFlag::END_HEADERS, 1_i32).encode(raw_m5)
-  j = 0; while j < bad_enc.size; raw_m5 << bad_enc[j]; j = j + 1; end
+  j = 0; while j < bad_enc.size
+    raw_m5 << bad_enc[j]; j = j + 1
+  end
   err_m5 = server5.receive(Bytes.new(raw_m5.size) { |idx| raw_m5[idx] })
   assert_true(!err_m5.nil?, "finding 5: uppercase header rejected")
   if err_m5
@@ -889,7 +901,9 @@ def test_remediation_findings : Nil
   server7.local_settings.max_concurrent_streams = 2
   server7.start_connection
   raw_init7 = [] of UInt8
-  j = 0; while j < CLIENT_PREFACE_BYTES.size; raw_init7 << CLIENT_PREFACE_BYTES[j]; j = j + 1; end
+  j = 0; while j < CLIENT_PREFACE_BYTES.size
+    raw_init7 << CLIENT_PREFACE_BYTES[j]; j = j + 1
+  end
   FrameHeader.new(0, FrameType::SETTINGS, 0_u8, 0_i32).encode(raw_init7)
   server7.receive(Bytes.new(raw_init7.size) { |idx| raw_init7[idx] })
   server7.flush_outbound
@@ -903,14 +917,20 @@ def test_remediation_findings : Nil
 
   raw_7 = [] of UInt8
   FrameHeader.new(enc_ok.size, FrameType::HEADERS, FrameFlag::END_HEADERS, 1_i32).encode(raw_7)
-  j = 0; while j < enc_ok.size; raw_7 << enc_ok[j]; j = j + 1; end
+  j = 0; while j < enc_ok.size
+    raw_7 << enc_ok[j]; j = j + 1
+  end
   FrameHeader.new(enc_ok.size, FrameType::HEADERS, FrameFlag::END_HEADERS, 3_i32).encode(raw_7)
-  j = 0; while j < enc_ok.size; raw_7 << enc_ok[j]; j = j + 1; end
+  j = 0; while j < enc_ok.size
+    raw_7 << enc_ok[j]; j = j + 1
+  end
   server7.receive(Bytes.new(raw_7.size) { |idx| raw_7[idx] })
   assert_eq_i32(server7.active_stream_count, 2, "finding 7: 2 active streams open")
   raw_7_exceed = [] of UInt8
   FrameHeader.new(enc_ok.size, FrameType::HEADERS, FrameFlag::END_HEADERS, 5_i32).encode(raw_7_exceed)
-  j = 0; while j < enc_ok.size; raw_7_exceed << enc_ok[j]; j = j + 1; end
+  j = 0; while j < enc_ok.size
+    raw_7_exceed << enc_ok[j]; j = j + 1
+  end
   err_7 = server7.receive(Bytes.new(raw_7_exceed.size) { |idx| raw_7_exceed[idx] })
   assert_true(!err_7.nil?, "finding 7: max concurrent streams limit enforced")
   if err_7
@@ -939,7 +959,9 @@ def test_remediation_findings : Nil
   FrameHeader.new(15, FrameType::DATA, FrameFlag::PADDED, 1_i32).encode(raw_pad)
   raw_pad << 10_u8
   raw_pad << 1_u8; raw_pad << 2_u8; raw_pad << 3_u8; raw_pad << 4_u8
-  j = 0; while j < 10; raw_pad << 0_u8; j = j + 1; end
+  j = 0; while j < 10
+    raw_pad << 0_u8; j = j + 1
+  end
   init_recv_w = server9.connection_recv_window
   server9.receive(Bytes.new(raw_pad.size) { |idx| raw_pad[idx] })
   assert_eq_i64(server9.connection_recv_window, init_recv_w - 15_i64, "finding 9: flow control deducts full 15 bytes including padding")
@@ -949,7 +971,9 @@ def test_remediation_findings : Nil
   server10.start_connection; server10.receive(CLIENT_PREFACE_BYTES); server10.flush_outbound
   raw_ping_first = [] of UInt8
   FrameHeader.new(8, FrameType::PING, 0_u8, 0_i32).encode(raw_ping_first)
-  j = 0; while j < 8; raw_ping_first << 0_u8; j = j + 1; end
+  j = 0; while j < 8
+    raw_ping_first << 0_u8; j = j + 1
+  end
   err10 = server10.receive(Bytes.new(raw_ping_first.size) { |idx| raw_ping_first[idx] })
   assert_true(!err10.nil?, "finding 10: PING as first frame after preface rejected")
   if err10
@@ -987,7 +1011,9 @@ def test_remediation_findings : Nil
   enc_ep = server13.hpack_encoder.encode(h_empty_pseudo)
   raw_ep = [] of UInt8
   FrameHeader.new(enc_ep.size, FrameType::HEADERS, FrameFlag::END_HEADERS, 1_i32).encode(raw_ep)
-  j = 0; while j < enc_ep.size; raw_ep << enc_ep[j]; j = j + 1; end
+  j = 0; while j < enc_ep.size
+    raw_ep << enc_ep[j]; j = j + 1
+  end
   err13 = server13.receive(Bytes.new(raw_ep.size) { |idx| raw_ep[idx] })
   assert_true(!err13.nil?, "finding 13: missing mandatory request pseudo-headers rejected")
 
@@ -997,7 +1023,9 @@ def test_remediation_findings : Nil
   enc_cc = server_connect.hpack_encoder.encode(h_classic_connect)
   raw_cc = [] of UInt8
   FrameHeader.new(enc_cc.size, FrameType::HEADERS, FrameFlag::END_HEADERS, 1_i32).encode(raw_cc)
-  j = 0; while j < enc_cc.size; raw_cc << enc_cc[j]; j = j + 1; end
+  j = 0; while j < enc_cc.size
+    raw_cc << enc_cc[j]; j = j + 1
+  end
   err_cc = server_connect.receive(Bytes.new(raw_cc.size) { |idx| raw_cc[idx] })
   assert_true(err_cc.nil?, "finding 13: classic CONNECT without :scheme and :path accepted")
 
@@ -1007,7 +1035,9 @@ def test_remediation_findings : Nil
   enc_bc = server_bad_connect.hpack_encoder.encode(h_bad_connect)
   raw_bc = [] of UInt8
   FrameHeader.new(enc_bc.size, FrameType::HEADERS, FrameFlag::END_HEADERS, 1_i32).encode(raw_bc)
-  j = 0; while j < enc_bc.size; raw_bc << enc_bc[j]; j = j + 1; end
+  j = 0; while j < enc_bc.size
+    raw_bc << enc_bc[j]; j = j + 1
+  end
   err_bc = server_bad_connect.receive(Bytes.new(raw_bc.size) { |idx| raw_bc[idx] })
   assert_true(!err_bc.nil?, "finding 13: classic CONNECT with :path rejected")
 
@@ -1018,12 +1048,14 @@ def test_remediation_findings : Nil
     HeaderField.new(":protocol", "websocket"),
     HeaderField.new(":scheme", "https"),
     HeaderField.new(":authority", "example.com"),
-    HeaderField.new(":path", "/chat")
+    HeaderField.new(":path", "/chat"),
   ]
   enc_ec = server_ext_connect.hpack_encoder.encode(h_ext_connect)
   raw_ec = [] of UInt8
   FrameHeader.new(enc_ec.size, FrameType::HEADERS, FrameFlag::END_HEADERS, 1_i32).encode(raw_ec)
-  j = 0; while j < enc_ec.size; raw_ec << enc_ec[j]; j = j + 1; end
+  j = 0; while j < enc_ec.size
+    raw_ec << enc_ec[j]; j = j + 1
+  end
   err_ec = server_ext_connect.receive(Bytes.new(raw_ec.size) { |idx| raw_ec[idx] })
   assert_true(err_ec.nil?, "finding 13: extended CONNECT with :protocol, :scheme, :path accepted")
 
@@ -1078,12 +1110,14 @@ def test_remediation_findings : Nil
     HeaderField.new("cookie", "user=alice"),
     HeaderField.new("cookie", "token=secret123"),
     HeaderField.new("accept", "text/html"),
-    HeaderField.new("accept", "application/json")
+    HeaderField.new("accept", "application/json"),
   ]
   enc_rep = server17.hpack_encoder.encode(h_repeat)
   raw_rep = [] of UInt8
   FrameHeader.new(enc_rep.size, FrameType::HEADERS, FrameFlag::END_HEADERS | FrameFlag::END_STREAM, 1_i32).encode(raw_rep)
-  j = 0; while j < enc_rep.size; raw_rep << enc_rep[j]; j = j + 1; end
+  j = 0; while j < enc_rep.size
+    raw_rep << enc_rep[j]; j = j + 1
+  end
   server17.receive(Bytes.new(raw_rep.size) { |idx| raw_rep[idx] })
   req17 : Request? = nil
   idx17 = 0
@@ -1125,7 +1159,9 @@ def test_remediation_findings : Nil
   enc_resp18 = client18.hpack_encoder.encode(h_resp18)
   raw_resp18 = [] of UInt8
   FrameHeader.new(enc_resp18.size, FrameType::HEADERS, FrameFlag::END_HEADERS | FrameFlag::END_STREAM, 1_i32).encode(raw_resp18)
-  j = 0; while j < enc_resp18.size; raw_resp18 << enc_resp18[j]; j = j + 1; end
+  j = 0; while j < enc_resp18.size
+    raw_resp18 << enc_resp18[j]; j = j + 1
+  end
   err_resp18 = client18.receive(Bytes.new(raw_resp18.size) { |idx| raw_resp18[idx] })
   assert_true(err_resp18.nil?, "finding 18: in-flight stream 1 <= last_stream_id accepted after GOAWAY")
 
@@ -1140,7 +1176,9 @@ def test_remediation_findings : Nil
   # Newly initiated stream 3 (3 > 1) from peer is rejected by server
   raw_s3 = [] of UInt8
   FrameHeader.new(enc_ok.size, FrameType::HEADERS, FrameFlag::END_HEADERS, 3_i32).encode(raw_s3)
-  j = 0; while j < enc_ok.size; raw_s3 << enc_ok[j]; j = j + 1; end
+  j = 0; while j < enc_ok.size
+    raw_s3 << enc_ok[j]; j = j + 1
+  end
   err_s3 = server_recv_gw.receive(Bytes.new(raw_s3.size) { |idx| raw_s3[idx] })
   assert_true(!err_s3.nil?, "finding 18: newly initiated stream 3 > received GOAWAY last_stream_id rejected")
 
@@ -1166,7 +1204,9 @@ def test_remediation_findings : Nil
   # Peer attempts to open stream 3 (3 > 1) -> rejected!
   raw_post_gw = [] of UInt8
   FrameHeader.new(enc_ok.size, FrameType::HEADERS, FrameFlag::END_HEADERS, 3_i32).encode(raw_post_gw)
-  j = 0; while j < enc_ok.size; raw_post_gw << enc_ok[j]; j = j + 1; end
+  j = 0; while j < enc_ok.size
+    raw_post_gw << enc_ok[j]; j = j + 1
+  end
   err_post_gw = server18.receive(Bytes.new(raw_post_gw.size) { |idx| raw_post_gw[idx] })
   assert_true(!err_post_gw.nil?, "finding 18: inbound new stream exceeding GOAWAY last_stream_id rejected")
   puts "  all 18 adversarial findings verified"

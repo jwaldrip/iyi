@@ -583,14 +583,14 @@ def test_rejection_suite : Nil
     make_bytes([                    # Invalid back-reference distance exceeding buffer
       (1 | (1 << 1) | (1 << 9) | (0b01100 << 10)) & 0xFF,
       ((1 | (1 << 1) | (1 << 9) | (0b01100 << 10)) >> 8) & 0xFF,
-      ((1 | (1 << 1) | (1 << 9) | (0b01100 << 10)) >> 16) & 0xFF
+      ((1 | (1 << 1) | (1 << 9) | (0b01100 << 10)) >> 16) & 0xFF,
     ]),
-    make_bytes([                    # Invalid distance symbol 30 (> 29)
+    make_bytes([ # Invalid distance symbol 30 (> 29)
       ((3_i64 | (0b10001110_i64 << 3) | (0b1000000_i64 << 11) | (0b01111_i64 << 18)) & 0xFF).to_i32,
       (((3_i64 | (0b10001110_i64 << 3) | (0b1000000_i64 << 11) | (0b01111_i64 << 18)) >> 8) & 0xFF).to_i32,
       (((3_i64 | (0b10001110_i64 << 3) | (0b1000000_i64 << 11) | (0b01111_i64 << 18)) >> 16) & 0xFF).to_i32,
-      (((3_i64 | (0b10001110_i64 << 3) | (0b1000000_i64 << 11) | (0b01111_i64 << 18)) >> 24) & 0xFF).to_i32
-    ])
+      (((3_i64 | (0b10001110_i64 << 3) | (0b1000000_i64 << 11) | (0b01111_i64 << 18)) >> 24) & 0xFF).to_i32,
+    ]),
   ]
 
   adv_i = 0
@@ -768,7 +768,7 @@ def test_rejection_suite : Nil
   resp_bare1.headers["Sec-WebSocket-Accept"] = Handshake.compute_accept("dGhlIHNhbXBsZSBub25jZQ==")
   resp_bare1.headers["Sec-WebSocket-Extensions"] = "permessage-deflate; server_no_context_takeover"
   err_bare1 = Handshake.verify_server_response(resp_bare1, "dGhlIHNhbXBsZSBub25jZQ==",
-                                               requested_extensions: ["permessage-deflate"])
+    requested_extensions: ["permessage-deflate"])
   case err_bare1
   in WebSocketError
     assert_true(err_bare1.code == CLOSE_PROTOCOL_ERROR, "omitted client_no_context_takeover rejected with 1002")
@@ -783,7 +783,7 @@ def test_rejection_suite : Nil
   resp_bare2.headers["Sec-WebSocket-Accept"] = Handshake.compute_accept("dGhlIHNhbXBsZSBub25jZQ==")
   resp_bare2.headers["Sec-WebSocket-Extensions"] = "permessage-deflate; client_no_context_takeover"
   err_bare2 = Handshake.verify_server_response(resp_bare2, "dGhlIHNhbXBsZSBub25jZQ==",
-                                               requested_extensions: ["permessage-deflate"])
+    requested_extensions: ["permessage-deflate"])
   case err_bare2
   in WebSocketError
     assert_true(err_bare2.code == CLOSE_PROTOCOL_ERROR, "omitted server_no_context_takeover rejected with 1002")
@@ -798,7 +798,7 @@ def test_rejection_suite : Nil
   resp_win.headers["Sec-WebSocket-Accept"] = Handshake.compute_accept("dGhlIHNhbXBsZSBub25jZQ==")
   resp_win.headers["Sec-WebSocket-Extensions"] = "permessage-deflate; client_no_context_takeover; server_no_context_takeover; client_max_window_bits=10"
   err_win = Handshake.verify_server_response(resp_win, "dGhlIHNhbXBsZSBub25jZQ==",
-                                             requested_extensions: ["permessage-deflate"])
+    requested_extensions: ["permessage-deflate"])
   case err_win
   in WebSocketError
     assert_true(err_win.code == CLOSE_PROTOCOL_ERROR, "unsupported window bits rejected with 1002")
@@ -922,7 +922,7 @@ def test_live_socket : Nil
   # Client sends handshake offering permessage-deflate with both no-context parameters
   c_deflate_key = Handshake.generate_key
   c_deflate_req = Handshake.build_client_request("/", "127.0.0.1:#{def_port}", c_deflate_key,
-                                                 extensions: ["permessage-deflate; client_no_context_takeover; server_no_context_takeover"])
+    extensions: ["permessage-deflate; client_no_context_takeover; server_no_context_takeover"])
   ser_def_req = c_deflate_req.serialize
   case ser_def_req
   in String    then c_sock_deflate.write(ser_def_req)
@@ -941,7 +941,7 @@ def test_live_socket : Nil
     case parsed_c_resp
     in Response
       c_ver = Handshake.verify_server_response(parsed_c_resp, c_deflate_key,
-                                               requested_extensions: ["permessage-deflate; client_no_context_takeover; server_no_context_takeover"])
+        requested_extensions: ["permessage-deflate; client_no_context_takeover; server_no_context_takeover"])
       case c_ver
       in WebSocketError then raise "client failed to verify server deflate response: #{c_ver.message}"
       in Bool

@@ -19,9 +19,9 @@ using std/uri::{Params, URI}
 pub alias Params = Std::Uri::Params
 
 # HTTP Protocol Limits
-MAX_REQUEST_LINE_SIZE = 8192
-MAX_HEADER_COUNT      = 100
-MAX_HEADERS_SIZE      = 16384
+MAX_REQUEST_LINE_SIZE =     8192
+MAX_HEADER_COUNT      =      100
+MAX_HEADERS_SIZE      =    16384
 MAX_CHUNK_SIZE        = 16777216 # 16 MB
 
 # ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ pub struct Status
   end
 
   Continue                    = Status.new(100)
-  SwitchingProtocols           = Status.new(101)
+  SwitchingProtocols          = Status.new(101)
   OK                          = Status.new(200)
   Created                     = Status.new(201)
   Accepted                    = Status.new(202)
@@ -1423,9 +1423,9 @@ pub class Response
 
     # 3. Parse Body
     body_res = Std::Http.parse_body(raw, cur_pos, headers,
-                                    is_persistent_response: is_persistent,
-                                    is_body_forbidden: body_forbidden,
-                                    req_method: method_upper)
+      is_persistent_response: is_persistent,
+      is_body_forbidden: body_forbidden,
+      req_method: method_upper)
     case body_res
     in HttpError then return body_res
     in Tuple(String, Headers?)

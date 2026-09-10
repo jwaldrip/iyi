@@ -108,15 +108,15 @@ puts "    repetition rules: single-value headers replaced and list headers appen
 h_inj = Headers.new
 add_res = h_inj.add("X-Safe", "value\r\nInjected: evil")
 case add_res
-in Request  then raise "CR header injection was not rejected"
-in Headers  then raise "CR header injection was not rejected"
+in Request   then raise "CR header injection was not rejected"
+in Headers   then raise "CR header injection was not rejected"
 in HttpError then nil
 end
 
 add_res2 = h_inj.add("X-Safe", "value\nInjected: evil")
 case add_res2
-in Request  then raise "LF header injection was not rejected"
-in Headers  then raise "LF header injection was not rejected"
+in Request   then raise "LF header injection was not rejected"
+in Headers   then raise "LF header injection was not rejected"
 in HttpError then nil
 end
 
@@ -125,8 +125,8 @@ end
 # ---------------------------------------------------------------------------
 add_res3 = h_inj.add("Bad:Name", "value")
 case add_res3
-in Request  then raise "bad name injection was not rejected"
-in Headers  then raise "bad name injection was not rejected"
+in Request   then raise "bad name injection was not rejected"
+in Headers   then raise "bad name injection was not rejected"
 in HttpError then nil
 end
 
@@ -272,11 +272,11 @@ trailers["X-Audit-Status"] = "verified"
 raw_chunked_req = req.serialize(chunked: true, trailers: trailers)
 case raw_chunked_req
 in HttpError then raise "failed to serialize chunked request: #{raw_chunked_req.message}"
-in String then
+in String
   parsed = Request.parse(raw_chunked_req)
   case parsed
   in HttpError then raise "failed to parse chunked request: #{parsed.message}"
-  in Request then
+  in Request
     raise "parsed method" unless parsed.method == "POST"
     raise "parsed target" unless parsed.target == "/upload"
     raise "parsed body" unless parsed.body == "streaming content payload"
@@ -296,11 +296,11 @@ resp_trailers["X-Server-Timing"] = "total=4.2ms"
 raw_chunked_resp = resp.serialize(chunked: true, trailers: resp_trailers)
 case raw_chunked_resp
 in HttpError then raise "failed to serialize chunked response: #{raw_chunked_resp.message}"
-in String then
+in String
   parsed_resp = Response.parse(raw_chunked_resp)
   case parsed_resp
   in HttpError then raise "failed to parse chunked response: #{parsed_resp.message}"
-  in Response then
+  in Response
     raise "parsed status code" unless parsed_resp.status_code == 200
     raise "parsed status desc" unless parsed_resp.status.description == "OK"
     raise "parsed body" unless parsed_resp.body == "chunked response data"
@@ -319,11 +319,11 @@ req_cl.headers["Host"] = "example.com"
 raw_cl_req = req_cl.serialize
 case raw_cl_req
 in HttpError then raise "failed serialize CL: #{raw_cl_req.message}"
-in String then
+in String
   parsed_cl_req = Request.parse(raw_cl_req)
   case parsed_cl_req
   in HttpError then raise "failed parse CL: #{parsed_cl_req.message}"
-  in Request then
+  in Request
     raise "parsed body CL" unless parsed_cl_req.body == "fixed-length-payload"
     raise "parsed Content-Length header" unless parsed_cl_req.headers["Content-Length"] == "20"
   end
@@ -350,13 +350,13 @@ puts "    keep-alive: HTTP/1.1 default keep-alive and HTTP/1.0 default close ver
 # 18. Cookie parsing and serialization: attributes and SameSite
 # ---------------------------------------------------------------------------
 cookie = Cookie.new("session_token", "xyz987abc",
-                    path: "/app",
-                    domain: "example.com",
-                    expires: "Wed, 21 Oct 2026 07:28:00 GMT",
-                    max_age: 3600_i64,
-                    secure: true,
-                    http_only: true,
-                    samesite: SameSite::Strict)
+  path: "/app",
+  domain: "example.com",
+  expires: "Wed, 21 Oct 2026 07:28:00 GMT",
+  max_age: 3600_i64,
+  secure: true,
+  http_only: true,
+  samesite: SameSite::Strict)
 
 cookie_str = cookie.to_set_cookie
 raise "cookie string missing name/val" unless cookie_str.includes?("session_token=xyz987abc")
@@ -371,7 +371,7 @@ raise "cookie string missing SameSite" unless cookie_str.includes?("SameSite=Str
 parsed_cookie = Cookie.parse_set_cookie(cookie_str)
 case parsed_cookie
 in HttpError then raise "failed to parse Set-Cookie: #{parsed_cookie.message}"
-in Cookie then
+in Cookie
   raise "parsed cookie name" unless parsed_cookie.name == "session_token"
   raise "parsed cookie val" unless parsed_cookie.value == "xyz987abc"
   raise "parsed cookie path" unless parsed_cookie.path == "/app"
