@@ -32,6 +32,11 @@ import std/qpack
 import std/http3
 import std/webtransport
 
+# Native raise needs the scheduler main fiber initialized before any
+# mutation proof can unwind through protocol code. Without it, a correct
+# rejection prints its panic and then exits by SIGSEGV instead of exit 1.
+_ = IyiScheduler.current
+
 using std/slice::{Slice, Bytes}
 using std/crypto::{constant_time_compare, HKDF, AES128GCM}
 using std/udp::{UdpSocket, Datagram}
@@ -398,6 +403,18 @@ client_conn.set_remote("127.0.0.1", server_port)
 server_conn.set_remote("127.0.0.1", client_port)
 client_ep.add_connection(client_conn)
 server_ep.add_connection(server_conn)
+
+# A packet for an unknown destination connection ID is dropped rather than
+# fed into whichever connection happened to be registered first.
+rogue_cid = hex_to_bytes("a1a2a3a4a5a6a7a8")
+rogue_conn = QuicConnection.new(ConnectionRole::CLIENT, rogue_cid, hex_to_bytes("b1b2b3b4b5b6b7b8"), hostname: "rsa")
+rogue_conn.set_remote("127.0.0.1", server_port)
+rogue_conn.start_client_handshake
+rogue_packet = rogue_conn.send_initial_packet(current_time: 990_i64)
+client_ep.send_to(rogue_packet, "127.0.0.1", server_port)
+server_ep.step(995_i64)
+raise "unknown destination connection ID reached a connection" unless server_conn.peer_transport_params.nil?
+puts "  [observed] unknown destination connection ID dropped"
 
 # 1. Client sends Initial packet with TLS ClientHello + transport params extension 0x39
 client_hello = client_conn.start_client_handshake

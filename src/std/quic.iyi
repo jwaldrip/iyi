@@ -3034,9 +3034,10 @@ pub class QuicEndpoint
       end
     end
 
-    if target_conn.nil? && !@connections.empty?
-      target_conn = @connections[0]
-    end
+    # A datagram for an unknown destination connection ID belongs to no local
+    # connection. Feeding it to the first entry crosses connection state and
+    # turns an unknown CID into an authenticated-decrypt crash.
+    return if target_conn.nil?
 
     if conn = target_conn
       conn.set_remote(dgram.host, dgram.port)

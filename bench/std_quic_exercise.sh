@@ -102,6 +102,11 @@ prove_fails() {
     status=1
     return
   fi
+  if [ "$exit_code" -ne 1 ]; then
+    echo "  $label: expected exit 1, got $exit_code"
+    status=1
+    return
+  fi
   if ! grep -q "$phrase" "$WORK/$dir/out"; then
     echo "  $label: failed, but not at expected check (expected '$phrase')"
     sed -n '$p' "$WORK/$dir/out"
@@ -116,6 +121,11 @@ prove_fails() {
 prove_fails "loopback UDP send_to dropped" udp_drop \
   "server received no ClientHello" "quic.iyi" \
   's/@socket.send_to(data, host, port)/0 # drop/'
+
+# 2. Unknown destination connection ID routed to the first connection
+prove_fails "unknown destination connection ID routed" cid_fallback \
+  "AEAD decryption failed" "quic.iyi" \
+  's/return if target_conn.nil?/target_conn = @connections[0] if target_conn.nil? \&\& !@connections.empty?/'
 
 # 2. 1-RTT packet space corrupted (fails 1-RTT ACK processing)
 prove_fails "send_1rtt wrong space" 1rtt_space \
