@@ -10,6 +10,9 @@
 
 module samples/std_collections
 
+import std/format
+using std/format::{printf}
+
 import std/deque
 using std/deque::{Deque}
 import std/set
