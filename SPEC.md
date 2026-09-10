@@ -3991,19 +3991,19 @@ has `to_s`, `clone_without_location` and `accept_children`, because IV.6's parse
 work needed them. So this is nine visit methods against an interface that
 already exists, plus the idempotency tests the formatter has for everything else.
 
-Two consequences worth naming. Formatting has to be **exit-code correct** for a
-directory containing both `.cr` and `.iyi` files, because today's non-zero exit
-means no repository can put `iyi tool format` in CI at all. And CI's existing
-`tool format --check src spec` covers Crystal source only, so nothing formats
-`src/iyi` or `samples/iyi`, which is where the language's own examples live.
+Two consequences are enforced now. `iyi tool format` discovers `.iyi` files
+and nothing else when given a directory or no path; `crystal tool format`
+owns `.cr`. An explicitly named file can still be formatted, but neither
+command silently claims the other language's tree. The iyi command's help,
+syntax warnings and failures all name iyi and point at iyi's issue tracker.
 
-**Since built, and the claim above no longer reproduces.** `iyi tool format
---check` on a file carrying every iyi node — a module header, `impl`,
-`defer`, `!` — exits zero, formats idempotently, and CI's `Formatted` step
-has covered `src spec samples` for as long as the concurrency work has been
-landing: it is the step that caught this repository's own unformatted
-syscall table. The nine visit methods exist; what this section asked for
-is what the tree does.
+The command is exit-code correct on a file carrying every iyi node, including
+a module header, `pub import`, `pub enum`, `impl`, `defer` and `!`. The
+formatter's own specs use `.iyi` fixtures and leave an unformatted `.cr` file
+untouched. CI builds both frontends and runs two distinct checks over Git's
+tracked file lists: Crystal over `*.cr`, iyi over `*.iyi`. A green formatter
+job therefore proves the iyi frontend ran on the language's source, samples
+and exercises rather than reaching the same parser through Crystal.
 
 #### 2. A language server, and why iyi can have a good one: **BUILT — `iyi lsp`, measured by `bench/lsp_session.py`**
 
