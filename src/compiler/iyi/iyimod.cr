@@ -209,8 +209,23 @@ module Iyi::IyiMod
   def self.exported_macro(source : String) : String
     first = source.lines.first?
     return source unless first
-    name = first.lchop("macro ").strip.split(/[\s(]/).first?
-    return source if name.nil? || MACRO_HOOKS.includes?(name)
+
+    written = first.lstrip
+    # An iyi module's macros are written `pub macro` and travel as their own
+    # text, so this is only about the other language's: `pub pub macro
+    # described(declaration)` is `can't apply \`pub\` to pub`, and
+    # `bench/samples_roundtrip.sh` said so on the derive sample.
+    return source if written.starts_with?("pub ")
+    return source unless written.starts_with?("macro ")
+
+    rest = written.lchop("macro ").lstrip
+    name = String.build do |io|
+      rest.each_char do |char|
+        break if char.whitespace? || char == '('
+        io << char
+      end
+    end
+    return source if name.empty? || MACRO_HOOKS.includes?(name)
     "pub #{source}"
   end
 
