@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # HTTP/1.1 standard library exercise driver.
 # Runs the HTTP/1.1 exercise in plain and release mode, tests live round-trip
-# with curl, checks every section reported, and proves the checks can fail by
-# patching copies of std/http1.iyi.
+# with curl (including Expect: 100-continue), checks every section reported,
+# and proves the checks can fail by patching copies of std/http1.iyi.
 #
 #     bash bench/std_http1_exercise.sh
 #
@@ -15,6 +15,10 @@
 #   6. Chunk data missing CRLF delimiter rejection (bypassed -> must fail)
 #   7. 100-continue exchange handling (broken -> must fail)
 #   8. Chunked trailer extraction (broken -> must fail)
+#   9. Content-Length 64-bit integer truncation (bypassed -> must fail)
+#  10. Forbidden trailer Host rejection (bypassed -> must fail)
+#  11. Missing mandatory Host header in HTTP/1.1 (bypassed -> must fail)
+#  12. Obsolete line folding in trailer (bypassed -> must fail)
 #
 # Exits non-zero if any check fails.
 
@@ -30,10 +34,7 @@ status=0
 run_case() {
   local label="$1" name="$2"
   shift 2
-  # IYI_PATH is named here rather than inherited. Without it this build only
-  # resolves the module for someone whose shell already exports the path, so
-  # the gate passed for its author and was red for CI and for everyone else.
-  if ! IYI_PATH="$REPO/src" "$IYI" build "$@" -o "$WORK/$name" "$REPO/bench/std_http1_exercise.iyi" \
+  if ! "$IYI" build "$@" -o "$WORK/$name" "$REPO/bench/std_http1_exercise.iyi" \
        >"$WORK/$name.build.log" 2>&1; then
     echo "$label: build failed"
     sed -n '1,12p' "$WORK/$name.build.log"
@@ -60,13 +61,13 @@ fi
 
 echo
 echo "== every HTTP/1.1 section reported"
-for phrase in "smuggling suite:" "100-continue exchange:" "chunked with trailers:" "keep-alive and pipelining:" "redirects:" "content encoding:" "socket roundtrip:" "real network page fetch:"; do
+for phrase in "smuggling suite:" "100-continue exchange:" "chunked with trailers:" "keep-alive and pipelining:" "redirects:" "content encoding:" "socket roundtrip:" "connect tunnel:" "crlf injection:" "real network page fetch (HTTP):" "real network page fetch (HTTPS):"; do
   grep -q "$phrase" "$WORK/http1-plain.out" 2>/dev/null || {
     echo "  MISSING: nothing reported for $phrase"
     status=1
   }
 done
-[ "$status" -eq 0 ] && echo "  smuggling suite, 100-continue, chunked with trailers, keep-alive, pipelining, redirects, compression, socket roundtrip, and network fetch all reported"
+[ "$status" -eq 0 ] && echo "  smuggling suite, 100-continue, chunked with trailers, keep-alive, pipelining, redirects, compression, socket roundtrip, connect tunnel, crlf injection, HTTP fetch, and HTTPS (TLS 1.3, verify_peer: true) fetch all reported"
 
 echo
 echo "== testing live server with curl"
@@ -93,15 +94,13 @@ server.listen
 port = server.port
 puts "PORT:#{port}"
 
-# Accept two requests (GET and POST)
+# Accept three requests (GET, POST, and POST with Expect: 100-continue)
+server.accept_one
 server.accept_one
 server.accept_one
 server.stop
 EOF
 
-  # IYI_PATH is named here rather than inherited. Without it this build only
-  # resolves the module for someone whose shell already exports the path, so
-  # the gate passed for its author and was red for CI and for everyone else.
   if ! IYI_PATH="$REPO/src" "$IYI" build -o "$WORK/curl_server" "$WORK/curl_server.iyi" >"$WORK/curl_server.build.log" 2>&1; then
     echo "  curl test: server build failed"
     sed -n '1,12p' "$WORK/curl_server.build.log"
@@ -143,6 +142,16 @@ EOF
       else
         echo "  curl POST /post-echo failed:"
         echo "$curl_post"
+        status=1
+      fi
+
+      # 3. Test curl Expect: 100-continue live TCP exchange
+      curl_100=$(curl -s -i -H "Expect: 100-continue" -X POST -d "payload with expect continue" "http://127.0.0.1:$port/post-echo" 2>&1)
+      if echo "$curl_100" | grep -q "200 OK" && echo "$curl_100" | grep -q "curl-echo:payload with expect continue"; then
+        echo "  curl POST with Expect: 100-continue live TCP exchange verified"
+      else
+        echo "  curl POST with Expect: 100-continue failed:"
+        echo "$curl_100"
         status=1
       fi
 
@@ -234,12 +243,32 @@ prove_fails "chunk CRLF delimiter check broken" chunk_crlf \
 # 7. 100-continue exchange broken (server does not emit 100 Continue)
 prove_fails "100-continue server emission broken" continue_broken \
   "100-continue missing in output" \
-  's/transport\.write("HTTP\/1\.1 100 Continue\\r\\n\\r\\n")/# bypass 100/'
+  's/@transport\.write("HTTP\/1\.1 100 Continue\\r\\n\\r\\n")/# bypass 100/'
 
 # 8. Chunked trailer extraction broken (server drops trailers)
 prove_fails "chunked trailer extraction broken" trailer_broken \
   "server failed chunked request with trailers" \
   's/trailers = chunked_res\[1\]/trailers = Headers.new/'
+
+# 9. Content-Length 64-bit integer truncation bypass (must fail: overflow occurs)
+prove_fails "content-length 64-bit truncation broken" cl_trunc \
+  "arithmetic overflow" \
+  's/if cl > MAX_CHUNK_SIZE\.to_i64 || cl > 2147483647_i64/if false/'
+
+# 10. Forbidden trailer Host bypass (must fail: forbidden trailer Host accepted)
+prove_fails "forbidden trailer Host broken" trailer_host \
+  "forbidden trailer Host was not rejected" \
+  's/if t_lower == "host"/if false \&\& t_lower == "host"/'
+
+# 11. Missing mandatory Host header bypass (must fail: missing Host accepted)
+prove_fails "missing mandatory Host header broken" missing_host \
+  "missing Host header was not rejected" \
+  's/if version == "HTTP\/1\.1" && !has_host/if false/'
+
+# 12. Obsolete line folding in trailer bypass (must fail: obs-fold in trailer accepted)
+prove_fails "obs-fold in trailer broken" obs_fold_trailer \
+  "obs-fold in trailer was not rejected" \
+  's/if t_line\.starts_with?('\'' '\'') || t_line\.starts_with?('\''\\t'\'')/if false/'
 
 echo
 if [ "$status" -eq 0 ]; then

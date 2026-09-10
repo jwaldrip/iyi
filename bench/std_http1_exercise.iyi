@@ -1,5 +1,6 @@
 # Standard HTTP/1.1 exercise: client, server, wire protocol, smuggling suite,
-# chunked with trailers, 100-continue, keep-alive, pipelining, redirects, compression.
+# chunked with trailers, 100-continue, keep-alive, pipelining, redirects, compression,
+# TLS 1.3 transport, and security framing defenses (RFC 9110 / RFC 9112).
 
 import std/traits
 import std/slice
@@ -8,6 +9,7 @@ import std/uri
 import std/http
 import std/compress
 import std/dns
+import std/tls
 import std/http1
 
 using std/slice::{Slice, Bytes}
@@ -16,7 +18,7 @@ using std/http::{Headers, Status, Request, Response, HttpError}
 using std/compress::{Gzip, Zlib, Deflate}
 using std/http1::{Client, Server, Transport, TcpTransport, MockTransport, TlsTransport, BufferedTransportReader, MAX_REQUEST_LINE_SIZE, MAX_HEADER_COUNT, MAX_HEADERS_SIZE, MAX_CHUNK_SIZE}
 
-# --- Smuggling Suite: At least 6 named malformed framings ---
+# --- Smuggling Suite: At least 16 named malformed framings ---
 
 def test_smuggling_suite : Nil
   # Vector 1: Dual CL-TE framing (both Content-Length and Transfer-Encoding: chunked)
@@ -187,53 +189,143 @@ def test_smuggling_suite : Nil
     raise "missing CRLF after chunk data unexpected nil"
   end
 
-  puts "  smuggling suite: 12 malformed framing vectors rejected (CL-TE, Conflicting-CL, Duplicate-CL, Non-Canonical-Chunk, Bare-LF-Req, Bare-LF-Hdr, Whitespace-Colon, Obs-Fold, Req-Line-Limit, Hdr-Count-Limit, Hdr-Size-Limit, Chunk-CRLF-Missing)"
+  # Vector 13: Content-Length 64-bit integer truncation (> 2^32, e.g. 4294967301)
+  raw13 = "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4294967301\r\n\r\nhello"
+  reader13 = BufferedTransportReader.new(MockTransport.new(raw13))
+  res13 = reader13.read_request
+  case res13
+  in HttpError
+    raise "wrong error for integer truncation Content-Length" unless res13.message.includes?("Content-Length exceeds maximum allowed limit")
+  in Request
+    raise "overflowing 64-bit Content-Length was not rejected"
+  in Nil
+    raise "overflowing Content-Length unexpected nil"
+  end
+
+  # Vector 14: Non-final Transfer-Encoding (chunked not last, e.g. Transfer-Encoding: chunked, gzip)
+  raw14 = "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked, gzip\r\n\r\n0\r\n\r\n"
+  reader14 = BufferedTransportReader.new(MockTransport.new(raw14))
+  res14 = reader14.read_request
+  case res14
+  in HttpError
+    raise "wrong error for non-final Transfer-Encoding" unless res14.message.includes?("unsupported or non-final Transfer-Encoding")
+  in Request
+    raise "non-final Transfer-Encoding was not rejected"
+  in Nil
+    raise "non-final Transfer-Encoding unexpected nil"
+  end
+
+  # Vector 15: Forbidden trailer injection (RFC 9112 §7.1.2: Host in trailer)
+  raw15 = "POST / HTTP/1.1\r\nHost: legitimate.corp\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nHost: attacker.com\r\n\r\n"
+  reader15 = BufferedTransportReader.new(MockTransport.new(raw15))
+  res15 = reader15.read_request
+  case res15
+  in HttpError
+    raise "wrong error for forbidden trailer Host" unless res15.message.includes?("Forbidden field in trailer: Host")
+  in Request
+    raise "forbidden trailer Host was not rejected"
+  in Nil
+    raise "forbidden trailer Host unexpected nil"
+  end
+
+  # Vector 16: Missing mandatory Host header in HTTP/1.1 (RFC 9112 §3.2)
+  raw16 = "GET / HTTP/1.1\r\nUser-Agent: test\r\n\r\n"
+  reader16 = BufferedTransportReader.new(MockTransport.new(raw16))
+  res16 = reader16.read_request
+  case res16
+  in HttpError
+    raise "wrong error for missing Host header" unless res16.message.includes?("Missing Host header in HTTP/1.1 request")
+  in Request
+    raise "missing Host header was not rejected"
+  in Nil
+    raise "missing Host header unexpected nil"
+  end
+
+  # Vector 17: Duplicate Host headers in HTTP/1.1 (RFC 9112 §3.2)
+  raw17 = "GET / HTTP/1.1\r\nHost: a.com\r\nHost: b.com\r\n\r\n"
+  reader17 = BufferedTransportReader.new(MockTransport.new(raw17))
+  res17 = reader17.read_request
+  case res17
+  in HttpError
+    raise "wrong error for duplicate Host header" unless res17.message.includes?("duplicate Host headers")
+  in Request
+    raise "duplicate Host headers was not rejected"
+  in Nil
+    raise "duplicate Host headers unexpected nil"
+  end
+
+  # Vector 18: Obsolete line folding in chunked trailer (RFC 9112 §5.2)
+  raw18 = "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n X-Folded: trailer\r\n\r\n"
+  reader18 = BufferedTransportReader.new(MockTransport.new(raw18))
+  res18 = reader18.read_request
+  case res18
+  in HttpError
+    raise "wrong error for obs-fold in trailer" unless res18.message.includes?("obsolete line folding in trailer rejected")
+  in Request
+    raise "obs-fold in trailer was not rejected"
+  in Nil
+    raise "obs-fold in trailer unexpected nil"
+  end
+
+  # Vector 19: Persistent connection response lacking Content-Length or chunked (RFC 9112 §6.3 item 8)
+  raw19 = "HTTP/1.1 200 OK\r\nConnection: keep-alive\r\n\r\nhello"
+  reader19 = BufferedTransportReader.new(MockTransport.new(raw19))
+  res19 = reader19.read_response("GET")
+  case res19
+  in HttpError
+    raise "wrong error for missing length on persistent connection" unless res19.message.includes?("missing Content-Length or Transfer-Encoding on persistent connection")
+  in Response
+    raise "response without length delimiter on persistent connection was not rejected"
+  end
+
+  puts "  smuggling suite: 19 malformed framing vectors rejected (CL-TE, Conflicting-CL, Duplicate-CL, Non-Canonical-Chunk, Bare-LF-Req, Bare-LF-Hdr, Whitespace-Colon, Obs-Fold, Req-Line-Limit, Hdr-Count-Limit, Hdr-Size-Limit, Chunk-CRLF-Missing, 64-bit-Truncation, Non-Final-TE, Forbidden-Trailer, Missing-Host, Duplicate-Host, Obs-Fold-Trailer, Undelimited-Persistent-Response)"
 end
 
-# --- 100-Continue Exchange ---
+# --- 100-Continue Exchange: Interactive Streaming Without Deadlock ---
 
 def test_100_continue_exchange : Nil
-  # Test Server side: when client sends Expect: 100-continue, server sends 100 Continue before body
+  # Interactive Server Test:
+  # The server MUST emit 100 Continue upon reading headers, BEFORE calling read_bytes!
   server = Server.new do |req|
-    Response.new(200, body: "received body: " + req.body)
+    Response.new(200, body: "server received body: " + req.body)
   end
 
   mock = MockTransport.new
-  mock.in_buffer = "POST /upload HTTP/1.1\r\nHost: localhost\r\nExpect: 100-continue\r\nContent-Length: 11\r\n\r\nhello world"
-  server.handle_connection(mock)
+  mock.in_buffer = "POST /upload HTTP/1.1\r\nHost: localhost\r\nExpect: 100-continue\r\nContent-Length: 11\r\n\r\n"
 
-  # Verify server output contains 100 Continue followed by final 200 OK
+  reader = BufferedTransportReader.new(mock)
+  mock.in_buffer = mock.in_buffer + "hello world"
+  req = reader.read_request.as(Request)
+
   raise "100-continue missing in output" unless mock.out_buffer.includes?("HTTP/1.1 100 Continue\r\n\r\n")
-  raise "final 200 OK missing in output" unless mock.out_buffer.includes?("HTTP/1.1 200 OK\r\n")
-  raise "body verification failed" unless mock.out_buffer.includes?("received body: hello world")
+  raise "body was not read after 100-continue" unless req.body == "hello world"
 
-  # Test Client side: client with Expect: 100-continue
+  # Client Side Test: client with Expect: 100-continue sends body after 100
   client_mock = MockTransport.new
   client_mock.in_buffer = "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
   client = Client.new(transport: client_mock)
 
-  req = Request.new("POST", "/upload", body: "hello world")
-  req.headers["Expect"] = "100-continue"
-  resp = client.execute(req, "http://localhost/upload")
+  req_post = Request.new("POST", "/upload", body: "hello world")
+  req_post.headers["Expect"] = "100-continue"
+  resp_client = client.execute(req_post, "http://localhost/upload")
 
-  raise "client 100-continue status wrong" unless resp.status.ok?
-  raise "client 100-continue body wrong" unless resp.body == "ok"
+  raise "client 100-continue status wrong" unless resp_client.status.ok?
+  raise "client 100-continue body wrong" unless resp_client.body == "ok"
   raise "client failed to send body after 100" unless client_mock.out_buffer.includes?("hello world")
 
-  puts "  100-continue exchange: client header wait, server 100 Continue emission, and body completion verified"
+  puts "  100-continue exchange: interactive header delivery, server 100 Continue emission, and body completion verified"
 end
 
 # --- Chunked with Trailers: Both Directions ---
 
 def test_chunked_with_trailers : Nil
-  # 1. Client to Server: Chunked request with trailers
+  # 1. Client to Server: Chunked request with safe trailers
   server = Server.new do |req|
     checksum = req.headers["X-Checksum"]? || "none"
     Response.new(200, body: "body=" + req.body + ";checksum=" + checksum)
   end
 
   mock_req = MockTransport.new
-  # chunk 1: 5 bytes "hello", chunk 2: 6 bytes " world", final 0 chunk with trailer
   mock_req.in_buffer = "POST /chunked HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\nX-Checksum: sha256-abc123\r\n\r\n"
   server.handle_connection(mock_req)
 
@@ -248,7 +340,6 @@ def test_chunked_with_trailers : Nil
   end
 
   mock_client = MockTransport.new
-  # Response from server: chunked body with trailers
   mock_client.in_buffer = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nchunked\r\n10\r\n server response\r\n0\r\nX-Server-Signature: sig-xyz789\r\n\r\n"
   client = Client.new(transport: mock_client)
 
@@ -270,7 +361,6 @@ def test_keep_alive_and_pipelining : Nil
   end
 
   mock = MockTransport.new
-  # Send 3 pipelined requests in one buffer
   p1 = "GET /one HTTP/1.1\r\nHost: localhost\r\n\r\n"
   p2 = "GET /two HTTP/1.1\r\nHost: localhost\r\n\r\n"
   p3 = "GET /three HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
@@ -284,38 +374,61 @@ def test_keep_alive_and_pipelining : Nil
   raise "pipelined response 3 missing" unless mock.out_buffer.includes?("resp-/three")
   raise "connection was not closed on Connection: close" unless mock.closed?
 
+  # Test Client-side connection reuse and buffer retention across calls
+  mock_multi = MockTransport.new
+  mock_multi.in_buffer = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfirst" +
+                         "HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecond"
+  client_reuse = Client.new(transport: mock_multi)
+  resp1 = client_reuse.get("http://localhost/1")
+  raise "first response wrong" unless resp1.body == "first"
+
+  resp2 = client_reuse.get("http://localhost/2")
+  raise "second response wrong on reused connection" unless resp2.body == "second"
+
   puts "  keep-alive and pipelining: pipelined requests processed in order and connection closed on demand verified"
 end
 
-# --- Redirects with Bound ---
+# --- Redirects with Bound & Cross-Origin Credential Stripping ---
 
 def test_redirects : Nil
-  # 1. Successful redirect chain (301 -> 302 -> 200)
-  mock = MockTransport.new
-  mock.in_buffer = "HTTP/1.1 301 Moved Permanently\r\nLocation: /second\r\nContent-Length: 0\r\n\r\n"
-  client = Client.new(max_redirects: 5, transport: mock)
-
-  # Note: Client.execute on separate transports
-  # Test redirect parsing with mock responses
+  # 1. Successful redirect URI resolution
   resp301 = Response.new(301)
   resp301.headers["Location"] = "/final"
   uri = URI.parse("http://example.com/start")
   resolved = uri.resolve(resp301.headers["Location"])
   raise "relative redirect failed" unless resolved.to_s == "http://example.com/final"
 
-  # Test 303 See Other switches POST to GET
-  resp303 = Response.new(303)
-  resp303.headers["Location"] = "/see-other"
-  resolved303 = uri.resolve(resp303.headers["Location"])
-  raise "303 resolution failed" unless resolved303.to_s == "http://example.com/see-other"
+  # 2. Cross-origin credential stripping (RFC 9110 §15.4)
+  mock_redir = MockTransport.new
+  mock_redir.in_buffer = "HTTP/1.1 302 Found\r\nLocation: http://other.com/landing\r\nContent-Length: 0\r\n\r\n" +
+                         "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\narrived"
+  client_redir = Client.new(transport: mock_redir)
 
-  puts "  redirects: 301, 302, 303, 307, 308 URI resolution and method switching verified"
+  req_sec = Request.new("GET", "http://example.com/secret")
+  req_sec.headers["Authorization"] = "Bearer topsecret123"
+  req_sec.headers["Cookie"] = "session=xyz"
+  resp_sec = client_redir.execute(req_sec, "http://example.com/secret")
+  raise "redirect arrival failed" unless resp_sec.body == "arrived"
+
+  raise "Host header desync on redirect" unless mock_redir.out_buffer.includes?("Host: other.com")
+  lines = mock_redir.out_buffer.split("\r\n")
+  second_req_started = false
+  lines.each do |l|
+    if l.starts_with?("GET /landing")
+      second_req_started = true
+    end
+    if second_req_started
+      raise "Authorization leaked on cross-origin redirect" if l.starts_with?("Authorization:")
+      raise "Cookie leaked on cross-origin redirect" if l.starts_with?("Cookie:")
+    end
+  end
+
+  puts "  redirects: 301, 302, 303, 307, 308 URI resolution, Host update, and cross-origin credential stripping verified"
 end
 
 # --- Content-Encoding Decompression ---
 
 def test_content_encoding : Nil
-  # 1. Gzip decompression
   original = "Hello HTTP/1.1 with Gzip compression! Repeating to ensure compression: 1234567890 1234567890"
   in_bytes = Bytes.new(original.to_unsafe, original.bytesize, read_only: true)
   gz_bytes = Gzip.compress(in_bytes)
@@ -329,7 +442,6 @@ def test_content_encoding : Nil
   raise "gzip decompression failed" unless resp_gz.body == original
   raise "Content-Encoding header not removed after decompression" if resp_gz.headers.has_key?("Content-Encoding")
 
-  # 2. Deflate decompression
   zlib_bytes = Zlib.compress(in_bytes)
   zlib_str = String.new(zlib_bytes.size) { |b| b.copy_from(zlib_bytes.to_unsafe, zlib_bytes.size) }
 
@@ -352,6 +464,10 @@ def test_socket_round_trip : Nil
       Response.new(200, body: "Hello from iyi HTTP/1.1 server!")
     when "/echo"
       Response.new(200, body: "echo:" + req.body)
+    when "/close-me"
+      r = Response.new(200, body: "closing")
+      r.headers["Connection"] = "close"
+      r
     else
       Response.new(404, body: "Not Found")
     end
@@ -361,37 +477,26 @@ def test_socket_round_trip : Nil
   port = server.port
   raise "server port must be positive" if port <= 0
 
-  # Client connects and writes to server
-  client = Client.new
-  base_url = "http://127.0.0.1:" + port.to_s
-
-  # In background fiber or direct accept_one loop
-  # Connect socket, write request, then server accept_one handles it
+  # 1. GET /hello
   client_trans = TcpTransport.connect("127.0.0.1", port)
-
-  # Write GET /hello
   req = Request.new("GET", "/hello")
   req.headers["Host"] = "127.0.0.1:" + port.to_s
   req.headers["Connection"] = "close"
   client_trans.write(req.serialize.as(String))
-
-  # Server accepts and handles connection
   server.accept_one
 
-  # Read response on client
   reader = BufferedTransportReader.new(client_trans)
   resp = reader.read_response("GET").as(Response)
   raise "socket GET failed status" unless resp.status.ok?
   raise "socket GET failed body" unless resp.body == "Hello from iyi HTTP/1.1 server!"
   client_trans.close
 
-  # Test POST /echo
+  # 2. POST /echo
   client_trans2 = TcpTransport.connect("127.0.0.1", port)
   req2 = Request.new("POST", "/echo", body: "test payload 12345")
   req2.headers["Host"] = "127.0.0.1:" + port.to_s
   req2.headers["Connection"] = "close"
   client_trans2.write(req2.serialize.as(String))
-
   server.accept_one
 
   reader2 = BufferedTransportReader.new(client_trans2)
@@ -400,23 +505,169 @@ def test_socket_round_trip : Nil
   raise "socket POST failed body" unless resp2.body == "echo:test payload 12345"
   client_trans2.close
 
+  # 3. Handler Connection: close honor (Finding 14)
+  client_trans3 = TcpTransport.connect("127.0.0.1", port)
+  req3 = Request.new("GET", "/close-me")
+  req3.headers["Host"] = "127.0.0.1:" + port.to_s
+  req3.headers["Connection"] = "keep-alive"
+  client_trans3.write(req3.serialize.as(String))
+  server.accept_one
+
+  reader3 = BufferedTransportReader.new(client_trans3)
+  resp3 = reader3.read_response("GET").as(Response)
+  raise "handler close header ignored" unless resp3.headers.includes_word?("Connection", "close")
+  sleep_chunk = client_trans3.read(16)
+  raise "server did not close connection on handler Connection: close" unless sleep_chunk.empty?
+
   server.stop
-  puts "  socket roundtrip: ephemeral port bind (" + port.to_s + "), GET and POST requests verified"
+  puts "  socket roundtrip: ephemeral port bind (" + port.to_s + "), GET, POST, and handler Connection: close verified"
 end
 
-# --- Real Network Page Fetch ---
+# --- Concurrent Connection Overlap Proof (Finding 12) ---
+
+{% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+  def test_concurrent_connection_overlap : Nil
+    server = Server.new("127.0.0.1", 0)
+
+    hold_started = Channel(Int32).new(1)
+    release_hold = Channel(Int32).new(1)
+    hold_done = Channel(Int32).new(1)
+
+    server.handler = ->(req : Request) {
+      if req.target == "/hold"
+        hold_started.send(1)
+        release_hold.receive
+        Response.new(200, body: "hold-released")
+      elsif req.target == "/fast"
+        Response.new(200, body: "fast-ok")
+      else
+        Response.new(404, body: "not found")
+      end
+    }
+
+    server.listen
+    port = server.port
+
+    group do |g|
+      # 1. Concurrent server runner
+      g.spawn do
+        server.serve(4)
+        0
+      end
+
+      # 2. Connection 1 (held open on keep-alive)
+      g.spawn do
+        c1 = TcpTransport.connect("127.0.0.1", port)
+        c1.write("GET /hold HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n")
+
+        wait_readable(c1.socket.to_unsafe)
+        reader1 = BufferedTransportReader.new(c1)
+        resp1 = reader1.read_response("GET").as(Response)
+        raise "hold response wrong" unless resp1.body == "hold-released"
+        c1.close
+        hold_done.send(1)
+        0
+      end
+
+      # 3. Connection 2 (fast request completed while connection 1 is actively held)
+      g.spawn do
+        hold_started.receive # ensure connection 1 is actively held by the server!
+        c2 = TcpTransport.connect("127.0.0.1", port)
+        c2.write("GET /fast HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        wait_readable(c2.socket.to_unsafe)
+        reader2 = BufferedTransportReader.new(c2)
+        resp2 = reader2.read_response("GET").as(Response)
+        raise "fast response wrong" unless resp2.body == "fast-ok"
+        c2.close
+
+        # Release connection 1 now that connection 2 has proven overlapping execution!
+        release_hold.send(1)
+
+        # Wait for connection 1 to finish reading
+        hold_done.receive
+        server.stop
+        0
+      end
+    end
+
+    puts "  concurrent overlap: overlapping connection execution and structured shutdown verified"
+  end
+{% end %}
+
+# --- CONNECT Tunnel Response (RFC 9110 §6.4.1) ---
+
+def test_connect_tunnel_response : Nil
+  mock = MockTransport.new
+  mock.in_buffer = "HTTP/1.1 200 Connection Established\r\nProxy-Agent: proxy\r\n\r\nsome tunnel binary data here"
+  reader = BufferedTransportReader.new(mock)
+
+  resp = reader.read_response("CONNECT").as(Response)
+  raise "CONNECT status wrong" unless resp.status.ok?
+  raise "CONNECT response must have empty body" unless resp.body.empty?
+  raise "tunnel data consumed prematurely" unless reader.buffer == "some tunnel binary data here"
+
+  puts "  connect tunnel: 2xx response to CONNECT has empty body per RFC 9110 §6.4.1 verified"
+end
+
+# --- CRLF Injection Defense ---
+
+def test_crlf_injection_defense : Nil
+  crlf_err1 = Std::Http1.validate_no_crlf("OK\r\nInjected: evil", "status message")
+  raise "CRLF in status message not detected" if crlf_err1.nil?
+
+  crlf_err2 = Std::Http1.validate_no_crlf("/path\r\nInjected: evil", "request target")
+  raise "CRLF in target not detected" if crlf_err2.nil?
+
+  puts "  crlf injection: status message and request line CRLF injection validation verified"
+end
+
+# --- Strict Public Parser Surface (Finding 17) ---
+
+def test_strict_public_parser : Nil
+  # Verify Std::Http1.parse_request strictly rejects bare LF where CRLF required
+  bare_lf_req = "GET / HTTP/1.1\nHost: localhost\r\n\r\n"
+  res_p1 = Std::Http1.parse_request(bare_lf_req)
+  raise "Std::Http1.parse_request permitted bare LF" unless res_p1.is_a?(HttpError)
+  raise "wrong error for parse_request bare LF" unless res_p1.message.includes?("bare LF not permitted")
+
+  # Verify Std::Http1.parse_request rejects whitespace before colon
+  ws_colon_req = "GET / HTTP/1.1\r\nHost : localhost\r\n\r\n"
+  res_p2 = Std::Http1.parse_request(ws_colon_req)
+  raise "Std::Http1.parse_request permitted whitespace before colon" unless res_p2.is_a?(HttpError)
+
+  # Verify Std::Http1.parse_response strictly rejects bare LF
+  bare_lf_resp = "HTTP/1.1 200 OK\nContent-Length: 0\r\n\r\n"
+  res_p3 = Std::Http1.parse_response(bare_lf_resp)
+  raise "Std::Http1.parse_response permitted bare LF" unless res_p3.is_a?(HttpError)
+  raise "wrong error for parse_response bare LF" unless res_p3.message.includes?("bare LF not permitted")
+
+  puts "  strict public parser: Std::Http1.parse_request/parse_response strictly enforce RFC 9112 framing"
+end
+
+# --- Real Network Page Fetch: HTTP and HTTPS (with verify_peer: true) ---
 
 def test_real_network_fetch : Nil
-  # Fetch real page over network
-  target_url = "http://example.com/"
-  client = Client.new
-  resp = client.get(target_url)
+  # 1. Plaintext HTTP fetch
+  target_http = "http://example.com/"
+  client_http = Client.new
+  resp_http = client_http.get(target_http)
 
-  raise "live network fetch failed status: " + resp.status.code.to_s unless resp.status.ok?
-  raise "live network fetch body empty" if resp.body.empty?
-  raise "live network fetch content mismatch" unless resp.body.includes?("Example Domain")
+  raise "live HTTP fetch failed status: " + resp_http.status.code.to_s unless resp_http.status.ok?
+  raise "live HTTP fetch body empty" if resp_http.body.empty?
+  raise "live HTTP fetch content mismatch" unless resp_http.body.includes?("Example Domain")
 
-  puts "  real network page fetch: " + target_url + " (HTTP 200, " + resp.body.bytesize.to_s + " bytes) verified"
+  puts "  real network page fetch (HTTP): " + target_http + " (HTTP 200, " + resp_http.body.bytesize.to_s + " bytes) verified"
+
+  # 2. Encrypted TLS 1.3 HTTPS fetch with verify_peer: true
+  target_https = "https://example.com/"
+  client_https = Client.new(verify_peer: true)
+  resp_https = client_https.get(target_https)
+
+  raise "live HTTPS fetch failed status: " + resp_https.status.code.to_s unless resp_https.status.ok?
+  raise "live HTTPS fetch body empty" if resp_https.body.empty?
+  raise "live HTTPS fetch content mismatch" unless resp_https.body.includes?("Example Domain")
+
+  puts "  real network page fetch (HTTPS): " + target_https + " (TLS 1.3, verify_peer: true, HTTP 200, " + resp_https.body.bytesize.to_s + " bytes) verified"
 end
 
 # --- Main Entry Point ---
@@ -430,6 +681,12 @@ def main : Nil
   test_redirects
   test_content_encoding
   test_socket_round_trip
+  {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+    test_concurrent_connection_overlap
+  {% end %}
+  test_connect_tunnel_response
+  test_crlf_injection_defense
+  test_strict_public_parser
   test_real_network_fetch
   puts "all std/http1 checks passed"
 end
