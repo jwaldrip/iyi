@@ -93,6 +93,14 @@ class Iyi::CodeGenVisitor
     node.args.zip(target_def.args) do |arg, def_arg|
       request_value(arg)
 
+      # What the callee is handed, which is the parameter's type wherever the
+      # conversion below widens: a union is passed by value, and the load
+      # under it has to be of the union rather than of the member. Passing
+      # the member's own shape is `Call parameter type does not match
+      # function signature` out of LLVM's own verifier, on a call `dotenv`
+      # declares as `load(path : Path | String)`.
+      passed_type = arg.type
+
       if arg.type.void?
         call_arg = int8(0)
       else
@@ -106,9 +114,21 @@ class Iyi::CodeGenVisitor
         # handed this one. It is the same conversion `.as(IO)` performs by hand
         # at a call site, which is how the boundary was made to link before it
         # was made to do it by itself.
+        #
+        # Asked of the *types* rather than of where the def came from, which
+        # is what the sentence above always meant. A boundary call reaches
+        # this through an expansion as often as directly — a call that leaves
+        # a default out, or names one argument, gets a wrapper def of this
+        # program's own that forwards to the symbol — and the wrapper is not
+        # "from an artifact" while its parameters are still the declaration's.
+        # `db` writes `def query_all(query, args : Enumerable? = nil, as type
+        # : Class)`, an application calls it with a `String` where the
+        # declaration says `(Path | String)`, and the widening arrived here as
+        # `BUG: trying to downcast (Path | String) <- String`.
         call_arg =
-          if target_def.iyi_from_artifact? && arg.type != def_arg.type &&
+          if arg.type != def_arg.type && !arg.type.no_return? &&
              arg.type.implements?(def_arg.type)
+            passed_type = def_arg.type
             upcast(call_arg, def_arg.type, arg.type)
           else
             downcast(call_arg, def_arg.type, arg.type, true)
@@ -117,8 +137,8 @@ class Iyi::CodeGenVisitor
 
       # - C calling convention passing needs a separate handling of pass-by-value
       # - Primitives might need a separate handling (for example invoking a Proc)
-      if arg.type.passed_by_value? && !c_calling_convention && !is_primitive
-        call_arg = load(llvm_type(arg.type), call_arg)
+      if passed_type.passed_by_value? && !c_calling_convention && !is_primitive
+        call_arg = load(llvm_type(passed_type), call_arg)
       end
 
       call_args << call_arg

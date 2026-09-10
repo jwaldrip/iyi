@@ -194,6 +194,26 @@ module Iyi::IyiMod
   # first build.
   #
   # *interface* covers what a consumer typechecks against — the exports, the
+  # A module's own macro, marked the way every other name it exports is.
+  #
+  # Crystal has no `pub`, so a shard's macros arrive unmarked and R-2 reads
+  # that as "not exported": `quartz_mailer`'s `render` expands to
+  # `Kilt.render(…)`, and the consumer stopped on `Kilt does not export
+  # 'render'` inside a macro expansion it never wrote.
+  #
+  # Not the hooks. `included` and `extended` are fired by the compiler at a
+  # moment, never called by name, and `pub macro included` is a contradiction
+  # in terms.
+  MACRO_HOOKS = {"included", "extended", "inherited", "method_added", "finished"}
+
+  def self.exported_macro(source : String) : String
+    first = source.lines.first?
+    return source unless first
+    name = first.lchop("macro ").strip.split(/[\s(]/).first?
+    return source if name.nil? || MACRO_HOOKS.includes?(name)
+    "pub #{source}"
+  end
+
   # `using` directives that resolve their annotations, and which modules this
   # one imports. A body is not in it, so editing one leaves every dependent's
   # own artifact valid.
@@ -1762,7 +1782,7 @@ module Iyi::IyiMod
     # First, because a macro has to be defined before the code that calls it is
     # read, and the bodies below are full of code that calls them.
     artifact.macro_bodies.each do |source|
-      io << '\n' << source << '\n'
+      io << '\n' << exported_macro(source) << '\n'
     end
 
     # Before the functions, because one of them reads it: `Backtracer.configure`

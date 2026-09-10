@@ -564,7 +564,7 @@ class Iyi::Call
       end
       match_owner = match.context.instantiated_type
       def_instance_owner = (self_type || match_owner).as(DefInstanceContainer)
-      named_args_types = match.named_arg_types
+      named_args_types = iyi_artifact_named_arg_types(match) || match.named_arg_types
 
       def_instance_key = DefInstanceKey.new(match.def.object_id, lookup_arg_types, block_type, named_args_types)
       typed_def = def_instance_owner.lookup_def_instance def_instance_key if use_cache
@@ -694,24 +694,19 @@ class Iyi::Call
   private def iyi_artifact_arg_types(match) : Array(Type)?
     a_def = match.def
     return nil unless a_def.iyi_from_artifact?
-    return nil if a_def.splat_index || a_def.double_splat || match.named_arg_types
-    return nil unless a_def.args.size == match.arg_types.size
+    return nil if a_def.splat_index || a_def.double_splat
+    # The positional ones are the first `arg_types.size` parameters, in order.
+    # Fewer than the def has is an ordinary call leaving defaults out, and the
+    # ones it left out are either filled by name below or by the expansion the
+    # front end builds — neither is this call's to pin.
+    return nil unless match.arg_types.size <= a_def.args.size
 
     owner = match.context.instantiated_type
-    declared = Array(Type).new(a_def.args.size)
-    a_def.args.each_with_index do |arg, index|
-      restriction = arg.restriction
-      return nil unless restriction
-
-      type = owner.lookup_type?(restriction)
-      return nil unless type.is_a?(Type)
-      # A free variable is bound per call and has no one symbol behind it.
-      return nil if type.is_a?(TypeParameter)
-
-      # `virtual_type` is what a value of a class with subclasses is held as,
-      # and what the producing build's keep file gave the method. A leaf class
-      # is its own virtual type, so this is the identity for everything else.
-      declared << type.virtual_type
+    declared = Array(Type).new(match.arg_types.size)
+    match.arg_types.each_index do |index|
+      type = iyi_declared_arg_type(owner, a_def.args[index])
+      return nil unless type
+      declared << type
     end
 
     # Nothing to do where the call already matches the declaration, which is
@@ -719,6 +714,55 @@ class Iyi::Call
     return nil if declared == match.arg_types
 
     declared
+  end
+
+  # The same question for the ones passed by name, which is how a Crystal
+  # library's optional parameters are usually reached.
+  #
+  # `pg` raises `DB::ConnectionLost.new(statement.connection, cause: e)`, and
+  # `cause` is declared `(Exception | Nil)`. Keyed on the call site it asked
+  # `db`'s artifact for `*DB::ConnectionLost::new<DB::Connection+,
+  # IO::Error+>` — one symbol per exception class a caller happens to hold,
+  # and `db` emitted the declared one. It linked no further than the first
+  # application that used both shards: `undefined symbol`, with pg's object
+  # file naming the line.
+  private def iyi_artifact_named_arg_types(match) : Array(NamedArgumentType)?
+    a_def = match.def
+    named = match.named_arg_types
+    return nil unless named
+    return nil unless a_def.iyi_from_artifact?
+    return nil if a_def.splat_index || a_def.double_splat
+
+    owner = match.context.instantiated_type
+    declared = Array(NamedArgumentType).new(named.size)
+    named.each do |named_arg|
+      arg = a_def.args.find { |candidate| candidate.external_name == named_arg.name }
+      return nil unless arg
+
+      type = iyi_declared_arg_type(owner, arg)
+      return nil unless type
+      declared << NamedArgumentType.new(named_arg.name, type, named_arg.loc)
+    end
+
+    return nil if declared == named
+
+    declared
+  end
+
+  # What one parameter was written as, resolved where the method lives.
+  private def iyi_declared_arg_type(owner : Type, arg : Arg) : Type?
+    restriction = arg.restriction
+    return nil unless restriction
+
+    type = owner.lookup_type?(restriction)
+    return nil unless type.is_a?(Type)
+    # A free variable is bound per call and has no one symbol behind it.
+    return nil if type.is_a?(TypeParameter)
+
+    # `virtual_type` is what a value of a class with subclasses is held as,
+    # and what the producing build's keep file gave the method. A leaf class
+    # is its own virtual type, so this is the identity for everything else.
+    type.virtual_type
   end
 
   def raise_if_block_too_nested(block_nest)

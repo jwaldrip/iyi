@@ -854,7 +854,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 108,075 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 108,602 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 13,424-line own prelude + 6,057 in std |
 | Specs | 21,146 lines | 9,596 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3311,6 +3311,38 @@ and the consumer compiles it), a macro call copied into the initialiser, a
 type layout past 64 KiB, a match type named the way it prints rather than
 the way its symbol is, and a bare name one boundary's declarations took
 from another's.
+
+**And then the application itself, against the boundaries rather than
+against `lib/`.** The import probe above says a boundary can be read; this
+says whether a program can be *written* on one. The same 8,079-line
+application, with its 15 `require`s replaced by `pub import` of the
+artifacts, compiles, links and boots: it connects to postgres, Kemal
+installs its middleware and serves. Twelve more defects stood between the
+two sentences, and every one was a thing a consumer does and the import
+probe does not: call a macro the shard declares (`Kemal`'s `only`, and
+`DB::Serializable`'s `macro included`, without which a query mapping rows
+into structs types `Array(NoReturn)`), read the annotation that hook asks
+for, name a class as an argument (`read(type : DB::Mappable.class)` is one
+instantiation per class the caller names, so the body travels and nothing
+is measured), include a module the boundary declares (`HandlerInterface`
+carried no `include HTTP::Handler`, so a middleware was not a handler),
+call a method whose overload is private and shares a public one's name,
+pass an argument by name (keyed on the call site it asked `db` for a
+symbol per exception class), and — the one that had nothing to do with
+declarations — run a module *body*: `PG::Decoders` registers five decoders
+in statements under the hash they fill, and an artifact that carried the
+hash and not the statements answered every column with raw bytes.
+
+What it costs is measured too, cold cache and the same compiler: **17.0 s
+from source against 24.3 s from the boundaries**, and the whole difference
+is the top-level pass — 2.3 s to 12.1 s — reading 267 MB of artifacts. The
+application's own main pass falls, 7.9 s to 6.8 s, which is the boundary
+doing what it promises; the read in front of it costs more than it saves.
+The binary is **14.2 MB from source and 209 MB from the boundaries**,
+`.text` 7.0 MB against 112 MB, because a source build's codegen is
+demand-driven and a consumer links every unit every artifact carries.
+Both numbers are about the artifact rather than about the rule: what it
+carries, and when a consumer has to decode it.
 
 Three rules came out of it. **A boundary is rooted at one namespace, and a
 shard need not have one**: `pg` declares `PG` and `PQ`, its wire protocol,
