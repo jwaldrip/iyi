@@ -271,6 +271,15 @@ module Iyi
   # and the declaration therefore must not. See `collect_runnable`.
   @@assigned_class_vars = Set(String).new
 
+  # The methods whose bodies travel, keyed the way `keep_type` reads them:
+  # the container and the signature *as collected*, before the rewrites that
+  # strip the root and map another boundary's names. `MonoBodies` is rekeyed
+  # by those rewrites and the keep file is not, so the two stopped matching —
+  # and a method the keep file must not call was called: `openssl_ext`'s
+  # `SignatureVerifier.extract_signature`, whose body the shard's own build
+  # cannot type, took the fill build down with it.
+  @@travelling = Set(String).new
+
   # The types Crystal's library defines, which a consumer of a bound shard has.
   #
   # It has them because it must: the units number
@@ -367,6 +376,7 @@ module Iyi
     @@library_names = Set(String).new
     @@declared = declared_names program, root
     @@assigned_class_vars = Set(String).new
+    @@travelling = Set(String).new
     @@self_shadowed = Set(String).new
     @@drop = artifact_dir ? drop_list(artifact_dir, root) : Set(String).new
     @@top_level_fun_sources = top_level_funs program
@@ -2351,7 +2361,7 @@ module Iyi
         # `db`'s `read(type : DB::Mappable.class)` wants a class no shard has.
         # Both are methods a *consumer* completes, and standing one up here
         # stopped the fill build on the shard's own source.
-        travelling = @@mono_bodies.has_key?(
+        travelling = @@travelling.includes?(
           IyiMod.mono_body_key(relative_container, signature, ordinals[IyiMod.mono_body_key("", signature)]? || 0))
         ordinals[IyiMod.mono_body_key("", signature)] =
           (ordinals[IyiMod.mono_body_key("", signature)]? || 0) + 1
@@ -3644,7 +3654,9 @@ module Iyi
         ordinal = signatures.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) }
         signatures << signature
         if carries_body && body
-          @@mono_bodies[IyiMod.mono_body_key(name, signature, ordinal)] = body
+          key = IyiMod.mono_body_key(name, signature, ordinal)
+          @@mono_bodies[key] = body
+          @@travelling << key
         end
       end
     end
