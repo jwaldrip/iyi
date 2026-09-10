@@ -109,7 +109,13 @@ class Iyi::CodeGenVisitor
         call_arg =
           if target_def.iyi_from_artifact? && arg.type != def_arg.type &&
              arg.type.implements?(def_arg.type)
-            upcast(call_arg, def_arg.type, arg.type)
+            # A bound method keeps its written parameter rather than being
+            # specialised per caller. Widening a value into a mixed union
+            # yields the address of the union slot, while the method's LLVM
+            # signature takes that union by value. `to_rhs` loads only types
+            # whose ABI is by value; virtual and reference parameters remain
+            # pointers as before.
+            to_rhs(upcast(call_arg, def_arg.type, arg.type), def_arg.type)
           else
             downcast(call_arg, def_arg.type, arg.type, true)
           end
