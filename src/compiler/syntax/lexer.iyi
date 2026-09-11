@@ -406,7 +406,8 @@ pub class Lexer
       case next_char
       when '\r', '\n'
         handle_slash_r_slash_n_or_slash_n
-        incr_line_number(0)
+        next_char
+        incr_line_number(1)
         @token.passed_backslash_newline = true
         consume_whitespace
         reset_regex_flags = false
@@ -1199,8 +1200,23 @@ pub class Lexer
   end
 
   private def consume_whitespace
-    while current_char == ' ' || current_char == '\t'
-      next_char
+    while true
+      case current_char
+      when ' ', '\t'
+        next_char
+      when '\\'
+        case next_char
+        when '\r', '\n'
+          handle_slash_r_slash_n_or_slash_n
+          next_char
+          incr_line_number(1)
+          @token.passed_backslash_newline = true
+        else
+          unknown_token
+        end
+      else
+        break
+      end
     end
     @token.type = TokenKind::SPACE
   end
@@ -1310,7 +1326,8 @@ pub class Lexer
   end
 
   private def consume_char_unicode_escape : Int32
-    if current_char == '{'
+    if peek_next_char == '{'
+      next_char
       next_char
       val = 0
       while current_char != '}'
@@ -1329,12 +1346,12 @@ pub class Lexer
       val = 0
       i = 0
       while i < 4
+        next_char
         d = hex_value(current_char)
         if d < 0
           raise_syntax_error("expected hexadecimal character in unicode escape")
         end
         val = (val << 4) | d
-        next_char if i < 3
         i = i + 1
       end
       val
@@ -1411,7 +1428,8 @@ pub class Lexer
         raise_syntax_error("octal constants should be prefixed with 0o")
       when '_'
         next_char
-        if peek_next_char >= '0' && peek_next_char <= '9'
+        next_char
+        if current_char >= '0' && current_char <= '9'
           raise_syntax_error("octal constants should be prefixed with 0o")
         end
         has_underscores = true

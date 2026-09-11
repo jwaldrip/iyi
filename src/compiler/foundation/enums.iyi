@@ -29,3 +29,13 @@ struct ::Enum
     value >= other.value
   end
 end
+
+struct ::Range(B, E)
+  def ===(value) : Bool
+    if exclusive?
+      value >= self.begin && value < self.end
+    else
+      value >= self.begin && value <= self.end
+    end
+  end
+end

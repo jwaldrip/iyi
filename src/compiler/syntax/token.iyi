@@ -607,34 +607,51 @@ pub class Token
     end
   end
 
+  private def escape_string_for_normalized(s : String) : String
+    res = "\""
+    i = 0
+    while i < s.bytesize
+      case s[i]
+      when '\n' then res = res + "\\n"
+      when '\r' then res = res + "\\r"
+      when '\t' then res = res + "\\t"
+      when '\\' then res = res + "\\\\"
+      when '"'  then res = res + "\\\""
+      else res = res + s[i].to_s
+      end
+      i = i + 1
+    end
+    res + "\""
+  end
+
   def normalized_s : String
     case @type
     when TokenKind::IDENT
       if kw = @keyword
         "IDENT Keyword::#{kw.to_s.upcase}"
       else
-        "IDENT #{@value.inspect}"
+        "IDENT #{escape_string_for_normalized(@value)}"
       end
     when TokenKind::NUMBER
-      "NUMBER #{@value.inspect} #{@number_kind.to_s}"
+      "NUMBER #{escape_string_for_normalized(@value)} #{@number_kind.to_s}"
     when TokenKind::CONST
-      "CONST #{@value.inspect}"
+      "CONST #{escape_string_for_normalized(@value)}"
     when TokenKind::INSTANCE_VAR
-      "INSTANCE_VAR #{@value.inspect}"
+      "INSTANCE_VAR #{escape_string_for_normalized(@value)}"
     when TokenKind::CLASS_VAR
-      "CLASS_VAR #{@value.inspect}"
+      "CLASS_VAR #{escape_string_for_normalized(@value)}"
     when TokenKind::CHAR
-      "CHAR #{@value.inspect}"
+      "CHAR #{escape_string_for_normalized(@value)}"
     when TokenKind::STRING
-      "STRING #{@value.inspect}"
+      "STRING #{escape_string_for_normalized(@value)}"
     when TokenKind::SYMBOL
-      "SYMBOL #{@value.inspect}"
+      "SYMBOL #{escape_string_for_normalized(@value)}"
     when TokenKind::COMMENT
-      "COMMENT #{@value.inspect}"
+      "COMMENT #{escape_string_for_normalized(@value)}"
     when TokenKind::GLOBAL
-      "GLOBAL #{@value.inspect}"
+      "GLOBAL #{escape_string_for_normalized(@value)}"
     when TokenKind::GLOBAL_MATCH_DATA_INDEX
-      "GLOBAL_MATCH_DATA_INDEX #{@value.inspect}"
+      "GLOBAL_MATCH_DATA_INDEX #{escape_string_for_normalized(@value)}"
     when TokenKind::SPACE
       "SPACE nil"
     when TokenKind::NEWLINE
@@ -661,7 +678,7 @@ pub class Token
       if @type.operator?
         "#{@type.to_s} nil"
       else
-        "#{@type.to_s} #{@value.inspect}"
+        "#{@type.to_s} #{escape_string_for_normalized(@value)}"
       end
     end
   end
