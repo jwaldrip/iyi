@@ -130,9 +130,12 @@ module Iyi
 
       # Try our namespace, unless we are the top-level
       if lookup_in_namespace && self != program
-        return namespace.lookup_path_item(name, false, lookup_in_namespace, include_private, location)
+        match = namespace.lookup_path_item(name, false, lookup_in_namespace, include_private, location)
+        if match && match.is_a?(ModuleType) && match.iyi_unit? && program.types[name]?
+          return program.lookup_path_item(name, false, false, include_private, location)
+        end
+        return match if match
       end
-
       nil
     end
 

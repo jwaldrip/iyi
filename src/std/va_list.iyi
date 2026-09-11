@@ -1,0 +1,20 @@
+# Variadic argument list handling (va_list).
+# Wraps C-compatible variadic argument pointers.
+
+module std/va_list
+
+pub struct VaList
+  getter to_unsafe : Void*
+
+  def initialize(@to_unsafe : Void*)
+  end
+
+  def self.open(&block : VaList -> Nil) : Nil
+    dummy = Pointer(Void).new(0_u64)
+    yield new(pointerof(dummy).as(Void*))
+  end
+
+  def next(type)
+    raise "Cannot get variadic argument on this platform. As a workaround implement wrappers in C calling the va_arg macro."
+  end
+end

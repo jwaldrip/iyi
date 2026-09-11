@@ -1,0 +1,195 @@
+# System-level queries: hostname, CPU count, user and group information, and OS error wrapping.
+
+module std/system
+
+lib LibSystemInfo
+  fun gethostname(name : UInt8*, len : UInt64) : Int32
+
+  {% if flag?(:darwin) %}
+    fun sysctlbyname(name : UInt8*, oldp : Void*, oldlenp : UInt64*, newp : Void*, newlen : UInt64) : Int32
+  {% else %}
+    fun sysconf(name : Int32) : Int64
+  {% end %}
+end
+
+module System
+  def self.hostname : String
+    buf = Pointer(UInt8).malloc(256_u64)
+    res = LibSystemInfo.gethostname(buf, 256_u64)
+    if res != 0
+      return "localhost"
+    end
+    len = 0
+    while len < 256 && buf[len] != 0_u8
+      len = len + 1
+    end
+    String.new(len) do |dest|
+      dest.copy_from(buf, len)
+    end
+  end
+
+  def self.cpu_count : Int32
+    {% if flag?(:darwin) %}
+      count = 0_i32
+      size = sizeof(Int32).to_u64
+      res = LibSystemInfo.sysctlbyname("hw.ncpu".to_unsafe, pointerof(count).as(Void*), pointerof(size), Pointer(Void).new(0_u64), 0_u64)
+      if res == 0 && count > 0
+        return count
+      end
+    {% else %}
+      # _SC_NPROCESSORS_ONLN is 84 on Linux
+      count = LibSystemInfo.sysconf(84_i32)
+      if count > 0_i64
+        return count.to_i32
+      end
+    {% end %}
+    1
+  end
+
+  def self.effective_cpu_count : Int32
+    cpu_count
+  end
+
+  def self.os_name : String
+    {% if flag?(:darwin) %}
+      "Darwin"
+    {% elsif flag?(:linux) %}
+      "Linux"
+    {% elsif flag?(:windows) %}
+      "Windows"
+    {% else %}
+      "Unknown"
+    {% end %}
+  end
+end
+
+module SystemError
+  def self.os_error_message(err : Int32) : String
+    case err
+    when 1  then "Operation not permitted"
+    when 2  then "No such file or directory"
+    when 3  then "No such process"
+    when 4  then "Interrupted system call"
+    when 5  then "Input/output error"
+    when 9  then "Bad file descriptor"
+    when 11 then "Resource temporarily unavailable"
+    when 12 then "Cannot allocate memory"
+    when 13 then "Permission denied"
+    when 14 then "Bad address"
+    when 17 then "File exists"
+    when 22 then "Invalid argument"
+    when 32 then "Broken pipe"
+    else         "System error #{err}"
+    end
+  end
+end
+
+pub class User
+  class NotFoundError < Exception
+  end
+
+  getter username : String
+  getter id : String
+  getter group_id : String
+  getter name : String
+  getter home_directory : String
+  getter shell : String
+
+  def initialize(@username : String, @id : String, @group_id : String, @name : String, @home_directory : String, @shell : String)
+  end
+
+  def to_s : String
+    "#{@username} (#{@id})"
+  end
+
+  def self.find_by(*, name : String) : User
+    find_by?(name: name) || raise NotFoundError.new("No such user: #{name}")
+  end
+
+  def self.find_by(*, id : String) : User
+    find_by?(id: id) || raise NotFoundError.new("No such user with id: #{id}")
+  end
+
+  def self.find_by?(*, name : String) : User?
+    parse_passwd { |u| return u if u.username == name }
+    # Fallback for common current user
+    if name == "root"
+      return User.new("root", "0", "0", "System Administrator", "/var/root", "/bin/sh")
+    end
+    nil
+  end
+
+  def self.find_by?(*, id : String) : User?
+    parse_passwd { |u| return u if u.id == id }
+    if id == "0"
+      return User.new("root", "0", "0", "System Administrator", "/var/root", "/bin/sh")
+    end
+    nil
+  end
+
+  private def self.parse_passwd(&block : User -> _) : Nil
+    return unless File.exists?("/etc/passwd")
+    content = File.read("/etc/passwd")
+    content.split('\n').each do |line|
+      line = line.strip
+      next if line.empty? || line.starts_with?('#')
+      parts = line.split(':')
+      if parts.size >= 7
+        u = User.new(parts[0], parts[2], parts[3], parts[4], parts[5], parts[6])
+        yield u
+      end
+    end
+  end
+end
+
+pub class Group
+  class NotFoundError < Exception
+  end
+
+  getter name : String
+  getter id : String
+
+  def initialize(@name : String, @id : String)
+  end
+
+  def to_s : String
+    "#{@name} (#{@id})"
+  end
+
+  def self.find_by(*, name : String) : Group
+    find_by?(name: name) || raise NotFoundError.new("No such group: #{name}")
+  end
+
+  def self.find_by(*, id : String) : Group
+    find_by?(id: id) || raise NotFoundError.new("No such group with id: #{id}")
+  end
+
+  def self.find_by?(*, name : String) : Group?
+    parse_group { |g| return g if g.name == name }
+    if name == "wheel" || name == "root"
+      return Group.new(name, "0")
+    end
+    nil
+  end
+
+  def self.find_by?(*, id : String) : Group?
+    parse_group { |g| return g if g.id == id }
+    if id == "0"
+      return Group.new("wheel", "0")
+    end
+    nil
+  end
+
+  private def self.parse_group(&block : Group -> _) : Nil
+    return unless File.exists?("/etc/group")
+    content = File.read("/etc/group")
+    content.split('\n').each do |line|
+      next if line.empty? || line.starts_with?('#')
+      parts = line.split(':')
+      if parts.size >= 3
+        g = Group.new(parts[0], parts[2])
+        yield g
+      end
+    end
+  end
+end

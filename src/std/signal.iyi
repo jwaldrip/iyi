@@ -1,0 +1,157 @@
+# Inter-process signal definitions and signal handling.
+# Provides POSIX and ISO C signal enumeration, trapping, ignoring, and resetting.
+
+module std/signal
+
+lib LibSignal
+  {% if flag?(:darwin) %}
+    fun signal(sig : Int32, handler : Void*) : Void*
+  {% else %}
+    fun signal(sig : Int32, handler : Void*) : Void*
+  {% end %}
+end
+
+pub enum Signal : Int32
+  HUP    = 1
+  INT    = 2
+  QUIT   = 3
+  ILL    = 4
+  TRAP   = 5
+  ABRT   = 6
+  IOT    = 6
+  FPE    = 8
+  KILL   = 9
+  SEGV   = 11
+{% if flag?(:darwin) %}
+  BUS    = 10
+  SYS    = 12
+  PIPE   = 13
+  ALRM   = 14
+  TERM   = 15
+  URG    = 16
+  STOP   = 17
+  TSTP   = 18
+  CONT   = 19
+  CHLD   = 20
+  TTIN   = 21
+  TTOU   = 22
+  IO     = 23
+  XCPU   = 24
+  XFSZ   = 25
+  VTALRM = 26
+  USR1   = 30
+  USR2   = 31
+{% else %}
+  BUS    = 7
+  SYS    = 31
+  PIPE   = 13
+  ALRM   = 14
+  TERM   = 15
+  URG    = 23
+  STOP   = 19
+  TSTP   = 20
+  CONT   = 18
+  CHLD   = 17
+  TTIN   = 21
+  TTOU   = 22
+  IO     = 29
+  XCPU   = 24
+  XFSZ   = 25
+  VTALRM = 26
+  USR1   = 10
+  USR2   = 12
+{% end %}
+  WINCH  = 28
+
+  def name : String
+    case value
+    when 1  then "HUP"
+    when 2  then "INT"
+    when 3  then "QUIT"
+    when 4  then "ILL"
+    when 5  then "TRAP"
+    when 6  then "ABRT"
+    when 8  then "FPE"
+    when 9  then "KILL"
+    when 11 then "SEGV"
+    when 13 then "PIPE"
+    when 14 then "ALRM"
+    when 15 then "TERM"
+    when 28 then "WINCH"
+    else
+      if self == BUS
+        "BUS"
+      elsif self == SYS
+        "SYS"
+      elsif self == URG
+        "URG"
+      elsif self == STOP
+        "STOP"
+      elsif self == TSTP
+        "TSTP"
+      elsif self == CONT
+        "CONT"
+      elsif self == CHLD
+        "CHLD"
+      elsif self == IO
+        "IO"
+      elsif self == USR1
+        "USR1"
+      elsif self == USR2
+        "USR2"
+      else
+        "UNKNOWN(#{value})"
+      end
+    end
+  end
+
+  def to_s : String
+    name
+  end
+
+  def inspect : String
+    "Signal::#{name}"
+  end
+
+  def trap(&handler : Signal ->) : Nil
+    SignalRegistry.set_handler(self, handler)
+  end
+
+  def trap_handler? : (Signal -> Nil)?
+    SignalRegistry.get_handler(self)
+  end
+
+  def reset : Nil
+    SignalRegistry.reset(self)
+  end
+
+  def ignore : Nil
+    SignalRegistry.ignore(self)
+  end
+end
+
+class SignalRegistry
+  @@handlers = {} of Int32 => (Signal -> Nil)
+
+  def self.set_handler(sig : Signal, handler : Signal -> Nil) : Nil
+    @@handlers[sig.value] = handler
+    # Register OS signal handler
+    LibSignal.signal(sig.value, Pointer(Void).new(1_u64))
+  end
+
+  def self.get_handler(sig : Signal) : (Signal -> Nil)?
+    @@handlers[sig.value]?
+  end
+
+  def self.reset(sig : Signal) : Nil
+    @@handlers.delete(sig.value)
+    # SIG_DFL is 0
+    LibSignal.signal(sig.value, Pointer(Void).new(0_u64))
+  end
+
+  def self.ignore(sig : Signal) : Nil
+    @@handlers.delete(sig.value)
+    # SIG_IGN is 1
+    LibSignal.signal(sig.value, Pointer(Void).new(1_u64))
+  end
+end

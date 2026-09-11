@@ -1,0 +1,177 @@
+# Direct operating system syscall interface.
+# Provides low-level syscall codes and invocations for Linux and Darwin.
+
+module std/syscall
+
+lib LibSyscall
+  {% if flag?(:darwin) %}
+    fun syscall(number : Int32, a1 : Int64, a2 : Int64, a3 : Int64, a4 : Int64, a5 : Int64, a6 : Int64) : Int64
+    fun getpid : Int32
+    fun getppid : Int32
+    fun getuid : Int32
+    fun geteuid : Int32
+    fun getgid : Int32
+    fun getegid : Int32
+    fun kill(pid : Int32, sig : Int32) : Int32
+  {% else %}
+    fun getpid : Int32
+    fun getppid : Int32
+    fun getuid : Int32
+    fun geteuid : Int32
+    fun getgid : Int32
+    fun getegid : Int32
+  {% end %}
+end
+
+pub enum Code : UInt64
+  {% if flag?(:darwin) %}
+    READ        = 3
+    WRITE       = 4
+    OPEN        = 5
+    CLOSE       = 6
+    KILL        = 37
+    GETPID      = 20
+    GETPPID     = 39
+    GETUID      = 24
+    GETEUID     = 25
+    GETGID      = 47
+    GETEGID     = 43
+    DUP         = 41
+    PIPE        = 42
+    GETRUSAGE   = 117
+    NANOSLEEP   = 340
+  {% elsif flag?(:aarch64) %}
+    GETCWD      = 17
+    DUP         = 23
+    DUP3        = 24
+    FCNTL       = 25
+    IOCTL       = 29
+    MKDIRAT     = 34
+    UNLINKAT    = 35
+    CLOSE       = 57
+    PIPE2       = 59
+    READ        = 63
+    WRITE       = 64
+    FSTAT       = 80
+    EXIT        = 93
+    EXIT_GROUP  = 94
+    KILL        = 129
+    NANOSLEEP   = 101
+    GETPID      = 172
+    GETPPID     = 173
+    GETUID      = 174
+    GETEUID     = 175
+    GETGID      = 176
+    GETEGID     = 177
+    GETRUSAGE   = 165
+  {% else %}
+    READ        = 0
+    WRITE       = 1
+    OPEN        = 2
+    CLOSE       = 3
+    STAT        = 4
+    FSTAT       = 5
+    LSTAT       = 6
+    POLL        = 7
+    LSEEK       = 8
+    MMAP        = 9
+    MPROTECT    = 10
+    MUNMAP      = 11
+    BRK         = 12
+    RT_SIGACTION = 13
+    RT_SIGPROCMASK = 14
+    IOCTL       = 16
+    PREAD64     = 17
+    PWRITE64    = 18
+    ACCESS      = 21
+    PIPE        = 22
+    SELECT      = 23
+    SCHED_YIELD = 24
+    DUP         = 32
+    DUP2        = 33
+    PAUSE       = 34
+    NANOSLEEP   = 35
+    GETPID      = 39
+    EXIT        = 60
+    KILL        = 62
+    UNAME       = 63
+    FCNTL       = 72
+    FSYNC       = 74
+    GETRUSAGE   = 98
+    GETPPID     = 110
+    GETPGID     = 121
+    GETUID      = 102
+    GETGID      = 104
+    GETEUID     = 107
+    GETEGID     = 108
+    EXIT_GROUP  = 231
+  {% end %}
+end
+
+pub def self.syscall(code : Code, a1 : Int64 = 0_i64, a2 : Int64 = 0_i64, a3 : Int64 = 0_i64, a4 : Int64 = 0_i64, a5 : Int64 = 0_i64, a6 : Int64 = 0_i64) : Int64
+  syscall(code.value, a1, a2, a3, a4, a5, a6)
+end
+
+pub def self.syscall(code : UInt64, a1 : Int64 = 0_i64, a2 : Int64 = 0_i64, a3 : Int64 = 0_i64, a4 : Int64 = 0_i64, a5 : Int64 = 0_i64, a6 : Int64 = 0_i64) : Int64
+  {% if flag?(:darwin) %}
+    LibSyscall.syscall(code.to_i32, a1, a2, a3, a4, a5, a6)
+  {% elsif flag?(:aarch64) %}
+    result = uninitialized Int64
+    asm("svc #0" : "={x0}"(result)
+                 : "{x8}"(code.to_i64), "{x0}"(a1), "{x1}"(a2), "{x2}"(a3), "{x3}"(a4), "{x4}"(a5), "{x5}"(a6)
+                 : "memory"
+                 : "volatile")
+    result
+  {% else %}
+    result = uninitialized Int64
+    asm("syscall" : "={rax}"(result)
+                  : "{rax}"(code.to_i64), "{rdi}"(a1), "{rsi}"(a2), "{rdx}"(a3), "{r10}"(a4), "{r8}"(a5), "{r9}"(a6)
+                  : "rcx", "r11", "memory"
+                  : "volatile")
+    result
+  {% end %}
+end
+
+pub def self.getpid : Int64
+  LibSyscall.getpid.to_i64
+end
+
+pub def self.getppid : Int64
+  LibSyscall.getppid.to_i64
+end
+
+pub def self.getuid : Int64
+  LibSyscall.getuid.to_i64
+end
+
+pub def self.geteuid : Int64
+  LibSyscall.geteuid.to_i64
+end
+
+pub def self.getgid : Int64
+  LibSyscall.getgid.to_i64
+end
+
+pub def self.getegid : Int64
+  LibSyscall.getegid.to_i64
+end
+
+pub def self.write(fd : Int32, buf : Void*, count : UInt64) : Int64
+  syscall(Code::WRITE, fd.to_i64, buf.address.to_i64, count.to_i64)
+end
+
+pub def self.read(fd : Int32, buf : Void*, count : UInt64) : Int64
+  syscall(Code::READ, fd.to_i64, buf.address.to_i64, count.to_i64)
+end
+
+pub def self.close(fd : Int32) : Int64
+  syscall(Code::CLOSE, fd.to_i64)
+end
+
+pub def self.kill(pid : Int64, signal : Int32) : Int64
+  {% if flag?(:darwin) %}
+    LibSyscall.kill(pid.to_i32, signal).to_i64
+  {% else %}
+    syscall(Code::KILL, pid, signal.to_i64)
+  {% end %}
+end

@@ -1,0 +1,261 @@
+# Raw pointer operations, appenders, and memory management.
+# Extends Pointer(T) with safe helpers, appenders, and memory manipulation.
+
+module std/pointer
+
+import std/slice
+using std/slice::{Slice}
+
+struct ::Pointer(T)
+  struct Appender(T)
+    @pointer : Pointer(T)
+    @start : Pointer(T)
+
+    def initialize(@pointer : Pointer(T))
+      @start = @pointer
+    end
+
+    def <<(value : T) : Nil
+      @pointer.value = value
+      @pointer = @pointer + 1_i64
+    end
+
+    def size : Int64
+      @pointer - @start
+    end
+
+    def pointer : Pointer(T)
+      @pointer
+    end
+
+    def to_slice : Std::Slice::Slice(T)
+      Std::Slice::Slice(T).new(@start, size.to_i32)
+    end
+  end
+
+  def null? : Bool
+    address == 0_u64
+  end
+
+  def +(other : Int32) : self
+    self + other.to_i64
+  end
+
+  def +(other : UInt64) : self
+    self + other.to_i64
+  end
+
+  def -(other : Int32) : self
+    self + (-other.to_i64)
+  end
+
+  def -(other : Int64) : self
+    self + (-other)
+  end
+
+  def <=>(other : self) : Int32
+    if address < other.address
+      -1
+    elsif address > other.address
+      1
+    else
+      0
+    end
+  end
+
+  def copy_from(source : Pointer(T), count : Int32) : Nil
+    raise "negative count: #{count}" if count < 0
+    i = 0
+    while i < count
+      self[i] = source[i]
+      i = i + 1
+    end
+  end
+
+  def copy_to(target : Pointer(T), count : Int32) : Nil
+    target.copy_from(self, count)
+  end
+
+  def move_from(source : Pointer(T), count : Int32) : Nil
+    raise "negative count: #{count}" if count < 0
+    return if count == 0 || address == source.address
+
+    if address > source.address && address < source.address + count.to_u64 * sizeof(T).to_u64
+      # Overlapping target after source: copy backward
+      i = count - 1
+      while i >= 0
+        self[i] = source[i]
+        i = i - 1
+      end
+    else
+      # Non-overlapping or target before source: copy forward
+      i = 0
+      while i < count
+        self[i] = source[i]
+        i = i + 1
+      end
+    end
+  end
+
+  def move_to(target : Pointer(T), count : Int32) : Nil
+    target.move_from(self, count)
+  end
+
+  def memcmp(other : Pointer(T), count : Int32) : Int32
+    raise "negative count: #{count}" if count < 0
+    i = 0
+    while i < count
+      if self[i] != other[i]
+        return self[i] < other[i] ? -1 : 1
+      end
+      i = i + 1
+    end
+    0
+  end
+
+  def swap(i : Int32, j : Int32) : Nil
+    tmp = self[i]
+    self[i] = self[j]
+    self[j] = tmp
+  end
+
+  def shuffle(count : Int32) : self
+    raise "negative count: #{count}" if count < 0
+    return self if count <= 1
+
+    i = count - 1
+    while i > 0
+      # Simple linear congruential step for deterministic shuffling
+      j = (i * 17 + 3) % (i + 1)
+      swap(i, j)
+      i = i - 1
+    end
+    self
+  end
+
+  def map_in_place(count : Int32, &block : T -> T) : self
+    raise "negative count: #{count}" if count < 0
+    i = 0
+    while i < count
+      self[i] = yield self[i]
+      i = i + 1
+    end
+    self
+  end
+
+  def map_with_index_in_place(count : Int32, offset : Int32 = 0, &block : T, Int32 -> T) : self
+    raise "negative count: #{count}" if count < 0
+    i = 0
+    while i < count
+      self[i] = yield self[i], offset + i
+      i = i + 1
+    end
+    self
+  end
+
+  def fill(count : Int32, value : T) : self
+    raise "negative count: #{count}" if count < 0
+    i = 0
+    while i < count
+      self[i] = value
+      i = i + 1
+    end
+    self
+  end
+
+  def fill(count : Int32, offset : Int32 = 0, &block : Int32 -> T) : self
+    raise "negative count: #{count}" if count < 0
+    i = 0
+    while i < count
+      self[i] = yield offset + i
+      i = i + 1
+    end
+    self
+  end
+
+  def align_down(boundary : UInt64) : Pointer(T)
+    mask = ~(boundary - 1_u64)
+    Pointer(T).new(address & mask)
+  end
+
+  def align_down(boundary : UInt64) : Pointer(T)
+    mask = 0xffffffffffffffff_u64 ^ (boundary - 1_u64)
+    Pointer(T).new(address & mask)
+  end
+
+  def align_up(boundary : UInt64) : Pointer(T)
+    mask = 0xffffffffffffffff_u64 ^ (boundary - 1_u64)
+    Pointer(T).new((address + boundary - 1_u64) & mask)
+  end
+  def self.malloc(size : Int32) : Pointer(T)
+    raise "negative size: #{size}" if size < 0
+    malloc(size.to_u64)
+  end
+
+  def self.malloc(size : Int32, value : T) : Pointer(T)
+    ptr = malloc(size)
+    ptr.fill(size, value)
+    ptr
+  end
+
+  def self.malloc(size : Int32, &block : Int32 -> T) : Pointer(T)
+    ptr = malloc(size)
+    ptr.fill(size) { |i| yield i }
+    ptr
+  end
+
+  def appender : Pointer::Appender(T)
+    Pointer::Appender(T).new(self)
+  end
+
+  def to_slice(size : Int32) : Std::Slice::Slice(T)
+    Std::Slice::Slice(T).new(self, size)
+  end
+
+  def clear(count : Int32 = 1) : Nil
+    raise "negative count: #{count}" if count < 0
+    {% if T == UInt8 %}
+      i = 0
+      while i < count
+        self[i] = 0_u8
+        i = i + 1
+      end
+    {% end %}
+  end
+
+  def clone : self
+    self
+  end
+
+  def to_s : String
+    if address == 0_u64
+      "Pointer.null"
+    else
+      "Pointer(0x#{address})"
+    end
+  end
+
+  def inspect : String
+    to_s
+  end
+end
+
+pub struct PointerAppender(T)
+  @appender : Pointer::Appender(T)
+
+  def initialize(pointer : Pointer(T))
+    @appender = Pointer::Appender(T).new(pointer)
+  end
+
+  def <<(value : T) : Nil
+    @appender << value
+  end
+
+  def size : Int64
+    @appender.size
+  end
+
+  def to_slice : Std::Slice::Slice(T)
+    @appender.to_slice
+  end
+end

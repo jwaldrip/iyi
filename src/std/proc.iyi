@@ -1,0 +1,74 @@
+# Function pointer and closure operations, Box wrapper for C callbacks.
+
+module std/proc
+
+struct ::Proc
+  def pointer : Void*
+    internal_representation[0]
+  end
+
+  def closure_data : Void*
+    internal_representation[1]
+  end
+
+  def closure? : Bool
+    closure_data.address != 0_u64
+  end
+
+  private def internal_representation
+    func = self
+    ptr = pointerof(func).as({Void*, Void*}*)
+    ptr.value
+  end
+
+  def ==(other : self) : Bool
+    pointer.address == other.pointer.address && closure_data.address == other.closure_data.address
+  end
+
+  def ===(other : self) : Bool
+    self == other
+  end
+
+  def clone : self
+    self
+  end
+
+  def hash : Int32
+    pointer.address.to_i32
+  end
+
+  def to_s : String
+    if closure?
+      "#<Proc:closure>"
+    else
+      "#<Proc>"
+    end
+  end
+
+  def inspect : String
+    to_s
+  end
+
+  def self.new(&block : self) : self
+    block
+  end
+end
+
+pub class Box(T)
+  @value : T
+
+  def initialize(@value : T)
+  end
+
+  def value : T
+    @value
+  end
+
+  def self.box(value : T) : Void*
+    new(value).as(Void*)
+  end
+
+  def self.unbox(pointer : Void*) : T
+    pointer.as(Box(T)).value
+  end
+end

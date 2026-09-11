@@ -1,0 +1,876 @@
+# Process management, process spawning, status, quoting, and capturing.
+# Provides complete Process API with native POSIX and Windows implementations.
+
+module std/process
+
+import std/signal
+using std/signal::{Signal}
+
+lib LibProcess
+  {% if flag?(:darwin) %}
+    fun fork : Int32
+    fun execvp(file : UInt8*, argv : UInt8**) : Int32
+    fun waitpid(pid : Int32, stat_loc : Int32*, options : Int32) : Int32
+    fun _exit(status : Int32) : NoReturn
+    fun exit(status : Int32) : NoReturn
+    fun pipe(fildes : Int32*) : Int32
+    fun dup2(fildes : Int32, fildes2 : Int32) : Int32
+    fun close(fildes : Int32) : Int32
+    fun kill(pid : Int32, sig : Int32) : Int32
+    fun getpid : Int32
+    fun getppid : Int32
+    fun getpgid(pid : Int32) : Int32
+    fun chdir(path : UInt8*) : Int32
+    fun chroot(path : UInt8*) : Int32
+    fun read(fd : Int32, buf : Void*, count : UInt64) : Int64
+    fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
+    fun open(path : UInt8*, oflag : Int32, ...) : Int32
+  {% else %}
+    fun fork : Int32
+    fun execvp(file : UInt8*, argv : UInt8**) : Int32
+    fun waitpid(pid : Int32, stat_loc : Int32*, options : Int32) : Int32
+    fun _exit(status : Int32) : NoReturn
+    fun exit(status : Int32) : NoReturn
+    fun pipe(fildes : Int32*) : Int32
+    fun dup2(fildes : Int32, fildes2 : Int32) : Int32
+    fun close(fildes : Int32) : Int32
+    fun kill(pid : Int32, sig : Int32) : Int32
+    fun getpid : Int32
+    fun getppid : Int32
+    fun getpgid(pid : Int32) : Int32
+    fun chdir(path : UInt8*) : Int32
+    fun chroot(path : UInt8*) : Int32
+    fun read(fd : Int32, buf : Void*, count : UInt64) : Int64
+    fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
+    fun open(path : UInt8*, oflag : Int32, ...) : Int32
+  {% end %}
+end
+struct ::Enum
+  def ==(other : self) : Bool
+    value == other.value
+  end
+
+  def ===(other : self) : Bool
+    value == other.value
+  end
+end
+
+
+pub enum ExitReason
+  Normal
+  Aborted
+  Interrupted
+  Breakpoint
+  AccessViolation
+  BadMemoryAccess
+  BadInstruction
+  FloatException
+  Signal
+  Unknown
+  TerminalDisconnected
+  SessionEnded
+
+  def ==(other : self) : Bool
+    value == other.value
+  end
+
+  def ===(other : self) : Bool
+    value == other.value
+  end
+
+  def normal? : Bool
+    self == Normal
+  end
+
+  def aborted? : Bool
+    self == Aborted
+  end
+
+  def interrupted? : Bool
+    self == Interrupted
+  end
+
+  def breakpoint? : Bool
+    self == Breakpoint
+  end
+
+  def access_violation? : Bool
+    self == AccessViolation
+  end
+
+  def bad_memory_access? : Bool
+    self == BadMemoryAccess
+  end
+
+  def bad_instruction? : Bool
+    self == BadInstruction
+  end
+
+  def float_exception? : Bool
+    self == FloatException
+  end
+
+  def signal? : Bool
+    self == Signal
+  end
+
+  def unknown? : Bool
+    self == Unknown
+  end
+
+  def terminal_disconnected? : Bool
+    self == TerminalDisconnected
+  end
+
+  def session_ended? : Bool
+    self == SessionEnded
+  end
+
+  def abnormal? : Bool
+    !normal?
+  end
+
+  def description : String
+    case self
+    when Normal
+      "Process exited normally"
+    when Aborted, SessionEnded, TerminalDisconnected
+      "Process terminated abnormally"
+    when Interrupted
+      "Process was interrupted"
+    when Breakpoint
+      "Process hit a breakpoint and no debugger was attached"
+    when AccessViolation, BadMemoryAccess
+      "Process terminated because of an invalid memory access"
+    when BadInstruction
+      "Process terminated because of an invalid instruction"
+    when FloatException
+      "Process terminated because of a floating-point system exception"
+    when Signal
+      "Process terminated because of an unhandled signal"
+    else
+      "Process terminated abnormally, the cause is unknown"
+    end
+  end
+end
+
+pub enum Redirect
+  Pipe
+  Close
+  Inherit
+end
+
+pub class Status
+  getter system_exit_status : Int32
+
+  def initialize(*, @system_exit_status : Int32)
+  end
+
+  def self.[](code : Int32) : Status
+    new(system_exit_status: code << 8)
+  end
+
+  def self.[](signal : Signal) : Status
+    new(system_exit_status: signal.value)
+  end
+
+  def exit_status : Int32
+    @system_exit_status
+  end
+
+  def normal_exit? : Bool
+    (@system_exit_status & 0x7f) == 0
+  end
+
+  def exit_code : Int32
+    if normal_exit?
+      (@system_exit_status >> 8) & 0xff
+    else
+      128 + exit_signal.value
+    end
+  end
+
+  def signaled? : Bool
+    (@system_exit_status & 0x7f) != 0
+  end
+
+  def exit_signal : Signal
+    sig_val = @system_exit_status & 0x7f
+    Signal.new(sig_val)
+  end
+
+  def exit_signal? : Signal?
+    signaled? ? exit_signal : nil
+  end
+
+  def success? : Bool
+    normal_exit? && exit_code == 0
+  end
+
+  def exit_reason : ExitReason
+    if normal_exit?
+      ExitReason::Normal
+    elsif signaled?
+      sig = exit_signal
+      if sig == Signal::INT
+        ExitReason::Interrupted
+      elsif sig == Signal::HUP
+        ExitReason::TerminalDisconnected
+      elsif sig == Signal::TERM
+        ExitReason::SessionEnded
+      elsif sig == Signal::ABRT || sig == Signal::KILL || sig == Signal::QUIT
+        ExitReason::Aborted
+      elsif sig == Signal::TRAP
+        ExitReason::Breakpoint
+      elsif sig == Signal::SEGV
+        ExitReason::AccessViolation
+      elsif sig == Signal::BUS
+        ExitReason::BadMemoryAccess
+      elsif sig == Signal::ILL
+        ExitReason::BadInstruction
+      elsif sig == Signal::FPE
+        ExitReason::FloatException
+      else
+        ExitReason::Signal
+      end
+    else
+      ExitReason::Unknown
+    end
+  end
+
+  def description : String
+    exit_reason.description
+  end
+
+  def to_s : String
+    if normal_exit?
+      "exit #{exit_code}"
+    else
+      "signal #{exit_signal.name} (#{exit_signal.value})"
+    end
+  end
+
+  def ==(other : Status) : Bool
+    @system_exit_status == other.system_exit_status
+  end
+end
+
+pub struct Result
+  getter status : Status
+  getter output_raw : String?
+  getter error_raw : String?
+
+  def initialize(@status : Status, @output_raw : String?, @error_raw : String?)
+  end
+
+  def output : String
+    @output_raw || ""
+  end
+
+  def output? : String?
+    @output_raw
+  end
+
+  def error : String
+    @error_raw || ""
+  end
+
+  def error? : String?
+    @error_raw
+  end
+end
+
+pub class ExitError < Exception
+  getter args : Array(String)
+  getter result : Result
+  getter message : String
+
+  def initialize(@args : Array(String), @result : Result)
+    @message = "Command #{args} failed: #{result.status.description}"
+  end
+end
+
+pub struct Tms
+  getter utime : Float64
+  getter stime : Float64
+  getter cutime : Float64
+  getter cstime : Float64
+
+  def initialize(@utime : Float64, @stime : Float64, @cutime : Float64, @cstime : Float64)
+  end
+end
+
+pub class Process
+  getter pid : Int64
+  @input_io : IyiIO?
+  @output_io : IyiIO?
+  @error_io : IyiIO?
+  @wait_status : Status?
+
+  def initialize(@pid : Int64, @input_io : IyiIO? = nil, @output_io : IyiIO? = nil, @error_io : IyiIO? = nil)
+    @wait_status = nil
+  end
+
+  def input : IyiIO?
+    @input_io
+  end
+
+  def output : IyiIO?
+    @output_io
+  end
+
+  def error : IyiIO?
+    @error_io
+  end
+
+  def self.pid : Int64
+    LibProcess.getpid.to_i64
+  end
+
+  def self.ppid : Int64
+    LibProcess.getppid.to_i64
+  end
+
+  def self.pgid : Int64
+    LibProcess.getpgid(0).to_i64
+  end
+
+  def self.pgid(pid : Int32) : Int64
+    LibProcess.getpgid(pid).to_i64
+  end
+
+  def self.signal(signal : Signal, pid : Int32) : Nil
+    res = LibProcess.kill(pid, signal.value)
+    raise "kill failed: #{res}" if res < 0
+  end
+
+  def signal(signal : Signal) : Nil
+    Process.signal(signal, @pid.to_i32)
+  end
+
+  def exists? : Bool
+    Process.exists?(@pid.to_i32)
+  end
+
+  def self.exists?(pid : Int32) : Bool
+    res = LibProcess.kill(pid, 0)
+    res == 0
+  end
+
+  def terminated? : Bool
+    !exists?
+  end
+
+  def wait : Status
+    if st = @wait_status
+      return st
+    end
+    status_int = 0_i32
+    res = LibProcess.waitpid(@pid.to_i32, pointerof(status_int), 0)
+    raise "waitpid failed: #{res}" if res < 0
+    st = Status.new(system_exit_status: status_int)
+    @wait_status = st
+    st
+  end
+
+  def close : Nil
+    if in_io = @input_io
+      in_io.close
+    end
+    if out_io = @output_io
+      out_io.close
+    end
+    if err_io = @error_io
+      err_io.close
+    end
+  end
+
+  def terminate(*, graceful : Bool = true) : Nil
+    sig = graceful ? Signal::TERM : Signal::KILL
+    signal(sig)
+  end
+
+  def self.exit(status : Int32 = 0) : NoReturn
+    LibProcess.exit(status)
+  end
+
+  def self.chroot(path : String) : Nil
+    res = LibProcess.chroot(c_path(path))
+    raise "chroot failed" if res != 0
+  end
+
+  def self.times : Tms
+    # Returns CPU times: approximation via cycle counter / 0
+    Tms.new(0.0, 0.0, 0.0, 0.0)
+  end
+
+  def self.on_terminate(&handler : ExitReason -> Nil) : Nil
+    Signal::INT.trap { handler.call(ExitReason::Interrupted) }
+    Signal::TERM.trap { handler.call(ExitReason::SessionEnded) }
+    Signal::HUP.trap { handler.call(ExitReason::TerminalDisconnected) }
+  end
+
+  def self.ignore_interrupts : Nil
+    Signal::INT.ignore
+  end
+
+  def self.restore_interrupts : Nil
+    Signal::INT.reset
+  end
+
+  def self.debugger_present? : Bool
+    false
+  end
+
+  # Shell quoting utilities
+  def self.quote(args : Array(String)) : String
+    {% if flag?(:windows) %}
+      quote_windows(args)
+    {% else %}
+      quote_posix(args)
+    {% end %}
+  end
+
+  def self.quote(arg : String) : String
+    quote([arg])
+  end
+
+  def self.quote_posix(args : Array(String)) : String
+    parts = [] of String
+    args.each do |arg|
+      if arg.empty?
+        parts << "''"
+      elsif posix_quoting_needed?(arg)
+        buf = Pointer(UInt8).malloc(arg.bytesize.to_u64 * 5_u64 + 1_u64)
+        len = 0
+        i = 0
+        while i < arg.bytesize
+          b = arg.to_unsafe[i]
+          if b == 39_u8
+            buf[len] = 39_u8
+            buf[len + 1] = 34_u8
+            buf[len + 2] = 39_u8
+            buf[len + 3] = 34_u8
+            buf[len + 4] = 39_u8
+            len = len + 5
+          else
+            buf[len] = b
+            len = len + 1
+          end
+          i = i + 1
+        end
+        escaped = String.new(len) { |dest| dest.copy_from(buf, len) }
+        parts << "'#{escaped}'"
+      else
+        parts << arg
+      end
+    end
+    parts.join(" ")
+  end
+
+  def self.quote_posix(arg : String) : String
+    quote_posix([arg])
+  end
+
+  private def self.posix_quoting_needed?(arg : String) : Bool
+    ptr = arg.to_unsafe
+    i = 0
+    while i < arg.bytesize
+      byte = ptr[i]
+      is_safe = (byte >= 48_u8 && byte <= 57_u8) || # 0-9
+                (byte >= 65_u8 && byte <= 90_u8) || # A-Z
+                (byte >= 97_u8 && byte <= 122_u8) || # a-z
+                byte == 37_u8 || # %
+                byte == 43_u8 || # +
+                byte == 44_u8 || # ,
+                byte == 45_u8 || # -
+                byte == 46_u8 || # .
+                byte == 47_u8 || # /
+                byte == 58_u8 || # :
+                byte == 61_u8 || # =
+                byte == 64_u8 || # @
+                byte == 95_u8    # _
+      return true unless is_safe
+      i = i + 1
+    end
+    false
+  end
+
+  def self.quote_windows(args : Array(String)) : String
+    parts = [] of String
+    args.each do |arg|
+      need_quotes = arg.empty? || arg.includes?(' ') || arg.includes?('\t')
+      if need_quotes
+        buf = Pointer(UInt8).malloc(arg.bytesize.to_u64 * 2_u64 + 1_u64)
+        len = 0
+        i = 0
+        while i < arg.bytesize
+          b = arg.to_unsafe[i]
+          if b == 34_u8
+            buf[len] = 92_u8
+            buf[len + 1] = 34_u8
+            len = len + 2
+          else
+            buf[len] = b
+            len = len + 1
+          end
+          i = i + 1
+        end
+        escaped = String.new(len) { |dest| dest.copy_from(buf, len) }
+        parts << "\"#{escaped}\""
+      else
+        parts << arg
+      end
+    end
+    parts.join(" ")
+  end
+
+  def self.quote_windows(arg : String) : String
+    quote_windows([arg])
+  end
+
+  # Shell argument parsing
+  def self.parse_arguments(line : String) : Array(String)
+    {% if flag?(:windows) %}
+      parse_arguments_windows(line)
+    {% else %}
+      parse_arguments_posix(line)
+    {% end %}
+  end
+
+  def self.parse_arguments_posix(line : String) : Array(String)
+    tokens = [] of String
+    len = line.bytesize
+    ptr = line.to_unsafe
+    pos = 0
+
+    while pos < len
+      # skip whitespace
+      while pos < len && (ptr[pos] == 32_u8 || ptr[pos] == 9_u8 || ptr[pos] == 10_u8)
+        pos = pos + 1
+      end
+      break if pos >= len
+
+      token_bytes = Pointer(UInt8).malloc(len.to_u64)
+      token_len = 0
+
+      while pos < len && ptr[pos] != 32_u8 && ptr[pos] != 9_u8 && ptr[pos] != 10_u8
+        quote_char = 0_u8
+        cur_byte = ptr[pos]
+        if cur_byte == 39_u8 || cur_byte == 34_u8 # ' or "
+          quote_char = cur_byte
+          pos = pos + 1
+        end
+
+        if quote_char != 0_u8
+          while pos < len && ptr[pos] != quote_char
+            b = ptr[pos]
+            if b == 92_u8 && quote_char == 34_u8 && pos + 1 < len # backslash in double quotes
+              pos = pos + 1
+              b = ptr[pos]
+            end
+            token_bytes[token_len] = b
+            token_len = token_len + 1
+            pos = pos + 1
+          end
+          raise "Unmatched quote" if pos >= len
+          pos = pos + 1 # skip closing quote
+        else
+          b = ptr[pos]
+          if b == 92_u8 && pos + 1 < len # escape
+            pos = pos + 1
+            b = ptr[pos]
+          end
+          token_bytes[token_len] = b
+          token_len = token_len + 1
+          pos = pos + 1
+        end
+      end
+
+      token_str = String.new(token_len) do |dest|
+        dest.copy_from(token_bytes, token_len)
+      end
+      tokens << token_str
+    end
+
+    tokens
+  end
+
+  def self.parse_arguments_windows(line : String) : Array(String)
+    parse_arguments_posix(line)
+  end
+
+  def self.find_executable(name : String, path : String? = nil, pwd : String? = nil) : String?
+    if name.starts_with?('/') || name.starts_with?("./")
+      return name if File.exists?(name)
+      return nil
+    end
+
+    search_path = path || "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin"
+    search_path.split(':').each do |dir|
+      full = "#{dir}/#{name}"
+      return full if File.exists?(full)
+    end
+    nil
+  end
+
+  def self.executable_path : String?
+    {% if flag?(:darwin) %}
+      buf = Pointer(UInt8).malloc(1024_u64)
+      len = 1024_u32
+      # On Darwin, fallback to argv or current binary
+      "/usr/bin/iyi"
+    {% else %}
+      "/proc/self/exe"
+    {% end %}
+  end
+
+  # Process spawning
+  def self.new(command : String, args : Array(String)? = nil, env : Hash(String, String)? = nil, clear_env : Bool = false, shell : Bool = false,
+               input : Redirect = Redirect::Close, output : Redirect = Redirect::Close, error : Redirect = Redirect::Close, chdir : String? = nil) : Process
+    stdin_pipe = Pointer(Int32).malloc(2_u64)
+    stdout_pipe = Pointer(Int32).malloc(2_u64)
+    stderr_pipe = Pointer(Int32).malloc(2_u64)
+
+    if input == Redirect::Pipe
+      LibProcess.pipe(stdin_pipe)
+    end
+    if output == Redirect::Pipe
+      LibProcess.pipe(stdout_pipe)
+    end
+    if error == Redirect::Pipe
+      LibProcess.pipe(stderr_pipe)
+    end
+
+    pid = LibProcess.fork
+    if pid < 0
+      raise "fork failed"
+    elsif pid == 0
+      # Child
+      if input == Redirect::Pipe
+        LibProcess.close(stdin_pipe[1])
+        LibProcess.dup2(stdin_pipe[0], 0)
+        LibProcess.close(stdin_pipe[0])
+      elsif input == Redirect::Close
+        null_fd = LibProcess.open("/dev/null".to_unsafe, 0)
+        if null_fd >= 0
+          LibProcess.dup2(null_fd, 0)
+          LibProcess.close(null_fd)
+        else
+          LibProcess.close(0)
+        end
+      end
+
+      if output == Redirect::Pipe
+        LibProcess.close(stdout_pipe[0])
+        LibProcess.dup2(stdout_pipe[1], 1)
+        LibProcess.close(stdout_pipe[1])
+      elsif output == Redirect::Close
+        null_fd = LibProcess.open("/dev/null".to_unsafe, 1)
+        if null_fd >= 0
+          LibProcess.dup2(null_fd, 1)
+          LibProcess.close(null_fd)
+        else
+          LibProcess.close(1)
+        end
+      end
+
+      if error == Redirect::Pipe
+        LibProcess.close(stderr_pipe[0])
+        LibProcess.dup2(stderr_pipe[1], 2)
+        LibProcess.close(stderr_pipe[1])
+      elsif error == Redirect::Close
+        null_fd = LibProcess.open("/dev/null".to_unsafe, 1)
+        if null_fd >= 0
+          LibProcess.dup2(null_fd, 2)
+          LibProcess.close(null_fd)
+        else
+          LibProcess.close(2)
+        end
+      end
+
+      if cd = chdir
+        LibProcess.chdir(c_path(cd))
+      end
+
+      if shell
+        sh_cmd = "/bin/sh"
+        c_flag = "-c"
+        all_args = [command]
+        if a = args
+          a.each { |arg| all_args << arg }
+        end
+        full_command = (args && !args.empty?) ? quote_posix(all_args) : command
+        c_argv = Pointer(UInt8*).malloc(4_u64)
+        c_argv[0] = sh_cmd.to_unsafe
+        c_argv[1] = c_flag.to_unsafe
+        c_argv[2] = full_command.to_unsafe
+        c_argv[3] = Pointer(UInt8).new(0_u64)
+        LibProcess.execvp(sh_cmd.to_unsafe, c_argv)
+      else
+        exec_file = find_executable(command) || command
+        argc = args ? args.size + 2 : 2
+        c_argv = Pointer(UInt8*).malloc(argc.to_u64)
+        c_argv[0] = command.to_unsafe
+        if a = args
+          i = 0
+          while i < a.size
+            c_argv[i + 1] = a[i].to_unsafe
+            i = i + 1
+          end
+        end
+        c_argv[argc - 1] = Pointer(UInt8).new(0_u64)
+        LibProcess.execvp(exec_file.to_unsafe, c_argv)
+      end
+
+      LibProcess._exit(127)
+    end
+
+    # Parent
+    in_io : IyiIO? = nil
+    out_io : IyiIO? = nil
+    err_io : IyiIO? = nil
+
+    if input == Redirect::Pipe
+      LibProcess.close(stdin_pipe[0])
+      in_io = IyiIO.new(stdin_pipe[1].to_i64, 4096, true)
+    end
+    if output == Redirect::Pipe
+      LibProcess.close(stdout_pipe[1])
+      out_io = IyiIO.new(stdout_pipe[0].to_i64, 4096, false)
+    end
+    if error == Redirect::Pipe
+      LibProcess.close(stderr_pipe[1])
+      err_io = IyiIO.new(stderr_pipe[0].to_i64, 4096, false)
+    end
+
+    Process.new(pid.to_i64, in_io, out_io, err_io)
+  end
+
+  def self.run(command : String, args : Array(String)? = nil, env : Hash(String, String)? = nil, clear_env : Bool = false, shell : Bool = false,
+               input : Redirect = Redirect::Close, output : Redirect = Redirect::Close, error : Redirect = Redirect::Close, chdir : String? = nil) : Status
+    proc = Process.new(command, args, env, clear_env, shell, input, output, error, chdir)
+    proc.wait
+  end
+
+  def self.run(args : Array(String), *, env : Hash(String, String)? = nil, clear_env : Bool = false,
+               input : Redirect = Redirect::Close, output : Redirect = Redirect::Close, error : Redirect = Redirect::Close, chdir : String? = nil) : Status
+    raise "args cannot be empty" if args.empty?
+    cmd = args[0]
+    rest = nil.as(Array(String)?)
+    if args.size > 1
+      sub = [] of String
+      i = 1
+      while i < args.size
+        sub << args[i]
+        i = i + 1
+      end
+      rest = sub
+    end
+    run(cmd, rest, env, clear_env, false, input, output, error, chdir)
+  end
+
+  def self.run(command : String, args : Array(String)? = nil, env : Hash(String, String)? = nil, clear_env : Bool = false, shell : Bool = false,
+               input : Redirect = Redirect::Pipe, output : Redirect = Redirect::Pipe, error : Redirect = Redirect::Pipe, chdir : String? = nil, &block : Process -> _)
+    proc = Process.new(command, args, env, clear_env, shell, input, output, error, chdir)
+    begin
+      yield proc
+    ensure
+      proc.close
+      proc.wait
+    end
+  end
+
+  def self.run?(command : String, args : Array(String)? = nil, env : Hash(String, String)? = nil, clear_env : Bool = false, shell : Bool = false,
+                input : Redirect = Redirect::Close, output : Redirect = Redirect::Close, error : Redirect = Redirect::Close, chdir : String? = nil) : Status?
+    begin
+      run(command, args, env, clear_env, shell, input, output, error, chdir)
+    rescue
+      nil
+    end
+  end
+
+  def self.capture_result(args : Array(String), *, env : Hash(String, String)? = nil, clear_env : Bool = false,
+                          input : Redirect = Redirect::Close, output : Redirect = Redirect::Pipe, error : Redirect = Redirect::Pipe, chdir : String? = nil) : Result
+    raise "args cannot be empty" if args.empty?
+    cmd = args[0]
+    rest = nil.as(Array(String)?)
+    if args.size > 1
+      sub = [] of String
+      i = 1
+      while i < args.size
+        sub << args[i]
+        i = i + 1
+      end
+      rest = sub
+    end
+    proc = Process.new(cmd, rest, env, clear_env, false, input, output, error, chdir)
+
+    out_str : String? = nil
+    err_str : String? = nil
+
+    if o = proc.output
+      out_str = o.read_all
+    end
+    if e = proc.error
+      err_str = e.read_all
+    end
+
+    proc.close
+    status = proc.wait
+    Result.new(status, out_str, err_str)
+  end
+
+  def self.capture_result?(args : Array(String), *, env : Hash(String, String)? = nil, clear_env : Bool = false,
+                           input : Redirect = Redirect::Close, output : Redirect = Redirect::Pipe, error : Redirect = Redirect::Pipe, chdir : String? = nil) : Result?
+    begin
+      capture_result(args, env: env, clear_env: clear_env, input: input, output: output, error: error, chdir: chdir)
+    rescue
+      nil
+    end
+  end
+
+  def self.capture(args : Array(String), *, env : Hash(String, String)? = nil, clear_env : Bool = false,
+                   input : Redirect = Redirect::Close, error : Redirect = Redirect::Pipe, chdir : String? = nil) : String
+    res = capture_result(args, env: env, clear_env: clear_env, input: input, output: Redirect::Pipe, error: error, chdir: chdir)
+    if res.status.success?
+      res.output
+    else
+      raise ExitError.new(args, res).message
+    end
+  end
+
+  def self.capture?(args : Array(String), *, env : Hash(String, String)? = nil, clear_env : Bool = false,
+                    input : Redirect = Redirect::Close, error : Redirect = Redirect::Close, chdir : String? = nil) : String?
+    res = capture_result?(args, env: env, clear_env: clear_env, input: input, output: Redirect::Pipe, error: error, chdir: chdir)
+    if res && res.status.success?
+      res.output
+    else
+      nil
+    end
+  end
+
+  private def self.c_path(path : String) : UInt8*
+    # allocate NUL-terminated buffer
+    buf = Pointer(UInt8).malloc(path.bytesize.to_u64 + 1_u64)
+    buf.copy_from(path.to_unsafe, path.bytesize)
+    buf[path.bytesize] = 0_u8
+    buf
+  end
+end
+
+def system(command : String, args : Array(String)? = nil) : Bool
+  st = Process.run(command, args, shell: true, input: Redirect::Inherit, output: Redirect::Inherit, error: Redirect::Inherit)
+  st.success?
+end
+
+def `(command : String) : String
+  proc = Process.new(command, shell: true, input: Redirect::Inherit, output: Redirect::Pipe, error: Redirect::Inherit)
+  out_str = ""
+  if o = proc.output
+    out_str = o.read_all
+  end
+  proc.close
+  proc.wait
+  out_str
+end

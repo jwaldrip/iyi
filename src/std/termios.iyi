@@ -1,0 +1,173 @@
+# Terminal I/O control interfaces (termios).
+# Provides input/output mode flags, baud rates, and terminal attribute manipulation.
+
+module std/termios
+
+lib LibTermios
+  {% if flag?(:darwin) %}
+    fun tcgetattr(fd : Int32, termios : Void*) : Int32
+    fun tcsetattr(fd : Int32, action : Int32, termios : Void*) : Int32
+    fun tcflush(fd : Int32, queue : Int32) : Int32
+    fun tcdrain(fd : Int32) : Int32
+    fun cfgetispeed(termios : Void*) : UInt64
+    fun cfgetospeed(termios : Void*) : UInt64
+    fun cfsetispeed(termios : Void*, speed : UInt64) : Int32
+    fun cfsetospeed(termios : Void*, speed : UInt64) : Int32
+    fun cfmakeraw(termios : Void*) : Void
+  {% else %}
+    fun tcgetattr(fd : Int32, termios : Void*) : Int32
+    fun tcsetattr(fd : Int32, action : Int32, termios : Void*) : Int32
+    fun tcflush(fd : Int32, queue : Int32) : Int32
+    fun tcdrain(fd : Int32) : Int32
+    fun cfgetispeed(termios : Void*) : UInt64
+    fun cfgetospeed(termios : Void*) : UInt64
+    fun cfsetispeed(termios : Void*, speed : UInt64) : Int32
+    fun cfsetospeed(termios : Void*, speed : UInt64) : Int32
+    fun cfmakeraw(termios : Void*) : Void
+  {% end %}
+end
+
+pub enum InputMode : Int32
+  BRKINT = 0x00000002
+  ICRNL  = 0x00000100
+  IGNBRK = 0x00000001
+  IGNCR  = 0x00000080
+  IGNPAR = 0x00000004
+  INLCR  = 0x00000040
+  INPCK  = 0x00000010
+  ISTRIP = 0x00000020
+  IXANY  = 0x00000800
+  IXOFF  = 0x00001000
+  IXON   = 0x00000200
+  PARMRK = 0x00000008
+end
+
+pub enum OutputMode : Int32
+  OPOST  = 0x00000001
+  ONLCR  = 0x00000002
+  OCRNL  = 0x00000010
+  ONOCR  = 0x00000020
+  ONLRET = 0x00000040
+  TAB0   = 0x00000000
+  TAB3   = 0x00000004
+end
+
+pub enum BaudRate : Int32
+  B0      = 0
+  B50     = 50
+  B75     = 75
+  B110    = 110
+  B134    = 134
+  B150    = 150
+  B200    = 200
+  B300    = 300
+  B600    = 600
+  B1200   = 1200
+  B1800   = 1800
+  B2400   = 2400
+  B4800   = 4800
+  B9600   = 9600
+  B19200  = 19200
+  B38400  = 38400
+  B57600  = 57600
+  B115200 = 115200
+end
+
+pub enum ControlMode : Int32
+  CSIZE  = 0x00000300
+  CS5    = 0x00000000
+  CS6    = 0x00000100
+  CS7    = 0x00000200
+  CS8    = 0x00000300
+  CSTOPB = 0x00000400
+  CREAD  = 0x00000800
+  PARENB = 0x00001000
+  PARODD = 0x00002000
+  HUPCL  = 0x00004000
+  CLOCAL = 0x00008000
+end
+
+pub enum LocalMode : Int64
+  ECHO   = 0x00000008_u64
+  ECHOE  = 0x00000002_u64
+  ECHOK  = 0x00000004_u64
+  ECHONL = 0x00000010_u64
+  ICANON = 0x00000100_u64
+  IEXTEN = 0x00000400_u64
+  ISIG   = 0x00000080_u64
+  NOFLSH = 0x80000000_u64
+  TOSTOP = 0x00400000_u64
+end
+
+pub enum AttributeSelection : Int32
+  TCSANOW   = 0
+  TCSADRAIN = 1
+  TCSAFLUSH = 2
+end
+
+pub enum LineControl : Int32
+  TCSANOW   = 0
+  TCSADRAIN = 1
+  TCSAFLUSH = 2
+  TCIFLUSH  = 1
+  TCIOFLUSH = 2
+  TCOFLUSH  = 3
+  TCIOFF    = 3
+  TCION     = 4
+  TCOOFF    = 1
+  TCOON     = 2
+end
+
+pub struct Termios
+  property c_iflag : UInt64
+  property c_oflag : UInt64
+  property c_cflag : UInt64
+  property c_lflag : UInt64
+  property c_ispeed : UInt64
+  property c_ospeed : UInt64
+
+  def initialize
+    @c_iflag = 0_u64
+    @c_oflag = 0_u64
+    @c_cflag = 0_u64
+    @c_lflag = 0_u64
+    @c_ispeed = 0_u64
+    @c_ospeed = 0_u64
+  end
+
+  def self.tcgetattr(fd : Int32, termios : Pointer(Termios)) : Int32
+    LibTermios.tcgetattr(fd, termios.as(Void*))
+  end
+
+  def self.tcsetattr(fd : Int32, optional_actions : Int32, termios : Pointer(Termios)) : Int32
+    LibTermios.tcsetattr(fd, optional_actions, termios.as(Void*))
+  end
+
+  def self.tcflush(fd : Int32, queue_selector : Int32) : Int32
+    LibTermios.tcflush(fd, queue_selector)
+  end
+
+  def self.tcdrain(fd : Int32) : Int32
+    LibTermios.tcdrain(fd)
+  end
+
+  def self.cfgetispeed(termios : Pointer(Termios)) : UInt64
+    LibTermios.cfgetispeed(termios.as(Void*))
+  end
+
+  def self.cfgetospeed(termios : Pointer(Termios)) : UInt64
+    LibTermios.cfgetospeed(termios.as(Void*))
+  end
+
+  def self.cfsetispeed(termios : Pointer(Termios), speed : UInt64) : Int32
+    LibTermios.cfsetispeed(termios.as(Void*), speed)
+  end
+
+  def self.cfsetospeed(termios : Pointer(Termios), speed : UInt64) : Int32
+    LibTermios.cfsetospeed(termios.as(Void*), speed)
+  end
+
+  def self.cfmakeraw(termios : Pointer(Termios)) : Nil
+    LibTermios.cfmakeraw(termios.as(Void*))
+  end
+end
