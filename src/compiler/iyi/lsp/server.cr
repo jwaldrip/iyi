@@ -597,7 +597,7 @@ module Iyi::Lsp
           json.field "code", "SPEC #{refs.first}"
           json.field "codeDescription" do
             json.object do
-              json.field "href", "https://github.com/sdogruyol/iyi/blob/master/SPEC.md"
+              json.field "href", "https://github.com/iyilang/iyi/blob/master/SPEC.md"
             end
           end
         end

@@ -1,6 +1,6 @@
 # iyi
 
-[![iyi](https://github.com/sdogruyol/iyi/actions/workflows/iyi.yml/badge.svg)](https://github.com/sdogruyol/iyi/actions/workflows/iyi.yml)
+[![iyi](https://github.com/iyilang/iyi/actions/workflows/iyi.yml/badge.svg)](https://github.com/iyilang/iyi/actions/workflows/iyi.yml)
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
 [![site](https://img.shields.io/badge/site-iyi--lang.com-black.svg)](https://iyi-lang.com)
 
@@ -11,7 +11,7 @@ The easiest way to get it is one command, which installs the latest release
 into `~/.local`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sdogruyol/iyi/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/iyilang/iyi/master/install.sh | sh
 ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs the latest iyi release into ~/.local (bin/, lib/, share/iyi/):
 #
-#   curl -fsSL https://raw.githubusercontent.com/sdogruyol/iyi/master/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/iyilang/iyi/master/install.sh | sh
 #
 # IYI_PREFIX       where to unpack, default ~/.local; the tarball is relocatable
 # IYI_VERSION      a release to pin, e.g. 0.11.0; default is the latest release
@@ -17,7 +17,7 @@
 # not the byte the release job wrote is refused rather than run.
 set -eu
 
-repo="sdogruyol/iyi"
+repo="iyilang/iyi"
 prefix="${IYI_PREFIX:-$HOME/.local}"
 version="${IYI_VERSION:-}"
 
