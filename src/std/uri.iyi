@@ -7,9 +7,229 @@ module std/uri
 
 import std/text
 
+pub class Error < ::Exception
+  def initialize(message : String? = nil, cause : Exception? = nil)
+    super(message, cause)
+  end
+end
+
+pub class SerializableError < Error
+end
+
+pub class Punycode
+  private BASE         = 36
+  private TMIN         = 1
+  private TMAX         = 26
+  private SKEW         = 38
+  private DAMP         = 700
+  private INITIAL_BIAS = 72
+  private INITIAL_N    = 128
+  private DELIMITER    = '-'
+  private BASE36       = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+  private def self.adapt(delta : Int32, numpoints : Int32, firsttime : Bool) : Int32
+    d = firsttime ? (delta // DAMP) : (delta // 2)
+    d = d + (d // numpoints)
+    k = 0
+    while d > (((BASE - TMIN) * TMAX) // 2)
+      d = d // (BASE - TMIN)
+      k = k + BASE
+    end
+    k + (((BASE - TMIN + 1) * d) // (d + SKEW))
+  end
+
+  def self.encode(string : String) : String
+    io = IO::Memory.new
+    encode(string, io)
+    io.to_s
+  end
+
+  def self.encode(string : String, io : IO) : Nil
+    others = [] of Char
+    string.each_char do |c|
+      if c.ord < 128
+        io << c
+      else
+        others.push(c)
+      end
+    end
+    return if others.empty?
+    others.sort!
+
+    h = string.size - others.size + 1
+    delta = 0
+    n = INITIAL_N
+    bias = INITIAL_BIAS
+    firsttime = true
+    prev : Char? = nil
+
+    io << DELIMITER if h > 1
+
+    others.each do |m|
+      next if prev && m == prev
+      prev = m
+
+      delta = delta + (m.ord - n) * h
+      n = m.ord + 1
+
+      string.each_char do |c|
+        if c < m
+          delta = delta + 1
+        elsif c == m
+          q = delta
+          k = BASE
+          while true
+            t = if k <= bias
+                  TMIN
+                elsif k >= bias + TMAX
+                  TMAX
+                else
+                  k - bias
+                end
+            break if q < t
+            b36_idx = t + ((q - t) % (BASE - t))
+            io << BASE36[b36_idx]
+            q = (q - t) // (BASE - t)
+            k = k + BASE
+          end
+          io << BASE36[q]
+
+          bias = adapt(delta, h, firsttime)
+          delta = 0
+          h = h + 1
+          firsttime = false
+        end
+      end
+      delta = delta + 1
+    end
+  end
+
+  def self.decode(string : String) : String
+    delim_idx = string.rindex(DELIMITER)
+    output = [] of Char
+    rest = string
+    if delim_idx
+      prefix = string[0, delim_idx]
+      prefix.each_char { |c| output << c }
+      rest = string[delim_idx + 1, string.bytesize - delim_idx - 1]
+    end
+
+    n = INITIAL_N
+    bias = INITIAL_BIAS
+    i = 0
+    init = true
+    w = 0
+    oldi = 0
+    k = 0
+
+    rest.each_char do |c|
+      if init
+        w = 1
+        oldi = i
+        k = BASE
+        init = false
+      end
+
+      ch_ord = c.ord
+      digit = if ch_ord >= 97 && ch_ord <= 122 # 'a'..'z'
+                ch_ord - 97
+              elsif ch_ord >= 65 && ch_ord <= 90 # 'A'..'Z'
+                ch_ord - 65
+              elsif ch_ord >= 48 && ch_ord <= 57 # '0'..'9'
+                ch_ord - 48 + 26
+              else
+                raise "Invalid input for Punycode: #{c}"
+              end
+
+      i = i + digit * w
+      t = if k <= bias
+            TMIN
+          elsif k >= bias + TMAX
+            TMAX
+          else
+            k - bias
+          end
+
+      if digit >= t
+        w = w * (BASE - t)
+        k = k + BASE
+      else
+        outsize = output.size + 1
+        bias = adapt(i - oldi, outsize, oldi == 0)
+        n = n + (i // outsize)
+        i = i % outsize
+        output.insert(i, n.chr)
+        i = i + 1
+        init = true
+      end
+    end
+
+    chars_str = [] of String
+    output.each { |c| chars_str << c.to_s }
+    chars_str.join("")
+  end
+
+  def self.to_ascii(string : String) : String
+    has_non_ascii = false
+    string.each_char do |c|
+      if c.ord > 127
+        has_non_ascii = true
+        break
+      end
+    end
+    return string unless has_non_ascii
+
+    parts = string.split('.')
+    encoded_parts = [] of String
+    parts.each do |part|
+      part_non_ascii = false
+      part.each_char do |c|
+        if c.ord > 127
+          part_non_ascii = true
+          break
+        end
+      end
+      if part_non_ascii
+        encoded_parts << ("xn--" + encode(part))
+      else
+        encoded_parts << part
+      end
+    end
+    encoded_parts.join(".")
+  end
+end
+
+pub class ParamsBuilder
+  @io : IO
+  @space_to_plus : Bool
+  @first : Bool
+
+  def initialize(@io : IO, *, @space_to_plus : Bool = true)
+    @first = true
+  end
+
+  def add(key : String, value : String?) : self
+    @io << '&' unless @first
+    @first = false
+    URI.encode_www_form(key, @io, space_to_plus: @space_to_plus)
+    @io << '='
+    if value
+      URI.encode_www_form(value, @io, space_to_plus: @space_to_plus)
+    end
+    self
+  end
+
+  def add(key : String, values : Array(String)) : self
+    values.each { |v| add(key, v) }
+    self
+  end
+end
+
 # An ordered multi-value collection representing URI query parameters
 # or application/x-www-form-urlencoded form data.
 pub struct Params
+  alias Builder = ::Std::Uri::ParamsBuilder
+
   @keys : Array(String)
   @values : Array(String)
 
@@ -21,6 +241,34 @@ pub struct Params
   def initialize(keys : Array(String), values : Array(String))
     @keys = keys
     @values = values
+  end
+
+  def self.build(io : IO, *, space_to_plus : Bool = true, &block : Builder -> Nil) : Nil
+    builder = Builder.new(io, space_to_plus: space_to_plus)
+    yield builder
+  end
+
+  def self.build(*, space_to_plus : Bool = true, &block : Builder -> Nil) : String
+    io = IO::Memory.new
+    build(io, space_to_plus: space_to_plus, &block)
+    io.to_s
+  end
+
+  def self.encode(io : IO, hash : Hash(String, String)) : Nil
+    first = true
+    hash.each do |k, v|
+      io << '&' unless first
+      first = false
+      URI.encode_www_form(k, io, space_to_plus: true)
+      io << '='
+      URI.encode_www_form(v, io, space_to_plus: true)
+    end
+  end
+
+  def self.encode(hash : Hash(String, String)) : String
+    io = IO::Memory.new
+    encode(io, hash)
+    io.to_s
   end
 
   def empty? : Bool
@@ -73,6 +321,15 @@ pub struct Params
     result
   end
 
+  def fetch(key : String, default : String) : String
+    self[key]? || default
+  end
+
+  def fetch(key : String, &block : String -> String) : String
+    val = self[key]?
+    val ? val : yield(key)
+  end
+
   # Appends a key-value pair, preserving duplicate keys.
   def add(key : String, value : String) : Nil
     @keys << key
@@ -106,6 +363,13 @@ pub struct Params
     @values = new_values
   end
 
+  def set_all(key : String, values : Array(String)) : Nil
+    delete(key)
+    values.each do |v|
+      add(key, v)
+    end
+  end
+
   # Deletes all entries for *key*, returning the removed values or nil.
   def delete(key : String) : Array(String)?
     new_keys = [] of String
@@ -126,8 +390,39 @@ pub struct Params
     removed.empty? ? nil : removed
   end
 
-  # Iterates through each key-value pair.
-  def each(& : (String, String) -> Nil) : Nil
+  def delete_all(key : String) : Nil
+    delete(key)
+    nil
+  end
+
+  def clone : Params
+    Params.new(@keys.dup, @values.dup)
+  end
+
+  def dup : Params
+    Params.new(@keys.dup, @values.dup)
+  end
+
+  def merge(other : Params, replace : Bool = false) : Params
+    res = clone
+    res.merge_in_place(other, replace: replace)
+    res
+  end
+
+  def merge_in_place(other : Params, replace : Bool = false) : self
+    if replace
+      other.each do |k, v|
+        self[k] = v
+      end
+    else
+      other.each do |k, v|
+        add(k, v)
+      end
+    end
+    self
+  end
+
+  def each(&block : (String, String) -> Nil) : Nil
     i = 0
     while i < @keys.size
       yield @keys[i], @values[i]
@@ -135,16 +430,34 @@ pub struct Params
     end
   end
 
-  # Parses query string into Params.
+  def ==(other : Params) : Bool
+    return false unless @keys.size == other.size
+    i = 0
+    while i < @keys.size
+      return false unless @keys[i] == other.@keys[i] && @values[i] == other.@values[i]
+      i = i + 1
+    end
+    true
+  end
+
+  def hash : UInt64
+    h = 0_u64
+    i = 0
+    while i < @keys.size
+      h = h ^ (@keys[i].hash * 31_u64 + @values[i].hash)
+      i = i + 1
+    end
+    h
+  end
+
+  # Parses query string according to application/x-www-form-urlencoded rules.
+  # Supports both '&' and ';' as parameter separators.
   def self.parse(query : String) : Params
     params = Params.new
-    return params if query.empty?
+    q = query.starts_with?('?') ? query[1, query.bytesize - 1] : query
+    return params if q.empty?
 
-    # Strip optional leading '?'
-    s = query.starts_with?('?') ? query[1, query.bytesize - 1] : query
-    return params if s.empty?
-
-    pairs = s.split('&')
+    pairs = q.split('&')
     p_idx = 0
     while p_idx < pairs.size
       pair = pairs[p_idx]
@@ -172,21 +485,36 @@ pub struct Params
     params
   end
 
-  # Encodes parameters to application/x-www-form-urlencoded string.
   def to_s : String
+    to_s(space_to_plus: true)
+  end
+
+  def to_s(space_to_plus : Bool = true) : String
     parts = [] of String
     i = 0
     while i < @keys.size
-      k_enc = URI.encode_www_form(@keys[i])
-      v_enc = URI.encode_www_form(@values[i])
+      k_enc = URI.encode_www_form(@keys[i], space_to_plus: space_to_plus)
+      v_enc = URI.encode_www_form(@values[i], space_to_plus: space_to_plus)
       parts << (k_enc + "=" + v_enc)
       i = i + 1
     end
     parts.join("&")
   end
+
+  def to_s(io : IO, space_to_plus : Bool = true) : Nil
+    str = to_s(space_to_plus: space_to_plus)
+    io.write(str.to_unsafe, str.bytesize)
+  end
 end
 
 pub class URI
+  alias Error = ::Std::Uri::Error
+  alias SerializableError = ::Std::Uri::SerializableError
+  alias Punycode = ::Std::Uri::Punycode
+  alias Params = ::Std::Uri::Params
+
+  @@custom_ports : Hash(String, Int32) = Hash(String, Int32).new
+
   @scheme : String?
   @user : String?
   @password : String?
@@ -254,6 +582,19 @@ pub class URI
     end
   end
 
+  def self.from_json_object_key?(key : String) : URI?
+    URI.parse(key)
+  end
+
+  def self.set_default_port(scheme : String, port : Int32?) : Nil
+    s = scheme.downcase
+    if port
+      @@custom_ports[s] = port
+    else
+      @@custom_ports.delete(s)
+    end
+  end
+
   def userinfo : String?
     u = @user
     return nil unless u
@@ -297,6 +638,12 @@ pub class URI
     @query = params.empty? ? nil : params.to_s
   end
 
+  def update_query_params(&block : Params -> Nil) : Nil
+    p = query_params
+    yield p
+    self.query_params = p
+  end
+
   def authority : String?
     return nil unless @host || @user || @port
 
@@ -322,26 +669,53 @@ pub class URI
     parts.join("")
   end
 
+  def authority(io : IO) : Nil
+    if a = authority
+      io.write(a.to_unsafe, a.bytesize)
+    end
+  end
+
+  # RFC 7230 section 5.3: Request Target for HTTP requests
+  def request_target : String
+    p = @path.empty? ? "/" : @path
+    q = @query
+    q ? (p + "?" + q) : p
+  end
+
+  def ==(other : URI) : Bool
+    @scheme == other.scheme &&
+      @user == other.user &&
+      @password == other.password &&
+      @host == other.host &&
+      @port == other.port &&
+      @path == other.path &&
+      @query == other.query &&
+      @fragment == other.fragment
+  end
+
+  def hash : UInt64
+    h = 0_u64
+    if s = @scheme; h = h ^ s.hash; end
+    if u = @user; h = h ^ (u.hash * 31_u64); end
+    if p = @password; h = h ^ (p.hash * 37_u64); end
+    if ho = @host; h = h ^ (ho.hash * 41_u64); end
+    if pr = @port; h = h ^ (pr.to_u64 * 43_u64); end
+    h = h ^ (@path.hash * 47_u64)
+    if q = @query; h = h ^ (q.hash * 53_u64); end
+    if f = @fragment; h = h ^ (f.hash * 59_u64); end
+    h
+  end
+
   def to_s : String
     parts = [] of String
+
     if s = @scheme
       parts << (s + ":")
     end
 
-    has_auth = !@host.nil? || !@user.nil? || !@port.nil?
-    if has_auth
-      parts << "//"
-      auth_str = authority
-      if auth_str
-        parts << auth_str
-      end
-    end
-    if has_auth
-      if !@path.empty? && !@path.starts_with?('/')
-        parts << "/"
-      end
-    elsif @path.starts_with?("//")
-      parts << "/."
+    auth = authority
+    if auth
+      parts << ("//" + auth)
     end
 
     parts << @path
@@ -353,46 +727,50 @@ pub class URI
     if f = @fragment
       parts << ("#" + f)
     end
+
     parts.join("")
+  end
+
+  def to_s(io : IO) : Nil
+    str = to_s
+    io.write(str.to_unsafe, str.bytesize)
+  end
+
+  def to_json : String
+    "\"" + to_s + "\""
+  end
+
+  def to_yaml : String
+    to_s
   end
 
   def dup : URI
     URI.new(
-      scheme: @scheme,
-      host: @host,
-      port: @port,
-      path: @path,
-      query: @query,
-      user: @user,
-      password: @password,
-      fragment: @fragment
+      @scheme,
+      @host,
+      @port,
+      @path,
+      @query,
+      @user,
+      @password,
+      @fragment
     )
   end
 
-  def ==(other : URI) : Bool
-    @scheme == other.scheme &&
-      @host == other.host &&
-      @port == other.port &&
-      @path == other.path &&
-      @query == other.query &&
-      @user == other.user &&
-      @password == other.password &&
-      @fragment == other.fragment
-  end
-
   # =========================================================================
-  # RFC 3986 Section 2: Percent-Encoding and Decoding
+  # Percent-Encoding and Decoding (RFC 3986 Section 2)
   # =========================================================================
 
-  # Unreserved characters: ALPHA / DIGIT / "-" / "." / "_" / "~"
-  def self.unreserved?(byte : UInt8) : Bool
-    (byte >= 97_u8 && byte <= 122_u8) ||  # a-z
-      (byte >= 65_u8 && byte <= 90_u8) || # A-Z
-      (byte >= 48_u8 && byte <= 57_u8) || # 0-9
-      byte == 45_u8 ||                    # -
-      byte == 46_u8 ||                    # .
-      byte == 95_u8 ||                    # _
-      byte == 126_u8                      # ~
+  # RFC 3986 section 2.3: Unreserved Characters
+  # unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"
+  def self.unreserved?(b : UInt8) : Bool
+    (b >= 97_u8 && b <= 122_u8) ||  # a-z
+      (b >= 65_u8 && b <= 90_u8) || # A-Z
+      (b >= 48_u8 && b <= 57_u8) || # 0-9
+      b == 45_u8 ||                 # -
+      b == 46_u8 ||                 # .
+      b == 95_u8 ||                 # _
+      b == 126_u8                   # ~
   end
 
   # Gen-delims: ":" / "/" / "?" / "#" / "[" / "]" / "@"
@@ -431,26 +809,38 @@ pub class URI
       (byte >= 97_u8 && byte <= 102_u8)   # a-f
   end
 
-  private def self.hex_value(byte : UInt8) : Int32
-    if byte >= 48_u8 && byte <= 57_u8
-      (byte - 48_u8).to_i
-    elsif byte >= 65_u8 && byte <= 70_u8
-      (byte - 65_u8 + 10_u8).to_i
-    elsif byte >= 97_u8 && byte <= 102_u8
-      (byte - 97_u8 + 10_u8).to_i
+  # Characters permitted unencoded in a path segment (pchar = unreserved | sub-delims | ":" | "@")
+  def self.pchar?(b : UInt8) : Bool
+    unreserved?(b) ||
+      b == 33_u8 || b == 36_u8 || b == 38_u8 || b == 39_u8 || # ! $ & '
+      b == 40_u8 || b == 41_u8 || b == 42_u8 || b == 43_u8 || # ( ) * +
+      b == 44_u8 || b == 59_u8 || b == 61_u8 ||              # , ; =
+      b == 58_u8 || b == 64_u8                              # : @
+  end
+
+  # Characters permitted unencoded in a query or fragment (query = pchar | "/" | "?")
+  def self.query_char?(b : UInt8) : Bool
+    pchar?(b) || b == 47_u8 || b == 63_u8
+  end
+
+  private def self.hex_char(val : Int32) : UInt8
+    val < 10 ? (48 + val).to_u8 : (65 + (val - 10)).to_u8
+  end
+
+  private def self.hex_value(b : UInt8) : Int32
+    if b >= 48_u8 && b <= 57_u8
+      b.to_i - 48
+    elsif b >= 65_u8 && b <= 70_u8
+      b.to_i - 65 + 10
+    elsif b >= 97_u8 && b <= 102_u8
+      b.to_i - 97 + 10
     else
       -1
     end
   end
 
-  private def self.hex_char(nibble : Int32) : UInt8
-    nibble < 10 ? (48 + nibble).to_u8 : (65 + nibble - 10).to_u8
-  end
-
-  # Percent-encodes string.
-  # Guarantees:
-  # 1. Does not double-encode: if a sequence is already %XX (valid hex), it is preserved.
-  # 2. Non-ASCII bytes are percent-encoded per byte so UTF-8 round-trips.
+  # Encodes a string according to RFC 3986 URI component rules.
+  # Escapes everything except unreserved characters.
   def self.encode(str : String, space_to_plus : Bool = false) : String
     bytes = [] of UInt8
     raw = str.to_unsafe
@@ -500,6 +890,14 @@ pub class URI
     end
   end
 
+  def self.encode(str : String, io : IO, space_to_plus : Bool = false) : Nil
+    s = encode(str, space_to_plus: space_to_plus)
+    io.write(s.to_unsafe, s.bytesize)
+  end
+
+  # Encodes a URI path: preserves '/' and pchar, escapes other characters.
+  # Traps:
+  # - Must not double-encode existing valid percent escapes (%20 -> %20, not %2520).
   def self.encode_path(str : String) : String
     bytes = [] of UInt8
     raw = str.to_unsafe
@@ -507,8 +905,11 @@ pub class URI
     i = 0
     while i < len
       b = raw[i]
-      if b == 37_u8 # '%'
-        if i + 2 < len && hex_digit?(raw[i + 1]) && hex_digit?(raw[i + 2])
+      if b == 47_u8 || pchar?(b) # '/' or pchar
+        bytes << b
+        i = i + 1
+      elsif b == 37_u8 # '%' check for existing valid escape
+        if i + 2 < len && hex_value(raw[i + 1]) >= 0 && hex_value(raw[i + 2]) >= 0
           bytes << 37_u8
           bytes << raw[i + 1]
           bytes << raw[i + 2]
@@ -519,9 +920,6 @@ pub class URI
           bytes << 53_u8
           i = i + 1
         end
-      elsif unreserved?(b) || b == 47_u8 # '/' allowed in path
-        bytes << b
-        i = i + 1
       else
         bytes << 37_u8
         high = (b.to_i >> 4) & 0xF
@@ -537,6 +935,12 @@ pub class URI
     end
   end
 
+  def self.encode_path(io : IO, str : String) : Nil
+    s = encode_path(str)
+    io.write(s.to_unsafe, s.bytesize)
+  end
+
+  # Encodes a single path segment: preserves pchar but escapes '/'
   def self.encode_path_segment(str : String) : String
     bytes = [] of UInt8
     raw = str.to_unsafe
@@ -545,7 +949,7 @@ pub class URI
     while i < len
       b = raw[i]
       if b == 37_u8 # '%'
-        if i + 2 < len && hex_digit?(raw[i + 1]) && hex_digit?(raw[i + 2])
+        if i + 2 < len && hex_value(raw[i + 1]) >= 0 && hex_value(raw[i + 2]) >= 0
           bytes << 37_u8
           bytes << raw[i + 1]
           bytes << raw[i + 2]
@@ -572,6 +976,11 @@ pub class URI
     String.new(bytes.size) do |buf|
       buf.copy_from(bytes.to_unsafe, bytes.size)
     end
+  end
+
+  def self.encode_path_segment(io : IO, str : String) : Nil
+    s = encode_path_segment(str)
+    io.write(s.to_unsafe, s.bytesize)
   end
 
   def self.encode_www_form(str : String, space_to_plus : Bool = true) : String
@@ -606,6 +1015,11 @@ pub class URI
     String.new(bytes.size) do |buf|
       buf.copy_from(bytes.to_unsafe, bytes.size)
     end
+  end
+
+  def self.encode_www_form(str : String, io : IO, space_to_plus : Bool = true) : Nil
+    s = encode_www_form(str, space_to_plus: space_to_plus)
+    io.write(s.to_unsafe, s.bytesize)
   end
 
   # Decodes percent-encoded string.
@@ -659,8 +1073,18 @@ pub class URI
     end
   end
 
+  def self.decode(str : String, io : IO, plus_to_space : Bool = false) : Nil
+    s = decode(str, plus_to_space: plus_to_space)
+    io.write(s.to_unsafe, s.bytesize)
+  end
+
   def self.decode_www_form(str : String, plus_to_space : Bool = true) : String
     decode(str, plus_to_space: plus_to_space)
+  end
+
+  def self.decode_www_form(str : String, io : IO, plus_to_space : Bool = true) : Nil
+    s = decode_www_form(str, plus_to_space: plus_to_space)
+    io.write(s.to_unsafe, s.bytesize)
   end
 
   # =========================================================================
@@ -701,82 +1125,88 @@ pub class URI
       end
     end
 
-    # Authority: begins with "//"
+    # Parse authority if starts with "//"
     if ptr + 1 < len && raw[ptr] == 47_u8 && raw[ptr + 1] == 47_u8
       ptr = ptr + 2
-      # Authority runs until '/', '?', '#', or end of string
       auth_start = ptr
       while ptr < len && raw[ptr] != 47_u8 && raw[ptr] != 63_u8 && raw[ptr] != 35_u8
         ptr = ptr + 1
       end
       auth_str = s[auth_start, ptr - auth_start]
-
-      # Parse userinfo@host:port from auth_str
-      at_idx = auth_str.index('@')
-      host_port_str = auth_str
-      if at_idx
-        uinfo = auth_str[0, at_idx]
-        colon_ui = uinfo.index(':')
-        if colon_ui
-          uri.user = URI.decode_www_form(uinfo[0, colon_ui])
-          uri.password = URI.decode_www_form(uinfo[colon_ui + 1, uinfo.bytesize - colon_ui - 1])
-        else
-          uri.user = URI.decode_www_form(uinfo)
-        end
-        host_port_str = auth_str[at_idx + 1, auth_str.bytesize - at_idx - 1]
-      end
-
-      # Parse host and port, taking IPv6 [ ... ] into account
-      if host_port_str.starts_with?('[')
-        bracket_end = host_port_str.index(']')
-        if bracket_end
-          uri.host = host_port_str[0, bracket_end + 1]
-          rest = host_port_str[bracket_end + 1, host_port_str.bytesize - bracket_end - 1]
-          if rest.starts_with?(':')
-            port_str = rest[1, rest.bytesize - 1]
-            p_val = port_str.to_i?
-            uri.port = p_val if p_val
-          end
-        else
-          uri.host = host_port_str
-        end
-      else
-        colon_hp = host_port_str.rindex(':')
-        if colon_hp
-          uri.host = host_port_str[0, colon_hp]
-          port_str = host_port_str[colon_hp + 1, host_port_str.bytesize - colon_hp - 1]
-          p_val = port_str.to_i?
-          uri.port = p_val if p_val
-        else
-          uri.host = host_port_str
-        end
-      end
+      parse_authority(auth_str, uri)
     end
 
-    # Path runs until '?', '#', or end
+    # Parse path until '?' or '#' or end
     path_start = ptr
     while ptr < len && raw[ptr] != 63_u8 && raw[ptr] != 35_u8
       ptr = ptr + 1
     end
     uri.path = s[path_start, ptr - path_start]
 
-    # Query: begins with '?'
-    if ptr < len && raw[ptr] == 63_u8 # '?'
+    # Parse query if '?' present
+    if ptr < len && raw[ptr] == 63_u8
       ptr = ptr + 1
       query_start = ptr
-      while ptr < len && raw[ptr] != 35_u8 # '#'
+      while ptr < len && raw[ptr] != 35_u8
         ptr = ptr + 1
       end
       uri.query = s[query_start, ptr - query_start]
     end
 
-    # Fragment: begins with '#'
-    if ptr < len && raw[ptr] == 35_u8 # '#'
+    # Parse fragment if '#' present
+    if ptr < len && raw[ptr] == 35_u8
       ptr = ptr + 1
       uri.fragment = s[ptr, len - ptr]
     end
 
     uri
+  end
+
+  private def self.parse_authority(auth : String, uri : URI) : Nil
+    return if auth.empty?
+
+    # Check for userinfo before '@'
+    at_idx = auth.rindex('@')
+    host_port = ""
+    if at_idx
+      userinfo = auth[0, at_idx]
+      colon = userinfo.index(':')
+      if colon
+        uri.user = URI.decode_www_form(userinfo[0, colon])
+        uri.password = URI.decode_www_form(userinfo[colon + 1, userinfo.bytesize - colon - 1])
+      else
+        uri.user = URI.decode_www_form(userinfo)
+      end
+      host_port = auth[at_idx + 1, auth.bytesize - at_idx - 1]
+    else
+      host_port = auth
+    end
+
+    # Check for IPv6 host enclosed in brackets "[...]"
+    if host_port.starts_with?('[')
+      close_bracket = host_port.index(']')
+      if close_bracket
+        uri.host = host_port[0, close_bracket + 1]
+        after_bracket = host_port[close_bracket + 1, host_port.bytesize - close_bracket - 1]
+        if after_bracket.starts_with?(':')
+          port_str = after_bracket[1, after_bracket.bytesize - 1]
+          port_val = port_str.to_i?
+          uri.port = port_val if port_val
+        end
+        return
+      end
+    end
+
+    # Non-IPv6 host: check for port after last ':'
+    colon = host_port.rindex(':')
+    if colon
+      uri.host = host_port[0, colon]
+      port_str = host_port[colon + 1, host_port.bytesize - colon - 1]
+      port_val = port_str.to_i?
+      uri.port = port_val if port_val
+    else
+      uri.host = host_port
+    end
   end
 
   # =========================================================================
@@ -787,72 +1217,80 @@ pub class URI
     return "" if path.empty?
 
     input = path
-    output_segments = [] of String
+    output = [] of String
 
     while !input.empty?
-      # A. If the input buffer begins with a prefix of "../" or "./",
-      #    then remove that prefix from the input buffer; otherwise,
+      # A: If the input buffer begins with a prefix of "../" or "./",
+      # then remove that prefix from the input buffer; otherwise,
       if input.starts_with?("../")
         input = input[3, input.bytesize - 3]
       elsif input.starts_with?("./")
         input = input[2, input.bytesize - 2]
-        # B. if the input buffer begins with a prefix of "/./" or "/.",
-        #    where "." is a complete path segment, then replace that
-        #    prefix with "/" in the input buffer; otherwise,
+      # B: if the input buffer begins with a prefix of "/./" or "/.",
+      # where "." is a complete path segment, then replace that
+      # prefix with "/" in the input buffer; otherwise,
       elsif input.starts_with?("/./")
         input = "/" + input[3, input.bytesize - 3]
       elsif input == "/."
         input = "/"
-        # C. if the input buffer begins with a prefix of "/../" or "/..",
-        #    where ".." is a complete path segment, then replace that
-        #    prefix with "/" in the input buffer and remove the last
-        #    segment and its preceding "/" (if any) from the output buffer;
+      # C: if the input buffer begins with a prefix of "/../" or "/..",
+      # where ".." is a complete path segment, then replace that
+      # prefix with "/" in the input buffer and remove the last
+      # segment and its preceding "/" (if any) from the output buffer;
       elsif input.starts_with?("/../")
         input = "/" + input[4, input.bytesize - 4]
-        output_segments.pop unless output_segments.empty?
+        output.pop unless output.empty?
       elsif input == "/.."
         input = "/"
-        output_segments.pop unless output_segments.empty?
-        # D. if the input buffer consists only of "." or "..", then remove
-        #    that from the input buffer; otherwise,
+        output.pop unless output.empty?
+      # D: if the input buffer consists only of "." or "..",
+      # then remove that from the input buffer; otherwise,
       elsif input == "." || input == ".."
         input = ""
-        # E. move the first path segment in the input buffer to the end of
-        #    the output buffer, including the initial "/" character (if any)
-        #    and any subsequent characters up to, but not including, the next
-        #    "/" character or the end of the input buffer.
+      # E: move the first path segment in the input buffer to the end of
+      # the output buffer, including the initial "/" character (if any)
+      # and any subsequent characters up to, but not including, the next
+      # "/" character or the end of the input buffer.
       else
-        slash_idx = -1
-        if input.starts_with?('/')
-          # search for next '/' after index 0
-          next_slash = input.index('/', 1)
-          slash_idx = next_slash ? next_slash : input.bytesize
-        else
-          next_slash = input.index('/')
-          slash_idx = next_slash ? next_slash : input.bytesize
+        seg_end = -1
+        raw = input.to_unsafe
+        len = input.bytesize
+        i = 0
+        if raw[0] == 47_u8 # starts with '/'
+          i = 1
         end
-        segment = input[0, slash_idx]
-        output_segments << segment
-        input = input[slash_idx, input.bytesize - slash_idx]
+        while i < len
+          if raw[i] == 47_u8
+            seg_end = i
+            break
+          end
+          i = i + 1
+        end
+
+        if seg_end > 0
+          output << input[0, seg_end]
+          input = input[seg_end, len - seg_end]
+        else
+          output << input
+          input = ""
+        end
       end
     end
 
-    res = output_segments.join("")
+    res = output.join("")
     res
   end
 
   # =========================================================================
-  # RFC 3986 Section 5.2: Relative Reference Resolution
+  # RFC 3986 Section 5: Reference Resolution
   # =========================================================================
 
-  # Resolves *ref* against this URI as Base URI according to RFC 3986 section 5.2.
   def resolve(ref : URI | String) : URI
-    r = ref.is_a?(URI) ? ref : URI.parse(ref)
-
-    # 5.2.2. Transform References
+    r = ref.is_a?(String) ? URI.parse(ref) : ref
+    # RFC 3986 Section 5.2.2: Transform References
     t = URI.new
 
-    if r.absolute?
+    if r.scheme
       t.scheme = r.scheme
       t.host = r.host
       t.port = r.port
@@ -861,7 +1299,8 @@ pub class URI
       t.path = URI.remove_dot_segments(r.path)
       t.query = r.query
     else
-      # R.scheme is undefined
+      t.scheme = @scheme
+
       if r.host || r.user || r.port
         t.host = r.host
         t.port = r.port
@@ -870,6 +1309,11 @@ pub class URI
         t.path = URI.remove_dot_segments(r.path)
         t.query = r.query
       else
+        t.host = @host
+        t.port = @port
+        t.user = @user
+        t.password = @password
+
         if r.path.empty?
           t.path = @path
           if r.query
@@ -881,18 +1325,11 @@ pub class URI
           if r.path.starts_with?('/')
             t.path = URI.remove_dot_segments(r.path)
           else
-            # Merge paths (5.2.3)
-            merged = merge_paths(@path, r.path)
-            t.path = URI.remove_dot_segments(merged)
+            t.path = URI.remove_dot_segments(merge_paths(@path, r.path))
           end
           t.query = r.query
         end
-        t.host = @host
-        t.port = @port
-        t.user = @user
-        t.password = @password
       end
-      t.scheme = @scheme
     end
 
     t.fragment = r.fragment
@@ -914,12 +1351,25 @@ pub class URI
     end
   end
 
+  # Relative to base URI
+  def relativize(other : URI | String) : URI
+    target = other.is_a?(String) ? URI.parse(other) : other
+    return target if @scheme != target.scheme || @host != target.host || @port != target.port
+    rel = URI.new
+    rel.path = target.path
+    rel.query = target.query
+    rel.fragment = target.fragment
+    rel
+  end
+
   # =========================================================================
   # Normalization
   # =========================================================================
 
   def self.default_port(scheme : String) : Int32?
     s = scheme.downcase
+    custom = @@custom_ports[s]?
+    return custom if custom
     if s == "http" || s == "ws"
       80
     elsif s == "https" || s == "wss"
