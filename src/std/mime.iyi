@@ -16,12 +16,25 @@
 module std/mime
 
 import std/text
+import std/io
+import std/file
+import std/slice
+using std/slice::{Bytes}
+
+pub class Error < ::Exception
+  getter message : String?
+  getter cause : Exception?
+
+  def initialize(@message : String? = nil, @cause : Exception? = nil)
+  end
+end
 
 pub struct MediaType
   @media_type : String
   @params : Hash(String, String)
 
   getter media_type : String
+  getter params : Hash(String, String)
 
   def initialize(@media_type : String, @params : Hash(String, String))
   end
@@ -29,6 +42,14 @@ pub struct MediaType
   def initialize(media_type : String)
     @media_type = media_type.downcase
     @params = Hash(String, String).new
+  end
+
+  def self.new(media_type : String, params : Hash(String, String)? = nil) : MediaType
+    if params
+      new(media_type, params)
+    else
+      new(media_type)
+    end
   end
 
   # Returns the top-level type (before the slash), e.g. "text" from "text/html".
@@ -65,6 +86,11 @@ pub struct MediaType
   def fetch(key : String, default_value : String) : String
     val = @params[key.downcase]?
     val ? val : default_value
+  end
+
+  def fetch(key : String, &block : String -> String) : String
+    val = @params[key.downcase]?
+    val ? val : yield(key)
   end
 
   def []=(key : String, value : String) : Nil
@@ -252,9 +278,272 @@ pub struct MediaType
     end
     parts.join("")
   end
+
+  def to_s(io : IO) : Nil
+    str = to_s
+    io.write(str.to_unsafe, str.bytesize)
+  end
+end
+
+pub struct Multipart
+  class Error < Std::Mime::Error
+  end
+
+  @@boundary_counter : UInt64 = 0_u64
+
+  # Generates a unique multipart boundary conforming to RFC 2046.
+  def self.generate_boundary : String
+    @@boundary_counter = @@boundary_counter + 1_u64
+    "---------------------------iyi" + @@boundary_counter.to_s + "b" + (@@boundary_counter * 6364136223846793005_u64).to_s(16)
+  end
+
+  # Extracts the boundary parameter from a Content-Type header string.
+  def self.parse_boundary(content_type : String) : String?
+    mt = MediaType.parse?(content_type)
+    return nil unless mt
+    mt["boundary"]?
+  end
+
+  def self.build(io : IO, boundary : String = generate_boundary, &block : Builder -> Nil) : Nil
+    builder = Builder.new(io, boundary)
+    yield builder
+    builder.finish
+  end
+
+  def self.build(boundary : String = generate_boundary, &block : Builder -> Nil) : String
+    io = IO::Memory.new
+    build(io, boundary, &block)
+    io.to_s
+  end
+
+  def self.parse(io : IO, boundary : String) : Parser
+    Parser.new(io, boundary)
+  end
+
+  pub class Builder
+    getter boundary : String
+
+    def initialize(@io : IO, @boundary : String = Std::Mime::Multipart.generate_boundary)
+      @finished = false
+    end
+
+    def content_type(subtype : String = "form-data") : String
+      "multipart/#{subtype}; boundary=\"#{@boundary}\""
+    end
+
+    def preamble(string : String) : Nil
+      @io.write(string.to_unsafe, string.bytesize)
+      @io.write("\r\n".to_unsafe, 2)
+    end
+
+    def preamble(data : Bytes) : Nil
+      @io.write(data.to_unsafe, data.size)
+      @io.write("\r\n".to_unsafe, 2)
+    end
+
+    def preamble(preamble_io : IO) : Nil
+      content = preamble_io.read_all
+      @io.write(content.to_unsafe, content.bytesize)
+      @io.write("\r\n".to_unsafe, 2)
+    end
+
+    def epilogue(string : String) : Nil
+      @io.write(string.to_unsafe, string.bytesize)
+    end
+
+    def epilogue(data : Bytes) : Nil
+      @io.write(data.to_unsafe, data.size)
+    end
+
+    def epilogue(epilogue_io : IO) : Nil
+      content = epilogue_io.read_all
+      @io.write(content.to_unsafe, content.bytesize)
+    end
+
+    def body_part(headers : Hash(String, String), string : String) : Nil
+      write_boundary
+      write_headers(headers)
+      @io.write(string.to_unsafe, string.bytesize)
+      @io.write("\r\n".to_unsafe, 2)
+    end
+
+    def body_part(headers : Hash(String, String), data : Bytes) : Nil
+      write_boundary
+      write_headers(headers)
+      @io.write(data.to_unsafe, data.size)
+      @io.write("\r\n".to_unsafe, 2)
+    end
+
+    def body_part(headers : Hash(String, String), body_io : IO) : Nil
+      write_boundary
+      write_headers(headers)
+      content = body_io.read_all
+      @io.write(content.to_unsafe, content.bytesize)
+      @io.write("\r\n".to_unsafe, 2)
+    end
+
+    def body_part(headers : Hash(String, String), &block : IO -> Nil) : Nil
+      write_boundary
+      write_headers(headers)
+      yield @io
+      @io.write("\r\n".to_unsafe, 2)
+    end
+
+    def finish : Nil
+      return if @finished
+      @finished = true
+      end_bound = "--#{@boundary}--\r\n"
+      @io.write(end_bound.to_unsafe, end_bound.bytesize)
+    end
+
+    private def write_boundary : Nil
+      bound = "--#{@boundary}\r\n"
+      @io.write(bound.to_unsafe, bound.bytesize)
+    end
+
+    private def write_headers(headers : Hash(String, String)) : Nil
+      headers.each do |k, v|
+        line = "#{k}: #{v}\r\n"
+        @io.write(line.to_unsafe, line.bytesize)
+      end
+      @io.write("\r\n".to_unsafe, 2)
+    end
+  end
+
+  pub class Parser
+    getter boundary : String
+    @io : IO
+    @delimiter : String
+    @end_delimiter : String
+    @finished : Bool
+    @has_peeked : Bool
+    @peeked_headers : Hash(String, String)?
+    @peeked_body : String?
+
+    def initialize(@io : IO, @boundary : String)
+      @delimiter = "--" + @boundary
+      @end_delimiter = "--" + @boundary + "--"
+      @finished = false
+      @has_peeked = false
+      @peeked_headers = nil
+      @peeked_body = nil
+      read_preamble
+    end
+
+    private def read_preamble : Nil
+      while line = read_line_trimmed
+        if line == @delimiter
+          return
+        elsif line == @end_delimiter
+          @finished = true
+          return
+        end
+      end
+      @finished = true
+    end
+
+    private def read_line_trimmed : String?
+      s = @io.read_line(chomp: true)
+      return nil unless s
+      if s.ends_with?('\r')
+        s[0, s.bytesize - 1]
+      else
+        s
+      end
+    end
+
+    def has_next? : Bool
+      return false if @finished
+      unless @has_peeked
+        step_next
+      end
+      @peeked_headers != nil
+    end
+
+    def next : Tuple(Hash(String, String), String)?
+      if has_next?
+        if h = @peeked_headers
+          b = @peeked_body || ""
+          @has_peeked = false
+          @peeked_headers = nil
+          @peeked_body = nil
+          return {h, b}
+        end
+      end
+      nil
+    end
+
+    def next(&block : (Hash(String, String), IO) -> Nil) : Bool
+      part = self.next
+      return false unless part
+      h, b = part
+      mem = IO::Memory.new(b)
+      yield h, mem
+      true
+    end
+
+    private def step_next : Nil
+      return if @finished
+      headers = Hash(String, String).new
+
+      # Read headers until empty line
+      while line = read_line_trimmed
+        break if line.empty?
+        colon = line.index(':')
+        if colon
+          h_name = line[0, colon].strip
+          h_val = line[colon + 1, line.bytesize - colon - 1].strip
+          headers[h_name] = h_val
+        end
+      end
+
+      # Read body until next delimiter
+      body_lines = [] of String
+      boundary_found = false
+      while line = read_line_trimmed
+        if line == @delimiter
+          boundary_found = true
+          break
+        elsif line == @end_delimiter
+          boundary_found = true
+          @finished = true
+          break
+        else
+          body_lines << line
+        end
+      end
+
+      @finished = true unless boundary_found
+      @peeked_headers = headers
+      @peeked_body = body_lines.join("\r\n")
+      @has_peeked = true
+    end
+  end
 end
 
 pub struct MIME
+  alias Error = ::Std::Mime::Error
+  alias MediaType = ::Std::Mime::MediaType
+  alias Multipart = ::Std::Mime::Multipart
+
+  DEFAULT_TYPES = {
+    ".css"  => "text/css; charset=utf-8",
+    ".gif"  => "image/gif",
+    ".htm"  => "text/html; charset=utf-8",
+    ".html" => "text/html; charset=utf-8",
+    ".jpg"  => "image/jpeg",
+    ".jpeg" => "image/jpeg",
+    ".js"   => "text/javascript; charset=utf-8",
+    ".json" => "application/json",
+    ".pdf"  => "application/pdf",
+    ".png"  => "image/png",
+    ".svg"  => "image/svg+xml",
+    ".txt"  => "text/plain; charset=utf-8",
+    ".xml"  => "text/xml; charset=utf-8",
+    ".wasm" => "application/wasm",
+    ".webp" => "image/webp",
+  }
+
   @@custom_extensions : Hash(String, String) = Hash(String, String).new
   @@custom_reverse : Hash(String, Array(String)) = Hash(String, Array(String)).new
 
@@ -285,34 +574,20 @@ pub struct MIME
     custom = @@custom_extensions[normalized]?
     return custom if custom
 
+    # Check DEFAULT_TYPES constant
+    def_val = DEFAULT_TYPES[normalized]?
+    return def_val if def_val
+
     # Common built-in table
     case normalized
-    when ".html", ".htm"
-      "text/html; charset=utf-8"
-    when ".css"
-      "text/css; charset=utf-8"
-    when ".js", ".mjs"
+    when ".mjs"
       "text/javascript; charset=utf-8"
-    when ".json"
-      "application/json"
-    when ".xml"
-      "text/xml; charset=utf-8"
-    when ".txt", ".text"
+    when ".text"
       "text/plain; charset=utf-8"
     when ".csv"
       "text/csv; charset=utf-8"
     when ".md", ".markdown"
       "text/markdown; charset=utf-8"
-    when ".png"
-      "image/png"
-    when ".jpg", ".jpeg"
-      "image/jpeg"
-    when ".gif"
-      "image/gif"
-    when ".svg"
-      "image/svg+xml"
-    when ".webp"
-      "image/webp"
     when ".ico"
       "image/x-icon"
     when ".avif"
@@ -321,16 +596,12 @@ pub struct MIME
       "image/bmp"
     when ".tif", ".tiff"
       "image/tiff"
-    when ".pdf"
-      "application/pdf"
     when ".zip"
       "application/zip"
     when ".gz"
       "application/gzip"
     when ".tar"
       "application/x-tar"
-    when ".wasm"
-      "application/wasm"
     when ".bin"
       "application/octet-stream"
     when ".mp3"
@@ -370,6 +641,10 @@ pub struct MIME
     end
   end
 
+  def self.from_extension(ext : String, default : String) : String
+    from_extension?(ext) || default
+  end
+
   # Returns media type from file path or file name.
   def self.from_filename?(filename : String) : String?
     # Extract file extension after last dot, after last slash
@@ -388,6 +663,10 @@ pub struct MIME
     else
       raise "unknown mime filename: " + filename
     end
+  end
+
+  def self.from_filename(filename : String, default : String) : String
+    from_filename?(filename) || default
   end
 
   # Returns extensions registered for the given media type.
@@ -433,6 +712,33 @@ pub struct MIME
     end
 
     result
+  end
+
+  def self.init(load_defaults : Bool = true) : Nil
+    @@custom_extensions.clear
+    @@custom_reverse.clear
+    if load_defaults
+      DEFAULT_TYPES.each do |ext, type|
+        register(ext, type)
+      end
+    end
+  end
+
+  def self.init(filename : String) : Nil
+    if File.exists?(filename)
+      content = File.read(filename)
+      load_mime_database(content)
+    else
+      raise "MIME database file not found: #{filename}"
+    end
+  end
+
+  def self.load_mime_database(io : IO) : Nil
+    lines = [] of String
+    while line = io.read_line(chomp: true)
+      lines << line
+    end
+    load_mime_database(lines.join("\n"))
   end
 
   # Loads a mime database from mime.types format content.
