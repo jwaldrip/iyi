@@ -58,4 +58,3 @@ struct ::Bool
     self ? 1231 : 1237
   end
 end
-

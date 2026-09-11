@@ -92,4 +92,3 @@ struct ::Symbol
     io << quote_for_named_argument(string)
   end
 end
-
