@@ -32,6 +32,14 @@ pub def sleep(seconds : Number) : Nil
   nil
 end
 
+pub def sleep(seconds : Int32) : Nil
+  if seconds < 0
+    raise "Sleep seconds must be non-negative"
+  end
+  IyiScheduler.sleep_current(seconds * 1000)
+  nil
+end
+
 pub def sleep : Nil
   Fiber.suspend
 end

@@ -115,8 +115,18 @@ class ::Channel(T)
     IyiSendSelect(T).new(self, value)
   end
 
-  def self.receive_first(*channels : Channel(T)) : T forall T
-    receive_first(channels.to_a)
+  def self.receive_first(*channels : *U) forall U
+    loop do
+      {% for i in 0...U.size %}
+        if channels[{{ i }}].receive_ready? && !channels[{{ i }}].empty?
+          res = channels[{{ i }}].take_now
+          unless res.is_a?(ChannelClosed)
+            return res
+          end
+        end
+      {% end %}
+      Fiber.yield
+    end
   end
 
   def self.receive_first(channels : Array(Channel(T))) : T forall T
@@ -133,8 +143,18 @@ class ::Channel(T)
     end
   end
 
-  def self.send_first(value : T, *channels : Channel(T)) : Nil forall T
-    send_first(value, channels.to_a)
+  def self.send_first(value, *channels : *U) forall U
+    loop do
+      {% for i in 0...U.size %}
+        if channels[{{ i }}].send_ready?
+          res = channels[{{ i }}].put_now(value)
+          unless res.is_a?(ChannelClosed)
+            return nil
+          end
+        end
+      {% end %}
+      Fiber.yield
+    end
   end
 
   def self.send_first(value : T, channels : Array(Channel(T))) : Nil forall T
