@@ -16,7 +16,9 @@
 module std/deque
 
 import std/indexable
-using std/indexable::{Indexable}
+using std/indexable::{Indexable, IndexableMutable}
+import std/enumerable
+using std/enumerable::{Enumerable}
 
 pub class Deque(T)
   @buffer : Pointer(T)
@@ -480,5 +482,27 @@ impl Indexable for Deque(T) forall T
 
   def unsafe_fetch(index : Int32) : T
     internal_fetch(index)
+  end
+end
+
+impl IndexableMutable for Deque(T) forall T
+  type Elem = T
+
+  def unsafe_put(index : Int32, value : T) : T
+    idx = @start + index
+    idx = idx - @capacity if idx >= @capacity
+    @buffer[idx] = value
+  end
+end
+
+impl Enumerable for Deque(T) forall T
+  type Elem = T
+
+  def each(& : T -> Nil) : Nil
+    i = 0
+    while i < @size
+      yield internal_fetch(i)
+      i = i + 1
+    end
   end
 end
