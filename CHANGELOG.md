@@ -426,6 +426,46 @@
 
 ### Fixed
 
+- **The editor froze on `▶ run`, and the thirty-second guard could not
+  fire.** `iyi run` hands its pipes to the program it builds, and the
+  server handed *its* pipes to `Process` as `IO`s — which makes `wait`
+  wait for end-of-file on them as well as for the child. A program that
+  serves never closes them: the wait never returned, the timeout's own
+  `receive` waited on the same channel, and the single-threaded loop was
+  gone for good. One click on a web application's lens and the session
+  never answered anything again, which is what "iyi lsp froze" was on a
+  kemal port with a server in every file. The verb rides its own fiber
+  now and owns its pipes: the loop is free the whole time, the answer
+  joins the queue when the program is done, the kill travels (`iyi run`
+  forwards `SIGTERM`/`SIGHUP` to the program, so the port is free
+  afterwards), and a program printing in a loop is read to a megabyte
+  and then hung up on. Measured on the project that found it: a hover
+  sent 0.3 s into a `▶ run` over a listening server was answered in 0.3 s
+  where it had been answered never.
+- **The workspace pull owned the loop for every file it compiled.**
+  `workspace/diagnostic` is a compile per file, and the walk was written
+  inside the response: nothing could stop it. On this repository that is
+  94 compiles, and a hover sent 50 ms in was answered 10.9 seconds later
+  — the "it freezes while I type" a person reports as the server being
+  broken. The walk now reads its inbox between files: a cancel for the
+  pull is `-32800`, and anything else waiting stops it with `-32802` and
+  `retriggerRequest`, which is the code the diagnostic request carries
+  for exactly this and which the client answers by asking again two
+  seconds later. Verdicts are kept by `resultId`, so the pull that is
+  asked again resumes instead of starting over. The same hover is
+  answered in 0.23 s now, and a warm pull is unchanged at 20 ms.
+- **A panic that could not be printed was a segfault.** `raise` printed
+  through the program's own output stream, whose failed write raises —
+  so the panic printed, failed, printed the failure, failed again, and
+  recursed until the stack ended. `iyi run prog | head -3` died of
+  "invalid memory access" whose whole cause was the message about the
+  broken pipe. A panic goes straight to descriptor 2 now, through a
+  write that ignores its own failure: not the program's output (`prog >
+  data.json` was putting panics inside the JSON) and not a stream object
+  either, because `raise` is reachable before the globals one would use
+  are built — reaching for `STDERR` there flushed 22 zero bytes into the
+  front of every program's output. A refused write says which refusal it
+  was: `broken pipe: nothing is reading this output any more`.
 - **A private helper the declarations pruned because its default names its
   own module.** `prune_declaration` refuses a method whose text names a
   type the artifact did not carry, and a parameter's text holds its
@@ -4925,7 +4965,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,424-line library and nothing else. Every other
+  written against iyi's own 13,457-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

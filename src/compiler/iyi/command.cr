@@ -448,6 +448,19 @@ class Iyi::Command
             # (the running process can still handle this signal)
             Process.ignore_interrupts!
           {% end %}
+
+          # iyi: and pass on the one nobody delivers for us. `SIGINT`
+          # reaches the program by itself, because a terminal signals the
+          # whole foreground group; `SIGTERM` names one process, and that
+          # process is this one. Without this line, killing `iyi run`
+          # leaves the program it built running and holding whatever it
+          # had open - a port, in every program worth running this way.
+          # The editor's `▶ run` is what found it: the lens kills the
+          # verb after thirty seconds and the server it started stayed up.
+          {% unless flag?(:win32) || flag?(:wasm32) %}
+            Signal::TERM.trap { process.terminate rescue nil }
+            Signal::HUP.trap { process.terminate rescue nil }
+          {% end %}
         end
       end
       {$?, elapsed}

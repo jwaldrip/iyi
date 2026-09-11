@@ -101,6 +101,7 @@ module Iyi::Lsp
     # into one compile instead of queueing one per keystroke.
     def run : Nil
       messages = Channel(JSON::Any?).new(64)
+      @messages = messages
       spawn do
         loop do
           message = read_message
@@ -124,13 +125,73 @@ module Iyi::Lsp
       end
     end
 
-    # Block for the first message only; take the rest without waiting.
-    private def drain(messages : Channel(JSON::Any?)) : Nil
-      if @inbox.empty? && !@eof
-        if message = messages.receive
+    # The reader's channel, kept so work that runs long can look up from
+    # it: `workspace/diagnostic` walks the project a file at a time and
+    # reads the inbox between them.
+    @messages : Channel(JSON::Any?)?
+
+    # A verb the editor asked to run, finished. `iyi.run` launches the
+    # person's own program, which may serve forever; its fiber watches
+    # it and hands the answer back here, so the reply is still written
+    # by the loop and one frame cannot land inside another.
+    record Finished, id : JSON::Any, ok : Bool, output : String, error : String
+    @finished_verbs = Channel(Finished).new(RUNS_IN_FLIGHT)
+    @running_verbs = 0
+
+    # Take whatever has arrived, and register the cancels among it. Safe
+    # to call from inside a handler: it only moves messages from the
+    # channel into the queue the loop reads.
+    #
+    # The millisecond is not politeness, it is the whole mechanism. The
+    # reader rides a fiber parked on stdin, and a compile yields to
+    # nothing, so a purely non-blocking peek at the channel finds it
+    # empty however long the walk runs — measured: the pull noticed a
+    # waiting hover eight seconds after it arrived. Waiting on the
+    # channel with a deadline is the trip through the event loop that
+    # wakes the reader; at a tenth of a file's compile it does not show.
+    private def absorb_pending : Nil
+      return unless messages = @messages
+      return if @eof
+      select
+      when message = messages.receive
+        if message
           @inbox << message
         else
           @eof = true
+        end
+      when finished = @finished_verbs.receive
+        answer_verb(finished)
+      when timeout(1.millisecond)
+      end
+      loop do
+        select
+        when message = messages.receive
+          if message
+            @inbox << message
+          else
+            @eof = true
+          end
+        when finished = @finished_verbs.receive
+          answer_verb(finished)
+        else
+          break
+        end
+      end
+      sweep_cancels
+    end
+
+    # Block for the first message only; take the rest without waiting.
+    private def drain(messages : Channel(JSON::Any?)) : Nil
+      if @inbox.empty? && !@eof
+        select
+        when message = messages.receive
+          if message
+            @inbox << message
+          else
+            @eof = true
+          end
+        when finished = @finished_verbs.receive
+          answer_verb(finished)
         end
       end
       loop do
@@ -141,6 +202,8 @@ module Iyi::Lsp
           else
             @eof = true
           end
+        when finished = @finished_verbs.receive
+          answer_verb(finished)
         else
           break
         end
@@ -645,22 +708,57 @@ module Iyi::Lsp
         end
       end
 
+      # The verdicts first, and *interruptibly*, because this is the one
+      # request that compiles a hundred files.
+      #
+      # It was built inside the response, so the walk could not be stopped
+      # once it started: a cold pull of this repository is 94 compiles and
+      # eleven seconds, and every keystroke behind it waited the whole
+      # eleven — measured, hover answered at 10.91 s. One thread is the
+      # honest limit, but a *request* is not the unit it has to be honest
+      # about: between files the inbox is drained, and if the client
+      # cancelled this pull, or anything else is waiting to be answered,
+      # the walk stops and says so. A cancelled pull is `-32800`; one the
+      # server gave up on is `-32802` with `retriggerRequest`, which the
+      # protocol has for exactly this and which the editor answers by
+      # asking again when the typing stops.
+      answers = [] of {String, String, Array({Int32, Int32, Int32, Diag})?}
+      uris.each do |uri|
+        next unless @documents.has_key?(uri) || File.file?(path_of(uri))
+        result_id = ids[path_of(uri)]? || "0"
+        if previous[uri]? == result_id
+          answers << {uri, result_id, nil}
+          next
+        end
+
+        if kept = kept_rows(uri, result_id)
+          answers << {uri, result_id, kept}
+          next
+        end
+
+        # Only a file that has to be compiled is worth looking up from:
+        # everything above is a hash lookup, and a warm pull should not
+        # pay the event loop ninety-four times for nothing.
+        absorb_pending
+        return respond_cancelled(id) if @cancelled.delete(id.to_json)
+        return respond_retrigger(id) if waiting_request?(id)
+
+        answers << {uri, result_id, compile_rows(uri, result_id)}
+      end
+
       respond(id) do |json|
         json.object do
           json.field "items" do
             json.array do
-              uris.each do |uri|
-                next unless @documents.has_key?(uri) || File.file?(path_of(uri))
-                result_id = ids[path_of(uri)]? || "0"
+              answers.each do |(uri, result_id, rows)|
                 json.object do
                   json.field "uri", uri
                   json.field "version", nil
                   json.field "resultId", result_id
-                  if previous[uri]? == result_id
+                  if rows.nil?
                     json.field "kind", "unchanged"
                     next
                   end
-                  rows = diagnostic_rows(uri)
                   json.field "kind", "full"
                   json.field "items" do
                     json.array do
@@ -675,6 +773,65 @@ module Iyi::Lsp
           end
         end
       end
+    end
+
+    # One file's verdict, kept by the id that describes it.
+    #
+    # A pull the server gave up on is asked again, and without this the
+    # second pull recompiles every file the first one had already answered
+    # — which, with a client polling every two seconds while somebody
+    # types, is a server that never finishes anything. The key is the
+    # `resultId`, so a file that moved is compiled again by construction.
+    # Bounded to the cap the walk already has.
+    @workspace_rows = {} of String => {String, Array({Int32, Int32, Int32, Diag})}
+
+    private def kept_rows(uri : String, result_id : String) : Array({Int32, Int32, Int32, Diag})?
+      kept = @workspace_rows[uri]?
+      return nil unless kept && kept[0] == result_id
+      kept[1]
+    end
+
+    private def compile_rows(uri : String, result_id : String) : Array({Int32, Int32, Int32, Diag})
+      rows = diagnostic_rows(uri)
+      @workspace_rows.clear if @workspace_rows.size > 256
+      @workspace_rows[uri] = {result_id, rows}
+      rows
+    end
+
+    # Whether anything but this request is waiting to be answered.
+    #
+    # A cancel is not work — `sweep_cancels` has already taken those out —
+    # and neither is another pull for the same thing: answering "ask me
+    # again" to a queue that holds nothing but pulls is a loop.
+    private def waiting_request?(id : JSON::Any) : Bool
+      @inbox.any? do |message|
+        next false if message["id"]?.try(&.to_json) == id.to_json
+        method = message["method"]?.try(&.as_s?)
+        next false unless method
+        next false if method == "$/cancelRequest"
+        next false if method == "workspace/diagnostic"
+        true
+      end
+    end
+
+    # `ServerCancelled`, with the flag the diagnostic request has for it:
+    # the client retriggers rather than treating the verdict as missing.
+    private def respond_retrigger(id : JSON::Any) : Nil
+      send(JSON.build do |json|
+        json.object do
+          json.field "jsonrpc", "2.0"
+          json.field "id" { id.to_json(json) }
+          json.field "error" do
+            json.object do
+              json.field "code", -32802
+              json.field "message", "the server stopped the workspace pull to answer what was waiting"
+              json.field "data" do
+                json.object { json.field "retriggerRequest", true }
+              end
+            end
+          end
+        end
+      end)
     end
 
     # One workspace file as the pull sees it: what it is (an open
@@ -2626,7 +2783,23 @@ module Iyi::Lsp
     # One released verb against one document, bounded: `iyi.run`
     # executes the person's own program, and a program that never
     # returns must not take the session with it.
+    RUN_LIMIT = 30.seconds
+
+    # How many verbs may be out at once. A person clicks `▶ run` twice;
+    # a client with a stuck retry clicks it a thousand times.
+    RUNS_IN_FLIGHT = 4
+
     private def run_verb(id : JSON::Any, uri : String, *verb : String) : Nil
+      if @running_verbs >= RUNS_IN_FLIGHT
+        return respond(id) do |json|
+          json.object do
+            json.field "ok", false
+            json.field "output", ""
+            json.field "error", "#{RUNS_IN_FLIGHT} verbs are already running for this session"
+          end
+        end
+      end
+
       path = path_of(uri)
 
       scratch = nil
@@ -2636,34 +2809,109 @@ module Iyi::Lsp
         path = scratch
       end
 
-      output = IO::Memory.new
-      error = IO::Memory.new
+      # The pipes are ours, not `Process`'s. Handing it an `IO` makes
+      # `wait` wait for end-of-file on that pipe as well as for the
+      # child, and `iyi run` hands the pipe down to the program it built:
+      # a program that serves never closes it, so `wait` never returns
+      # and neither did this method. That is the session freezing on `▶
+      # run` over a web server — the whole of iyi-web is web servers.
       process = Process.new(
         @self_exe || raise("the server's own binary is gone — rebuilt under a running session? restart the client"),
         verb.to_a + [path],
-        output: output, error: error)
+        input: Process::Redirect::Close,
+        output: Process::Redirect::Pipe,
+        error: Process::Redirect::Pipe)
 
-      done = Channel(Process::Status).new(1)
-      spawn { done.send process.wait }
-      status = nil
-      select
-      when finished = done.receive
-        status = finished
-      when timeout(30.seconds)
-        process.terminate rescue nil
-        error << "\nkilled after 30s: the verb did not return"
-        status = done.receive
+      @running_verbs += 1
+      spawn { supervise_verb(id, process, scratch) }
+    end
+
+    # The verb, watched from its own fiber: the loop is free the whole
+    # time, and the answer joins the queue when the program is done.
+    private def supervise_verb(id : JSON::Any, process : Process, scratch : String?) : Nil
+      output = IO::Memory.new
+      error = IO::Memory.new
+      spawn { capture(process.output, output) }
+      spawn { capture(process.error, error) }
+
+      exited = Channel(Process::Status).new(1)
+      spawn do
+        status = process.wait rescue nil
+        exited.send(status) if status
       end
 
-      respond(id) do |json|
-        json.object do
-          json.field "ok", status.success?
-          json.field "output", output.to_s
-          json.field "error", error.to_s unless status.success?
+      status = nil
+      note = nil
+      select
+      when finished = exited.receive
+        status = finished
+      when timeout(RUN_LIMIT)
+        # Termination travels: `iyi run` forwards it to the program it
+        # built, so a server started here does not outlive the click.
+        process.terminate rescue nil
+        note = "killed after #{RUN_LIMIT.total_seconds.to_i}s: the verb did not return"
+        select
+        when finished = exited.receive
+          status = finished
+        when timeout(2.seconds)
+          note = "#{note}, and did not die either; it is on its own now"
         end
       end
+
+      # Whatever arrived is the answer. What holds the other end open is
+      # not this session's business any more.
+      process.output.close rescue nil
+      process.error.close rescue nil
+
+      # The note goes last, under the program's own last word, so the two
+      # are not read as one sentence.
+      said = error.to_s
+      said += "\n" unless said.empty? || said.ends_with?("\n")
+      said += "#{note}\n" if note
+      if output.size >= RUN_OUTPUT_LIMIT || error.size >= RUN_OUTPUT_LIMIT
+        said += "the program passed #{RUN_OUTPUT_LIMIT // 1024} KiB and the rest was not read\n"
+      end
+
+      @finished_verbs.send Finished.new(id, status.try(&.success?) == true,
+        output.to_s, said)
     ensure
+      @running_verbs -= 1
       File.delete(scratch) if scratch && File.file?(scratch)
+    end
+
+    # What one run may say into a session that outlives it. A program
+    # printing in a loop is a program, not a bug, and a megabyte of it
+    # is already more than an editor will show; the rest is a leak with
+    # a nicer name.
+    RUN_OUTPUT_LIMIT = 1024 * 1024
+
+    private def capture(from : IO, into : IO::Memory) : Nil
+      buffer = Bytes.new(16384)
+      while (read = from.read(buffer)) > 0
+        room = RUN_OUTPUT_LIMIT - into.size
+        if room <= 0
+          # Stop listening *and* say so by hanging up: a program writing
+          # into a pipe nobody reads would otherwise sit in `write` until
+          # the deadline killed it, and the person would wait thirty
+          # seconds for an answer that was already full.
+          from.close
+          return
+        end
+        into.write(buffer[0, Math.min(read, room)])
+      end
+    rescue
+      # The pipe was closed under us, which is how a run that overstayed
+      # ends. What arrived before that is still the answer.
+    end
+
+    private def answer_verb(finished : Finished) : Nil
+      respond(finished.id) do |json|
+        json.object do
+          json.field "ok", finished.ok
+          json.field "output", finished.output
+          json.field "error", finished.error unless finished.ok
+        end
+      end
     end
 
     # ── Paths and the shadow root ────────────────────────────────────────

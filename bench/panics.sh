@@ -219,4 +219,44 @@ $out"
 ! echo "$out" | grep -q "unreached" || fail "overflow fell through"
 step "an overflow in a task dies at the task boundary"
 
+# ── 8. the panic a panic cannot print: the reader is gone, so the write
+#      that says so fails too. It used to print through the program's
+#      own output stream, whose failed write raised, which printed,
+#      which failed - until the stack ended and `prog | head` died of
+#      "invalid memory access". The panic goes to the descriptor now,
+#      and to descriptor 2, which is also why `prog > file` no longer
+#      finds a panic inside the file. ─────────────────────────────────
+cat > "$work/pipe.iyi" <<'EOF'
+module pipe
+
+n = 0
+while n < 200000
+  puts "line"
+  n = n + 1
+end
+EOF
+"$IYI" build "$work/pipe.iyi" -o "$work/pipe" >/dev/null 2>&1 || fail "pipe fixture did not build"
+# SIGPIPE ignored is how every parent that matters runs a child: the
+# editor's `▶ run`, a Crystal or Go parent, systemd. With the signal
+# doing the killing there is no panic to print at all (exit 141).
+set +e
+trap "" PIPE
+"$work/pipe" 2>"$work/pipe.err" | head -c 20 > "$work/pipe.out"
+status=${PIPESTATUS[0]}
+trap - PIPE
+set -e
+said=$(head -c 400 "$work/pipe.err")
+[ "$status" != 139 ] || fail "a closed reader still segfaults the writer"
+[ "$status" = 1 ] || fail "closed-reader exit was $status, wanted 1"
+echo "$said" | grep -q "iyi: panic: broken pipe" || fail "closed-reader panic said:
+$said"
+set +e
+data=$(trap "" PIPE; "$work/pipe" 2>/dev/null | head -c 20)
+set -e
+case "$data" in
+  line*) ;;
+  *) fail "the program's own output carried the panic: $data" ;;
+esac
+step "a panic with nowhere to print says so once, on the error stream"
+
 echo "panics gate: every step held"

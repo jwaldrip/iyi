@@ -745,6 +745,43 @@ def main():
          full == ["lexer.iyi", "parser.iyi"],
          f"{full} full, {len(touched) - len(full)} unchanged")
 
+    # 31e. and a keystroke while that walk is running is answered
+    #      first. The walk is a compile per file and it used to own the
+    #      loop for all of them: measured on the compiler's own tree, a
+    #      hover sent 50 ms into a 94-file pull was answered 10.9
+    #      seconds later, which is what "the editor froze" means. The
+    #      server now reads its inbox between files; anything waiting
+    #      stops the walk, and the pull says `-32802` with
+    #      `retriggerRequest`, which is the code the diagnostic request
+    #      has for exactly this and which the client answers by asking
+    #      again when the typing stops.
+    fill = os.path.join(work, "fill")
+    os.makedirs(fill, exist_ok=True)
+    for n in range(16):
+        with open(os.path.join(fill, f"m{n:02}.iyi"), "w") as f:
+            f.write(f"module fill/m{n:02}\n\n"
+                    f"pub def value{n:02} : Int32\n  {n}\nend\n")
+    pull_id = c.request_nowait("workspace/diagnostic", {"previousResultIds": []})
+    time.sleep(0.25)
+    started = time.monotonic()
+    asked_id = c.request_nowait("textDocument/documentSymbol",
+                                {"textDocument": {"uri": app_uri}})
+    answers = {}
+    while len(answers) < 2:
+        message = c.read_message()
+        if message.get("id") in (pull_id, asked_id):
+            answers[message["id"]] = (time.monotonic() - started, message)
+    waited, _ = answers[asked_id]
+    _, pull = answers[pull_id]
+    error = pull.get("error") or {}
+    retrigger = (error.get("code") == -32802 and
+                 (error.get("data") or {}).get("retriggerRequest") is True)
+    step("31e", "a request during the workspace pull is answered first",
+         waited < 1.5 and (retrigger or "result" in pull),
+         f"answered in {waited * 1000:.0f} ms, pull "
+         f"{'asked to be retriggered' if retrigger else 'ran to the end'}")
+    shutil.rmtree(fill)
+
     # 32. references reach a file nobody opened: printer.iyi calls
     #     `token` from the disk, and the workspace walk finds it beside
     #     the open buffer's call — the gap gopls' index covers, closed
@@ -1014,6 +1051,36 @@ def main():
          ran.get("ok") and ran.get("output", "").strip() == ".",
          f"lens at line {lens and lens['range']['start']['line'] + 1}, "
          f"output {ran.get('output', '')!r}")
+
+    # 43b. and a lens over a program that does not come back does not
+    #      take the session with it. `iyi run` hands its pipes to the
+    #      program it builds, so a program that serves holds them open
+    #      for as long as it serves — and waiting on that pipe is what
+    #      the server used to do, on the loop, with a thirty-second
+    #      guard that could not fire because it waited on the same
+    #      pipe. One click on a web app's `▶ run` and nothing was ever
+    #      answered again. The verb rides its own fiber now.
+    slow = os.path.join(work, "slow.iyi")
+    with open(slow, "w") as f:
+        f.write('module slow\n\nputs "started"\nsleep(2000)\nputs "done"\n')
+    slow_uri = "file://" + slow
+    c.send("textDocument/didOpen",
+           {"textDocument": {"uri": slow_uri, "languageId": "iyi",
+                             "version": 1, "text": open(slow).read()}},
+           wait=False)
+    c.diagnostics(slow_uri)
+    run_id = c.request_nowait("workspace/executeCommand",
+                              {"command": "iyi.run", "arguments": [slow_uri]})
+    started = time.monotonic()
+    reply = c.send("textDocument/documentSymbol",
+                   {"textDocument": {"uri": shapes_uri}})
+    waited = time.monotonic() - started
+    ran = c.wait_for(lambda m: m.get("id") == run_id)["result"]
+    step("43b", "a run that does not return does not take the session",
+         waited < 1.5 and ran.get("ok") and
+         "done" in ran.get("output", ""),
+         f"answered in {waited * 1000:.0f} ms while the program slept, "
+         f"then the run said {ran.get('output', '').split()[-1]!r}")
 
     # 44. snippet completion: a callable with parameters lands with the
     #     cursor inside its parentheses, because initialize said the
