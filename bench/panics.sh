@@ -248,7 +248,7 @@ set -e
 said=$(head -c 400 "$work/pipe.err")
 [ "$status" != 139 ] || fail "a closed reader still segfaults the writer"
 [ "$status" = 1 ] || fail "closed-reader exit was $status, wanted 1"
-echo "$said" | grep -q "iyi: panic: broken pipe" || fail "closed-reader panic said:
+echo "$said" | grep -q "iyi: panic: write failed" || fail "closed-reader panic said:
 $said"
 set +e
 data=$(trap "" PIPE; "$work/pipe" 2>/dev/null | head -c 20)

@@ -255,7 +255,7 @@ class IyiIO
       total = count.to_i64
       while written < total
         n = low_level_write(@fd, (bytes + written).as(Void*), (total - written).to_u64)
-        raise write_error(n) if n <= 0_i64
+        raise "write failed: the reader is gone, or the device refused it" if n <= 0_i64
         written = written + n
       end
       return
@@ -271,7 +271,7 @@ class IyiIO
         total = count.to_i64
         while written < total
           n = low_level_write(@fd, (bytes + written).as(Void*), (total - written).to_u64)
-          raise write_error(n) if n <= 0_i64
+          raise "write failed: the reader is gone, or the device refused it" if n <= 0_i64
           written = written + n
         end
       else
@@ -319,20 +319,11 @@ class IyiIO
       total = @write_pos.to_i64
       while written < total
         n = low_level_write(@fd, (@write_buffer + written).as(Void*), (total - written).to_u64)
-        raise write_error(n) if n <= 0_i64
+        raise "write failed: the reader is gone, or the device refused it" if n <= 0_i64
         written = written + n
       end
       @write_pos = 0
     end
-  end
-
-  # What a refused write is called. The raw write answers `-errno`, and
-  # the one every program meets is `EPIPE` - the reader went away, which
-  # is `| head` and a client that closed. "write failed" told nobody
-  # anything; the shell's own word for it is the one to print.
-  private def write_error(code : Int64) : String
-    return "broken pipe: nothing is reading this output any more" if code == -32_i64
-    "write failed"
   end
 
   def close : Nil

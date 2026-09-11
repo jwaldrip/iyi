@@ -464,8 +464,13 @@
   data.json` was putting panics inside the JSON) and not a stream object
   either, because `raise` is reachable before the globals one would use
   are built — reaching for `STDERR` there flushed 22 zero bytes into the
-  front of every program's output. A refused write says which refusal it
-  was: `broken pipe: nothing is reading this output any more`.
+  front of every program's output. A refused write also says what a
+  refusal means now - `write failed: the reader is gone, or the device
+  refused it` - because "write failed" told nobody anything, and the
+  errno that would name which is not reachable on every target the
+  prelude has (the Linux path answers `-errno` from the raw syscall,
+  darwin's `LibC.write` answers `-1`, and one sentence that is true
+  everywhere beats two that differ by platform).
 - **A private helper the declarations pruned because its default names its
   own module.** `prune_declaration` refuses a method whose text names a
   type the artifact did not carry, and a parameter's text holds its
@@ -4965,7 +4970,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,457-line library and nothing else. Every other
+  written against iyi's own 13,448-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
