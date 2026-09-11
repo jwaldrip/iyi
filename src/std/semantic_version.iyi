@@ -4,6 +4,13 @@
 
 module std/semantic_version
 
+class ::String
+  def <=>(other : String) : Int32
+    return 0 if self == other
+    self < other ? -1 : 1
+  end
+end
+
 struct ::SemanticVersion
   getter major : Int32
   getter minor : Int32
@@ -103,7 +110,21 @@ struct ::SemanticVersion
     end
 
     def ==(other : Prerelease) : Bool
-      @identifiers == other.identifiers
+      return false unless @identifiers.size == other.identifiers.size
+      i = 0
+      while i < @identifiers.size
+        a = @identifiers[i]
+        b = other.identifiers[i]
+        if a.is_a?(Int32) && b.is_a?(Int32)
+          return false unless a == b
+        elsif a.is_a?(String) && b.is_a?(String)
+          return false unless a == b
+        else
+          return false
+        end
+        i += 1
+      end
+      true
     end
 
     def ==(other) : Bool

@@ -81,15 +81,19 @@ struct ::NamedTuple
 
   # Merges another named tuple with self. Entries in *other* overwrite matching keys.
   def merge(other : NamedTuple)
+    merge(**other)
+  end
+
+  def merge(**other : **U) forall U
     {% begin %}
       {
         {% for k in T.keys %}
-          {% unless other.class.has_key?(k.stringify) %}
+          {% unless U.keys.includes?(k) %}
             {{k.id}}: self[:{{k.id}}],
           {% end %}
         {% end %}
-        {% for k in other.keys %}
-          {{k}}: other[{{k.symbolize}}],
+        {% for k in U.keys %}
+          {{k.id}}: other[:{{k.id}}],
         {% end %}
       }
     {% end %}
