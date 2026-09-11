@@ -592,7 +592,7 @@ pub struct BigInt
   # Division and Modulo: Knuth Algorithm D
   # Returns {quotient, remainder}.
   # Division truncates towards zero; remainder follows the sign of the dividend (self).
-  def divmod(other : BigInt) : Tuple(BigInt, BigInt)
+  def divmod(other : BigInt) : ::Tuple(BigInt, BigInt)
     raise "division by zero" if other.zero?
     return {BigInt.zero, BigInt.zero} if zero?
 
@@ -838,6 +838,52 @@ pub struct BigInt
       base = base * base if !e.zero?
     end
     res
+  end
+  # Greatest Common Divisor (Euclidean algorithm)
+  def gcd(other : BigInt) : BigInt
+    a = self.abs
+    b = other.abs
+    while !b.zero?
+      rem = a % b
+      a = b
+      b = rem
+    end
+    a
+  end
+
+  def gcd(other : Int64) : BigInt
+    gcd(BigInt.new(other))
+  end
+
+  def gcd(other : Int32) : BigInt
+    gcd(BigInt.new(other.to_i64))
+  end
+
+  # Least Common Multiple
+  def lcm(other : BigInt) : BigInt
+    return BigInt.zero if zero? || other.zero?
+    (self.abs // gcd(other)) * other.abs
+  end
+
+  def lcm(other : Int64) : BigInt
+    lcm(BigInt.new(other))
+  end
+
+  def lcm(other : Int32) : BigInt
+    lcm(BigInt.new(other.to_i64))
+  end
+
+  # Bitwise NOT (~a = -a - 1 in two's complement)
+  def ~ : BigInt
+    -(self + 1_i64)
+  end
+
+  def abs2 : BigInt
+    self * self
+  end
+
+  def to_big_i : BigInt
+    self
   end
 
   # Modular exponentiation: (self ** exp) % mod
@@ -1296,6 +1342,17 @@ pub struct BigInt
     self
   end
 
+  def to_big_d : BigDecimal
+    BigDecimal.new(self, 0)
+  end
+
+  def to_big_r : BigRational
+    BigRational.new(self, BigInt.one)
+  end
+
+  def to_big_f : BigFloat
+    BigFloat.new(self)
+  end
   # 32-bit hash value combining sign and limb bits
   def hash : Int32
     return 0 if zero?
@@ -1346,9 +1403,734 @@ impl Hashable for BigInt
   end
 end
 
+pub struct BigDecimal
+  getter value : BigInt
+  getter scale : Int32
+
+  def initialize(@value : BigInt, @scale : Int32 = 0)
+  end
+
+  def initialize(num : Int32 = 0, scale : Int32 = 0)
+    @value = BigInt.new(num.to_i64)
+    @scale = scale
+  end
+
+  def initialize(num : Int64, scale : Int32 = 0)
+    @value = BigInt.new(num)
+    @scale = scale
+  end
+
+  def initialize(str : String)
+    raise "empty BigDecimal string" if str.empty?
+    negative = false
+    idx = 0
+    len = str.bytesize
+    ptr = str.to_unsafe
+
+    if ptr[0] == 45_u8 # '-'
+      negative = true
+      idx = 1
+    elsif ptr[0] == 43_u8 # '+'
+      idx = 1
+    end
+
+    digits = [] of Char
+    decimal_point = -1
+    exp = 0
+    exp_negative = false
+    has_exp = false
+
+    while idx < len
+      byte = ptr[idx]
+      if byte == 46_u8 # '.'
+        raise "multiple decimal points" if decimal_point >= 0 || has_exp
+        decimal_point = digits.size
+      elsif byte == 101_u8 || byte == 69_u8 # 'e' or 'E'
+        has_exp = true
+        idx = idx + 1
+        if idx < len && ptr[idx] == 45_u8 # '-'
+          exp_negative = true
+          idx = idx + 1
+        elsif idx < len && ptr[idx] == 43_u8 # '+'
+          idx = idx + 1
+        end
+        exp_digits = 0
+        while idx < len
+          eb = ptr[idx]
+          if eb >= 48_u8 && eb <= 57_u8
+            exp_digits = exp_digits * 10 + (eb - 48_u8).to_i32
+          else
+            raise "invalid exponent character"
+          end
+          idx = idx + 1
+        end
+        exp = exp_negative ? -exp_digits : exp_digits
+        break
+      elsif byte >= 48_u8 && byte <= 57_u8
+        digits << byte.to_i32.chr
+      else
+        raise "invalid BigDecimal character"
+      end
+      idx = idx + 1
+    end
+
+    raise "no digits in BigDecimal" if digits.empty?
+
+    digit_str = digits.join("")
+    frac_len = decimal_point >= 0 ? (digits.size - decimal_point) : 0
+    final_scale = frac_len - exp
+
+    val = BigInt.new(digit_str)
+    @value = negative ? -val : val
+    @scale = final_scale
+  end
+
+  def self.zero : BigDecimal
+    BigDecimal.new(BigInt.zero, 0)
+  end
+
+  def self.one : BigDecimal
+    BigDecimal.new(BigInt.one, 0)
+  end
+
+  def zero? : Bool
+    @value.zero?
+  end
+
+  def positive? : Bool
+    @value.positive?
+  end
+
+  def negative? : Bool
+    @value.negative?
+  end
+
+  def abs : BigDecimal
+    BigDecimal.new(@value.abs, @scale)
+  end
+
+  def negate : BigDecimal
+    BigDecimal.new(-@value, @scale)
+  end
+
+  def - : BigDecimal
+    negate
+  end
+
+  def + : BigDecimal
+    self
+  end
+
+  protected def self.align(a : BigDecimal, b : BigDecimal) : ::Tuple(BigInt, BigInt, Int32)
+    if a.scale == b.scale
+      {a.value, b.value, a.scale}
+    elsif a.scale > b.scale
+      diff = a.scale - b.scale
+      factor = BigInt.new(10_i64) ** diff
+      {a.value, b.value * factor, a.scale}
+    else
+      diff = b.scale - a.scale
+      factor = BigInt.new(10_i64) ** diff
+      {a.value * factor, b.value, b.scale}
+    end
+  end
+
+  def +(other : BigDecimal) : BigDecimal
+    tup = BigDecimal.align(self, other)
+    BigDecimal.new(tup[0] + tup[1], tup[2])
+  end
+
+  def +(other : Int32 | Int64) : BigDecimal
+    self + BigDecimal.new(other)
+  end
+
+  def -(other : BigDecimal) : BigDecimal
+    tup = BigDecimal.align(self, other)
+    BigDecimal.new(tup[0] - tup[1], tup[2])
+  end
+
+  def -(other : Int32 | Int64) : BigDecimal
+    self - BigDecimal.new(other)
+  end
+
+  def *(other : BigDecimal) : BigDecimal
+    BigDecimal.new(@value * other.value, @scale + other.scale)
+  end
+
+  def *(other : Int32 | Int64) : BigDecimal
+    self * BigDecimal.new(other)
+  end
+
+  def /(other : BigDecimal) : BigDecimal
+    raise "division by zero" if other.zero?
+    prec = 20
+    scaled_val = @value * (BigInt.new(10_i64) ** prec)
+    quot = scaled_val // other.value
+    BigDecimal.new(quot, @scale - other.scale + prec)
+  end
+
+  def /(other : Int32 | Int64) : BigDecimal
+    self / BigDecimal.new(other)
+  end
+
+  def //(other : BigDecimal) : BigDecimal
+    raise "division by zero" if other.zero?
+    tup = BigDecimal.align(self, other)
+    BigDecimal.new(tup[0] // tup[1], 0)
+  end
+
+  def %(other : BigDecimal) : BigDecimal
+    raise "division by zero" if other.zero?
+    tup = BigDecimal.align(self, other)
+    BigDecimal.new(tup[0] % tup[1], tup[2])
+  end
+
+  def cmp(other : BigDecimal) : Int32
+    if @value.sign != other.value.sign
+      return @value.sign < other.value.sign ? -1 : 1
+    end
+    tup = BigDecimal.align(self, other)
+    tup[0].cmp(tup[1])
+  end
+
+  def <=>(other : BigDecimal) : Int32
+    cmp(other)
+  end
+
+  def ==(other : BigDecimal) : Bool
+    cmp(other) == 0
+  end
+
+  def !=(other : BigDecimal) : Bool
+    cmp(other) != 0
+  end
+
+  def <(other : BigDecimal) : Bool
+    cmp(other) < 0
+  end
+
+  def <=(other : BigDecimal) : Bool
+    cmp(other) <= 0
+  end
+
+  def >(other : BigDecimal) : Bool
+    cmp(other) > 0
+  end
+
+  def >=(other : BigDecimal) : Bool
+    cmp(other) >= 0
+  end
+
+  def to_s : String
+    return "0.0" if zero? && @scale == 1
+    return "0" if zero?
+    v_str = @value.abs.to_s
+    prefix = negative? ? "-" : ""
+
+    if @scale <= 0
+      zeros = ""
+      i = 0
+      while i < -@scale
+        zeros = zeros + "0"
+        i = i + 1
+      end
+      prefix + v_str + zeros
+    elsif v_str.size <= @scale
+      leading_zeros = ""
+      i = 0
+      while i < (@scale - v_str.size)
+        leading_zeros = leading_zeros + "0"
+        i = i + 1
+      end
+      prefix + "0." + leading_zeros + v_str
+    else
+      split_pos = v_str.size - @scale
+      int_part = v_str[0, split_pos]
+      frac_part = v_str[split_pos, @scale]
+      prefix + int_part + "." + frac_part
+    end
+  end
+
+  def inspect : String
+    to_s
+  end
+
+  def to_big_d : BigDecimal
+    self
+  end
+
+  def to_big_i : BigInt
+    @scale <= 0 ? @value * (BigInt.new(10_i64) ** (-@scale)) : @value // (BigInt.new(10_i64) ** @scale)
+  end
+
+  def to_f64 : Float64
+    to_s.to_f
+  end
+
+  def to_f : Float64
+    to_f64
+  end
+
+  def to_i64 : Int64
+    to_big_i.to_i64
+  end
+
+  def to_i32 : Int32
+    to_big_i.to_i32
+  end
+
+  def hash : Int32
+    @value.hash ^ @scale
+  end
+
+  def hash_key : Int32
+    hash
+  end
+end
+
+impl Cmp for BigDecimal
+  def cmp(other : self) : Int32
+    self.cmp(other)
+  end
+end
+
+impl Num for BigDecimal
+  def self.zero : self
+    BigDecimal.new(BigInt.zero, 0)
+  end
+
+  def self.one : self
+    BigDecimal.new(BigInt.one, 0)
+  end
+
+  def add(other : self) : self
+    self + other
+  end
+
+  def mul(other : self) : self
+    self * other
+  end
+end
+
+impl Hashable for BigDecimal
+  def hash_key : Int32
+    self.hash
+  end
+end
+
+pub struct BigRational
+  getter numerator : BigInt
+  getter denominator : BigInt
+
+  def initialize(numerator : BigInt, denominator : BigInt)
+    raise "division by zero" if denominator.zero?
+    if denominator.negative?
+      numerator = -numerator
+      denominator = -denominator
+    end
+    if numerator.zero?
+      @numerator = BigInt.zero
+      @denominator = BigInt.one
+    else
+      g = numerator.abs.gcd(denominator)
+      @numerator = numerator // g
+      @denominator = denominator // g
+    end
+  end
+
+  def initialize(num : Int64 = 0_i64, den : Int64 = 1_i64)
+    initialize(BigInt.new(num), BigInt.new(den))
+  end
+
+  def initialize(num : Int32, den : Int32 = 1)
+    initialize(BigInt.new(num.to_i64), BigInt.new(den.to_i64))
+  end
+
+  def initialize(str : String)
+    slash_idx = str.index('/')
+    if slash_idx
+      n_str = str[0, slash_idx]
+      d_str = str[slash_idx + 1, str.bytesize - slash_idx - 1]
+      initialize(BigInt.new(n_str), BigInt.new(d_str))
+    else
+      initialize(BigInt.new(str), BigInt.one)
+    end
+  end
+
+  def self.zero : BigRational
+    BigRational.new(BigInt.zero, BigInt.one)
+  end
+
+  def self.one : BigRational
+    BigRational.new(BigInt.one, BigInt.one)
+  end
+
+  def zero? : Bool
+    @numerator.zero?
+  end
+
+  def positive? : Bool
+    @numerator.positive?
+  end
+
+  def negative? : Bool
+    @numerator.negative?
+  end
+
+  def abs : BigRational
+    BigRational.new(@numerator.abs, @denominator)
+  end
+
+  def negate : BigRational
+    BigRational.new(-@numerator, @denominator)
+  end
+
+  def - : BigRational
+    negate
+  end
+
+  def + : BigRational
+    self
+  end
+
+  def inv : BigRational
+    raise "division by zero in inv" if @numerator.zero?
+    BigRational.new(@denominator, @numerator)
+  end
+
+  def +(other : BigRational) : BigRational
+    BigRational.new(@numerator * other.denominator + other.numerator * @denominator, @denominator * other.denominator)
+  end
+
+  def +(other : Int32 | Int64 | BigInt) : BigRational
+    self + BigRational.new(other.to_big_i, BigInt.one)
+  end
+
+  def -(other : BigRational) : BigRational
+    BigRational.new(@numerator * other.denominator - other.numerator * @denominator, @denominator * other.denominator)
+  end
+
+  def -(other : Int32 | Int64 | BigInt) : BigRational
+    self - BigRational.new(other.to_big_i, BigInt.one)
+  end
+
+  def *(other : BigRational) : BigRational
+    BigRational.new(@numerator * other.numerator, @denominator * other.denominator)
+  end
+
+  def *(other : Int32 | Int64 | BigInt) : BigRational
+    self * BigRational.new(other.to_big_i, BigInt.one)
+  end
+
+  def /(other : BigRational) : BigRational
+    raise "division by zero" if other.zero?
+    BigRational.new(@numerator * other.denominator, @denominator * other.numerator)
+  end
+
+  def /(other : Int32 | Int64 | BigInt) : BigRational
+    self / BigRational.new(other.to_big_i, BigInt.one)
+  end
+
+  def **(exp : Int32) : BigRational
+    if exp == 0
+      BigRational.one
+    elsif exp > 0
+      BigRational.new(@numerator ** exp, @denominator ** exp)
+    else
+      BigRational.new(@denominator ** (-exp), @numerator ** (-exp))
+    end
+  end
+
+  def cmp(other : BigRational) : Int32
+    (@numerator * other.denominator).cmp(other.numerator * @denominator)
+  end
+
+  def <=>(other : BigRational) : Int32
+    cmp(other)
+  end
+
+  def ==(other : BigRational) : Bool
+    cmp(other) == 0
+  end
+
+  def !=(other : BigRational) : Bool
+    cmp(other) != 0
+  end
+
+  def <(other : BigRational) : Bool
+    cmp(other) < 0
+  end
+
+  def <=(other : BigRational) : Bool
+    cmp(other) <= 0
+  end
+
+  def >(other : BigRational) : Bool
+    cmp(other) > 0
+  end
+
+  def >=(other : BigRational) : Bool
+    cmp(other) >= 0
+  end
+
+  def to_s : String
+    @denominator == 1_i64 ? @numerator.to_s : "#{@numerator}/#{@denominator}"
+  end
+
+  def inspect : String
+    to_s
+  end
+
+  def to_big_r : BigRational
+    self
+  end
+
+  def to_big_i : BigInt
+    @numerator // @denominator
+  end
+
+  def to_big_d : BigDecimal
+    BigDecimal.new(@numerator) / BigDecimal.new(@denominator)
+  end
+
+  def to_f64 : Float64
+    to_big_d.to_f64
+  end
+
+  def hash : Int32
+    @numerator.hash ^ @denominator.hash
+  end
+
+  def hash_key : Int32
+    hash
+  end
+end
+
+impl Cmp for BigRational
+  def cmp(other : self) : Int32
+    self.cmp(other)
+  end
+end
+
+impl Num for BigRational
+  def self.zero : self
+    BigRational.new(BigInt.zero, BigInt.one)
+  end
+
+  def self.one : self
+    BigRational.new(BigInt.one, BigInt.one)
+  end
+
+  def add(other : self) : self
+    self + other
+  end
+
+  def mul(other : self) : self
+    self * other
+  end
+end
+
+impl Hashable for BigRational
+  def hash_key : Int32
+    self.hash
+  end
+end
+
+pub struct BigFloat
+  getter dec : BigDecimal
+
+  def initialize(@dec : BigDecimal)
+  end
+
+  def initialize(str : String)
+    @dec = BigDecimal.new(str)
+  end
+
+  def initialize(num : BigInt)
+    @dec = BigDecimal.new(num, 0)
+  end
+
+  def initialize(num : BigRational)
+    @dec = num.to_big_d
+  end
+
+  def initialize(num : Float64)
+    @dec = BigDecimal.new(num.to_s)
+  end
+
+  def initialize(num : Int32)
+    @dec = BigDecimal.new(num, 0)
+  end
+
+  def initialize(num : Int64)
+    @dec = BigDecimal.new(num, 0)
+  end
+
+  def self.zero : BigFloat
+    BigFloat.new(BigDecimal.zero)
+  end
+
+  def self.one : BigFloat
+    BigFloat.new(BigDecimal.one)
+  end
+
+  def zero? : Bool
+    @dec.zero?
+  end
+
+  def positive? : Bool
+    @dec.positive?
+  end
+
+  def negative? : Bool
+    @dec.negative?
+  end
+
+  def abs : BigFloat
+    BigFloat.new(@dec.abs)
+  end
+
+  def negate : BigFloat
+    BigFloat.new(@dec.negate)
+  end
+
+  def - : BigFloat
+    negate
+  end
+
+  def + : BigFloat
+    self
+  end
+
+  def +(other : BigFloat) : BigFloat
+    BigFloat.new(@dec + other.dec)
+  end
+
+  def -(other : BigFloat) : BigFloat
+    BigFloat.new(@dec - other.dec)
+  end
+
+  def *(other : BigFloat) : BigFloat
+    BigFloat.new(@dec * other.dec)
+  end
+
+  def /(other : BigFloat) : BigFloat
+    BigFloat.new(@dec / other.dec)
+  end
+
+  def cmp(other : BigFloat) : Int32
+    @dec.cmp(other.dec)
+  end
+
+  def <=>(other : BigFloat) : Int32
+    cmp(other)
+  end
+
+  def ==(other : BigFloat) : Bool
+    cmp(other) == 0
+  end
+
+  def !=(other : BigFloat) : Bool
+    cmp(other) != 0
+  end
+
+  def <(other : BigFloat) : Bool
+    cmp(other) < 0
+  end
+
+  def <=(other : BigFloat) : Bool
+    cmp(other) <= 0
+  end
+
+  def >(other : BigFloat) : Bool
+    cmp(other) > 0
+  end
+
+  def >=(other : BigFloat) : Bool
+    cmp(other) >= 0
+  end
+
+  def to_s : String
+    @dec.to_s
+  end
+
+  def inspect : String
+    to_s
+  end
+
+  def to_f64 : Float64
+    @dec.to_f64
+  end
+
+  def to_big_f : BigFloat
+    self
+  end
+
+  def to_big_d : BigDecimal
+    @dec
+  end
+
+  def to_big_i : BigInt
+    @dec.to_big_i
+  end
+
+  def hash : Int32
+    @dec.hash
+  end
+
+  def hash_key : Int32
+    hash
+  end
+end
+
+impl Cmp for BigFloat
+  def cmp(other : self) : Int32
+    self.cmp(other)
+  end
+end
+
+impl Num for BigFloat
+  def self.zero : self
+    BigFloat.new(BigDecimal.new(BigInt.zero, 0))
+  end
+
+  def self.one : self
+    BigFloat.new(BigDecimal.new(BigInt.one, 0))
+  end
+
+  def add(other : self) : self
+    self + other
+  end
+
+  def mul(other : self) : self
+    self * other
+  end
+end
+
+impl Hashable for BigFloat
+  def hash_key : Int32
+    self.hash
+  end
+end
+
 struct ::Int64
   def to_big : Std::Big::BigInt
     Std::Big::BigInt.new(self)
+  end
+  def to_big_i : Std::Big::BigInt
+    to_big
+  end
+
+  def to_big_d : Std::Big::BigDecimal
+    Std::Big::BigDecimal.new(self, 0)
+  end
+
+  def to_big_r : Std::Big::BigRational
+    Std::Big::BigRational.new(self, 1_i64)
+  end
+
+  def to_big_f : Std::Big::BigFloat
+    Std::Big::BigFloat.new(self)
   end
 
   def +(other : Std::Big::BigInt) : Std::Big::BigInt
@@ -1376,6 +2158,21 @@ struct ::Int32
   def to_big : Std::Big::BigInt
     Std::Big::BigInt.new(self.to_i64)
   end
+  def to_big_i : Std::Big::BigInt
+    to_big
+  end
+
+  def to_big_d : Std::Big::BigDecimal
+    Std::Big::BigDecimal.new(self, 0)
+  end
+
+  def to_big_r : Std::Big::BigRational
+    Std::Big::BigRational.new(self, 1)
+  end
+
+  def to_big_f : Std::Big::BigFloat
+    Std::Big::BigFloat.new(self)
+  end
 
   def +(other : Std::Big::BigInt) : Std::Big::BigInt
     to_big + other
@@ -1395,5 +2192,23 @@ struct ::Int32
 
   def <=>(other : Std::Big::BigInt) : Int32
     to_big <=> other
+  end
+end
+
+class ::String
+  def to_big_i : Std::Big::BigInt
+    Std::Big::BigInt.new(self)
+  end
+
+  def to_big_d : Std::Big::BigDecimal
+    Std::Big::BigDecimal.new(self)
+  end
+
+  def to_big_r : Std::Big::BigRational
+    Std::Big::BigRational.new(self)
+  end
+
+  def to_big_f : Std::Big::BigFloat
+    Std::Big::BigFloat.new(self)
   end
 end

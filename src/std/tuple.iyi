@@ -142,6 +142,31 @@ struct ::Tuple
     {% end %}
   end
 
+  # Concatenates two tuples.
+  def +(other : Tuple(*U)) forall U
+    {% begin %}
+      {
+        {% for i in 0...T.size %}
+          self[{{i}}],
+        {% end %}
+        {% for i in 0...U.size %}
+          other[{{i}}],
+        {% end %}
+      }
+    {% end %}
+  end
+
+  # Reverses elements in tuple.
+  def reverse
+    {% begin %}
+      {
+        {% for i in 1..T.size %}
+          self[{{T.size - i}}],
+        {% end %}
+      }
+    {% end %}
+  end
+
   # String representation: `{1, "hello", true}`.
   def to_s : String
     result = "{"
