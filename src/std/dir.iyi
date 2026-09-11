@@ -417,4 +417,3 @@ pub class Dir
     buf
   end
 end
-
