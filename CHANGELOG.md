@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 — 2026-09-11
+
+**A Crystal project becomes iyi modules, and the thing people download
+carries the library it names.** `iyi migrate` writes a checkout out as
+iyi — a whole project, or one file at a time beside its source — and it
+was written against twelve real projects taken as they come from GitHub,
+`crystal-db`, `shards`, `halite`, `ameba`, `amber` and Kemal's own among
+them, which is where five of its rules came from. `iyi bind` puts every
+shard under `lib/` behind a boundary a program imports, and the sixteen
+defects in that boundary were found the same way: by consuming one. The
+tarball this release publishes is also the first to carry
+`share/iyi/src/std`, so `import std/text` resolves out of an install
+rather than answering "can't find module", and the first to publish
+`SHA256SUMS` beside the tarballs, which `install.sh` checks before it
+unpacks anything.
+
+**A server survives its own collector.** Two runtime mistakes of one
+shape — a heap pointer held as a number, where the collector is precise
+over a typed object's fields, and a fiber's stack mapped and never handed
+back — took a kemal port down at request ~400 under `wrk -c 100 -d 10`.
+The same program now serves 237,066 requests at 23,705/s behind 299
+mappings and 14 MB flat, and the stack pool's link moved to a word that
+is writable where a page is 16 KiB. The editor holds too: `▶ run` no
+longer ends the session, a workspace pull reads its inbox between files
+(a hover behind a 94-file walk: 10.9 s to 0.23 s), and a panic that could
+not be printed is a sentence on descriptor 2 instead of a segfault.
+
+`.iyimod` is v49.
 
 ### Added
 
