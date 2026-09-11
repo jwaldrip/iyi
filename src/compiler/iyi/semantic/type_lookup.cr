@@ -154,7 +154,19 @@ class Iyi::Type
       # (`@raise` off — overload matching trying restrictions) must
       # keep its answer, not acquire a new way to fail.
       if @raise && type.is_a?(Type)
-        @root.program.iyi_check_import_reach(node, type)
+        is_generic_param = false
+        if node.names.size == 1
+          curr : Type? = @root
+          while curr
+            if curr.is_a?(GenericInstanceType) && curr.type_vars.has_key?(node.names.first)
+              is_generic_param = true
+              break
+            end
+            break if curr == @root.program
+            curr = (curr.is_a?(NamedType) && (ns = curr.namespace) != curr) ? ns : nil
+          end
+        end
+        @root.program.iyi_check_import_reach(node, type) unless is_generic_param
       end
 
       type
