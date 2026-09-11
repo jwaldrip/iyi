@@ -409,9 +409,14 @@ tar -xzf iyi-0.11.0-linux-x86_64.tar.gz -C ~/.local
 ~/.local/bin/iyi run ~/.local/share/iyi/samples/hello.iyi
 ```
 
-The tarball is relocatable and carries both libraries: iyi's own 525 KB, and
-Crystal's standard library for `--crystal`. `bin/iyi` finds them beside itself,
-so there is nothing to configure and no `IYI_PATH` to set. LLVM is inside the
+The tarball is relocatable and carries every library a program can ask for:
+iyi's own 525 KB prelude, the 153 KB of `src/std` that `import std/...`
+resolves to, and Crystal's standard library for `--crystal`. 0.11.0 shipped
+the first and the third — `import std/enumerable` answered "can't find module"
+out of the thing people downloaded, and every gate passed it because they all
+ran `hello.iyi`; `bench/tarball_std.sh` reads the package instead. `bin/iyi`
+finds all three beside itself, so there is nothing to configure and no
+`IYI_PATH` to set. LLVM is inside the
 binary — a static minimal build from `scripts/build-static-llvm.sh`, the same
 recipe on Linux and darwin — so `lib/` is libgc (and libstdc++ on Linux) and
 nothing else, and the package is tens of megabytes because a compiler is,

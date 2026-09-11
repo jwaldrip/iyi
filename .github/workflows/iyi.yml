@@ -1028,6 +1028,16 @@ jobs:
           test "$(env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run conc.iyi)" = "a7"
           echo "the kqueue runtime runs out of the tarball"
 
+      # The native standard library, out of the same tarball. `import std/text`
+      # is a line a program writes, so it has to resolve from what was
+      # downloaded and from nothing else — and on darwin especially, because
+      # this is the platform whose `cp` semantics shipped a library flattened
+      # into one directory once already. The gate moves the shipped directory
+      # aside and requires the failure, so a package that carries std twice
+      # cannot pass by accident.
+      - name: The native standard library, out of the tarball
+        run: bash bench/tarball_std.sh /tmp/unpacked
+
       - name: The other library, out of the tarball
         run: |
           env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run --crystal \
@@ -1402,6 +1412,14 @@ jobs:
           env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run /tmp/unpacked/share/iyi/samples/hello.iyi
           env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi version
 
+      # The library a program opts into, out of the tarball: every `src/std/`
+      # module under its own name in `share/iyi/src/std`, each one imported and
+      # run with both path variables unset. 0.11.0 shipped none of it and said
+      # "can't find module 'std/enumerable'" to everybody who downloaded it,
+      # and `hello.iyi` passed that release.
+      - name: The native standard library, out of the tarball
+        run: bash bench/tarball_std.sh /tmp/unpacked
+
       # Both libraries, because a tarball that ships one of them answers
       # `require "json"` with "can't find file" — the headline feature failing
       # in the thing people download, which is how this was found.
@@ -1534,6 +1552,10 @@ jobs:
           export IYI_RELEASE_URL="file://$PWD/dist" IYI_VERSION="$version"
           IYI_PREFIX="$PWD/installed" sh install.sh
           env -u IYI_PATH -u CRYSTAL_PATH ./installed/bin/iyi run ./installed/share/iyi/samples/hello.iyi
+          # And what the one-liner leaves behind is a library, not just a
+          # binary: the same gate the tarball jobs run, against the prefix
+          # `install.sh` wrote. This is the path a person actually takes.
+          bash bench/tarball_std.sh "$PWD/installed"
 
           sed -i '1s/^0/X/; 1s/^[1-9a-f]/0/' dist/SHA256SUMS
           if IYI_PREFIX="$PWD/tampered" sh install.sh 2>err; then

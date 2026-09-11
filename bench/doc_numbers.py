@@ -121,6 +121,12 @@ def measured() -> dict[str, int]:
         "prelude_kb": round(
             sum(p.stat().st_size for p in sorted((REPO / "src/iyi").glob("*.iyi"))) / 1024
         ),
+        # The other half of that download, quoted the same way: the modules
+        # `import std/...` resolves to, which the tarball shipped none of
+        # until 0.12.0.
+        "std_kb": round(
+            sum(p.stat().st_size for p in sorted((REPO / "src/std").glob("*.iyi"))) / 1024
+        ),
         "bang_names": bang_names(),
         "generated": generated_project_lines(),
         "spec_iyi": iyi_spec_lines(),
@@ -194,7 +200,9 @@ CLAIMS: list[tuple[str, str, str, int]] = [
     ("compiler", r"\| ([\d,]+) lines, Crystal, forked", "SPEC.md", 1),
     ("spec_iyi", r"\| ([\d,]+) for iyi \|", "SPEC.md", 1),
     ("prelude_kb", r"library is ([\d,]+) KB on disk", "README.md", 1),
-    ("prelude_kb", r"carries both libraries: iyi's own ([\d,]+) KB", "README.md", 1),
+    ("prelude_kb", r"iyi's own ([\d,]+) KB prelude", "README.md", 1),
+    ("std_kb", r"the ([\d,]+) KB of `src/std`", "README.md", 1),
+    ("std_kb", r"the directory's ([\d,]+) KB is a second", "Makefile", 1),
     ("prelude_kb", r"beside `bin/iyi` is ([\d,]+) KB", "Makefile", 1),
     ("prelude_kb", r"ships only iyi's own ([\d,]+) KB", "Makefile", 1),
     ("prelude_kb", r"its own, and it is ([\d,]+) KB", "Makefile", 1),

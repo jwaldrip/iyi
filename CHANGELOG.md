@@ -426,6 +426,30 @@
 
 ### Fixed
 
+- **The standard library is in the package now, under its own name, and
+  only once.** `import std/text` is a line a program writes, so the
+  modules have to be inside the thing people download. 0.11.0 shipped
+  `share/iyi/src/iyi` and nothing beside it: `import std/enumerable`
+  answered `can't find module 'std/enumerable'` out of the released
+  tarball, and every tarball gate passed it, because all of them run
+  `hello.iyi`. `make install_iyi` names `src/std` — and stops shipping
+  the second copy that `cp -R src/.` left inside the other language's
+  library directory, where `import std/...` resolved from by accident:
+  153 KB of a library that already shipped, and a copy that answers for
+  the real one going missing (moving `share/iyi/src/std` aside still
+  built, out of `share/iyi/crystal/std`). Nothing in Crystal's library
+  requires `std/...`, so it leaves with `iyi/`.
+- **A gate that reads the package instead of running `hello.iyi`.**
+  `bench/tarball_std.sh <unpacked-root>`: every `src/std/` module
+  present byte for byte, each one imported, built and run from a work
+  directory with `IYI_PATH` and `CRYSTAL_PATH` unset — so the binary's
+  own `$ORIGIN/../share/iyi/src` is what resolved it — the eight shipped
+  samples that import std built from where the tarball put them, and
+  then the shipped directory moved aside to require the failure, which
+  is what catches a second copy answering for it. It runs on both
+  tarballs (Linux and darwin, the platform whose `cp` flattened this
+  directory once already) and on the prefix `install.sh` writes, so the
+  bytes a person downloads are the ones checked.
 - **A server died at its first collection: the poller's event buffer was
   a number, and the collector is precise.** `IyiSchedulerState#events`
   held `Pointer(UInt8).malloc(...).address` — an address, in a `UInt64`

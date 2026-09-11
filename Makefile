@@ -344,10 +344,18 @@ install_iyi: $(O)/iyi$(EXE) $(O)/$(IYI_DAEMON_BIN)
 # things to the two cps — GNU copies the directory, BSD copies its *contents* —
 # so the darwin tarball shipped Crystal's library flattened into one directory
 # and `--crystal` could not find `crystal/system/time` out of it. `dir/.` is
-# the one spelling POSIX gives both cps the same meaning for; `iyi/` rides in
-# and is removed below, exactly as before.
+# the one spelling POSIX gives both cps the same meaning for; `iyi/` and
+# `std/` ride in and are removed below.
 	cp -R -p $(if $(deref_symlinks),-L,-P) src/. "$(DESTDIR)$(DATADIR)/iyi/crystal/"
 	rm -rf "$(DESTDIR)$(DATADIR)/iyi/crystal/iyi"
+# And `std/`, for the reason it is above under its own name: nothing in
+# Crystal's library requires `std/...`, the directory's 153 KB is a second
+# copy of a library that already shipped, and while it is there it answers
+# `import std/text` out of `share/iyi/crystal` — which is how the accident
+# looked before `src/std` was installed at all, and which would let that
+# line break again without a program noticing. `bench/tarball_std.sh`
+# proves the absence by moving the real one aside.
+	rm -rf "$(DESTDIR)$(DATADIR)/iyi/crystal/std"
 
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(DATADIR)/licenses/iyi/"
 	$(INSTALL) -m 644 LICENSE "$(DESTDIR)$(DATADIR)/licenses/iyi/LICENSE"
