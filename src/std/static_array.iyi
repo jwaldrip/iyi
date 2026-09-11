@@ -119,8 +119,8 @@ struct ::StaticArray(T, N)
   end
 
   # Returns a Slice backed by this static array.
-  def to_slice : Slice(T)
-    Slice(T).new(to_unsafe, N, read_only: false)
+  def to_slice : Std::Slice::Slice(T)
+    Std::Slice::Slice(T).new(to_unsafe, N, false)
   end
 
   # Converts this static array into a heap Array.
@@ -450,3 +450,5 @@ struct ::StaticArray(T, N)
     %array
   end
 end
+
+pub alias StaticArray = ::StaticArray

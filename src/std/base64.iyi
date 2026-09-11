@@ -30,8 +30,16 @@ module ::Base64
 
   # Returns the base64-encoded version of *data*.
   # Complies with RFC 2045 with newlines every 60 characters.
+  private def self.to_slice(data : Std::Slice::Bytes) : Std::Slice::Bytes
+    data
+  end
+
+  private def self.to_slice(data) : Std::Slice::Bytes
+    data.to_slice
+  end
+
   def self.encode(data) : String
-    slice = data.to_slice
+    slice = to_slice(data)
     return "" if slice.empty?
 
     raw_chars = ((slice.size + 2) // 3) * 4
@@ -129,7 +137,7 @@ module ::Base64
   # Returns the base64-encoded version of *data* with no newlines.
   # Complies with RFC 4648.
   def self.strict_encode(data) : String
-    encode_internal(data.to_slice, CHARS_STD, pad: true)
+    encode_internal(to_slice(data), CHARS_STD, pad: true)
   end
 
   # Writes the base64-encoded version of *data* with no newlines to *io*.
@@ -142,7 +150,7 @@ module ::Base64
 
   # Returns the base64-encoded version of *data* using URL-safe alphabet.
   def self.urlsafe_encode(data, padding : Bool = true) : String
-    encode_internal(data.to_slice, CHARS_SAFE, pad: padding)
+    encode_internal(to_slice(data), CHARS_SAFE, pad: padding)
   end
 
   # Writes the base64-encoded version of *data* using URL-safe alphabet to *io*.
@@ -233,7 +241,7 @@ module ::Base64
   # Returns the base64-decoded version of *data* as a `Bytes`.
   # Decodes either standard or urlsafe alphabets.
   def self.decode(data) : Std::Slice::Bytes
-    slice = data.to_slice
+    slice = to_slice(data)
     size = slice.size
     return Std::Slice::Bytes.new(0) if size == 0
 
