@@ -247,6 +247,15 @@ jobs:
       - name: The runtime exercise holds III.4's properties
         run: bash bench/runtime_exercise.sh
 
+      # The shape those primitives are actually used in: a fiber per
+      # connection, both halves parked on the poller, and a collection
+      # in the middle. Two crashes lived here — the poller's event
+      # buffer held as a number the collector could not see, and a
+      # finished fiber's stack never handed back — and both failure
+      # proofs are in the gate.
+      - name: A server's shape survives its own collector
+        run: bash bench/server_load.sh
+
       # III.1.4: a panic kills the task, not the process — defers run
       # by registry, the boundary re-raises once, `.or_panic` is real.
       - name: A panic dies at its boundary, cleanly
@@ -912,6 +921,12 @@ jobs:
 
       - name: The concurrency gate (III.4)
         run: bash bench/concurrency_exercise.sh
+
+      # The same shape on kqueue, where the event entry is 32 bytes
+      # rather than 12 and the buffer the collector could not see is
+      # 512 rather than 192.
+      - name: A server's shape survives its own collector
+        run: bash bench/server_load.sh
 
       - name: The panics gate (III.1.4)
         run: bash bench/panics.sh

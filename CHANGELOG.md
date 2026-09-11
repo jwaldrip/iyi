@@ -426,6 +426,35 @@
 
 ### Fixed
 
+- **A server died at its first collection: the poller's event buffer was
+  a number, and the collector is precise.** `IyiSchedulerState#events`
+  held `Pointer(UInt8).malloc(...).address` — an address, in a `UInt64`
+  field — and a typed object's fields are traced by layout, so the one
+  reference to that heap buffer was invisible. The first collection
+  freed it; the kernel went on writing epoll's answers into a chunk the
+  allocator had already handed to somebody else; the free list it
+  scribbled over took the next allocation down. `wrk -c 100 -d 10`
+  against the sample web application died at request ~400 inside
+  `String#+` with "invalid memory access", and the trail read the same
+  every time: a 192-byte untyped chunk (sixteen epoll entries of twelve
+  bytes) written *after* it was freed. The field is a `Pointer(UInt8)`
+  now, which the layout traces. Same program, same load: 237,066
+  requests at 23,705/s and still serving.
+- **A fiber's stack was mapped and never handed back.** 256 KiB and a
+  registry node per fiber, kept on the grounds that a done fiber's
+  stack is never *reused* — true of the fiber, read as true of the
+  mapping. A server is a fiber per connection: the address space grew
+  with the request count, every collection walked a registry holding
+  every request the process had ever served, and the mappings killed it
+  first — `/proc/self/maps` outgrew the 64 KiB buffer the root walk
+  reads it with, and the program exited saying `no [stack] line in
+  /proc/self/maps` (20,000 fibers, half a second, no sockets needed).
+  A finished fiber now hands its stack to the fiber that runs next —
+  nothing can free the ground it stands on — and leaves the registry
+  and its group's child list on the way out. Two hundred sequential
+  connections run on **one** stack; the sample application holds 299
+  mappings and 14 MB across repeated runs where it used to grow without
+  bound. Gated by `bench/server_load.sh`, with both failures proved.
 - **The editor froze on `▶ run`, and the thirty-second guard could not
   fire.** `iyi run` hands its pipes to the program it builds, and the
   server handed *its* pipes to `Process` as `IO`s — which makes `wait`
@@ -4970,7 +4999,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,448-line library and nothing else. Every other
+  written against iyi's own 13,600-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

@@ -1,0 +1,176 @@
+# The shape every server has, small enough to be a gate: a fiber per
+# connection, both halves parked on the poller, and a collection in the
+# middle of it.
+#
+# Two properties, and each one was a crash before it was a line here.
+#
+#   1. **The poller's event buffer survives a collection.** It was held
+#      as a `UInt64` address, and the collector is precise over a typed
+#      object's fields: the one reference to that heap buffer was a
+#      number, so the first collection freed it and the kernel went on
+#      writing epoll results into a chunk the allocator had handed back.
+#      `wrk -c 100` over a sample web application died at request ~400,
+#      inside `String#+`, on a free list the poller had scribbled over.
+#
+#   2. **A finished fiber's stack comes back.** 256 KiB a fiber, mapped
+#      and never returned, is a leak with a connection counter on it:
+#      the mappings alone killed the program - `/proc/self/maps` outgrew
+#      the root walk's own reader - long before the memory did. Sequential
+#      connections must run on the same few stacks.
+module server_load
+
+import std/socket
+using std/socket::{IyiSocket}
+
+ROUNDS = 200
+STACK_BOUND = 8
+
+# One connection, server side: park, read, answer, and report the stack
+# it ran on, so the caller can count how many stacks the run used.
+pub def serve(client : IyiSocket) : UInt64
+  top = IyiScheduler.current.stack_top
+  case wait_readable(client.to_unsafe)
+  in Cancelled
+    client.close
+    0_u64
+  in Nil
+    request = client.read(256)
+    client.write("reply-" + request.size.to_s)
+    client.close
+    top
+  end
+end
+
+# One connection, client side: the other half of the same park.
+pub def ask(port : Int32, id : Int32) : Int32
+  socket = IyiSocket.connect("127.0.0.1", port)
+  socket.write("ping-" + id.to_s)
+  case wait_readable(socket.to_unsafe)
+  in Cancelled
+    socket.close
+    1
+  in Nil
+    reply = socket.read(256)
+    socket.close
+    want = "reply-" + ("ping-" + id.to_s).size.to_s
+    return 0 if reply == want
+    puts "FAIL: reply " + reply + ", wanted " + want
+    1
+  end
+end
+
+# Garbage, so the collections happen while fibers are parked rather than
+# after the run.
+pub def churn : Int32
+  n = 0
+  while n < 200000
+    junk = "filler-" + n.to_s + "-" + n.to_s
+    n = n + 1
+  end
+  0
+end
+
+# The canary, and the reason it is shaped like this: the poller's event
+# buffer is an untyped allocation of `EVENTS` entries - 192 bytes where
+# epoll's entry is twelve, 512 where kqueue's is thirty-two - and a
+# collection that cannot see it hands that chunk to whoever asks next.
+# So somebody asks: objects across that whole range of sizes, held over
+# a park, which is exactly when the kernel writes events. If the buffer
+# was freed, these are what it overwrites, and the bytes say so.
+pub def canaries(rounds : Int32) : Int32
+  unit = "0123456789"
+  bad = 0
+  n = 0
+  while n < rounds
+    held = [] of String
+    want = [] of String
+    size = 12
+    while size < 60
+      text = "canary" + n.to_s
+      copy = "canary" + n.to_s
+      part = 0
+      while part < size
+        text = text + unit
+        copy = copy + unit
+        part = part + 1
+      end
+      held << text
+      want << copy
+      size = size + 4
+    end
+    s = sleep(1)
+    index = 0
+    while index < held.size
+      bad = bad + 1 unless held[index] == want[index]
+      index = index + 1
+    end
+    n = n + 1
+  end
+  bad
+end
+
+listener = IyiSocket.listen(0)
+port = listener.local_port
+puts "serving on " + port.to_s
+
+tops = [] of UInt64
+bad = 0
+
+canary_bad = 0
+
+group do |outer|
+  outer.spawn { churn }
+  outer.spawn do
+    canary_bad = canaries(60)
+    0
+  end
+
+  outer.spawn do
+    n = 0
+    while n < ROUNDS
+      case wait_readable(listener.to_unsafe)
+      in Cancelled
+        n = ROUNDS
+      in Nil
+        client = listener.accept
+        outer.spawn do
+          tops << serve(client)
+          0
+        end
+        n = n + 1
+      end
+    end
+    0
+  end
+
+  outer.spawn do
+    n = 0
+    while n < ROUNDS
+      bad = bad + ask(port, n)
+      n = n + 1
+    end
+    0
+  end
+end
+
+listener.close
+
+distinct = [] of UInt64
+tops.each do |top|
+  distinct << top unless distinct.includes?(top) || top == 0_u64
+end
+
+puts "collections " + IyiMark.collections.to_s
+puts "answers " + tops.size.to_s + ", failures " + bad.to_s
+puts "stacks " + distinct.size.to_s
+
+puts "canary damage " + canary_bad.to_s
+
+raise "FAIL: the poller wrote into " + canary_bad.to_s +
+  " object(s) the collector had handed out" if canary_bad != 0
+raise "FAIL: a reply was wrong" if bad != 0
+raise "FAIL: served " + tops.size.to_s + " of " + ROUNDS.to_s if tops.size != ROUNDS
+raise "FAIL: nothing was collected, so nothing was proven" if IyiMark.collections == 0_u64
+raise "FAIL: the stacks were not reused - " + distinct.size.to_s + " of them for " +
+  ROUNDS.to_s + " connections" if distinct.size > STACK_BOUND
+puts "every property held"
