@@ -777,18 +777,27 @@ class IyiScheduler
   end
 
   # A stack for a new fiber out of this thread's pool (0 when it is
-  # empty and the caller should map one), and the way back into it.
+  # empty and the caller should map one), and the way back into it. The
+  # list runs through the stacks themselves, at the top word - the one
+  # place in the mapping that is writable on every target.
+  #
+  # The bottom is not: the guard page is `mprotect`ed by *length*, and a
+  # length is rounded up to the platform's page. darwin on arm64 pages
+  # at 16 KiB, so a guard asked for as 4 KiB is 16 KiB of unwritable
+  # mapping and a link stored just above `PAGE` faults the first time a
+  # fiber hands its stack back. It did, on the first program with tasks
+  # in it, every run, on that platform only.
   def self.take_stack : UInt64
     st = state
     base = st.stack_pool
     return 0_u64 if base == 0
-    st.stack_pool = Pointer(UInt64).new(base + IyiFiber::PAGE).value
+    st.stack_pool = Pointer(UInt64).new(base + IyiFiber::STACK_BYTES - 8_u64).value
     base
   end
 
   def self.give_stack(base : UInt64) : Nil
     st = state
-    Pointer(UInt64).new(base + IyiFiber::PAGE).value = st.stack_pool
+    Pointer(UInt64).new(base + IyiFiber::STACK_BYTES - 8_u64).value = st.stack_pool
     st.stack_pool = base
   end
 
