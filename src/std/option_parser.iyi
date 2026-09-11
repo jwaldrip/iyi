@@ -17,6 +17,9 @@
 
 module std/option_parser
 
+pub class Exception < ::Exception
+end
+
 pub class InvalidOption < Exception
   getter flag : String
   getter message : String
@@ -71,8 +74,9 @@ pub class OptionParser
   @unknown_args : Proc(Array(String), Array(String), Nil)?
   @missing_option : Proc(String, Nil)?
   @invalid_option : Proc(String, Nil)?
+  @before_each : Proc(String, Nil)?
+  @gnu_optional_args : Bool
   @stop : Bool
-
   def initialize
     @banner = nil
     @summary_width = 32
@@ -81,13 +85,46 @@ pub class OptionParser
     @handlers = Hash(String, Handler).new
     @missing_option = ->(flag : String) { raise MissingOption.new(flag).message }
     @invalid_option = ->(flag : String) { raise InvalidOption.new(flag).message }
+    @before_each = nil
+    @gnu_optional_args = false
     @stop = false
   end
 
-  def self.parse(args : Array(String), &block : OptionParser -> Nil) : Array(String)
-    parser = OptionParser.new
-    block.call(parser)
+  def initialize(@gnu_optional_args : Bool = false)
+    @banner = nil
+    @summary_width = 32
+    @summary_indent = "    "
+    @flags = [] of String
+    @handlers = Hash(String, Handler).new
+    @missing_option = ->(flag : String) { raise MissingOption.new(flag).message }
+    @invalid_option = ->(flag : String) { raise InvalidOption.new(flag).message }
+    @before_each = nil
+    @stop = false
+  end
+
+  def self.new(gnu_optional_args : Bool = false, &block : OptionParser -> Nil) : OptionParser
+    parser = OptionParser.new(gnu_optional_args)
+    yield parser
+    parser
+  end
+
+  def self.parse(args : Array(String), gnu_optional_args : Bool = false, &block : OptionParser -> Nil) : OptionParser
+    parser = OptionParser.new(gnu_optional_args)
+    yield parser
     parser.parse(args)
+    parser
+  end
+
+  def gnu_optional_args? : Bool
+    @gnu_optional_args
+  end
+
+  def gnu_optional_args=(val : Bool) : Bool
+    @gnu_optional_args = val
+  end
+
+  def before_each(&block : String -> Nil) : Nil
+    @before_each = block
   end
 
   def on(flag : String, description : String, &block : String -> Nil) : Nil
@@ -148,6 +185,10 @@ pub class OptionParser
     while i < args.size
       arg = args[i]
 
+      if cb = @before_each
+        cb.call(arg)
+      end
+
       if @stop
         double_dash_index = i - 1
         @stop = false
@@ -191,7 +232,7 @@ pub class OptionParser
                 end
               end
             elsif handler.value_type.optional?
-              if i + 1 < args.size && !args[i + 1].starts_with?('-') && !@handlers.has_key?(args[i + 1])
+              if !@gnu_optional_args && i + 1 < args.size && !args[i + 1].starts_with?('-') && !@handlers.has_key?(args[i + 1])
                 val = args[i + 1]
                 handled_indices << i + 1
                 i = i + 1
@@ -288,6 +329,15 @@ pub class OptionParser
     end
     lines.join("\n")
   end
+
+  def to_s(io : IO) : Nil
+    str = to_s
+    io.write(str.to_unsafe, str.bytesize)
+  end
+
+  alias Exception = ::Std::OptionParser::Exception
+  alias InvalidOption = ::Std::OptionParser::InvalidOption
+  alias MissingOption = ::Std::OptionParser::MissingOption
 
   private def append_flag(flag : String, description : String) : Nil
     display_flag = flag.starts_with?("--") ? "    #{flag}" : flag
