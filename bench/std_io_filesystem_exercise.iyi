@@ -100,6 +100,7 @@ assert_true(!tmp.empty?, "dir tempdir not empty")
 
 # 2. Dir mkdir, entries, children, delete
 test_dir = tmp + "/iyi_std_dir_test_" + p1.basename
+FileUtils.rm_rf(test_dir)
 Dir.mkdir_p(test_dir)
 assert_true(Dir.exists?(test_dir), "dir exists? after mkdir_p")
 assert_true(Dir.empty?(test_dir), "dir empty? true")
@@ -126,6 +127,7 @@ assert_true(glob_sh.size > 0, "dir glob bench/*.sh found entries")
 puts "== std/file_utils"
 # 1. FileUtils mkdir_p, touch, cp, mv, cmp, rm_rf
 fu_base = tmp + "/iyi_std_fu_test"
+FileUtils.rm_rf(fu_base)
 FileUtils.mkdir_p(fu_base + "/nested/deep")
 assert_true(Dir.exists?(fu_base + "/nested/deep"), "fu mkdir_p nested")
 
@@ -149,6 +151,7 @@ assert_true(!Dir.exists?(fu_base), "fu rm_rf removed directory")
 puts "== std/file"
 # 1. File size, info, read_lines, truncate
 test_f = tmp + "/iyi_std_file_test.txt"
+File.delete(test_f) if File.exists?(test_f)
 File.write(test_f, "line 1\nline 2\nline 3\n")
 assert_equal(21_i64, File.size(test_f), "file size")
 assert_true(File.file?(test_f), "file file?")

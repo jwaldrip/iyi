@@ -121,9 +121,9 @@ prove_fails "path basename broken" no_path_base "path basename" "path.iyi" \
 prove_fails "env retrieval broken" no_env_get "Missing ENV key" "env.iyi" \
   's/val = self\[key\]?/val = nil/'
 
-# 3. Dir children filtering broken
+# 3. Dir children collection broken
 prove_fails "dir children broken" no_dir_child "dir children size" "dir.iyi" \
-  's/if entry != "\." && entry != "\.\."/if false/'
+  's/res << entry/# res << entry/'
 
 # 4. FileUtils cmp broken
 prove_fails "file_utils cmp broken" no_fu_cmp "fu cmp identical" "file_utils.iyi" \
@@ -132,7 +132,6 @@ prove_fails "file_utils cmp broken" no_fu_cmp "fu cmp identical" "file_utils.iyi
 # 5. File size reporting broken
 prove_fails "file size broken" no_file_size "file size" "file.iyi" \
   's/info(path)\.size/0_i64/'
-
 # 6. IO::Memory to_s broken
 prove_fails "io memory to_s broken" no_mem_tos "mem to_s" "io.iyi" \
   's/String\.new(@bytesize)/String.new(0)/'
