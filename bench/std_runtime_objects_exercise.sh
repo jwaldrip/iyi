@@ -135,7 +135,7 @@ prove_fails "errno message lookup broken" no_errno_msg "errno: ENOENT message" "
 
 # 5. WasiError translation broken
 prove_fails "wasi_error translation broken" no_wasi_trans "wasi: to_errno ENOENT" "wasi_error.iyi" \
-  's/when ENOENT then Errno::ENOENT/when ENOENT then Errno::EPERM/'
+  's/when ENOENT[ ]*then Errno::ENOENT/when ENOENT then Errno::EPERM/'
 
 # 6. WinError message lookup broken
 prove_fails "winerror message lookup broken" no_win_msg "winerror: file not found message" "winerror.iyi" \
