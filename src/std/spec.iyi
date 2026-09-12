@@ -1812,33 +1812,8 @@ pub class CLI
   def exit_after_run=(@exit_after_run : Bool)
   end
 
-  def initialize(@stdout : IyiIO, @stderr : IyiIO)
-    @color = true
-    @fail_fast = false
-    @focus = false
-    @dry_run = false
-    @list_tags = false
-    @pattern = nil
-    @line = nil
-    @slowest = nil
-    @current_example = nil
-    @locations = {} of String => Array(Int32)
-    @tags = Set(String).new
-    @anti_tags = Set(String).new
-    @randomizer_seed = nil
-    @randomizer = nil
-    @aborted = false
-    @exit_code = 0
-    @exit_after_run = true
-    @formatters = [] of Formatter
-    @root_context = RootContext.new(self)
-    @current_context = @root_context
-    @formatters << DotFormatter.new(self, @stdout)
-  end
-
-  def initialize
-    @stdout = STDOUT
-    @stderr = STDERR
+  def initialize(@stdout : IyiIO = STDOUT, stderr : IyiIO? = nil)
+    @stderr = stderr || @stdout
     @color = true
     @fail_fast = false
     @focus = false
