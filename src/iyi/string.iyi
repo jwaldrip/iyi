@@ -158,20 +158,27 @@ class String
     end
   end
 
-  # Pad on the left (rjust) or the right (ljust) to *width* bytes. The pad is
-  # one ASCII byte, like the rest of this file. A width that already fits
-  # returns the string unchanged.
+  # Pad on the left (rjust) or the right (ljust) to *width*. A width that
+  # already fits returns the string unchanged.
+  # *width* is in characters, because `size` is: padding is asked for to line
+  # a column up, and a string measured one way and padded another lines up
+  # for ASCII and nothing else. `"héllo".rjust(7, '.')` used to answer a
+  # string whose own `size` was 6. The pad travels as its own bytes for the
+  # same reason — written as one byte, a `'·'` left a lone continuation byte
+  # in the middle of the result.
   def rjust(width : Int32, pad : Char) : String
-    return self if width <= @bytesize
-    extra = width - @bytesize
-    pad_byte = pad.ord.to_u8
-    String.new(width) do |buffer|
+    count = size
+    return self if width <= count
+    extra = width - count
+    padding = pad.to_s
+    pad_bytes = padding.bytesize
+    String.new(@bytesize + extra * pad_bytes) do |buffer|
       i = 0
       while i < extra
-        buffer[i] = pad_byte
+        (buffer + i * pad_bytes).copy_from(padding.to_unsafe, pad_bytes)
         i = i + 1
       end
-      (buffer + extra).copy_from(to_unsafe, @bytesize)
+      (buffer + extra * pad_bytes).copy_from(to_unsafe, @bytesize)
     end
   end
 
@@ -180,14 +187,16 @@ class String
   end
 
   def ljust(width : Int32, pad : Char) : String
-    return self if width <= @bytesize
-    extra = width - @bytesize
-    pad_byte = pad.ord.to_u8
-    String.new(width) do |buffer|
+    count = size
+    return self if width <= count
+    extra = width - count
+    padding = pad.to_s
+    pad_bytes = padding.bytesize
+    String.new(@bytesize + extra * pad_bytes) do |buffer|
       buffer.copy_from(to_unsafe, @bytesize)
-      i = @bytesize
-      while i < width
-        buffer[i] = pad_byte
+      i = 0
+      while i < extra
+        (buffer + @bytesize + i * pad_bytes).copy_from(padding.to_unsafe, pad_bytes)
         i = i + 1
       end
     end

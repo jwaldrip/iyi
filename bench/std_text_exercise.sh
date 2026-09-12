@@ -173,6 +173,14 @@ prove_fails_prelude "char utf8 encoding broken" no_encode "utf8: char to_s" \
 prove_fails_prelude "utf8 each_char decoding broken" no_decode "utf8: chars size" \
   's/index = index + 2$/index = index + 1/'
 
+# 10. Padding measured in bytes again, which is what it did
+prove_fails_prelude "padding width in bytes" no_width "utf8: ljust width" \
+  's/^    count = size$/    count = @bytesize/'
+
+# 11. And the pad written as one byte, which cut a multi-byte one in half
+prove_fails_prelude "wide pad truncated" no_wide "utf8: wide pad bytes" \
+  's/^    pad_bytes = padding.bytesize$/    pad_bytes = 1/'
+
 echo
 if [ "$status" -eq 0 ]; then
   echo "Text standard library: inspection, cases, conversions, strip, chomp, split,"

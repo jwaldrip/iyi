@@ -205,6 +205,25 @@ raise "utf8: char to_s" unless c_accent.to_s == "é"
 raise "utf8: char to_s bytesize" unless c_accent.to_s.bytesize == 2
 raise "utf8: char to_s size" unless c_accent.to_s.size == 1
 
+# Padding, which is asked for to line a column up, so its width is the one
+# `size` reports and not the byte count: padded by bytes, `"héllo"` in a
+# seven-wide column came out six characters long.
+padded_right = s_utf8.ljust(7, '.')
+raise "utf8: ljust width" unless padded_right.size == 7
+raise "utf8: ljust bytes" unless padded_right.bytesize == 8
+raise "utf8: ljust content" unless padded_right == "héllo.."
+padded_left = s_utf8.rjust(7, '.')
+raise "utf8: rjust width" unless padded_left.size == 7
+raise "utf8: rjust content" unless padded_left == "..héllo"
+# And a pad that is itself multi-byte travels whole, not as its low byte.
+wide_pad = s_utf8.rjust(7, '·')
+raise "utf8: wide pad width" unless wide_pad.size == 7
+raise "utf8: wide pad bytes" unless wide_pad.bytesize == 10
+raise "utf8: wide pad content" unless wide_pad == "··héllo"
+# A width that already fits is the string, and ASCII pads as it always did.
+raise "utf8: pad fits" unless s_utf8.ljust(3, '.') == "héllo"
+raise "utf8: ascii pad" unless "42".rjust(5) == "   42"
+
 # String chars decoding:
 decoded_chars = s_utf8.chars
 raise "utf8: chars size" unless decoded_chars.size == 5

@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- **Padding is measured in characters, because `size` is.** `ljust` and
+  `rjust` counted bytes: `"héllo".ljust(7, '.')` answered a string whose own
+  `size` was 6, so the one thing padding is asked for — lining a column up —
+  worked for ASCII and for nothing else. The pad was written as one byte
+  too, so a multi-byte one (`'·'`) left a lone continuation byte inside the
+  result. Both fixed: the width is the count `size` reports and the pad
+  travels as its own bytes. ASCII is unchanged, which is every sample.
+  Found by probing the prelude's string surface for the same
+  self-disagreement `each_char` had — `size` said 5 and the method said 6 —
+  and `bench/std_text_exercise.iyi` now holds the padded widths with two
+  more proofs that patch the prelude where they live (eleven in all).
 - **The scheduler's fiber states are named.** They were an `Int32` with
   seven numbers and their meanings in a comment, because the prelude had no
   `Enum` surface when the scheduler was written. It has one, and the comment
@@ -5253,7 +5264,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,841-line library and nothing else. Every other
+  written against iyi's own 13,850-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
