@@ -854,7 +854,7 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 109,435 lines, Crystal, forked |
+| Compiler | 24,984 lines, **written in Crystal** | 109,428 lines, Crystal, forked |
 | Library | 8,161 lines (3,551 of it core) | 13,609-line own prelude + 6,067 in std |
 | Specs | 21,146 lines | 9,758 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
@@ -3411,17 +3411,22 @@ instantiated defs, and marks every caller; `bench/open_dispatch.sh` runs the
 fixture both ways — `IYI_OPEN_TRAVEL=off` writes the boundary the way it was
 written before the rule, and answers `first `.
 
-**Bounded by what the artifact carries**, which is the part that had to be
-measured rather than reasoned. Walked over the whole program the closure
-reaches almost every method of every shard: `raise` dispatches over
-`Crystal::EventLoop`, `String.new` over four more modules, and a body that
-can raise is every body there is. None of it needs to travel — the library is
-what the consumer compiles for itself, so the symbol a shard's object code
-calls is the consumer's own, with the consumer's includers. So the walk stops
-at the module's own types. What that leaves open is a library method *copied*
-into an artifact's unit (IV.1g's internal-linkage copies): it holds the
-producer's set, and only a caller that travels would replace it. Nothing
-measured has reached it.
+**Every callee, because a copy is one too**, and which of the two bounds is
+right had to be measured rather than reasoned. The obvious bound is the
+module's own types: everything else is the consumer's to compile, so the
+symbol a shard's object code calls is the consumer's own and its includers
+are the consumer's. That bound is wrong for the reason IV.1g gives — while a
+module's unit is emitted, a callee it does not own is *copied* into that unit
+with internal linkage, so a library method with a dispatch in it is in the
+artifact holding the producer's set, and only a caller that travels replaces
+it. So the walk follows every call.
+
+What that costs, measured: on kemal's four boundaries **nothing at all** —
+the same 325, 36, 35 and 11 travelling bodies as the bounded walk, because
+what reaches a dispatch there already travelled for another reason. On `db`
+and `sqlite3` it is 45 bodies more out of 217, and neither gate's wall time
+moves. The one place the wide walk looked expensive was a defect rather than
+a cost, and it is the next paragraph.
 
 And one defect the wide closure walked into on the way, which is about a
 `fun` rather than about a set: **a `fun` that answers one of the shard's own

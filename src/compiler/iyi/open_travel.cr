@@ -29,36 +29,40 @@ require "./program"
 # `MonoBodies`, the keep file leaves it alone, so the producer emits no symbol
 # for it, and the consumer compiles it against the set *it* has.
 #
-# **Only the code the artifact carries.** The walk is bounded by the module's
-# own types, and the reason is that everything else is the consumer's to
-# compile: a shard method that calls `raise` reaches a dispatch over
-# `Crystal::EventLoop`, four modules deep in the standard library, and the
-# symbol it calls is one the *consumer's* program defines — from the same
-# library source, against the consumer's own includers. Marked unbounded, the
-# closure reached almost every method of every shard through `raise` and
-# `String.new`, which is the whole library travelling as text to fix a
-# dispatch that was never wrong. What the bound leaves open is written down in
-# SPEC.md III.6: a library method *copied* into an artifact's unit (IV.1g's
-# internal-linkage copies) holds the producer's set, and only a caller that
-# travels would replace it.
+# **Every callee, because a copy is one too.** The obvious bound is the
+# module's own types: everything else is the consumer's to compile, so the
+# symbol a shard's object code calls is the consumer's own, compiled against
+# the consumer's includers. It is the wrong bound, and IV.1g says why. While a
+# module's unit is being emitted, a callee the module does not own is *copied*
+# into that unit with internal linkage (`iyi_closure_host`) — so a library
+# method with a dispatch in it is in the artifact, holding the producer's set,
+# and the only thing that replaces it is a caller that travels.
+#
+# So the walk follows every call. What that costs was measured rather than
+# feared: on kemal's four boundaries, nothing at all — the same 325, 36, 35 and
+# 11 bodies as the bounded walk, because what reaches a dispatch there already
+# travelled for another reason. On `db` and `sqlite3` it is 45 bodies more out
+# of 217, and the gate's wall time does not move. The one place the wide walk
+# was expensive was a defect rather than a cost: it turned `ResultSet#read`
+# into text, which read a `fun`'s enum as its base type and answered the
+# `else` (`Iyi.fun_type`, fixed).
 module Iyi::OpenTravel
   # Marks the written defs whose bodies have to travel.
   #
   # Run after semantic analysis and before an artifact is written, on the build
   # that has the typed bodies: the mark is read off a type's own `defs`, which
-  # is what the artifact writers walk.
-  #
-  # The block answers whether a type's methods are the artifact's own — the
-  # exported owners for an iyi module, the root's namespace for a bound shard.
+  # is what the artifact writers walk. A library def marked here is read by
+  # nobody — an artifact writer asks only about the methods its own module
+  # wrote — and its *callers* in the module are the answer this produces.
   #
   # `IYI_OPEN_TRAVEL=off` writes the boundary the way it was written before this
   # rule, and `=trace` prints the closure. The first is what
   # `bench/open_dispatch.sh` proves the defect with: a gate that cannot fail is
   # not a gate, and the failure here is a program that prints half a line.
-  def self.mark(program : Program, &carried : Type -> Bool) : Nil
+  def self.mark(program : Program) : Nil
     return if ENV["IYI_OPEN_TRAVEL"]? == "off"
 
-    Walk.new(program, carried).run
+    Walk.new(program).run
   end
 
   # The call graph of this build's instantiated defs, in the one direction the
@@ -71,7 +75,7 @@ module Iyi::OpenTravel
     # Instance ids whose machine code answers for an open set.
     @open = Set(UInt64).new
 
-    def initialize(@program : Program, @carried : Proc(Type, Bool))
+    def initialize(@program : Program)
     end
 
     def run : Nil
@@ -81,7 +85,7 @@ module Iyi::OpenTravel
       record
     end
 
-    # Every type this build made, and every def instance the artifact carries.
+    # Every type this build made, and every def instance on it.
     #
     # The same walk `TypedDefProcessor` does for the tools, written out here
     # because this one has no target location to stop at: a module's method is
@@ -101,7 +105,6 @@ module Iyi::OpenTravel
       collect_types type.metaclass if type.metaclass != type
 
       return unless type.is_a?(DefInstanceContainer)
-      return unless @carried.call(type)
       type.def_instances.each_value { |instance| collect_instance instance }
     end
 
@@ -133,11 +136,10 @@ module Iyi::OpenTravel
           # somebody else's object code, and its own artifact answered this
           # question when it was written.
           next if callee.iyi_from_artifact?
-          # And a callee the artifact does not carry is the consumer's to
-          # compile, so its dispatch is the consumer's own: `raise` reaches one
-          # over `Crystal::EventLoop` in every program there is, and the symbol
-          # a shard's object code calls is the one the consumer's build defines.
-          next unless callee.owner.try { |owner| @carried.call(owner) }
+          # Every other callee is followed, the library's included: while a
+          # module's unit is emitted, what it calls is copied into that unit
+          # (IV.1g), so a dispatch inside a library method is a dispatch inside
+          # the artifact.
 
           (@callers[callee.object_id] ||= [] of Def) << instance
           pending << callee

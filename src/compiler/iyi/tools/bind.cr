@@ -391,14 +391,7 @@ module Iyi
     # compiled alone types almost none of its own bodies, and `infer_return`
     # instantiates each method on purpose. The answer is read back below by
     # location — a `BindMethod` is a record of strings and holds no `Def`.
-    #
-    # Bounded by the root, which is what this artifact carries object code for.
-    # A method of the *library* is the consumer's to compile whatever it
-    # dispatches over, so it is not in this closure — see `Iyi::OpenTravel`.
-    OpenTravel.mark(program) do |owner|
-      name = owner.instance_type.to_s
-      name == root || name.starts_with?("#{root}::")
-    end
+    OpenTravel.mark program
 
     ready = methods.count(&.verdict.ready?)
     inferable = methods.count(&.verdict.needs_return?)
@@ -4770,10 +4763,10 @@ module Iyi
   # so at the far side rather than be guessed at here.
   #
   # **The return side is not the same answer.** What a C function *takes* is
-  # the integer and Crystal converts an enum to it without being asked, so a
-  # parameter is written as the base type and a caller inside the module goes
-  # on writing `SQLite3::Flag::ReadWrite`. What a `fun` *answers* is read by
-  # the shard's own code as the enum it declared: `fun column_type =
+  # the integer, and Crystal's own rule converts an enum to it without being
+  # asked, so a parameter is written as the base type and a caller inside the
+  # module goes on writing `SQLite3::Flag::ReadWrite`. What a `fun` *answers*
+  # is read by the shard's own code as the enum it declared: `fun column_type =
   # sqlite3_column_type(…) : ::SQLite3::Type` crossing as `Int32` gave a body
   # compiled on the far side an integer, and `case column_type(self, col) when
   # Type::TEXT` then matched nothing and took the `else` — `another row

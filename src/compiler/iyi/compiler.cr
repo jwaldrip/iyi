@@ -599,9 +599,7 @@ module Iyi
       # reason the collection is — the keep file leaves a travelling body
       # alone, so nothing emits a symbol for it.
       @progress_tracker.stage("Open dispatch") do
-        OpenTravel.mark(program) do |owner|
-          program.iyi_exported_owners.includes?(owner.instance_type)
-        end
+        OpenTravel.mark program
       end
 
       prepared = program.iyi_module_paths.map do |filename, module_name|

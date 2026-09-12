@@ -40,15 +40,20 @@
   `IYI_OPEN_TRAVEL=off` writes the boundary the way it was written before
   the rule and still prints `first ` where the source prints
   `first mine end`.
-- **The closure is bounded by what the artifact carries, which is the half
-  that had to be measured.** Walked over the whole program it reaches
-  almost every method of every shard: `raise` dispatches over
-  `Crystal::EventLoop`, `String.new` over four more modules, and a body
-  that can raise is every body there is. None of it needs to travel — the
-  library is what a consumer compiles for itself, so the symbol a shard's
-  object code calls is the consumer's own, with the consumer's includers.
-  Unbounded it also turned `sqlite3`'s `ResultSet#read` into text, which
-  found the defect below.
+- **The closure follows every call, because a copy is a call too, and
+  which bound is right was measured rather than reasoned.** The obvious
+  bound is the module's own types — everything else is the consumer's to
+  compile, so the symbol a shard's object code calls is the consumer's own
+  and the includers are the consumer's. IV.1g says why that is wrong:
+  while a module's unit is emitted, a callee it does not own is *copied*
+  into that unit with internal linkage, so a library method with a
+  dispatch in it sits in the artifact holding the producer's set, and only
+  a caller that travels replaces it. Measured: on kemal's four boundaries
+  the wide walk changes nothing at all — the same 325, 36, 35 and 11
+  travelling bodies — because what reaches a dispatch there already
+  travelled for another reason; on `db` and `sqlite3` it is 45 bodies more
+  out of 217, with no change in either gate's wall time. The one place it
+  looked expensive was the defect below rather than a cost.
 - **A `fun` that answers one of the shard's own enums crosses as that
   enum.** It crossed as the enum's *base type*, which is the right answer
   for a parameter — what a C function takes is the integer, and Crystal
