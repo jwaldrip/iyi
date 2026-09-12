@@ -45,10 +45,12 @@ import std/slice
 import std/text
 import std/hpack
 import std/http
+import std/socket
 
 using std/slice::{Slice, Bytes}
 using std/hpack::{HeaderField, IndexingMode, HpackError, Decoder, Encoder}
 using std/http::{Headers, Request, Response, Status, HttpError}
+using std/socket::{IyiSocket}
 
 # ---------------------------------------------------------------------------
 # Constants & Protocol Limits
@@ -301,6 +303,12 @@ pub struct FrameHeader
     buffer << (id & 0xFF).to_u8
   end
 
+  def serialize : Bytes
+    buf = [] of UInt8
+    encode(buf)
+    Slice(UInt8).new(buf.to_unsafe, buf.size)
+  end
+
   def self.decode(bytes : Bytes, offset : Int32 = 0) : Tuple(FrameHeader, Int32) | Http2Error
     if offset + 9 > bytes.size
       return Http2Error.new(ErrorCode::FRAME_SIZE_ERROR, "Incomplete frame header: need 9 bytes, got #{bytes.size - offset}")
@@ -362,6 +370,25 @@ pub class Settings
       add_setting(buf, SettingId::ENABLE_CONNECT_PROTOCOL, @enable_connect_protocol.to_i64)
     end
     Bytes.new(buf.size) { |i| buf[i] }
+  end
+
+  def set(id : Int32, val : Int64) : Nil
+    case id
+    when SettingId::HEADER_TABLE_SIZE
+      @header_table_size = val.to_i32
+    when SettingId::ENABLE_PUSH
+      @enable_push = val.to_i32
+    when SettingId::MAX_CONCURRENT_STREAMS
+      @max_concurrent_streams = val.to_i32
+    when SettingId::INITIAL_WINDOW_SIZE
+      @initial_window_size = val
+    when SettingId::MAX_FRAME_SIZE
+      @max_frame_size = val.to_i32
+    when SettingId::MAX_HEADER_LIST_SIZE
+      @max_header_list_size = val.to_i32
+    when SettingId::ENABLE_CONNECT_PROTOCOL
+      @enable_connect_protocol = val.to_i32
+    end
   end
 
   private def add_setting(buf : Array(UInt8), id : Int32, val : Int64) : Nil
@@ -1983,5 +2010,126 @@ pub class Server
 
   def get_request_trailers(stream_id : Int32) : Headers
     @connection.request_trailers(stream_id)
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Socket-Driven HTTP/2 Client & Server
+# ---------------------------------------------------------------------------
+
+pub class SocketClient
+  getter connection : Connection
+  getter socket : IyiSocket
+
+  def initialize(@socket : IyiSocket)
+    @connection = Connection.new(Role::Client)
+    @connection.start_connection
+    flush
+  end
+
+  def self.connect(host : String, port : Int32) : SocketClient
+    sock = IyiSocket.connect(host, port)
+    SocketClient.new(sock)
+  end
+
+  def flush : Nil
+    outbound = @connection.flush_outbound
+    if outbound.size > 0
+      @socket.write(outbound.to_unsafe, outbound.size)
+    end
+  end
+
+  def step : Nil | Http2Error
+    flush
+    buf = Pointer(UInt8).malloc(16384_u64)
+    n = @socket.read(buf, 16384)
+    if n > 0
+      raw = Bytes.new(n) { |i| buf[i] }
+      err = @connection.receive(raw)
+      flush
+      return err if err
+    end
+    nil
+  end
+
+  def send_request(req : Request) : Tuple(Int32, Nil | Http2Error)
+    res = @connection.send_request(req)
+    flush
+    res
+  end
+
+  def get_response(stream_id : Int32) : Response?
+    i = 0
+    while i < @connection.completed_responses.size
+      item = @connection.completed_responses[i]
+      if item[0] == stream_id
+        return item[1]
+      end
+      i = i + 1
+    end
+    nil
+  end
+
+  def close : Nil
+    flush
+    @socket.close
+  end
+end
+
+pub class SocketServer
+  getter connection : Connection
+  getter socket : IyiSocket
+
+  def initialize(@socket : IyiSocket)
+    @connection = Connection.new(Role::Server)
+    @connection.start_connection
+    flush
+  end
+
+  def flush : Nil
+    outbound = @connection.flush_outbound
+    if outbound.size > 0
+      @socket.write(outbound.to_unsafe, outbound.size)
+    end
+  end
+
+  def step : Nil | Http2Error
+    buf = Pointer(UInt8).malloc(16384_u64)
+    n = @socket.read(buf, 16384)
+    if n > 0
+      raw = Bytes.new(n) { |i| buf[i] }
+      err = @connection.receive(raw)
+      flush
+      return err if err
+    end
+    flush
+    nil
+  end
+
+  def send_response(stream_id : Int32, resp : Response) : Nil | Http2Error
+    res = @connection.send_response(stream_id, resp)
+    flush
+    res
+  end
+
+  def get_request(stream_id : Int32) : Request?
+    i = 0
+    while i < @connection.completed_requests.size
+      item = @connection.completed_requests[i]
+      if item[0] == stream_id
+        return item[1]
+      end
+      i = i + 1
+    end
+    nil
+  end
+
+  def get_request_trailers(stream_id : Int32) : Headers
+    @connection.request_trailers(stream_id)
+  end
+
+  def close : Nil
+    flush
+    @socket.close
   end
 end
