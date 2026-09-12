@@ -4,6 +4,22 @@
 
 ### Fixed
 
+- **A `.iyi` file may add to the other language's type and may not replace
+  one of its methods.** `import std/text` in a `--crystal` program answered
+  `private method 'byte_slice' called for String`, at a line in Crystal's
+  own `Path#drive` that had not changed: `src/std/text.iyi` writes a
+  `private def byte_slice(start, count)` helper of its own, a name iyi's
+  prelude does not have and Crystal's `String` does, so the import replaced
+  the library's public method with a private one under the whole program.
+  A reopen that *adds* is what a reopen is for and stays; one that replaces
+  is refused, naming both definitions and both files. It asks where each was
+  written, and it does not apply when the prelude is iyi's own — there the
+  type is this language's and reopening it is how the prelude is extended.
+  What it settles about `src/std/`: nine of the twelve modules are
+  library-agnostic and build under `--crystal`, while `std/text` and
+  `std/format` are written against iyi's own prelude — byte-indexed `index`,
+  `split` and `sub`, a `%` that formats — and are refused there instead of
+  silently standing in for Crystal's, which is what they had been doing.
 - **A module used as a type survives the boundary: the consumer's own
   includer is in the dispatch.** 0.12.0 shipped this diagnosed and not
   fixed, and it is the one thing a bound kemal application did not
@@ -24,19 +40,35 @@
   `IYI_OPEN_TRAVEL=off` writes the boundary the way it was written before
   the rule and still prints `first ` where the source prints
   `first mine end`.
-- **The closure is bounded by what the artifact carries, which is the half
-  that had to be measured.** Walked over the whole program it reaches
-  almost every method of every shard: `raise` dispatches over
-  `Crystal::EventLoop`, `String.new` over four more modules, and a body
-  that can raise is every body there is. None of it needs to travel — the
-  library is what a consumer compiles for itself, so the symbol a shard's
-  object code calls is the consumer's own, with the consumer's includers.
-  Unbounded it also turned `sqlite3`'s `ResultSet#read` into text, which
-  found a latent defect in the *other* direction and is now written down
-  where it lives (`Iyi.fun_type`): a `fun` returning an enum crosses as the
-  enum's base type, and a body compiled on the far side then cases on an
-  integer and takes the `else` — `another row available`, on the first
-  query. Bounded to the module's own call graph, nothing reaches it.
+- **The closure follows every call, because a copy is a call too, and
+  which bound is right was measured rather than reasoned.** The obvious
+  bound is the module's own types — everything else is the consumer's to
+  compile, so the symbol a shard's object code calls is the consumer's own
+  and the includers are the consumer's. IV.1g says why that is wrong:
+  while a module's unit is emitted, a callee it does not own is *copied*
+  into that unit with internal linkage, so a library method with a
+  dispatch in it sits in the artifact holding the producer's set, and only
+  a caller that travels replaces it. Measured: on kemal's four boundaries
+  the wide walk changes nothing at all — the same 325, 36, 35 and 11
+  travelling bodies — because what reaches a dispatch there already
+  travelled for another reason; on `db` and `sqlite3` it is 45 bodies more
+  out of 217, with no change in either gate's wall time. The one place it
+  looked expensive was the defect below rather than a cost.
+- **A `fun` that answers one of the shard's own enums crosses as that
+  enum.** It crossed as the enum's *base type*, which is the right answer
+  for a parameter — what a C function takes is the integer, and Crystal
+  converts without being asked — and the wrong one for a return: the
+  shard's own code reads what it declared. `sqlite3` writes `case
+  LibSQLite3.column_type(self, col) when Type::TEXT`, so a body compiled on
+  the far side cased over an `Int32`, matched no member, took the `else` and
+  raised: `another row available`, on the first query a consumer ran. Named
+  globally — `::SQLite3::Type` — because a shard's `lib` is declared at the
+  top level, where its name is what the producer's symbols are made of, and
+  a name looked up in there reaches neither the module's scope (`Type` is
+  `undefined constant`) nor its namespace (`SQLite3::Type` was too).
+  `bench/bind_roundtrip.sh` carries the shape now: a module's body cases on
+  a `fun`'s enum, and with the base type back the two arms answer `many`
+  where they answer `one` and `two`.
 - **Five declarations a travelling body needs, which never crossed.** Each
   was invisible while the body that names it was machine code in the
   artifact. A declaration's members are written *inside* it now, so a

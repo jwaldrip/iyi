@@ -341,7 +341,7 @@ question — "too few arguments for format string" — where it used to borrow
 a raise from an index.
 
 **The standard library is deliberately outside that count, and this is the
-answer this section left open.** `src/std/` is **58,675 lines across ninety-seven
+answer this section left open.** `src/std/` is **58,685 lines across ninety-seven
 modules**. It is opt-in via `import std/...`, it lives outside `src/iyi/` where
 `bench/doc_numbers.py` measures the ceiling, and a program that imports none of
 it pays for none of it. So the prelude rule keeps its meaning, "a method enters
@@ -938,9 +938,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 109,409 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 13,609-line own prelude + 58,675 in std |
-| Specs | 21,146 lines | 9,683 for iyi |
+| Compiler | 24,984 lines, **written in Crystal** | 109,461 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 13,609-line own prelude + 58,685 in std |
+| Specs | 21,146 lines | 9,758 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |
@@ -3507,17 +3507,37 @@ instantiated defs, and marks every caller; `bench/open_dispatch.sh` runs the
 fixture both ways — `IYI_OPEN_TRAVEL=off` writes the boundary the way it was
 written before the rule, and answers `first `.
 
-**Bounded by what the artifact carries**, which is the part that had to be
-measured rather than reasoned. Walked over the whole program the closure
-reaches almost every method of every shard: `raise` dispatches over
-`Crystal::EventLoop`, `String.new` over four more modules, and a body that
-can raise is every body there is. None of it needs to travel — the library is
-what the consumer compiles for itself, so the symbol a shard's object code
-calls is the consumer's own, with the consumer's includers. So the walk stops
-at the module's own types. What that leaves open is a library method *copied*
-into an artifact's unit (IV.1g's internal-linkage copies): it holds the
-producer's set, and only a caller that travels would replace it. Nothing
-measured has reached it.
+**Every callee, because a copy is one too**, and which of the two bounds is
+right had to be measured rather than reasoned. The obvious bound is the
+module's own types: everything else is the consumer's to compile, so the
+symbol a shard's object code calls is the consumer's own and its includers
+are the consumer's. That bound is wrong for the reason IV.1g gives — while a
+module's unit is emitted, a callee it does not own is *copied* into that unit
+with internal linkage, so a library method with a dispatch in it is in the
+artifact holding the producer's set, and only a caller that travels replaces
+it. So the walk follows every call.
+
+What that costs, measured: on kemal's four boundaries **nothing at all** —
+the same 325, 36, 35 and 11 travelling bodies as the bounded walk, because
+what reaches a dispatch there already travelled for another reason. On `db`
+and `sqlite3` it is 45 bodies more out of 217, and neither gate's wall time
+moves. The one place the wide walk looked expensive was a defect rather than
+a cost, and it is the next paragraph.
+
+And one defect the wide closure walked into on the way, which is about a
+`fun` rather than about a set: **a `fun` that answers one of the shard's own
+enums crosses as that enum.** It crossed as the enum's *base type*, which is
+right for a parameter — what a C function takes is the integer, and Crystal
+converts without being asked — and wrong for a return, because the shard's
+own code reads what it declared. `sqlite3` writes `case
+LibSQLite3.column_type(self, col) when Type::TEXT`; compiled on the far side
+over an `Int32` it matched no member, took the `else` and raised `another row
+available` on the first query. Named globally now (`::SQLite3::Type`): a
+shard's `lib` is declared at the top level, where its name is what the
+producer's symbols are made of, and a name looked up in there reaches
+neither the module's scope nor its namespace. `bench/bind_roundtrip.sh`
+carries the shape — a module's body casing on a `fun`'s enum — and with the
+base type back its two arms disagree.
 
 Two further shapes came with it, both the same kind of thing as the twelve
 above. A private helper kept out of the declarations because its *default
@@ -3680,6 +3700,30 @@ initialize(*, __pull_for_json_serializable pull : ...)` as an unannotated
 parameter and asked the author to annotate a def a macro wrote — so a macro's
 defs are exempt, which is R-5's own premise: the macro travels and the
 consumer expands it again (`iyimod.cr`).
+
+**A `.iyi` file may add to the other language's type and may not replace one
+of its methods.** A reopen is how a module extends a type it does not own —
+`class ::String; def blank?` gives the library's `String` something the
+library does not have, and only what can reach the module's surface can call
+it. Replacing is a different act: the definition that goes is one the
+*library's own code* calls, so every program built with that module gets the
+new one, and nothing at either site says so. Refused now, naming both
+definitions. `src/std/text.iyi` is what found it — a `private def
+byte_slice(start, count)` helper of its own, a name iyi's prelude does not
+have and Crystal's `String` does, so `import std/text` under `--crystal`
+replaced Crystal's public one with a private one and the first program to
+touch `Path` (every program, through the backtrace) stopped on `private
+method 'byte_slice' called for String`, at a line in the library that had
+not changed. The rule asks where each definition was *written*, which is the
+same question `iyi tool bind` asks of a shard's members, and it does not
+apply when the prelude is iyi's own: there the type is this language's and
+reopening it is how the prelude is extended.
+
+What that settles about `src/std/`: nine of its twelve modules are
+library-agnostic and build under `--crystal`; `std/text` and `std/format` are
+written against iyi's own prelude — byte-indexed `index`, `split` and `sub`,
+a `%` that formats — and are refused there by the rule above rather than
+silently replacing Crystal's, which is what they were doing.
 
 **`--annotate`: the types R-2 wants, read off the program.** Crystal code
 does not write them — `def call(env)` is idiomatic — but they are not

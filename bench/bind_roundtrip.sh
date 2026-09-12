@@ -542,6 +542,35 @@ module Shard
     put 1, "one"
     put 2, "two"
   end
+
+  # An enum a `fun` answers with, cased on inside a body that travels.
+  #
+  # The `fun`'s enum crossed as the enum's *base type* — what a C function
+  # takes and answers is the integer — so the consumer compiled a `case` over
+  # an `Int32`, matched no member and took the `else`. Silently: `sqlite3`
+  # writes `case LibSQLite3.column_type(self, col) when Type::TEXT`, and the
+  # first query a consumer ran came back `another row available`. The body
+  # below is a *module*'s, so it travels (IV.1g) and the consumer is what
+  # compiles the `case`.
+  enum Sign : Int32
+    Zero = 0
+    One  = 1
+    Two  = 2
+  end
+
+  module Signed
+    def sign_of(value : Int32) : String
+      case LibShardSign.magnitude(value)
+      when Sign::One then "one"
+      when Sign::Two then "two"
+      else                "many"
+      end
+    end
+  end
+
+  class Signs
+    include Signed
+  end
 end
 
 # A name the shard writes outside its own namespace, which is a name every
@@ -553,6 +582,13 @@ alias Handy = Shard
 fun shard_worker_main(arg : Void*) : Void*
   Shard.worker_note
   Pointer(Void).null
+end
+
+# And the `fun` whose answer is one of the shard's own enums. `abs` is libc's:
+# what it answers for -1 and 2 is 1 and 2, which are the two members named
+# above. Written at the top level, where a shard writes a `lib`.
+lib LibShardSign
+  fun magnitude = abs(value : Int32) : ::Shard::Sign
 end
 
 # And the macro call, which declares `Shard.render_text`.
@@ -622,6 +658,14 @@ puts ""
 puts part.kind(2)
 puts part.kind(1)
 puts part.kind(0)
+
+# The enum a `fun` answers with, read inside a body the consumer compiles.
+# `many` where these say `one` and `two` is the base type having crossed
+# instead of the enum.
+signs = Shard::Signs.new
+puts signs.sign_of(-1)
+puts signs.sign_of(2)
+puts signs.sign_of(7)
 
 # The shapes a consumer is the only thing that can check: a class variable
 # that is thread-local, one the shard left uninitialized, one whose default

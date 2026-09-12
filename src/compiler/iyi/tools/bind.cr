@@ -391,14 +391,7 @@ module Iyi
     # compiled alone types almost none of its own bodies, and `infer_return`
     # instantiates each method on purpose. The answer is read back below by
     # location — a `BindMethod` is a record of strings and holds no `Def`.
-    #
-    # Bounded by the root, which is what this artifact carries object code for.
-    # A method of the *library* is the consumer's to compile whatever it
-    # dispatches over, so it is not in this closure — see `Iyi::OpenTravel`.
-    OpenTravel.mark(program) do |owner|
-      name = owner.instance_type.to_s
-      name == root || name.starts_with?("#{root}::")
-    end
+    OpenTravel.mark program
 
     ready = methods.count(&.verdict.ready?)
     inferable = methods.count(&.verdict.needs_return?)
@@ -4749,7 +4742,7 @@ module Iyi
       end
 
       if return_type = a_def.return_type
-        io << " : " << fun_type(return_type.to_s, a_def.type?, owner)
+        io << " : " << fun_type(return_type.to_s, a_def.type?, owner, returns: true)
       end
     end
   end
@@ -4769,18 +4762,28 @@ module Iyi
   # level cannot name is left as written — if that ever happens it should say
   # so at the far side rather than be guessed at here.
   #
-  # **The return side is the same answer and it is not always right.** `fun
-  # column_type = sqlite3_column_type(…) : ::SQLite3::Type` crosses as `Int32`,
-  # so a body compiled on the far side reads an integer where the shard's own
-  # code has an enum, and `case column_type(self, col) when Type::TEXT` matches
-  # nothing and takes the `else`. Nothing reaches it today: the only bodies
-  # that case on one are the shard's own object code, and III.6's rule is
-  # bounded to the module's own call graph — a wider closure walked into it
-  # (`another row available`, on `sqlite3`'s `ResultSet#read`). Writing the
-  # enum instead needs a name that resolves inside a *global* `lib`, which the
-  # module's own namespace is not: `Type` is `undefined constant` there and
-  # `SQLite3::Type` is a namespace the far side does not have.
-  private def self.fun_type(written : String, type : Type?, owner : NamedType?) : String
+  # **The return side is not the same answer.** What a C function *takes* is
+  # the integer, and Crystal's own rule converts an enum to it without being
+  # asked, so a parameter is written as the base type and a caller inside the
+  # module goes on writing `SQLite3::Flag::ReadWrite`. What a `fun` *answers*
+  # is read by the shard's own code as the enum it declared: `fun column_type =
+  # sqlite3_column_type(…) : ::SQLite3::Type` crossing as `Int32` gave a body
+  # compiled on the far side an integer, and `case column_type(self, col) when
+  # Type::TEXT` then matched nothing and took the `else` — `another row
+  # available`, on the first query a consumer ran through `sqlite3`.
+  #
+  # So the enum is named, globally. Not as written — `::SQLite3::Type` is
+  # stripped of the root on the way out and would become the global `::Type` —
+  # and not relative either: a shard's `lib` is declared at the top level,
+  # because its name is what the producer's symbols are made of, and a name
+  # looked up in there does not reach the module's own scope, so `Type` is
+  # `undefined constant` and `SQLite3::Type` was too. `::` in front is the one
+  # spelling that resolves from where the `lib` sits.
+  # `bench/bind_roundtrip.sh` holds it: a module's body cases on
+  # `LibShardSign.magnitude`, and with the base type back the two arms answer
+  # `many` where they answer `one` and `two`.
+  private def self.fun_type(written : String, type : Type?, owner : NamedType?,
+                            returns : Bool = false) : String
     return written unless owner
     return written unless type
 
@@ -4789,7 +4792,7 @@ module Iyi
     # The lib's own enums are declared with it and resolve beside it.
     return written if inside.to_s.starts_with?("#{owner}::")
 
-    inside.base_type.to_s
+    returns ? "::#{inside}" : inside.base_type.to_s
   end
 
   # One library type, with only what the shard put in it.
