@@ -256,6 +256,7 @@ for source in "$REPO"/samples/iyi/*.iyi; do
     cd "$WORK/samples" || exit 1
     if ! "$IYI" build -o "$WORK/$sample-default" "$sample.iyi" >"$WORK/$sample.default.log" 2>&1; then
       echo "  $sample: default build failed"
+      tail -8 "$WORK/$sample.default.log"
       exit 1
     fi
     if ! "$IYI" build -Dgc_iyi -o "$WORK/$sample-gc" "$sample.iyi" >"$WORK/$sample.gc.log" 2>&1; then

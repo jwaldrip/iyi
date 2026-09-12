@@ -1257,11 +1257,19 @@ class Iyi::CodeGenVisitor
     failure_ordering = atomic_ordering_get_const(failure_node, failure_ordering)
     validate_atomic_cmpxchg_ordering(success_node, success_ordering, failure_node, failure_ordering)
 
+    is_bool = call.args[1].type.bool_type?
+    if is_bool
+      cmp = builder.zext(cmp, llvm_context.int8)
+      new = builder.zext(new, llvm_context.int8)
+    end
+
     value = builder.cmpxchg(ptr, cmp, new, success_ordering, failure_ordering)
     value_type = node.type.as(TupleInstanceType)
     struct_type = llvm_type(value_type)
     value_ptr = alloca struct_type
-    store extract_value(value, 0), gep(struct_type, value_ptr, 0, 0)
+    first_val = extract_value(value, 0)
+    first_val = builder.trunc(first_val, llvm_context.int1) if is_bool
+    store first_val, gep(struct_type, value_ptr, 0, 0)
     store extract_value(value, 1), gep(struct_type, value_ptr, 0, 1)
     value_ptr
   end
@@ -1273,8 +1281,17 @@ class Iyi::CodeGenVisitor
     op = atomicrwm_bin_op_get_const(call.args[0], op)
     ordering = atomic_ordering_get_const(call.args[-2], ordering)
     singlethread = bool_from_bool_literal(call.args[-1])
+    is_bool = node.type.bool_type?
+    if is_bool
+      val = builder.zext(val, llvm_context.int8)
+    end
 
-    builder.atomicrmw(op, ptr, val, ordering, singlethread)
+    res = builder.atomicrmw(op, ptr, val, ordering, singlethread)
+    if is_bool
+      builder.trunc(res, llvm_context.int1)
+    else
+      res
+    end
   end
 
   def codegen_primitive_fence(call, node, target_def, call_args)
@@ -1299,14 +1316,18 @@ class Iyi::CodeGenVisitor
 
     ordering = atomic_ordering_get_const(call.args[-2], ordering)
     volatile = bool_from_bool_literal(call.args[-1])
-
-    inst = builder.load(llvm_type(node.type), ptr)
+    is_bool = node.type.bool_type?
+    load_type = is_bool ? llvm_context.int8 : llvm_type(node.type)
+    inst = builder.load(load_type, ptr)
     inst.ordering = ordering
     inst.volatile = true if volatile
     set_alignment inst, node.type
-    inst
+    if is_bool
+      builder.trunc(inst, llvm_context.int1)
+    else
+      inst
+    end
   end
-
   def codegen_primitive_store_atomic(call, node, target_def, call_args)
     call = check_atomic_call(call, target_def)
     ptr, value, ordering, _ = call_args
@@ -1314,13 +1335,17 @@ class Iyi::CodeGenVisitor
     ordering = atomic_ordering_get_const(call.args[-2], ordering)
     volatile = bool_from_bool_literal(call.args[-1])
 
+    is_bool = call.args[1].type.bool_type?
+    if is_bool
+      value = builder.zext(value, llvm_context.int8)
+    end
+
     inst = builder.store(value, ptr)
     inst.ordering = ordering
     inst.volatile = true if volatile
-    set_alignment inst, node.type
+    set_alignment inst, call.args[1].type
     inst
   end
-
   def codegen_va_arg(call, node, target_def, call_args)
     ptr = call_args.first
     builder.va_arg(ptr, llvm_type(node.type))
@@ -1342,6 +1367,8 @@ class Iyi::CodeGenVisitor
       inst.alignment = type.bytes
     when CharType
       inst.alignment = 4
+    when BoolType
+      inst.alignment = 1
     else
       inst.alignment = @program.bits64? ? 8 : 4
     end
