@@ -68,6 +68,32 @@ pub CLOSE_TRY_AGAIN_LATER  = 1013 # Try again later (registered)
 pub CLOSE_BAD_GATEWAY      = 1014 # Bad gateway (registered)
 pub CLOSE_TLS_HANDSHAKE    = 1015 # Reserved: TLS handshake failure (internal only)
 
+pub enum CloseCode : Int32
+  NormalClosure           = 1000
+  GoingAway               = 1001
+  ProtocolError           = 1002
+  UnsupportedData         = 1003
+  NoStatusReceived        = 1005
+  AbnormalClosure         = 1006
+  InvalidFramePayloadData = 1007
+  PolicyViolation         = 1008
+  MessageTooBig           = 1009
+  MandatoryExtension      = 1010
+  InternalServerError     = 1011
+  ServiceRestart          = 1012
+  TryAgainLater           = 1013
+  BadGateway              = 1014
+  TLSHandshake            = 1015
+
+  def to_i32 : Int32
+    self.value
+  end
+
+  def to_i : Int32
+    self.value
+  end
+end
+
 # Checks if a close code is permitted on the wire per RFC 6455 Section 7.4.
 # Codes < 1000, 1004, 1005, 1006, 1015, and 1016..2999 are forbidden on the wire.
 pub def valid_wire_close_code?(code : Int32) : Bool
@@ -1690,3 +1716,144 @@ pub struct Server
     end
   end
 end
+
+# =============================================================================
+# High-Level WebSocket Wrapper and Handlers (Crystal Parity)
+# =============================================================================
+
+pub class WebSocket(T)
+  getter session : Session(T)
+
+  def initialize(@session : Session(T))
+  end
+
+  def self.new(io : T, is_server : Bool = false, deflate_enabled : Bool = false) : WebSocket(T)
+    s = Session(T).new(io, is_server: is_server, deflate_enabled: deflate_enabled)
+    WebSocket(T).new(s)
+  end
+
+  def self.connect(host : String, port : Int32, path : String = "/",
+                   subprotocols : Array(String)? = nil,
+                   extensions : Array(String)? = nil) : WebSocket(PrefixedTransport(IyiSocket)) | WebSocketError
+    res = Client.connect(host, port, path, subprotocols, extensions)
+    case res
+    in WebSocketError                        then res
+    in Session(PrefixedTransport(IyiSocket)) then WebSocket(PrefixedTransport(IyiSocket)).new(res)
+    end
+  end
+
+  def self.upgrade(socket : IyiSocket,
+                   subprotocol : String? = nil,
+                   extensions : Array(String)? = nil) : WebSocket(PrefixedTransport(IyiSocket)) | WebSocketError
+    res = Server.upgrade(socket, subprotocol, extensions)
+    case res
+    in WebSocketError                        then res
+    in Session(PrefixedTransport(IyiSocket)) then WebSocket(PrefixedTransport(IyiSocket)).new(res)
+    end
+  end
+
+  def closed? : Bool
+    @session.closed?
+  end
+
+  def close_code : Int32?
+    @session.close_code
+  end
+
+  def close_reason : String?
+    @session.close_reason
+  end
+
+  def close(code : CloseCode | Int32 = CloseCode::NormalClosure, message : String = "") : Nil | WebSocketError
+    c_int = code.is_a?(CloseCode) ? code.value : code
+    @session.close(c_int, message)
+  end
+
+  def send(message : String) : Nil | WebSocketError
+    @session.send_text(message)
+  end
+
+  def send(message : Bytes) : Nil | WebSocketError
+    @session.send_binary(message)
+  end
+
+  def ping(message : String = "") : Nil | WebSocketError
+    b = Bytes.new(message.bytesize) { |i| message.to_unsafe[i] }
+    @session.send_ping(b)
+  end
+
+  def ping(message : Bytes) : Nil | WebSocketError
+    @session.send_ping(message)
+  end
+
+  def pong(message : String = "") : Nil | WebSocketError
+    b = Bytes.new(message.bytesize) { |i| message.to_unsafe[i] }
+    @session.send_pong(b)
+  end
+
+  def pong(message : Bytes) : Nil | WebSocketError
+    @session.send_pong(message)
+  end
+
+  def receive : Message | WebSocketError | Nil
+    @session.receive
+  end
+
+  def receive? : Message | Nil
+    res = @session.receive
+    if res.is_a?(Message)
+      res
+    else
+      nil
+    end
+  end
+end
+
+pub class WebSocketHandler
+  getter subprotocols : Array(String)?
+
+  def initialize(@subprotocols : Array(String)? = nil)
+  end
+
+  def upgrade(socket : IyiSocket, request : Request) : Session(PrefixedTransport(IyiSocket)) | WebSocketError
+    key_or_err = Handshake.verify_client_request(request)
+    case key_or_err
+    in WebSocketError
+      if key_or_err.message.includes?("Sec-WebSocket-Version")
+        socket.write("HTTP/1.1 426 Upgrade Required\r\nSec-WebSocket-Version: 13\r\nContent-Length: 0\r\n\r\n")
+      else
+        socket.write("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+      end
+      return key_or_err
+    in String
+      subproto = nil
+      if subprotos = @subprotocols
+        if req_sub = request.headers["Sec-WebSocket-Protocol"]?
+          i = 0
+          while i < subprotos.size
+            if req_sub.includes?(subprotos[i])
+              subproto = subprotos[i]
+              break
+            end
+            i = i + 1
+          end
+        end
+      end
+
+      resp = Handshake.build_server_response(key_or_err, subproto, nil)
+      ser = resp.serialize
+      case ser
+      in HttpError
+        socket.write("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+        return WebSocketError.new(CLOSE_PROTOCOL_ERROR, ser.message)
+      in String
+        socket.write(ser)
+      end
+
+      transport = PrefixedTransport.new(socket, Bytes.new(0))
+      return Session.new(transport, is_server: true, deflate_enabled: false)
+    end
+  end
+end
+
+pub alias Protocol = Handshake
