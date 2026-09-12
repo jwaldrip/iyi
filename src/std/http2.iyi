@@ -309,6 +309,14 @@ pub struct FrameHeader
     Slice(UInt8).new(buf.to_unsafe, buf.size)
   end
 
+  def self.parse(bytes : Bytes) : FrameHeader | Http2Error
+    res = decode(bytes, 0)
+    case res
+    in Tuple(FrameHeader, Int32) then res[0]
+    in Http2Error                then res
+    end
+  end
+
   def self.decode(bytes : Bytes, offset : Int32 = 0) : Tuple(FrameHeader, Int32) | Http2Error
     if offset + 9 > bytes.size
       return Http2Error.new(ErrorCode::FRAME_SIZE_ERROR, "Incomplete frame header: need 9 bytes, got #{bytes.size - offset}")
