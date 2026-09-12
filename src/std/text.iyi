@@ -254,75 +254,6 @@ class ::String
     rindex(char, bytesize - 1)
   end
 
-  # The prelude's `index` finds a character. These find a substring, and take
-  # an offset, and carry their own name because R-3 counts a name on a type
-  # once and `index` is already the prelude's (SPEC.md R-3).
-  # The prelude's `split` takes a character. This takes a string, and
-  # carries its own name for the reason `index_of` does: `split` is a name
-  # the prelude already declares on `String` (SPEC.md R-3).
-  def split_on(separator : String, limit : Int32 = 0) : Array(String)
-    return [self] if limit == 1
-    return [] of String if empty? && limit < 0
-
-    if separator.empty?
-      pieces = [] of String
-      each_char do |c|
-        pieces << c.to_s
-      end
-      return pieces
-    end
-
-    pieces = [] of String
-    sep_size = separator.bytesize
-    start = 0
-    while (idx = index_of(separator, start))
-      pieces << byte_slice(start, idx - start)
-      start = idx + sep_size
-      if limit > 1 && pieces.size == limit - 1
-        break
-      end
-    end
-    pieces << byte_slice(start, bytesize - start)
-    pieces
-  end
-
-  def index_of(search : String, offset : Int32 = 0) : Int32?
-    offset = bytesize + offset if offset < 0
-    return nil if offset < 0
-    return offset if search.bytesize == 0 && offset <= bytesize
-    return nil if offset + search.bytesize > bytesize
-
-    limit = bytesize - search.bytesize
-    i = offset
-    s_ptr = to_unsafe
-    t_ptr = search.to_unsafe
-    t_len = search.bytesize
-
-    while i <= limit
-      j = 0
-      while j < t_len && s_ptr[i + j] == t_ptr[j]
-        j = j + 1
-      end
-      return i if j == t_len
-      i = i + 1
-    end
-    nil
-  end
-
-  def index_of(char : Char, offset : Int32) : Int32?
-    offset = bytesize + offset if offset < 0
-    return nil if offset < 0 || offset >= bytesize
-
-    wanted = char.ord.to_u8
-    ptr = to_unsafe
-    i = offset
-    while i < bytesize
-      return i if ptr[i] == wanted
-      i = i + 1
-    end
-    nil
-  end
-
   def rindex(search : String, offset : Int32) : Int32?
     offset = bytesize + offset if offset < 0
     return nil if offset < 0
@@ -352,7 +283,7 @@ class ::String
   end
 
   def sub(search : String, replacement : String) : String
-    idx = index_of(search)
+    idx = index(search)
     return self unless idx
     byte_slice(0, idx) + replacement + byte_slice(idx + search.bytesize, bytesize - idx - search.bytesize)
   end
@@ -366,7 +297,7 @@ class ::String
   end
 
   def sub(search : String, & : String -> String) : String
-    idx = index_of(search)
+    idx = index(search)
     return self unless idx
     repl = yield search
     byte_slice(0, idx) + repl + byte_slice(idx + search.bytesize, bytesize - idx - search.bytesize)
@@ -388,7 +319,7 @@ class ::String
 
   def gsub(search : String, replacement : String) : String
     return self if search.empty?
-    pieces = split_on(search)
+    pieces = split(search)
     pieces.join(replacement)
   end
 
@@ -402,13 +333,13 @@ class ::String
 
   def gsub(search : String, & : String -> String) : String
     return self if search.empty?
-    idx = index_of(search)
+    idx = index(search)
     return self unless idx
 
     result = ""
     start = 0
     s_len = search.bytesize
-    while (idx = index_of(search, start))
+    while (idx = index(search, start))
       result = result + byte_slice(start, idx - start)
       result = result + yield search
       start = idx + s_len
@@ -651,7 +582,7 @@ class ::String
     c = 0
     start = 0
     s_len = search.bytesize
-    while (idx = index_of(search, start))
+    while (idx = index(search, start))
       c = c + 1
       start = idx + s_len
     end
@@ -864,7 +795,7 @@ class ::String
   end
 
   def partition(separator : String) : Tuple(String, String, String)
-    idx = index_of(separator)
+    idx = index(separator)
     if idx
       {byte_slice(0, idx), separator, byte_slice(idx + separator.bytesize, bytesize - idx - separator.bytesize)}
     else

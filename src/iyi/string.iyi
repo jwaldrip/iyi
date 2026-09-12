@@ -336,6 +336,101 @@ class String
     nil
   end
 
+  # Splitting on a string, and stopping after a count. `limit` of 0 means all
+  # of them; a positive one leaves the remainder in the last piece, which is
+  # how a status line or a header is cut without losing what follows.
+  def split(separator : String, limit : Int32 = 0) : Array(String)
+    pieces = [] of String
+    return pieces if bytesize == 0 && separator.bytesize > 0
+
+    if separator.bytesize == 0
+      each_char { |c| pieces << c.to_s }
+      return pieces
+    end
+
+    start = 0
+    while true
+      if limit > 0 && pieces.size == limit - 1
+        break
+      end
+      found = index_of(separator, start)
+      break if found.nil?
+      pieces << byte_slice(start, found - start)
+      start = found + separator.bytesize
+    end
+    pieces << byte_slice(start, bytesize - start)
+    pieces
+  end
+
+  def split(separator : Char, limit : Int32) : Array(String)
+    split(separator.to_s, limit)
+  end
+
+  # Where a substring first is, from an offset, or nil. The character form is
+  # above; this is the one a parser scanning for a delimiter asks.
+  def index_of(search : String, offset : Int32 = 0) : Int32?
+    offset = bytesize + offset if offset < 0
+    return nil if offset < 0
+    return offset if search.bytesize == 0 && offset <= bytesize
+    return nil if offset + search.bytesize > bytesize
+
+    limit = bytesize - search.bytesize
+    i = offset
+    mine = to_unsafe
+    theirs = search.to_unsafe
+    wanted = search.bytesize
+
+    while i <= limit
+      j = 0
+      while j < wanted && mine[i + j] == theirs[j]
+        j = j + 1
+      end
+      return i if j == wanted
+      i = i + 1
+    end
+    nil
+  end
+
+  def index(search : String, offset : Int32 = 0) : Int32?
+    index_of(search, offset)
+  end
+
+  # In a base other than ten: 16 for a hex escape, 2 for a bit string.
+  def to_i(base : Int32) : Int32
+    to_i?(base) || raise "not a number in base #{base}: #{inspect}"
+  end
+
+  def to_i?(base : Int32) : Int32?
+    return nil if empty?
+
+    index = 0
+    negative = false
+    first = to_unsafe[0]
+    if first == 45_u8 || first == 43_u8
+      negative = first == 45_u8
+      index = 1
+    end
+    return nil if index >= bytesize
+
+    value = 0
+    while index < bytesize
+      byte = to_unsafe[index]
+      digit = if byte >= 48_u8 && byte <= 57_u8
+                (byte - 48_u8).to_i
+              elsif byte >= 97_u8 && byte <= 122_u8
+                (byte - 97_u8).to_i + 10
+              elsif byte >= 65_u8 && byte <= 90_u8
+                (byte - 65_u8).to_i + 10
+              else
+                return nil
+              end
+      return nil if digit >= base
+      value = value * base + digit
+      index = index + 1
+    end
+    negative ? -value : value
+  end
+
   # Without the whitespace at either end.
   def strip : String
     first = 0
