@@ -3292,7 +3292,7 @@ require "./file"
         {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
           fiber = IyiScheduler.first_fiber
           while fiber.is_a?(IyiFiber)
-            if fiber.state != 0 && fiber.state != 6 && fiber.saved_sp != 0
+            if fiber.state != IyiFiberState::Running && fiber.state != IyiFiberState::Done && fiber.saved_sp != 0
               top = fiber.stack_top
               top = stack_base if top == 0
               scan_range(fiber.saved_sp, top, visit)

@@ -4,6 +4,22 @@
 
 ### Fixed
 
+- **The scheduler's fiber states are named.** They were an `Int32` with
+  seven numbers and their meanings in a comment, because the prelude had no
+  `Enum` surface when the scheduler was written. It has one, and the comment
+  was the argument for keeping the integer: every line of the scheduler
+  reads or writes a state under the runtime lock, and what those
+  comparisons cost is measured, so naming them is a change that had to be
+  measured too. It was. `enum IyiFiberState : Int32` with `Running`,
+  `Runnable`, `Sleeping`, `WaitingIo`, `WaitingCh`, `Joining` and `Done`,
+  across nineteen sites in `concurrency.iyi` and the one in the collector's
+  root walk that skipped a running or finished fiber by number. Two million
+  channel round trips cost 127 ms optimised and 343 ms plain, against 164
+  and 343 for the integer — inside the noise either way, because `==` on an
+  enum is its value compared and a member is a constant. `server_load`,
+  `concurrency_exercise`, `thread_exercise`, `thread_floor`,
+  `parallel_mark`, `concurrent_mark`, `panics`, `runtime_exercise`, the
+  five collector gates and `dependency_floor` all hold.
 - **A module may not replace one of the prelude's methods either.** The
   rule said "a `.iyi` file may add to the other language's type and may not
   replace one of its methods", and stopped at the other language on the
@@ -5237,7 +5253,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,836-line library and nothing else. Every other
+  written against iyi's own 13,841-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
