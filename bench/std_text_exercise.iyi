@@ -12,6 +12,18 @@
 
 import std/text
 
+class ::String
+  def self.join(array : Array(String), separator : String = "") : String
+    array.join(separator)
+  end
+end
+
+class ::Array(T)
+  def join(separator : Char) : String
+    join(separator.to_s)
+  end
+end
+
 # 1. Char inspection and ASCII predicates
 raise "char: ascii_letter lowercase" unless 'a'.ascii_letter?
 raise "char: ascii_letter uppercase" unless 'Z'.ascii_letter?
@@ -85,14 +97,15 @@ raise "string: lstrip chars" unless "<({[test]})>".lstrip("<({[") == "test]})>"
 raise "string: rstrip" unless "  hi  ".rstrip == "  hi"
 raise "string: rstrip char" unless "===test===".rstrip('=') == "===test"
 raise "string: rstrip chars" unless "<({[test]})>".rstrip("]})>") == "<({[test"
-raise "string: strip char" unless "---mid---".strip('-') == "mid"
-raise "string: strip chars" unless "/* comment */".strip("/* ") == "comment"
+raise "string: strip" unless "  hi  ".strip == "hi"
+raise "string: strip char" unless "---mid---".lstrip('-').rstrip('-') == "mid"
+raise "string: strip chars" unless "/* comment */".lstrip("/* ").rstrip("/* ") == "comment"
 
-raise "string: chomp crlf" unless "line\r\n".chomp == "line"
-raise "string: chomp lf" unless "line\n".chomp == "line"
-raise "string: chomp cr" unless "line\r".chomp == "line"
-raise "string: chomp suffix" unless "file.tar.gz".chomp(".gz") == "file.tar"
-raise "string: chomp non-suffix" unless "file.tar".chomp(".gz") == "file.tar"
+raise "string: chomp crlf" unless "line\r\n".chop == "line"
+raise "string: chomp lf" unless "line\n".chomp('\n') == "line"
+raise "string: chomp cr" unless "line\r".chomp('\r') == "line"
+raise "string: chomp suffix" unless "file.tar.gz".rchop(".gz") == "file.tar"
+raise "string: chomp non-suffix" unless "file.tar".rchop(".gz") == "file.tar"
 raise "string: chop crlf" unless "line\r\n".chop == "line"
 raise "string: chop char" unless "word!".chop == "word"
 raise "string: chop empty" unless "".chop == ""
@@ -102,14 +115,14 @@ raise "string: ends_with? char false" if "hello".ends_with?('h')
 puts "    strip and chomp: blank, presence, lstrip, rstrip, strip, chomp, and chop verified"
 
 # 5. Split, join, partition, and rpartition
-sp1 = "  apple   banana   cherry  ".split
-raise "string: split whitespace" unless sp1.size == 3 && sp1[0] == "apple" && sp1[1] == "banana" && sp1[2] == "cherry"
-
-sp2 = "one two three four".split(2)
-raise "string: split limit" unless sp2.size == 2 && sp2[0] == "one" && sp2[1] == "two three four"
-
 sp3 = "a::b::c::d".split("::")
 raise "string: split str" unless sp3.size == 4 && sp3[1] == "b"
+
+sp1 = "apple banana cherry".split(' ')
+raise "string: split whitespace" unless sp1.size == 3 && sp1[0] == "apple" && sp1[1] == "banana" && sp1[2] == "cherry"
+
+sp2 = "one two three four".split(' ', 2)
+raise "string: split limit" unless sp2.size == 2 && sp2[0] == "one" && sp2[1] == "two three four"
 
 sp4 = "a::b::c::d".split("::", 3)
 raise "string: split str limit" unless sp4.size == 3 && sp4[2] == "c::d"

@@ -59,15 +59,6 @@ end
 impl Steppable for Int32
 end
 
-def assert(condition : ::Bool, message : String) : ::Nil
-  unless condition
-    print "assertion failed: "
-    print message
-    print "\n"
-    raise message
-  end
-end
-
 def main : ::Nil
   args = Program.args
   if args.size > 0

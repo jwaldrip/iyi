@@ -81,7 +81,7 @@ if "$IYI" run "$EXERCISE" >"$WORK/mutated.txt" 2>&1; then
   echo "FAIL: the exercise still passed with the narrow types dropped"
   status=1
 else
-  echo "  exits non-zero at \"$(grep -m1 'ASSERTION FAILED' "$WORK/mutated.txt" || echo 'a comparison failure')\""
+  echo "  exits non-zero at \"$(grep -m1 -i 'assertion failed' "$WORK/mutated.txt" || echo 'a comparison failure')\""
 fi
 restore
 

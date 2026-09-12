@@ -144,9 +144,9 @@ if ! rebuild; then
   sed -n '1,12p' "$WORK/build.log"
   exit 1
 fi
-printf 'import std/json\n' >"$WORK/json.iyi"
+printf 'import std/deque\nusing std/deque::{Deque}\nimport std/json\n\nd = Deque(Std::Json::Any).new\n' >"$WORK/json.iyi"
 if "$IYI" build --no-codegen "$WORK/json.iyi" >"$WORK/m2.txt" 2>&1; then
-  echo "FAIL: std/json still compiled with the exemption removed"
+  echo "FAIL: generic instantiation still compiled with the exemption removed"
   status=1
 else
   echo "  exits non-zero at \"$(grep -m1 -o 'Std::Json is not imported here' "$WORK/m2.txt" || echo 'an R-1 error')\""

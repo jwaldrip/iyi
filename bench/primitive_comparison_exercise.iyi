@@ -11,15 +11,6 @@
 # and asserts the orderings too, because a type that answers `==` wrongly
 # usually answers `<` wrongly as well.
 
-def assert(cond : Bool, what : String) : Nil
-  unless cond
-    print "ASSERTION FAILED: "
-    print what
-    print "\n"
-    raise what
-  end
-end
-
 puts "== equality, every integer type against itself"
 
 assert(5_i8 == 5_i8, "Int8 equality")

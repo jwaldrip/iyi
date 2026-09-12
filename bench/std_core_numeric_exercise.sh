@@ -120,6 +120,41 @@ prove_fails() {
   printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
     "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
 }
+prove_fails_prelude() {
+  local label="$1" mod_file="$2" dir="$3" phrase="$4" sed_script="$5"
+  mkdir -p "$WORK/$dir/iyi"
+  cp -R "$REPO/src/iyi/." "$WORK/$dir/iyi/"
+  sed -e "$sed_script" "$REPO/src/iyi/$mod_file" > "$WORK/$dir/iyi/$mod_file"
+  if cmp -s "$REPO/src/iyi/$mod_file" "$WORK/$dir/iyi/$mod_file"; then
+    echo "  $label: the patch changed nothing, so this proves nothing"
+    status=1
+    return
+  fi
+  if ! PATH=/opt/homebrew/bin:/usr/bin:/bin LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib \
+       IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
+       -o "$WORK/$dir/program" "$REPO/bench/std_core_numeric_exercise.iyi" \
+       >"$WORK/$dir/build.log" 2>&1; then
+    echo "  $label: the patched prelude did not build"
+    sed -n '1,12p' "$WORK/$dir/build.log"
+    status=1
+    return
+  fi
+  "$WORK/$dir/program" >"$WORK/$dir/out" 2>&1
+  local exit_code=$?
+  if [ "$exit_code" -eq 0 ]; then
+    echo "  $label: the exercise still passed, so it does not test this"
+    status=1
+    return
+  fi
+  if ! grep -q "$phrase" "$WORK/$dir/out"; then
+    echo "  $label: failed, but not at expected check (expected '$phrase')"
+    sed -n '$p' "$WORK/$dir/out"
+    status=1
+    return
+  fi
+  printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
+    "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
+}
 
 # 1. Bool bitwise AND broken
 prove_fails "bool & broken" bool.iyi no_bool_and "bool and true" \
@@ -142,8 +177,8 @@ prove_fails "steppable step broken" steppable.iyi no_step "steppable step block"
   's/next_val = @current + @step/next_val = @current + @step + 1/'
 
 # 6. Enum bitmask includes? broken
-prove_fails "enum includes? broken" enum.iyi no_enum_inc "enum includes? red" \
-  's/(value & other.value) == other.value/false/'
+prove_fails_prelude "enum includes? broken" enum.iyi no_enum_inc "enum includes? red" \
+  's/value & other.value == other.value/false/'
 
 # 7. Char downcase broken
 prove_fails "char downcase broken" char.iyi no_char_down "char downcase" \
