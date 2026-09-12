@@ -42,16 +42,6 @@ def raise(error : Std::Json::Error) : NoReturn
   raise error.message
 end
 
-struct ::Enum
-  def ==(other : self) : Bool
-    value == other.value
-  end
-
-  def !=(other : self) : Bool
-    value != other.value
-  end
-end
-
 # Internal growable byte buffer for string accumulation
 class StringBuffer
   @buffer : Pointer(UInt8)

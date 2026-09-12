@@ -5,24 +5,6 @@ module std/wasi_error
 pub import std/errno
 using std/errno::{Errno}
 
-struct ::UInt16
-  @[Primitive(:convert)]
-  def to_i32 : Int32
-  end
-
-  @[Primitive(:convert)]
-  def to_u64 : UInt64
-  end
-
-  @[Primitive(:binary)]
-  def ==(other : UInt16) : Bool
-  end
-
-  @[Primitive(:binary)]
-  def !=(other : UInt16) : Bool
-  end
-end
-
 pub enum WasiError : UInt16
   SUCCESS         =  0
   E2BIG           =  1
