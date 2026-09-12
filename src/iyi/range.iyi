@@ -22,19 +22,17 @@ struct Range(B, E)
     @exclusive
   end
 
+  # The inclusive walk stops *at* the end rather than stepping past it: with
+  # `value <= @end` the last step left the type on the checked `+`, so
+  # `(2147483645..2147483647).each` panicked with "arithmetic overflow" at
+  # the value it was asked to yield last.
   def each(& : B -> Nil) : Nil
     value = @begin
-    if @exclusive
-      while value < @end
-        yield value
-        value = value + 1
-      end
-    else
-      while value <= @end
-        yield value
-        value = value + 1
-      end
+    while value < @end
+      yield value
+      value = value + 1
     end
+    yield value if !@exclusive && value == @end
   end
 
   def size : Int32

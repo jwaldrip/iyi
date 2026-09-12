@@ -19,6 +19,9 @@ class Array(T)
   end
 
   def initialize(capacity : Int32)
+    # A negative capacity reached `to_u64` and panicked about arithmetic,
+    # which says nothing about the array that was asked for.
+    raise "negative capacity" if capacity < 0
     @size = 0
     @capacity = capacity
     @buffer = capacity == 0 ? Pointer(T).new(0_u64) : Pointer(T).malloc(capacity.to_u64)

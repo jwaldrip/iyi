@@ -193,6 +193,16 @@ prove_fails "pop does not shrink" no_shrink array.iyi \
   "array: five hundred pops" \
   's/^    @size = @size - 1$/    @size = @size - 0/'
 
+# 9. The inclusive walk stepping past its own end again, which is what
+#    panicked at the type's maximum.
+prove_fails "the range walk steps past its end" past_end range.iyi \
+  "arithmetic overflow" \
+  's/^    yield value if !@exclusive \&\& value == @end$/    yield value if !@exclusive \&\& value <= @end \&\& (value = value + 1) < 0/'
+
+echo
+echo "== and what an empty receiver says when it is asked for a size"
+panics_with "a negative capacity" neg_cap "negative capacity" "Array(Int32).new(-1).size"
+
 echo
 if [ "$status" -eq 0 ]; then
   echo "Collections: a key is one entry however often it is written, a delete"

@@ -199,4 +199,17 @@ end
 assert_int(grown.size, 500, "array: five hundred pops")
 assert_int(grown[499], 499, "array: the new last")
 
+# ---- Range, whose walk used to step past its own end
+# `value <= @end` meant the last step left the type on the checked `+`, so a
+# range ending at the type's maximum panicked at the value it was asked to
+# yield last.
+assert_int((2147483645..2147483647).to_a.size, 3, "range: up to the type's maximum")
+assert_int((2147483645..2147483647).to_a[2], 2147483647, "range: and the maximum is in it")
+assert_int((1..3).to_a.size, 3, "range: inclusive counts both ends")
+assert_int((1...3).to_a.size, 2, "range: exclusive drops the end")
+assert_int((3..1).to_a.size, 0, "range: backwards is empty")
+assert_int((5..5).to_a.size, 1, "range: one value")
+assert_int((5...5).to_a.size, 0, "range: no values")
+assert_int((1..4).sum, 10, "range: sum")
+
 puts "all collection checks passed"

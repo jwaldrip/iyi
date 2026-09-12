@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **A range that ends at the type's maximum stepped past it.** The inclusive
+  walk was `while value <= @end` followed by `value = value + 1`, so the
+  last step left the type on the checked `+` and
+  `(2147483645..2147483647).each` panicked with "arithmetic overflow" at the
+  value it was asked to yield last — `Int64`'s maximum too. It stops *at*
+  the end now and yields it there. `Array(Int32).new(-1)` was the same shape
+  of message about the wrong thing: a negative capacity reached `to_u64` and
+  panicked about arithmetic, where "negative capacity" is what happened.
+  Both are in `bench/collections_exercise.sh`, one of them with a proof that
+  puts the old step back and watches the overflow return.
 - **`%f` and `%e` rounded the shortest decimal, not the number.** Two
   corrections, both measured against the other language, C and Python over
   908 cases. A tie went *away from zero*, so `%.1f` of 0.25 answered 0.3 and
@@ -5397,7 +5407,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,948-line library and nothing else. Every other
+  written against iyi's own 13,949-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
