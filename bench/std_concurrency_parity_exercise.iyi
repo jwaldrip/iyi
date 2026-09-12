@@ -1,5 +1,5 @@
 # Concurrency Parity Standard Library Exercise.
-# Exercises all Crystal-compatible concurrency primitives ported to iyi:
+# Exercises every concurrency primitive the standard library ports into iyi:
 #   1. std/atomic: Atomic(T) for Int32, Int64, UInt8, UInt64, Bool, Pointer, Reference,
 #      orderings, fence, RMW ops, bitwise_or, and Atomic::Flag.
 #   2. std/fiber: Fiber lifecycle, inspection, cooperative scheduling, state queries.

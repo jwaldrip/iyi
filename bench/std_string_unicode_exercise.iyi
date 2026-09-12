@@ -154,14 +154,14 @@ pool = StringPool.new(8)
 assert(pool.empty?, "pool: initially empty")
 assert_equal(0, pool.size, "pool: initial size 0")
 
-s1 = pool.get("crystal")
-s2 = pool.get("crystal")
-assert_equal("crystal", s1, "pool: get value")
+s1 = pool.get("namespace")
+s2 = pool.get("namespace")
+assert_equal("namespace", s1, "pool: get value")
 assert(s1.same?(s2), "pool: deduplication reuses same instance")
 assert_equal(1, pool.size, "pool: size after single insert")
 
 # get?
-assert_equal("crystal", pool.get?("crystal"), "pool: get? existing")
+assert_equal("namespace", pool.get?("namespace"), "pool: get? existing")
 assert_equal(nil, pool.get?("ruby"), "pool: get? absent")
 
 # Bytes get

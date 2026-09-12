@@ -51,6 +51,10 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     (r"^scripts/", "generators that emit Crystal's stdlib tables"),
     # Drives the compatibility binary by the name a user types.
     (r"^spec/compiler-cli/", "compatibility binary's CLI specs"),
+    # The self-hosting lexer's oracle. It proves the iyi-written lexer agrees
+    # token for token with the frontend iyi is still bootstrapped from, so the
+    # other language is the thing being compared against, by name.
+    (r"^bench/selfhost_lexer_exercise\.sh$", "the frontend the selfhost lexer is checked against"),
     # `tool bind` runs under `crystal`, on Crystal source, against Crystal's
     # library: it is how a shard is bound for an iyi consumer to import. The
     # bench drives that binary and names it throughout.
