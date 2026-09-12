@@ -158,20 +158,27 @@ class String
     end
   end
 
-  # Pad on the left (rjust) or the right (ljust) to *width* bytes. The pad is
-  # one ASCII byte, like the rest of this file. A width that already fits
-  # returns the string unchanged.
+  # Pad on the left (rjust) or the right (ljust) to *width*. A width that
+  # already fits returns the string unchanged.
+  # *width* is in characters, because `size` is: padding is asked for to line
+  # a column up, and a string measured one way and padded another lines up
+  # for ASCII and nothing else. `"héllo".rjust(7, '.')` used to answer a
+  # string whose own `size` was 6. The pad travels as its own bytes for the
+  # same reason — written as one byte, a `'·'` left a lone continuation byte
+  # in the middle of the result.
   def rjust(width : Int32, pad : Char) : String
-    return self if width <= @bytesize
-    extra = width - @bytesize
-    pad_byte = pad.ord.to_u8
-    String.new(width) do |buffer|
+    count = size
+    return self if width <= count
+    extra = width - count
+    padding = pad.to_s
+    pad_bytes = padding.bytesize
+    String.new(@bytesize + extra * pad_bytes) do |buffer|
       i = 0
       while i < extra
-        buffer[i] = pad_byte
+        (buffer + i * pad_bytes).copy_from(padding.to_unsafe, pad_bytes)
         i = i + 1
       end
-      (buffer + extra).copy_from(to_unsafe, @bytesize)
+      (buffer + extra * pad_bytes).copy_from(to_unsafe, @bytesize)
     end
   end
 
@@ -180,14 +187,16 @@ class String
   end
 
   def ljust(width : Int32, pad : Char) : String
-    return self if width <= @bytesize
-    extra = width - @bytesize
-    pad_byte = pad.ord.to_u8
-    String.new(width) do |buffer|
+    count = size
+    return self if width <= count
+    extra = width - count
+    padding = pad.to_s
+    pad_bytes = padding.bytesize
+    String.new(@bytesize + extra * pad_bytes) do |buffer|
       buffer.copy_from(to_unsafe, @bytesize)
-      i = @bytesize
-      while i < width
-        buffer[i] = pad_byte
+      i = 0
+      while i < extra
+        (buffer + @bytesize + i * pad_bytes).copy_from(padding.to_unsafe, pad_bytes)
         i = i + 1
       end
     end
@@ -295,10 +304,9 @@ class String
     byte_slice(0, bytesize - 1)
   end
 
-  # Without the line ending, whichever of the two it is. This is the shape a
-  # program reading lines asks for, and the reason it is here rather than in
-  # `std/text` is the one that put `split` and `to_i` here: `chomp` is already
-  # a name on this type, so R-3 lets nobody else add another of it.
+  # Without the line ending, whichever of the two it is: what a program
+  # reading lines asks for. Here because `chomp` is already a name on this
+  # type, and R-3 lets nobody else add another of it.
   def chomp : String
     return self if bytesize == 0
     last = to_unsafe[bytesize - 1]
@@ -324,11 +332,9 @@ class String
     true
   end
 
-  # The symmetric form of `starts_with?(char)`, which has been here since the
-  # prelude had either. Six modules in `src/std` ask a string whether it ends
-  # in one character, and R-3 will not let any of them answer it themselves:
-  # `ends_with?` is a name this type already has, so a second definition would
-  # be the one every program got.
+  # The symmetric form of `starts_with?(char)`. Six modules in `src/std` ask
+  # a string whether it ends in one character, and R-3 lets none of them
+  # answer it: `ends_with?` is already a name this type has.
   def ends_with?(char : Char) : Bool
     bytesize > 0 && to_unsafe[bytesize - 1] == char.ord.to_u8
   end
@@ -349,8 +355,7 @@ class String
     nil
   end
 
-  # Splitting on a string, stopping after a count: `limit` of 0 means all of
-  # them, a positive one leaves the remainder in the last piece.
+  # On a string, stopping after `limit` pieces; 0 means all of them.
   def split(separator : String, limit : Int32 = 0) : Array(String)
     pieces = [] of String
     return pieces if bytesize == 0
@@ -363,10 +368,6 @@ class String
     end
     pieces << byte_slice(start, bytesize - start)
     pieces
-  end
-
-  def split(separator : Char, limit : Int32) : Array(String)
-    split(separator.to_s, limit)
   end
 
   # On whitespace, with no empty piece at either end: a line cut into words.
@@ -384,8 +385,7 @@ class String
     pieces
   end
 
-  # Where a substring first is, from an offset, or nil. The character form is
-  # above; this is the one a parser scanning for a delimiter asks.
+  # Where a substring first is from an offset, or nil; the character form is above.
   def index(search : String, offset : Int32 = 0) : Int32?
     offset = bytesize + offset if offset < 0
     return nil if offset < 0
@@ -420,8 +420,7 @@ class String
     value = 0
     while index < bytesize
       byte = to_unsafe[index]
-      # A digit, or a letter in either case, which is how a base above ten is
-      # written; `| 32` lowercases a letter and leaves a digit alone.
+      # A digit, or a letter: `| 32` lowercases one and leaves a digit alone.
       lower = byte | 32_u8
       digit = byte >= 48_u8 && byte <= 57_u8 ? (byte - 48_u8).to_i : (lower >= 97_u8 && lower <= 122_u8 ? (lower - 97_u8).to_i + 10 : base)
       return nil if digit >= base

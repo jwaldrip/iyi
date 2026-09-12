@@ -381,8 +381,8 @@ line so it cannot move unread.
 **Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 36 KB
 binary that starts in 1.6 ms; the same program compiled with Crystal's standard
 library is 1,553 KB and 3.2 ms. Nothing clever is happening: a program links what
-it uses, and iyi's own library is 13,944 lines rather than 8,161. The whole
-library is 538 KB on disk beside the binary.
+it uses, and iyi's own library is 13,948 lines rather than 8,161. The whole
+library is 539 KB on disk beside the binary.
 
 <sup>Sizes and start times are a plain `iyi build`, no flags, on macOS arm64
 with LLVM 22. They move with the platform and the LLVM, which is why they are
@@ -410,7 +410,7 @@ tar -xzf iyi-0.12.0-linux-x86_64.tar.gz -C ~/.local
 ```
 
 The tarball is relocatable and carries every library a program can ask for:
-iyi's own 538 KB prelude, the 1,857 KB of `src/std` that `import std/...`
+iyi's own 539 KB prelude, the 1,857 KB of `src/std` that `import std/...`
 resolves to, and Crystal's standard library for `--crystal`. 0.11.0 shipped
 the first and the third — `import std/enumerable` answered "can't find module"
 out of the thing people downloaded, and every gate passed it because they all
@@ -583,7 +583,7 @@ $ curl localhost:3000/json
 `pub`, traits with defaults, `impl … forall`, error unions and `!`, `.or`,
 `or_panic`, `defer` — all of them, on a program that requires a shard. R-2
 still refuses an export that does not write its types. What changes is what the
-program *has*: 8,161 lines of Crystal's standard library instead of 13,944
+program *has*: 8,161 lines of Crystal's standard library instead of 13,948
 lines of iyi's own prelude.
 
 **One name is unreachable, and it is a class of names.** `!` in iyi propagates
@@ -965,7 +965,7 @@ marked PROPOSED are the parts that will move under you.
 
 ## What is not here
 
-- **iyi's own library is 13,944 lines, and its IO is `puts`, `print`,
+- **iyi's own library is 13,948 lines, and its IO is `puts`, `print`,
   `read_input` and `File`**: integers, booleans, a string, one sequence, one
   dictionary, one range, and what an `enum` needs — its name, its order, its
   members and, for a `@[Flags]` one, its bits. `read_input` returns everything
@@ -1069,7 +1069,7 @@ marked PROPOSED are the parts that will move under you.
 | [SPEC.md](SPEC.md) | the design, and the record of what measurement settled |
 | [`samples/iyi`](samples/iyi) | thirty-four programs: twenty-six documenting a part of it, seven being a first hour, and `calc`, a language |
 | [`samples/crystal/kemal`](samples/crystal/kemal) | a kemal application, from `shard.yml`: built from source and across four `.iyimod` boundaries |
-| [`src/iyi`](src/iyi) | iyi's own library, 13,944 lines. `--crystal` swaps it for Crystal's |
+| [`src/iyi`](src/iyi) | iyi's own library, 13,948 lines. `--crystal` swaps it for Crystal's |
 | [`src/std`](src/std) | the standard library, 67,449 lines of iyi across 102 modules: collections, text, time, JSON, YAML, XML, TLS 1.3, HTTP/1.1, WebSocket, HTTP/2, QUIC and HTTP/3 among them. Opt-in with `import std/...`, outside the prelude's ceiling |
 | [`src/compiler/iyi/iyimod.cr`](src/compiler/iyi/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |

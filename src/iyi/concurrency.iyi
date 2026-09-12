@@ -344,23 +344,28 @@ end
 #
 # Not user-facing (III.4.6): a raw spawn is the leak III.4.1 exists to
 # make unrepresentable. `IyiTask` and `group` are the only doors.
+
+# What a fiber is doing, which the scheduler reads and writes under the
+# runtime lock. It was an `Int32` with the names in a comment, because the
+# prelude had no `Enum` surface when the scheduler was written; it has one
+# now (`src/iyi/enum.iyi`), and the comment was the argument for keeping the
+# integer - what those comparisons cost is measured, so naming them is a
+# change that has to be measured too. It was: `bench/server_load.sh`'s shape
+# holds and 2,000,000 channel round trips cost what they cost before, plain
+# and optimised, because `==` on an enum is its value compared and the
+# member is a constant.
+enum IyiFiberState : Int32
+  Running   = 0 # the one fiber whose instructions are executing
+  Runnable  = 1 # in the run queue
+  Sleeping  = 2 # in the sleep list, by deadline
+  WaitingIo = 3 # in the io list, registered with the poller
+  WaitingCh = 4 # parked in a channel's queue
+  Joining   = 5 # parked on another fiber's completion
+  Done      = 6 # never scheduled again; its stack is never reused
+end
+
 class IyiFiber
-  # States, as an Int32. The prelude has an `Enum` surface now
-  # (`src/iyi/enum.iyi`) and this is the one place that would rather keep the
-  # integer: every line of the scheduler below reads and writes a state under
-  # the runtime lock, and what those comparisons cost is measured
-  # (`bench/server_load.sh`: 23,705 requests a second). Naming them is a
-  # change to the scheduler, so it belongs with that measurement rather than
-  # with the surface.
-  #
-  #   0 running    the one fiber whose instructions are executing
-  #   1 runnable   in the run queue
-  #   2 sleeping   in the sleep list, by deadline
-  #   3 waiting io in the io list, registered with the poller
-  #   4 waiting ch parked in a channel's queue
-  #   5 joining    parked on another fiber's completion
-  #   6 done       never scheduled again; its stack is never reused
-  property state : Int32
+  property state : IyiFiberState
   property cancelled : Bool
 
   # Panics — III.1.4. The registry `defer` pushes onto and the panic
@@ -424,7 +429,7 @@ class IyiFiber
   PAGE        =   4096_u64
 
   def initialize
-    @state = 1
+    @state = IyiFiberState::Runnable
     @cancelled = false
     @defers = nil
     @panicked = false
@@ -454,7 +459,7 @@ class IyiFiber
   # it one, and the first switch away fills in @sp.
   def self.main : IyiFiber
     fiber = IyiFiber.new
-    fiber.state = 0
+    fiber.state = IyiFiberState::Running
     fiber
   end
 
@@ -602,7 +607,7 @@ class IyiWaiter
   # Still the park it was made for: the fiber is channel-parked and has
   # not parked anywhere newer.
   def current? : Bool
-    @fiber.state == 4 && @fiber.park_nonce == @nonce
+    @fiber.state == IyiFiberState::WaitingCh && @fiber.park_nonce == @nonce
   end
 end
 
@@ -628,7 +633,7 @@ class IyiSendNode(T)
   end
 
   def current? : Bool
-    @fiber.state == 4 && @fiber.park_nonce == @nonce
+    @fiber.state == IyiFiberState::WaitingCh && @fiber.park_nonce == @nonce
   end
 
   def take : T
@@ -856,12 +861,12 @@ class IyiScheduler
   def self.park(fiber : IyiFiber) : UInt64
     nonce = fiber.park_nonce + 1
     fiber.park_nonce = nonce
-    fiber.state = 4
+    fiber.state = IyiFiberState::WaitingCh
     nonce
   end
 
   def self.enqueue(fiber : IyiFiber) : Nil
-    fiber.state = 1
+    fiber.state = IyiFiberState::Runnable
     fiber.next_run = nil
     state = self.state
     tail = state.run_tail
@@ -900,7 +905,7 @@ class IyiScheduler
 
   def self.switch_to(fiber : IyiFiber) : Nil
     previous = current
-    fiber.state = 0
+    fiber.state = IyiFiberState::Running
     return if fiber.sp_slot.address == previous.sp_slot.address
     state.current = fiber
     __iyi_ctx_swap(previous.sp_slot, fiber.sp_slot)
@@ -917,7 +922,7 @@ class IyiScheduler
     fiber = current
     body = fiber.proc
     body.call unless body.is_a?(Nil)
-    fiber.state = 6
+    fiber.state = IyiFiberState::Done
     joiner = fiber.joiner
     if joiner.is_a?(IyiFiber)
       fiber.joiner = nil
@@ -939,7 +944,7 @@ class IyiScheduler
     return Cancelled.new if fiber.cancelled
     return nil if ms <= 0
     fiber.deadline = __iyi_monotonic_ns + ms.to_i64 * 1000000_i64
-    fiber.state = 2
+    fiber.state = IyiFiberState::Sleeping
     sleep_insert(fiber)
     reschedule
     return Cancelled.new if fiber.cancelled
@@ -992,7 +997,7 @@ class IyiScheduler
       return 0_i64
     end
 
-    fiber.state = 3
+    fiber.state = IyiFiberState::WaitingIo
     fiber.next_io = state.io_head
     state.io_head = fiber
     reschedule
@@ -1052,7 +1057,7 @@ class IyiScheduler
     {% end %}
 
     fiber.wait_fd = fd
-    fiber.state = 3
+    fiber.state = IyiFiberState::WaitingIo
     fiber.next_io = state.io_head
     state.io_head = fiber
     reschedule
@@ -1061,11 +1066,11 @@ class IyiScheduler
   end
 
   def self.join(fiber : IyiFiber) : Nil
-    while fiber.state != 6
+    while fiber.state != IyiFiberState::Done
       raise "task already has a joiner" if fiber.joiner.is_a?(IyiFiber)
       me = current
       fiber.joiner = me
-      me.state = 5
+      me.state = IyiFiberState::Joining
       reschedule
     end
   end
@@ -1074,13 +1079,13 @@ class IyiScheduler
   # parked on, it is unparked here and its next (or current) blocking
   # primitive answers `Cancelled`.
   def self.cancel(fiber : IyiFiber) : Nil
-    return if fiber.state == 6
+    return if fiber.state == IyiFiberState::Done
     return if fiber.cancelled
     fiber.cancelled = true
-    if fiber.state == 2
+    if fiber.state == IyiFiberState::Sleeping
       sleep_remove(fiber)
       enqueue(fiber)
-    elsif fiber.state == 3
+    elsif fiber.state == IyiFiberState::WaitingIo
       {% if flag?(:win32) %}
         fiber.cancelled = true
         LibC.CancelIoEx(fiber.wait_handle, fiber.wait_overlapped.as(Void*))
@@ -1090,7 +1095,7 @@ class IyiScheduler
         io_remove(fiber)
         enqueue(fiber)
       {% end %}
-    elsif fiber.state == 4
+    elsif fiber.state == IyiFiberState::WaitingCh
       # The channel's node is left where it is: waking bumps nothing here,
       # because the enqueue below changes the state the node's `current?`
       # reads, and every wake skips a node that is no longer current.
@@ -1372,7 +1377,7 @@ class IyiScheduler
     g = fiber.group
     g.child_panicked(fiber.cancelled) if g.is_a?(IyiGroup)
 
-    fiber.state = 6
+    fiber.state = IyiFiberState::Done
     joiner = fiber.joiner
     if joiner.is_a?(IyiFiber)
       fiber.joiner = nil
@@ -1463,7 +1468,7 @@ class IyiTask(T)
   end
 
   def done? : Bool
-    @fiber.state == 6
+    @fiber.state == IyiFiberState::Done
   end
 
   def value : T | Panicked
@@ -1576,7 +1581,7 @@ class IyiGroup
     while @live > 0
       me = IyiScheduler.current
       @joiner = me
-      me.state = 5
+      me.state = IyiFiberState::Joining
       IyiScheduler.reschedule
     end
     # The boundary owes a re-raise for any panic *nobody read*: a bug

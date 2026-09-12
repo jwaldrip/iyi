@@ -1128,18 +1128,25 @@ module Iyi
       nil
     end
 
-    def add_macro(a_macro)
+    # Answers the macro this one took the place of, if it took one's place:
+    # the same question `add_def` answers for a def, and asked for the same
+    # reason (R-3, `TopLevelVisitor#iyi_refuse_override`).
+    def add_macro(a_macro) : Macro?
       a_macro.owner = self
 
       case a_macro.name
       when "inherited"
-        return add_hook :inherited, a_macro
+        add_hook :inherited, a_macro
+        return nil
       when "included"
-        return add_hook :included, a_macro
+        add_hook :included, a_macro
+        return nil
       when "extended"
-        return add_hook :extended, a_macro
+        add_hook :extended, a_macro
+        return nil
       when "method_added"
-        return add_hook :method_added, a_macro, args_size: 1
+        add_hook :method_added, a_macro, args_size: 1
+        return nil
       when "method_missing"
         check_macro_param_count(a_macro, 1)
       else
@@ -1151,11 +1158,14 @@ module Iyi
       index = array.index { |existing_macro| a_macro.overrides?(existing_macro) }
       if index
         # a_macro has the same signature of an existing macro, we override it.
-        a_macro.doc ||= array[index].doc
+        replaced = array[index]
+        a_macro.doc ||= replaced.doc
         array[index] = a_macro
+        replaced
       else
         # a_macro has a new signature, add it with the others.
         array << a_macro
+        nil
       end
     end
 

@@ -1224,10 +1224,11 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
 
     target = current_type.metaclass.as(ModuleType)
     begin
-      target.add_macro node
+      replaced = target.add_macro node
     rescue ex : Iyi::CodeError
       node.raise ex.message
     end
+    iyi_refuse_override node, replaced
 
     # iyi: `pub macro` — recorded on the module rather than on the metaclass the
     # macro itself lives on, because the export surface is the module's and
@@ -1412,17 +1413,26 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
   # either definition. A prelude method is the answer every program already
   # has, so replacing one from outside the prelude is the same defect as
   # replacing the library's, and is refused in the same sentence.
-  private def iyi_refuse_override(node : Def, replaced : Def?) : Nil
+  #
+  # A macro is the same act and a wider one. `getter` is a declaration macro,
+  # so a module that reopens `::Object` and writes its own decides what every
+  # field declaration in the program means — including the ones in files that
+  # never heard of it, and including the ones the prelude wrote. It travels in
+  # an artifact too (IV.1, `macro_bodies`), so a consumer can inherit it from
+  # a module whose source it never reads. Asked here because `add_macro`
+  # answers the same question `add_def` does.
+  private def iyi_refuse_override(node : Def | Macro, replaced : Def | Macro | Nil) : Nil
     return unless replaced
     return unless iyi_written_in?(node, ".iyi")
 
+    kind = node.is_a?(Macro) ? "macro" : "method"
     if @program.iyi_prelude?
       # The prelude extends itself: `number.iyi` writing a method
       # `primitives.iyi` declared is one library deciding its own surface.
       return unless iyi_written_in_prelude?(replaced)
       return if iyi_written_in_prelude?(node)
       whose = "the prelude's"
-      instead = "Give it a name the prelude does not use, or add the method " \
+      instead = "Give it a name the prelude does not use, or add the #{kind} " \
                 "to the prelude itself, where one definition answers for " \
                 "every program"
     else
@@ -1434,25 +1444,34 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
 
     at = replaced.location.try(&.expanded_location)
     where = at ? " (#{at.filename}:#{at.line_number})" : ""
-    node.raise "#{replaced.owner}##{node.name} is #{whose}, and this " \
-               "replaces it#{where}. A `.iyi` file may add a method to a type " \
-               "it did not declare — `def blank?` on `::String` is an " \
-               "addition — and may not redefine one it has: the definition " \
-               "that goes is one other code calls, so every program built " \
-               "with it gets this one instead. #{instead} (SPEC.md R-3)"
+    # A macro lives on the metaclass, so `replaced.owner` spells it
+    # `Object.class` — which is not what the author wrote above it.
+    if node.is_a?(Macro)
+      site = "#{replaced.owner.to_s.chomp(".class")}.#{node.name}"
+      example = "a `macro` under a name the prelude does not have is an addition"
+    else
+      site = "#{replaced.owner}##{node.name}"
+      example = "`def blank?` on `::String` is an addition"
+    end
+    node.raise "#{site} is #{whose} #{kind}, and this replaces it#{where}. " \
+               "A `.iyi` file may add a #{kind} to a type it did not " \
+               "declare — #{example} — and may not redefine one it has: the " \
+               "definition that goes is one other code calls, so every " \
+               "program built with it gets this one instead. #{instead} " \
+               "(SPEC.md R-3)"
   end
 
-  # Whether *a_def* was written in one of the prelude's own files.
-  private def iyi_written_in_prelude?(a_def : Def) : Bool
+  # Whether *node* was written in one of the prelude's own files.
+  private def iyi_written_in_prelude?(node : Def | Macro) : Bool
     return false unless dir = @program.iyi_prelude_dir
-    !!a_def.location.try(&.expanded_location).try do |at|
+    !!node.location.try(&.expanded_location).try do |at|
       at.filename.as?(String).try &.starts_with?("#{dir}#{File::SEPARATOR}")
     end
   end
 
   # Where a definition was written, following a macro back to its source.
-  private def iyi_written_in?(a_def : Def, extension : String) : Bool
-    !!a_def.location.try(&.expanded_location).try do |at|
+  private def iyi_written_in?(node : Def | Macro, extension : String) : Bool
+    !!node.location.try(&.expanded_location).try do |at|
       at.filename.as?(String).try &.ends_with?(extension)
     end
   end

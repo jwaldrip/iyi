@@ -52,7 +52,7 @@ jobs:
       - name: Build the compiler
         run: make crystal
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: crystal
           path: .build/crystal
@@ -68,7 +68,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: crystal
           path: .build
@@ -112,7 +112,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: crystal
           path: .build
@@ -133,7 +133,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: crystal
           path: .build
@@ -157,7 +157,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: crystal
           path: .build
@@ -284,6 +284,20 @@ jobs:
       # nothing. Eight broken methods of a copied prelude prove each check.
       - name: An enum is its name, its order and its members
         run: bash bench/enum_exercise.sh
+
+      # Three gates that existed, passed on the machine that wrote them, and
+      # were named in this file by nothing: `format_exercise` (seven proofs
+      # over patched copies of `std/format`), `io_exercise` (`IyiIO` flush,
+      # short reads, buffer boundaries, EOF) and `socket_exercise` (every
+      # phase of `IyiSocket` plus a refused connection). Nine seconds for the
+      # three of them, which is what an unrun gate was saving. Found while
+      # reviewing what CI actually runs; the collector's comment below
+      # records the same defect a stage earlier.
+      - name: Format strings, streams and sockets
+        run: |
+          bash bench/format_exercise.sh
+          bash bench/io_exercise.sh
+          bash bench/socket_exercise.sh
 
       # The collector's own gates (GC_DESIGN.md Stages 2, 3, 5, 6 and the
       # allocation-pressure trigger). Each drives its exercise plain and
@@ -592,7 +606,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: crystal
           path: .build
@@ -612,7 +626,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: crystal
           path: .build
@@ -703,7 +717,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: crystal
           path: .build
@@ -818,7 +832,7 @@ jobs:
               -o wasm32_exercise_rel ../bench/wasm32_exercise.iyi > wasm32_exercise_rel.link )
           cat cross/wasm32_exercise_rel.link
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: cross-objects
           path: cross/
@@ -828,7 +842,7 @@ jobs:
     runs-on: ubuntu-24.04
     name: "An iyi program, run on musl and on aarch64"
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: cross-objects
           path: cross
@@ -996,6 +1010,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+          # Nothing here is a Go project, so there is no `go.sum` to key a
+          # cache on and the default asks for one — a failed restore in
+          # every darwin log, about a dependency file that will never exist.
+          cache: false
       - name: The race, for the record (bench/gc_race.py)
         run: python3 bench/gc_race.py
 
@@ -1102,7 +1120,7 @@ jobs:
       - name: Stage the tarball for the release job
         run: mkdir -p dist && cp .build/iyi-*-darwin-*.tar.gz dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: iyi-darwin-arm64
           path: dist/
@@ -1126,7 +1144,7 @@ jobs:
     runs-on: windows-2022
     name: "What a Windows binary does, twenty times"
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: cross-objects
           path: cross
@@ -1188,7 +1206,7 @@ jobs:
     runs-on: windows-2022
     name: "The collector on Windows x86_64"
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: cross-objects
           path: cross
@@ -1229,7 +1247,7 @@ jobs:
     runs-on: windows-2022
     name: "The concurrency runtime on Windows x86_64"
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: cross-objects
           path: cross
@@ -1289,7 +1307,7 @@ jobs:
     runs-on: ubuntu-24.04
     name: "An iyi program, run on wasm32-wasi"
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: cross-objects
           path: cross
@@ -1346,7 +1364,7 @@ jobs:
     runs-on: ubuntu-24.04
     name: "The collector on wasm32-wasi"
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: cross-objects
           path: cross
@@ -1387,7 +1405,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: crystal
           path: .build
@@ -1514,7 +1532,7 @@ jobs:
       - name: Stage the tarball for the release job
         run: mkdir -p dist && cp .build/iyi-*-linux-*.tar.gz dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: iyi-linux-x86_64
           path: dist/
@@ -1541,7 +1559,7 @@ jobs:
       # Checkout first: it clears the workspace, so an artifact
       # downloaded before it is an artifact deleted by it.
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: iyi-linux-x86_64
           path: dist/
@@ -1609,11 +1627,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: iyi-linux-x86_64
           path: dist/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: iyi-darwin-arm64
           path: dist/
