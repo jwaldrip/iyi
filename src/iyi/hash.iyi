@@ -94,10 +94,10 @@ class Hash(K, V)
   end
 
   # Every pair, in the order it went in.
-  def each(& : K, V -> Nil) : Nil
+  def each(& : ::Tuple(K, V) -> Nil) : Nil
     entry = 0
     while entry < @size
-      yield @keys[entry], @values[entry]
+      yield({@keys[entry], @values[entry]})
       entry = entry + 1
     end
   end

@@ -681,13 +681,17 @@ impl Enumerable for Array(T) forall T
   type Elem = T
 end
 
+# `Hash` already answers `each` with this shape, so the impl only names what
+# it enumerates. Writing the body again here would reach into the prelude's
+# own `@size`, `@keys` and `@values` from another module, and would redefine
+# a method the prelude declares, which is what R-3 refuses.
+impl Enumerable for Hash(K, V) forall K, V
+  type Elem = ::Tuple(K, V)
+end
+
 class ::Hash(K, V)
-  def each_entry(& : ::Tuple(K, V) -> Nil) : Nil
-    entry = 0
-    while entry < @size
-      yield({@keys[entry], @values[entry]})
-      entry = entry + 1
-    end
+  def each_entry(&block : ::Tuple(K, V) -> Nil) : Nil
+    each(&block)
   end
 
   def each_key(& : K -> Nil) : Nil
@@ -976,13 +980,10 @@ class ::Hash(K, V)
   end
 end
 
-# `Hash` has no `Enumerable` impl here. The trait enumerates one element, so
-# it needs an `each` that yields a pair as a single tuple, and the prelude
-# already declares `Hash#each` yielding the key and the value as two
-# arguments. R-3 refuses a second definition of a method the prelude has, and
-# rightly: the one that lost would still be the one other code called. Use
-# `each_entry` above for tuple-at-a-time iteration until the prelude's own
-# `each` can answer the trait.
+# `Hash` implements `Enumerable` above. The prelude declares `Hash#each`
+# yielding the key and value as a single tuple `{K, V}`, so the impl answers
+# `type Elem = ::Tuple(K, V)` and inherits all 71 Enumerable defaults without
+# redefining `each` (R-3). Block destructuring preserves `|k, v|` callers.
 
 struct ::Range(B, E)
   def each_element(& : B -> Nil) : Nil
