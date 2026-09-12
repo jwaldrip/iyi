@@ -330,7 +330,7 @@ pub class Lexer
     when '[' then ']'
     when '{' then '}'
     when '<' then '>'
-    else char
+    else          char
     end
   end
 
@@ -1293,14 +1293,14 @@ pub class Lexer
       case char2
       when '\\' then @token.value = "\\"
       when '\'' then @token.value = "'"
-      when 'a' then @token.value = "\a"
-      when 'b' then @token.value = "\b"
-      when 'e' then @token.value = "\e"
-      when 'f' then @token.value = "\f"
-      when 'n' then @token.value = "\n"
-      when 'r' then @token.value = "\r"
-      when 't' then @token.value = "\t"
-      when 'v' then @token.value = "\v"
+      when 'a'  then @token.value = "\a"
+      when 'b'  then @token.value = "\b"
+      when 'e'  then @token.value = "\e"
+      when 'f'  then @token.value = "\f"
+      when 'n'  then @token.value = "\n"
+      when 'r'  then @token.value = "\r"
+      when 't'  then @token.value = "\t"
+      when 'v'  then @token.value = "\v"
       when 'u'
         cp = consume_char_unicode_escape
         @token.value = cp.unsafe_chr.to_s
@@ -1764,7 +1764,7 @@ pub class Lexer
     when '/'
       case next_char
       when '/' then next_char_and_symbol("//")
-      else symbol("/")
+      else          symbol("/")
       end
     when '='
       case next_char
@@ -1775,13 +1775,13 @@ pub class Lexer
           symbol("==")
         end
       when '~' then next_char_and_symbol("=~")
-      else unknown_token
+      else          unknown_token
       end
     when '!'
       case next_char
       when '=' then next_char_and_symbol("!=")
       when '~' then next_char_and_symbol("!~")
-      else symbol("!")
+      else          symbol("!")
       end
     when '<'
       case next_char
@@ -1792,13 +1792,13 @@ pub class Lexer
           symbol("<=")
         end
       when '<' then next_char_and_symbol("<<")
-      else symbol("<")
+      else          symbol("<")
       end
     when '>'
       case next_char
       when '=' then next_char_and_symbol(">=")
       when '>' then next_char_and_symbol(">>")
-      else symbol(">")
+      else          symbol(">")
       end
     when '&'
       case next_char
@@ -1807,7 +1807,7 @@ pub class Lexer
       when '*'
         case next_char
         when '*' then next_char_and_symbol("&**")
-        else symbol("&*")
+        else          symbol("&*")
         end
       else symbol("&")
       end
@@ -1820,7 +1820,7 @@ pub class Lexer
         case next_char
         when '=' then next_char_and_symbol("[]=")
         when '?' then next_char_and_symbol("[]?")
-        else symbol("[]")
+        else          symbol("[]")
         end
       else
         unknown_token
@@ -1912,13 +1912,13 @@ pub class Lexer
   def delimiter_state_for_percent_literal : DelimiterState?
     char = next_char
     del_kind = case char
-               when 'i' then DelimiterKind::SYMBOL_ARRAY
-               when 'r' then DelimiterKind::REGEX
-               when 'w', 'W' then DelimiterKind::STRING_ARRAY
-               when 'x' then DelimiterKind::COMMAND
-               when 'q', 'Q' then DelimiterKind::STRING
+               when 'i'                     then DelimiterKind::SYMBOL_ARRAY
+               when 'r'                     then DelimiterKind::REGEX
+               when 'w', 'W'                then DelimiterKind::STRING_ARRAY
+               when 'x'                     then DelimiterKind::COMMAND
+               when 'q', 'Q'                then DelimiterKind::STRING
                when '(', '[', '{', '<', '|' then DelimiterKind::STRING
-               else return nil
+               else                              return nil
                end
 
     has_open = char == '(' || char == '<' || char == '[' || char == '{' || char == '|'

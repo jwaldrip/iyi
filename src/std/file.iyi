@@ -99,7 +99,7 @@ using std/path::{Path}
 {% end %}
 
 class ::File
-  SEPARATOR = '/'
+  SEPARATOR        = '/'
   SEPARATOR_STRING = "/"
   using std/path::{Path}
 

@@ -295,7 +295,7 @@ def test_kernel : Nil
   sleep(0.01) # 10ms
   elapsed = (__iyi_monotonic_ns - t0) // 1_000_000_i64
   fail("kernel: sleep too short") unless elapsed >= 5
-  sleep(0) # Boundary: zero sleep
+  sleep(0)  # Boundary: zero sleep
   sleep(-1) # Boundary: negative sleep
   log_check("kernel: sleep durations and boundaries")
 end
@@ -307,7 +307,9 @@ def test_exception_hierarchy : Nil
   inner = Exception.new("inner reason")
   outer = Exception.new("outer reason", inner)
   fail("exception: message") unless outer.message == "outer reason"
-  fail("exception: cause message") unless (if c = outer.cause; c.message; end) == "inner reason"
+  fail("exception: cause message") unless (if c = outer.cause
+                                            c.message
+                                          end) == "inner reason"
   log_check("exception: cause chaining")
 
   # CallStack inspection

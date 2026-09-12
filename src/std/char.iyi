@@ -315,7 +315,6 @@ struct ::Char
   end
 end
 
-
 # Char reader for iterating strings by codepoints.
 pub struct Reader
   getter string : String

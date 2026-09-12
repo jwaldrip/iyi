@@ -14,16 +14,18 @@ class ::String
     Std::Slice::Bytes.new(to_unsafe, bytesize, read_only: true)
   end
 end
+
 module ::Base64
   class Error < Exception
     getter message : String
+
     def initialize(@message : String = "")
     end
   end
 
   private CHARS_STD  = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
   private CHARS_SAFE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-  private LINE_SIZE  = 60
+  private LINE_SIZE  =    60
   private PAD        = 61_u8 # '='
   private NL         = 10_u8 # '\n'
   private NR         = 13_u8 # '\r'
@@ -66,16 +68,24 @@ module ::Base64
         c3 = chars_bytes[triple & 0x3f]
 
         buf[dst_idx] = c0; dst_idx += 1; col += 1
-        if col >= LINE_SIZE; buf[dst_idx] = NL; dst_idx += 1; col = 0; end
+        if col >= LINE_SIZE
+          buf[dst_idx] = NL; dst_idx += 1; col = 0
+        end
 
         buf[dst_idx] = c1; dst_idx += 1; col += 1
-        if col >= LINE_SIZE; buf[dst_idx] = NL; dst_idx += 1; col = 0; end
+        if col >= LINE_SIZE
+          buf[dst_idx] = NL; dst_idx += 1; col = 0
+        end
 
         buf[dst_idx] = c2; dst_idx += 1; col += 1
-        if col >= LINE_SIZE; buf[dst_idx] = NL; dst_idx += 1; col = 0; end
+        if col >= LINE_SIZE
+          buf[dst_idx] = NL; dst_idx += 1; col = 0
+        end
 
         buf[dst_idx] = c3; dst_idx += 1; col += 1
-        if col >= LINE_SIZE; buf[dst_idx] = NL; dst_idx += 1; col = 0; end
+        if col >= LINE_SIZE
+          buf[dst_idx] = NL; dst_idx += 1; col = 0
+        end
 
         src_idx += 3
       end
@@ -88,16 +98,24 @@ module ::Base64
         c1 = chars_bytes[(triple >> 12) & 0x3f]
 
         buf[dst_idx] = c0; dst_idx += 1; col += 1
-        if col >= LINE_SIZE; buf[dst_idx] = NL; dst_idx += 1; col = 0; end
+        if col >= LINE_SIZE
+          buf[dst_idx] = NL; dst_idx += 1; col = 0
+        end
 
         buf[dst_idx] = c1; dst_idx += 1; col += 1
-        if col >= LINE_SIZE; buf[dst_idx] = NL; dst_idx += 1; col = 0; end
+        if col >= LINE_SIZE
+          buf[dst_idx] = NL; dst_idx += 1; col = 0
+        end
 
         buf[dst_idx] = PAD; dst_idx += 1; col += 1
-        if col >= LINE_SIZE; buf[dst_idx] = NL; dst_idx += 1; col = 0; end
+        if col >= LINE_SIZE
+          buf[dst_idx] = NL; dst_idx += 1; col = 0
+        end
 
         buf[dst_idx] = PAD; dst_idx += 1; col += 1
-        if col >= LINE_SIZE; buf[dst_idx] = NL; dst_idx += 1; col = 0; end
+        if col >= LINE_SIZE
+          buf[dst_idx] = NL; dst_idx += 1; col = 0
+        end
       elsif rem == 2
         b0 = src[src_idx].to_i32
         b1 = src[src_idx + 1].to_i32
@@ -107,16 +125,24 @@ module ::Base64
         c2 = chars_bytes[(triple >> 6) & 0x3f]
 
         buf[dst_idx] = c0; dst_idx += 1; col += 1
-        if col >= LINE_SIZE; buf[dst_idx] = NL; dst_idx += 1; col = 0; end
+        if col >= LINE_SIZE
+          buf[dst_idx] = NL; dst_idx += 1; col = 0
+        end
 
         buf[dst_idx] = c1; dst_idx += 1; col += 1
-        if col >= LINE_SIZE; buf[dst_idx] = NL; dst_idx += 1; col = 0; end
+        if col >= LINE_SIZE
+          buf[dst_idx] = NL; dst_idx += 1; col = 0
+        end
 
         buf[dst_idx] = c2; dst_idx += 1; col += 1
-        if col >= LINE_SIZE; buf[dst_idx] = NL; dst_idx += 1; col = 0; end
+        if col >= LINE_SIZE
+          buf[dst_idx] = NL; dst_idx += 1; col = 0
+        end
 
         buf[dst_idx] = PAD; dst_idx += 1; col += 1
-        if col >= LINE_SIZE; buf[dst_idx] = NL; dst_idx += 1; col = 0; end
+        if col >= LINE_SIZE
+          buf[dst_idx] = NL; dst_idx += 1; col = 0
+        end
       end
 
       if col > 0

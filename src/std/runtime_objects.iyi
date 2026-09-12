@@ -209,7 +209,6 @@ class ::Reference
       dup_obj
     {% end %}
   end
-
 end
 
 struct ::Value
@@ -233,6 +232,7 @@ struct ::Struct
       false
     end
   end
+
   def hash : Int32
     h = 0
     {% for ivar in @type.instance_vars %}

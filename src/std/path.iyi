@@ -46,6 +46,7 @@ pub struct Path
   def self.new(path : Path) : Path
     path
   end
+
   def self.[](name : String = "") : Path
     Path.new(name)
   end

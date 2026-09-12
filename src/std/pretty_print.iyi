@@ -90,6 +90,7 @@ class ::PrettyPrint
   class Group
     getter depth : Int32
     getter breakables : Array(Breakable)
+
     def break? : Bool
       @break
     end

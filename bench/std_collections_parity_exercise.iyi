@@ -126,8 +126,8 @@ w1.push(1)
 w1.push(2)
 w1.push(3)
 w1.push(4)
-w1.shift # removes 1
-w1.shift # removes 2
+w1.shift   # removes 1
+w1.shift   # removes 2
 w1.push(5) # wraps
 w1.push(6) # wraps
 assert_equal(4, w1.size, "wrapped size is 4")

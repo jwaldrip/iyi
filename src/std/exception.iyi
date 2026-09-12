@@ -9,7 +9,6 @@ class ::Class
   end
 end
 
-
 class ::Exception
   struct CallStack
     getter printable_backtrace : Array(String)

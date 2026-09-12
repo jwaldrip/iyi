@@ -9,6 +9,7 @@ import std/text
 import std/slice
 using std/slice::{Bytes}
 pub alias Bytes = Std::Slice::Bytes
+
 class ::StringPool
   getter size : Int32
   getter capacity : Int32

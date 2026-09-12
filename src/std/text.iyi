@@ -52,6 +52,7 @@ import std/slice
 using std/slice::{Slice, Bytes}
 pub alias Bytes = Std::Slice::Bytes
 alias ::Bytes = Std::Slice::Bytes
+
 struct ::Char
   def ascii_letter? : Bool
     (self >= 'a' && self <= 'z') || (self >= 'A' && self <= 'Z')

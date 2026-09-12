@@ -29,6 +29,7 @@ pub enum Type
     value == other.value
   end
 end
+
 pub class Error < Exception
   getter message : String
 

@@ -34,43 +34,44 @@ end
 
 struct ::UUID
   enum Variant
-    Unknown = 0
-    NCS = 1
-    RFC4122 = 2
-    RFC9562 = 2
+    Unknown   = 0
+    NCS       = 1
+    RFC4122   = 2
+    RFC9562   = 2
     Microsoft = 3
-    Future = 4
+    Future    = 4
   end
 
   enum Version
     Unknown = 0
-    V1 = 1
-    V2 = 2
-    V3 = 3
-    V4 = 4
-    V5 = 5
-    V6 = 6
-    V7 = 7
-    V8 = 8
+    V1      = 1
+    V2      = 2
+    V3      = 3
+    V4      = 4
+    V5      = 5
+    V6      = 6
+    V7      = 7
+    V8      = 8
   end
 
   enum Domain
     Person = 0
-    Group = 1
-    Org = 2
+    Group  = 1
+    Org    = 2
   end
 
   alias MAC = StaticArray(UInt8, 6)
 
   module Namespace
-    DNS = UUID.new("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
-    URL = UUID.new("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
-    OID = UUID.new("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
+    DNS  = UUID.new("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+    URL  = UUID.new("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
+    OID  = UUID.new("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
     X500 = UUID.new("6ba7b814-9dad-11d1-80b4-00c04fd430c8")
   end
 
   class Error < Exception
     getter message : String
+
     def initialize(@message : String = "")
     end
   end

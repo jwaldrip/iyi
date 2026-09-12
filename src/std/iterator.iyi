@@ -76,6 +76,7 @@ pub trait Iterator
   def self.of(array : Array(T)) : ArrayIterator(T) forall T
     ArrayIterator(T).new(array)
   end
+
   def self.of(range : Range(B, E)) : RangeIterator(B, E) forall B, E
     RangeIterator(B, E).new(range)
   end

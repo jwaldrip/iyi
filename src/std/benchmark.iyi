@@ -26,6 +26,7 @@ end
 module ::GC
   struct Stats
     getter total_bytes : UInt64
+
     def initialize(@total_bytes : UInt64 = 0_u64)
     end
   end
@@ -211,6 +212,7 @@ module ::Benchmark
       @warmup_time : Std::Time::Span
       @calculation_time : Std::Time::Span
       @interactive : Bool
+
       def initialize(calculation : Std::Time::Span = Std::Time::Span.seconds(5), warmup : Std::Time::Span = Std::Time::Span.seconds(2), interactive : Bool = false)
         @calculation_time = calculation
         @warmup_time = warmup
@@ -324,6 +326,7 @@ module ::Benchmark
     report.execute
     report
   end
+
   def ips(calculation : Std::Time::Span = Std::Time::Span.seconds(5), warmup : Std::Time::Span = Std::Time::Span.seconds(2), interactive : Bool = false, &)
     job = IPS::Job.new(calculation, warmup, interactive)
     yield job
@@ -350,6 +353,7 @@ module ::Benchmark
     t1 = Std::Time::Time.monotonic
     t1 - t0
   end
+
   def memory(&) : Int64
     before = GC.stats.total_bytes
     yield

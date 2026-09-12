@@ -28,10 +28,10 @@ end
 
 class ::Channel(T)
   alias ClosedError = Std::Channel::ClosedError
+
   private def raise(err : ClosedError) : NoReturn
     ::raise(err.message)
   end
-
 
   def capacity : Int32
     @capacity

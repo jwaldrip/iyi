@@ -185,7 +185,7 @@ prove_fails "BigInt addition" broken_bigint_add "big.iyi" "bigint addition" \
 
 # 7. Break BigRational addition
 prove_fails "BigRational addition" broken_bigrat_add "big.iyi" "bigrational addition" \
-  's/BigRational\.new(@numerator \* other\.denominator \+ other\.numerator \* @denominator/BigRational.new(@numerator - other.numerator/'
+  's/BigRational\.new(@numerator [*] other\.denominator [+] other\.numerator [*] @denominator/BigRational.new(@numerator - other.numerator/'
 
 # 8. Break BigDecimal multiplication
 prove_fails "BigDecimal multiplication" broken_bigdec_mul "big.iyi" "bigdecimal multiplication" \

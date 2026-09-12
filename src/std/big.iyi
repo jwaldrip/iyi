@@ -839,6 +839,7 @@ pub struct BigInt
     end
     res
   end
+
   # Greatest Common Divisor (Euclidean algorithm)
   def gcd(other : BigInt) : BigInt
     a = self.abs
@@ -1353,6 +1354,7 @@ pub struct BigInt
   def to_big_f : BigFloat
     BigFloat.new(self)
   end
+
   # 32-bit hash value combining sign and limb bits
   def hash : Int32
     return 0 if zero?
@@ -2117,6 +2119,7 @@ struct ::Int64
   def to_big : Std::Big::BigInt
     Std::Big::BigInt.new(self)
   end
+
   def to_big_i : Std::Big::BigInt
     to_big
   end
@@ -2158,6 +2161,7 @@ struct ::Int32
   def to_big : Std::Big::BigInt
     Std::Big::BigInt.new(self.to_i64)
   end
+
   def to_big_i : Std::Big::BigInt
     to_big
   end

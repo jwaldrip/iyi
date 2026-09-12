@@ -93,6 +93,7 @@ struct ::SemanticVersion
     def >=(other : self) : Bool
       (self <=> other) >= 0
     end
+
     private def compare(x : String | Int32, y : String | Int32) : Int32
       if x.is_a?(Int32)
         if y.is_a?(Int32)

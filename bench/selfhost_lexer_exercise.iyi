@@ -88,7 +88,7 @@ module BenchSelfhostLexerExercise
       "require", "rescue", "responds_to?", "return", "select", "self",
       "sizeof", "struct", "super", "then", "trait", "true", "type",
       "typeof", "uninitialized", "union", "unless", "until", "using",
-      "verbatim", "when", "while", "with", "yield"
+      "verbatim", "when", "while", "with", "yield",
     ]
 
     assert(kw_names.size == 67, "expected 67 keywords")
@@ -116,7 +116,7 @@ module BenchSelfhostLexerExercise
       "<", "<<", "<<=", "<=", "<=>", "=", "==", "===", "=>", "=~",
       ">", ">=", ">>", ">>=", "?", "@[", "[", "[]", "[]=", "[]?",
       "]", "^", "^=", "`", "{", "{%", "{{", "|", "|=", "||", "||=",
-      "}", "~"
+      "}", "~",
     ]
 
     i = 0
@@ -142,7 +142,7 @@ module BenchSelfhostLexerExercise
       TokenKind::OP_BAR_EQ, TokenKind::OP_AMP_EQ, TokenKind::OP_CARET_EQ,
       TokenKind::OP_STAR_STAR_EQ, TokenKind::OP_LT_LT_EQ, TokenKind::OP_GT_GT_EQ,
       TokenKind::OP_BAR_BAR_EQ, TokenKind::OP_AMP_AMP_EQ, TokenKind::OP_AMP_PLUS_EQ,
-      TokenKind::OP_AMP_MINUS_EQ, TokenKind::OP_AMP_STAR_EQ
+      TokenKind::OP_AMP_MINUS_EQ, TokenKind::OP_AMP_STAR_EQ,
     ]
 
     i = 0
@@ -157,7 +157,7 @@ module BenchSelfhostLexerExercise
     print "testing unary operators... "
     unary_ops = [
       TokenKind::OP_BANG, TokenKind::OP_PLUS, TokenKind::OP_MINUS,
-      TokenKind::OP_TILDE, TokenKind::OP_AMP_PLUS, TokenKind::OP_AMP_MINUS
+      TokenKind::OP_TILDE, TokenKind::OP_AMP_PLUS, TokenKind::OP_AMP_MINUS,
     ]
 
     i = 0
@@ -326,7 +326,7 @@ module BenchSelfhostLexerExercise
     fixtures = [
       "samples/iyi/calc.iyi",
       "samples/iyi/shapes.iyi",
-      "samples/iyi/config.iyi"
+      "samples/iyi/config.iyi",
     ]
 
     total_tokens = 0

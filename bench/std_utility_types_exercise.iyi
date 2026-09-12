@@ -72,10 +72,10 @@ puts "== annotations surface"
 
 @[Flags]
 enum TestRole
-  None = 0
+  None   = 0
   Reader = 1
   Writer = 2
-  Admin = 4
+  Admin  = 4
 end
 
 @[Deprecated("use new_calc")]
@@ -467,10 +467,10 @@ assert_str_equal("urn:uuid:" + u4.to_s, u4.urn, "UUID urn")
 
 # Comparison and ordering
 sorted_pair = if u1 < u4
-  {u1, u4}
-else
-  {u4, u1}
-end
+                {u1, u4}
+              else
+                {u4, u1}
+              end
 assert_true(sorted_pair[0] <= sorted_pair[1], "UUID comparison <=")
 
 puts "uuid: all passed"

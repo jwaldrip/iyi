@@ -222,9 +222,9 @@ module ::Random
       b = uninitialized UInt8[16]
       Secure.random_bytes(b.to_slice)
       s0 = b[0].to_u64.unsafe_shl(56_u64) | b[1].to_u64.unsafe_shl(48_u64) | b[2].to_u64.unsafe_shl(40_u64) | b[3].to_u64.unsafe_shl(32_u64) |
-           b[4].to_u64.unsafe_shl(24_u64) | b[5].to_u64.unsafe_shl(16_u64) | b[6].to_u64.unsafe_shl(8_u64)  | b[7].to_u64
+           b[4].to_u64.unsafe_shl(24_u64) | b[5].to_u64.unsafe_shl(16_u64) | b[6].to_u64.unsafe_shl(8_u64) | b[7].to_u64
       s1 = b[8].to_u64.unsafe_shl(56_u64) | b[9].to_u64.unsafe_shl(48_u64) | b[10].to_u64.unsafe_shl(40_u64) | b[11].to_u64.unsafe_shl(32_u64) |
-           b[12].to_u64.unsafe_shl(24_u64) | b[13].to_u64.unsafe_shl(16_u64) | b[14].to_u64.unsafe_shl(8_u64)  | b[15].to_u64
+           b[12].to_u64.unsafe_shl(24_u64) | b[13].to_u64.unsafe_shl(16_u64) | b[14].to_u64.unsafe_shl(8_u64) | b[15].to_u64
       new(s0, s1)
     end
 
@@ -300,13 +300,13 @@ module ::Random
 
       mix = -> {
         a ^= b.unsafe_shl(11_u64) & 0xffffffff_u64; d = (d &+ a) & 0xffffffff_u64; b = (b &+ c) & 0xffffffff_u64
-        b ^= c.unsafe_shr(2_u64);                   e = (e &+ b) & 0xffffffff_u64; c = (c &+ d) & 0xffffffff_u64
-        c ^= d.unsafe_shl(8_u64) & 0xffffffff_u64;  f = (f &+ c) & 0xffffffff_u64; d = (d &+ e) & 0xffffffff_u64
-        d ^= e.unsafe_shr(16_u64);                  g = (g &+ d) & 0xffffffff_u64; e = (e &+ f) & 0xffffffff_u64
+        b ^= c.unsafe_shr(2_u64); e = (e &+ b) & 0xffffffff_u64; c = (c &+ d) & 0xffffffff_u64
+        c ^= d.unsafe_shl(8_u64) & 0xffffffff_u64; f = (f &+ c) & 0xffffffff_u64; d = (d &+ e) & 0xffffffff_u64
+        d ^= e.unsafe_shr(16_u64); g = (g &+ d) & 0xffffffff_u64; e = (e &+ f) & 0xffffffff_u64
         e ^= f.unsafe_shl(10_u64) & 0xffffffff_u64; h = (h &+ e) & 0xffffffff_u64; f = (f &+ g) & 0xffffffff_u64
-        f ^= g.unsafe_shr(4_u64);                   a = (a &+ f) & 0xffffffff_u64; g = (g &+ h) & 0xffffffff_u64
-        g ^= h.unsafe_shl(8_u64) & 0xffffffff_u64;  b = (b &+ g) & 0xffffffff_u64; h = (h &+ a) & 0xffffffff_u64
-        h ^= a.unsafe_shr(9_u64);                   c = (c &+ h) & 0xffffffff_u64; a = (a &+ b) & 0xffffffff_u64
+        f ^= g.unsafe_shr(4_u64); a = (a &+ f) & 0xffffffff_u64; g = (g &+ h) & 0xffffffff_u64
+        g ^= h.unsafe_shl(8_u64) & 0xffffffff_u64; b = (b &+ g) & 0xffffffff_u64; h = (h &+ a) & 0xffffffff_u64
+        h ^= a.unsafe_shr(9_u64); c = (c &+ h) & 0xffffffff_u64; a = (a &+ b) & 0xffffffff_u64
       }
 
       4.times { mix.call }
@@ -316,14 +316,14 @@ module ::Random
         i = 0
         while i < 256
           if pass == 0
-            a = (a &+ @rsl[i]) & 0xffffffff_u64;     b = (b &+ @rsl[i + 1]) & 0xffffffff_u64; c = (c &+ @rsl[i + 2]) & 0xffffffff_u64; d = (d &+ @rsl[i + 3]) & 0xffffffff_u64
+            a = (a &+ @rsl[i]) & 0xffffffff_u64; b = (b &+ @rsl[i + 1]) & 0xffffffff_u64; c = (c &+ @rsl[i + 2]) & 0xffffffff_u64; d = (d &+ @rsl[i + 3]) & 0xffffffff_u64
             e = (e &+ @rsl[i + 4]) & 0xffffffff_u64; f = (f &+ @rsl[i + 5]) & 0xffffffff_u64; g = (g &+ @rsl[i + 6]) & 0xffffffff_u64; h = (h &+ @rsl[i + 7]) & 0xffffffff_u64
           else
-            a = (a &+ @mm[i]) & 0xffffffff_u64;     b = (b &+ @mm[i + 1]) & 0xffffffff_u64; c = (c &+ @mm[i + 2]) & 0xffffffff_u64; d = (d &+ @mm[i + 3]) & 0xffffffff_u64
+            a = (a &+ @mm[i]) & 0xffffffff_u64; b = (b &+ @mm[i + 1]) & 0xffffffff_u64; c = (c &+ @mm[i + 2]) & 0xffffffff_u64; d = (d &+ @mm[i + 3]) & 0xffffffff_u64
             e = (e &+ @mm[i + 4]) & 0xffffffff_u64; f = (f &+ @mm[i + 5]) & 0xffffffff_u64; g = (g &+ @mm[i + 6]) & 0xffffffff_u64; h = (h &+ @mm[i + 7]) & 0xffffffff_u64
           end
           mix.call
-          @mm[i] = a;     @mm[i + 1] = b; @mm[i + 2] = c; @mm[i + 3] = d
+          @mm[i] = a; @mm[i + 1] = b; @mm[i + 2] = c; @mm[i + 3] = d
           @mm[i + 4] = e; @mm[i + 5] = f; @mm[i + 6] = g; @mm[i + 7] = h
           i += 8
         end
@@ -371,7 +371,7 @@ module ::Random
       buf = uninitialized UInt8[8]
       random_bytes(buf.to_slice)
       buf[0].to_u64 | buf[1].to_u64.unsafe_shl(8_u64) | buf[2].to_u64.unsafe_shl(16_u64) | buf[3].to_u64.unsafe_shl(24_u64) |
-      buf[4].to_u64.unsafe_shl(32_u64) | buf[5].to_u64.unsafe_shl(40_u64) | buf[6].to_u64.unsafe_shl(48_u64) | buf[7].to_u64.unsafe_shl(56_u64)
+        buf[4].to_u64.unsafe_shl(32_u64) | buf[5].to_u64.unsafe_shl(40_u64) | buf[6].to_u64.unsafe_shl(48_u64) | buf[7].to_u64.unsafe_shl(56_u64)
     end
 
     def self.random_bytes(buf : Std::Slice::Bytes) : Nil

@@ -29,6 +29,7 @@ using std/channel::{Channel, ClosedError}
 
 class Item
   property id : Int32
+
   def initialize(@id : Int32)
   end
 end

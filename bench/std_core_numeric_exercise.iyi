@@ -25,6 +25,7 @@ end
 
 struct Score
   getter val : Int32
+
   def initialize(@val : Int32)
   end
 
@@ -38,6 +39,7 @@ end
 
 class IntList
   @arr : Array(Int32)
+
   def initialize(@arr : Array(Int32))
   end
 
@@ -48,6 +50,7 @@ end
 
 impl Iterable for IntList
   type Iter = Std::Iterator::ArrayIterator(Int32)
+
   def each : Std::Iterator::ArrayIterator(Int32)
     Std::Iterator::ArrayIterator(Int32).new(@arr)
   end
