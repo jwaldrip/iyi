@@ -107,14 +107,6 @@ class ::Channel(T)
     end
   end
 
-  def receive_select_action : IyiReceiveSelect(T)
-    IyiReceiveSelect(T).new(self)
-  end
-
-  def send_select_action(value : T) : IyiSendSelect(T)
-    IyiSendSelect(T).new(self, value)
-  end
-
   def self.receive_first(*channels : *U) forall U
     loop do
       {% for i in 0...U.size %}

@@ -22,22 +22,6 @@ struct ::Char
     ord < other.ord ? -1 : (ord > other.ord ? 1 : 0)
   end
 
-  def <(other : ::Char) : ::Bool
-    ord < other.ord
-  end
-
-  def <=(other : ::Char) : ::Bool
-    ord <= other.ord
-  end
-
-  def >(other : ::Char) : ::Bool
-    ord > other.ord
-  end
-
-  def >=(other : ::Char) : ::Bool
-    ord >= other.ord
-  end
-
   def step(*, to limit = nil, exclusive : ::Bool = false, & : ::Char -> ::Nil) : ::Nil
     current = self
     if !limit.nil?
@@ -96,24 +80,12 @@ struct ::Char
     ascii_lowercase? || ascii_uppercase?
   end
 
-  def letter? : ::Bool
-    ascii_letter?
-  end
-
   def ascii_alphanumeric? : ::Bool
     ascii_letter? || ascii_number?
   end
 
-  def alphanumeric? : ::Bool
-    ascii_alphanumeric?
-  end
-
   def ascii_whitespace? : ::Bool
     self == ' ' || (ord >= 9 && ord <= 13)
-  end
-
-  def whitespace? : ::Bool
-    ascii_whitespace?
   end
 
   def hex? : ::Bool
@@ -238,10 +210,6 @@ struct ::Char
 
   def to_f64 : Float64
     to_i.to_f64
-  end
-
-  def inspect : String
-    "'" + to_s + "'"
   end
 
   def inspect(io : IyiIO) : ::Nil

@@ -16,11 +16,6 @@ struct ::Nil
   end
 
   # Returns true: Nil has only one singleton value: nil.
-  def ==(other : ::Nil) : ::Bool
-    true
-  end
-
-  # Returns true: Nil has only one singleton value: nil.
   def same?(other : ::Nil) : ::Bool
     true
   end
@@ -36,11 +31,6 @@ struct ::Nil
 
   # Doesn't write anything to the given IO.
   def to_s(io : IyiIO) : ::Nil
-  end
-
-  # Returns "nil".
-  def inspect : String
-    "nil"
   end
 
   # Writes "nil" to the given IO.

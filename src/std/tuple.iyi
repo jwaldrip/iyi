@@ -43,11 +43,6 @@ struct ::Tuple
     args
   end
 
-  # Number of elements in the tuple.
-  def size : Int32
-    {{ T.size }}
-  end
-
   # Returns true when the tuple contains zero elements.
   def empty? : Bool
     {{ T.size == 0 }}
@@ -165,22 +160,6 @@ struct ::Tuple
         {% end %}
       }
     {% end %}
-  end
-
-  # String representation: `{1, "hello", true}`.
-  def to_s : String
-    result = "{"
-    {% for i in 0...T.size %}
-      {% if i > 0 %}
-        result = result + ", "
-      {% end %}
-      result = result + self[{{i}}].inspect
-    {% end %}
-    result + "}"
-  end
-
-  def inspect : String
-    to_s
   end
 end
 

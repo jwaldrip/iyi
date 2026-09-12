@@ -108,7 +108,7 @@ struct ::Atomic(T)
     {% end %}
   end
 
-  def get(ordering : Ordering = Ordering::SequentiallyConsistent) : T
+  def get(ordering : Ordering) : T
     res = case ordering.value
           when 0 then IyiAtomic.load(as_ptr, :monotonic, false)
           when 1 then IyiAtomic.load(as_ptr, :acquire, false)
@@ -117,7 +117,7 @@ struct ::Atomic(T)
     cast_out(res)
   end
 
-  def set(value : T, ordering : Ordering = Ordering::SequentiallyConsistent) : T
+  def set(value : T, ordering : Ordering) : T
     case ordering.value
     when 0 then IyiAtomic.store(as_ptr, cast_in(value), :monotonic, false)
     when 2 then IyiAtomic.store(as_ptr, cast_in(value), :release, false)
@@ -134,7 +134,7 @@ struct ::Atomic(T)
     set(value, Ordering::Relaxed)
   end
 
-  def swap(value : T, ordering : Ordering = Ordering::SequentiallyConsistent) : T
+  def swap(value : T, ordering : Ordering) : T
     res = case ordering.value
           when 0 then IyiAtomic.rmw(:xchg, as_ptr, cast_in(value), :monotonic, false)
           when 1 then IyiAtomic.rmw(:xchg, as_ptr, cast_in(value), :acquire, false)
@@ -145,7 +145,7 @@ struct ::Atomic(T)
     cast_out(res)
   end
 
-  def add(value : T, ordering : Ordering = Ordering::SequentiallyConsistent) : T
+  def add(value : T, ordering : Ordering) : T
     case ordering.value
     when 0 then IyiAtomic.rmw(:add, as_ptr, cast_in(value), :monotonic, false)
     when 1 then IyiAtomic.rmw(:add, as_ptr, cast_in(value), :acquire, false)
@@ -155,7 +155,7 @@ struct ::Atomic(T)
     end
   end
 
-  def sub(value : T, ordering : Ordering = Ordering::SequentiallyConsistent) : T
+  def sub(value : T, ordering : Ordering) : T
     case ordering.value
     when 0 then IyiAtomic.rmw(:sub, as_ptr, cast_in(value), :monotonic, false)
     when 1 then IyiAtomic.rmw(:sub, as_ptr, cast_in(value), :acquire, false)

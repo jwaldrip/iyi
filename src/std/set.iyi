@@ -220,12 +220,3 @@ class ::Set(T)
     s
   end
 end
-
-# Bridge: converts an `Array(T)` into a `Std::Set::Set(T)`.
-class ::Array(T)
-  def to_set : Std::Set::Set(T)
-    s = Std::Set::Set(T).new
-    each { |v| s.add(v) }
-    s
-  end
-end
