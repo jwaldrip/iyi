@@ -305,6 +305,16 @@ module Iyi
     # the prelude is a library.
     property? iyi_prelude = true
 
+    # iyi: the directory the prelude was loaded from, once it has been.
+    #
+    # Every prelude file sits beside `prelude.iyi`, so this is what tells a
+    # def written in the prelude from a def written in a program or in an
+    # `src/std/` module — the question R-3 asks before it refuses a
+    # replacement (`TopLevelVisitor#iyi_refuse_override`). Nil under
+    # `--crystal`, where the library is the other language's and the `.cr`
+    # half of that rule answers instead.
+    property iyi_prelude_dir : String? = nil
+
     # iyi: the types each object-code unit refers to a type id of, by unit name
     # (SPEC.md IV.1g).
     #

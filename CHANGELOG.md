@@ -4,6 +4,46 @@
 
 ### Fixed
 
+- **A module may not replace one of the prelude's methods either.** The
+  rule said "a `.iyi` file may add to the other language's type and may not
+  replace one of its methods", and stopped at the other language on the
+  reasoning that under iyi's own prelude the type is this language's.
+  Reopening the prelude *is* how a module extends it — and replacing is a
+  different act there for the same reason it is under `--crystal`: a prelude
+  method is the answer every program already has, so a module that writes
+  one again hands its own answer to every program that imports it, with one
+  import line as the whole diagnosis. Refused now, naming both definitions
+  and where each was written; the prelude may still replace its own, which
+  is how `number.iyi` writes a method `primitives.iyi` declared. Found by
+  reading a library written against this fork, and then it found two of
+  ours: `src/std/text.iyi` was replacing the prelude's `Char#to_s` and
+  `String#each_char`, so **a program that did not import it printed `'é'`
+  as one invalid byte and iterated `"héllo"` six times while `size`
+  answered 5**. The prelude encodes and decodes UTF-8 itself now — one
+  definition each, and `size`, `each_char` and `chars` agree — and
+  `std/text` keeps what the prelude does not have. `Array#join` with no
+  separator and a `byte_slice` helper were the prelude's twice over and are
+  its once.
+- **An artifact whose module path now reaches another file says so.** A
+  path is a file's path (R-1) and it resolves from the entry's directory
+  before `IYI_PATH`, so a program with its own `std/text.iyi` has that file
+  while it exists and the library's `std/text` after it is deleted. The
+  artifact is refused, which is right — its surface is not the surface at
+  that path — but the reader compared the two source hashes and said
+  "`src/std/text.iyi` has changed since it was written", naming a library
+  file the author has never opened. The artifact records the path it was
+  written from, so the paths are compared first: `"std/text" is <the
+  library's file> now, and this was written from <the program's>`.
+- **The dependency floor measures `src/std/` and reads what the library
+  declares.** It built every sample and nothing else, so a module no sample
+  imports was measured by nothing — and importing one proves nothing on its
+  own, because codegen is demand-driven and `import std/socket` asks the
+  linker for no socket symbol. It builds each `bench/std_*_exercise.iyi`
+  now, the program that calls its module's surface, into the same two sets.
+  And because a measurement cannot see a `@[Link]` nobody calls yet — the
+  shape a link line grows in — every annotation under `src/iyi` and
+  `src/std` is read as text against the three the library has reasons for.
+  A planted `@[Link("ssl")]` fails the gate with nothing calling it.
 - **An `enum` in iyi is its name, its order, its value and its members.**
   The compiler gives an enum two methods — `value`, the integer the member
   was numbered with, and `new`, which wraps one — and the prelude gave it
@@ -5183,7 +5223,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,780-line library and nothing else. Every other
+  written against iyi's own 13,836-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

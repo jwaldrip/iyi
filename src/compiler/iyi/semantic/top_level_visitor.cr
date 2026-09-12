@@ -1344,7 +1344,7 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     node.visibility = :private if is_instance_method && unexported_in_unit?(current_type, node.exported?)
 
     replaced = target_type.add_def node
-    iyi_refuse_library_override node, replaced
+    iyi_refuse_override node, replaced
 
     record_export current_type, node.name, node.exported?
 
@@ -1404,22 +1404,50 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
   # how the prelude is extended. What the test asks is where each definition
   # was *written* — the same question `iyi tool bind` asks of a shard's
   # members — because that is what says whose the type is.
-  private def iyi_refuse_library_override(node : Def, replaced : Def?) : Nil
+  #
+  # The prelude is the other half, and the half this fork's own library
+  # reached first. `import std/enum` that reopens `::Enum` and writes `to_s`
+  # again gets the prelude's every program: a two-member flags set printed
+  # `All`, and `Level.parse?("WARN")` answered nil, with nothing said at
+  # either definition. A prelude method is the answer every program already
+  # has, so replacing one from outside the prelude is the same defect as
+  # replacing the library's, and is refused in the same sentence.
+  private def iyi_refuse_override(node : Def, replaced : Def?) : Nil
     return unless replaced
-    return if @program.iyi_prelude?
     return unless iyi_written_in?(node, ".iyi")
-    return unless iyi_written_in?(replaced, ".cr")
+
+    if @program.iyi_prelude?
+      # The prelude extends itself: `number.iyi` writing a method
+      # `primitives.iyi` declared is one library deciding its own surface.
+      return unless iyi_written_in_prelude?(replaced)
+      return if iyi_written_in_prelude?(node)
+      whose = "the prelude's"
+      instead = "Give it a name the prelude does not use, or add the method " \
+                "to the prelude itself, where one definition answers for " \
+                "every program"
+    else
+      return unless iyi_written_in?(replaced, ".cr")
+      whose = "the library's"
+      instead = "Give it a name the library does not use, or build without " \
+                "`--crystal`, where the type is the prelude's"
+    end
 
     at = replaced.location.try(&.expanded_location)
     where = at ? " (#{at.filename}:#{at.line_number})" : ""
-    node.raise "#{replaced.owner}##{node.name} is the library's, and this " \
+    node.raise "#{replaced.owner}##{node.name} is #{whose}, and this " \
                "replaces it#{where}. A `.iyi` file may add a method to a type " \
-               "of the other language — `def blank?` on `::String` is an " \
+               "it did not declare — `def blank?` on `::String` is an " \
                "addition — and may not redefine one it has: the definition " \
-               "that goes is one the library's own code calls, so every " \
-               "program built with it gets this one instead. Give it a name " \
-               "the library does not use, or build without `--crystal`, where " \
-               "the type is the prelude's (SPEC.md R-3)"
+               "that goes is one other code calls, so every program built " \
+               "with it gets this one instead. #{instead} (SPEC.md R-3)"
+  end
+
+  # Whether *a_def* was written in one of the prelude's own files.
+  private def iyi_written_in_prelude?(a_def : Def) : Bool
+    return false unless dir = @program.iyi_prelude_dir
+    !!a_def.location.try(&.expanded_location).try do |at|
+      at.filename.as?(String).try &.starts_with?("#{dir}#{File::SEPARATOR}")
+    end
   end
 
   # Where a definition was written, following a macro back to its source.

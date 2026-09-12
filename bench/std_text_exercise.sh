@@ -127,9 +127,51 @@ prove_fails "string substitution broken" no_sub "string: sub str" \
 prove_fails "utf8 reverse broken" no_reverse "utf8: reverse content" \
   's/def reverse : String/def reverse : String; return "broken"/'
 
-# 8. Multi-byte char to_s encoding broken
-prove_fails "char utf8 encoding broken" no_encode "utf8: char to_s" \
-  's/String\.new(2) do |b|/String.new(1) do |b|/'
+# The two the prelude owns: `Char#to_s` encodes and `String#each_char`
+# decodes, and they are its own because the prelude counts code points in
+# `size` and has to agree with itself. Patched where they live.
+prove_fails_prelude() {
+  local label="$1" dir="$2" phrase="$3" sed_script="$4"
+  mkdir -p "$WORK/$dir/iyi"
+  cp -R "$REPO/src/iyi/." "$WORK/$dir/iyi/"
+  sed -e "$sed_script" "$REPO/src/iyi/string.iyi" > "$WORK/$dir/iyi/string.iyi"
+  if cmp -s "$REPO/src/iyi/string.iyi" "$WORK/$dir/iyi/string.iyi"; then
+    echo "  $label: the patch changed nothing, so this proves nothing"
+    status=1
+    return
+  fi
+  if ! IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build \
+       -o "$WORK/$dir/program" "$REPO/bench/std_text_exercise.iyi" \
+       >"$WORK/$dir/build.log" 2>&1; then
+    echo "  $label: the patched prelude did not build"
+    sed -n '1,12p' "$WORK/$dir/build.log"
+    status=1
+    return
+  fi
+  "$WORK/$dir/program" >"$WORK/$dir/out" 2>&1
+  local exit_code=$?
+  if [ "$exit_code" -eq 0 ]; then
+    echo "  $label: the exercise still passed, so it does not test this"
+    status=1
+    return
+  fi
+  if ! grep -q "$phrase" "$WORK/$dir/out"; then
+    echo "  $label: failed, but not at expected check (expected '$phrase')"
+    sed -n '$p' "$WORK/$dir/out"
+    status=1
+    return
+  fi
+  printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
+    "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
+}
+
+# 8. Multi-byte char to_s encoding broken, in the prelude
+prove_fails_prelude "char utf8 encoding broken" no_encode "utf8: char to_s" \
+  's/buffer\[1\] = (0x80 | (point \& 0x3F)).to_u8/buffer[1] = 0_u8/'
+
+# 9. And the decoder the same string's `size` already agrees with
+prove_fails_prelude "utf8 each_char decoding broken" no_decode "utf8: chars size" \
+  's/index = index + 2$/index = index + 1/'
 
 echo
 if [ "$status" -eq 0 ]; then

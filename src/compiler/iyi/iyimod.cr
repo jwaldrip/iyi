@@ -1371,6 +1371,10 @@ module Iyi::IyiMod
   # about to decide are fine.
   record Summary,
     module_name : String,
+    # The file the artifact was written from. A module's path is its file's
+    # path, so a reader that finds a *different* file at that path is looking
+    # at a name that moved rather than at a file that changed.
+    source_path : String,
     compiler_version : String,
     target_triple : String,
     flags : Array(String),
@@ -1406,8 +1410,9 @@ module Iyi::IyiMod
         raise Error.new("#{path} has no header section")
       end
 
-      Summary.new(header[:module_name], header[:compiler_version],
-        header[:target_triple], header[:flags], hashes, imports)
+      Summary.new(header[:module_name], header[:source_path],
+        header[:compiler_version], header[:target_triple], header[:flags],
+        hashes, imports)
     end
   rescue ex : Error
     raise ex

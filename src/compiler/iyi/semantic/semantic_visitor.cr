@@ -528,6 +528,26 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     return nil if summary.hashes.source.empty?
 
     if source = resolve_import(module_path)
+      # iyi: a module path is a file path (SPEC.md R-1), so the same name can
+      # come to mean a different file — delete a program's own `std/text.iyi`
+      # and `import std/text` reaches the library's module of that path. The
+      # artifact is then not stale, it is about a file nobody asked for, and
+      # "src/std/text.iyi has changed since it was written" named a library
+      # file the author has never edited. Said as what happened: the name
+      # moved.
+      written = summary.source_path
+      unless written.empty?
+        here = File.expand_path(source)
+        there = File.expand_path(written)
+        if here != there
+          # Expanded, because the search path reaches a library through
+          # `.build/../src` and a reader comparing two paths should not have
+          # to normalise them by eye.
+          return "\"#{module_path}\" is #{here} now, and this was written " \
+                 "from #{there}"
+        end
+      end
+
       unless IyiMod.digest(File.read(source)) == summary.hashes.source
         return "#{source} has changed since it was written"
       end
@@ -1147,6 +1167,13 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
   end
 
   private def require_file(node : Require, filename : String)
+    # iyi: the prelude's entry, and so the directory every prelude file is in.
+    # Only the injected require carries the mark, and it arrives before any
+    # program file is read.
+    if node.iyi_prelude? && @program.iyi_prelude_dir.nil?
+      @program.iyi_prelude_dir = File.dirname(filename)
+    end
+
     # These spans are additive: a require is parsed and normalized before any
     # nested require inside it is expanded, so they never nest. The visit is
     # deliberately not timed here — `accept` recurses into nested requires, so

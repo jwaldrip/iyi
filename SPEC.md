@@ -63,7 +63,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 13,780 lines, of which 3,570 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
+| iyi's own prelude | 13,836 lines, of which 3,626 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -88,7 +88,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 13,780 lines
+> "No standard library worth the name" is still true of iyi's own 13,836 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -270,8 +270,8 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 13,780 lines,
-primitives included, of which the library is 3,570.** Not a standard library:
+**3. A deliberately tiny prelude, written in iyi. Done: 13,836 lines,
+primitives included, of which the library is 3,626.** Not a standard library:
 integers, booleans, a string, one sequence, one dictionary, one range, `puts`,
 and an `enum`'s surface — the member's name, an order, the members, and the
 bits of a `@[Flags]` one. **Its scope is set by what the
@@ -299,7 +299,7 @@ collector (GC_DESIGN.md, the block between two marks in `prelude.iyi`),
 the scheduler and the kernel thread (III.4, `concurrency.iyi` and
 `thread.iyi`), the shortest-round-trip float text (`float.iyi`) - and they
 are most of its lines. So the figure held to the ceiling is the library:
-**3,570 lines** of the 13,780, measured by `bench/doc_numbers.py` as
+**3,626 lines** of the 13,836, measured by `bench/doc_numbers.py` as
 everything under `src/iyi/` except those three. The whole-prelude figure is
 stated beside it because a reader sees the whole file, and a "tiny prelude"
 claim that hid 9,000 lines of runtime would be a claim about the wrong number.
@@ -856,9 +856,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 109,499 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 13,780-line own prelude + 6,067 in std |
-| Specs | 21,146 lines | 9,830 for iyi |
+| Compiler | 24,984 lines, **written in Crystal** | 109,569 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 13,836-line own prelude + 5,997 in std |
+| Specs | 21,146 lines | 9,966 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |
@@ -3621,9 +3621,21 @@ replaced Crystal's public one with a private one and the first program to
 touch `Path` (every program, through the backtrace) stopped on `private
 method 'byte_slice' called for String`, at a line in the library that had
 not changed. The rule asks where each definition was *written*, which is the
-same question `iyi tool bind` asks of a shard's members, and it does not
-apply when the prelude is iyi's own: there the type is this language's and
-reopening it is how the prelude is extended.
+same question `iyi tool bind` asks of a shard's members.
+
+**And the prelude's methods are the prelude's.** The sentence above stopped
+at the other language's types, on the reasoning that under iyi's own prelude
+the type is this language's and reopening it is how the prelude is extended.
+That is true of the prelude extending itself — `number.iyi` writing a method
+`primitives.iyi` declared is one library deciding its own surface — and false
+of everybody else: a prelude method is the answer every program already has,
+so a module that writes one again hands its own answer to every program that
+imports it. A library written against this fork found it: a `std/enum`
+reopening `::Enum` with a `to_s` of its own printed `All` for a two-member
+flags set and answered `nil` for `Level.parse?("WARN")`, with one import line
+as the whole diagnosis. Refused in the same sentence now, and told apart the
+same way: a def written beside `prelude.iyi` may replace one, a def written
+anywhere else may not.
 
 What that settles about `src/std/`: nine of its twelve modules are
 library-agnostic and build under `--crystal`; `std/text` and `std/format` are
@@ -5051,6 +5063,20 @@ that own-prelude samples and the compiler must both clear. `libpcre` is on that
 denylist, so the compiler is held to the same rule as own-prelude programs. It
 runs in CI beside the roundtrip check.
 
+**And `src/std/` is measured too, twice over.** The samples are what a person
+writes; the library is what they import, and a module no sample reaches was
+measured by nothing. Importing one is not enough to see it — codegen is
+demand-driven, so `import std/socket` on its own asks the linker for no
+socket symbol at all — so the gate builds each `bench/std_*_exercise.iyi`,
+which is the program that calls its module's surface, and reads its symbols
+and libraries into the same two sets. That leaves the case a measurement
+cannot reach: a `@[Link]` sitting in the library against the day somebody
+calls it, which is the shape a link line grows in. So the annotations are
+also read as text, across `src/iyi` and `src/std`, and the list is the three
+the library has reasons for — `kernel32` and the MSVC runtime on Windows,
+and `bdw-gc` for the opt-in collector. A fourth fails the gate, whether or
+not any program reaches it.
+
 **The five on Linux are allowed by exact name.** `__libc_start_main`,
 `__gmon_start__`, `__cxa_finalize` and the two weak `_ITM_` clone-table
 callbacks, spelled in the script the way `nm -u` reports them with one leading
@@ -5437,6 +5463,23 @@ promises. It is also invisible, because 0.886 s of prelude is next to it. That
 is the 95% prelude tax stated as a measurement rather than as an argument, and
 it is why item 3 of the 0.1.0 list. A prelude small enough to be one of these
 modules: is what decides the schedule and not this section.
+
+**And a module path can come to mean a different file.** A path is a file's
+path (R-1) and it is resolved from the entry's own directory first and from
+`IYI_PATH` after, so a program that writes `std/text.iyi` of its own has that
+file while it exists and the library's `std/text` after it is deleted — the
+same name, two files, and only one of them is the one an artifact was written
+from. The artifact is refused, which is right: its surface is not the surface
+at that path. What was wrong is what it said. The reader compared the two
+source *hashes* and reported "`src/std/text.iyi` has changed since it was
+written", naming a library file the author has never opened and sending them
+to look for an edit nobody made. The artifact records the path it was written
+from, so the two paths are compared first and the sentence is the fact:
+`"std/text" is <the library's file> now, and this was written from <the
+program's>`. The name a program gives a module is therefore worth choosing
+against what `src/std/` already ships, and that is a naming consequence of
+R-1 rather than a rule of its own: nothing is reserved, and whichever file
+the search order reaches is what the name means.
 
 ### IV.1g `ObjectCode`. The module's own machine code
 
@@ -8853,7 +8896,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 13,780-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 13,836-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler

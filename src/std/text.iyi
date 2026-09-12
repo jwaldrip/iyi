@@ -102,36 +102,6 @@ struct ::Char
     end
   end
 
-  # Encodes this character into valid UTF-8 bytes (1 to 4 bytes).
-  def to_s : String
-    cp = ord
-    if cp < 0x80
-      String.new(1) do |b|
-        b[0] = cp.to_u8
-      end
-    elsif cp < 0x800
-      String.new(2) do |b|
-        b[0] = (0xC0 | (cp >> 6)).to_u8
-        b[1] = (0x80 | (cp & 0x3F)).to_u8
-      end
-    elsif cp < 0x10000
-      String.new(3) do |b|
-        b[0] = (0xE0 | (cp >> 12)).to_u8
-        b[1] = (0x80 | ((cp >> 6) & 0x3F)).to_u8
-        b[2] = (0x80 | (cp & 0x3F)).to_u8
-      end
-    elsif cp <= 0x10FFFF
-      String.new(4) do |b|
-        b[0] = (0xF0 | (cp >> 18)).to_u8
-        b[1] = (0x80 | ((cp >> 12) & 0x3F)).to_u8
-        b[2] = (0x80 | ((cp >> 6) & 0x3F)).to_u8
-        b[3] = (0x80 | (cp & 0x3F)).to_u8
-      end
-    else
-      String.new(1) { |b| b[0] = '?'.ord.to_u8 }
-    end
-  end
-
   def to_i : Int32
     to_i(10)
   end
@@ -817,40 +787,6 @@ class ::String
     arr
   end
 
-  # Decodes UTF-8 codepoints one character at a time.
-  def each_char(& : Char -> Nil) : Nil
-    i = 0
-    ptr = to_unsafe
-    while i < bytesize
-      b = ptr[i].to_i
-      if (b & 0x80) == 0
-        yield b.unsafe_chr
-        i = i + 1
-      elsif (b & 0xE0) == 0xC0 && i + 1 < bytesize
-        b1 = ptr[i + 1].to_i
-        cp = ((b & 0x1F) << 6) | (b1 & 0x3F)
-        yield cp.unsafe_chr
-        i = i + 2
-      elsif (b & 0xF0) == 0xE0 && i + 2 < bytesize
-        b1 = ptr[i + 1].to_i
-        b2 = ptr[i + 2].to_i
-        cp = ((b & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
-        yield cp.unsafe_chr
-        i = i + 3
-      elsif (b & 0xF8) == 0xF0 && i + 3 < bytesize
-        b1 = ptr[i + 1].to_i
-        b2 = ptr[i + 2].to_i
-        b3 = ptr[i + 3].to_i
-        cp = ((b & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
-        yield cp.unsafe_chr
-        i = i + 4
-      else
-        yield b.unsafe_chr
-        i = i + 1
-      end
-    end
-  end
-
   def bytes : Array(UInt8)
     arr = [] of UInt8
     i = 0
@@ -1084,18 +1020,12 @@ class ::String
     result
   end
 
-  private def byte_slice(start : Int32, count : Int32) : String
-    String.new(count) do |buffer|
-      buffer.copy_from(to_unsafe + start, count)
-    end
-  end
+  # `byte_slice` and `Array#join` with no separator are the prelude's, and
+  # `each_char` and `Char#to_s` are too now that they decode and encode
+  # UTF-8 there: this module writes what the prelude does not have (R-3).
 end
 
 class ::Array(T)
-  def join : String
-    join("")
-  end
-
   def join(separator : Char) : String
     join(separator.to_s)
   end

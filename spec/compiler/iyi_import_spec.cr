@@ -18,11 +18,16 @@ private def with_iyi_modules(files : Hash(String, String), &)
   end
 end
 
-private def semantic_iyi(entry : String, iyi_module_dir : String? = nil)
+private def semantic_iyi(entry : String, iyi_module_dir : String? = nil,
+                         prelude_dir : String? = nil)
   program = Iyi::Program.new
   program.color = false
   program.filename = File.expand_path(entry)
   program.iyi_module_dir = iyi_module_dir
+  # A real prelude is not loaded here, so a spec about what the prelude owns
+  # says where its files are — the one fact `require`ing it would have left
+  # behind (`SemanticVisitor#require_file`).
+  program.iyi_prelude_dir = prelude_dir
 
   parser = program.new_parser(File.read(entry))
   parser.filename = program.filename
@@ -693,6 +698,94 @@ describe "Semantic: iyi import" do
           IYI
       }) do
         semantic_iyi_crystal("main.iyi")
+      end
+    end
+
+    # The prelude's own methods are the other half of R-3, and the half a
+    # library written against this fork reached first: a module reopening
+    # `::Enum` with a `to_s` of its own printed `All` for a two-member flags
+    # set, and `parse?("WARN")` answered nil, with one import line as the
+    # whole diagnosis. The prelude here is a directory with one file in it,
+    # because what the rule reads is where a definition was written.
+    it "refuses a module that replaces a method of the prelude" do
+      with_iyi_modules({
+        "prelude/shout.iyi" => <<-IYI,
+          class ::Shouter
+            def shout : Int32
+              1
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          require "./prelude/shout.iyi"
+
+          class ::Shouter
+            def shout : Int32
+              2
+            end
+          end
+          IYI
+      }) do |dir|
+        expect_raises(Iyi::TypeException, /Shouter#shout is the prelude's, and this replaces it/) do
+          semantic_iyi("main.iyi", prelude_dir: File.join(dir, "prelude"))
+        end
+      end
+    end
+
+    # And adding to a prelude type is still how a module extends one.
+    it "lets a module add a method to a type of the prelude" do
+      with_iyi_modules({
+        "prelude/shout.iyi" => <<-IYI,
+          class ::Shouter
+            def shout : Int32
+              1
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          require "./prelude/shout.iyi"
+
+          class ::Shouter
+            def whisper : Int32
+              shout
+            end
+          end
+          IYI
+      }) do |dir|
+        semantic_iyi("main.iyi", prelude_dir: File.join(dir, "prelude"))
+      end
+    end
+
+    # The prelude extends itself: one library deciding its own surface, which
+    # is how `number.iyi` writes a method `primitives.iyi` declared.
+    it "lets the prelude replace its own method" do
+      with_iyi_modules({
+        "prelude/shout.iyi" => <<-IYI,
+          class ::Shouter
+            def shout : Int32
+              1
+            end
+          end
+          IYI
+        "prelude/louder.iyi" => <<-IYI,
+          class ::Shouter
+            def shout : Int32
+              2
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          require "./prelude/shout.iyi"
+          require "./prelude/louder.iyi"
+          IYI
+      }) do |dir|
+        semantic_iyi("main.iyi", prelude_dir: File.join(dir, "prelude"))
       end
     end
 

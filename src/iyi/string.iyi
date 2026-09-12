@@ -97,12 +97,41 @@ class String
     to_unsafe[index].unsafe_chr
   end
 
-  # Every character in order, as `[]` reads them: one per byte.
+  # Every character in order, decoded: `size` counts code points, so this
+  # yields exactly that many. It used to yield one per byte, which made the
+  # prelude disagree with itself — `"héllo".size` was 5 and `each_char` ran
+  # six times — and `samples/iyi/basics` counted the bytes of a word it
+  # printed. Indexing stays byte-indexed (`[]` above), which is the
+  # convention `samples/iyi/calc` scans with; a character is a unit only
+  # where a character is what was asked for.
+  #
+  # A byte that begins no sequence, or a sequence the string is too short to
+  # hold, is yielded as itself: this decodes, it does not validate.
   def each_char(& : Char -> Nil) : Nil
     index = 0
     while index < @bytesize
-      yield to_unsafe[index].unsafe_chr
-      index = index + 1
+      lead = to_unsafe[index].to_i32
+      if (lead & 0x80) == 0
+        yield lead.unsafe_chr
+        index = index + 1
+      elsif (lead & 0xE0) == 0xC0 && index + 1 < @bytesize
+        yield (((lead & 0x1F) << 6) | (to_unsafe[index + 1].to_i32 & 0x3F)).unsafe_chr
+        index = index + 2
+      elsif (lead & 0xF0) == 0xE0 && index + 2 < @bytesize
+        yield (((lead & 0x0F) << 12) |
+               ((to_unsafe[index + 1].to_i32 & 0x3F) << 6) |
+               (to_unsafe[index + 2].to_i32 & 0x3F)).unsafe_chr
+        index = index + 3
+      elsif (lead & 0xF8) == 0xF0 && index + 3 < @bytesize
+        yield (((lead & 0x07) << 18) |
+               ((to_unsafe[index + 1].to_i32 & 0x3F) << 12) |
+               ((to_unsafe[index + 2].to_i32 & 0x3F) << 6) |
+               (to_unsafe[index + 3].to_i32 & 0x3F)).unsafe_chr
+        index = index + 4
+      else
+        yield lead.unsafe_chr
+        index = index + 1
+      end
     end
   end
 
@@ -456,12 +485,39 @@ end
 # with `String#[]` and compares the result, which is why nothing caught it —
 # comparison was defined and printing was not.
 #
-# ASCII, on the same terms as the rest of this file: a `Char` here came out of a
-# byte and goes back as one.
+# UTF-8, in one to four bytes. It wrote the low byte and nothing else, which
+# is right for the ASCII a byte-indexed `[]` hands back and wrong for every
+# other character a program can write: `puts 'é'` printed one invalid byte,
+# and `each_char` above now yields code points that would print the same way.
+# `0x10FFFF` is the last one there is; past it a `'?'` goes out rather than a
+# sequence no reader can decode.
 struct Char
   def to_s : String
-    String.new(1) do |buffer|
-      buffer[0] = ord.to_u8
+    point = ord
+    if point < 0x80
+      String.new(1) do |buffer|
+        buffer[0] = point.to_u8
+      end
+    elsif point < 0x800
+      String.new(2) do |buffer|
+        buffer[0] = (0xC0 | (point >> 6)).to_u8
+        buffer[1] = (0x80 | (point & 0x3F)).to_u8
+      end
+    elsif point < 0x10000
+      String.new(3) do |buffer|
+        buffer[0] = (0xE0 | (point >> 12)).to_u8
+        buffer[1] = (0x80 | ((point >> 6) & 0x3F)).to_u8
+        buffer[2] = (0x80 | (point & 0x3F)).to_u8
+      end
+    elsif point <= 0x10FFFF
+      String.new(4) do |buffer|
+        buffer[0] = (0xF0 | (point >> 18)).to_u8
+        buffer[1] = (0x80 | ((point >> 12) & 0x3F)).to_u8
+        buffer[2] = (0x80 | ((point >> 6) & 0x3F)).to_u8
+        buffer[3] = (0x80 | (point & 0x3F)).to_u8
+      end
+    else
+      String.new(1) { |buffer| buffer[0] = '?'.ord.to_u8 }
     end
   end
 
