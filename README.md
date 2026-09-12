@@ -1068,7 +1068,7 @@ marked PROPOSED are the parts that will move under you.
 | [`samples/iyi`](samples/iyi) | thirty-three programs: twenty-five documenting a part of it, seven being a first hour, and `calc`, a language |
 | [`samples/crystal/kemal`](samples/crystal/kemal) | a kemal application, from `shard.yml`: built from source and across four `.iyimod` boundaries |
 | [`src/iyi`](src/iyi) | iyi's own library, 13,609 lines. `--crystal` swaps it for Crystal's |
-| [`src/std`](src/std) | the standard library, 62,488 lines of iyi across one hundred modules: collections, text, time, JSON, YAML, XML, TLS 1.3, HTTP/1.1, WebSocket, HTTP/2, QUIC and HTTP/3 among them. Opt-in with `import std/...`, outside the prelude's ceiling |
+| [`src/std`](src/std) | the standard library, 62,488 lines of iyi across 100 modules: collections, text, time, JSON, YAML, XML, TLS 1.3, HTTP/1.1, WebSocket, HTTP/2, QUIC and HTTP/3 among them. Opt-in with `import std/...`, outside the prelude's ceiling |
 | [`src/compiler/iyi/iyimod.cr`](src/compiler/iyi/iyimod.cr) | the artifact format |
 | [`bench/incremental.py`](bench/incremental.py) | the edit loop, against Go, generated in both languages |
 | [`bench/build_speed.py`](bench/build_speed.py) | the full builds, and the gate that fails until the target holds |
