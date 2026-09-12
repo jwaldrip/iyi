@@ -7,16 +7,6 @@ import compiler/syntax/token
 using compiler/foundation/location::{Location}
 using compiler/syntax/token::{Keyword, TokenKind, NumberKind}
 
-struct ::Int8
-  @[Primitive(:binary)]
-  def ==(other : Int8) : Bool
-  end
-
-  @[Primitive(:binary)]
-  def !=(other : Int8) : Bool
-  end
-end
-
 pub enum Visibility : Int8
   Public    = 0
   Protected = 1

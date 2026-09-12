@@ -44,15 +44,6 @@ import std/tuple
 # The module that made the second shape visible, in the same program.
 import std/http
 
-def assert(cond : Bool, what : String) : Nil
-  unless cond
-    print "ASSERTION FAILED: "
-    print what
-    print "\n"
-    raise what
-  end
-end
-
 # The blanket `impl Enumerable for Array(T)` in std/enumerable is what the
 # second shape broke, so the Enumerable defaults reached through an ordinary
 # `Array` are the thing worth calling here.

@@ -33,12 +33,6 @@ using std/uri::{URI, Params}
 using std/time::{Time, Span}
 using std/json::{JSON, Builder, PullParser}
 
-def assert(cond : Bool, message : String) : Nil
-  unless cond
-    raise "assertion failed: " + message
-  end
-end
-
 # -----------------------------------------------------------------------------
 # 1. RFC 5849 Section 1.2 Vectors
 # -----------------------------------------------------------------------------

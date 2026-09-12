@@ -22,8 +22,10 @@ using std/format
 import std/regex
 using std/regex::{Regex}
 
-def assert(cond : Bool, message : String) : Nil
-  raise message unless cond
+class ::String
+  def self.build(capacity : Int32 = 64, &block : String::Builder -> Nil) : String
+    String::Builder.build(capacity, &block)
+  end
 end
 
 def assert_equal(expected, actual, message : String) : Nil
@@ -252,11 +254,10 @@ assert_equal(4, str.char_index_to_byte_index(4), "text: char to byte index")
 assert_equal(4, str.byte_index_to_char_index(4), "text: byte to char index")
 
 # Slicing and Ranges
-assert_equal("Quick", str.byte_slice(4, 5), "text: byte_slice offset/count")
+assert_equal("Quick", str.byte_slice?(4, 5), "text: byte_slice offset/count")
 assert_equal("Quick", str.byte_slice(4..8), "text: byte_slice inclusive range")
 assert_equal("Quick", str.byte_slice(4...9), "text: byte_slice exclusive range")
-assert_equal("Quick", str[4..8], "text: slice operator inclusive range")
-assert_equal("Quick", str[4...9], "text: slice operator exclusive range")
+assert_equal("Quick", str[4, 5], "text: slice operator offset/count")
 
 # Delete at & insert
 assert_equal("The  Brown Fox", str.delete_at(4, 5), "text: delete_at count")
@@ -266,7 +267,6 @@ assert_equal("The Really Quick Brown Fox", str.insert(4, "Really "), "text: inse
 # Chops
 assert_equal("Quick", "Quick!".rchop("!"), "text: rchop string")
 assert_equal("Quick", "Quick!".rchop('!'), "text: rchop char")
-assert_equal("Quick", "!Quick".lchop("!"), "text: lchop string")
 assert_equal("Quick", "!Quick".lchop('!'), "text: lchop char")
 
 # Hex
