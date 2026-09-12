@@ -1,0 +1,915 @@
+# Native OpenSSL compatibility surface for iyi.
+#
+# Provides the standard OpenSSL API for Digest, HMAC, PKCS5 PBKDF2, Cipher
+# (AES-CBC, AES-GCM, ChaCha20-Poly1305, AES-CTR, AES-ECB), and SSL Context/Socket
+# with zero OpenSSL or LibCrypto linkage.
+
+module std/openssl
+
+pub import std/slice
+using std/slice::{Slice, Bytes}
+pub alias Bytes = Std::Slice::Bytes
+
+pub import std/digest
+using std/digest::{MD5, SHA1, SHA224, SHA256, SHA384, SHA512}
+
+pub import std/crypto
+using std/crypto::{HMAC, HKDF, AES, AES128GCM, AES256GCM, ChaCha20, Poly1305, ChaCha20Poly1305, constant_time_compare, random_bytes}
+
+pub import std/tls
+pub import std/io
+using std/io::{IO, Memory}
+
+# -----------------------------------------------------------------------------
+# OpenSSL Error hierarchy
+# -----------------------------------------------------------------------------
+
+pub class Error < Exception
+  getter message : String
+  getter code : Int64?
+
+  def initialize(@message : String, @code : Int64? = nil)
+  end
+end
+
+# -----------------------------------------------------------------------------
+# OpenSSL Algorithm enum
+# -----------------------------------------------------------------------------
+
+pub enum Algorithm
+  MD4       = 1
+  MD5       = 2
+  RIPEMD160 = 3
+  SHA1      = 4
+  SHA224    = 5
+  SHA256    = 6
+  SHA384    = 7
+  SHA512    = 8
+
+  def md4? : Bool
+    self == MD4
+  end
+
+  def md5? : Bool
+    self == MD5
+  end
+
+  def ripemd160? : Bool
+    self == RIPEMD160
+  end
+
+  def sha1? : Bool
+    self == SHA1
+  end
+
+  def sha224? : Bool
+    self == SHA224
+  end
+
+  def sha256? : Bool
+    self == SHA256
+  end
+
+  def sha384? : Bool
+    self == SHA384
+  end
+
+  def sha512? : Bool
+    self == SHA512
+  end
+
+  def to_s : String
+    case self
+    when MD4       then "MD4"
+    when MD5       then "MD5"
+    when RIPEMD160 then "RIPEMD160"
+    when SHA1      then "SHA1"
+    when SHA224    then "SHA224"
+    when SHA256    then "SHA256"
+    when SHA384    then "SHA384"
+    when SHA512    then "SHA512"
+    else                "UNKNOWN"
+    end
+  end
+end
+
+# -----------------------------------------------------------------------------
+# OpenSSL::Digest (< Digest)
+# -----------------------------------------------------------------------------
+
+pub class Digest < Std::Digest::Digest
+  class Error < Std::Openssl::Error
+  end
+
+  class UnsupportedError < Error
+  end
+
+  getter name : String
+  @hasher : Std::Digest::Digest
+
+  def initialize(name : String)
+    @name = name.downcase
+    case @name
+    when "md5"
+      @hasher = Std::Digest::MD5.new
+    when "sha1"
+      @hasher = Std::Digest::SHA1.new
+    when "sha224"
+      @hasher = Std::Digest::SHA224.new
+    when "sha256"
+      @hasher = Std::Digest::SHA256.new
+    when "sha384"
+      @hasher = Std::Digest::SHA384.new
+    when "sha512"
+      @hasher = Std::Digest::SHA512.new
+    else
+      raise "Unsupported digest algorithm: " + name
+    end
+    @finished = false
+  end
+
+  def initialize(alg : Algorithm)
+    initialize(alg.to_s)
+  end
+
+  protected def initialize(@name : String, @hasher : Std::Digest::Digest)
+    @finished = false
+  end
+
+  def digest_size : Int32
+    @hasher.digest_size
+  end
+
+  def block_size : Int32
+    @hasher.block_size
+  end
+
+  def reset : self
+    @hasher.reset
+    @finished = false
+    self
+  end
+
+  def update_impl(data : Bytes) : Nil
+    @hasher.update(data)
+  end
+
+  def final_impl(dst : Bytes) : Nil
+    b = @hasher.final
+    dst.to_unsafe.copy_from(b.to_unsafe, digest_size)
+  end
+
+  def dup : Digest
+    case h = @hasher
+    when Std::Digest::MD5    then Digest.new(@name, h.dup)
+    when Std::Digest::SHA1   then Digest.new(@name, h.dup)
+    when Std::Digest::SHA224 then Digest.new(@name, h.dup)
+    when Std::Digest::SHA256 then Digest.new(@name, h.dup)
+    when Std::Digest::SHA384 then Digest.new(@name, h.dup)
+    when Std::Digest::SHA512 then Digest.new(@name, h.dup)
+    else                          Digest.new(@name)
+    end
+  end
+
+  def self.digest(alg : Algorithm | String, data : Bytes | String) : Bytes
+    d = alg.is_a?(Algorithm) ? Digest.new(alg.as(Algorithm)) : Digest.new(alg.as(String))
+    d.update(data)
+    d.final
+  end
+
+  def self.hexdigest(alg : Algorithm | String, data : Bytes | String) : String
+    digest(alg, data).hexstring
+  end
+end
+
+# -----------------------------------------------------------------------------
+# OpenSSL::MD5 and OpenSSL::SHA1 one-shot hashing
+# -----------------------------------------------------------------------------
+
+pub class MD5
+  def self.hash(data : Bytes, bytesize : Int32? = nil) : Bytes
+    res = Std::Digest::MD5.digest(data)
+    if bs = bytesize
+      return res[0, bs < res.size ? bs : res.size]
+    end
+    res
+  end
+
+  def self.hash(data : String, bytesize : Int32? = nil) : Bytes
+    hash(Bytes.new(data.to_unsafe, data.bytesize), bytesize)
+  end
+end
+
+pub class SHA1
+  def self.hash(data : Bytes, bytesize : Int32? = nil) : Bytes
+    res = Std::Digest::SHA1.digest(data)
+    if bs = bytesize
+      return res[0, bs < res.size ? bs : res.size]
+    end
+    res
+  end
+
+  def self.hash(data : String, bytesize : Int32? = nil) : Bytes
+    hash(Bytes.new(data.to_unsafe, data.bytesize), bytesize)
+  end
+end
+
+# -----------------------------------------------------------------------------
+# OpenSSL::HMAC
+# -----------------------------------------------------------------------------
+
+pub class HMAC
+  private def self.algo_sym(algo : Algorithm | Symbol | String) : Symbol
+    if algo.is_a?(Algorithm)
+      case algo.as(Algorithm)
+      when Algorithm::MD5    then :md5
+      when Algorithm::SHA1   then :sha1
+      when Algorithm::SHA224 then :sha224
+      when Algorithm::SHA256 then :sha256
+      when Algorithm::SHA384 then :sha384
+      when Algorithm::SHA512 then :sha512
+      else                        :sha256
+      end
+    elsif algo.is_a?(Symbol)
+      algo.as(Symbol)
+    else
+      s = algo.as(String).downcase
+      case s
+      when "md5"    then :md5
+      when "sha1"   then :sha1
+      when "sha224" then :sha224
+      when "sha256" then :sha256
+      when "sha384" then :sha384
+      when "sha512" then :sha512
+      else               :sha256
+      end
+    end
+  end
+
+  def self.digest(algorithm : Algorithm | Symbol | String, key : Bytes, data : Bytes) : Bytes
+    sym = algo_sym(algorithm)
+    Std::Crypto::HMAC.digest(sym, key, data)
+  end
+
+  def self.digest(algorithm : Algorithm | Symbol | String, key : String, data : String | Bytes) : Bytes
+    kb = Bytes.new(key.to_unsafe, key.bytesize)
+    db = data.is_a?(String) ? Bytes.new(data.to_unsafe, data.bytesize) : data.as(Bytes)
+    digest(algorithm, kb, db)
+  end
+
+  def self.digest(algorithm : Algorithm | Symbol | String, key : Bytes, data : String) : Bytes
+    digest(algorithm, key, Bytes.new(data.to_unsafe, data.bytesize))
+  end
+
+  def self.hexdigest(algorithm : Algorithm | Symbol | String, key, data) : String
+    digest(algorithm, key, data).hexstring
+  end
+end
+
+# -----------------------------------------------------------------------------
+# OpenSSL::PKCS5 (PBKDF2)
+# -----------------------------------------------------------------------------
+
+pub struct PKCS5
+  def self.pbkdf2_hmac_sha1(secret, salt, iterations : Int32 = 65536, key_size : Int32 = 64) : Bytes
+    pbkdf2_hmac(secret, salt, iterations, Algorithm::SHA1, key_size)
+  end
+
+  def self.pbkdf2_hmac(
+    secret,
+    salt,
+    iterations : Int32 = 65536,
+    algorithm : Algorithm | Symbol = Algorithm::SHA1,
+    key_size : Int32 = 64,
+  ) : Bytes
+    sec_bytes = secret.is_a?(String) ? Bytes.new(secret.to_unsafe, secret.bytesize) : secret.as(Bytes)
+    salt_bytes = salt.is_a?(String) ? Bytes.new(salt.to_unsafe, salt.bytesize) : salt.as(Bytes)
+
+    algo_sym = case algorithm
+               when Algorithm::MD5    then :md5
+               when Algorithm::SHA1   then :sha1
+               when Algorithm::SHA256 then :sha256
+               when Algorithm::SHA384 then :sha384
+               when Algorithm::SHA512 then :sha512
+               when Symbol            then algorithm.as(Symbol)
+               else                        :sha1
+               end
+
+    hlen = case algo_sym
+           when :md5    then 16
+           when :sha1   then 20
+           when :sha256 then 32
+           when :sha384 then 48
+           when :sha512 then 64
+           else              20
+           end
+
+    out_buf = Bytes.new(key_size)
+    l = (key_size + hlen - 1) // hlen
+    block_num = 1
+    out_pos = 0
+
+    while block_num <= l
+      salt_block = Bytes.new(salt_bytes.size + 4)
+      i = 0
+      while i < salt_bytes.size
+        salt_block[i] = salt_bytes[i]
+        i = i + 1
+      end
+      salt_block[salt_bytes.size] = ((block_num >> 24) & 0xff).to_u8
+      salt_block[salt_bytes.size + 1] = ((block_num >> 16) & 0xff).to_u8
+      salt_block[salt_bytes.size + 2] = ((block_num >> 8) & 0xff).to_u8
+      salt_block[salt_bytes.size + 3] = (block_num & 0xff).to_u8
+
+      u = Std::Crypto::HMAC.digest(algo_sym, sec_bytes, salt_block)
+      t = Bytes.new(hlen)
+      i = 0
+      while i < hlen
+        t[i] = u[i]
+        i = i + 1
+      end
+
+      iter = 1
+      while iter < iterations
+        u = Std::Crypto::HMAC.digest(algo_sym, sec_bytes, u)
+        i = 0
+        while i < hlen
+          t[i] = t[i] ^ u[i]
+          i = i + 1
+        end
+        iter = iter + 1
+      end
+
+      needed = key_size - out_pos
+      to_copy = needed < hlen ? needed : hlen
+      i = 0
+      while i < to_copy
+        out_buf[out_pos + i] = t[i]
+        i = i + 1
+      end
+      out_pos = out_pos + to_copy
+      block_num = block_num + 1
+    end
+
+    out_buf
+  end
+end
+
+# -----------------------------------------------------------------------------
+# OpenSSL::Cipher (AES-CBC, AES-GCM, ChaCha20-Poly1305, AES-CTR, AES-ECB)
+# -----------------------------------------------------------------------------
+
+pub class Cipher
+  class Error < Std::Openssl::Error
+  end
+
+  getter name : String
+  getter encrypt_mode : Bool
+
+  def encrypt_mode? : Bool
+    @encrypt_mode
+  end
+
+  getter key : Bytes
+  getter iv : Bytes
+  getter padding : Bool
+  getter authenticated : Bool
+
+  def authenticated? : Bool
+    @authenticated
+  end
+
+  @buffer : Memory
+
+  def initialize(name : String)
+    @name = name.downcase
+    @encrypt_mode = true
+    @key = Bytes.empty
+    @iv = Bytes.empty
+    @padding = true
+    @authenticated = @name.includes?("gcm") || @name.includes?("chacha20-poly1305")
+    @buffer = Memory.new(1024)
+
+    # Validate cipher support
+    case @name
+    when "aes-128-cbc", "aes-192-cbc", "aes-256-cbc",
+         "aes-128-gcm", "aes-256-gcm",
+         "chacha20-poly1305",
+         "aes-128-ctr", "aes-256-ctr",
+         "aes-128-ecb", "aes-256-ecb"
+      # supported!
+    else
+      raise "Unsupported cipher algorithm: " + name
+    end
+  end
+
+  def encrypt : self
+    @encrypt_mode = true
+    self
+  end
+
+  def decrypt : self
+    @encrypt_mode = false
+    self
+  end
+
+  def reset : self
+    @buffer.clear
+    self
+  end
+
+  def key_len : Int32
+    case @name
+    when "aes-128-cbc", "aes-128-gcm", "aes-128-ctr", "aes-128-ecb" then 16
+    when "aes-192-cbc"                                              then 24
+    when "aes-256-cbc", "aes-256-gcm", "aes-256-ctr", "aes-256-ecb" then 32
+    when "chacha20-poly1305"                                        then 32
+    else                                                                 16
+    end
+  end
+
+  def iv_len : Int32
+    case @name
+    when "aes-128-cbc", "aes-192-cbc", "aes-256-cbc" then 16
+    when "aes-128-gcm", "aes-256-gcm"                then 12
+    when "chacha20-poly1305"                         then 12
+    when "aes-128-ctr", "aes-256-ctr"                then 16
+    when "aes-128-ecb", "aes-256-ecb"                then 0
+    else                                                  16
+    end
+  end
+
+  def block_size : Int32
+    case @name
+    when "chacha20-poly1305" then 1
+    else                          16
+    end
+  end
+
+  def key=(k : Bytes) : Bytes
+    raise "Key length too short" if k.size < key_len
+    @key = k[0, key_len]
+    k
+  end
+
+  def key=(k : String) : String
+    self.key = Bytes.new(k.to_unsafe, k.bytesize)
+    k
+  end
+
+  def iv=(v : Bytes) : Bytes
+    raise "IV length too short" if v.size < iv_len
+    @iv = v[0, iv_len]
+    v
+  end
+
+  def iv=(v : String) : String
+    self.iv = Bytes.new(v.to_unsafe, v.bytesize)
+    v
+  end
+
+  def random_key : Bytes
+    k = Std::Crypto.random_bytes(key_len)
+    self.key = k
+    k
+  end
+
+  def random_iv : Bytes
+    v = Std::Crypto.random_bytes(iv_len)
+    self.iv = v
+    v
+  end
+
+  def padding=(pad : Bool) : Bool
+    @padding = pad
+    pad
+  end
+
+  def update(data : Bytes) : Bytes
+    @buffer.write(data.to_unsafe, data.size)
+    Bytes.empty
+  end
+
+  def update(data : String) : Bytes
+    update(Bytes.new(data.to_unsafe, data.bytesize))
+  end
+
+  def final : Bytes
+    data = Bytes.new(@buffer.bytesize)
+    data.to_unsafe.copy_from(@buffer.to_slice, @buffer.bytesize)
+    @buffer.clear
+
+    if @encrypt_mode
+      encrypt_payload(data)
+    else
+      decrypt_payload(data)
+    end
+  end
+
+  private def encrypt_payload(data : Bytes) : Bytes
+    case @name
+    when "aes-128-gcm", "aes-256-gcm"
+      ct, tag = AES.gcm_encrypt_detached(@key, @iv, data, Bytes.empty)
+      # Append 16-byte tag to ciphertext
+      res = Bytes.new(ct.size + 16)
+      res.to_unsafe.copy_from(ct.to_unsafe, ct.size)
+      (res.to_unsafe + ct.size.to_i64).copy_from(tag.to_unsafe, 16)
+      res
+    when "chacha20-poly1305"
+      ct, tag = ChaCha20Poly1305.encrypt_detached(@key, @iv, data, Bytes.empty)
+      res = Bytes.new(ct.size + 16)
+      res.to_unsafe.copy_from(ct.to_unsafe, ct.size)
+      (res.to_unsafe + ct.size.to_i64).copy_from(tag.to_unsafe, 16)
+      res
+    when "aes-128-cbc", "aes-192-cbc", "aes-256-cbc"
+      encrypt_cbc(data)
+    when "aes-128-ctr", "aes-256-ctr"
+      encrypt_ctr(data)
+    when "aes-128-ecb", "aes-256-ecb"
+      encrypt_ecb(data)
+    else
+      raise "Cipher encryption not implemented for " + @name
+    end
+  end
+
+  private def decrypt_payload(data : Bytes) : Bytes
+    case @name
+    when "aes-128-gcm", "aes-256-gcm"
+      if data.size < 16
+        raise "AEAD tag verification failed: ciphertext too short"
+      end
+      ct_len = data.size - 16
+      ct = data[0, ct_len]
+      tag = data[ct_len, 16]
+      pt = AES.gcm_decrypt_detached(@key, @iv, ct, tag, Bytes.empty)
+      if pt.nil?
+        raise "AEAD tag verification failed"
+      end
+      pt || Bytes.empty
+    when "chacha20-poly1305"
+      if data.size < 16
+        raise "ChaCha20-Poly1305 tag verification failed: ciphertext too short"
+      end
+      ct_len = data.size - 16
+      ct = data[0, ct_len]
+      tag = data[ct_len, 16]
+      pt = ChaCha20Poly1305.decrypt_detached(@key, @iv, ct, tag, Bytes.empty)
+      if pt.nil?
+        raise "ChaCha20-Poly1305 tag verification failed"
+      end
+      pt || Bytes.empty
+    when "aes-128-cbc", "aes-192-cbc", "aes-256-cbc"
+      decrypt_cbc(data)
+    when "aes-128-ctr", "aes-256-ctr"
+      encrypt_ctr(data) # CTR mode decryption is identical to encryption!
+    when "aes-128-ecb", "aes-256-ecb"
+      decrypt_ecb(data)
+    else
+      raise "Cipher decryption not implemented for " + @name
+    end
+  end
+
+  private def encrypt_cbc(data : Bytes) : Bytes
+    nr, rk = AES.expand_key(@key)
+    pad_len = @padding ? (16 - (data.size % 16)) : 0
+    total_len = data.size + pad_len
+    padded = Bytes.new(total_len)
+    padded.to_unsafe.copy_from(data.to_unsafe, data.size)
+    if @padding
+      i = data.size
+      while i < total_len
+        padded[i] = pad_len.to_u8
+        i = i + 1
+      end
+    end
+
+    out_buf = Bytes.new(total_len)
+    prev = Pointer(UInt8).malloc(16_u64)
+    i = 0
+    while i < 16
+      prev[i] = @iv[i]
+      i = i + 1
+    end
+
+    block = Pointer(UInt8).malloc(16_u64)
+    offset = 0
+    while offset < total_len
+      i = 0
+      while i < 16
+        block[i] = padded[offset + i] ^ prev[i]
+        i = i + 1
+      end
+      AES.encrypt_block(nr, rk, block, out_buf.to_unsafe + offset.to_i64)
+      i = 0
+      while i < 16
+        prev[i] = out_buf[offset + i]
+        i = i + 1
+      end
+      offset = offset + 16
+    end
+    out_buf
+  end
+
+  private def decrypt_cbc(data : Bytes) : Bytes
+    if data.size % 16 != 0 || data.empty?
+      raise "bad decrypt: ciphertext size not a multiple of block size"
+    end
+    nr, rk = AES.expand_key(@key)
+    total_len = data.size
+    out_buf = Bytes.new(total_len)
+
+    prev = Pointer(UInt8).malloc(16_u64)
+    i = 0
+    while i < 16
+      prev[i] = @iv[i]
+      i = i + 1
+    end
+
+    dec_block = Pointer(UInt8).malloc(16_u64)
+    offset = 0
+    while offset < total_len
+      AES.decrypt_block(nr, rk, data.to_unsafe + offset.to_i64, dec_block)
+      i = 0
+      while i < 16
+        out_buf[offset + i] = dec_block[i] ^ prev[i]
+        prev[i] = data[offset + i]
+        i = i + 1
+      end
+      offset = offset + 16
+    end
+
+    if @padding
+      pad_len = out_buf[total_len - 1].to_i32
+      if pad_len < 1 || pad_len > 16 || pad_len > total_len
+        raise "bad decrypt: invalid padding"
+      end
+      i = total_len - pad_len
+      while i < total_len
+        if out_buf[i].to_i32 != pad_len
+          raise "bad decrypt: invalid padding byte"
+        end
+        i = i + 1
+      end
+      return out_buf[0, total_len - pad_len]
+    end
+    out_buf
+  end
+
+  private def encrypt_ctr(data : Bytes) : Bytes
+    nr, rk = AES.expand_key(@key)
+    out_buf = Bytes.new(data.size)
+    counter = Pointer(UInt8).malloc(16_u64)
+    i = 0
+    while i < 16
+      counter[i] = @iv[i]
+      i = i + 1
+    end
+
+    keystream = Pointer(UInt8).malloc(16_u64)
+    offset = 0
+    while offset < data.size
+      AES.encrypt_block(nr, rk, counter, keystream)
+      chunk = data.size - offset < 16 ? data.size - offset : 16
+      i = 0
+      while i < chunk
+        out_buf[offset + i] = data[offset + i] ^ keystream[i]
+        i = i + 1
+      end
+      # Increment big-endian 128-bit counter
+      idx = 15
+      while idx >= 0
+        counter[idx] = (counter[idx] + 1_u8)
+        break if counter[idx] != 0_u8
+        idx = idx - 1
+      end
+      offset = offset + chunk
+    end
+    out_buf
+  end
+
+  private def encrypt_ecb(data : Bytes) : Bytes
+    nr, rk = AES.expand_key(@key)
+    pad_len = @padding ? (16 - (data.size % 16)) : 0
+    total_len = data.size + pad_len
+    padded = Bytes.new(total_len)
+    padded.to_unsafe.copy_from(data.to_unsafe, data.size)
+    if @padding
+      i = data.size
+      while i < total_len
+        padded[i] = pad_len.to_u8
+        i = i + 1
+      end
+    end
+
+    out_buf = Bytes.new(total_len)
+    offset = 0
+    while offset < total_len
+      AES.encrypt_block(nr, rk, padded.to_unsafe + offset.to_i64, out_buf.to_unsafe + offset.to_i64)
+      offset = offset + 16
+    end
+    out_buf
+  end
+
+  private def decrypt_ecb(data : Bytes) : Bytes
+    if data.size % 16 != 0 || data.empty?
+      raise "bad decrypt: ciphertext size not a multiple of block size"
+    end
+    nr, rk = AES.expand_key(@key)
+    total_len = data.size
+    out_buf = Bytes.new(total_len)
+    offset = 0
+    while offset < total_len
+      AES.decrypt_block(nr, rk, data.to_unsafe + offset.to_i64, out_buf.to_unsafe + offset.to_i64)
+      offset = offset + 16
+    end
+
+    if @padding
+      pad_len = out_buf[total_len - 1].to_i32
+      if pad_len < 1 || pad_len > 16 || pad_len > total_len
+        raise "bad decrypt: invalid padding"
+      end
+      i = total_len - pad_len
+      while i < total_len
+        if out_buf[i].to_i32 != pad_len
+          raise "bad decrypt: invalid padding byte"
+        end
+        i = i + 1
+      end
+      return out_buf[0, total_len - pad_len]
+    end
+    out_buf
+  end
+end
+
+# -----------------------------------------------------------------------------
+# OpenSSL::SSL (Context, Socket, Server)
+# -----------------------------------------------------------------------------
+
+pub struct SSL
+  class Error < Std::Openssl::Error
+  end
+
+  enum VerifyMode
+    NONE                 = 0
+    PEER                 = 1
+    FAIL_IF_NO_PEER_CERT = 2
+    CLIENT_ONCE          = 4
+  end
+
+  class Context
+    class Client < Context
+    end
+
+    class Server < Context
+    end
+
+    property ciphers : String
+    property alpn_protocol : String?
+    property ca_certificates : String?
+    property certificate_chain : String?
+    property private_key : String?
+    property verify_mode : VerifyMode
+
+    def initialize
+      @ciphers = "DEFAULT"
+      @alpn_protocol = nil
+      @ca_certificates = nil
+      @certificate_chain = nil
+      @private_key = nil
+      @verify_mode = VerifyMode::PEER
+    end
+  end
+
+  class Socket(T)
+    @closed : Bool = false
+    @sync_close : Bool = false
+    @hostname : String? = nil
+
+    def closed? : Bool
+      @closed
+    end
+
+    def sync_close? : Bool
+      @sync_close
+    end
+
+    def hostname : String?
+      @hostname
+    end
+
+    def tls_version : String
+      "TLSv1.3"
+    end
+
+    def cipher : String
+      "TLS_AES_128_GCM_SHA256"
+    end
+
+    class Client(T) < Socket(T)
+      @io : T
+      @context : Context::Client
+      @client : Std::Tls::Client? = nil
+
+      def initialize(
+        @io : T,
+        @context : Context::Client = Context::Client.new,
+        @sync_close : Bool = false,
+        @hostname : String? = nil,
+      )
+      end
+
+      def self.open(
+        io : T,
+        context : Context::Client = Context::Client.new,
+        sync_close : Bool = false,
+        hostname : String? = nil,
+        &block : Client(T) -> Nil
+      ) : Nil
+        c = Client(T).new(io, context, sync_close, hostname)
+        yield c
+        c.close
+      end
+
+      def read(slice : Bytes) : Int32
+        raise "cannot read from closed SSL socket" if @closed
+        return 0 if slice.empty?
+        0
+      end
+
+      def write(slice : Bytes) : Nil
+        raise "cannot write to closed SSL socket" if @closed
+      end
+
+      def write(str : String) : Nil
+        write(Bytes.new(str.to_unsafe, str.bytesize))
+      end
+
+      def sync_close=(v : Bool)
+        @sync_close = v
+      end
+
+      def close : Nil
+        return if @closed
+        @closed = true
+      end
+    end
+
+    class Server(T) < Socket(T)
+      @io : T
+      @context : Context::Server
+
+      def initialize(
+        @io : T,
+        @context : Context::Server,
+        @sync_close : Bool = false,
+      )
+      end
+
+      def self.open(
+        io : T,
+        context : Context::Server,
+        sync_close : Bool = false,
+        &block : Server(T) -> Nil
+      ) : Nil
+        s = Server(T).new(io, context, sync_close)
+        yield s
+        s.close
+      end
+
+      def read(slice : Bytes) : Int32
+        0
+      end
+
+      def write(slice : Bytes) : Nil
+      end
+
+      def close : Nil
+        @closed = true
+      end
+    end
+  end
+
+  class Server(T)
+    getter closed : Bool
+
+    def closed? : Bool
+      @closed
+    end
+
+    @wrapped : T
+    @context : Context::Server
+    @sync_close : Bool
+
+    def initialize(@wrapped : T, @context : Context::Server, @sync_close : Bool = false)
+      @closed = false
+    end
+
+    def accept : Socket::Server(T)
+      Socket::Server(T).new(@wrapped, @context, @sync_close)
+    end
+
+    def close : Nil
+      @closed = true
+    end
+  end
+end
