@@ -1,4 +1,4 @@
-# The prelude's integers at their edges - SPEC.md, "0.1.0", item 3.
+# The prelude's numbers at their edges - SPEC.md, "0.1.0", item 3.
 #
 #     bash bench/number_exercise.sh
 #
@@ -78,5 +78,44 @@ assert_str(5.to_s(2), "101", "number: binary")
 assert_str((-255).to_s(16), "-ff", "number: a negative in hex")
 assert_str(35.to_s(36), "z", "number: base 36")
 assert_str((-2147483648).to_s(16), "-80000000", "number: int32 min in hex")
+
+# ---- 5. The floats, whose edges are values rather than bounds
+#
+# Probed and found already right, so these are here to keep it that way:
+# each one is a property a program reads without thinking about it, and the
+# conversions below are checked by the compiler rather than by this file.
+nan = 0.0 / 0.0
+inf = 1.0 / 0.0
+
+assert_str(nan.to_s, "NaN", "number: nan prints as NaN")
+assert_str(inf.to_s, "Infinity", "number: infinity prints")
+assert_str((0.0 - inf).to_s, "-Infinity", "number: negative infinity prints")
+assert_str((-0.0).to_s, "-0.0", "number: negative zero keeps its sign")
+
+# NaN is the one value that is not itself, and `-0.0` is two values that are
+# one. A `Hash` has to agree with both.
+assert_true((nan == nan) == false, "number: nan is not itself")
+assert_true(-0.0 == 0.0, "number: negative zero equals zero")
+assert_true((nan < 1.0) == false, "number: nan is not less")
+assert_true((nan > 1.0) == false, "number: nan is not greater")
+
+floats = {} of Float64 => String
+floats[0.0] = "zero"
+assert_str(floats[-0.0]? || "missing", "zero", "number: negative zero finds zero")
+floats[nan] = "nan"
+assert_true(floats[nan]? == nil, "number: nan cannot be found again")
+assert_int(floats.size, 2, "number: nan took a slot it cannot answer for")
+
+# A comparison sort given a value that answers no to every comparison has to
+# come back, and with everything it was handed.
+assert_int([1.0, nan, 0.5].sorted.size, 3, "number: sorting with nan keeps the count")
+
+# Toward zero, the same direction `//` takes.
+assert_int(2.9.to_i, 2, "number: to_i truncates")
+assert_int((-2.9).to_i, -2, "number: to_i truncates toward zero")
+assert_true((-1.5).floor == -2.0, "number: floor goes down")
+assert_true((-1.5).ceil == -1.0, "number: ceil goes up")
+assert_true(2.5.round == 3.0, "number: round goes away from zero")
+assert_true((-2.5).round == -3.0, "number: round is symmetric")
 
 puts "all number checks passed"

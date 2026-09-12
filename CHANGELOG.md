@@ -4,6 +4,21 @@
 
 ### Fixed
 
+- **The float surface was probed and found right, so it is pinned.** The
+  same question asked of `Float64` — which methods disagree with each other
+  at the edges — came back with nothing: `NaN` is not itself and cannot be
+  found again as a key it nevertheless occupies, `-0.0` equals `0.0` and
+  shares its slot, a comparison sort handed a `NaN` comes back with
+  everything it was given, `to_i` truncates toward zero the way `//` does,
+  and every conversion that cannot fit — `1e20.to_i`, `NaN.to_i`,
+  `Infinity.to_i`, and the boundary `2147483647.9.to_i` — is a panic rather
+  than whatever the hardware left behind. The boundary is the interesting
+  one: it truncates to a value that fits and is still refused, which this
+  compiler and the other language were both measured doing. Sixteen of
+  those properties are checks in `bench/number_exercise.iyi` now, with four
+  driver-run panics and two proofs that break `floor` and `round` in a
+  copied prelude — a clean probe is worth keeping only if it becomes a
+  gate.
 - **`Int32::MIN` can be read back from what it prints, and the division
   that overflows is a sentence rather than a signal.** Three defects at the
   edges of the integers, all found by one probe. `String#to_i?`

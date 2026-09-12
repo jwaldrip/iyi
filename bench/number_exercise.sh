@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The prelude's integers at their edges: printed and read back, what does not
-# fit, and the two divisions that leave the type.
+# The prelude's numbers at their edges: printed and read back, what does not
+# fit, the two divisions that leave the type, and the float values that are
+# their own question - NaN, the two zeros, and a conversion that cannot fit.
 #
 #     bash bench/number_exercise.sh
 #
@@ -103,6 +104,16 @@ panics_with "int64 min over minus one" min_div64 "arithmetic overflow" "-9223372
 panics_with "division by zero" zero_div "division by zero" "7 // 0"
 panics_with "modulo by zero" zero_mod "modulo by zero" "7 % 0"
 
+# And the float that does not fit an integer, which the compiler checks
+# rather than this file: unchecked it would hand back whatever the hardware's
+# conversion left behind. The last one is the boundary - 2147483647.9
+# truncates to a value that fits, and this compiler and the other language
+# both refuse it - measured against both rather than assumed.
+panics_with "a float too large for an int" big_float "arithmetic overflow" "1e20.to_i"
+panics_with "not a number as an int" nan_int "arithmetic overflow" "(0.0/0.0).to_i"
+panics_with "infinity as an int" inf_int "arithmetic overflow" "(1.0/0.0).to_i"
+panics_with "the boundary float" edge_float "arithmetic overflow" "2147483647.9.to_i"
+
 echo
 echo "== proving the checks can fail, one broken method at a time"
 
@@ -183,6 +194,16 @@ prove_fails "base printing broken" bad_base number.iyi \
   "number: hex" \
   's/^        buffer\[at\] = d < 10 ? (48 + d).to_u8 : (87 + d).to_u8$/        buffer[at] = d < 10 ? (48 + d).to_u8 : (55 + d).to_u8/'
 
+# 7. The rounding a column of numbers reads, in the file it lives in.
+prove_fails "floor rounds the wrong way" bad_floor float.iyi \
+  "number: floor goes down" \
+  's/^    truncated > self ? truncated - 1.0 : truncated$/    truncated/'
+
+# 8. And the rounding that has to be symmetric about zero.
+prove_fails "round is not symmetric" bad_round float.iyi \
+  "number: round is symmetric" \
+  's/^    self < 0.0 ? 0.0 - (0.0 - self + 0.5).floor : (self + 0.5).floor$/    (self + 0.5).floor/'
+
 echo
 echo "== and the check that keeps the processor out of it"
 
@@ -223,8 +244,10 @@ prove_traps "remainder without its guard" no_mod_guard \
 echo
 if [ "$status" -eq 0 ]; then
   echo "Numbers: every value prints and reads back, what does not fit says so,"
-  echo "and the two divisions that leave the type are panics with sentences"
-  echo "rather than a fault from the processor."
+  echo "the two divisions that leave the type are panics with sentences rather"
+  echo "than a fault from the processor, and the floats keep the three answers"
+  echo "a program reads without thinking - NaN is not itself, -0.0 is zero, and"
+  echo "everything rounds toward the same side it always did."
 else
   echo "the number surface does not hold"
 fi
