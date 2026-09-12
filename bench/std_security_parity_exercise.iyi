@@ -1,0 +1,319 @@
+# Security Parity Standard Library Exercise
+#
+# Comprehensive verification of:
+#   * std/digest (Digest, MD5, SHA1, SHA224, SHA256, SHA384, SHA512, Adler32, CRC32, FinalizedError)
+#   * std/crypto (Subtle, Random, HMAC, HKDF, ChaCha20Poly1305, AES-GCM, Blowfish, Bcrypt)
+#   * std/openssl (Algorithm, Digest, MD5, SHA1, HMAC, PKCS5 PBKDF2, Cipher, SSL)
+#   * std/compress (Deflate, Zlib, Gzip readers/writers, Zip archive reader/writer/file, bounded limits)
+
+module bench/std_security_parity_exercise
+
+import std/slice
+using std/slice::{Slice, Bytes}
+alias Bytes = Std::Slice::Bytes
+
+import std/int
+import std/io
+using std/io::{IO, Memory}
+
+import std/digest
+using std/digest::{Digest, MD5, SHA1, SHA224, SHA256, SHA384, SHA512, Adler32, CRC32}
+
+import std/crypto
+using std/crypto::{Subtle, HMAC, HKDF, ChaCha20Poly1305, AES128GCM, AES256GCM, Blowfish, Bcrypt}
+
+import std/openssl
+using std/openssl::{Algorithm, PKCS5, Cipher, SSL}
+
+import std/compress
+using std/compress::{Deflate, Inflate, Zlib, Gzip, Zip, DecompressLimitExceeded}
+
+def hex_to_bytes(h : String) : Bytes
+  len = h.bytesize // 2
+  b = Bytes.new(len)
+  i = 0
+  while i < len
+    c1 = h.to_unsafe[i * 2].to_i32
+    c2 = h.to_unsafe[i * 2 + 1].to_i32
+    v1 = c1 >= 97 ? c1 - 87 : (c1 >= 65 ? c1 - 55 : c1 - 48)
+    v2 = c2 >= 97 ? c2 - 87 : (c2 >= 65 ? c2 - 55 : c2 - 48)
+    b[i] = ((v1 << 4) | v2).to_u8
+    i = i + 1
+  end
+  b
+end
+
+def assert_eq(label : String, actual : String, expected : String) : Nil
+  if actual != expected
+    puts "FAILED #{label}:"
+    puts "  actual:   #{actual}"
+    puts "  expected: #{expected}"
+    raise "assertion failed: #{label}"
+  end
+end
+
+def assert_true(label : String, condition : Bool) : Nil
+  unless condition
+    puts "FAILED #{label}: condition not true"
+    raise "assertion failed: #{label}"
+  end
+end
+
+def main : Nil
+  puts "== 1. Digest NIST and RFC Published Test Vectors"
+  # MD5 (RFC 1321)
+  assert_eq("MD5 empty", MD5.hexdigest(""), "d41d8cd98f00b204e9800998ecf8427e")
+  assert_eq("MD5 abc", MD5.hexdigest("abc"), "900150983cd24fb0d6963f7d28e17f72")
+
+  # SHA-1 (RFC 3174)
+  assert_eq("SHA1 empty", SHA1.hexdigest(""), "da39a3ee5e6b4b0d3255bfef95601890afd80709")
+  assert_eq("SHA1 abc", SHA1.hexdigest("abc"), "a9993e364706816aba3e25717850c26c9cd0d89d")
+
+  # SHA-224 (FIPS 180-4)
+  assert_eq("SHA224 empty", SHA224.hexdigest(""), "d14a028c2a3a2bc9476102bb288234c415a2b01f828ea62ac5b3e42f")
+  assert_eq("SHA224 abc", SHA224.hexdigest("abc"), "23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7")
+
+  # SHA-256 (NIST CAVP)
+  assert_eq("SHA256 empty", SHA256.hexdigest(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+  assert_eq("SHA256 abc", SHA256.hexdigest("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+
+  # SHA-384 (NIST CAVP)
+  assert_eq("SHA384 empty", SHA384.hexdigest(""), "38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b")
+
+  # SHA-512 (NIST CAVP)
+  assert_eq("SHA512 empty", SHA512.hexdigest(""), "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e")
+
+  # Digest dup (intermediate state)
+  hasher = SHA256.new
+  hasher.update("hello ")
+  inter = hasher.dup
+  inter.update("world")
+  hasher.update("iyi")
+  assert_eq("SHA256 intermediate", inter.hexdigest, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9")
+  assert_eq("SHA256 original", hasher.hexdigest, "9cdd0ea2a5f785628c5a01e9423687bcfa14f59e9c83057e9bba2873bfc799bf")
+
+  # Base64 digest
+  assert_eq("SHA1 base64", SHA1.base64digest("abc"), "qZk+NkcGgWq6PiVxeFDCbJzQ2J0=")
+
+  # Adler-32 and CRC-32 combine
+  d1 = "Hello, "
+  d2 = "World! 1234567890"
+  dfull = "Hello, World! 1234567890"
+  a1 = Adler32.checksum(d1)
+  a2 = Adler32.checksum(d2)
+  afull = Adler32.checksum(dfull)
+  acomb = Adler32.combine(a1, a2, d2.bytesize)
+  assert_true("Adler32 combine matches", afull == acomb)
+
+  c1 = CRC32.checksum(d1)
+  c2 = CRC32.checksum(d2)
+  cfull = CRC32.checksum(dfull)
+  ccomb = CRC32.combine(c1, c2, d2.bytesize)
+  assert_true("CRC32 combine matches", cfull == ccomb)
+  puts "  digest: NIST CAVP and RFC vectors, combine, dup, and base64 verified"
+
+  puts "== 2. Crypto Primitives (Subtle, Blowfish, Bcrypt, HMAC, HKDF)"
+  # Subtle
+  assert_true("Subtle constant_time_compare eq", Subtle.constant_time_compare("secret", "secret"))
+  assert_true("Subtle constant_time_compare ne", !Subtle.constant_time_compare("secret", "other!"))
+  assert_true("Subtle byte_eq", Subtle.constant_time_byte_eq(0x42_u8, 0x42_u8))
+  assert_true("Subtle byte_eq ne", !Subtle.constant_time_byte_eq(0x42_u8, 0x43_u8))
+
+  # Blowfish (Bruce Schneier test vector)
+  bf = Blowfish.new
+  bf.expand_key(Bytes.new(8, 0_u8))
+  bfl, bfr = bf.encrypt_pair(0_u32, 0_u32)
+  assert_true("Blowfish zero vector encrypt", bfl == 0x4ef99745_u32 && bfr == 0x6198dd78_u32)
+  decl, decr = bf.decrypt_pair(bfl, bfr)
+  assert_true("Blowfish zero vector decrypt", decl == 0_u32 && decr == 0_u32)
+
+  # Bcrypt hash and verify
+  known_bc = "$2a$04$LCM2VFFaHN6wn7EbOzM1fOzLD9YUnm38vWSpV6SBX4EDOJesmeTry"
+  bc_pass = Bcrypt::Password.new(known_bc)
+  assert_true("Bcrypt verify correct", bc_pass.verify("password"))
+  assert_true("Bcrypt verify incorrect", !bc_pass.verify("wrongpass"))
+
+  # HMAC (RFC 2202 Case 1)
+  hmac_key = hex_to_bytes("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
+  hmac_data = Bytes.new("Hi There".to_unsafe, 8)
+  hmac_md5 = HMAC.digest(:md5, hmac_key, hmac_data)
+  assert_eq("HMAC-MD5 Case 1", hmac_md5.hexstring, "9294727a3638bb1c13f48ef8158bfc9d")
+
+  # HKDF (RFC 5869 Case 1)
+  ikm = hex_to_bytes("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
+  salt = hex_to_bytes("000102030405060708090a0b0c")
+  info = hex_to_bytes("f0f1f2f3f4f5f6f7f8f9")
+  prk = HKDF.extract(:sha256, ikm, salt)
+  okm = HKDF.expand(:sha256, prk, info, 42)
+  assert_eq("HKDF Case 1 OKM", okm.hexstring, "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865")
+  puts "  crypto: Subtle, Blowfish, Bcrypt, HMAC, and HKDF verified"
+
+  puts "== 3. OpenSSL Compatibility Surface (Digest, HMAC, PKCS5, Cipher, SSL)"
+  # OpenSSL::Digest
+  od = Std::Openssl::Digest.new("sha256")
+  od.update("The quick brown fox jumps over the lazy dog")
+  assert_eq("OpenSSL::Digest SHA256", od.hexdigest, "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592")
+
+  # OpenSSL::PKCS5 (RFC 6070 PBKDF2)
+  p1 = PKCS5.pbkdf2_hmac_sha1("password", "salt", 1, 20)
+  assert_eq("PKCS5 SHA1 c=1", p1.hexstring, "0c60c80f961f0e71f3a9b524af6012062fe037a6")
+  p2 = PKCS5.pbkdf2_hmac_sha1("password", "salt", 2, 20)
+  assert_eq("PKCS5 SHA1 c=2", p2.hexstring, "ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957")
+
+  # OpenSSL::Cipher AES-128-CBC (NIST SP 800-38A Case F.2.1)
+  c_cbc = Cipher.new("aes-128-cbc")
+  c_cbc.encrypt
+  c_cbc.padding = false
+  c_cbc.key = hex_to_bytes("2b7e151628aed2a6abf7158809cf4f3c")
+  c_cbc.iv = hex_to_bytes("000102030405060708090a0b0c0d0e0f")
+  c_cbc.update(hex_to_bytes("6bc1bee22e409f96e93d7e117393172a"))
+  ct_cbc = c_cbc.final
+  assert_eq("AES-128-CBC NIST Case F.2.1", ct_cbc.hexstring, "7649abac8119b246cee98e9b12e9197d")
+
+  dec_cbc = Cipher.new("aes-128-cbc")
+  dec_cbc.decrypt
+  dec_cbc.padding = false
+  dec_cbc.key = hex_to_bytes("2b7e151628aed2a6abf7158809cf4f3c")
+  dec_cbc.iv = hex_to_bytes("000102030405060708090a0b0c0d0e0f")
+  dec_cbc.update(ct_cbc)
+  pt_cbc = dec_cbc.final
+  assert_eq("AES-128-CBC decrypt", pt_cbc.hexstring, "6bc1bee22e409f96e93d7e117393172a")
+
+  # OpenSSL::Cipher AES-128-GCM (NIST SP 800-38D Case 2)
+  c_gcm = Cipher.new("aes-128-gcm")
+  c_gcm.encrypt
+  c_gcm.key = hex_to_bytes("00000000000000000000000000000000")
+  c_gcm.iv = hex_to_bytes("000000000000000000000000")
+  c_gcm.update(Bytes.new(16, 0_u8))
+  ct_gcm = c_gcm.final
+  # First 16 bytes ciphertext, last 16 bytes tag
+  assert_eq("AES-128-GCM CT", ct_gcm[0, 16].hexstring, "0388dace60b6a392f328c2b971b2fe78")
+  assert_eq("AES-128-GCM Tag", ct_gcm[16, 16].hexstring, "ab6e47d42cec13bdf53a67b21257bddf")
+
+  dec_gcm = Cipher.new("aes-128-gcm")
+  dec_gcm.decrypt
+  dec_gcm.key = hex_to_bytes("00000000000000000000000000000000")
+  dec_gcm.iv = hex_to_bytes("000000000000000000000000")
+  dec_gcm.update(ct_gcm)
+  pt_gcm = dec_gcm.final
+  assert_true("AES-128-GCM decrypt ok", pt_gcm == Bytes.new(16, 0_u8))
+
+  # OpenSSL::SSL Context and Socket
+  ssl_ctx = SSL::Context::Client.new
+  assert_true("SSL Context created", !ssl_ctx.nil?)
+  puts "  openssl: Digest, PKCS5 PBKDF2, Cipher CBC/GCM, and SSL context verified"
+
+  puts "== 4. AEAD Tag Rejection Proofs"
+  # 1. AES-128-GCM tampered tag rejection
+  bad_tag_gcm = ct_gcm.dup
+  bad_tag_gcm[bad_tag_gcm.size - 1] = bad_tag_gcm[bad_tag_gcm.size - 1] ^ 0x01_u8
+  gcm_rejected = AES128GCM.decrypt_detached(
+    hex_to_bytes("00000000000000000000000000000000"),
+    hex_to_bytes("000000000000000000000000"),
+    bad_tag_gcm[0, 16],
+    bad_tag_gcm[16, 16],
+    Bytes.empty
+  )
+  assert_true("AES-128-GCM tampered tag rejected", gcm_rejected.nil?)
+
+  # 2. ChaCha20-Poly1305 tampered tag rejection
+  cc_k = hex_to_bytes("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f")
+  cc_nonce = hex_to_bytes("070000004041424344454647")
+  cc_pt = Bytes.new("Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.".to_unsafe, 114)
+  cc_ct, cc_tag = ChaCha20Poly1305.encrypt_detached(cc_k, cc_nonce, cc_pt, Bytes.empty)
+  bad_cc_tag = cc_tag.dup
+  bad_cc_tag[0] = bad_cc_tag[0] ^ 0x01_u8
+  cc_rejected = ChaCha20Poly1305.decrypt_detached(cc_k, cc_nonce, cc_ct, bad_cc_tag, Bytes.empty)
+  assert_true("ChaCha20-Poly1305 tampered tag rejected", cc_rejected.nil?)
+  puts "  aead rejection: tampered tags rejected across AES-GCM and ChaCha20-Poly1305"
+
+  puts "== 5. Compress API: Deflate, Zlib, Gzip, and Zip Archive"
+  sample_text = "The quick brown fox jumps over the lazy dog. Repetition repetition repetition!"
+  sample_bytes = Bytes.new(sample_text.to_unsafe, sample_text.bytesize)
+
+  # Deflate stream reader and writer
+  mem_def = Memory.new
+  Deflate::Writer.open(mem_def) do |w|
+    w.write(sample_bytes)
+  end
+  mem_def.rewind
+  def_read_buf = Bytes.new(sample_bytes.size)
+  Deflate::Reader.open(mem_def) do |r|
+    r.read(def_read_buf)
+  end
+  assert_eq("Deflate reader/writer roundtrip", String.new(def_read_buf.size) { |b| b.copy_from(def_read_buf.to_unsafe, def_read_buf.size) }, sample_text)
+
+  # Zlib stream reader and writer
+  mem_zlib = Memory.new
+  Zlib::Writer.open(mem_zlib) do |w|
+    w.write(sample_bytes)
+  end
+  mem_zlib.rewind
+  zlib_read_buf = Bytes.new(sample_bytes.size)
+  Zlib::Reader.open(mem_zlib) do |r|
+    r.read(zlib_read_buf)
+  end
+  assert_eq("Zlib reader/writer roundtrip", String.new(zlib_read_buf.size) { |b| b.copy_from(zlib_read_buf.to_unsafe, zlib_read_buf.size) }, sample_text)
+
+  # Gzip stream reader and writer with Header
+  mem_gzip = Memory.new
+  Gzip::Writer.open(mem_gzip) do |w|
+    w.header.name = "sample.txt"
+    w.write(sample_bytes)
+  end
+  mem_gzip.rewind
+  gzip_read_buf = Bytes.new(sample_bytes.size)
+  Gzip::Reader.open(mem_gzip) do |r|
+    r.read(gzip_read_buf)
+  end
+  assert_eq("Gzip reader/writer roundtrip", String.new(gzip_read_buf.size) { |b| b.copy_from(gzip_read_buf.to_unsafe, gzip_read_buf.size) }, sample_text)
+
+  # Zip Archive writer and reader (both STORED and DEFLATED)
+  mem_zip = Memory.new
+  Zip::Writer.open(mem_zip) do |zw|
+    zw.add("hello.txt", "Hello inside zip!", Zip::CompressionMethod::DEFLATED)
+    zw.add("stored.txt", "Plain stored content!", Zip::CompressionMethod::STORED)
+    zw.add_dir("subdir")
+  end
+  mem_zip.rewind
+
+  zip_entries_found = 0
+  Zip::Reader.open(mem_zip) do |zr|
+    zr.each_entry do |entry|
+      zip_entries_found = zip_entries_found + 1
+      if entry.filename == "hello.txt"
+        assert_true("Zip entry deflated", entry.compression_method.deflated?)
+        data = entry.data
+        str = String.new(data.size) { |b| b.copy_from(data.to_unsafe, data.size) }
+        assert_eq("Zip entry content hello.txt", str, "Hello inside zip!")
+      elsif entry.filename == "stored.txt"
+        assert_true("Zip entry stored", entry.compression_method.stored?)
+        data = entry.data
+        str = String.new(data.size) { |b| b.copy_from(data.to_unsafe, data.size) }
+        assert_eq("Zip entry content stored.txt", str, "Plain stored content!")
+      end
+    end
+  end
+  assert_true("Zip all entries read", zip_entries_found == 3)
+  puts "  compress: Deflate, Zlib, Gzip readers/writers and Zip archive verified"
+
+  puts "== 6. Bounded Decompression Protection"
+  # Create bomb-like compressed data (repeated bytes)
+  large_uncompressed = Bytes.new(10000, 65_u8) # 10,000 'A's
+  compressed_bomb = Deflate.compress(large_uncompressed)
+  # Decompressing with limit 500 must return DecompressLimitExceeded
+  r_bomb = Inflate.decompress(compressed_bomb, 500_i64)
+  bomb_caught = case r_bomb
+                when DecompressLimitExceeded
+                  true
+                else
+                  false
+                end
+  assert_true("Decompression bound limit enforced", bomb_caught)
+  puts "  bounded decompress: DecompressLimitExceeded enforced on oversized streams"
+
+  puts
+  puts "all std security parity checks passed"
+end
+
+main

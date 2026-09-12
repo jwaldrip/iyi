@@ -19,6 +19,7 @@ module std/compress
 
 import std/slice
 using std/slice::{Slice}
+import std/int
 import std/io
 using std/io::{IO, Memory}
 import std/file
@@ -2459,11 +2460,11 @@ pub struct Zip
     DEFLATED = 8_u16
 
     def stored? : Bool
-      self == STORED
+      value.to_i32 == 0
     end
 
     def deflated? : Bool
-      self == DEFLATED
+      value.to_i32 == 8
     end
   end
 
@@ -2644,7 +2645,7 @@ pub struct Zip
       b = data.is_a?(String) ? Bytes.new(data.to_unsafe, data.bytesize) : data.as(Bytes)
 
       crc = CRC32.checksum(b)
-      compressed = method == CompressionMethod::DEFLATED ? Deflate.compress(b) : b
+      compressed = method.value.to_i32 == 8 ? Deflate.compress(b) : b
 
       info = FileInfo.new(filename)
       info.compression_method = method
@@ -2663,7 +2664,7 @@ pub struct Zip
       # flags 0
       hdr_ptr[6] = 0_u8; hdr_ptr[7] = 0_u8
       # compression method
-      m_val = method == CompressionMethod::DEFLATED ? 8_u16 : 0_u16
+      m_val = method.value.to_i32 == 8 ? 8_u16 : 0_u16
       hdr_ptr[8] = (m_val & 0xff_u16).to_u8; hdr_ptr[9] = (m_val.to_u32.unsafe_shr(8_u32)).to_u8
       # time, date 0
       hdr_ptr[10] = 0_u8; hdr_ptr[11] = 0_u8; hdr_ptr[12] = 0_u8; hdr_ptr[13] = 0_u8
@@ -2735,7 +2736,7 @@ pub struct Zip
         # flags
         ptr[8] = 0_u8; ptr[9] = 0_u8
         # compression method
-        m_val = info.compression_method == CompressionMethod::DEFLATED ? 8_u16 : 0_u16
+        m_val = info.compression_method.value.to_i32 == 8 ? 8_u16 : 0_u16
         ptr[10] = (m_val & 0xff_u16).to_u8; ptr[11] = (m_val.to_u32.unsafe_shr(8_u32)).to_u8
         # time, date
         ptr[12] = 0_u8; ptr[13] = 0_u8; ptr[14] = 0_u8; ptr[15] = 0_u8
@@ -2765,9 +2766,9 @@ pub struct Zip
         # external attr
         ext_attr = info.dir? ? 0x10_u32 : 0x20_u32
         ptr[38] = (ext_attr & 0xff_u32).to_u8
-        ptr[39] = ((ext_attr >> 8_u32) & 0xff_u32).to_u8
-        ptr[40] = ((ext_attr >> 16_u32) & 0xff_u32).to_u8
-        ptr[41] = ((ext_attr >> 24_u32) & 0xff_u32).to_u8
+        ptr[39] = ((ext_attr.unsafe_shr(8_u32)) & 0xff_u32).to_u8
+        ptr[40] = ((ext_attr.unsafe_shr(16_u32)) & 0xff_u32).to_u8
+        ptr[41] = ((ext_attr.unsafe_shr(24_u32)) & 0xff_u32).to_u8
         # relative offset
         off = info.offset
         ptr[42] = (off & 0xff_u64).to_u8
@@ -2906,7 +2907,7 @@ pub struct Zip
       break if sig != 0x04034b50_u32
 
       method_val = (ptr[pos + 8].to_u16) | (ptr[pos + 9].to_u16.unsafe_shl(8_u16))
-      method = method_val == 8_u16 ? CompressionMethod::DEFLATED : CompressionMethod::STORED
+      method = method_val.to_i32 == 8 ? CompressionMethod::DEFLATED : CompressionMethod::STORED
       crc = (ptr[pos + 14].to_u32) | (ptr[pos + 15].to_u32.unsafe_shl(8_u32)) | (ptr[pos + 16].to_u32.unsafe_shl(16_u32)) | (ptr[pos + 17].to_u32.unsafe_shl(24_u32))
       cs = (ptr[pos + 18].to_u64) | (ptr[pos + 19].to_u64.unsafe_shl(8_u64)) | (ptr[pos + 20].to_u64.unsafe_shl(16_u64)) | (ptr[pos + 21].to_u64.unsafe_shl(24_u64))
       us = (ptr[pos + 22].to_u64) | (ptr[pos + 23].to_u64.unsafe_shl(8_u64)) | (ptr[pos + 24].to_u64.unsafe_shl(16_u64)) | (ptr[pos + 25].to_u64.unsafe_shl(24_u64))
@@ -2926,7 +2927,7 @@ pub struct Zip
         raise DecompressLimitExceeded.new(max_total_decompressed, total_decompressed + us.to_i64).to_s
       end
 
-      decompressed = if method == CompressionMethod::DEFLATED
+      decompressed = if method.value.to_i32 == 8
                        dec_res = Inflate.decompress(payload, max_total_decompressed)
                        case dec_res
                        when Bytes                   then dec_res
