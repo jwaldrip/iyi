@@ -46,7 +46,11 @@ trap cleanup EXIT
 
 step() { echo "== $1"; }
 
+# The binary goes first. `make` compares whole seconds, so a patch written in
+# the same second as the last link reads as already current, and the proof
+# would run against the compiler it thought it had just replaced.
 rebuild() {
+  rm -f "$REPO/.build/iyi"
   ( cd "$REPO" && make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" ) \
     >"$WORK/build.log" 2>&1
 }
