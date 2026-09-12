@@ -63,7 +63,7 @@ own reference accepts.
 | warm full build, `hello` / 6,900-line pair | 0.07 s / 0.24 s, against `go build`'s 0.08 s / 0.09 s |
 | front end, `hello.iyi` | **0.036 s** against the 0.050 s target: MET |
 | starting the compiler and doing nothing | 0.018 s of that |
-| iyi's own prelude | 13,424 lines, of which 3,381 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
+| iyi's own prelude | 13,609 lines, of which 3,405 are the library held to the 3,734 ceiling; the rest is the collector, the scheduler and the float printer, which 0.1.0's prelude got from libgc, pthreads and libc |
 | compiler | 84,068 lines, none of it written in iyi |
 | artifact format | `.iyimod` v19, checksum per section |
 | samples | 9, of which 5 rebuild from artifacts with their modules' source deleted |
@@ -88,7 +88,7 @@ shape.
 > is a library and the rules are the language, so a program can keep one and
 > change the other: `--crystal` builds against Crystal's standard library, and
 > there `require` reaches the ecosystem while every rule stays where it was.
-> "No standard library worth the name" is still true of iyi's own 13,424 lines
+> "No standard library worth the name" is still true of iyi's own 13,609 lines
 > and no longer true of what a program can have. Part V item 12a is the
 > measurement, nine shards wide.
 
@@ -270,8 +270,8 @@ of binary. It is not made the default on that trade, and the middle needs the
 initialisers to run *later* rather than not at all, which is the `dlsym` table
 above, and a larger piece of work than the number it wins.
 
-**3. A deliberately tiny prelude, written in iyi. Done: 13,424 lines,
-primitives included, of which the library is 3,381.** Not a standard library:
+**3. A deliberately tiny prelude, written in iyi. Done: 13,609 lines,
+primitives included, of which the library is 3,405.** Not a standard library:
 integers, booleans, a string, one sequence, one dictionary, one range, `puts`. **Its scope is set by what the
 samples call and by nothing else**. A method enters the prelude because an
 existing sample needs it, never because it belongs there.
@@ -297,7 +297,7 @@ collector (GC_DESIGN.md, the block between two marks in `prelude.iyi`),
 the scheduler and the kernel thread (III.4, `concurrency.iyi` and
 `thread.iyi`), the shortest-round-trip float text (`float.iyi`) - and they
 are most of its lines. So the figure held to the ceiling is the library:
-**3,381 lines** of the 13,581, measured by `bench/doc_numbers.py` as
+**3,405 lines** of the 13,581, measured by `bench/doc_numbers.py` as
 everything under `src/iyi/` except those three. The whole-prelude figure is
 stated beside it because a reader sees the whole file, and a "tiny prelude"
 claim that hid 9,000 lines of runtime would be a claim about the wrong number.
@@ -310,7 +310,7 @@ question `src/std/` was created by: nothing in `src/iyi/` calls `sprintf`
 and nothing in it opens a socket, so every program was carrying 1,358 lines
 for the programs that do. They are `src/std/format.iyi` and
 `src/std/socket.iyi` now, reached by `import std/format` and `import
-std/socket`, and the library is **3,381 lines**, 353 under. `io.iyi` stays:
+std/socket`, and the library is **3,405 lines**, 353 under. `io.iyi` stays:
 it is the write path behind `puts`, which every program has.
 
 **Moving them broke Windows, and what broke was already broken.** With the
@@ -938,9 +938,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 108,718 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 13,424-line own prelude + 58,360 in std |
-| Specs | 21,146 lines | 9,596 for iyi |
+| Compiler | 24,984 lines, **written in Crystal** | 109,409 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 13,609-line own prelude + 58,360 in std |
+| Specs | 21,146 lines | 9,683 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |
@@ -2011,7 +2011,15 @@ language already had:
 - **A panic prints once, at the site of the bug** - the message, then
   `  at file:line` for a `raise` in the program's own code (a panic the
   prelude raises, an index out of range, names no prelude line: that is
-  not where the bug is) - then unwinds by
+  not where the bug is) - **on the error stream, through a write that
+  cannot fail**. Both halves are load-bearing. A panic is not the
+  program's output, so `prog > data.json` finds no panic inside the
+  JSON; and the print cannot be allowed to panic, because printing
+  through the ordinary stream meant a refused write raised, and that
+  raise printed, until the stack ended - a closed reader (`prog | head`)
+  turned every panic into a segfault. The panic path holds no stream
+  object either: it is reachable before the globals one would use are
+  built. Then it unwinds by
   registry: `defer` pushes its cleanup on the way in (the normalizer
   emits `__iyi_defer_push(-> { x })` and pops on every ordinary exit),
   so the panic path walks the current task's list innermost-first
@@ -2987,6 +2995,38 @@ Go's on churn and binary trees and level on the live items, and the
 footprint Go's on churn and binary trees and a budget over it on the
 live items.
 
+**And a fiber gives its stack back, which a server is the only program
+that notices.** A fiber's stack is 256 KiB of its own mapping with a
+guard page under it, and it was mapped and never returned: "a done
+fiber's stack is never reused" was true of the fiber and got read as
+true of the mapping. Nothing in a script minds. A server is a fiber per
+connection, and there the arithmetic is the request count: the address
+space grew with it, every collection walked a registry holding every
+request the process had ever served, and the mappings ran out first —
+`/proc/self/maps` outgrew the buffer the root walk reads it with, and
+the program exited saying so after twenty thousand fibers, half a
+second, no sockets involved. The rule now: **a finished fiber hands its
+stack to the fiber that runs next** — nothing can free the ground it
+stands on, so the successor does it, on its own stack, as its first
+instruction — and leaves the registry and its group's child list on the
+way out (a panicked child stays, because the boundary still owes a
+re-raise for one nobody read). Two hundred sequential connections run
+on one stack. The pool is per scheduler, which is per thread, so it
+needs no lock: a fiber never leaves the scheduler that spawned it.
+
+**The other half of that lesson: an address is not a reference.** The
+poller's event buffer was held as `Pointer(...).malloc(...).address` in
+a `UInt64` field, and the collector is *precise* over a typed object's
+fields — it traces the words the layout calls pointers. A number is not
+one. The first collection freed the buffer under the poller, the kernel
+kept writing epoll's answers into a chunk the allocator had handed to
+somebody else, and a server died at its first collection with the free
+list in pieces. The field is a `Pointer(UInt8)` now. The rule this
+leaves: runtime state that points into the heap is spelled as a
+pointer, or it is not there at all. `bench/server_load.sh` holds both —
+a fiber per connection, both halves parked on the poller, a collection
+in the middle — and proves both failures by patching them back in.
+
 #### III.4.12 Concurrency on wasm32-wasi: **MEASURED and REFUSED: why this target has no runtime**
 
 SPEC.md III.4 specifies structured concurrency (`group`/`spawn`, `Channel`,
@@ -3440,9 +3480,9 @@ demand-driven and a consumer links every unit every artifact carries.
 Both numbers are about the artifact rather than about the rule: what it
 carries, and when a consumer has to decode it.
 
-**And what it does not survive: the first request.** The application boots
-and faults on the first HTTP request it is given, and the reason is a rule
-this format does not keep. A *module used as a type* — kemal's
+**And what it did not survive: the first request.** The application booted
+and faulted on the first HTTP request it was given, and the reason was a
+rule this format did not keep. A *module used as a type* — kemal's
 `@next : HTTP::Handler | Nil`, the handler chain — is dispatched as a test
 per includer, and the includers are the ones the *producing* build had. A
 consumer writes its own middleware, joins that set, and the artifact's
@@ -3452,24 +3492,50 @@ pointer that was never a function.
 
 `bench/open_dispatch_fixture/` is that defect with no shard in it: a module
 `Link`, two includers in the shard, one in the consumer, and a boundary
-build that prints `first ` where the source build prints `first mine end`.
-It is not a gate, because it fails.
+build that printed `first ` where the source build prints `first mine end`.
 
-The rule the fix needs is the same sentence IV.1g already makes about
-blocks and generics, said about *sets*: **an instantiation whose machine
+**The rule is the same sentence IV.1g already makes about blocks and
+generics, said about *sets*, and it is BUILT: an instantiation whose machine
 code enumerates the members of an open type is the whole program's answer,
 not the module's, so its body travels and the consumer compiles it.** A
-module is the open case — anybody may include one — and a class is the
-half already written down. Measured on a prototype: making such bodies
-travel fixes the fixture and reaches two further shapes behind it, both of
-which are the same kind of thing as the twelve above. A private helper
-kept out of the declarations because its *default value* names the module
-it lives in (`limit : Int32 = Kemal.config.max_request_body_size`) — fixed
-here, because the module a consumer imported is always a name it can
-resolve — and a private nested type named by a call inside a body that has
-just started to travel (`private constant Kemal::ParamParser::LimitedBodyIO
-referenced`). The measurement above is therefore a floor: the application
-builds, boots and answers nothing.
+module is the open case — anybody may include one — and a class is the half
+already written down. The closure reaches the bodies that *call* one, because
+a caller the producer compiled binds to the producer's copy by name and
+carries the stale answer one call deep. `Iyi::OpenTravel` marks the call
+where the set is read (`Call#lookup_matches_in`), walks this build's
+instantiated defs, and marks every caller; `bench/open_dispatch.sh` runs the
+fixture both ways — `IYI_OPEN_TRAVEL=off` writes the boundary the way it was
+written before the rule, and answers `first `.
+
+**Bounded by what the artifact carries**, which is the part that had to be
+measured rather than reasoned. Walked over the whole program the closure
+reaches almost every method of every shard: `raise` dispatches over
+`Crystal::EventLoop`, `String.new` over four more modules, and a body that
+can raise is every body there is. None of it needs to travel — the library is
+what the consumer compiles for itself, so the symbol a shard's object code
+calls is the consumer's own, with the consumer's includers. So the walk stops
+at the module's own types. What that leaves open is a library method *copied*
+into an artifact's unit (IV.1g's internal-linkage copies): it holds the
+producer's set, and only a caller that travels would replace it. Nothing
+measured has reached it.
+
+Two further shapes came with it, both the same kind of thing as the twelve
+above. A private helper kept out of the declarations because its *default
+value* names the module it lives in (`limit : Int32 =
+Kemal.config.max_request_body_size`). And a declaration a travelling body
+needs that never crossed: a private nested type named from a sibling scope
+(`private constant Kemal::ParamParser::LimitedBodyIO referenced` — a
+declaration's members are written *inside* it now, so the name is the one the
+shard wrote), a method the shard alone cannot type (`exception_page` writes
+`def self.new(context : HTTP::Server::Context, …)` and requires no `http`, so
+its body travels and the consumer types it), a nested module that writes
+`extend self` (`Backtracer::Backtrace::Parser.parse`, carried as the word
+rather than as a second copy of every method — `.iyimod` v50), a method of a
+private type (the keep file cannot name one, so the producer emits no symbol
+for any of its methods and all of them travel), and an *empty* body, which
+the format spelled exactly the way it spells a header (`def backtracer` with
+nothing in it travels as `nil`). The application builds, boots and answers:
+`bench/kemal_serves.sh` holds it.
 
 Three rules came out of it. **A boundary is rooted at one namespace, and a
 shard need not have one**: `pg` declares `PG` and `PQ`, its wire protocol,
@@ -4256,7 +4322,6 @@ editor holds a subscription, an agent asks a question, and R-1 is what
 makes the whole-project question affordable — one cheap compile per
 module, no shared state to invalidate, capped so a monorepo cannot
 turn one request into a build farm. The gate holds 32 steps.
-
 **Then the last gap the comparison with gopls still named was closed.**
 References, rename, and incoming calls answered from the session's
 *open* documents; a caller in a file nobody opened was invisible, and a
@@ -4359,6 +4424,25 @@ header and path already disagree has no module identity to move and
 is left alone by name. The gate's step is the whole story: lexer.iyi
 becomes scanner.iyi, nine edits land across five files, and the moved
 module compiles clean. The gate holds 49 steps.
+
+**And the whole-project question learned to get out of the way.** One
+thread answers everything here, which is the honest limit; a *request*
+is not the unit it has to be honest about. The walk was written inside
+the response, so once it started nothing could stop it: 94 compiles on
+this repository, and a hover sent 50 ms in was answered 10.9 seconds
+later — the freeze a person reports as the server being broken. Between
+files the walk now reads its inbox. A cancel for the pull is `-32800`;
+anything else waiting stops the walk with `-32802` and
+`retriggerRequest`, the code the diagnostic request carries for exactly
+this, and the client asks again when the typing stops. Verdicts are
+kept by `resultId`, so the pull that is asked again resumes rather than
+starting over, and the same hover is answered in 0.23 s. The verbs the
+server runs for the editor — `▶ run`, `iyi/contextPack` — ride their
+own fibers for the same reason, and own their pipes: `iyi run` hands
+them to the program it builds, so waiting for end-of-file on them is
+waiting for a server to stop serving, which is how one click used to
+end a session permanently. Both are steps in the gate now, and it
+holds 55.
 
 **And the speed is measured, not asserted.** `bench/lsp_latency.py`
 opens the sample corpus — 32 modules: the calc language, the kemal
@@ -8800,7 +8884,7 @@ Named honestly, so nobody mistakes this draft for complete.
     shards exist and none of them is written to iyi's rules, so "run them
     directly" is not a compatibility problem, it is the four rules: `require`
     against R-1, inference against R-2, monkey patching against R-3, and
-    Crystal's 8,161-line standard library against iyi's own 13,424-line prelude.
+    Crystal's 8,161-line standard library against iyi's own 13,609-line prelude.
 
     What is measurable is narrower and better than that framing suggests, and
     it was measured on **Kemal 1.12.0**, which compiles under this compiler

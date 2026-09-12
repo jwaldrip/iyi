@@ -251,6 +251,15 @@ jobs:
       - name: The runtime exercise holds III.4's properties
         run: bash bench/runtime_exercise.sh
 
+      # The shape those primitives are actually used in: a fiber per
+      # connection, both halves parked on the poller, and a collection
+      # in the middle. Two crashes lived here — the poller's event
+      # buffer held as a number the collector could not see, and a
+      # finished fiber's stack never handed back — and both failure
+      # proofs are in the gate.
+      - name: A server's shape survives its own collector
+        run: bash bench/server_load.sh
+
       # III.1.4: a panic kills the task, not the process — defers run
       # by registry, the boundary re-raises once, `.or_panic` is real.
       - name: A panic dies at its boundary, cleanly
@@ -382,6 +391,15 @@ jobs:
       # gate here green.
       - name: Two bound shards keep their own regex literals
         run: bash bench/bind_regex_identity.sh
+
+      # A module held as a type, whose includers the consumer adds to (III.6).
+      # Forty lines and no network: the shard's two includers are compiled into
+      # the artifact's dispatch, the consumer writes a third, and before this
+      # rule the program printed half a line and stopped — which is what a
+      # kemal application did one request in. The arm with `IYI_OPEN_TRAVEL=off`
+      # is what keeps this gate honest: it still prints half a line.
+      - name: An open type's members are the program's answer
+        run: bash bench/open_dispatch.sh
 
       # And a chain of four, installed from the network. One boundary cannot
       # collide with another's synthesised names, cannot have an import edge to
@@ -917,6 +935,12 @@ jobs:
       - name: The concurrency gate (III.4)
         run: bash bench/concurrency_exercise.sh
 
+      # The same shape on kqueue, where the event entry is 32 bytes
+      # rather than 12 and the buffer the collector could not see is
+      # 512 rather than 192.
+      - name: A server's shape survives its own collector
+        run: bash bench/server_load.sh
+
       - name: The panics gate (III.1.4)
         run: bash bench/panics.sh
 
@@ -1016,6 +1040,16 @@ jobs:
           printf 'order = ""\nch = Channel(Int32).new\ngroup do |g|\n  g.spawn do\n    value = ch.receive\n    order = order + (value.is_a?(Int32) ? value.to_s : "?")\n    0\n  end\n  g.spawn do\n    sleep(10)\n    order = order + "a"\n    ch.send(7)\n    0\n  end\nend\nputs order\n' > conc.iyi
           test "$(env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run conc.iyi)" = "a7"
           echo "the kqueue runtime runs out of the tarball"
+
+      # The native standard library, out of the same tarball. `import std/text`
+      # is a line a program writes, so it has to resolve from what was
+      # downloaded and from nothing else — and on darwin especially, because
+      # this is the platform whose `cp` semantics shipped a library flattened
+      # into one directory once already. The gate moves the shipped directory
+      # aside and requires the failure, so a package that carries std twice
+      # cannot pass by accident.
+      - name: The native standard library, out of the tarball
+        run: bash bench/tarball_std.sh /tmp/unpacked
 
       - name: The other library, out of the tarball
         run: |
@@ -1391,6 +1425,14 @@ jobs:
           env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi run /tmp/unpacked/share/iyi/samples/hello.iyi
           env -u IYI_PATH -u CRYSTAL_PATH /tmp/unpacked/bin/iyi version
 
+      # The library a program opts into, out of the tarball: every `src/std/`
+      # module under its own name in `share/iyi/src/std`, each one imported and
+      # run with both path variables unset. 0.11.0 shipped none of it and said
+      # "can't find module 'std/enumerable'" to everybody who downloaded it,
+      # and `hello.iyi` passed that release.
+      - name: The native standard library, out of the tarball
+        run: bash bench/tarball_std.sh /tmp/unpacked
+
       # Both libraries, because a tarball that ships one of them answers
       # `require "json"` with "can't find file" — the headline feature failing
       # in the thing people download, which is how this was found.
@@ -1523,6 +1565,10 @@ jobs:
           export IYI_RELEASE_URL="file://$PWD/dist" IYI_VERSION="$version"
           IYI_PREFIX="$PWD/installed" sh install.sh
           env -u IYI_PATH -u CRYSTAL_PATH ./installed/bin/iyi run ./installed/share/iyi/samples/hello.iyi
+          # And what the one-liner leaves behind is a library, not just a
+          # binary: the same gate the tarball jobs run, against the prefix
+          # `install.sh` wrote. This is the path a person actually takes.
+          bash bench/tarball_std.sh "$PWD/installed"
 
           sed -i '1s/^0/X/; 1s/^[1-9a-f]/0/' dist/SHA256SUMS
           if IYI_PREFIX="$PWD/tampered" sh install.sh 2>err; then

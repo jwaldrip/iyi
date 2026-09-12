@@ -2,6 +2,90 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A module used as a type survives the boundary: the consumer's own
+  includer is in the dispatch.** 0.12.0 shipped this diagnosed and not
+  fixed, and it is the one thing a bound kemal application did not
+  survive — it booted and faulted on the first request. A module held as
+  a type (`@next : HTTP::Handler | Nil`, the handler chain every
+  middleware joins) is compiled as one type-id test per *including* type,
+  and the includers are whichever ones the producing build had;
+  `codegen_dispatch` ends in `unreachable`, so a consumer that writes its
+  own middleware falls off the end of the chain. IV.1g's sentence about
+  blocks and generics, said about **sets**: an instantiation whose machine
+  code enumerates the members of an open type is the whole program's
+  answer, so its body travels and the consumer compiles it — and so do the
+  bodies that *call* one, because a caller the producer compiled binds to
+  the producer's copy by name. `Iyi::OpenTravel` marks the call where the
+  set is read, walks this build's instantiated defs and marks every
+  caller. `bench/kemal_serves.sh` answers what the source arm answers now,
+  and `bench/open_dispatch.sh` holds the forty-line fixture both ways:
+  `IYI_OPEN_TRAVEL=off` writes the boundary the way it was written before
+  the rule and still prints `first ` where the source prints
+  `first mine end`.
+- **The closure is bounded by what the artifact carries, which is the half
+  that had to be measured.** Walked over the whole program it reaches
+  almost every method of every shard: `raise` dispatches over
+  `Crystal::EventLoop`, `String.new` over four more modules, and a body
+  that can raise is every body there is. None of it needs to travel — the
+  library is what a consumer compiles for itself, so the symbol a shard's
+  object code calls is the consumer's own, with the consumer's includers.
+  Unbounded it also turned `sqlite3`'s `ResultSet#read` into text, which
+  found a latent defect in the *other* direction and is now written down
+  where it lives (`Iyi.fun_type`): a `fun` returning an enum crosses as the
+  enum's base type, and a body compiled on the far side then cases on an
+  integer and takes the `else` — `another row available`, on the first
+  query. Bounded to the module's own call graph, nothing reaches it.
+- **Five declarations a travelling body needs, which never crossed.** Each
+  was invisible while the body that names it was machine code in the
+  artifact. A declaration's members are written *inside* it now, so a
+  private nested type is the name the shard wrote (`private constant
+  Kemal::ParamParser::LimitedBodyIO referenced`, on the class that
+  declares it). A method the shard alone cannot type travels as its body:
+  `exception_page` writes `def self.new(context : HTTP::Server::Context,
+  exception : Exception)` and requires no `http`, so instantiating it here
+  is refused and a consumer of `Kemal::ExceptionPage` got the synthesised
+  `new` alone — `wrong number of arguments (given 2, expected 4..10)`. A
+  nested module says whether it writes `extend self`, carried as the word
+  rather than as a second copy of every method, because
+  `Backtracer::Backtrace::Parser.parse` is how the shard calls it
+  (`.iyimod` v50). Every method of a *private* type travels, because
+  `keep_type` cannot name one and so the producer emits no symbol for any
+  of them (`undefined symbol: *Kemal::HeadRequestHandler::NullIO::new<…>`).
+  And an **empty** body travels as `nil`: the format spelled it exactly the
+  way it spells a header, so `def backtracer` with nothing in it arrived as
+  a promise of a symbol nobody emitted.
+
+## 0.12.0 — 2026-09-11
+
+**A Crystal project becomes iyi modules, and the thing people download
+carries the library it names.** `iyi migrate` writes a checkout out as
+iyi — a whole project, or one file at a time beside its source — and it
+was written against twelve real projects taken as they come from GitHub,
+`crystal-db`, `shards`, `halite`, `ameba`, `amber` and Kemal's own among
+them, which is where five of its rules came from. `iyi bind` puts every
+shard under `lib/` behind a boundary a program imports, and the sixteen
+defects in that boundary were found the same way: by consuming one. The
+tarball this release publishes is also the first to carry
+`share/iyi/src/std`, so `import std/text` resolves out of an install
+rather than answering "can't find module", and the first to publish
+`SHA256SUMS` beside the tarballs, which `install.sh` checks before it
+unpacks anything.
+
+**A server survives its own collector.** Two runtime mistakes of one
+shape — a heap pointer held as a number, where the collector is precise
+over a typed object's fields, and a fiber's stack mapped and never handed
+back — took a kemal port down at request ~400 under `wrk -c 100 -d 10`.
+The same program now serves 237,066 requests at 23,705/s behind 299
+mappings and 14 MB flat, and the stack pool's link moved to a word that
+is writable where a page is 16 KiB. The editor holds too: `▶ run` no
+longer ends the session, a workspace pull reads its inbox between files
+(a hover behind a 94-file walk: 10.9 s to 0.23 s), and a panic that could
+not be printed is a sentence on descriptor 2 instead of a segfault.
+
+`.iyimod` is v49.
+
 ### Added
 
 - **The header root is a fallback, not a replacement.** `iyi migrate
@@ -426,6 +510,104 @@
 
 ### Fixed
 
+- **The standard library is in the package now, under its own name, and
+  only once.** `import std/text` is a line a program writes, so the
+  modules have to be inside the thing people download. 0.11.0 shipped
+  `share/iyi/src/iyi` and nothing beside it: `import std/enumerable`
+  answered `can't find module 'std/enumerable'` out of the released
+  tarball, and every tarball gate passed it, because all of them run
+  `hello.iyi`. `make install_iyi` names `src/std` — and stops shipping
+  the second copy that `cp -R src/.` left inside the other language's
+  library directory, where `import std/...` resolved from by accident:
+  153 KB of a library that already shipped, and a copy that answers for
+  the real one going missing (moving `share/iyi/src/std` aside still
+  built, out of `share/iyi/crystal/std`). Nothing in Crystal's library
+  requires `std/...`, so it leaves with `iyi/`.
+- **A gate that reads the package instead of running `hello.iyi`.**
+  `bench/tarball_std.sh <unpacked-root>`: every `src/std/` module
+  present byte for byte, each one imported, built and run from a work
+  directory with `IYI_PATH` and `CRYSTAL_PATH` unset — so the binary's
+  own `$ORIGIN/../share/iyi/src` is what resolved it — the eight shipped
+  samples that import std built from where the tarball put them, and
+  then the shipped directory moved aside to require the failure, which
+  is what catches a second copy answering for it. It runs on both
+  tarballs (Linux and darwin, the platform whose `cp` flattened this
+  directory once already) and on the prefix `install.sh` writes, so the
+  bytes a person downloads are the ones checked.
+- **A server died at its first collection: the poller's event buffer was
+  a number, and the collector is precise.** `IyiSchedulerState#events`
+  held `Pointer(UInt8).malloc(...).address` — an address, in a `UInt64`
+  field — and a typed object's fields are traced by layout, so the one
+  reference to that heap buffer was invisible. The first collection
+  freed it; the kernel went on writing epoll's answers into a chunk the
+  allocator had already handed to somebody else; the free list it
+  scribbled over took the next allocation down. `wrk -c 100 -d 10`
+  against the sample web application died at request ~400 inside
+  `String#+` with "invalid memory access", and the trail read the same
+  every time: a 192-byte untyped chunk (sixteen epoll entries of twelve
+  bytes) written *after* it was freed. The field is a `Pointer(UInt8)`
+  now, which the layout traces. Same program, same load: 237,066
+  requests at 23,705/s and still serving.
+- **A fiber's stack was mapped and never handed back.** 256 KiB and a
+  registry node per fiber, kept on the grounds that a done fiber's
+  stack is never *reused* — true of the fiber, read as true of the
+  mapping. A server is a fiber per connection: the address space grew
+  with the request count, every collection walked a registry holding
+  every request the process had ever served, and the mappings killed it
+  first — `/proc/self/maps` outgrew the 64 KiB buffer the root walk
+  reads it with, and the program exited saying `no [stack] line in
+  /proc/self/maps` (20,000 fibers, half a second, no sockets needed).
+  A finished fiber now hands its stack to the fiber that runs next —
+  nothing can free the ground it stands on — and leaves the registry
+  and its group's child list on the way out. Two hundred sequential
+  connections run on **one** stack; the sample application holds 299
+  mappings and 14 MB across repeated runs where it used to grow without
+  bound. Gated by `bench/server_load.sh`, with both failures proved.
+- **The editor froze on `▶ run`, and the thirty-second guard could not
+  fire.** `iyi run` hands its pipes to the program it builds, and the
+  server handed *its* pipes to `Process` as `IO`s — which makes `wait`
+  wait for end-of-file on them as well as for the child. A program that
+  serves never closes them: the wait never returned, the timeout's own
+  `receive` waited on the same channel, and the single-threaded loop was
+  gone for good. One click on a web application's lens and the session
+  never answered anything again, which is what "iyi lsp froze" was on a
+  kemal port with a server in every file. The verb rides its own fiber
+  now and owns its pipes: the loop is free the whole time, the answer
+  joins the queue when the program is done, the kill travels (`iyi run`
+  forwards `SIGTERM`/`SIGHUP` to the program, so the port is free
+  afterwards), and a program printing in a loop is read to a megabyte
+  and then hung up on. Measured on the project that found it: a hover
+  sent 0.3 s into a `▶ run` over a listening server was answered in 0.3 s
+  where it had been answered never.
+- **The workspace pull owned the loop for every file it compiled.**
+  `workspace/diagnostic` is a compile per file, and the walk was written
+  inside the response: nothing could stop it. On this repository that is
+  94 compiles, and a hover sent 50 ms in was answered 10.9 seconds later
+  — the "it freezes while I type" a person reports as the server being
+  broken. The walk now reads its inbox between files: a cancel for the
+  pull is `-32800`, and anything else waiting stops it with `-32802` and
+  `retriggerRequest`, which is the code the diagnostic request carries
+  for exactly this and which the client answers by asking again two
+  seconds later. Verdicts are kept by `resultId`, so the pull that is
+  asked again resumes instead of starting over. The same hover is
+  answered in 0.23 s now, and a warm pull is unchanged at 20 ms.
+- **A panic that could not be printed was a segfault.** `raise` printed
+  through the program's own output stream, whose failed write raises —
+  so the panic printed, failed, printed the failure, failed again, and
+  recursed until the stack ended. `iyi run prog | head -3` died of
+  "invalid memory access" whose whole cause was the message about the
+  broken pipe. A panic goes straight to descriptor 2 now, through a
+  write that ignores its own failure: not the program's output (`prog >
+  data.json` was putting panics inside the JSON) and not a stream object
+  either, because `raise` is reachable before the globals one would use
+  are built — reaching for `STDERR` there flushed 22 zero bytes into the
+  front of every program's output. A refused write also says what a
+  refusal means now - `write failed: the reader is gone, or the device
+  refused it` - because "write failed" told nobody anything, and the
+  errno that would name which is not reachable on every target the
+  prelude has (the Linux path answers `-errno` from the raw syscall,
+  darwin's `LibC.write` answers `-1`, and one sentence that is true
+  everywhere beats two that differ by platform).
 - **A private helper the declarations pruned because its default names its
   own module.** `prune_declaration` refuses a method whose text names a
   type the artifact did not carry, and a parameter's text holds its
@@ -4925,7 +5107,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 13,424-line library and nothing else. Every other
+  written against iyi's own 13,609-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 

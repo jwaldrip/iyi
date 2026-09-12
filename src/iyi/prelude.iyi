@@ -7277,20 +7277,44 @@ end
 # the group boundary re-raises in the owner, which is where III.1.4
 # says a panic is caught. `NoReturn` is a type-system fact `.or_panic`
 # depends on (III.1.3): the fiber never resumes.
+# The panic's own write: one descriptor, no stream object, no error.
+#
+# Both halves are the same lesson. `print` goes through `IyiIO`, whose
+# write *raises* when the descriptor refuses - a closed pipe, `head`
+# gone - so a panic printed that way panicked, printed again, and
+# recursed until the stack ended: `iyi run prog | head -3` died of
+# "invalid memory access" whose entire cause was the message about the
+# broken pipe. And reaching for `stdout`/`STDERR` here is worse than
+# raising, because `raise` is reachable from the prelude's own early
+# code, before those globals are built - trying it flushed twenty-two
+# zero bytes into the front of every program's output.
+#
+# Descriptor 2, because a panic is not the program's output: `prog >
+# data.json` must not find a panic inside the JSON.
+private def __iyi_say(text : String) : Nil
+  written = 0_i64
+  total = text.bytesize.to_i64
+  while written < total
+    n = __iyi_write(2, (text.to_unsafe + written).as(Void*), (total - written).to_u64)
+    break if n <= 0_i64
+    written = written + n
+  end
+end
+
 def raise(message : String, file : String = __FILE__, line : Int32 = __LINE__) : NoReturn
-  print "iyi: panic: "
-  print message
-  print "\n"
+  __iyi_say("iyi: panic: ")
+  __iyi_say(message)
+  __iyi_say("\n")
   # The site, when it is the program's: the file and line the compiler
   # filled in at the call. A panic the prelude raises - an index out of
   # range, a division by zero - names the prelude's own line, which is
   # not where the bug is, and prints none.
   unless file.includes?("/src/iyi/") || file.starts_with?("src/iyi/")
-    print "  at "
-    print file
-    print ":"
-    print line.to_s
-    print "\n"
+    __iyi_say("  at ")
+    __iyi_say(file)
+    __iyi_say(":")
+    __iyi_say(line.to_s)
+    __iyi_say("\n")
   end
   {% if (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
     IyiScheduler.panic_current(message)

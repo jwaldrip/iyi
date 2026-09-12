@@ -392,6 +392,8 @@ class IyiFiber
   # them frees live objects. The main fiber's top stays 0 — its stack is
   # the thread's own and the root walk already knows that one's base.
   property next_fiber : IyiFiber?
+  property prev_fiber : IyiFiber?
+  property prev_child : IyiFiber?
   property stack_top : UInt64
 
   property deadline : Int64
@@ -434,6 +436,8 @@ class IyiFiber
     @wait_fd = -1
     @park_nonce = 0_u64
     @next_fiber = nil
+    @prev_fiber = nil
+    @prev_child = nil
     @stack_top = 0_u64
     @wait_handle = Pointer(Void).new(0_u64)
     @wait_overlapped = Pointer(UInt8).malloc(32_u64)
@@ -448,7 +452,28 @@ class IyiFiber
     fiber
   end
 
+  # A stack, from the pool if a finished fiber left one there.
+  #
+  # They used to be mapped and never given back, on the grounds that a
+  # done fiber's stack is never reused — which is true of the fiber and
+  # was read as true of the mapping. A server is a fiber per connection:
+  # 256 KiB a request, never returned, is a leak with a request counter
+  # on it, and the mappings are the visible half - a thousand
+  # connections is two thousand lines in `/proc/self/maps`, past what
+  # the root walk's own reader could hold, and the program died saying
+  # so. The stack comes back now, handed over by the fiber that runs
+  # next (`IyiScheduler.reap_dying`), because nothing can free the stack
+  # it is standing on.
   def prepare_stack : Nil
+    base = IyiScheduler.take_stack
+    if base != 0
+      settle_stack(base)
+      return
+    end
+    settle_stack(map_stack)
+  end
+
+  def map_stack : UInt64
     # The runtime's own mapping (PROT_READ|PROT_WRITE = 3 on both
     # platforms), so a fiber stack exists under every allocator, Boehm
     # included, and a guard page (PROT_NONE) under it, so running off
@@ -477,6 +502,13 @@ class IyiFiber
       base = mapped.to_u64
       __iyi_conc_syscall3(IYI_SYS_MPROTECT, base.to_i64, PAGE.to_i64, 0_i64)
     {% end %}
+    base
+  end
+
+  # The first frame, on a stack that is either fresh from the kernel or
+  # back from the pool: every word the resume reads is written here, so a
+  # reused stack starts exactly as a new one does.
+  def settle_stack(base : UInt64) : Nil
     top = base + STACK_BYTES
     @stack_top = top
     {% if flag?(:win32) && flag?(:x86_64) %}
@@ -520,6 +552,18 @@ class IyiFiber
       Pointer(UInt64).new(saved + 88_u64).value = __iyi_fiber_entry_address
       @sp = saved
     {% end %}
+  end
+
+  # The mapping, handed back. Called by the fiber that runs *after* this
+  # one dies, never by the dying fiber: nothing frees the stack it is
+  # standing on. The two words go with it, so a walk that reaches this
+  # fiber again finds nothing to scan.
+  def release_stack : Nil
+    top = @stack_top
+    return if top == 0
+    @stack_top = 0_u64
+    @sp = 0_u64
+    IyiScheduler.give_stack(top - STACK_BYTES)
   end
 
   def sp_slot : Pointer(UInt64)
@@ -614,12 +658,35 @@ class IyiSchedulerState
   property sleep_head : IyiFiber?
   property io_head : IyiFiber?
   property pollfd : Int64
-  property events : UInt64
+
+  # The poller's event buffer, as a *pointer*.
+  #
+  # It was a `UInt64` holding `.address`, and an address is a number:
+  # the collector is precise over a typed object's fields, so the one
+  # reference to a heap buffer was invisible and the first collection
+  # freed it. The kernel went on writing epoll results into a chunk the
+  # allocator had already handed back - sixteen events of twelve bytes,
+  # which is the 192-byte class - and the free list it scribbled over
+  # took the next allocation down with it. Every program that parks on
+  # the poller and lives long enough to collect once: a server, in
+  # other words, which is how this was found (a `wrk` run over a
+  # hundred connections, dead at the first collection).
+  property events : Pointer(UInt8)
   property next_state : IyiSchedulerState?
+
+  # The fiber that finished on this thread and is waiting for its
+  # successor to hand the stack back, and the stacks already handed
+  # back. Both are this thread's alone — a fiber never leaves the
+  # scheduler it was spawned on — so neither needs the lock. The pool
+  # is a list threaded through the stacks themselves, at the first word
+  # above the guard page.
+  property dying : IyiFiber?
+  property stack_pool : UInt64
 
   def initialize
     @pollfd = 0_i64
-    @events = 0_u64
+    @events = Pointer(UInt8).new(0_u64)
+    @stack_pool = 0_u64
   end
 end
 
@@ -671,21 +738,81 @@ class IyiScheduler
     main
   end
 
-  # Every fiber ever made, intrusively linked, for the collector's root
+  # Every *live* fiber, intrusively linked, for the collector's root
   # walk (GC_DESIGN.md Stage 3). The queues cannot serve that walk: a
   # channel-parked fiber lives in the channel's own node list, which the
   # scheduler cannot see, and a joiner hangs off the fiber it waits on.
-  # One list that only grows is exact by construction, and a done fiber
-  # is skipped by state rather than unlinked — its stack is never reused
-  # anyway (state 6's own rule above). Under the runtime lock, for the
-  # reason the states are.
+  #
+  # It used to be every fiber *ever made*, on the grounds that a done
+  # one is skipped by state. Skipped is not free: a server makes a fiber
+  # per connection, and a list nothing leaves makes every later
+  # collection walk every request the process ever served. A fiber
+  # leaves when its stack does, which is one step with the back link.
+  # Under the runtime lock, for the reason the states are.
   @@all_head : IyiFiber?
 
   def self.register(fiber : IyiFiber) : Nil
     IyiRuntimeLock.lock
-    fiber.next_fiber = @@all_head
+    head = @@all_head
+    fiber.next_fiber = head
+    fiber.prev_fiber = nil
+    head.prev_fiber = fiber if head.is_a?(IyiFiber)
     @@all_head = fiber
     IyiRuntimeLock.unlock
+  end
+
+  def self.unregister(fiber : IyiFiber) : Nil
+    IyiRuntimeLock.lock
+    following = fiber.next_fiber
+    previous = fiber.prev_fiber
+    if previous.is_a?(IyiFiber)
+      previous.next_fiber = following
+    else
+      @@all_head = following
+    end
+    following.prev_fiber = previous if following.is_a?(IyiFiber)
+    fiber.next_fiber = nil
+    fiber.prev_fiber = nil
+    IyiRuntimeLock.unlock
+  end
+
+  # A stack for a new fiber out of this thread's pool (0 when it is
+  # empty and the caller should map one), and the way back into it. The
+  # list runs through the stacks themselves, at the top word - the one
+  # place in the mapping that is writable on every target.
+  #
+  # The bottom is not: the guard page is `mprotect`ed by *length*, and a
+  # length is rounded up to the platform's page. darwin on arm64 pages
+  # at 16 KiB, so a guard asked for as 4 KiB is 16 KiB of unwritable
+  # mapping and a link stored just above `PAGE` faults the first time a
+  # fiber hands its stack back. It did, on the first program with tasks
+  # in it, every run, on that platform only.
+  def self.take_stack : UInt64
+    st = state
+    base = st.stack_pool
+    return 0_u64 if base == 0
+    st.stack_pool = Pointer(UInt64).new(base + IyiFiber::STACK_BYTES - 8_u64).value
+    base
+  end
+
+  def self.give_stack(base : UInt64) : Nil
+    st = state
+    Pointer(UInt64).new(base + IyiFiber::STACK_BYTES - 8_u64).value = st.stack_pool
+    st.stack_pool = base
+  end
+
+  # The fiber that died to get here. This runs on the *successor's*
+  # stack — the first instruction after a switch, and the first thing a
+  # fresh fiber does — because nothing can free the ground it is
+  # standing on. The mapping goes to the pool and the fiber leaves the
+  # registry; its object stays for as long as a task handle wants it.
+  def self.reap_dying : Nil
+    st = state
+    fiber = st.dying
+    return unless fiber.is_a?(IyiFiber)
+    st.dying = nil
+    fiber.release_stack
+    unregister(fiber)
   end
 
   def self.first_fiber : IyiFiber?
@@ -771,10 +898,16 @@ class IyiScheduler
     return if fiber.sp_slot.address == previous.sp_slot.address
     state.current = fiber
     __iyi_ctx_swap(previous.sp_slot, fiber.sp_slot)
+    # Back on this fiber's own stack, which is the first moment a stack
+    # somebody else finished with can be taken back.
+    reap_dying
   end
 
   # The trampoline lands here on a fresh fiber's first resume.
   def self.run_spawned_fiber : Nil
+    # A fresh fiber is also a successor: the switch that got here
+    # returned into the trampoline rather than into `switch_to`.
+    reap_dying
     fiber = current
     body = fiber.proc
     body.call unless body.is_a?(Nil)
@@ -785,7 +918,10 @@ class IyiScheduler
       enqueue(joiner)
     end
     # Never returns: a done fiber is never enqueued, so the switch away
-    # is the last instruction of this stack's life.
+    # is the last instruction of this stack's life — and the stack is
+    # the next fiber's to take back, named here because after the
+    # switch nobody else knows which one it was.
+    state.dying = fiber
     reschedule
     raise "a done fiber was scheduled"
   end
@@ -1191,11 +1327,12 @@ class IyiScheduler
   end
 
   def self.events_buffer : UInt64
-    buffer = state.events
-    return buffer if buffer > 0
-    buffer = Pointer(UInt8).malloc((EVENTS * IYI_POLL_EVENT_BYTES).to_u64).address
-    state.events = buffer
-    buffer
+    st = state
+    buffer = st.events
+    return buffer.address if buffer.address != 0_u64
+    buffer = Pointer(UInt8).malloc((EVENTS * IYI_POLL_EVENT_BYTES).to_u64)
+    st.events = buffer
+    buffer.address
   end
 
   # ── Panics — III.1.4 ─────────────────────────────────────────────────
@@ -1235,6 +1372,7 @@ class IyiScheduler
       fiber.joiner = nil
       enqueue(joiner)
     end
+    state.dying = fiber
     reschedule
     __iyi_exit(1)
   end
@@ -1361,10 +1499,14 @@ class IyiGroup
       value = block.call
       task.finish(value)
       runner.child_finished(value.is_a?(::Error) && !fiber.cancelled)
+      runner.drop_child(fiber)
     end
     fiber.prepare_stack
     IyiScheduler.register(fiber)
     fiber.next_child = @first_child
+    fiber.prev_child = nil
+    first = @first_child
+    first.prev_child = fiber if first.is_a?(IyiFiber)
     @first_child = fiber
     fiber.group = self
     @live = @live + 1
@@ -1380,6 +1522,25 @@ class IyiGroup
   end
 
   # :nodoc: — the runtime's own callback, on the task's stack.
+  # A child that finished and left nothing to say leaves the list too.
+  # A group is a scope and most scopes are short, but a server's is the
+  # whole run: its children are every connection it ever took, and a
+  # list that only grows is the same leak the registry had. A panicked
+  # child stays, because `join` owes a re-raise for one nobody read.
+  def drop_child(fiber : IyiFiber) : Nil
+    return if fiber.panicked
+    following = fiber.next_child
+    previous = fiber.prev_child
+    if previous.is_a?(IyiFiber)
+      previous.next_child = following
+    else
+      @first_child = following
+    end
+    following.prev_child = previous if following.is_a?(IyiFiber)
+    fiber.next_child = nil
+    fiber.prev_child = nil
+  end
+
   def child_finished(failed : Bool) : Nil
     @live = @live - 1
     if failed && !@failed

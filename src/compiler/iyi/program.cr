@@ -606,6 +606,15 @@ module Iyi
     # code in `ObjectCode`.
     getter iyi_mono_bodies = {} of String => Hash(String, String)
 
+    # iyi: the defs whose bodies travel because their machine code enumerates an
+    # open type's members, by the location each was written at (SPEC.md III.6).
+    #
+    # Filled by `Iyi::OpenTravel`, which marks the def itself as well. The
+    # location is here for the one reader that has no `Def` to ask: `iyi tool
+    # bind` decides what a Crystal shard's boundary carries from its own record
+    # of each method, and a location names one def in one build.
+    getter iyi_open_travel_defs = Set(String).new
+
     # iyi: the macros each file declares, as source text, by absolute filename
     # (SPEC.md IV.1, `MacroBodies`).
     #

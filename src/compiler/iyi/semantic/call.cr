@@ -259,6 +259,15 @@ class Iyi::Call
 
     including_types = owner.including_types
     if including_types
+      # iyi: this is the open set, and the mark is what says so (SPEC.md III.6).
+      #
+      # Every other receiver a call can have is a type the program already
+      # holds. This one is a *question* — which types include this module, or
+      # which instantiations of this generic exist — and the answer is the whole
+      # program's. A consumer that includes the module joins the set, and object
+      # code compiled against the producer's set tests type ids that are not its
+      # own.
+      self.iyi_open_dispatch = true
       lookup_matches_in(including_types, arg_types, named_args_types, search_in_parents: search_in_parents, with_autocast: with_autocast)
     else
       [] of Def
@@ -1593,6 +1602,13 @@ class Iyi::Call
     typed_def = untyped_def.clone
     typed_def.owner = owner
     typed_def.original_owner = untyped_def.owner
+    # iyi: and the def as it was *written*, which is a different question from
+    # the type that wrote it (SPEC.md III.6). An artifact decides what travels
+    # by looking at a type's own `defs`, while everything about machine code is
+    # a fact about this clone; `Iyi::OpenTravel` needs both ends of that.
+    # `original_untyped_def`, not `untyped_def`: a default-argument expansion is
+    # a def this compiler wrote, and nothing in a type's `defs` is it.
+    typed_def.iyi_origin = original_untyped_def
 
     if body = typed_def.body
       typed_def.bind_to body

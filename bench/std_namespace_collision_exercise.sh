@@ -129,7 +129,7 @@ python3 - "$LOOKUP2" <<'PY'
 import sys
 path = sys.argv[1]
 text = open(path).read()
-old = "if @raise && type.is_a?(Type) && !iyi_own_type_parameter?(node)"
+old = "if @raise && type.is_a?(Type) && !type_var_name?(node)"
 new = "if @raise && type.is_a?(Type)"
 assert old in text, "the exemption is not in the shape this proof patches"
 open(path, "w").write(text.replace(old, new, 1))

@@ -200,6 +200,93 @@ describe "Semantic: iyi import" do
     end
   end
 
+  describe "the import wall and a generic's own type variables (SPEC.md R-1)" do
+    # The wall asks a *file* whether it imported a name it wrote. A generic's
+    # methods are re-resolved against the instance, so `T` in `holder.iyi`
+    # comes back as whatever the program chose — and the wall took that for a
+    # name `holder.iyi` had written. Any generic instantiated with another
+    # module's type was refused on the line declaring its own field.
+    it "lets a generic be instantiated with a type its own file never named" do
+      with_iyi_modules({
+        "lib/holder.iyi" => <<-IYI,
+          module lib/holder
+
+          pub struct Holder(T)
+            @value : T
+
+            def initialize(@value : T)
+            end
+
+            pub def each(& : T -> Nil) : Nil
+              yield @value
+            end
+          end
+          IYI
+        "lib/badge.iyi" => <<-IYI,
+          module lib/badge
+
+          pub struct Badge
+            @name : String
+
+            def initialize(@name : String)
+            end
+
+            pub def name : String
+              @name
+            end
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import lib/holder
+          import lib/badge
+          using lib/holder::{Holder}
+          using lib/badge::{Badge}
+
+          kept = ""
+          Holder(Badge).new(Badge.new("kept")).each do |badge|
+            kept = badge.name
+          end
+          IYI
+      }) do
+        semantic_iyi("main.iyi")
+      end
+    end
+
+    # And the wall still stands where a file really does write the name.
+    it "still refuses a name the file did not import" do
+      with_iyi_modules({
+        "lib/badge.iyi" => <<-IYI,
+          module lib/badge
+
+          pub struct Badge
+          end
+          IYI
+        "lib/peek.iyi" => <<-IYI,
+          module lib/peek
+
+          import lib/badge
+
+          pub def peek : Lib::Badge::Badge?
+            nil
+          end
+          IYI
+        "main.iyi" => <<-IYI,
+          module app/main
+
+          import lib/peek
+
+          Lib::Badge::Badge
+          IYI
+      }) do
+        expect_raises(Iyi::TypeException, /is not imported here/) do
+          semantic_iyi("main.iyi")
+        end
+      end
+    end
+  end
+
   describe "from a .iyimod (SPEC.md IV.1)" do
     # R-1's contract, stated as a test: the source is not opened. Not opened
     # rather than not preferred — there is no `app/dep.iyi` on disk at all.

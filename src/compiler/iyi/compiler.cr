@@ -590,6 +590,20 @@ module Iyi
         end
       end
 
+      # iyi: and which of their bodies answer for an open set (SPEC.md III.6).
+      #
+      # Here, because this is where the owners are known and before the surface
+      # below is collected: a body whose machine code enumerates a module's
+      # including types is the whole program's answer, so it travels in
+      # `MonoBodies` like a block-taking one. Before codegen for the same
+      # reason the collection is — the keep file leaves a travelling body
+      # alone, so nothing emits a symbol for it.
+      @progress_tracker.stage("Open dispatch") do
+        OpenTravel.mark(program) do |owner|
+          program.iyi_exported_owners.includes?(owner.instance_type)
+        end
+      end
+
       prepared = program.iyi_module_paths.map do |filename, module_name|
         # Both hashes, because a dependency may have arrived either way and the
         # edge is keyed on a filename regardless. Asking only the source one
@@ -1558,7 +1572,13 @@ module Iyi
           # instantiated with the caller's block inside it, so the consumer is
           # what compiles it — the same reason a generic's method and a trait's
           # default travel (SPEC.md IV.1g).
-          if (travels || iyi_takes_block?(item.def)) && !item.def.abstract?
+          #
+          # And a def whose machine code enumerates an open type's members, or
+          # which calls one that does, for the reason III.6 gives: the set is
+          # the whole program's, so the answer is too. `Iyi::OpenTravel` marked
+          # it before this ran.
+          if (travels || iyi_takes_block?(item.def) || item.def.iyi_open_travel?) &&
+             !item.def.abstract?
             iyi_record_mono_body program, filename, container, signature, item.def
           end
         end
@@ -1608,7 +1628,11 @@ module Iyi
 
           signature = IyiMod.signature(item.def, check_block: false)
           signatures << signature
-          if iyi_takes_block?(item.def)
+          # The same two reasons the exported side travels for: a block-taking
+          # body is the caller's, and one whose code answers for an open set is
+          # the program's (SPEC.md III.6). A header for either would promise a
+          # symbol nobody emitted.
+          if iyi_takes_block?(item.def) || item.def.iyi_open_travel?
             iyi_record_mono_body program, filename, container, signature, item.def
           end
         end

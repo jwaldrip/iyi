@@ -123,6 +123,28 @@ class Iyi::Type
       end
     end
 
+    # iyi: whether this path is one of the *scope's* type variables (SPEC.md
+    # R-1).
+    #
+    # A generic's methods are re-resolved against the instance: `struct
+    # Holder(T)` writing `def initialize(@value : T)` has `T` looked up again
+    # with `Holder(Lib::Badge)` for a root, and what comes back is the caller's
+    # type. Asked of the import wall, that is the wrong question to the wrong
+    # file — `holder.iyi` never wrote `Badge`, the program that instantiated it
+    # did — and the refusal landed on the line declaring the field:
+    # ``Lib::Badge` is not imported here`. Any generic instantiated with another
+    # module's type hit it.
+    private def type_var_name?(node : Path) : Bool
+      return false unless node.names.size == 1
+      return false if node.global?
+      root = @root
+      # And the metaclass side, which is where a `new` resolves its arguments:
+      # the root there is `Holder(Badge).class`.
+      root = root.instance_type if root.metaclass?
+      return false unless root.is_a?(GenericInstanceType)
+      root.type_vars.has_key?(node.names.first)
+    end
+
     def lookup_type_var?(node : Path)
       # Check if the Path begins with a free variable
       if !node.global? && (free_var = @free_vars.try &.[node.names.first]?)
@@ -153,49 +175,11 @@ class Iyi::Type
       # `pub import`s. Only on authoritative lookups: a speculative one
       # (`@raise` off — overload matching trying restrictions) must
       # keep its answer, not acquire a new way to fail.
-      #
-      # A bare type parameter is exempt, because it is the file's own word.
-      # `Hash(K, V)` writes `K`; which type `K` stands for is the program's
-      # instantiation, not a name this file reached for. Checking it would make
-      # a file answerable for every element type any other file happens to put
-      # in a collection - std/enumerable stopped compiling beside std/json,
-      # std/yaml and std/http exactly that way.
-      if @raise && type.is_a?(Type) && !iyi_own_type_parameter?(node)
+      if @raise && type.is_a?(Type) && !type_var_name?(node)
         @root.program.iyi_check_import_reach(node, type)
       end
 
       type
-    end
-
-    # iyi: is *node* a bare name the enclosing generic declared as one of its
-    # own type parameters? Walks the namespace chain, because a method on
-    # `Hash(K, V)` is looked up with the instantiation as the root while the
-    # names it may write belong to the generic above it.
-    private def iyi_own_type_parameter?(node : Path) : Bool
-      return false if node.global? || node.names.size != 1
-
-      name = node.names.first
-      owner : Type? = @root
-      while owner
-        case owner
-        when GenericInstanceType
-          return true if owner.type_vars.has_key?(name)
-        when GenericType
-          return true if owner.type_vars.includes?(name)
-        end
-
-        next_owner : Type? =
-          if owner.is_a?(GenericInstanceType)
-            owner.generic_type.as(Type)
-          elsif owner.is_a?(NamedType) && (up = owner.namespace) != owner
-            up.as(Type)
-          else
-            nil
-          end
-        owner = next_owner
-      end
-
-      false
     end
 
     def lookup(node : Union)
