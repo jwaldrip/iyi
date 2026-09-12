@@ -2,7 +2,7 @@
 #
 #   ./bin/iyi run bench/std_oauth_parity_exercise.iyi
 #
-# Verifies complete Crystal parity for std/oauth and std/oauth2:
+# Verifies the full public surface of std/oauth and std/oauth2:
 # 1. RFC 5849 Section 1.2 test vectors (initiate, token, and protected resource access)
 # 2. RFC 5849 Section 3.4.1.1 signature base string + Errata 2550 POST and GET signatures
 # 3. RFC 6749 client credentials Basic authentication encoding
