@@ -182,6 +182,10 @@ pub class SettingsDictionary
     buf
   end
 
+  def serialize : Bytes
+    encode
+  end
+
   # Decodes settings; strictly enforces RFC 9114 7.2.4.1 validation (Finding 17).
   def self.decode?(payload : Bytes) : {SettingsDictionary?, UInt64}
     dict = SettingsDictionary.new

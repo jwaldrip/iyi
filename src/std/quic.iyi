@@ -222,6 +222,10 @@ pub class QuicCrypto
     KeyBundle.new(key, iv, hp)
   end
 
+  def self.derive_keys(secret : Bytes, is_chacha : Bool = false) : KeyBundle
+    derive_packet_keys(secret, is_chacha)
+  end
+
   # Computes the 12-byte AEAD nonce: iv XOR (64-bit packet number left-padded).
   def self.compute_nonce(iv : Bytes, packet_number : UInt64) : Bytes
     nonce = Bytes.new(12)
@@ -1410,6 +1414,10 @@ pub class RttEstimator
     diff = (@smoothed_rtt - adjusted_rtt).abs
     @rttvar = (@rttvar * 3_i64 + diff) // 4_i64
     @smoothed_rtt = (@smoothed_rtt * 7_i64 + adjusted_rtt) // 8_i64
+  end
+
+  def update(latest : Int64, ack_delay : Int64 = 0_i64, handshake_confirmed : Bool = false) : Nil
+    update_rtt(latest, ack_delay, handshake_confirmed)
   end
 
   # Space-aware PTO calculation with overflow protection (Finding 9).

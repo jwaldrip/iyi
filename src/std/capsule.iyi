@@ -522,4 +522,8 @@ pub struct CapsuleProtocol
   def self.valid_header?(name : String, value : String) : Bool
     name.downcase == "capsule-protocol" && (value == "?1" || value == "?1 ")
   end
+
+  def self.is_capsule_protocol_header?(value : String) : Bool
+    value == "?1" || value == "?1 "
+  end
 end

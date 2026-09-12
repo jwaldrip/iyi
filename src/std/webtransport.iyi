@@ -151,6 +151,10 @@ pub struct CloseSessionCapsule
     res
   end
 
+  def self.decode(bytes : Bytes, offset : Int32 = 0) : CloseSessionCapsule
+    decode_value(bytes, offset)
+  end
+
   # Decodes CloseSessionCapsule directly from a Capsule object.
   def self.from_capsule(capsule : Capsule) : CloseSessionCapsule
     if capsule.capsule_type != WebTransportConstants::CAPSULE_CLOSE_SESSION
@@ -453,6 +457,14 @@ pub class WebTransportSession
     @status
   end
 
+  def create_bidi_stream : Bytes
+    BidiStreamHeader.new(@session_id).encode
+  end
+
+  def create_uni_stream : Bytes
+    UniStreamHeader.new(@session_id).encode
+  end
+
   # Frames a bidirectional stream payload for transmission.
   # Prepends the 0x41 Stream Type and Session ID header.
   def send_bidi_stream(payload : Bytes) : Bytes
@@ -608,6 +620,10 @@ pub class WebTransportSession
     end
     # Unknown capsule types are skipped per RFC 9297 Section 3.2 extensibility rule.
     @status
+  end
+
+  def process_capsule(capsule : Capsule) : Int32
+    receive_capsule(capsule)
   end
 end
 
