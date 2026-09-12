@@ -381,8 +381,8 @@ line so it cannot move unread.
 **Efficiency — built, and it is mostly subtraction.** `puts "hello"` is a 36 KB
 binary that starts in 1.6 ms; the same program compiled with Crystal's standard
 library is 1,553 KB and 3.2 ms. Nothing clever is happening: a program links what
-it uses, and iyi's own library is 13,780 lines rather than 8,161. The whole
-library is 532 KB on disk beside the binary.
+it uses, and iyi's own library is 13,836 lines rather than 8,161. The whole
+library is 535 KB on disk beside the binary.
 
 <sup>Sizes and start times are a plain `iyi build`, no flags, on macOS arm64
 with LLVM 22. They move with the platform and the LLVM, which is why they are
@@ -583,7 +583,7 @@ $ curl localhost:3000/json
 `pub`, traits with defaults, `impl … forall`, error unions and `!`, `.or`,
 `or_panic`, `defer` — all of them, on a program that requires a shard. R-2
 still refuses an export that does not write its types. What changes is what the
-program *has*: 8,161 lines of Crystal's standard library instead of 13,780
+program *has*: 8,161 lines of Crystal's standard library instead of 13,836
 lines of iyi's own prelude.
 
 **One name is unreachable, and it is a class of names.** `!` in iyi propagates
@@ -965,7 +965,7 @@ marked PROPOSED are the parts that will move under you.
 
 ## What is not here
 
-- **iyi's own library is 13,780 lines, and its IO is `puts`, `print`,
+- **iyi's own library is 13,836 lines, and its IO is `puts`, `print`,
   `read_input` and `File`**: integers, booleans, a string, one sequence, one
   dictionary, one range, and what an `enum` needs — its name, its order, its
   members and, for a `@[Flags]` one, its bits. `read_input` returns everything

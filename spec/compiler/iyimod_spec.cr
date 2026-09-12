@@ -2090,6 +2090,49 @@ describe Iyi::IyiMod do
     end
   end
 
+  # A module path is a file path (R-1), so the same name can come to mean a
+  # different file: `src/std/` ships a `std/text`, and a program with one of
+  # its own that deletes it finds the library's at that path. The artifact is
+  # then not stale — it is about a file nobody asked for — and saying
+  # "src/std/text.iyi has changed since it was written" named a library file
+  # the author has never opened.
+  it "names a module whose path reaches another file now" do
+    with_tempdir("iyimod_moved_name") do
+      Dir.mkdir_p "std"
+      File.write "std/text.iyi", <<-IYI
+        module std/text
+
+        pub def mine : Int32
+          7
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import std/text
+        using std/text::{mine}
+
+        puts mine
+        IYI
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq "7"
+
+      File.delete "std/text.iyi"
+
+      reader = create_spec_compiler
+      reader.prelude = "iyi/prelude"
+      reader.use_iyimod = "mods"
+      expect_raises(Iyi::TypeException, /"std\/text" is .+ now, and this was written from .+std\/text\.iyi/) do
+        reader.compile source, File.expand_path("moved")
+      end
+    end
+  end
+
   # An artifact records the module it was written for, and nothing compared that
   # to the module being imported. A `.iyimod` copied onto another module's path
   # was adopted: its declarations were spliced in under its own name, and the

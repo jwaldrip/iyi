@@ -673,16 +673,12 @@ end
 # Enumerable implementations for core collection types
 # ---------------------------------------------------------------------------
 
+# `Array` already answers `each` with exactly this shape, so the impl only
+# names what it enumerates. Writing the body again here would reach into the
+# prelude's own `@size` and `@buffer` from another module, and would redefine
+# a method the prelude declares, which is what R-3 refuses.
 impl Enumerable for Array(T) forall T
   type Elem = T
-
-  def each(& : T -> Nil) : Nil
-    i = 0
-    while i < @size
-      yield @buffer[i]
-      i = i + 1
-    end
-  end
 end
 
 class ::Hash(K, V)
@@ -980,13 +976,13 @@ class ::Hash(K, V)
   end
 end
 
-impl Enumerable for Hash(K, V) forall K, V
-  type Elem = ::Tuple(K, V)
-
-  def each(& : ::Tuple(K, V) -> Nil) : Nil
-    each_entry { |pair| yield pair }
-  end
-end
+# `Hash` has no `Enumerable` impl here. The trait enumerates one element, so
+# it needs an `each` that yields a pair as a single tuple, and the prelude
+# already declares `Hash#each` yielding the key and the value as two
+# arguments. R-3 refuses a second definition of a method the prelude has, and
+# rightly: the one that lost would still be the one other code called. Use
+# `each_entry` above for tuple-at-a-time iteration until the prelude's own
+# `each` can answer the trait.
 
 struct ::Range(B, E)
   def each_element(& : B -> Nil) : Nil
@@ -1080,12 +1076,11 @@ struct ::Range(B, E)
   end
 end
 
+# `Range` already answers `each` with this exact shape, so the impl only names
+# what it enumerates. See the note on the `Array` impl above for why writing
+# the body again here would be a second definition rather than an addition.
 impl Enumerable for Range(B, E) forall B, E
   type Elem = B
-
-  def each(& : B -> Nil) : Nil
-    each_element { |x| yield x }
-  end
 end
 
 # ---------------------------------------------------------------------------

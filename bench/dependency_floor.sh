@@ -214,6 +214,28 @@ for mode in "" "--release"; do
   done
 done
 
+# The samples are what a person writes; `src/std/` is what they import, and a
+# module no sample reaches was measured by nothing. `import std/socket` alone
+# does not move the link line — codegen is demand-driven, so a `fun` nobody
+# calls is a declaration and not a symbol — which is exactly why the
+# exercises are the thing to build here: each one calls its module's surface.
+echo "== the std exercises, which call what src/std declares"
+for source in "$REPO"/bench/std_*_exercise.iyi; do
+  [ -f "$source" ] || continue
+  exercise="$(basename "$source" .iyi)"
+  if ! "$IYI" build -o "$WORK/$exercise" "$source" >"$WORK/$exercise.log" 2>&1; then
+    echo "$exercise: build failed"
+    tail -5 "$WORK/$exercise.log"
+    status=1
+    continue
+  fi
+  symbols "$WORK/$exercise" >>"$found_syms"
+  libraries "$WORK/$exercise" >>"$found_libs"
+  printf '  %-28s %s | %s\n' "$exercise" \
+    "$(symbols "$WORK/$exercise" | tr '\n' ' ')" \
+    "$(libraries "$WORK/$exercise" | tr '\n' ' ')"
+done
+
 [ "$status" -eq 0 ] || { echo; echo "a sample did not build, so no floor was measured"; exit 1; }
 
 prog_syms="$(sort -u "$found_syms")"
@@ -247,6 +269,32 @@ echo
 echo "== the compiler"
 compiler_libs="$(libraries "$REPO/.build/iyi")"
 printf '  %s\n' "$(echo "$compiler_libs" | tr '\n' ' ')"
+
+echo
+echo "== what the library declares, reached or not"
+# A measurement only sees what a program calls, so a `@[Link]` sitting in the
+# library against the day somebody calls it is invisible to everything above.
+# It is also the shape a link line grows in: one annotation, no caller yet,
+# and the floor moves the first time a module uses it. So the annotations are
+# read as text, and the list is the three the library has reasons for.
+while IFS= read -r annotation; do
+  [ -n "$annotation" ] || continue
+  case "$annotation" in
+    '@[Link("kernel32")]') ;;
+    '@[Link(ldflags: "msvcrt.lib ucrt.lib vcruntime.lib")]') ;;
+    '@[Link("gc", pkg_config: "bdw-gc")]') ;;
+    *)
+      echo "  THE FLOOR MOVED: the library declares $annotation"
+      echo "  A library iyi ships links the platform libc and, opt-in, a"
+      echo "  collector. A fourth annotation needs a reason in SPEC.md III.10"
+      echo "  before it needs a line here."
+      status=1
+      ;;
+  esac
+done <<LINKS
+$(grep -rhoE '@\[Link\([^]]*\)\]' "$REPO/src/iyi" "$REPO/src/std" | sort -u)
+LINKS
+printf '  %s\n' "$(grep -rhoE '@\[Link\([^]]*\)\]' "$REPO/src/iyi" "$REPO/src/std" | sort -u | tr '\n' ' ')"
 
 echo
 report() {

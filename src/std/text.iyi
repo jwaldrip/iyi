@@ -107,36 +107,6 @@ struct ::Char
     end
   end
 
-  # Encodes this character into valid UTF-8 bytes (1 to 4 bytes).
-  def to_s : String
-    cp = ord
-    if cp < 0x80
-      String.new(1) do |b|
-        b[0] = cp.to_u8
-      end
-    elsif cp < 0x800
-      String.new(2) do |b|
-        b[0] = (0xC0 | (cp >> 6)).to_u8
-        b[1] = (0x80 | (cp & 0x3F)).to_u8
-      end
-    elsif cp < 0x10000
-      String.new(3) do |b|
-        b[0] = (0xE0 | (cp >> 12)).to_u8
-        b[1] = (0x80 | ((cp >> 6) & 0x3F)).to_u8
-        b[2] = (0x80 | (cp & 0x3F)).to_u8
-      end
-    elsif cp <= 0x10FFFF
-      String.new(4) do |b|
-        b[0] = (0xF0 | (cp >> 18)).to_u8
-        b[1] = (0x80 | ((cp >> 12) & 0x3F)).to_u8
-        b[2] = (0x80 | ((cp >> 6) & 0x3F)).to_u8
-        b[3] = (0x80 | (cp & 0x3F)).to_u8
-      end
-    else
-      String.new(1) { |b| b[0] = '?'.ord.to_u8 }
-    end
-  end
-
   def to_i : Int32
     to_i(10)
   end
@@ -257,28 +227,6 @@ class ::String
     byte_slice(0, last)
   end
 
-  def strip(char : Char) : String
-    lstrip(char).rstrip(char)
-  end
-
-  def strip(chars : String) : String
-    lstrip(chars).rstrip(chars)
-  end
-
-  def chomp : String
-    if bytesize >= 2 && to_unsafe[bytesize - 2] == 13_u8 && to_unsafe[bytesize - 1] == 10_u8
-      return byte_slice(0, bytesize - 2)
-    elsif bytesize >= 1 && (to_unsafe[bytesize - 1] == 10_u8 || to_unsafe[bytesize - 1] == 13_u8)
-      return byte_slice(0, bytesize - 1)
-    end
-    self
-  end
-
-  def chomp(suffix : String) : String
-    return self unless ends_with?(suffix)
-    byte_slice(0, bytesize - suffix.bytesize)
-  end
-
   def chop : String
     return "" if empty?
     if bytesize >= 2 && to_unsafe[bytesize - 2] == 13_u8 && to_unsafe[bytesize - 1] == 10_u8
@@ -287,11 +235,32 @@ class ::String
     byte_slice(0, bytesize - 1)
   end
 
-  def ends_with?(char : Char) : Bool
-    bytesize > 0 && to_unsafe[bytesize - 1] == char.ord.to_u8
+  def rindex(char : Char, offset : Int32) : Int32?
+    offset = bytesize + offset if offset < 0
+    return nil if offset < 0
+    offset = bytesize - 1 if offset >= bytesize
+    wanted = char.ord.to_u8
+    ptr = to_unsafe
+
+    i = offset
+    while i >= 0
+      return i if ptr[i] == wanted
+      i = i - 1
+    end
+    nil
   end
 
-  def split(separator : String, limit : Int32 = 0) : Array(String)
+  def rindex(char : Char) : Int32?
+    rindex(char, bytesize - 1)
+  end
+
+  # The prelude's `index` finds a character. These find a substring, and take
+  # an offset, and carry their own name because R-3 counts a name on a type
+  # once and `index` is already the prelude's (SPEC.md R-3).
+  # The prelude's `split` takes a character. This takes a string, and
+  # carries its own name for the reason `index_of` does: `split` is a name
+  # the prelude already declares on `String` (SPEC.md R-3).
+  def split_on(separator : String, limit : Int32 = 0) : Array(String)
     return [self] if limit == 1
     return [] of String if empty? && limit < 0
 
@@ -306,7 +275,7 @@ class ::String
     pieces = [] of String
     sep_size = separator.bytesize
     start = 0
-    while (idx = index(separator, start))
+    while (idx = index_of(separator, start))
       pieces << byte_slice(start, idx - start)
       start = idx + sep_size
       if limit > 1 && pieces.size == limit - 1
@@ -317,82 +286,7 @@ class ::String
     pieces
   end
 
-  def split(separator : Char, limit : Int32) : Array(String)
-    return [self] if limit == 1
-    pieces = [] of String
-    wanted = separator.ord.to_u8
-    start = 0
-    index = 0
-    while index < bytesize
-      if to_unsafe[index] == wanted
-        pieces << byte_slice(start, index - start)
-        start = index + 1
-        if limit > 1 && pieces.size == limit - 1
-          break
-        end
-      end
-      index = index + 1
-    end
-    pieces << byte_slice(start, bytesize - start)
-    pieces
-  end
-
-  def split : Array(String)
-    split(0)
-  end
-
-  def split(limit : Int32) : Array(String)
-    return [self] if limit == 1
-    pieces = [] of String
-    in_token = false
-    token_start = 0
-    i = 0
-    while i < bytesize
-      b = to_unsafe[i].unsafe_chr
-      if b.whitespace?
-        if in_token
-          pieces << byte_slice(token_start, i - token_start)
-          in_token = false
-          if limit > 1 && pieces.size == limit - 1
-            j = i + 1
-            while j < bytesize && to_unsafe[j].unsafe_chr.whitespace?
-              j = j + 1
-            end
-            if j < bytesize
-              pieces << byte_slice(j, bytesize - j)
-            end
-            return pieces
-          end
-        end
-      else
-        unless in_token
-          token_start = i
-          in_token = true
-        end
-      end
-      i = i + 1
-    end
-    if in_token
-      pieces << byte_slice(token_start, bytesize - token_start)
-    end
-    pieces
-  end
-
-  def index(char : Char, offset : Int32) : Int32?
-    offset = bytesize + offset if offset < 0
-    return nil if offset < 0 || offset >= bytesize
-
-    wanted = char.ord.to_u8
-    ptr = to_unsafe
-    i = offset
-    while i < bytesize
-      return i if ptr[i] == wanted
-      i = i + 1
-    end
-    nil
-  end
-
-  def index(search : String, offset : Int32 = 0) : Int32?
+  def index_of(search : String, offset : Int32 = 0) : Int32?
     offset = bytesize + offset if offset < 0
     return nil if offset < 0
     return offset if search.bytesize == 0 && offset <= bytesize
@@ -415,23 +309,18 @@ class ::String
     nil
   end
 
-  def rindex(char : Char, offset : Int32) : Int32?
+  def index_of(char : Char, offset : Int32) : Int32?
     offset = bytesize + offset if offset < 0
-    return nil if offset < 0
-    offset = bytesize - 1 if offset >= bytesize
+    return nil if offset < 0 || offset >= bytesize
+
     wanted = char.ord.to_u8
     ptr = to_unsafe
-
     i = offset
-    while i >= 0
+    while i < bytesize
       return i if ptr[i] == wanted
-      i = i - 1
+      i = i + 1
     end
     nil
-  end
-
-  def rindex(char : Char) : Int32?
-    rindex(char, bytesize - 1)
   end
 
   def rindex(search : String, offset : Int32) : Int32?
@@ -463,7 +352,7 @@ class ::String
   end
 
   def sub(search : String, replacement : String) : String
-    idx = index(search)
+    idx = index_of(search)
     return self unless idx
     byte_slice(0, idx) + replacement + byte_slice(idx + search.bytesize, bytesize - idx - search.bytesize)
   end
@@ -477,7 +366,7 @@ class ::String
   end
 
   def sub(search : String, & : String -> String) : String
-    idx = index(search)
+    idx = index_of(search)
     return self unless idx
     repl = yield search
     byte_slice(0, idx) + repl + byte_slice(idx + search.bytesize, bytesize - idx - search.bytesize)
@@ -499,7 +388,7 @@ class ::String
 
   def gsub(search : String, replacement : String) : String
     return self if search.empty?
-    pieces = split(search)
+    pieces = split_on(search)
     pieces.join(replacement)
   end
 
@@ -513,13 +402,13 @@ class ::String
 
   def gsub(search : String, & : String -> String) : String
     return self if search.empty?
-    idx = index(search)
+    idx = index_of(search)
     return self unless idx
 
     result = ""
     start = 0
     s_len = search.bytesize
-    while (idx = index(search, start))
+    while (idx = index_of(search, start))
       result = result + byte_slice(start, idx - start)
       result = result + yield search
       start = idx + s_len
@@ -762,7 +651,7 @@ class ::String
     c = 0
     start = 0
     s_len = search.bytesize
-    while (idx = index(search, start))
+    while (idx = index_of(search, start))
       c = c + 1
       start = idx + s_len
     end
@@ -822,40 +711,6 @@ class ::String
     arr
   end
 
-  # Decodes UTF-8 codepoints one character at a time.
-  def each_char(& : Char -> Nil) : Nil
-    i = 0
-    ptr = to_unsafe
-    while i < bytesize
-      b = ptr[i].to_i
-      if (b & 0x80) == 0
-        yield b.unsafe_chr
-        i = i + 1
-      elsif (b & 0xE0) == 0xC0 && i + 1 < bytesize
-        b1 = ptr[i + 1].to_i
-        cp = ((b & 0x1F) << 6) | (b1 & 0x3F)
-        yield cp.unsafe_chr
-        i = i + 2
-      elsif (b & 0xF0) == 0xE0 && i + 2 < bytesize
-        b1 = ptr[i + 1].to_i
-        b2 = ptr[i + 2].to_i
-        cp = ((b & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
-        yield cp.unsafe_chr
-        i = i + 3
-      elsif (b & 0xF8) == 0xF0 && i + 3 < bytesize
-        b1 = ptr[i + 1].to_i
-        b2 = ptr[i + 2].to_i
-        b3 = ptr[i + 3].to_i
-        cp = ((b & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
-        yield cp.unsafe_chr
-        i = i + 4
-      else
-        yield b.unsafe_chr
-        i = i + 1
-      end
-    end
-  end
-
   def bytes : Array(UInt8)
     arr = [] of UInt8
     i = 0
@@ -878,46 +733,6 @@ class ::String
     lines.each do |line|
       yield line.chomp('\r')
     end
-  end
-
-  def to_i(base : Int32) : Int32
-    to_i?(base) || raise "not a number in base #{base}: #{inspect}"
-  end
-
-  def to_i?(base : Int32) : Int32?
-    raise "base #{base} out of range (2..36)" if base < 2 || base > 36
-    return nil if empty?
-
-    index = 0
-    sign = 1
-    if self[0] == '-'
-      return nil if bytesize == 1
-      sign = -1
-      index = 1
-    elsif self[0] == '+'
-      return nil if bytesize == 1
-      index = 1
-    end
-
-    value = 0
-    while index < bytesize
-      b = to_unsafe[index]
-      digit = -1
-      if b >= 48_u8 && b <= 57_u8
-        digit = (b - 48_u8).to_i
-      elsif b >= 97_u8 && b <= 122_u8
-        digit = (b - 97_u8).to_i + 10
-      elsif b >= 65_u8 && b <= 90_u8
-        digit = (b - 65_u8).to_i + 10
-      else
-        return nil
-      end
-      return nil if digit >= base
-      value = value * base + digit
-      index = index + 1
-    end
-
-    value * sign
   end
 
   def to_i64 : Int64
@@ -1049,7 +864,7 @@ class ::String
   end
 
   def partition(separator : String) : Tuple(String, String, String)
-    idx = index(separator)
+    idx = index_of(separator)
     if idx
       {byte_slice(0, idx), separator, byte_slice(idx + separator.bytesize, bytesize - idx - separator.bytesize)}
     else
@@ -1072,25 +887,6 @@ class ::String
 
   def rpartition(separator : Char) : Tuple(String, String, String)
     rpartition(separator.to_s)
-  end
-
-  def self.join(items : Array(String), separator : String = "") : String
-    items.join(separator)
-  end
-
-  def self.join(items, separator : String = "") : String
-    result = ""
-    first = true
-    items.each do |item|
-      result = result + separator unless first
-      result = result + item.to_s
-      first = false
-    end
-    result
-  end
-
-  def byte_slice(start : Int32, count : Int32) : String
-    byte_slice?(start, count) || raise "start #{start}, count #{count} out of bounds for bytesize #{bytesize}"
   end
 
   def byte_slice?(start : Int32, count : Int32) : String?
@@ -1118,35 +914,6 @@ class ::String
     count = range.exclusive? ? e - b : e - b + 1
     count = 0 if count < 0
     byte_slice?(b, count)
-  end
-
-  def [](range : Range(Int32, Int32)) : String
-    self[range]? || raise "Range #{range.begin}..#{range.end} out of bounds for size #{size}"
-  end
-
-  def []?(range : Range(Int32, Int32)) : String?
-    b = range.begin
-    e = range.end
-    b = size + b if b < 0
-    e = size + e if e < 0
-    return nil if b < 0 || b > size
-    e = size if e > size
-    count = range.exclusive? ? e - b : e - b + 1
-    count = 0 if count < 0
-    if single_byte_optimizable?
-      byte_slice?(b, count)
-    else
-      ch = chars
-      return nil if b > ch.size
-      count = ch.size - b if b + count > ch.size
-      res = ""
-      i = 0
-      while i < count
-        res = res + ch[b + i].to_s
-        i += 1
-      end
-      res
-    end
   end
 
   def single_byte_optimizable? : Bool
@@ -1341,27 +1108,6 @@ class ::String
     insert(index, other.to_s)
   end
 
-  def lchop : String
-    return "" if empty?
-    if single_byte_optimizable?
-      byte_slice(1, bytesize - 1)
-    else
-      ch = chars
-      res = ""
-      i = 1
-      while i < ch.size
-        res = res + ch[i].to_s
-        i += 1
-      end
-      res
-    end
-  end
-
-  def lchop(prefix : String) : String
-    return self unless starts_with?(prefix)
-    byte_slice(prefix.bytesize, bytesize - prefix.bytesize)
-  end
-
   def rchop : String
     return "" if empty?
     if single_byte_optimizable?
@@ -1538,10 +1284,6 @@ class ::String
       yield c.ord
     end
   end
-
-  def self.build(capacity : Int32 = 64, &block : String::Builder -> Nil) : String
-    String::Builder.build(capacity, &block)
-  end
 end
 
 class ::String::Builder
@@ -1683,11 +1425,4 @@ class ::IyiIO
 end
 
 class ::Array(T)
-  def join : String
-    join("")
-  end
-
-  def join(separator : Char) : String
-    join(separator.to_s)
-  end
 end
