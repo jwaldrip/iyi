@@ -1343,7 +1343,8 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     # from outside — so it is set here rather than reimplemented.
     node.visibility = :private if is_instance_method && unexported_in_unit?(current_type, node.exported?)
 
-    target_type.add_def node
+    replaced = target_type.add_def node
+    iyi_refuse_library_override node, replaced
 
     record_export current_type, node.name, node.exported?
 
@@ -1378,6 +1379,54 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     end
 
     false
+  end
+
+  # iyi: a `.iyi` file may *add* to a type of the other language and may not
+  # *replace* one of its methods (SPEC.md R-3).
+  #
+  # Adding is what a reopen is for: `class ::String; def blank?` gives the
+  # library's `String` a method the library does not have, and only code that
+  # can reach the module's surface can call it. Replacing is a different act.
+  # The definition that goes is one the *library's own code* calls, so the
+  # whole program gets the new one — and nothing at the two sites says so.
+  #
+  # `src/std/text.iyi` is how this was found. It writes `private def
+  # byte_slice(start, count)` as a helper of its own, which is a name iyi's
+  # prelude does not have and Crystal's `String` does. Built `--crystal`,
+  # `import std/text` replaced Crystal's public `byte_slice` with a private
+  # one, and the first program that touched `Path` — which is every program,
+  # through the exception handler's backtrace — stopped on `private method
+  # 'byte_slice' called for String`, pointing at a line in Crystal's own
+  # library that had not changed.
+  #
+  # The module's own language is not this rule's business: with iyi's prelude
+  # the type is a type of this language, written in `.iyi`, and reopening it is
+  # how the prelude is extended. What the test asks is where each definition
+  # was *written* — the same question `iyi tool bind` asks of a shard's
+  # members — because that is what says whose the type is.
+  private def iyi_refuse_library_override(node : Def, replaced : Def?) : Nil
+    return unless replaced
+    return if @program.iyi_prelude?
+    return unless iyi_written_in?(node, ".iyi")
+    return unless iyi_written_in?(replaced, ".cr")
+
+    at = replaced.location.try(&.expanded_location)
+    where = at ? " (#{at.filename}:#{at.line_number})" : ""
+    node.raise "#{replaced.owner}##{node.name} is the library's, and this " \
+               "replaces it#{where}. A `.iyi` file may add a method to a type " \
+               "of the other language — `def blank?` on `::String` is an " \
+               "addition — and may not redefine one it has: the definition " \
+               "that goes is one the library's own code calls, so every " \
+               "program built with it gets this one instead. Give it a name " \
+               "the library does not use, or build without `--crystal`, where " \
+               "the type is the prelude's (SPEC.md R-3)"
+  end
+
+  # Where a definition was written, following a macro back to its source.
+  private def iyi_written_in?(a_def : Def, extension : String) : Bool
+    !!a_def.location.try(&.expanded_location).try do |at|
+      at.filename.as?(String).try &.ends_with?(extension)
+    end
   end
 
   private def process_def_primitive_annotation(node, ann)

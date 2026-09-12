@@ -40,6 +40,10 @@
 # the engine that would. `import std/format` brings `sprintf`, `printf`,
 # `String.format` and `String#%` with it, and the reopenings below travel
 # with the import the way `std/text`'s do (SPEC.md III.9).
+#
+# And against iyi's own prelude only: `String#%` is a name Crystal has, so
+# `import std/format` in a `--crystal` program is refused rather than
+# replacing the library's under the whole program (SPEC.md III.6).
 
 module std/format
 

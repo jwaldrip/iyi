@@ -854,9 +854,9 @@ Checking it moved two things and left the shape alone.
 
 | | Crystal 0.1.0 (2014-06-18) | iyi today |
 |---|---|---|
-| Compiler | 24,984 lines, **written in Crystal** | 109,376 lines, Crystal, forked |
-| Library | 8,161 lines (3,551 of it core) | 13,609-line own prelude + 6,057 in std |
-| Specs | 21,146 lines | 9,683 for iyi |
+| Compiler | 24,984 lines, **written in Crystal** | 109,425 lines, Crystal, forked |
+| Library | 8,161 lines (3,551 of it core) | 13,609-line own prelude + 6,067 in std |
+| Specs | 21,146 lines | 9,758 for iyi |
 | Samples | 24 **programs** | 8 **explanations**, a first half hour, and `calc`, a language |
 | History | 3,165 commits over 21 months | 266 |
 | Own status line | *"pre-alpha: we are still designing the language"* | design largely settled, 0.2.0 released, a language written in it |
@@ -3584,6 +3584,30 @@ initialize(*, __pull_for_json_serializable pull : ...)` as an unannotated
 parameter and asked the author to annotate a def a macro wrote — so a macro's
 defs are exempt, which is R-5's own premise: the macro travels and the
 consumer expands it again (`iyimod.cr`).
+
+**A `.iyi` file may add to the other language's type and may not replace one
+of its methods.** A reopen is how a module extends a type it does not own —
+`class ::String; def blank?` gives the library's `String` something the
+library does not have, and only what can reach the module's surface can call
+it. Replacing is a different act: the definition that goes is one the
+*library's own code* calls, so every program built with that module gets the
+new one, and nothing at either site says so. Refused now, naming both
+definitions. `src/std/text.iyi` is what found it — a `private def
+byte_slice(start, count)` helper of its own, a name iyi's prelude does not
+have and Crystal's `String` does, so `import std/text` under `--crystal`
+replaced Crystal's public one with a private one and the first program to
+touch `Path` (every program, through the backtrace) stopped on `private
+method 'byte_slice' called for String`, at a line in the library that had
+not changed. The rule asks where each definition was *written*, which is the
+same question `iyi tool bind` asks of a shard's members, and it does not
+apply when the prelude is iyi's own: there the type is this language's and
+reopening it is how the prelude is extended.
+
+What that settles about `src/std/`: nine of its twelve modules are
+library-agnostic and build under `--crystal`; `std/text` and `std/format` are
+written against iyi's own prelude — byte-indexed `index`, `split` and `sub`,
+a `%` that formats — and are refused there by the rule above rather than
+silently replacing Crystal's, which is what they were doing.
 
 **`--annotate`: the types R-2 wants, read off the program.** Crystal code
 does not write them — `def call(env)` is idiomatic — but they are not

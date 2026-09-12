@@ -4,6 +4,22 @@
 
 ### Fixed
 
+- **A `.iyi` file may add to the other language's type and may not replace
+  one of its methods.** `import std/text` in a `--crystal` program answered
+  `private method 'byte_slice' called for String`, at a line in Crystal's
+  own `Path#drive` that had not changed: `src/std/text.iyi` writes a
+  `private def byte_slice(start, count)` helper of its own, a name iyi's
+  prelude does not have and Crystal's `String` does, so the import replaced
+  the library's public method with a private one under the whole program.
+  A reopen that *adds* is what a reopen is for and stays; one that replaces
+  is refused, naming both definitions and both files. It asks where each was
+  written, and it does not apply when the prelude is iyi's own — there the
+  type is this language's and reopening it is how the prelude is extended.
+  What it settles about `src/std/`: nine of the twelve modules are
+  library-agnostic and build under `--crystal`, while `std/text` and
+  `std/format` are written against iyi's own prelude — byte-indexed `index`,
+  `split` and `sub`, a `%` that formats — and are refused there instead of
+  silently standing in for Crystal's, which is what they had been doing.
 - **A module used as a type survives the boundary: the consumer's own
   includer is in the dispatch.** 0.12.0 shipped this diagnosed and not
   fixed, and it is the one thing a bound kemal application did not

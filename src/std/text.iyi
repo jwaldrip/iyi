@@ -45,6 +45,12 @@
 #    programs reach for: whitespace stripping, splitting, joining, indexing,
 #    substitutions, transformations (tr, squeeze, delete, count, center),
 #    character inspection, and robust conversions with nilable failure paths.
+#
+# Written against iyi's own prelude, and only that one. Its `index`, `split`
+# and `sub` are byte-indexed by the convention above, which is not Crystal's,
+# and the names it gives `::String` and `::Char` are names Crystal has — so
+# `import std/text` in a `--crystal` program is refused rather than replacing
+# the library's methods under the whole program (SPEC.md III.6).
 
 module std/text
 
